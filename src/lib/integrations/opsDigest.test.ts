@@ -50,6 +50,8 @@ const card = (over: Partial<FulfillmentCard>): FulfillmentCard => ({
   itemCount: 3,
   installDate: null,
   isTest: false,
+  highlevelContactId: null,
+  customerId: null,
   ...over,
 });
 

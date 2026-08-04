@@ -156,7 +156,20 @@ export default function JobsAdminPage() {
                     </td>
                     <td className="px-3 py-2 text-gray-700">
                       <div className="flex items-center gap-2">
-                        <span>{j.customerName ?? '—'}</span>
+                        {/* Customer-name link (mirrors /admin/quotes' idiom, #666):
+                            same routing rule as src/lib/dashboard/customers.ts
+                            customerRouteId — highlevel_contact_id, else customer_id.
+                            A walk-in with neither stays plain text. */}
+                        {(() => {
+                          const routeId = j.highlevelContactId ?? j.customerId;
+                          return routeId ? (
+                            <Link href={`/customers/${encodeURIComponent(routeId)}`} className="text-blue-600 hover:underline">
+                              {j.customerName ?? '—'}
+                            </Link>
+                          ) : (
+                            <span>{j.customerName ?? '—'}</span>
+                          );
+                        })()}
                         {j.isTest && (
                           <span
                             title="Simulated test job — excluded from dashboard metrics"

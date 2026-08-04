@@ -435,6 +435,31 @@ describe('listJobsForAdmin', () => {
     sbRef.current = null;
     expect(await listJobsForAdmin()).toEqual([]);
   });
+
+  it('computes the customer-detail route id fields (highlevel_contact_id first, then the job\'s own customer_id over the quote\'s)', async () => {
+    const { client } = makeSb({
+      jobs: {
+        list: [
+          { id: 'j1', job_number: 1001, quote_id: 'q1', customer_id: null, status: 'to_schedule', type: 'one_off', install_date: null, created_at: '2026-06-01', line_items: [] },
+          { id: 'j2', job_number: 1002, quote_id: 'q2', customer_id: 'job-cust-2', status: 'to_schedule', type: 'one_off', install_date: null, created_at: '2026-06-02', line_items: [] },
+        ],
+      },
+      quotes: {
+        list: [
+          { id: 'q1', customer_name: 'Alice', customer_address: '1 Main St', is_test: false, highlevel_contact_id: 'hl-1', customer_id: 'quote-cust-1' },
+          { id: 'q2', customer_name: 'Bob', customer_address: '2 Oak', is_test: false, highlevel_contact_id: null, customer_id: 'quote-cust-2' },
+        ],
+      },
+    });
+    sbRef.current = client;
+
+    const cards = await listJobsForAdmin();
+    // j1: no job.customer_id, but the quote has a highlevel_contact_id — wins.
+    expect(cards[0]).toMatchObject({ id: 'j1', highlevelContactId: 'hl-1', customerId: 'quote-cust-1' });
+    // j2: no highlevel_contact_id on the quote — the job's OWN customer_id
+    // ('job-cust-2') is preferred over the quote's ('quote-cust-2').
+    expect(cards[1]).toMatchObject({ id: 'j2', highlevelContactId: null, customerId: 'job-cust-2' });
+  });
 });
 
 describe('getJobDetail', () => {
