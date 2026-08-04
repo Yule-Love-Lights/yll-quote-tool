@@ -42,6 +42,7 @@ describe('isPublicPath — customer-facing allowlist', () => {
       '/api/dashboard/gmail/poll', // Vercel Cron (CRON_SECRET-guarded, #58)
       '/api/dashboard/ingest', // Generic ingest (shared-secret in the route, #58)
       '/api/leads/retry', // Vercel Cron (CRON_SECRET-guarded, #leads retry worker)
+      '/api/ops/digest', // Vercel Cron (CRON_SECRET-guarded, #168 morning ops digest)
     ]) {
       expect(isPublicPath(p), p).toBe(true);
     }
