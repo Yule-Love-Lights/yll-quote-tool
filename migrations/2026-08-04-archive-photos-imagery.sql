@@ -35,6 +35,13 @@
 -- the slice-1 migration doesn't read as a contradiction.
 --
 -- HOW TO APPLY: paste into the Supabase SQL Editor and Run. Idempotent.
+--
+-- ORDER: MIGRATION FIRST — apply this BEFORE merging the slice-2 code, not
+-- just before the first fetch. Both the GET (queue counters) and the POST
+-- (the batch) SELECT imagery_error, so the moment the code is live against a
+-- table without these columns the /training/archive page 500s on load. This is
+-- the column-add case of the per-migration order rule: the column must exist
+-- before any code reads or writes it.
 -- =====================================================================
 
 alter table public.archive_photos

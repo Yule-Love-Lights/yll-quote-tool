@@ -198,6 +198,12 @@ export async function fetchArchiveImageryBatch(opts?: {
     .not('resolved_address', 'is', null);
   if (!opts?.retryFailed) query = query.is('imagery_error', null);
 
+  // Unbounded on purpose: the whole claimable set is 159 rows today and the
+  // grouping has to see every photo of a property to stamp them all together.
+  // PostgREST caps a response at 1000 rows, so a much later manifest drop would
+  // silently truncate this — the batch would still be correct (it just works a
+  // subset), but `remaining` would understate. Revisit if the table passes ~1000
+  // unfetched rows.
   const { data, error } = await query;
   if (error) throw new Error(`archive imagery claim failed: ${error.message}`);
 
