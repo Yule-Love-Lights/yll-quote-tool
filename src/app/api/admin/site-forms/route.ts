@@ -16,7 +16,7 @@ import { SITE_FORM_TYPES } from '@/lib/siteForms/siteFormService';
 export const runtime = 'nodejs';
 
 const LIST_COLUMNS =
-  'id,created_at,form_type,form_variant,name,email,phone,payload,resume_path,consent,landing_url,sync_status,sync_error,ghl_contact_id,is_test';
+  'id,created_at,form_type,form_variant,name,email,phone,payload,resume_path,resume_error,consent,landing_url,sync_status,sync_error,ghl_contact_id,is_test';
 
 const MAX_ROWS = 500;
 // Long enough for a human to click it, short enough that a copied link dies.

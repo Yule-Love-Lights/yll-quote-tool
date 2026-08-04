@@ -19,6 +19,7 @@ type Submission = {
   phone: string | null;
   payload: Record<string, string> | null;
   resume_url: string | null;
+  resume_error: string | null;
   consent: boolean;
   landing_url: string | null;
   sync_status: string;
@@ -127,6 +128,12 @@ export default function SiteFormsAdminClient() {
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
               <div>
+                {/* On every other tab the bold name IS the person the row is
+                    about. On a nomination it is the person who SENT it, so say
+                    so: mixing the two up means contacting the wrong household. */}
+                {row.form_type === 'nomination' && (
+                  <span style={{ color: '#666', fontSize: 13 }}>Nominated by </span>
+                )}
                 <strong style={{ fontSize: 15 }}>{row.name || row.email}</strong>
                 <span style={{ color: '#666', fontSize: 13 }}>
                   {' '}
@@ -150,13 +157,51 @@ export default function SiteFormsAdminClient() {
                 ) : null}
               </div>
 
-              {row.payload &&
-                Object.entries(row.payload).map(([k, v]) => (
-                  <div key={k} style={{ marginTop: 4 }}>
-                    <span style={{ color: '#666' }}>{FIELD_LABELS[k] ?? k}: </span>
-                    {v}
+              {/* The nominated household gets its own block with working links,
+                  so the person who actually needs contacting is never buried in
+                  a generic list of answers. */}
+              {row.form_type === 'nomination' && row.payload?.nomineeName && (
+                <div
+                  style={{
+                    marginTop: 10,
+                    padding: 12,
+                    borderRadius: 10,
+                    background: '#FBF7EF',
+                    border: '1px solid #EADFC8',
+                  }}
+                >
+                  <div style={{ color: '#666', fontSize: 12, fontWeight: 700, marginBottom: 4 }}>
+                    NOMINATED HOUSEHOLD
                   </div>
-                ))}
+                  <strong style={{ fontSize: 15 }}>{row.payload.nomineeName}</strong>
+                  {row.payload.nomineeAddress && <div>{row.payload.nomineeAddress}</div>}
+                  <div>
+                    {row.payload.nomineeEmail && (
+                      <a href={`mailto:${row.payload.nomineeEmail}`}>{row.payload.nomineeEmail}</a>
+                    )}
+                    {row.payload.nomineeEmail && row.payload.nomineePhone ? ' · ' : ''}
+                    {row.payload.nomineePhone && (
+                      <a href={`tel:${row.payload.nomineePhone}`}>{row.payload.nomineePhone}</a>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {row.payload &&
+                Object.entries(row.payload)
+                  .filter(
+                    ([k]) =>
+                      !(
+                        row.form_type === 'nomination' &&
+                        ['nomineeName', 'nomineeAddress', 'nomineeEmail', 'nomineePhone'].includes(k)
+                      ),
+                  )
+                  .map(([k, v]) => (
+                    <div key={k} style={{ marginTop: 4 }}>
+                      <span style={{ color: '#666' }}>{FIELD_LABELS[k] ?? k}: </span>
+                      {v}
+                    </div>
+                  ))}
 
               {row.resume_url && (
                 <div style={{ marginTop: 8 }}>
@@ -178,9 +223,17 @@ export default function SiteFormsAdminClient() {
                     Download resume
                   </a>
                   <span style={{ color: '#888', fontSize: 12, marginLeft: 8 }}>
-                    link expires in 5 minutes
+                    link expires in 5 minutes, refresh this page for a new one
                   </span>
                 </div>
+              )}
+
+              {/* An applicant who attached a resume that failed to store looks
+                  identical to one who attached nothing, unless we say so. */}
+              {row.resume_error && (
+                <p style={{ color: '#B00020', fontSize: 13, marginTop: 8, marginBottom: 0 }}>
+                  This applicant attached a resume but it failed to save. Email them for a copy.
+                </p>
               )}
 
               {row.form_type === 'nomination' && (

@@ -23,6 +23,26 @@ const API = process.env.NEXT_PUBLIC_APP_URL
   ? `${process.env.NEXT_PUBLIC_APP_URL}/api/site-forms`
   : '/api/site-forms';
 
+// Visually hidden, still read aloud. Not display:none, which removes it from
+// the accessibility tree entirely.
+const SR_ONLY: React.CSSProperties = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: 'hidden',
+  clip: 'rect(0 0 0 0)',
+  whiteSpace: 'nowrap',
+  border: 0,
+};
+
+// Matches the server cap, which itself matches this app's established multipart
+// ceiling (headroom under Vercel's ~4.5MB raw-body limit). Checked on the
+// client too so an oversized resume is refused with a clear message BEFORE a
+// round trip that the platform would reject with an unreadable 413.
+const RESUME_MAX_BYTES = 4 * 1024 * 1024;
+
 const COPY: Record<FormType, { heading: string; blurb: string; button: string; done: string }> = {
   newsletter: {
     heading: 'Join our community',
@@ -94,6 +114,12 @@ export default function SiteForm({ formType, formVariant, theme, compact }: Prop
     const resume = data.get('resume');
     const hasFile = resume instanceof File && resume.size > 0;
 
+    if (hasFile && (resume as File).size > RESUME_MAX_BYTES) {
+      setError('That file is over 4MB. Please attach a smaller PDF or Word document.');
+      setStatus('error');
+      return;
+    }
+
     try {
       let res: Response;
       const common = {
@@ -122,6 +148,14 @@ export default function SiteForm({ formType, formVariant, theme, compact }: Prop
         });
       }
 
+      // A body the platform rejected for size comes back as PLAIN TEXT with a
+      // 413, not JSON. Parsing that blindly throws and the applicant sees a
+      // meaningless error, so handle it before touching res.json().
+      if (res.status === 413) {
+        setError('That file is too large for the server. Please attach a smaller one.');
+        setStatus('error');
+        return;
+      }
       const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (!res.ok || !json.ok) {
         setError(json.error || 'Something went wrong, please try again.');
@@ -195,8 +229,11 @@ export default function SiteForm({ formType, formVariant, theme, compact }: Prop
         </>
       )}
 
-      {/* Honeypot: hidden from people, catnip for bots. */}
-      <div style={{ position: 'absolute', left: -9999, width: 1, height: 1, overflow: 'hidden' }} aria-hidden="true">
+      {/* Honeypot: hidden from people, catnip for bots. Deliberately NOT
+          aria-hidden, since that would put a focusable field inside a hidden
+          subtree, which accessibility checkers flag. Off-screen plus
+          tabIndex={-1} plus autoComplete="off" is the standard pattern. */}
+      <div style={{ position: 'absolute', left: -9999, width: 1, height: 1, overflow: 'hidden' }}>
         <label>
           Company
           <input type="text" name="company" tabIndex={-1} autoComplete="off" />
@@ -204,8 +241,6 @@ export default function SiteForm({ formType, formVariant, theme, compact }: Prop
       </div>
 
       <div style={{ display: 'grid', gap: 12 }}>
-        {formType !== 'newsletter' || !compact ? null : null}
-
         {formType !== 'newsletter' && (
           <div>
             <label style={labelStyle} htmlFor="name">
@@ -226,7 +261,15 @@ export default function SiteForm({ formType, formVariant, theme, compact }: Prop
 
         <div style={compact ? { display: 'flex', gap: 8 } : undefined}>
           <div style={{ flex: 1 }}>
-            {!compact && (
+            {compact ? (
+              // The footer form has no room for a visible label, but a
+              // placeholder is not a label: it is not reliably announced and it
+              // vanishes the moment someone starts typing. Hide it visually
+              // only, never with display:none.
+              <label htmlFor="email" style={SR_ONLY}>
+                Email address
+              </label>
+            ) : (
               <label style={labelStyle} htmlFor="email">
                 Email address
               </label>
@@ -304,7 +347,7 @@ export default function SiteForm({ formType, formVariant, theme, compact }: Prop
         {needsResume && (
           <div>
             <label style={labelStyle} htmlFor="resume">
-              Attach your resume (PDF or Word, up to 5MB)
+              Attach your resume (PDF or Word, up to 4MB)
             </label>
             <input
               id="resume"
@@ -371,10 +414,10 @@ export default function SiteForm({ formType, formVariant, theme, compact }: Prop
             }}
           >
             <input type="checkbox" name="consent" required style={{ marginTop: 3 }} />
-            <span>
-              I agree to be contacted by Yule Love Lights about this submission. Message and data
-              rates may apply.
-            </span>
+            {/* No "message and data rates" line: these submissions never enter
+                a text campaign, so promising one would describe something that
+                does not happen. */}
+            <span>I agree to be contacted by Yule Love Lights about this submission.</span>
           </label>
         )}
 

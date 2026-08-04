@@ -49,6 +49,7 @@ import {
   type SiteFormAlertInput,
 } from '@/lib/siteForms/siteFormAlerts';
 import { notifyTelegramAudience } from '@/lib/integrations/telegramRouting';
+import { MULTIPART_SIZE_LIMIT_BYTES } from '@/lib/clientImage';
 
 export const runtime = 'nodejs';
 
@@ -65,14 +66,43 @@ const MAX_LEN = {
   payloadValue: 5000,
 } as const;
 
-// Resumes only. Kept small on purpose: a serverless request body has a hard
-// ceiling and a 413 surfaces to the applicant as an unexplained failure.
-const RESUME_MAX_BYTES = 5 * 1024 * 1024;
+// Resumes only. Reuses the codebase's established multipart ceiling (~4MB,
+// headroom under Vercel's ~4.5MB raw-body cap) rather than inventing a new
+// one: a body over the PLATFORM limit is rejected by Vercel with a plain-text
+// 413 before this handler ever runs, so a limit above it would advertise a
+// size the applicant can never actually upload.
+const RESUME_MAX_BYTES = MULTIPART_SIZE_LIMIT_BYTES;
 const RESUME_ALLOWED = new Map<string, string>([
   ['application/pdf', 'pdf'],
   ['application/msword', 'doc'],
   ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'docx'],
 ]);
+// Some browser and OS combinations send a generic type for a genuine .docx,
+// so the extension is the fallback rather than rejecting a real resume.
+const RESUME_ALLOWED_EXT = new Set(['pdf', 'doc', 'docx']);
+
+function resumeExtension(file: File): string | null {
+  const byMime = RESUME_ALLOWED.get(file.type);
+  if (byMime) return byMime;
+  const ext = (file.name.split('.').pop() ?? '').toLowerCase();
+  return RESUME_ALLOWED_EXT.has(ext) ? ext : null;
+}
+
+/**
+ * Leading-bytes check. A PDF starts with "%PDF-", a .docx is a ZIP ("PK"), and
+ * a legacy .doc is an OLE compound file (D0 CF 11 E0). Cheap, and it closes the
+ * gap between what the uploader CLAIMS the file is and what it actually is.
+ */
+export async function hasAllowedSignature(file: File, ext: string): Promise<boolean> {
+  const head = new Uint8Array(await file.slice(0, 8).arrayBuffer());
+  const starts = (bytes: number[]) => bytes.every((b, i) => head[i] === b);
+  if (ext === 'pdf') return starts([0x25, 0x50, 0x44, 0x46, 0x2d]); // %PDF-
+  if (ext === 'docx') return starts([0x50, 0x4b]); // PK (zip)
+  if (ext === 'doc') {
+    return starts([0xd0, 0xcf, 0x11, 0xe0]) || starts([0x50, 0x4b]);
+  }
+  return false;
+}
 const RESUME_BUCKET = 'applications';
 
 const ALLOWED_ORIGINS = new Set(['https://yulelovelights.com', 'https://www.yulelovelights.com']);
@@ -192,18 +222,40 @@ export async function POST(req: NextRequest) {
     return jsonResponse(origin, { error: 'Please tick the consent box to continue' }, 400);
   }
 
+  // A nomination is useless without the person being nominated. The browser
+  // marks these required, but this endpoint is public and CORS-open to the
+  // marketing origins, so a scripted or malformed POST could otherwise store a
+  // nomination naming nobody — staff would have a nominator and no one to help.
+  if (formType === 'nomination') {
+    for (const [key, label] of [
+      ['nomineeName', "the nominated person's name"],
+      ['relationship', 'your relationship to them'],
+      ['nomineeAddress', "the nominated person's address"],
+    ] as const) {
+      if (!payload[key]) {
+        return jsonResponse(origin, { error: `Please include ${label}` }, 400);
+      }
+    }
+  }
+
   // Resume validation before anything is written.
   let resumeExt: string | null = null;
   if (resume) {
     if (formType !== 'careers' && formType !== 'intern') {
       return jsonResponse(origin, { error: 'This form does not accept a file' }, 400);
     }
-    const ext = RESUME_ALLOWED.get(resume.type);
+    const ext = resumeExtension(resume);
     if (!ext) {
       return jsonResponse(origin, { error: 'Please attach a PDF or Word document' }, 400);
     }
     if (resume.size > RESUME_MAX_BYTES) {
-      return jsonResponse(origin, { error: 'That file is over 5MB, please attach a smaller one' }, 400);
+      return jsonResponse(origin, { error: 'That file is over 4MB, please attach a smaller one' }, 400);
+    }
+    // The declared content type is attacker-controlled on a direct POST, and a
+    // staff member later DOWNLOADS and opens this file. Check the real leading
+    // bytes so a renamed executable cannot arrive labelled as a PDF.
+    if (!(await hasAllowedSignature(resume, ext))) {
+      return jsonResponse(origin, { error: 'That file does not look like a PDF or Word document' }, 400);
     }
     resumeExt = ext;
   }
@@ -214,11 +266,21 @@ export async function POST(req: NextRequest) {
     return jsonResponse(origin, { error: 'Submissions are not configured' }, 503);
   }
 
-  // Bot signals. Stored, answered 200, never synced — indistinguishable to a bot.
+  // Bot signals. The honeypot is decisive: a real visitor never fills a field
+  // they cannot see, so those are stored as spam, answered 200, and never
+  // synced — indistinguishable to a bot.
   const honeypotTripped = typeof fields.company === 'string' && fields.company.trim() !== '';
+
+  // Timing is NOT decisive on its own. The footer newsletter is a single email
+  // box, and a password manager filling it and a person clicking Subscribe can
+  // legitimately finish inside two seconds. Discarding on timing alone would
+  // tell that person "You are on the list" while binning them, so a fast
+  // submission is only treated as spam when the honeypot agrees; otherwise it
+  // is processed normally and merely noted for review.
   const elapsedMs = typeof fields.elapsedMs === 'number' ? fields.elapsedMs : null;
   const tooFast = elapsedMs !== null && Number.isFinite(elapsedMs) && elapsedMs < TOO_FAST_MS;
-  const isSpam = honeypotTripped || tooFast;
+  const isSpam = honeypotTripped;
+  if (tooFast && !honeypotTripped) payload.bot_suspect_fast_submit = String(elapsedMs);
 
   if (!isSpam && ip) {
     const since = new Date(Date.now() - 60 * 60 * 1000).toISOString();
@@ -266,7 +328,13 @@ export async function POST(req: NextRequest) {
       .from(RESUME_BUCKET)
       .upload(path, buffer, { contentType: resume.type, upsert: true });
     if (upErr) {
+      // Record it on the row. A silent failure here is indistinguishable from
+      // "applied without a resume", so staff would never know to ask for one.
       console.error('[site-forms] resume upload failed:', upErr.message);
+      await supabase
+        .from('site_submissions')
+        .update({ resume_error: `Upload failed: ${upErr.message}` })
+        .eq('id', inserted.id);
     } else {
       hasResume = true;
       await supabase.from('site_submissions').update({ resume_path: path }).eq('id', inserted.id);
@@ -303,7 +371,10 @@ export async function POST(req: NextRequest) {
 
   // Staff alerts, both fail-open.
   await sendSiteFormAlertEmail(alertInput);
-  await notifyTelegramAudience('leads', siteFormTelegramMessage(alertInput)).catch(() => {});
+  // 'ops', not 'leads': the leads channel is where staff triage real sales
+  // enquiries, and mixing a newsletter signup in there invites someone to skim
+  // past it, or worse, to treat a job applicant like a customer.
+  await notifyTelegramAudience('ops', siteFormTelegramMessage(alertInput)).catch(() => {});
 
   return jsonResponse(origin, { ok: true });
 }

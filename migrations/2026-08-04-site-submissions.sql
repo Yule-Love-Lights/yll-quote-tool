@@ -41,10 +41,15 @@ create table if not exists public.site_submissions (
   -- Kept as jsonb so a new question does not need a schema change.
   payload        jsonb not null default '{}'::jsonb,
 
-  -- Object path in the PRIVATE 'applications' storage bucket. Never a public
-  -- URL: a resume is personal data and is served only through a short-lived
-  -- signed URL generated for a signed-in staff user.
+  -- Object path in the PRIVATE 'applications' storage bucket (created at the
+  -- bottom of this file). Never a public URL: a resume is personal data and is
+  -- served only through a short-lived signed URL minted for a signed-in staff
+  -- user.
   resume_path    text,
+  -- Set when an applicant DID attach a resume but the upload failed. Without
+  -- this, a failed upload is indistinguishable from "applied without a resume"
+  -- and staff would never know to ask for it.
+  resume_error   text,
 
   consent        boolean not null default false,
   landing_url    text,
@@ -78,3 +83,14 @@ create index if not exists site_submissions_form_type_created_at_idx
 -- Service-role only, same as website_leads: RLS on with no policies, so the
 -- anon key can neither read nor write. Every access goes through the server.
 alter table public.site_submissions enable row level security;
+
+-- The PRIVATE bucket resumes live in. Created here, in the same migration that
+-- introduces the feature, matching every other storage-backed feature in this
+-- repo (training-archive, custom-uploads, designs). Without this the upload
+-- call fails with "bucket not found", which the route only logs — the
+-- application would still be saved but the resume would silently never exist.
+-- public = false is asserted by the migration rather than left to someone
+-- remembering to tick a box in the Supabase dashboard.
+insert into storage.buckets (id, name, public)
+values ('applications', 'applications', false)
+on conflict (id) do nothing;

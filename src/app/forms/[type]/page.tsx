@@ -34,7 +34,11 @@ export default async function FormEmbedPage({
   const variantRaw = typeof sp.variant === 'string' ? sp.variant : '';
   const formVariant = (variantRaw || `${formType}-page`).slice(0, 50);
   const theme = sp.theme === 'dark' ? 'dark' : 'light';
-  const compact = sp.compact === '1' || sp.compact === 'true';
+  // compact is the inline footer layout, which puts the submit button beside
+  // the email box. That only makes sense for the one-field newsletter form; on
+  // an application it would strand the button above the remaining fields, so it
+  // is ignored elsewhere rather than trusted from the query string.
+  const compact = (sp.compact === '1' || sp.compact === 'true') && formType === 'newsletter';
 
   return (
     <main

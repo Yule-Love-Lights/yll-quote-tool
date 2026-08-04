@@ -155,6 +155,8 @@ describe('separation from the sales pipeline', () => {
         consent: true,
         payload: {
           nomineeName: 'Ruth Neighbour',
+          relationship: 'Neighbour',
+          nomineeAddress: '12 Elm Street',
           nomineeEmail: 'ruth@example.com',
           nomineePhone: '5552220000',
           story: 'She does a lot for the block.',
@@ -193,6 +195,45 @@ describe('validation', () => {
   });
 });
 
+describe('nomination completeness (review finding: browser-only validation)', () => {
+  const base = {
+    formType: 'nomination',
+    formVariant: 'hope-page',
+    email: 'nominator@example.com',
+    name: 'Nora Nominator',
+    phone: '5551110000',
+    consent: true,
+  };
+
+  it('rejects a nomination that names nobody, even posted directly to the API', async () => {
+    // The endpoint is public and CORS-open, so the browser's `required` is not
+    // a guarantee. Without this, staff would get a nominator and no household.
+    const res = await POST(req({ ...base, payload: { story: 'They are lovely.' } }));
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects when the relationship or address is missing', async () => {
+    expect(
+      (await POST(req({ ...base, payload: { nomineeName: 'Ruth', nomineeAddress: '1 Main St' } })))
+        .status,
+    ).toBe(400);
+    expect(
+      (await POST(req({ ...base, payload: { nomineeName: 'Ruth', relationship: 'Neighbour' } })))
+        .status,
+    ).toBe(400);
+  });
+
+  it('accepts a complete nomination', async () => {
+    const res = await POST(
+      req({
+        ...base,
+        payload: { nomineeName: 'Ruth', relationship: 'Neighbour', nomineeAddress: '1 Main St' },
+      }),
+    );
+    expect(res.status).toBe(200);
+  });
+});
+
 describe('spam handling', () => {
   it('stores a honeypot hit as spam, answers 200, and never syncs', async () => {
     const sb = makeSb();
@@ -204,10 +245,23 @@ describe('spam handling', () => {
     expect(hl.upsertContact).not.toHaveBeenCalled();
   });
 
-  it('treats a too-fast submit as spam', async () => {
+  it('does NOT silently bin a fast submission on timing alone', async () => {
+    // Autofill on the one-field footer form can beat the timer. Discarding it
+    // while showing "You are on the list" would lose real subscribers, so a
+    // fast submit is processed and merely flagged for review.
     const sb = makeSb();
     sbRef.current = sb.client;
-    await POST(req({ ...NEWSLETTER, elapsedMs: 300 }));
+    const res = await POST(req({ ...NEWSLETTER, elapsedMs: 300 }));
+    expect(res.status).toBe(200);
+    expect(sb.inserted[0]!.sync_status).toBe('pending');
+    expect((sb.inserted[0]!.payload as Record<string, string>).bot_suspect_fast_submit).toBe('300');
+    expect(hl.upsertContact).toHaveBeenCalled();
+  });
+
+  it('still treats fast + honeypot as spam', async () => {
+    const sb = makeSb();
+    sbRef.current = sb.client;
+    await POST(req({ ...NEWSLETTER, elapsedMs: 300, company: 'bot corp' }));
     expect(sb.inserted[0]!.sync_status).toBe('spam');
     expect(hl.upsertContact).not.toHaveBeenCalled();
   });
