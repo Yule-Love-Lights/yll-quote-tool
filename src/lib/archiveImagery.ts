@@ -14,6 +14,28 @@
 // route's maxDuration, and a failed property records why in imagery_error
 // instead of being silently retried forever.
 //
+// TWO DELIBERATE LIMITS, both reviewed and accepted rather than overlooked:
+//
+// 1. NO ATOMIC CLAIM. Claiming is a plain SELECT with no lock or claim marker,
+//    so two overlapping runs (two tabs, or a closed tab whose server-side run
+//    keeps going) can both work the same properties and pay Google twice. It
+//    cannot CORRUPT anything: uploads go to a deterministic path with
+//    upsert:true, and the write is guarded on status='pending' so the loser's
+//    update matches nothing. The cost is a few duplicate lookups on a one-time
+//    77-property backfill run by one person. A real claim needs an interim
+//    status plus a stuck-claim recovery path — more moving parts, and more
+//    ways to strand a row, than the problem justifies here.
+//
+// 2. THE DEADLINE IS CHECKED BETWEEN PROPERTIES, NOT INSIDE ONE. A property
+//    that starts just under DEADLINE_MS can in principle run past the route's
+//    maxDuration and be hard-killed. That is safe by construction: each
+//    property commits on its own, so earlier ones keep their writes, and an
+//    interrupted property is simply re-claimed next click (its upload, if it
+//    happened, is overwritten by the upsert). The operator loses the HTTP
+//    response, not data. Bailing out mid-property instead would trade that
+//    benign outcome for a permanent Street-View gap on whichever properties
+//    happened to land near the deadline.
+//
 // WHY THIS ISN'T getCachedAddressImagery(): that helper throws
 // NoStreetViewError BEFORE it fetches the satellite when a location has no
 // panorama. For the estimator that's correct (it needs the front elevation).
@@ -190,13 +212,41 @@ export async function fetchArchiveImageryBatch(opts?: {
   const limit = Math.min(MAX_LIMIT, Math.max(1, Math.round(opts?.limit ?? DEFAULT_LIMIT)));
   const deadline = Date.now() + (opts?.deadlineMs ?? DEADLINE_MS);
 
-  let query = sb
-    .from('archive_photos')
-    .select('id, resolved_address, resolved_address_key')
-    .eq('status', 'pending')
-    .is('satellite_ref', null)
-    .not('resolved_address', 'is', null);
-  if (!opts?.retryFailed) query = query.is('imagery_error', null);
+  // IS NOT NULL is expressed with `.filter(col, 'not.is', null)` rather than
+  // `.not(col, 'is', null)`. The two emit the IDENTICAL PostgREST query string
+  // — `.not` appends `not.${operator}.${value}` and `.filter` appends
+  // `${operator}.${value}`, so both produce `col=not.is.null` — but `.filter`
+  // returns `this` while `.not` returns a widened builder type. Two chained
+  // `.not` calls intersect those widened types and make tsc give up outright
+  // (TS2589, "type instantiation is excessively deep"). Don't "simplify" this
+  // back to `.not`.
+  //
+  // Built as a factory rather than one reassigned `query` variable for the same
+  // family of reasons: the two branches below stay independent chains.
+  const claimable = () =>
+    sb
+      .from('archive_photos')
+      .select('id, resolved_address, resolved_address_key')
+      .eq('status', 'pending')
+      .is('satellite_ref', null)
+    // Filtered on the KEY, not the raw address, so the claim and the grouping
+    // agree by construction. resolved_address_key is `nullif(btrim(...), '')`,
+    // so a whitespace-only address is non-null in resolved_address but NULL in
+    // the key: filtering on the raw column would claim it, geocode an empty
+    // string, and — because groupByProperty groups on the key — collapse every
+    // such row onto one `null` Map key, sharing one geocode and one error stamp
+    // across unrelated photos. Not reachable in today's data (unaddressed rows
+      // are NULL, never ''), but nothing enforces that.
+      .filter('resolved_address_key', 'not.is', null);
+
+  // "Retry failed" means retry the FAILED ones, not "also include them". Merely
+  // dropping this filter would put the failures into the same alphabetically
+  // sorted pool as every untried property and take the first `limit` — so while
+  // untried work remained, a button labelled "Retry 3 failed" could retry none
+  // of the three and the operator would have no way to tell.
+  const query = opts?.retryFailed
+    ? claimable().filter('imagery_error', 'not.is', null)
+    : claimable().is('imagery_error', null);
 
   // Unbounded on purpose: the whole claimable set is 159 rows today and the
   // grouping has to see every photo of a property to stamp them all together.
@@ -270,12 +320,26 @@ async function fetchOneProperty(
 
     // Street View is BEST EFFORT: a missing panorama (private road, new
     // construction, a rural lot) must not cost the property its satellite.
+    //
+    // The try/catch is what actually MAKES that true. Only `pano.status !==
+    // 'OK'` is a graceful miss; both of these calls can THROW — a timeout or a
+    // network error out of fetchWithTimeout, a malformed body out of the
+    // metadata call's res.json(), a non-2xx out of fetchStreetView. Without a
+    // local catch, a transient Street View hiccup propagated to the outer catch
+    // and threw away a satellite that had already been fetched successfully,
+    // failing the whole property and re-burning the geocode + satellite call on
+    // the next retry. The comment promised best-effort; the code did not
+    // deliver it.
     let streetViewRef: string | null = null;
     let svBuf: Buffer | null = null;
-    const pano = await resolveStreetViewPano(geo.lat, geo.lng);
-    if (pano.status === 'OK') {
-      const sv = await fetchStreetView(geo.lat, geo.lng, { size: SV_SIZE });
-      svBuf = Buffer.from(sv.base64, 'base64');
+    try {
+      const pano = await resolveStreetViewPano(geo.lat, geo.lng);
+      if (pano.status === 'OK') {
+        const sv = await fetchStreetView(geo.lat, geo.lng, { size: SV_SIZE });
+        svBuf = Buffer.from(sv.base64, 'base64');
+      }
+    } catch (err) {
+      console.error(`archive imagery (street view, ${addressKey}):`, safeErrorMessage(err));
     }
 
     const prefix = archiveStoragePrefix(addressKey);
@@ -360,9 +424,20 @@ export async function getArchiveImageryStatus(): Promise<ArchiveImageryStatus> {
     imagery_error: string | null;
   }>;
 
-  const withImagery = new Set<string>();
-  const failed = new Set<string>();
-  const pendingKeys = new Set<string>();
+  // Aggregated per property, keyed on resolved_address_key.
+  //
+  // `outstanding` — rows still 'pending' with no satellite_ref — is what
+  // decides whether a property is settled. An earlier version settled a
+  // property the moment ANY one of its rows had a satellite_ref, which hides
+  // real work: if a later manifest drop adds a photo for an address that had
+  // already failed, a normal run claims only the new row (the old ones are
+  // excluded by the imagery_error filter). The new row succeeds, the property
+  // reads as done, and the old rows sit 'pending' with a stale error, invisible
+  // to every button on the page. Counting outstanding rows instead means the
+  // property stays in `failed`, the Retry button renders, and the orphans get
+  // picked up — the queue heals itself instead of silently dropping them.
+  type Agg = { imaged: boolean; outstanding: number; errored: number };
+  const byKey = new Map<string, Agg>();
   const photos = { total: rows.length, pending: 0, readyToTrace: 0, excluded: 0, other: 0 };
   let needsAddress = 0;
 
@@ -376,27 +451,34 @@ export async function getArchiveImageryStatus(): Promise<ArchiveImageryStatus> {
       if (r.status === 'pending') needsAddress += 1;
       continue;
     }
-    if (r.satellite_ref) withImagery.add(r.resolved_address_key);
-    else if (r.status === 'pending' && r.imagery_error) failed.add(r.resolved_address_key);
-    else if (r.status === 'pending') pendingKeys.add(r.resolved_address_key);
+
+    const agg = byKey.get(r.resolved_address_key) ?? { imaged: false, outstanding: 0, errored: 0 };
+    if (r.satellite_ref) {
+      agg.imaged = true;
+    } else if (r.status === 'pending') {
+      agg.outstanding += 1;
+      if (r.imagery_error) agg.errored += 1;
+    }
+    byKey.set(r.resolved_address_key, agg);
   }
 
-  // A property that landed imagery is no longer failed or pending, whatever a
-  // sibling row says — imagery is attached per property, so one imaged row
-  // settles the whole group.
-  for (const k of withImagery) {
-    failed.delete(k);
-    pendingKeys.delete(k);
+  let withImagery = 0;
+  let failed = 0;
+  let pending = 0;
+  for (const agg of byKey.values()) {
+    if (agg.outstanding === 0) {
+      // Settled. (A property with no outstanding rows and no imagery is one
+      // whose photos were all excluded — not queue work, counted nowhere.)
+      if (agg.imaged) withImagery += 1;
+    } else if (agg.errored > 0) {
+      failed += 1;
+    } else {
+      pending += 1;
+    }
   }
-  for (const k of failed) pendingKeys.delete(k);
 
   return {
-    properties: {
-      total: withImagery.size + failed.size + pendingKeys.size,
-      withImagery: withImagery.size,
-      failed: failed.size,
-      pending: pendingKeys.size,
-    },
+    properties: { total: withImagery + failed + pending, withImagery, failed, pending },
     photos,
     needsAddress,
   };

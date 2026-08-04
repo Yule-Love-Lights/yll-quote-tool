@@ -58,7 +58,7 @@ type FakeRow = {
 };
 
 type Filter = { col: string; op: 'eq' | 'isNull' | 'notNull' };
-type Update = { patch: Record<string, unknown>; ids: string[]; status?: string };
+type Update = { patch: Record<string, unknown>; ids: string[]; eqs: Record<string, unknown> };
 
 function matches(row: Record<string, unknown>, filters: Array<Filter & { value?: unknown }>): boolean {
   return filters.every((f) => {
@@ -66,6 +66,20 @@ function matches(row: Record<string, unknown>, filters: Array<Filter & { value?:
     if (f.op === 'isNull') return row[f.col] === null || row[f.col] === undefined;
     return row[f.col] !== null && row[f.col] !== undefined;
   });
+}
+
+/**
+ * supabase-js `.filter(column, operator, value)` is a raw passthrough to
+ * PostgREST (`column=<op>.<value>`), so the operator string is load-bearing.
+ * The fake models only the forms the worker actually uses and THROWS on
+ * anything else, rather than silently applying some default semantics to a call
+ * that meant something different — without that, mistyping a real filter as
+ * `.filter(col, 'eq', 'x')` would keep every test green.
+ */
+function rawFilter(col: string, op: string, value: unknown): Filter {
+  if (op === 'not.is' && value === null) return { col, op: 'notNull' };
+  if (op === 'is' && value === null) return { col, op: 'isNull' };
+  throw new Error(`fake supabase: unsupported .filter(${col}, '${op}', ${String(value)})`);
 }
 
 function makeSb(rows: FakeRow[]) {
@@ -88,8 +102,8 @@ function makeSb(rows: FakeRow[]) {
               filters.push({ col, op: value === null ? 'isNull' : 'eq', value });
               return builder;
             },
-            not(col: string, _op: string, _value: unknown) {
-              filters.push({ col, op: 'notNull' });
+            filter(col: string, op: string, value: unknown) {
+              filters.push(rawFilter(col, op, value));
               return builder;
             },
             then(resolve: (r: { data: unknown; error: null }) => void) {
@@ -102,14 +116,17 @@ function makeSb(rows: FakeRow[]) {
           return builder;
         },
         update(patch: Record<string, unknown>) {
-          const captured: Update = { patch, ids: [] };
+          // Records every .eq() by column rather than only 'status', so a guard
+          // added on a different column can't be silently dropped by the fake
+          // while a test asserting its effect still passes.
+          const captured: Update = { patch, ids: [], eqs: {} };
           const builder = {
             in(_col: string, ids: string[]) {
               captured.ids = ids;
               return builder;
             },
             eq(col: string, value: unknown) {
-              if (col === 'status') captured.status = value as string;
+              captured.eqs[col] = value;
               return builder;
             },
             then(resolve: (r: { error: null }) => void) {
@@ -117,7 +134,8 @@ function makeSb(rows: FakeRow[]) {
               // Reflect the write so a later status read in the same test sees it.
               for (const row of rows) {
                 if (!captured.ids.includes(row.id)) continue;
-                if (captured.status !== undefined && row.status !== captured.status) continue;
+                const rowRec = row as unknown as Record<string, unknown>;
+                if (Object.entries(captured.eqs).some(([c, v]) => rowRec[c] !== v)) continue;
                 Object.assign(row, captured.patch);
               }
               resolve({ error: null });
@@ -263,7 +281,7 @@ describe('fetchArchiveImageryBatch', () => {
 
     expect(sb.updates).toHaveLength(1);
     expect(sb.updates[0].ids.sort()).toEqual(['a', 'b', 'c']);
-    expect(sb.updates[0].status).toBe('pending'); // guarded write
+    expect(sb.updates[0].eqs).toEqual({ status: 'pending' }); // guarded write
     expect(sb.updates[0].patch).toMatchObject({
       satellite_ref: `${prefix}/satellite.png`,
       street_view_ref: `${prefix}/street-view.jpg`,
@@ -422,6 +440,70 @@ describe('fetchArchiveImageryBatch', () => {
     expect(maps.geocodeAddress).not.toHaveBeenCalled();
   });
 
+  // Pre-merge review, staff lens (HIGH). retryFailed used to merely DROP the
+  // imagery_error filter, so the failures competed with every untried property
+  // for the same alphabetically-sorted batch — a button labelled "Retry 1
+  // failed" could retry none of them.
+  it('retries ONLY the failed properties, never the untried ones', async () => {
+    armHappyPath();
+    const sb = makeSb([
+      row({ id: 'a', resolved_address_key: 'aaa', resolved_address: 'A St' }),
+      row({ id: 'b', resolved_address_key: 'bbb', resolved_address: 'B St' }),
+      // Sorts LAST, so a limit-1 unscoped claim would never reach it.
+      row({ id: 'z', resolved_address_key: 'zzz', resolved_address: 'Z St', imagery_error: 'Imprecise geocode' }),
+    ]);
+    sbRef.current = sb.client;
+
+    const run = await fetchArchiveImageryBatch({ retryFailed: true, limit: 1 });
+
+    expect(run.results.map((r) => r.addressKey)).toEqual(['zzz']);
+    expect(run.remaining).toBe(0); // 'zzz' was the only failed property
+  });
+
+  // Pre-merge review, technical lens. A Street View hiccup THROWS (timeout,
+  // malformed metadata body, non-2xx) — it must not discard an
+  // already-successful satellite and fail the whole property.
+  it('keeps the satellite when the Street View call throws, not just when there is no pano', async () => {
+    armHappyPath();
+    maps.resolveStreetViewPano.mockRejectedValue(new Error('Request timed out after 10000ms'));
+    const sb = makeSb([row({ id: 'a' })]);
+    sbRef.current = sb.client;
+
+    const run = await fetchArchiveImageryBatch();
+
+    expect(run).toMatchObject({ fetched: 1, failed: 0 });
+    expect(run.results[0]).toMatchObject({ ok: true, streetViewRef: null });
+    expect(sb.uploads.map((u) => u.path)).toEqual([expect.stringMatching(/satellite\.png$/)]);
+    expect(sb.updates[0].patch).toMatchObject({ status: 'ready_to_trace', imagery_error: null });
+  });
+
+  it('also survives a throw from the Street View IMAGE fetch, after the pano resolved', async () => {
+    armHappyPath();
+    maps.fetchStreetView.mockRejectedValue(new Error('Street View fetch failed: 500'));
+    sbRef.current = makeSb([row({ id: 'a' })]).client;
+
+    const run = await fetchArchiveImageryBatch();
+
+    expect(run.results[0]).toMatchObject({ ok: true, streetViewRef: null });
+  });
+
+  // Pre-merge review, technical lens. resolved_address_key is
+  // nullif(btrim(...), ''), so a whitespace-only address is non-null in
+  // resolved_address but NULL in the key — claiming on the raw column would
+  // geocode '' and collapse unrelated rows onto one null group key.
+  it('does not claim a row whose address is present but blank', async () => {
+    armHappyPath();
+    const sb = makeSb([
+      row({ id: 'blank', resolved_address: '   ', resolved_address_key: null }),
+      row({ id: 'real', resolved_address_key: 'real st', resolved_address: 'Real St' }),
+    ]);
+    sbRef.current = sb.client;
+
+    const run = await fetchArchiveImageryBatch();
+
+    expect(run.results.map((r) => r.addressKey)).toEqual(['real st']);
+  });
+
   it('refuses to run without a Google key rather than marking every property failed', async () => {
     maps.isGoogleMapsConfigured.mockReturnValue(false);
     const sb = makeSb([row({ id: 'a' })]);
@@ -454,5 +536,37 @@ describe('getArchiveImageryStatus', () => {
     expect(status.properties).toEqual({ total: 4, withImagery: 1, failed: 1, pending: 2 });
     expect(status.photos).toEqual({ total: 7, pending: 4, readyToTrace: 2, excluded: 1, other: 0 });
     expect(status.needsAddress).toBe(1);
+  });
+
+  // Pre-merge review, admin lens. A property's rows can enter the claimable
+  // pool in different runs: it fails once, then a later manifest drop adds a
+  // photo for the same address. The normal claim skips the errored siblings, so
+  // the new row succeeds alone. Settling the property on "any row has imagery"
+  // then reported it as done and stranded the siblings — no button on the page
+  // could reach them, and the "everything is done" banner would show.
+  it('keeps a property un-settled while any of its rows still has no imagery', async () => {
+    sbRef.current = makeSb([
+      // Same property: one imaged row, two stranded from an earlier failure.
+      row({ id: 'new', resolved_address_key: 'split st', status: 'ready_to_trace', satellite_ref: 'x/satellite.png' }),
+      row({ id: 'old1', resolved_address_key: 'split st', imagery_error: 'transient 5xx' }),
+      row({ id: 'old2', resolved_address_key: 'split st', imagery_error: 'transient 5xx' }),
+    ]).client;
+
+    const status = await getArchiveImageryStatus();
+
+    // Reported as FAILED, not done — so the Retry button renders and heals it.
+    expect(status.properties).toEqual({ total: 1, withImagery: 0, failed: 1, pending: 0 });
+  });
+
+  it('does not count a property whose photos were all excluded as queue work', async () => {
+    sbRef.current = makeSb([
+      row({ id: 'x', resolved_address_key: 'shop st', status: 'excluded' }),
+      row({ id: 'y', resolved_address_key: 'shop st', status: 'excluded' }),
+    ]).client;
+
+    const status = await getArchiveImageryStatus();
+
+    expect(status.properties).toEqual({ total: 0, withImagery: 0, failed: 0, pending: 0 });
+    expect(status.photos.excluded).toBe(2);
   });
 });

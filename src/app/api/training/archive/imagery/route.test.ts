@@ -104,7 +104,9 @@ describe('POST /api/training/archive/imagery', () => {
     // Infinity are not expressible in JSON at all — the route's Number.isFinite
     // check is belt-and-braces against a future non-JSON caller, not something
     // a request body can reach.)
-    for (const limit of ['"5"', '0', '-3', 'null', 'true', '{}']) {
+    // 101 covers the upper bound the 400 message advertises — it used to sail
+    // through and get silently clamped in the worker (pre-merge review).
+    for (const limit of ['"5"', '0', '-3', 'null', 'true', '{}', '101']) {
       const res = await POST(makeReq(`{"limit": ${limit}}`));
       expect(res.status, `limit ${limit}`).toBe(400);
     }

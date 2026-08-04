@@ -131,7 +131,13 @@ export default function ArchiveImageryPage() {
               <Stat label="Properties" value={p!.total} hint={`${status.photos.total} archive photos`} />
               <Stat label="Imagery ready" value={p!.withImagery} hint="ready to trace" />
               <Stat label="Awaiting fetch" value={p!.pending} hint="no satellite yet" />
-              <Stat label="Needs a human" value={p!.failed + status.needsAddress} hint="bad address or no address" />
+              {/* Deliberately NOT `failed + needsAddress`: those are different
+                  units — failed counts PROPERTIES whose address wouldn't
+                  geocode, needsAddress counts individual PHOTO rows with no
+                  address at all (there's no key to group them by). Summing them
+                  produced a number that was neither, and double-reported the
+                  photo rows the banner below already explains. */}
+              <Stat label="Bad address" value={p!.failed} hint="properties to correct" />
             </div>
 
             {!status.googleMapsConfigured && (

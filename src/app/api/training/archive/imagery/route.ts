@@ -68,7 +68,16 @@ export async function POST(req: NextRequest) {
 
   let limit: number | undefined;
   if (body.limit !== undefined) {
-    if (typeof body.limit !== 'number' || !Number.isFinite(body.limit) || body.limit < 1) {
+    // Upper bound enforced here, not just clamped in the worker: the 400 below
+    // tells the caller the contract is "1 to MAX_LIMIT", so silently accepting
+    // 99999 and clamping it made that message a lie and left the stated
+    // contract untested.
+    if (
+      typeof body.limit !== 'number' ||
+      !Number.isFinite(body.limit) ||
+      body.limit < 1 ||
+      body.limit > MAX_LIMIT
+    ) {
       return NextResponse.json({ error: `limit must be a number between 1 and ${MAX_LIMIT}` }, { status: 400 });
     }
     limit = body.limit;
