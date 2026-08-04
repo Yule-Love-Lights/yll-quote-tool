@@ -36,7 +36,9 @@ type Lead = {
 };
 
 // UI filter label → the set of sync_status values it shows. 'Stuck' is the
-// actionable default (still needs a human or a retry); the rest are exact.
+// most actionable view (still needs a human or a retry); the rest are exact.
+// The page itself opens on 'All' (see the `filter` useState below) so a fresh
+// operator sees every lead, not just the recovery queue.
 const FILTERS: Array<{ label: string; statuses: string[] | null }> = [
   { label: 'Stuck', statuses: ['pending', 'deferred', 'failed'] },
   { label: 'Pending', statuses: ['pending'] },
@@ -105,7 +107,7 @@ export default function LeadsAdminClient({ hlLocationId }: { hlLocationId: strin
   const [leads, setLeads] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState('Stuck');
+  const [filter, setFilter] = useState('All');
   const [retryingId, setRetryingId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
