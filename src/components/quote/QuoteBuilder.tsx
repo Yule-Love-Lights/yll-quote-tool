@@ -385,12 +385,28 @@ export default function QuoteBuilder({
   // `highlevelContact`: the GHL contact picked in the autocomplete. When
   // set, customer fields are pre-filled and we'll attach the quote to this
   // contact's existing opportunity on save.
+  // A lead-prefilled NEW quote seeds this as if the operator had picked the
+  // lead's known contact by hand (blank-slate branch only): the linked chip
+  // renders immediately, the false "contact required" warning never shows,
+  // and the normal post-save attach flow wires the pipeline card. Built from
+  // the prefill's own fields — the lead IS the contact. "Change" still works.
   // `savedQuoteId`: UUID returned from /api/quote. Needed for the attach
   // call and for the "Send Quote to Customer" button (which targets
   // /api/quotes/[id]/send).
   // `attachStatus` / `sendStatus`: informational — surfaced as a small
   // status line so the operator knows whether the GHL side is in sync.
-  const [highlevelContact, setHighLevelContact] = useState<CrmContact | null>(null);
+  const [highlevelContact, setHighLevelContact] = useState<CrmContact | null>(() =>
+    !initialQuote && prefill?.ghlContactId
+      ? {
+          id: prefill.ghlContactId,
+          source: 'highlevel',
+          fullName: prefill.name?.trim() || undefined,
+          email: prefill.email?.trim() || undefined,
+          phone: prefill.phone?.trim() || undefined,
+          address1: prefill.address?.trim() || undefined,
+        }
+      : null,
+  );
   const [savedQuoteId, setSavedQuoteId] = useState<string | null>(initialQuote?.quoteId ?? null);
   // Referral program (#41 "mention" attribution): an existing customer staff
   // picked as "Referred by" while building THIS quote. The new quote's id (or,
@@ -456,7 +472,14 @@ export default function QuoteBuilder({
   // #172: the saved row already carries a HighLevel link (hydrated on edit,
   // maintained on attach/detach). Kills the false "contact required" warning
   // on reopened linked quotes — the chip itself stays pick-session-only.
-  const [dbLinked, setDbLinked] = useState<boolean>(!!initialQuote?.highlevelContactId);
+  // A lead-prefilled NEW quote is the second producer of that same state: the
+  // first Calculate inserts the carried ghlContactId, so the warning would be
+  // just as false — seed from the prefill too (applyPrefill is the only thing
+  // that sets form.highlevelContactId on the blank-slate branch). An explicit
+  // operator pick still overwrites via the attach flow as usual.
+  const [dbLinked, setDbLinked] = useState<boolean>(
+    !!initialQuote?.highlevelContactId || (!initialQuote && !!prefill?.ghlContactId),
+  );
 
   // ─── Draft autosave (quote-forms-partial-save) ───────────────────────────
   // Save the customer block to localStorage as staff type, so a brand-new
@@ -2676,6 +2699,12 @@ export default function QuoteBuilder({
           // reopening a quote that never had one (adversarial-review fix;
           // both paths are idempotent, so a resave never duplicates it).
           referredByCustomerId: referredBy?.id ?? undefined,
+          // #leads "Create quote" link: seeded only by applyPrefill on a
+          // blank-slate builder. Sent on every save, but the server only ever
+          // honors it on the NEW-quote insert (saveQuote) — an update never
+          // touches highlevel_contact_id, so this can't clobber a contact the
+          // operator later picks/clears via the HL autocomplete.
+          highlevelContactId: form.highlevelContactId ?? undefined,
         }),
       });
       const data = await res.json();

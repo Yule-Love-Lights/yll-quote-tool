@@ -114,6 +114,16 @@ export type QuoteFormData = {
   // on its billed line item id survives a mid-list run delete (a run's id must
   // not re-index like the old positional permanent-bistro-<index> fallback).
   permanentBistro: { poles: number; bistro: { footage: number; id?: string }[] };
+  // HighLevel contact carried from the #leads "Create quote" link (operator
+  // feedback: the created quote should link to the lead's KNOWN contact from
+  // birth). Seeded ONLY by applyPrefill on the blank-slate builder's initial
+  // state; null on every other quote. Sent on save (see buildQuoteInputs'
+  // sibling, the /api/quote payload in QuoteBuilder) so saveQuote can set
+  // quotes.highlevel_contact_id on the FIRST insert only — mirrors the
+  // rebook flow's buildRebookInsert, which carries this same column forward
+  // on a direct insert (no live HighLevel opportunity call at save time; the
+  // "attach" flow / send flow reconcile the opportunity id later).
+  highlevelContactId: string | null;
 };
 
 export const initialFormData: QuoteFormData = {
@@ -152,6 +162,7 @@ export const initialFormData: QuoteFormData = {
   permanent: makeDefaultPermanentFields(),
   referralCredit: null,
   permanentBistro: { poles: 0, bistro: [] },
+  highlevelContactId: null,
 };
 
 // Quote-builder prefill (#leads "Create quote" link, src/app/admin/leads). Raw
@@ -163,6 +174,9 @@ export type QuoteBuilderPrefill = {
   phone?: string;
   address?: string;
   serviceType?: string;
+  // The lead's HighLevel contact id (src/app/admin/leads' quoteNewHref), when
+  // known. Raw/untyped here too — validated at the /api/quote boundary.
+  ghlContactId?: string;
 };
 
 /**
@@ -178,6 +192,7 @@ export function applyPrefill(base: QuoteFormData, prefill?: QuoteBuilderPrefill)
     const trimmed = v?.trim();
     return trimmed ? trimmed : fallback;
   };
+  const ghlContactId = prefill.ghlContactId?.trim();
   return {
     ...base,
     customer: {
@@ -187,6 +202,7 @@ export function applyPrefill(base: QuoteFormData, prefill?: QuoteBuilderPrefill)
       address: pick(prefill.address, base.customer.address),
     },
     serviceType: asServiceType(prefill.serviceType) ?? base.serviceType,
+    highlevelContactId: ghlContactId ? ghlContactId : base.highlevelContactId,
   };
 }
 
@@ -435,5 +451,8 @@ export function inputsToFormData(
         ...(b.id ? { id: b.id } : {}),
       })),
     },
+    // #leads prefill-only field — a hydrated/reopened quote never carries it
+    // (applyPrefill never runs on the edit flavor; see its own doc comment).
+    highlevelContactId: null,
   };
 }

@@ -52,6 +52,7 @@ const fullForm: QuoteFormData = {
   // #117: permanentBistro grew a `bistro` array (satellite-derived footage) —
   // [] here so the pre-existing full-payload assertions are unaffected.
   permanentBistro: { poles: 0, bistro: [] },
+  highlevelContactId: null,
 };
 
 describe('buildQuoteInputs', () => {
@@ -390,6 +391,26 @@ describe('applyPrefill (#leads Create-quote link)', () => {
   it('only touches customer + serviceType, leaving every other field alone', () => {
     const result = applyPrefill(initialFormData, { name: 'Bob' });
     expect({ ...result, customer: initialFormData.customer }).toEqual(initialFormData);
+  });
+
+  it('seeds highlevelContactId from a prefill ghlContactId', () => {
+    const result = applyPrefill(initialFormData, { ghlContactId: 'ghl-contact-123' });
+    expect(result.highlevelContactId).toBe('ghl-contact-123');
+  });
+
+  it('trims a whitespace-padded ghlContactId', () => {
+    const result = applyPrefill(initialFormData, { ghlContactId: '  ghl-contact-123  ' });
+    expect(result.highlevelContactId).toBe('ghl-contact-123');
+  });
+
+  it('ignores a blank/whitespace-only ghlContactId, keeping highlevelContactId null', () => {
+    const result = applyPrefill(initialFormData, { ghlContactId: '   ' });
+    expect(result.highlevelContactId).toBeNull();
+  });
+
+  it('leaves highlevelContactId null when no ghlContactId is given', () => {
+    const result = applyPrefill(initialFormData, { name: 'Bob' });
+    expect(result.highlevelContactId).toBeNull();
   });
 });
 

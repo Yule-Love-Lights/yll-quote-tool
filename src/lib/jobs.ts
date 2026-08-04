@@ -152,6 +152,13 @@ export type JobAdminCard = {
   isTest: boolean;
   createdAt: string;
   itemCount: number;
+  // Customer detail-page route id fields (same precedence as QuoteListItem /
+  // src/lib/dashboard/customers.ts customerRouteId: highlevel_contact_id, else
+  // customer_id) — lets /admin/jobs link a customer name to their profile.
+  // customerId prefers the job's OWN customer_id (Phase 5) over the linked
+  // quote's, since the job row is the more direct source once backfilled.
+  highlevelContactId: string | null;
+  customerId: string | null;
 };
 
 /**
@@ -170,23 +177,27 @@ export async function listJobsForAdmin(limit = 500): Promise<JobAdminCard[]> {
   const quoteIds = [...new Set(jobs.map((j) => j.quote_id).filter((x): x is string => !!x))];
   const byQuote = new Map<
     string,
-    { name: string | null; address: string | null; isTest: boolean }
+    { name: string | null; address: string | null; isTest: boolean; highlevelContactId: string | null; customerId: string | null }
   >();
   if (quoteIds.length) {
     const { data } = await db
       .from('quotes')
-      .select('id, customer_name, customer_address, is_test')
+      .select('id, customer_name, customer_address, is_test, highlevel_contact_id, customer_id')
       .in('id', quoteIds);
     for (const q of (data ?? []) as {
       id: string;
       customer_name: string | null;
       customer_address: string | null;
       is_test: boolean | null;
+      highlevel_contact_id: string | null;
+      customer_id: string | null;
     }[]) {
       byQuote.set(q.id, {
         name: q.customer_name ?? null,
         address: q.customer_address ?? null,
         isTest: !!q.is_test,
+        highlevelContactId: q.highlevel_contact_id ?? null,
+        customerId: q.customer_id ?? null,
       });
     }
   }
@@ -204,6 +215,8 @@ export async function listJobsForAdmin(limit = 500): Promise<JobAdminCard[]> {
       isTest: c?.isTest ?? false,
       createdAt: j.created_at,
       itemCount: Array.isArray(j.line_items) ? j.line_items.length : 0,
+      highlevelContactId: c?.highlevelContactId ?? null,
+      customerId: j.customer_id ?? c?.customerId ?? null,
     };
   });
 }
