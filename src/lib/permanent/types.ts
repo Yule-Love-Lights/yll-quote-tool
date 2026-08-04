@@ -14,6 +14,28 @@ export type TrackStyle = 'single' | 'parapet';
 /** The four house sides a permanent job bills/orders per (#192). */
 export type PermanentSide = 'front' | 'left' | 'right' | 'back';
 
+/** Canonical side order every scoped-BOM surface lists in (#192 review fix). */
+export const ALL_PERMANENT_SIDES: readonly PermanentSide[] = ['front', 'left', 'right', 'back'];
+
+/** Shared display labels for PermanentSide — every "Booked scope: …" surface uses these (#192 review fix). */
+export const PERMANENT_SIDE_LABEL: Record<PermanentSide, string> = {
+  front: 'Front',
+  left: 'Left side',
+  right: 'Right side',
+  back: 'Back',
+};
+
+/**
+ * #192 review fix — order the raw included-sides Set into the canonical
+ * front/left/right/back display-label array every scoped-BOM surface
+ * renders. Returns null unchanged (unscoped) so callers can gate a note on
+ * `!= null` without re-deriving the empty-vs-null distinction themselves.
+ */
+export function permanentScopedSideLabels(includedSides: ReadonlySet<PermanentSide> | null): string[] | null {
+  if (includedSides == null) return null;
+  return ALL_PERMANENT_SIDES.filter((s) => includedSides.has(s)).map((s) => PERMANENT_SIDE_LABEL[s]);
+}
+
 /** Stock powder-coat color codes: white / black / cream / dark brown. */
 export type TrackColor = '9003' | '9004' | '9012' | '8019';
 

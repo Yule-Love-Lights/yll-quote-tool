@@ -285,6 +285,16 @@ describe('POST /api/quote — permanent block validation (#88 P4b)', () => {
     expect(save).not.toHaveBeenCalled();
   });
 
+  // #674 review (technical LOW) — isObj() alone admits arrays (typeof [] ===
+  // 'object'); every other object-shaped field in this route additionally
+  // rejects Array.isArray (see lineItemPriceOverrides ~line 219). trackStyleBySide
+  // was missing that guard.
+  it('rejects an ARRAY trackStyleBySide with 400 (isObj alone admits arrays)', async () => {
+    const res = await POST(badPerm({ trackStyleBySide: [] }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
   it('rejects an invalid VALUE on a recognized trackStyleBySide side with 400', async () => {
     const res = await POST(badPerm({ trackStyleBySide: { front: 'diagonal' } }));
     expect(res.status).toBe(400);

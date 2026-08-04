@@ -101,6 +101,16 @@ export default async function PermanentBomPrintPage({ params }: { params: Promis
         </h1>
       </header>
 
+      {/* #192 review fix (LOW) — moved ABOVE the totals grid so the warehouse
+          reader sees the scope explanation BEFORE the narrowed numbers below
+          (mirrors PermanentBomPanel's placement, which already renders this
+          before its totals <dl>). */}
+      {scopedSideLabels && scopedSideLabels.length > 0 && (
+        <p style={{ fontSize: '12px', color: '#1d4ed8', background: '#eff6ff', border: '1px solid #dbeafe', borderRadius: '6px', padding: '6px 8px', margin: '0 0 14px' }}>
+          Booked scope: {scopedSideLabels.join(', ')} — accessories/gaps remain whole-job.
+        </p>
+      )}
+
       <section style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 24px', fontSize: '13px', marginBottom: '18px' }}>
         <div><strong>Customer:</strong> {quote.customer_name ?? '—'}</div>
         <div><strong>Total footage:</strong> {bom.totals.totalFt} ft</div>
@@ -109,12 +119,6 @@ export default async function PermanentBomPrintPage({ params }: { params: Promis
         <div><strong>Track sections:</strong> {bom.totals.trackSections}</div>
         <div><strong>Wholesale cost:</strong> {money(bom.totals.wholesaleCost)} ({money(bom.totals.costPerFt)}/ft)</div>
       </section>
-
-      {scopedSideLabels && scopedSideLabels.length > 0 && (
-        <p style={{ fontSize: '12px', color: '#1d4ed8', background: '#eff6ff', border: '1px solid #dbeafe', borderRadius: '6px', padding: '6px 8px', margin: '0 0 14px' }}>
-          Booked scope: {scopedSideLabels.join(', ')} — accessories/gaps remain whole-job.
-        </p>
-      )}
 
       {bom.flags.length > 0 && (
         <ul style={{ fontSize: '12px', color: '#b45309', margin: '0 0 14px', paddingLeft: '18px' }}>

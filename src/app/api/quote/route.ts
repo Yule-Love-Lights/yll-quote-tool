@@ -332,7 +332,7 @@ export async function POST(req: NextRequest) {
     // silently ignored (mirrors sideSource's leniency); a PRESENT recognized
     // side key must carry a valid TrackStyle value.
     if (pf.trackStyleBySide !== undefined) {
-      if (!isObj(pf.trackStyleBySide)) {
+      if (!isObj(pf.trackStyleBySide) || Array.isArray(pf.trackStyleBySide)) {
         return NextResponse.json({ error: 'permanent.trackStyleBySide must be an object if provided' }, { status: 400 });
       }
       for (const side of ['front', 'left', 'right', 'back'] as const) {

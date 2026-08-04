@@ -93,6 +93,20 @@ const SIDE_ITEM_ID: Record<string, PermanentSide[]> = {
  * snapshot, no customerSelection, an empty/unparseable selectedItemIds, or a
  * selection that resolves to NO known permanent side id (a corrupted/foreign
  * snapshot). FAIL OPEN — never under-order a paid job.
+ *
+ * KNOWN LIMITATION (#674 review, documented not fixed — pre-existing parity
+ * with #160's holiday selectedSceneItemIds, which reads the exact same frozen
+ * `customerSelection` with no amendment awareness either): a side-ADDING
+ * amendment on an already-booked order never updates THIS field. Concrete
+ * case — a quote books front-only (`selectedItemIds: ['permanent-front']`),
+ * then staff amend the order to add the back side; `approval_snapshot.
+ * amendments[]` gets a `line_item_changes` entry recording the add, but
+ * `customerSelection.selectedItemIds` (the ORIGINAL signed selection, by
+ * design never overwritten — see amend.ts) still reads `['permanent-front']`
+ * forever. This function has no way to see the amendment trail, so the
+ * scoped BOM keeps excluding the newly-sold back side until a human notices
+ * and hand-adjusts. Follow-up: ledger #193 (amendment-aware BOM/materials
+ * scoping for both #192 permanent and #160 holiday).
  */
 export function includedPermanentSidesFromSnapshot(snapshot: unknown): Set<PermanentSide> | null {
   const sel = (snapshot as { customerSelection?: { selectedItemIds?: unknown } } | null | undefined)

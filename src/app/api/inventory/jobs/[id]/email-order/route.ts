@@ -50,6 +50,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
         materials: wo.materials.materials,
         unbound: wo.materials.unbound.map((u) => ({ label: u.label, qty: u.qty })),
         isTest: wo.job.isTest,
+        scopedSides: wo.scopedSides, // #192 review fix — parity with the crew print sheet + board modal
       }),
       emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
     });
