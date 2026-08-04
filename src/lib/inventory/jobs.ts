@@ -53,6 +53,13 @@ export type FulfillmentCard = {
   // Test Quote (ledger #93): VISIBLE in the Kanban but badged TEST + inert on
   // real stock (prepareJobMaterials no-ops the deduction). Derived via the quote.
   isTest: boolean;
+  // Customer detail-page route id fields (same precedence as QuoteListItem /
+  // src/lib/dashboard/customers.ts customerRouteId: highlevel_contact_id, else
+  // customer_id) — lets the board link a customer name to their profile.
+  // customerId prefers the job's OWN customer_id over the linked quote's,
+  // mirroring JobAdminCard's precedence (same jobs table).
+  highlevelContactId: string | null;
+  customerId: string | null;
 };
 
 // Pure: bucket cards into the four columns (every column present, stable order).
@@ -66,7 +73,7 @@ export function groupByStage(cards: FulfillmentCard[]): Record<FulfillmentStage,
 
 function toCard(
   j: JobRow,
-  cust?: { name: string | null; address: string | null; isTest?: boolean },
+  cust?: { name: string | null; address: string | null; isTest?: boolean; highlevelContactId?: string | null; customerId?: string | null },
 ): FulfillmentCard {
   return {
     id: j.id,
@@ -80,6 +87,8 @@ function toCard(
     itemCount: Array.isArray(j.line_items) ? j.line_items.length : 0,
     installDate: j.install_date,
     isTest: cust?.isTest ?? false,
+    highlevelContactId: cust?.highlevelContactId ?? null,
+    customerId: j.customer_id ?? cust?.customerId ?? null,
   };
 }
 
@@ -95,22 +104,29 @@ export async function listFulfillmentCards(): Promise<FulfillmentCard[]> {
   if (!jobs.length) return [];
 
   const quoteIds = [...new Set(jobs.map((j) => j.quote_id).filter((x): x is string => !!x))];
-  const custById = new Map<string, { name: string | null; address: string | null; isTest: boolean }>();
+  const custById = new Map<
+    string,
+    { name: string | null; address: string | null; isTest: boolean; highlevelContactId: string | null; customerId: string | null }
+  >();
   if (quoteIds.length) {
     const { data } = await db
       .from('quotes')
-      .select('id, customer_name, customer_address, is_test')
+      .select('id, customer_name, customer_address, is_test, highlevel_contact_id, customer_id')
       .in('id', quoteIds);
     for (const q of (data ?? []) as {
       id: string;
       customer_name: string | null;
       customer_address: string | null;
       is_test: boolean | null;
+      highlevel_contact_id: string | null;
+      customer_id: string | null;
     }[]) {
       custById.set(q.id, {
         name: q.customer_name ?? null,
         address: q.customer_address ?? null,
         isTest: !!q.is_test,
+        highlevelContactId: q.highlevel_contact_id ?? null,
+        customerId: q.customer_id ?? null,
       });
     }
   }
