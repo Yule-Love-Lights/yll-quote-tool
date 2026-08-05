@@ -16,6 +16,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { MIN_TENURE_YEAR } from '@/lib/customerTenure';
+import { pushTenureYearsToGhl } from '@/lib/integrations/ghlTenure';
 
 export const runtime = 'nodejs';
 
@@ -93,6 +94,16 @@ export async function POST(
   }
   if (!data) {
     return NextResponse.json({ error: 'Customer not found' }, { status: 404 });
+  }
+
+  // GHL tenure mirror (#200): push the full tenure set (auto-derived ∪ this
+  // just-saved manual list) to the linked GHL contact right after the save
+  // lands, so the two don't wait for the next booking to converge. Fail-open
+  // — a GHL hiccup must never fail a staff save that already landed in the DB.
+  try {
+    await pushTenureYearsToGhl(customerId);
+  } catch (err) {
+    console.error('[api/customers/:customerId/tenure-years] GHL tenure push failed:', err);
   }
 
   return NextResponse.json({ ok: true, manualYears: data.manual_years });

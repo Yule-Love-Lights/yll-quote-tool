@@ -28,6 +28,7 @@ import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/sup
 import { createJobFromQuote } from '@/lib/jobs';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { accrueOnBooking, ensureReferralCode } from '@/lib/referrals';
+import { pushTenureYearsToGhl } from '@/lib/integrations/ghlTenure';
 
 export const runtime = 'nodejs';
 
@@ -173,6 +174,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (quote.customer_id) await ensureReferralCode(quote.customer_id);
   } catch (err) {
     console.error('[api/quotes/:id/simulate-deposit] referral code stamp failed:', err);
+  }
+
+  // GHL tenure mirror (#200): same booking-event push the real Valor webhook +
+  // convert-to-job fire. Always a no-op here in practice — this route is
+  // is_test-only (see the HARD GUARD above) and saveQuote never links a test
+  // quote's customer_id — but wired anyway for consistency with the other two
+  // booking sites (mirrors the referral-code call just above). Fail-open.
+  try {
+    if (quote.customer_id) await pushTenureYearsToGhl(quote.customer_id);
+  } catch (err) {
+    console.error('[api/quotes/:id/simulate-deposit] GHL tenure push failed:', err);
   }
 
   // Auto-create the (test) Job — the SAME idempotent path the Valor webhook uses,

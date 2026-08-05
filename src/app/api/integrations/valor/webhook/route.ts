@@ -63,6 +63,7 @@ import { getJobWorkOrder } from '@/lib/inventory/jobs';
 import { notifyTelegramAudience } from '@/lib/integrations/telegramRouting';
 import { prepJobMessage } from '@/lib/integrations/telegramMessages';
 import { accrueOnBooking, ensureReferralCode } from '@/lib/referrals';
+import { pushTenureYearsToGhl } from '@/lib/integrations/ghlTenure';
 import { BUSINESS_RULES, type QuoteResult } from '@/lib/pricing/pricingEngine';
 
 export const runtime = 'nodejs';
@@ -903,6 +904,24 @@ export async function POST(req: NextRequest) {
     }
   };
 
+  // GHL tenure mirror (review fix batch, #200 customer-lens HIGH): push this
+  // customer's full "years with YLL" set to their linked GHL contact at the
+  // booking event — this webhook is ONE of the reconciled deposit_paid_at
+  // write sites (see AGENTS.md pitfall on cross-cutting seams). MOVED into
+  // this allSettled batch (was previously awaited ahead of createJobFromQuote)
+  // — same W1-027 rationale as the rest of this batch: an unbounded external
+  // GHL call must never sit ahead of job creation/receipts. pushTenureYearsToGhl
+  // has its own internal deadline + fail-soft contract; this wrapper only adds
+  // the customer_id guard + a log, matching every other task here.
+  const tenurePush = async () => {
+    if (!quote.customer_id) return;
+    try {
+      await pushTenureYearsToGhl(quote.customer_id);
+    } catch (err) {
+      console.error('[api/integrations/valor/webhook] GHL tenure push failed:', err);
+    }
+  };
+
   // Run the independent side effects concurrently. Each already swallows + logs
   // its own error; allSettled is belt-and-suspenders so one unexpected throw can
   // never reject the batch or the webhook.
@@ -910,6 +929,7 @@ export async function POST(req: NextRequest) {
     prepPing(),
     autoPO(),
     hlStageMove(),
+    tenurePush(),
     customerSms(),
     customerEmail(),
     internalEmail(),

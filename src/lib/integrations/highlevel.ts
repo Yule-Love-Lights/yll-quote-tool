@@ -552,6 +552,70 @@ export async function upsertContactCustomField(
   });
 }
 
+// ─── Location custom fields (list / create) ────────────────────────────────
+// Backs the #200 "Years with YLL" tenure field: every OTHER contact custom
+// field in this app (quoteLinkFieldId in ghlPipelineMap.ts, REFERRAL_LINK_
+// FIELD_ENV in referrals.ts) is a FIXED id pasted into an env var after the
+// dev hand-creates the field in the GHL UI. #200 locked a different design —
+// no new env var, no manual dashboard step — so the field is resolved BY
+// NAME at runtime and created via the API the first time it's missing (see
+// resolveTenureFieldId in src/lib/integrations/ghlTenure.ts, the only caller).
+//
+// Endpoints per the public docs (marketplace.gohighlevel.com/docs/ghl/
+// locations/{get-custom-fields,create-custom-field}): GET/POST /locations/
+// {locationId}/customFields, same API base + Version header as every other
+// call in this file. ⚠️ NOT independently confirmed against the live API (no
+// token in this build environment) — the response wrapper shapes below are
+// inferred from this file's own established conventions (an array response
+// wrapped under a name matching the resource, e.g. `conversations`/
+// `opportunities` above) and defensively parsed on the create side to accept
+// either shape. Needs a live verify at deploy (ledger #200 calls this out).
+export type GhlCustomField = {
+  id: string;
+  name: string;
+  fieldKey?: string;
+  dataType?: string;
+  model?: string;
+};
+
+/** Every custom field defined on the CONTACT model for this location. */
+export async function listLocationCustomFields(): Promise<GhlCustomField[]> {
+  const { locationId } = requireConfig();
+  const json = await ghlFetch<{ customFields?: GhlCustomField[] }>(
+    `/locations/${encodeURIComponent(locationId)}/customFields?model=contact`,
+  );
+  return json.customFields ?? [];
+}
+
+/**
+ * Create one new CONTACT custom field. NOT idempotent by itself — calling it
+ * twice with the same name creates two fields — callers must list-then-create
+ * (never call this blind); see resolveTenureFieldId's find-or-create.
+ *
+ * Response wrapper unconfirmed live (see the section note above): accepts
+ * either an unwrapped field object or one nested under `customField`.
+ */
+export async function createLocationCustomField(input: {
+  name: string;
+  dataType: string;
+}): Promise<GhlCustomField> {
+  const { locationId } = requireConfig();
+  const json = await ghlFetch<{ customField?: GhlCustomField } & Partial<GhlCustomField>>(
+    `/locations/${encodeURIComponent(locationId)}/customFields`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ name: input.name, dataType: input.dataType, model: 'contact' }),
+    },
+  );
+  const field = json.customField ?? (json as GhlCustomField);
+  if (!field?.id) {
+    throw new HighLevelError(
+      `HighLevel POST /locations/.../customFields returned no field id for "${input.name}"`,
+    );
+  }
+  return field;
+}
+
 // ─── Contact upsert (website lead capture) ─────────────────────────────────
 // POST /contacts/upsert — the v2 LeadConnector endpoint that creates a NEW
 // contact or updates the existing match (by email/phone) and reports which

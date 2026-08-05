@@ -51,6 +51,21 @@ describe('deriveTenureYears — booked years', () => {
     const result = deriveTenureYears([q()], [], NOW);
     expect(result.years).toEqual([]);
   });
+
+  // Review fix batch (#200 staff-lens MED): a derived year is floor-clamped
+  // too, same as a manual one — no real prod row is below the floor (verified
+  // against prod: zero pre-2022 deposit_paid_at rows), but a formatter/derive
+  // divergence on a future bad row would be a silent, hard-to-spot GHL mirror
+  // bug, not a crash.
+  it('drops a derived year from a stray pre-floor deposit_paid_at, keeping any valid years alongside it', () => {
+    const result = deriveTenureYears(
+      [q({ deposit_paid_at: '2019-06-01T00:00:00Z' }), q({ deposit_paid_at: '2023-01-01T00:00:00Z' })],
+      [],
+      NOW,
+    );
+    expect(result.years).toEqual([2023]);
+    expect(result.derivedYears).toEqual([2023]);
+  });
 });
 
 describe('deriveTenureYears — legacy rebook rule', () => {
@@ -92,10 +107,10 @@ describe('deriveTenureYears — manual union + dedupe', () => {
   it('marks a manual-only year as removable (manualYears) and a derived year as not (derivedYears)', () => {
     const result = deriveTenureYears(
       [q({ deposit_paid_at: '2024-11-01T00:00:00Z' })],
-      [2020],
+      [2022],
       NOW,
     );
-    expect(result.manualYears).toEqual([2020]);
+    expect(result.manualYears).toEqual([2022]);
     expect(result.derivedYears).toEqual([2024]);
   });
 
@@ -119,13 +134,13 @@ describe('deriveTenureYears — junk manual values ignored', () => {
   });
 
   it('drops individual junk entries but keeps the valid ones', () => {
-    const result = deriveTenureYears([], [2022, '2023', 2024.5, null, {}, [], 2021], NOW);
-    expect(result.years).toEqual([2021, 2022]);
+    const result = deriveTenureYears([], [2023, '2024', 2024.5, null, {}, [], 2022], NOW);
+    expect(result.years).toEqual([2022, 2023]);
   });
 
-  it('drops years before the plausible floor (2015) and any year in the future', () => {
-    const result = deriveTenureYears([], [2014, 2015, 2027, 2026], NOW); // NOW is 2026
-    expect(result.years).toEqual([2015, 2026]);
+  it('drops years before the plausible floor (2022) and any year in the future', () => {
+    const result = deriveTenureYears([], [2021, 2022, 2027, 2026], NOW); // NOW is 2026
+    expect(result.years).toEqual([2022, 2026]);
   });
 });
 
@@ -151,8 +166,12 @@ describe('tenureChipLabel / tenureHeaderLabel', () => {
   });
 
   it('ordinal suffixes handle the 11/12/13 special case', () => {
-    const years = Array.from({ length: 11 }, (_, i) => 2015 + i); // 2015..2025, count 11
-    const result = deriveTenureYears([], years, NOW);
+    // Floor-anchored at 2022 (MIN_TENURE_YEAR) needs a "now" past 2032 for all
+    // 11 years to survive validManualYears' currentYear cap — NOW (2026) is
+    // too early, so this test uses its own later instant.
+    const laterNow = new Date('2036-07-28T12:00:00Z');
+    const years = Array.from({ length: 11 }, (_, i) => 2022 + i); // 2022..2032, count 11
+    const result = deriveTenureYears([], years, laterNow);
     expect(tenureChipLabel(result)?.startsWith('11th year')).toBe(true);
   });
 
@@ -241,9 +260,9 @@ describe('getCustomerTenure — combines quotes + manual_years', () => {
     sbRef.current = makeSb([
       { id: 'a', customer_id: 'cust-1', deposit_paid_at: '2024-01-01', legacy_rebook: false, is_test: false, view_only: false },
     ]);
-    getCustomerMock.mockResolvedValue({ id: 'cust-1', manual_years: [2020] });
+    getCustomerMock.mockResolvedValue({ id: 'cust-1', manual_years: [2022] });
     const result = await getCustomerTenure('cust-1', null, NOW);
-    expect(result.years).toEqual([2020, 2024]);
+    expect(result.years).toEqual([2022, 2024]);
   });
 
   it('returns the empty result and skips the customer read when there is no linked customer id', async () => {
