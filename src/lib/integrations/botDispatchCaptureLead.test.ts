@@ -17,7 +17,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   interpretBotText: vi.fn(async (): Promise<unknown> => null),
   runWhatsAppCommand: vi.fn(async () => 'KEYWORD-REPLY'),
-  runCaptureLead: vi.fn(async () => ({ reply: 'CAPTURE-REPLY', synced: true })),
+  runCaptureLead: vi.fn(
+    async (): Promise<{ reply: string; synced: boolean; savedContactName?: string }> => ({
+      reply: 'CAPTURE-REPLY',
+      synced: true,
+    }),
+  ),
   stagePendingAction: vi.fn(
     async (_opts: {
       chatId: string;
@@ -165,6 +170,20 @@ describe('captureLead — service is required, and the bot ASKS rather than gues
     expect(mocks.runCaptureLead).not.toHaveBeenCalled();
   });
 
+  it('lists services with the friendly labels the confirm line uses, not the raw enum keys', async () => {
+    mocks.interpretBotText.mockResolvedValue({
+      tool: 'captureLead',
+      args: { name: 'John Smith', phone: '631-555-0100' },
+      confidence: 0.9,
+    });
+    const reply = await handleBotMessage({ ...base, text: 'new lead John Smith 631-555-0100' });
+    expect(reply).toContain('Christmas');
+    expect(reply).toContain('Permanent');
+    expect(reply).toContain('Event/Wedding');
+    expect(reply).toContain('Landscape');
+    expect(reply).not.toContain('event-wedding'); // the raw enum key
+  });
+
   it('is stateless — nothing is stored for the crew to complete later; they must resend', async () => {
     mocks.interpretBotText.mockResolvedValue({
       tool: 'captureLead',
@@ -262,6 +281,25 @@ describe('captureLead — nothing executes without a yes', () => {
     const reply = await handleBotMessage({ ...base, text: 'yes' });
     expect(reply).toBe('Saved but tagging failed');
     expect(mocks.notifyTelegramAudience).not.toHaveBeenCalled();
+  });
+
+  it('passes savedContactName through to the staff ping on a household match', async () => {
+    mocks.runCaptureLead.mockResolvedValue({
+      reply: 'Added to existing contact Bob Jones (you captured Alice Jones) — enrolled in texts.',
+      synced: true,
+      savedContactName: 'Bob Jones',
+    });
+    mocks.consumePendingAction.mockResolvedValue({
+      id: 'p1',
+      tool: 'captureLead',
+      args: { name: 'Alice Jones', phone: '631-555-0100', service: 'permanent' },
+      summary: 's',
+    });
+    await handleBotMessage({ ...base, text: 'yes' });
+    expect(mocks.notifyTelegramAudience).toHaveBeenCalledWith(
+      'leads',
+      expect.stringContaining('kept existing contact name Bob Jones'),
+    );
   });
 
   it('says nothing is pending on a stray yes', async () => {

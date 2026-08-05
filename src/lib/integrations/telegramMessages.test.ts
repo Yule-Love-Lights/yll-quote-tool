@@ -132,6 +132,28 @@ describe('fieldLeadMessage', () => {
     });
     expect(withoutAddress).not.toContain('📍');
   });
+
+  it('flags a household match — shows the SAVED contact name, not just the typed one', () => {
+    const msg = fieldLeadMessage({
+      name: 'Alice Jones',
+      service: 'permanent',
+      phone: '631-555-0100',
+      address: null,
+      savedContactName: 'Bob Jones',
+    });
+    expect(msg).toContain('Alice Jones'); // who the crew captured
+    expect(msg).toContain('kept existing contact name Bob Jones'); // what actually saved
+  });
+
+  it('omits the household line entirely when there was no mismatch', () => {
+    const msg = fieldLeadMessage({
+      name: 'John Smith',
+      service: 'permanent',
+      phone: '631-555-0100',
+      address: null,
+    });
+    expect(msg).not.toContain('kept existing contact name');
+  });
 });
 
 describe('capList', () => {

@@ -108,6 +108,43 @@ describe('syncFieldLeadToGhl', () => {
     expect(upsertArg.phone).toBe('6315550100');
   });
 
+  it('on a household mismatch: still enrolls (synced), reports the SAVED name, and leaves a discrepancy note', async () => {
+    hl.searchContacts.mockResolvedValue([
+      { id: 'c-existing', fullName: 'Bob Jones', phone: '+16315550100' },
+    ]);
+    const res = await syncFieldLeadToGhl({ name: 'Alice Jones', phone: '6315550100', service: 'permanent' });
+
+    // Still enrolled — tags land regardless of the name-overwrite guard.
+    expect(res.status).toBe('synced');
+    expect(res.ghlContactId).toBe('contact-1');
+    expect(hl.addContactTags).toHaveBeenCalledWith('contact-1', [
+      'new lead',
+      'field-lead',
+      'sms-consent',
+      'web-lead-permanent',
+    ]);
+
+    // The caller needs the EXISTING name to be honest with the crew — never
+    // silently claim "Alice Jones" was saved when it wasn't.
+    expect(res.savedContactName).toBe('Bob Jones');
+
+    // Two notes: the household discrepancy trace FIRST, then the regular
+    // field-lead context note — mirrors leadService.ts's ordering.
+    expect(hl.createContactNote).toHaveBeenCalledTimes(2);
+    const householdBody = hl.createContactNote.mock.calls[0]![1] as string;
+    expect(householdBody).toContain('Alice Jones');
+    expect(householdBody).toContain('Bob Jones');
+    expect(householdBody).toContain('6315550100');
+    const regularBody = hl.createContactNote.mock.calls[1]![1] as string;
+    expect(regularBody).toContain('field lead');
+  });
+
+  it('does NOT set savedContactName or write a household note when there is no mismatch', async () => {
+    const res = await syncFieldLeadToGhl({ name: 'John Smith', phone: '6315550100', service: 'permanent' });
+    expect(res.savedContactName).toBeUndefined();
+    expect(hl.createContactNote).toHaveBeenCalledTimes(1); // the regular note only
+  });
+
   it('still sends name fields when the phone matches nobody', async () => {
     hl.searchContacts.mockResolvedValue([]);
     await syncFieldLeadToGhl({ name: 'Alice Jones', phone: '6315559999', service: 'permanent' });
@@ -131,12 +168,14 @@ describe('syncFieldLeadToGhl', () => {
     expect(res.syncError).toContain('tag boom');
   });
 
-  it('returns status error (with the contact id) when the note fails', async () => {
+  it('still returns status synced when only the note fails — the contact IS enrolled once tags land', async () => {
     hl.createContactNote.mockRejectedValue(new Error('note boom'));
     const res = await syncFieldLeadToGhl({ name: 'John Smith', phone: '6315550100', service: 'permanent' });
-    expect(res.status).toBe('error');
+    expect(res.status).toBe('synced');
     expect(res.ghlContactId).toBe('contact-1');
-    expect(res.syncError).toContain('note boom');
+    // Tags are the enrollment-critical step and already succeeded (this test
+    // never touches hl.addContactTags) — a note hiccup must not hide that.
+    expect(hl.addContactTags).toHaveBeenCalledTimes(1);
   });
 
   it('propagates an upsert throw (no contact yet)', async () => {

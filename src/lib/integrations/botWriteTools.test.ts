@@ -244,6 +244,21 @@ describe('summarizeCaptureLead', () => {
       "New field lead: John Smith · 631-555-0100 · Christmas. Reply YES only if they agreed to be contacted (they'll be enrolled in texts).",
     );
   });
+
+  it('echoes the note so the crew can catch a bad extraction before confirming', () => {
+    const summary = summarizeCaptureLead({
+      name: 'John Smith',
+      phone: '631-555-0100',
+      service: 'permanent',
+      note: 'wants uplighting too',
+    });
+    expect(summary).toContain('note "wants uplighting too"');
+  });
+
+  it('omits the note segment when none was parsed', () => {
+    const summary = summarizeCaptureLead({ name: 'John Smith', phone: '631-555-0100', service: 'permanent' });
+    expect(summary).not.toContain('note "');
+  });
 });
 
 describe('runCaptureLead', () => {
@@ -278,10 +293,36 @@ describe('runCaptureLead', () => {
     expect(result.reply).toContain('office');
   });
 
-  it('never throws into the webhook when the GHL upsert itself throws', async () => {
+  it('never throws into the webhook when the GHL sync itself throws, and tells the crew to RESEND (not reply yes)', async () => {
     mocks.syncFieldLeadToGhl.mockRejectedValue(new Error('upsert boom'));
     const result = await runCaptureLead({ name: 'John Smith', phone: '631-555-0100', service: 'permanent' });
     expect(result.synced).toBe(false);
-    expect(result.reply).toContain('try again');
+    // The pending confirm is already consumed by the time this runs (see
+    // botDispatch), so a "reply yes" instruction here would dead-end on
+    // "Nothing is waiting for a yes." and lose the lead. Must say RESEND.
+    expect(result.reply).toContain('resend the whole lead');
+    expect(result.reply).not.toContain('reply yes');
+  });
+
+  it('is honest when a household match kept the EXISTING contact name — reply names both names', async () => {
+    mocks.syncFieldLeadToGhl.mockResolvedValue({
+      status: 'synced',
+      ghlContactId: 'contact-1',
+      savedContactName: 'Bob Jones',
+    });
+    const result = await runCaptureLead({ name: 'Alice Jones', phone: '631-555-0100', service: 'permanent' });
+    expect(result.synced).toBe(true);
+    expect(result.savedContactName).toBe('Bob Jones');
+    expect(result.reply).toContain('Bob Jones');
+    expect(result.reply).toContain('Alice Jones');
+    expect(result.reply).not.toContain('Got it —'); // must not use the ordinary success wording
+  });
+
+  it('uses the ordinary success reply when there was no household mismatch', async () => {
+    mocks.syncFieldLeadToGhl.mockResolvedValue({ status: 'synced', ghlContactId: 'contact-1' });
+    const result = await runCaptureLead({ name: 'John Smith', phone: '631-555-0100', service: 'permanent' });
+    expect(result.synced).toBe(true);
+    expect(result.savedContactName).toBeUndefined();
+    expect(result.reply).toContain('Got it');
   });
 });

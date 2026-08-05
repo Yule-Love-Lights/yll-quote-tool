@@ -156,15 +156,25 @@ export type CaptureLeadArgs = {
  * affirmation — the crew's "yes" to this exact line is the consent record
  * (task #9, locked), so the wording must make that unmistakable rather than
  * reading like an ordinary "reply yes to confirm" prompt.
+ *
+ * Echoes the parsed note (when present) the same way summarizeCompleteInstall
+ * echoes its note — so the crew can catch a bad LLM extraction BEFORE
+ * confirming, not after.
  */
 export function summarizeCaptureLead(args: CaptureLeadArgs): string {
   const parts = [args.name, args.phone];
   if (args.address) parts.push(args.address);
   parts.push(SERVICE_FIELD_VALUE[args.service]);
+  if (args.note) parts.push(`note "${args.note}"`);
   return `New field lead: ${parts.join(' · ')}. Reply YES only if they agreed to be contacted (they'll be enrolled in texts).`;
 }
 
-export type CaptureLeadResult = { reply: string; synced: boolean };
+export type CaptureLeadResult = {
+  reply: string;
+  synced: boolean;
+  /** Set ONLY on a household-name mismatch — see SyncFieldLeadResult. */
+  savedContactName?: string;
+};
 
 /**
  * Record one field-lead capture. Returns the plain-text reply for the crew
@@ -173,9 +183,9 @@ export type CaptureLeadResult = { reply: string; synced: boolean };
  * case, which only notifies on `synced`).
  *
  * Never throws into the webhook: syncFieldLeadToGhl's one THROWING call
- * (upsertContact) is caught here so a GHL hiccup degrades to a plain "try
- * again" reply rather than propagating, matching this module's fail-closed
- * style (mirrors runCompleteInstall never throwing).
+ * (upsertContact) is caught here so a GHL hiccup degrades to a plain reply
+ * rather than propagating, matching this module's fail-closed style (mirrors
+ * runCompleteInstall never throwing).
  */
 export async function runCaptureLead(args: CaptureLeadArgs): Promise<CaptureLeadResult> {
   const input: FieldLeadInput = {
@@ -191,8 +201,13 @@ export async function runCaptureLead(args: CaptureLeadArgs): Promise<CaptureLead
     result = await syncFieldLeadToGhl(input);
   } catch (err) {
     console.error('[botWriteTools] captureLead sync failed:', err);
+    // By the time this runs, botDispatch has already CONSUMED the pending
+    // confirm action (it consumes before calling executeConfirmed) — so a
+    // "reply yes" instruction here would dead-end on "Nothing is waiting for
+    // a yes." and the lead could be lost entirely. Tell the crew to resend
+    // the whole capture instead of retrying a "yes" that has nothing to hit.
     return {
-      reply: `Couldn't create the GHL contact for ${args.name} — try again in a minute.`,
+      reply: `Couldn't reach GHL for ${args.name} — resend the whole lead (name, phone, service) to try again.`,
       synced: false,
     };
   }
@@ -203,6 +218,16 @@ export async function runCaptureLead(args: CaptureLeadArgs): Promise<CaptureLead
     return {
       reply: `Saved ${args.name}'s contact, but tagging/the note failed — tell the office to check GHL.`,
       synced: false,
+    };
+  }
+
+  if (result.savedContactName) {
+    // Household guard fired — be honest that the typed name did NOT overwrite
+    // the real contact's name, rather than implying it did.
+    return {
+      reply: `Added to existing contact ${result.savedContactName} (you captured ${args.name}) — enrolled in texts.`,
+      synced: true,
+      savedContactName: result.savedContactName,
     };
   }
 

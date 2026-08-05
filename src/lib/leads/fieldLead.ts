@@ -45,12 +45,20 @@ export type SyncFieldLeadResult = {
   status: 'synced' | 'error';
   ghlContactId?: string;
   syncError?: string;
+  /**
+   * Set ONLY on a household-name mismatch (an existing contact matched by
+   * phone but under a different name, so the upsert omitted the crew's typed
+   * name to protect the real contact's identity). The caller (runCaptureLead)
+   * uses this to tell the crew the truth — the contact was NOT renamed to
+   * what they typed — instead of implying the new name landed.
+   */
+  savedContactName?: string;
 };
 
-// Strips newlines from the one field a crew member's free text could carry
-// (note) — same injection guard as leadService's (unexported) stripNewlinesForNote,
-// kept local here rather than exporting a private helper from a shared module
-// just for this one caller.
+// Strips newlines from a field a crew member's free text could carry (note,
+// name, phone) — same injection guard as leadService's (unexported)
+// stripNewlinesForNote, kept local here rather than exporting a private
+// helper from a shared module just for this one caller.
 function stripNewlines(s: string): string {
   return s.replace(/[\r\n]+/g, ' ');
 }
@@ -75,16 +83,34 @@ function buildFieldLeadNoteBody(input: FieldLeadInput): string {
   return lines.join('\n');
 }
 
+// Mirrors leadService.ts's buildHouseholdNoteBody — a household-mismatch
+// discrepancy MUST leave a trace on the contact, not just silently skip the
+// name fields, or the office has no idea a different person called this in.
+function buildHouseholdNoteBody(input: FieldLeadInput, existingName: string): string {
+  const typedName = stripNewlines(input.name.trim());
+  const safeExistingName = stripNewlines(existingName.trim());
+  const phone = stripNewlines(input.phone.trim());
+  return (
+    `Household note: captured in the field as ${typedName} using this contact's phone on file. ` +
+    `Contact name kept as ${safeExistingName}. Submitted phone: ${phone}.`
+  );
+}
+
 /**
  * Sync one crew-captured field lead to GHL: upsert the contact, tag it for
  * the SAME automation a completed website form triggers, and drop a note.
  *
- * Failure contract mirrors partialLead.ts / leadService.ts: upsertContact is
- * the only call allowed to THROW (no contact yet means nothing to report —
- * the caller, runCaptureLead in botWriteTools.ts, turns that into a plain-text
- * reply rather than letting it reach the webhook). Every step AFTER the
- * contact exists catches its own failure and still returns the contact id, so
- * a tag/note hiccup never loses the captured contact.
+ * Failure contract mirrors partialLead.ts / leadService.ts for the upsert:
+ * upsertContact is the only call allowed to THROW (no contact yet means
+ * nothing to report — the caller, runCaptureLead in botWriteTools.ts, turns
+ * that into a plain-text reply rather than letting it reach the webhook).
+ *
+ * PAST the upsert, tags and notes are handled separately on purpose: the tag
+ * step is what actually ENROLLS the contact (addContactTags carries 'new
+ * lead'), so a tag failure is a real status:'error' — the person is NOT
+ * enrolled. Notes are best-effort context; a note failure must never
+ * downgrade an already-enrolled contact to status:'error', or a staff ping
+ * that should fire (tags landed) would get silently suppressed.
  */
 export async function syncFieldLeadToGhl(input: FieldLeadInput): Promise<SyncFieldLeadResult> {
   const phone = input.phone.trim();
@@ -92,7 +118,8 @@ export async function syncFieldLeadToGhl(input: FieldLeadInput): Promise<SyncFie
   const { firstName, lastName } = splitLeadName(fullName);
 
   const existing = await findExistingContact(phone);
-  const nameIsSafe = fullName !== '' && !(existing && existingNameDiffers(existing.fullName, fullName));
+  const isHousehold = existing !== null && existingNameDiffers(existing.fullName, fullName);
+  const nameIsSafe = fullName !== '' && !isHousehold;
 
   const { contact } = await upsertContact({
     ...(nameIsSafe ? { firstName, lastName: lastName || undefined } : {}),
@@ -101,18 +128,17 @@ export async function syncFieldLeadToGhl(input: FieldLeadInput): Promise<SyncFie
     source: 'Field Lead (Text-Ops Bot)',
   });
 
+  // Enrollment-critical: 'new lead' is the tag the GHL workflow keys off, so a
+  // failure HERE means the person is genuinely not enrolled — report it.
+  // Order matches Naldo's locked decision — new lead FIRST, then the two
+  // provenance/consent tags, then the service tag the workflow also matches on.
   try {
-    // Order matches Naldo's locked decision — new lead FIRST (the tag the GHL
-    // workflow actually keys off), then the two provenance/consent tags, then
-    // the service tag the workflow also matches on.
     await addContactTags(contact.id, [
       'new lead',
       'field-lead',
       'sms-consent',
       `web-lead-${input.service}`,
     ]);
-    await createContactNote(contact.id, buildFieldLeadNoteBody(input));
-    return { status: 'synced', ghlContactId: contact.id };
   } catch (err) {
     return {
       status: 'error',
@@ -120,4 +146,23 @@ export async function syncFieldLeadToGhl(input: FieldLeadInput): Promise<SyncFie
       syncError: err instanceof Error ? err.message : 'Unknown HighLevel error',
     };
   }
+
+  // Best-effort from here — the contact IS enrolled once the tags above
+  // landed, so a note hiccup is logged, not surfaced as a sync failure.
+  try {
+    // Household note FIRST (mirrors leadService.ts's ordering) so it's the
+    // most prominent entry when the office opens the contact.
+    if (isHousehold) {
+      await createContactNote(contact.id, buildHouseholdNoteBody(input, existing?.fullName ?? ''));
+    }
+    await createContactNote(contact.id, buildFieldLeadNoteBody(input));
+  } catch (err) {
+    console.warn('[fieldLead] note write failed (contact still enrolled):', err);
+  }
+
+  return {
+    status: 'synced',
+    ghlContactId: contact.id,
+    ...(isHousehold ? { savedContactName: existing?.fullName || undefined } : {}),
+  };
 }

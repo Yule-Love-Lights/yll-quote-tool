@@ -44,6 +44,7 @@ import { downloadTelegramFile } from './telegramMedia';
 import { transcribeAudio, isTranscriptionConfigured } from './transcribe';
 import { notifyTelegramAudience } from './telegramRouting';
 import { fieldLeadMessage } from './telegramMessages';
+import { LEAD_SERVICES, SERVICE_FIELD_VALUE } from '@/lib/leads/leadService';
 
 export type BotIncomingMessage = {
   chatId: string;
@@ -64,6 +65,16 @@ const NOTHING_PENDING = 'Nothing is waiting for a yes.';
 // write confirms first, regardless of role — a misread text stays harmless
 // until "yes".
 const CONFIRM_REQUIRED_KEYWORDS = new Set(['prep', 'set']);
+
+// "Christmas, Permanent, Event/Wedding, or Landscape" — the friendly labels
+// the confirm line already uses (SERVICE_FIELD_VALUE), not the raw enum keys
+// (captureLead's missing-service prompt used to show "event-wedding" etc.,
+// which nobody types back verbatim — the interpreter matches natural language
+// on the resend either way, so this is purely for the crew reading it).
+const SERVICE_LABEL_LIST = (() => {
+  const labels = LEAD_SERVICES.map((s) => SERVICE_FIELD_VALUE[s]);
+  return `${labels.slice(0, -1).join(', ')}, or ${labels[labels.length - 1]}`;
+})();
 
 
 /**
@@ -266,7 +277,7 @@ export async function handleBotMessage(msg: BotIncomingMessage): Promise<string 
       if (!service) {
         return withHeard(
           `Got ${name} · ${phone}${address ? ` · ${address}` : ''} — which service do they want ` +
-            '(christmas, permanent, event-wedding, or landscape)? Resend the whole message including it.',
+            `(${SERVICE_LABEL_LIST})? Resend the whole message including it.`,
         );
       }
 
@@ -334,6 +345,10 @@ async function executeConfirmed(
             service: clArgs.service,
             phone: clArgs.phone,
             address: clArgs.address ?? null,
+            // Household guard fired — tell staff the SAVED name too, or they'd
+            // search GHL for a contact under the name the crew typed and find
+            // nothing (see fieldLead.ts's savedContactName).
+            savedContactName: result.savedContactName,
           }),
         );
       }
