@@ -45,8 +45,8 @@ describe('customerKey — identity grouping', () => {
   it('keeps the hl > email > phone > name precedence', () => {
     expect(customerKey(makeQuote({ highlevel_contact_id: 'hl_1', customer_phone: '6315550100' }))).toBe('hl_1');
     expect(customerKey(makeQuote({ customer_email: 'a@b.com', customer_phone: '6315550100' }))).toBe('a@b.com');
-    // a phone with no digits falls through to name, same as before
-    expect(customerKey(makeQuote({ customer_name: 'Jo', customer_email: null, customer_phone: 'n/a' }))).toBe('Jo');
+    // a phone with no digits falls through to name (normalized to lowercase)
+    expect(customerKey(makeQuote({ customer_name: 'Jo', customer_email: null, customer_phone: 'n/a' }))).toBe('jo');
   });
 
   // Email is normalized the same way customerMatchKey (lib/customers.ts) does —
@@ -59,6 +59,16 @@ describe('customerKey — identity grouping', () => {
     expect(a).toBe(b);
     expect(b).toBe(c);
     expect(b).toBe('a@b.com');
+  });
+
+  // The name-only fallback tier (no hl id / email / phone) is normalized the
+  // same way customerMatchKey normalizes its name — trimmed + lowercased — so
+  // 'John Smith' and 'john smith ' are ONE customer, not two.
+  it('normalizes name case + whitespace in the name-fallback tier', () => {
+    const a = customerKey(makeQuote({ customer_name: 'John Smith', customer_email: null, customer_phone: null }));
+    const b = customerKey(makeQuote({ customer_name: 'john smith ', customer_email: null, customer_phone: null }));
+    expect(a).toBe(b);
+    expect(a).toBe('john smith');
   });
 });
 
