@@ -16,8 +16,9 @@
 // is the one legitimate way a customer tag goes back to false).
 
 import { NextRequest, NextResponse } from 'next/server';
-import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
+import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
+import { setCustomerTags } from '@/lib/customers';
 
 export const runtime = 'nodejs';
 
@@ -66,17 +67,7 @@ export async function POST(
     );
   }
 
-  const patch: Record<string, boolean> = {};
-  if (isNce !== undefined) patch.is_nce = isNce;
-  if (isYllNeighbor !== undefined) patch.is_yll_neighbor = isYllNeighbor;
-
-  const sb = getSupabaseServiceClient()!;
-  const { data, error } = await sb
-    .from('customers')
-    .update(patch)
-    .eq('id', customerId)
-    .select('id, is_nce, is_yll_neighbor')
-    .maybeSingle<{ id: string; is_nce: boolean; is_yll_neighbor: boolean }>();
+  const { data, error } = await setCustomerTags(customerId, { isNce, isYllNeighbor });
 
   if (error) {
     console.error('[api/customers/:customerId/tags] update failed:', error);

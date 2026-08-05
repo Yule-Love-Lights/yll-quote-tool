@@ -554,3 +554,32 @@ export async function propagateQuoteTagsToCustomer(
     console.error(`propagateQuoteTagsToCustomer: update failed for customer ${customerId}:`, error);
   }
 }
+
+// Staff add/remove update (#198) — the direct write behind POST
+// /api/customers/[customerId]/tags. Unlike propagateQuoteTagsToCustomer above
+// (forward-only, fire-and-forget), this is a real partial update that CAN
+// clear a tag, and the caller (the route) needs to distinguish a DB error
+// (500) from an unknown customer id (404) — so this returns the raw
+// {data, error} pair rather than collapsing both into null the way
+// getCustomer does; a pure extract of the route's own Supabase call shape,
+// no behavior change for its one caller.
+export async function setCustomerTags(
+  customerId: string,
+  tags: { isNce?: boolean; isYllNeighbor?: boolean },
+): Promise<{
+  data: { id: string; is_nce: boolean; is_yll_neighbor: boolean } | null;
+  error: { message: string } | null;
+}> {
+  const patch: Record<string, boolean> = {};
+  if (tags.isNce !== undefined) patch.is_nce = tags.isNce;
+  if (tags.isYllNeighbor !== undefined) patch.is_yll_neighbor = tags.isYllNeighbor;
+  const sb = svc();
+  if (!sb) return { data: null, error: { message: 'Supabase not configured' } };
+  const { data, error } = await sb
+    .from('customers')
+    .update(patch)
+    .eq('id', customerId)
+    .select('id, is_nce, is_yll_neighbor')
+    .maybeSingle<{ id: string; is_nce: boolean; is_yll_neighbor: boolean }>();
+  return { data, error };
+}
