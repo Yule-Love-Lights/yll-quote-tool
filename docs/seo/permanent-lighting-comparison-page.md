@@ -178,9 +178,11 @@ tool / estimate flow)*
       publish.
 - [ ] Confirm **"since 2022"** and the Nassau/Suffolk boundary language match
       what the rest of the site says.
-- [ ] Confirm the **$2,500–$5,000** range is still what we want printed publicly.
-      It appears in search snippets already, so it's effectively public — but
-      confirm it's current.
+- [ ] Confirm the **$2,500–$5,000** range is what we want printed on this page.
+      Still open: this figure came from a search snippet, not from Naldo. His
+      2026-08-05 "pricing is correct" was about the profile's "From $1,000"
+      floor, which is a different number answering a different question. Don't
+      treat that as sign-off on this range.
 - [x] **Night, system on** — received 2026-08-05 (IMG_6561). Split-level, red
       across the left roofline and blue across the right on one continuous run,
       plus the porch gable and a lower band above the garage. This is the
@@ -197,10 +199,10 @@ tool / estimate flow)*
       than a dark night shot, but it doesn't fully settle the "in broad
       daylight" question a skeptical buyer is asking. Grab a midday frame from
       the same angle next time someone's at that house. Not a blocker.
-- [ ] **Homeowner permission — still open.** A number appears on the portico
-      gable in IMG_6575 and IMG_6566. Combined with a town name that's
-      potentially identifying, so get the owner's OK and decide whether to crop
-      or retouch it out.
+- [x] **Homeowner permission — granted** (Naldo, 2026-08-05). A number is
+      visible on the portico gable in IMG_6575 and IMG_6566; with permission in
+      hand that's the owner's call to make, but crop it if the page ever pairs
+      the photos with a specific town name.
 - [ ] Photos go in the WordPress media library, not this repo — the originals
       are 8000×6000 and don't belong in git.
 - [ ] Build `/services/permanent-lighting/` **first** — this page's internal
