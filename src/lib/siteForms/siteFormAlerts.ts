@@ -5,6 +5,16 @@
 // signup came in", "someone applied for a job", "a neighbour was nominated".
 // Same fail-open contract though: an email outage must never break the
 // submission, so nothing here throws.
+//
+// PRECISION ABOUT THE NOMINEE, because a looser version of this claim was
+// written elsewhere and is wrong: a nominated third party never becomes a GHL
+// CONTACT, never gets an opportunity, and never enters any automation or
+// campaign. Their details DO travel inside this staff alert, which is delivered
+// through GHL's conversations API, so they persist in GHL as message content on
+// the internal alert thread. That is deliberate (staff cannot act on a
+// nomination without the address) but it is not the same as "never reaches
+// GHL". The Telegram line below is the one channel kept free of their contact
+// details, since it fans out to a group chat rather than a staff inbox.
 
 import { sendEmail } from '@/lib/integrations/highlevel';
 import type { SiteFormType } from './siteFormService';
