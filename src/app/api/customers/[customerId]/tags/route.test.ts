@@ -115,7 +115,7 @@ describe('POST /api/customers/[customerId]/tags — validation', () => {
     expect(updatePayloads).toHaveLength(0);
   });
 
-  it.each([['true'], [1], [{}], [[]]])(
+  it.each([['true'], [1], [null], [{}], [[]]])(
     '400s when isNce is a non-boolean value (%p)',
     async (value) => {
       const { client, updatePayloads } = makeSb({ id: VALID_UUID, is_nce: false, is_yll_neighbor: false });
@@ -126,7 +126,7 @@ describe('POST /api/customers/[customerId]/tags — validation', () => {
     },
   );
 
-  it.each([['true'], [1], [{}], [[]]])(
+  it.each([['true'], [1], [null], [{}], [[]]])(
     '400s when isYllNeighbor is a non-boolean value (%p)',
     async (value) => {
       const { client, updatePayloads } = makeSb({ id: VALID_UUID, is_nce: false, is_yll_neighbor: false });
