@@ -36,6 +36,7 @@ import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { accrueOnBooking, ensureReferralCode } from '@/lib/referrals';
 import { updateOpportunity, isHighLevelConfigured } from '@/lib/integrations/highlevel';
 import { resolvePipelineStages } from '@/lib/integrations/ghlPipelineMap';
+import { pushTenureYearsToGhl } from '@/lib/integrations/ghlTenure';
 
 export const runtime = 'nodejs';
 
@@ -230,6 +231,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (quote.customer_id) await ensureReferralCode(quote.customer_id);
   } catch (err) {
     console.error('[api/quotes/:id/convert-to-job] referral code stamp failed:', err);
+  }
+
+  // GHL tenure mirror (#200): push this customer's full "years with YLL" set
+  // to their linked GHL contact at the booking event — a THIRD deposit-paid
+  // write site needing this (same reconciled writer list as the referral
+  // accrual above). Fail-open — must never block an operator's manual booking.
+  try {
+    if (quote.customer_id) await pushTenureYearsToGhl(quote.customer_id);
+  } catch (err) {
+    console.error('[api/quotes/:id/convert-to-job] GHL tenure push failed:', err);
   }
 
   // GHL pipeline sync (booking bug batch 2026-07-17): this is an OFFLINE close

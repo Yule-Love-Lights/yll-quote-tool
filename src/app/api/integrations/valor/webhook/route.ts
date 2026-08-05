@@ -63,6 +63,7 @@ import { getJobWorkOrder } from '@/lib/inventory/jobs';
 import { notifyTelegramAudience } from '@/lib/integrations/telegramRouting';
 import { prepJobMessage } from '@/lib/integrations/telegramMessages';
 import { accrueOnBooking, ensureReferralCode } from '@/lib/referrals';
+import { pushTenureYearsToGhl } from '@/lib/integrations/ghlTenure';
 import { BUSINESS_RULES, type QuoteResult } from '@/lib/pricing/pricingEngine';
 
 export const runtime = 'nodejs';
@@ -719,6 +720,16 @@ export async function POST(req: NextRequest) {
     if (quote.customer_id) await ensureReferralCode(quote.customer_id);
   } catch (err) {
     console.error('[api/integrations/valor/webhook] referral code stamp failed:', err);
+  }
+
+  // GHL tenure mirror (#200): push this customer's full "years with YLL" set
+  // to their linked GHL contact at the booking event — this webhook is ONE of
+  // the reconciled deposit_paid_at write sites (see AGENTS.md pitfall on
+  // cross-cutting seams). Fail-open — must never break the payment webhook.
+  try {
+    if (quote.customer_id) await pushTenureYearsToGhl(quote.customer_id);
+  } catch (err) {
+    console.error('[api/integrations/valor/webhook] GHL tenure push failed:', err);
   }
 
   // ── Auto-create the Job (ledger #83 Phase 2) ──────────────────────────────
