@@ -177,6 +177,14 @@ export type QuoteBuilderPrefill = {
   // The lead's HighLevel contact id (src/app/admin/leads' quoteNewHref), when
   // known. Raw/untyped here too — validated at the /api/quote boundary.
   ghlContactId?: string;
+  // NCE + YLL Neighbor tag inheritance (#198): UNLIKE the raw string fields
+  // above, these are resolved SERVER-SIDE (src/app/quote/new/page.tsx looks
+  // up ghlContactId's customers row before rendering) — real booleans, not
+  // URL strings. QuoteBuilder reads them directly (not through
+  // applyPrefill/QuoteFormData — tags are quote-row metadata, not pricing
+  // inputs, same posture as isTest/highlevelContactId).
+  isNce?: boolean;
+  legacyRebook?: boolean;
 };
 
 /**

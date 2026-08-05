@@ -31,7 +31,10 @@ import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { EventSection } from './EventSection';
 import { OperatorShell } from '@/components/OperatorShell';
 import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
-import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
+// YllNeighborBadge/NceBadge (the read-only admin-surface pills) are NOT used
+// here (#198): the builder's own tag chips below are interactive buttons with
+// builder-specific title text, not those components' migration-specific
+// copy — see the chip strip's own comment.
 import { ReferredByPicker } from '@/components/quote/ReferredByPicker';
 import { ReferralCreditBanner } from '@/components/quote/ReferralCreditBanner';
 import { ReferralSpritzerBanner } from '@/components/quote/ReferralSpritzerBanner';
@@ -268,9 +271,13 @@ export type QuoteBuilderInitial = {
   // from the saved row, never re-read from the URL on edit (is_test is immutable).
   isTest?: boolean;
   // YLL Neighbor (#158): quote migrated from last year's Jobber data (#155).
-  // Read-only display flag from the saved row — legacy_rebook quotes only exist
-  // via that migration, so there's no "new quote" path that sets this.
+  // The saved row's value, hydrated ONCE at mount into a real toggleable chip
+  // (#198) — see the legacyRebook/isNce useState below. No live re-read after
+  // mount (matches every other saved-row flag here).
   legacyRebook?: boolean;
+  // NCE (#198): quote-level "Mark as NCE" tag (the barter/trade network YLL
+  // belongs to). Same mount-hydrate-once posture as legacyRebook above.
+  isNce?: boolean;
   // View-only portal (#176): staff-flagged browse-only quote. Read-only display
   // flag from the saved row — display-only here (the toggle itself lives on the
   // admin detail page, not the builder); mirrors legacyRebook exactly.
@@ -340,8 +347,17 @@ export default function QuoteBuilder({
   // the saved row (initialQuote.isTest). When true, the builder shows a TEST MODE
   // banner and Calculate persists the quote as is_test=true (saveQuote).
   const isTest = isTestProp ?? initialQuote?.isTest ?? false;
-  // YLL Neighbor (#158) — purely from the saved row, never set for a brand-new quote.
-  const legacyRebook = initialQuote?.legacyRebook ?? false;
+  // YLL Neighbor + NCE tags (#198) — staff-toggleable chips (below the
+  // header), in BOTH new-quote and edit modes. Hydrated ONCE at mount: from
+  // the saved row in edit mode, else from a resolved prefill (a tagged HL
+  // contact picked from the lead list) in new mode, else false — never
+  // live-refreshed after (mount-hydrate convention, matches isTest/viewOnly/
+  // every other saved-row flag here; a customer tagged elsewhere mid-session
+  // is picked up on next reopen, not live — DISCLOSED in the ledger spec).
+  const [legacyRebook, setLegacyRebook] = useState(
+    () => initialQuote?.legacyRebook ?? prefill?.legacyRebook ?? false,
+  );
+  const [isNce, setIsNce] = useState(() => initialQuote?.isNce ?? prefill?.isNce ?? false);
   // View-only portal (#176) — purely from the saved row, never set for a brand-new quote.
   const viewOnly = initialQuote?.viewOnly ?? false;
   // Customer tenure (#178) — purely from the saved row, never set for a brand-new quote.
@@ -2305,6 +2321,20 @@ export default function QuoteBuilder({
         void queueAttach(savedQuoteId, c.id, hlAddress);
       }
     }
+    // NCE + YLL Neighbor tag inheritance (#198): if the picked contact maps
+    // to an already-tagged customers row, turn the matching chip(s) ON to
+    // match (merge, never clear — a chip the operator already set by hand,
+    // or from an earlier pick, is never turned back off just because THIS
+    // contact carries no tag). Fire-and-forget, best-effort: a lookup
+    // failure just means no chip changes, same as an untagged contact.
+    fetch(`/api/customers?hlContactId=${encodeURIComponent(c.id)}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { customers?: Array<{ is_nce?: boolean; is_yll_neighbor?: boolean }> } | null) => {
+        const tags = data?.customers?.[0];
+        if (tags?.is_nce) setIsNce(true);
+        if (tags?.is_yll_neighbor) setLegacyRebook(true);
+      })
+      .catch(() => {});
   };
 
   const clearHighLevelContact = () => {
@@ -2705,6 +2735,12 @@ export default function QuoteBuilder({
           // touches highlevel_contact_id, so this can't clobber a contact the
           // operator later picks/clears via the HL autocomplete.
           highlevelContactId: form.highlevelContactId ?? undefined,
+          // NCE + YLL Neighbor tags (#198): the chip strip's CURRENT state,
+          // sent on every save — unlike highlevelContactId above, the server
+          // honors these on BOTH the new-quote insert AND an update, so a
+          // reopened quote's toggled chip actually persists.
+          legacyRebook,
+          isNce,
         }),
       });
       const data = await res.json();
@@ -3049,8 +3085,6 @@ export default function QuoteBuilder({
                 Test
               </span>
             )}
-            {/* YLL Neighbor (#158) — migrated from last year's Jobber data (#155). */}
-            {legacyRebook && <YllNeighborBadge />}
             {/* View-only portal (#176) — mirrors the admin detail page's pill. */}
             {viewOnly && (
               <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-100 text-sky-700">
@@ -3085,6 +3119,47 @@ export default function QuoteBuilder({
                 {quoteNumber != null ? `#${quoteNumber}` : `ID ${savedQuoteId.slice(0, 8)}`}
               </span>
             )}
+          </div>
+          {/* NCE + YLL Neighbor tag chips (#198) — directly under the heading,
+              toggleable in BOTH new-quote and edit modes. Pure form state (no
+              confirm dialog, no immediate API call, unlike the admin detail
+              page's LegacyRebookToggle/NceToggle) — the chosen state
+              persists on the next Calculate/Save like any other form field,
+              same mount-hydrate-only convention as isTest/viewOnly (a
+              customer tagged elsewhere mid-session isn't live-reflected
+              here; staff re-check on reopen). This strip is the ONE place to
+              see + set both tags in the builder — it replaces the old
+              read-only YllNeighborBadge display that used to sit in the
+              badge row above (no duplicate/contradictory Neighbor UI).
+              NCE-tagging here sets ONLY the tag; deposit/balance behaviors
+              are ledger #199, not wired yet. */}
+          <div className="flex items-center gap-2 mt-2">
+            <button
+              type="button"
+              onClick={() => setLegacyRebook((v) => !v)}
+              aria-pressed={legacyRebook}
+              title={legacyRebook ? 'YLL Neighbor — click to remove' : 'Mark as YLL Neighbor'}
+              className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border transition-colors ${
+                legacyRebook
+                  ? 'bg-sky-100 text-sky-700 border-sky-300'
+                  : 'text-gray-400 border-gray-300 hover:bg-gray-50'
+              }`}
+            >
+              YLL Neighbor
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsNce((v) => !v)}
+              aria-pressed={isNce}
+              title={isNce ? 'NCE — click to remove' : 'Mark as NCE (barter/trade network)'}
+              className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border transition-colors ${
+                isNce
+                  ? 'bg-rose-100 text-rose-700 border-rose-300'
+                  : 'text-gray-400 border-gray-300 hover:bg-gray-50'
+              }`}
+            >
+              NCE
+            </button>
           </div>
           {editMode && (
             <p className="text-xs text-gray-500 mt-1">
