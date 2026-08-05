@@ -124,7 +124,11 @@ export async function syncFieldLeadToGhl(input: FieldLeadInput): Promise<SyncFie
   const { contact } = await upsertContact({
     ...(nameIsSafe ? { firstName, lastName: lastName || undefined } : {}),
     phone,
-    address1: input.address?.trim() || undefined,
+    // Same protection as the name fields: on a household match this address
+    // belongs to whoever is ALREADY at that phone number, not the person the
+    // crew met in the field — sending it would overwrite the real contact's
+    // street address with an unrelated one.
+    ...(isHousehold ? {} : { address1: input.address?.trim() || undefined }),
     source: 'Field Lead (Text-Ops Bot)',
   });
 
@@ -149,15 +153,25 @@ export async function syncFieldLeadToGhl(input: FieldLeadInput): Promise<SyncFie
 
   // Best-effort from here — the contact IS enrolled once the tags above
   // landed, so a note hiccup is logged, not surfaced as a sync failure.
-  try {
+  // TWO INDEPENDENT try/catch blocks, deliberately: the household note and the
+  // regular field-lead note are unrelated facts (a name discrepancy vs. the
+  // capture context), and a failure writing ONE must never stop the OTHER
+  // from being attempted — a household match whose discrepancy-note write
+  // throws must still get its ordinary context note, not end up with zero
+  // notes on the contact.
+  if (isHousehold) {
     // Household note FIRST (mirrors leadService.ts's ordering) so it's the
     // most prominent entry when the office opens the contact.
-    if (isHousehold) {
+    try {
       await createContactNote(contact.id, buildHouseholdNoteBody(input, existing?.fullName ?? ''));
+    } catch (err) {
+      console.warn('[fieldLead] household note write failed (contact still enrolled):', err);
     }
+  }
+  try {
     await createContactNote(contact.id, buildFieldLeadNoteBody(input));
   } catch (err) {
-    console.warn('[fieldLead] note write failed (contact still enrolled):', err);
+    console.warn('[fieldLead] field-lead note write failed (contact still enrolled):', err);
   }
 
   return {

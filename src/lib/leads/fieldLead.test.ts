@@ -145,6 +145,41 @@ describe('syncFieldLeadToGhl', () => {
     expect(hl.createContactNote).toHaveBeenCalledTimes(1); // the regular note only
   });
 
+  it('still attempts the regular field-lead note when the household note throws (independent try/catch)', async () => {
+    hl.searchContacts.mockResolvedValue([
+      { id: 'c-existing', fullName: 'Bob Jones', phone: '+16315550100' },
+    ]);
+    // First createContactNote call (the household note) throws; the SECOND
+    // (the regular note) must still be attempted, not skipped.
+    hl.createContactNote.mockRejectedValueOnce(new Error('household note boom'));
+    const res = await syncFieldLeadToGhl({ name: 'Alice Jones', phone: '6315550100', service: 'permanent' });
+
+    expect(res.status).toBe('synced'); // a note failure never downgrades an enrolled contact
+    expect(hl.createContactNote).toHaveBeenCalledTimes(2);
+    const regularBody = hl.createContactNote.mock.calls[1]![1] as string;
+    expect(regularBody).toContain('field lead');
+  });
+
+  it('does NOT overwrite the existing contact\'s address on a household mismatch', async () => {
+    hl.searchContacts.mockResolvedValue([
+      { id: 'c-existing', fullName: 'Bob Jones', phone: '+16315550100' },
+    ]);
+    await syncFieldLeadToGhl({
+      name: 'Alice Jones',
+      phone: '6315550100',
+      address: '99 Field St', // the crew's typed address for the field lead
+      service: 'permanent',
+    });
+    const upsertArg = hl.upsertContact.mock.calls[0]![0] as Record<string, unknown>;
+    expect(upsertArg).not.toHaveProperty('address1');
+  });
+
+  it('still sends address1 on the normal (non-household) path', async () => {
+    await syncFieldLeadToGhl({ name: 'John Smith', phone: '6315550100', address: '12 Oak St', service: 'permanent' });
+    const upsertArg = hl.upsertContact.mock.calls[0]![0] as Record<string, unknown>;
+    expect(upsertArg.address1).toBe('12 Oak St');
+  });
+
   it('still sends name fields when the phone matches nobody', async () => {
     hl.searchContacts.mockResolvedValue([]);
     await syncFieldLeadToGhl({ name: 'Alice Jones', phone: '6315559999', service: 'permanent' });

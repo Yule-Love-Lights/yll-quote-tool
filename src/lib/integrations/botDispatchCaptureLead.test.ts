@@ -318,3 +318,104 @@ describe('captureLead — nothing executes without a yes', () => {
   });
 
 });
+
+describe('captureLead — photos have nowhere to go (only completeInstall attaches them)', () => {
+  it('a captionless photo does NOT get appended to a pending captureLead, and the reply does not lie', async () => {
+    mocks.peekPendingAction.mockResolvedValue({
+      id: 'p1',
+      tool: 'captureLead',
+      args: { name: 'John Smith', phone: '631-555-0100', service: 'permanent' },
+      summary: 's',
+    });
+    const reply = await handleBotMessage({ ...base, text: '', photoFileIds: ['file-abc'] });
+    expect(mocks.appendPhotosToPendingAction).not.toHaveBeenCalled();
+    expect(reply).toContain("aren't saved on a field lead");
+    expect(reply).not.toContain('ready'); // must not claim the photo is staged
+  });
+
+  it('a photo sent WITH "yes" is not folded into a pending captureLead either', async () => {
+    mocks.peekPendingAction.mockResolvedValue({
+      id: 'p1',
+      tool: 'captureLead',
+      args: { name: 'John Smith', phone: '631-555-0100', service: 'permanent' },
+      summary: 's',
+    });
+    mocks.consumePendingAction.mockResolvedValue({
+      id: 'p1',
+      tool: 'captureLead',
+      args: { name: 'John Smith', phone: '631-555-0100', service: 'permanent' },
+      summary: 's',
+    });
+    const reply = await handleBotMessage({ ...base, text: 'yes', photoFileIds: ['file-z'] });
+    expect(mocks.appendPhotosToPendingAction).not.toHaveBeenCalled();
+    // The capture still runs normally — a photo just isn't part of it.
+    expect(mocks.runCaptureLead).toHaveBeenCalledOnce();
+    expect(reply).toBe('CAPTURE-REPLY');
+  });
+});
+
+describe('captureLead — the consent "yes" must be ADDRESSED to the bot (task #9 compliance)', () => {
+  it('does NOT consume a pending captureLead on a bare, UNADDRESSED affirmative in a group', async () => {
+    mocks.peekPendingAction.mockResolvedValue({
+      id: 'p1',
+      tool: 'captureLead',
+      args: { name: 'John Smith', phone: '631-555-0100', service: 'permanent' },
+      summary: 's',
+    });
+    // "ok" — one of the affirmative synonyms — typed into a group with no
+    // @mention and not a reply to the bot. Could easily be meant for a
+    // coworker's unrelated question.
+    const reply = await handleBotMessage({ ...base, chatType: 'group', text: 'ok' });
+    expect(reply).toBeNull();
+    expect(mocks.consumePendingAction).not.toHaveBeenCalled();
+    expect(mocks.runCaptureLead).not.toHaveBeenCalled();
+  });
+
+  it('DOES consume it once the reply is ADDRESSED (reply-to-bot) in the same group', async () => {
+    mocks.peekPendingAction.mockResolvedValue({
+      id: 'p1',
+      tool: 'captureLead',
+      args: { name: 'John Smith', phone: '631-555-0100', service: 'permanent' },
+      summary: 's',
+    });
+    mocks.consumePendingAction.mockResolvedValue({
+      id: 'p1',
+      tool: 'captureLead',
+      args: { name: 'John Smith', phone: '631-555-0100', service: 'permanent' },
+      summary: 's',
+    });
+    const reply = await handleBotMessage({ ...base, chatType: 'group', text: 'yes', isReplyToBot: true });
+    expect(reply).toBe('CAPTURE-REPLY');
+    expect(mocks.runCaptureLead).toHaveBeenCalledOnce();
+  });
+
+  it('an unaddressed bare "no" still cancels a pending captureLead (cancelling is not a consent risk)', async () => {
+    mocks.peekPendingAction.mockResolvedValue({
+      id: 'p1',
+      tool: 'captureLead',
+      args: { name: 'John Smith', phone: '631-555-0100', service: 'permanent' },
+      summary: 's',
+    });
+    const reply = await handleBotMessage({ ...base, chatType: 'group', text: 'no' });
+    expect(reply).toContain('Cancelled');
+    expect(mocks.supersedeOpenActions).toHaveBeenCalled();
+  });
+
+  it('a 1:1 private chat is always "addressed" — a bare "yes" there still confirms normally', async () => {
+    mocks.peekPendingAction.mockResolvedValue({
+      id: 'p1',
+      tool: 'captureLead',
+      args: { name: 'John Smith', phone: '631-555-0100', service: 'permanent' },
+      summary: 's',
+    });
+    mocks.consumePendingAction.mockResolvedValue({
+      id: 'p1',
+      tool: 'captureLead',
+      args: { name: 'John Smith', phone: '631-555-0100', service: 'permanent' },
+      summary: 's',
+    });
+    const reply = await handleBotMessage({ ...base, chatType: 'private', text: 'yes' });
+    expect(reply).toBe('CAPTURE-REPLY');
+    expect(mocks.runCaptureLead).toHaveBeenCalledOnce();
+  });
+});

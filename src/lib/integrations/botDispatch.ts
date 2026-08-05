@@ -105,7 +105,17 @@ export async function handleBotMessage(msg: BotIncomingMessage): Promise<string 
     // is silently dropped (it's transcribed further down once addressed).
     const hasVoice = !!msg.voiceFileId;
     if (!bare && !hasPhotos && !hasVoice) return null;
-    if (!(await peekPendingAction(msg.chatId, msg.userId))) return null;
+    const pendingForGate = await peekPendingAction(msg.chatId, msg.userId);
+    if (!pendingForGate) return null;
+    // captureLead's "yes" IS the SMS-consent record (task #9, locked) — an
+    // unaddressed bare affirmative in a group (any of the ~11 synonyms, quite
+    // possibly meant for a coworker's unrelated question) must never be able
+    // to consume it and silently become that record. Leave it pending; an
+    // ADDRESSED yes (reply-to-bot or @mention — always true in a 1:1 chat)
+    // still confirms normally further down. Scoped to captureLead only:
+    // cancelling ("no") isn't a consent risk, and every other tool keeps
+    // today's behavior.
+    if (pendingForGate.tool === 'captureLead' && isAffirmative(text)) return null;
   }
 
   // Resolve the sender's role AFTER the addressed gate: it reads the roster from
@@ -140,9 +150,16 @@ export async function handleBotMessage(msg: BotIncomingMessage): Promise<string 
   if (isAffirmative(text)) {
     // A photo sent WITH the "yes" (as its caption) would otherwise be discarded:
     // control reaches here before the captionless-photo branch below. Fold it
-    // into the pending action first so the confirmed run saves it too.
+    // into the pending action first so the confirmed run saves it too — but
+    // ONLY for a tool that actually accepts photos (completeInstall).
+    // captureLead has nowhere to put one; appending it there would just
+    // pollute the pending args with a photoFileIds field runCaptureLead never
+    // reads, and the crew would have no idea the photo went nowhere.
     if (msg.photoFileIds?.length) {
-      await appendPhotosToPendingAction(msg.chatId, msg.userId, msg.photoFileIds);
+      const pendingForPhoto = await peekPendingAction(msg.chatId, msg.userId);
+      if (pendingForPhoto && pendingForPhoto.tool !== 'captureLead') {
+        await appendPhotosToPendingAction(msg.chatId, msg.userId, msg.photoFileIds);
+      }
     }
     const pending = await consumePendingAction(msg.chatId, msg.userId);
     if (!pending) return NOTHING_PENDING;
@@ -151,6 +168,14 @@ export async function handleBotMessage(msg: BotIncomingMessage): Promise<string 
 
   if (!text) {
     if (!msg.photoFileIds?.length) return NOT_UNDERSTOOD;
+    // captureLead has nowhere to put a photo (only completeInstall attaches
+    // them) — appending it to the pending action here would silently discard
+    // it while still claiming it's "ready", so check the pending tool BEFORE
+    // appending anything.
+    const pendingForPhoto = await peekPendingAction(msg.chatId, msg.userId);
+    if (pendingForPhoto?.tool === 'captureLead') {
+      return "Photos aren't saved on a field lead — reply yes to create it, or resend the details.";
+    }
     // Telegram splits an album into separate updates and puts the caption on
     // only one, so these arrive captionless. Attaching them to the pending
     // action stops the rest of the album from vanishing while the final reply
