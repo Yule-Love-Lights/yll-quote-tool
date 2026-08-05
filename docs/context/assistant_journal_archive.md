@@ -79,4 +79,18 @@
 - **Friction / incidents:** wiped the local task_ledger.md via a `;`-chained write after a failed cast (restored from repo canonical + conversation — scripts-only rule adopted); PS here-string quirk twice (use `-F`/`--body-file`); Vercel dropped one master webhook (#462) + queued 18 min (dashboard Create-Deployment recovered).
 - **NEXT (S26):** event/highlighting analyzer (Q&A-first like #140) · Naldo: wire-SKU confirm + #117/#41/#85/#72/#121/#122/#114 · parked: P8 counts, #141 v2.
 
+<!-- moved verbatim from CLAUDE.md at the S33 close (2026-08-05) -->
+
+### S32 (Jason) -- 2026-07-28→30 -- THE 13-TASK SHIP DAY: #175-#186 all shipped (PRs #645-#656, every one lens-reviewed + CI-read + combined-tree-gated + SHA-verified) · Kristie decline→browse-twin→paid arc · the dead-#157-exclusion forensics · the 60s-operator-page diagnosis -- close PR jason/s32-close + jason/s32-wrap-fixes
+
+- MISTAKE: #653's explicitly-flagged multipart-upload residual bit Jason live the next day as a cryptic parse error. Lesson: a deferred customer-path residual gets a ledger row at merge time.
+- MISTAKE (4th session running, wrap-caught ×4): cross-surface parity — staff-approve missed the TOCTOU re-check its 5 siblings got; the list-page actions menu never learned view_only; 2 of 4 stale-tab 409 copy sites missed the special-case. Lesson: at feature end, grep the hardened IDIOM across every sibling and reconcile to zero.
+- MISTAKE (promoted to Pitfalls): concurrent builders shared the main worktree — branch flips under readers, a stash that took S31's untracked scripts off disk, node_modules eaten 3× by junction teardowns.
+- Did right: evidence-first everywhere (instrumented prod replay exposed the 22P02-poisoned exclusion that code+tests swore was fine; Valor decline webhook PROVEN in logs before #175 was built; the 60s mystery measured from 5 angles until only the auth gate survived); read-before-delete caught that "TEST Walkthrough" was actually naldoven's live demo quote; 13 PRs of builder→lens→disposition→worker-fix cadence with zero seat redos; every deploy SHA-verified; prod data ops named-consented + reverted-after-test.
+
+### S30 (Jason) -- 2026-07-24→26 -- AUTO-CHARGE ARMED + PROVEN ($1.09 live button test; #170 a–e + payment preference; **#83 COMPLETE**) · #172 GHL abandoned-card resurrect (diana unblocked + sent) · portal custom-label fix · #169 aftercare · Rony #1167 revert -- close PR jason/s30-close (+ wrap-fixes PR #643)
+
+- MISTAKE (x3, one family): shipped three half-wired pieces the wrap lenses caught — the critical-tone set missing 2 of its 4 members, one attach call site left off the queueAttach migration, the `resurrected` response field never rendered by the UI. All fixed in #643. Lesson: finish cross-cutting changes by reconciling to zero (grep the old symbol, enumerate the whole reason class, wire the consumer) before calling the diff done.
+- MISTAKE: the "Awaiting payment" rename collided with Naldo's dashboard terminology (his board says "Requires invoicing" for the same status and already used "Awaiting payment" for invoices). Checked his file enough to NOT touch it, not enough to flag the collision at rename time.
+- Did right: probe-first on GHL (read diana's real card + a multi-pipeline probe BEFORE designing the resurrect); the read-before-write open-card refusal; migration-first; CAS discipline end to end (settle claim, txn record, appendRetiredTxn, the #1167 revert guard); every deploy SHA-verified via the Vercel API; the classifier's block on my prod-write E2E honored (offered the paste-able script; Jason's own button test replaced it); four-lens on both money PRs caught 3+10 real findings pre-merge including a cross-pipeline active-deal hijack.
 
