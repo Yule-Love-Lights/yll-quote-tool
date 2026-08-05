@@ -15,6 +15,9 @@ import {
   upsertContactCustomField,
   createContactNote,
   createContact,
+  listLocationCustomFields,
+  createLocationCustomField,
+  HighLevelError,
 } from './highlevel';
 import type { HighLevelContact, HighLevelOpportunity } from './types';
 
@@ -474,6 +477,82 @@ describe('HighLevel client (audit fix g19-highlevel)', () => {
       const [, init] = fetchMock.mock.calls[0]!;
       const body = JSON.parse((init as RequestInit).body as string);
       expect(body.customFields).toEqual([{ id: 'field-456', value: 'some text value' }]);
+    });
+  });
+
+  describe('listLocationCustomFields / createLocationCustomField (#200 tenure field)', () => {
+    // Local non-ok fetch helper (mirrors the shape of mockFetchRouted, which
+    // is scoped to a different describe block above) — needed here to prove
+    // a 401/403 surfaces as a HighLevelError with .status set, which
+    // ghlTenure.ts's scope-failure detection depends on.
+    function mockFetchStatus(status: number, json: unknown) {
+      const fn = vi.fn(async (_url: string, _init?: RequestInit) => ({
+        ok: status >= 200 && status < 300,
+        status,
+        json: async () => json,
+        text: async () => JSON.stringify(json),
+      }));
+      vi.stubGlobal('fetch', fn);
+      return fn;
+    }
+
+    it('GETs /locations/{locationId}/customFields?model=contact and returns the array', async () => {
+      const fetchMock = mockFetchCapture({
+        customFields: [{ id: 'f1', name: 'Years with YLL', dataType: 'TEXT' }],
+      });
+
+      const fields = await listLocationCustomFields();
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(String(url)).toContain('/locations/loc_1/customFields');
+      expect(String(url)).toContain('model=contact');
+      expect((init as RequestInit).method ?? 'GET').toBe('GET');
+      expect(fields).toEqual([{ id: 'f1', name: 'Years with YLL', dataType: 'TEXT' }]);
+    });
+
+    it('returns [] when the response carries no customFields key', async () => {
+      mockFetchOnce({});
+      expect(await listLocationCustomFields()).toEqual([]);
+    });
+
+    it('POSTs /locations/{locationId}/customFields with name + dataType + model:contact', async () => {
+      const fetchMock = mockFetchCapture({ id: 'new-field-1', name: 'Years with YLL', dataType: 'TEXT' });
+
+      const field = await createLocationCustomField({ name: 'Years with YLL', dataType: 'TEXT' });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0]!;
+      expect(String(url)).toContain('/locations/loc_1/customFields');
+      expect((init as RequestInit).method).toBe('POST');
+      const body = JSON.parse((init as RequestInit).body as string);
+      expect(body).toEqual({ name: 'Years with YLL', dataType: 'TEXT', model: 'contact' });
+      expect(field.id).toBe('new-field-1');
+    });
+
+    it('also accepts a {customField: {...}} wrapped create response', async () => {
+      mockFetchOnce({ customField: { id: 'wrapped-1', name: 'Years with YLL', dataType: 'TEXT' } });
+      const field = await createLocationCustomField({ name: 'Years with YLL', dataType: 'TEXT' });
+      expect(field.id).toBe('wrapped-1');
+    });
+
+    it('throws a HighLevelError when the create response has no field id in either shape', async () => {
+      mockFetchOnce({ ok: true });
+      await expect(
+        createLocationCustomField({ name: 'Years with YLL', dataType: 'TEXT' }),
+      ).rejects.toBeInstanceOf(HighLevelError);
+    });
+
+    it('a 401 from the list endpoint surfaces as a HighLevelError with .status set (scope detection)', async () => {
+      mockFetchStatus(401, { message: 'Forbidden' });
+      await expect(listLocationCustomFields()).rejects.toMatchObject({ status: 401 });
+    });
+
+    it('a 403 from the create endpoint surfaces as a HighLevelError with .status set', async () => {
+      mockFetchStatus(403, { message: 'Forbidden' });
+      await expect(
+        createLocationCustomField({ name: 'Years with YLL', dataType: 'TEXT' }),
+      ).rejects.toMatchObject({ status: 403 });
     });
   });
 

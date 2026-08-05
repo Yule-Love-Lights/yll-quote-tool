@@ -12,9 +12,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
 
-const { requireOperatorMock, sbRef } = vi.hoisted(() => ({
+const { requireOperatorMock, sbRef, pushTenureYearsToGhl } = vi.hoisted(() => ({
   requireOperatorMock: vi.fn(async (): Promise<NextResponse | null> => null),
   sbRef: { current: null as unknown },
+  pushTenureYearsToGhl: vi.fn(async () => ({ pushed: false })),
 }));
 
 vi.mock('@/lib/auth/supabaseServer', () => ({
@@ -24,6 +25,10 @@ vi.mock('@/lib/auth/supabaseServer', () => ({
 vi.mock('@/lib/supabase', () => ({
   isSupabaseServiceConfigured: () => true,
   getSupabaseServiceClient: () => sbRef.current,
+}));
+
+vi.mock('@/lib/integrations/ghlTenure', () => ({
+  pushTenureYearsToGhl,
 }));
 
 import { POST } from './route';
@@ -196,6 +201,38 @@ describe('POST /api/customers/[customerId]/tenure-years — happy path', () => {
   });
 });
 
+// #200: GHL tenure mirror — pushes after a successful manual-years save.
+describe('POST /api/customers/[customerId]/tenure-years — GHL tenure push', () => {
+  it('pushes this customer to GHL after a successful save', async () => {
+    const { client } = makeSb({ id: VALID_UUID, manual_years: [] });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ manualYears: [2022] }), makeParams(VALID_UUID));
+    expect(res.status).toBe(200);
+    expect(pushTenureYearsToGhl).toHaveBeenCalledWith(VALID_UUID);
+  });
+
+  it('still returns 200 even if the GHL push throws (fail-open, #200)', async () => {
+    const { client } = makeSb({ id: VALID_UUID, manual_years: [] });
+    sbRef.current = client;
+    pushTenureYearsToGhl.mockRejectedValueOnce(new Error('GHL down'));
+
+    const res = await POST(makeReq({ manualYears: [2022] }), makeParams(VALID_UUID));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toEqual({ ok: true, manualYears: [2022] });
+  });
+
+  it('does not push when validation fails (never reaches the write)', async () => {
+    const { client } = makeSb({ id: VALID_UUID, manual_years: [] });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ manualYears: [2014] }), makeParams(VALID_UUID));
+    expect(res.status).toBe(400);
+    expect(pushTenureYearsToGhl).not.toHaveBeenCalled();
+  });
+});
+
 describe('POST /api/customers/[customerId]/tenure-years — unknown id', () => {
   it('404s when the update matches no row', async () => {
     const { client } = makeSb(null);
@@ -205,6 +242,7 @@ describe('POST /api/customers/[customerId]/tenure-years — unknown id', () => {
     const json = await res.json();
 
     expect(res.status).toBe(404);
+    expect(pushTenureYearsToGhl).not.toHaveBeenCalled();
     expect(json.error).toMatch(/not found/i);
   });
 });

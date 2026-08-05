@@ -26,6 +26,7 @@ const {
   getJobWorkOrder,
   accrueOnBooking,
   ensureReferralCode,
+  pushTenureYearsToGhl,
   registerCardInVault,
   vaultEnabled,
 } = vi.hoisted(() => ({
@@ -64,6 +65,9 @@ const {
   accrueOnBooking: vi.fn(async () => ({ accrued: false })),
   // Referral program (#41 PR 2): stamp-at-booking — mocked the same way.
   ensureReferralCode: vi.fn(async () => 'CODE1234'),
+  // GHL tenure mirror (#200): mocked the same way — its OWN behavior is
+  // covered in src/lib/integrations/ghlTenure.test.ts.
+  pushTenureYearsToGhl: vi.fn(async () => ({ pushed: false })),
   // #161 "both vaults" decision: the vault-registration orchestrator + its
   // flag gate. Default OFF (mirrors the real flag being operator-armed) and a
   // default happy-path return, so every PRE-EXISTING test in this file is
@@ -108,6 +112,10 @@ vi.mock('@/lib/integrations/highlevel', () => ({
 vi.mock('@/lib/referrals', () => ({
   accrueOnBooking,
   ensureReferralCode,
+}));
+
+vi.mock('@/lib/integrations/ghlTenure', () => ({
+  pushTenureYearsToGhl,
 }));
 
 vi.mock('@/lib/integrations/valorVault', () => ({
@@ -362,6 +370,37 @@ describe('Valor webhook — happy path', () => {
     const { client } = makeSb({ ...QUOTE, customer_id: 'cust-1' }, [{ id: 'quote-1' }]);
     sbRef.current = client;
     ensureReferralCode.mockRejectedValueOnce(new Error('referrals table missing'));
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true);
+  });
+
+  // #200: GHL tenure mirror — pushes on the SAME booking event, same guard.
+  it('pushes the GHL tenure mirror for the quote\'s OWN linked customer on booking', async () => {
+    const { client } = makeSb({ ...QUOTE, customer_id: 'cust-1' }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    expect(res.status).toBe(200);
+    expect(pushTenureYearsToGhl).toHaveBeenCalledWith('cust-1');
+  });
+
+  it('skips the GHL tenure push when the quote has no linked customer', async () => {
+    const { client } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    expect(res.status).toBe(200);
+    expect(pushTenureYearsToGhl).not.toHaveBeenCalled();
+  });
+
+  it('still books even if the GHL tenure push throws (fail-open, #200)', async () => {
+    const { client } = makeSb({ ...QUOTE, customer_id: 'cust-1' }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+    pushTenureYearsToGhl.mockRejectedValueOnce(new Error('GHL down'));
 
     const res = await POST(signedReq(APPROVED_PAYLOAD));
     const json = await res.json();
