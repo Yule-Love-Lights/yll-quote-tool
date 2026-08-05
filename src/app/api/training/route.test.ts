@@ -8,11 +8,13 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 import type { TrainingHousePayload } from '@/lib/training';
 
-const { saveTrainingHouse } = vi.hoisted(() => ({
+const { saveTrainingHouse, promoteArchiveProperty } = vi.hoisted(() => ({
   saveTrainingHouse: vi.fn(async (_payload: TrainingHousePayload) => ({ id: 'h1' })),
+  promoteArchiveProperty: vi.fn(async (_key: string, _id: string) => {}),
 }));
 
 vi.mock('@/lib/training', () => ({ saveTrainingHouse }));
+vi.mock('@/lib/archiveQueue', () => ({ promoteArchiveProperty }));
 vi.mock('@/lib/supabase', () => ({ isSupabaseConfigured: () => true }));
 vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: async () => null }));
 
@@ -108,5 +110,55 @@ describe('POST /api/training — payload sanitization (#110 W5-005)', () => {
     const saved = saveTrainingHouse.mock.calls[0][0];
     expect(saved.santasFootage).toBe(42);
     expect(saved.santasDifficulty).toBe('easy');
+  });
+});
+
+// #167 slice 3 — the corpus-isolation gate lives at THIS boundary, not one
+// layer down. sanitizeTrainingPayload spreads the request body, so `source` is
+// a pass-through field; if the route did not overwrite it, a body claiming
+// source:'manual' alongside an archiveAddressKey would file an overhead
+// satellite trace into the ground-level few-shot pool the analyzer serves to
+// customer photos. Pinned here because saveTrainingHouse's own tests cannot see
+// what the route chose to pass it.
+describe('POST /api/training — archive source derivation (#167)', () => {
+  it('stamps archive and promotes when archiveAddressKey is present', async () => {
+    const res = await POST(makeReq(basePayload({ archiveAddressKey: '6 birch road selden' })));
+
+    expect(res.status).toBe(200);
+    expect(saveTrainingHouse.mock.calls[0][0].source).toBe('archive');
+    expect(promoteArchiveProperty).toHaveBeenCalledWith('6 birch road selden', 'h1');
+  });
+
+  it('defaults to manual and promotes nothing for an ordinary save', async () => {
+    await POST(makeReq(basePayload()));
+
+    expect(saveTrainingHouse.mock.calls[0][0].source).toBe('manual');
+    expect(promoteArchiveProperty).not.toHaveBeenCalled();
+  });
+
+  it('discards a client-supplied source rather than trusting the body', async () => {
+    // Both directions: a body cannot launder an archive trace into the
+    // ground-photo pool, and cannot forge an archive label on a manual save.
+    await POST(makeReq(basePayload({ source: 'manual', archiveAddressKey: '6 birch road selden' })));
+    expect(saveTrainingHouse.mock.calls[0][0].source).toBe('archive');
+
+    vi.clearAllMocks();
+    saveTrainingHouse.mockResolvedValue({ id: 'h1' });
+
+    await POST(makeReq(basePayload({ source: 'archive' })));
+    expect(saveTrainingHouse.mock.calls[0][0].source).toBe('manual');
+    expect(promoteArchiveProperty).not.toHaveBeenCalled();
+  });
+
+  it('ignores a blank or non-string archiveAddressKey', async () => {
+    await POST(makeReq(basePayload({ archiveAddressKey: '   ' })));
+    expect(saveTrainingHouse.mock.calls[0][0].source).toBe('manual');
+
+    vi.clearAllMocks();
+    saveTrainingHouse.mockResolvedValue({ id: 'h1' });
+
+    await POST(makeReq(basePayload({ archiveAddressKey: 42 })));
+    expect(saveTrainingHouse.mock.calls[0][0].source).toBe('manual');
+    expect(promoteArchiveProperty).not.toHaveBeenCalled();
   });
 });
