@@ -213,10 +213,11 @@ export async function runCaptureLead(args: CaptureLeadArgs): Promise<CaptureLead
   }
 
   if (result.status === 'error') {
-    // The contact WAS created — say so, rather than implying total failure
-    // and risking a duplicate contact on retry.
+    // The contact WAS created — say so (avoids a duplicate on retry) — but the
+    // enrollment TAGS didn't land (post-split, this branch is a tag failure
+    // only; a note hiccup stays 'synced'), so they are NOT enrolled yet.
     return {
-      reply: `Saved ${args.name}'s contact, but tagging/the note failed — tell the office to check GHL.`,
+      reply: `Saved ${args.name}'s contact, but the tags didn't apply — they're NOT enrolled yet, tell the office to check GHL.`,
       synced: false,
     };
   }
