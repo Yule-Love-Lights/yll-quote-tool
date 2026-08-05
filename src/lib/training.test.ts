@@ -133,6 +133,35 @@ describe('saveTrainingHouse', () => {
     expect(inserted!.house_style).toBe('Colonial');
     expect(inserted!.address).toBe('1 Main St');
   });
+
+  // #167 slice 3: source is written explicitly on every insert rather than left
+  // to the column default, so an archive promotion that forgets it can't land a
+  // satellite-traced house in the ground-photo few-shot pool.
+  it.each([
+    ['defaults to manual when unset', undefined, 'manual'],
+    ['stamps archive when the promote path passes it', 'archive' as const, 'archive'],
+  ])('%s', async (_label, source, expected) => {
+    const service = makeFake();
+    serviceRef.current = service.client;
+    let inserted: Record<string, unknown> | undefined;
+    service.client.from = ((t: string) => {
+      const builder: Record<string, unknown> = {};
+      for (const m of ['select', 'update', 'delete', 'eq', 'is', 'not', 'in', 'order', 'limit']) {
+        builder[m] = () => builder;
+      }
+      builder.insert = (row: Record<string, unknown>) => {
+        inserted = row;
+        return builder;
+      };
+      builder.single = async () => ({ data: { id: 'new-id' }, error: null });
+      void t;
+      return builder;
+    }) as typeof service.client.from;
+
+    await saveTrainingHouse({ ...PAYLOAD, ...(source ? { source } : {}) });
+
+    expect(inserted!.source).toBe(expected);
+  });
 });
 
 describe('getTrainingFewShot', () => {
@@ -146,5 +175,34 @@ describe('getTrainingFewShot', () => {
 
     expect(service.fromCalls).toContain('training_houses');
     expect(anon.fromCalls).not.toContain('training_houses');
+  });
+
+  // #167 slice 3 — corpus isolation. Archive houses are traced on overhead
+  // satellites; analyzePhoto presents few-shot exemplars to the model as ground
+  // truth whose coordinate style it should match, so serving one for a
+  // ground-level customer photo teaches the wrong geometry. The pool must be
+  // filtered POSITIVELY to 'manual' so a future source value can't inherit
+  // ground-photo retrieval by default.
+  it('restricts the few-shot pool to manual (ground-level) houses', async () => {
+    const eqCalls: Array<[string, unknown]> = [];
+    const service = makeFake();
+    serviceRef.current = service.client;
+    service.client.from = ((t: string) => {
+      const builder: Record<string, unknown> = {};
+      for (const m of ['select', 'insert', 'update', 'delete', 'is', 'not', 'in', 'order', 'limit']) {
+        builder[m] = () => builder;
+      }
+      builder.eq = (col: string, val: unknown) => {
+        eqCalls.push([col, val]);
+        return builder;
+      };
+      builder.then = (resolve: (v: unknown) => void) => resolve({ data: [], error: null });
+      void t;
+      return builder;
+    }) as typeof service.client.from;
+
+    await getTrainingFewShot();
+
+    expect(eqCalls).toContainEqual(['source', 'manual']);
   });
 });
