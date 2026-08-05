@@ -37,6 +37,11 @@ const SR_ONLY: React.CSSProperties = {
   border: 0,
 };
 
+// The only pages allowed to embed these forms, and therefore the only origins
+// we will post our height to. Mirrors the frame-ancestors allowlist in
+// next.config.ts — never '*'.
+const EMBED_PARENT_ORIGINS = ['https://yulelovelights.com', 'https://www.yulelovelights.com'];
+
 // Matches the server cap, which itself matches this app's established multipart
 // ceiling (headroom under Vercel's ~4.5MB raw-body limit). Checked on the
 // client too so an oversized resume is refused with a clear message BEFORE a
@@ -76,6 +81,25 @@ export default function SiteForm({ formType, formVariant, theme, compact }: Prop
   // Set on mount, not during render: Date.now() during render is impure and
   // would also be the SSR clock rather than the visitor's.
   const renderedAt = useRef<number>(0);
+
+  // Tell the embedding page how tall we are, so the <iframe> can size itself.
+  // A fixed height either clips a long form on a phone or leaves a gap under a
+  // short one, and the nomination form is three times the height of the footer
+  // signup. Posted only to our own marketing origins, never '*', so the height
+  // (and the fact a form is here at all) is not broadcast to any other frame.
+  useEffect(() => {
+    if (typeof window === 'undefined' || window.parent === window) return;
+    const send = () => {
+      const height = Math.ceil(document.documentElement.getBoundingClientRect().height);
+      for (const origin of EMBED_PARENT_ORIGINS) {
+        window.parent.postMessage({ type: 'yll-form-height', formType, height }, origin);
+      }
+    };
+    send();
+    const observer = new ResizeObserver(send);
+    observer.observe(document.documentElement);
+    return () => observer.disconnect();
+  }, [formType]);
 
   useEffect(() => {
     renderedAt.current = Date.now();
