@@ -35,6 +35,7 @@ vi.mock('./materialsProjection', () => ({
 }));
 
 import { getJobWorkOrder } from './jobs';
+import { permanentBomFromQuote } from '../permanent/bomFromQuote';
 
 // A db fake whose chains all terminate in .maybeSingle(): the stock_decremented_at
 // read, the design read, and the quote read (now carrying service_type + inputs).
@@ -118,6 +119,42 @@ describe('getJobWorkOrder — permanent jobs join the BOM (P8 PR-2)', () => {
     expect(skus).toContain('APL11111-350-KIT');
     expect(wo!.materials.unbound).toEqual([]); // every BOM line carries a real SKU
     for (const m of wo!.materials.materials) expect(m.qty).toBeGreaterThan(0);
+    // #192 review fix — a null/missing snapshot fails open (unscoped): the
+    // returned scopedSides must be null, not an empty array or all 4 sides.
+    expect(wo!.scopedSides).toBeNull();
+  });
+
+  it('#192 — a front-only approval_snapshot scopes materials to just the approved side', async () => {
+    quoteRow = {
+      customer_name: 'Perm Customer',
+      customer_address: '1 Perm St',
+      is_test: false,
+      approval_snapshot: { customerSelection: { selectedItemIds: ['permanent-front'] } },
+      service_type: 'permanent',
+      inputs: PERMANENT_INPUTS,
+    };
+    const wo = await getJobWorkOrder('j1');
+    expect(wo).not.toBeNull();
+
+    // Compare against the SAME BOM engine run scoped/unscoped directly — proves
+    // jobs.ts actually threads includedPermanentSidesFromSnapshot through,
+    // without duplicating the engine's own formulas as magic numbers here.
+    const scopedBom = permanentBomFromQuote(
+      { permanent: PERMANENT_INPUTS.permanent },
+      undefined,
+      new Set(['front']),
+    );
+    const fullBom = permanentBomFromQuote({ permanent: PERMANENT_INPUTS.permanent });
+    const scopedLightsQty = scopedBom!.lines.find((l) => l.sku === 'APL11012-5')!.qty;
+    const fullLightsQty = fullBom!.lines.find((l) => l.sku === 'APL11012-5')!.qty;
+    expect(scopedLightsQty).toBeLessThan(fullLightsQty); // sanity: the back side really is excluded
+
+    const actualLightsQty = wo!.materials.materials.find((m) => m.sku === 'APL11012-5')!.qty;
+    expect(actualLightsQty).toBe(scopedLightsQty);
+    // #192 review fix — the work order surfaces WHICH sides it was scoped to,
+    // in canonical front/left/right/back order, so every consumer (crew print,
+    // board modal, purchasing email) can render the same "Booked scope" note.
+    expect(wo!.scopedSides).toEqual(['front']);
   });
 
   it('holiday jobs keep the scene-projection path untouched (positive gate, not negative)', async () => {
@@ -132,6 +169,8 @@ describe('getJobWorkOrder — permanent jobs join the BOM (P8 PR-2)', () => {
     const wo = await getJobWorkOrder('j1');
     expect(wo).not.toBeNull();
     expect(projectMaterials).toHaveBeenCalledTimes(1);
+    // #192 review fix — a non-permanent job never carries permanent scoping.
+    expect(wo!.scopedSides).toBeNull();
   });
 
   it('event jobs (not permanent) also keep the scene-projection path', async () => {

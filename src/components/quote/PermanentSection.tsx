@@ -1,7 +1,7 @@
 'use client';
 
 import type { QuoteFormData } from '@/lib/quoteForm';
-import { roundFootageUpTo5, type PermanentQuoteFields } from '@/lib/permanent/types';
+import { roundFootageUpTo5, effectiveSideTrackStyle, type PermanentQuoteFields, type PermanentSide } from '@/lib/permanent/types';
 
 const lbl = 'block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1';
 const inp = 'w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500';
@@ -55,6 +55,8 @@ const SIDE_LABEL: Record<'front' | 'left' | 'right' | 'back', string> = {
   back: 'Back',
 };
 
+const ALL_SIDES: readonly PermanentSide[] = ['front', 'left', 'right', 'back'];
+
 // Footage + corners come from the satellite-view roofline draw (#88 / S23, per
 // Jason — the design projection was dropped as inaccurate). The operator draws
 // each side on the Satellite tab; those measurements flow into the fields below,
@@ -76,6 +78,25 @@ export default function PermanentSection({ form, setForm, onRecount, tracedSides
       if (side) permanent.sideSource = { ...(f.permanent.sideSource ?? {}), [side]: 'manual' };
       return { ...f, permanent };
     });
+
+  // #192 — per-side track style. footageOfSide gates which style rows show
+  // (only sides with billed footage). The setter spreads trackStyleBySide and
+  // deliberately does NOT go through setP — track style isn't footage/corners
+  // provenance, so it must never touch sideSource.
+  const footageOfSide: Record<PermanentSide, number> = {
+    front: p.frontFootage,
+    left: p.leftFootage,
+    right: p.rightFootage,
+    back: p.backFootage,
+  };
+  const setTrackStyleForSide = (side: PermanentSide, style: PermanentQuoteFields['trackStyle']) =>
+    setForm((f) => ({
+      ...f,
+      permanent: {
+        ...f.permanent,
+        trackStyleBySide: { ...(f.permanent.trackStyleBySide ?? {}), [side]: style },
+      },
+    }));
 
   // #139 (Jason S24): footage bills in 5-ft steps — a hand-typed value rounds
   // UP to the next multiple of 5 when the operator leaves the field (22 → 25;
@@ -266,14 +287,30 @@ export default function PermanentSection({ form, setForm, onRecount, tracedSides
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className={lbl}>Track style</label>
-            <select
-              className={sel}
-              value={p.trackStyle}
-              onChange={(e) => setP('trackStyle', e.target.value as PermanentQuoteFields['trackStyle'])}
-            >
-              <option value="single">Single (soffit)</option>
-              <option value="parapet">Parapet (fascia)</option>
-            </select>
+            {/* #192 — per-side track style: one row per side WITH footage, so a
+                mixed house (e.g. front/back soffit, left/right fascia) can be
+                ordered correctly. The old single global select is retired. */}
+            {ALL_SIDES.filter((side) => footageOfSide[side] > 0).length === 0 ? (
+              <p className="text-xs text-gray-400">Enter footage above to set a side&apos;s track style.</p>
+            ) : (
+              <div className="space-y-2">
+                {ALL_SIDES.filter((side) => footageOfSide[side] > 0).map((side) => (
+                  <div key={side} className="flex items-center gap-2">
+                    <span className="text-xs text-gray-500 w-16 shrink-0">{SIDE_LABEL[side]}</span>
+                    <select
+                      className={sel}
+                      value={effectiveSideTrackStyle(p, side)}
+                      onChange={(e) =>
+                        setTrackStyleForSide(side, e.target.value as PermanentQuoteFields['trackStyle'])
+                      }
+                    >
+                      <option value="single">Single (soffit)</option>
+                      <option value="parapet">Parapet (fascia)</option>
+                    </select>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
           <div>
             <label className={lbl}>Track color</label>

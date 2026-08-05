@@ -23,7 +23,7 @@ function sweepInputs(trackStyle: TrackStyle, trackColor: TrackColor, blackHousin
   const base = {
     footageBySide: { front: 125, left: 40, right: 40, back: 60 },
     cornersBySide: { front: 3, left: 1, right: 1, back: 2 },
-    trackStyle,
+    trackStyleBySide: { front: trackStyle, left: trackStyle, right: trackStyle, back: trackStyle },
     trackColor,
     blackHousing,
     controllerToFirstLightFt: 35,
@@ -62,7 +62,7 @@ function collectAllEmittedSkus(): Map<string, number> {
   record({
     footageBySide: { front: 800, left: 0, right: 0, back: 0 },
     cornersBySide: { front: 0, left: 0, right: 0, back: 0 },
-    trackStyle: 'single',
+    trackStyleBySide: { front: 'single', left: 'single', right: 'single', back: 'single' },
     trackColor: '9003',
     blackHousing: false,
     controllerToFirstLightFt: 0,
@@ -72,8 +72,20 @@ function collectAllEmittedSkus(): Map<string, number> {
   record({
     footageBySide: { front: 0, left: 0, right: 0, back: 0 },
     cornersBySide: { front: 350, left: 0, right: 0, back: 0 },
-    trackStyle: 'parapet',
+    trackStyleBySide: { front: 'parapet', left: 'parapet', right: 'parapet', back: 'parapet' },
     trackColor: '9004',
+    blackHousing: false,
+    controllerToFirstLightFt: 0,
+    gaps: [],
+  });
+  // #192 — a mixed-style job, so BOTH track SKU families are locked against
+  // the catalog when emitted TOGETHER on the same BOM (not just individually
+  // via the uniform sweep above).
+  record({
+    footageBySide: { front: 40, left: 0, right: 0, back: 40 },
+    cornersBySide: { front: 0, left: 0, right: 0, back: 0 },
+    trackStyleBySide: { front: 'single', left: 'single', right: 'single', back: 'parapet' },
+    trackColor: '9003',
     blackHousing: false,
     controllerToFirstLightFt: 0,
     gaps: [],
@@ -82,7 +94,7 @@ function collectAllEmittedSkus(): Map<string, number> {
     record({
       footageBySide: { front: lights / 1.5, left: 0, right: 0, back: 0 },
       cornersBySide: { front: 0, left: 0, right: 0, back: 0 },
-      trackStyle: 'single',
+      trackStyleBySide: { front: 'single', left: 'single', right: 'single', back: 'single' },
       trackColor: '9003',
       blackHousing: false,
       controllerToFirstLightFt: 0,
