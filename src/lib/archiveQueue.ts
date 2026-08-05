@@ -217,6 +217,83 @@ export async function identifyArchivePhoto(id: string, address: string): Promise
   return { ok: true };
 }
 
+export type ArchivePrefill = {
+  address: string;
+  /** The daytime satellite, as base64 — the tracer holds photos in that shape. */
+  satellite: { base64: string; mediaType: string };
+  /**
+   * Feet per unit of NORMALIZED IMAGE WIDTH, which is the scale the tracer
+   * actually calibrates in: its coordinates are 0..1 across the image, so
+   * feet-per-pixel alone would be off by a factor of the pixel width. This is
+   * the one conversion in the archive pre-fill — get it wrong and every
+   * archive example's footage is silently mis-scaled.
+   */
+  feetPerUnit: number;
+  /** Night photos of the finished install — reference beside the tracer, never traced on. */
+  nightPhotoUrls: string[];
+};
+
+/**
+ * Everything /training/new needs to trace one archive property. Returns null
+ * when the property has no satellite yet (nothing to trace on) — the queue card
+ * disables its button in that case, and this is the server-side half of that
+ * guard.
+ */
+export async function getArchivePrefill(addressKey: string): Promise<ArchivePrefill | null> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return null;
+
+  const { data, error } = await sb
+    .from('archive_photos')
+    .select(QUEUE_COLUMNS)
+    .eq('resolved_address_key', addressKey)
+    .neq('status', 'excluded');
+  if (error || !data || data.length === 0) return null;
+
+  const rows = data as unknown as QueueRow[];
+  const withImagery = rows.find(r => r.satellite_ref);
+  if (!withImagery?.satellite_ref || !withImagery.satellite_feet_per_pixel || !withImagery.satellite_w) {
+    return null;
+  }
+
+  const { data: blob, error: dlErr } = await sb.storage.from(BUCKET).download(withImagery.satellite_ref);
+  if (dlErr || !blob) return null;
+  const base64 = Buffer.from(await blob.arrayBuffer()).toString('base64');
+
+  const nightPaths = rows.map(r => r.night_photo_ref).filter((p): p is string => !!p);
+  const signed = await signPaths(nightPaths);
+
+  return {
+    address: rows.find(r => r.resolved_address)?.resolved_address ?? addressKey,
+    satellite: { base64, mediaType: 'image/png' },
+    feetPerUnit: withImagery.satellite_feet_per_pixel * withImagery.satellite_w,
+    nightPhotoUrls: nightPaths.map(p => signed.get(p)).filter((u): u is string => !!u),
+  };
+}
+
+/**
+ * Link a saved training house back to the archive rows it came from and take
+ * the property out of the queue. Best-effort by design: the training house is
+ * already written by the time this runs, so a failure here must not fail the
+ * save — it leaves the property in the queue, which is a visible, re-doable
+ * state rather than lost work.
+ */
+export async function promoteArchiveProperty(addressKey: string, trainingHouseId: string): Promise<void> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return;
+
+  const { error } = await sb
+    .from('archive_photos')
+    .update({
+      promoted_training_house_id: trainingHouseId,
+      status: 'approved',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('resolved_address_key', addressKey)
+    .neq('status', 'excluded');
+  if (error) console.error('promoteArchiveProperty error:', error.message);
+}
+
 /** Mark a row as not an install, so it leaves the queue permanently. */
 export async function excludeArchivePhoto(id: string, note?: string): Promise<{ ok: true } | { ok: false; error: string }> {
   const sb = getSupabaseServiceClient();

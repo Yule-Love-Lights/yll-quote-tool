@@ -14,7 +14,7 @@ vi.mock('./supabase', () => ({
   isSupabaseServiceConfigured: () => !!sbRef.current,
 }));
 
-import { getArchiveQueue, identifyArchivePhoto, excludeArchivePhoto } from './archiveQueue';
+import { getArchiveQueue, identifyArchivePhoto, excludeArchivePhoto, getArchivePrefill, promoteArchiveProperty } from './archiveQueue';
 
 type Row = Record<string, unknown>;
 
@@ -59,6 +59,10 @@ function makeSb(rows: Row[]) {
       from: () => ({
         createSignedUrls: async (paths: string[]) => ({
           data: paths.map(p => ({ path: p, signedUrl: `signed:${p}` })),
+          error: null,
+        }),
+        download: async () => ({
+          data: { arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer },
           error: null,
         }),
       }),
@@ -208,6 +212,78 @@ describe('identifyArchivePhoto', () => {
 
     expect(await identifyArchivePhoto(ID, '   ')).toEqual({ ok: false, error: 'An address is required' });
     expect(updates).toHaveLength(0);
+  });
+});
+
+describe('getArchivePrefill', () => {
+  // THE money-critical line of slice 3. Traced coordinates are normalized to
+  // image WIDTH, so the tracer calibrates in feet-per-normalized-unit while the
+  // satellite is measured in feet-per-PIXEL. Hand it feetPerPixel raw and every
+  // archive example's footage is silently wrong by a factor of the pixel width
+  // (here, 640x) — tsc can't catch it and the UI looks fine.
+  it('converts feet-per-pixel to feet-per-normalized-width', async () => {
+    const { client } = makeSb([
+      row({
+        satellite_ref: 'prop/satellite.png',
+        satellite_feet_per_pixel: 0.25,
+        satellite_w: 640,
+        satellite_h: 640,
+      }),
+    ]);
+    sbRef.current = client;
+
+    const prefill = await getArchivePrefill('6 birch road selden');
+
+    expect(prefill!.feetPerUnit).toBeCloseTo(160, 6); // 0.25 ft/px * 640 px
+    expect(prefill!.satellite.base64).toBe(Buffer.from([1, 2, 3]).toString('base64'));
+    expect(prefill!.address).toBe('6 Birch Road, Selden');
+  });
+
+  it('returns null when the property has no satellite to trace on', async () => {
+    const { client } = makeSb([row({ satellite_ref: null })]);
+    sbRef.current = client;
+
+    expect(await getArchivePrefill('6 birch road selden')).toBeNull();
+  });
+
+  // A satellite path with no scale recorded would seed a canvas the operator
+  // could draw on while every derived footage silently stayed zero.
+  it('returns null when the scale is missing', async () => {
+    const { client } = makeSb([
+      row({ satellite_ref: 'prop/satellite.png', satellite_feet_per_pixel: null, satellite_w: 640 }),
+    ]);
+    sbRef.current = client;
+
+    expect(await getArchivePrefill('6 birch road selden')).toBeNull();
+  });
+
+  it('passes the night photos through as signed reference URLs', async () => {
+    const { client } = makeSb([
+      row({
+        satellite_ref: 'prop/satellite.png',
+        satellite_feet_per_pixel: 0.2,
+        satellite_w: 640,
+        night_photo_ref: 'night/abc.jpg',
+      }),
+    ]);
+    sbRef.current = client;
+
+    expect((await getArchivePrefill('6 birch road selden'))!.nightPhotoUrls).toEqual(['signed:night/abc.jpg']);
+  });
+});
+
+describe('promoteArchiveProperty', () => {
+  it('links every photo of the property to the saved training house', async () => {
+    const { client, updates } = makeSb([row()]);
+    sbRef.current = client;
+
+    await promoteArchiveProperty('6 birch road selden', 'e1111111-1111-1111-1111-111111111111');
+
+    expect(updates[0].patch.promoted_training_house_id).toBe('e1111111-1111-1111-1111-111111111111');
+    expect(updates[0].patch.status).toBe('approved');
+    // Scoped to the property, and never resurrects a row already ruled out.
+    expect(updates[0].filters).toContainEqual(['eq:resolved_address_key', '6 birch road selden']);
+    expect(updates[0].filters).toContainEqual(['neq:status', 'excluded']);
   });
 });
 

@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useState, useRef, useEffect } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { OperatorShell } from '@/components/OperatorShell';
 import type {
@@ -95,7 +95,17 @@ function polylineLength(lines: LineSegment[], aspect: number): number {
   return total;
 }
 
+// useSearchParams needs a Suspense boundary in the App Router — same shape as
+// /login. The page body is unchanged below; this is only the wrapper.
 export default function NewTrainingHousePage() {
+  return (
+    <Suspense fallback={null}>
+      <NewTrainingHousePageInner />
+    </Suspense>
+  );
+}
+
+function NewTrainingHousePageInner() {
   const router = useRouter();
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -206,6 +216,49 @@ export default function NewTrainingHousePage() {
   const prevLineLensRef = useRef({ s: 0, g: 0, c: 0, st: 0 });
 
   useEffect(() => { feetPerUnitRef.current = feetPerUnit; }, [feetPerUnit]);
+
+  // ── #167 slice 3: seed this page from an archive property ──────────────────
+  // Arrives as /training/new?archive=<resolved_address_key> from the queue.
+  // Unlike the quote pre-fill above, there is no design to project: we load the
+  // daytime satellite to trace on, the address, and the SCALE.
+  //
+  // Seeding feetPerUnit is what makes this work at all. The calibration effect
+  // below normally derives scale from typed footage; here it runs backwards —
+  // scale is known from the satellite's zoom math, so the polyline effect
+  // computes footage from the lines the operator draws. That effect keys on
+  // normalized image WIDTH, hence feetPerPixel * satelliteW, computed server-side.
+  //
+  // Safe against the calibration effect: it only overwrites feetPerUnit when a
+  // footage AND a line length are both non-zero, and a freshly-seeded archive
+  // trace has neither, so its `scale` stays null when imgAspect settles.
+  const searchParams = useSearchParams();
+  const archiveKey = searchParams.get('archive');
+  const [archiveNightPhotos, setArchiveNightPhotos] = useState<string[]>([]);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
+  const archiveSeededRef = useRef(false);
+
+  useEffect(() => {
+    if (!archiveKey || archiveSeededRef.current) return;
+    archiveSeededRef.current = true; // one-shot: never clobber operator edits on a re-render
+
+    (async () => {
+      try {
+        const res = await fetch(`/api/training/archive/prefill?addressKey=${encodeURIComponent(archiveKey)}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? 'Could not load that archive property');
+
+        // photos and photoMarkup are parallel arrays — seed both, exactly as the
+        // upload path does, or the markup index desyncs from the photo index.
+        setPhotos([{ tag: 'other', base64: data.satellite.base64, mediaType: data.satellite.mediaType, caption: 'Daytime satellite' }]);
+        setPhotoMarkup([emptyMarkup()]);
+        setAddress(a => a || data.address);
+        setFeetPerUnit(data.feetPerUnit);
+        setArchiveNightPhotos(data.nightPhotoUrls ?? []);
+      } catch (err) {
+        setArchiveError(err instanceof Error ? err.message : 'Could not load that archive property');
+      }
+    })();
+  }, [archiveKey]);
 
   // Feet-per-unit calibration (gutter preferred, ridge fallback).
   // Depends on footage inputs only — line edits recompute footage via the
@@ -755,6 +808,9 @@ export default function NewTrainingHousePage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          // Present only for an archive trace. The server derives source from
+          // it and links the archive rows back to the saved house.
+          archiveAddressKey: archiveKey || undefined,
           address: address || undefined,
           yearCompleted: yearCompleted || undefined,
           notes: notes || undefined,
@@ -804,6 +860,43 @@ export default function NewTrainingHousePage() {
             Enter a historical job with confirmed measurements. The AI will use this to improve future quotes.
           </p>
         </div>
+
+        {/* #167 slice 3 — archive trace context. The night photos are what was
+            actually installed; the satellite loaded into the canvas is what you
+            measure on. Shown side by side because the whole job is reading one
+            and drawing the other. */}
+        {archiveKey && (
+          <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
+            {archiveError ? (
+              <p className="text-sm text-red-700">{archiveError}</p>
+            ) : (
+              <>
+                <div className="text-sm font-medium text-gray-900">Tracing an archive property</div>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  The satellite is loaded with its scale already set — draw the roofline and the footage fills
+                  in. The night photos below are reference for what was installed, not something to measure on.
+                </p>
+                {archiveNightPhotos.length > 0 ? (
+                  <div className="flex gap-2 mt-3 overflow-x-auto">
+                    {archiveNightPhotos.map((url, i) => (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        key={url}
+                        src={url}
+                        alt={`Archive install photo ${i + 1}`}
+                        className="h-24 w-24 object-cover rounded border border-gray-200 shrink-0"
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-gray-500 mt-2">
+                    No archive photos copied from Drive yet — trace from the satellite.
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+        )}
 
         {/* House info */}
         <Section title="House Info">
