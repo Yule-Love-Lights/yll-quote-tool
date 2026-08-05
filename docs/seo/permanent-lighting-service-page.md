@@ -92,20 +92,28 @@ right. Caption: "The same house at night. Two colors on one continuous run.")*
 
 ### H2 — Permanent lighting for homes
 
-Most of our permanent installs are single-family homes across Nassau and
-Suffolk — capes, splits, colonials, waterfront properties. We design to your
-actual roofline rather than quoting a per-foot number and hoping.
+We install permanent lighting across Nassau and Suffolk on single-family homes —
+capes, splits, colonials, waterfront properties. We design to your actual
+roofline rather than quoting a per-foot number and hoping.
 
 Typical residential systems run **$2,500–$5,000** installed for small-to-medium
 homes. Larger or more complex rooflines cost more, and we'll tell you that
 before we start, not after.
 
-### H2 — Permanent lighting for businesses
+### H2 — Multi-family buildings
 
-Storefronts, restaurants, offices, and multi-building properties. The same
-system, with two things commercial clients tend to care about more: scheduling
-that runs itself without anyone thinking about it, and a local crew who can be
-there when a section goes out during your busiest month.
+Apartment buildings, condos, co-ops, and townhouse communities. One system
+across the whole property means a building that looks deliberate instead of
+lit unit by unit — and one point of contact, one schedule, one invoice.
+
+Boards and property managers tend to care most about two things here: that the
+lighting runs itself on a schedule nobody has to remember, and that there's a
+local crew who answers when a section goes out.
+
+### H2 — Businesses and commercial properties
+
+Storefronts, restaurants, offices, and multi-building properties. Same system,
+same scheduling, same local service.
 
 We also handle **commercial architectural lighting** — accent and façade
 lighting that isn't tied to a holiday at all.
@@ -174,15 +182,16 @@ Still comparing systems? Read our guide to
       we want to describe the hardware, and that nothing here overstates a
       warranty we don't offer. This is the one paragraph making a longevity
       claim; it should match whatever we actually warrant.
-- [ ] **Year four-or-five payback** — this is a reasonable inference from the
-      $1,000+ seasonal floor against a $2,500–$5,000 system, not a figure Naldo
-      gave me. Confirm or replace it. Don't publish a payback number that hasn't
-      been checked.
-- [ ] **"Most of our permanent installs are single-family homes"** — confirm
-      that's true rather than assumed.
-- [ ] Confirm we want **commercial** on the same page rather than its own.
-      Splitting later is easy; I've kept it here because the GBP entries point
-      at one destination and the volume is likely residential.
+- [x] **Year four-or-five payback** — confirmed publishable (Naldo, 2026-08-05).
+- [x] **Customer mix** — corrected 2026-08-05. Permanent installs go on
+      single-family homes, multi-family buildings, and businesses. An earlier
+      draft asserted "most are single-family homes," which was my assumption and
+      was wrong. Multi-family now has its own section rather than being folded
+      into commercial.
+- [ ] Confirm the three-way split (homes / multi-family / commercial) reads
+      right on one page. All six GBP entries point at a single destination so
+      one page is the current call, but if multi-family becomes a real channel
+      it deserves its own URL.
 - [ ] Point the CTA at the real estimate flow URL.
 - [ ] Add the two photos (permission granted 2026-08-05).
 - [ ] After publishing: update the six GBP service entries to link here, and add
