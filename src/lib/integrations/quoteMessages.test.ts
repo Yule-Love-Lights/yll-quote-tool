@@ -161,6 +161,37 @@ describe('inventory order email (#82 Slice 3)', () => {
     const html = orderEmailHtml({ jobNumber: 1, customerName: null, address: null, installDate: null, materials: [], unbound: [] });
     expect(html).toContain('No bound materials projected');
   });
+
+  // #192 review fix (parity) — the purchasing email gets the same "Booked
+  // scope" note as the crew print sheet / board modal / admin BOM panel.
+  it('#192 — renders a "Booked scope" note ABOVE the materials table when scopedSides is set', () => {
+    const html = orderEmailHtml({
+      jobNumber: 1042,
+      customerName: 'Jane Doe',
+      address: '1 Main St',
+      installDate: 'Dec 1, 2026',
+      materials: [{ sku: 'APL11012-5', name: 'RGBW set of 5', qty: 3, onHand: 10, short: false }],
+      unbound: [],
+      scopedSides: ['front', 'back'],
+    });
+    expect(html).toContain('Booked scope: Front, Back — accessories/gaps remain whole-job.');
+    // Above the materials table, not after it.
+    expect(html.indexOf('Booked scope')).toBeLessThan(html.indexOf('APL11012-5'));
+  });
+
+  it('#192 — no scopedSides (undefined/null/empty) renders no note', () => {
+    const base = {
+      jobNumber: 1,
+      customerName: null,
+      address: null,
+      installDate: null,
+      materials: [],
+      unbound: [],
+    };
+    expect(orderEmailHtml(base)).not.toContain('Booked scope');
+    expect(orderEmailHtml({ ...base, scopedSides: null })).not.toContain('Booked scope');
+    expect(orderEmailHtml({ ...base, scopedSides: [] })).not.toContain('Booked scope');
+  });
 });
 
 describe('low-stock alert email (#82)', () => {

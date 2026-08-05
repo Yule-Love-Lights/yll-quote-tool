@@ -11,6 +11,31 @@
 /** Track mounting style: soffit → single track, fascia → parapet track. */
 export type TrackStyle = 'single' | 'parapet';
 
+/** The four house sides a permanent job bills/orders per (#192). */
+export type PermanentSide = 'front' | 'left' | 'right' | 'back';
+
+/** Canonical side order every scoped-BOM surface lists in (#192 review fix). */
+export const ALL_PERMANENT_SIDES: readonly PermanentSide[] = ['front', 'left', 'right', 'back'];
+
+/** Shared display labels for PermanentSide — every "Booked scope: …" surface uses these (#192 review fix). */
+export const PERMANENT_SIDE_LABEL: Record<PermanentSide, string> = {
+  front: 'Front',
+  left: 'Left side',
+  right: 'Right side',
+  back: 'Back',
+};
+
+/**
+ * #192 review fix — order the raw included-sides Set into the canonical
+ * front/left/right/back display-label array every scoped-BOM surface
+ * renders. Returns null unchanged (unscoped) so callers can gate a note on
+ * `!= null` without re-deriving the empty-vs-null distinction themselves.
+ */
+export function permanentScopedSideLabels(includedSides: ReadonlySet<PermanentSide> | null): string[] | null {
+  if (includedSides == null) return null;
+  return ALL_PERMANENT_SIDES.filter((s) => includedSides.has(s)).map((s) => PERMANENT_SIDE_LABEL[s]);
+}
+
 /** Stock powder-coat color codes: white / black / cream / dark brown. */
 export type TrackColor = '9003' | '9004' | '9012' | '8019';
 
@@ -58,6 +83,16 @@ export type PermanentQuoteFields = {
   rightCorners: number;
   backCorners: number;
   trackStyle: TrackStyle;
+  /**
+   * #192 — per-side track style override. Only shown/written for sides with
+   * footage > 0. The single global select is retired from the UI; this map is
+   * the only thing new saves write. `trackStyle` (the legacy scalar) is kept
+   * FOREVER as the fallback for any side absent from this map — a pre-#192
+   * stored quote (scalar-only, this map absent/empty) resolves identically to
+   * today on every surface. Never read directly; always resolve through
+   * `effectiveSideTrackStyle`.
+   */
+  trackStyleBySide?: Partial<Record<PermanentSide, TrackStyle>>;
   /** Default '9003' (white). */
   trackColor: TrackColor;
   /** Puck housing: false = standard, true = the -BLK SKUs (same price). */
@@ -186,6 +221,15 @@ export function roundFootageUpTo5(n: number): number {
 }
 
 /**
+ * #192 — resolve the track style a given side actually orders: the per-side
+ * override if set, else the legacy scalar `trackStyle`. The ONE place either
+ * field is read; every consumer (BOM engine bridge, UI) goes through this.
+ */
+export function effectiveSideTrackStyle(p: PermanentQuoteFields, side: PermanentSide): TrackStyle {
+  return p.trackStyleBySide?.[side] ?? p.trackStyle;
+}
+
+/**
  * A blank permanent block for a fresh/hydrating quote form. A FACTORY (not a
  * shared const) so each form gets its own `gaps` array — no cross-form mutation.
  */
@@ -206,5 +250,6 @@ export function makeDefaultPermanentFields(): PermanentQuoteFields {
     blackHousing: false,
     maintenanceAddOn: false,
     sideSource: {},
+    trackStyleBySide: {},
   };
 }

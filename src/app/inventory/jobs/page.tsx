@@ -16,12 +16,16 @@ import {
   type FulfillmentStage,
 } from '@/lib/inventory/fulfillmentStage';
 import type { FulfillmentCard } from '@/lib/inventory/jobs';
+import { PERMANENT_SIDE_LABEL, type PermanentSide } from '@/lib/permanent/types';
 
 type MaterialRow = { sku: string; name: string; qty: number; onHand: number | null; short: boolean };
 type UnboundConcept = { conceptKey: string; label: string; qty: number };
 type WorkOrder = {
   job: { id: string; jobNumber: number | null; quoteId: string | null; designId: string | null; stage: FulfillmentStage; status: string; installDate: string | null; customerName: string | null; customerAddress: string | null; stockDecrementedAt: string | null; isTest: boolean };
   materials: { materials: MaterialRow[]; unbound: UnboundConcept[]; totalLines: number };
+  // #192 review fix — same scoping the crew print sheet + purchasing email
+  // surface; see WorkOrder.scopedSides in src/lib/inventory/jobs.ts.
+  scopedSides: PermanentSide[] | null;
 };
 
 export default function JobsBoardPage() {
@@ -310,6 +314,18 @@ function WorkOrderModal({ id, onClose }: { id: string; onClose: () => void }) {
                   </button>
                 )}
               </div>
+
+              {/* #192 review fix (parity) — same note as the crew print sheet +
+                  purchasing email, shown ABOVE the materials table so staff read
+                  the explanation before the narrowed numbers. */}
+              {data.scopedSides && data.scopedSides.length > 0 && (
+                <p
+                  className="mb-2 rounded-md border px-2 py-1.5 text-xs"
+                  style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-hover)', color: 'var(--op-text-2)' }}
+                >
+                  Booked scope: {data.scopedSides.map((s) => PERMANENT_SIDE_LABEL[s]).join(', ')} — accessories/gaps remain whole-job.
+                </p>
+              )}
 
               <h3 className="text-xs font-semibold uppercase tracking-wide mb-1" style={{ color: 'var(--op-text-dim)' }}>Materials</h3>
               {data.materials.materials.length === 0 ? (

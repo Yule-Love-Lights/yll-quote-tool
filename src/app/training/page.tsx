@@ -66,6 +66,14 @@ export default function TrainingListPage() {
             >
               Product Library
             </Link>
+            {/* #167 P1: the past-installs archive queue. Without this link the
+                queue is unreachable from anywhere in the app. */}
+            <Link
+              href="/training/archive"
+              className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium text-sm px-4 py-2 rounded-md"
+            >
+              Archive Queue
+            </Link>
             <Link
               href="/training/new"
               className="bg-green-600 hover:bg-green-700 text-white font-medium text-sm px-4 py-2 rounded-md"

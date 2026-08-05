@@ -7,6 +7,7 @@ import {
 import type { LineSegment, MiniLightDetection, WreathDetection, SpritzerDetection, GarlandDetection } from '@/lib/photoAnalysis';
 import { isSupabaseConfigured } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
+import { promoteArchiveProperty } from '@/lib/archiveQueue';
 // #110 W5-005 (security, reopens #80-036): mirror the same allowed-value sets
 // the scene-correction sanitizers use so the operator-submit path and the
 // analyzer's model-output path enforce identical bounds on the few-shot corpus.
@@ -164,9 +165,9 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  let body: TrainingHousePayload;
+  let body: TrainingHousePayload & { archiveAddressKey?: unknown };
   try {
-    body = (await req.json()) as TrainingHousePayload;
+    body = (await req.json()) as TrainingHousePayload & { archiveAddressKey?: unknown };
   } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
@@ -175,9 +176,33 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'At least one photo is required' }, { status: 400 });
   }
 
-  const saved = await saveTrainingHouse(sanitizeTrainingPayload(body));
+  // #167 slice 3. source is DERIVED from the archive key and overwrites whatever
+  // the body carried — sanitizeTrainingPayload spreads the body, so trusting a
+  // client-supplied source would let an archive trace label itself 'manual' and
+  // land an overhead-satellite example in ground-photo few-shot.
+  const archiveAddressKey =
+    typeof body.archiveAddressKey === 'string' && body.archiveAddressKey.trim()
+      ? body.archiveAddressKey.trim()
+      : null;
+
+  const saved = await saveTrainingHouse({
+    ...sanitizeTrainingPayload(body),
+    source: archiveAddressKey ? 'archive' : 'manual',
+  });
   if (!saved) {
     return NextResponse.json({ error: 'Failed to save training house — check server logs' }, { status: 500 });
   }
+
+  // The house is already saved, so a lost claim never fails the save — but it
+  // is reported, because it means this trace is now an orphaned row nobody's
+  // queue card points at, and the operator who just spent two minutes on it
+  // deserves to know rather than being redirected as if it landed.
+  if (archiveAddressKey) {
+    const res = await promoteArchiveProperty(archiveAddressKey, saved.id);
+    if (!res.promoted) {
+      return NextResponse.json({ id: saved.id, archiveClaimFailed: res.reason });
+    }
+  }
+
   return NextResponse.json({ id: saved.id });
 }

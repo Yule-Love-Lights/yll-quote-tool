@@ -15,8 +15,8 @@ import { listCatalog, catalogCostOverrides } from './catalog';
 import { listOnHand, adjustOnHandAtomic } from './onHand';
 import { projectMaterials, buildMaterialsView, type MaterialLine, type MaterialsView } from './materialsProjection';
 import { colorChoiceFromSnapshot } from './resolveInstalls';
-import { permanentBomFromQuote } from '@/lib/permanent/bomFromQuote';
-import type { PermanentQuoteFields } from '@/lib/permanent/types';
+import { permanentBomFromQuote, includedPermanentSidesFromSnapshot } from '@/lib/permanent/bomFromQuote';
+import { ALL_PERMANENT_SIDES, type PermanentQuoteFields, type PermanentSide } from '@/lib/permanent/types';
 import { bistroBomFromQuote } from '@/lib/permanentBistro/bomFromQuote';
 import type { PermanentBistroInputFields } from '@/lib/permanentBistro/types';
 import { BISTRO_CATALOG, costOverridesFromBistroCatalog } from './bistroCatalog';
@@ -165,7 +165,20 @@ export type WorkOrderJob = {
   // badge + makes prepareJobMaterials no-op the real on-hand deduction.
   isTest: boolean;
 };
-export type WorkOrder = { job: WorkOrderJob; materials: MaterialsView };
+export type WorkOrder = {
+  job: WorkOrderJob;
+  materials: MaterialsView;
+  /**
+   * #192 review fix (parity) — the permanent sides this work order's materials
+   * were narrowed to, in front/left/right/back order; null when NOT scoped
+   * (a non-permanent job, or a permanent job whose scoping resolved unscoped —
+   * see includedPermanentSidesFromSnapshot's fail-open contract). Every
+   * consumer of getJobWorkOrder (the board modal, the crew print sheet, the
+   * purchasing email) renders a "Booked scope: …" note when this is non-null,
+   * so a narrowed materials list is never silently narrower than expected.
+   */
+  scopedSides: PermanentSide[] | null;
+};
 
 // P8 PR-2: map a permanent BOM's lines onto the shared MaterialLine shape so a
 // permanent job's work order / prep-deduction reuse buildMaterialsView exactly
@@ -364,9 +377,21 @@ export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
   // Positive `=== 'permanent_bistro'` gate, checked AFTER permanent (the two
   // service types are mutually exclusive, so order doesn't matter functionally,
   // but this reads as the natural "which BOM engine" ladder).
+  // #192 — a job exists only post-booking (deposit paid, see this file's own
+  // header), so its materials are ALWAYS scoped to the customer's approved
+  // sides. includedPermanentSidesFromSnapshot fails open to null (unscoped —
+  // today's full-BOM behavior) on any missing/unparseable/no-match snapshot,
+  // so a paid job can never silently under-order. Resolved ONCE so the BOM
+  // build and the returned `scopedSides` (review-fix parity — every consumer
+  // of this work order gets to render the same "Booked scope" note) agree.
+  const includedPermanentSides = isPermanent ? includedPermanentSidesFromSnapshot(approvalSnapshotRaw) : null;
   const lines = isPermanent
     ? materialLinesFromBom(
-        permanentBomFromQuote({ permanent: permanentFields }, await catalogCostOverrides())?.lines ?? [],
+        permanentBomFromQuote(
+          { permanent: permanentFields },
+          await catalogCostOverrides(),
+          includedPermanentSides,
+        )?.lines ?? [],
       )
     : isPermanentBistro
       ? materialLinesFromBistroBom(
@@ -392,6 +417,13 @@ export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
     (sku) => nameOf.get(sku),
     (sku) => (onHandOf.has(sku) ? (onHandOf.get(sku) as number) : null),
   );
+  // #192 review fix — the raw included sides, canonical front/left/right/back
+  // order, for every getJobWorkOrder consumer to render its own "Booked scope"
+  // note. Stays null for a non-permanent job (never computed above) or a
+  // permanent job whose scoping resolved unscoped.
+  const scopedSides = includedPermanentSides
+    ? ALL_PERMANENT_SIDES.filter((s) => includedPermanentSides.has(s))
+    : null;
 
   return {
     job: {
@@ -408,6 +440,7 @@ export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
       isTest,
     },
     materials,
+    scopedSides,
   };
 }
 

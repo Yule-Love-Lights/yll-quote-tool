@@ -18,8 +18,8 @@ import { recordOrder, markOrderSent, cancelOrder, sumOpenOnOrder, type Inventory
 import { projectMaterials, aggregateMaterials } from './materialsProjection';
 import { colorChoiceFromSnapshot } from './resolveInstalls';
 import { isActiveFulfillment } from './jobs';
-import { permanentBomFromQuote } from '@/lib/permanent/bomFromQuote';
-import type { PermanentQuoteFields } from '@/lib/permanent/types';
+import { permanentBomFromQuote, includedPermanentSidesFromSnapshot } from '@/lib/permanent/bomFromQuote';
+import type { PermanentQuoteFields, PermanentSide } from '@/lib/permanent/types';
 import { bistroBomFromQuote } from '@/lib/permanentBistro/bomFromQuote';
 import type { BistroBomLine } from '@/lib/permanentBistro/bom';
 import type { PermanentBistroInputFields } from '@/lib/permanentBistro/types';
@@ -116,6 +116,18 @@ export async function buildSupplierPurchaseOrder(): Promise<SupplierPurchaseOrde
         return [row.id, row.inputs?.permanent] as const;
       }),
   );
+  // #192 — a job exists only post-booking (deposit paid — see isActiveFulfillment's
+  // callers), so every active permanent quote here is always scoped to its
+  // approved sides. includedPermanentSidesFromSnapshot fails open to null
+  // (unscoped) on any missing/unparseable/no-match snapshot.
+  const includedPermanentSidesByQuote = new Map<string, Set<PermanentSide> | null>(
+    (quoteRows ?? [])
+      .filter((r) => (r as { service_type: string | null }).service_type === 'permanent')
+      .map((r) => {
+        const row = r as { id: string; approval_snapshot: unknown };
+        return [row.id, includedPermanentSidesFromSnapshot(row.approval_snapshot)] as const;
+      }),
+  );
   // #117 (Naldo 2026-07-11): a bistro job's THUNDER items DO auto-send on this
   // pooled PO; its Home Depot / Amazon items (posts, concrete, timer) are
   // manual buys on the per-quote order sheet (bistro-bom/print) and must never
@@ -153,7 +165,12 @@ export async function buildSupplierPurchaseOrder(): Promise<SupplierPurchaseOrde
     if (permanentFieldsByQuote.has(j.quote_id)) {
       // Permanent (P8 PR-2): accumulate need from the Ascend/Dauer BOM engine —
       // no costOverrides here (the PO cares about quantities, not costs).
-      const bom = permanentBomFromQuote({ permanent: permanentFieldsByQuote.get(j.quote_id) });
+      // #192: scoped to the quote's approved sides.
+      const bom = permanentBomFromQuote(
+        { permanent: permanentFieldsByQuote.get(j.quote_id) },
+        undefined,
+        includedPermanentSidesByQuote.get(j.quote_id) ?? null,
+      );
       for (const l of bom?.lines ?? []) {
         needBySku.set(l.sku, (needBySku.get(l.sku) ?? 0) + l.qty);
       }

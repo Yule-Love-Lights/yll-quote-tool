@@ -18,7 +18,7 @@ function input(over: Partial<PermanentBomInput> = {}): PermanentBomInput {
   return {
     footageBySide: { front: 0, left: 0, right: 0, back: 0 },
     cornersBySide: { front: 0, left: 0, right: 0, back: 0 },
-    trackStyle: 'single',
+    trackStyleBySide: { front: 'single', left: 'single', right: 'single', back: 'single' },
     trackColor: '9003',
     blackHousing: false,
     controllerToFirstLightFt: 0,
@@ -240,9 +240,62 @@ describe('permanent BOM — buildPermanentBom', () => {
   });
 
   it('parapet track uses the 90 SKU + flags a non-stock color', () => {
-    const bom = buildPermanentBom(input({ footageBySide: { front: 40, left: 0, right: 0, back: 0 }, trackStyle: 'parapet', trackColor: '9012' }));
+    const bom = buildPermanentBom(
+      input({
+        footageBySide: { front: 40, left: 0, right: 0, back: 0 },
+        trackStyleBySide: { front: 'parapet', left: 'single', right: 'single', back: 'single' },
+        trackColor: '9012',
+      }),
+    );
     expect(line(bom, 'APL11230-90-9012')).toBeTruthy();
     expect(bom.flags).toContain('parapet-track-only-stocked-white-or-black');
+  });
+
+  describe('#192 — per-side track style', () => {
+    it('mixed styles emit TWO track lines, each independently rounded, summing into totals.trackSections', () => {
+      // Front (single) 37ft + back (parapet) 37ft — chosen so PER-SIDE
+      // rounding (13+13=26 sections) differs from what a single COMBINED
+      // 74ft run would round to (25 sections), proving each side's run
+      // rounds independently (a leftover single section can't substitute
+      // for a parapet section).
+      const bom = buildPermanentBom(
+        input({
+          footageBySide: { front: 37, left: 0, right: 0, back: 37 },
+          trackStyleBySide: { front: 'single', left: 'single', right: 'single', back: 'parapet' },
+        }),
+      );
+      const singleLine = line(bom, 'APL11210-9003')!;
+      const parapetLine = line(bom, 'APL11230-90-9003')!;
+      expect(singleLine).toBeTruthy();
+      expect(parapetLine).toBeTruthy();
+      expect(singleLine.qty).toBe(trackSections(37));
+      expect(parapetLine.qty).toBe(trackSections(37));
+      expect(bom.totals.trackSections).toBe(singleLine.qty + parapetLine.qty);
+      // Sanity: NOT what a single combined 74ft track section count would be
+      // (would collapse the two lines into one under the old scalar behavior).
+      expect(bom.totals.trackSections).not.toBe(trackSections(74));
+    });
+
+    it('all-single (uniform) still emits exactly one track line — no regression for the common case', () => {
+      const bom = buildPermanentBom(
+        input({ footageBySide: { front: 30, left: 20, right: 20, back: 30 } }),
+      );
+      const trackLines = bom.lines.filter((l) => l.category === 'track');
+      expect(trackLines).toHaveLength(1);
+      expect(trackLines[0].sku).toBe('APL11210-9003');
+      expect(trackLines[0].qty).toBe(trackSections(100));
+    });
+
+    it('parapet-color flag keys on ANY side using parapet, not a scalar style', () => {
+      const bom = buildPermanentBom(
+        input({
+          footageBySide: { front: 20, left: 0, right: 0, back: 20 },
+          trackStyleBySide: { front: 'single', left: 'single', right: 'single', back: 'parapet' },
+          trackColor: '9012',
+        }),
+      );
+      expect(bom.flags).toContain('parapet-track-only-stocked-white-or-black');
+    });
   });
 
   it('costOverrides replaces a SKU unit cost (P7/P8 live catalog path)', () => {
