@@ -37,6 +37,12 @@ export type CustomerRow = {
    *  jsonb column could hold old/hand-edited junk; validate before use
    *  (src/lib/customerTenure.ts's deriveTenureYears does this). */
   manual_years?: unknown;
+  /** NCE + YLL Neighbor tags (#198) — see migrations/2026-08-05-nce-customer-
+   *  tags.sql. Set directly by staff (customer profile add/remove chips) or
+   *  forward-only-propagated from a tagged quote (never cleared by
+   *  propagation — only a staff remove clears these). */
+  is_nce: boolean;
+  is_yll_neighbor: boolean;
 };
 
 export type PropertyRow = {
@@ -476,4 +482,115 @@ export async function getPropertiesForCustomer(customerId: string): Promise<Prop
     return [];
   }
   return (data ?? []) as PropertyRow[];
+}
+
+// Read-only lookup by HighLevel contact id — unlike findOrCreateCustomer this
+// NEVER creates a row (used to resolve a picked/prefilled HL contact's
+// existing tags for inheritance, #198; merely viewing/picking a contact must
+// not conjure a customer row that attachQuoteToCustomer hasn't earned yet).
+export async function getCustomerByHlContactId(hlContactId: string): Promise<CustomerRow | null> {
+  const trimmed = norm(hlContactId);
+  if (!trimmed) return null;
+  const sb = svc();
+  if (!sb) return null;
+  const { data, error } = await sb
+    .from('customers')
+    .select('*')
+    .eq('hl_contact_id', trimmed)
+    .maybeSingle();
+  if (error) {
+    console.error('getCustomerByHlContactId error:', error);
+    return null;
+  }
+  return (data as CustomerRow | null) ?? null;
+}
+
+// Bulk tag lookup for the customers LIST page (#198) — one query for every
+// customer row shown, keyed by id, so the page doesn't N+1. Ids with no
+// matching row (or that don't resolve, e.g. a walk-in with no customer_id)
+// are simply absent from the returned map.
+export async function listCustomerTagsByIds(
+  ids: string[],
+): Promise<Map<string, { isNce: boolean; isYllNeighbor: boolean }>> {
+  const uniqueIds = Array.from(new Set(ids.filter((id) => id)));
+  const map = new Map<string, { isNce: boolean; isYllNeighbor: boolean }>();
+  if (!uniqueIds.length) return map;
+  const sb = svc();
+  if (!sb) return map;
+  const { data, error } = await sb
+    .from('customers')
+    .select('id, is_nce, is_yll_neighbor')
+    .in('id', uniqueIds);
+  if (error) {
+    console.error('listCustomerTagsByIds error:', error);
+    return map;
+  }
+  for (const row of (data ?? []) as Array<{ id: string; is_nce: boolean; is_yll_neighbor: boolean }>) {
+    map.set(row.id, { isNce: row.is_nce, isYllNeighbor: row.is_yll_neighbor });
+  }
+  return map;
+}
+
+// Forward-only tag propagation (#198): a tagged quote auto-tags its linked
+// customer. Only ever WRITES true — a false/absent flag here is simply
+// omitted from the update, so this can never clear a tag another quote (or a
+// staff edit) already set. Best-effort: swallows its own DB error (logs and
+// returns) so a propagation failure can never fail the caller's real action
+// (a send, a toggle, a save) — every call site can fire this without its own
+// try/catch, though several wrap it anyway for defense in depth, matching
+// this file's attachQuoteToCustomer convention.
+//
+// REASSERTION (review fix, staff/admin MED, S34 #198 review): because this
+// only ever writes true, a staff CLEAR on the customer profile
+// (setCustomerTags, which CAN set false) is NOT durable against a linked
+// quote that's still tagged — the next event that re-fires propagation for
+// that SAME quote (a resend, a retry-eligible toggle, another Calculate that
+// re-touches the chip) will flip the customer tag back to true. There is no
+// tracking of "staff deliberately cleared this" here — a customer-level
+// clear is only fully durable once every linked tagged quote is ALSO
+// untagged. Both quote-level toggles' OFF confirm copy and
+// CustomerTagsEditor's clear control disclose this; no state machine added.
+export async function propagateQuoteTagsToCustomer(
+  customerId: string,
+  tags: { isNce?: boolean; isYllNeighbor?: boolean },
+): Promise<void> {
+  const patch: Record<string, true> = {};
+  if (tags.isNce) patch.is_nce = true;
+  if (tags.isYllNeighbor) patch.is_yll_neighbor = true;
+  if (Object.keys(patch).length === 0) return;
+  const sb = svc();
+  if (!sb) return;
+  const { error } = await sb.from('customers').update(patch).eq('id', customerId);
+  if (error) {
+    console.error(`propagateQuoteTagsToCustomer: update failed for customer ${customerId}:`, error);
+  }
+}
+
+// Staff add/remove update (#198) — the direct write behind POST
+// /api/customers/[customerId]/tags. Unlike propagateQuoteTagsToCustomer above
+// (forward-only, fire-and-forget), this is a real partial update that CAN
+// clear a tag, and the caller (the route) needs to distinguish a DB error
+// (500) from an unknown customer id (404) — so this returns the raw
+// {data, error} pair rather than collapsing both into null the way
+// getCustomer does; a pure extract of the route's own Supabase call shape,
+// no behavior change for its one caller.
+export async function setCustomerTags(
+  customerId: string,
+  tags: { isNce?: boolean; isYllNeighbor?: boolean },
+): Promise<{
+  data: { id: string; is_nce: boolean; is_yll_neighbor: boolean } | null;
+  error: { message: string } | null;
+}> {
+  const patch: Record<string, boolean> = {};
+  if (tags.isNce !== undefined) patch.is_nce = tags.isNce;
+  if (tags.isYllNeighbor !== undefined) patch.is_yll_neighbor = tags.isYllNeighbor;
+  const sb = svc();
+  if (!sb) return { data: null, error: { message: 'Supabase not configured' } };
+  const { data, error } = await sb
+    .from('customers')
+    .update(patch)
+    .eq('id', customerId)
+    .select('id, is_nce, is_yll_neighbor')
+    .maybeSingle<{ id: string; is_nce: boolean; is_yll_neighbor: boolean }>();
+  return { data, error };
 }

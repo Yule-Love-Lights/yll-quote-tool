@@ -78,6 +78,8 @@ export default async function EditQuotePage({ params }: { params: Promise<{ id: 
         isTest: quote.is_test,
         // YLL Neighbor (#158): getQuoteRaw already selects legacy_rebook (#155).
         legacyRebook: quote.legacy_rebook,
+        // NCE (#198): getQuoteRaw already selects is_nce.
+        isNce: quote.is_nce,
         // View-only portal (#176): getQuoteRaw already selects view_only.
         viewOnly: quote.view_only,
         // #172: suppress the "contact required" warning on an already-linked

@@ -31,10 +31,16 @@ vi.mock('./designs', () => ({ deleteDesign, deleteDesignsForQuote }));
 // Rebook Part A: mock customers so the attach-on-save wiring is testable here,
 // and so existing tests (which don't configure a full customers table) don't blow
 // up when saveQuote now calls attachQuoteToCustomer.
-const { attachQuoteToCustomerMock } = vi.hoisted(() => ({
+// #198: propagateQuoteTagsToCustomer mocked alongside it so updateQuote's tag-
+// propagation call is testable without a real customers table.
+const { attachQuoteToCustomerMock, propagateQuoteTagsToCustomerMock } = vi.hoisted(() => ({
   attachQuoteToCustomerMock: vi.fn(async () => null as null | { customerId: string; propertyId: string }),
+  propagateQuoteTagsToCustomerMock: vi.fn(async () => {}),
 }));
-vi.mock('./customers', () => ({ attachQuoteToCustomer: attachQuoteToCustomerMock }));
+vi.mock('./customers', () => ({
+  attachQuoteToCustomer: attachQuoteToCustomerMock,
+  propagateQuoteTagsToCustomer: propagateQuoteTagsToCustomerMock,
+}));
 
 // Referral program (#41 "mention" attribution): mock so the wiring (called
 // once per new save with a referrer picked, never on an update) is testable
@@ -411,6 +417,121 @@ describe('updateQuote — referral "mention" attribution on the UPDATE path (#41
   });
 });
 
+// #198: updateQuote's 7th/8th params (legacyRebook, isNce) — only written when
+// PROVIDED (undefined = leave the stored value untouched, matching
+// serviceType's convention), and a tag SET TO TRUE on an already-sent,
+// customer-linked quote propagates onto the customer immediately.
+//
+// Fake tuned to updateQuote's tag-propagation chain:
+//   write: from('quotes').update(payload).eq().select('id, quote_sent_at, customer_id').single() → returnRow
+function makeTagUpdateFake(returnRow: {
+  id: string;
+  quote_sent_at: string | null;
+  customer_id: string | null;
+  is_test?: boolean;
+}) {
+  const updates: Record<string, unknown>[] = [];
+  const builder: Record<string, unknown> = {};
+  Object.assign(builder, {
+    select: () => builder,
+    eq: () => builder,
+    update: (payload: Record<string, unknown>) => {
+      updates.push(payload);
+      return builder;
+    },
+    single: async () => ({ data: returnRow, error: null }),
+  });
+  return { client: { from: () => builder }, updates };
+}
+
+describe('updateQuote — NCE + YLL Neighbor tags (#198)', () => {
+  it('omits legacy_rebook/is_nce from the write when both are undefined', async () => {
+    const fake = makeTagUpdateFake({ id: 'q1', quote_sent_at: null, customer_id: null });
+    serviceRef.current = fake.client;
+
+    await updateQuote('q1', INPUTS, RESULT);
+
+    expect(fake.updates[0]).not.toHaveProperty('legacy_rebook');
+    expect(fake.updates[0]).not.toHaveProperty('is_nce');
+  });
+
+  it('writes legacy_rebook/is_nce when explicitly provided (true or false)', async () => {
+    const fake = makeTagUpdateFake({ id: 'q1', quote_sent_at: null, customer_id: null });
+    serviceRef.current = fake.client;
+
+    // updateQuote(id, inputs, result, customer?, serviceType?, referredByCustomerId?, legacyRebook?, isNce?)
+    await updateQuote('q1', INPUTS, RESULT, undefined, undefined, undefined, true, false);
+
+    expect(fake.updates[0]).toMatchObject({ legacy_rebook: true, is_nce: false });
+  });
+
+  it('propagates to the linked customer when a tag is set true on an already-sent quote', async () => {
+    const fake = makeTagUpdateFake({ id: 'q1', quote_sent_at: '2026-08-01T00:00:00Z', customer_id: 'cust-1' });
+    serviceRef.current = fake.client;
+
+    await updateQuote('q1', INPUTS, RESULT, undefined, undefined, undefined, undefined, true);
+
+    expect(propagateQuoteTagsToCustomerMock).toHaveBeenCalledWith('cust-1', {
+      isNce: true,
+      isYllNeighbor: undefined,
+    });
+  });
+
+  it('does NOT propagate when the quote has not been sent yet', async () => {
+    const fake = makeTagUpdateFake({ id: 'q1', quote_sent_at: null, customer_id: 'cust-1' });
+    serviceRef.current = fake.client;
+
+    await updateQuote('q1', INPUTS, RESULT, undefined, undefined, undefined, undefined, true);
+
+    expect(propagateQuoteTagsToCustomerMock).not.toHaveBeenCalled();
+  });
+
+  // Review fix (admin MED, S34 #198 review): defense-in-depth — a reopened
+  // TEST quote CAN be re-Calculated through this exact path (builder Save),
+  // so this guard is genuinely reachable, unlike the two admin-only toggle
+  // routes' equivalent guards.
+  it('does NOT propagate for a TAGGED TEST quote, even already-sent + linked', async () => {
+    const fake = makeTagUpdateFake({
+      id: 'q1',
+      quote_sent_at: '2026-08-01T00:00:00Z',
+      customer_id: 'cust-1',
+      is_test: true,
+    });
+    serviceRef.current = fake.client;
+
+    await updateQuote('q1', INPUTS, RESULT, undefined, undefined, undefined, undefined, true);
+
+    expect(propagateQuoteTagsToCustomerMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT propagate when the quote has no linked customer', async () => {
+    const fake = makeTagUpdateFake({ id: 'q1', quote_sent_at: '2026-08-01T00:00:00Z', customer_id: null });
+    serviceRef.current = fake.client;
+
+    await updateQuote('q1', INPUTS, RESULT, undefined, undefined, undefined, undefined, true);
+
+    expect(propagateQuoteTagsToCustomerMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT propagate when both tags are false/omitted (forward-only — never propagates an untag)', async () => {
+    const fake = makeTagUpdateFake({ id: 'q1', quote_sent_at: '2026-08-01T00:00:00Z', customer_id: 'cust-1' });
+    serviceRef.current = fake.client;
+
+    await updateQuote('q1', INPUTS, RESULT, undefined, undefined, undefined, false, false);
+
+    expect(propagateQuoteTagsToCustomerMock).not.toHaveBeenCalled();
+  });
+
+  it('still returns the updated id when propagation throws (best-effort)', async () => {
+    propagateQuoteTagsToCustomerMock.mockRejectedValueOnce(new Error('customers table missing'));
+    const fake = makeTagUpdateFake({ id: 'q1', quote_sent_at: '2026-08-01T00:00:00Z', customer_id: 'cust-1' });
+    serviceRef.current = fake.client;
+
+    const res = await updateQuote('q1', INPUTS, RESULT, undefined, undefined, undefined, undefined, true);
+    expect(res).toEqual({ id: 'q1' });
+  });
+});
+
 // #90 actor audit trail: saveQuote stamps created_by (the operator's user id).
 describe('saveQuote created_by', () => {
   it('writes the caller id into created_by on insert', async () => {
@@ -454,6 +575,38 @@ describe('saveQuote highlevelContactId', () => {
     await saveQuote({ name: 'Jane' }, INPUTS, RESULT);
 
     expect(service.inserts[0]).toMatchObject({ highlevel_contact_id: null });
+  });
+});
+
+// #198: saveQuote's 9th/10th params (legacyRebook, isNce) write legacy_rebook/
+// is_nce on insert — the builder's tag chips can start a NEW quote tagged.
+describe('saveQuote — NCE + YLL Neighbor tags (#198)', () => {
+  it('defaults both tags to false when omitted', async () => {
+    const service = makeFake();
+    serviceRef.current = service.client;
+
+    await saveQuote({ name: 'Jane' }, INPUTS, RESULT);
+
+    expect(service.inserts[0]).toMatchObject({ legacy_rebook: false, is_nce: false });
+  });
+
+  it('writes legacyRebook/isNce through to legacy_rebook/is_nce on insert', async () => {
+    const service = makeFake();
+    serviceRef.current = service.client;
+
+    // saveQuote(customer, inputs, result, serviceType, isTest, createdBy, referredByCustomerId, highlevelContactId, legacyRebook, isNce)
+    await saveQuote({ name: 'Jane' }, INPUTS, RESULT, undefined, false, null, null, null, true, true);
+
+    expect(service.inserts[0]).toMatchObject({ legacy_rebook: true, is_nce: true });
+  });
+
+  it('tags are independent (NCE without Neighbor)', async () => {
+    const service = makeFake();
+    serviceRef.current = service.client;
+
+    await saveQuote({ name: 'Jane' }, INPUTS, RESULT, undefined, false, null, null, null, false, true);
+
+    expect(service.inserts[0]).toMatchObject({ legacy_rebook: false, is_nce: true });
   });
 });
 

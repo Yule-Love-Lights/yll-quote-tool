@@ -11,7 +11,8 @@ import { CustomerReferralPanel } from '@/components/dashboard/CustomerReferralPa
 import { PipelineActionsMenuRefresh } from '@/components/admin/PipelineActionsMenuRefresh';
 import { RebookButton } from '@/components/dashboard/RebookButton';
 import { CustomerTenureEditor } from '@/components/dashboard/CustomerTenureEditor';
-import { getPropertiesForCustomer } from '@/lib/customers';
+import { CustomerTagsEditor } from '@/components/dashboard/CustomerTagsEditor';
+import { getPropertiesForCustomer, getCustomer } from '@/lib/customers';
 import { getCustomerTenure, tenureHeaderLabel } from '@/lib/customerTenure';
 import { getContact, isHighLevelConfigured } from '@/lib/integrations/highlevel';
 import type { CrmContact } from '@/lib/integrations/types';
@@ -138,6 +139,13 @@ export default async function CustomerDetailPage({
   // gets a derived count even with no customerId yet to edit against.
   const tenure = await getCustomerTenure(customerId, hlContactId, new Date());
 
+  // NCE + YLL Neighbor tags (#198): same pre-backfill guard as the tenure
+  // editor above (getCustomer needs a real customerId to save against) —
+  // CustomerTagsEditor is hidden entirely (mirrors CustomerTenureEditor's
+  // own {customerId && ...} guard below) rather than shown disabled, since a
+  // pre-backfill (HL-only) customer has no row here to read tags FROM either.
+  const customerRow = customerId ? await getCustomer(customerId) : null;
+
   return (
     <OperatorShell active="customers">
       <div className="max-w-4xl mx-auto w-full">
@@ -167,6 +175,17 @@ export default async function CustomerDetailPage({
                   customerId={customerId}
                   derivedYears={tenure.derivedYears}
                   initialManualYears={tenure.manualYears}
+                />
+              </div>
+            )}
+            {/* NCE + YLL Neighbor tags (#198) — same pre-backfill guard as
+                the tenure editor above. */}
+            {customerId && (
+              <div className="mt-2">
+                <CustomerTagsEditor
+                  customerId={customerId}
+                  initialIsNce={customerRow?.is_nce ?? false}
+                  initialIsYllNeighbor={customerRow?.is_yll_neighbor ?? false}
                 />
               </div>
             )}

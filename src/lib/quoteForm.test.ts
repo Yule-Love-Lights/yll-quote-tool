@@ -5,6 +5,7 @@ import {
   buildQuoteInputs,
   inputsToFormData,
   applyPrefill,
+  resolveTagPayload,
 } from './quoteForm';
 import type { QuoteInputs } from './pricing/pricingEngine';
 import { makeDefaultPermanentFields } from './permanent/types';
@@ -429,6 +430,71 @@ describe('applyPrefill (#leads Create-quote link)', () => {
   it('leaves highlevelContactId null when no ghlContactId is given', () => {
     const result = applyPrefill(initialFormData, { name: 'Bob' });
     expect(result.highlevelContactId).toBeNull();
+  });
+});
+
+// Review fix (staff HIGH + tech MED, S34 #198 review; INSERT/UPDATE split
+// added in round 2 — a coordinator-caught bug in round 1's own instruction):
+// resolveTagPayload is the ONE shared mechanism both /api/quote call sites
+// in QuoteBuilder use (the main Calculate/Save via runQuote, and the
+// roofline-recommend re-price) — see its own doc comment for the full
+// insert-vs-update rationale. Pure-function coverage here stands in for a
+// full component render test (QuoteBuilder has no test harness — see
+// AGENTS.md convention); grep confirms both call sites spread this same
+// function's return value, each deriving mode fresh from its own quoteId.
+describe('resolveTagPayload (#198 review — touched-ref tag chips)', () => {
+  describe("mode: 'update' (a quoteId already exists)", () => {
+    it('sends undefined for BOTH tags when neither chip was touched (untouched reopen save → no tag write, unchanged)', () => {
+      expect(resolveTagPayload(true, false, true, false, 'update')).toEqual({
+        legacyRebook: undefined,
+        isNce: undefined,
+      });
+      expect(resolveTagPayload(false, false, false, false, 'update')).toEqual({
+        legacyRebook: undefined,
+        isNce: undefined,
+      });
+    });
+
+    it('sends the current value for BOTH tags when both were touched (unchanged)', () => {
+      expect(resolveTagPayload(true, true, true, true, 'update')).toEqual({ legacyRebook: true, isNce: true });
+      expect(resolveTagPayload(false, true, false, true, 'update')).toEqual({ legacyRebook: false, isNce: false });
+    });
+
+    it('resolves each chip independently — touching one never sends the other', () => {
+      // legacyRebook touched (now true), isNce untouched (stays whatever it is, unsent)
+      expect(resolveTagPayload(true, true, true, false, 'update')).toEqual({ legacyRebook: true, isNce: undefined });
+      // isNce touched (now false), legacyRebook untouched
+      expect(resolveTagPayload(true, false, false, true, 'update')).toEqual({ legacyRebook: undefined, isNce: false });
+    });
+
+    it('a touched chip sends its value even when toggled back to its original/default state', () => {
+      // Staff clicked NCE on then off again — still counts as touched, and the
+      // explicit `false` must reach the server (matters for an already-tagged
+      // customer/quote where "off" is a real, deliberate untag).
+      expect(resolveTagPayload(false, false, false, true, 'update')).toEqual({ legacyRebook: undefined, isNce: false });
+    });
+  });
+
+  describe("mode: 'insert' (no quoteId yet — this save creates the row)", () => {
+    it('sends true for an UNTOUCHED but inherited true chip — it persists on the very first save', () => {
+      // The whole point of the round-2 fix: a lead-prefilled or pick-inherited
+      // tag the staff never manually clicked must still land on the brand-new
+      // quote — inheriting the tag by default is the feature's core ask.
+      expect(resolveTagPayload(true, false, true, false, 'insert')).toEqual({ legacyRebook: true, isNce: true });
+    });
+
+    it('sends false for an untouched, never-inherited chip — the ordinary untagged case', () => {
+      expect(resolveTagPayload(false, false, false, false, 'insert')).toEqual({ legacyRebook: false, isNce: false });
+    });
+
+    it('sends the current value regardless of touched — there is no existing row to protect', () => {
+      expect(resolveTagPayload(true, true, true, true, 'insert')).toEqual({ legacyRebook: true, isNce: true });
+      expect(resolveTagPayload(false, true, false, true, 'insert')).toEqual({ legacyRebook: false, isNce: false });
+    });
+
+    it('resolves each chip independently on insert too', () => {
+      expect(resolveTagPayload(true, false, false, false, 'insert')).toEqual({ legacyRebook: true, isNce: false });
+    });
   });
 });
 

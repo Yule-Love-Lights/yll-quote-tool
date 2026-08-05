@@ -1,6 +1,7 @@
 import { getSupabaseClient, getSupabaseServiceClient } from './supabase';
 import { cloneDesignToNewQuote } from './designs';
 import { allocateNumber } from './displayId';
+import { getCustomer } from './customers';
 
 // "Rebook last season" (ledger #83, Phase 5). One click clones a customer/
 // property's last APPROVED quote — its priced inputs/result + its design (scene
@@ -27,6 +28,14 @@ export type RebookSource = {
   customer_id?: string | null;
   property_id?: string | null;
   is_test?: boolean | null;
+  // NCE + YLL Neighbor tags (#198): the SOURCE quote's own tags — carried
+  // forward as a plain clone-field default (like is_test above). rebookLastSeason
+  // overrides these with the CUSTOMER's current tags before calling
+  // buildRebookInsert (a customer may have been tagged more recently than
+  // their last approved quote); rebookFromQuote (#116 exact-quote revive)
+  // leaves them as-is, so a revived quote simply keeps its own tags.
+  legacy_rebook?: boolean | null;
+  is_nce?: boolean | null;
 };
 
 // PURE — the column set a rebooked quote INSERTs. Copies the customer + the
@@ -87,13 +96,17 @@ export function buildRebookInsert(src: RebookSource): Record<string, unknown> {
     // dashboard/jobs/invoices/PO surfaces that trust is_test as the isolation
     // boundary (#93).
     is_test: src.is_test ?? false,
+    // NCE + YLL Neighbor tags (#198) — see the RebookSource field comments
+    // above for which value each caller passes in.
+    legacy_rebook: src.legacy_rebook ?? false,
+    is_nce: src.is_nce ?? false,
   };
 }
 
 // The columns the source-quote lookup selects (kept in one place so the query +
 // the RebookSource shape stay in sync).
 const SOURCE_COLUMNS =
-  'id, customer_name, customer_address, customer_phone, customer_email, highlevel_contact_id, service_type, inputs, result, customer_id, property_id, is_test';
+  'id, customer_name, customer_address, customer_phone, customer_email, highlevel_contact_id, service_type, inputs, result, customer_id, property_id, is_test, legacy_rebook, is_nce';
 
 // Best-effort sequential quote_number (ledger #83, SPEC §4.6) for a rebooked
 // clone — same allocateNumber('quote_number_seq') + try/catch-omit pattern
@@ -146,12 +159,22 @@ export async function rebookLastSeason(
   if (!data) return null; // no approved quote to rebook from
   const src = data as RebookSource & { id: string };
 
+  // NCE + YLL Neighbor tags (#198): inherit the CUSTOMER's CURRENT tags
+  // (customer→quote inheritance), not necessarily whatever this particular
+  // old approved quote happened to carry — the customer may have been tagged
+  // more recently (profile edit, or propagation off a later quote) than their
+  // last approved one. Best-effort: getCustomer fails soft (null on error /
+  // unconfigured), which falls back to the source quote's own tag below.
+  const customer = await getCustomer(customerId);
+
   const quoteNumber = await allocateRebookQuoteNumber('rebookLastSeason');
   const insertRow = {
     ...buildRebookInsert({
       ...src,
       // Honor an explicit property scope; otherwise keep the source's property.
       property_id: propertyId ?? src.property_id ?? null,
+      legacy_rebook: customer?.is_yll_neighbor ?? src.legacy_rebook ?? false,
+      is_nce: customer?.is_nce ?? src.is_nce ?? false,
     }),
     ...(quoteNumber != null ? { quote_number: quoteNumber } : {}),
     created_by: createdBy,
