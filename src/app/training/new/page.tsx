@@ -652,12 +652,26 @@ function NewTrainingHousePageInner() {
       const newGingerLines = r.gingerbreadLines ?? [];
       const detections = r.miniLightDetections ?? [];
 
-      setSantasLines(newSantasLines);
-      setGingerbreadLines(newGingerLines);
-      setSantasFootage(r.santasFootage);
-      setSantasDifficulty(r.santasDifficulty);
-      setGingerbreadFootage(r.gingerbreadFootage);
-      setGingerbreadDifficulty(r.gingerbreadDifficulty);
+      // Same hazard as the scale guard below, one photo type earlier: on an
+      // archive trace the ONLY photo Auto-Analyze has to look at is the
+      // daytime satellite (the night photos are reference-only, never the
+      // active markup target), so the analyzer is guessing a ground-level
+      // roofline off an overhead shot it was never built for. Applying that
+      // guess would silently discard the operator's traced/typed gutterline
+      // and ridge — including an explicit "Override" entry — with no
+      // confirmation. Device-checked live: without this guard, a drawn
+      // 80ft gutterline + an "Override" of 999ft both reset to 0ft/no
+      // segments on a single Auto-Analyze click, and nothing server-side
+      // rejects a zero-footage save, so a wiped trace can land in the
+      // corpus as "confirmed" ground truth.
+      if (!archiveScaleLockedRef.current) {
+        setSantasLines(newSantasLines);
+        setGingerbreadLines(newGingerLines);
+        setSantasFootage(r.santasFootage);
+        setSantasDifficulty(r.santasDifficulty);
+        setGingerbreadFootage(r.gingerbreadFootage);
+        setGingerbreadDifficulty(r.gingerbreadDifficulty);
+      }
       setWreathDetections(r.wreathDetections ?? []);
       setSpritzerDetections(r.spritzerDetections ?? []);
       setGarlandDetections(r.garlandDetections ?? []);
