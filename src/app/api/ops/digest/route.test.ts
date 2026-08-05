@@ -114,8 +114,8 @@ describe('GET /api/ops/digest', () => {
     expect(msg).toContain('☀️ YLL morning digest');
     expect(msg).toContain('📝 Quotes to send: 1');
     expect(msg).toContain('📥 Inbox — 64 to respond · 2 follow-ups due');
+    expect(msg).toContain('→ https://quote.yulelovelights.com/admin/quotes');
     expect(msg).toContain('→ https://quote.yulelovelights.com/inbox');
     expect(msg).toContain('Dashboard → https://quote.yulelovelights.com/');
-    expect(msg).not.toContain('/admin/quotes');
   });
 });

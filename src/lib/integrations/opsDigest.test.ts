@@ -65,6 +65,7 @@ const emptyData: OpsDigestData = {
   quotesToSendCount: 0,
   rebookDraftCount: 0,
   quotesAwaitingReplyCount: 0,
+  changesRequestedCount: 0,
   depositsPendingCount: 0,
   inboxOpenCount: 0,
   inboxFollowUpsDueCount: 0,
@@ -114,11 +115,13 @@ describe('collectOpsDigest', () => {
       quote({ id: 'q8', quote_number: 108, quote_sent_at: '2026-07-05T00:00:00Z' }), // sent → awaiting reply
       quote({ id: 'q9', quote_number: 109, viewed_at: '2026-07-06T00:00:00Z' }), // viewed → awaiting reply
       quote({ id: 'q10', quote_number: 110, legacy_rebook: true, view_only: true }), // rebook BUT view-only → excluded from rebookDraftCount
+      quote({ id: 'q11', quote_number: 111, status: 'changes_requested' }), // customer asked for edits → changes requested
     ]);
     const data = await collectOpsDigest();
     expect(data.quotesToSendCount).toBe(1); // q1
     expect(data.rebookDraftCount).toBe(1); // q3 only; q10 is view-only so excluded (parity with the real bucket)
     expect(data.quotesAwaitingReplyCount).toBe(2); // q8 sent + q9 viewed
+    expect(data.changesRequestedCount).toBe(1); // q11
     expect(data.depositsPendingCount).toBe(1); // q4 approved+unpaid; q5 booked
   });
 
@@ -153,11 +156,12 @@ describe('opsDigestMessage (pure formatter — heartbeat)', () => {
     expect(msg).toContain('📝 Quotes to send: 0');
     expect(msg).toContain('🏘️ Neighbor (rebook) drafts: 0');
     expect(msg).toContain('⏳ Quotes awaiting reply: 0');
+    expect(msg).toContain('✏️ Changes requested: 0');
     expect(msg).toContain('💰 Deposits pending: 0');
+    expect(msg).toContain('→ https://quote.yulelovelights.com/admin/quotes');
     expect(msg).toContain('📥 Inbox — 0 to respond · 0 follow-ups due');
     expect(msg).toContain('→ https://quote.yulelovelights.com/inbox');
     expect(msg).toContain('Dashboard → https://quote.yulelovelights.com/');
-    expect(msg).not.toContain('/admin/quotes');
   });
 
   it('lists installs by name but shows counts for the pipeline stats', () => {
@@ -169,6 +173,7 @@ describe('opsDigestMessage (pure formatter — heartbeat)', () => {
         quotesToSendCount: 3,
         rebookDraftCount: 124,
         quotesAwaitingReplyCount: 8,
+        changesRequestedCount: 1,
         depositsPendingCount: 2,
         inboxOpenCount: 64,
         inboxFollowUpsDueCount: 10,
@@ -183,7 +188,9 @@ describe('opsDigestMessage (pure formatter — heartbeat)', () => {
     expect(msg).toContain('📝 Quotes to send: 3');
     expect(msg).toContain('🏘️ Neighbor (rebook) drafts: 124');
     expect(msg).toContain('⏳ Quotes awaiting reply: 8');
+    expect(msg).toContain('✏️ Changes requested: 1');
     expect(msg).toContain('💰 Deposits pending: 2');
+    expect(msg).toContain('→ https://quote.yulelovelights.com/admin/quotes');
     expect(msg).toContain('📥 Inbox — 64 to respond · 10 follow-ups due');
   });
 

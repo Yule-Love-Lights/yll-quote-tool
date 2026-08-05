@@ -42,6 +42,8 @@ export type OpsDigestData = {
   rebookDraftCount: number;
   /** Sent/viewed, no decision yet — customer owes a reply, we owe a follow-up. */
   quotesAwaitingReplyCount: number;
+  /** Customer asked for edits — WE owe a revised quote (deriveStatus 'changes_requested'). */
+  changesRequestedCount: number;
   /** Approved, deposit not yet paid. */
   depositsPendingCount: number;
   /** Open inbox items needing a first response, matching /inbox (null = read
@@ -100,6 +102,7 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
     const s = deriveStatus(q);
     return s === 'sent' || s === 'viewed';
   }).length;
+  const changesRequestedCount = real.filter((q) => deriveStatus(q) === 'changes_requested').length;
   const depositsPendingCount = real.filter((q) => deriveStatus(q) === 'approved').length;
   const rebookDraftCount = allQuotes.filter(
     (q) => !q.is_test && !q.view_only && q.legacy_rebook && deriveStatus(q) === 'draft',
@@ -125,6 +128,7 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
     quotesToSendCount,
     rebookDraftCount,
     quotesAwaitingReplyCount,
+    changesRequestedCount,
     depositsPendingCount,
     inboxOpenCount,
     inboxFollowUpsDueCount,
@@ -160,7 +164,9 @@ export function opsDigestMessage(data: OpsDigestData, baseUrl: string): string {
   lines.push(`📝 Quotes to send: ${data.quotesToSendCount}`);
   lines.push(`🏘️ Neighbor (rebook) drafts: ${data.rebookDraftCount}`);
   lines.push(`⏳ Quotes awaiting reply: ${data.quotesAwaitingReplyCount}`);
+  lines.push(`✏️ Changes requested: ${data.changesRequestedCount}`);
   lines.push(`💰 Deposits pending: ${data.depositsPendingCount}`);
+  lines.push(`→ ${base}/admin/quotes`);
 
   lines.push('');
   const inboxBits: string[] = [];
