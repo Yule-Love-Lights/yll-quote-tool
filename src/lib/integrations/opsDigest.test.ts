@@ -3,12 +3,15 @@ import type { QuoteListItem } from '@/lib/quotes';
 import type { FulfillmentCard } from '@/lib/inventory/jobs';
 
 // IO seams mocked; the collect filtering + the pure formatter run for real.
-const { listQuotes, listFulfillmentCards } = vi.hoisted(() => ({
+const { listQuotes, listFulfillmentCards, listOpenItems, listDueFollowUps } = vi.hoisted(() => ({
   listQuotes: vi.fn(async (): Promise<unknown[]> => []),
   listFulfillmentCards: vi.fn(async (): Promise<unknown[]> => []),
+  listOpenItems: vi.fn(async (): Promise<unknown> => ({ ok: true, items: [], totalOpen: 0, truncated: false })),
+  listDueFollowUps: vi.fn(async (): Promise<unknown> => ({ ok: true, items: [] })),
 }));
 vi.mock('@/lib/quotes', () => ({ listQuotes }));
 vi.mock('@/lib/inventory/jobs', () => ({ listFulfillmentCards }));
+vi.mock('@/lib/dashboard/inbox/store', () => ({ listOpenItems, listDueFollowUps }));
 
 import { collectOpsDigest, opsDigestMessage, type OpsDigestData } from './opsDigest';
 
@@ -56,18 +59,23 @@ const card = (over: Partial<FulfillmentCard>): FulfillmentCard => ({
 });
 
 const emptyData: OpsDigestData = {
+  dateLabel: 'Tue, Aug 5',
   installsToday: [],
   installsTomorrow: [],
-  quotesToSend: [],
   quotesToSendCount: 0,
-  depositsPending: [],
+  rebookDraftCount: 0,
+  quotesAwaitingReplyCount: 0,
   depositsPendingCount: 0,
+  inboxOpenCount: 0,
+  inboxFollowUpsDueCount: 0,
 };
 
 beforeEach(() => {
   vi.clearAllMocks();
   listQuotes.mockResolvedValue([]);
   listFulfillmentCards.mockResolvedValue([]);
+  listOpenItems.mockResolvedValue({ ok: true, items: [], totalOpen: 0, truncated: false });
+  listDueFollowUps.mockResolvedValue({ ok: true, items: [] });
 });
 
 describe('collectOpsDigest', () => {
@@ -94,56 +102,99 @@ describe('collectOpsDigest', () => {
     expect(data.installsTomorrow.map((i) => i.jobNumber)).toEqual([143]);
   });
 
-  it('counts draft quotes as to-send and approved-unpaid as deposits pending, excluding test + legacy + view-only', async () => {
+  it('counts each quote bucket: draft to-send, sent/viewed awaiting reply, approved deposits, rebook drafts; excludes test + view-only', async () => {
     listQuotes.mockResolvedValue([
-      quote({}),
-      quote({ id: 'q2', quote_number: 102, is_test: true }),
-      quote({ id: 'q3', quote_number: 103, legacy_rebook: true }),
-      quote({ id: 'q4', quote_number: 104, customer_approved_at: '2026-07-10T00:00:00Z' }),
-      quote({ id: 'q5', quote_number: 105, customer_approved_at: '2026-07-10T00:00:00Z', deposit_paid_at: '2026-07-11T00:00:00Z' }),
-      quote({ id: 'q6', quote_number: 106, status: 'declined' }),
-      quote({ id: 'q7', quote_number: 107, view_only: true }),
+      quote({}), // q1 draft, real → to-send
+      quote({ id: 'q2', quote_number: 102, is_test: true }), // excluded
+      quote({ id: 'q3', quote_number: 103, legacy_rebook: true }), // rebook draft → own line
+      quote({ id: 'q4', quote_number: 104, customer_approved_at: '2026-07-10T00:00:00Z' }), // approved → deposit pending
+      quote({ id: 'q5', quote_number: 105, customer_approved_at: '2026-07-10T00:00:00Z', deposit_paid_at: '2026-07-11T00:00:00Z' }), // booked → none
+      quote({ id: 'q6', quote_number: 106, status: 'declined' }), // terminal → none
+      quote({ id: 'q7', quote_number: 107, view_only: true }), // excluded
+      quote({ id: 'q8', quote_number: 108, quote_sent_at: '2026-07-05T00:00:00Z' }), // sent → awaiting reply
+      quote({ id: 'q9', quote_number: 109, viewed_at: '2026-07-06T00:00:00Z' }), // viewed → awaiting reply
     ]);
     const data = await collectOpsDigest();
-    expect(data.quotesToSendCount).toBe(1); // only q1: test/legacy/approved/booked/declined/view-only all excluded
-    expect(data.quotesToSend[0].quoteNumber).toBe(101);
-    expect(data.depositsPendingCount).toBe(1); // q4 approved + unpaid; q5 is booked
-    expect(data.depositsPending[0].quoteNumber).toBe(104);
+    expect(data.quotesToSendCount).toBe(1); // q1
+    expect(data.rebookDraftCount).toBe(1); // q3 (a legacy_rebook draft, excluded from the real pipeline)
+    expect(data.quotesAwaitingReplyCount).toBe(2); // q8 sent + q9 viewed
+    expect(data.depositsPendingCount).toBe(1); // q4 approved+unpaid; q5 booked
   });
 
-  it('caps the line lists at 5 but keeps the full counts', async () => {
-    listQuotes.mockResolvedValue(
-      Array.from({ length: 8 }, (_, i) => quote({ id: `q${i}`, quote_number: 200 + i })),
-    );
+  it('reads inbox open + due-follow-up counts from the inbox surface (totalOpen, not the capped page)', async () => {
+    listOpenItems.mockResolvedValue({ ok: true, items: [{}, {}], totalOpen: 64, truncated: true });
+    listDueFollowUps.mockResolvedValue({ ok: true, items: [{}, {}, {}] });
     const data = await collectOpsDigest();
-    expect(data.quotesToSend).toHaveLength(5);
-    expect(data.quotesToSendCount).toBe(8);
+    expect(data.inboxOpenCount).toBe(64);
+    expect(data.inboxFollowUpsDueCount).toBe(3);
+  });
+
+  it('falls back to null inbox counts when the inbox read fails — never breaks the digest', async () => {
+    listOpenItems.mockResolvedValue({ ok: false, error: 'db down' });
+    listDueFollowUps.mockRejectedValue(new Error('boom'));
+    const data = await collectOpsDigest();
+    expect(data.inboxOpenCount).toBeNull();
+    expect(data.inboxFollowUpsDueCount).toBeNull();
+  });
+
+  it('stamps a shop-timezone date label', async () => {
+    const data = await collectOpsDigest();
+    // 2026-07-21T02:00Z is still Mon Jul 20 in New York.
+    expect(data.dateLabel).toBe('Mon, Jul 20');
   });
 });
 
-describe('opsDigestMessage (pure formatter)', () => {
-  it('returns null on an all-quiet day — no noise ping', () => {
-    expect(opsDigestMessage(emptyData, 'https://x')).toBeNull();
+describe('opsDigestMessage (pure formatter — heartbeat)', () => {
+  it('ALWAYS returns a message: an all-quiet day still sends, with zeroed counts', () => {
+    const msg = opsDigestMessage(emptyData, 'https://quote.yulelovelights.com');
+    expect(msg).toContain('☀️ YLL morning digest — Tue, Aug 5');
+    expect(msg).toContain('🔧 Installs — today: 0 · tomorrow: 0');
+    expect(msg).toContain('📝 Quotes to send: 0');
+    expect(msg).toContain('🏘️ Neighbor (rebook) drafts: 0');
+    expect(msg).toContain('⏳ Quotes awaiting reply: 0');
+    expect(msg).toContain('💰 Deposits pending: 0');
+    expect(msg).toContain('📥 Inbox — 0 to respond · 0 follow-ups due');
+    expect(msg).toContain('→ https://quote.yulelovelights.com/inbox');
+    expect(msg).toContain('Dashboard → https://quote.yulelovelights.com/');
+    expect(msg).not.toContain('/admin/quotes');
   });
 
-  it('renders only the non-empty sections, with the overflow marker and TEST tag', () => {
+  it('lists installs by name but shows counts for the pipeline stats', () => {
     const msg = opsDigestMessage(
       {
         ...emptyData,
         installsToday: [{ jobNumber: 142, customerName: 'Maria', stageLabel: 'Ready For Install', isTest: true }],
-        quotesToSend: [{ quoteNumber: 101, customerName: 'Ann', total: 1500 }],
-        quotesToSendCount: 7,
+        installsTomorrow: [{ jobNumber: 143, customerName: 'Tom', stageLabel: 'Scheduled', isTest: false }],
+        quotesToSendCount: 3,
+        rebookDraftCount: 124,
+        quotesAwaitingReplyCount: 8,
+        depositsPendingCount: 2,
+        inboxOpenCount: 64,
+        inboxFollowUpsDueCount: 10,
       },
       'https://quote.yulelovelights.com',
     );
-    expect(msg).toContain('☀️ YLL morning digest');
-    expect(msg).toContain('Installs today:');
+    expect(msg).toContain('🔧 Installs today:');
     expect(msg).toContain('• Job #142 Maria (Ready For Install) [TEST]');
-    expect(msg).not.toContain('Installs tomorrow:');
-    expect(msg).toContain('Quotes to send: 7');
-    expect(msg).toContain('• #101 Ann — $1,500');
-    expect(msg).toContain('…+6 more');
-    expect(msg).not.toContain('Deposits pending');
-    expect(msg).toContain('Admin → https://quote.yulelovelights.com/admin/quotes');
+    expect(msg).toContain('🔧 Installs tomorrow:');
+    expect(msg).toContain('• Job #143 Tom (Scheduled)');
+    expect(msg).toContain('📝 Quotes to send: 3');
+    expect(msg).toContain('🏘️ Neighbor (rebook) drafts: 124');
+    expect(msg).toContain('⏳ Quotes awaiting reply: 8');
+    expect(msg).toContain('💰 Deposits pending: 2');
+    expect(msg).toContain('📥 Inbox — 64 to respond · 10 follow-ups due');
+  });
+
+  it('keeps the inbox line + link but drops the numbers when the inbox read failed', () => {
+    const msg = opsDigestMessage({ ...emptyData, inboxOpenCount: null, inboxFollowUpsDueCount: null }, 'https://x');
+    expect(msg).toContain('📥 Inbox\n→ https://x/inbox');
+    expect(msg).not.toContain('to respond');
+  });
+
+  it('normalizes a trailing slash on the base url', () => {
+    const msg = opsDigestMessage(emptyData, 'https://x/');
+    expect(msg).toContain('→ https://x/inbox');
+    expect(msg).toContain('Dashboard → https://x/');
+    expect(msg).not.toContain('https://x//');
   });
 });
