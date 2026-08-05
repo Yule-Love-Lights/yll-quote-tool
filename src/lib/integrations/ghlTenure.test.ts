@@ -89,6 +89,10 @@ describe('formatTenureYearsForGhl', () => {
   it('empty input → empty string', () => {
     expect(formatTenureYearsForGhl([])).toBe('');
   });
+
+  it('drops non-integer values (review fix batch, tech-lens LOW)', () => {
+    expect(formatTenureYearsForGhl([2023, 2024.5, NaN, 2024])).toBe('2023, 2024');
+  });
 });
 
 describe('pushTenureYearsToGhl — guards', () => {
@@ -136,6 +140,58 @@ describe('pushTenureYearsToGhl — guards', () => {
 
     await expect(pushTenureYearsToGhl('cust-1')).resolves.toEqual({ pushed: false });
   });
+
+  // Review fix batch (#200 admin-lens HIGH): getTenureQuotes fails OPEN to []
+  // on a transient DB read error, so an empty computed set must never be
+  // treated as "report zero" — it skips entirely, before the field is even
+  // resolved.
+  it('skips when the computed year set is empty — zero API calls, field never resolved', async () => {
+    customersMock.getCustomer.mockResolvedValue({ id: 'cust-1', hl_contact_id: 'hl-1' });
+    tenureMock.getCustomerTenure.mockResolvedValue({ years: [], count: 0, manualYears: [], derivedYears: [] });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await pushTenureYearsToGhl('cust-1');
+
+    expect(result).toEqual({ pushed: false });
+    expect(hl.listLocationCustomFields).not.toHaveBeenCalled();
+    expect(hl.createLocationCustomField).not.toHaveBeenCalled();
+    expect(hl.upsertContactCustomField).not.toHaveBeenCalled();
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('computed empty year set'));
+    errSpy.mockRestore();
+  });
+});
+
+describe('pushTenureYearsToGhl — deadline', () => {
+  it('times out after PUSH_DEADLINE_MS and resolves pushed:false without throwing', async () => {
+    vi.useFakeTimers();
+    customersMock.getCustomer.mockResolvedValue({ id: 'cust-1', hl_contact_id: 'hl-1' });
+    // Never resolves — simulates a hung downstream call so the deadline is
+    // the only thing that can settle the outer promise.
+    tenureMock.getCustomerTenure.mockImplementation(() => new Promise(() => {}));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const resultPromise = pushTenureYearsToGhl('cust-1');
+    await vi.advanceTimersByTimeAsync(6000);
+    const result = await resultPromise;
+
+    expect(result).toEqual({ pushed: false });
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('push timed out'));
+
+    errSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('does NOT time out when the real work finishes well within the deadline', async () => {
+    vi.useFakeTimers();
+    customersMock.getCustomer.mockResolvedValue({ id: 'cust-1', hl_contact_id: 'hl-1' });
+    tenureMock.getCustomerTenure.mockResolvedValue({ years: [2023], count: 1, manualYears: [], derivedYears: [2023] });
+    hl.listLocationCustomFields.mockResolvedValue([{ id: 'field-1', name: TENURE_FIELD_NAME }]);
+
+    const result = await pushTenureYearsToGhl('cust-1');
+
+    expect(result).toEqual({ pushed: true });
+    vi.useRealTimers();
+  });
 });
 
 describe('pushTenureYearsToGhl — happy path', () => {
@@ -177,6 +233,78 @@ describe('pushTenureYearsToGhl — field resolution (create-if-missing + cache)'
     expect(result).toEqual({ pushed: true });
     expect(hl.createLocationCustomField).toHaveBeenCalledWith({ name: TENURE_FIELD_NAME, dataType: 'TEXT' });
     expect(hl.upsertContactCustomField).toHaveBeenCalledWith('hl-1', 'brand-new-field', '2023');
+  });
+
+  // Review fix batch (tech-lens MED): the hand-create dashboard fallback
+  // (named in resolveTenureFieldId's docstring) must survive a casing or
+  // whitespace slip.
+  it('matches an existing field by name with different casing + surrounding whitespace, without creating a duplicate', async () => {
+    linkedCustomer();
+    hl.listLocationCustomFields.mockResolvedValue([{ id: 'hand-created', name: '  years WITH yll  ' }]);
+
+    const result = await pushTenureYearsToGhl('cust-1');
+
+    expect(result).toEqual({ pushed: true });
+    expect(hl.createLocationCustomField).not.toHaveBeenCalled();
+    expect(hl.upsertContactCustomField).toHaveBeenCalledWith('hl-1', 'hand-created', '2023');
+  });
+
+  // Review fix batch (#200 tech-lens HIGH): this location provably has other
+  // contact custom fields (quote-link/referral fields), so a genuinely empty
+  // list is treated as a probable response-wrapper parse bug — refuse rather
+  // than risk creating a duplicate field on every future booking.
+  it('refuses to create when the list comes back EMPTY (probable parse bug), never auto-creates', async () => {
+    linkedCustomer();
+    hl.listLocationCustomFields.mockResolvedValue([]);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await pushTenureYearsToGhl('cust-1');
+
+    expect(result).toEqual({ pushed: false });
+    expect(hl.createLocationCustomField).not.toHaveBeenCalled();
+    expect(hl.upsertContactCustomField).not.toHaveBeenCalled();
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('came back EMPTY'));
+    errSpy.mockRestore();
+  });
+
+  // Review fix batch (admin-lens MED): a stray duplicate field in GHL must
+  // not make different process instances write to different fields.
+  it('when multiple fields match the name, warns with the count + ids and deterministically picks the lowest id', async () => {
+    linkedCustomer();
+    hl.listLocationCustomFields.mockResolvedValue([
+      { id: 'field-z', name: TENURE_FIELD_NAME },
+      { id: 'field-a', name: TENURE_FIELD_NAME },
+    ]);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await pushTenureYearsToGhl('cust-1');
+
+    expect(result).toEqual({ pushed: true });
+    expect(hl.upsertContactCustomField).toHaveBeenCalledWith('hl-1', 'field-a', '2023');
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('2 custom fields match'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('field-a'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('field-z'));
+    warnSpy.mockRestore();
+  });
+
+  // Review fix batch (tech-lens MED): a human deleting/renaming the field in
+  // GHL must not silently no-op every push from a warm instance forever.
+  it('clears the cached field id when the upsert fails, so the next push re-resolves', async () => {
+    linkedCustomer();
+    hl.listLocationCustomFields.mockResolvedValueOnce([{ id: 'field-old', name: TENURE_FIELD_NAME }]);
+    hl.upsertContactCustomField.mockRejectedValueOnce(new Error('contact custom field not found'));
+
+    const first = await pushTenureYearsToGhl('cust-1');
+    expect(first).toEqual({ pushed: false });
+
+    // Second push: field id was cleared, so it must re-list rather than
+    // silently reuse the dead 'field-old' id.
+    hl.listLocationCustomFields.mockResolvedValueOnce([{ id: 'field-new', name: TENURE_FIELD_NAME }]);
+    const second = await pushTenureYearsToGhl('cust-1');
+
+    expect(second).toEqual({ pushed: true });
+    expect(hl.listLocationCustomFields).toHaveBeenCalledTimes(2);
+    expect(hl.upsertContactCustomField).toHaveBeenLastCalledWith('hl-1', 'field-new', '2023');
   });
 
   it('caches the resolved field id in-process — a second push does not re-list or re-create', async () => {
