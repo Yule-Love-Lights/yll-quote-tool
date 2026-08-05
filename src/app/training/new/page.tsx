@@ -664,6 +664,20 @@ function NewTrainingHousePageInner() {
       // segments on a single Auto-Analyze click, and nothing server-side
       // rejects a zero-footage save, so a wiped trace can land in the
       // corpus as "confirmed" ground truth.
+      //
+      // Detections (wreaths/spritzers/garland/mini-lights) get the SAME
+      // guard, for the SAME reason: pre-merge review (staff + technical
+      // lens, independently) caught that the archive flow's only photo is
+      // the satellite — a top-down shot has no legible wreath-on-a-door or
+      // spritzer-on-a-railing to detect, so an unguarded apply here would
+      // overwrite hand-placed boxes (working from the night reference
+      // photos, which is the intended archive workflow) with a satellite
+      // guess that's structurally unable to be right. recalcStrings below
+      // would compound it: it derives its scale from r.santasFootage /
+      // newSantasLines, i.e. the exact satellite-hallucinated numbers this
+      // guard already refuses to trust for feetPerUnit — so even a
+      // "successful" detection would carry a wrong string count computed
+      // off an untrustworthy scale, not just a missing one.
       if (!archiveScaleLockedRef.current) {
         setSantasLines(newSantasLines);
         setGingerbreadLines(newGingerLines);
@@ -671,42 +685,44 @@ function NewTrainingHousePageInner() {
         setSantasDifficulty(r.santasDifficulty);
         setGingerbreadFootage(r.gingerbreadFootage);
         setGingerbreadDifficulty(r.gingerbreadDifficulty);
-      }
-      setWreathDetections(r.wreathDetections ?? []);
-      setSpritzerDetections(r.spritzerDetections ?? []);
-      setGarlandDetections(r.garlandDetections ?? []);
+        setWreathDetections(r.wreathDetections ?? []);
+        setSpritzerDetections(r.spritzerDetections ?? []);
+        setGarlandDetections(r.garlandDetections ?? []);
 
-      const santasLen = polylineLength(newSantasLines, imgAspect);
-      const ridgeLen = polylineLength(newGingerLines, imgAspect);
-      let scale: number | null = null;
-      if (santasLen > 0 && r.santasFootage > 0) scale = r.santasFootage / santasLen;
-      else if (ridgeLen > 0 && r.gingerbreadFootage > 0) scale = r.gingerbreadFootage / ridgeLen;
+        const santasLen = polylineLength(newSantasLines, imgAspect);
+        const ridgeLen = polylineLength(newGingerLines, imgAspect);
+        let scale: number | null = null;
+        if (santasLen > 0 && r.santasFootage > 0) scale = r.santasFootage / santasLen;
+        else if (ridgeLen > 0 && r.gingerbreadFootage > 0) scale = r.gingerbreadFootage / ridgeLen;
 
-      // Seed calibration so garland/column length readouts and any subsequent
-      // polyline edits use feet, not raw normalized units. Never on an archive
-      // trace: the analyzer is built for ground-level elevations and its
-      // footage guess off an overhead satellite would replace a measured scale
-      // with a hallucinated one (#167).
-      if (scale && !archiveScaleLockedRef.current) setFeetPerUnit(scale);
+        // Seed calibration so garland/column length readouts and any
+        // subsequent polyline edits use feet, not raw normalized units.
+        if (scale) setFeetPerUnit(scale);
 
-      if (scale && detections.length > 0) {
-        const PERSPECTIVE = 0.4;
-        const recalcStrings = (box: [number, number, number, number]): number => {
-          const widthFt = box[2] * scale! * PERSPECTIVE;
-          const heightFt = (box[3] / imgAspect) * scale! * PERSPECTIVE;
-          const circumIn = Math.PI * widthFt * 12;
-          const wraps = (heightFt * 12) / 6;
-          const footageFt = (wraps * circumIn) / 12;
-          return Math.max(1, Math.round(footageFt / 25));
-        };
-        // Railings are a LINEAR top-rail run, not a cylindrical wrap — the AI's
-        // ~1-string-per-25ft count is already right; don't re-apply the wrap math.
-        setMiniLightDetections(detections.map(d => ({ ...d, stringCount: d.type === 'railing' ? d.stringCount : recalcStrings(d.box) })));
-      } else {
-        setMiniLightDetections(detections);
+        if (scale && detections.length > 0) {
+          const PERSPECTIVE = 0.4;
+          const recalcStrings = (box: [number, number, number, number]): number => {
+            const widthFt = box[2] * scale! * PERSPECTIVE;
+            const heightFt = (box[3] / imgAspect) * scale! * PERSPECTIVE;
+            const circumIn = Math.PI * widthFt * 12;
+            const wraps = (heightFt * 12) / 6;
+            const footageFt = (wraps * circumIn) / 12;
+            return Math.max(1, Math.round(footageFt / 25));
+          };
+          // Railings are a LINEAR top-rail run, not a cylindrical wrap — the
+          // AI's ~1-string-per-25ft count is already right; don't re-apply
+          // the wrap math.
+          setMiniLightDetections(detections.map(d => ({ ...d, stringCount: d.type === 'railing' ? d.stringCount : recalcStrings(d.box) })));
+        } else {
+          setMiniLightDetections(detections);
+        }
       }
 
-      setAnalysisNotes(`${r.notes} (confidence: ${r.confidence})`);
+      setAnalysisNotes(
+        archiveScaleLockedRef.current
+          ? `${r.notes} (confidence: ${r.confidence}) — archive trace: satellite-derived geometry and detections were NOT applied, trace the roofline and place decorations by hand from the night reference photos.`
+          : `${r.notes} (confidence: ${r.confidence})`,
+      );
     } catch (err) {
       setAnalysisError(err instanceof Error ? err.message : 'Analysis failed');
     } finally {
