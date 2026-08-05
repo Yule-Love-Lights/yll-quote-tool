@@ -129,8 +129,18 @@ export async function getArchiveQueue(): Promise<ArchiveQueue> {
 
   // The lane is defined by "no address to geocode", not by status: a row can be
   // addressless and still sit at whatever status the loader left it at.
-  const needsIdRows = rows.filter(r => !r.resolved_address);
-  const traceRows = rows.filter(r => r.resolved_address && r.resolved_address_key);
+  //
+  // Partitioned on the KEY, not the raw address, matching the imagery worker's
+  // claim filter. resolved_address_key is `nullif(btrim(regexp_replace(...)), '')`,
+  // so a whitespace-only resolved_address is TRUTHY in the raw column but NULL
+  // in the key. Splitting on the raw address would put such a row in neither
+  // list — truthy address excludes it from the identification lane, null key
+  // excludes it from the trace lane — leaving it invisible to every operator
+  // forever. Keying both sides off the same column makes the partition
+  // exhaustive by construction. Not reachable from identifyArchivePhoto (it
+  // trims and rejects blank), but nothing enforces it for loader-seeded rows.
+  const traceRows = rows.filter(r => r.resolved_address_key);
+  const needsIdRows = rows.filter(r => !r.resolved_address_key);
 
   const signed = await signPaths([
     ...rows.map(r => r.night_photo_ref).filter((p): p is string => !!p),
@@ -203,14 +213,21 @@ export async function identifyArchivePhoto(id: string, address: string): Promise
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase is not configured' };
 
-  // Only ever fills a BLANK address. Re-pointing a row that already has one is a
-  // different, riskier operation (its imagery and any promoted trace were
-  // derived from the old address) and is deliberately not offered here.
+  // Only ever fills a row with no USABLE address. Re-pointing a row that already
+  // has one is a different, riskier operation (its imagery and any promoted
+  // trace were derived from the old address) and is deliberately not offered.
+  //
+  // Guarded on the KEY rather than the raw address so it matches exactly what
+  // getArchiveQueue puts in this lane. Guarding on `resolved_address is null`
+  // would render a whitespace-only row in the lane and then refuse every
+  // attempt to fix it — visible but unfixable. The key is still a valid CAS
+  // target: it is generated from the address, so a successful identify makes it
+  // non-null and a second concurrent identify matches zero rows.
   const { data, error } = await sb
     .from('archive_photos')
     .update({ resolved_address: trimmed, status: 'pending', updated_at: new Date().toISOString() })
     .eq('id', id)
-    .is('resolved_address', null)
+    .is('resolved_address_key', null)
     .select('id');
   if (error) return { ok: false, error: error.message };
   if (!data || data.length === 0) return { ok: false, error: 'That photo already has an address' };
@@ -272,17 +289,28 @@ export async function getArchivePrefill(addressKey: string): Promise<ArchivePref
 }
 
 /**
- * Link a saved training house back to the archive rows it came from and take
- * the property out of the queue. Best-effort by design: the training house is
- * already written by the time this runs, so a failure here must not fail the
- * save — it leaves the property in the queue, which is a visible, re-doable
- * state rather than lost work.
+ * Link a saved training house back to the archive rows it came from and mark
+ * the property traced.
+ *
+ * COMPARE-AND-SWAP on promoted_training_house_id, mirroring identifyArchivePhoto's
+ * .is(null) guard. Without it, two operators working the queue at once — or one
+ * operator with a stale second tab — both finish tracing the same house, both
+ * saves succeed, and the later call silently overwrites the pointer. The first
+ * operator's completed trace becomes an orphaned training_houses row that no
+ * queue card ever surfaces again, with nothing on screen saying so.
+ *
+ * Returns whether THIS call claimed the property. False means someone else got
+ * there first; the training house is still saved (it is written before this
+ * runs), so the caller's job is to tell the operator, not to fail the save.
  */
-export async function promoteArchiveProperty(addressKey: string, trainingHouseId: string): Promise<void> {
+export async function promoteArchiveProperty(
+  addressKey: string,
+  trainingHouseId: string,
+): Promise<{ promoted: boolean }> {
   const sb = getSupabaseServiceClient();
-  if (!sb) return;
+  if (!sb) return { promoted: false };
 
-  const { error } = await sb
+  const { data, error } = await sb
     .from('archive_photos')
     .update({
       promoted_training_house_id: trainingHouseId,
@@ -290,8 +318,44 @@ export async function promoteArchiveProperty(addressKey: string, trainingHouseId
       updated_at: new Date().toISOString(),
     })
     .eq('resolved_address_key', addressKey)
-    .neq('status', 'excluded');
-  if (error) console.error('promoteArchiveProperty error:', error.message);
+    .neq('status', 'excluded')
+    .is('promoted_training_house_id', null)
+    .select('id');
+  if (error) {
+    console.error('promoteArchiveProperty error:', error.message);
+    return { promoted: false };
+  }
+  return { promoted: (data?.length ?? 0) > 0 };
+}
+
+/**
+ * Drop a whole property from the queue — every photo of it at once.
+ *
+ * Property-grained rather than photo-grained because that is what the queue
+ * card is: excluding a nine-angle house one photo at a time would leave the
+ * card rendered with a shrinking photo strip until the last one went.
+ * Refuses a property that has already been traced, so this can't quietly
+ * detach a promoted training example from its source rows.
+ */
+export async function excludeArchiveProperty(
+  addressKey: string,
+  note?: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase is not configured' };
+
+  const patch: Record<string, unknown> = { status: 'excluded', updated_at: new Date().toISOString() };
+  if (note?.trim()) patch.reviewer_notes = note.trim();
+
+  const { data, error } = await sb
+    .from('archive_photos')
+    .update(patch)
+    .eq('resolved_address_key', addressKey)
+    .is('promoted_training_house_id', null)
+    .select('id');
+  if (error) return { ok: false, error: error.message };
+  if (!data || data.length === 0) return { ok: false, error: 'That property has already been traced' };
+  return { ok: true };
 }
 
 /** Mark a row as not an install, so it leaves the queue permanently. */

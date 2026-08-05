@@ -14,7 +14,7 @@ vi.mock('./supabase', () => ({
   isSupabaseServiceConfigured: () => !!sbRef.current,
 }));
 
-import { getArchiveQueue, identifyArchivePhoto, excludeArchivePhoto, getArchivePrefill, promoteArchiveProperty } from './archiveQueue';
+import { getArchiveQueue, identifyArchivePhoto, excludeArchivePhoto, excludeArchiveProperty, getArchivePrefill, promoteArchiveProperty } from './archiveQueue';
 
 type Row = Record<string, unknown>;
 
@@ -41,12 +41,16 @@ function makeSb(rows: Row[]) {
         then: (resolve: (v: unknown) => void) => {
           if (isUpdate) {
             updates.push({ patch: patch!, filters });
-            // Honour the `.is('resolved_address', null)` guard so the
-            // already-identified case is exercised rather than assumed.
-            const wantsNullAddress = filters.some(([f]) => f === 'is:resolved_address');
-            const targetId = filters.find(([f]) => f === 'eq:id')?.[1];
-            const matched = rows.filter(r =>
-              r.id === targetId && (!wantsNullAddress || r.resolved_address == null));
+            // Apply the filters for real rather than assuming they match, so the
+            // compare-and-swap guards (identify's null-key, promote's
+            // null-promoted-id) are exercised in both the won and lost cases.
+            const matched = rows.filter(r => filters.every(([f, val]) => {
+              const [op, col] = f.split(':');
+              if (op === 'eq') return r[col] === val;
+              if (op === 'neq') return r[col] !== val;
+              if (op === 'is') return r[col] == null;
+              return true;
+            }));
             return resolve({ data: matched.map(r => ({ id: r.id })), error: null });
           }
           const visible = rows.filter(r => r.status !== 'excluded');
@@ -162,6 +166,31 @@ describe('getArchiveQueue', () => {
     expect(queue.needsIdentification[0].nightPhotoUrl).toBe('signed:night/xyz.jpg');
   });
 
+  // resolved_address_key is `nullif(btrim(...), '')`, so a whitespace-only
+  // address is truthy in the raw column but null in the key. Partitioning the
+  // two lanes on the raw address would drop such a row from BOTH lists — and it
+  // would be invisible to every operator forever. Both lanes key off the same
+  // column so the partition is exhaustive by construction.
+  it('never loses a row whose address is whitespace-only', async () => {
+    const { client } = makeSb([
+      row({ id: 'a1111111-1111-1111-1111-111111111111' }),
+      row({
+        id: 'f1111111-1111-1111-1111-111111111111',
+        original_title: 'orphan.jpg',
+        resolved_address: '   ',
+        resolved_address_key: null,
+      }),
+    ]);
+    sbRef.current = client;
+
+    const queue = await getArchiveQueue();
+
+    const seen = queue.properties.flatMap(p => p.photos.map(ph => ph.id))
+      .concat(queue.needsIdentification.map(r => r.id));
+    expect(seen).toContain('f1111111-1111-1111-1111-111111111111');
+    expect(queue.needsIdentification.map(r => r.id)).toContain('f1111111-1111-1111-1111-111111111111');
+  });
+
   it('omits excluded rows and does not count promoted properties as remaining', async () => {
     const { client } = makeSb([
       row({ id: 'a1111111-1111-1111-1111-111111111111' }),
@@ -188,7 +217,7 @@ describe('identifyArchivePhoto', () => {
   const ID = 'd1111111-1111-1111-1111-111111111111';
 
   it('fills a blank address and makes the row claimable again', async () => {
-    const { client, updates } = makeSb([row({ id: ID, resolved_address: null })]);
+    const { client, updates } = makeSb([row({ id: ID, resolved_address: null, resolved_address_key: null })]);
     sbRef.current = client;
 
     expect(await identifyArchivePhoto(ID, '  701 Bedford Avenue, Bellmore  ')).toEqual({ ok: true });
@@ -198,7 +227,7 @@ describe('identifyArchivePhoto', () => {
   });
 
   it('refuses a row that already has an address', async () => {
-    const { client } = makeSb([row({ id: ID, resolved_address: '6 Birch Road, Selden' })]);
+    const { client } = makeSb([row({ id: ID, resolved_address: '6 Birch Road, Selden', resolved_address_key: '6 birch road selden' })]);
     sbRef.current = client;
 
     const res = await identifyArchivePhoto(ID, '701 Bedford Avenue');
@@ -207,7 +236,7 @@ describe('identifyArchivePhoto', () => {
   });
 
   it('rejects a blank address without touching the row', async () => {
-    const { client, updates } = makeSb([row({ id: ID, resolved_address: null })]);
+    const { client, updates } = makeSb([row({ id: ID, resolved_address: null, resolved_address_key: null })]);
     sbRef.current = client;
 
     expect(await identifyArchivePhoto(ID, '   ')).toEqual({ ok: false, error: 'An address is required' });
@@ -277,13 +306,55 @@ describe('promoteArchiveProperty', () => {
     const { client, updates } = makeSb([row()]);
     sbRef.current = client;
 
-    await promoteArchiveProperty('6 birch road selden', 'e1111111-1111-1111-1111-111111111111');
+    const res = await promoteArchiveProperty('6 birch road selden', 'e1111111-1111-1111-1111-111111111111');
+    expect(res).toEqual({ promoted: true });
 
     expect(updates[0].patch.promoted_training_house_id).toBe('e1111111-1111-1111-1111-111111111111');
     expect(updates[0].patch.status).toBe('approved');
     // Scoped to the property, and never resurrects a row already ruled out.
     expect(updates[0].filters).toContainEqual(['eq:resolved_address_key', '6 birch road selden']);
     expect(updates[0].filters).toContainEqual(['neq:status', 'excluded']);
+  });
+
+  // Two operators can both open an untraced property, both finish, and both
+  // save. Without the compare-and-swap the later call silently overwrites the
+  // pointer and the first operator's finished trace becomes an orphaned row no
+  // queue card ever surfaces again — with nothing on screen saying so.
+  it('refuses to claim a property that is already traced', async () => {
+    const { client } = makeSb([
+      row({ promoted_training_house_id: 'e1111111-1111-1111-1111-111111111111' }),
+    ]);
+    sbRef.current = client;
+
+    const res = await promoteArchiveProperty('6 birch road selden', 'f1111111-1111-1111-1111-111111111111');
+
+    expect(res).toEqual({ promoted: false });
+  });
+});
+
+describe('excludeArchiveProperty', () => {
+  it('drops every photo of the property at once', async () => {
+    const { client, updates } = makeSb([row()]);
+    sbRef.current = client;
+
+    expect(await excludeArchiveProperty('6 birch road selden', ' duplicate ')).toEqual({ ok: true });
+    expect(updates[0].patch.status).toBe('excluded');
+    expect(updates[0].patch.reviewer_notes).toBe('duplicate');
+    expect(updates[0].filters).toContainEqual(['eq:resolved_address_key', '6 birch road selden']);
+  });
+
+  // Excluding a traced property would detach a promoted training example from
+  // the rows that produced it, leaving the example with no provenance.
+  it('refuses a property that has already been traced', async () => {
+    const { client } = makeSb([
+      row({ promoted_training_house_id: 'e1111111-1111-1111-1111-111111111111' }),
+    ]);
+    sbRef.current = client;
+
+    expect(await excludeArchiveProperty('6 birch road selden')).toEqual({
+      ok: false,
+      error: 'That property has already been traced',
+    });
   });
 });
 

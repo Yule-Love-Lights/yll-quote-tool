@@ -236,6 +236,11 @@ function NewTrainingHousePageInner() {
   const [archiveNightPhotos, setArchiveNightPhotos] = useState<string[]>([]);
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const archiveSeededRef = useRef(false);
+  // Set once the satellite scale lands. Everything that would otherwise
+  // re-derive feetPerUnit checks this: the calibration effect below, and
+  // Auto-Analyze. A ref rather than state because those readers run inside
+  // effects/handlers that must see the current value without re-subscribing.
+  const archiveScaleLockedRef = useRef(false);
 
   useEffect(() => {
     if (!archiveKey || archiveSeededRef.current) return;
@@ -251,8 +256,14 @@ function NewTrainingHousePageInner() {
         // upload path does, or the markup index desyncs from the photo index.
         setPhotos([{ tag: 'other', base64: data.satellite.base64, mediaType: data.satellite.mediaType, caption: 'Daytime satellite' }]);
         setPhotoMarkup([emptyMarkup()]);
+        // The seed REPLACES the arrays, so anything uploaded during the fetch is
+        // discarded — reset the index too, or it can point past the new
+        // 1-element array and activePhoto goes undefined, blanking the whole
+        // markup section with no explanation.
+        setActivePhotoIdx(0);
         setAddress(a => a || data.address);
         setFeetPerUnit(data.feetPerUnit);
+        archiveScaleLockedRef.current = true;
         setArchiveNightPhotos(data.nightPhotoUrls ?? []);
       } catch (err) {
         setArchiveError(err instanceof Error ? err.message : 'Could not load that archive property');
@@ -265,6 +276,14 @@ function NewTrainingHousePageInner() {
   // effect below, which sets skipCalibRef to keep this one from re-firing.
   useEffect(() => {
     if (skipCalibRef.current) { skipCalibRef.current = false; return; }
+    // #167 slice 3: an archive trace's scale comes from the satellite's zoom
+    // math (geodata), not from anything typed. Re-deriving it from a footage
+    // input would replace a measured constant with an estimate — and the
+    // "Override if the drawn lines don't capture reality" field invites exactly
+    // that edit, which would silently rescale every OTHER measurement on the
+    // house. Locking here rather than in the seed effect because the seed only
+    // guarantees the FIRST tick; this fires on every later footage edit.
+    if (archiveScaleLockedRef.current) return;
     const santasLen = polylineLength(santasLines, imgAspect);
     const ridgeLen = polylineLength(gingerbreadLines, imgAspect);
     const sFt = typeof santasFootage === 'number' ? santasFootage : 0;
@@ -650,8 +669,11 @@ function NewTrainingHousePageInner() {
       else if (ridgeLen > 0 && r.gingerbreadFootage > 0) scale = r.gingerbreadFootage / ridgeLen;
 
       // Seed calibration so garland/column length readouts and any subsequent
-      // polyline edits use feet, not raw normalized units.
-      if (scale) setFeetPerUnit(scale);
+      // polyline edits use feet, not raw normalized units. Never on an archive
+      // trace: the analyzer is built for ground-level elevations and its
+      // footage guess off an overhead satellite would replace a measured scale
+      // with a hallucinated one (#167).
+      if (scale && !archiveScaleLockedRef.current) setFeetPerUnit(scale);
 
       if (scale && detections.length > 0) {
         const PERSPECTIVE = 0.4;
@@ -842,7 +864,21 @@ function NewTrainingHousePageInner() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Save failed');
-      router.push('/training');
+      if (data.archiveAlreadyTraced) {
+        // Someone else claimed this property while it was open here. The trace
+        // IS saved — it just isn't linked to the queue card, so say that
+        // plainly and stay put rather than redirecting as if it landed.
+        setSaveError(
+          'Saved, but this house was already traced by someone else while you were working. '
+          + 'Your version was kept as a separate training example and is not linked to the archive queue — '
+          + 'check /training if you want to compare them or delete one.',
+        );
+        return;
+      }
+      // Back to wherever the work came from: an archive trace is one of ~80 in
+      // a sitting, so dropping the operator on the general list means
+      // re-navigating to the queue after every single save.
+      router.push(archiveKey ? '/training/archive' : '/training');
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : 'Save failed');
     } finally {

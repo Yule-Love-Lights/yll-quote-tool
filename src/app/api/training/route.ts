@@ -193,9 +193,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Failed to save training house — check server logs' }, { status: 500 });
   }
 
-  // Best-effort: the house is already saved, so a failed link leaves the
-  // property in the queue (visible, re-doable) rather than failing the save.
-  if (archiveAddressKey) await promoteArchiveProperty(archiveAddressKey, saved.id);
+  // The house is already saved, so a lost claim never fails the save — but it
+  // is reported, because it means this trace is now an orphaned row nobody's
+  // queue card points at, and the operator who just spent two minutes on it
+  // deserves to know rather than being redirected as if it landed.
+  if (archiveAddressKey) {
+    const { promoted } = await promoteArchiveProperty(archiveAddressKey, saved.id);
+    if (!promoted) return NextResponse.json({ id: saved.id, archiveAlreadyTraced: true });
+  }
 
   return NextResponse.json({ id: saved.id });
 }

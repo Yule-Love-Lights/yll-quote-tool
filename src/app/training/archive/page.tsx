@@ -267,7 +267,14 @@ export default function ArchiveImageryPage() {
             </p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {queue.properties.map(prop => (
-                <PropertyCard key={prop.addressKey} property={prop} />
+                <PropertyCard
+                  key={prop.addressKey}
+                  property={prop}
+                  onExclude={() => queueAction(
+                    { action: 'excludeProperty', addressKey: prop.addressKey },
+                    'Could not remove that property',
+                  )}
+                />
               ))}
             </div>
           </div>
@@ -394,7 +401,7 @@ function NeedsIdCard({
 }
 
 /** One card per property — a house's angles are photos of ONE job, not N jobs. */
-function PropertyCard({ property }: { property: QueueProperty }) {
+function PropertyCard({ property, onExclude }: { property: QueueProperty; onExclude: () => Promise<void> }) {
   const traced = !!property.promotedTrainingHouseId;
   const nightPhotos = property.photos.filter(p => p.nightPhotoUrl);
 
@@ -448,16 +455,31 @@ function PropertyCard({ property }: { property: QueueProperty }) {
               View training example
             </Link>
           ) : (
-            <Link
-              href={`/training/new?archive=${encodeURIComponent(property.addressKey)}`}
-              className={`inline-block font-medium text-sm px-4 py-2 rounded-md ${
-                property.satelliteUrl
-                  ? 'bg-green-600 hover:bg-green-700 text-white'
-                  : 'bg-gray-200 text-gray-500 pointer-events-none'
-              }`}
-            >
-              Trace this house
-            </Link>
+            <div className="flex gap-2 flex-wrap items-center">
+              <Link
+                href={`/training/new?archive=${encodeURIComponent(property.addressKey)}`}
+                className={`inline-block font-medium text-sm px-4 py-2 rounded-md ${
+                  property.satelliteUrl
+                    ? 'bg-green-600 hover:bg-green-700 text-white'
+                    : 'bg-gray-200 text-gray-500 pointer-events-none'
+                }`}
+              >
+                Trace this house
+              </Link>
+              {/* Without this a bad or duplicate property sits in the queue
+                  forever, inflating the remaining count staff are grinding
+                  down, with tracing it the only way to make it go away. */}
+              <button
+                onClick={() => {
+                  if (confirm(`Remove ${property.address} from the queue? This drops all ${property.photoCount} of its photos.`)) {
+                    onExclude();
+                  }
+                }}
+                className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium text-sm px-3 py-2 rounded-md"
+              >
+                Not an install
+              </button>
+            </div>
           )}
         </div>
       </div>

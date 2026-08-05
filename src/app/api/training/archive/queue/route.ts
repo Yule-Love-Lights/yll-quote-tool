@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
-import { getArchiveQueue, identifyArchivePhoto, excludeArchivePhoto } from '@/lib/archiveQueue';
+import {
+  getArchiveQueue,
+  identifyArchivePhoto,
+  excludeArchivePhoto,
+  excludeArchiveProperty,
+} from '@/lib/archiveQueue';
 
 // #167 P1 slice 3 — the trace queue behind /training/archive.
 //
@@ -41,11 +46,27 @@ export async function POST(req: NextRequest) {
   const unavailable = serviceUnavailable();
   if (unavailable) return unavailable;
 
-  let body: { action?: unknown; id?: unknown; address?: unknown; note?: unknown };
+  let body: { action?: unknown; id?: unknown; addressKey?: unknown; address?: unknown; note?: unknown };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
+  }
+
+  // Property-grained, so it is keyed by addressKey rather than a photo id and
+  // is checked before the UUID guard below (which does not apply to it).
+  if (body.action === 'excludeProperty') {
+    if (typeof body.addressKey !== 'string' || !body.addressKey.trim()) {
+      return NextResponse.json({ error: 'An addressKey is required' }, { status: 400 });
+    }
+    const res = await excludeArchiveProperty(
+      body.addressKey.trim(),
+      typeof body.note === 'string' ? body.note : undefined,
+    );
+    if (!res.ok) {
+      return NextResponse.json({ error: res.error }, { status: res.error.includes('already') ? 409 : 500 });
+    }
+    return NextResponse.json({ ok: true });
   }
 
   const id = typeof body.id === 'string' ? body.id : '';

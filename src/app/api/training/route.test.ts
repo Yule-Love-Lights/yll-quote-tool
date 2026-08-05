@@ -10,7 +10,7 @@ import type { TrainingHousePayload } from '@/lib/training';
 
 const { saveTrainingHouse, promoteArchiveProperty } = vi.hoisted(() => ({
   saveTrainingHouse: vi.fn(async (_payload: TrainingHousePayload) => ({ id: 'h1' })),
-  promoteArchiveProperty: vi.fn(async (_key: string, _id: string) => {}),
+  promoteArchiveProperty: vi.fn(async (_key: string, _id: string) => ({ promoted: true })),
 }));
 
 vi.mock('@/lib/training', () => ({ saveTrainingHouse }));
@@ -42,6 +42,7 @@ function basePayload(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   saveTrainingHouse.mockResolvedValue({ id: 'h1' });
+  promoteArchiveProperty.mockResolvedValue({ promoted: true });
 });
 
 describe('POST /api/training — payload sanitization (#110 W5-005)', () => {
@@ -160,5 +161,20 @@ describe('POST /api/training — archive source derivation (#167)', () => {
     await POST(makeReq(basePayload({ archiveAddressKey: 42 })));
     expect(saveTrainingHouse.mock.calls[0][0].source).toBe('manual');
     expect(promoteArchiveProperty).not.toHaveBeenCalled();
+  });
+
+  // A lost claim must not read as a clean save. The training house IS written
+  // (it happens before the promote), so the operator's two minutes of tracing
+  // exist — but as an orphaned row no queue card points at. Redirecting them as
+  // if it landed is how that work disappears unnoticed.
+  it('reports a lost claim instead of silently redirecting', async () => {
+    promoteArchiveProperty.mockResolvedValue({ promoted: false });
+
+    const res = await POST(makeReq(basePayload({ archiveAddressKey: '6 birch road selden' })));
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.id).toBe('h1');
+    expect(body.archiveAlreadyTraced).toBe(true);
   });
 });
