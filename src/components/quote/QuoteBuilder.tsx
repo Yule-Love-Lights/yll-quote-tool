@@ -363,21 +363,18 @@ export default function QuoteBuilder({
   // EXPLICITLY click this chip" trackers — set ONLY by the two chip onClick
   // handlers below (never by mount-hydration, prefill, or the HL-contact-pick
   // tag-lookup a few hundred lines down). Both /api/quote call sites
-  // (resolveTagPayload) use these to decide whether to send the chip's
-  // current value or `undefined` (server = leave the stored value alone).
-  // Without this, every save unconditionally wrote both tag columns — a
-  // Calculate on a tab left open could silently revert a tag an admin toggled
-  // concurrently on the detail page. Refs (not state) because touching a
+  // (resolveTagPayload) use these on an UPDATE (an existing quoteId) to
+  // decide whether to send the chip's current value or `undefined` (server =
+  // leave the stored value alone) — without this, every save unconditionally
+  // wrote both tag columns, so a Calculate on a tab left open could silently
+  // revert a tag an admin toggled concurrently on the detail page. On an
+  // INSERT (no quoteId yet — this save creates the row) resolveTagPayload
+  // sends the displayed value regardless of touched, so a lead-prefilled or
+  // pick-inherited tag the staff never clicked still lands on the brand-new
+  // quote (round-1 of this fix wrongly gated inserts too, silently dropping
+  // an untouched inherited tag — corrected per resolveTagPayload's mode
+  // param; see its own doc comment). Refs (not state) because touching a
   // chip shouldn't itself trigger a re-render.
-  // KNOWN INTERACTION (flagged, not fixed here): an inherited tag that's
-  // never manually clicked — a lead-prefilled contact (server-resolved,
-  // src/app/quote/new/page.tsx) or an in-builder contact pick that resolves
-  // to a tagged customer (below) — now displays correctly but does NOT
-  // persist until staff clicks the chip, because saveQuote's own tag params
-  // default `undefined` to false at INSERT (unlike updateQuote, where
-  // `undefined` means "leave alone" — there's nothing to "leave alone" on a
-  // brand-new row). This is the literal, reviewed fix; flagged for a
-  // follow-up decision rather than silently special-cased.
   const legacyRebookTouchedRef = useRef(false);
   const isNceTouchedRef = useRef(false);
   // View-only portal (#176) — purely from the saved row, never set for a brand-new quote.
@@ -2768,12 +2765,19 @@ export default function QuoteBuilder({
           // touches highlevel_contact_id, so this can't clobber a contact the
           // operator later picks/clears via the HL autocomplete.
           highlevelContactId: form.highlevelContactId ?? undefined,
-          // NCE + YLL Neighbor tags (#198): only a chip staff EXPLICITLY
-          // clicked this session sends its value — an untouched chip sends
-          // undefined, so the server leaves the stored value alone instead
-          // of blindly re-asserting a possibly-stale mount-time read (review
-          // fix, staff HIGH + tech MED — see resolveTagPayload's doc comment).
-          ...resolveTagPayload(legacyRebook, legacyRebookTouchedRef.current, isNce, isNceTouchedRef.current),
+          // NCE + YLL Neighbor tags (#198): 'insert' (no existingQuoteId yet
+          // — this save creates the row) sends the displayed value outright,
+          // so an inherited-but-unclicked tag lands on the brand-new quote;
+          // 'update' (existingQuoteId present) gates on touched, so a
+          // Calculate on a tab left open can't clobber a concurrent
+          // admin-detail toggle — see resolveTagPayload's doc comment.
+          ...resolveTagPayload(
+            legacyRebook,
+            legacyRebookTouchedRef.current,
+            isNce,
+            isNceTouchedRef.current,
+            existingQuoteId ? 'update' : 'insert',
+          ),
         }),
       });
       const data = await res.json();
@@ -2889,8 +2893,19 @@ export default function QuoteBuilder({
           // followed by a roofline-radio pick + Send never persisted the
           // toggle (recommendRoofline is its own /api/quote round trip, not
           // routed through runQuote). Same resolveTagPayload rule as the
-          // main Calculate/Save call.
-          ...resolveTagPayload(legacyRebook, legacyRebookTouchedRef.current, isNce, isNceTouchedRef.current),
+          // main Calculate/Save call, INCLUDING the insert/update derivation
+          // — recommendRoofline can itself fire pre-first-save (savedQuoteId
+          // still null: e.g. Supabase was briefly unconfigured on the
+          // original Calculate, so persisted:false and savedQuoteId was
+          // never set), so this re-derives mode from savedQuoteId fresh here
+          // rather than assuming an existing row.
+          ...resolveTagPayload(
+            legacyRebook,
+            legacyRebookTouchedRef.current,
+            isNce,
+            isNceTouchedRef.current,
+            savedQuoteId ? 'update' : 'insert',
+          ),
         }),
       });
       const data = await res.json();

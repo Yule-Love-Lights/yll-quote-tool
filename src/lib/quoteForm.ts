@@ -188,28 +188,45 @@ export type QuoteBuilderPrefill = {
 };
 
 /**
- * NCE + YLL Neighbor tag chips (#198 review fix — staff HIGH + tech MED):
- * resolves what the /api/quote body should send for each tag. A TOUCHED
- * chip (staff explicitly clicked it this session) sends its current value;
- * an UNTOUCHED chip sends `undefined`, which updateQuote treats as "leave
- * the stored value alone" — so a Calculate on a tab left open can never
- * silently revert a tag an admin toggled concurrently on the quote detail
- * page. Pure + shared by BOTH /api/quote call sites in QuoteBuilder (the
- * main Calculate/Save and the roofline-recommend re-price), so a toggle
- * followed by either still persists identically.
+ * NCE + YLL Neighbor tag chips (#198 review fix — staff HIGH + tech MED;
+ * INSERT/UPDATE split — S34 #198 review round 2, coordinator correction):
+ * resolves what the /api/quote body should send for each tag. Pure + shared
+ * by BOTH /api/quote call sites in QuoteBuilder (the main Calculate/Save and
+ * the roofline-recommend re-price), so a toggle followed by either still
+ * persists identically.
  *
- * KNOWN INTERACTION: an inherited tag (lead-prefilled, or auto-set from an
- * in-builder HL-contact pick) that staff never manually clicks will now
- * display correctly but NOT persist — saveQuote's own tag params default
- * `undefined` to false at INSERT (there's no existing row for "leave alone"
- * to mean anything). Flagged as a residual, not special-cased here.
+ * mode is derived by the CALLER from whether a quoteId exists YET at the
+ * moment of that specific call (both call sites re-derive it fresh — a
+ * brand-new quote's savedQuoteId flips from null to a real id after its
+ * first successful save, so the SAME function call site is 'insert' once
+ * and 'update' on every call after):
+ *
+ * - 'insert' (no existing DB row — this save WILL create one): sends the
+ *   chip's CURRENT DISPLAYED value for both tags, regardless of touched.
+ *   There is nothing to clobber yet, and the displayed value (which may be
+ *   an inherited tag from a lead prefill or an in-builder HL-contact pick
+ *   the staff never manually clicked) IS the intended state — inheriting
+ *   the tag by default, with no click required, is the actual feature this
+ *   ticket asked for. (Round-1 fix wrongly applied touched-gating here too,
+ *   silently dropping an untouched inherited tag back to false at the exact
+ *   moment it needed to land — see git history; this corrects it.)
+ * - 'update' (a quoteId already exists — this save updates that row): a
+ *   TOUCHED chip (staff explicitly clicked it this session) sends its
+ *   current value; an UNTOUCHED chip sends `undefined`, which updateQuote
+ *   treats as "leave the stored value alone" — so a Calculate on a tab left
+ *   open can never silently revert a tag an admin toggled concurrently on
+ *   the quote detail page.
  */
 export function resolveTagPayload(
   legacyRebook: boolean,
   legacyRebookTouched: boolean,
   isNce: boolean,
   isNceTouched: boolean,
+  mode: 'insert' | 'update',
 ): { legacyRebook: boolean | undefined; isNce: boolean | undefined } {
+  if (mode === 'insert') {
+    return { legacyRebook, isNce };
+  }
   return {
     legacyRebook: legacyRebookTouched ? legacyRebook : undefined,
     isNce: isNceTouched ? isNce : undefined,
