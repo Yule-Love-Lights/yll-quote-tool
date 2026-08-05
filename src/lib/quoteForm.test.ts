@@ -5,6 +5,7 @@ import {
   buildQuoteInputs,
   inputsToFormData,
   applyPrefill,
+  resolveTagPayload,
 } from './quoteForm';
 import type { QuoteInputs } from './pricing/pricingEngine';
 import { makeDefaultPermanentFields } from './permanent/types';
@@ -429,6 +430,45 @@ describe('applyPrefill (#leads Create-quote link)', () => {
   it('leaves highlevelContactId null when no ghlContactId is given', () => {
     const result = applyPrefill(initialFormData, { name: 'Bob' });
     expect(result.highlevelContactId).toBeNull();
+  });
+});
+
+// Review fix (staff HIGH + tech MED, S34 #198 review): resolveTagPayload is
+// the ONE shared mechanism both /api/quote call sites in QuoteBuilder use
+// (the main Calculate/Save via runQuote, and the roofline-recommend
+// re-price) — see its own doc comment for the full clobber-prevention
+// rationale. Pure-function coverage here stands in for a full component
+// render test (QuoteBuilder has no test harness — see AGENTS.md convention);
+// grep confirms both call sites spread this same function's return value.
+describe('resolveTagPayload (#198 review — touched-ref tag chips)', () => {
+  it('sends undefined for BOTH tags when neither chip was touched (untouched reopen save → no tag write)', () => {
+    expect(resolveTagPayload(true, false, true, false)).toEqual({
+      legacyRebook: undefined,
+      isNce: undefined,
+    });
+    expect(resolveTagPayload(false, false, false, false)).toEqual({
+      legacyRebook: undefined,
+      isNce: undefined,
+    });
+  });
+
+  it('sends the current value for BOTH tags when both were touched', () => {
+    expect(resolveTagPayload(true, true, true, true)).toEqual({ legacyRebook: true, isNce: true });
+    expect(resolveTagPayload(false, true, false, true)).toEqual({ legacyRebook: false, isNce: false });
+  });
+
+  it('resolves each chip independently — touching one never sends the other', () => {
+    // legacyRebook touched (now true), isNce untouched (stays whatever it is, unsent)
+    expect(resolveTagPayload(true, true, true, false)).toEqual({ legacyRebook: true, isNce: undefined });
+    // isNce touched (now false), legacyRebook untouched
+    expect(resolveTagPayload(true, false, false, true)).toEqual({ legacyRebook: undefined, isNce: false });
+  });
+
+  it('a touched chip sends its value even when toggled back to its original/default state', () => {
+    // Staff clicked NCE on then off again — still counts as touched, and the
+    // explicit `false` must reach the server (matters for an already-tagged
+    // customer/quote where "off" is a real, deliberate untag).
+    expect(resolveTagPayload(false, false, false, true)).toEqual({ legacyRebook: undefined, isNce: false });
   });
 });
 

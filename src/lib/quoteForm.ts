@@ -188,6 +188,35 @@ export type QuoteBuilderPrefill = {
 };
 
 /**
+ * NCE + YLL Neighbor tag chips (#198 review fix — staff HIGH + tech MED):
+ * resolves what the /api/quote body should send for each tag. A TOUCHED
+ * chip (staff explicitly clicked it this session) sends its current value;
+ * an UNTOUCHED chip sends `undefined`, which updateQuote treats as "leave
+ * the stored value alone" — so a Calculate on a tab left open can never
+ * silently revert a tag an admin toggled concurrently on the quote detail
+ * page. Pure + shared by BOTH /api/quote call sites in QuoteBuilder (the
+ * main Calculate/Save and the roofline-recommend re-price), so a toggle
+ * followed by either still persists identically.
+ *
+ * KNOWN INTERACTION: an inherited tag (lead-prefilled, or auto-set from an
+ * in-builder HL-contact pick) that staff never manually clicks will now
+ * display correctly but NOT persist — saveQuote's own tag params default
+ * `undefined` to false at INSERT (there's no existing row for "leave alone"
+ * to mean anything). Flagged as a residual, not special-cased here.
+ */
+export function resolveTagPayload(
+  legacyRebook: boolean,
+  legacyRebookTouched: boolean,
+  isNce: boolean,
+  isNceTouched: boolean,
+): { legacyRebook: boolean | undefined; isNce: boolean | undefined } {
+  return {
+    legacyRebook: legacyRebookTouched ? legacyRebook : undefined,
+    isNce: isNceTouched ? isNce : undefined,
+  };
+}
+
+/**
  * Merge a lead's prefill values onto a blank QuoteFormData. Applied ONLY as
  * the blank-slate builder's INITIAL state (QuoteBuilder's lazy useState
  * initializer) — never re-applied after mount, so a reopened quote

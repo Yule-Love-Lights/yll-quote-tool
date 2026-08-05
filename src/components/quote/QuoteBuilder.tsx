@@ -24,6 +24,7 @@ import {
   buildQuoteInputs,
   inputsToFormData,
   applyPrefill,
+  resolveTagPayload,
 } from '@/lib/quoteForm';
 import type { CrmContact } from '@/lib/integrations/types';
 import { type ServiceType, SERVICE_TYPES, SERVICE_TYPE_LABELS } from '@/lib/serviceType';
@@ -358,6 +359,27 @@ export default function QuoteBuilder({
     () => initialQuote?.legacyRebook ?? prefill?.legacyRebook ?? false,
   );
   const [isNce, setIsNce] = useState(() => initialQuote?.isNce ?? prefill?.isNce ?? false);
+  // Review fix (staff HIGH + tech MED, S34 #198 review): per-chip "did staff
+  // EXPLICITLY click this chip" trackers — set ONLY by the two chip onClick
+  // handlers below (never by mount-hydration, prefill, or the HL-contact-pick
+  // tag-lookup a few hundred lines down). Both /api/quote call sites
+  // (resolveTagPayload) use these to decide whether to send the chip's
+  // current value or `undefined` (server = leave the stored value alone).
+  // Without this, every save unconditionally wrote both tag columns — a
+  // Calculate on a tab left open could silently revert a tag an admin toggled
+  // concurrently on the detail page. Refs (not state) because touching a
+  // chip shouldn't itself trigger a re-render.
+  // KNOWN INTERACTION (flagged, not fixed here): an inherited tag that's
+  // never manually clicked — a lead-prefilled contact (server-resolved,
+  // src/app/quote/new/page.tsx) or an in-builder contact pick that resolves
+  // to a tagged customer (below) — now displays correctly but does NOT
+  // persist until staff clicks the chip, because saveQuote's own tag params
+  // default `undefined` to false at INSERT (unlike updateQuote, where
+  // `undefined` means "leave alone" — there's nothing to "leave alone" on a
+  // brand-new row). This is the literal, reviewed fix; flagged for a
+  // follow-up decision rather than silently special-cased.
+  const legacyRebookTouchedRef = useRef(false);
+  const isNceTouchedRef = useRef(false);
   // View-only portal (#176) — purely from the saved row, never set for a brand-new quote.
   const viewOnly = initialQuote?.viewOnly ?? false;
   // Customer tenure (#178) — purely from the saved row, never set for a brand-new quote.
@@ -2735,12 +2757,12 @@ export default function QuoteBuilder({
           // touches highlevel_contact_id, so this can't clobber a contact the
           // operator later picks/clears via the HL autocomplete.
           highlevelContactId: form.highlevelContactId ?? undefined,
-          // NCE + YLL Neighbor tags (#198): the chip strip's CURRENT state,
-          // sent on every save — unlike highlevelContactId above, the server
-          // honors these on BOTH the new-quote insert AND an update, so a
-          // reopened quote's toggled chip actually persists.
-          legacyRebook,
-          isNce,
+          // NCE + YLL Neighbor tags (#198): only a chip staff EXPLICITLY
+          // clicked this session sends its value — an untouched chip sends
+          // undefined, so the server leaves the stored value alone instead
+          // of blindly re-asserting a possibly-stale mount-time read (review
+          // fix, staff HIGH + tech MED — see resolveTagPayload's doc comment).
+          ...resolveTagPayload(legacyRebook, legacyRebookTouchedRef.current, isNce, isNceTouchedRef.current),
         }),
       });
       const data = await res.json();
@@ -2845,7 +2867,20 @@ export default function QuoteBuilder({
         headers: { 'Content-Type': 'application/json' },
         // quoteId → re-price that quote in place; falls back to a fresh save
         // if the quote wasn't persisted (Supabase unconfigured).
-        body: JSON.stringify({ customer: form.customer, serviceType: form.serviceType, inputs, quoteId: savedQuoteId ?? undefined, designId: designId ?? undefined }),
+        body: JSON.stringify({
+          customer: form.customer,
+          serviceType: form.serviceType,
+          inputs,
+          quoteId: savedQuoteId ?? undefined,
+          designId: designId ?? undefined,
+          // NCE + YLL Neighbor tags (#198 review fix, staff HIGH): this
+          // payload used to omit the tags entirely, so a toggled chip
+          // followed by a roofline-radio pick + Send never persisted the
+          // toggle (recommendRoofline is its own /api/quote round trip, not
+          // routed through runQuote). Same resolveTagPayload rule as the
+          // main Calculate/Save call.
+          ...resolveTagPayload(legacyRebook, legacyRebookTouchedRef.current, isNce, isNceTouchedRef.current),
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Request failed');
@@ -3136,7 +3171,10 @@ export default function QuoteBuilder({
           <div className="flex items-center gap-2 mt-2">
             <button
               type="button"
-              onClick={() => setLegacyRebook((v) => !v)}
+              onClick={() => {
+                legacyRebookTouchedRef.current = true;
+                setLegacyRebook((v) => !v);
+              }}
               aria-pressed={legacyRebook}
               title={legacyRebook ? 'YLL Neighbor — click to remove' : 'Mark as YLL Neighbor'}
               className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border transition-colors ${
@@ -3149,7 +3187,10 @@ export default function QuoteBuilder({
             </button>
             <button
               type="button"
-              onClick={() => setIsNce((v) => !v)}
+              onClick={() => {
+                isNceTouchedRef.current = true;
+                setIsNce((v) => !v);
+              }}
               aria-pressed={isNce}
               title={isNce ? 'NCE — click to remove' : 'Mark as NCE (barter/trade network)'}
               className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border transition-colors ${
