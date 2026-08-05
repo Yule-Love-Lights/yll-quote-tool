@@ -328,6 +328,23 @@ export async function POST(req: NextRequest) {
     if (!PERM_TRACK_COLORS.has(pf.trackColor as string)) {
       return NextResponse.json({ error: 'Invalid permanent.trackColor' }, { status: 400 });
     }
+    // #192 — per-side track style override (optional). An unknown key is
+    // silently ignored (mirrors sideSource's leniency); a PRESENT recognized
+    // side key must carry a valid TrackStyle value.
+    if (pf.trackStyleBySide !== undefined) {
+      if (!isObj(pf.trackStyleBySide) || Array.isArray(pf.trackStyleBySide)) {
+        return NextResponse.json({ error: 'permanent.trackStyleBySide must be an object if provided' }, { status: 400 });
+      }
+      for (const side of ['front', 'left', 'right', 'back'] as const) {
+        const v = (pf.trackStyleBySide as Record<string, unknown>)[side];
+        if (v !== undefined && !PERM_TRACK_STYLES.has(v as string)) {
+          return NextResponse.json(
+            { error: `permanent.trackStyleBySide.${side} must be 'single' or 'parapet' if provided` },
+            { status: 400 },
+          );
+        }
+      }
+    }
     if (typeof pf.blackHousing !== 'boolean' || typeof pf.maintenanceAddOn !== 'boolean') {
       return NextResponse.json({ error: 'permanent.blackHousing and permanent.maintenanceAddOn must be booleans' }, { status: 400 });
     }
