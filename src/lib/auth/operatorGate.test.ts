@@ -43,6 +43,8 @@ describe('isPublicPath — customer-facing allowlist', () => {
       '/api/dashboard/ingest', // Generic ingest (shared-secret in the route, #58)
       '/api/leads/retry', // Vercel Cron (CRON_SECRET-guarded, #leads retry worker)
       '/api/ops/digest', // Vercel Cron (CRON_SECRET-guarded, #168 morning ops digest)
+      '/api/inventory/prep-digest', // Vercel Cron (CRON_SECRET-guarded, #666 daily prep digest)
+      '/api/jobs/completing-today', // Vercel Cron (CRON_SECRET-guarded, #666 completing-today Jobs ping)
     ]) {
       expect(isPublicPath(p), p).toBe(true);
     }
