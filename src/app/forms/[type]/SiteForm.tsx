@@ -87,19 +87,32 @@ export default function SiteForm({ formType, formVariant, theme, compact }: Prop
   // short one, and the nomination form is three times the height of the footer
   // signup. Posted only to our own marketing origins, never '*', so the height
   // (and the fact a form is here at all) is not broadcast to any other frame.
+  // Typed as HTMLElement because the success state swaps the <form> for a
+  // <div>: without measuring that too, the frame would keep the form's height
+  // and leave a tall empty box under a one-line thank-you.
+  const rootRef = useRef<HTMLElement | null>(null);
+
   useEffect(() => {
     if (typeof window === 'undefined' || window.parent === window) return;
+    const node = rootRef.current;
+    if (!node) return;
     const send = () => {
-      const height = Math.ceil(document.documentElement.getBoundingClientRect().height);
+      // Measure the FORM, not documentElement. documentElement stretches to
+      // fill the iframe, so measuring it just reports back whatever height the
+      // frame already has — the value can never grow or shrink, which is
+      // exactly the bug this reported-height feature exists to avoid. The
+      // form's own box is the real content height. +2 absorbs sub-pixel
+      // rounding that would otherwise leave a 1px scrollbar inside the frame.
+      const height = Math.ceil(node.getBoundingClientRect().height) + 2;
       for (const origin of EMBED_PARENT_ORIGINS) {
         window.parent.postMessage({ type: 'yll-form-height', formType, height }, origin);
       }
     };
     send();
     const observer = new ResizeObserver(send);
-    observer.observe(document.documentElement);
+    observer.observe(node);
     return () => observer.disconnect();
-  }, [formType]);
+  }, [formType, status]);
 
   useEffect(() => {
     renderedAt.current = Date.now();
@@ -201,7 +214,12 @@ export default function SiteForm({ formType, formVariant, theme, compact }: Prop
 
   if (status === 'done') {
     return (
-      <div style={{ fontFamily: '"DM Sans", sans-serif', color: text, padding: compact ? 0 : 8 }}>
+      <div
+        ref={(el) => {
+          rootRef.current = el;
+        }}
+        style={{ fontFamily: '"DM Sans", sans-serif', color: text, padding: compact ? 0 : 8 }}
+      >
         <p style={{ fontFamily: 'Poppins, sans-serif', fontWeight: 700, fontSize: 16, margin: 0 }}>
           {copy.done}
         </p>
@@ -233,6 +251,9 @@ export default function SiteForm({ formType, formVariant, theme, compact }: Prop
   return (
     <form
       onSubmit={onSubmit}
+      ref={(el) => {
+        rootRef.current = el;
+      }}
       style={{ fontFamily: '"DM Sans", sans-serif', color: text, maxWidth: compact ? 520 : 680 }}
     >
       {!compact && (

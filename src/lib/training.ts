@@ -14,7 +14,19 @@ export type TrainingPhoto = {
   caption?: string;
 };
 
+/**
+ * Where a training house came from. Drives few-shot eligibility, not just
+ * provenance: 'manual' houses are traced on ground-level photos and are the
+ * ONLY ones getTrainingFewShot serves to customer-photo analysis; 'archive'
+ * houses (#167) are traced on overhead satellites and are deliberately held
+ * out of that pool. Adding a value here is a corpus decision — check
+ * getTrainingFewShot before you add one.
+ */
+export type TrainingHouseSource = 'manual' | 'archive';
+
 export type TrainingHousePayload = {
+  /** Defaults to 'manual'. Archive promotions (#167 slice 3) must pass 'archive'. */
+  source?: TrainingHouseSource;
   address?: string;
   yearCompleted?: number;
   houseStyle?: string;
@@ -48,6 +60,7 @@ export type TrainingHousePayload = {
 export type StoredTrainingHouse = {
   id: string;
   created_at: string;
+  source: TrainingHouseSource;
   address: string | null;
   year_completed: number | null;
   house_style: string | null;
@@ -112,6 +125,11 @@ export async function saveTrainingHouse(payload: TrainingHousePayload): Promise<
   const { data, error } = await supabase
     .from('training_houses')
     .insert({
+      // Explicit rather than leaning on the column default: an archive
+      // promotion that forgot this would silently default to 'manual' and put
+      // an overhead-satellite trace back into ground-photo few-shot — the exact
+      // contamination the source column exists to prevent.
+      source: payload.source ?? 'manual',
       address: sanitizeCorpusText(payload.address),
       year_completed: payload.yearCompleted ?? null,
       house_style: sanitizeCorpusText(payload.houseStyle),
@@ -218,9 +236,19 @@ export async function getTrainingFewShot(
   // can rank by style match without downloading full photo base64 for every
   // candidate. Then SELECT * only for the top-N winners.
   const poolSize = Math.max(limit * 5, 10);
+  // #167 slice 3: ground-photo few-shot ONLY. Archive-sourced houses are traced
+  // on an overhead satellite, and analyzePhoto tells the model these exemplars
+  // are ground truth whose "precision and coordinate style" it should match —
+  // overhead geometry is the wrong thing to imitate on a customer's ground-level
+  // front elevation. The ~80 archive properties also all land at once, so an
+  // unfiltered recency pool would be mostly archive rows.
+  // POSITIVE match (=== 'manual'), never `neq('archive')`: a negative gate
+  // silently hands every future source the ground-photo retrieval it was never
+  // vetted for (the seam-gate pitfall).
   const { data: candidates, error: poolErr } = await supabase
     .from('training_houses')
     .select('id, house_style, created_at')
+    .eq('source', 'manual')
     .order('created_at', { ascending: false })
     .limit(poolSize);
   if (poolErr || !candidates) return [];

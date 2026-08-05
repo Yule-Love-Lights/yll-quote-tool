@@ -77,6 +77,8 @@ const PUBLIC_API_EXACT = new Set([
   '/api/dashboard/gmail/poll', // Vercel Cron (CRON_SECRET-guarded, #58 Gmail inbox ingestion)
   '/api/dashboard/ingest', // Generic source ingest (shared-secret in the route, #58 Homeworks etc.)
   '/api/ops/digest', // Vercel Cron (CRON_SECRET-guarded, #168 morning ops digest — same Bearer guard as low-stock-alert; a cron request carries no operator session so it must be allowlisted to reach its own CRON_SECRET check)
+  '/api/inventory/prep-digest', // Vercel Cron (CRON_SECRET-guarded, #666 daily prep digest — was silently 401'd by this perimeter from #666's merge until the S47 wrap review caught it)
+  '/api/jobs/completing-today', // Vercel Cron (CRON_SECRET-guarded, #666 completing-today Jobs ping — same gap, same fix)
   '/api/leads/retry', // Vercel Cron (CRON_SECRET-guarded, #leads GHL-outage retry worker) — a cron
   // request carries no operator session, so it must be allowlisted here to reach
   // its own CRON_SECRET check (the /api/leads carve-out below is exact-match +
