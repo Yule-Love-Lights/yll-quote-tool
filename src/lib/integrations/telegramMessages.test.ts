@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { prepJobMessage, lowStockMessage, poSentMessage, capList } from './telegramMessages';
+import { prepJobMessage, lowStockMessage, poSentMessage, capList, fieldLeadMessage } from './telegramMessages';
 
 const BASE = 'https://quote.yulelovelights.com';
 
@@ -97,6 +97,40 @@ describe('poSentMessage', () => {
     expect(msg).toContain('C9 Warm White (1001) ×88');
     expect(msg).toContain('Green clips (1042) ×250');
     expect(msg).toContain(`${BASE}/inventory/orders`);
+  });
+});
+
+describe('fieldLeadMessage', () => {
+  it('headers with the crew-captured name, service, and phone', () => {
+    const msg = fieldLeadMessage({
+      name: 'John Smith',
+      service: 'permanent',
+      phone: '631-555-0100',
+      address: null,
+    });
+    expect(msg).toContain('New field lead');
+    expect(msg).toContain('John Smith');
+    expect(msg).toContain('(permanent)');
+    expect(msg).toContain('631-555-0100');
+    expect(msg).toContain('SMS drip');
+  });
+
+  it('includes the address when given, omits the line when not', () => {
+    const withAddress = fieldLeadMessage({
+      name: 'John Smith',
+      service: 'permanent',
+      phone: '631-555-0100',
+      address: '12 Oak St',
+    });
+    expect(withAddress).toContain('12 Oak St');
+
+    const withoutAddress = fieldLeadMessage({
+      name: 'John Smith',
+      service: 'permanent',
+      phone: '631-555-0100',
+      address: null,
+    });
+    expect(withoutAddress).not.toContain('📍');
   });
 });
 

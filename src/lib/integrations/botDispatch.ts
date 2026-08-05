@@ -32,13 +32,18 @@ import { logBotAction } from './botAudit';
 import {
   runCompleteInstall,
   summarizeCompleteInstall,
+  runCaptureLead,
+  summarizeCaptureLead,
   type CompleteInstallArgs,
+  type CaptureLeadArgs,
 } from './botWriteTools';
 import { listCatalog } from '@/lib/inventory/catalog';
 import { listFulfillmentCards, getJobWorkOrder } from '@/lib/inventory/jobs';
 import { resolveMaterialLines } from '@/lib/inventory/materialResolve';
 import { downloadTelegramFile } from './telegramMedia';
 import { transcribeAudio, isTranscriptionConfigured } from './transcribe';
+import { notifyTelegramAudience } from './telegramRouting';
+import { fieldLeadMessage } from './telegramMessages';
 
 export type BotIncomingMessage = {
   chatId: string;
@@ -250,6 +255,33 @@ export async function handleBotMessage(msg: BotIncomingMessage): Promise<string 
         .join(', ');
       return withHeard(`${staged}\nI couldn't match: ${missing}. Reply with the exact product name for those.`);
     }
+    if (interp.tool === 'captureLead') {
+      const { name, phone, address, service, note } = interp.args;
+      if (!name || !phone) {
+        return withHeard('Need at least a name and phone number for a field lead. Resend with both.');
+      }
+      // Naldo's locked decision: the bot ASKS rather than guesses a service —
+      // stateless, so nothing is staged here. The crew just resends the whole
+      // capture with the service included; there's no partial to lose.
+      if (!service) {
+        return withHeard(
+          `Got ${name} · ${phone}${address ? ` · ${address}` : ''} — which service do they want ` +
+            '(christmas, permanent, event-wedding, or landscape)? Resend the whole message including it.',
+        );
+      }
+
+      const args: CaptureLeadArgs = {
+        name,
+        phone,
+        address: address ?? null,
+        note: note ?? null,
+        service,
+      };
+      const summary = summarizeCaptureLead(args);
+      return withHeard(
+        await stage(msg, role, interp.tool, args as unknown as Record<string, unknown>, summary),
+      );
+    }
     return withHeard(NOT_UNDERSTOOD);
   }
 
@@ -287,6 +319,24 @@ async function executeConfirmed(
     let reply: string;
     if (tool === 'completeInstall') {
       reply = await runCompleteInstall(args as unknown as CompleteInstallArgs, msg.userId);
+    } else if (tool === 'captureLead') {
+      const clArgs = args as unknown as CaptureLeadArgs;
+      const result = await runCaptureLead(clArgs);
+      reply = result.reply;
+      // Only ping staff when the contact is genuinely enrolled — a tag/note
+      // failure (result.synced false) must not tell the office a lead is in
+      // the drip when it isn't.
+      if (result.synced) {
+        await notifyTelegramAudience(
+          'leads',
+          fieldLeadMessage({
+            name: clArgs.name,
+            service: clArgs.service,
+            phone: clArgs.phone,
+            address: clArgs.address ?? null,
+          }),
+        );
+      }
     } else if (tool === 'prep' || tool === 'set') {
       // Round-trips through jsonb as the same parsed shape it was staged from.
       reply = await runWhatsAppCommand(args as unknown as WhatsAppCommand);

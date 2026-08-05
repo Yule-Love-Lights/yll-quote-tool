@@ -1,9 +1,10 @@
 // src/lib/integrations/botWriteTools.ts
-// Execution for the text-ops bot's field-capture writes (Phase 2 of the
-// 2026-07-19 plan). Everything here runs ONLY after the dispatcher has checked
-// the sender's role AND consumed their confirm-yes — nothing in this module
-// gates itself, by design: the gates live in one place (botDispatch) so a new
-// tool can't accidentally ship ungated.
+// Execution for the text-ops bot's field-capture writes (completeInstall,
+// Phase 2; captureLead, Phase 3 — both of the 2026-07-19 plan). Everything
+// here runs ONLY after the dispatcher has checked the sender's role AND
+// consumed their confirm-yes — nothing in this module gates itself, by
+// design: the gates live in one place (botDispatch) so a new tool can't
+// accidentally ship ungated.
 //
 // SCOPE NOTE — completeInstall deliberately does NOT mark the job installed.
 // In this codebase "complete" (src/app/api/jobs/[id]/complete/route.ts) advances
@@ -22,6 +23,8 @@ import { listFulfillmentCards } from '@/lib/inventory/jobs';
 import { recordMaterialActuals, type MaterialActualLine } from '@/lib/inventory/materialActuals';
 import { addDesignExtraPhoto } from '@/lib/designs';
 import { downloadTelegramFile } from './telegramMedia';
+import { syncFieldLeadToGhl, type FieldLeadInput } from '@/lib/leads/fieldLead';
+import { SERVICE_FIELD_VALUE, type LeadService } from '@/lib/leads/leadService';
 
 export type CompleteInstallArgs = {
   jobNumber: number;
@@ -130,6 +133,83 @@ export async function runCompleteInstall(
   if (photoResult.noDesign) out.push('No design linked to this job, so photos were skipped.');
 
   return out.join('\n');
+}
+
+// ─── captureLead (Phase 3) ──────────────────────────────────────────────
+// A crew installer texts in a brand-new lead met in the field. Unlike
+// completeInstall, this tool needs an explicit CONSENT affirmation before the
+// dispatcher will even stage the confirm (see summarizeCaptureLead below) —
+// the bot must never enroll someone in SMS without the crew affirming the
+// homeowner agreed. Naldo's locked decision: enrollment here means "tag for
+// automation" (see fieldLead.ts), never a pipeline opportunity.
+
+export type CaptureLeadArgs = {
+  name: string;
+  phone: string;
+  address?: string | null;
+  note?: string | null;
+  service: LeadService;
+};
+
+/**
+ * The one-line confirm shown BEFORE anything runs. Doubles as the CONSENT
+ * affirmation — the crew's "yes" to this exact line is the consent record
+ * (task #9, locked), so the wording must make that unmistakable rather than
+ * reading like an ordinary "reply yes to confirm" prompt.
+ */
+export function summarizeCaptureLead(args: CaptureLeadArgs): string {
+  const parts = [args.name, args.phone];
+  if (args.address) parts.push(args.address);
+  parts.push(SERVICE_FIELD_VALUE[args.service]);
+  return `New field lead: ${parts.join(' · ')}. Reply YES only if they agreed to be contacted (they'll be enrolled in texts).`;
+}
+
+export type CaptureLeadResult = { reply: string; synced: boolean };
+
+/**
+ * Record one field-lead capture. Returns the plain-text reply for the crew
+ * plus whether the sync fully succeeded (so the caller knows whether it's
+ * safe to tell staff a new lead is enrolled — see botDispatch's captureLead
+ * case, which only notifies on `synced`).
+ *
+ * Never throws into the webhook: syncFieldLeadToGhl's one THROWING call
+ * (upsertContact) is caught here so a GHL hiccup degrades to a plain "try
+ * again" reply rather than propagating, matching this module's fail-closed
+ * style (mirrors runCompleteInstall never throwing).
+ */
+export async function runCaptureLead(args: CaptureLeadArgs): Promise<CaptureLeadResult> {
+  const input: FieldLeadInput = {
+    name: args.name,
+    phone: args.phone,
+    address: args.address ?? null,
+    note: args.note ?? null,
+    service: args.service,
+  };
+
+  let result;
+  try {
+    result = await syncFieldLeadToGhl(input);
+  } catch (err) {
+    console.error('[botWriteTools] captureLead sync failed:', err);
+    return {
+      reply: `Couldn't create the GHL contact for ${args.name} — try again in a minute.`,
+      synced: false,
+    };
+  }
+
+  if (result.status === 'error') {
+    // The contact WAS created — say so, rather than implying total failure
+    // and risking a duplicate contact on retry.
+    return {
+      reply: `Saved ${args.name}'s contact, but tagging/the note failed — tell the office to check GHL.`,
+      synced: false,
+    };
+  }
+
+  return {
+    reply: `Got it — ${args.name} (${args.phone}) is in and enrolled in texts.`,
+    synced: true,
+  };
 }
 
 type PhotoResult = { saved: number; failed: number; noDesign: boolean };

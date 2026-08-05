@@ -10,14 +10,16 @@ const mocks = vi.hoisted(() => ({
   recordMaterialActuals: vi.fn(async (): Promise<unknown> => null),
   addDesignExtraPhoto: vi.fn(async () => ({ id: 'p1' })),
   downloadTelegramFile: vi.fn(async (): Promise<unknown> => null),
+  syncFieldLeadToGhl: vi.fn(async (): Promise<unknown> => ({ status: 'synced', ghlContactId: 'contact-1' })),
 }));
 
 vi.mock('@/lib/inventory/jobs', () => ({ listFulfillmentCards: mocks.listFulfillmentCards }));
 vi.mock('@/lib/inventory/materialActuals', () => ({ recordMaterialActuals: mocks.recordMaterialActuals }));
 vi.mock('@/lib/designs', () => ({ addDesignExtraPhoto: mocks.addDesignExtraPhoto }));
 vi.mock('./telegramMedia', () => ({ downloadTelegramFile: mocks.downloadTelegramFile }));
+vi.mock('@/lib/leads/fieldLead', () => ({ syncFieldLeadToGhl: mocks.syncFieldLeadToGhl }));
 
-import { runCompleteInstall, summarizeCompleteInstall } from './botWriteTools';
+import { runCompleteInstall, summarizeCompleteInstall, runCaptureLead, summarizeCaptureLead } from './botWriteTools';
 
 const CARD = { id: 'job-uuid', jobNumber: 142, customerName: 'Alvarez', designId: 'design-1' };
 
@@ -34,6 +36,7 @@ beforeEach(() => {
     buffer: Buffer.from('img'),
     contentType: 'image/jpeg',
   });
+  mocks.syncFieldLeadToGhl.mockResolvedValue({ status: 'synced', ghlContactId: 'contact-1' });
 });
 
 describe('summarizeCompleteInstall', () => {
@@ -218,5 +221,67 @@ describe('runCompleteInstall', () => {
     );
     expect(reply).toContain('logged 1 material line');
     expect(reply).toContain('1 photo failed');
+  });
+});
+
+describe('summarizeCaptureLead', () => {
+  it('names every field and carries the consent affirmation (task #9, locked wording)', () => {
+    const summary = summarizeCaptureLead({
+      name: 'John Smith',
+      phone: '631-555-0100',
+      address: '12 Oak St',
+      service: 'permanent',
+    });
+    expect(summary).toBe(
+      'New field lead: John Smith · 631-555-0100 · 12 Oak St · Permanent. ' +
+        "Reply YES only if they agreed to be contacted (they'll be enrolled in texts).",
+    );
+  });
+
+  it('omits the address bullet when none was given', () => {
+    const summary = summarizeCaptureLead({ name: 'John Smith', phone: '631-555-0100', service: 'christmas' });
+    expect(summary).toBe(
+      "New field lead: John Smith · 631-555-0100 · Christmas. Reply YES only if they agreed to be contacted (they'll be enrolled in texts).",
+    );
+  });
+});
+
+describe('runCaptureLead', () => {
+  it('syncs to GHL and reports success', async () => {
+    const result = await runCaptureLead({
+      name: 'John Smith',
+      phone: '631-555-0100',
+      address: '12 Oak St',
+      service: 'permanent',
+    });
+    expect(mocks.syncFieldLeadToGhl).toHaveBeenCalledWith({
+      name: 'John Smith',
+      phone: '631-555-0100',
+      address: '12 Oak St',
+      note: null,
+      service: 'permanent',
+    });
+    expect(result.synced).toBe(true);
+    expect(result.reply).toContain('John Smith');
+    expect(result.reply).toContain('enrolled in texts');
+  });
+
+  it('reports the contact as saved but flags a tag/note failure without claiming success', async () => {
+    mocks.syncFieldLeadToGhl.mockResolvedValue({
+      status: 'error',
+      ghlContactId: 'contact-1',
+      syncError: 'tag boom',
+    });
+    const result = await runCaptureLead({ name: 'John Smith', phone: '631-555-0100', service: 'permanent' });
+    expect(result.synced).toBe(false);
+    expect(result.reply).toContain('Saved');
+    expect(result.reply).toContain('office');
+  });
+
+  it('never throws into the webhook when the GHL upsert itself throws', async () => {
+    mocks.syncFieldLeadToGhl.mockRejectedValue(new Error('upsert boom'));
+    const result = await runCaptureLead({ name: 'John Smith', phone: '631-555-0100', service: 'permanent' });
+    expect(result.synced).toBe(false);
+    expect(result.reply).toContain('try again');
   });
 });
