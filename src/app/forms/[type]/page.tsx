@@ -44,7 +44,12 @@ export default async function FormEmbedPage({
     <main
       style={{
         margin: 0,
-        padding: compact ? 0 : 4,
+        // No padding: the reported height measures the FORM, so any padding on
+        // this wrapper is height the parent frame never accounts for, and the
+        // form ends up with its own scrollbar inside the embed (the nomination
+        // form overflowed by exactly this 8px). Spacing around the form belongs
+        // to the page doing the embedding, not to the embed.
+        padding: 0,
         background: 'transparent',
       }}
     >
