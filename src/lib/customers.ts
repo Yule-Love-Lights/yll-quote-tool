@@ -539,6 +539,17 @@ export async function listCustomerTagsByIds(
 // (a send, a toggle, a save) — every call site can fire this without its own
 // try/catch, though several wrap it anyway for defense in depth, matching
 // this file's attachQuoteToCustomer convention.
+//
+// REASSERTION (review fix, staff/admin MED, S34 #198 review): because this
+// only ever writes true, a staff CLEAR on the customer profile
+// (setCustomerTags, which CAN set false) is NOT durable against a linked
+// quote that's still tagged — the next event that re-fires propagation for
+// that SAME quote (a resend, a retry-eligible toggle, another Calculate that
+// re-touches the chip) will flip the customer tag back to true. There is no
+// tracking of "staff deliberately cleared this" here — a customer-level
+// clear is only fully durable once every linked tagged quote is ALSO
+// untagged. Both quote-level toggles' OFF confirm copy and
+// CustomerTagsEditor's clear control disclose this; no state machine added.
 export async function propagateQuoteTagsToCustomer(
   customerId: string,
   tags: { isNce?: boolean; isYllNeighbor?: boolean },

@@ -28,7 +28,11 @@ export function NceToggle({ quoteId, isNce }: { quoteId: string; isNce: boolean 
           '- This sets the tag only — deposit percent, balance-collection, and invoice mark-paid behaviors are a separate update (ledger #199) and are unaffected by this toggle today.',
           "- If this quote is already sent and linked to a customer, the customer's profile is tagged NCE immediately too.",
         ]
-      : ['Remove the NCE tag from this quote?'];
+      : [
+          'Remove the NCE tag from this quote?',
+          '',
+          "- If this already propagated to the customer's profile (the quote was sent while tagged), the customer stays tagged NCE — propagation is one-way. Remove it on the customer's profile directly if that's also wrong.",
+        ];
     if (!window.confirm(lines.join('\n'))) return;
 
     setBusy(true);

@@ -71,7 +71,11 @@ export function CustomerTagsEditor({
           onClick={() => toggle('isYllNeighbor')}
           disabled={busy}
           aria-pressed={isYllNeighbor}
-          title={isYllNeighbor ? 'YLL Neighbor — click to remove' : 'Mark as YLL Neighbor'}
+          title={
+            isYllNeighbor
+              ? 'YLL Neighbor — click to remove. If a linked SENT quote is still tagged, it can re-assert this on the customer the next time that quote is sent/toggled — untag the quote too if you want it fully cleared.'
+              : 'Mark as YLL Neighbor'
+          }
           className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded disabled:opacity-50"
           style={
             isYllNeighbor
@@ -86,7 +90,11 @@ export function CustomerTagsEditor({
           onClick={() => toggle('isNce')}
           disabled={busy}
           aria-pressed={isNce}
-          title={isNce ? 'NCE — click to remove' : 'Mark as NCE (barter/trade network)'}
+          title={
+            isNce
+              ? 'NCE — click to remove. If a linked SENT quote is still tagged, it can re-assert this on the customer the next time that quote is sent/toggled — untag the quote too if you want it fully cleared.'
+              : 'Mark as NCE (barter/trade network)'
+          }
           className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded disabled:opacity-50"
           style={
             isNce
