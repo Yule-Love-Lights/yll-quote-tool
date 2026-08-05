@@ -26,8 +26,14 @@ import { buildRebookInsert, rebookLastSeason, rebookFromQuote } from './rebook';
 
 type Row = Record<string, unknown>;
 
-function makeFakeSupabase(initial: { quotes?: Row[] } = {}) {
-  const tables: Record<string, Row[]> = { quotes: initial.quotes ? initial.quotes.map((r) => ({ ...r })) : [] };
+// #198: customers is optional/empty by default — rebookLastSeason now also
+// reads getCustomer(customerId) for tag inheritance; most existing tests
+// never seed it, which correctly resolves to "no customer row" (null).
+function makeFakeSupabase(initial: { quotes?: Row[]; customers?: Row[] } = {}) {
+  const tables: Record<string, Row[]> = {
+    quotes: initial.quotes ? initial.quotes.map((r) => ({ ...r })) : [],
+    customers: initial.customers ? initial.customers.map((r) => ({ ...r })) : [],
+  };
   let counter = 0;
 
   function from(table: string) {
@@ -208,6 +214,27 @@ describe('buildRebookInsert', () => {
     expect(row.is_test).toBe(false);
   });
 
+  // #198: legacy_rebook/is_nce carry through from the source (same
+  // clone-field posture as is_test above) — this is the plain default;
+  // rebookLastSeason overrides these with the CUSTOMER's current tags before
+  // calling buildRebookInsert (see its own describe block below).
+  it('carries legacy_rebook/is_nce through from the source', () => {
+    expect(buildRebookInsert({ ...src, legacy_rebook: true, is_nce: true })).toMatchObject({
+      legacy_rebook: true,
+      is_nce: true,
+    });
+    expect(buildRebookInsert({ ...src, legacy_rebook: false, is_nce: false })).toMatchObject({
+      legacy_rebook: false,
+      is_nce: false,
+    });
+  });
+
+  it('defaults legacy_rebook/is_nce to false when the source omits them', () => {
+    const row = buildRebookInsert(src);
+    expect(row.legacy_rebook).toBe(false);
+    expect(row.is_nce).toBe(false);
+  });
+
   it('strips discount + referralCredit from inputs — a rebooked quote re-earns/re-applies its own credit, never clones a spent one (#41 adversarial-review fix)', () => {
     const withCredit = {
       ...src,
@@ -332,6 +359,74 @@ describe('rebookLastSeason', () => {
     expect(created.is_test).toBe(false);
   });
 
+  // #198 customer→quote inheritance: the rebooked draft inherits the
+  // CUSTOMER's CURRENT tags, not necessarily whatever the source (last
+  // approved) quote itself carried.
+  describe('NCE + YLL Neighbor tag inheritance (#198)', () => {
+    it("inherits the customer's CURRENT tags, overriding the source quote's own (possibly stale) tags", async () => {
+      const fake = makeFakeSupabase({
+        quotes: [
+          {
+            id: 'a',
+            customer_id: 'c1',
+            customer_approved_at: '2025-01-01',
+            inputs: {},
+            result: { total: 5 },
+            legacy_rebook: false, // the OLD approved quote was never tagged...
+            is_nce: false,
+          },
+        ],
+        // ...but the customer has since been tagged (profile edit / a later
+        // quote's propagation) — the rebook should reflect THAT, not the stale quote.
+        customers: [{ id: 'c1', is_nce: true, is_yll_neighbor: true }],
+      });
+      sbRef.current = fake.client;
+      const res = await rebookLastSeason('c1');
+      const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+      expect(created.is_nce).toBe(true);
+      expect(created.legacy_rebook).toBe(true);
+    });
+
+    it("does not inherit a tag the customer row explicitly has false, even if the source quote was tagged", async () => {
+      const fake = makeFakeSupabase({
+        quotes: [
+          { id: 'a', customer_id: 'c1', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 }, legacy_rebook: true, is_nce: true },
+        ],
+        customers: [{ id: 'c1', is_nce: false, is_yll_neighbor: false }],
+      });
+      sbRef.current = fake.client;
+      const res = await rebookLastSeason('c1');
+      const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+      expect(created.is_nce).toBe(false);
+      expect(created.legacy_rebook).toBe(false);
+    });
+
+    it("falls back to the source quote's own tags when no customer row exists (lookup miss)", async () => {
+      const fake = makeFakeSupabase({
+        quotes: [
+          { id: 'a', customer_id: 'c1', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 }, legacy_rebook: true, is_nce: false },
+        ],
+        // no customers row for c1
+      });
+      sbRef.current = fake.client;
+      const res = await rebookLastSeason('c1');
+      const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+      expect(created.legacy_rebook).toBe(true);
+      expect(created.is_nce).toBe(false);
+    });
+
+    it('defaults both tags false when neither the customer nor the source quote is tagged', async () => {
+      const fake = makeFakeSupabase({
+        quotes: [{ id: 'a', customer_id: 'c1', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 } }],
+      });
+      sbRef.current = fake.client;
+      const res = await rebookLastSeason('c1');
+      const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+      expect(created.legacy_rebook).toBe(false);
+      expect(created.is_nce).toBe(false);
+    });
+  });
+
   // rebook-number-createdby: a rebooked quote must get a sequential quote_number
   // (same allocateNumber('quote_number_seq') as saveQuote) so it isn't stuck on
   // the truncated-UUID fallback and stays findable by number search/sort.
@@ -434,6 +529,23 @@ describe('rebookFromQuote', () => {
     const res = await rebookFromQuote('a');
     const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
     expect(created.is_test).toBe(true);
+  });
+
+  // #198: rebookFromQuote is a "revive THIS exact quote" clone (#116), not a
+  // customer→quote inheritance site (it doesn't even take a customerId) — it
+  // simply carries the SOURCE quote's OWN tags forward, ignoring the
+  // customer's current tag state entirely.
+  it('carries the SOURCE quote\'s own legacy_rebook/is_nce tags through, unlike rebookLastSeason', async () => {
+    const fake = makeFakeSupabase({
+      quotes: [{ id: 'a', customer_id: 'c1', status: 'declined', inputs: {}, result: { total: 5 }, legacy_rebook: true, is_nce: true }],
+      // Even if the customer row disagrees, rebookFromQuote never reads it.
+      customers: [{ id: 'c1', is_nce: false, is_yll_neighbor: false }],
+    });
+    sbRef.current = fake.client;
+    const res = await rebookFromQuote('a');
+    const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+    expect(created.legacy_rebook).toBe(true);
+    expect(created.is_nce).toBe(true);
   });
 
   it('survives a throwing design clone (best-effort)', async () => {

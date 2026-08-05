@@ -37,6 +37,12 @@ export type CustomerRow = {
    *  jsonb column could hold old/hand-edited junk; validate before use
    *  (src/lib/customerTenure.ts's deriveTenureYears does this). */
   manual_years?: unknown;
+  /** NCE + YLL Neighbor tags (#198) — see migrations/2026-08-05-nce-customer-
+   *  tags.sql. Set directly by staff (customer profile add/remove chips) or
+   *  forward-only-propagated from a tagged quote (never cleared by
+   *  propagation — only a staff remove clears these). */
+  is_nce: boolean;
+  is_yll_neighbor: boolean;
 };
 
 export type PropertyRow = {
@@ -476,4 +482,75 @@ export async function getPropertiesForCustomer(customerId: string): Promise<Prop
     return [];
   }
   return (data ?? []) as PropertyRow[];
+}
+
+// Read-only lookup by HighLevel contact id — unlike findOrCreateCustomer this
+// NEVER creates a row (used to resolve a picked/prefilled HL contact's
+// existing tags for inheritance, #198; merely viewing/picking a contact must
+// not conjure a customer row that attachQuoteToCustomer hasn't earned yet).
+export async function getCustomerByHlContactId(hlContactId: string): Promise<CustomerRow | null> {
+  const trimmed = norm(hlContactId);
+  if (!trimmed) return null;
+  const sb = svc();
+  if (!sb) return null;
+  const { data, error } = await sb
+    .from('customers')
+    .select('*')
+    .eq('hl_contact_id', trimmed)
+    .maybeSingle();
+  if (error) {
+    console.error('getCustomerByHlContactId error:', error);
+    return null;
+  }
+  return (data as CustomerRow | null) ?? null;
+}
+
+// Bulk tag lookup for the customers LIST page (#198) — one query for every
+// customer row shown, keyed by id, so the page doesn't N+1. Ids with no
+// matching row (or that don't resolve, e.g. a walk-in with no customer_id)
+// are simply absent from the returned map.
+export async function listCustomerTagsByIds(
+  ids: string[],
+): Promise<Map<string, { isNce: boolean; isYllNeighbor: boolean }>> {
+  const uniqueIds = Array.from(new Set(ids.filter((id) => id)));
+  const map = new Map<string, { isNce: boolean; isYllNeighbor: boolean }>();
+  if (!uniqueIds.length) return map;
+  const sb = svc();
+  if (!sb) return map;
+  const { data, error } = await sb
+    .from('customers')
+    .select('id, is_nce, is_yll_neighbor')
+    .in('id', uniqueIds);
+  if (error) {
+    console.error('listCustomerTagsByIds error:', error);
+    return map;
+  }
+  for (const row of (data ?? []) as Array<{ id: string; is_nce: boolean; is_yll_neighbor: boolean }>) {
+    map.set(row.id, { isNce: row.is_nce, isYllNeighbor: row.is_yll_neighbor });
+  }
+  return map;
+}
+
+// Forward-only tag propagation (#198): a tagged quote auto-tags its linked
+// customer. Only ever WRITES true — a false/absent flag here is simply
+// omitted from the update, so this can never clear a tag another quote (or a
+// staff edit) already set. Best-effort: swallows its own DB error (logs and
+// returns) so a propagation failure can never fail the caller's real action
+// (a send, a toggle, a save) — every call site can fire this without its own
+// try/catch, though several wrap it anyway for defense in depth, matching
+// this file's attachQuoteToCustomer convention.
+export async function propagateQuoteTagsToCustomer(
+  customerId: string,
+  tags: { isNce?: boolean; isYllNeighbor?: boolean },
+): Promise<void> {
+  const patch: Record<string, true> = {};
+  if (tags.isNce) patch.is_nce = true;
+  if (tags.isYllNeighbor) patch.is_yll_neighbor = true;
+  if (Object.keys(patch).length === 0) return;
+  const sb = svc();
+  if (!sb) return;
+  const { error } = await sb.from('customers').update(patch).eq('id', customerId);
+  if (error) {
+    console.error(`propagateQuoteTagsToCustomer: update failed for customer ${customerId}:`, error);
+  }
 }
