@@ -10,6 +10,7 @@
 // DEFAULT_SERVICE_TYPE (unknown/missing service_type → holiday).
 
 import { asServiceType, DEFAULT_SERVICE_TYPE, type ServiceType } from '@/lib/serviceType';
+import { PERMANENT_SIDE_LABEL, type PermanentSide } from '@/lib/permanent/types';
 
 const QUOTE_READY_EMAIL_SUBJECT: Record<ServiceType, string> = {
   holiday: 'Your Yule Love Lights quote is ready 🎄',
@@ -312,6 +313,11 @@ export function orderEmailHtml(input: {
   // Test Quote (ledger #93) — when true, a loud banner up top so this can never
   // be mistaken for a real order to forward/pull stock against.
   isTest?: boolean;
+  // #192 review fix (parity) — same "Booked scope" note as the crew print
+  // sheet / board modal / admin BOM panel. null/undefined/empty = unscoped
+  // (no note) — a non-permanent job, or a permanent job whose scoping
+  // resolved unscoped.
+  scopedSides?: PermanentSide[] | null;
 }): string {
   const row = (label: string, value: string) =>
     `<tr><td style="padding:2px 14px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
@@ -337,6 +343,16 @@ export function orderEmailHtml(input: {
     row('Address', escapeHtml(input.address || '—')),
     row('Install', escapeHtml(input.installDate || '—')),
     `</table>`,
+    // #192 review fix — a plain one-line note (not a styled table) above the
+    // materials list, so the reader sees the explanation before the narrowed
+    // numbers, mirroring the crew print sheet / board modal placement.
+    ...(input.scopedSides && input.scopedSides.length
+      ? [
+          `<p style="color:#1d4ed8;">Booked scope: ${escapeHtml(
+            input.scopedSides.map((s) => PERMANENT_SIDE_LABEL[s]).join(', '),
+          )} — accessories/gaps remain whole-job.</p>`,
+        ]
+      : []),
   ];
   if (input.materials.length) {
     out.push(

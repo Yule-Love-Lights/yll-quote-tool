@@ -7,6 +7,7 @@ import { notFound, redirect } from 'next/navigation';
 import { getOperator } from '@/lib/auth/supabaseServer';
 import { getJobWorkOrder } from '@/lib/inventory/jobs';
 import { FULFILLMENT_STAGE_LABELS } from '@/lib/inventory/fulfillmentStage';
+import { PERMANENT_SIDE_LABEL } from '@/lib/permanent/types';
 import { PrintButton } from '@/components/inventory/PrintButton';
 
 export const dynamic = 'force-dynamic';
@@ -27,6 +28,10 @@ export default async function WorkOrderPrintPage({ params }: { params: Promise<{
   const wo = await getJobWorkOrder(id);
   if (!wo) notFound();
   const { job, materials } = wo;
+  // #192 review fix (parity) — same "Booked scope" note as the admin BOM
+  // panel/print sheet, so a crew member pulling from this sheet knows WHY the
+  // pick-list is narrower than the full measured house.
+  const scopedSideNote = wo.scopedSides ? wo.scopedSides.map((s) => PERMANENT_SIDE_LABEL[s]).join(', ') : null;
 
   return (
     <main
@@ -86,6 +91,12 @@ export default async function WorkOrderPrintPage({ params }: { params: Promise<{
         <div><strong>Address:</strong> {job.customerAddress ?? '—'}</div>
         <div><strong>Install date:</strong> {fmtDate(job.installDate)}</div>
       </section>
+
+      {scopedSideNote && (
+        <p style={{ fontSize: '12px', color: '#1d4ed8', background: '#eff6ff', border: '1px solid #dbeafe', borderRadius: '6px', padding: '6px 8px', margin: '0 0 14px' }}>
+          Booked scope: {scopedSideNote} — accessories/gaps remain whole-job.
+        </p>
+      )}
 
       <h2 style={{ fontSize: '13px', textTransform: 'uppercase', letterSpacing: '0.06em', color: '#555', margin: '0 0 6px' }}>
         Materials

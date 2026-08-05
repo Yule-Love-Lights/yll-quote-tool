@@ -3,8 +3,9 @@
 // Cron hits this GET on the vercel.json schedule "30 11 * * *" — Vercel crons
 // run in UTC, so that's 7:30am EDT / 6:30am EST. CRON-ONLY: same Bearer
 // CRON_SECRET guard as low-stock-alert, so the endpoint isn't publicly
-// triggerable. Dormant unless the Telegram bot is enabled + configured, and an
-// all-quiet day sends nothing (opsDigestMessage returns null).
+// triggerable. Dormant unless the Telegram bot is enabled + configured; when
+// live it ALWAYS sends (the heartbeat — see opsDigest.ts), so a silent morning
+// means broken, never "nothing on the board".
 
 import { NextRequest, NextResponse } from 'next/server';
 import { safeEqual } from '@/lib/security';
@@ -25,8 +26,6 @@ export async function GET(req: NextRequest) {
   }
 
   const msg = opsDigestMessage(await collectOpsDigest(), appBaseUrl());
-  if (!msg) return NextResponse.json({ ok: true, sent: false });
-
   await notifyTelegramAudience('ops', msg);
   return NextResponse.json({ ok: true, sent: true });
 }

@@ -102,6 +102,24 @@ describe('buildQuoteInputs', () => {
     expect(restored.permanent).toEqual(perm.permanent);
   });
 
+  it('#192 — round-trips a SET trackStyleBySide map through inputs → form', () => {
+    const perm = {
+      ...fullForm,
+      serviceType: 'permanent' as const,
+      permanent: {
+        ...makeDefaultPermanentFields(),
+        frontFootage: 40,
+        backFootage: 40,
+        trackStyle: 'single' as const, // legacy scalar untouched
+        trackStyleBySide: { front: 'parapet' as const, back: 'parapet' as const },
+      },
+    };
+    const restored = inputsToFormData(perm.customer, buildQuoteInputs(perm), 'permanent');
+    expect(restored.permanent).toEqual(perm.permanent);
+    expect(restored.permanent.trackStyleBySide).toEqual({ front: 'parapet', back: 'parapet' });
+    expect(restored.permanent.trackStyle).toBe('single');
+  });
+
   it('hydrates a fresh blank permanent block for a holiday quote (factory, fresh gaps)', () => {
     const a = inputsToFormData(fullForm.customer, buildQuoteInputs(fullForm), 'holiday');
     const b = inputsToFormData(fullForm.customer, buildQuoteInputs(fullForm), 'holiday');
