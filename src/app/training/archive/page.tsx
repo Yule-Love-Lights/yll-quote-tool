@@ -448,11 +448,14 @@ function PropertyCard({ property, onExclude }: { property: QueueProperty; onExcl
 
         <div className="mt-3">
           {traced ? (
+            // No /training/[id] detail route exists — the list page is the only
+            // place a saved house renders, so that is where this goes. A
+            // per-house href here 404'd (caught in the S51 wrap review).
             <Link
-              href={`/training/${property.promotedTrainingHouseId}`}
+              href="/training"
               className="inline-block bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium text-sm px-4 py-2 rounded-md"
             >
-              View training example
+              View in training list
             </Link>
           ) : (
             <div className="flex gap-2 flex-wrap items-center">
