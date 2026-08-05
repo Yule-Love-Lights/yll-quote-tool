@@ -54,6 +54,7 @@ import {
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { deriveStatus, canRevive } from '@/lib/quoteStatus';
+import { attachQuoteToCustomer, propagateQuoteTagsToCustomer } from '@/lib/customers';
 
 export const runtime = 'nodejs';
 
@@ -110,12 +111,24 @@ type QuoteRow = {
   // Legacy rebook (#156): routes to the Neighbors pipeline instead of the
   // service_type's own map — see resolvePipelineStages.
   legacy_rebook: boolean;
+  // NCE tag (#198): no pipeline/routing behavior of its own — read here only
+  // for the tag-propagation block below.
+  is_nce: boolean;
   // View-only portal (#176): a staff-flagged browse-only quote can never be
   // sent — see the check right after the fetch below. A real send would
   // reuse/overwrite the contact's GHL opportunity card and re-stamp their
   // quote-link field with the browse-only portal URL, so this must run
   // before any messaging or GHL work, not just before the DB stamp.
   view_only: boolean;
+  // #198 tag propagation: the linked customer (if any) + the raw identity
+  // columns, so an unlinked-but-tagged quote can be (re-)attached at send
+  // time using whatever contact info has accumulated on the row by now (a
+  // self-serve-estimate quote starts address-only; name/email/phone can land
+  // later via a path that never re-runs attachQuoteToCustomer).
+  customer_id: string | null;
+  customer_email: string | null;
+  customer_phone: string | null;
+  customer_address: string | null;
 };
 
 export function hasDeliverableQuoteResult(
@@ -171,7 +184,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
-    .select('id, highlevel_opportunity_id, highlevel_contact_id, customer_name, service_type, total, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status, ghl_stage_synced_at, is_test, legacy_rebook, view_only')
+    .select('id, highlevel_opportunity_id, highlevel_contact_id, customer_name, service_type, total, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status, ghl_stage_synced_at, is_test, legacy_rebook, is_nce, view_only, customer_id, customer_email, customer_phone, customer_address')
     .eq('id', id)
     .single<QuoteRow>();
 
@@ -360,6 +373,46 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         { error: 'This quote changed before it could be sent — please refresh and try again.', code: 'send-conflict' },
         { status: 409 },
       );
+    }
+
+    // NCE + YLL Neighbor tag propagation (#198): a tagged quote auto-tags its
+    // customer the moment it BECOMES sent. Only runs on a fresh stamp (this
+    // block, guarded above by !isGhlRetry && !isDeliveryRetry) — a retry never
+    // re-fires it, and it's idempotent (propagateQuoteTagsToCustomer) even if
+    // it did. Skipped entirely for an untagged quote (the common case) to
+    // avoid the extra round trip below on every ordinary send.
+    if (quote.legacy_rebook || quote.is_nce) {
+      try {
+        // The common case (post-#192 identity linking runs at quote-save
+        // time) already has customer_id set. The one real gap: a self-serve-
+        // estimate quote starts address-only (no name/email/phone), so
+        // attachQuoteToCustomer's insert-time call resolves no identity and
+        // links nothing — re-attempt it here with whatever identity has
+        // landed on the row by send time, using the SAME find-or-create
+        // attachQuoteToCustomer the initial save uses (idempotent: re-running
+        // it on an already-linked quote just re-resolves the same customer).
+        const linkedCustomerId =
+          quote.customer_id ??
+          (
+            await attachQuoteToCustomer({
+              id,
+              highlevel_contact_id: quote.highlevel_contact_id,
+              customer_name: quote.customer_name,
+              customer_email: quote.customer_email,
+              customer_phone: quote.customer_phone,
+              customer_address: quote.customer_address,
+            })
+          )?.customerId ??
+          null;
+        if (linkedCustomerId) {
+          await propagateQuoteTagsToCustomer(linkedCustomerId, {
+            isNce: quote.is_nce,
+            isYllNeighbor: quote.legacy_rebook,
+          });
+        }
+      } catch (err) {
+        console.warn('[api/quotes/:id/send] tag propagation failed (non-fatal):', err);
+      }
     }
   }
 

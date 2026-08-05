@@ -18,9 +18,18 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
 
-const { requireOperatorMock, sbRef } = vi.hoisted(() => ({
+const { requireOperatorMock, sbRef, attachQuoteToCustomerMock, propagateMock } = vi.hoisted(() => ({
   requireOperatorMock: vi.fn(async (): Promise<NextResponse | null> => null),
   sbRef: { current: null as unknown },
+  // #198: mocked so the existing DRAFT_QUOTE fixture (no tags set) never
+  // reaches these, and the tag-propagation tests below can assert on them.
+  attachQuoteToCustomerMock: vi.fn(async () => null as null | { customerId: string; propertyId: string }),
+  propagateMock: vi.fn(async () => {}),
+}));
+
+vi.mock('@/lib/customers', () => ({
+  attachQuoteToCustomer: attachQuoteToCustomerMock,
+  propagateQuoteTagsToCustomer: propagateMock,
 }));
 
 vi.mock('@/lib/auth/supabaseServer', () => ({
@@ -243,5 +252,57 @@ describe('POST /api/quotes/[id]/mark-sent — race loss on write', () => {
     const json = await res.json();
     expect(res.status).toBe(409);
     expect(json.code).toBe('invalid-status');
+  });
+});
+
+describe('POST /api/quotes/[id]/mark-sent — NCE + YLL Neighbor tag propagation (#198)', () => {
+  it('propagates both tags to the ALREADY-linked customer', async () => {
+    const { client } = makeSb({ ...DRAFT_QUOTE, legacy_rebook: true, is_nce: true, customer_id: 'cust-1' });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), ctx());
+    expect(res.status).toBe(200);
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+    expect(propagateMock).toHaveBeenCalledWith('cust-1', { isNce: true, isYllNeighbor: true });
+  });
+
+  it('re-attaches via attachQuoteToCustomer when tagged but NOT yet linked, then propagates', async () => {
+    attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'cust-resolved', propertyId: 'prop-1' });
+    const { client } = makeSb({
+      ...DRAFT_QUOTE,
+      legacy_rebook: false,
+      is_nce: true,
+      customer_id: null,
+      customer_email: 'jane@x.com',
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), ctx());
+    expect(res.status).toBe(200);
+    expect(attachQuoteToCustomerMock).toHaveBeenCalledWith(
+      expect.objectContaining({ id: ID, customer_email: 'jane@x.com' }),
+    );
+    expect(propagateMock).toHaveBeenCalledWith('cust-resolved', { isNce: true, isYllNeighbor: false });
+  });
+
+  it('does NOT attach or propagate when the quote carries neither tag (the DRAFT_QUOTE default)', async () => {
+    const { client } = makeSb(DRAFT_QUOTE);
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), ctx());
+    expect(res.status).toBe(200);
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+    expect(propagateMock).not.toHaveBeenCalled();
+  });
+
+  it('still marks sent successfully when propagation throws (best-effort)', async () => {
+    propagateMock.mockRejectedValueOnce(new Error('customers table missing'));
+    const { client } = makeSb({ ...DRAFT_QUOTE, is_nce: true, customer_id: 'cust-1' });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
   });
 });

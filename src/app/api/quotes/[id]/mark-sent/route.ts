@@ -43,6 +43,7 @@ import {
   QUOTE_STATUSES,
   type QuoteStatus,
 } from '@/lib/quoteStatus';
+import { attachQuoteToCustomer, propagateQuoteTagsToCustomer } from '@/lib/customers';
 
 export const runtime = 'nodejs';
 
@@ -61,6 +62,17 @@ type QuoteRow = {
   customer_approved_at: string | null;
   deposit_paid_at: string | null;
   view_only: boolean;
+  // NCE + YLL Neighbor tag propagation (#198) — see the sibling /send route's
+  // doc comment for the full rationale (same pattern, this is the OTHER
+  // become-sent writer the ledger names).
+  legacy_rebook: boolean;
+  is_nce: boolean;
+  customer_id: string | null;
+  highlevel_contact_id: string | null;
+  customer_name: string | null;
+  customer_email: string | null;
+  customer_phone: string | null;
+  customer_address: string | null;
 };
 
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -79,7 +91,9 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   const sb = getSupabaseServiceClient()!;
   const { data: quote } = await sb
     .from('quotes')
-    .select('id, status, quote_sent_at, viewed_at, customer_approved_at, deposit_paid_at, view_only')
+    .select(
+      'id, status, quote_sent_at, viewed_at, customer_approved_at, deposit_paid_at, view_only, legacy_rebook, is_nce, customer_id, highlevel_contact_id, customer_name, customer_email, customer_phone, customer_address',
+    )
     .eq('id', id)
     .maybeSingle<QuoteRow>();
 
@@ -146,6 +160,36 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       { error: 'Cannot mark this quote sent anymore', code: 'invalid-status' },
       { status: 409 },
     );
+  }
+
+  // NCE + YLL Neighbor tag propagation (#198) — mirrors the real /send
+  // route's block exactly (this route stamps the SAME become-sent DB
+  // end-state, just without messaging/GHL). Skipped entirely for an untagged
+  // quote (the common case).
+  if (quote.legacy_rebook || quote.is_nce) {
+    try {
+      const linkedCustomerId =
+        quote.customer_id ??
+        (
+          await attachQuoteToCustomer({
+            id,
+            highlevel_contact_id: quote.highlevel_contact_id,
+            customer_name: quote.customer_name,
+            customer_email: quote.customer_email,
+            customer_phone: quote.customer_phone,
+            customer_address: quote.customer_address,
+          })
+        )?.customerId ??
+        null;
+      if (linkedCustomerId) {
+        await propagateQuoteTagsToCustomer(linkedCustomerId, {
+          isNce: quote.is_nce,
+          isYllNeighbor: quote.legacy_rebook,
+        });
+      }
+    } catch (err) {
+      console.warn('[api/quotes/:id/mark-sent] tag propagation failed (non-fatal):', err);
+    }
   }
 
   return NextResponse.json({ ok: true, status: 'sent', sentAt });
