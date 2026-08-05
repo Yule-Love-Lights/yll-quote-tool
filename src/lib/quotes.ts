@@ -407,9 +407,13 @@ export async function updateQuote(
     })
     .eq('id', id)
     // Widened past 'id' (#198) so a tag-propagation check below can read the
-    // post-update quote_sent_at/customer_id off THIS response, no 2nd round trip.
-    .select('id, quote_sent_at, customer_id')
-    .single<{ id: string; quote_sent_at: string | null; customer_id: string | null }>();
+    // post-update quote_sent_at/customer_id off THIS response, no 2nd round
+    // trip. is_test ridden along too (review fix, admin MED, S34 #198
+    // review) — updateQuote has no other way to know is_test (it's immutable
+    // and never a param here), and a reopened TEST quote CAN be re-Calculated
+    // through this exact path.
+    .select('id, quote_sent_at, customer_id, is_test')
+    .single<{ id: string; quote_sent_at: string | null; customer_id: string | null; is_test: boolean }>();
 
   if (error) {
     console.error('Supabase updateQuote error:', error);
@@ -420,9 +424,12 @@ export async function updateQuote(
   // legacy-rebook toggle routes' "tagging an already-sent quote propagates
   // immediately" behavior — the SAME rule applies no matter which UI set the
   // tag. Only fires when this update actually SET a tag true (never on
-  // false/omitted — forward-only) and the quote already has both a sent stamp
-  // and a linked customer. Best-effort: never fails the save.
-  if ((legacyRebook === true || isNce === true) && data.quote_sent_at && data.customer_id) {
+  // false/omitted — forward-only), the quote already has both a sent stamp
+  // and a linked customer, and it's NOT a test quote (defense-in-depth — a
+  // real send/mark-sent can never even reach 'sent' as a test row without
+  // ALSO being caught by their own is_test guard, but this keeps the
+  // invariant self-contained here too). Best-effort: never fails the save.
+  if (!data.is_test && (legacyRebook === true || isNce === true) && data.quote_sent_at && data.customer_id) {
     try {
       await propagateQuoteTagsToCustomer(data.customer_id, { isNce, isYllNeighbor: legacyRebook });
     } catch (err) {

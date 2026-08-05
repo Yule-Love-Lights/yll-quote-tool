@@ -59,7 +59,13 @@ function makeParams(id: string) {
 // row doesn't set them — same as every existing test here, so the tag-
 // propagation branch stays a no-op unless a test opts in.
 function makeSb(
-  row: { id: string; legacy_rebook: boolean; quote_sent_at?: string | null; customer_id?: string | null } | null,
+  row: {
+    id: string;
+    legacy_rebook: boolean;
+    quote_sent_at?: string | null;
+    customer_id?: string | null;
+    is_test?: boolean;
+  } | null,
 ) {
   const updatePayloads: Array<Record<string, unknown>> = [];
   const builder: Record<string, unknown> = {};
@@ -80,6 +86,7 @@ function makeSb(
           legacy_rebook: merged.legacy_rebook,
           quote_sent_at: merged.quote_sent_at,
           customer_id: merged.customer_id,
+          is_test: merged.is_test ?? false,
         },
         error: null,
       };
@@ -229,6 +236,23 @@ describe('POST /api/quotes/[id]/legacy-rebook — tag propagation (#198)', () =>
     sbRef.current = client;
 
     await POST(makeReq({ legacyRebook: false }), makeParams(VALID_UUID));
+    expect(propagateMock).not.toHaveBeenCalled();
+  });
+
+  // Review fix (admin MED, S34 #198 review): defense-in-depth — mirrors the
+  // sibling /nce route's test.
+  it('does NOT propagate for a TAGGED TEST quote, even already-sent + linked', async () => {
+    const { client } = makeSb({
+      id: VALID_UUID,
+      legacy_rebook: false,
+      quote_sent_at: '2026-08-01T00:00:00Z',
+      customer_id: 'cust-1',
+      is_test: true,
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ legacyRebook: true }), makeParams(VALID_UUID));
+    expect(res.status).toBe(200);
     expect(propagateMock).not.toHaveBeenCalled();
   });
 

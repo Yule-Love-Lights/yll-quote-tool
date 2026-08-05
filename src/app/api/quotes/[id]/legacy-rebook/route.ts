@@ -64,9 +64,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     .update({ legacy_rebook: legacyRebook })
     .eq('id', id)
     // quote_sent_at + customer_id ridden along so the propagation check below
-    // needs no second round trip (#198).
-    .select('id, legacy_rebook, quote_sent_at, customer_id')
-    .maybeSingle<{ id: string; legacy_rebook: boolean; quote_sent_at: string | null; customer_id: string | null }>();
+    // needs no second round trip (#198). is_test ridden along too (review
+    // fix, admin MED, S34 #198 review) — defense-in-depth, see the sibling
+    // /nce route's comment for the full rationale.
+    .select('id, legacy_rebook, quote_sent_at, customer_id, is_test')
+    .maybeSingle<{
+      id: string;
+      legacy_rebook: boolean;
+      quote_sent_at: string | null;
+      customer_id: string | null;
+      is_test: boolean;
+    }>();
 
   if (error) {
     console.error('[api/quotes/:id/legacy-rebook] update failed:', error);
@@ -76,7 +84,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Quote not found' }, { status: 404 });
   }
 
-  if (legacyRebook && data.quote_sent_at && data.customer_id) {
+  if (!data.is_test && legacyRebook && data.quote_sent_at && data.customer_id) {
     try {
       await propagateQuoteTagsToCustomer(data.customer_id, { isYllNeighbor: true });
     } catch (err) {

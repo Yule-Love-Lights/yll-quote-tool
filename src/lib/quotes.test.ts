@@ -424,7 +424,12 @@ describe('updateQuote — referral "mention" attribution on the UPDATE path (#41
 //
 // Fake tuned to updateQuote's tag-propagation chain:
 //   write: from('quotes').update(payload).eq().select('id, quote_sent_at, customer_id').single() → returnRow
-function makeTagUpdateFake(returnRow: { id: string; quote_sent_at: string | null; customer_id: string | null }) {
+function makeTagUpdateFake(returnRow: {
+  id: string;
+  quote_sent_at: string | null;
+  customer_id: string | null;
+  is_test?: boolean;
+}) {
   const updates: Record<string, unknown>[] = [];
   const builder: Record<string, unknown> = {};
   Object.assign(builder, {
@@ -474,6 +479,24 @@ describe('updateQuote — NCE + YLL Neighbor tags (#198)', () => {
 
   it('does NOT propagate when the quote has not been sent yet', async () => {
     const fake = makeTagUpdateFake({ id: 'q1', quote_sent_at: null, customer_id: 'cust-1' });
+    serviceRef.current = fake.client;
+
+    await updateQuote('q1', INPUTS, RESULT, undefined, undefined, undefined, undefined, true);
+
+    expect(propagateQuoteTagsToCustomerMock).not.toHaveBeenCalled();
+  });
+
+  // Review fix (admin MED, S34 #198 review): defense-in-depth — a reopened
+  // TEST quote CAN be re-Calculated through this exact path (builder Save),
+  // so this guard is genuinely reachable, unlike the two admin-only toggle
+  // routes' equivalent guards.
+  it('does NOT propagate for a TAGGED TEST quote, even already-sent + linked', async () => {
+    const fake = makeTagUpdateFake({
+      id: 'q1',
+      quote_sent_at: '2026-08-01T00:00:00Z',
+      customer_id: 'cust-1',
+      is_test: true,
+    });
     serviceRef.current = fake.client;
 
     await updateQuote('q1', INPUTS, RESULT, undefined, undefined, undefined, undefined, true);

@@ -57,7 +57,13 @@ function makeParams(id: string) {
 // `row` is the row present in the table BEFORE the update (null = no match,
 // mirroring an unknown quote id — the update then matches 0 rows).
 function makeSb(
-  row: { id: string; is_nce: boolean; quote_sent_at?: string | null; customer_id?: string | null } | null,
+  row: {
+    id: string;
+    is_nce: boolean;
+    quote_sent_at?: string | null;
+    customer_id?: string | null;
+    is_test?: boolean;
+  } | null,
 ) {
   const updatePayloads: Array<Record<string, unknown>> = [];
   const builder: Record<string, unknown> = {};
@@ -78,6 +84,7 @@ function makeSb(
           is_nce: merged.is_nce,
           quote_sent_at: merged.quote_sent_at,
           customer_id: merged.customer_id,
+          is_test: merged.is_test ?? false,
         },
         error: null,
       };
@@ -227,6 +234,25 @@ describe('POST /api/quotes/[id]/nce — tag propagation (#198)', () => {
     sbRef.current = client;
 
     await POST(makeReq({ isNce: false }), makeParams(VALID_UUID));
+    expect(propagateMock).not.toHaveBeenCalled();
+  });
+
+  // Review fix (admin MED, S34 #198 review): defense-in-depth — this route
+  // is admin-only (no realistic staff reason to toggle a test quote's NCE
+  // flag), but the guard is cheap and keeps the "test quotes never touch
+  // customers" invariant self-contained here too.
+  it('does NOT propagate for a TAGGED TEST quote, even already-sent + linked', async () => {
+    const { client } = makeSb({
+      id: VALID_UUID,
+      is_nce: false,
+      quote_sent_at: '2026-08-01T00:00:00Z',
+      customer_id: 'cust-1',
+      is_test: true,
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ isNce: true }), makeParams(VALID_UUID));
+    expect(res.status).toBe(200);
     expect(propagateMock).not.toHaveBeenCalled();
   });
 

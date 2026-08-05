@@ -62,9 +62,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     .update({ is_nce: isNce })
     .eq('id', id)
     // quote_sent_at + customer_id ridden along so the propagation check below
-    // needs no second round trip.
-    .select('id, is_nce, quote_sent_at, customer_id')
-    .maybeSingle<{ id: string; is_nce: boolean; quote_sent_at: string | null; customer_id: string | null }>();
+    // needs no second round trip. is_test ridden along too (review fix, admin
+    // MED, S34 #198 review) — defense-in-depth even though staff have no
+    // reason to hand-toggle a test quote's tag from this admin-only route;
+    // mirrors saveQuote's is_test posture and keeps the invariant even if a
+    // future writer breaks the /send + /mark-sent guards.
+    .select('id, is_nce, quote_sent_at, customer_id, is_test')
+    .maybeSingle<{
+      id: string;
+      is_nce: boolean;
+      quote_sent_at: string | null;
+      customer_id: string | null;
+      is_test: boolean;
+    }>();
 
   if (error) {
     console.error('[api/quotes/:id/nce] update failed:', error);
@@ -74,7 +84,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Quote not found' }, { status: 404 });
   }
 
-  if (isNce && data.quote_sent_at && data.customer_id) {
+  if (!data.is_test && isNce && data.quote_sent_at && data.customer_id) {
     try {
       await propagateQuoteTagsToCustomer(data.customer_id, { isNce: true });
     } catch (err) {
