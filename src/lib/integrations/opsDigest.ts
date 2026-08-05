@@ -6,11 +6,16 @@
 // result through notifyTelegram every morning.
 //
 // HEARTBEAT (2026-08-05): the digest ALWAYS sends now, even on an all-quiet
-// morning — silence used to be ambiguous ("broken" vs "nothing on the board"),
-// so a daily message is the proof-of-life. Primarily an off-season prep tool:
-// alongside installs + the quote pipeline it surfaces the inbox's own
-// open-items + due-follow-up counts (reusing listOpenItems/listDueFollowUps, so
-// the numbers match /inbox exactly, incl. the legacy-rebook exclusion).
+// morning. Before #675 a 401'd cron sent nothing — indistinguishable from
+// "nothing on the board" — so the daily message is proof the cron + Telegram
+// DELIVERY PATH is alive. (It does NOT prove the data is fresh: the quote/job
+// reads fail soft to [] on a DB error rather than throw, so a rare read hiccup
+// could render an all-zero heartbeat that looks like a genuinely quiet day.)
+// Primarily an off-season prep tool: alongside installs + the quote pipeline it
+// surfaces the inbox's own counts, reusing listOpenItems/listDueFollowUps so
+// they match /inbox — the open-items count carries the legacy-rebook exclusion
+// (like the /inbox open list); follow-ups-due mirrors the inbox follow-up strip
+// as-is (which does NOT exclude rebook), so it can exceed "awaiting reply".
 
 import { listQuotes } from '@/lib/quotes';
 import { listFulfillmentCards } from '@/lib/inventory/jobs';
@@ -97,12 +102,13 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
   }).length;
   const depositsPendingCount = real.filter((q) => deriveStatus(q) === 'approved').length;
   const rebookDraftCount = allQuotes.filter(
-    (q) => !q.is_test && q.legacy_rebook && deriveStatus(q) === 'draft',
+    (q) => !q.is_test && !q.view_only && q.legacy_rebook && deriveStatus(q) === 'draft',
   ).length;
 
-  // Inbox: reuse the /inbox surface's own reads so the counts match exactly
-  // (incl. the legacy-rebook exclusion). Never let a Telegram-side summary break
-  // on an inbox read hiccup — fall back to null (rendered as no number).
+  // Inbox: reuse the /inbox surface's own reads so the counts match the page.
+  // open-items (totalOpen) carries the legacy-rebook exclusion; follow-ups-due
+  // mirrors the inbox follow-up strip as-is. Never let a Telegram-side summary
+  // break on an inbox read hiccup — fall back to null (rendered as no number).
   const inboxOpenCount = await safeCount(async () => {
     const res = await listOpenItems();
     return res.ok ? res.totalOpen : null;
@@ -146,14 +152,10 @@ export function opsDigestMessage(data: OpsDigestData, baseUrl: string): string {
 
   const installLine = (i: DigestInstall) =>
     `• Job #${i.jobNumber ?? '—'} ${i.customerName ?? '(no name)'} (${i.stageLabel})${i.isTest ? ' [TEST]' : ''}`;
-  if (data.installsToday.length || data.installsTomorrow.length) {
-    if (data.installsToday.length) lines.push('🔧 Installs today:', ...data.installsToday.map(installLine));
-    if (data.installsTomorrow.length) {
-      lines.push('🔧 Installs tomorrow:', ...data.installsTomorrow.map(installLine));
-    }
-  } else {
-    lines.push('🔧 Installs — today: 0 · tomorrow: 0');
-  }
+  // Always show both counts (heartbeat), then list names under each day present.
+  lines.push(`🔧 Installs — today: ${data.installsToday.length} · tomorrow: ${data.installsTomorrow.length}`);
+  if (data.installsToday.length) lines.push('Today:', ...data.installsToday.map(installLine));
+  if (data.installsTomorrow.length) lines.push('Tomorrow:', ...data.installsTomorrow.map(installLine));
 
   lines.push(`📝 Quotes to send: ${data.quotesToSendCount}`);
   lines.push(`🏘️ Neighbor (rebook) drafts: ${data.rebookDraftCount}`);

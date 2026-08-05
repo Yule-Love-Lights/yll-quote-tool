@@ -113,10 +113,11 @@ describe('collectOpsDigest', () => {
       quote({ id: 'q7', quote_number: 107, view_only: true }), // excluded
       quote({ id: 'q8', quote_number: 108, quote_sent_at: '2026-07-05T00:00:00Z' }), // sent → awaiting reply
       quote({ id: 'q9', quote_number: 109, viewed_at: '2026-07-06T00:00:00Z' }), // viewed → awaiting reply
+      quote({ id: 'q10', quote_number: 110, legacy_rebook: true, view_only: true }), // rebook BUT view-only → excluded from rebookDraftCount
     ]);
     const data = await collectOpsDigest();
     expect(data.quotesToSendCount).toBe(1); // q1
-    expect(data.rebookDraftCount).toBe(1); // q3 (a legacy_rebook draft, excluded from the real pipeline)
+    expect(data.rebookDraftCount).toBe(1); // q3 only; q10 is view-only so excluded (parity with the real bucket)
     expect(data.quotesAwaitingReplyCount).toBe(2); // q8 sent + q9 viewed
     expect(data.depositsPendingCount).toBe(1); // q4 approved+unpaid; q5 booked
   });
@@ -174,9 +175,10 @@ describe('opsDigestMessage (pure formatter — heartbeat)', () => {
       },
       'https://quote.yulelovelights.com',
     );
-    expect(msg).toContain('🔧 Installs today:');
+    expect(msg).toContain('🔧 Installs — today: 1 · tomorrow: 1');
+    expect(msg).toContain('Today:');
     expect(msg).toContain('• Job #142 Maria (Ready For Install) [TEST]');
-    expect(msg).toContain('🔧 Installs tomorrow:');
+    expect(msg).toContain('Tomorrow:');
     expect(msg).toContain('• Job #143 Tom (Scheduled)');
     expect(msg).toContain('📝 Quotes to send: 3');
     expect(msg).toContain('🏘️ Neighbor (rebook) drafts: 124');
