@@ -295,6 +295,31 @@ describe('POST /api/quotes/[id]/mark-sent — NCE + YLL Neighbor tag propagation
     expect(propagateMock).not.toHaveBeenCalled();
   });
 
+  // Review fix (admin HIGH, S34 #198 review): a tagged TEST quote must never
+  // run attach/propagation with test data — see the sibling /send route test
+  // for the full rationale.
+  it('does NOT attach or propagate for a TAGGED TEST quote, even unlinked — mark-sent still succeeds', async () => {
+    const { client } = makeSb({ ...DRAFT_QUOTE, is_test: true, legacy_rebook: true, is_nce: true, customer_id: null });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+    expect(propagateMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT attach or propagate for a TAGGED TEST quote that IS already linked', async () => {
+    const { client } = makeSb({ ...DRAFT_QUOTE, is_test: true, legacy_rebook: true, is_nce: true, customer_id: 'cust-1' });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), ctx());
+    expect(res.status).toBe(200);
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+    expect(propagateMock).not.toHaveBeenCalled();
+  });
+
   it('still marks sent successfully when propagation throws (best-effort)', async () => {
     propagateMock.mockRejectedValueOnce(new Error('customers table missing'));
     const { client } = makeSb({ ...DRAFT_QUOTE, is_nce: true, customer_id: 'cust-1' });

@@ -1025,6 +1025,45 @@ describe('POST /api/quotes/[id]/send — NCE + YLL Neighbor tag propagation (#19
     expect(propagateMock).not.toHaveBeenCalled();
   });
 
+  // Review fix (admin HIGH, S34 #198 review): a tagged TEST quote must never
+  // run attach/propagation with test data — orphan real customer rows or a
+  // merge-overwrite of a REAL customer's identity fields, then tagging that
+  // real customer, would break the "test quotes never touch customers"
+  // invariant #200's tenure push also depends on.
+  it('does NOT attach or propagate for a TAGGED TEST quote, even unlinked — the send still succeeds', async () => {
+    const { client } = makeSb({
+      ...FRESH_QUOTE,
+      is_test: true,
+      legacy_rebook: true,
+      is_nce: true,
+      customer_id: null,
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+    expect(propagateMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT attach or propagate for a TAGGED TEST quote that IS already linked', async () => {
+    const { client } = makeSb({
+      ...FRESH_QUOTE,
+      is_test: true,
+      legacy_rebook: true,
+      is_nce: true,
+      customer_id: 'cust-1',
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+    expect(propagateMock).not.toHaveBeenCalled();
+  });
+
   it('does NOT propagate when the re-attach attempt resolves to no customer', async () => {
     attachQuoteToCustomerMock.mockResolvedValueOnce(null); // no identity to link (e.g. address-only quote)
     const { client } = makeSb({ ...FRESH_QUOTE, is_nce: true, customer_id: null });

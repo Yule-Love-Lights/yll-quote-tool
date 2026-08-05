@@ -381,7 +381,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // re-fires it, and it's idempotent (propagateQuoteTagsToCustomer) even if
     // it did. Skipped entirely for an untagged quote (the common case) to
     // avoid the extra round trip below on every ordinary send.
-    if (quote.legacy_rebook || quote.is_nce) {
+    // Review fix (admin HIGH, S34 #198 review): !quote.is_test is REQUIRED,
+    // not cosmetic — a tagged TEST send must never call attachQuoteToCustomer
+    // with test data. Doing so could create an orphan real customer row, or
+    // (worse) merge-overwrite a REAL customer's identity fields via
+    // findOrCreateCustomer's newest-win secondary-key match, then tag that
+    // real customer — silently breaking the "test quotes never touch
+    // customers" invariant #200's tenure push also depends on.
+    if (!quote.is_test && (quote.legacy_rebook || quote.is_nce)) {
       try {
         // The common case (post-#192 identity linking runs at quote-save
         // time) already has customer_id set. The one real gap: a self-serve-

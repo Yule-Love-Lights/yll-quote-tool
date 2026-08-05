@@ -67,6 +67,10 @@ type QuoteRow = {
   // become-sent writer the ledger names).
   legacy_rebook: boolean;
   is_nce: boolean;
+  // Test Quote (ledger #93) — review fix (admin HIGH, S34 #198 review): a
+  // tagged TEST mark-sent must never touch attachQuoteToCustomer/
+  // propagateQuoteTagsToCustomer with test data (same rationale as /send).
+  is_test: boolean;
   customer_id: string | null;
   highlevel_contact_id: string | null;
   customer_name: string | null;
@@ -92,7 +96,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   const { data: quote } = await sb
     .from('quotes')
     .select(
-      'id, status, quote_sent_at, viewed_at, customer_approved_at, deposit_paid_at, view_only, legacy_rebook, is_nce, customer_id, highlevel_contact_id, customer_name, customer_email, customer_phone, customer_address',
+      'id, status, quote_sent_at, viewed_at, customer_approved_at, deposit_paid_at, view_only, legacy_rebook, is_nce, customer_id, highlevel_contact_id, customer_name, customer_email, customer_phone, customer_address, is_test',
     )
     .eq('id', id)
     .maybeSingle<QuoteRow>();
@@ -165,8 +169,9 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   // NCE + YLL Neighbor tag propagation (#198) — mirrors the real /send
   // route's block exactly (this route stamps the SAME become-sent DB
   // end-state, just without messaging/GHL). Skipped entirely for an untagged
-  // quote (the common case).
-  if (quote.legacy_rebook || quote.is_nce) {
+  // quote (the common case). !quote.is_test is REQUIRED — see /send's
+  // sibling comment for the full rationale.
+  if (!quote.is_test && (quote.legacy_rebook || quote.is_nce)) {
     try {
       const linkedCustomerId =
         quote.customer_id ??
