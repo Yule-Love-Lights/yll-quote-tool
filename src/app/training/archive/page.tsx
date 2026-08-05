@@ -128,7 +128,11 @@ export default function ArchiveImageryPage() {
 
   // Both queue actions are the same shape: POST, then re-read rather than
   // patching local state, so what's on screen is what the table holds.
-  const queueAction = async (body: Record<string, unknown>, failMessage: string) => {
+  // Returns the error message (or null on success) so the CARD that fired the
+  // action can show it inline — a lost race surfaced only in the page-top
+  // banner reads as "nothing happened" from card #30 of an 80-card grind
+  // (S51 wrap review, staff lens). The banner is kept as a secondary surface.
+  const queueAction = async (body: Record<string, unknown>, failMessage: string): Promise<string | null> => {
     setError(null);
     try {
       const res = await fetch('/api/training/archive/queue', {
@@ -139,8 +143,11 @@ export default function ArchiveImageryPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? failMessage);
       await refresh();
+      return null;
     } catch (err) {
-      setError(err instanceof Error ? err.message : failMessage);
+      const message = err instanceof Error ? err.message : failMessage;
+      setError(message);
+      return message;
     }
   };
 
@@ -329,17 +336,19 @@ function NeedsIdCard({
   onExclude,
 }: {
   row: NeedsIdRow;
-  onIdentify: (address: string) => Promise<void>;
-  onExclude: () => Promise<void>;
+  onIdentify: (address: string) => Promise<string | null>;
+  onExclude: () => Promise<string | null>;
 }) {
   const [address, setAddress] = useState('');
   const [saving, setSaving] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
 
   const submit = async () => {
     if (!address.trim() || saving) return;
     setSaving(true);
+    setLocalError(null);
     try {
-      await onIdentify(address);
+      setLocalError(await onIdentify(address));
     } finally {
       setSaving(false);
     }
@@ -388,22 +397,24 @@ function NeedsIdCard({
             {saving ? 'Saving…' : 'Save address'}
           </button>
           <button
-            onClick={onExclude}
+            onClick={async () => setLocalError(await onExclude())}
             disabled={saving}
             className="bg-white border border-gray-300 hover:bg-gray-50 disabled:opacity-50 text-gray-700 font-medium text-sm px-3 py-2 rounded-md"
           >
             Not an install
           </button>
         </div>
+        {localError && <p className="text-xs text-red-700 mt-2">{localError}</p>}
       </div>
     </div>
   );
 }
 
 /** One card per property — a house's angles are photos of ONE job, not N jobs. */
-function PropertyCard({ property, onExclude }: { property: QueueProperty; onExclude: () => Promise<void> }) {
+function PropertyCard({ property, onExclude }: { property: QueueProperty; onExclude: () => Promise<string | null> }) {
   const traced = !!property.promotedTrainingHouseId;
   const nightPhotos = property.photos.filter(p => p.nightPhotoUrl);
+  const [localError, setLocalError] = useState<string | null>(null);
 
   return (
     <div className={`bg-white border rounded-lg overflow-hidden ${traced ? 'border-gray-200 opacity-60' : 'border-gray-200'}`}>
@@ -473,13 +484,13 @@ function PropertyCard({ property, onExclude }: { property: QueueProperty; onExcl
                   forever, inflating the remaining count staff are grinding
                   down, with tracing it the only way to make it go away. */}
               <button
-                onClick={() => {
+                onClick={async () => {
                   if (confirm(
                     `Remove ${property.address} from the queue?\n\n`
                     + `This drops all ${property.photoCount} of its photos and cannot be undone from this app — `
                     + `restoring it needs a database edit.`,
                   )) {
-                    onExclude();
+                    setLocalError(await onExclude());
                   }
                 }}
                 className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium text-sm px-3 py-2 rounded-md"
@@ -488,6 +499,7 @@ function PropertyCard({ property, onExclude }: { property: QueueProperty; onExcl
               </button>
             </div>
           )}
+          {localError && <p className="text-xs text-red-700 mt-2">{localError}</p>}
         </div>
       </div>
     </div>

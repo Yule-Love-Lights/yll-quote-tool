@@ -830,9 +830,13 @@ function NewTrainingHousePageInner() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          // Present only for an archive trace. The server derives source from
-          // it and links the archive rows back to the saved house.
-          archiveAddressKey: archiveKey || undefined,
+          // Present only for an archive trace WHOSE SEED ACTUALLY LANDED —
+          // gated on the scale lock, which is set only when the satellite and
+          // its scale arrived. Without the gate, a failed prefill left ?archive=
+          // in the URL above a fully-functional blank form, and a manual save
+          // would have claimed the property with a non-satellite trace and no
+          // locked scale (S51 wrap review, staff lens).
+          archiveAddressKey: archiveKey && archiveScaleLockedRef.current ? archiveKey : undefined,
           address: address || undefined,
           yearCompleted: yearCompleted || undefined,
           notes: notes || undefined,
@@ -913,7 +917,19 @@ function NewTrainingHousePageInner() {
         {archiveKey && (
           <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
             {archiveError ? (
-              <p className="text-sm text-red-700">{archiveError}</p>
+              <div>
+                <p className="text-sm text-red-700">{archiveError}</p>
+                <p className="text-xs text-gray-500 mt-1">
+                  Nothing was loaded, so saving this form would create an ordinary training
+                  example — it will NOT count as tracing the archive property.
+                </p>
+                <Link
+                  href="/training/archive"
+                  className="inline-block mt-2 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium text-sm px-3 py-2 rounded-md"
+                >
+                  ← Back to Archive Queue
+                </Link>
+              </div>
             ) : (
               <>
                 <div className="text-sm font-medium text-gray-900">Tracing an archive property</div>
