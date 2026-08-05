@@ -106,6 +106,8 @@ export async function POST(req: NextRequest) {
     amendReprice: rawAmendReprice,
     referredByCustomerId: rawReferredByCustomerId,
     highlevelContactId: rawHighlevelContactId,
+    legacyRebook: rawLegacyRebook,
+    isNce: rawIsNce,
   } = body as Record<string, unknown>;
 
   // Amend deadlock fix: an explicit, operator-only re-price mode for a BOOKED order.
@@ -162,6 +164,20 @@ export async function POST(req: NextRequest) {
   const highlevelContactIdTrimmed =
     typeof rawHighlevelContactId === 'string' ? rawHighlevelContactId.trim() : '';
   const highlevelContactId = highlevelContactIdTrimmed ? highlevelContactIdTrimmed : null;
+
+  // NCE + YLL Neighbor tags (#198): the builder's chip strip sends the CURRENT
+  // chip state on every save (both new + edit mode) — optional booleans, same
+  // shape as isTest above. Unlike isTest, BOTH are honored on the update path
+  // too (see saveQuote/updateQuote's own param docs) so a reopened quote's
+  // toggled chip actually persists.
+  if (rawLegacyRebook !== undefined && typeof rawLegacyRebook !== 'boolean') {
+    return NextResponse.json({ error: 'legacyRebook must be a boolean if provided' }, { status: 400 });
+  }
+  const legacyRebook = typeof rawLegacyRebook === 'boolean' ? rawLegacyRebook : undefined;
+  if (rawIsNce !== undefined && typeof rawIsNce !== 'boolean') {
+    return NextResponse.json({ error: 'isNce must be a boolean if provided' }, { status: 400 });
+  }
+  const isNce = typeof rawIsNce === 'boolean' ? rawIsNce : undefined;
 
   // Testing mode: customer fields (name, address, phone, email) are all
   // optional. We still accept the customer object so future fields can be
@@ -651,6 +667,11 @@ export async function POST(req: NextRequest) {
           // honors this too (create-once, idempotent) — see its own doc
           // comment for why an update needs a fresh pre-read of its own.
           referredByCustomerId,
+          // NCE + YLL Neighbor tags (#198): unlike highlevelContactId below,
+          // these ARE honored on the update path — undefined (not sent /
+          // chip strip not touched) leaves the stored value untouched.
+          legacyRebook,
+          isNce,
         )
       : await saveQuote(
           safeCustomer,
@@ -664,6 +685,11 @@ export async function POST(req: NextRequest) {
           // never passed to updateQuote, so an existing/reopened quote's
           // linked contact can't be clobbered by a resave.
           highlevelContactId,
+          // NCE + YLL Neighbor tags (#198): the builder's chip strip's
+          // current state at first save; undefined → saveQuote's own
+          // default (false).
+          legacyRebook,
+          isNce,
         );
     return NextResponse.json({
       customer: safeCustomer,

@@ -23,6 +23,11 @@ import { FULFILLMENT_STAGE_LABELS } from '@/lib/inventory/fulfillmentStage';
 import { deriveStatus } from '@/lib/quoteStatus';
 import { listOpenItems, listDueFollowUps } from '@/lib/dashboard/inbox/store';
 
+// The digest's quote-pipeline counts must see EVERY open quote, not just the
+// newest page — a high explicit scan limit (well above the foreseeable table
+// size) so listQuotes()'s default 500 cap can't silently truncate a count.
+const DIGEST_QUOTE_SCAN_LIMIT = 10_000;
+
 type DigestInstall = {
   jobNumber: number | null;
   customerName: string | null;
@@ -89,7 +94,12 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
         isTest: c.isTest,
       }));
 
-  const allQuotes = await listQuotes();
+  // These counts are meant to be EXHAUSTIVE — listQuotes()'s default 500-row cap
+  // (ORDER BY created_at DESC) would silently drop older-but-still-open quotes
+  // (e.g. the ~124 legacy rebook drafts) from the totals as the table grows, so
+  // pass a high explicit scan limit. (~164 rows today; revisit as a COUNT query
+  // if the table ever approaches this.)
+  const allQuotes = await listQuotes(DIGEST_QUOTE_SCAN_LIMIT);
   // Test quotes are simulation data; view-only quotes (#176) are a browse-only
   // second quote — neither is real operational work. Legacy rebook drafts (#155)
   // are a deliberate separate send wave, counted on their OWN line below.

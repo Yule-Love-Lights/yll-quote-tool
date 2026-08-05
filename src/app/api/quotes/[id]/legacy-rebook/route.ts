@@ -16,10 +16,16 @@
 //     service-type pipeline (src/lib/integrations/ghlPipelineMap.ts)
 // The flag only changes FUTURE renders/syncs — flipping it never retroactively
 // moves an existing GHL card (the admin confirm dialog says so explicitly).
+//
+// Tag propagation (#198): when this quote is ALREADY SENT and linked to a
+// customers row, turning the flag ON propagates "YLL Neighbor" onto that
+// customer immediately — see src/app/api/quotes/[id]/nce/route.ts's sibling
+// doc comment for the full rationale (same pattern, added alongside NCE).
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
+import { propagateQuoteTagsToCustomer } from '@/lib/customers';
 
 export const runtime = 'nodejs';
 
@@ -57,8 +63,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     .from('quotes')
     .update({ legacy_rebook: legacyRebook })
     .eq('id', id)
-    .select('id, legacy_rebook')
-    .maybeSingle<{ id: string; legacy_rebook: boolean }>();
+    // quote_sent_at + customer_id ridden along so the propagation check below
+    // needs no second round trip (#198). is_test ridden along too (review
+    // fix, admin MED, S34 #198 review) — defense-in-depth, see the sibling
+    // /nce route's comment for the full rationale.
+    .select('id, legacy_rebook, quote_sent_at, customer_id, is_test')
+    .maybeSingle<{
+      id: string;
+      legacy_rebook: boolean;
+      quote_sent_at: string | null;
+      customer_id: string | null;
+      is_test: boolean;
+    }>();
 
   if (error) {
     console.error('[api/quotes/:id/legacy-rebook] update failed:', error);
@@ -66,6 +82,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
   if (!data) {
     return NextResponse.json({ error: 'Quote not found' }, { status: 404 });
+  }
+
+  if (!data.is_test && legacyRebook && data.quote_sent_at && data.customer_id) {
+    try {
+      await propagateQuoteTagsToCustomer(data.customer_id, { isYllNeighbor: true });
+    } catch (err) {
+      console.warn('[api/quotes/:id/legacy-rebook] tag propagation failed (non-fatal):', err);
+    }
   }
 
   return NextResponse.json({ ok: true, legacyRebook: data.legacy_rebook });

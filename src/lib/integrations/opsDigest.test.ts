@@ -35,6 +35,7 @@ const quote = (over: Partial<QuoteListItem>): QuoteListItem => ({
   is_test: false,
   service_type: null,
   legacy_rebook: false,
+  is_nce: false,
   view_only: false,
   highlevel_contact_id: null,
   customer_id: null,
@@ -123,6 +124,9 @@ describe('collectOpsDigest', () => {
     expect(data.quotesAwaitingReplyCount).toBe(2); // q8 sent + q9 viewed
     expect(data.changesRequestedCount).toBe(1); // q11
     expect(data.depositsPendingCount).toBe(1); // q4 approved+unpaid; q5 booked
+    // Counts must be exhaustive — scan well above listQuotes()'s default 500 cap
+    // so an older open quote can't silently drop out of the totals.
+    expect(listQuotes).toHaveBeenCalledWith(10_000);
   });
 
   it('reads inbox open + due-follow-up counts from the inbox surface (totalOpen, not the capped page)', async () => {

@@ -22,6 +22,10 @@ import {
   backfillCustomersFromQuotes,
   getCustomer,
   getPropertiesForCustomer,
+  getCustomerByHlContactId,
+  listCustomerTagsByIds,
+  propagateQuoteTagsToCustomer,
+  setCustomerTags,
 } from './customers';
 
 // ─── In-memory Supabase fake ────────────────────────────────────────────────
@@ -162,6 +166,11 @@ function makeFakeSupabase(initial: { quotes?: Row[]; customers?: Row[]; properti
       },
       async maybeSingle() {
         if (state.op === 'insert') return { data: doInsert(), error: null };
+        // #198: an update chained straight into .maybeSingle() (no bare await)
+        // must apply the mutation before reading back — mirrors then()'s
+        // existing 'update' handling below (doUpdate), previously only
+        // reachable via a bare await in this fake.
+        if (state.op === 'update') return { data: doUpdate()[0] ?? null, error: null };
         return { data: match()[0] ?? null, error: null };
       },
       async single() {
@@ -651,5 +660,172 @@ describe('reads', () => {
     expect(await getCustomer('x')).toBeNull();
     expect(await getPropertiesForCustomer('x')).toEqual([]);
     expect(await findOrCreateCustomer({ email: 'a@x.com' })).toBeNull();
+  });
+});
+
+// ─── #198: NCE + YLL Neighbor tags ──────────────────────────────────────────
+
+describe('getCustomerByHlContactId', () => {
+  it('finds the customer by hl_contact_id — never creates one', async () => {
+    const fake = makeFakeSupabase({
+      customers: [{ id: 'cust-1', match_key: 'hl:contact-1', hl_contact_id: 'contact-1', name: 'Jane', is_nce: true, is_yll_neighbor: false }],
+    });
+    sbRef.current = fake.client;
+
+    const c = await getCustomerByHlContactId('contact-1');
+    expect(c?.id).toBe('cust-1');
+    expect(c?.is_nce).toBe(true);
+    expect(fake.tables.customers).toHaveLength(1); // unchanged — no row created
+  });
+
+  it('returns null when no customer matches', async () => {
+    const fake = makeFakeSupabase({ customers: [] });
+    sbRef.current = fake.client;
+    expect(await getCustomerByHlContactId('unknown-contact')).toBeNull();
+  });
+
+  it('returns null for a blank/whitespace id without querying', async () => {
+    sbRef.current = null; // would throw if the function tried to reach Supabase
+    expect(await getCustomerByHlContactId('   ')).toBeNull();
+  });
+
+  it('returns null when Supabase is unconfigured', async () => {
+    sbRef.current = null;
+    expect(await getCustomerByHlContactId('contact-1')).toBeNull();
+  });
+});
+
+describe('listCustomerTagsByIds', () => {
+  it('returns a map keyed by id with each row\'s tags', async () => {
+    const fake = makeFakeSupabase({
+      customers: [
+        { id: 'cust-1', match_key: 'a', is_nce: true, is_yll_neighbor: false },
+        { id: 'cust-2', match_key: 'b', is_nce: false, is_yll_neighbor: true },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const map = await listCustomerTagsByIds(['cust-1', 'cust-2', 'cust-missing']);
+    expect(map.get('cust-1')).toEqual({ isNce: true, isYllNeighbor: false });
+    expect(map.get('cust-2')).toEqual({ isNce: false, isYllNeighbor: true });
+    expect(map.has('cust-missing')).toBe(false);
+  });
+
+  it('returns an empty map for an empty id list without querying', async () => {
+    sbRef.current = null; // would throw if the function tried to reach Supabase
+    const map = await listCustomerTagsByIds([]);
+    expect(map.size).toBe(0);
+  });
+
+  it('dedupes repeated ids before querying', async () => {
+    const fake = makeFakeSupabase({
+      customers: [{ id: 'cust-1', match_key: 'a', is_nce: true, is_yll_neighbor: true }],
+    });
+    sbRef.current = fake.client;
+    const map = await listCustomerTagsByIds(['cust-1', 'cust-1']);
+    expect(map.size).toBe(1);
+  });
+
+  it('returns an empty map when Supabase is unconfigured', async () => {
+    sbRef.current = null;
+    expect((await listCustomerTagsByIds(['cust-1'])).size).toBe(0);
+  });
+});
+
+describe('propagateQuoteTagsToCustomer', () => {
+  it('sets is_nce true on the customer row', async () => {
+    const fake = makeFakeSupabase({ customers: [{ id: 'cust-1', match_key: 'a', is_nce: false, is_yll_neighbor: false }] });
+    sbRef.current = fake.client;
+
+    await propagateQuoteTagsToCustomer('cust-1', { isNce: true });
+    expect(fake.tables.customers[0].is_nce).toBe(true);
+    expect(fake.tables.customers[0].is_yll_neighbor).toBe(false); // untouched
+  });
+
+  it('sets is_yll_neighbor true on the customer row', async () => {
+    const fake = makeFakeSupabase({ customers: [{ id: 'cust-1', match_key: 'a', is_nce: false, is_yll_neighbor: false }] });
+    sbRef.current = fake.client;
+
+    await propagateQuoteTagsToCustomer('cust-1', { isYllNeighbor: true });
+    expect(fake.tables.customers[0].is_yll_neighbor).toBe(true);
+    expect(fake.tables.customers[0].is_nce).toBe(false); // untouched
+  });
+
+  it('sets both tags true in one call when both are true', async () => {
+    const fake = makeFakeSupabase({ customers: [{ id: 'cust-1', match_key: 'a', is_nce: false, is_yll_neighbor: false }] });
+    sbRef.current = fake.client;
+
+    await propagateQuoteTagsToCustomer('cust-1', { isNce: true, isYllNeighbor: true });
+    expect(fake.tables.customers[0]).toMatchObject({ is_nce: true, is_yll_neighbor: true });
+  });
+
+  it('forward-only: never writes false, even when explicitly passed false', async () => {
+    const fake = makeFakeSupabase({ customers: [{ id: 'cust-1', match_key: 'a', is_nce: true, is_yll_neighbor: true }] });
+    sbRef.current = fake.client;
+
+    await propagateQuoteTagsToCustomer('cust-1', { isNce: false, isYllNeighbor: false });
+    // Still true — a false input is simply omitted from the write, never clears.
+    expect(fake.tables.customers[0]).toMatchObject({ is_nce: true, is_yll_neighbor: true });
+  });
+
+  it('does nothing when both tags are omitted', async () => {
+    const fake = makeFakeSupabase({ customers: [{ id: 'cust-1', match_key: 'a', is_nce: false, is_yll_neighbor: false }] });
+    sbRef.current = fake.client;
+
+    await propagateQuoteTagsToCustomer('cust-1', {});
+    expect(fake.tables.customers[0]).toMatchObject({ is_nce: false, is_yll_neighbor: false });
+  });
+
+  it('does not throw when Supabase is unconfigured', async () => {
+    sbRef.current = null;
+    await expect(propagateQuoteTagsToCustomer('cust-1', { isNce: true })).resolves.toBeUndefined();
+  });
+});
+
+describe('setCustomerTags', () => {
+  it('writes only the provided key(s) — partial update', async () => {
+    const fake = makeFakeSupabase({ customers: [{ id: 'cust-1', match_key: 'a', is_nce: false, is_yll_neighbor: true }] });
+    sbRef.current = fake.client;
+
+    const { data, error } = await setCustomerTags('cust-1', { isNce: true });
+    expect(error).toBeNull();
+    // toMatchObject (not toEqual): the real route only SELECTs id/is_nce/
+    // is_yll_neighbor, but this fake returns the whole row (incl. match_key)
+    // regardless of the select string — same pre-existing fidelity gap noted
+    // elsewhere in this file's siblings, not a new one.
+    expect(data).toMatchObject({ id: 'cust-1', is_nce: true, is_yll_neighbor: true });
+    expect(fake.tables.customers[0]).toMatchObject({ is_nce: true, is_yll_neighbor: true });
+  });
+
+  it('CAN explicitly clear a tag (unlike propagateQuoteTagsToCustomer, this is a real staff remove)', async () => {
+    const fake = makeFakeSupabase({ customers: [{ id: 'cust-1', match_key: 'a', is_nce: true, is_yll_neighbor: true }] });
+    sbRef.current = fake.client;
+
+    const { data } = await setCustomerTags('cust-1', { isNce: false });
+    expect(data).toMatchObject({ id: 'cust-1', is_nce: false, is_yll_neighbor: true });
+  });
+
+  it('writes both tags in one call', async () => {
+    const fake = makeFakeSupabase({ customers: [{ id: 'cust-1', match_key: 'a', is_nce: false, is_yll_neighbor: false }] });
+    sbRef.current = fake.client;
+
+    const { data } = await setCustomerTags('cust-1', { isNce: true, isYllNeighbor: true });
+    expect(data).toMatchObject({ id: 'cust-1', is_nce: true, is_yll_neighbor: true });
+  });
+
+  it('returns null data (no error) for an unknown customer id', async () => {
+    const fake = makeFakeSupabase({ customers: [] });
+    sbRef.current = fake.client;
+
+    const { data, error } = await setCustomerTags('unknown-cust', { isNce: true });
+    expect(data).toBeNull();
+    expect(error).toBeNull();
+  });
+
+  it('returns an error (not a throw) when Supabase is unconfigured', async () => {
+    sbRef.current = null;
+    const { data, error } = await setCustomerTags('cust-1', { isNce: true });
+    expect(data).toBeNull();
+    expect(error).not.toBeNull();
   });
 });

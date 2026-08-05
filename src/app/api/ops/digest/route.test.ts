@@ -118,4 +118,16 @@ describe('GET /api/ops/digest', () => {
     expect(msg).toContain('→ https://quote.yulelovelights.com/inbox');
     expect(msg).toContain('Dashboard → https://quote.yulelovelights.com/');
   });
+
+  it('sends a failure ALERT (never goes silent) when building the digest throws', async () => {
+    // The heartbeat promise: a silent morning means broken. If a data read
+    // throws in a way that escapes the collectors' fail-soft, the cron must
+    // still send something, not nothing.
+    listQuotes.mockRejectedValue(new Error('db exploded'));
+    const res = await GET(makeReq(SECRET));
+    expect(await res.json()).toEqual({ ok: false, error: 'digest build failed' });
+    expect(notifyTelegramAudience).toHaveBeenCalledTimes(1);
+    expect(notifyTelegramAudience.mock.calls[0][0]).toBe('ops');
+    expect(notifyTelegramAudience.mock.calls[0][1]).toContain('failed to build');
+  });
 });

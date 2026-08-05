@@ -640,7 +640,7 @@ describe('POST /api/quote — created_by actor trail (#90)', () => {
     operatorRef.current = { id: 'op-1', email: 'a@b.com', role: 'operator' };
     const res = await POST(makeReq({ inputs: validInputs() }));
     expect(res.status).toBe(200);
-    // saveQuote(customer, inputs, result, serviceType, isTest, created_by, referredByCustomerId, highlevelContactId)
+    // saveQuote(customer, inputs, result, serviceType, isTest, created_by, referredByCustomerId, highlevelContactId, legacyRebook, isNce)
     expect(save).toHaveBeenCalledWith(
       expect.anything(), // customer
       expect.anything(), // inputs
@@ -650,6 +650,8 @@ describe('POST /api/quote — created_by actor trail (#90)', () => {
       'op-1', // created_by
       null, // referredByCustomerId (#41) — not supplied in this request
       null, // highlevelContactId (#leads) — not supplied in this request
+      undefined, // legacyRebook (#198) — not supplied in this request
+      undefined, // isNce (#198) — not supplied in this request
     );
   });
 
@@ -665,6 +667,8 @@ describe('POST /api/quote — created_by actor trail (#90)', () => {
       null,
       null,
       null,
+      undefined,
+      undefined,
     );
   });
 });
@@ -685,6 +689,8 @@ describe('POST /api/quote — referredByCustomerId (#41 "mention" attribution)',
       null,
       referrerId,
       null,
+      undefined,
+      undefined,
     );
   });
 
@@ -724,6 +730,8 @@ describe('POST /api/quote — highlevelContactId (#leads "Create quote" link)', 
       null,
       null,
       'ghl-contact-abc123',
+      undefined,
+      undefined,
     );
   });
 
@@ -751,9 +759,60 @@ describe('POST /api/quote — highlevelContactId (#leads "Create quote" link)', 
     );
     expect(res.status).toBe(200);
     expect(update).toHaveBeenCalledTimes(1);
-    // updateQuote(id, inputs, result, customer, serviceType, referredByCustomerId) — 6 args, no highlevelContactId slot.
+    // updateQuote(id, inputs, result, customer, serviceType, referredByCustomerId,
+    // legacyRebook, isNce) — 8 args (#198 added the trailing tag pair), still no
+    // highlevelContactId slot anywhere in the list.
     const updateArgs = update.mock.calls[0] as unknown[];
-    expect(updateArgs).toHaveLength(6);
+    expect(updateArgs).toHaveLength(8);
+    expect(updateArgs).not.toContain('ghl-contact-abc123');
+  });
+});
+
+describe('POST /api/quote — NCE + YLL Neighbor tags (#198)', () => {
+  it('threads legacyRebook/isNce to saveQuote (9th/10th args) on a NEW save', async () => {
+    const res = await POST(makeReq({ inputs: validInputs(), legacyRebook: true, isNce: true }));
+    expect(res.status).toBe(200);
+    const saveArgs = save.mock.calls[0] as unknown[];
+    expect(saveArgs[8]).toBe(true); // legacyRebook
+    expect(saveArgs[9]).toBe(true); // isNce
+  });
+
+  it('defaults to undefined (saveQuote applies its own false default) when omitted', async () => {
+    const res = await POST(makeReq({ inputs: validInputs() }));
+    expect(res.status).toBe(200);
+    const saveArgs = save.mock.calls[0] as unknown[];
+    expect(saveArgs[8]).toBeUndefined();
+    expect(saveArgs[9]).toBeUndefined();
+  });
+
+  it('threads legacyRebook/isNce to updateQuote (7th/8th args) on the UPDATE path too — unlike highlevelContactId, tags ARE settable on a reopened quote', async () => {
+    const res = await POST(
+      makeReq({ inputs: validInputs(), quoteId: REAL_UUID, legacyRebook: false, isNce: true }),
+    );
+    expect(res.status).toBe(200);
+    const updateArgs = update.mock.calls[0] as unknown[];
+    expect(updateArgs[6]).toBe(false); // legacyRebook
+    expect(updateArgs[7]).toBe(true); // isNce
+  });
+
+  it('leaves the stored tags untouched on an update that omits them (undefined, not false)', async () => {
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    expect(res.status).toBe(200);
+    const updateArgs = update.mock.calls[0] as unknown[];
+    expect(updateArgs[6]).toBeUndefined();
+    expect(updateArgs[7]).toBeUndefined();
+  });
+
+  it('400s on a non-boolean legacyRebook', async () => {
+    const res = await POST(makeReq({ inputs: validInputs(), legacyRebook: 'yes' }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('400s on a non-boolean isNce', async () => {
+    const res = await POST(makeReq({ inputs: validInputs(), isNce: 'yes' }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
   });
 });
 

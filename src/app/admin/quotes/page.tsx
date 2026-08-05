@@ -8,6 +8,7 @@ import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { PipelineActionsMenu } from '@/components/admin/PipelineActionsMenu';
 import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
+import { NceBadge } from '@/components/admin/NceBadge';
 import { SERVICE_TYPE_LABELS, SERVICE_TYPES, DEFAULT_SERVICE_TYPE, type ServiceType } from '@/lib/serviceType';
 import { QuotesListSkeleton } from './QuotesListSkeleton';
 
@@ -355,6 +356,8 @@ export default function QuotesAdminPage() {
                           )}
                           {/* YLL Neighbor (#158) — migrated from last year's Jobber data (#155). */}
                           {q.legacy_rebook && <YllNeighborBadge />}
+                          {/* NCE (#198) — the barter/trade network tag. Tags coexist. */}
+                          {q.is_nce && <NceBadge />}
                           {/* View-only portal (#176) — mirrors the detail page's pill. */}
                           {q.view_only && (
                             <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-100 text-sky-700">

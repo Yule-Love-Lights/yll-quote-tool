@@ -5,7 +5,7 @@ import { deleteDesign, deleteDesignsForQuote } from './designs';
 import { allocateNumber } from './displayId';
 import type { QuoteStatus } from './quoteStatus';
 import type { AmendmentTrailEntry } from './amend';
-import { attachQuoteToCustomer } from './customers';
+import { attachQuoteToCustomer, propagateQuoteTagsToCustomer } from './customers';
 import { createPendingReferral } from './referrals';
 
 export type QuoteListItem = {
@@ -44,6 +44,10 @@ export type QuoteListItem = {
   // Legacy rebook (#155/#158): quote migrated from last year's Jobber data —
   // the admin list shows a "YLL Neighbor" badge (YllNeighborBadge).
   legacy_rebook: boolean;
+  // NCE tag (#198): quote-level "Mark as NCE" flag (the barter/trade network
+  // YLL belongs to) — the admin list shows an "NCE" badge (NceBadge). No
+  // inbox/stats exclusions, unlike legacy_rebook.
+  is_nce: boolean;
   // View-only portal (#176): staff-flagged browse-only quote — the portal
   // stays fully viewable but every approve/pay/decline/request-changes path
   // is blocked. The admin list/detail shows a pill + the ViewOnlyToggle.
@@ -65,7 +69,7 @@ export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
   const { data, error } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, total, created_at, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, last_viewed_at, view_count, status, decline_reason, quote_number, is_test, service_type, legacy_rebook, view_only, highlevel_contact_id, customer_id',
+      'id, customer_name, customer_address, customer_phone, customer_email, total, created_at, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, last_viewed_at, view_count, status, decline_reason, quote_number, is_test, service_type, legacy_rebook, is_nce, view_only, highlevel_contact_id, customer_id',
     )
     .order('created_at', { ascending: false })
     .limit(limit);
@@ -209,6 +213,14 @@ export async function saveQuote(
   // job). rebook.ts's buildRebookInsert is the other direct-insert write site
   // for this column (carries the SOURCE quote's link onto a rebooked clone).
   highlevelContactId: string | null = null,
+  // NCE + YLL Neighbor tags (#198): staff-toggleable chips in the builder,
+  // same insert-time posture as the params above — additive trailing params,
+  // existing param order untouched. Unlike highlevelContactId/isTest these
+  // ARE also settable on the update path (see updateQuote below) because
+  // staff can flip either tag mid-build on a reopened quote, not just at
+  // first save.
+  legacyRebook = false,
+  isNce = false,
 ): Promise<{ id: string } | null> {
   // Service client first so the write bypasses RLS (enabled on quotes, #90); the
   // anon fallback keeps dev (no service key) working.
@@ -246,6 +258,8 @@ export async function saveQuote(
       is_test: isTest,
       created_by: createdBy,
       highlevel_contact_id: highlevelContactId,
+      legacy_rebook: legacyRebook,
+      is_nce: isNce,
       ...(quoteNumber != null ? { quote_number: quoteNumber } : {}),
     })
     .select('id')
@@ -332,6 +346,12 @@ export async function updateQuote(
   // reopened quote that never had a referrer picked on its first save). Was
   // previously ignored entirely on the update path — see the block below.
   referredByCustomerId?: string | null,
+  // NCE + YLL Neighbor tags (#198): only written when provided (undefined =
+  // leave the stored value untouched), same convention as serviceType above —
+  // the builder's chip strip sends the CURRENT chip state on every save, so a
+  // reopened quote's tags persist through a re-price instead of resetting.
+  legacyRebook?: boolean,
+  isNce?: boolean,
 ): Promise<{ id: string } | null> {
   // Service client first so the write bypasses RLS (enabled on quotes, #90).
   const supabase = getSupabaseServiceClient() ?? getSupabaseClient();
@@ -382,14 +402,39 @@ export async function updateQuote(
             customer_email: blankToNull(customer.email),
           }
         : {}),
+      ...(legacyRebook !== undefined ? { legacy_rebook: legacyRebook } : {}),
+      ...(isNce !== undefined ? { is_nce: isNce } : {}),
     })
     .eq('id', id)
-    .select('id')
-    .single();
+    // Widened past 'id' (#198) so a tag-propagation check below can read the
+    // post-update quote_sent_at/customer_id off THIS response, no 2nd round
+    // trip. is_test ridden along too (review fix, admin MED, S34 #198
+    // review) — updateQuote has no other way to know is_test (it's immutable
+    // and never a param here), and a reopened TEST quote CAN be re-Calculated
+    // through this exact path.
+    .select('id, quote_sent_at, customer_id, is_test')
+    .single<{ id: string; quote_sent_at: string | null; customer_id: string | null; is_test: boolean }>();
 
   if (error) {
     console.error('Supabase updateQuote error:', error);
     return null;
+  }
+
+  // NCE + YLL Neighbor tag propagation (#198): mirrors the dedicated nce/
+  // legacy-rebook toggle routes' "tagging an already-sent quote propagates
+  // immediately" behavior — the SAME rule applies no matter which UI set the
+  // tag. Only fires when this update actually SET a tag true (never on
+  // false/omitted — forward-only), the quote already has both a sent stamp
+  // and a linked customer, and it's NOT a test quote (defense-in-depth — a
+  // real send/mark-sent can never even reach 'sent' as a test row without
+  // ALSO being caught by their own is_test guard, but this keeps the
+  // invariant self-contained here too). Best-effort: never fails the save.
+  if (!data.is_test && (legacyRebook === true || isNce === true) && data.quote_sent_at && data.customer_id) {
+    try {
+      await propagateQuoteTagsToCustomer(data.customer_id, { isNce, isYllNeighbor: legacyRebook });
+    } catch (err) {
+      console.warn('updateQuote: tag propagation failed (non-fatal):', err);
+    }
   }
 
   // Referral program (#41 adversarial-review fix): honor "Referred by" on the
@@ -492,6 +537,10 @@ export type QuoteRaw = {
   // Legacy rebook (#155): quote migrated from last year's Jobber data — the
   // admin detail page shows a badge + (once approved) the chosen light color.
   legacy_rebook: boolean;
+  // NCE tag (#198): quote-level "Mark as NCE" flag — the admin detail page +
+  // the builder (toggleable there, unlike legacy_rebook's read-only display)
+  // both read this.
+  is_nce: boolean;
   // #172: whether a HighLevel contact is already linked — the builder needs it
   // on reopen so it stops showing "a contact is required" on a linked quote.
   highlevel_contact_id: string | null;
@@ -514,7 +563,7 @@ export async function getQuoteRaw(id: string): Promise<QuoteRaw | null> {
   const { data, error } = await sb
     .from('quotes')
     .select(
-      'id, customer_id, customer_name, customer_address, customer_phone, customer_email, service_type, inputs, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, total, approval_snapshot, status, decline_reason, quote_number, is_test, legacy_rebook, highlevel_contact_id, view_only, deposit_declined_at, deposit_decline_code, deposit_decline_notified_at, valor_vault_token, valor_vault_customer_id',
+      'id, customer_id, customer_name, customer_address, customer_phone, customer_email, service_type, inputs, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, total, approval_snapshot, status, decline_reason, quote_number, is_test, legacy_rebook, is_nce, highlevel_contact_id, view_only, deposit_declined_at, deposit_decline_code, deposit_decline_notified_at, valor_vault_token, valor_vault_customer_id',
     )
     .eq('id', id)
     .maybeSingle();
