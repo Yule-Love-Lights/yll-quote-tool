@@ -633,6 +633,16 @@ describe('saveQuote — attach-on-save (rebook Part A)', () => {
     );
   });
 
+  // REGRESSION TRIPWIRE (review fix batch, #200 admin-lens LOW): a test quote
+  // NEVER getting a customer_id is a structural invariant TWO other features
+  // build their is_test guard on top of, instead of re-deriving is_test logic
+  // of their own — ensureReferralCode's booking-time call sites (#41, "if
+  // (quote.customer_id) await ensureReferralCode(...)") and
+  // pushTenureYearsToGhl's callers (#200, same "if (quote.customer_id)"
+  // pattern in the 3 booking routes + src/lib/integrations/ghlTenure.ts's own
+  // doc comment). If this test ever goes red, both of those silently start
+  // leaking test-quote side effects into real referrals/GHL data — not just a
+  // "this one test broke."
   it('does NOT call attachQuoteToCustomer for a test quote (is_test=true)', async () => {
     const service = makeFake();
     serviceRef.current = service.client;
