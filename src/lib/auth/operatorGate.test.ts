@@ -226,4 +226,31 @@ describe('isPublicPath — customer-facing allowlist', () => {
       expect(isPublicPath(`${p}/`, 'POST'), p).toBe(true); // tolerates a single trailing slash
     }
   });
+
+  // #195 — the non-lead website forms are iframed on yulelovelights.com, so the
+  // visitor is never signed in. Without these entries the perimeter
+  // default-denies and a homeowner sees our login screen instead of the form.
+  // Caught on PROD after merge, by neither review lens (S50).
+  it('treats each non-lead form page as public — EXACT match only (#195)', () => {
+    for (const p of ['/forms/newsletter', '/forms/careers', '/forms/intern', '/forms/nomination']) {
+      expect(isPublicPath(p), p).toBe(true);
+      expect(isPublicPath(`${p}/`), p).toBe(true); // single trailing slash is normalized
+    }
+    // Never public by prefix: a future /forms/<something> is a deliberate act.
+    expect(isPublicPath('/forms')).toBe(false);
+    expect(isPublicPath('/forms/anything-else')).toBe(false);
+    expect(isPublicPath('/forms/newsletter/extra')).toBe(false);
+  });
+
+  it('allows POST + OPTIONS on /api/site-forms and nothing else (#195)', () => {
+    expect(isPublicPath('/api/site-forms', 'POST')).toBe(true);
+    expect(isPublicPath('/api/site-forms', 'OPTIONS')).toBe(true); // cross-origin JSON preflight
+    expect(isPublicPath('/api/site-forms/', 'POST')).toBe(true);
+    expect(isPublicPath('/api/site-forms', 'GET')).toBe(false);
+    expect(isPublicPath('/api/site-forms', 'DELETE')).toBe(false);
+    expect(isPublicPath('/api/site-forms')).toBe(false); // defaults to GET
+    // The ADMIN read of the same data stays operator-only.
+    expect(isPublicPath('/api/admin/site-forms', 'GET')).toBe(false);
+    expect(isPublicPath('/admin/site-forms')).toBe(false);
+  });
 });
