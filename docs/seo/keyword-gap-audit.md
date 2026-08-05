@@ -197,22 +197,23 @@ proximity and the Google Business Profile.
 
 ## Google Business Profile
 
-Read from screenshots of the profile's Services screen, 2026-08-05. Five screens
-captured; two further screens exist and are not yet reviewed, so the service
-count below is a floor, not a total.
+Read from screenshots of the profile's Services screen, 2026-08-05. Complete —
+all screens captured through the "Add another business category" button at the
+end of the list.
 
 ### Current state
 
-**Categories**
+**Categories — five, and three carry nothing**
 
 | Category | Role | Services attached |
 |---|---|---|
-| Lighting contractor | Primary | The bulk of the list |
-| Christmas store | Additional | None visible |
-| Lighting consultant | Additional | None visible |
-| Landscape lighting designer | Additional | A set that appears to duplicate the primary's |
+| Lighting contractor | Primary | The full list |
+| Landscape lighting designer | Additional | The list again, duplicated |
+| Christmas store | Additional | **None** |
+| Lighting consultant | Additional | **None** |
+| Stage lighting equipment supplier | Additional | **None** |
 
-**Services (~32 visible)**
+**Services (~33, of which 13 are town-specific)**
 
 General: Residential Holiday Light Installation · Residential Christmas Light
 Installation · Commercial Holiday Light Installation · Commercial Christmas
@@ -227,7 +228,7 @@ Town-specific: Babylon · Huntington · Amityville · Massapequa · Smithtown ·
 Islip · Bay Shore · Patchogue · Commack · Deer Park · Dix Hills · Farmingdale ·
 Garden City
 
-Every entry is priced **"From $1,000."**
+Every entry is priced "From $1,000" — confirmed correct by Naldo, 2026-08-05.
 
 ### The profile is ahead of the website
 
@@ -289,20 +290,34 @@ Words the profile doesn't use that customers do:
 - **Outdoor Lighting Installation** — the umbrella term. Backyard, Patio,
   Landscape and Bistro are all present; the word that covers them isn't.
 
-### Two things worth questioning
+### Gap 4 — three categories describe a business this isn't
 
-**"Christmas store" as a category.** That's a retail category, and this is a
-service business. It may be pulling "where to buy Christmas decorations" intent —
-shoppers, not homeowners booking installs. It also has no services attached, so
-it isn't earning a slot. Worth testing whether removing it changes anything.
+Two of the five categories name a business model Yule Love Lights doesn't
+operate:
 
-**"From $1,000" on permanent lighting.** The real range is $2,500–$5,000. A
-customer who arrives anchored on $1,000 and gets quoted $3,800 is a bad
-conversation and a lost lead. Consider per-service price floors that reflect the
-actual service, or removing the floor from the permanent entries.
+- **Christmas store** is retail. It invites "where can I buy Christmas
+  decorations" — shoppers, not homeowners booking an install.
+- **Stage lighting equipment supplier** is a supplier of stage gear. Neither the
+  selling nor the stage part is the business.
 
-**"Lighting consultant"** has no services attached either — either attach some or
-drop it.
+**Lighting consultant** is at least adjacent and defensible, but like the other
+two it has zero services attached, so it's occupying a category slot and doing
+nothing with it.
+
+Categories are a strong relevance signal, and the primary carries the most
+weight — `Lighting contractor` is a sound primary. But additional categories tell
+Google what else to consider this business for, and two of these are pointing at
+the wrong kind of business entirely.
+
+Recommendation: drop **Christmas store** and **Stage lighting equipment
+supplier**. Either attach services to **Lighting consultant** or drop it too. If
+a holiday-lighting-specific category exists in the picker, it's a better use of
+a slot than any of the three.
+
+Do this one at a time with a couple of weeks between changes, so a ranking move
+can be attributed. Category edits can also trigger re-verification on some
+profiles — worth knowing before touching a profile in August rather than
+discovering it in October.
 
 ### Before editing
 
