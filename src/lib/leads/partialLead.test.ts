@@ -102,6 +102,26 @@ describe('syncPartialLeadToGhl', () => {
     expect(upsertArg.firstName).toBeUndefined();
   });
 
+  // Guards the phone-fallback SEARCH argument (partialLead.ts findExistingContact):
+  // the fallback must query the NORMALIZED digits, or GHL's text search never
+  // returns an E.164-stored contact. Unlike the tests above, the mock returns the
+  // contact ONLY for '6315550100', and no email matches, so the email search is
+  // empty and the phone-fallback branch actually runs — a revert to
+  // searchContacts(raw) would query '(631) 555-0100', return nothing, and fail.
+  it('runs the phone-fallback search on normalized digits (not the raw formatted field)', async () => {
+    hl.searchContacts.mockImplementation(async (q: string) =>
+      q === '6315550100'
+        ? [{ id: 'c-existing', fullName: 'Bob Jones', email: '', phone: '+16315550100' }]
+        : [],
+    );
+    await syncPartialLeadToGhl({ name: 'Alice', email: null, phone: '(631) 555-0100' });
+    expect(hl.searchContacts).toHaveBeenCalledWith('6315550100');
+    // and the guard fired off that match: different name → name fields omitted
+    const upsertArg = hl.upsertContact.mock.calls[0]![0] as Record<string, unknown>;
+    expect(upsertArg.firstName).toBeUndefined();
+    expect(upsertArg.lastName).toBeUndefined();
+  });
+
   it('does NOT treat two genuinely different numbers as the same household', async () => {
     hl.searchContacts.mockResolvedValue([
       { id: 'c-existing', fullName: 'Bob Jones', email: 'bob@example.com', phone: '+16315550100' },

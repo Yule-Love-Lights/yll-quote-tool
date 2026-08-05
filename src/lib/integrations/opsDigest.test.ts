@@ -124,6 +124,9 @@ describe('collectOpsDigest', () => {
     expect(data.quotesAwaitingReplyCount).toBe(2); // q8 sent + q9 viewed
     expect(data.changesRequestedCount).toBe(1); // q11
     expect(data.depositsPendingCount).toBe(1); // q4 approved+unpaid; q5 booked
+    // Counts must be exhaustive — scan well above listQuotes()'s default 500 cap
+    // so an older open quote can't silently drop out of the totals.
+    expect(listQuotes).toHaveBeenCalledWith(10_000);
   });
 
   it('reads inbox open + due-follow-up counts from the inbox surface (totalOpen, not the capped page)', async () => {
