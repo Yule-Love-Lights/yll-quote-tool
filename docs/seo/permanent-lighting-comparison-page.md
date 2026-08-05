@@ -79,11 +79,19 @@ what we'd tell you to check anyway.
 
 ### H2 — What actually differs between systems
 
-**How visible the track is by day.**
+**How visible the track is when it's off.**
 This is the thing people regret. Systems differ in how the channel sits against
 the fascia and whether the diodes face out toward the street or down toward the
-ground. Ask to see a daytime photo of a real installed home — not a rendering,
-not a night shot. Any installer who can't produce one is telling you something.
+ground.
+
+The detail that decides it is whether the track follows a line your house
+already has. Mounted tight under the fascia or along an existing trim band, it
+reads as part of the trim. Mounted proud of the surface, it reads as a strip
+someone added — and no amount of color at night fixes that in the daylight.
+
+Ask to see a photo of a real installed home with the system **off** — not a
+rendering, not a night shot with everything lit. Any installer who can't produce
+one is telling you something.
 
 **How the light throws at night.**
 Outward-facing diodes read as visible dots of color from the street. Downward-
@@ -179,13 +187,20 @@ tool / estimate flow)*
       multi-color-at-once proof; it earns its own callout in the copy.
 - [x] **Night, system off, same house** — received 2026-08-05 (IMG_6566). Strong
       as a before/after pair with the above.
-- [ ] **Daytime, system off, same house — STILL NEEDED.** Both photos received
-      are at night, so neither supports the page's central claim that the track
-      disappears *by day*. Publishing without it means the page asks readers to
-      demand something it doesn't itself provide, which a sharp reader will
-      notice. Shoot the same house in daylight from roughly the IMG_6566 angle.
-- [ ] Get the homeowner's OK before publishing photos of their house, and check
-      whether the address or house number is legible in frame.
+- [x] **System off, house legible** — received 2026-08-05 (IMG_6575). Same
+      split-level, system off, house fully readable. The track doesn't announce
+      itself: it follows the existing trim lines (under the fascia up top, along
+      the mid-level trim band), which is exactly the point the copy now makes.
+      Good enough to build the page on.
+- [ ] **Optional upgrade: a midday frame.** IMG_6575 is dusk — deep blue sky,
+      a few stars, and the exposure is lifted. It reads well and is far stronger
+      than a dark night shot, but it doesn't fully settle the "in broad
+      daylight" question a skeptical buyer is asking. Grab a midday frame from
+      the same angle next time someone's at that house. Not a blocker.
+- [ ] **Homeowner permission — still open.** A number appears on the portico
+      gable in IMG_6575 and IMG_6566. Combined with a town name that's
+      potentially identifying, so get the owner's OK and decide whether to crop
+      or retouch it out.
 - [ ] Photos go in the WordPress media library, not this repo — the originals
       are 8000×6000 and don't belong in git.
 - [ ] Build `/services/permanent-lighting/` **first** — this page's internal
