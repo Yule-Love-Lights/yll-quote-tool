@@ -67,7 +67,12 @@ export function deriveTenureYears(
   for (const q of quotes) {
     if (q.deposit_paid_at) {
       const y = new Date(q.deposit_paid_at).getUTCFullYear();
-      if (Number.isFinite(y)) derived.add(y);
+      // Floor-clamped too (review fix batch, #200 staff-lens MED) — derived
+      // years read an arbitrary DB timestamp (unlike LEGACY_REBOOK_YEAR just
+      // below, a fixed known-safe constant), so a stray pre-floor
+      // deposit_paid_at can't produce a year the formatter would then
+      // silently drop, making derive and the GHL push diverge on count.
+      if (Number.isFinite(y) && y >= MIN_TENURE_YEAR) derived.add(y);
     }
     if (q.legacy_rebook === true) derived.add(LEGACY_REBOOK_YEAR);
   }

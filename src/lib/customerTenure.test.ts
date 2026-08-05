@@ -51,6 +51,21 @@ describe('deriveTenureYears — booked years', () => {
     const result = deriveTenureYears([q()], [], NOW);
     expect(result.years).toEqual([]);
   });
+
+  // Review fix batch (#200 staff-lens MED): a derived year is floor-clamped
+  // too, same as a manual one — no real prod row is below the floor (verified
+  // against prod: zero pre-2022 deposit_paid_at rows), but a formatter/derive
+  // divergence on a future bad row would be a silent, hard-to-spot GHL mirror
+  // bug, not a crash.
+  it('drops a derived year from a stray pre-floor deposit_paid_at, keeping any valid years alongside it', () => {
+    const result = deriveTenureYears(
+      [q({ deposit_paid_at: '2019-06-01T00:00:00Z' }), q({ deposit_paid_at: '2023-01-01T00:00:00Z' })],
+      [],
+      NOW,
+    );
+    expect(result.years).toEqual([2023]);
+    expect(result.derivedYears).toEqual([2023]);
+  });
 });
 
 describe('deriveTenureYears — legacy rebook rule', () => {
