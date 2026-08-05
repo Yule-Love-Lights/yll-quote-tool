@@ -2344,18 +2344,29 @@ export default function QuoteBuilder({
       }
     }
     // NCE + YLL Neighbor tag inheritance (#198): if the picked contact maps
-    // to an already-tagged customers row, turn the matching chip(s) ON to
-    // match (merge, never clear — a chip the operator already set by hand,
-    // or from an earlier pick, is never turned back off just because THIS
-    // contact carries no tag). Fire-and-forget, best-effort: a lookup
-    // failure just means no chip changes, same as an untagged contact.
+    // to a customers row, sync the UNTOUCHED chip(s) to that contact's
+    // ACTUAL current tag state (true OR false) — review fix (staff MED×2 +
+    // tech LOW, S34 #198 review). Was merge-only-true (never cleared), which
+    // left a mis-pick's auto-true tag stuck after re-picking an untagged
+    // contact. A chip staff has explicitly clicked (legacyRebookTouchedRef/
+    // isNceTouchedRef — see their declaration) is NEVER auto-changed here;
+    // staff-touched state always wins over whatever the currently-picked
+    // contact carries.
+    // Staleness guard mirrors the attach flow's OWN use of this exact token
+    // 20-ish lines up (attachSeqRef bumped on every pick; a response whose
+    // captured seq no longer matches belongs to a SUPERSEDED pick and is
+    // dropped) — same shared ref, same pattern, not a second/parallel token.
+    const tagLookupSeq = attachSeqRef.current;
     fetch(`/api/customers?hlContactId=${encodeURIComponent(c.id)}`)
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: { customers?: Array<{ is_nce?: boolean; is_yll_neighbor?: boolean }> } | null) => {
-        const tags = data?.customers?.[0];
-        if (tags?.is_nce) setIsNce(true);
-        if (tags?.is_yll_neighbor) setLegacyRebook(true);
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then((data: { customers?: Array<{ is_nce?: boolean; is_yll_neighbor?: boolean }> }) => {
+        if (tagLookupSeq !== attachSeqRef.current) return; // superseded by a later pick
+        const tags = data.customers?.[0];
+        if (!legacyRebookTouchedRef.current) setLegacyRebook(tags?.is_yll_neighbor ?? false);
+        if (!isNceTouchedRef.current) setIsNce(tags?.is_nce ?? false);
       })
+      // Network error or non-OK response: leave chips exactly as they are —
+      // "couldn't check" is not the same signal as "checked, no tags".
       .catch(() => {});
   };
 
