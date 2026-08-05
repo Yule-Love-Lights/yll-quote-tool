@@ -164,12 +164,23 @@ night.
 Call us. We come fix it.
 
 **How long does it last?**
-These are commercial-grade LED systems built for year-round outdoor exposure on
-Long Island — salt air, nor'easters, and full sun included.
+Years, not seasons. That's the whole point — these are commercial-grade LEDs
+built to live outside through Long Island winters, not hardware-store strings
+you replace every December. And if something does go out, you call us and we
+come fix it.
 
-### CTA
-**See what permanent lighting would cost on your roofline.**
-*(link to the estimate flow)*
+### CTA — inline form, not a button
+
+**Tell us about your house and we'll quote your actual roofline.**
+
+Embed the existing lead form with the service pre-selected:
+
+```html
+<div data-yll-lead-form="full" data-service="permanent"></div>
+<script src="https://quote.yulelovelights.com/lead-form.js" async></script>
+```
+
+Secondary, for mobile: **Call 631-517-0186**
 
 Still comparing systems? Read our guide to
 [comparing permanent roofline lighting](/permanent-roofline-lighting-comparison/).

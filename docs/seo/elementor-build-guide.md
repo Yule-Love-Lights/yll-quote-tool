@@ -180,13 +180,26 @@ stays consistent.
 | Do I still need Christmas lights? | For the roofline, no — that's what this replaces. If you want lit trees, garland, or wreaths, we do those seasonally alongside your permanent system. |
 | Can I see it before I commit? | Yes. Ask and we'll show you real installed homes near you, in daylight and at night. |
 | What happens if a section goes out? | Call us. We come fix it. |
-| How long does it last? | **UNCONFIRMED — see open items. Do not publish this answer as drafted.** |
+| How long does it last? | Years, not seasons. That's the whole point — these are commercial-grade LEDs built to live outside through Long Island winters, not hardware-store strings you replace every December. And if something does go out, you call us and we come fix it. |
 
-### S11 — CTA
-- **Heading (H2):** See what permanent lighting would cost on your roofline
-- **Button:** `Get my quote` → *(CTA target — see open items)*
+### S11 — CTA (inline form, not a button)
+- **Heading (H2):** Tell us about your house and we'll quote your actual roofline
+- **HTML widget:**
+  ```html
+  <div data-yll-lead-form="full" data-service="permanent"></div>
+  <script src="https://quote.yulelovelights.com/lead-form.js" async></script>
+  ```
+- **Secondary (mobile):** Call 631-517-0186 as a `tel:` link
 - **Text link:** Still comparing systems? Read our guide to comparing permanent
   roofline lighting. → `/permanent-roofline-lighting-comparison/`
+
+`data-service="permanent"` pre-selects Permanent and hides the service picker
+(`public/lead-form.js` line 12), so someone arriving from this page never has to
+re-state why they came.
+
+**Elementor gotcha:** editing an existing HTML/code widget sometimes silently
+reverts. If an edit doesn't stick, delete the widget and add a fresh one — then
+verify logged-out.
 
 ---
 
@@ -244,15 +257,43 @@ band. Full copy is in `permanent-lighting-comparison-page.md`; the section order
 4. **Link from the homepage** if it mentions permanent or architectural lighting.
 5. **Submit both URLs** in Search Console for indexing.
 
-## Open items — do not publish without these
+## The CTA decision, and why
 
-1. **The FAQ durability answer.** The drafted text ("commercial-grade LED
-   systems built for year-round outdoor exposure…") is a longevity claim written
-   by me, not given by Naldo. It must match what's actually warranted. Asked
-   twice, still unanswered.
-2. **The CTA target URL.** Both pages end in a button with nowhere to point.
-3. **Photo placement** is proposed, not verified — the hero background only
-   works if the sibling service pages use one.
+**Use the lead form you already ship. Don't use the estimator yet.**
+
+The estimator (`/estimate` on the quote tool) looks like the obvious target —
+it's purpose-built to iframe into WordPress, per
+`docs/self-serve-estimate-embed.md`. Two reasons it isn't the answer today:
+
+1. **It's dark in production on purpose.** `SELF_SERVE_ESTIMATE_ENABLED` is set
+   on Preview only; production returns 404. A CTA pointing there today sends
+   customers to a dead page.
+2. **It's holiday-shaped.** The embed doc titles it "Instant Holiday Lighting
+   Estimate," and nothing in `src/app/estimate/page.tsx` references permanent or
+   a service type. It may not price permanent lighting at all.
+
+The lead form is live, is already embedded elsewhere on the site, and supports
+`data-service="permanent"`.
+
+**Also: the CTA copy had to change.** The draft said "See what permanent
+lighting would cost on your roofline," which promises an instant number. A lead
+form doesn't give one. Promising a price and delivering a contact form is a
+small broken promise on the highest-intent element of the page, so the heading
+is now "Tell us about your house and we'll quote your actual roofline."
+
+When the estimator goes live in production **and** is confirmed to handle
+permanent lighting, swap the embed and restore the original "see what it would
+cost" wording — at that point it's true.
+
+## Open items
+
+1. ~~The FAQ durability answer.~~ Rewritten in house voice 2026-08-05. Makes no
+   numeric or warranty promise, and reuses "commercial-grade," which is already
+   the site's own language. **If there is an actual warranty term, stating the
+   number would be stronger than any of this** — worth doing.
+2. ~~The CTA target.~~ Resolved above.
+3. ~~Photo placement.~~ Confirmed 2026-08-05: all service pages use a hero
+   image, so IMG_6561 as the hero background matches the pattern.
 
 ## Confirmed and safe to publish
 
