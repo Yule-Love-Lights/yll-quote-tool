@@ -29,9 +29,15 @@ export type TenureResult = {
 };
 
 // No customer of ours predates this; nothing here is real tenure evidence.
-// Exported so the tenure-years write route (POST /api/customers/[customerId]/
-// tenure-years) enforces the SAME floor on input, instead of a second magic number.
-export const MIN_TENURE_YEAR = 2015;
+// YLL started business in 2022 (Jason locked, ledger #200) — was 2015 until
+// #200 moved it. Exported so the tenure-years write route (POST /api/
+// customers/[customerId]/tenure-years) enforces the SAME floor on input,
+// instead of a second magic number. CustomerTenureEditor.tsx (a 'use client'
+// component) can't import this const — importing anything from this module
+// would drag getSupabaseServiceClient's SUPABASE_SERVICE_ROLE_KEY read into
+// the client bundle (the #52 sharp-in-client-bundle pitfall) — so its two
+// literal 2022s must be kept in sync with this value by hand.
+export const MIN_TENURE_YEAR = 2022;
 
 // Legacy rebook rows (#155) are unsent drafts the #155-158 bulk migration
 // created FROM last year's real Jobber invoices — the row itself never went
@@ -78,9 +84,10 @@ export function deriveTenureYears(
   return { years, count: years.length, manualYears, derivedYears };
 }
 
-// Keep only integers in a plausible range (2015..currentYear — never a future
-// year); drop anything else (strings, floats, out-of-range) rather than
-// rejecting the whole array — a stray junk entry shouldn't hide the rest.
+// Keep only integers in a plausible range (MIN_TENURE_YEAR..currentYear —
+// never a future year); drop anything else (strings, floats, out-of-range)
+// rather than rejecting the whole array — a stray junk entry shouldn't hide
+// the rest.
 function validManualYears(raw: unknown, currentYear: number): number[] {
   if (!Array.isArray(raw)) return [];
   const out: number[] = [];

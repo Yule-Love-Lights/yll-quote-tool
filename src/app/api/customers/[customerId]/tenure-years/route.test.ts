@@ -126,7 +126,7 @@ describe('POST /api/customers/[customerId]/tenure-years — validation', () => {
   it('400s when manualYears has more than 50 entries', async () => {
     const { client, updatePayloads } = makeSb({ id: VALID_UUID, manual_years: [] });
     sbRef.current = client;
-    const tooMany = Array.from({ length: 51 }, (_, i) => 2015 + (i % 11));
+    const tooMany = Array.from({ length: 51 }, (_, i) => 2022 + (i % 11));
     const res = await POST(makeReq({ manualYears: tooMany }), makeParams(VALID_UUID));
     const json = await res.json();
     expect(res.status).toBe(400);
@@ -175,12 +175,12 @@ describe('POST /api/customers/[customerId]/tenure-years — happy path', () => {
     const { client, updatePayloads } = makeSb({ id: VALID_UUID, manual_years: [] });
     sbRef.current = client;
 
-    const res = await POST(makeReq({ manualYears: [2022, 2020, 2022] }), makeParams(VALID_UUID));
+    const res = await POST(makeReq({ manualYears: [2023, 2022, 2023] }), makeParams(VALID_UUID));
     const json = await res.json();
 
     expect(res.status).toBe(200);
-    expect(json).toEqual({ ok: true, manualYears: [2020, 2022] });
-    expect(updatePayloads[0]).toEqual({ manual_years: [2020, 2022] });
+    expect(json).toEqual({ ok: true, manualYears: [2022, 2023] });
+    expect(updatePayloads[0]).toEqual({ manual_years: [2022, 2023] });
   });
 
   it('saves an empty array (removing all manual years)', async () => {
