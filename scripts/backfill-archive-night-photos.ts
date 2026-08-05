@@ -22,7 +22,14 @@
 // re-uploads and overwrites.
 //
 // SAFETY: writes NOTHING without --live. The default is a dry run that reports
-// exactly what it would upload and update.
+// exactly what it would upload and update — READ ITS OUTPUT. It prints the
+// source file for every match precisely so a wrong match is visible before any
+// bytes move; a stray file sharing a generic basename matches cleanly and
+// raises no ambiguity warning.
+//
+// --force is the highest-blast-radius flag here: it re-uploads rows that
+// already carry night_photo_ref, so pointing it at a wrong or partial folder
+// overwrites an already-correct set rather than filling gaps. Dry-run it first.
 //
 // Usage:
 //   npx tsx scripts/backfill-archive-night-photos.ts --dir ~/Downloads/archive
@@ -117,6 +124,13 @@ async function main() {
 
   let uploaded = 0, skipped = 0, missing = 0, ambiguous = 0, failed = 0;
   const missingTitles: string[] = [];
+  // Which row already claimed each file. Guards the REVERSE of the ambiguity
+  // check below: that one catches one row matching several files, this catches
+  // several rows matching one file. Each row would individually see exactly one
+  // match and raise nothing, while two different installs silently got the same
+  // bytes. Distinct across all 211 titles today, so this is for a later import
+  // where two cameras produce the same default filename.
+  const claimedBy = new Map<string, string>();
 
   for (const row of rows!) {
     if (row.night_photo_ref && !force) { skipped++; continue; }
@@ -136,8 +150,22 @@ async function main() {
       continue;
     }
 
+    const src = matches[0];
+    const prior = claimedBy.get(src);
+    if (prior) {
+      console.error(`COLLISION ${row.original_title}: ${src} was already matched to ${prior} — skipped`);
+      ambiguous++;
+      continue;
+    }
+    claimedBy.set(src, row.original_title ?? row.drive_file_id);
+
     const path = `night/${row.drive_file_id}.jpg`;
-    if (!live) { console.log(`would upload ${row.original_title} -> ${path}`); uploaded++; continue; }
+    // Print the SOURCE FILE, not just the row's own title echoed back. A dry run
+    // is the safety net before --live, and it can only catch a bad match if the
+    // operator can see which file on disk was chosen — a stray file sharing a
+    // generic basename (img13.png) matches exactly one row, raises no ambiguity,
+    // and otherwise prints identically to a correct match.
+    if (!live) { console.log(`would upload ${src}\n            -> ${path}  (row: ${row.original_title})`); uploaded++; continue; }
 
     try {
       const buf = await sharp(matches[0])

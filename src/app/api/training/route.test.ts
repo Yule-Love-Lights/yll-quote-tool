@@ -10,7 +10,7 @@ import type { TrainingHousePayload } from '@/lib/training';
 
 const { saveTrainingHouse, promoteArchiveProperty } = vi.hoisted(() => ({
   saveTrainingHouse: vi.fn(async (_payload: TrainingHousePayload) => ({ id: 'h1' })),
-  promoteArchiveProperty: vi.fn(async (_key: string, _id: string) => ({ promoted: true })),
+  promoteArchiveProperty: vi.fn(async (_key: string, _id: string) => ({ promoted: true } as { promoted: boolean; reason?: string })),
 }));
 
 vi.mock('@/lib/training', () => ({ saveTrainingHouse }));
@@ -167,14 +167,19 @@ describe('POST /api/training — archive source derivation (#167)', () => {
   // (it happens before the promote), so the operator's two minutes of tracing
   // exist — but as an orphaned row no queue card points at. Redirecting them as
   // if it landed is how that work disappears unnoticed.
-  it('reports a lost claim instead of silently redirecting', async () => {
-    promoteArchiveProperty.mockResolvedValue({ promoted: false });
+  it.each(['traced', 'excluded', 'error'])(
+    'reports a lost claim (%s) instead of silently redirecting',
+    async (reason) => {
+      promoteArchiveProperty.mockResolvedValue({ promoted: false, reason });
 
-    const res = await POST(makeReq(basePayload({ archiveAddressKey: '6 birch road selden' })));
-    const body = await res.json();
+      const res = await POST(makeReq(basePayload({ archiveAddressKey: '6 birch road selden' })));
+      const body = await res.json();
 
-    expect(res.status).toBe(200);
-    expect(body.id).toBe('h1');
-    expect(body.archiveAlreadyTraced).toBe(true);
-  });
+      expect(res.status).toBe(200);
+      expect(body.id).toBe('h1');
+      // The REASON is carried through, not flattened to a boolean: the tracer
+      // gives opposite advice for a competing trace vs an exclusion.
+      expect(body.archiveClaimFailed).toBe(reason);
+    },
+  );
 });

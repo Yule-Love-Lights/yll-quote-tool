@@ -53,7 +53,17 @@ function makeSb(rows: Row[]) {
             }));
             return resolve({ data: matched.map(r => ({ id: r.id })), error: null });
           }
-          const visible = rows.filter(r => r.status !== 'excluded');
+          // Apply the recorded filters to reads too. The promote failure path
+          // reads BACK without the excluded filter to tell "already traced"
+          // apart from "marked not an install"; hardcoding the exclusion here
+          // would hide exactly the rows that distinction depends on.
+          const visible = rows.filter(r => filters.every(([f, val]) => {
+            const [op, col] = f.split(':');
+            if (op === 'eq') return r[col] === val;
+            if (op === 'neq') return r[col] !== val;
+            if (op === 'is') return r[col] == null;
+            return true;
+          }));
           return resolve({ data: visible, error: null });
         },
       };
@@ -328,7 +338,21 @@ describe('promoteArchiveProperty', () => {
 
     const res = await promoteArchiveProperty('6 birch road selden', 'f1111111-1111-1111-1111-111111111111');
 
-    expect(res).toEqual({ promoted: false });
+    expect(res).toEqual({ promoted: false, reason: 'traced' });
+  });
+
+  // The CAS excludes already-promoted AND excluded rows, so both land on the
+  // same zero-match result. They need opposite advice: 'traced' means go
+  // reconcile two competing examples, 'excluded' means somebody judged this
+  // isn't a real install and there is nothing to compare against. Reporting
+  // 'traced' for an exclusion tells the operator something simply untrue.
+  it('distinguishes a property excluded mid-trace from one already traced', async () => {
+    const { client } = makeSb([row({ status: 'excluded' })]);
+    sbRef.current = client;
+
+    const res = await promoteArchiveProperty('6 birch road selden', 'f1111111-1111-1111-1111-111111111111');
+
+    expect(res).toEqual({ promoted: false, reason: 'excluded' });
   });
 });
 

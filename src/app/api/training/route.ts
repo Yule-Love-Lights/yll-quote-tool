@@ -198,8 +198,10 @@ export async function POST(req: NextRequest) {
   // queue card points at, and the operator who just spent two minutes on it
   // deserves to know rather than being redirected as if it landed.
   if (archiveAddressKey) {
-    const { promoted } = await promoteArchiveProperty(archiveAddressKey, saved.id);
-    if (!promoted) return NextResponse.json({ id: saved.id, archiveAlreadyTraced: true });
+    const res = await promoteArchiveProperty(archiveAddressKey, saved.id);
+    if (!res.promoted) {
+      return NextResponse.json({ id: saved.id, archiveClaimFailed: res.reason });
+    }
   }
 
   return NextResponse.json({ id: saved.id });

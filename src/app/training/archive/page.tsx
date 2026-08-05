@@ -471,7 +471,11 @@ function PropertyCard({ property, onExclude }: { property: QueueProperty; onExcl
                   down, with tracing it the only way to make it go away. */}
               <button
                 onClick={() => {
-                  if (confirm(`Remove ${property.address} from the queue? This drops all ${property.photoCount} of its photos.`)) {
+                  if (confirm(
+                    `Remove ${property.address} from the queue?\n\n`
+                    + `This drops all ${property.photoCount} of its photos and cannot be undone from this app — `
+                    + `restoring it needs a database edit.`,
+                  )) {
                     onExclude();
                   }
                 }}

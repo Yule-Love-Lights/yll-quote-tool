@@ -54,6 +54,14 @@ export type ArchiveNeedsIdRow = {
   reviewerNotes: string | null;
 };
 
+/**
+ * Why a promote failed to claim its property. Distinguished rather than
+ * collapsed to a boolean because the two non-error cases need OPPOSITE advice:
+ * 'traced' means a competing training example exists to reconcile against,
+ * 'excluded' means someone judged this property isn't a real install at all.
+ */
+export type PromoteFailure = 'traced' | 'excluded' | 'error';
+
 export type ArchiveQueue = {
   properties: ArchiveQueueProperty[];
   needsIdentification: ArchiveNeedsIdRow[];
@@ -306,9 +314,9 @@ export async function getArchivePrefill(addressKey: string): Promise<ArchivePref
 export async function promoteArchiveProperty(
   addressKey: string,
   trainingHouseId: string,
-): Promise<{ promoted: boolean }> {
+): Promise<{ promoted: true } | { promoted: false; reason: PromoteFailure }> {
   const sb = getSupabaseServiceClient();
-  if (!sb) return { promoted: false };
+  if (!sb) return { promoted: false, reason: 'error' };
 
   const { data, error } = await sb
     .from('archive_photos')
@@ -323,9 +331,24 @@ export async function promoteArchiveProperty(
     .select('id');
   if (error) {
     console.error('promoteArchiveProperty error:', error.message);
-    return { promoted: false };
+    return { promoted: false, reason: 'error' };
   }
-  return { promoted: (data?.length ?? 0) > 0 };
+  if ((data?.length ?? 0) > 0) return { promoted: true };
+
+  // Zero rows matched means one of TWO different things, and the operator needs
+  // to be told which. The CAS excludes both already-promoted rows AND excluded
+  // ones, so "someone else traced it" and "someone else marked it not an
+  // install" land here identically — and telling an operator to go compare
+  // their trace against a competing example is simply false in the second case,
+  // where no competing example exists. Read back to find out which happened.
+  const { data: rows } = await sb
+    .from('archive_photos')
+    .select('status, promoted_training_house_id')
+    .eq('resolved_address_key', addressKey);
+  if (!rows || rows.length === 0) return { promoted: false, reason: 'error' };
+  if (rows.some(r => r.promoted_training_house_id)) return { promoted: false, reason: 'traced' };
+  if (rows.every(r => r.status === 'excluded')) return { promoted: false, reason: 'excluded' };
+  return { promoted: false, reason: 'error' };
 }
 
 /**

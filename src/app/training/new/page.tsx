@@ -864,14 +864,23 @@ function NewTrainingHousePageInner() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Save failed');
-      if (data.archiveAlreadyTraced) {
-        // Someone else claimed this property while it was open here. The trace
-        // IS saved — it just isn't linked to the queue card, so say that
-        // plainly and stay put rather than redirecting as if it landed.
+      if (data.archiveClaimFailed) {
+        // Someone else changed this property while it was open here. The trace
+        // IS saved — it just isn't linked to the queue card. Say which of the
+        // two things happened, because the right next step differs: a competing
+        // trace needs reconciling, an exclusion means this house was judged not
+        // to be a real install at all and the example is probably worth deleting.
         setSaveError(
-          'Saved, but this house was already traced by someone else while you were working. '
-          + 'Your version was kept as a separate training example and is not linked to the archive queue — '
-          + 'check /training if you want to compare them or delete one.',
+          data.archiveClaimFailed === 'traced'
+            ? 'Saved, but someone else traced this house while you were working. Your version was kept as a '
+              + 'separate training example and is not linked to the archive queue — check /training to compare '
+              + 'them and delete whichever you do not want.'
+            : data.archiveClaimFailed === 'excluded'
+              ? 'Saved, but someone else marked this property "not an install" while you were working. Your '
+                + 'trace was kept in /training and is not linked to the archive queue — it is probably worth '
+                + 'deleting unless you disagree with that call.'
+              : 'Saved to /training, but linking it back to the archive queue failed. The property may still '
+                + 'show as untraced in the queue — check /training/archive before re-tracing it.',
         );
         return;
       }

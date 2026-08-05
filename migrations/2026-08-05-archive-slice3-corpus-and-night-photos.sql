@@ -55,9 +55,16 @@
 --
 -- HOW TO APPLY: paste into the Supabase SQL Editor and Run. Idempotent.
 --
--- ORDER: MIGRATION FIRST. Both columns are read by slice-3 code the moment
--- it is live — the retrieval SELECTs source, and the queue endpoint SELECTs
--- night_photo_ref — so the column must exist before the code that reads it.
+-- ORDER: MIGRATION FIRST, and the blast radius of getting it wrong is wider
+-- than "the archive queue breaks". saveTrainingHouse writes `source` on EVERY
+-- insert, not just archive ones, so code deployed ahead of this migration makes
+-- every training-house save fail — including ordinary hand-made ones that have
+-- nothing to do with #167. The failure is quiet, too: the insert error is
+-- caught and returned as null, which the route surfaces as a generic "Failed
+-- to save training house — check server logs".
+--
+-- The reads are the smaller half: getTrainingFewShot SELECTs source, and the
+-- queue and prefill endpoints SELECT night_photo_ref.
 -- =====================================================================
 
 -- Backfills every existing row to 'manual', which is correct: everything in
