@@ -32,12 +32,14 @@ export function CustomerTagsEditor({
   const [error, setError] = useState<string | null>(null);
 
   async function toggle(tag: 'isNce' | 'isYllNeighbor') {
-    const prevNce = isNce;
-    const prevNeighbor = isYllNeighbor;
-    const next = tag === 'isNce' ? !isNce : !isYllNeighbor;
-    // Optimistic.
-    if (tag === 'isNce') setIsNce(next);
-    else setIsYllNeighbor(next);
+    // Review fix (tech LOW, S34 #198 review): revert scoped to ONLY the
+    // field THIS call touched — a rapid click on both chips + one failure
+    // used to revert both, stomping whichever chip's optimistic update
+    // (or already-confirmed save) happened to be in flight at the same time.
+    const prev = tag === 'isNce' ? isNce : isYllNeighbor;
+    const setField = tag === 'isNce' ? setIsNce : setIsYllNeighbor;
+    const next = !prev;
+    setField(next); // optimistic
     setBusy(true);
     setError(null);
     try {
@@ -48,15 +50,13 @@ export function CustomerTagsEditor({
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setIsNce(prevNce); // revert
-        setIsYllNeighbor(prevNeighbor);
+        setField(prev); // revert — this field only
         setError((body as { error?: string }).error ?? 'Could not save that change.');
         return;
       }
       router.refresh();
     } catch {
-      setIsNce(prevNce); // revert
-      setIsYllNeighbor(prevNeighbor);
+      setField(prev); // revert — this field only
       setError('Could not save that change.');
     } finally {
       setBusy(false);
