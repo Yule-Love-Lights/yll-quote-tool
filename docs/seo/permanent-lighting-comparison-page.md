@@ -174,15 +174,14 @@ tool / estimate flow)*
 - [ ] **Do not add competitor prices, warranty lengths, or app feature claims**
       unless read directly from that manufacturer's current published page, with
       the date checked. If in doubt, leave them out — the page works without them.
-- [ ] Confirm **CLIPA certification** is current and that's the correct name to
-      publish.
-- [ ] Confirm **"since 2022"** and the Nassau/Suffolk boundary language match
-      what the rest of the site says.
-- [ ] Confirm the **$2,500–$5,000** range is what we want printed on this page.
-      Still open: this figure came from a search snippet, not from Naldo. His
-      2026-08-05 "pricing is correct" was about the profile's "From $1,000"
-      floor, which is a different number answering a different question. Don't
-      treat that as sign-off on this range.
+- [x] **CLIPA certification** — confirmed current and correctly named (Naldo,
+      2026-08-05).
+- [x] **"Since 2022" and the Nassau/Suffolk language** — confirmed (Naldo,
+      2026-08-05).
+- [x] **$2,500–$5,000** — confirmed publishable (Naldo, 2026-08-05, written
+      "250p-500" and read as $2,500–$5,000). Distinct from the profile's "From
+      $1,000" floor, which was confirmed separately and answers a different
+      question.
 - [x] **Night, system on** — received 2026-08-05 (IMG_6561). Split-level, red
       across the left roofline and blue across the right on one continuous run,
       plus the porch gable and a lower band above the garage. This is the

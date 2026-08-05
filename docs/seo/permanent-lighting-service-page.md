@@ -1,0 +1,196 @@
+# Service page draft — permanent lighting
+
+Date: 2026-08-05
+Status: draft — verification pass at the bottom
+
+## Why this page, and why now
+
+This is item 2 in the audit's work order, built ahead of schedule because it
+blocks work already authorized.
+
+Three things all point at a page that doesn't exist:
+
+1. **Six Google Business Profile service entries** — Permanent Lighting,
+   Residential Permanent Lighting, Commercial Permanent Lighting, Architectural
+   Lighting, Residential Architectural Lighting, Commercial Architectural
+   Lighting — currently land on the homepage or `/services/`, neither of which
+   is about permanent lighting.
+2. **The comparison page's CTA and internal links** have nowhere to go until
+   this exists.
+3. It's the **only service with year-round demand** rather than a Sept–Dec
+   spike, and it's a $2,500–$5,000 ticket.
+
+Event, Landscape and Municipal each already have a dedicated page. This one
+didn't.
+
+**Target URL:** `/services/permanent-lighting/`
+**Title:** `Permanent Christmas Lights Long Island | Yule Love Lights`
+**Meta description:** `Permanent app-controlled LED roofline lighting on Long
+Island — invisible by day, any color at night. Installed once, used all year.
+$2,500–$5,000 typical. Nassau & Suffolk.`
+
+## Vocabulary this page has to carry
+
+The customer has no settled name for this product, so the page must carry all of
+them explicitly rather than hoping Google infers. Working these in naturally:
+
+permanent christmas lights · permanent holiday lights · permanent outdoor
+lighting · permanent roofline lighting · year round lights · app controlled
+roofline lighting · architectural lighting · residential and commercial variants
+
+"Architectural lighting" is our word and the profile's; "permanent christmas
+lights" is what customers type. The page needs both, and should not lead with
+ours.
+
+---
+
+## Page copy
+
+### H1
+Permanent Christmas Lights on Long Island
+
+### Intro
+
+Put lights on the house once. Use them all year.
+
+Permanent roofline lighting is a slim track of individually controlled LEDs
+mounted along your roofline and trim. It's there year-round, but you'd have to
+look for it in daylight. At night it does whatever you tell it from your
+phone — warm white on an ordinary evening, red and green in December, orange for
+Halloween, red white and blue on the Fourth.
+
+No ladder in November. No tangled boxes in the garage. No January morning
+wondering when you'll get to it.
+
+### H2 — What you actually get
+
+**Any color, and more than one at a time.** Each LED is controlled on its own,
+so a single roofline can run red across one section and blue across another —
+not one color for the whole house. That's the difference between doing a flag on
+the Fourth and only being able to do red.
+
+**Warm white for the other eleven months.** Most people think they're buying
+holiday lights and end up living on warm white year-round, because it makes the
+house look finished at night. It's the setting worth caring most about.
+
+**Controlled from your phone.** Colors, brightness, patterns, speed, and
+schedules. Set it to come on at sunset and turn itself off at midnight, and then
+forget it exists until December.
+
+**Invisible when it's off.** The track follows lines your house already has —
+tucked under the fascia along the roof edge, and along existing trim bands. It
+reads as part of the trim, not as a strip someone added.
+
+### H2 — What it looks like in daylight
+
+*(Photo: IMG_6575 — system off, house fully legible, track following the trim
+lines. Caption: "The same house with the system off. The track follows the
+fascia and the trim band.")*
+
+*(Photo: IMG_6561 — system on, red across the left roofline and blue across the
+right. Caption: "The same house at night. Two colors on one continuous run.")*
+
+### H2 — Permanent lighting for homes
+
+Most of our permanent installs are single-family homes across Nassau and
+Suffolk — capes, splits, colonials, waterfront properties. We design to your
+actual roofline rather than quoting a per-foot number and hoping.
+
+Typical residential systems run **$2,500–$5,000** installed for small-to-medium
+homes. Larger or more complex rooflines cost more, and we'll tell you that
+before we start, not after.
+
+### H2 — Permanent lighting for businesses
+
+Storefronts, restaurants, offices, and multi-building properties. The same
+system, with two things commercial clients tend to care about more: scheduling
+that runs itself without anyone thinking about it, and a local crew who can be
+there when a section goes out during your busiest month.
+
+We also handle **commercial architectural lighting** — accent and façade
+lighting that isn't tied to a holiday at all.
+
+### H2 — What it costs, honestly
+
+**$2,500–$5,000** for most small-to-medium homes, installed. Bigger and more
+complicated rooflines run higher.
+
+It pays for itself against seasonal installs somewhere around year four or
+five, depending on the size of the display you'd otherwise be buying. And unlike
+a seasonal install, there's no annual line item after that.
+
+### H2 — Is it right for you?
+
+**It's a good fit if** you want the house lit for more than Christmas, you're
+tired of the yearly install-and-takedown cycle, or you like the idea of the
+house looking finished on an ordinary Tuesday in March.
+
+**It's not the better choice if** what you love is the classic C9 look with
+garland, wreaths, and lit trees. Permanent systems do rooflines beautifully;
+they don't do the rest of a designed display. Plenty of our customers have
+both — permanent on the roofline, and we come out each season for the trees and
+the greenery.
+
+### H2 — Why us
+
+We're family-owned and based on Long Island, and we've been lighting homes here
+since 2022 — Nassau and Suffolk, Elmont and Great Neck out to Montauk.
+
+- **Service is us.** The people who installed it are the people who come fix it.
+  No national dispatch number.
+- **Licensed, insured, CLIPA-certified.**
+- **We do the whole year.** Permanent lighting, Christmas installs, landscape
+  lighting, event lighting. One vendor, one crew.
+
+### H2 — Common questions
+
+**Do I still need Christmas lights?**
+For the roofline, no — that's what this replaces. If you want lit trees,
+garland, or wreaths, we do those seasonally alongside your permanent system.
+
+**Can I see it before I commit?**
+Yes. Ask and we'll show you real installed homes near you, in daylight and at
+night.
+
+**What happens if a section goes out?**
+Call us. We come fix it.
+
+**How long does it last?**
+These are commercial-grade LED systems built for year-round outdoor exposure on
+Long Island — salt air, nor'easters, and full sun included.
+
+### CTA
+**See what permanent lighting would cost on your roofline.**
+*(link to the estimate flow)*
+
+Still comparing systems? Read our guide to
+[comparing permanent roofline lighting](/permanent-roofline-lighting-comparison/).
+
+---
+
+## Verification pass
+
+- [ ] **"Commercial-grade LED"** and the durability claim — confirm that's how
+      we want to describe the hardware, and that nothing here overstates a
+      warranty we don't offer. This is the one paragraph making a longevity
+      claim; it should match whatever we actually warrant.
+- [ ] **Year four-or-five payback** — this is a reasonable inference from the
+      $1,000+ seasonal floor against a $2,500–$5,000 system, not a figure Naldo
+      gave me. Confirm or replace it. Don't publish a payback number that hasn't
+      been checked.
+- [ ] **"Most of our permanent installs are single-family homes"** — confirm
+      that's true rather than assumed.
+- [ ] Confirm we want **commercial** on the same page rather than its own.
+      Splitting later is easy; I've kept it here because the GBP entries point
+      at one destination and the volume is likely residential.
+- [ ] Point the CTA at the real estimate flow URL.
+- [ ] Add the two photos (permission granted 2026-08-05).
+- [ ] After publishing: update the six GBP service entries to link here, and add
+      this page to the site nav under Services.
+
+## Confirmed inputs
+
+Carried from the comparison page's verification pass, all confirmed by Naldo on
+2026-08-05: CLIPA certification current and correctly named · "since 2022" and
+the Nassau/Suffolk coverage language · the $2,500–$5,000 range publishable ·
+homeowner permission for the photos.
