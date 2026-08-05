@@ -35,6 +35,7 @@ const quote = (over: Partial<QuoteListItem>): QuoteListItem => ({
   is_test: false,
   service_type: null,
   legacy_rebook: false,
+  is_nce: false,
   view_only: false,
   highlevel_contact_id: null,
   customer_id: null,
