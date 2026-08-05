@@ -93,9 +93,14 @@ preferences once they see both. Ask for a night photo of each.
 
 **Color capability.**
 Nearly all of these systems do millions of colors. What varies is whether a
-single run can show multiple colors at once, and whether the warm white looks
-genuinely warm or slightly blue. Warm white is the setting most homeowners
-actually live on for eleven months of the year, so look at that one hardest.
+single run can show **multiple colors at once** — a red section and a blue
+section on the same continuous roofline, rather than the whole house being one
+color at a time. That's the difference between a system that can do a flag on
+the Fourth and one that can only do red.
+
+The other thing to check is whether the warm white looks genuinely warm or
+slightly blue. Warm white is the setting most homeowners actually live on for
+eleven months of the year, so look at that one hardest.
 
 **The app.**
 Every one of them has an app. Ask to hold a phone and drive it before you buy.
@@ -133,6 +138,8 @@ A few things that are true about us and worth weighing:
   landscape work or a wreath-and-garland package, and that's one vendor and one
   crew rather than three.
 - **We're licensed, insured, and CLIPA-certified.**
+- **Our systems run multiple colors on the same roofline at once** — not one
+  color per house. *(Photographed on a real install; see the photo notes below.)*
 - **Typical permanent roofline systems run $2,500–$5,000** for small-to-medium
   homes, installed. We'll quote your actual roofline rather than a per-foot
   guess.
@@ -166,9 +173,21 @@ tool / estimate flow)*
 - [ ] Confirm the **$2,500–$5,000** range is still what we want printed publicly.
       It appears in search snippets already, so it's effectively public — but
       confirm it's current.
-- [ ] Swap in **two real photos**: one daytime showing how little the track
-      reads, one night. The page argues that any installer who can't produce
-      these is hiding something, so it had better lead by example.
+- [x] **Night, system on** — received 2026-08-05 (IMG_6561). Split-level, red
+      across the left roofline and blue across the right on one continuous run,
+      plus the porch gable and a lower band above the garage. This is the
+      multi-color-at-once proof; it earns its own callout in the copy.
+- [x] **Night, system off, same house** — received 2026-08-05 (IMG_6566). Strong
+      as a before/after pair with the above.
+- [ ] **Daytime, system off, same house — STILL NEEDED.** Both photos received
+      are at night, so neither supports the page's central claim that the track
+      disappears *by day*. Publishing without it means the page asks readers to
+      demand something it doesn't itself provide, which a sharp reader will
+      notice. Shoot the same house in daylight from roughly the IMG_6566 angle.
+- [ ] Get the homeowner's OK before publishing photos of their house, and check
+      whether the address or house number is legible in frame.
+- [ ] Photos go in the WordPress media library, not this repo — the originals
+      are 8000×6000 and don't belong in git.
 - [ ] Build `/services/permanent-lighting/` **first** — this page's internal
       links and its CTA both need somewhere to land.
 - [ ] Decide whether competitor brand names appear in the **title tag**. My
