@@ -87,3 +87,78 @@ describe('interpretBotText (Phase 1 read-only interpreter)', () => {
     });
   });
 });
+
+describe('interpretBotText (captureLead, Phase 3 write)', () => {
+  it('rejects captureLead when allowWrites is not set — a write can never escape read-only mode', async () => {
+    seam.create.mockResolvedValue(
+      toolUse({ tool: 'captureLead', name: 'John Smith', phone: '6315550100', confidence: 0.95 }),
+    );
+    // No { allowWrites: true } — defaults to read-only.
+    expect(await interpretBotText('new lead John Smith 631-555-0100')).toBeNull();
+  });
+
+  it('parses name/phone/address/service through when allowWrites is set', async () => {
+    seam.create.mockResolvedValue(
+      toolUse({
+        tool: 'captureLead',
+        name: ' John Smith ',
+        phone: ' 631-555-0100 ',
+        address: ' 12 Oak St ',
+        service: 'permanent',
+        confidence: 0.95,
+      }),
+    );
+    expect(
+      await interpretBotText('new lead John Smith 631-555-0100 12 Oak St wants permanent', {
+        allowWrites: true,
+      }),
+    ).toEqual({
+      tool: 'captureLead',
+      args: {
+        name: 'John Smith',
+        phone: '631-555-0100',
+        address: '12 Oak St',
+        service: 'permanent',
+      },
+      confidence: 0.95,
+    });
+  });
+
+  it('omits service when the sender never said it (bot must ask, not guess)', async () => {
+    seam.create.mockResolvedValue(
+      toolUse({ tool: 'captureLead', name: 'John Smith', phone: '6315550100', confidence: 0.9 }),
+    );
+    const res = await interpretBotText('new lead John Smith 631-555-0100', { allowWrites: true });
+    expect(res?.args.service).toBeUndefined();
+  });
+
+  it('drops an invalid/hallucinated service value instead of passing it through', async () => {
+    seam.create.mockResolvedValue(
+      toolUse({
+        tool: 'captureLead',
+        name: 'John Smith',
+        phone: '6315550100',
+        service: 'residential-holiday', // not a real LeadService
+        confidence: 0.9,
+      }),
+    );
+    const res = await interpretBotText('new lead John Smith 631-555-0100', { allowWrites: true });
+    expect(res?.args.service).toBeUndefined();
+  });
+
+  it('carries note through alongside captureLead fields', async () => {
+    seam.create.mockResolvedValue(
+      toolUse({
+        tool: 'captureLead',
+        name: 'John Smith',
+        phone: '6315550100',
+        note: 'met at the fence',
+        confidence: 0.9,
+      }),
+    );
+    const res = await interpretBotText('new lead John Smith 631-555-0100, met at the fence', {
+      allowWrites: true,
+    });
+    expect(res?.args.note).toBe('met at the fence');
+  });
+});

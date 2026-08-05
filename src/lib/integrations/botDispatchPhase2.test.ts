@@ -442,6 +442,15 @@ describe('voice input', () => {
 
 describe('a photo sent WITH a "yes" caption', () => {
   it('is folded into the pending action before the confirm runs', async () => {
+    // FIX C (photo tool-awareness): the dispatcher now peeks the pending
+    // action's tool BEFORE appending a photo (completeInstall accepts one,
+    // captureLead does not) — so this mock must agree with consumePendingAction.
+    mocks.peekPendingAction.mockResolvedValue({
+      id: 'p1',
+      tool: 'completeInstall',
+      args: { jobNumber: 142, materials: [] },
+      summary: 's',
+    });
     mocks.consumePendingAction.mockResolvedValue({
       id: 'p1',
       tool: 'completeInstall',
