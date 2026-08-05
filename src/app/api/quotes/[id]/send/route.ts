@@ -375,52 +375,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       );
     }
 
-    // NCE + YLL Neighbor tag propagation (#198): a tagged quote auto-tags its
-    // customer the moment it BECOMES sent. Only runs on a fresh stamp (this
-    // block, guarded above by !isGhlRetry && !isDeliveryRetry) — a retry never
-    // re-fires it, and it's idempotent (propagateQuoteTagsToCustomer) even if
-    // it did. Skipped entirely for an untagged quote (the common case) to
-    // avoid the extra round trip below on every ordinary send.
-    // Review fix (admin HIGH, S34 #198 review): !quote.is_test is REQUIRED,
-    // not cosmetic — a tagged TEST send must never call attachQuoteToCustomer
-    // with test data. Doing so could create an orphan real customer row, or
-    // (worse) merge-overwrite a REAL customer's identity fields via
-    // findOrCreateCustomer's newest-win secondary-key match, then tag that
-    // real customer — silently breaking the "test quotes never touch
-    // customers" invariant #200's tenure push also depends on.
-    if (!quote.is_test && (quote.legacy_rebook || quote.is_nce)) {
-      try {
-        // The common case (post-#192 identity linking runs at quote-save
-        // time) already has customer_id set. The one real gap: a self-serve-
-        // estimate quote starts address-only (no name/email/phone), so
-        // attachQuoteToCustomer's insert-time call resolves no identity and
-        // links nothing — re-attempt it here with whatever identity has
-        // landed on the row by send time, using the SAME find-or-create
-        // attachQuoteToCustomer the initial save uses (idempotent: re-running
-        // it on an already-linked quote just re-resolves the same customer).
-        const linkedCustomerId =
-          quote.customer_id ??
-          (
-            await attachQuoteToCustomer({
-              id,
-              highlevel_contact_id: quote.highlevel_contact_id,
-              customer_name: quote.customer_name,
-              customer_email: quote.customer_email,
-              customer_phone: quote.customer_phone,
-              customer_address: quote.customer_address,
-            })
-          )?.customerId ??
-          null;
-        if (linkedCustomerId) {
-          await propagateQuoteTagsToCustomer(linkedCustomerId, {
-            isNce: quote.is_nce,
-            isYllNeighbor: quote.legacy_rebook,
-          });
-        }
-      } catch (err) {
-        console.warn('[api/quotes/:id/send] tag propagation failed (non-fatal):', err);
-      }
-    }
+    // NCE + YLL Neighbor tag propagation (#198): moved into the delivery
+    // Promise.allSettled group below (review fix, customer MED, S34 #198
+    // review) — see the tagPropagation closure's own comment for why.
   }
 
   // HighLevel (#37): move the customer's opportunity to "📨Bid Sent" — creating
@@ -634,7 +591,57 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
   };
 
-  await Promise.allSettled([ghlStageChain(), customerSms(), customerEmail()]);
+  // NCE + YLL Neighbor tag propagation (#198): a tagged quote auto-tags its
+  // customer the moment it BECOMES sent. Runs concurrently with the GHL
+  // stage move + customer messaging above (review fix, customer MED, S34
+  // #198 review) — this closure can do up to ~5 unbounded DB round trips
+  // (attachQuoteToCustomer's find-or-create-customer + find-or-create-
+  // property + relink, then propagateQuoteTagsToCustomer's update), which
+  // used to run SERIALLY between the sent-stamp and the Promise.allSettled
+  // group below — adding straight latency in front of the customer's SMS/
+  // email instead of alongside it. Only runs on a fresh stamp (mirrors the
+  // stamp block's own guard above — a retry never re-fires it, and it's
+  // idempotent even if it did) and never for a TEST quote (admin HIGH review
+  // fix — attachQuoteToCustomer must never run with test data; see the
+  // AGENTS.md-style rationale that used to sit above the old inline block,
+  // now folded into this guard).
+  const tagPropagation = async () => {
+    if (isGhlRetry || isDeliveryRetry) return;
+    if (quote.is_test || (!quote.legacy_rebook && !quote.is_nce)) return;
+    try {
+      // The common case (post-#192 identity linking runs at quote-save time)
+      // already has customer_id set. The one real gap: a self-serve-estimate
+      // quote starts address-only (no name/email/phone), so
+      // attachQuoteToCustomer's insert-time call resolves no identity and
+      // links nothing — re-attempt it here with whatever identity has landed
+      // on the row by send time, using the SAME find-or-create
+      // attachQuoteToCustomer the initial save uses (idempotent: re-running
+      // it on an already-linked quote just re-resolves the same customer).
+      const linkedCustomerId =
+        quote.customer_id ??
+        (
+          await attachQuoteToCustomer({
+            id,
+            highlevel_contact_id: quote.highlevel_contact_id,
+            customer_name: quote.customer_name,
+            customer_email: quote.customer_email,
+            customer_phone: quote.customer_phone,
+            customer_address: quote.customer_address,
+          })
+        )?.customerId ??
+        null;
+      if (linkedCustomerId) {
+        await propagateQuoteTagsToCustomer(linkedCustomerId, {
+          isNce: quote.is_nce,
+          isYllNeighbor: quote.legacy_rebook,
+        });
+      }
+    } catch (err) {
+      console.warn('[api/quotes/:id/send] tag propagation failed (non-fatal):', err);
+    }
+  };
+
+  await Promise.allSettled([ghlStageChain(), customerSms(), customerEmail(), tagPropagation()]);
 
   // Join the two message errors deterministically (SMS first, then email),
   // preserving the original "a; b" concatenation shape.
