@@ -391,6 +391,39 @@ export async function attachQuoteToCustomer(
 
   const sb = svc();
   if (!sb) return null;
+
+  // Forward-heal (S34, #198 follow-up — live finding: 166/168 customers rows
+  // had hl_contact_id NULL). findOrCreateCustomer's own merge/insert
+  // branches already stamp hl_contact_id whenever THEY run with an
+  // hl-carrying identity, but a quote's customer_id, once resolved, is never
+  // re-run through findOrCreateCustomer just because the quote LATER gains
+  // an hl_contact_id via a different path (the builder's HL-contact-pick
+  // autocomplete only writes quotes.highlevel_contact_id via
+  // /api/integrations/highlevel/attach — it never touches customers at
+  // all). Every attachQuoteToCustomer call (initial save, the one-shot
+  // backfill, the #198 send-time re-attach) is a fresh chance to close that
+  // gap. Race-safe, one round trip: .is('hl_contact_id', null) means this
+  // can only ever affect a row that's STILL unlinked at write time — a row
+  // already linked to a DIFFERENT id is never touched (0 rows match, a
+  // silent no-op). Never overwrites — that's the secondary-key merge's job
+  // inside findOrCreateCustomer (#213's territory, untouched here).
+  // Best-effort: never blocks the quote-link write below.
+  const hlContactId = norm(q.highlevel_contact_id);
+  if (hlContactId) {
+    try {
+      const { error: healErr } = await sb
+        .from('customers')
+        .update({ hl_contact_id: hlContactId })
+        .eq('id', customer.id)
+        .is('hl_contact_id', null);
+      if (healErr) {
+        console.warn(`attachQuoteToCustomer: hl_contact_id heal failed for customer ${customer.id}:`, healErr);
+      }
+    } catch (err) {
+      console.warn(`attachQuoteToCustomer: hl_contact_id heal threw for customer ${customer.id}:`, err);
+    }
+  }
+
   const { error } = await sb
     .from('quotes')
     .update({ customer_id: customer.id, property_id: property.id })
