@@ -16,9 +16,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
 
-const { requireOperatorMock, sbRef, propagateMock } = vi.hoisted(() => ({
+const { requireOperatorMock, sbRef, attachQuoteToCustomerMock, propagateMock } = vi.hoisted(() => ({
   requireOperatorMock: vi.fn(async (): Promise<NextResponse | null> => null),
   sbRef: { current: null as unknown },
+  // #214: the route now verify-or-reattaches before propagating.
+  attachQuoteToCustomerMock: vi.fn(async () => null as null | { customerId: string; propertyId: string }),
   propagateMock: vi.fn(async () => {}),
 }));
 
@@ -31,7 +33,11 @@ vi.mock('@/lib/supabase', () => ({
   getSupabaseServiceClient: () => sbRef.current,
 }));
 
-vi.mock('@/lib/customers', () => ({
+// #214: importOriginal keeps quoteRowToIdentity (pure sentinel translation)
+// REAL — only the DB-touching fns are mocked.
+vi.mock('@/lib/customers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/customers')>()),
+  attachQuoteToCustomer: attachQuoteToCustomerMock,
   propagateQuoteTagsToCustomer: propagateMock,
 }));
 
@@ -211,7 +217,7 @@ describe('POST /api/quotes/[id]/nce — tag propagation (#198)', () => {
     expect(propagateMock).not.toHaveBeenCalled();
   });
 
-  it('does NOT propagate when the quote has no linked customer', async () => {
+  it('does NOT propagate when unlinked AND re-resolution yields nothing (identity-less quote)', async () => {
     const { client } = makeSb({
       id: VALID_UUID,
       is_nce: false,
@@ -222,6 +228,57 @@ describe('POST /api/quotes/[id]/nce — tag propagation (#198)', () => {
 
     await POST(makeReq({ isNce: true }), makeParams(VALID_UUID));
     expect(propagateMock).not.toHaveBeenCalled();
+  });
+
+  // #214: verify-or-reattach before propagating — the cached customer_id can
+  // be stale after an identity edit; re-resolution wins, cached is fallback.
+  it('propagates to the RE-RESOLVED customer (not the cached id) when re-attach lands on a different row', async () => {
+    attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'cust-right', propertyId: 'p1' });
+    const { client } = makeSb({
+      id: VALID_UUID,
+      is_nce: false,
+      quote_sent_at: '2026-08-01T00:00:00Z',
+      customer_id: 'cust-stale',
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ isNce: true }), makeParams(VALID_UUID));
+    expect(res.status).toBe(200);
+    expect(propagateMock).toHaveBeenCalledWith('cust-right', { isNce: true });
+  });
+
+  // #214: the old customer_id-non-null gate is lifted — tagging a sent,
+  // never-linked quote now heals the link instead of silently skipping.
+  it('heals a NEVER-linked sent quote when re-resolution finds the customer, then propagates', async () => {
+    attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'cust-healed', propertyId: 'p1' });
+    const { client } = makeSb({
+      id: VALID_UUID,
+      is_nce: false,
+      quote_sent_at: '2026-08-01T00:00:00Z',
+      customer_id: null,
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ isNce: true }), makeParams(VALID_UUID));
+    expect(res.status).toBe(200);
+    expect(propagateMock).toHaveBeenCalledWith('cust-healed', { isNce: true });
+  });
+
+  it('does NOT even attempt re-resolution when turning OFF or on an un-sent quote (no extra round trips)', async () => {
+    const { client } = makeSb({
+      id: VALID_UUID,
+      is_nce: true,
+      quote_sent_at: '2026-08-01T00:00:00Z',
+      customer_id: 'cust-1',
+    });
+    sbRef.current = client;
+    await POST(makeReq({ isNce: false }), makeParams(VALID_UUID));
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+
+    const { client: unsent } = makeSb({ id: VALID_UUID, is_nce: false, quote_sent_at: null, customer_id: 'cust-1' });
+    sbRef.current = unsent;
+    await POST(makeReq({ isNce: true }), makeParams(VALID_UUID));
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
   });
 
   it('does NOT propagate when turning the flag OFF, even on an already-sent, linked quote (forward-only)', async () => {

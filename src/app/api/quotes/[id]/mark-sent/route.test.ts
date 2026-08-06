@@ -27,7 +27,10 @@ const { requireOperatorMock, sbRef, attachQuoteToCustomerMock, propagateMock } =
   propagateMock: vi.fn(async () => {}),
 }));
 
-vi.mock('@/lib/customers', () => ({
+// #214: importOriginal keeps quoteRowToIdentity (pure sentinel translation)
+// REAL — only the DB-touching fns are mocked.
+vi.mock('@/lib/customers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/customers')>()),
   attachQuoteToCustomer: attachQuoteToCustomerMock,
   propagateQuoteTagsToCustomer: propagateMock,
 }));
@@ -256,14 +259,27 @@ describe('POST /api/quotes/[id]/mark-sent — race loss on write', () => {
 });
 
 describe('POST /api/quotes/[id]/mark-sent — NCE + YLL Neighbor tag propagation (#198)', () => {
-  it('propagates both tags to the ALREADY-linked customer', async () => {
+  // #214: attach-first even when a cached customer_id exists (verify-or-
+  // reattach — the cached link can be stale after an identity edit); the
+  // cached id is only the fallback when re-resolution yields nothing.
+  it('re-verifies via attachQuoteToCustomer even when ALREADY linked, falling back to the cached id when re-resolution yields nothing', async () => {
     const { client } = makeSb({ ...DRAFT_QUOTE, legacy_rebook: true, is_nce: true, customer_id: 'cust-1' });
     sbRef.current = client;
 
     const res = await POST(makeReq(), ctx());
     expect(res.status).toBe(200);
-    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+    expect(attachQuoteToCustomerMock).toHaveBeenCalledOnce();
     expect(propagateMock).toHaveBeenCalledWith('cust-1', { isNce: true, isYllNeighbor: true });
+  });
+
+  it('propagates to the RE-RESOLVED customer (not the cached id) when re-attach lands on a different row', async () => {
+    attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'cust-right', propertyId: 'prop-1' });
+    const { client } = makeSb({ ...DRAFT_QUOTE, legacy_rebook: true, is_nce: true, customer_id: 'cust-stale' });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), ctx());
+    expect(res.status).toBe(200);
+    expect(propagateMock).toHaveBeenCalledWith('cust-right', { isNce: true, isYllNeighbor: true });
   });
 
   it('re-attaches via attachQuoteToCustomer when tagged but NOT yet linked, then propagates', async () => {

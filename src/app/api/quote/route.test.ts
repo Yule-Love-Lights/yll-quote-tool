@@ -753,18 +753,48 @@ describe('POST /api/quote — highlevelContactId (#leads "Create quote" link)', 
     expect(save).not.toHaveBeenCalled();
   });
 
-  it('does NOT thread highlevelContactId to updateQuote on the UPDATE path (never clobbers an existing link)', async () => {
+  // #214: the update path now RECEIVES the session's hl link — as
+  // updateQuote's identity-resolution input only (updateQuote never writes
+  // the highlevel_contact_id column; the attach route stays that column's
+  // post-insert writer). Tri-state on the wire: string = linked this
+  // session · explicit null = session has NO contact (never fall back to
+  // the stored id) · absent = legacy caller (updateQuote falls back to the
+  // stored id).
+  it('threads highlevelContactId to updateQuote (9th arg) on the UPDATE path', async () => {
     const res = await POST(
       makeReq({ inputs: validInputs(), quoteId: REAL_UUID, highlevelContactId: 'ghl-contact-abc123' }),
     );
     expect(res.status).toBe(200);
     expect(update).toHaveBeenCalledTimes(1);
     // updateQuote(id, inputs, result, customer, serviceType, referredByCustomerId,
-    // legacyRebook, isNce) — 8 args (#198 added the trailing tag pair), still no
-    // highlevelContactId slot anywhere in the list.
+    // legacyRebook, isNce, hlContactId)
     const updateArgs = update.mock.calls[0] as unknown[];
-    expect(updateArgs).toHaveLength(8);
-    expect(updateArgs).not.toContain('ghl-contact-abc123');
+    expect(updateArgs[8]).toBe('ghl-contact-abc123');
+  });
+
+  it('accepts an EXPLICIT null and threads it through (session cleared the contact)', async () => {
+    const res = await POST(
+      makeReq({ inputs: validInputs(), quoteId: REAL_UUID, highlevelContactId: null }),
+    );
+    expect(res.status).toBe(200);
+    const updateArgs = update.mock.calls[0] as unknown[];
+    expect(updateArgs[8]).toBeNull();
+  });
+
+  it('threads undefined when the key is ABSENT (legacy caller — updateQuote falls back to the stored id)', async () => {
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    expect(res.status).toBe(200);
+    const updateArgs = update.mock.calls[0] as unknown[];
+    expect(updateArgs[8]).toBeUndefined();
+  });
+
+  it('a blank string collapses to null (not a stored-id fallback) on the update path', async () => {
+    const res = await POST(
+      makeReq({ inputs: validInputs(), quoteId: REAL_UUID, highlevelContactId: '   ' }),
+    );
+    expect(res.status).toBe(200);
+    const updateArgs = update.mock.calls[0] as unknown[];
+    expect(updateArgs[8]).toBeNull();
   });
 });
 

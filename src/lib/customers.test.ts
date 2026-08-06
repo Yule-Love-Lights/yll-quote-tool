@@ -26,7 +26,73 @@ import {
   listCustomerTagsByIds,
   propagateQuoteTagsToCustomer,
   setCustomerTags,
+  quoteRowToIdentity,
 } from './customers';
+
+// ─── #214: quoteRowToIdentity — stored-row → attach identity ────────────────
+// saveQuote persists a blank name as 'Anonymous' and a blank address as
+// '(no address)'; those display sentinels must never become identity evidence
+// (a name:anonymous match_key would fold every contactless quote onto ONE
+// customer row, and a literal-sentinel name forces false field disagreements).
+describe('quoteRowToIdentity (#214)', () => {
+  it("translates the 'Anonymous' name sentinel to null", () => {
+    const id = quoteRowToIdentity({ id: 'q1', customer_name: 'Anonymous' });
+    expect(id.customer_name).toBeNull();
+  });
+
+  it("translates the '(no address)' sentinel to null", () => {
+    const id = quoteRowToIdentity({ id: 'q1', customer_address: '(no address)' });
+    expect(id.customer_address).toBeNull();
+  });
+
+  it('keeps real values, trimming whitespace', () => {
+    const id = quoteRowToIdentity({
+      id: 'q1',
+      highlevel_contact_id: ' hl-1 ',
+      customer_name: ' Jane Doe ',
+      customer_email: 'jane@x.com',
+      customer_phone: '(631) 555-0100',
+      customer_address: '1 A St',
+    });
+    expect(id).toEqual({
+      id: 'q1',
+      highlevel_contact_id: 'hl-1',
+      customer_name: 'Jane Doe',
+      customer_email: 'jane@x.com',
+      customer_phone: '(631) 555-0100',
+      customer_address: '1 A St',
+    });
+  });
+
+  it('nulls blank/whitespace/missing fields', () => {
+    const id = quoteRowToIdentity({ id: 'q1', customer_name: '   ', customer_email: '' });
+    expect(id).toEqual({
+      id: 'q1',
+      highlevel_contact_id: null,
+      customer_name: null,
+      customer_email: null,
+      customer_phone: null,
+      customer_address: null,
+    });
+  });
+
+  it('derives NO match key for a sentinel-only row (the fold-onto-one-customer failure)', () => {
+    const id = quoteRowToIdentity({
+      id: 'q1',
+      customer_name: 'Anonymous',
+      customer_address: '(no address)',
+    });
+    // Mapped exactly the way attachQuoteToCustomer feeds findOrCreateCustomer.
+    expect(
+      customerMatchKey({
+        hl_contact_id: id.highlevel_contact_id,
+        name: id.customer_name,
+        email: id.customer_email,
+        phone: id.customer_phone,
+      }),
+    ).toBeNull();
+  });
+});
 
 // ─── In-memory Supabase fake ────────────────────────────────────────────────
 

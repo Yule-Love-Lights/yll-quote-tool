@@ -23,7 +23,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
-import { propagateQuoteTagsToCustomer } from '@/lib/customers';
+import { attachQuoteToCustomer, propagateQuoteTagsToCustomer, quoteRowToIdentity } from '@/lib/customers';
 
 export const runtime = 'nodejs';
 
@@ -66,14 +66,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // MED, S34 #198 review) — defense-in-depth even though staff have no
     // reason to hand-toggle a test quote's tag from this admin-only route;
     // mirrors saveQuote's is_test posture and keeps the invariant even if a
-    // future writer breaks the /send + /mark-sent guards.
-    .select('id, is_nce, quote_sent_at, customer_id, is_test')
+    // future writer breaks the /send + /mark-sent guards. #214: the identity
+    // columns ride along too, feeding the verify-or-reattach below.
+    .select(
+      'id, is_nce, quote_sent_at, customer_id, is_test, highlevel_contact_id, customer_name, customer_email, customer_phone, customer_address',
+    )
     .maybeSingle<{
       id: string;
       is_nce: boolean;
       quote_sent_at: string | null;
       customer_id: string | null;
       is_test: boolean;
+      highlevel_contact_id: string | null;
+      customer_name: string | null;
+      customer_email: string | null;
+      customer_phone: string | null;
+      customer_address: string | null;
     }>();
 
   if (error) {
@@ -84,9 +92,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Quote not found' }, { status: 404 });
   }
 
-  if (!data.is_test && isNce && data.quote_sent_at && data.customer_id) {
+  // #214 (verify-or-reattach): re-resolve the customers link before
+  // propagating instead of trusting the cached customer_id — an identity
+  // edit since the last resolution can leave it pointing at the WRONG
+  // customer, and this admin toggle is exactly the kind of late tag flip
+  // the S34 wrap review traced onto stale links. Attach-first with the
+  // cached id as fallback, same shape as /send + /mark-sent; also lifts the
+  // old customer_id-non-null gate, so tagging a never-linked sent quote now
+  // heals the link instead of silently skipping (mirrors the send route's
+  // lazy attach). Only runs when propagation would actually fire — a
+  // toggle-OFF or an un-sent quote pays no extra round trips.
+  if (!data.is_test && isNce && data.quote_sent_at) {
     try {
-      await propagateQuoteTagsToCustomer(data.customer_id, { isNce: true });
+      const linkedCustomerId =
+        (await attachQuoteToCustomer(quoteRowToIdentity(data)))?.customerId ??
+        data.customer_id ??
+        null;
+      if (linkedCustomerId) {
+        await propagateQuoteTagsToCustomer(linkedCustomerId, { isNce: true });
+      }
     } catch (err) {
       console.warn('[api/quotes/:id/nce] tag propagation failed (non-fatal):', err);
     }

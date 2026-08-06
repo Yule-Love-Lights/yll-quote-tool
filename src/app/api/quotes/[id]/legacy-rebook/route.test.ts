@@ -13,9 +13,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
 
-const { requireOperatorMock, sbRef, propagateMock } = vi.hoisted(() => ({
+const { requireOperatorMock, sbRef, attachQuoteToCustomerMock, propagateMock } = vi.hoisted(() => ({
   requireOperatorMock: vi.fn(async (): Promise<NextResponse | null> => null),
   sbRef: { current: null as unknown },
+  // #214: the route now verify-or-reattaches before propagating.
+  attachQuoteToCustomerMock: vi.fn(async () => null as null | { customerId: string; propertyId: string }),
   propagateMock: vi.fn(async () => {}),
 }));
 
@@ -29,8 +31,12 @@ vi.mock('@/lib/supabase', () => ({
 }));
 
 // #198: propagateQuoteTagsToCustomer mocked so the already-sent propagation
-// branch is testable without a real customers table.
-vi.mock('@/lib/customers', () => ({
+// branch is testable without a real customers table. #214: importOriginal
+// keeps quoteRowToIdentity (pure sentinel translation) REAL — only the
+// DB-touching fns are mocked.
+vi.mock('@/lib/customers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/customers')>()),
+  attachQuoteToCustomer: attachQuoteToCustomerMock,
   propagateQuoteTagsToCustomer: propagateMock,
 }));
 
@@ -213,7 +219,7 @@ describe('POST /api/quotes/[id]/legacy-rebook — tag propagation (#198)', () =>
     expect(propagateMock).not.toHaveBeenCalled();
   });
 
-  it('does NOT propagate when the quote has no linked customer', async () => {
+  it('does NOT propagate when unlinked AND re-resolution yields nothing (identity-less quote)', async () => {
     const { client } = makeSb({
       id: VALID_UUID,
       legacy_rebook: false,
@@ -224,6 +230,38 @@ describe('POST /api/quotes/[id]/legacy-rebook — tag propagation (#198)', () =>
 
     await POST(makeReq({ legacyRebook: true }), makeParams(VALID_UUID));
     expect(propagateMock).not.toHaveBeenCalled();
+  });
+
+  // #214: verify-or-reattach before propagating — mirrors the sibling /nce
+  // route's tests (sibling-guard parity).
+  it('propagates to the RE-RESOLVED customer (not the cached id) when re-attach lands on a different row', async () => {
+    attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'cust-right', propertyId: 'p1' });
+    const { client } = makeSb({
+      id: VALID_UUID,
+      legacy_rebook: false,
+      quote_sent_at: '2026-08-01T00:00:00Z',
+      customer_id: 'cust-stale',
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ legacyRebook: true }), makeParams(VALID_UUID));
+    expect(res.status).toBe(200);
+    expect(propagateMock).toHaveBeenCalledWith('cust-right', { isYllNeighbor: true });
+  });
+
+  it('heals a NEVER-linked sent quote when re-resolution finds the customer, then propagates', async () => {
+    attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'cust-healed', propertyId: 'p1' });
+    const { client } = makeSb({
+      id: VALID_UUID,
+      legacy_rebook: false,
+      quote_sent_at: '2026-08-01T00:00:00Z',
+      customer_id: null,
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ legacyRebook: true }), makeParams(VALID_UUID));
+    expect(res.status).toBe(200);
+    expect(propagateMock).toHaveBeenCalledWith('cust-healed', { isYllNeighbor: true });
   });
 
   it('does NOT propagate when turning the flag OFF, even on an already-sent, linked quote (forward-only)', async () => {

@@ -5,7 +5,7 @@ import { deleteDesign, deleteDesignsForQuote } from './designs';
 import { allocateNumber } from './displayId';
 import type { QuoteStatus } from './quoteStatus';
 import type { AmendmentTrailEntry } from './amend';
-import { attachQuoteToCustomer, propagateQuoteTagsToCustomer } from './customers';
+import { attachQuoteToCustomer, propagateQuoteTagsToCustomer, quoteRowToIdentity } from './customers';
 import { createPendingReferral } from './referrals';
 
 export type QuoteListItem = {
@@ -361,6 +361,22 @@ export async function updateQuote(
   // reopened quote's tags persist through a re-price instead of resetting.
   legacyRebook?: boolean,
   isNce?: boolean,
+  // #214: the builder session's LIVE HighLevel contact id, tri-state:
+  //   string    — a contact is linked this session (picked, prefill-seeded,
+  //               or reopen-seeded from the saved row)
+  //   null      — the session EXPLICITLY has no contact (cleared, or a
+  //               reopened quote that never had one)
+  //   undefined — the caller doesn't know (legacy callers) → fall back to
+  //               the stored highlevel_contact_id for identity purposes.
+  // Identity-resolution input ONLY: updateQuote never writes the
+  // highlevel_contact_id COLUMN — /api/integrations/highlevel/attach stays
+  // that column's sole post-insert writer. This param exists because the
+  // S34 wrap review found the most common workflow (pick a contact in the
+  // builder, Calculate) resolved the customers row hl-LESS: the pick's id
+  // only ever reached the attach route, never the save identity, so
+  // findOrCreateCustomer's hl-agree/veto rules sat dead on every re-save
+  // and a weak-field reject could fork a silent dup customers row (#214 b).
+  hlContactId?: string | null,
 ): Promise<{ id: string } | null> {
   // Service client first so the write bypasses RLS (enabled on quotes, #90).
   const supabase = getSupabaseServiceClient() ?? getSupabaseClient();
@@ -380,18 +396,40 @@ export async function updateQuote(
   // change) — a same-value re-save or an update that omits serviceType never
   // clears anything. Fail-open: if the pre-read fails, keep the link (clearing
   // on a transient error would drop a valid card link).
+  //
+  // #214: the same pre-read now also feeds the identity-change detection
+  // below, so it additionally fetches the stored identity columns + link ids
+  // and runs whenever ANY identity-bearing input is present (customer /
+  // hlContactId), not just serviceType. An update carrying none of the three
+  // (a bare re-price) still skips it entirely — nothing it guards can change
+  // on such a call.
+  type StoredIdentityRow = {
+    service_type: string | null;
+    customer_name: string | null;
+    customer_email: string | null;
+    customer_phone: string | null;
+    customer_address: string | null;
+    highlevel_contact_id: string | null;
+    customer_id: string | null;
+  };
+  let stored: StoredIdentityRow | null = null;
   let clearGhlLink = false;
-  if (serviceType) {
+  if (serviceType || customer !== undefined || hlContactId !== undefined) {
     const { data: existing, error: readErr } = await supabase
       .from('quotes')
-      .select('service_type')
+      .select(
+        'service_type, customer_name, customer_email, customer_phone, customer_address, highlevel_contact_id, customer_id',
+      )
       .eq('id', id)
-      .maybeSingle<{ service_type: string | null }>();
+      .maybeSingle<StoredIdentityRow>();
     if (readErr) {
       console.warn('updateQuote: service_type pre-read failed (GHL link kept):', readErr.message);
     } else if (existing) {
-      const storedType = asServiceType(existing.service_type) ?? DEFAULT_SERVICE_TYPE;
-      clearGhlLink = storedType !== serviceType;
+      stored = existing;
+      if (serviceType) {
+        const storedType = asServiceType(existing.service_type) ?? DEFAULT_SERVICE_TYPE;
+        clearGhlLink = storedType !== serviceType;
+      }
     }
   }
 
@@ -429,6 +467,80 @@ export async function updateQuote(
     return null;
   }
 
+  // #214 (a): verify-or-reattach the customers link whenever this update
+  // changed the quote's IDENTITY — the S34 wrap review's worst case was this
+  // exact function: ONE call can rewrite customer name/email/phone AND flip
+  // a tag, then propagate that tag onto the customer row the quote resolved
+  // to BEFORE the edit (quotes.customer_id is a cache of a past
+  // findOrCreateCustomer decision, not a live fact). Re-running
+  // attachQuoteToCustomer (idempotent; #213-gated) re-resolves the LIVE
+  // identity and re-links the quote row, so the propagation below targets
+  // the customer the quote identifies NOW.
+  //
+  // Triggers: an identity column actually changed in this write, the
+  // session's hl link differs from the stored one, or the quote was never
+  // linked at all (same heal chance the send route's lazy attach takes —
+  // cheap here, since an identity-less quote short-circuits inside
+  // findOrCreateCustomer before any query). Skipped for test quotes
+  // (attachQuoteToCustomer must never run with test data) and when the
+  // pre-read failed (can't compare — fall back to the cached link, the
+  // pre-#214 behavior). Best-effort: never fails the save.
+  const effectiveHl =
+    hlContactId === undefined
+      ? (stored?.highlevel_contact_id ?? null)
+      : (hlContactId?.trim() || null);
+  let reattached: { customerId: string } | null | undefined;
+  if (!data.is_test && stored) {
+    const written = customer
+      ? {
+          customer_name: blankToNull(customer.name) ?? 'Anonymous',
+          customer_address: blankToNull(customer.address) ?? '(no address)',
+          customer_phone: blankToNull(customer.phone),
+          customer_email: blankToNull(customer.email),
+        }
+      : null;
+    const identityChanged =
+      written !== null &&
+      (written.customer_name !== stored.customer_name ||
+        written.customer_email !== stored.customer_email ||
+        written.customer_phone !== stored.customer_phone ||
+        written.customer_address !== stored.customer_address);
+    const hlChanged =
+      hlContactId !== undefined && effectiveHl !== (stored.highlevel_contact_id?.trim() || null);
+    if (identityChanged || hlChanged || stored.customer_id == null) {
+      try {
+        reattached = await attachQuoteToCustomer(
+          // Stored halves go through the sentinel translation
+          // (quoteRowToIdentity); a customer object provided on THIS call
+          // supplies the raw form values instead (norm() inside
+          // findOrCreateCustomer trims/nulls blanks, so no sentinel ever
+          // enters the identity from either side).
+          {
+            ...quoteRowToIdentity({
+              id,
+              highlevel_contact_id: effectiveHl,
+              customer_name: stored.customer_name,
+              customer_email: stored.customer_email,
+              customer_phone: stored.customer_phone,
+              customer_address: stored.customer_address,
+            }),
+            ...(customer
+              ? {
+                  customer_name: customer.name ?? null,
+                  customer_email: customer.email ?? null,
+                  customer_phone: customer.phone ?? null,
+                  customer_address: customer.address ?? null,
+                }
+              : {}),
+          },
+        );
+      } catch (err) {
+        console.warn('updateQuote: identity re-attach failed (non-fatal):', err);
+        reattached = null;
+      }
+    }
+  }
+
   // NCE + YLL Neighbor tag propagation (#198): mirrors the dedicated nce/
   // legacy-rebook toggle routes' "tagging an already-sent quote propagates
   // immediately" behavior — the SAME rule applies no matter which UI set the
@@ -438,9 +550,18 @@ export async function updateQuote(
   // real send/mark-sent can never even reach 'sent' as a test row without
   // ALSO being caught by their own is_test guard, but this keeps the
   // invariant self-contained here too). Best-effort: never fails the save.
-  if (!data.is_test && (legacyRebook === true || isNce === true) && data.quote_sent_at && data.customer_id) {
+  //
+  // #214: the target id prefers the re-attach's FRESH resolution above.
+  // When a re-attach was attempted and failed (returned null), propagation
+  // is SKIPPED rather than falling back to the cached id — the cached row
+  // is exactly the possibly-wrong target the re-attach existed to verify,
+  // and a deferred propagation self-heals at the next become-sent event
+  // (send/mark-sent re-fire it). When no re-attach ran (identity untouched
+  // this call), the cached id is as trustworthy as it was before the call.
+  const propagationCustomerId = reattached === undefined ? data.customer_id : (reattached?.customerId ?? null);
+  if (!data.is_test && (legacyRebook === true || isNce === true) && data.quote_sent_at && propagationCustomerId) {
     try {
-      await propagateQuoteTagsToCustomer(data.customer_id, { isNce, isYllNeighbor: legacyRebook });
+      await propagateQuoteTagsToCustomer(propagationCustomerId, { isNce, isYllNeighbor: legacyRebook });
     } catch (err) {
       console.warn('updateQuote: tag propagation failed (non-fatal):', err);
     }

@@ -54,7 +54,7 @@ import {
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { deriveStatus, canRevive } from '@/lib/quoteStatus';
-import { attachQuoteToCustomer, propagateQuoteTagsToCustomer } from '@/lib/customers';
+import { attachQuoteToCustomer, propagateQuoteTagsToCustomer, quoteRowToIdentity } from '@/lib/customers';
 
 export const runtime = 'nodejs';
 
@@ -609,26 +609,34 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (isGhlRetry || isDeliveryRetry) return;
     if (quote.is_test || (!quote.legacy_rebook && !quote.is_nce)) return;
     try {
-      // The common case (post-#192 identity linking runs at quote-save time)
-      // already has customer_id set. The one real gap: a self-serve-estimate
-      // quote starts address-only (no name/email/phone), so
-      // attachQuoteToCustomer's insert-time call resolves no identity and
-      // links nothing — re-attempt it here with whatever identity has landed
-      // on the row by send time, using the SAME find-or-create
-      // attachQuoteToCustomer the initial save uses (idempotent: re-running
-      // it on an already-linked quote just re-resolves the same customer).
+      // #214 (verify-or-reattach): ALWAYS re-resolve through
+      // attachQuoteToCustomer before propagating — quotes.customer_id is a
+      // cache of a past findOrCreateCustomer decision, and an identity edit
+      // since then can leave it pointing at the WRONG customer (the S34
+      // wrap's 3-HIGH seam). Re-running is idempotent (an unchanged identity
+      // re-resolves to the same row), heals the self-serve gap the old
+      // lazy-attach existed for (an address-only quote whose name/email/
+      // phone landed after save), fires the #700 hl heal, and re-links the
+      // quote row when the resolution moved. The cached id is only the
+      // FALLBACK — used when re-resolution can't produce an answer (identity
+      // -less quote, transient DB error), where propagating to the last
+      // known link beats silently dropping the tag. quoteRowToIdentity
+      // translates the row's 'Anonymous'/'(no address)' display sentinels
+      // back to null so they can never become identity evidence.
       const linkedCustomerId =
-        quote.customer_id ??
         (
-          await attachQuoteToCustomer({
-            id,
-            highlevel_contact_id: quote.highlevel_contact_id,
-            customer_name: quote.customer_name,
-            customer_email: quote.customer_email,
-            customer_phone: quote.customer_phone,
-            customer_address: quote.customer_address,
-          })
+          await attachQuoteToCustomer(
+            quoteRowToIdentity({
+              id,
+              highlevel_contact_id: quote.highlevel_contact_id,
+              customer_name: quote.customer_name,
+              customer_email: quote.customer_email,
+              customer_phone: quote.customer_phone,
+              customer_address: quote.customer_address,
+            }),
+          )
         )?.customerId ??
+        quote.customer_id ??
         null;
       if (linkedCustomerId) {
         await propagateQuoteTagsToCustomer(linkedCustomerId, {

@@ -37,7 +37,10 @@ const { attachQuoteToCustomerMock, propagateQuoteTagsToCustomerMock } = vi.hoist
   attachQuoteToCustomerMock: vi.fn(async () => null as null | { customerId: string; propertyId: string }),
   propagateQuoteTagsToCustomerMock: vi.fn(async () => {}),
 }));
-vi.mock('./customers', () => ({
+// #214: importOriginal keeps quoteRowToIdentity (a pure sentinel-translating
+// helper updateQuote now calls) REAL — only the DB-touching fns are mocked.
+vi.mock('./customers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./customers')>()),
   attachQuoteToCustomer: attachQuoteToCustomerMock,
   propagateQuoteTagsToCustomer: propagateQuoteTagsToCustomerMock,
 }));
@@ -528,6 +531,203 @@ describe('updateQuote — NCE + YLL Neighbor tags (#198)', () => {
     serviceRef.current = fake.client;
 
     const res = await updateQuote('q1', INPUTS, RESULT, undefined, undefined, undefined, undefined, true);
+    expect(res).toEqual({ id: 'q1' });
+  });
+});
+
+// ── #214: updateQuote verify-or-reattach — the identity-caller seam. The S34
+// wrap review's worst case was THIS function: one call can rewrite customer
+// name/email/phone AND flip a tag, then propagate onto the customer row the
+// quote resolved to BEFORE the edit. updateQuote now re-runs
+// attachQuoteToCustomer whenever the written identity or the session hl link
+// actually changed (or the quote was never linked), and the tag propagation
+// targets the re-resolution's FRESH id — or is SKIPPED when a triggered
+// re-attach fails, never falling back to the possibly-stale cached id. ──────
+
+// Fake tuned to BOTH updateQuote chains:
+//   pre-read: from('quotes').select(identity cols).eq().maybeSingle() → stored
+//   write:    from('quotes').update(payload).eq().select(...).single() → returnRow
+function makeIdentityFake(
+  stored: Record<string, unknown> | null,
+  returnRow: Record<string, unknown> = {},
+) {
+  const updates: Record<string, unknown>[] = [];
+  const builder: Record<string, unknown> = {};
+  Object.assign(builder, {
+    select: () => builder,
+    eq: () => builder,
+    update: (payload: Record<string, unknown>) => {
+      updates.push(payload);
+      return builder;
+    },
+    maybeSingle: async () => ({ data: stored, error: null }),
+    single: async () => ({
+      data: { id: 'q1', quote_sent_at: null, customer_id: null, is_test: false, ...returnRow },
+      error: null,
+    }),
+  });
+  return { client: { from: () => builder }, updates };
+}
+
+// A stored row whose identity exactly matches what writing CUSTOMER below
+// produces, hl-linked and customer-linked — the "nothing changed" baseline.
+const STORED = {
+  service_type: 'holiday',
+  customer_name: 'Jane',
+  customer_email: 'jane@x.com',
+  customer_phone: null,
+  customer_address: '1 A St',
+  highlevel_contact_id: 'hl-1',
+  customer_id: 'cust-1',
+};
+const CUSTOMER = { name: 'Jane', email: 'jane@x.com', address: '1 A St' };
+
+describe('updateQuote — #214 identity verify-or-reattach', () => {
+  it('re-attaches when a customer identity field changes, and propagation targets the FRESH id', async () => {
+    attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'cust-fresh', propertyId: 'p1' });
+    const fake = makeIdentityFake(STORED, {
+      quote_sent_at: '2026-08-01T00:00:00Z',
+      customer_id: 'cust-1', // the CACHED (pre-edit) link
+    });
+    serviceRef.current = fake.client;
+
+    await updateQuote(
+      'q1', INPUTS, RESULT,
+      { ...CUSTOMER, name: 'Jane Newname' }, // name edit
+      'holiday', undefined, undefined, true,
+    );
+
+    expect(attachQuoteToCustomerMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'q1',
+        customer_name: 'Jane Newname',
+        highlevel_contact_id: 'hl-1', // hl param absent → stored fallback
+      }),
+    );
+    expect(propagateQuoteTagsToCustomerMock).toHaveBeenCalledWith('cust-fresh', {
+      isNce: true,
+      isYllNeighbor: undefined,
+    });
+  });
+
+  it('does NOT re-attach when identity + hl are unchanged and the quote is linked — propagation uses the cached id', async () => {
+    const fake = makeIdentityFake(STORED, {
+      quote_sent_at: '2026-08-01T00:00:00Z',
+      customer_id: 'cust-1',
+    });
+    serviceRef.current = fake.client;
+
+    await updateQuote('q1', INPUTS, RESULT, CUSTOMER, 'holiday', undefined, undefined, true);
+
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+    expect(propagateQuoteTagsToCustomerMock).toHaveBeenCalledWith('cust-1', {
+      isNce: true,
+      isYllNeighbor: undefined,
+    });
+  });
+
+  it('re-attaches when the session hl link DIFFERS from the stored one (a re-pick)', async () => {
+    attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'cust-fresh', propertyId: 'p1' });
+    const fake = makeIdentityFake(STORED);
+    serviceRef.current = fake.client;
+
+    // updateQuote(id, inputs, result, customer, serviceType, referredBy, legacyRebook, isNce, hlContactId)
+    await updateQuote('q1', INPUTS, RESULT, CUSTOMER, 'holiday', undefined, undefined, undefined, 'hl-NEW');
+
+    expect(attachQuoteToCustomerMock).toHaveBeenCalledWith(
+      expect.objectContaining({ highlevel_contact_id: 'hl-NEW' }),
+    );
+  });
+
+  it('an EXPLICIT null hl (session cleared the contact) is a change vs a stored id — re-attaches hl-less', async () => {
+    attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'cust-fresh', propertyId: 'p1' });
+    const fake = makeIdentityFake(STORED);
+    serviceRef.current = fake.client;
+
+    await updateQuote('q1', INPUTS, RESULT, CUSTOMER, 'holiday', undefined, undefined, undefined, null);
+
+    expect(attachQuoteToCustomerMock).toHaveBeenCalledWith(
+      expect.objectContaining({ highlevel_contact_id: null }),
+    );
+  });
+
+  it('SKIPS propagation (never the cached id) when a change-triggered re-attach resolves to null', async () => {
+    attachQuoteToCustomerMock.mockResolvedValueOnce(null);
+    const fake = makeIdentityFake(STORED, {
+      quote_sent_at: '2026-08-01T00:00:00Z',
+      customer_id: 'cust-1',
+    });
+    serviceRef.current = fake.client;
+
+    await updateQuote(
+      'q1', INPUTS, RESULT,
+      { ...CUSTOMER, name: 'Jane Newname' },
+      'holiday', undefined, undefined, true,
+    );
+
+    expect(attachQuoteToCustomerMock).toHaveBeenCalled();
+    expect(propagateQuoteTagsToCustomerMock).not.toHaveBeenCalled();
+  });
+
+  it('re-attaches a NEVER-LINKED quote even with unchanged identity (heal chance), and propagates to the resolution', async () => {
+    attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'cust-new', propertyId: 'p1' });
+    const fake = makeIdentityFake(
+      { ...STORED, customer_id: null },
+      { quote_sent_at: '2026-08-01T00:00:00Z', customer_id: null },
+    );
+    serviceRef.current = fake.client;
+
+    await updateQuote('q1', INPUTS, RESULT, CUSTOMER, 'holiday', undefined, undefined, true);
+
+    expect(attachQuoteToCustomerMock).toHaveBeenCalled();
+    expect(propagateQuoteTagsToCustomerMock).toHaveBeenCalledWith('cust-new', {
+      isNce: true,
+      isYllNeighbor: undefined,
+    });
+  });
+
+  it('never re-attaches a TEST quote (attachQuoteToCustomer must not run with test data)', async () => {
+    const fake = makeIdentityFake(
+      { ...STORED, customer_id: null },
+      { is_test: true },
+    );
+    serviceRef.current = fake.client;
+
+    await updateQuote('q1', INPUTS, RESULT, { ...CUSTOMER, name: 'Edited' }, 'holiday');
+
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+  });
+
+  it("translates the stored 'Anonymous'/'(no address)' display sentinels to null in the re-attach identity", async () => {
+    attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'c1', propertyId: 'p1' });
+    const fake = makeIdentityFake({
+      ...STORED,
+      customer_name: 'Anonymous',
+      customer_address: '(no address)',
+      customer_email: null,
+      customer_phone: '6315550100',
+    });
+    serviceRef.current = fake.client;
+
+    // No customer object on this call → the stored halves feed the identity.
+    await updateQuote('q1', INPUTS, RESULT, undefined, 'holiday', undefined, undefined, undefined, 'hl-NEW');
+
+    expect(attachQuoteToCustomerMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customer_name: null,
+        customer_address: null,
+        customer_phone: '6315550100',
+        highlevel_contact_id: 'hl-NEW',
+      }),
+    );
+  });
+
+  it('still returns the updated id when the re-attach throws (best-effort)', async () => {
+    attachQuoteToCustomerMock.mockRejectedValueOnce(new Error('customers table missing'));
+    const fake = makeIdentityFake(STORED, { customer_id: 'cust-1' });
+    serviceRef.current = fake.client;
+
+    const res = await updateQuote('q1', INPUTS, RESULT, { ...CUSTOMER, name: 'Edited' }, 'holiday');
     expect(res).toEqual({ id: 'q1' });
   });
 });

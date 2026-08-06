@@ -401,7 +401,16 @@ export default function QuoteBuilder({
   const savedJobId = initialQuote?.jobId ?? null;
   const [form, setForm] = useState<QuoteFormData>(() =>
     initialQuote
-      ? inputsToFormData(initialQuote.customer, initialQuote.inputs, initialQuote.serviceType)
+      ? {
+          ...inputsToFormData(initialQuote.customer, initialQuote.inputs, initialQuote.serviceType),
+          // #214 (b): seed the form's hl link from the SAVED row so every
+          // save body carries the live session truth (inputsToFormData
+          // itself stays prefill-agnostic and returns null here). Pick /
+          // Clear below keep this field current; /api/quote uses it as
+          // identity input on updates (string = linked · null = no contact
+          // — never falls back to a stored id the session already dropped).
+          highlevelContactId: initialQuote.highlevelContactId ?? null,
+        }
       : applyPrefill(initialFormData, prefill),
   );
   // In edit mode the saved result hydrates too, so the operator sees the
@@ -2495,6 +2504,14 @@ export default function QuoteBuilder({
         email: c.email || f.customer.email,
         address: hlAddress || f.customer.address,
       },
+      // #214 (c): the pick REPLACES the form's hl link — before this, a
+      // lead-prefill's ghlContactId silently survived a re-pick, so the next
+      // Calculate saved/resolved identity under the STALE contact id
+      // (findOrCreateCustomer's hl-agree would then adopt the WRONG
+      // customer and newest-win overwrite its stored fields with this
+      // person's). The save body now always carries the contact actually
+      // picked.
+      highlevelContactId: c.id,
     }));
     // Reset attach status — the previous attach (if any) was against a
     // different contact and doesn't apply anymore. Bump the staleness token so
@@ -2547,6 +2564,13 @@ export default function QuoteBuilder({
   const clearHighLevelContact = () => {
     attachSeqRef.current++;
     setHighLevelContact(null);
+    // #214 (c): a real undo clears the FORM's hl link too — leaving a
+    // prefill/reopen-seeded id here would put the dropped contact right back
+    // into the next save body (the same stale-id class the pick-time
+    // replacement above closes). null is meaningful on the wire: it tells
+    // /api/quote "this session has NO contact" so the update-path identity
+    // never falls back to the stored id being detached below.
+    setForm(f => ({ ...f, highlevelContactId: null }));
     setAttachStatus('idle');
     setAttachError(null);
     setAttachResurrected(false);
@@ -2936,12 +2960,15 @@ export default function QuoteBuilder({
           // reopening a quote that never had one (adversarial-review fix;
           // both paths are idempotent, so a resave never duplicates it).
           referredByCustomerId: referredBy?.id ?? undefined,
-          // #leads "Create quote" link: seeded only by applyPrefill on a
-          // blank-slate builder. Sent on every save, but the server only ever
-          // honors it on the NEW-quote insert (saveQuote) — an update never
-          // touches highlevel_contact_id, so this can't clobber a contact the
-          // operator later picks/clears via the HL autocomplete.
-          highlevelContactId: form.highlevelContactId ?? undefined,
+          // #214: the session's LIVE hl link, sent explicitly on every save
+          // (string = linked via prefill/pick/reopen-seed · null = no
+          // contact this session). Insert: lands in the row (saveQuote).
+          // Update: identity-resolution input only — the server never
+          // writes the highlevel_contact_id column from this (the attach
+          // route stays that column's post-insert writer), so it can't
+          // clobber the stored link; explicit null stops the server falling
+          // back to a stored id the session already cleared.
+          highlevelContactId: form.highlevelContactId,
           // NCE + YLL Neighbor tags (#198): 'insert' (no existingQuoteId yet
           // — this save creates the row) sends the displayed value outright,
           // so an inherited-but-unclicked tag lands on the brand-new quote;

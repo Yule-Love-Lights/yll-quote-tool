@@ -41,6 +41,7 @@ import {
 import { resolvePipelineStages } from '@/lib/integrations/ghlPipelineMap';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
+import { attachQuoteToCustomer, quoteRowToIdentity } from '@/lib/customers';
 
 export const runtime = 'nodejs';
 
@@ -109,9 +110,22 @@ export async function POST(req: NextRequest) {
   // (kept as a defensive guard with the same code/status as before).
   const { data: quoteRow, error: quoteErr } = await sb
     .from('quotes')
-    .select('id, service_type, legacy_rebook')
+    // #214: is_test + the identity columns ride along for the post-link
+    // customers re-resolution below (no second read).
+    .select(
+      'id, service_type, legacy_rebook, is_test, customer_name, customer_email, customer_phone, customer_address',
+    )
     .eq('id', body.quoteId)
-    .maybeSingle<{ id: string; service_type: string | null; legacy_rebook: boolean }>();
+    .maybeSingle<{
+      id: string;
+      service_type: string | null;
+      legacy_rebook: boolean;
+      is_test: boolean;
+      customer_name: string | null;
+      customer_email: string | null;
+      customer_phone: string | null;
+      customer_address: string | null;
+    }>();
   if (quoteErr) {
     console.warn(
       '[api/integrations/highlevel/attach] service_type read failed — defaulting to the holiday pipeline:',
@@ -169,6 +183,39 @@ export async function POST(req: NextRequest) {
         '[api/integrations/highlevel/attach] DB link failed — orphaned GHL card:',
         { quoteId: body.quoteId, opportunityId: opportunity.id, error: updateErr.message },
       );
+    }
+
+    // #214 (d): this route is where a quote GAINS its hl contact id after
+    // insert — and, pre-#214, nothing downstream ever re-ran the customers
+    // resolution with it. A quote linked to an hl-less customers row stayed
+    // hl-less forever (the #700 heal lives INSIDE attachQuoteToCustomer, so
+    // it never fired), and the #213 hl-agree/veto rules never saw the pick.
+    // Re-resolve now, with the quote's stored identity + the JUST-picked
+    // contact id: an hl-less linked row gets the heal stamp; an identity
+    // that #213-classifies onto a different row RELINKS the quote (the pick
+    // is the operator saying "this person" — the customers link should
+    // follow it). Gated !is_test (attachQuoteToCustomer must never run with
+    // test data) and skipped when the pre-link read failed (quoteRow null —
+    // no identity to resolve with; the next save/send re-attach covers it).
+    // Best-effort: never changes this route's response.
+    if (!updateErr && quoteRow && !quoteRow.is_test) {
+      try {
+        await attachQuoteToCustomer(
+          quoteRowToIdentity({
+            id: body.quoteId,
+            highlevel_contact_id: body.contactId,
+            customer_name: quoteRow.customer_name,
+            customer_email: quoteRow.customer_email,
+            customer_phone: quoteRow.customer_phone,
+            customer_address: quoteRow.customer_address,
+          }),
+        );
+      } catch (err) {
+        console.warn(
+          '[api/integrations/highlevel/attach] customers re-resolution failed (non-fatal):',
+          err,
+        );
+      }
     }
 
     return NextResponse.json({

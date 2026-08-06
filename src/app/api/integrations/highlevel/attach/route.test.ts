@@ -9,16 +9,26 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 
 // ── Mocks (hoisted so the vi.mock factories can see them) ───────────────────
-const { sbRef, hl } = vi.hoisted(() => ({
+const { sbRef, hl, attachQuoteToCustomerMock } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
   hl: {
     findOrCreate: vi.fn(async () => ({ opportunity: { id: 'opp-1' }, created: false })),
   },
+  // #214 (d): the route re-resolves the customers link after a successful
+  // link write — mocked so these unit tests never touch a customers table.
+  attachQuoteToCustomerMock: vi.fn(async () => null as null | { customerId: string; propertyId: string }),
 }));
 
 vi.mock('@/lib/supabase', () => ({
   isSupabaseServiceConfigured: () => true,
   getSupabaseServiceClient: () => sbRef.current,
+}));
+
+// #214: importOriginal keeps quoteRowToIdentity (pure sentinel translation)
+// REAL — only the DB-touching fn is mocked.
+vi.mock('@/lib/customers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/customers')>()),
+  attachQuoteToCustomer: attachQuoteToCustomerMock,
 }));
 
 vi.mock('@/lib/integrations/highlevel', () => ({
@@ -177,6 +187,78 @@ describe('HighLevel attach — per-service-type pipeline (#GHL pipeline sync)', 
     expect(hl.findOrCreate).toHaveBeenCalledWith(
       expect.objectContaining({ pipelineId: 'pipe-1', fallbackStageId: 'stage-created' }),
     );
+  });
+});
+
+// #214 (d): the attach route is where a quote GAINS its hl id after insert —
+// it must re-run the customers resolution with the just-picked contact so an
+// hl-less linked customers row heals (the #700 heal lives inside
+// attachQuoteToCustomer) and the #213 rules finally see the pick.
+describe('HighLevel attach — post-link customers re-resolution (#214)', () => {
+  it('re-resolves with the quote identity + the JUST-picked contact id after a clean link write', async () => {
+    sbRef.current = makeSb(
+      { ...HOLIDAY_QUOTE, is_test: false, customer_name: 'Jane', customer_email: 'jane@x.com' },
+      null,
+    );
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+    expect(res.status).toBe(200);
+    expect(attachQuoteToCustomerMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: QUOTE_ID,
+        highlevel_contact_id: 'contact-1',
+        customer_name: 'Jane',
+        customer_email: 'jane@x.com',
+      }),
+    );
+  });
+
+  it("translates the stored 'Anonymous'/'(no address)' sentinels to null in the identity", async () => {
+    sbRef.current = makeSb(
+      { ...HOLIDAY_QUOTE, is_test: false, customer_name: 'Anonymous', customer_address: '(no address)' },
+      null,
+    );
+
+    await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+    expect(attachQuoteToCustomerMock).toHaveBeenCalledWith(
+      expect.objectContaining({ customer_name: null, customer_address: null }),
+    );
+  });
+
+  it('never re-resolves for a TEST quote (attachQuoteToCustomer must not run with test data)', async () => {
+    sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: true, customer_name: 'Jane' }, null);
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+    expect(res.status).toBe(200);
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+  });
+
+  it('skips re-resolution when the link write-back failed (linked:false path)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false }, { message: 'db down' });
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+    expect(res.status).toBe(200);
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  it('skips re-resolution when the quote row could not be read (fail-open path — no identity to resolve with)', async () => {
+    sbRef.current = makeSb(null, null);
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+    expect(res.status).toBe(200);
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+  });
+
+  it('the response is unchanged when re-resolution throws (best-effort)', async () => {
+    attachQuoteToCustomerMock.mockRejectedValueOnce(new Error('customers table missing'));
+    sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false }, null);
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.linked).toBe(true);
   });
 });
 
