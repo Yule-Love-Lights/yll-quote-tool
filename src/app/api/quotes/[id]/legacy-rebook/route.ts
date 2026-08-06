@@ -69,7 +69,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // /nce route's comment for the full rationale. #214: the identity
     // columns ride along too, feeding the verify-or-reattach below.
     .select(
-      'id, legacy_rebook, quote_sent_at, customer_id, is_test, highlevel_contact_id, customer_name, customer_email, customer_phone, customer_address',
+      'id, legacy_rebook, quote_sent_at, customer_id, is_test, deposit_paid_at, highlevel_contact_id, customer_name, customer_email, customer_phone, customer_address',
     )
     .maybeSingle<{
       id: string;
@@ -77,6 +77,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       quote_sent_at: string | null;
       customer_id: string | null;
       is_test: boolean;
+      deposit_paid_at: string | null;
       highlevel_contact_id: string | null;
       customer_name: string | null;
       customer_email: string | null;
@@ -100,10 +101,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // a customer row later quotes kept current).
   if (!data.is_test && legacyRebook && data.quote_sent_at) {
     try {
+      // Booked-freeze parity (round-3 delta-verify) — see the sibling /nce
+      // route's comment.
       const linkedCustomerId =
         data.customer_id ??
-        (await attachQuoteToCustomer(quoteRowToIdentity(data)))?.customerId ??
-        null;
+        (data.deposit_paid_at
+          ? null
+          : ((await attachQuoteToCustomer(quoteRowToIdentity(data)))?.customerId ?? null));
       if (linkedCustomerId) {
         await propagateQuoteTagsToCustomer(linkedCustomerId, { isYllNeighbor: true });
       }

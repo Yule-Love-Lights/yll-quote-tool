@@ -277,6 +277,33 @@ describe('HighLevel attach — post-link customers re-resolution (#214)', () => 
     expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
   });
 
+  // Round-3 delta-verify HIGH (sibling-guard parity with updateQuote's
+  // booked-freeze): jobs/invoices/GHL tenure snapshot the customers link at
+  // booking and never resync — a post-booking contact re-pick must update
+  // the GHL card link only, never relink the customers row.
+  it('never re-resolves a BOOKED quote (deposit paid) — the GHL link still updates, the customers link is frozen', async () => {
+    sbRef.current = makeSb(
+      { ...HOLIDAY_QUOTE, is_test: false, deposit_paid_at: '2026-08-01T00:00:00Z', customer_id: 'cust-frozen' },
+      null,
+    );
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1', ...CONTACT_FIELDS }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.linked).toBe(true); // the route's own job still happened
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+  });
+
+  // Round-3 delta-verify MED: the non-hl-field gate runs POST-translation —
+  // a contact literally named 'Anonymous' (no email/phone) must not sneak
+  // an hl-only identity past the guard.
+  it("a contact named literally 'Anonymous' with no email/phone does NOT count as a non-hl field", async () => {
+    sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false }, null);
+
+    await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1', contactName: 'Anonymous' }));
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+  });
+
   it('skips re-resolution when the link write-back failed (linked:false path)', async () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false }, { message: 'db down' });

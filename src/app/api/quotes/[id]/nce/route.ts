@@ -69,7 +69,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // future writer breaks the /send + /mark-sent guards. #214: the identity
     // columns ride along too, feeding the verify-or-reattach below.
     .select(
-      'id, is_nce, quote_sent_at, customer_id, is_test, highlevel_contact_id, customer_name, customer_email, customer_phone, customer_address',
+      'id, is_nce, quote_sent_at, customer_id, is_test, deposit_paid_at, highlevel_contact_id, customer_name, customer_email, customer_phone, customer_address',
     )
     .maybeSingle<{
       id: string;
@@ -77,6 +77,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       quote_sent_at: string | null;
       customer_id: string | null;
       is_test: boolean;
+      deposit_paid_at: string | null;
       highlevel_contact_id: string | null;
       customer_name: string | null;
       customer_email: string | null;
@@ -102,14 +103,24 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // workflow), and an unconditional re-resolution would newest-win that old
   // quote's YEAR-OLD stored fields back onto a customer row later quotes
   // kept current. The cache is trustworthy here because updateQuote's own
-  // #214 re-attach now maintains it at every identity edit — the write
-  // source verifies, the read sites trust.
+  // #214 re-attach maintains it at every identity edit AND /send +
+  // /mark-sent force a fresh resolution at the quote_sent_at transition
+  // this propagation gates on — the write sources verify, the read sites
+  // trust. (Delta-verify note: the two identity writers that bypass those —
+  // rebook's insert and the self-serve enrich — either copy an
+  // already-resolved link or run pre-send, so the invariant holds.)
   if (!data.is_test && isNce && data.quote_sent_at) {
     try {
+      // Booked-freeze parity (round-3 delta-verify): the null-link heal
+      // never runs on a booked quote either — near-unreachable (send-time
+      // resolution gates quote_sent_at), kept for sibling parity with
+      // updateQuote + the attach route. Propagation to a non-null cached id
+      // is unaffected.
       const linkedCustomerId =
         data.customer_id ??
-        (await attachQuoteToCustomer(quoteRowToIdentity(data)))?.customerId ??
-        null;
+        (data.deposit_paid_at
+          ? null
+          : ((await attachQuoteToCustomer(quoteRowToIdentity(data)))?.customerId ?? null));
       if (linkedCustomerId) {
         await propagateQuoteTagsToCustomer(linkedCustomerId, { isNce: true });
       }

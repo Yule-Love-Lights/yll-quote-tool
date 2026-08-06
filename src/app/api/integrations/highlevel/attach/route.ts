@@ -121,11 +121,12 @@ export async function POST(req: NextRequest) {
   // (kept as a defensive guard with the same code/status as before).
   const { data: quoteRow, error: quoteErr } = await sb
     .from('quotes')
-    // #214: is_test (test-data guard) + customer_id (repoint visibility)
-    // ride along for the post-link customers re-resolution below (no second
-    // read). The re-resolution's IDENTITY comes from the request body's
-    // contact fields, never from this row — see the block below.
-    .select('id, service_type, legacy_rebook, is_test, customer_id')
+    // #214: is_test (test-data guard) + customer_id (repoint visibility) +
+    // deposit_paid_at (booked-freeze, round-3 delta-verify HIGH) ride along
+    // for the post-link customers re-resolution below (no second read). The
+    // re-resolution's IDENTITY comes from the request body's contact
+    // fields, never from this row — see the block below.
+    .select('id, service_type, legacy_rebook, is_test, customer_id, deposit_paid_at')
     .eq('id', body.quoteId)
     .maybeSingle<{
       id: string;
@@ -133,6 +134,7 @@ export async function POST(req: NextRequest) {
       legacy_rebook: boolean;
       is_test: boolean;
       customer_id: string | null;
+      deposit_paid_at: string | null;
     }>();
   if (quoteErr) {
     console.warn(
@@ -218,22 +220,34 @@ export async function POST(req: NextRequest) {
     // Also gated !is_test (attachQuoteToCustomer must never run with test
     // data) and skipped when the pre-link read failed (quoteRow null — no
     // is_test answer; fail safe). Best-effort: never changes the response.
-    const contactIdentity = {
+    // Round-3 delta-verify MED: the non-hl-field check runs on the
+    // TRANSLATED identity, not the raw body — a contact literally named
+    // 'Anonymous' (with no email/phone) would otherwise pass the raw check
+    // and then reach attachQuoteToCustomer as exactly the hl-only identity
+    // this guard exists to block (quoteRowToIdentity nulls the sentinel).
+    const contactIdentity = quoteRowToIdentity({
       id: body.quoteId,
       highlevel_contact_id: body.contactId,
       customer_name: typeof body.contactName === 'string' ? body.contactName.slice(0, 200) : null,
       customer_email: typeof body.contactEmail === 'string' ? body.contactEmail.slice(0, 200) : null,
       customer_phone: typeof body.contactPhone === 'string' ? body.contactPhone.slice(0, 50) : null,
       customer_address: typeof body.contactAddress === 'string' ? body.contactAddress.slice(0, 300) : null,
-    };
+    });
     const hasNonHlField = !!(
-      contactIdentity.customer_name?.trim() ||
-      contactIdentity.customer_email?.trim() ||
-      contactIdentity.customer_phone?.trim()
+      contactIdentity.customer_name ||
+      contactIdentity.customer_email ||
+      contactIdentity.customer_phone
     );
-    if (!updateErr && quoteRow && !quoteRow.is_test && hasNonHlField) {
+    // Round-3 delta-verify HIGH (sibling-guard parity — the exact class the
+    // AGENTS.md pitfall names): the booked-freeze updateQuote received in
+    // round 2 applies HERE too. jobs/invoices/GHL tenure snapshot the
+    // customers link at booking and never resync — a post-booking contact
+    // re-pick through the still-enabled builder autocomplete must not
+    // relink the quote. The GHL card link above still updates (that's this
+    // route's job); only the customers re-resolution freezes.
+    if (!updateErr && quoteRow && !quoteRow.is_test && !quoteRow.deposit_paid_at && hasNonHlField) {
       try {
-        const resolved = await attachQuoteToCustomer(quoteRowToIdentity(contactIdentity));
+        const resolved = await attachQuoteToCustomer(contactIdentity);
         // Repoint visibility (#214 review, WT-55 family): a resolution that
         // MOVED the quote off a previously-linked customer row is loud, not
         // silent — the old row keeps its history; staff reconcile manually.
