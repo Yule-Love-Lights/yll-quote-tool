@@ -165,6 +165,201 @@ export function normalizeAddress(v: string | null | undefined): string {
     .trim();
 }
 
+// #213 (S34 #198 review, customer lens): name normalization for the identity-
+// agreement compare below — trim, lowercase, collapse internal whitespace.
+// Deliberately a SEPARATE helper from customerMatchKey/secondaryMatchKeys'
+// own name-key derivation (unchanged — the dashboard's customerKey and every
+// existing match_key also depend on those), so this stricter compare can't
+// shift any other dedup behavior.
+function normNameForCompare(v: string | null | undefined): string | null {
+  const t = norm(v);
+  if (!t) return null;
+  return t.toLowerCase().replace(/\s+/g, ' ');
+}
+
+// #213 (3-lens review, fix 2 — tech HIGH): does `identity` CONFLICT with
+// `row` on the HighLevel contact id — both non-null, and DIFFERENT? An HL id
+// is CRM-issued and unique, so two different ones can only ever mean two
+// different real contacts. This is a hard VETO in classifyCandidate's total
+// order below: it beats even a 2-field email+phone agreement (a shared
+// household email/phone alongside two genuinely different hl ids is still
+// two different people, and a merge here would permanently self-contradict
+// the row: match_key stays hl:<the OTHER id> while this write clobbers the
+// hl_contact_id COLUMN to ours).
+function hlConflicts(identity: CustomerIdentity, row: Pick<CustomerRow, 'hl_contact_id'>): boolean {
+  const a = norm(identity.hl_contact_id);
+  const b = norm(row.hl_contact_id);
+  return !!a && !!b && a !== b;
+}
+
+// #213: does `identity` agree with `row` on the HighLevel contact id — both
+// non-null and EQUAL? An HL id is CRM-issued and unique — unlike email/
+// phone/name, which are self-reported and, per #198's review, shareable
+// within a household — so agreement here is ALWAYS enough on its own to
+// adopt (design point 1). Complementary to hlConflicts above, not redundant
+// with it: both-null and one-null-one-set are neither agreement nor
+// conflict — classifyCandidate checks hlConflicts FIRST, so this only ever
+// runs once a conflict has already been ruled out.
+function hlAgrees(identity: CustomerIdentity, row: Pick<CustomerRow, 'hl_contact_id'>): boolean {
+  const a = norm(identity.hl_contact_id);
+  const b = norm(row.hl_contact_id);
+  return !!a && !!b && a === b;
+}
+
+// #213: which of {email, phone, name} agree vs. actively DISAGREE between
+// `identity` and an existing `row` — present AND compared after normalizing.
+// A field missing on EITHER side is neither an agreement nor a disagreement:
+// it's simply unknown (see classifyCandidate rule 4 — "absence isn't
+// evidence of a different person; disagreement is").
+function compareFields(
+  identity: CustomerIdentity,
+  row: Pick<CustomerRow, 'email' | 'phone' | 'name'>,
+): { agreeing: string[]; disagreeing: string[] } {
+  const agreeing: string[] = [];
+  const disagreeing: string[] = [];
+  const email = norm(identity.email)?.toLowerCase() ?? null;
+  const rowEmail = norm(row.email)?.toLowerCase() ?? null;
+  if (email && rowEmail) (email === rowEmail ? agreeing : disagreeing).push('email');
+  const phone = normalizePhone(identity.phone);
+  const rowPhone = normalizePhone(row.phone);
+  if (phone && rowPhone) (phone === rowPhone ? agreeing : disagreeing).push('phone');
+  const name = normNameForCompare(identity.name);
+  const rowName = normNameForCompare(row.name);
+  if (name && rowName) (name === rowName ? agreeing : disagreeing).push('name');
+  return { agreeing, disagreeing };
+}
+
+// #213 (round-2 adversarial delta-verify, fix 1 — HIGH, replaces the
+// original rule 4 predicate): which of {email, phone, name} are POPULATED
+// (non-null after normalizing) on a given identity/row — used to check
+// whether `identity` CONTRIBUTES a field the candidate `row` has no value
+// for at all (as opposed to merely disagreeing on a shared one).
+function populatedFieldSet(x: { email?: string | null; phone?: string | null; name?: string | null }): Set<string> {
+  const s = new Set<string>();
+  if (norm(x.email)) s.add('email');
+  if (normalizePhone(x.phone)) s.add('phone');
+  if (norm(x.name)) s.add('name');
+  return s;
+}
+
+function isSubsetOf(a: Set<string>, b: Set<string>): boolean {
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
+}
+
+// #213 (3-lens review, fix 3 — staff HIGH, design refinement over the
+// original #213 rule; rule 4's predicate corrected by a round-2 adversarial
+// delta-verify, HIGH): the FULL adopt/reject decision for whether `identity`
+// may adopt an existing `row`, in ONE fixed total order:
+//   1. hl-CONFLICT (hlConflicts) → hard VETO, never adopt. Beats every other
+//      signal, including a 2-field agreement (fix 2).
+//   2. hl-AGREE (hlAgrees) → adopt unconditionally (design point 1).
+//   3. >=2 of {email, phone, name} agree → adopt.
+//   4. >=1 field agrees AND ZERO fields populated on BOTH sides disagree AND
+//      `identity`'s populated field-set is a SUBSET of `row`'s populated
+//      field-set → adopt. Absence isn't evidence of a different person (a
+//      row that's never had a name can't "conflict" with one identity
+//      happens to provide) — but the SUBSET check matters: a RICH identity
+//      (e.g. email+phone+name) hitting a SPARSE row (email only) on just
+//      the one shared field would otherwise adopt and newest-win would
+//      stamp the identity's uncorroborated phone/name onto the row — the
+//      exact wrong-merge class this ticket exists to close, just reached
+//      asymmetrically (rich-into-sparse) instead of symmetrically
+//      (sparse-into-sparse). An identity that contributes NO field the row
+//      lacks can't cause that: either it's an identical-or-sparser repeat
+//      (subset holds, e.g. two quotes that only ever carry the same phone,
+//      or a lead's email-only identity meeting its own fuller past profile
+//      — both converge deterministically instead of splitting on race
+//      timing or bouncing a legitimate repeat), or it's actively
+//      contributing something new and unproven, which this rule now
+//      declines to trust.
+//   5. Otherwise → reject — the money case (e.g. same phone, DIFFERENT
+//      name, or a rich identity's uncorroborated extra field): a shared
+//      household field must never silently attach this quote's identity —
+//      and, via #199, its NCE money terms — to the wrong customer.
+function classifyCandidate(
+  identity: CustomerIdentity,
+  row: Pick<CustomerRow, 'hl_contact_id' | 'email' | 'phone' | 'name'>,
+): { adopt: boolean; vetoed: boolean; agreeing: string[]; disagreeing: string[] } {
+  if (hlConflicts(identity, row)) return { adopt: false, vetoed: true, agreeing: [], disagreeing: [] };
+  if (hlAgrees(identity, row)) return { adopt: true, vetoed: false, agreeing: [], disagreeing: [] };
+  const { agreeing, disagreeing } = compareFields(identity, row);
+  const adopt =
+    agreeing.length >= 2 ||
+    (agreeing.length >= 1 &&
+      disagreeing.length === 0 &&
+      isSubsetOf(populatedFieldSet(identity), populatedFieldSet(row)));
+  return { adopt, vetoed: false, agreeing, disagreeing };
+}
+
+// #213: a short, staff-readable summary of why a candidate was REJECTED —
+// feeds the candidate-merge warning (WT-55).
+function describeRejection(d: { vetoed: boolean; agreeing: string[]; disagreeing: string[] }): string {
+  if (d.vetoed) return 'hl_contact_id conflict';
+  const bits: string[] = [];
+  if (d.agreeing.length) bits.push(`${d.agreeing.join('+')} agreed`);
+  if (d.disagreeing.length) bits.push(`${d.disagreeing.join('+')} conflicted`);
+  return bits.length ? bits.join(', ') : 'no agreeing field';
+}
+
+// #213 (round-2 adversarial delta-verify, fix 4 — LOW): the SAME candidate
+// can legitimately get classified (and rejected) more than once across
+// phases — e.g. the exact-match phase and the secondary/OR search can both
+// surface the same row, and round-2 fix 2 above means a single search can
+// now surface it twice too. Dedup by id before the final candidate-merge
+// warning so staff see one line per row, not a repeated one; keep whichever
+// detail string is longest (the "richest") if they ever differ.
+function dedupRejected(rejected: Array<{ id: string; detail: string }>): Array<{ id: string; detail: string }> {
+  const byId = new Map<string, string>();
+  for (const r of rejected) {
+    const existing = byId.get(r.id);
+    if (!existing || r.detail.length > existing.length) byId.set(r.id, r.detail);
+  }
+  return Array.from(byId, ([id, detail]) => ({ id, detail }));
+}
+
+// #213 (3-lens review, fix 5 — tech MED): a deterministic, collision-
+// avoiding match_key for a row created because a candidate was found but
+// REJECTED — see findOrCreateCustomer, WT-55. Plain `customerMatchKey
+// (identity)` would collide with the rejected candidate's OWN match_key
+// whenever the rejection came from the exact-match phase — that row already
+// legitimately owns that key, so reusing it isn't a race, it's a certainty
+// (customers.match_key is UNIQUE).
+//
+// Encodes EVERY one of this identity's own populated fields — INCLUDING
+// hl_contact_id (never itself sufficient for the "authoritative" adopt
+// decision unless it AGREES with a candidate, but still needed here): without
+// it, two DIFFERENT hl-carrying identities that happen to share every other
+// field (email+phone+name — e.g. two GHL contacts both showing a business's
+// shared "info@" email/phone) would compute the SAME disambiguated key and
+// collide forever, since findOrCreateCustomer's retry-recovery loop would
+// keep hl-vetoing (fix 2) the same recovered row on every attempt. Folding
+// hl in gives them distinct keys instead, so each gets its own clean row.
+//
+// JSON-encoded, not a hand-joined string: a raw `|`-delimiter join would let
+// a crafted or simply unlucky name containing `|` smuggle a fake extra field
+// and collide two different identities' keys. JSON.stringify unambiguously
+// escapes every component, so key equality can only ever mean true field-by-
+// field equality.
+//
+// Deterministic per identity, so a genuine repeat of this exact (rejected)
+// identity reproduces the SAME string — the row created here is what a
+// repeat resolves back to via the standard insert/unique-violation-reselect
+// recovery, while two different people who merely share one field keep
+// landing on separate rows.
+function disambiguatedMatchKey(identity: CustomerIdentity): string {
+  const parts: Array<[string, string]> = [];
+  const hl = norm(identity.hl_contact_id);
+  if (hl) parts.push(['hl', hl]);
+  const email = norm(identity.email);
+  if (email) parts.push(['email', email.toLowerCase()]);
+  const phone = normalizePhone(identity.phone);
+  if (phone) parts.push(['phone', phone]);
+  const name = norm(identity.name);
+  if (name) parts.push(['name', name.toLowerCase()]);
+  return `dup:${JSON.stringify(parts)}`;
+}
+
 // ─── DB helpers ─────────────────────────────────────────────────────────────
 
 function svc() {
@@ -188,6 +383,16 @@ function svc() {
 // a previously email-only row didn't), upgrade match_key + backfill the newly
 // -known fields so a future lookup on EITHER identity resolves here. An
 // existing higher-or-equal-precedence key is never downgraded.
+//
+// #213 (S34 #198 review, customer lens; total order refined by a 3-lens
+// review pass — see classifyCandidate): a candidate that doesn't clear the
+// adopt bar is NEVER adopted — a shared household email/phone would
+// otherwise silently attach this quote's identity (and, via #199, its NCE
+// money terms) to the WRONG customer. It instead creates a NEW row (under a
+// disambiguatedMatchKey so it can't collide with the row it declined to
+// adopt) and logs a candidate-merge pair for staff to reconcile by hand —
+// see WT-55 (a future customer-merge UI; no such UI exists yet, so this is
+// currently a loud log line, not a queue).
 export async function findOrCreateCustomer(
   identity: CustomerIdentity,
 ): Promise<{ id: string } | null> {
@@ -196,34 +401,104 @@ export async function findOrCreateCustomer(
   const sb = svc();
   if (!sb) return null;
 
+  // #213 (fix 6): every candidate found-but-rejected across every phase
+  // (exact-match, secondary/OR search, and the create-path retry-recovery
+  // below) is accumulated here, not just the last one — the final
+  // candidate-merge warning names ALL of them.
+  const rejected: Array<{ id: string; detail: string }> = [];
+
+  // #213: adopt `row` — upgrade match_key to `key` only when it out-ranks
+  // what's stored (never downgrades an existing higher-or-equal-precedence
+  // key, the original W2-009 rule) and backfill any newly-known fields.
+  // Shared by the secondary/OR-search adopt below AND the fix-1 retry-
+  // recovery adopt further down: a recovered row's match_key already equals
+  // whatever key was searched for, so this is a no-op key-wise UNLESS that
+  // key was the `dup:` disambiguation key, in which case it correctly
+  // upgrades to a clean key now that the adopt is confirmed safe.
+  //
+  // #213 (round-2 adversarial delta-verify, fix 3 — MED): the key upgrade
+  // itself can hit UNIQUE — `key` (the plain hl/email/phone/name key) is
+  // sometimes already legitimately owned by an EARLIER-rejected candidate
+  // (that's exactly why THIS row is still on a disambiguated key). That's
+  // not a transient race: it's a permanent structural fact that will recur
+  // on every future adopt of this same row, for as long as the earlier
+  // candidate's row exists — so it must never be logged as an error. Retry
+  // the SAME write with only the key change dropped (row stays on its
+  // existing key; the contact-field backfill still applies), and log once
+  // at info, not error.
+  async function adopt(
+    row: Pick<CustomerRow, 'id' | 'match_key' | 'hl_contact_id' | 'name' | 'email' | 'phone'>,
+  ): Promise<{ id: string }> {
+    const rowKeyRank = keyPrecedenceRank(row.match_key);
+    const ourKeyRank = keyPrecedenceRank(key);
+    const nextMatchKey = ourKeyRank < rowKeyRank ? key : row.match_key;
+    const contactFields = {
+      hl_contact_id: norm(identity.hl_contact_id) ?? row.hl_contact_id,
+      name: norm(identity.name) ?? row.name,
+      email: norm(identity.email) ?? row.email,
+      phone: norm(identity.phone) ?? row.phone,
+    };
+    // sb is narrowed non-null above, but that narrowing doesn't cross into a
+    // nested function's body — `adopt` only ever runs synchronously within
+    // this same call, after the same guard, so the assertion is sound here.
+    const { error: updErr } = await sb!
+      .from('customers')
+      .update({ match_key: nextMatchKey, ...contactFields })
+      .eq('id', row.id);
+    if (updErr) {
+      if (updErr.code === '23505' && nextMatchKey !== row.match_key) {
+        const { error: retryErr } = await sb!.from('customers').update(contactFields).eq('id', row.id);
+        if (retryErr) {
+          console.error('findOrCreateCustomer merge-upgrade error (contact-field retry):', retryErr);
+        } else {
+          console.info(
+            `findOrCreateCustomer: customer ${row.id} stays on its existing key — ${key} is already owned by a previously-rejected candidate (expected).`,
+          );
+        }
+      } else {
+        console.error('findOrCreateCustomer merge-upgrade error:', updErr);
+      }
+    }
+    return { id: row.id };
+  }
+
   const existing = await sb
     .from('customers')
     .select('id, name, email, phone, hl_contact_id')
     .eq('match_key', key)
     .maybeSingle<Pick<CustomerRow, 'id' | 'name' | 'email' | 'phone' | 'hl_contact_id'>>();
   if (existing.data) {
-    // W2-026 (Jason 2026-07-06: NEWEST-WIN) — a repeat quote for an existing
-    // customer refreshes the stored contact fields to this newer quote's values
-    // (when present), so name/email/phone don't go stale. match_key is unchanged
-    // on this exact-match path, so only the display/contact columns move. Only
-    // write when something actually changed (no needless write per quote).
     const row = existing.data;
-    const next = {
-      name: norm(identity.name) ?? row.name,
-      email: norm(identity.email) ?? row.email,
-      phone: norm(identity.phone) ?? row.phone,
-      hl_contact_id: norm(identity.hl_contact_id) ?? row.hl_contact_id,
-    };
-    if (
-      next.name !== row.name ||
-      next.email !== row.email ||
-      next.phone !== row.phone ||
-      next.hl_contact_id !== row.hl_contact_id
-    ) {
-      const { error: updErr } = await sb.from('customers').update(next).eq('id', row.id);
-      if (updErr) console.error('findOrCreateCustomer newest-win update error:', updErr);
+    // #213: an exact match_key hit is only a safe signal ON ITS OWN when
+    // it's hl-based (classifyCandidate rule 2). When identity has no hl id,
+    // `key` is email/phone/name-derived and this equality is itself only ONE
+    // agreeing field — run it through the same total-order decision as every
+    // other candidate below.
+    const decision = classifyCandidate(identity, row);
+    if (decision.adopt) {
+      // W2-026 (Jason 2026-07-06: NEWEST-WIN) — a repeat quote for an existing
+      // customer refreshes the stored contact fields to this newer quote's values
+      // (when present), so name/email/phone don't go stale. match_key is unchanged
+      // on this exact-match path, so only the display/contact columns move. Only
+      // write when something actually changed (no needless write per quote).
+      const next = {
+        name: norm(identity.name) ?? row.name,
+        email: norm(identity.email) ?? row.email,
+        phone: norm(identity.phone) ?? row.phone,
+        hl_contact_id: norm(identity.hl_contact_id) ?? row.hl_contact_id,
+      };
+      if (
+        next.name !== row.name ||
+        next.email !== row.email ||
+        next.phone !== row.phone ||
+        next.hl_contact_id !== row.hl_contact_id
+      ) {
+        const { error: updErr } = await sb.from('customers').update(next).eq('id', row.id);
+        if (updErr) console.error('findOrCreateCustomer newest-win update error:', updErr);
+      }
+      return { id: row.id as string };
     }
-    return { id: row.id as string };
+    rejected.push({ id: row.id, detail: describeRejection(decision) });
   }
 
   // W2-009 secondary-identity search, BOTH directions:
@@ -243,6 +518,14 @@ export async function findOrCreateCustomer(
   // the client's parameterized .in() for those instead (a separate query, run
   // FIRST — a name-only identity's ONLY merge route, since there's no safe
   // raw hl/email/phone column value to fall back on for it).
+  //
+  // #213: this phase ALWAYS runs now, even after a phase-1 rejection above —
+  // not just when phase 1 found nothing. A phase-1 exact-key candidate that
+  // fails corroboration on ITS key field doesn't mean no adopt-worthy
+  // candidate exists under a DIFFERENT key (e.g. identity is now email+
+  // phone+name; an email-only row shares only email, but a SEPARATE phone-
+  // keyed row for the same real person shares phone+name) — worth the extra
+  // query to not miss a legitimate merge.
   const secondaryKeys = secondaryMatchKeys(identity).filter((k) => k !== key);
   const orConds: string[] = [];
   const hl = norm(identity.hl_contact_id);
@@ -252,55 +535,93 @@ export async function findOrCreateCustomer(
   const phoneRaw = norm(identity.phone);
   if (phoneRaw && safeOrValue(phoneRaw)) orConds.push(`phone.eq.${phoneRaw}`);
 
-  let merge: CustomerRow | undefined;
+  // #213 (round-2 adversarial delta-verify, fix 2 — HIGH): a REJECTED .in()
+  // hit must not suppress the OR-fallback below — a different, adoptable
+  // candidate can still exist there (e.g. an EARLIER no-hl disambiguated row
+  // for the SAME real person, findable only by a raw email/phone column,
+  // while .in() instead surfaced an unrelated row that merely shares this
+  // identity's derived secondary key). Both searches now iterate every row
+  // they return (not just the first) and classify each in turn, so a
+  // rejected candidate sorting first in a result set can't hide an
+  // adoptable one sorting after it — adopt the first candidate, from either
+  // search, that actually passes; push every reject along the way.
   if (secondaryKeys.length) {
-    const { data: byKey } = await sb
-      .from('customers')
-      .select('*')
-      .in('match_key', secondaryKeys);
-    merge = (byKey as CustomerRow[] | null)?.[0];
+    const { data: byKey } = await sb.from('customers').select('*').in('match_key', secondaryKeys);
+    for (const row of (byKey as CustomerRow[] | null) ?? []) {
+      const decision = classifyCandidate(identity, row);
+      if (decision.adopt) return await adopt(row);
+      rejected.push({ id: row.id, detail: describeRejection(decision) });
+    }
   }
-  if (!merge && orConds.length) {
+  if (orConds.length) {
     const { data: candidates } = await sb.from('customers').select('*').or(orConds.join(','));
-    merge = (candidates as CustomerRow[] | null)?.[0];
+    for (const row of (candidates as CustomerRow[] | null) ?? []) {
+      const decision = classifyCandidate(identity, row);
+      if (decision.adopt) return await adopt(row);
+      rejected.push({ id: row.id, detail: describeRejection(decision) });
+    }
   }
-  if (merge) {
-    // Never DOWNGRADE an existing higher-(or-equal-)precedence match_key —
-    // only adopt `key` on the merged row when it out-ranks what's stored.
-    const mergeKeyRank = keyPrecedenceRank(merge.match_key);
-    const ourKeyRank = keyPrecedenceRank(key);
-    const nextMatchKey = ourKeyRank < mergeKeyRank ? key : merge.match_key;
-    const { error: updErr } = await sb
+
+  // #213 (3-lens review, fix 1 — tech HIGH): create, with the SAME
+  // classification gate applied to whatever the unique-violation retry
+  // recovers below — NOT a blind trust. The old code trusted a recovered row
+  // unconditionally: when `candidateKey` starts as the PLAIN key (no
+  // candidate seen above — e.g. two brand-new quotes for two DIFFERENT
+  // people who happen to share one field, racing each other, exactly the
+  // backfill's own documented concurrent Promise.all pattern), two different
+  // people could silently merge with ZERO warning via this exact race — the
+  // failure this whole ticket exists to close.
+  //
+  // Bounded loop, not open-ended: a plain-key collision is a genuine race
+  // against (at most, per attempt) one other writer, resolved by classifying
+  // the recovered row and switching to the disambiguated key on reject. A
+  // disambiguated-key collision is PROVABLY always a re-classify-as-adopt —
+  // that key fully encodes hl+email+phone+name (disambiguatedMatchKey), so
+  // any row sharing it shares EVERY field this identity does, which always
+  // clears classifyCandidate's rule 3 or 4. The headroom past 2 attempts is
+  // defensive, not relied on.
+  let candidateKey = rejected.length ? disambiguatedMatchKey(identity) : key;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const ins = await sb
       .from('customers')
-      .update({
-        match_key: nextMatchKey,
-        hl_contact_id: norm(identity.hl_contact_id) ?? merge.hl_contact_id,
-        name: norm(identity.name) ?? merge.name,
-        email: norm(identity.email) ?? merge.email,
-        phone: norm(identity.phone) ?? merge.phone,
+      .insert({
+        match_key: candidateKey,
+        hl_contact_id: norm(identity.hl_contact_id),
+        name: norm(identity.name),
+        email: norm(identity.email),
+        phone: norm(identity.phone),
       })
-      .eq('id', merge.id);
-    if (updErr) console.error('findOrCreateCustomer merge-upgrade error:', updErr);
-    return { id: merge.id };
+      .select('id')
+      .single();
+    if (!ins.error && ins.data) {
+      const newId = ins.data.id as string;
+      if (rejected.length) {
+        const pairs = dedupRejected(rejected)
+          .map((r) => `${r.id} (${r.detail})`)
+          .join('; ');
+        console.warn(
+          `findOrCreateCustomer: candidate merge NOT applied for new customer ${newId} — rejected: ${pairs}. Review for a manual merge (WT-55).`,
+        );
+      }
+      return { id: newId };
+    }
+
+    // Lost the insert race → recover, then CLASSIFY (fix 1) before trusting it.
+    const retry = await sb
+      .from('customers')
+      .select('id, match_key, name, email, phone, hl_contact_id')
+      .eq('match_key', candidateKey)
+      .maybeSingle<Pick<CustomerRow, 'id' | 'match_key' | 'name' | 'email' | 'phone' | 'hl_contact_id'>>();
+    if (!retry.data) {
+      console.error('findOrCreateCustomer error:', ins.error);
+      return null;
+    }
+    const decision = classifyCandidate(identity, retry.data);
+    if (decision.adopt) return await adopt(retry.data);
+    rejected.push({ id: retry.data.id, detail: describeRejection(decision) });
+    candidateKey = disambiguatedMatchKey(identity);
   }
-
-  const ins = await sb
-    .from('customers')
-    .insert({
-      match_key: key,
-      hl_contact_id: norm(identity.hl_contact_id),
-      name: norm(identity.name),
-      email: norm(identity.email),
-      phone: norm(identity.phone),
-    })
-    .select('id')
-    .single();
-  if (!ins.error && ins.data) return { id: ins.data.id as string };
-
-  // Lost the insert race (another writer created the same match_key) → re-select.
-  const retry = await sb.from('customers').select('id').eq('match_key', key).maybeSingle();
-  if (retry.data) return { id: retry.data.id as string };
-  console.error('findOrCreateCustomer error:', ins.error);
+  console.error(`findOrCreateCustomer: exhausted create/recover attempts for key ${key}`);
   return null;
 }
 
@@ -471,10 +792,19 @@ export async function backfillCustomersFromQuotes(
   // property), so nothing forces strictly-serial processing. Process in
   // bounded-concurrency chunks instead of one-at-a-time — the find-or-create
   // UNIQUE-index race-recovery (customers.ts findOrCreateCustomer/
-  // findOrCreateProperty) already makes concurrent same-key creates safe, so
-  // overlapping quotes for the same customer within a chunk still dedup
-  // correctly. Keeps a large first-run backfill well under a function timeout
-  // without the unbounded fan-out of a single Promise.all(rows.map(...)).
+  // findOrCreateProperty) already makes concurrent same-key creates safe.
+  // Keeps a large first-run backfill well under a function timeout without
+  // the unbounded fan-out of a single Promise.all(rows.map(...)).
+  //
+  // #213 fix 3 (precise guarantee, post 3-lens review): overlapping quotes
+  // for the SAME customer within a chunk dedup onto ONE row UNCONDITIONALLY
+  // when their identities are IDENTICAL (nothing populated on both sides can
+  // disagree — classifyCandidate's zero-disagreement rule always adopts).
+  // When two overlapping quotes' identities instead CONFLICT on a field both
+  // carry (e.g. same phone, different name — the household-share risk #213
+  // exists to catch), findOrCreateCustomer correctly REJECTS the merge and
+  // creates a separate row instead, exactly as it would outside a backfill —
+  // this loop adds concurrency, not a looser identity rule.
   const CHUNK_SIZE = 8;
   let linked = 0;
   let skipped = 0;

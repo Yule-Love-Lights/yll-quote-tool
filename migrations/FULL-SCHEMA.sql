@@ -707,6 +707,10 @@ create trigger inventory_on_hand_updated_at_trigger
 --     (hl:<id> | email:<lower> | phone:<digits> | name:<lower>) — UNIQUE so
 --     find-or-create is race-safe. Reached only via the service-role client;
 --     RLS enabled with no policies (#90).
+--     #213: a candidate that doesn't clear the identity-agreement adoption
+--     bar (src/lib/customers.ts classifyCandidate) creates a NEW row keyed
+--     `dup:[["label","value"],...]` (JSON-encoded field pairs) instead of
+--     one of the four shapes above — still UNIQUE, still race-safe.
 -- ---------------------------------------------------------------------
 create table if not exists public.customers (
   id            uuid primary key default gen_random_uuid(),

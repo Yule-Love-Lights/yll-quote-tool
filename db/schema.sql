@@ -257,11 +257,15 @@ create index if not exists invoices_status_idx on invoices (status);
 -- (src/lib/customers.ts backfillCustomersFromQuotes), not by SQL.
 -- ⚠️ Fresh-DB bootstrap only; the .sql migration is what is applied to
 -- provisioned DBs. match_key is the computed dedup key (unique).
+-- #213: an identity that doesn't clear the adoption bar (src/lib/
+-- customers.ts classifyCandidate) gets a NEW row keyed
+-- dup:[["label","value"],...] (JSON-encoded) instead of one of the four
+-- shapes below — still unique, still race-safe.
 -- ─────────────────────────────────────────────────────────────
 
 create table if not exists customers (
   id            uuid primary key default gen_random_uuid(),
-  match_key     text unique,         -- hl:<id> | email:<lower> | phone:<digits> | name:<lower>
+  match_key     text unique,         -- hl:<id> | email:<lower> | phone:<digits> | name:<lower> | dup:[...]
   hl_contact_id text,
   name          text,
   email         text,

@@ -786,6 +786,40 @@ describe('saveQuote — attach-on-save (rebook Part A)', () => {
     );
   });
 
+  // #213 fix 4 (3-lens review, customer HIGH-leverage): saveQuote stamps
+  // highlevel_contact_id on the quote insert itself (see the
+  // 'saveQuote highlevelContactId' describe block above) but used to never
+  // thread it into the identity passed to attachQuoteToCustomer — so
+  // findOrCreateCustomer's hl-agree/hl-conflict rules never fired on an
+  // ordinary save, even when staff picked the exact right HL contact in the
+  // builder. These prove the wiring, not the merge mechanism itself (that's
+  // customers.test.ts's job, since this file mocks attachQuoteToCustomer
+  // entirely).
+  it('#213 fix 4: threads highlevelContactId through to attachQuoteToCustomer as identity.highlevel_contact_id', async () => {
+    attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'c1', propertyId: 'p1' });
+    const service = makeFake();
+    serviceRef.current = service.client;
+
+    // saveQuote(customer, inputs, result, serviceType, isTest, createdBy, referredByCustomerId, highlevelContactId)
+    await saveQuote({ name: 'Bob', email: 'bob@x.com' }, INPUTS, RESULT, undefined, false, null, null, 'ghl-contact-123');
+
+    expect(attachQuoteToCustomerMock).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'new-id', highlevel_contact_id: 'ghl-contact-123' }),
+    );
+  });
+
+  it('#213 fix 4: passes highlevel_contact_id: null (not simply omitted) when the quote has no hl id', async () => {
+    attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'c1', propertyId: 'p1' });
+    const service = makeFake();
+    serviceRef.current = service.client;
+
+    await saveQuote({ name: 'Jane' }, INPUTS, RESULT);
+
+    expect(attachQuoteToCustomerMock).toHaveBeenCalledWith(
+      expect.objectContaining({ highlevel_contact_id: null }),
+    );
+  });
+
   // REGRESSION TRIPWIRE (review fix batch, #200 admin-lens LOW): a test quote
   // NEVER getting a customer_id is a structural invariant TWO other features
   // build their is_test guard on top of, instead of re-deriving is_test logic
