@@ -130,6 +130,126 @@ describe('getCachedAddressImagery (#110 W5-013)', () => {
   });
 });
 
+// #204: satellite-only imagery for "Pull satellite" + the analyze-address
+// no-Street-View fallback. Unlike getCachedAddressImagery, this must NEVER
+// throw on a missing Street View pano — that's the entire point of it.
+describe('getAddressSatelliteImagery (#204)', () => {
+  beforeEach(() => {
+    process.env.GOOGLE_MAPS_API_KEY = 'test-key';
+  });
+
+  it('returns the satellite image + real scale even when NO Street View pano resolves', async () => {
+    global.fetch = (async (url: string) => {
+      if (url.includes('/geocode/')) {
+        return new Response(JSON.stringify({
+          status: 'OK',
+          results: [{ geometry: { location: { lat: 40.1, lng: -74.1 } }, formatted_address: '123 Main St, Town, ST' }],
+        }), { status: 200 });
+      }
+      if (url.includes('/streetview/metadata')) {
+        return new Response(JSON.stringify({ status: 'ZERO_RESULTS' }), { status: 200 });
+      }
+      // staticmap tile — binary image
+      return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+    }) as typeof fetch;
+
+    const { getAddressSatelliteImagery } = await import('./googleMaps');
+    const img = await getAddressSatelliteImagery('123 Main St');
+    expect(img.satellite.mediaType).toBe('image/png');
+    expect(img.satelliteFeetPerPixel).toBeGreaterThan(0);
+    expect(img.geo.formattedAddress).toBe('123 Main St, Town, ST');
+    expect(img.streetViewAvailable).toBe(false);
+  });
+
+  it('reports streetViewAvailable:true when a pano DOES resolve', async () => {
+    global.fetch = (async (url: string) => {
+      if (url.includes('/geocode/')) {
+        return new Response(JSON.stringify({
+          status: 'OK',
+          results: [{ geometry: { location: { lat: 40.1, lng: -74.1 } }, formatted_address: '5 Elm St, Town, ST' }],
+        }), { status: 200 });
+      }
+      if (url.includes('/streetview/metadata')) {
+        return new Response(JSON.stringify({ status: 'OK', pano_id: 'p1', location: { lat: 40.1, lng: -74.1 } }), { status: 200 });
+      }
+      return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+    }) as typeof fetch;
+
+    const { getAddressSatelliteImagery } = await import('./googleMaps');
+    const img = await getAddressSatelliteImagery('5 Elm St');
+    expect(img.streetViewAvailable).toBe(true);
+  });
+
+  it('still returns the satellite when the pano metadata call itself errors (best-effort, never blocks)', async () => {
+    global.fetch = (async (url: string) => {
+      if (url.includes('/geocode/')) {
+        return new Response(JSON.stringify({
+          status: 'OK',
+          results: [{ geometry: { location: { lat: 40.1, lng: -74.1 } }, formatted_address: '7 Oak Ave, Town, ST' }],
+        }), { status: 200 });
+      }
+      if (url.includes('/streetview/metadata')) {
+        // resolveStreetViewPano turns a non-ok HTTP response into {status:'HTTP_ERROR'}, not a throw.
+        return new Response('', { status: 500 });
+      }
+      return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+    }) as typeof fetch;
+
+    const { getAddressSatelliteImagery } = await import('./googleMaps');
+    const img = await getAddressSatelliteImagery('7 Oak Ave');
+    expect(img.satellite.mediaType).toBe('image/png');
+    expect(img.streetViewAvailable).toBe(false);
+  });
+
+  it('throws when geocoding fails (bad/unresolvable address) — a genuine failure, unlike the no-pano case', async () => {
+    global.fetch = (() =>
+      Promise.resolve(new Response(JSON.stringify({ status: 'ZERO_RESULTS', results: [] }), { status: 200 }))) as typeof fetch;
+
+    const { getAddressSatelliteImagery } = await import('./googleMaps');
+    await expect(getAddressSatelliteImagery('nowhere')).rejects.toThrow(/ZERO_RESULTS/);
+  });
+
+  it('computes the SAME scale as getCachedAddressImagery for the same lat — never forked (#204)', async () => {
+    global.fetch = (async (url: string) => {
+      if (url.includes('/geocode/')) {
+        return new Response(JSON.stringify({
+          status: 'OK',
+          results: [{ geometry: { location: { lat: 40.7128, lng: -74.006 } }, formatted_address: 'NYC' }],
+        }), { status: 200 });
+      }
+      if (url.includes('/streetview/metadata')) {
+        return new Response(JSON.stringify({ status: 'OK', pano_id: 'p1', location: { lat: 40.7128, lng: -74.006 } }), { status: 200 });
+      }
+      return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+    }) as typeof fetch;
+
+    const { getAddressSatelliteImagery, getCachedAddressImagery, __clearImageryCache } = await import('./googleMaps');
+    __clearImageryCache();
+    const satOnly = await getAddressSatelliteImagery('NYC address');
+    const full = await getCachedAddressImagery('NYC address');
+    expect(satOnly.satelliteFeetPerPixel).toBe(full.satelliteFeetPerPixel);
+  });
+});
+
+describe('computeSatelliteFeetPerPixel (#204 — extracted, shared scale math)', () => {
+  it('matches the known Google Static Maps zoom=20 ground-resolution formula at the equator', async () => {
+    const { computeSatelliteFeetPerPixel } = await import('./googleMaps');
+    // At lat=0, cos(lat)=1: metersPerPixel = 156543.03392 / 2^20, × 3.28084 for feet.
+    const expected = (156543.03392 / Math.pow(2, 20)) * 3.28084;
+    expect(computeSatelliteFeetPerPixel(0, 20)).toBeCloseTo(expected, 10);
+  });
+
+  it('defaults to zoom 20 when no zoom is passed', async () => {
+    const { computeSatelliteFeetPerPixel } = await import('./googleMaps');
+    expect(computeSatelliteFeetPerPixel(40.7128)).toBe(computeSatelliteFeetPerPixel(40.7128, 20));
+  });
+
+  it('shrinks with latitude (Web Mercator: cos(lat) drops moving away from the equator)', async () => {
+    const { computeSatelliteFeetPerPixel } = await import('./googleMaps');
+    expect(computeSatelliteFeetPerPixel(60, 20)).toBeLessThan(computeSatelliteFeetPerPixel(0, 20));
+  });
+});
+
 // W5-023: geocodeAddress's empty-result / non-OK-status guard decides the
 // seed's map location — no test previously covered it (only fetchWithTimeout
 // was exercised).

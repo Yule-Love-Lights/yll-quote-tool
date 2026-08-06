@@ -686,6 +686,18 @@ export default function QuoteBuilder({
     satelliteFeetPerPixel?: number | null;
   };
   const pendingContextRef = useRef<AnalysisContext | null>(null);
+  // #204 review round: which address the currently-parked pendingContextRef
+  // satellite was pulled for — client-only bookkeeping, NEVER sent to the
+  // server (pushAnalysisContext's payload shape is unchanged). Stamped by
+  // applyPulledSatellite whenever it parks (rather than directly pushes) a
+  // satellite context; read by handlePhotoSelect to tell "same house, just a
+  // different photo source" (preserve) apart from "the operator moved on to a
+  // different address without re-pulling" (drop — the original wipe
+  // behavior). Compared against form.customer.address (the live-typed field,
+  // which changes on every keystroke) rather than googleAddress (which only
+  // changes on a fresh successful geocode and would miss an address EDIT that
+  // hasn't been re-pulled yet).
+  const pendingSatelliteAddressRef = useRef<string | null>(null);
   // designId mirrored in a ref so async callbacks (e.g. the FileReader in the
   // manual satellite upload) read the CURRENT id at fire time, not the stale
   // one captured in their closure when a design was created mid-flight.
@@ -1508,8 +1520,38 @@ export default function QuoteBuilder({
     setGeoLng(null);
     setSvLat(null);
     setSvLng(null);
-    // A parked analysis context belongs to the PREVIOUS house — drop it.
-    pendingContextRef.current = null;
+    // A parked ANALYSIS belongs to the PREVIOUS photo (about to be replaced) —
+    // drop it. A parked SATELLITE-only context (#204: "Pull satellite", the
+    // no-Street-View fallback, or a manual satellite upload) belongs to the
+    // ADDRESS/house, not the street photo — the #97 promise above ("keeps the
+    // good satellite intact") covers its PERSISTED provenance too, so it
+    // survives a manual street-photo swap for the SAME house instead of being
+    // silently dropped before a design ever exists to receive it (the eager
+    // design effect only creates/updates a design once photoBase64 is set,
+    // which a satellite-only pull never does — so without this, the pulled
+    // satellite's image/scale would never reach the design row at all, even
+    // though the LIVE satelliteFeetPerPixel state stays correct).
+    //
+    // #204 review round (gap 2, HIGH portal): "same house" must be CHECKED,
+    // not assumed — the operator may have edited the address field after the
+    // pull without re-pulling (typing alone never re-geocodes), and house A's
+    // satellite must never persist onto house B's design. Compared against
+    // form.customer.address (changes on every keystroke) rather than
+    // googleAddress: googleAddress only changes on a fresh successful
+    // geocode, so it would still read "house A" here and miss an
+    // edited-but-not-yet-re-pulled address.
+    const currentAddress = form.customer.address.trim();
+    const parked = pendingContextRef.current;
+    if (parked?.satelliteBase64 != null && pendingSatelliteAddressRef.current === currentAddress) {
+      pendingContextRef.current = {
+        satelliteBase64: parked.satelliteBase64,
+        satelliteMediaType: parked.satelliteMediaType,
+        satelliteFeetPerPixel: parked.satelliteFeetPerPixel,
+      };
+    } else {
+      pendingContextRef.current = null;
+      pendingSatelliteAddressRef.current = null;
+    }
   };
 
   // Manual satellite upload (#9): a second photo slot so manually-photographed
@@ -1883,6 +1925,128 @@ export default function QuoteBuilder({
     setFewShotDegraded(data.fewShotBreakdown?.degraded ?? false);
   };
 
+  // #204: shared by "Pull satellite" (handlePullSatellite) and the
+  // analyze-address no-Street-View fallback below (both branches) — both
+  // receive the exact same satellite-only response shape (satelliteBase64 /
+  // satelliteMediaType / satelliteFeetPerPixel / formattedAddress), so both
+  // apply it through this ONE function instead of two hand-copied blocks that
+  // could drift out of parity. `pulledForAddress` is the EXACT address string
+  // used for the fetch (captured before the await, not re-read from form
+  // state afterward) — stamped onto a parked context for handlePhotoSelect's
+  // same-house check (#204 review round, gap 2). Returns false (no state
+  // touched at all) when the operator cancels the replace-confirm below.
+  const applyPulledSatellite = (
+    data: {
+      satelliteBase64?: string;
+      satelliteMediaType?: string;
+      satelliteFeetPerPixel?: number | null;
+      formattedAddress?: string;
+    },
+    pulledForAddress: string,
+  ): boolean => {
+    // #204 review round (gap 1, HIGH money): a RE-pull with lines already
+    // drawn would otherwise apply the NEW scale against the OLD (possibly
+    // different-house) geometry — the footage-derive effects would compute
+    // wrong billed footage from stale lines × a new feet-per-pixel, silently.
+    // Mirrors handleSatelliteSelect's exact pattern (~line 1519): confirm
+    // before replacing when anything's drawn, clear EVERY satellite line
+    // array on apply; silent when nothing's drawn yet (the common case — the
+    // first pull on a fresh quote).
+    const hasAnyLines =
+      satelliteSantasLines.length > 0 ||
+      satelliteGingerbreadLines.length > 0 ||
+      satelliteC9Lines.length > 0 ||
+      satelliteStakeLines.length > 0 ||
+      satelliteBistroLines.length > 0 ||
+      PERMANENT_SIDES.some((s) => permanentSatLines[s].length > 0);
+    if (hasAnyLines) {
+      const ok = window.confirm(
+        'Replaces the satellite image — traced roofline + footage will reset. Continue?',
+      );
+      if (!ok) return false;
+      setSatelliteSantasLines([]);
+      setSatelliteGingerbreadLines([]);
+      setSatelliteC9Lines([]);
+      setSatelliteStakeLines([]);
+      setSatelliteBistroLines([]);
+      hadBistroLinesRef.current = false;
+      setPermanentSatLines({ front: [], left: [], right: [], back: [] });
+    }
+    setGoogleAddress(data.formattedAddress ?? null);
+    setSatellitePreview(`data:${data.satelliteMediaType};base64,${data.satelliteBase64}`);
+    setSatelliteFeetPerPixel(data.satelliteFeetPerPixel ?? null);
+    // No street photo in this response — the Design tab has nothing to show
+    // yet, so surface the tab that DOES: the satellite the operator can draw on.
+    setViewMode('satellite');
+    setFewShotCount(0);
+    // #443-style: persist the satellite IMAGE onto the design so the portal's
+    // "Where the lights go" view has it, mirroring the imagery-only branch
+    // below and applyAnalysisResult's ctx push.
+    if (data.satelliteBase64) {
+      const satCtx = {
+        satelliteBase64: data.satelliteBase64,
+        satelliteMediaType: data.satelliteMediaType ?? 'image/png',
+        satelliteFeetPerPixel: data.satelliteFeetPerPixel ?? null,
+      };
+      // #204 review round (gap 3, MED): a design may already exist (a
+      // reopened quote, or the operator already uploaded/analyzed a photo
+      // earlier this session) — parking would sit unconsumed forever, since
+      // the eager design effect only flushes pendingContextRef on a
+      // photoBase64 CHANGE, which a satellite-only re-pull never causes.
+      // Mirrors handleSatelliteSelect's designIdRef.current branch: push
+      // directly when a design exists, park (+ stamp the address) otherwise.
+      const id = designIdRef.current;
+      if (id) {
+        void pushAnalysisContext(id, satCtx);
+      } else {
+        pendingContextRef.current = { ...(pendingContextRef.current ?? {}), ...satCtx };
+        pendingSatelliteAddressRef.current = pulledForAddress;
+      }
+    }
+    return true;
+  };
+
+  // #204: geocode the typed address and load JUST the satellite image + its
+  // real scale — no AI, instant. Built for houses Street View can't serve
+  // (analyze-address's full lookup 404s the WHOLE request on those); the
+  // operator draws channels by hand and footage derives from the drawn
+  // geometry as usual (same as any other satellite trace). Does NOT touch the
+  // street photo slot — upload one separately, then Analyze; the #190 guard
+  // (hasSatellitePayload) keeps this pulled scale intact through that later
+  // analyze (see analysisSatellitePayload.ts / the #204 ordering test).
+  const handlePullSatellite = async () => {
+    const addr = form.customer.address.trim();
+    if (!addr) {
+      setAnalysisError('Enter the property address above first.');
+      return;
+    }
+    setLookingUp(true);
+    setAnalysisError(null);
+    setAnalysisWarning(null);
+    setAnalysisNotes(null);
+    try {
+      const res = await fetch('/api/pull-satellite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address: addr }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Satellite pull failed');
+      // Cancel = no-op (the operator declined the replace-confirm inside
+      // applyPulledSatellite because lines were already drawn) — no message.
+      if (!applyPulledSatellite(data, addr)) return;
+      setAnalysisNotes(
+        data.streetViewAvailable
+          ? 'Satellite loaded. Draw the roofline/channels on the Satellite tab — footage follows the lines. Street View is also available for this address if you want the full "Analyze from Address" auto-measure instead.'
+          : 'Satellite loaded — no Street View available at this address. Upload a front photo below, then Analyze; the pulled satellite + scale stay intact.',
+      );
+    } catch (err) {
+      setAnalysisError(err instanceof Error ? err.message : 'Satellite pull failed');
+    } finally {
+      setLookingUp(false);
+    }
+  };
+
   const handleLookupAddress = async () => {
     const addr = form.customer.address.trim();
     if (!addr) {
@@ -1901,6 +2065,19 @@ export default function QuoteBuilder({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Address lookup failed');
+      // #204: partial success — Street View isn't available at this address,
+      // but the satellite leg doesn't need it. No AI ran server-side (nothing
+      // to show it without a street photo) — populate the satellite tab and
+      // tell the operator honestly, same shape as handlePullSatellite above.
+      if (data.streetViewUnavailable) {
+        // Cancel = no-op, same as handlePullSatellite (the operator declined
+        // the replace-confirm because lines were already drawn).
+        if (!applyPulledSatellite(data, addr)) return;
+        setAnalysisWarning(
+          'No Street View available at this address — upload a front photo below; the satellite image is loaded for measurements.',
+        );
+        return;
+      }
       // Show street view as the editable photo
       const streetUrl = `data:${data.photoMediaType};base64,${data.photoBase64}`;
       setPhotoPreview(streetUrl);
@@ -3406,14 +3583,30 @@ export default function QuoteBuilder({
             <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
               <div className="flex items-center justify-between gap-3 mb-1">
                 <span className="text-sm font-medium text-blue-900">Look up on Google Maps</span>
-                <button
-                  type="button"
-                  onClick={handleLookupAddress}
-                  disabled={lookingUp || !form.customer.address.trim()}
-                  className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium text-sm px-4 py-2 rounded-md whitespace-nowrap"
-                >
-                  {lookingUp ? 'Looking up…' : '🏠 Analyze from Address'}
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handlePullSatellite}
+                    disabled={lookingUp || !form.customer.address.trim()}
+                    title={
+                      form.customer.address.trim()
+                        ? 'No Street View at this address? Skip straight to the satellite image + real scale — instant, no AI. Draw channels by hand.'
+                        : 'Enter the property address above first.'
+                    }
+                    className="bg-white hover:bg-blue-50 disabled:bg-blue-50 disabled:text-blue-300 text-blue-700 border border-blue-300 font-medium text-sm px-3 py-2 rounded-md whitespace-nowrap"
+                  >
+                    {lookingUp ? 'Working…' : '🛰️ Pull satellite'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleLookupAddress}
+                    disabled={lookingUp || !form.customer.address.trim()}
+                    title={form.customer.address.trim() ? undefined : 'Enter the property address above first.'}
+                    className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium text-sm px-4 py-2 rounded-md whitespace-nowrap"
+                  >
+                    {lookingUp ? 'Looking up…' : '🏠 Analyze from Address'}
+                  </button>
+                </div>
               </div>
               <p className="text-xs text-blue-700">
                 {form.serviceType === 'permanent'
@@ -3421,6 +3614,8 @@ export default function QuoteBuilder({
                   : form.serviceType === 'permanent_bistro'
                     ? 'Uses the Property Address above. Fetches Street View + satellite (with scale) so you draw the bistro runs on the Satellite tab.'
                     : 'Uses the Property Address above. Fetches Street View + satellite view, sends both to Claude.'}
+                {' '}
+                {'No Street View at the address? Use "Pull satellite" instead — just the satellite image + scale, instant, then upload your own front photo below.'}
               </p>
               {/* #95: quick link to open the house on Google Maps (standard pin, not
                   Street View) — precise coords once analyzed, else the matched/typed
