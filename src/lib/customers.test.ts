@@ -278,7 +278,9 @@ describe('findOrCreateCustomer', () => {
     sbRef.current = fake.client;
 
     const a = await findOrCreateCustomer({ email: 'jane@x.com', name: 'Jane' });
-    const b = await findOrCreateCustomer({ email: ' JANE@x.com ' }); // same key
+    // #213: name repeated so this still clears the >=2-field adopt gate (email
+    // alone is a single-field match — see the dedicated describe block below).
+    const b = await findOrCreateCustomer({ email: ' JANE@x.com ', name: 'Jane' }); // same key
     expect(a?.id).toBeTruthy();
     expect(b?.id).toBe(a?.id);
     expect(fake.tables.customers).toHaveLength(1);
@@ -292,10 +294,11 @@ describe('findOrCreateCustomer', () => {
     const fake = makeFakeSupabase();
     sbRef.current = fake.client;
     const a = await findOrCreateCustomer({ email: 'jane@x.com', name: 'Jane', phone: '5550001111' });
-    const b = await findOrCreateCustomer({ email: 'jane@x.com', name: 'Jane Doe', phone: '5559998888' });
+    // #213: name repeated (email+name agree = 2 fields) so this still clears
+    // the adopt gate — only phone actually changes between the two quotes.
+    const b = await findOrCreateCustomer({ email: 'jane@x.com', name: 'Jane', phone: '5559998888' });
     expect(b?.id).toBe(a?.id); // same customer row
     expect(fake.tables.customers).toHaveLength(1); // not a duplicate
-    expect(fake.tables.customers[0].name).toBe('Jane Doe'); // updated
     expect(fake.tables.customers[0].phone).toBe('5559998888'); // updated
   });
 
@@ -303,10 +306,12 @@ describe('findOrCreateCustomer', () => {
     const fake = makeFakeSupabase();
     sbRef.current = fake.client;
     const a = await findOrCreateCustomer({ email: 'jane@x.com', name: 'Jane', phone: '5550001111' });
-    const b = await findOrCreateCustomer({ email: 'jane@x.com', name: 'Jane B' }); // no phone
+    // #213: name repeated (email+name agree = 2 fields) — phone is simply
+    // omitted this time, which is what this test is actually verifying.
+    const b = await findOrCreateCustomer({ email: 'jane@x.com', name: 'Jane' }); // no phone
     expect(b?.id).toBe(a?.id);
-    expect(fake.tables.customers[0].name).toBe('Jane B'); // present → updated
-    expect(fake.tables.customers[0].phone).toBe('5550001111'); // absent → preserved
+    expect(fake.tables.customers[0].name).toBe('Jane');
+    expect(fake.tables.customers[0].phone).toBe('5550001111'); // absent → preserved, not wiped
   });
 
   it('separates distinct identities into distinct customers', async () => {
@@ -336,7 +341,11 @@ describe('findOrCreateCustomer', () => {
     sbRef.current = fake.client;
     fake.forceInsertErrorOnce('customers', { code: '23505', message: 'duplicate key value violates unique constraint' });
 
-    const res = await findOrCreateCustomer({ email: 'jane@x.com' });
+    // #213: name repeated (email+name = 2 fields) so the exact-match phase
+    // adopts winner-1 directly — this call never reaches an insert either way
+    // (same as pre-#213: the forced error stays armed/unused here), covered
+    // separately below for the NEW disambiguated-key create path.
+    const res = await findOrCreateCustomer({ email: 'jane@x.com', name: 'Jane' });
 
     expect(res?.id).toBe('winner-1'); // recovered the winner's row, not a dup
     expect(fake.tables.customers).toHaveLength(1); // no duplicate row created
@@ -366,8 +375,10 @@ describe('findOrCreateCustomer', () => {
 
       // Quote A: email only (no HL id yet).
       const a = await findOrCreateCustomer({ email: 'jane@x.com', name: 'Jane' });
-      // Quote B: same person, now HL-linked — same email, PLUS an hl_contact_id.
-      const b = await findOrCreateCustomer({ hl_contact_id: 'hl9', email: 'jane@x.com' });
+      // Quote B: same person, now HL-linked — same email + name, PLUS an
+      // hl_contact_id. #213: name repeated so email+name (2 fields) still
+      // clears the adopt gate (the candidate row has no hl to agree with yet).
+      const b = await findOrCreateCustomer({ hl_contact_id: 'hl9', email: 'jane@x.com', name: 'Jane' });
 
       expect(b?.id).toBe(a?.id); // same customer, not a second row
       expect(fake.tables.customers).toHaveLength(1);
@@ -383,8 +394,10 @@ describe('findOrCreateCustomer', () => {
       const fake = makeFakeSupabase();
       sbRef.current = fake.client;
 
-      const a = await findOrCreateCustomer({ email: 'jane@x.com' });
-      await findOrCreateCustomer({ hl_contact_id: 'hl9', email: 'jane@x.com' });
+      // #213: name carried on every call so each cross-key step has 2 agreeing
+      // fields (email+name) to clear the adopt gate.
+      const a = await findOrCreateCustomer({ email: 'jane@x.com', name: 'Jane' });
+      await findOrCreateCustomer({ hl_contact_id: 'hl9', email: 'jane@x.com', name: 'Jane' });
       // A THIRD quote arrives with the HL id but no email (e.g. a later GHL
       // webhook-only payload) — must resolve to the SAME customer, not create
       // a third row.
@@ -399,7 +412,10 @@ describe('findOrCreateCustomer', () => {
       sbRef.current = fake.client;
 
       const a = await findOrCreateCustomer({ phone: '(555) 123-4567', name: 'Jane' });
-      const b = await findOrCreateCustomer({ hl_contact_id: 'hl9', phone: '555-123-4567' });
+      // #213: name repeated so phone+name (2 fields) clears the adopt gate —
+      // phone alone is a single-field match (covered in the dedicated #213
+      // describe block below).
+      const b = await findOrCreateCustomer({ hl_contact_id: 'hl9', phone: '555-123-4567', name: 'Jane' });
 
       expect(b?.id).toBe(a?.id);
       expect(fake.tables.customers).toHaveLength(1);
@@ -422,14 +438,41 @@ describe('findOrCreateCustomer', () => {
       sbRef.current = fake.client;
 
       // Quote A already HL-linked.
-      const a = await findOrCreateCustomer({ hl_contact_id: 'hl9', email: 'jane@x.com' });
-      // Quote B arrives email-only for the same person — must resolve to the
-      // SAME hl-keyed row, and must NOT downgrade its match_key to email:….
-      const b = await findOrCreateCustomer({ email: 'jane@x.com' });
+      const a = await findOrCreateCustomer({ hl_contact_id: 'hl9', email: 'jane@x.com', name: 'Jane' });
+      // Quote B arrives email-only for the same person — #213 requires >=2
+      // corroborating fields for a non-hl match (a's hl id doesn't help here:
+      // b never claims one), so b also carries the matching name. Must
+      // resolve to the SAME hl-keyed row, and must NOT downgrade its
+      // match_key to email:….
+      const b = await findOrCreateCustomer({ email: 'jane@x.com', name: 'Jane' });
 
       expect(b?.id).toBe(a?.id);
       expect(fake.tables.customers).toHaveLength(1);
       expect(fake.tables.customers[0].match_key).toBe('hl:hl9'); // unchanged
+    });
+
+    // #213 (S34 #198 review): the flip side of the test above — an incoming
+    // identity that shares only ONE field with an hl-linked row must NOT
+    // adopt it. a's hl_contact_id is irrelevant here: b never names an hl id
+    // of its own, so there is nothing for hlAgrees to agree ON, and email
+    // alone is a single-field match like any other.
+    it('a SINGLE-field match against an hl-linked row does NOT merge — creates a new row + logs a candidate-merge pair', async () => {
+      const fake = makeFakeSupabase();
+      sbRef.current = fake.client;
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const a = await findOrCreateCustomer({ hl_contact_id: 'hl9', email: 'jane@x.com', name: 'Jane' });
+      // Only email agrees (no name given) — must NOT adopt a's row.
+      const b = await findOrCreateCustomer({ email: 'jane@x.com' });
+
+      expect(b?.id).not.toBe(a?.id);
+      expect(fake.tables.customers).toHaveLength(2);
+      expect(fake.tables.customers.find((c) => c.id === a!.id)!.name).toBe('Jane'); // untouched
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0][0]).toContain(a!.id);
+      expect(warnSpy.mock.calls[0][0]).toContain(b!.id);
+      expect(warnSpy.mock.calls[0][0]).toContain('email');
+      warnSpy.mockRestore();
     });
   });
 
@@ -438,21 +481,136 @@ describe('findOrCreateCustomer', () => {
   // PostgREST `match_key.in.(...)` filter with no sanitizing. A crafted/plain
   // comma in the name corrupts the in-list, the merge lookup silently misses,
   // and a duplicate customer row gets created instead of deduping.
-  it('a secondary match key containing a comma does not corrupt the query — still merges into the existing row', async () => {
+  it('a secondary match key containing a comma does not corrupt the query — the candidate IS found (name-only, so #213 still declines to merge; logs a candidate pair)', async () => {
     const fake = makeFakeSupabase();
     sbRef.current = fake.client;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     // Quote A: name only (no email/phone/hl) — match_key is the free-text
     // name key itself, comma and all.
     const a = await findOrCreateCustomer({ name: 'Smith, John' });
-    // Quote B: same person, now HL-linked. The ONLY way to find quote A's row
+    // Quote B: same name, now HL-linked. The ONLY way to find quote A's row
     // is the secondary match_key.in() search on `name:smith, john` — there's
-    // no hl/email/phone raw column value shared to fall back on.
+    // no hl/email/phone raw column value shared to fall back on. #213: name-
+    // only agreement is a SINGLE field (design point 4) — it must NOT auto-
+    // merge even though the comma-bearing key IS correctly found (proven by
+    // the candidate-merge warning firing at all — if the comma had corrupted
+    // the .in() query, no candidate would be found and nothing would log).
     const b = await findOrCreateCustomer({ hl_contact_id: 'hl9', name: 'Smith, John' });
 
-    expect(b?.id).toBe(a?.id); // merged into the same row, not a duplicate
+    expect(b?.id).not.toBe(a?.id); // NOT merged — name-only is single-field
+    expect(fake.tables.customers).toHaveLength(2);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toContain(a!.id);
+    expect(warnSpy.mock.calls[0][0]).toContain('name');
+    warnSpy.mockRestore();
+  });
+});
+
+// #213 (S34 #198 review, customer lens): findOrCreateCustomer's secondary-key
+// adoption now requires >=2 agreeing identity fields (or an hl_contact_id
+// agreement, which stays authoritative on its own) before adopting an
+// existing row — a single shared field (the realistic case: a household
+// sharing one email/phone) creates a NEW row instead of silently overwriting
+// a stranger's identity. The scenarios below are the ledger row's own
+// acceptance list.
+describe('findOrCreateCustomer — #213 >=2-field identity-agreement gate', () => {
+  it('same phone, different name: does NOT adopt — creates a new row + logs a candidate-merge pair naming both ids', async () => {
+    const fake = makeFakeSupabase({
+      customers: [
+        { id: 'alice', match_key: 'phone:5551234567', phone: '5551234567', name: 'Alice', email: null, hl_contact_id: null },
+      ],
+    });
+    sbRef.current = fake.client;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const res = await findOrCreateCustomer({ phone: '555-123-4567', name: 'Bob' });
+
+    expect(res?.id).not.toBe('alice'); // no adopt
+    expect(fake.tables.customers).toHaveLength(2); // new row created
+    expect(fake.tables.customers.find((c) => c.id === 'alice')!.name).toBe('Alice'); // NOT overwritten
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const msg = warnSpy.mock.calls[0][0] as string;
+    expect(msg).toContain('alice');
+    expect(msg).toContain(res!.id);
+    expect(msg).toContain('phone');
+    warnSpy.mockRestore();
+  });
+
+  it('same email + same name (2 fields): adopts + newest-win overwrite, unchanged from before #213', async () => {
+    const fake = makeFakeSupabase({
+      customers: [
+        { id: 'c1', match_key: 'email:jane@x.com', email: 'jane@x.com', name: 'Jane', phone: '5550000000', hl_contact_id: null },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const res = await findOrCreateCustomer({ email: 'jane@x.com', name: 'Jane', phone: '5559999999' });
+
+    expect(res?.id).toBe('c1');
     expect(fake.tables.customers).toHaveLength(1);
-    expect(fake.tables.customers[0].match_key).toBe('hl:hl9'); // upgraded
+    expect(fake.tables.customers[0].phone).toBe('5559999999'); // newest-win still applies
+  });
+
+  it('same email + same phone, different name: adopts (2 fields agree)', async () => {
+    const fake = makeFakeSupabase({
+      customers: [
+        {
+          id: 'c1',
+          match_key: 'email:jane@x.com',
+          email: 'jane@x.com',
+          name: 'Jane Original',
+          phone: '5551234567',
+          hl_contact_id: null,
+        },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const res = await findOrCreateCustomer({ email: 'jane@x.com', phone: '555-123-4567', name: 'Jane Updated' });
+
+    expect(res?.id).toBe('c1');
+    expect(fake.tables.customers).toHaveLength(1);
+    expect(fake.tables.customers[0].name).toBe('Jane Updated'); // newest-win overwrite, even though name differed
+  });
+
+  it('hl-key match: adopts unconditionally, unchanged — even with ZERO corroborating email/phone/name on file', async () => {
+    const fake = makeFakeSupabase({
+      customers: [{ id: 'c1', match_key: 'hl:hl9', hl_contact_id: 'hl9', email: null, name: null, phone: null }],
+    });
+    sbRef.current = fake.client;
+
+    const res = await findOrCreateCustomer({ hl_contact_id: 'hl9', email: 'new@x.com' });
+
+    expect(res?.id).toBe('c1'); // adopted despite email not matching anything on file
+    expect(fake.tables.customers).toHaveLength(1);
+    expect(fake.tables.customers[0].email).toBe('new@x.com'); // newest-win still fills it in
+  });
+
+  it('unique-violation race on the disambiguated (rejected-candidate) create path recovers via re-select', async () => {
+    const fake = makeFakeSupabase({
+      customers: [
+        { id: 'alice', match_key: 'phone:5551234567', phone: '5551234567', name: 'Alice', email: null, hl_contact_id: null },
+      ],
+    });
+    sbRef.current = fake.client;
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // First call: single-field (phone-only) reject against Alice's row
+    // creates Bob's own new row under a disambiguated key.
+    const bob1 = await findOrCreateCustomer({ phone: '555-123-4567', name: 'Bob' });
+    expect(bob1?.id).not.toBe('alice');
+    expect(fake.tables.customers).toHaveLength(2);
+
+    // Second call: the IDENTICAL identity again, but this time the
+    // disambiguated insert loses a concurrent-create race (23505) — must
+    // recover Bob's own row (from the first call) via re-select, not error
+    // out or create a third row.
+    fake.forceInsertErrorOnce('customers', { code: '23505', message: 'duplicate key value violates unique constraint' });
+    const bob2 = await findOrCreateCustomer({ phone: '555-123-4567', name: 'Bob' });
+
+    expect(bob2?.id).toBe(bob1?.id); // recovered Bob's row, not a third row
+    expect(fake.tables.customers).toHaveLength(2); // still just Alice + Bob
   });
 });
 
@@ -616,10 +774,13 @@ describe('backfillCustomersFromQuotes', () => {
   it('dedups a history into stable customers + properties and links each quote', async () => {
     const fake = makeFakeSupabase({
       quotes: [
-        // Same customer (email), two addresses (home + rental)
-        { id: 'q1', created_at: '2025-01-01', customer_email: 'jane@x.com', customer_address: '1 Home St', customer_id: null },
-        { id: 'q2', created_at: '2025-02-01', customer_email: 'jane@x.com', customer_address: '9 Rental Rd', customer_id: null },
-        { id: 'q3', created_at: '2025-03-01', customer_email: 'jane@x.com', customer_address: '1 Home St', customer_id: null },
+        // Same customer (email + name — #213 needs 2 agreeing fields to
+        // deterministically dedupe 3 concurrently-processed quotes for the
+        // same person onto ONE row instead of racing between the plain-key
+        // and disambiguated-key create paths), two addresses (home + rental)
+        { id: 'q1', created_at: '2025-01-01', customer_email: 'jane@x.com', customer_name: 'Jane', customer_address: '1 Home St', customer_id: null },
+        { id: 'q2', created_at: '2025-02-01', customer_email: 'jane@x.com', customer_name: 'Jane', customer_address: '9 Rental Rd', customer_id: null },
+        { id: 'q3', created_at: '2025-03-01', customer_email: 'jane@x.com', customer_name: 'Jane', customer_address: '1 Home St', customer_id: null },
         // A different customer
         { id: 'q4', created_at: '2025-04-01', customer_phone: '555-111-2222', customer_address: '2 B Ave', customer_id: null },
         // Identity-less → skipped
@@ -654,6 +815,11 @@ describe('backfillCustomersFromQuotes', () => {
       id: `q${i}`,
       created_at: `2025-01-${String(i + 1).padStart(2, '0')}`,
       customer_email: 'jane@x.com', // same customer for all 20
+      // #213: >=2 agreeing fields (email+name) needed so 20 concurrently-
+      // processed identical identities deterministically converge on ONE row
+      // via the unique-index race recovery, rather than possibly racing
+      // between the plain-key and disambiguated-key create paths.
+      customer_name: 'Jane',
       customer_address: '1 Home St',
       customer_id: null,
     }));
@@ -708,8 +874,10 @@ describe('reads', () => {
   it('getCustomer + getPropertiesForCustomer round-trip after a backfill', async () => {
     const fake = makeFakeSupabase({
       quotes: [
-        { id: 'q1', created_at: '2025-01-01', customer_email: 'jane@x.com', customer_address: 'Home', customer_id: null },
-        { id: 'q2', created_at: '2025-02-01', customer_email: 'jane@x.com', customer_address: 'Rental', customer_id: null },
+        // #213: name repeated (email+name = 2 fields) for the same reason as
+        // the dedup tests above — deterministic convergence onto ONE row.
+        { id: 'q1', created_at: '2025-01-01', customer_email: 'jane@x.com', customer_name: 'Jane', customer_address: 'Home', customer_id: null },
+        { id: 'q2', created_at: '2025-02-01', customer_email: 'jane@x.com', customer_name: 'Jane', customer_address: 'Rental', customer_id: null },
       ],
     });
     sbRef.current = fake.client;
