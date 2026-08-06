@@ -92,15 +92,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Quote not found' }, { status: 404 });
   }
 
-  // #214 (verify-or-reattach): attach-first, cached-id fallback — see the
+  // #214: cached-id first, re-attach ONLY when never linked — see the
   // sibling /nce route's comment for the full rationale (identical block,
-  // sibling-guard parity). Also lifts the old customer_id-non-null gate so
-  // tagging a never-linked sent quote heals the link instead of skipping.
+  // sibling-guard parity; deliberately NOT attach-first — retroactive
+  // tagging of OLD quotes is this flag's core workflow, and an
+  // unconditional re-resolution would newest-win stale stored fields onto
+  // a customer row later quotes kept current).
   if (!data.is_test && legacyRebook && data.quote_sent_at) {
     try {
       const linkedCustomerId =
-        (await attachQuoteToCustomer(quoteRowToIdentity(data)))?.customerId ??
         data.customer_id ??
+        (await attachQuoteToCustomer(quoteRowToIdentity(data)))?.customerId ??
         null;
       if (linkedCustomerId) {
         await propagateQuoteTagsToCustomer(linkedCustomerId, { isYllNeighbor: true });

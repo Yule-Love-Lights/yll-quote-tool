@@ -230,21 +230,24 @@ describe('POST /api/quotes/[id]/nce — tag propagation (#198)', () => {
     expect(propagateMock).not.toHaveBeenCalled();
   });
 
-  // #214: verify-or-reattach before propagating — the cached customer_id can
-  // be stale after an identity edit; re-resolution wins, cached is fallback.
-  it('propagates to the RE-RESOLVED customer (not the cached id) when re-attach lands on a different row', async () => {
-    attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'cust-right', propertyId: 'p1' });
+  // #214 (review-refined): the toggle trusts the CACHED customer_id when one
+  // exists — updateQuote's own re-attach maintains it at every identity
+  // edit, and an unconditional re-resolution here would newest-win an OLD
+  // quote's stale stored fields onto a customer row later quotes kept
+  // current (retroactive tagging of old quotes is a real workflow).
+  it('does NOT re-resolve when a cached customer_id exists — propagates straight to it', async () => {
     const { client } = makeSb({
       id: VALID_UUID,
       is_nce: false,
       quote_sent_at: '2026-08-01T00:00:00Z',
-      customer_id: 'cust-stale',
+      customer_id: 'cust-1',
     });
     sbRef.current = client;
 
     const res = await POST(makeReq({ isNce: true }), makeParams(VALID_UUID));
     expect(res.status).toBe(200);
-    expect(propagateMock).toHaveBeenCalledWith('cust-right', { isNce: true });
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+    expect(propagateMock).toHaveBeenCalledWith('cust-1', { isNce: true });
   });
 
   // #214: the old customer_id-non-null gate is lifted — tagging a sent,

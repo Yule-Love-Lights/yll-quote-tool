@@ -1180,6 +1180,34 @@ describe('backfillCustomersFromQuotes', () => {
     expect(fake.tables.customers).toHaveLength(1);
   });
 
+  // #214 review fix (3-lens MED): the backfill reads STORED rows, whose
+  // blank name/address were persisted as the 'Anonymous'/'(no address)'
+  // display sentinels — without quoteRowToIdentity those derived match_key
+  // `name:anonymous` and PERMANENTLY folded every blank-identity quote onto
+  // ONE shared "Anonymous" customer row.
+  it('sentinel-only stored rows are SKIPPED, never folded onto a shared "Anonymous" customer', async () => {
+    const fake = makeFakeSupabase({
+      quotes: [
+        // Two unrelated contactless quotes, both persisted with the sentinels.
+        { id: 'q1', created_at: '2025-01-01', customer_name: 'Anonymous', customer_address: '(no address)', customer_id: null },
+        { id: 'q2', created_at: '2025-02-01', customer_name: 'Anonymous', customer_address: '(no address)', customer_id: null },
+        // A real one, to prove the run still links normal rows.
+        { id: 'q3', created_at: '2025-03-01', customer_email: 'real@x.com', customer_address: '1 Real St', customer_id: null },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const summary = await backfillCustomersFromQuotes();
+    expect(summary.scanned).toBe(3);
+    expect(summary.linked).toBe(1);
+    expect(summary.skipped).toBe(2);
+    expect(fake.tables.customers).toHaveLength(1);
+    expect(fake.tables.customers[0].match_key).toBe('email:real@x.com');
+    expect(fake.tables.customers.map((c) => c.match_key)).not.toContain('name:anonymous');
+    expect(fake.tables.quotes.find((q) => q.id === 'q1')!.customer_id).toBeNull();
+    expect(fake.tables.quotes.find((q) => q.id === 'q2')!.customer_id).toBeNull();
+  });
+
   it('EXCLUDES test quotes from promotion (ledger #93) — real + legacy NULL only', async () => {
     const fake = makeFakeSupabase({
       quotes: [

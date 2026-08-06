@@ -179,21 +179,23 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   // of the identity).
   if (!quote.is_test && (quote.legacy_rebook || quote.is_nce)) {
     try {
-      const linkedCustomerId =
-        (
-          await attachQuoteToCustomer(
-            quoteRowToIdentity({
-              id,
-              highlevel_contact_id: quote.highlevel_contact_id,
-              customer_name: quote.customer_name,
-              customer_email: quote.customer_email,
-              customer_phone: quote.customer_phone,
-              customer_address: quote.customer_address,
-            }),
-          )
-        )?.customerId ??
-        quote.customer_id ??
-        null;
+      const resolved = await attachQuoteToCustomer(
+        quoteRowToIdentity({
+          id,
+          highlevel_contact_id: quote.highlevel_contact_id,
+          customer_name: quote.customer_name,
+          customer_email: quote.customer_email,
+          customer_phone: quote.customer_phone,
+          customer_address: quote.customer_address,
+        }),
+      );
+      // Repoint visibility (#214 review, WT-55 family) — mirrors /send.
+      if (resolved && quote.customer_id && resolved.customerId !== quote.customer_id) {
+        console.warn(
+          `[api/quotes/:id/mark-sent] #214 repoint: quote ${id} customer_id ${quote.customer_id} → ${resolved.customerId} at mark-sent. Review for a manual merge (WT-55).`,
+        );
+      }
+      const linkedCustomerId = resolved?.customerId ?? quote.customer_id ?? null;
       if (linkedCustomerId) {
         await propagateQuoteTagsToCustomer(linkedCustomerId, {
           isNce: quote.is_nce,

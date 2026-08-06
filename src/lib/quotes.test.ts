@@ -698,6 +698,29 @@ describe('updateQuote — #214 identity verify-or-reattach', () => {
     expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
   });
 
+  it('never re-attaches a BOOKED quote (deposit paid — the customers link is frozen; jobs/invoices/GHL tenure snapshot it and never resync)', async () => {
+    const fake = makeIdentityFake(STORED, {
+      deposit_paid_at: '2026-08-01T00:00:00Z',
+      quote_sent_at: '2026-07-01T00:00:00Z',
+      customer_id: 'cust-1',
+    });
+    serviceRef.current = fake.client;
+
+    // Identity edit + hl change — both triggers present, both must be inert.
+    await updateQuote(
+      'q1', INPUTS, RESULT,
+      { ...CUSTOMER, name: 'Edited Mid-Amend' },
+      'holiday', undefined, undefined, true, 'hl-NEW',
+    );
+
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+    // Tag propagation still runs, against the frozen cached id.
+    expect(propagateQuoteTagsToCustomerMock).toHaveBeenCalledWith('cust-1', {
+      isNce: true,
+      isYllNeighbor: undefined,
+    });
+  });
+
   it("translates the stored 'Anonymous'/'(no address)' display sentinels to null in the re-attach identity", async () => {
     attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'c1', propertyId: 'p1' });
     const fake = makeIdentityFake({

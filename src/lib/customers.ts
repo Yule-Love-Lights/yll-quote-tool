@@ -836,7 +836,13 @@ export async function backfillCustomersFromQuotes(
   let skipped = 0;
   for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
     const chunk = rows.slice(i, i + CHUNK_SIZE);
-    const results = await Promise.all(chunk.map((q) => attachQuoteToCustomer(q)));
+    // #214 review fix (3-lens MED): these are STORED rows — run them through
+    // the sentinel translation like every other stored-row attach site. The
+    // raw row was the one remaining caller that could hand the literal
+    // 'Anonymous' name to findOrCreateCustomer, deriving match_key
+    // `name:anonymous` and permanently folding every blank-identity quote
+    // the backfill ever touches onto ONE shared customer row.
+    const results = await Promise.all(chunk.map((q) => attachQuoteToCustomer(quoteRowToIdentity(q))));
     for (const res of results) {
       if (res) linked++;
       else skipped++;

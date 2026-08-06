@@ -232,21 +232,22 @@ describe('POST /api/quotes/[id]/legacy-rebook — tag propagation (#198)', () =>
     expect(propagateMock).not.toHaveBeenCalled();
   });
 
-  // #214: verify-or-reattach before propagating — mirrors the sibling /nce
-  // route's tests (sibling-guard parity).
-  it('propagates to the RE-RESOLVED customer (not the cached id) when re-attach lands on a different row', async () => {
-    attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'cust-right', propertyId: 'p1' });
+  // #214 (review-refined): cached-first — mirrors the sibling /nce route's
+  // tests (sibling-guard parity; see its comment for the stale-old-quote
+  // rationale).
+  it('does NOT re-resolve when a cached customer_id exists — propagates straight to it', async () => {
     const { client } = makeSb({
       id: VALID_UUID,
       legacy_rebook: false,
       quote_sent_at: '2026-08-01T00:00:00Z',
-      customer_id: 'cust-stale',
+      customer_id: 'cust-1',
     });
     sbRef.current = client;
 
     const res = await POST(makeReq({ legacyRebook: true }), makeParams(VALID_UUID));
     expect(res.status).toBe(200);
-    expect(propagateMock).toHaveBeenCalledWith('cust-right', { isYllNeighbor: true });
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+    expect(propagateMock).toHaveBeenCalledWith('cust-1', { isYllNeighbor: true });
   });
 
   it('heals a NEVER-linked sent quote when re-resolution finds the customer, then propagates', async () => {

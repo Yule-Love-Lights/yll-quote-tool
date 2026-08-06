@@ -623,21 +623,24 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       // known link beats silently dropping the tag. quoteRowToIdentity
       // translates the row's 'Anonymous'/'(no address)' display sentinels
       // back to null so they can never become identity evidence.
-      const linkedCustomerId =
-        (
-          await attachQuoteToCustomer(
-            quoteRowToIdentity({
-              id,
-              highlevel_contact_id: quote.highlevel_contact_id,
-              customer_name: quote.customer_name,
-              customer_email: quote.customer_email,
-              customer_phone: quote.customer_phone,
-              customer_address: quote.customer_address,
-            }),
-          )
-        )?.customerId ??
-        quote.customer_id ??
-        null;
+      const resolved = await attachQuoteToCustomer(
+        quoteRowToIdentity({
+          id,
+          highlevel_contact_id: quote.highlevel_contact_id,
+          customer_name: quote.customer_name,
+          customer_email: quote.customer_email,
+          customer_phone: quote.customer_phone,
+          customer_address: quote.customer_address,
+        }),
+      );
+      // Repoint visibility (#214 review, WT-55 family): a send-time
+      // re-resolution that moved the quote off its cached row is loud.
+      if (resolved && quote.customer_id && resolved.customerId !== quote.customer_id) {
+        console.warn(
+          `[api/quotes/:id/send] #214 repoint: quote ${id} customer_id ${quote.customer_id} → ${resolved.customerId} at send time. Review for a manual merge (WT-55).`,
+        );
+      }
+      const linkedCustomerId = resolved?.customerId ?? quote.customer_id ?? null;
       if (linkedCustomerId) {
         await propagateQuoteTagsToCustomer(linkedCustomerId, {
           isNce: quote.is_nce,

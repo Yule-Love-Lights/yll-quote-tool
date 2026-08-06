@@ -458,9 +458,16 @@ export async function updateQuote(
     // trip. is_test ridden along too (review fix, admin MED, S34 #198
     // review) — updateQuote has no other way to know is_test (it's immutable
     // and never a param here), and a reopened TEST quote CAN be re-Calculated
-    // through this exact path.
-    .select('id, quote_sent_at, customer_id, is_test')
-    .single<{ id: string; quote_sent_at: string | null; customer_id: string | null; is_test: boolean }>();
+    // through this exact path. deposit_paid_at rides along for the #214
+    // booked-freeze below.
+    .select('id, quote_sent_at, customer_id, is_test, deposit_paid_at')
+    .single<{
+      id: string;
+      quote_sent_at: string | null;
+      customer_id: string | null;
+      is_test: boolean;
+      deposit_paid_at: string | null;
+    }>();
 
   if (error) {
     console.error('Supabase updateQuote error:', error);
@@ -485,12 +492,23 @@ export async function updateQuote(
   // (attachQuoteToCustomer must never run with test data) and when the
   // pre-read failed (can't compare — fall back to the cached link, the
   // pre-#214 behavior). Best-effort: never fails the save.
+  // #214 review fix (admin HIGH — booked-freeze): once the deposit is PAID,
+  // the customers link is FROZEN. jobs.customer_id and invoices.customer_id
+  // snapshot the quote's link at booking and are never resynced (job
+  // creation is idempotent-by-quote; the invoice inherits the job's copy),
+  // and the GHL tenure push already fired at that id — a post-booking
+  // relink (reachable via the amendReprice path, whose customer fields
+  // carry no lock) would split the job/invoice across two customer
+  // profiles and overstate the old one's tenure with no self-heal. This
+  // restores the pre-#214 immutability-after-booking for the LINK
+  // specifically; tag propagation below still runs against the (frozen)
+  // cached id.
   const effectiveHl =
     hlContactId === undefined
       ? (stored?.highlevel_contact_id ?? null)
       : (hlContactId?.trim() || null);
   let reattached: { customerId: string } | null | undefined;
-  if (!data.is_test && stored) {
+  if (!data.is_test && !data.deposit_paid_at && stored) {
     const written = customer
       ? {
           customer_name: blankToNull(customer.name) ?? 'Anonymous',
@@ -534,6 +552,17 @@ export async function updateQuote(
               : {}),
           },
         );
+        // Repoint visibility (#214 review, WT-55 family): a re-resolution
+        // that MOVED the quote off its previously-linked customer row is
+        // loud, never silent — identity-follows-the-quote is the design
+        // (#213 forks on conflicting evidence instead of guessing a merge),
+        // but the move itself must be greppable so staff can reconcile the
+        // rows by hand.
+        if (reattached && stored.customer_id && reattached.customerId !== stored.customer_id) {
+          console.warn(
+            `updateQuote: #214 repoint — quote ${id} customer_id ${stored.customer_id} → ${reattached.customerId} after an identity edit. Review for a manual merge (WT-55).`,
+          );
+        }
       } catch (err) {
         console.warn('updateQuote: identity re-attach failed (non-fatal):', err);
         reattached = null;

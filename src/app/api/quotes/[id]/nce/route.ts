@@ -92,21 +92,23 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Quote not found' }, { status: 404 });
   }
 
-  // #214 (verify-or-reattach): re-resolve the customers link before
-  // propagating instead of trusting the cached customer_id — an identity
-  // edit since the last resolution can leave it pointing at the WRONG
-  // customer, and this admin toggle is exactly the kind of late tag flip
-  // the S34 wrap review traced onto stale links. Attach-first with the
-  // cached id as fallback, same shape as /send + /mark-sent; also lifts the
-  // old customer_id-non-null gate, so tagging a never-linked sent quote now
-  // heals the link instead of silently skipping (mirrors the send route's
-  // lazy attach). Only runs when propagation would actually fire — a
-  // toggle-OFF or an un-sent quote pays no extra round trips.
+  // #214: propagation target = the CACHED customer_id first, with a
+  // re-attach attempt ONLY when the quote was never linked (lifts the old
+  // customer_id-non-null gate, so tagging a never-linked sent quote heals
+  // the link instead of silently skipping — mirrors the send route's lazy
+  // attach; quoteRowToIdentity keeps the row's display sentinels out of the
+  // identity). Deliberately NOT attach-first (review fix, admin MED): this
+  // toggle legitimately fires on OLD quotes (retroactive tagging is a real
+  // workflow), and an unconditional re-resolution would newest-win that old
+  // quote's YEAR-OLD stored fields back onto a customer row later quotes
+  // kept current. The cache is trustworthy here because updateQuote's own
+  // #214 re-attach now maintains it at every identity edit — the write
+  // source verifies, the read sites trust.
   if (!data.is_test && isNce && data.quote_sent_at) {
     try {
       const linkedCustomerId =
-        (await attachQuoteToCustomer(quoteRowToIdentity(data)))?.customerId ??
         data.customer_id ??
+        (await attachQuoteToCustomer(quoteRowToIdentity(data)))?.customerId ??
         null;
       if (linkedCustomerId) {
         await propagateQuoteTagsToCustomer(linkedCustomerId, { isNce: true });
