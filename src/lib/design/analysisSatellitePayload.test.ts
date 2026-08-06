@@ -96,22 +96,29 @@ describe('ordering: pull-satellite (or the no-Street-View fallback) THEN an anal
     expect(state.satelliteFeetPerPixel).toBe(0.0521);
   });
 
-  // #204 fix: the PROVENANCE half of this interaction — QuoteBuilder's
-  // pendingContextRef (persisted onto the design row for the portal's
-  // satellite view) is a SEPARATE mechanism from the satelliteFeetPerPixel
-  // state tested above. handlePhotoSelect used to unconditionally null
-  // pendingContextRef.current ("a parked context belongs to the PREVIOUS
-  // house"), which silently dropped a satellite-only context (Pull satellite,
-  // the no-Street-View fallback, or a manual satellite upload) parked for the
-  // SAME house before any design existed to receive it — the eager design
-  // effect only fires once photoBase64 is set, which a satellite-only pull
-  // never does, so nothing had consumed the park yet. Fixed to keep the
-  // satellite half and only drop a stale `analysis` half. Mirrors
-  // handlePhotoSelect's exact transformation verbatim.
+  // #204 fix, updated in the #702 review round (gap 2): the PROVENANCE half
+  // of this interaction — QuoteBuilder's pendingContextRef (persisted onto
+  // the design row for the portal's satellite view) is a SEPARATE mechanism
+  // from the satelliteFeetPerPixel state tested above. handlePhotoSelect used
+  // to unconditionally null pendingContextRef.current ("a parked context
+  // belongs to the PREVIOUS house"), which silently dropped a satellite-only
+  // context (Pull satellite, the no-Street-View fallback, or a manual
+  // satellite upload) parked for the SAME house before any design existed to
+  // receive it — the eager design effect only fires once photoBase64 is set,
+  // which a satellite-only pull never does, so nothing had consumed the park
+  // yet. Fixed to keep the satellite half and only drop a stale `analysis`
+  // half — BUT "same house" must be CHECKED (gap 2, HIGH portal), not
+  // assumed: the operator may have edited the address field after the pull
+  // without re-pulling. Mirrors handlePhotoSelect's exact transformation
+  // verbatim, comparing the pull-time-stamped address against the CURRENT
+  // form.customer.address (not googleAddress, which only changes on a fresh
+  // geocode and would miss an edited-but-not-yet-re-pulled address).
   function dropAnalysisKeepSatellite(
     pending: { analysis?: unknown; satelliteBase64?: string; satelliteMediaType?: string; satelliteFeetPerPixel?: number | null } | null,
+    stampedAddress: string | null,
+    currentAddress: string,
   ): { satelliteBase64?: string; satelliteMediaType?: string; satelliteFeetPerPixel?: number | null } | null {
-    return pending?.satelliteBase64
+    return pending?.satelliteBase64 != null && stampedAddress === currentAddress
       ? {
           satelliteBase64: pending.satelliteBase64,
           satelliteMediaType: pending.satelliteMediaType,
@@ -120,11 +127,11 @@ describe('ordering: pull-satellite (or the no-Street-View fallback) THEN an anal
       : null;
   }
 
-  it('a manual photo upload after pull-satellite keeps the parked satellite provenance (does not silently drop it)', () => {
-    // Step 1: Pull satellite parks satellite-only provenance (no design yet).
+  it('a manual photo upload after pull-satellite, SAME address — keeps the parked satellite provenance (does not silently drop it)', () => {
+    // Step 1: Pull satellite parks satellite-only provenance for "123 Main St" (no design yet).
     const pendingAfterPull = { satelliteBase64: 'sat-b64', satelliteMediaType: 'image/png', satelliteFeetPerPixel: 0.0521 };
-    // Step 2: handlePhotoSelect (manual photo upload) runs its cleanup.
-    const pendingAfterUpload = dropAnalysisKeepSatellite(pendingAfterPull);
+    // Step 2: handlePhotoSelect (manual photo upload) runs its cleanup — address unchanged.
+    const pendingAfterUpload = dropAnalysisKeepSatellite(pendingAfterPull, '123 Main St', '123 Main St');
     expect(pendingAfterUpload).toEqual({
       satelliteBase64: 'sat-b64',
       satelliteMediaType: 'image/png',
@@ -132,12 +139,18 @@ describe('ordering: pull-satellite (or the no-Street-View fallback) THEN an anal
     });
   });
 
-  it('a stale ANALYSIS half (from a previous photo) is still dropped when there is no parked satellite', () => {
-    const pendingWithOnlyStaleAnalysis = { analysis: { notes: 'old house' } };
-    expect(dropAnalysisKeepSatellite(pendingWithOnlyStaleAnalysis)).toBeNull();
+  it('pull A, EDIT the address to B (no re-pull), then upload — dropped (house A must not leak onto house B\'s design)', () => {
+    const pendingAfterPullA = { satelliteBase64: 'sat-A', satelliteMediaType: 'image/png', satelliteFeetPerPixel: 0.0521 };
+    const pendingAfterEditAndUpload = dropAnalysisKeepSatellite(pendingAfterPullA, '123 Main St', '456 Oak Ave');
+    expect(pendingAfterEditAndUpload).toBeNull();
   });
 
-  it('nothing parked stays nothing parked', () => {
-    expect(dropAnalysisKeepSatellite(null)).toBeNull();
+  it('a stale ANALYSIS half (from a previous photo) is still dropped when there is no parked satellite, even for the same address', () => {
+    const pendingWithOnlyStaleAnalysis = { analysis: { notes: 'old house' } };
+    expect(dropAnalysisKeepSatellite(pendingWithOnlyStaleAnalysis, '123 Main St', '123 Main St')).toBeNull();
+  });
+
+  it('nothing parked stays nothing parked, regardless of address', () => {
+    expect(dropAnalysisKeepSatellite(null, null, '123 Main St')).toBeNull();
   });
 });
