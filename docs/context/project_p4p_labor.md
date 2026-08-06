@@ -33,25 +33,31 @@ the numbers prove themselves, then the switch flips.
 | Drive time | Counts toward job hours (Naldo's call). Matches P4P practice: the clock runs door to door and the day's budgeted hours include windshield time, which is why route density matters in the lawn version. For YLL, each job's BH gets a travel allowance; shadow mode calibrates it. |
 | Pay period | Weekly. Payroll is mostly manual today; automating the breakdown is a goal of this build. |
 | Production rates | Never tracked before. Seed from a one-sitting estimate session with Jason, then calibrate from shadow-mode actuals. Past history cannot supply them (no job-level hours exist anywhere, Copilot's clock was never job-linked). |
-| Guardrails, season 1 | Yellow slips YES, damage deductions YES, training bonus YES. Profit sharing NOT season 1. Referral bonuses: cheap to include (a manual bonus row), in unless Naldo says drop. |
-| Pool membership | Install team (SonSon, Little James, Big James). Jason's status TBD (office manager; today he is the only one clocking in). |
-| Takedown | OPEN. Naldo has not designed this yet. Options in A6. |
+| Guardrails, season 1 | Yellow slips YES, damage deductions YES, training bonus YES, referral bonus IN ($50 new customer, $10 gift card existing). Profit sharing NOT season 1. |
+| Pool membership | Install team only: SonSon, Little James, Big James. Jason is OUT, hourly (he approves instead). |
+| Crew model | One team, assigned per day. Whoever is on the job that day shares its pool by hours. No fixed crew names. |
+| Clock gate | ON. Crew cannot see the day's schedule until clocked in (bot and Ops Hub). Office/admin exempt. |
+| Approver | Jason approves time entries and settles grey-area splits. |
+| Language | Crew surfaces get a per-profile language option (English default, other languages enabled per person). |
+| Takedown | Paid plain hourly for now, outside the P4P pools. Takedown jobs still get clocked per job so this season's data can design the real rule later. |
+| Season dates | Installs start the last week of September 2026. Takedown season starts about Jan 5 (read back from a garbled voice answer, Naldo to confirm). Phases 1-2 must be live before installs start. |
+| Copilot retirement | Cancel the subscription once Phase 2 replaces Jason's clock. Reminder recorded in A7. |
 
 **Base rates.** Naldo's numbers vs what Copilot profiles actually say (verified
 2026-08-06 on each employee profile):
 
 | Person | Naldo said | Copilot profile | Note |
 |---|---|---|---|
-| SonSon | $16/hr | $16.00 | match |
-| Little James | $17/hr | $16.00 | mismatch, reconcile |
-| Big James | "$20-something" | $20.00 | match |
-| Jason | $8/hr | $10.00 | mismatch, reconcile |
+| SonSon | $16/hr | $16.00 | CONFIRMED $16. Below the $17.00 LI floor, see flag below |
+| Little James | $17/hr | $16.00 | CONFIRMED $17 (got a raise; the Copilot profile is stale) |
+| Big James | "$20-something" | $20.00 | CONFIRMED $20 |
+| Jason | $8/hr | $10.00 | CONFIRMED $10 (out of the pool, hourly office rate) |
 
 **Compliance flag, not optional:** Long Island minimum wage is **$17.00/hr as of
 Jan 1, 2026** (NYC/LI/Westchester tier). Overtime is 1.5x after 40 hours, and NY
 counts performance pay/commissions in the regular rate when computing OT. So the
-P4P base-pay floor for the install crew must be at least $17.00, which means the
-$16 rates above are below the legal hourly floor and need attention regardless of
+P4P base-pay floor for the install crew must be at least $17.00. SonSon's $16 and
+Jason's $10 sit below the legal hourly floor and need attention regardless of
 P4P. Payroll is manual today; before the first real P4P paycheck, have an
 accountant or payroll provider bless the formula. Sources:
 [NY DOL 2026 increase](https://www.governor.ny.gov/news/money-your-pockets-governor-hochul-reminds-new-yorkers-minimum-wage-increase-january-1),
@@ -91,6 +97,11 @@ mode is the instrument:
 
 Ordered so shadow data starts flowing before the season, and money math ships
 last. Each phase shippable alone, gates green, normal PR flow.
+
+**Hard date:** installs start the last week of September 2026, and shadow data
+must flow from day one. Targets: Phases 1 + 2 live by Sept 21, Phase 3 by early
+October, Phase 4 during October, Phases 5-6 in season, the pay flip whenever the
+numbers are trusted.
 
 **Phase 1: budgeted hours + labor revenue on every job.**
 Per-category labor % and production rates (ft per man-hour by roofline difficulty,
@@ -143,28 +154,27 @@ day, not 12-stop mow routes), GHL changes.
 
 ## A6. Open items (the short list that remains)
 
-1. **Takedown design.** Not thought through yet (Naldo). Options when ready:
-   (a) hold back a fixed slice of the job's labor revenue (say 15-20%) for the
-   takedown visit's pool, or (b) auto-create a takedown job with its own BH and
-   labor revenue at season end. Leaning (b) for clean per-visit efficiency, but
-   this is Naldo's call and blocks nothing until Phase 4.
+1. **Takedown P4P design.** Deferred on purpose: takedown pays plain hourly this
+   season, and the clocked takedown data designs the real rule for next season.
 2. **Labor % starting value.** Shadow mode needs SOME number to display. Proposal:
    start the dial at the template's 33% and let the weekly ritual move it. Costs
    nothing while shadow.
-3. **Jason in the pool or not.** Decide by Phase 4.
-4. **Rate reconciliation.** Little James 16 vs 17, Jason 8 vs 10, and the $17.00
-   legal floor. One conversation with the payroll/accountant.
-5. **Referral bonus in season 1:** in unless Naldo drops it (manual row, trivial).
+3. **Wage floor.** SonSon at $16 and Jason at $10 vs the $17.00 LI minimum: one
+   conversation with the payroll/accountant before the season.
+4. **Takedown start date.** Recorded as about Jan 5 from a garbled voice answer
+   ("takedown starting in 5 days"). Naldo to confirm or correct.
 
 ## A7. Immediate next actions
 
-1. Standing weekly reminder for the in-season economics check (Naldo requested).
-   Set as a scheduled weekly reminder starting late September, retired once the
-   digest block (Phase 4) replaces it.
+1. DONE 2026-08-06: standing weekly reminder created (cloud routine "P4P weekly
+   economics check", Mondays 9am ET, stays quiet until Sept 28; manage at
+   claude.ai/code/routines). Retire it once the digest block (Phase 4) ships.
 2. Naldo + Jason estimate session for seed production rates (Phase 1 input).
    Can run any time; one sitting.
 3. Ledger row for the initiative + phase rows when building starts.
-4. Phase 1 build brief once seed rates exist.
+4. Phase 1 build brief once seed rates exist (Naldo's go).
+5. When Phase 2 ships: cancel the Copilot subscription (Naldo's yes on record,
+   2026-08-06). Flag it in that session's close notes.
 
 ---
 
