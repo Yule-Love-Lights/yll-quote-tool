@@ -13,6 +13,7 @@ import { bearingDegrees } from '@/lib/permanent/orientation';
 import {
   isGoogleMapsConfigured,
   getCachedAddressImagery,
+  getAddressSatelliteImagery,
   NoStreetViewError,
 } from '@/lib/googleMaps';
 
@@ -68,7 +69,32 @@ export async function POST(req: NextRequest) {
     ({ geo, streetView, satellite, satelliteFeetPerPixel, panoLocation } = await getCachedAddressImagery(address));
   } catch (err) {
     if (err instanceof NoStreetViewError) {
-      return NextResponse.json({ error: err.message }, { status: 404 });
+      // #204: PARTIAL SUCCESS — the satellite leg doesn't need Street View at
+      // all, so a missing pano no longer kills the whole request. Fetch just
+      // the satellite image + its real scale and tell the client honestly.
+      // No analyzer runs here (every analyzer needs a street photo to look
+      // at, and we don't have one) — the operator uploads their own photo and
+      // analyzes that separately; the #190 guard keeps this satellite/scale
+      // intact through that later analyze (hasSatellitePayload).
+      try {
+        const sat = await getAddressSatelliteImagery(address);
+        return NextResponse.json({
+          result: null,
+          streetViewUnavailable: true,
+          satelliteBase64: sat.satellite.base64,
+          satelliteMediaType: sat.satellite.mediaType,
+          satelliteFeetPerPixel: sat.satelliteFeetPerPixel,
+          formattedAddress: sat.geo.formattedAddress,
+          lat: sat.geo.lat,
+          lng: sat.geo.lng,
+        });
+      } catch (satErr) {
+        console.error('[api/analyze-address] satellite-only fallback failed:', satErr);
+        return NextResponse.json(
+          { error: 'Failed to fetch imagery for this address' },
+          { status: 502 },
+        );
+      }
     }
     // Audit fix (#100): log the upstream detail server-side only. Returning
     // raw err.message to the client could leak Google internals (e.g.
