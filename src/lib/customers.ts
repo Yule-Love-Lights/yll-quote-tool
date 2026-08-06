@@ -707,10 +707,19 @@ export async function backfillCustomersFromQuotes(
   // property), so nothing forces strictly-serial processing. Process in
   // bounded-concurrency chunks instead of one-at-a-time — the find-or-create
   // UNIQUE-index race-recovery (customers.ts findOrCreateCustomer/
-  // findOrCreateProperty) already makes concurrent same-key creates safe, so
-  // overlapping quotes for the same customer within a chunk still dedup
-  // correctly. Keeps a large first-run backfill well under a function timeout
-  // without the unbounded fan-out of a single Promise.all(rows.map(...)).
+  // findOrCreateProperty) already makes concurrent same-key creates safe.
+  // Keeps a large first-run backfill well under a function timeout without
+  // the unbounded fan-out of a single Promise.all(rows.map(...)).
+  //
+  // #213 fix 3 (precise guarantee, post 3-lens review): overlapping quotes
+  // for the SAME customer within a chunk dedup onto ONE row UNCONDITIONALLY
+  // when their identities are IDENTICAL (nothing populated on both sides can
+  // disagree — classifyCandidate's zero-disagreement rule always adopts).
+  // When two overlapping quotes' identities instead CONFLICT on a field both
+  // carry (e.g. same phone, different name — the household-share risk #213
+  // exists to catch), findOrCreateCustomer correctly REJECTS the merge and
+  // creates a separate row instead, exactly as it would outside a backfill —
+  // this loop adds concurrency, not a looser identity rule.
   const CHUNK_SIZE = 8;
   let linked = 0;
   let skipped = 0;

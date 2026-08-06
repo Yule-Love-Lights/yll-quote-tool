@@ -310,7 +310,8 @@ describe('findOrCreateCustomer', () => {
     // omitted this time, which is what this test is actually verifying.
     const b = await findOrCreateCustomer({ email: 'jane@x.com', name: 'Jane' }); // no phone
     expect(b?.id).toBe(a?.id);
-    expect(fake.tables.customers[0].name).toBe('Jane');
+    // #213 fix 8: no name assertion here — both calls use the SAME name, so
+    // asserting on it would prove nothing about preservation either way.
     expect(fake.tables.customers[0].phone).toBe('5550001111'); // absent → preserved, not wiped
   });
 
@@ -334,23 +335,14 @@ describe('findOrCreateCustomer', () => {
   // exercised by any test. Simulate a concurrent create — the insert loses the
   // race (another writer already created the same match_key), and the
   // re-select must recover the WINNER's existing row (not null, no dup row).
-  it('recovers the existing row on a 23505 unique-violation race (concurrent create)', async () => {
-    const fake = makeFakeSupabase({
-      customers: [{ id: 'winner-1', match_key: 'email:jane@x.com', name: 'Jane', email: 'jane@x.com' }],
-    });
-    sbRef.current = fake.client;
-    fake.forceInsertErrorOnce('customers', { code: '23505', message: 'duplicate key value violates unique constraint' });
-
-    // #213: name repeated (email+name = 2 fields) so the exact-match phase
-    // adopts winner-1 directly — this call never reaches an insert either way
-    // (same as pre-#213: the forced error stays armed/unused here), covered
-    // separately below for the NEW disambiguated-key create path.
-    const res = await findOrCreateCustomer({ email: 'jane@x.com', name: 'Jane' });
-
-    expect(res?.id).toBe('winner-1'); // recovered the winner's row, not a dup
-    expect(fake.tables.customers).toHaveLength(1); // no duplicate row created
-  });
-
+  // #213 fix 7 (tech LOW): the old version of this test seeded a row with
+  // match_key EXACTLY equal to the identity's own key, which the exact-match
+  // phase always finds and returns from directly — the forced 23505 was
+  // dead, never actually exercised (true pre-#213 too, not something this
+  // ticket introduced). Superseded by the '#213 >=2-field...' describe
+  // block's 'unique-violation race on the disambiguated (rejected-
+  // candidate) create path' test below, which genuinely forces and recovers
+  // from a real insert failure.
   it('returns null on a genuine hard insert error (not a recoverable race)', async () => {
     const fake = makeFakeSupabase();
     sbRef.current = fake.client;
@@ -452,18 +444,22 @@ describe('findOrCreateCustomer', () => {
     });
 
     // #213 (S34 #198 review): the flip side of the test above — an incoming
-    // identity that shares only ONE field with an hl-linked row must NOT
-    // adopt it. a's hl_contact_id is irrelevant here: b never names an hl id
-    // of its own, so there is nothing for hlAgrees to agree ON, and email
-    // alone is a single-field match like any other.
-    it('a SINGLE-field match against an hl-linked row does NOT merge — creates a new row + logs a candidate-merge pair', async () => {
+    // identity that shares only ONE field with an hl-linked row, but also
+    // ACTIVELY CONFLICTS on a second field, must NOT adopt it (classifyCandidate
+    // rule 5 — the money case). a's hl_contact_id is irrelevant here: b never
+    // names an hl id of its own, so there is nothing for hlAgrees/hlConflicts
+    // to compare against.
+    it('a SINGLE agreeing field PLUS a conflicting field against an hl-linked row does NOT merge — creates a new row + logs a candidate-merge pair', async () => {
       const fake = makeFakeSupabase();
       sbRef.current = fake.client;
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       const a = await findOrCreateCustomer({ hl_contact_id: 'hl9', email: 'jane@x.com', name: 'Jane' });
-      // Only email agrees (no name given) — must NOT adopt a's row.
-      const b = await findOrCreateCustomer({ email: 'jane@x.com' });
+      // Email agrees, but name is populated on BOTH sides and DIFFERS — an
+      // active disagreement, not mere absence, so the #213 fix-3
+      // zero-disagreement rule does NOT save this one (unlike the test
+      // below, where b simply never provides a name at all).
+      const b = await findOrCreateCustomer({ email: 'jane@x.com', name: 'Bob' });
 
       expect(b?.id).not.toBe(a?.id);
       expect(fake.tables.customers).toHaveLength(2);
@@ -472,6 +468,7 @@ describe('findOrCreateCustomer', () => {
       expect(warnSpy.mock.calls[0][0]).toContain(a!.id);
       expect(warnSpy.mock.calls[0][0]).toContain(b!.id);
       expect(warnSpy.mock.calls[0][0]).toContain('email');
+      expect(warnSpy.mock.calls[0][0]).toContain('name');
       warnSpy.mockRestore();
     });
   });
@@ -481,29 +478,25 @@ describe('findOrCreateCustomer', () => {
   // PostgREST `match_key.in.(...)` filter with no sanitizing. A crafted/plain
   // comma in the name corrupts the in-list, the merge lookup silently misses,
   // and a duplicate customer row gets created instead of deduping.
-  it('a secondary match key containing a comma does not corrupt the query — the candidate IS found (name-only, so #213 still declines to merge; logs a candidate pair)', async () => {
+  it('a secondary match key containing a comma does not corrupt the query — still merges into the existing row', async () => {
     const fake = makeFakeSupabase();
     sbRef.current = fake.client;
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     // Quote A: name only (no email/phone/hl) — match_key is the free-text
     // name key itself, comma and all.
     const a = await findOrCreateCustomer({ name: 'Smith, John' });
-    // Quote B: same name, now HL-linked. The ONLY way to find quote A's row
+    // Quote B: same person, now HL-linked. The ONLY way to find quote A's row
     // is the secondary match_key.in() search on `name:smith, john` — there's
-    // no hl/email/phone raw column value shared to fall back on. #213: name-
-    // only agreement is a SINGLE field (design point 4) — it must NOT auto-
-    // merge even though the comma-bearing key IS correctly found (proven by
-    // the candidate-merge warning firing at all — if the comma had corrupted
-    // the .in() query, no candidate would be found and nothing would log).
+    // no hl/email/phone raw column value shared to fall back on. #213 fix 3:
+    // name agrees and NOTHING populated on both sides disagrees (b provides
+    // no email/phone to conflict with), so the zero-disagreement rule adopts
+    // — this also proves the comma didn't corrupt the .in() lookup (a
+    // corrupted lookup would have found nothing and created a second row).
     const b = await findOrCreateCustomer({ hl_contact_id: 'hl9', name: 'Smith, John' });
 
-    expect(b?.id).not.toBe(a?.id); // NOT merged — name-only is single-field
-    expect(fake.tables.customers).toHaveLength(2);
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(warnSpy.mock.calls[0][0]).toContain(a!.id);
-    expect(warnSpy.mock.calls[0][0]).toContain('name');
-    warnSpy.mockRestore();
+    expect(b?.id).toBe(a?.id); // merged into the same row, not a duplicate
+    expect(fake.tables.customers).toHaveLength(1);
+    expect(fake.tables.customers[0].match_key).toBe('hl:hl9'); // upgraded
   });
 });
 
@@ -611,6 +604,59 @@ describe('findOrCreateCustomer — #213 >=2-field identity-agreement gate', () =
 
     expect(bob2?.id).toBe(bob1?.id); // recovered Bob's row, not a third row
     expect(fake.tables.customers).toHaveLength(2); // still just Alice + Bob
+  });
+
+  // #213 fix 4 (customer HIGH-leverage): saveQuote now threads
+  // highlevel_contact_id into the identity (src/lib/quotes.ts), so hl
+  // becomes authoritative on every properly-picked save, not just the send-
+  // time re-attach. These exercise the MECHANISM end-to-end via
+  // attachQuoteToCustomer (the exact function saveQuote calls), proving hl
+  // agreement/conflict wins regardless of what the other fields say.
+  it('an hl-agreeing identity adopts the hl row via attachQuoteToCustomer, regardless of other fields', async () => {
+    const fake = makeFakeSupabase({
+      customers: [
+        { id: 'c1', match_key: 'hl:hl9', hl_contact_id: 'hl9', email: 'old@x.com', name: 'Old Name', phone: null },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const res = await attachQuoteToCustomer({
+      id: 'q1',
+      highlevel_contact_id: 'hl9',
+      customer_name: 'Totally Different Name',
+      customer_email: 'different@x.com',
+      customer_address: '1 A St',
+    });
+
+    expect(res?.customerId).toBe('c1'); // adopted via hl agreement alone
+    expect(fake.tables.customers).toHaveLength(1);
+    expect(fake.tables.customers[0].name).toBe('Totally Different Name'); // newest-win still applies
+  });
+
+  it('an hl-CONFLICTING identity refuses to adopt via attachQuoteToCustomer, even with matching email+phone+name', async () => {
+    const fake = makeFakeSupabase({
+      customers: [
+        { id: 'c1', match_key: 'hl:hl-old', hl_contact_id: 'hl-old', email: 'shared@x.com', phone: '5551234567', name: 'Jane' },
+      ],
+    });
+    sbRef.current = fake.client;
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const res = await attachQuoteToCustomer({
+      id: 'q1',
+      highlevel_contact_id: 'hl-new',
+      customer_name: 'Jane',
+      customer_email: 'shared@x.com',
+      customer_phone: '555-123-4567',
+      customer_address: '1 A St',
+    });
+
+    // Vetoed despite email+phone+name ALL agreeing — a different hl id means
+    // a different real CRM contact, full stop (fix 2's veto beats fix 3's
+    // >=2-field rule).
+    expect(res?.customerId).not.toBe('c1');
+    expect(fake.tables.customers).toHaveLength(2);
+    expect(fake.tables.customers.find((c) => c.id === 'c1')!.hl_contact_id).toBe('hl-old'); // untouched
   });
 });
 
@@ -774,13 +820,14 @@ describe('backfillCustomersFromQuotes', () => {
   it('dedups a history into stable customers + properties and links each quote', async () => {
     const fake = makeFakeSupabase({
       quotes: [
-        // Same customer (email + name — #213 needs 2 agreeing fields to
-        // deterministically dedupe 3 concurrently-processed quotes for the
-        // same person onto ONE row instead of racing between the plain-key
-        // and disambiguated-key create paths), two addresses (home + rental)
-        { id: 'q1', created_at: '2025-01-01', customer_email: 'jane@x.com', customer_name: 'Jane', customer_address: '1 Home St', customer_id: null },
-        { id: 'q2', created_at: '2025-02-01', customer_email: 'jane@x.com', customer_name: 'Jane', customer_address: '9 Rental Rd', customer_id: null },
-        { id: 'q3', created_at: '2025-03-01', customer_email: 'jane@x.com', customer_name: 'Jane', customer_address: '1 Home St', customer_id: null },
+        // Same customer (email ONLY — #213 fix 3's zero-disagreement rule
+        // means a single agreeing field with nothing to conflict on is
+        // enough to deterministically dedupe 3 concurrently-processed
+        // quotes for the same person onto ONE row), two addresses (home +
+        // rental).
+        { id: 'q1', created_at: '2025-01-01', customer_email: 'jane@x.com', customer_address: '1 Home St', customer_id: null },
+        { id: 'q2', created_at: '2025-02-01', customer_email: 'jane@x.com', customer_address: '9 Rental Rd', customer_id: null },
+        { id: 'q3', created_at: '2025-03-01', customer_email: 'jane@x.com', customer_address: '1 Home St', customer_id: null },
         // A different customer
         { id: 'q4', created_at: '2025-04-01', customer_phone: '555-111-2222', customer_address: '2 B Ave', customer_id: null },
         // Identity-less → skipped
@@ -809,30 +856,54 @@ describe('backfillCustomersFromQuotes', () => {
   // W2-011: backfill now processes quotes in bounded-concurrency chunks
   // instead of strictly one-at-a-time. Cross a chunk boundary (>8 rows) with
   // repeated identities to prove dedup still holds across chunks, not just
-  // within one.
-  it('dedups correctly across a chunk boundary (bounded concurrency, W2-011)', async () => {
-    const quotes = Array.from({ length: 20 }, (_, i) => ({
-      id: `q${i}`,
-      created_at: `2025-01-${String(i + 1).padStart(2, '0')}`,
-      customer_email: 'jane@x.com', // same customer for all 20
-      // #213: >=2 agreeing fields (email+name) needed so 20 concurrently-
-      // processed identical identities deterministically converge on ONE row
-      // via the unique-index race recovery, rather than possibly racing
-      // between the plain-key and disambiguated-key create paths.
-      customer_name: 'Jane',
-      customer_address: '1 Home St',
-      customer_id: null,
-    }));
-    const fake = makeFakeSupabase({ quotes });
+  // within one. #213 fix 3: email-only (single field, nothing to conflict
+  // with) — 20 concurrently-processed IDENTICAL identities must still
+  // deterministically converge on ONE row (the zero-disagreement rule), not
+  // split on race timing. Run it several times: this is exactly the
+  // scenario that used to be timing-sensitive.
+  it('dedups correctly across a chunk boundary (bounded concurrency, W2-011) — deterministic, not timing-luck', async () => {
+    for (let run = 0; run < 5; run++) {
+      const quotes = Array.from({ length: 20 }, (_, i) => ({
+        id: `q${i}`,
+        created_at: `2025-01-${String(i + 1).padStart(2, '0')}`,
+        customer_email: 'jane@x.com', // same customer for all 20, no other field
+        customer_address: '1 Home St',
+        customer_id: null,
+      }));
+      const fake = makeFakeSupabase({ quotes });
+      sbRef.current = fake.client;
+
+      const summary = await backfillCustomersFromQuotes();
+
+      expect(summary.scanned).toBe(20);
+      expect(summary.linked).toBe(20);
+      expect(fake.tables.customers).toHaveLength(1); // still ONE customer, no dup races
+      expect(fake.tables.properties).toHaveLength(1);
+      expect(fake.tables.quotes.every((q) => q.customer_id === fake.tables.customers[0].id)).toBe(true);
+    }
+  });
+
+  // #213 fix 3 (staff HIGH — explicit concurrency coverage, not routed
+  // through the chunking helper): TWO calls for the EXACT SAME single-field
+  // identity, fired via Promise.all so they genuinely race each other's
+  // DB reads/writes (not just processed back-to-back), must still converge
+  // on ONE customer row. This is the literal scenario fix 1's retry-recovery
+  // classification + fix 3's zero-disagreement rule together are meant to
+  // guarantee: nothing here can "disagree" (there's only one field, and it's
+  // identical on both sides), so classifyCandidate adopts on whichever side
+  // loses the race, rather than the pre-fix-3 strict >=2 rule splitting them.
+  it('two concurrent findOrCreateCustomer calls for the IDENTICAL single-field identity converge on one row', async () => {
+    const fake = makeFakeSupabase();
     sbRef.current = fake.client;
 
-    const summary = await backfillCustomersFromQuotes();
+    const [a, b] = await Promise.all([
+      findOrCreateCustomer({ phone: '555-123-4567' }),
+      findOrCreateCustomer({ phone: '555-123-4567' }),
+    ]);
 
-    expect(summary.scanned).toBe(20);
-    expect(summary.linked).toBe(20);
-    expect(fake.tables.customers).toHaveLength(1); // still ONE customer, no dup races
-    expect(fake.tables.properties).toHaveLength(1);
-    expect(fake.tables.quotes.every((q) => q.customer_id === fake.tables.customers[0].id)).toBe(true);
+    expect(a?.id).toBeTruthy();
+    expect(b?.id).toBe(a?.id);
+    expect(fake.tables.customers).toHaveLength(1);
   });
 
   it('is idempotent — a re-run only scans the still-unlinked quotes', async () => {
@@ -874,10 +945,10 @@ describe('reads', () => {
   it('getCustomer + getPropertiesForCustomer round-trip after a backfill', async () => {
     const fake = makeFakeSupabase({
       quotes: [
-        // #213: name repeated (email+name = 2 fields) for the same reason as
-        // the dedup tests above — deterministic convergence onto ONE row.
-        { id: 'q1', created_at: '2025-01-01', customer_email: 'jane@x.com', customer_name: 'Jane', customer_address: 'Home', customer_id: null },
-        { id: 'q2', created_at: '2025-02-01', customer_email: 'jane@x.com', customer_name: 'Jane', customer_address: 'Rental', customer_id: null },
+        // Email only — #213 fix 3's zero-disagreement rule (nothing else to
+        // conflict on) deterministically converges both onto one row.
+        { id: 'q1', created_at: '2025-01-01', customer_email: 'jane@x.com', customer_address: 'Home', customer_id: null },
+        { id: 'q2', created_at: '2025-02-01', customer_email: 'jane@x.com', customer_address: 'Rental', customer_id: null },
       ],
     });
     sbRef.current = fake.client;

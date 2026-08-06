@@ -284,6 +284,15 @@ export async function saveQuote(
     try {
       const attachResult = await attachQuoteToCustomer({
         id: data.id,
+        // #213 (3-lens review fix 4, customer HIGH-leverage): this quote's
+        // own highlevel_contact_id was already stamped into the insert above
+        // (the row this function just created) but was never threaded into
+        // the identity here, so findOrCreateCustomer's hl-agree/hl-conflict
+        // rules NEVER fired on an ordinary save — even when staff picked the
+        // exact right HL contact in the builder. QuoteIdentityRow already
+        // has this field (the mark-sent/send re-attach routes already pass
+        // it); saveQuote was simply the one caller omitting it.
+        highlevel_contact_id: highlevelContactId,
         customer_name: customer.name ?? null,
         customer_email: customer.email ?? null,
         customer_phone: customer.phone ?? null,
