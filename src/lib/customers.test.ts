@@ -543,6 +543,73 @@ describe('attachQuoteToCustomer', () => {
     expect(res).toBeNull();
     expect(fake.tables.customers).toHaveLength(0);
   });
+
+  // Forward-heal (S34, #198 follow-up — live finding: 166/168 customers rows
+  // had hl_contact_id NULL, because a quote can gain highlevel_contact_id
+  // LATER (the builder's HL-contact-pick autocomplete) via a route that never
+  // touches the customers table — findOrCreateCustomer is never re-run for
+  // that quote's link. Every attachQuoteToCustomer call is a fresh chance to
+  // close that gap.
+  describe('hl_contact_id forward-heal', () => {
+    it('stamps a null hl_contact_id when the quote it resolves to carries one', async () => {
+      const fake = makeFakeSupabase({
+        customers: [{ id: 'c1', match_key: 'email:jane@x.com', hl_contact_id: null, email: 'jane@x.com', name: 'Jane', phone: null }],
+      });
+      sbRef.current = fake.client;
+
+      const res = await attachQuoteToCustomer({
+        id: 'q1',
+        highlevel_contact_id: 'ghl-1',
+        customer_name: 'Jane',
+        customer_email: 'jane@x.com',
+        customer_address: '1 A St',
+      });
+
+      expect(res?.customerId).toBe('c1');
+      expect(fake.tables.customers.find((c) => c.id === 'c1')!.hl_contact_id).toBe('ghl-1');
+    });
+
+    it('never touches an unrelated customer row already linked to a DIFFERENT hl_contact_id', async () => {
+      // Bob shares no identity field with the incoming quote (different
+      // name/email/phone AND a different hl id), so findOrCreateCustomer
+      // resolves to a BRAND-NEW customer for this quote — Bob's row is never
+      // even read, let alone written. Guards against this heal (or anything
+      // in the resolution path) reaching across and clobbering an unrelated
+      // customer's existing, deliberately-different link.
+      const fake = makeFakeSupabase({
+        customers: [{ id: 'bob', match_key: 'hl:ghl-bob', hl_contact_id: 'ghl-bob', email: 'bob@x.com', name: 'Bob', phone: null }],
+      });
+      sbRef.current = fake.client;
+
+      const res = await attachQuoteToCustomer({
+        id: 'q1',
+        highlevel_contact_id: 'ghl-alice',
+        customer_name: 'Alice',
+        customer_email: 'alice@x.com',
+        customer_address: '1 A St',
+      });
+
+      expect(res?.customerId).not.toBe('bob');
+      expect(fake.tables.customers.find((c) => c.id === 'bob')!.hl_contact_id).toBe('ghl-bob');
+    });
+
+    it('does nothing when the quote carries no highlevel_contact_id', async () => {
+      const fake = makeFakeSupabase({
+        customers: [{ id: 'c1', match_key: 'email:jane@x.com', hl_contact_id: null, email: 'jane@x.com', name: 'Jane', phone: null }],
+      });
+      sbRef.current = fake.client;
+
+      const res = await attachQuoteToCustomer({
+        id: 'q1',
+        customer_name: 'Jane',
+        customer_email: 'jane@x.com',
+        customer_address: '1 A St',
+      });
+
+      expect(res?.customerId).toBe('c1');
+      expect(fake.tables.customers.find((c) => c.id === 'c1')!.hl_contact_id).toBeNull();
+    });
+  });
 });
 
 describe('backfillCustomersFromQuotes', () => {
