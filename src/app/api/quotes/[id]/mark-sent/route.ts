@@ -43,7 +43,7 @@ import {
   QUOTE_STATUSES,
   type QuoteStatus,
 } from '@/lib/quoteStatus';
-import { attachQuoteToCustomer, propagateQuoteTagsToCustomer } from '@/lib/customers';
+import { attachQuoteToCustomer, propagateQuoteTagsToCustomer, quoteRowToIdentity } from '@/lib/customers';
 
 export const runtime = 'nodejs';
 
@@ -171,21 +171,31 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   // end-state, just without messaging/GHL). Skipped entirely for an untagged
   // quote (the common case). !quote.is_test is REQUIRED — see /send's
   // sibling comment for the full rationale.
+  //
+  // #214 (verify-or-reattach): attach-first, cached-id fallback — see the
+  // /send route's sibling comment for the full rationale (the cached
+  // customer_id can be stale after an identity edit; re-resolution is
+  // idempotent and quoteRowToIdentity keeps the row's display sentinels out
+  // of the identity).
   if (!quote.is_test && (quote.legacy_rebook || quote.is_nce)) {
     try {
-      const linkedCustomerId =
-        quote.customer_id ??
-        (
-          await attachQuoteToCustomer({
-            id,
-            highlevel_contact_id: quote.highlevel_contact_id,
-            customer_name: quote.customer_name,
-            customer_email: quote.customer_email,
-            customer_phone: quote.customer_phone,
-            customer_address: quote.customer_address,
-          })
-        )?.customerId ??
-        null;
+      const resolved = await attachQuoteToCustomer(
+        quoteRowToIdentity({
+          id,
+          highlevel_contact_id: quote.highlevel_contact_id,
+          customer_name: quote.customer_name,
+          customer_email: quote.customer_email,
+          customer_phone: quote.customer_phone,
+          customer_address: quote.customer_address,
+        }),
+      );
+      // Repoint visibility (#214 review, WT-55 family) — mirrors /send.
+      if (resolved && quote.customer_id && resolved.customerId !== quote.customer_id) {
+        console.warn(
+          `[api/quotes/:id/mark-sent] #214 repoint: quote ${id} customer_id ${quote.customer_id} → ${resolved.customerId} at mark-sent. Review for a manual merge (WT-55).`,
+        );
+      }
+      const linkedCustomerId = resolved?.customerId ?? quote.customer_id ?? null;
       if (linkedCustomerId) {
         await propagateQuoteTagsToCustomer(linkedCustomerId, {
           isNce: quote.is_nce,

@@ -41,6 +41,7 @@ import {
 import { resolvePipelineStages } from '@/lib/integrations/ghlPipelineMap';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
+import { attachQuoteToCustomer, quoteRowToIdentity } from '@/lib/customers';
 
 export const runtime = 'nodejs';
 
@@ -71,6 +72,17 @@ export async function POST(req: NextRequest) {
     opportunityName?: string;
     monetaryValue?: number;
     detach?: boolean;
+    // #214 review fix (3-lens HIGH): the PICKED contact's own identity
+    // fields, sent by the builder (contactIdentityOf). The post-link
+    // customers re-resolution below runs ONLY off these — the stored quote
+    // row's fields describe whoever the quote referenced BEFORE this pick,
+    // and pairing them with the fresh contact id built a self-inconsistent
+    // identity that could adopt + newest-win-overwrite the WRONG customer's
+    // row (or stamp this contact's hl id onto the old customer's row).
+    contactName?: string;
+    contactEmail?: string;
+    contactPhone?: string;
+    contactAddress?: string;
   };
   try {
     body = await req.json();
@@ -109,9 +121,21 @@ export async function POST(req: NextRequest) {
   // (kept as a defensive guard with the same code/status as before).
   const { data: quoteRow, error: quoteErr } = await sb
     .from('quotes')
-    .select('id, service_type, legacy_rebook')
+    // #214: is_test (test-data guard) + customer_id (repoint visibility) +
+    // deposit_paid_at (booked-freeze, round-3 delta-verify HIGH) ride along
+    // for the post-link customers re-resolution below (no second read). The
+    // re-resolution's IDENTITY comes from the request body's contact
+    // fields, never from this row — see the block below.
+    .select('id, service_type, legacy_rebook, is_test, customer_id, deposit_paid_at')
     .eq('id', body.quoteId)
-    .maybeSingle<{ id: string; service_type: string | null; legacy_rebook: boolean }>();
+    .maybeSingle<{
+      id: string;
+      service_type: string | null;
+      legacy_rebook: boolean;
+      is_test: boolean;
+      customer_id: string | null;
+      deposit_paid_at: string | null;
+    }>();
   if (quoteErr) {
     console.warn(
       '[api/integrations/highlevel/attach] service_type read failed — defaulting to the holiday pipeline:',
@@ -169,6 +193,75 @@ export async function POST(req: NextRequest) {
         '[api/integrations/highlevel/attach] DB link failed — orphaned GHL card:',
         { quoteId: body.quoteId, opportunityId: opportunity.id, error: updateErr.message },
       );
+    }
+
+    // #214 (d): this route is where a quote GAINS its hl contact id after
+    // insert — and, pre-#214, nothing downstream ever re-ran the customers
+    // resolution with it. A quote linked to an hl-less customers row stayed
+    // hl-less forever (the #700 heal lives INSIDE attachQuoteToCustomer, so
+    // it never fired), and the #213 hl-agree/veto rules never saw the pick.
+    // Re-resolve now, with the PICKED CONTACT's OWN identity (review fix,
+    // 3-lens HIGH — the first cut used the quote row's stored fields, which
+    // describe whoever the quote referenced BEFORE the pick; that
+    // self-inconsistent pairing could 2-field-adopt the OLD customer's row
+    // and stamp this contact's hl id + fields onto it, permanently
+    // absorbing the wrong identity with zero log). The contact's own
+    // fields, from the request body, make the resolution mean exactly what
+    // the operator said: "this quote belongs to THIS person" — an hl-less
+    // row for the same person gets the heal stamp; a different person's
+    // row is found (or created) and the quote RELINKS to it.
+    //
+    // Skipped entirely when the builder sent no non-hl contact field
+    // (legacy caller, or a truly bare CRM contact): an hl-only identity
+    // that matches no existing row would CREATE a bare hl-only customers
+    // row and repoint the quote at it — forking the quote off its real
+    // customer instead of healing. The next identity-bearing save
+    // (updateQuote's own #214 re-attach carries the live hl) covers those.
+    // Also gated !is_test (attachQuoteToCustomer must never run with test
+    // data) and skipped when the pre-link read failed (quoteRow null — no
+    // is_test answer; fail safe). Best-effort: never changes the response.
+    // Round-3 delta-verify MED: the non-hl-field check runs on the
+    // TRANSLATED identity, not the raw body — a contact literally named
+    // 'Anonymous' (with no email/phone) would otherwise pass the raw check
+    // and then reach attachQuoteToCustomer as exactly the hl-only identity
+    // this guard exists to block (quoteRowToIdentity nulls the sentinel).
+    const contactIdentity = quoteRowToIdentity({
+      id: body.quoteId,
+      highlevel_contact_id: body.contactId,
+      customer_name: typeof body.contactName === 'string' ? body.contactName.slice(0, 200) : null,
+      customer_email: typeof body.contactEmail === 'string' ? body.contactEmail.slice(0, 200) : null,
+      customer_phone: typeof body.contactPhone === 'string' ? body.contactPhone.slice(0, 50) : null,
+      customer_address: typeof body.contactAddress === 'string' ? body.contactAddress.slice(0, 300) : null,
+    });
+    const hasNonHlField = !!(
+      contactIdentity.customer_name ||
+      contactIdentity.customer_email ||
+      contactIdentity.customer_phone
+    );
+    // Round-3 delta-verify HIGH (sibling-guard parity — the exact class the
+    // AGENTS.md pitfall names): the booked-freeze updateQuote received in
+    // round 2 applies HERE too. jobs/invoices/GHL tenure snapshot the
+    // customers link at booking and never resync — a post-booking contact
+    // re-pick through the still-enabled builder autocomplete must not
+    // relink the quote. The GHL card link above still updates (that's this
+    // route's job); only the customers re-resolution freezes.
+    if (!updateErr && quoteRow && !quoteRow.is_test && !quoteRow.deposit_paid_at && hasNonHlField) {
+      try {
+        const resolved = await attachQuoteToCustomer(contactIdentity);
+        // Repoint visibility (#214 review, WT-55 family): a resolution that
+        // MOVED the quote off a previously-linked customer row is loud, not
+        // silent — the old row keeps its history; staff reconcile manually.
+        if (resolved && quoteRow.customer_id && resolved.customerId !== quoteRow.customer_id) {
+          console.warn(
+            `[api/integrations/highlevel/attach] #214 repoint: quote ${body.quoteId} customer_id ${quoteRow.customer_id} → ${resolved.customerId} (contact pick ${body.contactId}). Review for a manual merge (WT-55).`,
+          );
+        }
+      } catch (err) {
+        console.warn(
+          '[api/integrations/highlevel/attach] customers re-resolution failed (non-fatal):',
+          err,
+        );
+      }
     }
 
     return NextResponse.json({

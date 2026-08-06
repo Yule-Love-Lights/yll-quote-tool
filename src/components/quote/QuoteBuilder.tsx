@@ -401,7 +401,16 @@ export default function QuoteBuilder({
   const savedJobId = initialQuote?.jobId ?? null;
   const [form, setForm] = useState<QuoteFormData>(() =>
     initialQuote
-      ? inputsToFormData(initialQuote.customer, initialQuote.inputs, initialQuote.serviceType)
+      ? {
+          ...inputsToFormData(initialQuote.customer, initialQuote.inputs, initialQuote.serviceType),
+          // #214 (b): seed the form's hl link from the SAVED row so every
+          // save body carries the live session truth (inputsToFormData
+          // itself stays prefill-agnostic and returns null here). Pick /
+          // Clear below keep this field current; /api/quote uses it as
+          // identity input on updates (string = linked · null = no contact
+          // — never falls back to a stored id the session already dropped).
+          highlevelContactId: initialQuote.highlevelContactId ?? null,
+        }
       : applyPrefill(initialFormData, prefill),
   );
   // In edit mode the saved result hydrates too, so the operator sees the
@@ -2495,6 +2504,14 @@ export default function QuoteBuilder({
         email: c.email || f.customer.email,
         address: hlAddress || f.customer.address,
       },
+      // #214 (c): the pick REPLACES the form's hl link — before this, a
+      // lead-prefill's ghlContactId silently survived a re-pick, so the next
+      // Calculate saved/resolved identity under the STALE contact id
+      // (findOrCreateCustomer's hl-agree would then adopt the WRONG
+      // customer and newest-win overwrite its stored fields with this
+      // person's). The save body now always carries the contact actually
+      // picked.
+      highlevelContactId: c.id,
     }));
     // Reset attach status — the previous attach (if any) was against a
     // different contact and doesn't apply anymore. Bump the staleness token so
@@ -2514,7 +2531,7 @@ export default function QuoteBuilder({
       const attachKey = `${savedQuoteId}:${c.id}`;
       if (lastAttachKey.current !== attachKey) {
         lastAttachKey.current = attachKey;
-        void queueAttach(savedQuoteId, c.id, hlAddress);
+        void queueAttach(savedQuoteId, c.id, hlAddress, contactIdentityOf(c));
       }
     }
     // NCE + YLL Neighbor tag inheritance (#198): if the picked contact maps
@@ -2547,6 +2564,13 @@ export default function QuoteBuilder({
   const clearHighLevelContact = () => {
     attachSeqRef.current++;
     setHighLevelContact(null);
+    // #214 (c): a real undo clears the FORM's hl link too — leaving a
+    // prefill/reopen-seeded id here would put the dropped contact right back
+    // into the next save body (the same stale-id class the pick-time
+    // replacement above closes). null is meaningful on the wire: it tells
+    // /api/quote "this session has NO contact" so the update-path identity
+    // never falls back to the stored id being detached below.
+    setForm(f => ({ ...f, highlevelContactId: null }));
     setAttachStatus('idle');
     setAttachError(null);
     setAttachResurrected(false);
@@ -2574,11 +2598,34 @@ export default function QuoteBuilder({
     }
   };
 
+  // #214 review fix (3-lens HIGH): the attach route's customers
+  // re-resolution needs the PICKED CONTACT's own identity fields — the
+  // stored quote row's fields are whoever the quote used to describe
+  // (pre-pick), and pairing them with the fresh contact id builds a
+  // self-inconsistent identity that can adopt + overwrite the WRONG
+  // customer's row. Every attach call site derives this from the contact it
+  // is actually attaching.
+  const contactIdentityOf = (c: CrmContact) => {
+    const name = c.fullName || [c.firstName, c.lastName].filter(Boolean).join(' ');
+    const address = [c.address1, c.city, c.state, c.postalCode].filter(Boolean).join(', ');
+    return {
+      contactName: name || undefined,
+      contactEmail: c.email || undefined,
+      contactPhone: c.phone || undefined,
+      contactAddress: address || undefined,
+    };
+  };
+
   // #172: all attach/detach traffic runs through this chain — one at a time,
   // in click order — so concurrent picks/sends can't interleave DB writes.
-  const queueAttach = (quoteId: string, contactId: string, addressHint?: string): Promise<boolean> => {
+  const queueAttach = (
+    quoteId: string,
+    contactId: string,
+    addressHint?: string,
+    contactIdentity?: ReturnType<typeof contactIdentityOf>,
+  ): Promise<boolean> => {
     const run = (attachPromiseRef.current ?? Promise.resolve(false)).then(() =>
-      attachQuoteToHighLevel(quoteId, contactId, addressHint),
+      attachQuoteToHighLevel(quoteId, contactId, addressHint, contactIdentity),
     );
     attachPromiseRef.current = run;
     return run;
@@ -2591,10 +2638,14 @@ export default function QuoteBuilder({
   // failed) still leaves the send gate closed, so it counts as failure here.
   // addressHint: pick-time caller passes the picked contact's address because
   // the form state hasn't flushed yet in that tick.
+  // contactIdentity: the picked contact's own fields (contactIdentityOf) —
+  // the route's #214 customers re-resolution runs ONLY off these, never the
+  // stored quote fields.
   const attachQuoteToHighLevel = async (
     quoteId: string,
     contactId: string,
     addressHint?: string,
+    contactIdentity?: ReturnType<typeof contactIdentityOf>,
   ): Promise<boolean> => {
     // Staleness token: if a later pick/clear bumps the seq while we're in
     // flight, our result still returns to OUR caller, but we stop writing the
@@ -2617,6 +2668,7 @@ export default function QuoteBuilder({
           // #107: the GHL card carries the "Full Yule" ceiling pre-approval (the
           // deposit webhook later resets it to the customer's actual selection).
           monetaryValue: result?.fullYule?.total ?? result?.total,
+          ...(contactIdentity ?? {}),
         }),
       });
       const data = await res.json();
@@ -2699,7 +2751,7 @@ export default function QuoteBuilder({
       }
       if (!linked) {
         lastAttachKey.current = attachKey;
-        linked = await queueAttach(savedQuoteId, highlevelContact.id);
+        linked = await queueAttach(savedQuoteId, highlevelContact.id, undefined, contactIdentityOf(highlevelContact));
       }
       if (!linked) {
         setSendStatus('idle');
@@ -2936,12 +2988,15 @@ export default function QuoteBuilder({
           // reopening a quote that never had one (adversarial-review fix;
           // both paths are idempotent, so a resave never duplicates it).
           referredByCustomerId: referredBy?.id ?? undefined,
-          // #leads "Create quote" link: seeded only by applyPrefill on a
-          // blank-slate builder. Sent on every save, but the server only ever
-          // honors it on the NEW-quote insert (saveQuote) — an update never
-          // touches highlevel_contact_id, so this can't clobber a contact the
-          // operator later picks/clears via the HL autocomplete.
-          highlevelContactId: form.highlevelContactId ?? undefined,
+          // #214: the session's LIVE hl link, sent explicitly on every save
+          // (string = linked via prefill/pick/reopen-seed · null = no
+          // contact this session). Insert: lands in the row (saveQuote).
+          // Update: identity-resolution input only — the server never
+          // writes the highlevel_contact_id column from this (the attach
+          // route stays that column's post-insert writer), so it can't
+          // clobber the stored link; explicit null stops the server falling
+          // back to a stored id the session already cleared.
+          highlevelContactId: form.highlevelContactId,
           // NCE + YLL Neighbor tags (#198): 'insert' (no existingQuoteId yet
           // — this save creates the row) sends the displayed value outright,
           // so an inherited-but-unclicked tag lands on the brand-new quote;
@@ -3027,7 +3082,7 @@ export default function QuoteBuilder({
         // S30 wrap review MED: route through the serialized queue like every
         // other attach call site — a direct call could race a rapid re-pick
         // and leave the DB linked to the stale contact.
-        void queueAttach(newQuoteId, highlevelContact.id);
+        void queueAttach(newQuoteId, highlevelContact.id, undefined, contactIdentityOf(highlevelContact));
       } else if (highlevelContact?.id && !newQuoteId) {
         // Quote wasn't persisted (Supabase not configured). Tell the
         // operator the HL link won't be made either.
@@ -3065,6 +3120,15 @@ export default function QuoteBuilder({
           inputs,
           quoteId: savedQuoteId ?? undefined,
           designId: designId ?? undefined,
+          // #214 review fix (staff MED): recommendRoofline is the builder's
+          // SECOND /api/quote caller and was missed by the first #214 pass —
+          // sending customer WITHOUT the session hl made the server fall
+          // back to the STORED hl id (possibly the pre-pick one, if the
+          // pick-time attach hadn't landed) paired with the FRESH form
+          // fields: the same self-inconsistent identity class as the attach
+          // route's stale-fields bug, inverted. Same live value runQuote
+          // sends.
+          highlevelContactId: form.highlevelContactId,
           // NCE + YLL Neighbor tags (#198 review fix, staff HIGH): this
           // payload used to omit the tags entirely, so a toggled chip
           // followed by a roofline-radio pick + Send never persisted the

@@ -23,7 +23,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
-import { propagateQuoteTagsToCustomer } from '@/lib/customers';
+import { attachQuoteToCustomer, propagateQuoteTagsToCustomer, quoteRowToIdentity } from '@/lib/customers';
 
 export const runtime = 'nodejs';
 
@@ -66,14 +66,23 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // MED, S34 #198 review) — defense-in-depth even though staff have no
     // reason to hand-toggle a test quote's tag from this admin-only route;
     // mirrors saveQuote's is_test posture and keeps the invariant even if a
-    // future writer breaks the /send + /mark-sent guards.
-    .select('id, is_nce, quote_sent_at, customer_id, is_test')
+    // future writer breaks the /send + /mark-sent guards. #214: the identity
+    // columns ride along too, feeding the verify-or-reattach below.
+    .select(
+      'id, is_nce, quote_sent_at, customer_id, is_test, deposit_paid_at, highlevel_contact_id, customer_name, customer_email, customer_phone, customer_address',
+    )
     .maybeSingle<{
       id: string;
       is_nce: boolean;
       quote_sent_at: string | null;
       customer_id: string | null;
       is_test: boolean;
+      deposit_paid_at: string | null;
+      highlevel_contact_id: string | null;
+      customer_name: string | null;
+      customer_email: string | null;
+      customer_phone: string | null;
+      customer_address: string | null;
     }>();
 
   if (error) {
@@ -84,9 +93,37 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Quote not found' }, { status: 404 });
   }
 
-  if (!data.is_test && isNce && data.quote_sent_at && data.customer_id) {
+  // #214: propagation target = the CACHED customer_id first, with a
+  // re-attach attempt ONLY when the quote was never linked (lifts the old
+  // customer_id-non-null gate, so tagging a never-linked sent quote heals
+  // the link instead of silently skipping — mirrors the send route's lazy
+  // attach; quoteRowToIdentity keeps the row's display sentinels out of the
+  // identity). Deliberately NOT attach-first (review fix, admin MED): this
+  // toggle legitimately fires on OLD quotes (retroactive tagging is a real
+  // workflow), and an unconditional re-resolution would newest-win that old
+  // quote's YEAR-OLD stored fields back onto a customer row later quotes
+  // kept current. The cache is trustworthy here because updateQuote's own
+  // #214 re-attach maintains it at every identity edit AND /send +
+  // /mark-sent force a fresh resolution at the quote_sent_at transition
+  // this propagation gates on — the write sources verify, the read sites
+  // trust. (Delta-verify note: the two identity writers that bypass those —
+  // rebook's insert and the self-serve enrich — either copy an
+  // already-resolved link or run pre-send, so the invariant holds.)
+  if (!data.is_test && isNce && data.quote_sent_at) {
     try {
-      await propagateQuoteTagsToCustomer(data.customer_id, { isNce: true });
+      // Booked-freeze parity (round-3 delta-verify): the null-link heal
+      // never runs on a booked quote either — near-unreachable (send-time
+      // resolution gates quote_sent_at), kept for sibling parity with
+      // updateQuote + the attach route. Propagation to a non-null cached id
+      // is unaffected.
+      const linkedCustomerId =
+        data.customer_id ??
+        (data.deposit_paid_at
+          ? null
+          : ((await attachQuoteToCustomer(quoteRowToIdentity(data)))?.customerId ?? null));
+      if (linkedCustomerId) {
+        await propagateQuoteTagsToCustomer(linkedCustomerId, { isNce: true });
+      }
     } catch (err) {
       console.warn('[api/quotes/:id/nce] tag propagation failed (non-fatal):', err);
     }
