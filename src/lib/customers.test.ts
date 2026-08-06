@@ -88,10 +88,24 @@ function makeFakeSupabase(initial: { quotes?: Row[]; customers?: Row[]; properti
       rows.push(row);
       return row;
     };
-    const doUpdate = () => {
+    // #213 (round-2 test infra): mirrors the real UNIQUE(match_key)
+    // constraint on customers UPDATEs too (previously only modeled for
+    // INSERT) — needed to exercise adopt()'s key-upgrade-hits-UNIQUE retry
+    // path (findOrCreateCustomer round-2 fix 3): the plain key can already
+    // be legitimately owned by a DIFFERENT row (an earlier-rejected
+    // candidate), which a real UPDATE would reject with a 23505 exactly like
+    // an INSERT would.
+    const doUpdate = (): { matched: Row[]; violated: boolean } => {
       const matched = rows.filter((r) => state.filters.every((f) => f(r)));
+      if (table === 'customers' && state.updateRow && 'match_key' in state.updateRow) {
+        const newKey = (state.updateRow as Row).match_key;
+        const matchedIds = new Set(matched.map((r) => r.id));
+        if (rows.some((r) => r.match_key === newKey && !matchedIds.has(r.id))) {
+          return { matched: [], violated: true };
+        }
+      }
       for (const r of matched) Object.assign(r, state.updateRow);
-      return matched;
+      return { matched, violated: false };
     };
     // Consumes the forced error (once) so only the NEXT insert on this table fails.
     const takeForcedInsertError = () => {
@@ -170,7 +184,13 @@ function makeFakeSupabase(initial: { quotes?: Row[]; customers?: Row[]; properti
         // must apply the mutation before reading back — mirrors then()'s
         // existing 'update' handling below (doUpdate), previously only
         // reachable via a bare await in this fake.
-        if (state.op === 'update') return { data: doUpdate()[0] ?? null, error: null };
+        if (state.op === 'update') {
+          const { matched, violated } = doUpdate();
+          if (violated) {
+            return { data: null, error: { code: '23505', message: 'duplicate key value violates unique constraint' } };
+          }
+          return { data: matched[0] ?? null, error: null };
+        }
         return { data: match()[0] ?? null, error: null };
       },
       async single() {
@@ -187,7 +207,13 @@ function makeFakeSupabase(initial: { quotes?: Row[]; customers?: Row[]; properti
       },
       then(resolve: (v: unknown) => void) {
         if (state.op === 'insert') return resolve({ data: doInsert(), error: null });
-        if (state.op === 'update') return resolve({ data: doUpdate(), error: null });
+        if (state.op === 'update') {
+          const { matched, violated } = doUpdate();
+          if (violated) {
+            return resolve({ data: null, error: { code: '23505', message: 'duplicate key value violates unique constraint' } });
+          }
+          return resolve({ data: matched, error: null });
+        }
         return resolve({ data: match(), error: null });
       },
     };
@@ -764,6 +790,69 @@ describe('findOrCreateCustomer — #213 round 2: a rejected .in() hit must not s
     expect(rx.phone).toBe('5550000000'); // untouched
     expect(rx.name).toBe('Not Alice'); // untouched
     expect(rx.hl_contact_id).toBeNull(); // untouched
+    warnSpy.mockRestore();
+  });
+});
+
+describe('findOrCreateCustomer — #213 round 2: adopt() key-upgrade UNIQUE handling', () => {
+  it('adopting a row whose key-upgrade collides with an earlier-rejected candidate keeps its existing key — info, never error', async () => {
+    const fake = makeFakeSupabase({
+      customers: [
+        { id: 'alice', match_key: 'phone:5551234567', phone: '5551234567', name: 'Alice', email: null, hl_contact_id: null },
+      ],
+    });
+    sbRef.current = fake.client;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+
+    // Creates Bob's own row (R2) under a disambiguated key — rejected
+    // against Alice's phone-only row (phone agrees, name conflicts).
+    const bob1 = await findOrCreateCustomer({ phone: '555-123-4567', name: 'Bob' });
+    expect(fake.tables.customers).toHaveLength(2);
+    const bob1Key = fake.tables.customers.find((c) => c.id === bob1!.id)!.match_key;
+    expect(bob1Key).not.toBe('phone:5551234567');
+
+    // Repeat: phase 1 rejects Alice again; the OR-fallback then finds BOTH
+    // Alice and Bob's own row — Bob's own row qualifies to ADOPT (phone +
+    // name, 2 fields agree), and its key-upgrade attempt (dup: ->
+    // phone:...) collides with Alice's row, which already legitimately
+    // owns that plain key.
+    const bob2 = await findOrCreateCustomer({ phone: '555-123-4567', name: 'Bob' });
+
+    expect(bob2?.id).toBe(bob1?.id); // adopted Bob's own row, not a third row
+    expect(fake.tables.customers).toHaveLength(2);
+    expect(fake.tables.customers.find((c) => c.id === bob1!.id)!.match_key).toBe(bob1Key); // stayed on its dup key
+    expect(fake.tables.customers.find((c) => c.id === 'alice')!.match_key).toBe('phone:5551234567'); // untouched
+    expect(errorSpy).not.toHaveBeenCalled(); // never error-level for this expected, permanent case
+    expect(infoSpy).toHaveBeenCalledTimes(1);
+    expect(infoSpy.mock.calls[0][0]).toContain(bob1!.id);
+
+    warnSpy.mockRestore();
+    errorSpy.mockRestore();
+    infoSpy.mockRestore();
+  });
+});
+
+describe('findOrCreateCustomer — #213 round 2: dedup the rejected list before warning', () => {
+  it('the same candidate rejected via both the exact-match phase and the secondary search is named ONCE, not twice', async () => {
+    const fake = makeFakeSupabase({
+      customers: [
+        // Mom's sparse row: found by phase 1 (exact key) AND, since her
+        // email also matches the raw column, by phase 2's OR-fallback too.
+        { id: 'mom', match_key: 'email:family@x.com', email: 'family@x.com', phone: null, name: null, hl_contact_id: null },
+      ],
+    });
+    sbRef.current = fake.client;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const res = await findOrCreateCustomer({ email: 'family@x.com', phone: '555-999-9999', name: 'Bob Smith' });
+
+    expect(res?.id).not.toBe('mom');
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const msg = warnSpy.mock.calls[0][0] as string;
+    // 'mom' appears exactly once in the rejected list, not twice.
+    expect(msg.split('mom').length - 1).toBe(1);
     warnSpy.mockRestore();
   });
 });

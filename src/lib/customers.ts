@@ -302,6 +302,22 @@ function describeRejection(d: { vetoed: boolean; agreeing: string[]; disagreeing
   return bits.length ? bits.join(', ') : 'no agreeing field';
 }
 
+// #213 (round-2 adversarial delta-verify, fix 4 — LOW): the SAME candidate
+// can legitimately get classified (and rejected) more than once across
+// phases — e.g. the exact-match phase and the secondary/OR search can both
+// surface the same row, and round-2 fix 2 above means a single search can
+// now surface it twice too. Dedup by id before the final candidate-merge
+// warning so staff see one line per row, not a repeated one; keep whichever
+// detail string is longest (the "richest") if they ever differ.
+function dedupRejected(rejected: Array<{ id: string; detail: string }>): Array<{ id: string; detail: string }> {
+  const byId = new Map<string, string>();
+  for (const r of rejected) {
+    const existing = byId.get(r.id);
+    if (!existing || r.detail.length > existing.length) byId.set(r.id, r.detail);
+  }
+  return Array.from(byId, ([id, detail]) => ({ id, detail }));
+}
+
 // #213 (3-lens review, fix 5 — tech MED): a deterministic, collision-
 // avoiding match_key for a row created because a candidate was found but
 // REJECTED — see findOrCreateCustomer, WT-55. Plain `customerMatchKey
@@ -399,26 +415,50 @@ export async function findOrCreateCustomer(
   // whatever key was searched for, so this is a no-op key-wise UNLESS that
   // key was the `dup:` disambiguation key, in which case it correctly
   // upgrades to a clean key now that the adopt is confirmed safe.
+  //
+  // #213 (round-2 adversarial delta-verify, fix 3 — MED): the key upgrade
+  // itself can hit UNIQUE — `key` (the plain hl/email/phone/name key) is
+  // sometimes already legitimately owned by an EARLIER-rejected candidate
+  // (that's exactly why THIS row is still on a disambiguated key). That's
+  // not a transient race: it's a permanent structural fact that will recur
+  // on every future adopt of this same row, for as long as the earlier
+  // candidate's row exists — so it must never be logged as an error. Retry
+  // the SAME write with only the key change dropped (row stays on its
+  // existing key; the contact-field backfill still applies), and log once
+  // at info, not error.
   async function adopt(
     row: Pick<CustomerRow, 'id' | 'match_key' | 'hl_contact_id' | 'name' | 'email' | 'phone'>,
   ): Promise<{ id: string }> {
     const rowKeyRank = keyPrecedenceRank(row.match_key);
     const ourKeyRank = keyPrecedenceRank(key);
     const nextMatchKey = ourKeyRank < rowKeyRank ? key : row.match_key;
+    const contactFields = {
+      hl_contact_id: norm(identity.hl_contact_id) ?? row.hl_contact_id,
+      name: norm(identity.name) ?? row.name,
+      email: norm(identity.email) ?? row.email,
+      phone: norm(identity.phone) ?? row.phone,
+    };
     // sb is narrowed non-null above, but that narrowing doesn't cross into a
     // nested function's body — `adopt` only ever runs synchronously within
     // this same call, after the same guard, so the assertion is sound here.
     const { error: updErr } = await sb!
       .from('customers')
-      .update({
-        match_key: nextMatchKey,
-        hl_contact_id: norm(identity.hl_contact_id) ?? row.hl_contact_id,
-        name: norm(identity.name) ?? row.name,
-        email: norm(identity.email) ?? row.email,
-        phone: norm(identity.phone) ?? row.phone,
-      })
+      .update({ match_key: nextMatchKey, ...contactFields })
       .eq('id', row.id);
-    if (updErr) console.error('findOrCreateCustomer merge-upgrade error:', updErr);
+    if (updErr) {
+      if (updErr.code === '23505' && nextMatchKey !== row.match_key) {
+        const { error: retryErr } = await sb!.from('customers').update(contactFields).eq('id', row.id);
+        if (retryErr) {
+          console.error('findOrCreateCustomer merge-upgrade error (contact-field retry):', retryErr);
+        } else {
+          console.info(
+            `findOrCreateCustomer: customer ${row.id} stays on its existing key — ${key} is already owned by a previously-rejected candidate (expected).`,
+          );
+        }
+      } else {
+        console.error('findOrCreateCustomer merge-upgrade error:', updErr);
+      }
+    }
     return { id: row.id };
   }
 
@@ -556,7 +596,9 @@ export async function findOrCreateCustomer(
     if (!ins.error && ins.data) {
       const newId = ins.data.id as string;
       if (rejected.length) {
-        const pairs = rejected.map((r) => `${r.id} (${r.detail})`).join('; ');
+        const pairs = dedupRejected(rejected)
+          .map((r) => `${r.id} (${r.detail})`)
+          .join('; ');
         console.warn(
           `findOrCreateCustomer: candidate merge NOT applied for new customer ${newId} — rejected: ${pairs}. Review for a manual merge (WT-55).`,
         );
