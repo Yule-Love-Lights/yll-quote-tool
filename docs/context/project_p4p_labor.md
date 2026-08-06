@@ -63,15 +63,35 @@ accountant or payroll provider bless the formula. Sources:
 [NY DOL 2026 increase](https://www.governor.ny.gov/news/money-your-pockets-governor-hochul-reminds-new-yorkers-minimum-wage-increase-january-1),
 [Proskauer 2026 summary](https://www.proskauer.com/blog/new-york-state-minimum-wage-and-exempt-salary-updates-for-2026).
 
-## A3. The ecosystem split (stated assumption, correct me if wrong)
+## A3. The ecosystem split (CONFIRMED by Naldo, 2026-08-06 evening round)
 
 - **Quote tool (this repo):** system of record and the engine. Tables, BH math,
   labor-revenue math, pay math, scheduling data, office admin screens, the
-  Telegram bot, APIs for the hub.
-- **YLL Operations Hub (yll-call-copilot repo, being built in another session):**
-  the crew- and office-facing app. Crew clock-in page, my-hours, my-efficiency,
-  my-P4P-earnings. Also call tracking and, later, the yard-sign/door-hanger team
-  (explicitly out of scope here).
+  Telegram bot, and token-authed HTTP APIs for the hub.
+- **YLL Operations Hub = yll-call-copilot, extended.** Confirmed: the hub is not
+  a new repo; it grows inside `Yule-Love-Lights/yll-call-copilot` (today the
+  sales/coach/practice app). Crew clock-in page, my-hours, my-efficiency,
+  my-P4P-earnings live there. Later: the yard-sign/door-hanger team (out of
+  scope here).
+- **Data wiring (confirmed):** the hub calls quote tool APIs. Each app keeps its
+  own database. VERIFIED 2026-08-06: the two apps already run separate Supabase
+  projects, so this matches reality with zero migration.
+- **Division of labor (Naldo's call):** Codex works FULL-STACK on hub features,
+  meaning Codex also writes the quote tool API routes its screens need. That
+  puts two assistants in the quote tool repo, so the coordination rules below
+  are load-bearing:
+  - Codex reads the quote tool's `AGENTS.md` before any quote-tool-side work
+    and follows it like a third dev: branch prefix (`codex/...`), PR into
+    master, gates green (`npx tsc --noEmit · npm run lint · npm test`), a human
+    merges, never merge stale.
+  - Any NEW crew-facing route Codex adds MUST go into `operatorGate`'s allowlist
+    in the same PR and be verified logged-out (standing pitfall, real prod
+    incidents).
+  - The contract doc (see below) is the handshake: endpoints, auth, and shapes
+    get written there BEFORE either side builds against them.
+  - Contract doc home: `docs/context/OPERATIONS_HUB_CONTRACT.md` in the quote
+    tool (canonical), with a pointer copy in `yll-call-copilot/docs/` so Codex
+    finds it natively. To be written once Codex's hub plan doc is shared.
 - **GHL:** stays the CRM for leads/comms. Untouched by this build.
 
 ## A4. The learning loop (because the numbers are unknown)
@@ -175,6 +195,31 @@ day, not 12-stop mow routes), GHL changes.
 4. Phase 1 build brief once seed rates exist (Naldo's go).
 5. When Phase 2 ships: cancel the Copilot subscription (Naldo's yes on record,
    2026-08-06). Flag it in that session's close notes.
+6. Get Codex's hub plan doc into the repo (Naldo said it is a plan doc only, no
+   hub code yet). Then write `docs/context/OPERATIONS_HUB_CONTRACT.md` from both
+   plans and mirror a pointer into `yll-call-copilot/docs/`.
+
+## A8. What the hub will need from the quote tool (draft API surface)
+
+Not built, not final. This is the starting list for the contract doc, so Codex
+has something concrete to react to. All endpoints token-authed (service token per
+app, plus the crew member's identity), all added to `operatorGate`'s allowlist in
+the same PR that creates them, all verified logged-out.
+
+| Endpoint | Purpose | Phase |
+|---|---|---|
+| `GET /api/ops/me/day` | today's assigned jobs for the signed-in crew member; returns empty until clocked in (the clock gate) | 2-3 |
+| `POST /api/ops/clock/in` / `clock/out` | day clock, mirrors the Telegram bot's behavior | 2 |
+| `POST /api/ops/jobs/{id}/start` / `stop` | per-job clock | 2 |
+| `GET /api/ops/me/hours` | this week's entries, approved vs pending | 2 |
+| `GET /api/ops/me/stats` | efficiency, budgeted vs actual, effective hourly (shadow or live) | 4-5 |
+| `GET /api/ops/me/earnings` | pay-period breakdown: base, pool share, floor true-up, bonuses, deductions | 4-6 |
+| `GET /api/ops/leaderboard` | crew-wide efficiency board | 5 |
+| `GET /api/ops/schedule` | week view for the office/dispatch surface if the hub renders it | 3 |
+
+Identity note: the quote tool knows crew by `bot_users.telegram_user_id`; the hub
+knows them by its own auth. The contract doc must define the mapping (likely a
+`crew_members` table in the quote tool holding both keys plus the pay fields).
 
 ---
 
