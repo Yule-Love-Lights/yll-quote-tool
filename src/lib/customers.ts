@@ -229,24 +229,54 @@ function compareFields(
   return { agreeing, disagreeing };
 }
 
+// #213 (round-2 adversarial delta-verify, fix 1 — HIGH, replaces the
+// original rule 4 predicate): which of {email, phone, name} are POPULATED
+// (non-null after normalizing) on a given identity/row — used to check
+// whether `identity` CONTRIBUTES a field the candidate `row` has no value
+// for at all (as opposed to merely disagreeing on a shared one).
+function populatedFieldSet(x: { email?: string | null; phone?: string | null; name?: string | null }): Set<string> {
+  const s = new Set<string>();
+  if (norm(x.email)) s.add('email');
+  if (normalizePhone(x.phone)) s.add('phone');
+  if (norm(x.name)) s.add('name');
+  return s;
+}
+
+function isSubsetOf(a: Set<string>, b: Set<string>): boolean {
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
+}
+
 // #213 (3-lens review, fix 3 — staff HIGH, design refinement over the
-// original #213 rule): the FULL adopt/reject decision for whether `identity`
+// original #213 rule; rule 4's predicate corrected by a round-2 adversarial
+// delta-verify, HIGH): the FULL adopt/reject decision for whether `identity`
 // may adopt an existing `row`, in ONE fixed total order:
 //   1. hl-CONFLICT (hlConflicts) → hard VETO, never adopt. Beats every other
 //      signal, including a 2-field agreement (fix 2).
 //   2. hl-AGREE (hlAgrees) → adopt unconditionally (design point 1).
 //   3. >=2 of {email, phone, name} agree → adopt.
-//   4. >=1 field agrees AND ZERO fields populated on BOTH sides disagree →
-//      adopt. Absence isn't evidence of a different person (a row that's
-//      never had a name can't "conflict" with one identity happens to
-//      provide); an active disagreement on a field BOTH sides carry is. This
-//      is what makes an IDENTICAL single-field identity's repeat (e.g. two
-//      quotes that only ever carry the SAME phone, nothing else) converge
-//      deterministically instead of splitting on race timing.
+//   4. >=1 field agrees AND ZERO fields populated on BOTH sides disagree AND
+//      `identity`'s populated field-set is a SUBSET of `row`'s populated
+//      field-set → adopt. Absence isn't evidence of a different person (a
+//      row that's never had a name can't "conflict" with one identity
+//      happens to provide) — but the SUBSET check matters: a RICH identity
+//      (e.g. email+phone+name) hitting a SPARSE row (email only) on just
+//      the one shared field would otherwise adopt and newest-win would
+//      stamp the identity's uncorroborated phone/name onto the row — the
+//      exact wrong-merge class this ticket exists to close, just reached
+//      asymmetrically (rich-into-sparse) instead of symmetrically
+//      (sparse-into-sparse). An identity that contributes NO field the row
+//      lacks can't cause that: either it's an identical-or-sparser repeat
+//      (subset holds, e.g. two quotes that only ever carry the same phone,
+//      or a lead's email-only identity meeting its own fuller past profile
+//      — both converge deterministically instead of splitting on race
+//      timing or bouncing a legitimate repeat), or it's actively
+//      contributing something new and unproven, which this rule now
+//      declines to trust.
 //   5. Otherwise → reject — the money case (e.g. same phone, DIFFERENT
-//      name): a shared household field with an active conflict elsewhere
-//      must never silently attach this quote's identity — and, via #199,
-//      its NCE money terms — to the wrong customer.
+//      name, or a rich identity's uncorroborated extra field): a shared
+//      household field must never silently attach this quote's identity —
+//      and, via #199, its NCE money terms — to the wrong customer.
 function classifyCandidate(
   identity: CustomerIdentity,
   row: Pick<CustomerRow, 'hl_contact_id' | 'email' | 'phone' | 'name'>,
@@ -254,7 +284,11 @@ function classifyCandidate(
   if (hlConflicts(identity, row)) return { adopt: false, vetoed: true, agreeing: [], disagreeing: [] };
   if (hlAgrees(identity, row)) return { adopt: true, vetoed: false, agreeing: [], disagreeing: [] };
   const { agreeing, disagreeing } = compareFields(identity, row);
-  const adopt = agreeing.length >= 2 || (agreeing.length >= 1 && disagreeing.length === 0);
+  const adopt =
+    agreeing.length >= 2 ||
+    (agreeing.length >= 1 &&
+      disagreeing.length === 0 &&
+      isSubsetOf(populatedFieldSet(identity), populatedFieldSet(row)));
   return { adopt, vetoed: false, agreeing, disagreeing };
 }
 
@@ -461,22 +495,31 @@ export async function findOrCreateCustomer(
   const phoneRaw = norm(identity.phone);
   if (phoneRaw && safeOrValue(phoneRaw)) orConds.push(`phone.eq.${phoneRaw}`);
 
-  let merge: CustomerRow | undefined;
+  // #213 (round-2 adversarial delta-verify, fix 2 — HIGH): a REJECTED .in()
+  // hit must not suppress the OR-fallback below — a different, adoptable
+  // candidate can still exist there (e.g. an EARLIER no-hl disambiguated row
+  // for the SAME real person, findable only by a raw email/phone column,
+  // while .in() instead surfaced an unrelated row that merely shares this
+  // identity's derived secondary key). Both searches now iterate every row
+  // they return (not just the first) and classify each in turn, so a
+  // rejected candidate sorting first in a result set can't hide an
+  // adoptable one sorting after it — adopt the first candidate, from either
+  // search, that actually passes; push every reject along the way.
   if (secondaryKeys.length) {
-    const { data: byKey } = await sb
-      .from('customers')
-      .select('*')
-      .in('match_key', secondaryKeys);
-    merge = (byKey as CustomerRow[] | null)?.[0];
+    const { data: byKey } = await sb.from('customers').select('*').in('match_key', secondaryKeys);
+    for (const row of (byKey as CustomerRow[] | null) ?? []) {
+      const decision = classifyCandidate(identity, row);
+      if (decision.adopt) return await adopt(row);
+      rejected.push({ id: row.id, detail: describeRejection(decision) });
+    }
   }
-  if (!merge && orConds.length) {
+  if (orConds.length) {
     const { data: candidates } = await sb.from('customers').select('*').or(orConds.join(','));
-    merge = (candidates as CustomerRow[] | null)?.[0];
-  }
-  if (merge) {
-    const decision = classifyCandidate(identity, merge);
-    if (decision.adopt) return await adopt(merge);
-    rejected.push({ id: merge.id, detail: describeRejection(decision) });
+    for (const row of (candidates as CustomerRow[] | null) ?? []) {
+      const decision = classifyCandidate(identity, row);
+      if (decision.adopt) return await adopt(row);
+      rejected.push({ id: row.id, detail: describeRejection(decision) });
+    }
   }
 
   // #213 (3-lens review, fix 1 — tech HIGH): create, with the SAME

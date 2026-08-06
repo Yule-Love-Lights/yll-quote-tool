@@ -587,7 +587,7 @@ describe('findOrCreateCustomer — #213 >=2-field identity-agreement gate', () =
       ],
     });
     sbRef.current = fake.client;
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     // First call: single-field (phone-only) reject against Alice's row
     // creates Bob's own new row under a disambiguated key.
@@ -604,6 +604,7 @@ describe('findOrCreateCustomer — #213 >=2-field identity-agreement gate', () =
 
     expect(bob2?.id).toBe(bob1?.id); // recovered Bob's row, not a third row
     expect(fake.tables.customers).toHaveLength(2); // still just Alice + Bob
+    warnSpy.mockRestore();
   });
 
   // #213 fix 4 (customer HIGH-leverage): saveQuote now threads
@@ -640,7 +641,7 @@ describe('findOrCreateCustomer — #213 >=2-field identity-agreement gate', () =
       ],
     });
     sbRef.current = fake.client;
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const res = await attachQuoteToCustomer({
       id: 'q1',
@@ -657,6 +658,113 @@ describe('findOrCreateCustomer — #213 >=2-field identity-agreement gate', () =
     expect(res?.customerId).not.toBe('c1');
     expect(fake.tables.customers).toHaveLength(2);
     expect(fake.tables.customers.find((c) => c.id === 'c1')!.hl_contact_id).toBe('hl-old'); // untouched
+    warnSpy.mockRestore();
+  });
+});
+
+// #213 round 2 (adversarial delta-verify of the review-fix round above)
+// found fix 3's original zero-disagreement predicate still had a gap: it
+// checked only agreement/disagreement, not whether the identity was
+// CONTRIBUTING an uncorroborated new field. Rule 4 is now subset-scoped —
+// see classifyCandidate.
+describe('findOrCreateCustomer — #213 round 2: subset-scoped rule 4', () => {
+  it('a RICH identity hitting a SPARSE row on one shared field does NOT adopt — rejects + logs, row untouched', async () => {
+    const fake = makeFakeSupabase({
+      customers: [
+        // Mom's row: email only, nothing else ever recorded.
+        { id: 'mom', match_key: 'email:family@x.com', email: 'family@x.com', phone: null, name: null, hl_contact_id: null },
+      ],
+    });
+    sbRef.current = fake.client;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Bob's own quote: same shared household email, PLUS his own phone and
+    // name — fields the row has never seen and can't corroborate.
+    const res = await findOrCreateCustomer({ email: 'family@x.com', phone: '555-999-9999', name: 'Bob Smith' });
+
+    expect(res?.id).not.toBe('mom'); // NOT adopted — email agreement alone isn't enough once identity contributes new fields
+    expect(fake.tables.customers).toHaveLength(2);
+    const momRow = fake.tables.customers.find((c) => c.id === 'mom')!;
+    expect(momRow.phone).toBeNull(); // untouched — Bob's phone never stamped onto Mom's row
+    expect(momRow.name).toBeNull(); // untouched
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toContain('mom');
+    expect(warnSpy.mock.calls[0][0]).toContain('email');
+    warnSpy.mockRestore();
+  });
+
+  it('an IDENTICAL single-field identity repeat converges at PHASE 1 — no disambiguated row ever created', async () => {
+    const fake = makeFakeSupabase();
+    sbRef.current = fake.client;
+
+    const a = await findOrCreateCustomer({ email: 'jane@x.com' });
+    const b = await findOrCreateCustomer({ email: 'jane@x.com' }); // identical, nothing else on either side
+
+    expect(b?.id).toBe(a?.id);
+    expect(fake.tables.customers).toHaveLength(1); // never split into a dup: row
+    expect(fake.tables.customers[0].match_key).toBe('email:jane@x.com'); // plain key, never disambiguated
+  });
+
+  it('a SPARSE identity (e.g. an email-only lead) adopts a RICHER existing row — contributes nothing new', async () => {
+    const fake = makeFakeSupabase({
+      customers: [
+        { id: 'c1', match_key: 'email:jane@x.com', email: 'jane@x.com', phone: '5551234567', name: 'Jane Doe', hl_contact_id: null },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const res = await findOrCreateCustomer({ email: 'jane@x.com' }); // no phone/name at all
+
+    expect(res?.id).toBe('c1'); // adopts — identity's {email} is a subset of the row's {email,phone,name}
+    expect(fake.tables.customers).toHaveLength(1);
+    expect(fake.tables.customers[0].phone).toBe('5551234567'); // untouched (identity had nothing to overwrite it with anyway)
+    expect(fake.tables.customers[0].name).toBe('Jane Doe');
+  });
+});
+
+describe('findOrCreateCustomer — #213 round 2: a rejected .in() hit must not suppress the OR-search', () => {
+  it('visit 2 (hl-linked) converges on the earlier disambiguated row from visit 1, not a third row — RX untouched', async () => {
+    const fake = makeFakeSupabase({
+      customers: [
+        // RX: an unrelated existing customer who happens to share Alice's
+        // email (the classic household/coincidence case), with a DIFFERENT
+        // phone + name.
+        { id: 'RX', match_key: 'email:alice@x.com', email: 'alice@x.com', phone: '5550000000', name: 'Not Alice', hl_contact_id: null },
+      ],
+    });
+    sbRef.current = fake.client;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Visit 1: Alice's real identity, no hl yet. The exact-match phase finds
+    // RX (same match_key), rejects it (phone + name both conflict), and
+    // creates R1 under a no-hl disambiguated key.
+    const visit1 = await findOrCreateCustomer({
+      email: 'alice@x.com',
+      phone: '555-123-4567',
+      name: 'Alice Real',
+    });
+    expect(visit1?.id).not.toBe('RX');
+    expect(fake.tables.customers).toHaveLength(2); // RX + R1
+
+    // Visit 2: same Alice, now hl-linked. The .in() secondary search finds
+    // RX again (rejects it again) — this must NOT stop the search; the
+    // OR-fallback must still find R1 (raw email/phone columns match) and
+    // adopt it, upgrading it to the hl key.
+    const visit2 = await findOrCreateCustomer({
+      hl_contact_id: 'hl-alice',
+      email: 'alice@x.com',
+      phone: '555-123-4567',
+      name: 'Alice Real',
+    });
+
+    expect(visit2?.id).toBe(visit1?.id); // converged on R1, not a third row
+    expect(fake.tables.customers).toHaveLength(2); // still just RX + R1
+    expect(fake.tables.customers.find((c) => c.id === visit1!.id)!.match_key).toBe('hl:hl-alice'); // R1 upgraded
+    const rx = fake.tables.customers.find((c) => c.id === 'RX')!;
+    expect(rx.phone).toBe('5550000000'); // untouched
+    expect(rx.name).toBe('Not Alice'); // untouched
+    expect(rx.hl_contact_id).toBeNull(); // untouched
+    warnSpy.mockRestore();
   });
 });
 
