@@ -69,6 +69,7 @@ function makeSb(
     quote_sent_at?: string | null;
     customer_id?: string | null;
     is_test?: boolean;
+    deposit_paid_at?: string | null;
   } | null,
 ) {
   const updatePayloads: Array<Record<string, unknown>> = [];
@@ -91,6 +92,9 @@ function makeSb(
           quote_sent_at: merged.quote_sent_at,
           customer_id: merged.customer_id,
           is_test: merged.is_test ?? false,
+          // #214 round 3: the booked-freeze gate reads this off the same
+          // select (null = unbooked, mirroring the real nullable column).
+          deposit_paid_at: merged.deposit_paid_at ?? null,
         },
         error: null,
       };
@@ -248,6 +252,24 @@ describe('POST /api/quotes/[id]/nce — tag propagation (#198)', () => {
     expect(res.status).toBe(200);
     expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
     expect(propagateMock).toHaveBeenCalledWith('cust-1', { isNce: true });
+  });
+
+  // #214 round 3 (booked-freeze parity): the null-link heal never runs on a
+  // booked quote — the customers link is frozen once money moved.
+  it('does NOT attempt the null-link heal on a BOOKED quote (deposit paid)', async () => {
+    const { client } = makeSb({
+      id: VALID_UUID,
+      is_nce: false,
+      quote_sent_at: '2026-08-01T00:00:00Z',
+      customer_id: null,
+      deposit_paid_at: '2026-08-02T00:00:00Z',
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ isNce: true }), makeParams(VALID_UUID));
+    expect(res.status).toBe(200);
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+    expect(propagateMock).not.toHaveBeenCalled();
   });
 
   // #214: the old customer_id-non-null gate is lifted — tagging a sent,
