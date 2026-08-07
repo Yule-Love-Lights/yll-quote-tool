@@ -401,6 +401,32 @@ merge, never weaken.
   error) alerting through the QT bot, reconciliation jobs for every event
   family, replay never duplicates effects.
 
+### v1.3.0 configuration rulings (Naldo, 2026-08-07; P16 items 5, 6, 8, 10)
+
+- **Door hangers (P16.5): pay OFF.** No door-hanger pay unit is configured;
+  door-hanger placements never enter a pay count or an
+  `AdvertisingWeekClosed` net count until a later ruling. Capture may exist
+  under the protective residential-privacy default. Any door-hanger pay field
+  stays null, and the engine treats a configured-null unit as
+  "feature disabled", never as zero-value work.
+- **Completion media (P16.6): NOT REQUIRED, three prompts.** The completion
+  command never blocks on `photo_refs[]`. The surface prompts at most three
+  times, then completes without media. The same three-attempt cadence is the
+  default for missed-tap nudges. Marked provisional by the owner.
+- **Digests (P16.8):** all four types send at **08:00 America/New_York,
+  daily**. Per-department recipients plus Naldo and Jason on all four.
+  Delivery failures retry per P13/P15 and surface in the admin queue;
+  escalation policy remains open.
+- **Payroll CSV (P16.10): generic vendor-neutral format for now.** One row
+  per pay line, UTF-8, header row, no provisional values:
+  `employee_id, employee_name, period_start, period_end, line_type,
+  description, job_or_campaign_ref, quantity, unit, rate_cents, amount_cents,
+  state, notes`, with a per-employee subtotal row. `line_type` enum:
+  `hourly_base`, `installer_performance_earned`, `advertising_piece_rate`,
+  `floor_true_up`, `training_bonus`, `referral_bonus`, `manual_adjustment`.
+  Vendor column mapping and OT/blended-rate treatment stay open for the
+  payroll professional; QuickBooks remains out of V1.
+
 **Shared schema artifact path (planned, Phase 0):**
 `yll-quote-tool/docs/context/ops-contract-schema/` (generated from the
 OpenAPI fragments; `schema_version` lives in its manifest; both CIs validate
