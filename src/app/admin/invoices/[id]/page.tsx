@@ -503,14 +503,19 @@ export default function InvoiceDetailPage() {
                   )}
 
                   <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={sendBalanceLink}
-                      disabled={sendingLink}
-                      className="text-sm font-semibold px-3 py-1.5 rounded-md bg-[#1f6f43] text-white hover:bg-[#195c38] disabled:opacity-60"
-                    >
-                      {sendingLink ? 'Sending…' : 'Text / email balance link'}
-                    </button>
+                    {/* #199: an NCE balance is never collectable by pay-link — no
+                        override (unlike the charge button below), so the send
+                        button is just hidden, with the note underneath. */}
+                    {!data?.isNce && (
+                      <button
+                        type="button"
+                        onClick={sendBalanceLink}
+                        disabled={sendingLink}
+                        className="text-sm font-semibold px-3 py-1.5 rounded-md bg-[#1f6f43] text-white hover:bg-[#195c38] disabled:opacity-60"
+                      >
+                        {sendingLink ? 'Sending…' : 'Text / email balance link'}
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={copyPayLink}
@@ -543,6 +548,12 @@ export default function InvoiceDetailPage() {
                       </button>
                     )}
                   </div>
+
+                  {data?.isNce && (
+                    <p className="text-xs text-gray-500 mt-1.5">
+                      NCE trade job — the balance is not collectable by pay-link (it settles through NCE instead).
+                    </p>
+                  )}
 
                   {data?.autoChargeEnabled && inv.payment_preference === 'cash_check' && (
                     <p className="text-xs text-gray-500 mt-1.5">
