@@ -19,6 +19,7 @@ import {
   listInvoicesForAdmin,
   listInvoicesForCustomer,
   markInvoicePaidManually,
+  updateInvoicePaymentReference,
   appendRetiredTxn,
   mergeInvoicesNewestFirst,
   reconcileInvoice,
@@ -523,6 +524,34 @@ describe('listInvoicesForAdmin', () => {
     // ('inv-cust-2') is preferred over the quote's ('quote-cust-2').
     expect(cards[1]).toMatchObject({ id: 'i2', highlevelContactId: null, customerId: 'inv-cust-2' });
   });
+
+  // #199: is_nce joins the SAME way is_test does above — feeds the NceBadge.
+  it('joins is_nce from the linked quote', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [
+        { id: 'i1', invoice_number: 1000, job_id: 'j1', quote_id: 'q1', total: 1000, deposit_applied: 500, balance: 500, credit_note: 0, status: 'draft', created_at: '2026-06-02', paid_at: null },
+        { id: 'i2', invoice_number: 1001, job_id: 'j2', quote_id: 'q2', total: 2000, deposit_applied: 1000, balance: 0, credit_note: 0, status: 'paid', created_at: '2026-06-01', paid_at: '2026-06-03' },
+      ],
+      quotes: [
+        { id: 'q1', customer_name: 'Alice', is_test: false, is_nce: true },
+        { id: 'q2', customer_name: 'Bob', is_test: false, is_nce: false },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const cards = await listInvoicesForAdmin();
+    expect(cards[0]).toMatchObject({ id: 'i1', isNce: true });
+    expect(cards[1]).toMatchObject({ id: 'i2', isNce: false });
+  });
+
+  it('defaults isNce to false when the invoice has no linked quote', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [{ id: 'i1', invoice_number: 1000, job_id: null, quote_id: null, total: 1000, deposit_applied: 0, balance: 1000, credit_note: 0, status: 'draft', created_at: '2026-06-02', paid_at: null }],
+    });
+    sbRef.current = fake.client;
+    const cards = await listInvoicesForAdmin();
+    expect(cards[0].isNce).toBe(false);
+  });
 });
 
 describe('setInvoiceTaxOverride', () => {
@@ -795,6 +824,29 @@ describe('getInvoiceDetail', () => {
     expect(d?.intendedDepositUsd).toBeNull();
   });
 
+  // #199: is_nce joins the same way is_test does — gates the charge/send-
+  // balance-link UI and the "Mark paid — NCE" affordance on the detail page.
+  it('surfaces the linked quote\'s is_nce', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [{ id: 'i1', job_id: null, quote_id: 'q1', total: 4000, balance: 3200, status: 'draft' }],
+      quotes: [{ id: 'q1', customer_name: 'Alice', is_test: false, is_nce: true }],
+    });
+    sbRef.current = fake.client;
+
+    const d = await getInvoiceDetail('i1');
+    expect(d?.isNce).toBe(true);
+  });
+
+  it('defaults isNce to false when the invoice has no linked quote', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [{ id: 'i1', job_id: null, quote_id: null, total: 4000, balance: 3200, status: 'draft' }],
+    });
+    sbRef.current = fake.client;
+
+    const d = await getInvoiceDetail('i1');
+    expect(d?.isNce).toBe(false);
+  });
+
   it('returns null when the invoice is missing', async () => {
     const fake = makeFakeSupabase({ invoices: [] });
     sbRef.current = fake.client;
@@ -894,6 +946,102 @@ describe('markInvoicePaidManually', () => {
     const fake = makeFakeSupabase({ invoices: [] });
     sbRef.current = fake.client;
     expect(await markInvoicePaidManually('nope')).toBeNull();
+  });
+
+  // #199: method/reference params — every EXISTING caller (no args) keeps
+  // getting exactly what it always got (no method/reference concept existed
+  // before), now just also labelled 'cash_check'/null.
+  describe('#199 method/reference', () => {
+    it('defaults to cash_check with a null reference when called with no method/reference (back-compat)', async () => {
+      const fake = makeFakeSupabase({
+        invoices: [{ id: 'i1', status: 'awaiting_payment', balance: 500, paid_at: null }],
+      });
+      sbRef.current = fake.client;
+      const inv = await markInvoicePaidManually('i1');
+      expect(inv!.paid_method).toBe('cash_check');
+      expect(inv!.payment_reference ?? null).toBeNull();
+    });
+
+    it('writes method + a trimmed-by-caller reference when passed', async () => {
+      const fake = makeFakeSupabase({
+        invoices: [{ id: 'i1', status: 'awaiting_payment', balance: 500, paid_at: null }],
+      });
+      sbRef.current = fake.client;
+      const inv = await markInvoicePaidManually('i1', 'nce', 'NCE-4821');
+      expect(inv!.paid_method).toBe('nce');
+      expect(inv!.payment_reference).toBe('NCE-4821');
+    });
+
+    it('an idempotent already-paid call returns the EXISTING method/reference, ignoring this call\'s params', async () => {
+      const fake = makeFakeSupabase({
+        invoices: [
+          {
+            id: 'i1',
+            status: 'paid',
+            balance: 0,
+            paid_at: '2026-01-01T00:00:00Z',
+            paid_method: 'nce',
+            payment_reference: 'NCE-1',
+          },
+        ],
+      });
+      sbRef.current = fake.client;
+      const inv = await markInvoicePaidManually('i1', 'cash_check', null);
+      expect(inv!.paid_method).toBe('nce');
+      expect(inv!.payment_reference).toBe('NCE-1');
+    });
+  });
+});
+
+// ─── DB: updateInvoicePaymentReference ──────────────────────────────────────
+
+describe('updateInvoicePaymentReference (#199)', () => {
+  it('updates the reference on an already-paid NCE invoice', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [{ id: 'i1', status: 'paid', balance: 0, paid_method: 'nce', payment_reference: 'NCE-OLD' }],
+    });
+    sbRef.current = fake.client;
+    const inv = await updateInvoicePaymentReference('i1', 'NCE-NEW');
+    expect(inv!.payment_reference).toBe('NCE-NEW');
+  });
+
+  it('trims whitespace off the reference before writing', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [{ id: 'i1', status: 'paid', balance: 0, paid_method: 'nce', payment_reference: 'NCE-OLD' }],
+    });
+    sbRef.current = fake.client;
+    const inv = await updateInvoicePaymentReference('i1', '  NCE-NEW  ');
+    expect(inv!.payment_reference).toBe('NCE-NEW');
+  });
+
+  it('refuses (null) on a whitespace-only reference', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [{ id: 'i1', status: 'paid', balance: 0, paid_method: 'nce', payment_reference: 'NCE-OLD' }],
+    });
+    sbRef.current = fake.client;
+    expect(await updateInvoicePaymentReference('i1', '   ')).toBeNull();
+  });
+
+  it('refuses (null) when the invoice is not paid', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [{ id: 'i1', status: 'awaiting_payment', balance: 500, paid_method: 'nce' }],
+    });
+    sbRef.current = fake.client;
+    expect(await updateInvoicePaymentReference('i1', 'NCE-NEW')).toBeNull();
+  });
+
+  it('refuses (null) when the invoice was paid via cash/check, not NCE', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [{ id: 'i1', status: 'paid', balance: 0, paid_method: 'cash_check' }],
+    });
+    sbRef.current = fake.client;
+    expect(await updateInvoicePaymentReference('i1', 'NCE-NEW')).toBeNull();
+  });
+
+  it('returns null when the invoice does not exist', async () => {
+    const fake = makeFakeSupabase({ invoices: [] });
+    sbRef.current = fake.client;
+    expect(await updateInvoicePaymentReference('nope', 'NCE-NEW')).toBeNull();
   });
 });
 
