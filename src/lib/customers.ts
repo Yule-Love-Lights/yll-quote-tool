@@ -66,6 +66,32 @@ export type QuoteIdentityRow = {
   customer_address?: string | null;
 };
 
+// #214: build an attach identity from STORED quote-row columns, translating
+// the row's display sentinels back to null. saveQuote persists a blank name
+// as 'Anonymous' and a blank address as '(no address)' (quotes.ts
+// blankToNull ?? sentinel) — display conveniences that must never become
+// identity evidence. Without this, a stored-row re-attach (send/mark-sent's
+// lazy attach, and every #214 verify-or-reattach site) would derive
+// match_key `name:anonymous` for a contactless quote — folding EVERY such
+// quote onto one shared "Anonymous" customer row — and compareFields would
+// read the literal sentinel as a real name, forcing false disagreements
+// (dup-row rejects) against a candidate row that carries the person's real
+// name. Insert-time attach never had this problem (it passes the raw form
+// values, pre-sentinel); this helper gives stored-row callers the same
+// clean identity.
+export function quoteRowToIdentity(row: QuoteIdentityRow): QuoteIdentityRow {
+  const name = norm(row.customer_name);
+  const address = norm(row.customer_address);
+  return {
+    id: row.id,
+    highlevel_contact_id: norm(row.highlevel_contact_id),
+    customer_name: name === 'Anonymous' ? null : name,
+    customer_email: norm(row.customer_email),
+    customer_phone: norm(row.customer_phone),
+    customer_address: address === '(no address)' ? null : address,
+  };
+}
+
 function norm(v: string | null | undefined): string | null {
   if (!v) return null;
   const t = v.trim();
@@ -810,7 +836,13 @@ export async function backfillCustomersFromQuotes(
   let skipped = 0;
   for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
     const chunk = rows.slice(i, i + CHUNK_SIZE);
-    const results = await Promise.all(chunk.map((q) => attachQuoteToCustomer(q)));
+    // #214 review fix (3-lens MED): these are STORED rows — run them through
+    // the sentinel translation like every other stored-row attach site. The
+    // raw row was the one remaining caller that could hand the literal
+    // 'Anonymous' name to findOrCreateCustomer, deriving match_key
+    // `name:anonymous` and permanently folding every blank-identity quote
+    // the backfill ever touches onto ONE shared customer row.
+    const results = await Promise.all(chunk.map((q) => attachQuoteToCustomer(quoteRowToIdentity(q))));
     for (const res of results) {
       if (res) linked++;
       else skipped++;

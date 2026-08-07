@@ -145,15 +145,24 @@ export async function POST(req: NextRequest) {
   }
   const referredByCustomerId = typeof rawReferredByCustomerId === 'string' ? rawReferredByCustomerId : null;
 
-  // #leads "Create quote" link: the lead's HighLevel contact id, carried
-  // through so a lead-created quote links to that contact from birth. Opaque
-  // untrusted string — type + length only (no format assumed, unlike the
-  // UUID-shaped referredByCustomerId above). Optional; only honored on a NEW
-  // save (saveQuote) — an update never touches highlevel_contact_id (an
-  // operator's later HL-autocomplete pick/clear, via /api/integrations/
-  // highlevel/attach, is the only thing allowed to change it after insert).
-  if (rawHighlevelContactId !== undefined && typeof rawHighlevelContactId !== 'string') {
-    return NextResponse.json({ error: 'highlevelContactId must be a string if provided' }, { status: 400 });
+  // #leads "Create quote" link + #214 live-session link: the builder
+  // session's HighLevel contact id. Opaque untrusted string — type + length
+  // only (no format assumed, unlike the UUID-shaped referredByCustomerId
+  // above). On a NEW save it lands in the insert (saveQuote). On an UPDATE
+  // it is (since #214) threaded to updateQuote as IDENTITY input only —
+  // updateQuote still never writes the highlevel_contact_id column (the
+  // operator's HL-autocomplete pick/clear, via /api/integrations/highlevel/
+  // attach, stays that column's only post-insert writer). Tri-state: string
+  // = linked this session · explicit null = the session has NO contact
+  // (cleared / never linked — do NOT fall back to the stored id) ·
+  // absent/undefined = caller doesn't know (legacy) → updateQuote falls
+  // back to the stored id.
+  if (
+    rawHighlevelContactId !== undefined &&
+    rawHighlevelContactId !== null &&
+    typeof rawHighlevelContactId !== 'string'
+  ) {
+    return NextResponse.json({ error: 'highlevelContactId must be a string or null if provided' }, { status: 400 });
   }
   if (typeof rawHighlevelContactId === 'string' && rawHighlevelContactId.length > MAX_HL_CONTACT_ID_LEN) {
     return NextResponse.json(
@@ -164,6 +173,9 @@ export async function POST(req: NextRequest) {
   const highlevelContactIdTrimmed =
     typeof rawHighlevelContactId === 'string' ? rawHighlevelContactId.trim() : '';
   const highlevelContactId = highlevelContactIdTrimmed ? highlevelContactIdTrimmed : null;
+  // The tri-state form updateQuote takes (undefined preserved; blank → null).
+  const hlContactIdForUpdate: string | null | undefined =
+    rawHighlevelContactId === undefined ? undefined : highlevelContactId;
 
   // NCE + YLL Neighbor tags (#198): the builder's chip strip sends the CURRENT
   // chip state on every save (both new + edit mode) — optional booleans, same
@@ -667,11 +679,15 @@ export async function POST(req: NextRequest) {
           // honors this too (create-once, idempotent) — see its own doc
           // comment for why an update needs a fresh pre-read of its own.
           referredByCustomerId,
-          // NCE + YLL Neighbor tags (#198): unlike highlevelContactId below,
-          // these ARE honored on the update path — undefined (not sent /
-          // chip strip not touched) leaves the stored value untouched.
+          // NCE + YLL Neighbor tags (#198): these ARE honored on the update
+          // path — undefined (not sent / chip strip not touched) leaves the
+          // stored value untouched.
           legacyRebook,
           isNce,
+          // #214: the session's live HL link, tri-state (see the validation
+          // block above) — identity-resolution input only; updateQuote never
+          // writes the highlevel_contact_id column.
+          hlContactIdForUpdate,
         )
       : await saveQuote(
           safeCustomer,
@@ -681,9 +697,10 @@ export async function POST(req: NextRequest) {
           isTest,
           operator?.id ?? null,
           referredByCustomerId,
-          // #leads "Create quote" link: only honored on this NEW-save path —
-          // never passed to updateQuote, so an existing/reopened quote's
-          // linked contact can't be clobbered by a resave.
+          // #leads "Create quote" link: written into the insert here. (Since
+          // #214 the update path ALSO receives it — as identity input only,
+          // never a column write, so an existing quote's linked contact
+          // still can't be clobbered by a resave.)
           highlevelContactId,
           // NCE + YLL Neighbor tags (#198): the builder's chip strip's
           // current state at first save; undefined → saveQuote's own

@@ -26,7 +26,73 @@ import {
   listCustomerTagsByIds,
   propagateQuoteTagsToCustomer,
   setCustomerTags,
+  quoteRowToIdentity,
 } from './customers';
+
+// ─── #214: quoteRowToIdentity — stored-row → attach identity ────────────────
+// saveQuote persists a blank name as 'Anonymous' and a blank address as
+// '(no address)'; those display sentinels must never become identity evidence
+// (a name:anonymous match_key would fold every contactless quote onto ONE
+// customer row, and a literal-sentinel name forces false field disagreements).
+describe('quoteRowToIdentity (#214)', () => {
+  it("translates the 'Anonymous' name sentinel to null", () => {
+    const id = quoteRowToIdentity({ id: 'q1', customer_name: 'Anonymous' });
+    expect(id.customer_name).toBeNull();
+  });
+
+  it("translates the '(no address)' sentinel to null", () => {
+    const id = quoteRowToIdentity({ id: 'q1', customer_address: '(no address)' });
+    expect(id.customer_address).toBeNull();
+  });
+
+  it('keeps real values, trimming whitespace', () => {
+    const id = quoteRowToIdentity({
+      id: 'q1',
+      highlevel_contact_id: ' hl-1 ',
+      customer_name: ' Jane Doe ',
+      customer_email: 'jane@x.com',
+      customer_phone: '(631) 555-0100',
+      customer_address: '1 A St',
+    });
+    expect(id).toEqual({
+      id: 'q1',
+      highlevel_contact_id: 'hl-1',
+      customer_name: 'Jane Doe',
+      customer_email: 'jane@x.com',
+      customer_phone: '(631) 555-0100',
+      customer_address: '1 A St',
+    });
+  });
+
+  it('nulls blank/whitespace/missing fields', () => {
+    const id = quoteRowToIdentity({ id: 'q1', customer_name: '   ', customer_email: '' });
+    expect(id).toEqual({
+      id: 'q1',
+      highlevel_contact_id: null,
+      customer_name: null,
+      customer_email: null,
+      customer_phone: null,
+      customer_address: null,
+    });
+  });
+
+  it('derives NO match key for a sentinel-only row (the fold-onto-one-customer failure)', () => {
+    const id = quoteRowToIdentity({
+      id: 'q1',
+      customer_name: 'Anonymous',
+      customer_address: '(no address)',
+    });
+    // Mapped exactly the way attachQuoteToCustomer feeds findOrCreateCustomer.
+    expect(
+      customerMatchKey({
+        hl_contact_id: id.highlevel_contact_id,
+        name: id.customer_name,
+        email: id.customer_email,
+        phone: id.customer_phone,
+      }),
+    ).toBeNull();
+  });
+});
 
 // ─── In-memory Supabase fake ────────────────────────────────────────────────
 
@@ -1112,6 +1178,34 @@ describe('backfillCustomersFromQuotes', () => {
     const second = await backfillCustomersFromQuotes();
     expect(second.scanned).toBe(0); // q1 now has customer_id → not re-scanned
     expect(fake.tables.customers).toHaveLength(1);
+  });
+
+  // #214 review fix (3-lens MED): the backfill reads STORED rows, whose
+  // blank name/address were persisted as the 'Anonymous'/'(no address)'
+  // display sentinels — without quoteRowToIdentity those derived match_key
+  // `name:anonymous` and PERMANENTLY folded every blank-identity quote onto
+  // ONE shared "Anonymous" customer row.
+  it('sentinel-only stored rows are SKIPPED, never folded onto a shared "Anonymous" customer', async () => {
+    const fake = makeFakeSupabase({
+      quotes: [
+        // Two unrelated contactless quotes, both persisted with the sentinels.
+        { id: 'q1', created_at: '2025-01-01', customer_name: 'Anonymous', customer_address: '(no address)', customer_id: null },
+        { id: 'q2', created_at: '2025-02-01', customer_name: 'Anonymous', customer_address: '(no address)', customer_id: null },
+        // A real one, to prove the run still links normal rows.
+        { id: 'q3', created_at: '2025-03-01', customer_email: 'real@x.com', customer_address: '1 Real St', customer_id: null },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const summary = await backfillCustomersFromQuotes();
+    expect(summary.scanned).toBe(3);
+    expect(summary.linked).toBe(1);
+    expect(summary.skipped).toBe(2);
+    expect(fake.tables.customers).toHaveLength(1);
+    expect(fake.tables.customers[0].match_key).toBe('email:real@x.com');
+    expect(fake.tables.customers.map((c) => c.match_key)).not.toContain('name:anonymous');
+    expect(fake.tables.quotes.find((q) => q.id === 'q1')!.customer_id).toBeNull();
+    expect(fake.tables.quotes.find((q) => q.id === 'q2')!.customer_id).toBeNull();
   });
 
   it('EXCLUDES test quotes from promotion (ledger #93) — real + legacy NULL only', async () => {

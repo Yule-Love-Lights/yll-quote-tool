@@ -25,7 +25,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
-import { propagateQuoteTagsToCustomer } from '@/lib/customers';
+import { attachQuoteToCustomer, propagateQuoteTagsToCustomer, quoteRowToIdentity } from '@/lib/customers';
 
 export const runtime = 'nodejs';
 
@@ -66,14 +66,23 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // quote_sent_at + customer_id ridden along so the propagation check below
     // needs no second round trip (#198). is_test ridden along too (review
     // fix, admin MED, S34 #198 review) — defense-in-depth, see the sibling
-    // /nce route's comment for the full rationale.
-    .select('id, legacy_rebook, quote_sent_at, customer_id, is_test')
+    // /nce route's comment for the full rationale. #214: the identity
+    // columns ride along too, feeding the verify-or-reattach below.
+    .select(
+      'id, legacy_rebook, quote_sent_at, customer_id, is_test, deposit_paid_at, highlevel_contact_id, customer_name, customer_email, customer_phone, customer_address',
+    )
     .maybeSingle<{
       id: string;
       legacy_rebook: boolean;
       quote_sent_at: string | null;
       customer_id: string | null;
       is_test: boolean;
+      deposit_paid_at: string | null;
+      highlevel_contact_id: string | null;
+      customer_name: string | null;
+      customer_email: string | null;
+      customer_phone: string | null;
+      customer_address: string | null;
     }>();
 
   if (error) {
@@ -84,9 +93,24 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Quote not found' }, { status: 404 });
   }
 
-  if (!data.is_test && legacyRebook && data.quote_sent_at && data.customer_id) {
+  // #214: cached-id first, re-attach ONLY when never linked — see the
+  // sibling /nce route's comment for the full rationale (identical block,
+  // sibling-guard parity; deliberately NOT attach-first — retroactive
+  // tagging of OLD quotes is this flag's core workflow, and an
+  // unconditional re-resolution would newest-win stale stored fields onto
+  // a customer row later quotes kept current).
+  if (!data.is_test && legacyRebook && data.quote_sent_at) {
     try {
-      await propagateQuoteTagsToCustomer(data.customer_id, { isYllNeighbor: true });
+      // Booked-freeze parity (round-3 delta-verify) — see the sibling /nce
+      // route's comment.
+      const linkedCustomerId =
+        data.customer_id ??
+        (data.deposit_paid_at
+          ? null
+          : ((await attachQuoteToCustomer(quoteRowToIdentity(data)))?.customerId ?? null));
+      if (linkedCustomerId) {
+        await propagateQuoteTagsToCustomer(linkedCustomerId, { isYllNeighbor: true });
+      }
     } catch (err) {
       console.warn('[api/quotes/:id/legacy-rebook] tag propagation failed (non-fatal):', err);
     }
