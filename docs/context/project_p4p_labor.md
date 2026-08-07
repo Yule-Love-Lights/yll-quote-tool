@@ -14,6 +14,24 @@
 
 # PART A: THE PLAN
 
+> **ADDENDUM 2026-08-06 (evening), binding over anything below that conflicts.**
+> The cross-assistant merge with Codex's Operations Hub plan is complete. Naldo's
+> final rulings (F1-F4, logged in the hub repo's
+> `docs/operations-hub/DECISIONS.md`) change this plan as follows:
+> (1) F2: the Quote Tool owns ALL canonical time (day clock, breaks, job
+> segments, travel) as one paid-day envelope; the hub is capture UI, offline
+> queue, and raw GPS evidence. This restores and widens Phase 2 below.
+> (2) F1: parallel tracks. Phase 2's Sept 21 target is BACK, Telegram-bot-first,
+> writing to the canonical ledger; the hub's capture UI joins later.
+> (3) F3: manual Arrived/Departed punches are authoritative for pay; GPS
+> corroborates and suggests only.
+> (4) F4: the clock gate softens to a non-sensitive pre-clock-in summary, exact
+> details unlock at accepted clock-in, with an audited owner override.
+> The integration authority is now `docs/context/OPERATIONS_HUB_CONTRACT.md`
+> (v1.0.0-draft, canonical in this repo, mirrored in the hub repo); its Flow B
+> state machine supersedes this doc's A8 draft API table. Hub-side behavior
+> authority is the hub repo's `docs/operations-hub/OPERATIONS-HUB-SPEC.md`.
+
 ## A1. What we are building, one paragraph
 
 The quote tool becomes the operations system: budgeted hours computed from each
