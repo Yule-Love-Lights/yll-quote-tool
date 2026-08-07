@@ -6,6 +6,7 @@ import { useParams } from 'next/navigation';
 import { OperatorShell } from '@/components/OperatorShell';
 import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
+import { NceBadge } from '@/components/admin/NceBadge';
 import { reconcileInvoice } from '@/lib/invoices';
 import type { InvoiceDetail, PaymentPreference } from '@/lib/invoices';
 import type { ChargeSlotState } from '@/lib/integrations/valorBalance';
@@ -402,6 +403,8 @@ export default function InvoiceDetailPage() {
                   Test
                 </span>
               )}
+              {/* NCE (#199) — the barter/trade network tag. */}
+              {data.isNce && <NceBadge />}
             </div>
             <p className="text-sm text-gray-500 mb-6">
               Created {fmtDate(inv.created_at)}
