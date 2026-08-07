@@ -378,6 +378,17 @@ export default function QuoteBuilder({
   // chip shouldn't itself trigger a re-render.
   const legacyRebookTouchedRef = useRef(false);
   const isNceTouchedRef = useRef(false);
+  // #199 (wrap-review F4): provenance for resolveNceDepositPercent's OFF-side
+  // revert — true only while the CURRENT depositPercent===40 is a value
+  // applyIsNce itself just wrote (a turn-ON), never a coincidence. Cleared on
+  // turning OFF (whether or not a revert fired) and on any DIRECT manual edit
+  // of the deposit input (see its own onChange) — a staff hand-edit, even to
+  // 40, is never "the rule's" value again. Starts false on every mount
+  // (including a reopened already-NCE quote) — provenance isn't persisted, so
+  // a freshly-loaded 40% is conservatively treated as staff-owned rather than
+  // guessed at from the coincidental value alone (the same guess this fix
+  // removes from the OFF path itself).
+  const nceDepositSetByRuleRef = useRef(false);
   // View-only portal (#176) — purely from the saved row, never set for a brand-new quote.
   const viewOnly = initialQuote?.viewOnly ?? false;
   // Customer tenure (#178) — purely from the saved row, never set for a brand-new quote.
@@ -2356,16 +2367,30 @@ export default function QuoteBuilder({
   // same-tick edit. Locked (savedStatus approved/booked) quotes are a no-op —
   // the #177 freeze owns the deposit percent past approval; the tag itself
   // still flips (money is unaffected, matching the admin toggle route).
+  //
+  // #199 (wrap-review F4): a no-op flip (`next` equals the CURRENT isNce —
+  // e.g. contact-pick inheritance re-confirming an already-false chip on a
+  // re-pick) must never touch the deposit field at all, even in passing —
+  // this is what made the OFF-side revert bug (below) invisible: the chip
+  // never visibly changed, yet a hand-typed 40 vanished. Checked BEFORE
+  // resolveNceDepositPercent even runs, using the isNce closed over from this
+  // render (the same value the chip/inheritance caller just compared against
+  // to decide whether to call this at all).
   const applyIsNce = (next: boolean) => {
     setIsNce(next);
-    setForm(f => ({
-      ...f,
-      depositPercent: resolveNceDepositPercent(
-        f.depositPercent,
-        next,
-        savedStatus === 'approved' || savedStatus === 'booked',
-      ),
-    }));
+    if (next === isNce) return;
+    const locked = savedStatus === 'approved' || savedStatus === 'booked';
+    setForm(f => {
+      const resolved = resolveNceDepositPercent(f.depositPercent, next, locked, nceDepositSetByRuleRef.current);
+      return resolved === f.depositPercent ? f : { ...f, depositPercent: resolved };
+    });
+    // Provenance: resolveNceDepositPercent force-writes 40 in exactly one
+    // case — turning ON while unlocked — so that's the only time the NEXT
+    // 40 is "the rule's". Turning OFF always clears it (whether a revert
+    // just fired or the value was left alone as a hand-edit, there is no
+    // rule-owned value anymore). Locked leaves it untouched — resolveNceDepositPercent
+    // never wrote anything, so there's nothing new to record either way.
+    if (!locked) nceDepositSetByRuleRef.current = next;
   };
 
   // ─── Referral program redemption (#41 PR 2) ─────────────────────────────
@@ -5056,7 +5081,16 @@ export default function QuoteBuilder({
                     ? 'Locked after approval — amend handles changes'
                     : undefined
                 }
-                onChange={e => set('depositPercent', Number(e.target.value))}
+                onChange={e => {
+                  // #199 (wrap-review F4): a DIRECT staff edit — to ANY value,
+                  // including coincidentally 40 — is never "the NCE rule's"
+                  // value again. Without this, hand-typing 40 right after
+                  // turning the chip off (or independently of it entirely)
+                  // would still get silently wiped by a LATER OFF-toggle that
+                  // still thought it owned this field.
+                  nceDepositSetByRuleRef.current = false;
+                  set('depositPercent', Number(e.target.value));
+                }}
               />
             </label>
             <span className="block text-xs text-gray-500 mt-1">

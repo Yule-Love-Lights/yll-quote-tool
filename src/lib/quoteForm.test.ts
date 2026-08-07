@@ -503,29 +503,44 @@ describe('resolveTagPayload (#198 review — touched-ref tag chips)', () => {
 // helper (both the chip click and contact-pick inheritance) funnels through,
 // mirroring resolveTagPayload's pure-function-stands-in-for-a-render-test
 // convention above.
+//
+// wasRuleSet (wrap-review F4 fix): a bare `current === 40` can't tell "the 40
+// THIS rule set" apart from "a 40 staff typed for an unrelated negotiated
+// deposit" — the exact colliding value this rule itself writes. Every OFF
+// case below is now parameterized on it.
 describe('resolveNceDepositPercent (#199 NCE 40% deposit default)', () => {
   it('sets 40 when turning ON from blank (0)', () => {
-    expect(resolveNceDepositPercent(0, true, false)).toBe(40);
+    expect(resolveNceDepositPercent(0, true, false, false)).toBe(40);
   });
 
   it('sets 40 when turning ON, overwriting whatever was there before', () => {
-    expect(resolveNceDepositPercent(25, true, false)).toBe(40);
-    expect(resolveNceDepositPercent(50, true, false)).toBe(40);
+    expect(resolveNceDepositPercent(25, true, false, false)).toBe(40);
+    expect(resolveNceDepositPercent(50, true, false, false)).toBe(40);
   });
 
-  it('reverts an untouched 40 back to 0 (blank) when turning OFF', () => {
-    expect(resolveNceDepositPercent(40, false, false)).toBe(0);
+  it('reverts a 40 THIS RULE set (wasRuleSet=true) back to 0 (blank) when turning OFF', () => {
+    expect(resolveNceDepositPercent(40, false, false, true)).toBe(0);
   });
 
-  it('leaves a staff hand-set value alone when turning OFF (not the 40 this rule set)', () => {
-    expect(resolveNceDepositPercent(25, false, false)).toBe(25);
-    expect(resolveNceDepositPercent(0, false, false)).toBe(0);
+  // #199 F4 (wrap-review): the exact colliding-value case a bare `current
+  // === 40` check couldn't distinguish — a staff-typed 40 that has NOTHING
+  // to do with the NCE rule (e.g. an unrelated negotiated deposit) must
+  // survive turning the chip OFF (or a no-op contact-pick re-confirmation
+  // upstream, which the caller now short-circuits before ever reaching here).
+  it('leaves a HAND-TYPED 40 alone when turning OFF (wasRuleSet=false — the collision case)', () => {
+    expect(resolveNceDepositPercent(40, false, false, false)).toBe(40);
   });
 
-  it('never changes anything once locked (#177 freeze), regardless of direction', () => {
-    expect(resolveNceDepositPercent(0, true, true)).toBe(0);
-    expect(resolveNceDepositPercent(40, false, true)).toBe(40);
-    expect(resolveNceDepositPercent(25, true, true)).toBe(25);
+  it('leaves any other staff hand-set value alone when turning OFF, regardless of wasRuleSet', () => {
+    expect(resolveNceDepositPercent(25, false, false, true)).toBe(25);
+    expect(resolveNceDepositPercent(0, false, false, true)).toBe(0);
+    expect(resolveNceDepositPercent(25, false, false, false)).toBe(25);
+  });
+
+  it('never changes anything once locked (#177 freeze), regardless of direction or wasRuleSet', () => {
+    expect(resolveNceDepositPercent(0, true, true, false)).toBe(0);
+    expect(resolveNceDepositPercent(40, false, true, true)).toBe(40);
+    expect(resolveNceDepositPercent(25, true, true, false)).toBe(25);
   });
 });
 

@@ -245,20 +245,31 @@ export function resolveTagPayload(
  * - locked: never changes here — the #177 freeze (server 409 on a changed
  *   depositPercent post-approval) owns an approved/booked quote's deposit.
  * - turning ON: 40 (NCE's contractual deposit rate vs the 50% default).
- * - turning OFF: an UNTOUCHED 40 (this same rule's own prior default) reverts
- *   to 0 (blank = 50%); any OTHER value is a staff hand-edit and is left alone.
+ * - turning OFF: reverts to 0 (blank = 50%) ONLY when BOTH `current === 40`
+ *   AND `wasRuleSet` — i.e. THIS rule's own prior turn-ON is what put the 40
+ *   there. A bare `current === 40` can't tell that apart from a value staff
+ *   hand-typed for an unrelated reason (a coincidentally-40% negotiated
+ *   deposit) — wrap-review F4: without `wasRuleSet`, turning the chip OFF (or
+ *   even a same-tick contact-pick re-confirmation that never actually
+ *   changes isNce — see the caller's own no-op-flip guard) would silently
+ *   wipe a hand-typed 40 the chip never touched. Any other value is always
+ *   left alone regardless of `wasRuleSet`.
  *
  * Returns `current` unchanged when no rule applies (including the locked
- * case), so callers can always assign the result unconditionally.
+ * case), so callers can always assign the result unconditionally. Callers
+ * are expected to skip calling this entirely when nextIsNce hasn't actually
+ * changed from the current isNce (this function has no way to know that on
+ * its own — it only sees the NEXT value).
  */
 export function resolveNceDepositPercent(
   current: number,
   nextIsNce: boolean,
   locked: boolean,
+  wasRuleSet: boolean,
 ): number {
   if (locked) return current;
   if (nextIsNce) return 40;
-  return current === 40 ? 0 : current;
+  return wasRuleSet && current === 40 ? 0 : current;
 }
 
 /**
