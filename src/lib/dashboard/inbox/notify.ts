@@ -5,6 +5,14 @@
 
 export type EscalationEmailItem = { name: string; preview: string | null; waiting: string };
 
+// Emails have no page origin, so a relative href resolves as a hostname in the
+// mail client ("inbox" → NXDOMAIN). The absolute base is passed in by the server
+// caller (appBaseUrl()) so this module stays env-free — it's also imported by
+// client components for formatWaiting.
+function inboxLink(baseUrl: string): string {
+  return `<a href="${baseUrl.replace(/\/+$/, '')}/inbox">Open the inbox →</a>`;
+}
+
 /** Human-friendly elapsed time: "45m", "2h 5m", "1d 2h". */
 export function formatWaiting(ms: number): string {
   const minutes = Math.max(0, Math.floor(ms / 60_000));
@@ -43,13 +51,17 @@ function itemList(items: EscalationEmailItem[]): string {
   return `<ul style="padding-left:18px">${rows}</ul>`;
 }
 
-export function escalationEmailHtml(opts: { level: number; items: EscalationEmailItem[] }): string {
+export function escalationEmailHtml(opts: {
+  level: number;
+  items: EscalationEmailItem[];
+  baseUrl: string;
+}): string {
   const heading = opts.level >= 2 ? 'These have been waiting too long' : 'A customer is waiting';
   return (
     `<div style="font-family:system-ui,sans-serif">` +
     `<h2>${heading}</h2>` +
     itemList(opts.items) +
-    `<p><a href="/inbox">Open the inbox →</a></p>` +
+    `<p>${inboxLink(opts.baseUrl)}</p>` +
     `</div>`
   );
 }
@@ -58,12 +70,12 @@ export function eodDigestSubject(count: number): string {
   return `📋 End-of-day: ${count} unanswered customer message${plural(count)}`;
 }
 
-export function eodDigestHtml(items: EscalationEmailItem[]): string {
+export function eodDigestHtml(items: EscalationEmailItem[], baseUrl: string): string {
   return (
     `<div style="font-family:system-ui,sans-serif">` +
     `<h2>Still unanswered at end of day (${items.length})</h2>` +
     itemList(items) +
-    `<p>These roll into tomorrow's digest until handled. <a href="/inbox">Open the inbox →</a></p>` +
+    `<p>These roll into tomorrow's digest until handled. ${inboxLink(baseUrl)}</p>` +
     `</div>`
   );
 }
