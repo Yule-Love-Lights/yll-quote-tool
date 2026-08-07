@@ -1,4 +1,4 @@
-# Operations Hub <-> Quote Tool contract, v1.0.0-draft
+# Operations Hub <-> Quote Tool contract, v1.1.0-draft
 
 > CANONICAL copy. The mirror lives at
 > `yll-call-copilot/docs/operations-hub/INTEGRATION-CONTRACT.md` and must carry
@@ -6,7 +6,7 @@
 > file. Built 2026-08-06 from CODEX-PLAN §19-21, OPERATIONS-HUB-SPEC §3-§7,
 > CLAUDE-PLAN A3/A8, the union checklist from the cross-doc gap audit, and
 > Naldo's rulings R1-R8 + F1-F4 (DECISIONS.md in the hub repo). Approved by the
-> Claude/Quote Tool side as v1.0.0-draft; becomes v1.0.0 when Codex confirms
+> Claude/Quote Tool side as v1.1.0-draft; becomes v1.0.0 when Codex confirms
 > the mirror matches and Naldo approves the master plan.
 
 ## 0. Ownership (final, per rulings F2/R8)
@@ -55,6 +55,27 @@
   tested; production fails closed.
 - Independent kill switches: QT time-writes, QT job-reads, completion
   commands, Telegram relay, hub advertising writes, route collection.
+- **Vocabulary (v1.1.0, from the risk audit): three distinct version fields,
+  never the bare word "version":** `contract_version` (this file's semver),
+  `client_app_version` (the calling app/device build), `entity_version` (the
+  per-aggregate optimistic-concurrency counter; `expected_entity_version` on
+  requests). `review_flag` enum: `none` | `needs_review` | `quarantined`.
+  Error-code enum (extendable only by contract PR): `unauthorized`,
+  `forbidden`, `not_found`, `conflict_stale_version`,
+  `conflict_idempotency`, `validation_failed`, `gate_locked`,
+  `kill_switched`, `rate_limited`, `internal`.
+- **One shared schema artifact.** The envelope, enums, and event shapes are
+  published as a versioned JSON Schema (generated from the OpenAPI
+  fragments); BOTH repos validate requests and responses against the same
+  schema file in their own CI. Neither side hand-implements the envelope
+  twice. A CI check in each repo fails on any byte diff between the
+  canonical contract and the mirror, version string included.
+- **Deploy skew guard:** each side's deploy runs a staging smoke against
+  every `/api/ops/v1` endpoint and fails on `contract_version` disagreement.
+  The two repos auto-deploy independently; this is the only gate.
+- **Dead-letter alerting:** DLQ depth greater than zero pushes a Telegram
+  alert to Naldo and Jason through the existing QT bot. The admin surface is
+  the workbench, never the only detection mechanism.
 
 ## 2. Identity (Flow I)
 
@@ -72,6 +93,18 @@
   duplicate.
 - Departments are MEMBERSHIPS (one or more per employee, per ruling R7) with
   ONE active department context per shift.
+- **Interim identity rule (unblocks the Sept 21 Track A target):** until Hub
+  Phase 0's OTP lands, `employees` rows may be ADMIN-SEEDED (Naldo/Jason
+  create the five people without OTP sign-in), or Flow B commands originating
+  from the Telegram bot authenticate by `telegram_user_id` and act under
+  `crew_members.id` as the acting identity, backfilled to `hub_employee_id`
+  later. Track A does NOT depend on the OTP UI shipping. Stated here so it is
+  never rediscovered mid-season.
+- **Deactivation forces financial resolution.** `EmployeeDeactivated`
+  triggers a QT final-pay checklist: unapproved time queued for final
+  approval, pool shares computed at the final payroll, any open yellow-slip
+  response window resolved per the comp plan. No silent limbo for in-flight
+  pay.
 
 ## 3. Flow A: jobs and schedule reads (QT -> Hub)
 
@@ -86,8 +119,25 @@
 - `GET /api/ops/v1/jobs?assigned_to={employee_id}&date=` — job_id, customer
   display name, address (role-gated), lat/lng, window, assigned
   employee_ids[], budgeted_hours, canonical status, service type.
+- `GET /api/ops/v1/jobs/{id}/design` (post-clock-in gated, v1.1.0, closes
+  the installer-lens gap): signed design snapshot/render URL, the design's
+  item list, a DERIVED LOAD LIST (materials from the design BOM), and
+  job-site notes (gate code, dog, parking, surfaced from existing quote/
+  customer notes). The design editor's geometry finally reaches the crew,
+  not just the pay math.
+- Jobs and me/day payloads carry `service_type`; a takedown job renders a
+  visible "hourly mode" badge on every crew surface so a pool member never
+  expects performance pay on takedown work.
+- Jobs payload carries optional `sold_by_employee_id` so the hub can close
+  the sales loop (notify the rep on field completion, feed the second-mile
+  review/referral queue).
 - Events: `JobAssigned`, `JobUnassigned`, `JobRescheduled`,
-  `JobStatusChanged` (job_id, status, at, version).
+  `JobStatusChanged` (job_id, status, at, entity_version,
+  sold_by_employee_id?).
+- **Flow F (reserved, v1.2):** placement-to-lead attribution. Campaign
+  short-codes/QR on signs and door hangers captured at call/lead intake
+  (GHL tag or field), plus ROI read endpoints joining placements to quotes
+  and bookings. Named now so neither side designs against it.
 
 ## 4. Flow B: time capture commands (Hub/Telegram/office -> QT)
 
@@ -122,6 +172,11 @@ Semantics (state machine, QT-enforced):
 - GPS-derived route evidence (Hub-owned) may SUGGEST visits after Phase 5
   calibration; a suggestion becomes a segment only through an explicit
   punch, an employee confirmation, or a Jason/Naldo correction (F3).
+- **Missed-tap backstop (v1.1.0):** with manual punches sole-authoritative,
+  a forgotten Depart is the one un-backstopped pay-and-data corruption
+  path. The QT flags any open job segment with no activity beyond a
+  configurable idle gap and the bot nudges the crew member same-day.
+  "Forgotten mid-day tap" joins the Phase 4 failure-test list.
 
 ## 5. Flow C: canonical time reads, approvals, exceptions (QT surfaces)
 
@@ -150,6 +205,13 @@ Semantics (state machine, QT-enforced):
 - Completion photos post through the QT's existing photo path; commands
   carry returned reference ids; the binary exists once. Required photo
   count/camera/GPS rules stay OFF until Naldo defines them (Codex open item).
+- **Material fields pinned (v1.1.0, no more spec-by-assumption):** the
+  complete command preserves today's bot `completeInstall` shape:
+  `materials_used[]` ({sku, qty, estimated_qty?}), optional on-hand true-up,
+  `note?`, `photo_refs[]`, raw text for audit. Same fields on every channel.
+- On `field_work_completed`, if the job carries `sold_by_employee_id`, the
+  hub notifies the selling rep ("your sale is installed") and the QT
+  enqueues the review/referral follow-up (second-mile pattern).
 
 ## 7. Flow E: earnings, stats, leaderboard (QT -> Hub display)
 
@@ -188,6 +250,11 @@ Semantics (state machine, QT-enforced):
   are never verified placements.
 - Pairing, roster, routing, webhook config, write enablement: Naldo/Jason
   only, audited.
+- **Relay latency SLA (v1.1.0):** a crew member's consequential command gets
+  an interim "Got it, processing" bot reply within 2 seconds and a final
+  confirmation on completion; re-taps ride the idempotency key. A slow or
+  down QT never leaves someone standing in the cold re-tapping into
+  silence.
 
 ## 9. Sequencing hooks (F1)
 
