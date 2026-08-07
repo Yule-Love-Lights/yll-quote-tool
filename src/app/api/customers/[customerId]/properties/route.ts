@@ -6,7 +6,7 @@
 // POST /api/customers/[customerId]/properties   (operator-only)
 // Body: { address: string, nickname?: string }   — address required,
 //   trimmed, non-empty; nickname optional.
-// Response: { ok: true, property } | { error, code? }
+// Response: { ok: true, property, created: boolean } | { error, code? }
 //
 // Delegates to createPropertyForCustomer (src/lib/customers.ts), which
 // reuses findOrCreateProperty's normalizeAddress/address_key + UNIQUE-race-
@@ -15,6 +15,11 @@
 // resolves to that row instead of creating a duplicate, and un-archives +
 // labels it if that row was hidden. See that function's own comment for the
 // full design.
+//
+// #205 review fix (staff/customer MED, F2): `created` distinguishes a
+// fresh insert from a resolve-to-existing-row — the panel uses this to
+// tell staff the truth ("That address already exists" vs a plain add)
+// instead of silently doing something other than what the form implied.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
@@ -79,11 +84,11 @@ export async function POST(
     return NextResponse.json({ error: 'Customer not found' }, { status: 404 });
   }
 
-  const { data, error } = await createPropertyForCustomer(customerId, { address, nickname });
+  const { data, error, created } = await createPropertyForCustomer(customerId, { address, nickname });
   if (error || !data) {
     console.error('[api/customers/:customerId/properties] create failed:', error);
     return NextResponse.json({ error: 'Failed to add this property' }, { status: 500 });
   }
 
-  return NextResponse.json({ ok: true, property: toJson(data) });
+  return NextResponse.json({ ok: true, property: toJson(data), created });
 }

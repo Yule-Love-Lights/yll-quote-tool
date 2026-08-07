@@ -59,6 +59,11 @@ export function CustomerPropertiesPanel({
   const [showArchived, setShowArchived] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // #205 review fix (staff/customer MED, F2): distinct from `error` — an
+  // add that resolved to an EXISTING row (rather than creating a new one)
+  // isn't a failure, but staff must be told the truth about what happened
+  // instead of the panel silently closing as if it "just added" one.
+  const [notice, setNotice] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
   const [adding, setAdding] = useState(false);
@@ -96,6 +101,7 @@ export function CustomerPropertiesPanel({
     setEditingId(p.id);
     setEditValue(p.nickname ?? '');
     setError(null);
+    setNotice(null);
   }
 
   function cancelEdit() {
@@ -103,19 +109,29 @@ export function CustomerPropertiesPanel({
     setEditValue('');
   }
 
+  // #205 review fix (staff/customer MED, F3): the edit box (and the typed
+  // value) now stays open through the whole save — it only closes on
+  // CONFIRMED success. Previously editingId cleared synchronously with the
+  // optimistic update, before the network call even started; a failure
+  // reverted `properties` but the input was already gone, and re-clicking
+  // to edit again just re-seeded from the reverted (stale) value — the
+  // staff member's typed text was unrecoverable. No optimistic update is
+  // needed here at all: the open edit box already shows the in-progress
+  // value, so there's nothing else on screen that needs a "preview" of the
+  // unsaved change.
   async function saveEdit(propertyId: string) {
-    const prev = properties;
     const nextNickname = editValue.trim() || null;
-    setProperties((ps) => ps.map((p) => (p.id === propertyId ? { ...p, nickname: nextNickname } : p))); // optimistic
-    setEditingId(null);
     setBusyId(propertyId);
     setError(null);
+    setNotice(null);
     const saved = await patchProperty(propertyId, { nickname: nextNickname });
     setBusyId(null);
     if (!saved) {
-      setProperties(prev); // revert
-      return;
+      return; // edit box stays open, typed value intact — nothing lost
     }
+    setProperties((ps) => ps.map((p) => (p.id === propertyId ? { ...p, nickname: nextNickname } : p)));
+    setEditingId(null);
+    setEditValue('');
     router.refresh();
   }
 
@@ -123,8 +139,15 @@ export function CustomerPropertiesPanel({
     const archiving = !p.archivedAt;
     if (archiving) {
       const label = p.nickname || p.address || 'this property';
+      // #205 review fix (admin MED, F5 + LOW): accurate without being a
+      // paragraph. The old copy said it "re-appears automatically the next
+      // time a quote is created for it" — that undersold the real trigger
+      // surface (a resend, a re-attach, a rebook ALL count too, not just a
+      // brand-new quote) while also overstating it FOR rebook specifically
+      // (which used to bypass the resurrection rule entirely — now fixed,
+      // see rebook.ts's resurrectPropertyForRebook, #205 F1).
       const ok = window.confirm(
-        `Archive ${label}?\n\nIt will be hidden from this list by default. Quote/job/invoice history is unaffected, and it re-appears automatically the next time a quote is created for it — or reveal it any time via "Show archived" and Unarchive.`,
+        `Archive ${label}?\n\nHidden from this list by default. Quote/job/invoice history is unaffected — it un-archives automatically the moment there's new quote activity for this address (a new quote, a resend, a rebook). Reveal it any time via "Show archived," or Unarchive here.`,
       );
       if (!ok) return;
     }
@@ -133,6 +156,7 @@ export function CustomerPropertiesPanel({
     setProperties((ps) => ps.map((x) => (x.id === p.id ? { ...x, archivedAt: nextArchivedAt } : x))); // optimistic
     setBusyId(p.id);
     setError(null);
+    setNotice(null);
     const saved = await patchProperty(p.id, { archived: archiving });
     setBusyId(null);
     if (!saved) {
@@ -148,24 +172,38 @@ export function CustomerPropertiesPanel({
       setError('Enter an address.');
       return;
     }
+    const typedNickname = addNickname.trim();
     setAddBusy(true);
     setError(null);
+    setNotice(null);
     try {
       const res = await fetch(`/api/customers/${customerId}/properties`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ address, nickname: addNickname.trim() || undefined }),
+        body: JSON.stringify({ address, nickname: typedNickname || undefined }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         setError((body as { error?: string }).error ?? 'Could not add that property.');
         return;
       }
-      const json = (await res.json()) as { property: CustomerProperty };
+      const json = (await res.json()) as { property: CustomerProperty; created: boolean };
       setProperties((ps) => upsertById(ps, json.property));
       setAddAddress('');
       setAddNickname('');
       setAdding(false);
+      // #205 review fix (staff/customer MED, F2): tell the truth about what
+      // actually happened. createPropertyForCustomer resolves an address
+      // collision to the EXISTING row instead of creating a duplicate —
+      // without this, the form just closes and looks identical to a real
+      // add, even though nothing new was created.
+      if (!json.created) {
+        setNotice(
+          typedNickname
+            ? 'That address already existed — updated its label.'
+            : 'That address already existed — opened it.',
+        );
+      }
       router.refresh();
     } catch {
       setError('Could not add that property.');
@@ -183,6 +221,7 @@ export function CustomerPropertiesPanel({
             onClick={() => {
               setAdding(true);
               setError(null);
+              setNotice(null);
             }}
             className="px-3 py-1 rounded-md font-medium text-xs"
             style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
@@ -247,6 +286,7 @@ export function CustomerPropertiesPanel({
                 setAddAddress('');
                 setAddNickname('');
                 setError(null);
+                setNotice(null);
               }}
               disabled={addBusy}
               className="text-xs hover:underline"
@@ -308,8 +348,13 @@ export function CustomerPropertiesPanel({
                   <button
                     type="button"
                     onClick={() => startEdit(p)}
+                    // #205 review fix (LOW): matches its Archive sibling —
+                    // without this the label was clickable mid-save,
+                    // letting a second edit start (and last-write-win) on
+                    // top of one already in flight.
+                    disabled={busyId === p.id}
                     title="Click to edit label"
-                    className="text-left hover:underline truncate block max-w-full"
+                    className="text-left hover:underline truncate block max-w-full disabled:opacity-50"
                     style={{
                       color: p.nickname ? 'var(--op-text)' : 'var(--op-text-dim)',
                       fontStyle: p.nickname ? 'normal' : 'italic',
@@ -351,6 +396,9 @@ export function CustomerPropertiesPanel({
       )}
       {error && (
         <p className="text-xs mt-2" style={{ color: '#b91c1c' }}>{error}</p>
+      )}
+      {notice && (
+        <p className="text-xs mt-2" style={{ color: 'var(--op-text-dim)' }}>{notice}</p>
       )}
     </div>
   );

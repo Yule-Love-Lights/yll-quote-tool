@@ -72,7 +72,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   requireOperatorMock.mockResolvedValue(null); // default: authorized / gate dormant
   getCustomerMock.mockResolvedValue({ id: VALID_UUID });
-  createPropertyMock.mockResolvedValue({ data: SOME_ROW, error: null });
+  createPropertyMock.mockResolvedValue({ data: SOME_ROW, error: null, created: true });
 });
 
 describe('POST /api/customers/[customerId]/properties — operator gate', () => {
@@ -142,6 +142,7 @@ describe('POST /api/customers/[customerId]/properties — happy path', () => {
     expect(res.status).toBe(200);
     expect(json.ok).toBe(true);
     expect(json.property).toEqual({ id: 'prop-1', address: '1 A St', nickname: null, archivedAt: null });
+    expect(json.created).toBe(true);
     expect(createPropertyMock).toHaveBeenCalledWith(VALID_UUID, { address: '1 A St', nickname: 'Home' });
   });
 
@@ -155,6 +156,7 @@ describe('POST /api/customers/[customerId]/properties — happy path', () => {
     createPropertyMock.mockResolvedValueOnce({
       data: { ...SOME_ROW, nickname: 'Beach House', archived_at: '2026-02-01T00:00:00Z' },
       error: null,
+      created: true,
     });
     const res = await POST(makeReq({ address: '1 A St' }), makeParams(VALID_UUID));
     const json = await res.json();
@@ -164,6 +166,15 @@ describe('POST /api/customers/[customerId]/properties — happy path', () => {
       nickname: 'Beach House',
       archivedAt: '2026-02-01T00:00:00Z',
     });
+  });
+
+  // #205 review fix (F2): the route must pass `created` through unchanged
+  // so the panel can tell staff the truth about what actually happened.
+  it('passes created:false through when the add resolved to an existing row', async () => {
+    createPropertyMock.mockResolvedValueOnce({ data: SOME_ROW, error: null, created: false });
+    const res = await POST(makeReq({ address: '1 A St' }), makeParams(VALID_UUID));
+    const json = await res.json();
+    expect(json.created).toBe(false);
   });
 });
 

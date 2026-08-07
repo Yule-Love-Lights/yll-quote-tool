@@ -1023,11 +1023,19 @@ export async function unarchiveProperty(
 //
 // When the resolved row is ARCHIVED, this manual add is treated as a
 // deliberate staff signal that the property should be live + labeled again:
-// unarchive it and apply the nickname — the only way to label an archived,
-// hidden-by-default row without first revealing it via "Show archived". A
-// collision with a LIVE row leaves its existing nickname untouched —
-// resolving to the row is enough; staff can inline-edit the nickname
-// separately if they want to change it.
+// unarchive it. Either way (live or archived), an EXPLICITLY-typed nickname
+// is applied — staff typed it deliberately, so silently dropping it on the
+// (more common) live-collision path was a real "my work vanished" bug
+// (#205 review fix, staff/customer MED, F2). A caller that provides no
+// nickname at all never touches whatever the row already had.
+//
+// `created` distinguishes a fresh INSERT from a resolve-to-existing-row (the
+// route surfaces this so the panel can tell staff the truth — "already
+// existed" vs "added" — instead of silently doing something other than what
+// the form implied, #205 review fix F2). true only when THIS call's own
+// insert attempt is what created the row; a race-retry recovery is
+// `created: false` even though the row is brand new, because it wasn't
+// created BY this call.
 //
 // customerId existence is NOT re-checked here (properties.customer_id is a
 // NOT NULL FK) — the route pre-checks via getCustomer so a bogus id 404s
@@ -1035,9 +1043,9 @@ export async function unarchiveProperty(
 export async function createPropertyForCustomer(
   customerId: string,
   input: { address: string; nickname?: string | null },
-): Promise<{ data: PropertyRow | null; error: { message: string } | null }> {
+): Promise<{ data: PropertyRow | null; error: { message: string } | null; created: boolean }> {
   const sb = svc();
-  if (!sb) return { data: null, error: { message: 'Supabase not configured' } };
+  if (!sb) return { data: null, error: { message: 'Supabase not configured' }, created: false };
   const address_key = normalizeAddress(input.address);
   const nickname = normalizeNickname(input.nickname);
 
@@ -1047,16 +1055,19 @@ export async function createPropertyForCustomer(
   // (mirrors findOrCreateCustomer's adopt() helper above).
   async function resolve(
     row: PropertyRow,
-  ): Promise<{ data: PropertyRow | null; error: { message: string } | null }> {
-    if (!row.archived_at) return { data: row, error: null };
+  ): Promise<{ data: PropertyRow | null; error: { message: string } | null; created: false }> {
+    const patch: Record<string, unknown> = {};
+    if (row.archived_at) patch.archived_at = null;
+    if (nickname != null) patch.nickname = nickname; // explicit nickname wins on ANY collision (F2)
+    if (Object.keys(patch).length === 0) return { data: row, error: null, created: false }; // nothing to change
     const { data, error } = await sb!
       .from('properties')
-      .update({ archived_at: null, nickname: nickname ?? row.nickname })
+      .update(patch)
       .eq('id', row.id)
       .select('*')
       .maybeSingle<PropertyRow>();
-    if (error) console.error('createPropertyForCustomer resurrect error:', error);
-    return { data: (data as PropertyRow | null) ?? null, error };
+    if (error) console.error('createPropertyForCustomer resolve-update error:', error);
+    return { data: (data as PropertyRow | null) ?? null, error, created: false };
   }
 
   const existing = await sb
@@ -1072,7 +1083,7 @@ export async function createPropertyForCustomer(
     .insert({ customer_id: customerId, address: norm(input.address), address_key, nickname })
     .select('*')
     .single<PropertyRow>();
-  if (!ins.error && ins.data) return { data: ins.data, error: null };
+  if (!ins.error && ins.data) return { data: ins.data, error: null, created: true };
 
   // Lost the insert race -> recover the winner's row (mirrors findOrCreateProperty).
   const retry = await sb
@@ -1083,7 +1094,11 @@ export async function createPropertyForCustomer(
     .maybeSingle<PropertyRow>();
   if (retry.data) return resolve(retry.data);
   console.error('createPropertyForCustomer error:', ins.error);
-  return { data: null, error: ins.error ? { message: ins.error.message } : { message: 'insert failed' } };
+  return {
+    data: null,
+    error: ins.error ? { message: ins.error.message } : { message: 'insert failed' },
+    created: false,
+  };
 }
 
 // Read-only lookup by HighLevel contact id — unlike findOrCreateCustomer this
