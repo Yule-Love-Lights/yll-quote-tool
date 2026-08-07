@@ -59,12 +59,32 @@ export type InvoiceRow = {
   // actually collected. null covers both a legacy manual mark-paid (predates
   // this column) and a Valor-settled invoice (never written by the balance
   // webhook / charge-balance route) — see migrations/2026-08-07-invoices-
-  // manual-payment-method.sql. Optional: the column ships migration-first, so
-  // a pre-migration select simply omits the key rather than erroring.
+  // manual-payment-method.sql. Optional here ONLY so tsc/tests don't require
+  // the column to exist — this is NOT a claim that a pre-migration read
+  // degrades gracefully (wrap-review LOW: it doesn't). PostgREST fails the
+  // WHOLE query when a selected column is missing (verified live: `column
+  // invoices.paid_method does not exist`, code 42703) — INVOICE_SELECT is a
+  // literal column list, so EVERY read through it (getInvoice, listInvoices,
+  // …) fails pre-migration. Reads only LOOK unaffected because every one of
+  // those callers already catches its own error and degrades (console.error
+  // + return null/[]) — a pre-existing resilience pattern, not something
+  // #199 added. The WRITE side is worse and not just cosmetic:
+  // markInvoicePaidManually's update+select(INVOICE_SELECT) fails the SAME
+  // way for a PLAIN CASH invoice too (not just NCE) — its caller (mark-paid/
+  // route.ts) then returns the misleading 'Invoice not found' for an invoice
+  // that exists and just failed to update. createInvoiceFromJob's
+  // insert+select(INVOICE_SELECT) fails identically — an INSERT...RETURNING
+  // with a missing column fails atomically (nothing commits), so completing
+  // a job creates NO invoice at all pre-migration. Migration-first (AGENTS.md
+  // Pitfalls) means the seat applies migrations/2026-08-07-… BEFORE this code
+  // merges — the above is the blast radius if that order is ever missed, not
+  // an expected/tolerated intermediate state.
   paid_method?: PaidMethod | null;
   // #199: the NCE trade-system payment reference number. Required at NCE
   // mark-paid time (app-enforced, not a DB constraint); editable afterward
-  // for a typo fix. Optional for the same pre-migration-tolerant reason.
+  // for a typo fix. Optional for the same tsc/tests-only reason as
+  // paid_method above — see its comment for the real pre-migration blast
+  // radius (this is not a "degrades gracefully" annotation).
   payment_reference?: string | null;
   created_at: string;
   paid_at: string | null;
@@ -781,7 +801,23 @@ export async function markInvoicePaidManually(
   if (current.status === 'cancelled') {
     throw new InvoiceSettleError('cancelled', `markInvoicePaidManually: invoice ${id} is cancelled`);
   }
-  if (current.status === 'paid') return current; // idempotent no-op
+  if (current.status === 'paid') {
+    // #199 (wrap-review LOW, accepted-narrow): idempotent no-op — a
+    // concurrent settle already won, so THIS call's method/reference is
+    // silently discarded (never overwrites a real settlement). The race is
+    // narrow (two settle attempts landing within the same request window)
+    // and returning the existing row is still the correct, safe choice —
+    // but when what's actually stored doesn't match what THIS caller asked
+    // for, that's worth a cheap, honest trace for reconciliation (never a
+    // behavior change or a client-facing error).
+    if (current.paid_method !== method || (reference != null && current.payment_reference !== reference)) {
+      console.warn(
+        `markInvoicePaidManually: invoice ${id} was already settled (paid_method=${current.paid_method ?? 'null'}) ` +
+          `when this call asked for method=${method}${reference != null ? ` reference=${reference}` : ''} — the earlier settle wins, this call's params were discarded`,
+      );
+    }
+    return current;
+  }
 
   if (method !== 'nce' && current.quote_id) {
     const { data: quoteRow } = await db

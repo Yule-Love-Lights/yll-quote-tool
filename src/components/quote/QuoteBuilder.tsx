@@ -389,6 +389,14 @@ export default function QuoteBuilder({
   // guessed at from the coincidental value alone (the same guess this fix
   // removes from the OFF path itself).
   const nceDepositSetByRuleRef = useRef(false);
+  // #199 (wrap-review LOW): a ref mirror of `isNce`, updated synchronously by
+  // applyIsNce (the ONLY place isNce ever changes — see its own reconcile
+  // note). Pre-#199, the chip's onClick used setIsNce's own functional form
+  // (`(v) => !v`), which is always guaranteed current. Routing the toggle
+  // through applyIsNce's plain-boolean signature regressed that to a
+  // render-closure read (`!isNce`) — this ref restores the same
+  // never-stale guarantee for computing "next" at the call site.
+  const isNceRef = useRef(isNce);
   // View-only portal (#176) — purely from the saved row, never set for a brand-new quote.
   const viewOnly = initialQuote?.viewOnly ?? false;
   // Customer tenure (#178) — purely from the saved row, never set for a brand-new quote.
@@ -2372,13 +2380,15 @@ export default function QuoteBuilder({
   // e.g. contact-pick inheritance re-confirming an already-false chip on a
   // re-pick) must never touch the deposit field at all, even in passing —
   // this is what made the OFF-side revert bug (below) invisible: the chip
-  // never visibly changed, yet a hand-typed 40 vanished. Checked BEFORE
-  // resolveNceDepositPercent even runs, using the isNce closed over from this
-  // render (the same value the chip/inheritance caller just compared against
-  // to decide whether to call this at all).
+  // never visibly changed, yet a hand-typed 40 vanished. Compared against
+  // isNceRef (wrap-review LOW), not the render-closure isNce — always
+  // synchronously current, kept in lockstep by this same function (the ONLY
+  // place isNce ever changes).
   const applyIsNce = (next: boolean) => {
+    const wasNce = isNceRef.current;
+    isNceRef.current = next;
     setIsNce(next);
-    if (next === isNce) return;
+    if (next === wasNce) return;
     const locked = savedStatus === 'approved' || savedStatus === 'booked';
     setForm(f => {
       const resolved = resolveNceDepositPercent(f.depositPercent, next, locked, nceDepositSetByRuleRef.current);
@@ -3517,8 +3527,11 @@ export default function QuoteBuilder({
               onClick={() => {
                 isNceTouchedRef.current = true;
                 // #199: applyIsNce (not a bare toggle) so turning the chip
-                // on/off also sets/reverts the 40% deposit default.
-                applyIsNce(!isNce);
+                // on/off also sets/reverts the 40% deposit default. Reads
+                // isNceRef (wrap-review LOW), not the render-closure isNce —
+                // restores the always-current guarantee the pre-#199 bare
+                // setIsNce((v) => !v) functional form had.
+                applyIsNce(!isNceRef.current);
               }}
               aria-pressed={isNce}
               title={isNce ? 'NCE — click to remove' : 'Mark as NCE (barter/trade network)'}
