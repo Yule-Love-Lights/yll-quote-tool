@@ -15,11 +15,20 @@
 -- `bot_users`; if no exact match exists, it stays null. The seed is first-write
 -- only by display name so a re-run never overwrites later pay/config edits.
 --
+-- IMPORTANT — "idempotent / safe to re-run" means SAFE, not a correction
+-- mechanism: the WHERE NOT EXISTS guard keys on display_name only, so if a
+-- seeded value here turns out wrong (a typo'd rate, say), editing this file
+-- and re-running it is a silent no-op — the name already exists, the row is
+-- skipped, nothing errors, nothing logs. Fix an already-seeded value with a
+-- direct UPDATE (or the crewMembers.ts accessor), never by editing this file.
+--
 -- RLS ENABLED, ZERO POLICIES — service-role only (shared labor/pay engine
 -- server-side). Matches the bot_users / job_material_actuals pattern.
 --
--- HOW TO APPLY: paste into the Supabase SQL Editor and Run. Idempotent; safe to
--- re-run.
+-- HOW TO APPLY: applied directly via Supabase MCP (see AGENTS.md's migration-
+-- application default) rather than the manual SQL-editor paste this repo used
+-- before 2026-08-07. Still idempotent/safe to re-run in the "won't duplicate
+-- existing rows" sense above.
 -- =====================================================================
 
 create table if not exists public.crew_members (
