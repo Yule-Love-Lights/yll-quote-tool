@@ -262,6 +262,72 @@ export function resolveNceDepositPercent(
 }
 
 /**
+ * Builder tag-chip confirm gate (#215): whether a MANUAL click on the YLL
+ * Neighbor chip should window.confirm before the tag turns ON, and what it
+ * says if so. Mirrors LegacyRebookToggle's (the admin quote-detail sibling)
+ * confirm+list pattern — the builder chip flipped silently before this, the
+ * asymmetry this ticket closes. Turning OFF never prompts: removing the tag
+ * can't mis-show the returning-customer portal experience, only ADDING it
+ * can. Pure so the "should this click prompt, and with what copy" decision
+ * is unit-testable without a React render harness (QuoteBuilder has none —
+ * see resolveTagPayload/resolveNceDepositPercent above for the same
+ * convention). Only the chip's own onClick calls this — automatic paths
+ * (contact-pick tag inheritance, mount hydration) call setLegacyRebook
+ * directly and must never prompt.
+ */
+export function legacyRebookConfirmMessage(turningOn: boolean): string | null {
+  if (!turningOn) return null;
+  return [
+    'Mark this quote as a YLL Neighbor?',
+    '',
+    '- The customer portal will show the "Last Year\'s Design" returning-customer experience instead of a first-time quote.',
+  ].join('\n');
+}
+
+/**
+ * Same gate as legacyRebookConfirmMessage, for the NCE chip (#199 money
+ * behaviors). Unlike Neighbor, BOTH directions can warrant a prompt:
+ * - ON always prompts — turning NCE on always blocks card/pay-link balance
+ *   collection (unconditional; see pay-balance/charge-balance's is_nce
+ *   gates), so there's always something to disclose.
+ * - OFF prompts ONLY when it actually reverts the deposit — removing the tag
+ *   itself needs no warning (same reasoning as Neighbor's OFF), but silently
+ *   dropping a 40% deposit back to blank would be a silent money change.
+ *
+ * depositPercent/locked are the same inputs applyIsNce's caller already has
+ * (form.depositPercent, the #177 approved/booked freeze). This calls
+ * resolveNceDepositPercent itself rather than taking a precomputed
+ * "will it change" boolean, so the copy can never drift from what applyIsNce
+ * actually does — including staying silent about the deposit once locked,
+ * since resolveNceDepositPercent is a no-op there too.
+ */
+export function nceConfirmMessage(
+  turningOn: boolean,
+  depositPercent: number,
+  locked: boolean,
+): string | null {
+  const nextDepositPercent = resolveNceDepositPercent(depositPercent, turningOn, locked);
+  const depositChanges = nextDepositPercent !== depositPercent;
+
+  if (turningOn) {
+    return [
+      'Mark this quote as NCE?',
+      '',
+      'NCE = the barter/trade network YLL belongs to.',
+      ...(depositChanges ? [`- Sets this quote's deposit to ${nextDepositPercent}%.`] : []),
+      "- The balance won't be collectable by card or pay-link — it settles through NCE instead.",
+    ].join('\n');
+  }
+
+  if (!depositChanges) return null;
+  return [
+    'Remove the NCE tag from this quote?',
+    '',
+    `- Reverts this quote's deposit from ${depositPercent}% back to blank (defaults to 50%).`,
+  ].join('\n');
+}
+
+/**
  * Merge a lead's prefill values onto a blank QuoteFormData. Applied ONLY as
  * the blank-slate builder's INITIAL state (QuoteBuilder's lazy useState
  * initializer) — never re-applied after mount, so a reopened quote

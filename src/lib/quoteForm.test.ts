@@ -7,6 +7,8 @@ import {
   applyPrefill,
   resolveTagPayload,
   resolveNceDepositPercent,
+  legacyRebookConfirmMessage,
+  nceConfirmMessage,
 } from './quoteForm';
 import type { QuoteInputs } from './pricing/pricingEngine';
 import { makeDefaultPermanentFields } from './permanent/types';
@@ -526,6 +528,73 @@ describe('resolveNceDepositPercent (#199 NCE 40% deposit default)', () => {
     expect(resolveNceDepositPercent(0, true, true)).toBe(0);
     expect(resolveNceDepositPercent(40, false, true)).toBe(40);
     expect(resolveNceDepositPercent(25, true, true)).toBe(25);
+  });
+});
+
+// #215: the builder tag chips' confirm gate — mirrors LegacyRebookToggle/
+// NceToggle's (the admin quote-detail siblings) window.confirm+list pattern,
+// which the chips lacked. Pure-function coverage stands in for a render test
+// (QuoteBuilder has none), same convention as resolveTagPayload/
+// resolveNceDepositPercent above.
+describe('legacyRebookConfirmMessage (#215 builder chip confirm)', () => {
+  it('returns null turning OFF — removing the tag needs no warning', () => {
+    expect(legacyRebookConfirmMessage(false)).toBeNull();
+  });
+
+  it('returns a message turning ON that names the portal consequence', () => {
+    const msg = legacyRebookConfirmMessage(true);
+    expect(msg).not.toBeNull();
+    expect(msg).toContain('YLL Neighbor');
+    expect(msg).toContain("Last Year's Design");
+    expect(msg).toContain('portal');
+  });
+});
+
+describe('nceConfirmMessage (#215 builder chip confirm)', () => {
+  describe('turning ON', () => {
+    it('always returns a message (the balance-collection block is unconditional)', () => {
+      expect(nceConfirmMessage(true, 0, false)).not.toBeNull();
+      expect(nceConfirmMessage(true, 40, false)).not.toBeNull();
+      expect(nceConfirmMessage(true, 25, true)).not.toBeNull();
+    });
+
+    it('names the 40% deposit when it will actually change', () => {
+      const msg = nceConfirmMessage(true, 0, false);
+      expect(msg).toContain('40%');
+    });
+
+    it('omits the deposit line when the deposit is already 40 (no real change)', () => {
+      const msg = nceConfirmMessage(true, 40, false)!;
+      expect(msg).not.toContain('40%');
+    });
+
+    it('omits the deposit line when locked (#177 freeze — applyIsNce is a no-op there)', () => {
+      const msg = nceConfirmMessage(true, 25, true)!;
+      expect(msg).not.toContain('deposit');
+    });
+
+    it('always names the balance-collection block, deposit-change or not', () => {
+      expect(nceConfirmMessage(true, 40, false)).toContain('card or pay-link');
+      expect(nceConfirmMessage(true, 25, true)).toContain('card or pay-link');
+    });
+  });
+
+  describe('turning OFF', () => {
+    it('returns null when the deposit is not the untouched 40 (nothing actually changes)', () => {
+      expect(nceConfirmMessage(false, 25, false)).toBeNull();
+      expect(nceConfirmMessage(false, 0, false)).toBeNull();
+    });
+
+    it('returns null when locked, even if the deposit is 40 (#177 freeze — no-op)', () => {
+      expect(nceConfirmMessage(false, 40, true)).toBeNull();
+    });
+
+    it('returns a message naming the deposit revert when the deposit is the untouched 40', () => {
+      const msg = nceConfirmMessage(false, 40, false);
+      expect(msg).not.toBeNull();
+      expect(msg).toContain('40%');
+      expect(msg).toContain('blank');
+    });
   });
 });
 

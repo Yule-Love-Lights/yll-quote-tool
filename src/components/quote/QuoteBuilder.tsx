@@ -26,6 +26,8 @@ import {
   applyPrefill,
   resolveTagPayload,
   resolveNceDepositPercent,
+  legacyRebookConfirmMessage,
+  nceConfirmMessage,
 } from '@/lib/quoteForm';
 import type { CrmContact } from '@/lib/integrations/types';
 import { type ServiceType, SERVICE_TYPES, SERVICE_TYPE_LABELS } from '@/lib/serviceType';
@@ -2356,15 +2358,15 @@ export default function QuoteBuilder({
   // same-tick edit. Locked (savedStatus approved/booked) quotes are a no-op —
   // the #177 freeze owns the deposit percent past approval; the tag itself
   // still flips (money is unaffected, matching the admin toggle route).
+  // Hoisted to a named const (#215) so the chip's confirm copy
+  // (nceConfirmMessage) can ask the identical "is this locked" question
+  // before it prompts, instead of a second inline expression that could drift.
+  const nceDepositLocked = savedStatus === 'approved' || savedStatus === 'booked';
   const applyIsNce = (next: boolean) => {
     setIsNce(next);
     setForm(f => ({
       ...f,
-      depositPercent: resolveNceDepositPercent(
-        f.depositPercent,
-        next,
-        savedStatus === 'approved' || savedStatus === 'booked',
-      ),
+      depositPercent: resolveNceDepositPercent(f.depositPercent, next, nceDepositLocked),
     }));
   };
 
@@ -3457,11 +3459,11 @@ export default function QuoteBuilder({
             )}
           </div>
           {/* NCE + YLL Neighbor tag chips (#198) — directly under the heading,
-              toggleable in BOTH new-quote and edit modes. Pure form state (no
-              confirm dialog, no immediate API call, unlike the admin detail
-              page's LegacyRebookToggle/NceToggle) — the chosen state
-              persists on the next Calculate/Save like any other form field,
-              same mount-hydrate-only convention as isTest/viewOnly (a
+              toggleable in BOTH new-quote and edit modes. Sets form state only,
+              no immediate API call (unlike the admin detail page's
+              LegacyRebookToggle/NceToggle, which fetch on click) — the chosen
+              state persists on the next Calculate/Save like any other form
+              field, same mount-hydrate-only convention as isTest/viewOnly (a
               customer tagged elsewhere mid-session isn't live-reflected
               here; staff re-check on reopen). This strip is the ONE place to
               see + set both tags in the builder — it replaces the old
@@ -3469,13 +3471,25 @@ export default function QuoteBuilder({
               badge row above (no duplicate/contradictory Neighbor UI).
               NCE-tagging here also seeds the 40% deposit default via
               applyIsNce (#199, pre-approval only — see its own comment);
-              the deposit input itself stays hand-editable after. */}
+              the deposit input itself stays hand-editable after.
+              #215: a MANUAL turn-on now window.confirms first, mirroring the
+              admin siblings' confirm+list pattern (legacyRebookConfirmMessage/
+              nceConfirmMessage, quoteForm.ts — each owns its own per-direction
+              when-to-prompt rule and exact copy). Automatic paths (the
+              contact-pick tag inheritance a few hundred lines down, the
+              mount-hydrate useState above) call setLegacyRebook/applyIsNce
+              directly and never prompt. Declining leaves the tag, deposit,
+              and touched-ref exactly as they were — the touched-ref is set
+              AFTER the confirm returns true, never before. */}
           <div className="flex items-center gap-2 mt-2">
             <button
               type="button"
               onClick={() => {
+                const turningOn = !legacyRebook;
+                const confirmMsg = legacyRebookConfirmMessage(turningOn);
+                if (confirmMsg && !window.confirm(confirmMsg)) return;
                 legacyRebookTouchedRef.current = true;
-                setLegacyRebook((v) => !v);
+                setLegacyRebook(turningOn);
               }}
               aria-pressed={legacyRebook}
               title={legacyRebook ? 'YLL Neighbor — click to remove' : 'Mark as YLL Neighbor'}
@@ -3490,10 +3504,13 @@ export default function QuoteBuilder({
             <button
               type="button"
               onClick={() => {
+                const turningOn = !isNce;
+                const confirmMsg = nceConfirmMessage(turningOn, form.depositPercent, nceDepositLocked);
+                if (confirmMsg && !window.confirm(confirmMsg)) return;
                 isNceTouchedRef.current = true;
                 // #199: applyIsNce (not a bare toggle) so turning the chip
                 // on/off also sets/reverts the 40% deposit default.
-                applyIsNce(!isNce);
+                applyIsNce(turningOn);
               }}
               aria-pressed={isNce}
               title={isNce ? 'NCE — click to remove' : 'Mark as NCE (barter/trade network)'}
