@@ -29,7 +29,13 @@ vi.mock('@/lib/supabase', () => ({
 }));
 vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: requireOperatorMock }));
 vi.mock('@/lib/jobs', () => ({ getJob, setJobStatus }));
-vi.mock('@/lib/invoices', () => ({ getInvoiceByJob, markInvoicePaidManually }));
+// #199 F2: importOriginal keeps InvoiceSettleError (the real class, needed
+// for the route's `instanceof` check) — only the DB-touching fns are mocked.
+vi.mock('@/lib/invoices', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/invoices')>()),
+  getInvoiceByJob,
+  markInvoicePaidManually,
+}));
 vi.mock('@/lib/integrations/highlevel', () => ({
   isHighLevelConfigured: () => hl.configured.value,
   updateOpportunity: hl.updateOpportunity,
@@ -38,6 +44,7 @@ vi.mock('@/lib/integrations/highlevel', () => ({
 }));
 
 import { POST } from './route';
+import { InvoiceSettleError } from '@/lib/invoices';
 
 // A minimal from().select().eq().maybeSingle() chain for the quote row —
 // shared by the installed-stage GHL move (ghlQuoteCard.ts) and the WT-18
@@ -195,6 +202,27 @@ describe('POST /api/jobs/[id]/close', () => {
     expect(res.status).toBe(409);
     const json = await res.json();
     expect(json.code).toBe('settle-failed');
+  });
+
+  // #199 F2 (wrap-review HIGH): the bare close-route call always defaults to
+  // method:'cash_check' — an NCE-linked invoice REFUSES that (the data layer's
+  // single gate). Must not close the job silently or generically; point staff
+  // at the invoice's own "Mark paid — NCE" panel, with the invoice id.
+  it('409s (nce-mismatch) with the invoice id when the linked invoice is NCE and can\'t cash-settle', async () => {
+    getJob.mockResolvedValueOnce(JOB_REQUIRES_INVOICING);
+    getInvoiceByJob.mockResolvedValueOnce(UNPAID_INVOICE);
+    markInvoicePaidManually.mockRejectedValueOnce(
+      new InvoiceSettleError('nce-mismatch', "invoice's quote is NCE — refusing a cash_check settle"),
+    );
+
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(409);
+    const json = await res.json();
+    expect(json.code).toBe('nce-mismatch');
+    expect(json.invoiceId).toBe(UNPAID_INVOICE.id);
+    expect(json.error).toMatch(/Mark paid . NCE/);
+    // The job must NOT advance — it stays exactly where it was.
+    expect(setJobStatus).not.toHaveBeenCalled();
   });
 });
 

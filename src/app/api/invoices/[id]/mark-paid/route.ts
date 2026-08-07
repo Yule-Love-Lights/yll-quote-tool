@@ -29,12 +29,23 @@
 // status/balance change, no job-close, no WT-18 gate (nothing to re-consent
 // to). 409 unless the invoice is already paid AND paid_method==='nce'.
 //
+// #199 (F2): markInvoicePaidManually itself refuses a non-'nce' method on an
+// NCE-linked invoice (409 code 'nce-mismatch' here) — a single gate covering
+// both this route's back-compat default AND PipelineActionsMenu's generic
+// "collect-payment" action (which POSTs an empty body).
+//
 // Response: { ok, paid, invoice: { id, status, balance } } | { error, code? }
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
-import { getInvoice, markInvoicePaidManually, updateInvoicePaymentReference, type PaidMethod } from '@/lib/invoices';
+import {
+  getInvoice,
+  markInvoicePaidManually,
+  updateInvoicePaymentReference,
+  InvoiceSettleError,
+  type PaidMethod,
+} from '@/lib/invoices';
 import { getJob, setJobStatus } from '@/lib/jobs';
 import { latestConsentAmendment, blocksSettlement, amendedQuoteStatus, type AmendmentTrailEntry } from '@/lib/amend';
 import type { QuoteStatus } from '@/lib/quoteStatus';
@@ -177,6 +188,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     paid = await markInvoicePaidManually(id, method, reference);
   } catch (err) {
     console.error('[api/invoices/:id/mark-paid]', err);
+    // #199 (F2): a cash_check/omitted-method settle attempt on an NCE invoice
+    // — via THIS route's own back-compat default, or PipelineActionsMenu's
+    // "collect-payment" empty-body POST — gets a specific, actionable message
+    // instead of the generic 'cancelled' fallback below.
+    if (err instanceof InvoiceSettleError && err.code === 'nce-mismatch') {
+      return NextResponse.json(
+        {
+          error:
+            'This is an NCE trade job — settle it with "Mark paid — NCE" and a trade reference number, not a cash/check mark-paid.',
+          code: 'nce-mismatch',
+        },
+        { status: 409 },
+      );
+    }
     return NextResponse.json(
       { error: 'Invoice cannot be marked paid', code: 'cancelled' },
       { status: 409 },

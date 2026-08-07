@@ -20,6 +20,7 @@ import {
   listInvoicesForCustomer,
   markInvoicePaidManually,
   updateInvoicePaymentReference,
+  InvoiceSettleError,
   appendRetiredTxn,
   mergeInvoicesNewestFirst,
   reconcileInvoice,
@@ -989,6 +990,73 @@ describe('markInvoicePaidManually', () => {
       const inv = await markInvoicePaidManually('i1', 'cash_check', null);
       expect(inv!.paid_method).toBe('nce');
       expect(inv!.payment_reference).toBe('NCE-1');
+    });
+  });
+
+  // #199 F2 (wrap-review HIGH): a single positive gate covering BOTH real
+  // call sites (job-close's bare force-settle; the mark-paid route, itself
+  // reachable from PipelineActionsMenu's generic "collect-payment" empty-body
+  // POST) — an NCE-linked invoice can only ever settle as method:'nce'.
+  describe('#199 F2 — NCE settle-method gate', () => {
+    it('throws InvoiceSettleError(nce-mismatch) for a cash_check settle on an NCE-linked invoice', async () => {
+      const fake = makeFakeSupabase({
+        invoices: [{ id: 'i1', quote_id: 'q1', status: 'awaiting_payment', balance: 500, paid_at: null }],
+        quotes: [{ id: 'q1', is_nce: true }],
+      });
+      sbRef.current = fake.client;
+      await expect(markInvoicePaidManually('i1')).rejects.toThrow(InvoiceSettleError);
+      await expect(markInvoicePaidManually('i1')).rejects.toMatchObject({ code: 'nce-mismatch' });
+    });
+
+    it('throws for the SAME reason when method is omitted entirely (the bare job-close call shape)', async () => {
+      const fake = makeFakeSupabase({
+        invoices: [{ id: 'i1', quote_id: 'q1', status: 'awaiting_payment', balance: 500, paid_at: null }],
+        quotes: [{ id: 'q1', is_nce: true }],
+      });
+      sbRef.current = fake.client;
+      await expect(markInvoicePaidManually('i1')).rejects.toThrow(/is NCE/);
+    });
+
+    it('does NOT settle (no write) when it refuses — the invoice stays unpaid', async () => {
+      const fake = makeFakeSupabase({
+        invoices: [{ id: 'i1', quote_id: 'q1', status: 'awaiting_payment', balance: 500, paid_at: null }],
+        quotes: [{ id: 'q1', is_nce: true }],
+      });
+      sbRef.current = fake.client;
+      await expect(markInvoicePaidManually('i1')).rejects.toThrow();
+      const inv = fake.tables.invoices.find((i) => i.id === 'i1')!;
+      expect(inv.status).toBe('awaiting_payment');
+    });
+
+    it('allows method:"nce" on an NCE-linked invoice', async () => {
+      const fake = makeFakeSupabase({
+        invoices: [{ id: 'i1', quote_id: 'q1', status: 'awaiting_payment', balance: 500, paid_at: null }],
+        quotes: [{ id: 'q1', is_nce: true }],
+      });
+      sbRef.current = fake.client;
+      const inv = await markInvoicePaidManually('i1', 'nce', 'NCE-1');
+      expect(inv!.status).toBe('paid');
+      expect(inv!.paid_method).toBe('nce');
+    });
+
+    it('allows a cash_check settle on a NON-NCE invoice (unaffected)', async () => {
+      const fake = makeFakeSupabase({
+        invoices: [{ id: 'i1', quote_id: 'q1', status: 'awaiting_payment', balance: 500, paid_at: null }],
+        quotes: [{ id: 'q1', is_nce: false }],
+      });
+      sbRef.current = fake.client;
+      const inv = await markInvoicePaidManually('i1');
+      expect(inv!.status).toBe('paid');
+      expect(inv!.paid_method).toBe('cash_check');
+    });
+
+    it('allows a cash_check settle when the invoice has no linked quote (nothing to check)', async () => {
+      const fake = makeFakeSupabase({
+        invoices: [{ id: 'i1', quote_id: null, status: 'awaiting_payment', balance: 500, paid_at: null }],
+      });
+      sbRef.current = fake.client;
+      const inv = await markInvoicePaidManually('i1');
+      expect(inv!.status).toBe('paid');
     });
   });
 });

@@ -719,6 +719,21 @@ export async function setInvoiceStatus(id: string, to: InvoiceStatus): Promise<I
   return data as unknown as InvoiceRow;
 }
 
+// #199 (F2, wrap-review HIGH): a typed throw so callers can tell WHY
+// markInvoicePaidManually refused, instead of pattern-matching a message
+// string. `cancelled` mirrors the pre-existing throw exactly (message
+// unchanged, so the mark-paid route's existing generic catch — which never
+// inspected the error — keeps its EXACT prior behavior for that case).
+// `nce-mismatch` is new: see the gate below.
+export class InvoiceSettleError extends Error {
+  code: 'cancelled' | 'nce-mismatch';
+  constructor(code: 'cancelled' | 'nce-mismatch', message: string) {
+    super(message);
+    this.name = 'InvoiceSettleError';
+    this.code = code;
+  }
+}
+
 /**
  * Manually mark an invoice paid — an operator recording an offline/external
  * payment (cash / check / NCE trade / paid in the Valor terminal). Atomic
@@ -734,6 +749,18 @@ export async function setInvoiceStatus(id: string, to: InvoiceStatus): Promise<I
  * force-settle) keeps writing exactly what it always wrote, now just also
  * labelled. Validating `reference` (required + non-empty for 'nce') is the
  * CALLER's job (the mark-paid route) — this is a thin, unconditional write.
+ *
+ * #199 (F2, wrap-review HIGH): ONE positive gate here, not N patches at every
+ * caller — an invoice whose linked quote is_nce can ONLY ever settle with
+ * method:'nce'. Without this, EITHER of this function's two call sites
+ * (job-close's bare force-settle; the mark-paid route, itself reachable from
+ * BOTH the dedicated NCE panel AND PipelineActionsMenu's generic
+ * "collect-payment"/"close" actions, which POST an empty body) would silently
+ * settle an NCE invoice as cash_check — and that mislabel is UNRECOVERABLE in
+ * the UI (updateInvoicePaymentReference refuses anything that isn't already
+ * paid_method==='nce'). Skipped when the invoice has no linked quote (nothing
+ * to check against — same permissive default as every other quote_id-gated
+ * lookup in this file).
  *
  * W1-022: the claim excludes BOTH 'paid' AND 'cancelled'. The cancelled pre-check
  * above is read-then-write, so a concurrent order-cancel that flips the invoice to
@@ -752,9 +779,24 @@ export async function markInvoicePaidManually(
   const current = await getInvoice(id);
   if (!current) return null;
   if (current.status === 'cancelled') {
-    throw new Error(`markInvoicePaidManually: invoice ${id} is cancelled`);
+    throw new InvoiceSettleError('cancelled', `markInvoicePaidManually: invoice ${id} is cancelled`);
   }
   if (current.status === 'paid') return current; // idempotent no-op
+
+  if (method !== 'nce' && current.quote_id) {
+    const { data: quoteRow } = await db
+      .from('quotes')
+      .select('is_nce')
+      .eq('id', current.quote_id)
+      .maybeSingle<{ is_nce: boolean }>();
+    if (quoteRow?.is_nce) {
+      throw new InvoiceSettleError(
+        'nce-mismatch',
+        `markInvoicePaidManually: invoice ${id}'s quote is NCE — refusing a ${method} settle`,
+      );
+    }
+  }
+
   const paidAt = new Date().toISOString();
   const { data, error } = await db
     .from('invoices')
