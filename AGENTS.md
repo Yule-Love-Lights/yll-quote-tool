@@ -130,6 +130,7 @@ Two devs work in this repo on **different machines**. **Naldo owns the dashboard
 |---|---|
 | **Naldo** | `src/app/page.tsx`, `src/components/dashboard/**`, `src/app/api/dashboard/**`, `src/lib/dashboard/**` |
 | **Jason** | `src/app/portal/**`, `src/components/portal/**`, `src/app/quote/**`, `src/components/quote/**`, pricing (`pricingEngine` / `BUSINESS_RULES`), `src/components/design/**` + `editor-core/**`, training, settings |
+| **Operations Hub contract** | `docs/context/OPERATIONS_HUB_CONTRACT.md`, `crew_members` + future shared-labor tables/migrations, `/api/ops/v1/**` — Claude/quote-tool-assistant-owned only; the Operations Hub Codex reads this contract from its repo and never edits this repo's schema/routes |
 | **SHARED — claim it first** | `src/app/layout.tsx`, `globals.css`, `package.json` + lockfile, the data layer (`src/lib/quotes.ts`, `designs.ts`, `supabase*`), shared types (`sceneTypes.ts`), tsconfig / eslint / next config |
 
 *Reading* a shared file (e.g. importing from `src/lib/quotes.ts`) is always fine; only **editing** a SHARED file needs a heads-up to the other owner first.
