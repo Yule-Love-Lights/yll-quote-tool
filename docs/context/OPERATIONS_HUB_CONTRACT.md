@@ -1,4 +1,4 @@
-# Operations Hub <-> Quote Tool contract, v1.1.0-draft
+# Operations Hub <-> Quote Tool contract, v1.2.0-draft
 
 > CANONICAL copy. The mirror lives at
 > `yll-call-copilot/docs/operations-hub/INTEGRATION-CONTRACT.md` and must carry
@@ -6,7 +6,7 @@
 > file. Built 2026-08-06 from CODEX-PLAN §19-21, OPERATIONS-HUB-SPEC §3-§7,
 > CLAUDE-PLAN A3/A8, the union checklist from the cross-doc gap audit, and
 > Naldo's rulings R1-R8 + F1-F4 (DECISIONS.md in the hub repo). Approved by the
-> Claude/Quote Tool side as v1.1.0-draft; becomes v1.0.0 when Codex confirms
+> Claude/Quote Tool side as v1.2.0-draft; becomes v1.0.0 when Codex confirms
 > the mirror matches and Naldo approves the master plan.
 
 ## 0. Ownership (final, per rulings F2/R8)
@@ -255,6 +255,32 @@ Semantics (state machine, QT-enforced):
   confirmation on completion; re-taps ride the idempotency key. A slow or
   down QT never leaves someone standing in the cold re-tapping into
   silence.
+
+## 8b. Flow G: advertising pay inputs (v1.2.0, per Naldo's piece-rate ruling)
+
+- The advertising crew is paid **$0.25 per accepted placement** (rate lives in
+  QT compensation config, changeable), computed by the QT pay engine ONLY
+  (R8), with the standard floor true-up: weekly pay = max(accepted placements
+  x piece rate, hours x the legal floor). NY minimum wage applies to
+  piece-rate hourly averages, so the ad crew joins the SAME day clock as
+  everyone else (Flow B clock-in/out; advertising's exclusion from attendance
+  is repealed by this ruling). Placement Runs remain productivity sessions;
+  the day clock is the hours record.
+- Hub reports pay inputs weekly: `AdvertisingWeekClosed` event per employee
+  per week: accepted placement count (verified placements only, voids
+  excluded), campaign breakdown, signs issued, signs reconciled
+  (issued - placed - returned), entity_version. The QT computes pay from the
+  COUNT; the sign-inventory reconciliation informs restock and loss review,
+  never a wage deduction (NY §193 applies to the ad crew too).
+- Sign inventory ledger is Hub-owned (advertising domain): stock on hand,
+  weekly issuance per person, placement decrements, week-end reconciliation.
+- Piece-rate pay basis requires its own written comp terms and WTPA notice,
+  same as the installers' P4P (attorney reviews both in one pass).
+- Digest model (Naldo's ruling): FOUR per-department digests (office,
+  advertising, install, management), each combining that department's ops
+  and attendance; admins receive all four. The QT morning ops digest and the
+  hub coaching digest fold into this model; digest content APIs follow the
+  same provisional-pay display law.
 
 ## 9. Sequencing hooks (F1)
 
