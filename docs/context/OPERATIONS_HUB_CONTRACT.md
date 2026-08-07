@@ -1,4 +1,4 @@
-# Operations Hub <-> Quote Tool contract, v1.2.0-draft
+# Operations Hub <-> Quote Tool contract, v1.3.0-draft
 
 > CANONICAL copy. The mirror lives at
 > `yll-call-copilot/docs/operations-hub/INTEGRATION-CONTRACT.md` and must carry
@@ -6,7 +6,7 @@
 > file. Built 2026-08-06 from CODEX-PLAN §19-21, OPERATIONS-HUB-SPEC §3-§7,
 > CLAUDE-PLAN A3/A8, the union checklist from the cross-doc gap audit, and
 > Naldo's rulings R1-R8 + F1-F4 (DECISIONS.md in the hub repo). Approved by the
-> Claude/Quote Tool side as v1.2.0-draft; becomes v1.0.0 when Codex confirms
+> Claude/Quote Tool side as v1.3.0-draft; becomes v1.0.0 when Codex confirms
 > the mirror matches and Naldo approves the master plan.
 
 ## 0. Ownership (final, per rulings F2/R8)
@@ -294,6 +294,117 @@ manual punch UI, completion UI). Actual P4P pay enablement is last and
 feature-flagged. External Copilot CRM cancels only after schedule/time
 parity plus two clean weeks; YLL Call Copilot the codebase is preserved and
 renamed.
+
+## 9b. v1.3.0 amendments (accepted from CONTRACT-V1.3-PROPOSAL.md, 2026-08-07)
+
+Codex's P1-P15 proposal sections are ACCEPTED and normative as follows.
+Dispositions: P1-P5, P7-P15 accepted; P6 accepted with one clarification;
+P16 is the open-decision list and lives with DECISIONS.md. Where this section
+and the flows above differ in field naming, this section wins; semantics
+merge, never weaken.
+
+- **P1 versions:** three values on every request/response and a health
+  surface: `contract_version`, `schema_version` (the shared JSON Schema
+  artifact's own version), `client_version`. Deploys fail on
+  contract/schema incompatibility; CI byte-compares canonical vs mirror
+  after canonical merge.
+- **P2 envelope:** the canonical mutation envelope and response are the
+  proposal's shapes (command_id, idempotency_key, **semantic_operation**
+  `employee:date:operation:entity` protecting the same human action across
+  channels, actor_employee_id, source, versions, device times,
+  client_sequence, effective_at_requested, offline_packet_id,
+  active_department_id + membership_version, gps_evidence, reason,
+  evidence_refs, correlation_id; response: canonical_operation_id,
+  command_status enum, effective_at, entity_version, review_flag,
+  error_code, duplicate_of_command_id). Add
+  `GET /api/ops/v1/commands/{command_id}` for post-timeout resolution.
+  Error-code enum = the union of section 1's list and the proposal's
+  additions (CONTRACT_VERSION_UNSUPPORTED, SCHEMA_VERSION_UNSUPPORTED,
+  ENTITY_VERSION_CONFLICT, IDENTITY_NOT_LINKED, MEMBERSHIP_STALE,
+  ACTIVE_DEPARTMENT_REQUIRED, CLOCK_REQUIRED, OFFLINE_PACKET_EXPIRED,
+  OFFLINE_PACKET_SCOPE_DENIED, EFFECTIVE_TIME_REVIEW_REQUIRED,
+  PLACEMENT_ACK_PENDING, INVENTORY_RECONCILIATION_REQUIRED,
+  PAY_PERIOD_LOCKED).
+- **P3 identity:** admin-seeded `crew_members` start Track A; QT never
+  creates or mutates Hub employees; owner-only
+  `POST /api/ops/v1/identity-links` with optimistic versioning; events
+  IdentityLinked/Changed/Unlinked; duplicate phone/Telegram/employee links
+  hard-fail into an owner review queue.
+- **P4 departments:** one `active_department_id` per paid shift; ClockIn
+  requires it plus membership_version;
+  `POST /api/ops/v1/me/department-context/switch`; switching during an open
+  break/segment/run defaults to reject-with-review until Naldo rules
+  (P16.2); DepartmentContextChanged event; no retroactive reclassification.
+- **P5 offline packets:** signed scoped `POST /api/ops/v1/me/offline-packets`
+  (employee, day, allowed operations, issued/expires, versions, nonce);
+  drift/GPS-age/sequence limits are P16.1 launch config; missing GPS
+  review-flags, never erases or fabricates; server persists device time,
+  receipt time, requested and chosen effective time, and the chooser.
+- **P6 time (accepted with clarification):** semantic operations clock_in,
+  break_start/end, arrive_job, depart_job, travel_start/end,
+  non_billable_start/end, clock_out. Unsegmented day time returns as
+  `unclassified_seconds`; the Hub never infers travel. CLARIFICATION
+  (preserves Naldo's drive-time ruling): travel remains PAID day time inside
+  the envelope; explicit travel ops or an approved classification rule
+  assign it; the unclassified residual exists to surface missed taps, not to
+  unpay time. Typed exceptions and correction-request endpoints as proposed;
+  locked periods adjust forward only. The six-year wage-record retention in
+  section 5 stands unchanged.
+- **P7 job facts:** assignment reads add budgeted_elapsed_hours,
+  planned_crew_size, budgeted_crew_hours, job_lead_employee_id,
+  assigned_crew[] with roles, design/load-list refs, notes, gate state,
+  source version. Pre-clock responses omit sensitive fields and action
+  tokens. Audited emergency override as specified.
+- **P8 completion:** two dimensions: `field_work_state`
+  (not_started | in_progress | field_work_completed) and
+  `completion_review_state` (not_submitted |
+  completion_submitted_for_office_review | accepted | needs_changes);
+  `depart_behavior` on the command; pinned material fields unchanged;
+  offline completion drafts with checksum media manifest and
+  durable-before-submit; events FieldWorkCompleted,
+  CompletionReviewChanged, JobDeparted; never financial.
+- **P9 quality and deactivation:** employee-readable quality-case API
+  (evidence, reason code, response state/deadline, reviewer, window close);
+  `GET /api/ops/v1/crew/{id}/deactivation-readiness` listing every open
+  item before deactivation; retained final-pay/audit records never deleted.
+- **P10 placement events:** PlacementAccepted / PlacementReversed
+  (/ PlacementAcceptanceCorrected) with the proposal's field list; batch
+  delivery with per-event acks; QT dedupes by event id; reconciliation read
+  comparing Hub vs QT totals by employee/campaign/week.
+- **P11 advertising weeks:** week states open ->
+  submitted_for_reconciliation -> ready_to_close -> closed -> adjusted;
+  close blocked while events/links/inventory unresolved;
+  AdvertisingWeekClosed carries the full proposed field list;
+  compensation config effective-dates the rates, initial values **250
+  cents per accepted placement, 1700 cents/hour floor**; QT computes and
+  returns unit pay, floor comparison, true-up, total, blockers; inventory
+  variance is never a wage deduction; door-hanger pay stays unconfigured
+  until ruled.
+- **P12 office metrics:** versioned effective-dated qualified-call formula;
+  stat reads expose numerator/denominator/exclusions/source-through/formula
+  version; sold_by uses immutable identity with an owner correction flow;
+  never name-matching.
+- **P13 digests:** four types (office, advertising, install, management);
+  canonical facts endpoint or event bundle per type/period with
+  source-through and versions; Hub composes and delivers; persisted digest
+  records with input versions, recipients, artifact checksum, delivery
+  state; admins receive all four; display law applies; scheduled delivery
+  has its own deadline/retry policy distinct from the 2-second command SLA.
+- **P14 payroll:** QT-owned readiness/blocker read, owner close/lock, raw
+  CSV generation, post-export adjustment listing; blockers as proposed; CSV
+  carries no provisional values, one row per pay line with stable ids and
+  types (hourly base, installer performance earned, advertising piece rate,
+  floor true-up, training bonus, referral bonus, manual adjustment);
+  vendor column mapping is an owner/payroll decision; QuickBooks out of V1.
+- **P15 observability:** stable event ids, at-least-once outbox with
+  idempotent consumers, DLQ metrics (depth, oldest age, operation, last
+  error) alerting through the QT bot, reconciliation jobs for every event
+  family, replay never duplicates effects.
+
+**Shared schema artifact path (planned, Phase 0):**
+`yll-quote-tool/docs/context/ops-contract-schema/` (generated from the
+OpenAPI fragments; `schema_version` lives in its manifest; both CIs validate
+against it and the Hub vendors the same files byte-identically).
 
 ## 10. Change process
 
