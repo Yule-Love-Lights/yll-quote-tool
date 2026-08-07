@@ -679,6 +679,19 @@ export async function findOrCreateProperty(
     .eq('customer_id', customerId)
     .eq('address_key', address_key)
     .maybeSingle<Pick<PropertyRow, 'id' | 'address' | 'lat' | 'lng' | 'archived_at'>>();
+  // #205 review fix (admin/technical MED, F4): pre-migration (archived_at
+  // column not yet added) this SELECT errors — existing.data comes back
+  // null either way, indistinguishable from "not found", so the function
+  // already falls through to INSERT → 23505 → retry-select and still
+  // resolves to the right row (nothing crashes, no bad linkage). But this
+  // is a HOT path (every quote save/send/re-attach that touches an
+  // existing property) and the error was never even logged: every such
+  // call wastes a doomed INSERT, and the W2-026 newest-win refresh below is
+  // silently disabled for the whole pre-migration window with zero trace.
+  // Log-only fix, per review instruction — do not restructure further.
+  if (existing.error) {
+    console.error('findOrCreateProperty existing-row lookup error (falls through to insert/retry-recover):', existing.error);
+  }
   if (existing.data) {
     // W2-026 (newest-win) — same normalized address_key, so refresh the display
     // address + geo to this quote's newer values when present (formatting/geo can
@@ -692,13 +705,26 @@ export async function findOrCreateProperty(
     // active property is a worse state than simply unarchiving it. This is
     // the ONLY other change to this function; nickname is untouched here
     // (that's the manual createPropertyForCustomer add's territory below).
+    //
+    // #205 review fix (admin MED, F5): this function is reached from
+    // attachQuoteToCustomer, which fires from a plain quote save, send,
+    // mark-sent, the #198 nce/legacy-rebook re-attach on OLD drafts, and
+    // backfillCustomersFromQuotes — a wide, largely-invisible trigger
+    // surface. Log the resurrection so it's traceable (a one-line
+    // console.info, not a restructure); logged only when it actually
+    // happens and the write succeeds, never on the routine address/geo-only
+    // refresh path.
     const resurrect = row.archived_at != null;
     if (nextAddress !== row.address || nextLat !== row.lat || nextLng !== row.lng || resurrect) {
       const { error: updErr } = await sb
         .from('properties')
         .update({ address: nextAddress, lat: nextLat, lng: nextLng, archived_at: null })
         .eq('id', row.id);
-      if (updErr) console.error('findOrCreateProperty newest-win update error:', updErr);
+      if (updErr) {
+        console.error('findOrCreateProperty newest-win update error:', updErr);
+      } else if (resurrect) {
+        console.info(`findOrCreateProperty: un-archived property ${row.id} for customer ${customerId} (new quote activity)`);
+      }
     }
     return { id: row.id as string };
   }
