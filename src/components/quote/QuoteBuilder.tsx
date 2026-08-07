@@ -397,6 +397,12 @@ export default function QuoteBuilder({
         status: initialQuote.status ?? null,
       })
     : null;
+  // #215: mirrors LegacyRebookToggle's own `status !== 'draft'` check (the
+  // admin sibling — both ultimately read deriveStatus) so the Neighbor
+  // chip's confirm can show the SAME "won't move an existing GHL card"
+  // caveat once a quote has left draft. A brand-new (never-saved) quote has
+  // savedStatus === null, which counts as still-draft here too.
+  const legacyRebookLeftDraft = savedStatus != null && savedStatus !== 'draft';
   const quoteNumber = initialQuote?.quoteNumber ?? null;
   // PS-G2: the booked quote's job id (null pre-booking) — drives the "Amend
   // order" banner below, which links to the job page's Record-amendment
@@ -3486,7 +3492,7 @@ export default function QuoteBuilder({
               type="button"
               onClick={() => {
                 const turningOn = !legacyRebook;
-                const confirmMsg = legacyRebookConfirmMessage(turningOn);
+                const confirmMsg = legacyRebookConfirmMessage(turningOn, legacyRebookLeftDraft);
                 if (confirmMsg && !window.confirm(confirmMsg)) return;
                 legacyRebookTouchedRef.current = true;
                 setLegacyRebook(turningOn);

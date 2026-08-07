@@ -264,24 +264,49 @@ export function resolveNceDepositPercent(
 /**
  * Builder tag-chip confirm gate (#215): whether a MANUAL click on the YLL
  * Neighbor chip should window.confirm before the tag turns ON, and what it
- * says if so. Mirrors LegacyRebookToggle's (the admin quote-detail sibling)
- * confirm+list pattern — the builder chip flipped silently before this, the
- * asymmetry this ticket closes. Turning OFF never prompts: removing the tag
- * can't mis-show the returning-customer portal experience, only ADDING it
- * can. Pure so the "should this click prompt, and with what copy" decision
- * is unit-testable without a React render harness (QuoteBuilder has none —
- * see resolveTagPayload/resolveNceDepositPercent above for the same
- * convention). Only the chip's own onClick calls this — automatic paths
- * (contact-pick tag inheritance, mount hydration) call setLegacyRebook
- * directly and must never prompt.
+ * says if so. Full consequence parity with LegacyRebookToggle's (the admin
+ * quote-detail sibling) confirm text — same three bullets, same voice, same
+ * "already left draft" caveat — the builder chip flipped silently before
+ * this, the asymmetry this ticket closes. All three are real regardless of
+ * which UI set the flag: the portal render (src/lib/portal/adapter.ts +
+ * derivePackages.ts), the operator-inbox exclusion
+ * (EXCLUDE_LEGACY_REBOOK_FROM_INBOX, src/lib/dashboard/inbox/store.ts), and
+ * the GHL pipeline routing (resolvePipelineStages, only actually fires at
+ * /send — see ghlPipelineMap.ts) all read quotes.legacy_rebook directly, not
+ * "which control toggled it." Turning OFF never prompts: removing the tag
+ * can't mis-show the returning-customer portal experience, re-hide-from- or
+ * un-hide-from the inbox, or reroute a GHL sync — only ADDING it can. Pure so
+ * the "should this click prompt, and with what copy" decision is
+ * unit-testable without a React render harness (QuoteBuilder has none — see
+ * resolveTagPayload/resolveNceDepositPercent above for the same convention).
+ * Only the chip's own onClick calls this — automatic paths (contact-pick tag
+ * inheritance, mount hydration) call setLegacyRebook directly and must never
+ * prompt.
+ *
+ * alreadyLeftDraft mirrors the admin control's own `status !== 'draft'`
+ * check exactly (both ultimately read deriveStatus's output) — true once the
+ * quote has been sent/viewed/approved/etc., so the caveat about NOT
+ * retroactively moving an already-synced GHL card only appears when that's
+ * actually possible. A brand-new or still-draft quote has nothing synced
+ * yet either way, so the caveat would be noise there — same as the admin
+ * control shows it.
  */
-export function legacyRebookConfirmMessage(turningOn: boolean): string | null {
+export function legacyRebookConfirmMessage(
+  turningOn: boolean,
+  alreadyLeftDraft: boolean,
+): string | null {
   if (!turningOn) return null;
-  return [
+  const lines = [
     'Mark this quote as a YLL Neighbor?',
     '',
-    '- The customer portal will show the "Last Year\'s Design" returning-customer experience instead of a first-time quote.',
-  ].join('\n');
+    '- The customer portal will show the "Last Year\'s Design" rebook variant (rebook copy; the item list is read-only while the quote has a single bundled line, toggleable with 2+ lines).',
+    '- The quote will be hidden from the operator inbox.',
+    '- Any GHL sync will route to the Yule Love Lights Neighbors pipeline instead of Christmas Lights.',
+  ];
+  if (alreadyLeftDraft) {
+    lines.push('', 'This only affects future renders and syncs — it will NOT move any existing GHL card.');
+  }
+  return lines.join('\n');
 }
 
 /**

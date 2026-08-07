@@ -537,16 +537,28 @@ describe('resolveNceDepositPercent (#199 NCE 40% deposit default)', () => {
 // (QuoteBuilder has none), same convention as resolveTagPayload/
 // resolveNceDepositPercent above.
 describe('legacyRebookConfirmMessage (#215 builder chip confirm)', () => {
-  it('returns null turning OFF — removing the tag needs no warning', () => {
-    expect(legacyRebookConfirmMessage(false)).toBeNull();
+  it('returns null turning OFF regardless of draft state — removing the tag needs no warning', () => {
+    expect(legacyRebookConfirmMessage(false, false)).toBeNull();
+    expect(legacyRebookConfirmMessage(false, true)).toBeNull();
   });
 
-  it('returns a message turning ON that names the portal consequence', () => {
-    const msg = legacyRebookConfirmMessage(true);
+  it('returns a message turning ON that names all three real consequences — full parity with LegacyRebookToggle', () => {
+    const msg = legacyRebookConfirmMessage(true, false);
     expect(msg).not.toBeNull();
     expect(msg).toContain('YLL Neighbor');
-    expect(msg).toContain("Last Year's Design");
-    expect(msg).toContain('portal');
+    expect(msg).toContain("Last Year's Design"); // portal render
+    expect(msg).toContain('operator inbox'); // EXCLUDE_LEGACY_REBOOK_FROM_INBOX
+    expect(msg).toContain('Neighbors pipeline'); // resolvePipelineStages, fires at /send
+  });
+
+  it('omits the "already left draft" caveat for a still-draft (or brand-new) quote — nothing synced yet', () => {
+    const msg = legacyRebookConfirmMessage(true, false)!;
+    expect(msg).not.toContain('will NOT move');
+  });
+
+  it('adds the "already left draft" caveat once the quote has left draft, mirroring the admin control exactly', () => {
+    const msg = legacyRebookConfirmMessage(true, true)!;
+    expect(msg).toContain('This only affects future renders and syncs — it will NOT move any existing GHL card.');
   });
 });
 
