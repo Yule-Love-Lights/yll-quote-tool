@@ -60,14 +60,12 @@ function makeParams(id: string) {
 }
 
 // Chainable mock for .update(payload).eq('id', id).select(...).maybeSingle(),
-// PLUS a second bare .update({inputs}).eq('id', id) (#199's deposit-default
-// write — no .select() chained, so it resolves via `await` on the builder
-// itself, same idiom as findOrCreateCustomer's fire-and-forget updates:
-// `error` reads `undefined` off the builder object = no error). `row` is the
-// row present in the table BEFORE the update (null = no match, mirroring an
-// unknown quote id — the update then matches 0 rows). `opts.secondUpdateError`
-// injects an error on the SECOND update call only (updatePayloads.length===2
-// at the moment its .eq() resolves), for the #199 best-effort test.
+// PLUS a second CAS'd .update({inputs}).eq('id',id).is('customer_approved_at',
+// null).is/eq('inputs',...).select('id') (#199 F3's deposit-default write —
+// terminal .select('id') resolves explicitly so tests can simulate a CAS HIT
+// (default: 1 row) or a lost race / DB error via `opts.depositWriteResult`.
+// `row` is the row present in the table BEFORE the update (null = no match,
+// mirroring an unknown quote id — the update then matches 0 rows).
 function makeSb(
   row: {
     id: string;
@@ -79,7 +77,9 @@ function makeSb(
     customer_approved_at?: string | null;
     inputs?: Record<string, unknown> | null;
   } | null,
-  opts: { secondUpdateError?: { message: string } } = {},
+  opts: {
+    depositWriteResult?: { data: Array<{ id: string }> | null; error: { message: string } | null };
+  } = {},
 ) {
   const updatePayloads: Array<Record<string, unknown>> = [];
   const builder: Record<string, unknown> = {};
@@ -89,13 +89,18 @@ function makeSb(
       updatePayloads.push(payload);
       return builder;
     },
-    eq: () => {
-      if (opts.secondUpdateError && updatePayloads.length === 2) {
-        return Promise.resolve({ error: opts.secondUpdateError });
+    eq: () => builder,
+    is: () => builder,
+    select: (cols?: string) => {
+      // The SECOND (deposit-default) update's terminal .select('id') — the
+      // FIRST update's own .select(<long column list>) never passes 'id' alone.
+      if (cols === 'id' && updatePayloads.length === 2) {
+        return Promise.resolve(
+          opts.depositWriteResult ?? { data: [{ id: row?.id ?? '' }], error: null },
+        );
       }
       return builder;
     },
-    select: () => builder,
     maybeSingle: async () => {
       if (!row) return { data: null, error: null };
       const merged = { ...row, ...(updatePayloads[0] ?? {}) };
@@ -465,7 +470,7 @@ describe('POST /api/quotes/[id]/nce — NCE 40% deposit default (#199)', () => {
     expect(updatePayloads).toHaveLength(1);
   });
 
-  it('is best-effort — a deposit-write failure never fails the toggle', async () => {
+  it('is best-effort — a deposit-write DB error never fails the toggle', async () => {
     const { client } = makeSb(
       {
         id: VALID_UUID,
@@ -473,7 +478,7 @@ describe('POST /api/quotes/[id]/nce — NCE 40% deposit default (#199)', () => {
         customer_approved_at: null,
         inputs: {},
       },
-      { secondUpdateError: { message: 'db down' } },
+      { depositWriteResult: { data: null, error: { message: 'db down' } } },
     );
     sbRef.current = client;
 
@@ -481,5 +486,49 @@ describe('POST /api/quotes/[id]/nce — NCE 40% deposit default (#199)', () => {
     const json = await res.json();
     expect(res.status).toBe(200);
     expect(json).toEqual({ ok: true, isNce: true });
+  });
+
+  // #199 F3 (wrap-review MED-HIGH): the deposit write is a read-modify-write
+  // of the WHOLE inputs jsonb — CAS'd against the exact inputs read above (+
+  // customer_approved_at re-checked still null), mirroring free-items/route.ts's
+  // approval_snapshot CAS. A lost race (a concurrent builder Calculate/save,
+  // or a concurrent approve) must skip the write, not silently clobber the
+  // newer state — and never fail the tag toggle itself (best-effort).
+  describe('deposit-write CAS (#199 F3)', () => {
+    it('is best-effort — a lost CAS race (concurrent inputs change) never fails the toggle', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { client, updatePayloads } = makeSb(
+        { id: VALID_UUID, is_nce: false, customer_approved_at: null, inputs: {} },
+        { depositWriteResult: { data: [], error: null } }, // 0 rows — CAS missed
+      );
+      sbRef.current = client;
+
+      const res = await POST(makeReq({ isNce: true }), makeParams(VALID_UUID));
+      const json = await res.json();
+      expect(res.status).toBe(200);
+      expect(json).toEqual({ ok: true, isNce: true });
+      // The write was ATTEMPTED (the payload was sent)...
+      expect(updatePayloads[1]).toEqual({ inputs: { depositPercent: 40 } });
+      // ...but the route knows it didn't land — surfaced as a warning, not
+      // silently swallowed and not surfaced as a client-facing failure.
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('changed concurrently'));
+      warnSpy.mockRestore();
+    });
+
+    it('does not warn on a normal CAS hit (the default happy path)', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { client } = makeSb({
+        id: VALID_UUID,
+        is_nce: false,
+        customer_approved_at: null,
+        inputs: {},
+      });
+      sbRef.current = client;
+
+      const res = await POST(makeReq({ isNce: true }), makeParams(VALID_UUID));
+      expect(res.status).toBe(200);
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
   });
 });

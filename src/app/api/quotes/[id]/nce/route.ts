@@ -119,9 +119,36 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       depositWrite = rest;
     }
     if (depositWrite) {
-      const { error: depErr } = await sb.from('quotes').update({ inputs: depositWrite }).eq('id', id);
+      // #199 (F3, wrap-review MED-HIGH): this is a read-modify-write of the
+      // WHOLE inputs jsonb — un-guarded, a concurrent builder Calculate/save
+      // racing this toggle would silently revert the save's entire inputs
+      // blob (the closest sibling on this table, free-items/route.ts, CASes
+      // for exactly this — mirrored here). CAS against the EXACT inputs we
+      // read above; .is() for the null case (a never-priced quote) since a
+      // SQL NULL never matches .eq('col','null') (mirrors charge-balance's
+      // own null-vs-sentinel CAS split). ALSO re-checks customer_approved_at
+      // is STILL null at write time (not just at our read above, seconds
+      // earlier) — closes the narrow approve-vs-write TOCTOU where the
+      // customer approves in that window, which would otherwise let this
+      // pre-approval-only write land on a now-#177-frozen quote. A lost race
+      // on EITHER guard skips the write (0 rows) — best-effort, matching this
+      // route's existing design (never fails the tag toggle itself).
+      let depositUpdateQuery = sb
+        .from('quotes')
+        .update({ inputs: depositWrite })
+        .eq('id', id)
+        .is('customer_approved_at', null);
+      depositUpdateQuery =
+        data.inputs === null
+          ? depositUpdateQuery.is('inputs', null)
+          : depositUpdateQuery.eq('inputs', JSON.stringify(data.inputs));
+      const { data: casRows, error: depErr } = await depositUpdateQuery.select('id');
       if (depErr) {
         console.warn('[api/quotes/:id/nce] #199 deposit-default write failed (non-fatal):', depErr);
+      } else if (!casRows || casRows.length === 0) {
+        console.warn(
+          `[api/quotes/:id/nce] #199 deposit-default write skipped for quote ${id} — inputs or approval state changed concurrently (non-fatal, best-effort)`,
+        );
       }
     }
   }
