@@ -27,6 +27,10 @@ import {
   propagateQuoteTagsToCustomer,
   setCustomerTags,
   quoteRowToIdentity,
+  updateProperty,
+  archiveProperty,
+  unarchiveProperty,
+  createPropertyForCustomer,
 } from './customers';
 
 // ─── #214: quoteRowToIdentity — stored-row → attach identity ────────────────
@@ -1424,5 +1428,282 @@ describe('setCustomerTags', () => {
     const { data, error } = await setCustomerTags('cust-1', { isNce: true });
     expect(data).toBeNull();
     expect(error).not.toBeNull();
+  });
+});
+
+// ─── #205: property management (nickname, archive, manual add) ─────────────
+
+describe('getPropertiesForCustomer — includeArchived (#205)', () => {
+  it('excludes archived properties by default', async () => {
+    const fake = makeFakeSupabase({
+      properties: [
+        { id: 'p1', customer_id: 'cust-1', address_key: 'a', archived_at: null },
+        { id: 'p2', customer_id: 'cust-1', address_key: 'b', archived_at: '2026-01-01T00:00:00Z' },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const list = await getPropertiesForCustomer('cust-1');
+    expect(list.map((p) => p.id)).toEqual(['p1']);
+  });
+
+  it('includes archived properties when includeArchived is true', async () => {
+    const fake = makeFakeSupabase({
+      properties: [
+        { id: 'p1', customer_id: 'cust-1', address_key: 'a', archived_at: null },
+        { id: 'p2', customer_id: 'cust-1', address_key: 'b', archived_at: '2026-01-01T00:00:00Z' },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const list = await getPropertiesForCustomer('cust-1', { includeArchived: true });
+    expect(list.map((p) => p.id).sort()).toEqual(['p1', 'p2']);
+  });
+});
+
+describe('updateProperty', () => {
+  it('trims whitespace from the nickname', async () => {
+    const fake = makeFakeSupabase({
+      properties: [{ id: 'p1', customer_id: 'cust-1', address_key: '1 a st', nickname: null }],
+    });
+    sbRef.current = fake.client;
+
+    const { data, error } = await updateProperty('cust-1', 'p1', { nickname: "  Talonda's House  " });
+    expect(error).toBeNull();
+    expect(data?.nickname).toBe("Talonda's House");
+  });
+
+  it('caps the nickname at 80 characters', async () => {
+    const fake = makeFakeSupabase({
+      properties: [{ id: 'p1', customer_id: 'cust-1', address_key: '1 a st', nickname: null }],
+    });
+    sbRef.current = fake.client;
+
+    const long = 'x'.repeat(100);
+    const { data } = await updateProperty('cust-1', 'p1', { nickname: long });
+    expect(data?.nickname).toBe('x'.repeat(80));
+  });
+
+  it('treats an empty/whitespace-only nickname as a clear (-> null)', async () => {
+    const fake = makeFakeSupabase({
+      properties: [{ id: 'p1', customer_id: 'cust-1', address_key: '1 a st', nickname: 'Old Label' }],
+    });
+    sbRef.current = fake.client;
+
+    const { data } = await updateProperty('cust-1', 'p1', { nickname: '   ' });
+    expect(data?.nickname).toBeNull();
+  });
+
+  it('returns no data (not found) for a property that belongs to a DIFFERENT customer — never edited', async () => {
+    const fake = makeFakeSupabase({
+      properties: [{ id: 'p1', customer_id: 'cust-OTHER', address_key: '1 a st', nickname: null }],
+    });
+    sbRef.current = fake.client;
+
+    const { data, error } = await updateProperty('cust-1', 'p1', { nickname: 'Hijack' });
+    expect(data).toBeNull();
+    expect(error).toBeNull();
+    expect(fake.tables.properties[0].nickname).toBeNull(); // untouched
+  });
+
+  it('returns no data (not found) for an unknown property id', async () => {
+    const fake = makeFakeSupabase();
+    sbRef.current = fake.client;
+    const { data, error } = await updateProperty('cust-1', 'missing', { nickname: 'x' });
+    expect(data).toBeNull();
+    expect(error).toBeNull();
+  });
+
+  it('returns an error (not a throw) when Supabase is unconfigured', async () => {
+    sbRef.current = null;
+    const { data, error } = await updateProperty('cust-1', 'p1', { nickname: 'x' });
+    expect(data).toBeNull();
+    expect(error).not.toBeNull();
+  });
+});
+
+describe('archiveProperty / unarchiveProperty', () => {
+  it('archiving stamps archived_at and hides the property from the default list', async () => {
+    const fake = makeFakeSupabase({
+      properties: [{ id: 'p1', customer_id: 'cust-1', address: '1 A St', address_key: '1 a st', archived_at: null }],
+    });
+    sbRef.current = fake.client;
+
+    const { data, error } = await archiveProperty('cust-1', 'p1');
+    expect(error).toBeNull();
+    expect(data?.archived_at).toBeTruthy();
+
+    expect(await getPropertiesForCustomer('cust-1')).toHaveLength(0);
+    expect(await getPropertiesForCustomer('cust-1', { includeArchived: true })).toHaveLength(1);
+  });
+
+  it('unarchiving clears archived_at and the property reappears in the default list', async () => {
+    const fake = makeFakeSupabase({
+      properties: [{ id: 'p1', customer_id: 'cust-1', address_key: '1 a st', archived_at: '2026-01-01T00:00:00Z' }],
+    });
+    sbRef.current = fake.client;
+
+    const { data, error } = await unarchiveProperty('cust-1', 'p1');
+    expect(error).toBeNull();
+    expect(data?.archived_at).toBeNull();
+    expect(await getPropertiesForCustomer('cust-1')).toHaveLength(1);
+  });
+
+  it('never archives a property belonging to a DIFFERENT customer', async () => {
+    const fake = makeFakeSupabase({
+      properties: [{ id: 'p1', customer_id: 'cust-OTHER', address_key: '1 a st', archived_at: null }],
+    });
+    sbRef.current = fake.client;
+
+    const { data } = await archiveProperty('cust-1', 'p1');
+    expect(data).toBeNull();
+    expect(fake.tables.properties[0].archived_at).toBeNull(); // untouched
+  });
+
+  it('never unarchives a property belonging to a DIFFERENT customer', async () => {
+    const fake = makeFakeSupabase({
+      properties: [{ id: 'p1', customer_id: 'cust-OTHER', address_key: '1 a st', archived_at: '2026-01-01T00:00:00Z' }],
+    });
+    sbRef.current = fake.client;
+
+    const { data } = await unarchiveProperty('cust-1', 'p1');
+    expect(data).toBeNull();
+    expect(fake.tables.properties[0].archived_at).toBe('2026-01-01T00:00:00Z'); // untouched
+  });
+});
+
+describe('createPropertyForCustomer', () => {
+  it('creates a brand-new property with the given nickname', async () => {
+    const fake = makeFakeSupabase();
+    sbRef.current = fake.client;
+
+    const { data, error } = await createPropertyForCustomer('cust-1', { address: '1 Main St', nickname: 'Home' });
+    expect(error).toBeNull();
+    expect(data?.address).toBe('1 Main St');
+    expect(data?.nickname).toBe('Home');
+    expect(fake.tables.properties).toHaveLength(1);
+  });
+
+  it('a collision with an existing LIVE property resolves to that row, leaving its nickname untouched', async () => {
+    const fake = makeFakeSupabase({
+      properties: [
+        {
+          id: 'p1',
+          customer_id: 'cust-1',
+          address: '1 Main St',
+          address_key: '1 main st',
+          nickname: 'Original Label',
+          archived_at: null,
+        },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const { data, error } = await createPropertyForCustomer('cust-1', { address: '1  MAIN st.', nickname: 'New Label' });
+    expect(error).toBeNull();
+    expect(data?.id).toBe('p1');
+    expect(data?.nickname).toBe('Original Label'); // untouched — resolving to the row is enough
+    expect(fake.tables.properties).toHaveLength(1); // no duplicate
+  });
+
+  it('a collision with an ARCHIVED property unarchives it and applies the nickname', async () => {
+    const fake = makeFakeSupabase({
+      properties: [
+        {
+          id: 'p1',
+          customer_id: 'cust-1',
+          address: '1 Main St',
+          address_key: '1 main st',
+          nickname: null,
+          archived_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const { data, error } = await createPropertyForCustomer('cust-1', { address: '1 Main St', nickname: 'Resurrected' });
+    expect(error).toBeNull();
+    expect(data?.id).toBe('p1');
+    expect(data?.archived_at).toBeNull();
+    expect(data?.nickname).toBe('Resurrected');
+    expect(fake.tables.properties).toHaveLength(1); // no duplicate
+  });
+
+  it('a collision with an ARCHIVED property and no nickname provided keeps its existing nickname', async () => {
+    const fake = makeFakeSupabase({
+      properties: [
+        {
+          id: 'p1',
+          customer_id: 'cust-1',
+          address: '1 Main St',
+          address_key: '1 main st',
+          nickname: 'Keep Me',
+          archived_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const { data } = await createPropertyForCustomer('cust-1', { address: '1 Main St' });
+    expect(data?.archived_at).toBeNull();
+    expect(data?.nickname).toBe('Keep Me');
+  });
+
+  // Mirrors findOrCreateProperty's own "genuine hard insert error" test —
+  // nothing pre-exists, so the retry re-select genuinely (not just
+  // theoretically) finds nothing and the function fails safely rather than
+  // throwing or fabricating a row.
+  it('returns an error on a genuine hard insert error (not a recoverable race)', async () => {
+    const fake = makeFakeSupabase();
+    sbRef.current = fake.client;
+    fake.forceInsertErrorOnce('properties', { code: '500', message: 'connection reset' });
+
+    const { data, error } = await createPropertyForCustomer('cust-1', { address: '9 New Rd' });
+    expect(data).toBeNull();
+    expect(error).not.toBeNull();
+    expect(fake.tables.properties).toHaveLength(0);
+  });
+
+  it('returns an error (not a throw) when Supabase is unconfigured', async () => {
+    sbRef.current = null;
+    const { data, error } = await createPropertyForCustomer('cust-1', { address: '1 Main St' });
+    expect(data).toBeNull();
+    expect(error).not.toBeNull();
+  });
+});
+
+describe('findOrCreateProperty — archive resurrection (#205)', () => {
+  it('clears archived_at when new quote activity lands on an archived property', async () => {
+    const fake = makeFakeSupabase({
+      properties: [
+        {
+          id: 'p1',
+          customer_id: 'cust-1',
+          address: '1 Main St',
+          address_key: '1 main st',
+          nickname: 'Keep Me',
+          archived_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const res = await findOrCreateProperty('cust-1', '1 Main St');
+    expect(res?.id).toBe('p1');
+    expect(fake.tables.properties[0].archived_at).toBeNull();
+    // nickname is untouched — findOrCreateProperty's scope stops at
+    // address/geo/archived_at; nickname is createPropertyForCustomer's job.
+    expect(fake.tables.properties[0].nickname).toBe('Keep Me');
+  });
+
+  it('does not write archived_at for a property that was already live (no needless write)', async () => {
+    const fake = makeFakeSupabase({
+      properties: [{ id: 'p1', customer_id: 'cust-1', address: '1 Main St', address_key: '1 main st', archived_at: null }],
+    });
+    sbRef.current = fake.client;
+
+    const res = await findOrCreateProperty('cust-1', '1 Main St');
+    expect(res?.id).toBe('p1');
+    expect(fake.tables.properties[0].archived_at).toBeNull();
   });
 });
