@@ -49,6 +49,10 @@ export default function InvoiceDetailPage() {
   // sequence; per-call flags ping-ponged forever). Reconsent is deliberately
   // NEVER persisted (a future amendment must re-block).
   const grantedPrefOverrideRef = useRef(false);
+  // #199: same accumulate-across-retries posture as grantedPrefOverrideRef —
+  // an NCE + cash/check invoice can need BOTH overrides granted across two
+  // separate "charge anyway" clicks before the reconsent gate is even reached.
+  const grantedNceOverrideRef = useRef(false);
   const [savingPref, setSavingPref] = useState(false);
   const [markingPaid, setMarkingPaid] = useState(false);
 
@@ -156,11 +160,19 @@ export default function InvoiceDetailPage() {
   // opts (#170d): overrideReconsent re-runs past the WT-18 settlement gate after
   // the operator explicitly accepts it; overridePreference charges despite a
   // cash/check preference (its own harder confirm at the call site).
-  const chargeBalance = async (opts?: { overrideReconsent?: boolean; overridePreference?: boolean }) => {
+  // opts.overrideNce (#199): same shape, charges despite the NCE trade-job
+  // block — accumulates via grantedNceOverrideRef exactly like overridePreference,
+  // so an NCE + cash/check invoice can grant both across two separate clicks.
+  const chargeBalance = async (opts?: {
+    overrideReconsent?: boolean;
+    overridePreference?: boolean;
+    overrideNce?: boolean;
+  }) => {
     const invoice = data?.invoice;
     if (!invoice) return;
     if (!window.confirm(`Charge the saved card ${money(invoice.balance)} for the remaining balance?`)) return;
     if (opts?.overridePreference) grantedPrefOverrideRef.current = true;
+    if (opts?.overrideNce) grantedNceOverrideRef.current = true;
     setCharging(true);
     setBalanceMsg(null);
     setReconsentBlocked(null);
@@ -171,6 +183,7 @@ export default function InvoiceDetailPage() {
         body: JSON.stringify({
           overrideReconsent: opts?.overrideReconsent === true,
           overridePreference: grantedPrefOverrideRef.current,
+          overrideNce: grantedNceOverrideRef.current,
         }),
       });
       if (res.status === 401) {
@@ -507,8 +520,9 @@ export default function InvoiceDetailPage() {
                     </button>
                     {/* Gated: only when Valor card-on-file auto-charge is enabled AND the
                         customer hasn't said cash/check (#170d — the cash path gets an
-                        explicit override instead of a one-click charge). */}
-                    {data?.autoChargeEnabled && inv.payment_preference !== 'cash_check' && (
+                        explicit override instead of a one-click charge) AND the quote
+                        isn't NCE (#199 — same override-instead-of-one-click posture). */}
+                    {data?.autoChargeEnabled && inv.payment_preference !== 'cash_check' && !data.isNce && (
                       <button
                         type="button"
                         onClick={() => void chargeBalance()}
@@ -543,6 +557,31 @@ export default function InvoiceDetailPage() {
                             )
                           ) {
                             void chargeBalance({ overridePreference: true });
+                          }
+                        }}
+                        className="underline text-gray-600 hover:text-gray-800 disabled:opacity-60"
+                      >
+                        Charge the card anyway
+                      </button>
+                    </p>
+                  )}
+
+                  {/* #199: independent of payment_preference above — an NCE + cash/check
+                      invoice shows BOTH notes, and both overrides can combine (chargeBalance
+                      merges the accumulated ref flags into one request body). */}
+                  {data?.autoChargeEnabled && data.isNce && (
+                    <p className="text-xs text-gray-500 mt-1.5">
+                      This is an NCE trade job — the balance settles through NCE, not a card charge.{' '}
+                      <button
+                        type="button"
+                        disabled={charging}
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              'This is an NCE trade job. Charge their saved card anyway?',
+                            )
+                          ) {
+                            void chargeBalance({ overrideNce: true });
                           }
                         }}
                         className="underline text-gray-600 hover:text-gray-800 disabled:opacity-60"
