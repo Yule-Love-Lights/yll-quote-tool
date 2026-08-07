@@ -133,15 +133,24 @@ export default async function CustomerDetailPage({
   //
   // #205: fetched ONCE with includeArchived:true (the full set) so the new
   // Properties panel below can toggle "Show archived" client-side without a
-  // second round trip; rebookProperties then filters archived back OUT in
-  // JS (an archived property is a poor rebook target — matches
-  // getPropertiesForCustomer's own new default).
+  // second round trip.
+  //
+  // #205 review fix (customer/staff HIGH, F1): rebookProperties now passes
+  // ALL properties (archived included) to RebookButton, NOT a live-only
+  // filter. Archived-ness is a display preference, not a claim about quote
+  // history — a customer can have a LIVE property with zero history and an
+  // ARCHIVED one holding last season's approved quote; filtering archived
+  // out here made "1 visible property" stop meaning "unambiguous", so a
+  // click could silently post against the wrong (empty) property and 404.
+  // See RebookButton's decideRebookClick + rebook.ts's own #205 comments.
   const allProperties = customerId
     ? await getPropertiesForCustomer(customerId, { includeArchived: true })
     : [];
-  const rebookProperties = allProperties
-    .filter(p => !p.archived_at)
-    .map(p => ({ id: p.id, address: p.address }));
+  const rebookProperties = allProperties.map(p => ({
+    id: p.id,
+    address: p.address,
+    archivedAt: p.archived_at ?? null,
+  }));
   const propertiesPanelData = allProperties.map(p => ({
     id: p.id,
     address: p.address,
