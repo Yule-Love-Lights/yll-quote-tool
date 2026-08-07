@@ -980,17 +980,37 @@ describe('findOrCreateProperty', () => {
 
   // W2-010: same race-recovery coverage as findOrCreateCustomer, for the
   // identical branch in findOrCreateProperty (UNIQUE(customer_id, address_key)).
+  //
+  // #205 review fix (F6 — pre-existing test repair, reviewer-verified):
+  // this test used to pre-seed the WINNER row directly, so
+  // findOrCreateProperty's own up-front existing-row SELECT found it
+  // immediately and returned WITHOUT ever attempting an insert — the
+  // forced 23505 sat unconsumed, and the retry-recovery branch this test
+  // claims to cover never actually ran (it "passed" only because the
+  // direct-hit path produces the identical observable result). Repaired
+  // using the SAME genuine-concurrency technique this file already uses
+  // for findOrCreateCustomer (see "two concurrent findOrCreateCustomer
+  // calls..." below): Promise.all with NO pre-seed and NO forced error.
+  // Traced precisely via the fake's microtask interleaving — both calls
+  // SUSPEND at their own first await (the existing-row SELECT, finding
+  // nothing, since the table starts empty), so both proceed to INSERT;
+  // the winner's insert lands first and genuinely occupies the
+  // address_key; the loser's insert then hits a REAL (unforced) 23505 —
+  // by the time its own single() resolves, the winner's row already
+  // exists — and ITS retry-select genuinely recovers the winner. This is
+  // what actually exercises the retry-recovery branch.
   it('recovers the existing row on a 23505 unique-violation race (concurrent create)', async () => {
-    const fake = makeFakeSupabase({
-      properties: [{ id: 'winner-1', customer_id: 'cust-1', address_key: '123 main st' }],
-    });
+    const fake = makeFakeSupabase();
     sbRef.current = fake.client;
-    fake.forceInsertErrorOnce('properties', { code: '23505', message: 'duplicate key value violates unique constraint' });
 
-    const res = await findOrCreateProperty('cust-1', '123 Main St.');
+    const [a, b] = await Promise.all([
+      findOrCreateProperty('cust-1', '123 Main St.'),
+      findOrCreateProperty('cust-1', '123 Main St.'),
+    ]);
 
-    expect(res?.id).toBe('winner-1');
-    expect(fake.tables.properties).toHaveLength(1);
+    expect(a?.id).toBeTruthy();
+    expect(b?.id).toBe(a?.id); // both converge on the SAME row
+    expect(fake.tables.properties).toHaveLength(1); // never duplicated
   });
 
   it('returns null on a genuine hard insert error (not a recoverable race)', async () => {
