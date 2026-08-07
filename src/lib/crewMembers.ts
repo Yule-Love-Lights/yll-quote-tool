@@ -16,8 +16,7 @@ export type CrewMember = {
   updatedAt: string | null;
 };
 
-export type CrewMemberUpsertInput = {
-  id?: string;
+export type CrewMemberUpsertFields = {
   hubEmployeeId?: string | null;
   telegramUserId?: string | null;
   displayName: string;
@@ -27,6 +26,8 @@ export type CrewMemberUpsertInput = {
   language?: string;
   active?: boolean;
 };
+
+export type NewCrewMemberInput = CrewMemberUpsertFields;
 
 type Row = {
   id: string;
@@ -44,6 +45,37 @@ type Row = {
 
 const SELECT =
   'id, hub_employee_id, telegram_user_id, display_name, base_rate_cents, in_p4p_pool, pay_mode, language, active, created_at, updated_at';
+
+function buildCrewMemberInsertPayload(input: NewCrewMemberInput): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    display_name: input.displayName.trim(),
+    base_rate_cents: input.baseRateCents,
+    in_p4p_pool: input.inP4pPool,
+    pay_mode: input.payMode,
+    language: input.language?.trim() || 'en',
+    active: input.active ?? true,
+  };
+
+  if (input.hubEmployeeId !== undefined) payload.hub_employee_id = input.hubEmployeeId?.trim() || null;
+  if (input.telegramUserId !== undefined) payload.telegram_user_id = input.telegramUserId?.trim() || null;
+
+  return payload;
+}
+
+function buildCrewMemberUpdatePayload(patch: Partial<CrewMemberUpsertFields>): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+
+  if (patch.displayName !== undefined) payload.display_name = patch.displayName.trim();
+  if (patch.baseRateCents !== undefined) payload.base_rate_cents = patch.baseRateCents;
+  if (patch.inP4pPool !== undefined) payload.in_p4p_pool = patch.inP4pPool;
+  if (patch.payMode !== undefined) payload.pay_mode = patch.payMode;
+  if (patch.language !== undefined) payload.language = patch.language.trim() || 'en';
+  if (patch.active !== undefined) payload.active = patch.active;
+  if (patch.hubEmployeeId !== undefined) payload.hub_employee_id = patch.hubEmployeeId?.trim() || null;
+  if (patch.telegramUserId !== undefined) payload.telegram_user_id = patch.telegramUserId?.trim() || null;
+
+  return payload;
+}
 
 function toCrewMember(row: Row): CrewMember {
   return {
@@ -96,27 +128,29 @@ export async function listActiveCrewMembers(): Promise<CrewMember[]> {
   return (data ?? []).map((row) => toCrewMember(row as Row));
 }
 
-export async function upsertCrewMember(input: CrewMemberUpsertInput): Promise<CrewMember> {
+export async function insertCrewMember(input: NewCrewMemberInput): Promise<CrewMember> {
   const db = getSupabaseServiceClient();
   if (!db) throw new Error('Supabase service role not configured');
 
-  const payload: Record<string, unknown> = {
-    display_name: input.displayName.trim(),
-    base_rate_cents: input.baseRateCents,
-    in_p4p_pool: input.inP4pPool,
-    pay_mode: input.payMode,
-    language: input.language?.trim() || 'en',
-    active: input.active ?? true,
-  };
-  if (input.id?.trim()) payload.id = input.id.trim();
-  if (input.hubEmployeeId !== undefined) payload.hub_employee_id = input.hubEmployeeId?.trim() || null;
-  if (input.telegramUserId !== undefined) payload.telegram_user_id = input.telegramUserId?.trim() || null;
+  const payload = buildCrewMemberInsertPayload(input);
 
-  const { data, error } = await db
-    .from('crew_members')
-    .upsert(payload, { onConflict: 'id' })
-    .select(SELECT)
-    .maybeSingle();
-  if (error || !data) throw new Error(`upsertCrewMember: ${error?.message ?? 'no row returned'}`);
+  const { data, error } = await db.from('crew_members').insert(payload).select(SELECT).maybeSingle();
+  if (error || !data) throw new Error(`insertCrewMember: ${error?.message ?? 'no row returned'}`);
+  return toCrewMember(data as Row);
+}
+
+export async function updateCrewMember(
+  id: string,
+  patch: Partial<CrewMemberUpsertFields>,
+): Promise<CrewMember> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+
+  const crewMemberId = id.trim();
+  const payload = buildCrewMemberUpdatePayload(patch);
+
+  const { data, error } = await db.from('crew_members').update(payload).eq('id', crewMemberId).select(SELECT).maybeSingle();
+  if (error) throw new Error(`updateCrewMember: ${error.message}`);
+  if (!data) throw new Error(`updateCrewMember: no row found for id ${crewMemberId}`);
   return toCrewMember(data as Row);
 }
