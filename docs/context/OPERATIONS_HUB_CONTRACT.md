@@ -258,7 +258,7 @@ Semantics (state machine, QT-enforced):
 
 ## 8b. Flow G: advertising pay inputs (v1.2.0, per Naldo's piece-rate ruling)
 
-- The advertising crew is paid **$0.25 per accepted placement** (rate lives in
+- The advertising crew is paid **$2.50 per accepted placement** (rate lives in
   QT compensation config, changeable), computed by the QT pay engine ONLY
   (R8), with the standard floor true-up: weekly pay = max(accepted placements
   x piece rate, hours x the legal floor). NY minimum wage applies to
