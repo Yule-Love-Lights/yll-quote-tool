@@ -59,9 +59,15 @@ function makeParams(id: string) {
   return { params: Promise.resolve({ id }) };
 }
 
-// Chainable mock for .update(payload).eq('id', id).select(...).maybeSingle().
-// `row` is the row present in the table BEFORE the update (null = no match,
-// mirroring an unknown quote id — the update then matches 0 rows).
+// Chainable mock for .update(payload).eq('id', id).select(...).maybeSingle(),
+// PLUS a second bare .update({inputs}).eq('id', id) (#199's deposit-default
+// write — no .select() chained, so it resolves via `await` on the builder
+// itself, same idiom as findOrCreateCustomer's fire-and-forget updates:
+// `error` reads `undefined` off the builder object = no error). `row` is the
+// row present in the table BEFORE the update (null = no match, mirroring an
+// unknown quote id — the update then matches 0 rows). `opts.secondUpdateError`
+// injects an error on the SECOND update call only (updatePayloads.length===2
+// at the moment its .eq() resolves), for the #199 best-effort test.
 function makeSb(
   row: {
     id: string;
@@ -70,7 +76,10 @@ function makeSb(
     customer_id?: string | null;
     is_test?: boolean;
     deposit_paid_at?: string | null;
+    customer_approved_at?: string | null;
+    inputs?: Record<string, unknown> | null;
   } | null,
+  opts: { secondUpdateError?: { message: string } } = {},
 ) {
   const updatePayloads: Array<Record<string, unknown>> = [];
   const builder: Record<string, unknown> = {};
@@ -80,7 +89,12 @@ function makeSb(
       updatePayloads.push(payload);
       return builder;
     },
-    eq: () => builder,
+    eq: () => {
+      if (opts.secondUpdateError && updatePayloads.length === 2) {
+        return Promise.resolve({ error: opts.secondUpdateError });
+      }
+      return builder;
+    },
     select: () => builder,
     maybeSingle: async () => {
       if (!row) return { data: null, error: null };
@@ -95,6 +109,8 @@ function makeSb(
           // #214 round 3: the booked-freeze gate reads this off the same
           // select (null = unbooked, mirroring the real nullable column).
           deposit_paid_at: merged.deposit_paid_at ?? null,
+          customer_approved_at: merged.customer_approved_at ?? null,
+          inputs: merged.inputs ?? null,
         },
         error: null,
       };
@@ -346,6 +362,119 @@ describe('POST /api/quotes/[id]/nce — tag propagation (#198)', () => {
       quote_sent_at: '2026-08-01T00:00:00Z',
       customer_id: 'cust-1',
     });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ isNce: true }), makeParams(VALID_UUID));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toEqual({ ok: true, isNce: true });
+  });
+});
+
+describe('POST /api/quotes/[id]/nce — NCE 40% deposit default (#199)', () => {
+  it('writes depositPercent=40 when turning ON on a pre-approval quote with no existing override', async () => {
+    const { client, updatePayloads } = makeSb({
+      id: VALID_UUID,
+      is_nce: false,
+      customer_approved_at: null,
+      inputs: { a: 1 },
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ isNce: true }), makeParams(VALID_UUID));
+    expect(res.status).toBe(200);
+    expect(updatePayloads[1]).toEqual({ inputs: { a: 1, depositPercent: 40 } });
+  });
+
+  it('writes depositPercent=40 when the stored depositPercent is explicitly 0', async () => {
+    const { client, updatePayloads } = makeSb({
+      id: VALID_UUID,
+      is_nce: false,
+      customer_approved_at: null,
+      inputs: { depositPercent: 0 },
+    });
+    sbRef.current = client;
+
+    await POST(makeReq({ isNce: true }), makeParams(VALID_UUID));
+    expect(updatePayloads[1]).toEqual({ inputs: { depositPercent: 40 } });
+  });
+
+  it('does NOT overwrite an explicit staff-set depositPercent when turning ON', async () => {
+    const { client, updatePayloads } = makeSb({
+      id: VALID_UUID,
+      is_nce: false,
+      customer_approved_at: null,
+      inputs: { depositPercent: 25 },
+    });
+    sbRef.current = client;
+
+    await POST(makeReq({ isNce: true }), makeParams(VALID_UUID));
+    // Only the tag update ran — no second (deposit) write.
+    expect(updatePayloads).toHaveLength(1);
+  });
+
+  it('removes an untouched 40 when turning OFF pre-approval', async () => {
+    const { client, updatePayloads } = makeSb({
+      id: VALID_UUID,
+      is_nce: true,
+      customer_approved_at: null,
+      inputs: { depositPercent: 40, a: 1 },
+    });
+    sbRef.current = client;
+
+    await POST(makeReq({ isNce: false }), makeParams(VALID_UUID));
+    expect(updatePayloads[1]).toEqual({ inputs: { a: 1 } });
+  });
+
+  it('leaves a non-40 depositPercent alone when turning OFF', async () => {
+    const { client, updatePayloads } = makeSb({
+      id: VALID_UUID,
+      is_nce: true,
+      customer_approved_at: null,
+      inputs: { depositPercent: 25 },
+    });
+    sbRef.current = client;
+
+    await POST(makeReq({ isNce: false }), makeParams(VALID_UUID));
+    expect(updatePayloads).toHaveLength(1);
+  });
+
+  it('never touches the deposit percent once the quote is customer-approved (#177 freeze) — turning ON', async () => {
+    const { client, updatePayloads } = makeSb({
+      id: VALID_UUID,
+      is_nce: false,
+      customer_approved_at: '2026-08-01T00:00:00Z',
+      inputs: {},
+    });
+    sbRef.current = client;
+
+    await POST(makeReq({ isNce: true }), makeParams(VALID_UUID));
+    expect(updatePayloads).toHaveLength(1);
+  });
+
+  it('never touches the deposit percent once the quote is customer-approved (#177 freeze) — turning OFF', async () => {
+    const { client, updatePayloads } = makeSb({
+      id: VALID_UUID,
+      is_nce: true,
+      customer_approved_at: '2026-08-01T00:00:00Z',
+      inputs: { depositPercent: 40 },
+    });
+    sbRef.current = client;
+
+    await POST(makeReq({ isNce: false }), makeParams(VALID_UUID));
+    expect(updatePayloads).toHaveLength(1);
+  });
+
+  it('is best-effort — a deposit-write failure never fails the toggle', async () => {
+    const { client } = makeSb(
+      {
+        id: VALID_UUID,
+        is_nce: false,
+        customer_approved_at: null,
+        inputs: {},
+      },
+      { secondUpdateError: { message: 'db down' } },
+    );
     sbRef.current = client;
 
     const res = await POST(makeReq({ isNce: true }), makeParams(VALID_UUID));

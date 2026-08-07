@@ -25,6 +25,7 @@ import {
   inputsToFormData,
   applyPrefill,
   resolveTagPayload,
+  resolveNceDepositPercent,
 } from '@/lib/quoteForm';
 import type { CrmContact } from '@/lib/integrations/types';
 import { type ServiceType, SERVICE_TYPES, SERVICE_TYPE_LABELS } from '@/lib/serviceType';
@@ -411,7 +412,16 @@ export default function QuoteBuilder({
           // — never falls back to a stored id the session already dropped).
           highlevelContactId: initialQuote.highlevelContactId ?? null,
         }
-      : applyPrefill(initialFormData, prefill),
+      : {
+          ...applyPrefill(initialFormData, prefill),
+          // NCE 40% deposit default (#199): a BRAND-NEW quote prefilled from
+          // an already-NCE-tagged lead (prefill.isNce, resolved server-side —
+          // see QuoteBuilderPrefill's own comment) starts at 40% too, same
+          // rule applyIsNce below applies to a live chip turn-on. Blank-slate
+          // only — there's nothing to clobber yet (initialFormData.depositPercent
+          // is always 0 here), unlike a reopened quote's already-resolved rate.
+          ...(prefill?.isNce ? { depositPercent: 40 } : {}),
+        },
   );
   // In edit mode the saved result hydrates too, so the operator sees the
   // current price breakdown (and the portal/send buttons) without recalculating.
@@ -2337,6 +2347,27 @@ export default function QuoteBuilder({
   const set = <K extends keyof QuoteFormData>(k: K, v: QuoteFormData[K]) =>
     setForm(f => ({ ...f, [k]: v }));
 
+  // NCE 40% deposit default (#199): the ONE helper every LIVE isNce flip
+  // funnels through (the chip click below + contact-pick tag inheritance a
+  // few hundred lines down) — mirrors resolveTagPayload's shared-mechanism
+  // convention so both sites can never drift. The rule itself is pure
+  // (resolveNceDepositPercent, quoteForm.ts) and reads/writes depositPercent
+  // via the SAME functional setForm update `set` uses, so it can't race a
+  // same-tick edit. Locked (savedStatus approved/booked) quotes are a no-op —
+  // the #177 freeze owns the deposit percent past approval; the tag itself
+  // still flips (money is unaffected, matching the admin toggle route).
+  const applyIsNce = (next: boolean) => {
+    setIsNce(next);
+    setForm(f => ({
+      ...f,
+      depositPercent: resolveNceDepositPercent(
+        f.depositPercent,
+        next,
+        savedStatus === 'approved' || savedStatus === 'booked',
+      ),
+    }));
+  };
+
   // ─── Referral program redemption (#41 PR 2) ─────────────────────────────
   // Credit banner: the button is disabled whenever some OTHER discount (a
   // manual %/flat entry, or an early-install promo) already occupies the
@@ -2554,7 +2585,10 @@ export default function QuoteBuilder({
         if (tagLookupSeq !== attachSeqRef.current) return; // superseded by a later pick
         const tags = data.customers?.[0];
         if (!legacyRebookTouchedRef.current) setLegacyRebook(tags?.is_yll_neighbor ?? false);
-        if (!isNceTouchedRef.current) setIsNce(tags?.is_nce ?? false);
+        // #199: routed through applyIsNce (not a bare setIsNce) so an
+        // inherited NCE tag also seeds the 40% deposit default, same as a
+        // manual chip click.
+        if (!isNceTouchedRef.current) applyIsNce(tags?.is_nce ?? false);
       })
       // Network error or non-OK response: leave chips exactly as they are —
       // "couldn't check" is not the same signal as "checked, no tags".
@@ -3433,8 +3467,9 @@ export default function QuoteBuilder({
               see + set both tags in the builder — it replaces the old
               read-only YllNeighborBadge display that used to sit in the
               badge row above (no duplicate/contradictory Neighbor UI).
-              NCE-tagging here sets ONLY the tag; deposit/balance behaviors
-              are ledger #199, not wired yet. */}
+              NCE-tagging here also seeds the 40% deposit default via
+              applyIsNce (#199, pre-approval only — see its own comment);
+              the deposit input itself stays hand-editable after. */}
           <div className="flex items-center gap-2 mt-2">
             <button
               type="button"
@@ -3456,7 +3491,9 @@ export default function QuoteBuilder({
               type="button"
               onClick={() => {
                 isNceTouchedRef.current = true;
-                setIsNce((v) => !v);
+                // #199: applyIsNce (not a bare toggle) so turning the chip
+                // on/off also sets/reverts the 40% deposit default.
+                applyIsNce(!isNce);
               }}
               aria-pressed={isNce}
               title={isNce ? 'NCE — click to remove' : 'Mark as NCE (barter/trade network)'}

@@ -77,7 +77,25 @@ function stripDiscountAndReferralCredit(inputs: unknown): unknown {
   return rest;
 }
 
+// NCE 40% deposit default (#199): mirrors the builder chip's/admin toggle's
+// turn-on rule (resolveNceDepositPercent / the nce route's own deposit-write)
+// for a REBOOKED quote — a clone that resolves NCE=true starts the new
+// season at NCE's 40% deposit unless the SOURCE quote already carried an
+// explicit staff-set depositPercent (kept — a deliberate hand-edit from last
+// season carries forward, same "no lock, no lost work" posture as every
+// other rebooked input). No-op when inputs isn't a plain object, mirroring
+// stripDiscountAndReferralCredit's own guard. Runs for BOTH rebook paths
+// (rebookLastSeason's customer-tag resolution + #116's exact-quote revive)
+// since both build their insert row through buildRebookInsert.
+function applyNceDepositDefault(inputs: unknown, isNce: boolean): unknown {
+  if (!isNce || !inputs || typeof inputs !== 'object') return inputs;
+  const current = (inputs as { depositPercent?: unknown }).depositPercent;
+  if (typeof current === 'number' && current > 0) return inputs; // explicit hand-set — keep
+  return { ...(inputs as Record<string, unknown>), depositPercent: 40 };
+}
+
 export function buildRebookInsert(src: RebookSource): Record<string, unknown> {
+  const isNce = src.is_nce ?? false;
   return {
     customer_name: src.customer_name ?? 'Anonymous',
     customer_address: src.customer_address ?? '(no address)',
@@ -86,7 +104,7 @@ export function buildRebookInsert(src: RebookSource): Record<string, unknown> {
     highlevel_contact_id: src.highlevel_contact_id ?? null,
     status: 'draft',
     ...(src.service_type ? { service_type: src.service_type } : {}),
-    inputs: stripDiscountAndReferralCredit(src.inputs),
+    inputs: applyNceDepositDefault(stripDiscountAndReferralCredit(src.inputs), isNce),
     result: stripRatesSnapshots(src.result),
     total: src.result?.total ?? 0,
     customer_id: src.customer_id ?? null,
@@ -99,7 +117,7 @@ export function buildRebookInsert(src: RebookSource): Record<string, unknown> {
     // NCE + YLL Neighbor tags (#198) — see the RebookSource field comments
     // above for which value each caller passes in.
     legacy_rebook: src.legacy_rebook ?? false,
-    is_nce: src.is_nce ?? false,
+    is_nce: isNce,
   };
 }
 

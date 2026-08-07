@@ -234,6 +234,34 @@ export function resolveTagPayload(
 }
 
 /**
+ * NCE 40% deposit default (#199): the depositPercent a quote's Deposit %
+ * field should carry when the NCE chip flips, given the CURRENT depositPercent
+ * and whether the quote is locked post-approval (the #177 freeze). Pure so
+ * every place the builder flips isNce (the chip click, contact-pick tag
+ * inheritance) funnels through identical logic — and it's unit-testable
+ * without a React render harness (QuoteBuilder has none; see resolveTagPayload
+ * above for the same convention).
+ *
+ * - locked: never changes here — the #177 freeze (server 409 on a changed
+ *   depositPercent post-approval) owns an approved/booked quote's deposit.
+ * - turning ON: 40 (NCE's contractual deposit rate vs the 50% default).
+ * - turning OFF: an UNTOUCHED 40 (this same rule's own prior default) reverts
+ *   to 0 (blank = 50%); any OTHER value is a staff hand-edit and is left alone.
+ *
+ * Returns `current` unchanged when no rule applies (including the locked
+ * case), so callers can always assign the result unconditionally.
+ */
+export function resolveNceDepositPercent(
+  current: number,
+  nextIsNce: boolean,
+  locked: boolean,
+): number {
+  if (locked) return current;
+  if (nextIsNce) return 40;
+  return current === 40 ? 0 : current;
+}
+
+/**
  * Merge a lead's prefill values onto a blank QuoteFormData. Applied ONLY as
  * the blank-slate builder's INITIAL state (QuoteBuilder's lazy useState
  * initializer) — never re-applied after mount, so a reopened quote

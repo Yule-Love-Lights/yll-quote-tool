@@ -6,6 +6,7 @@ import {
   inputsToFormData,
   applyPrefill,
   resolveTagPayload,
+  resolveNceDepositPercent,
 } from './quoteForm';
 import type { QuoteInputs } from './pricing/pricingEngine';
 import { makeDefaultPermanentFields } from './permanent/types';
@@ -495,6 +496,36 @@ describe('resolveTagPayload (#198 review — touched-ref tag chips)', () => {
     it('resolves each chip independently on insert too', () => {
       expect(resolveTagPayload(true, false, false, false, 'insert')).toEqual({ legacyRebook: true, isNce: false });
     });
+  });
+});
+
+// #199: resolveNceDepositPercent is the ONE rule the builder's applyIsNce
+// helper (both the chip click and contact-pick inheritance) funnels through,
+// mirroring resolveTagPayload's pure-function-stands-in-for-a-render-test
+// convention above.
+describe('resolveNceDepositPercent (#199 NCE 40% deposit default)', () => {
+  it('sets 40 when turning ON from blank (0)', () => {
+    expect(resolveNceDepositPercent(0, true, false)).toBe(40);
+  });
+
+  it('sets 40 when turning ON, overwriting whatever was there before', () => {
+    expect(resolveNceDepositPercent(25, true, false)).toBe(40);
+    expect(resolveNceDepositPercent(50, true, false)).toBe(40);
+  });
+
+  it('reverts an untouched 40 back to 0 (blank) when turning OFF', () => {
+    expect(resolveNceDepositPercent(40, false, false)).toBe(0);
+  });
+
+  it('leaves a staff hand-set value alone when turning OFF (not the 40 this rule set)', () => {
+    expect(resolveNceDepositPercent(25, false, false)).toBe(25);
+    expect(resolveNceDepositPercent(0, false, false)).toBe(0);
+  });
+
+  it('never changes anything once locked (#177 freeze), regardless of direction', () => {
+    expect(resolveNceDepositPercent(0, true, true)).toBe(0);
+    expect(resolveNceDepositPercent(40, false, true)).toBe(40);
+    expect(resolveNceDepositPercent(25, true, true)).toBe(25);
   });
 });
 

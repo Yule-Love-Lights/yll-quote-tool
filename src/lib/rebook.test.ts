@@ -256,6 +256,36 @@ describe('buildRebookInsert', () => {
     const row = buildRebookInsert(src);
     expect(row.inputs).toEqual({ a: 1 });
   });
+
+  // #199: the clone's NCE 40% deposit default — piggybacks on whichever
+  // is_nce this SAME call resolved (src.is_nce here; rebookLastSeason's
+  // customer-tag override is exercised in its own describe block below).
+  describe('NCE 40% deposit default (#199)', () => {
+    it('sets depositPercent=40 when the clone resolves NCE=true and the source had none', () => {
+      const row = buildRebookInsert({ ...src, is_nce: true, inputs: { a: 1 } });
+      expect(row.inputs).toEqual({ a: 1, depositPercent: 40 });
+    });
+
+    it('sets depositPercent=40 when the source explicitly stored 0', () => {
+      const row = buildRebookInsert({ ...src, is_nce: true, inputs: { depositPercent: 0 } });
+      expect((row.inputs as Record<string, unknown>).depositPercent).toBe(40);
+    });
+
+    it('keeps an explicit staff-set depositPercent from the source (hand-set last season)', () => {
+      const row = buildRebookInsert({ ...src, is_nce: true, inputs: { depositPercent: 25 } });
+      expect((row.inputs as Record<string, unknown>).depositPercent).toBe(25);
+    });
+
+    it('never sets a deposit default when the clone is NOT NCE', () => {
+      const row = buildRebookInsert({ ...src, is_nce: false, inputs: { a: 1 } });
+      expect(row.inputs).toEqual({ a: 1 });
+    });
+
+    it('is a no-op when inputs is not a plain object (mirrors the discard-strip guard)', () => {
+      const row = buildRebookInsert({ ...src, is_nce: true, inputs: null });
+      expect(row.inputs).toBeNull();
+    });
+  });
 });
 
 // ─── DB: rebookLastSeason ───────────────────────────────────────────────────
@@ -427,6 +457,39 @@ describe('rebookLastSeason', () => {
     });
   });
 
+  // #199: the deposit default piggybacks on whatever is_nce this rebook
+  // resolved above (customer-inherited or source-quote fallback) — the pure
+  // rule itself is unit-tested directly in the buildRebookInsert describe
+  // block; this closes the loop end-to-end through the real orchestration.
+  describe('NCE 40% deposit default (#199)', () => {
+    it('seeds depositPercent=40 when the CUSTOMER-inherited tag resolves NCE=true', async () => {
+      const fake = makeFakeSupabase({
+        quotes: [
+          { id: 'a', customer_id: 'c1', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 }, is_nce: false },
+        ],
+        customers: [{ id: 'c1', is_nce: true }],
+      });
+      sbRef.current = fake.client;
+      const res = await rebookLastSeason('c1');
+      const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+      expect(created.is_nce).toBe(true);
+      expect((created.inputs as Record<string, unknown>).depositPercent).toBe(40);
+    });
+
+    it('does not touch the deposit when the resolved tag is NOT NCE', async () => {
+      const fake = makeFakeSupabase({
+        quotes: [
+          { id: 'a', customer_id: 'c1', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 }, is_nce: false },
+        ],
+        customers: [{ id: 'c1', is_nce: false }],
+      });
+      sbRef.current = fake.client;
+      const res = await rebookLastSeason('c1');
+      const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+      expect(created.inputs).toEqual({});
+    });
+  });
+
   // rebook-number-createdby: a rebooked quote must get a sequential quote_number
   // (same allocateNumber('quote_number_seq') as saveQuote) so it isn't stuck on
   // the truncated-UUID fallback and stays findable by number search/sort.
@@ -546,6 +609,20 @@ describe('rebookFromQuote', () => {
     const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
     expect(created.legacy_rebook).toBe(true);
     expect(created.is_nce).toBe(true);
+  });
+
+  // #199: same buildRebookInsert plumbing as rebookLastSeason above, exercised
+  // once here through the #116 revive path too (its is_nce source differs —
+  // the quote's own tag, never the customer's — but the deposit rule downstream
+  // doesn't care which path resolved it).
+  it('seeds depositPercent=40 when the source quote is NCE', async () => {
+    const fake = makeFakeSupabase({
+      quotes: [{ id: 'a', customer_id: 'c1', status: 'declined', inputs: {}, result: { total: 5 }, is_nce: true }],
+    });
+    sbRef.current = fake.client;
+    const res = await rebookFromQuote('a');
+    const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+    expect((created.inputs as Record<string, unknown>).depositPercent).toBe(40);
   });
 
   it('survives a throwing design clone (best-effort)', async () => {
