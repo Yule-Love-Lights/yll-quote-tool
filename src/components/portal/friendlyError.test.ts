@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { friendlyPortalError, portalPhone, viewOnlyStaleTabError } from './friendlyError';
+import { friendlyPortalError, portalPhone, viewOnlyStaleTabError, nceBalanceBlockedError } from './friendlyError';
 
 // #90 / audit g10: customer-facing portal errors must never surface the raw
 // server/network error (Supabase/Postgres internals, "Failed to fetch", HTTP
@@ -54,5 +54,24 @@ describe('viewOnlyStaleTabError', () => {
   it('defaults to portalPhone() when no phone is passed', () => {
     delete process.env.NEXT_PUBLIC_PORTAL_PHONE;
     expect(viewOnlyStaleTabError()).toContain('(631) 517-0186');
+  });
+});
+
+// #199 — the pay-balance 409 copy for an NCE-tagged quote.
+describe('nceBalanceBlockedError', () => {
+  it('names the NCE trade-account state and the contact phone', () => {
+    const msg = nceBalanceBlockedError('(555) 000-1234');
+    expect(msg).toContain('NCE trade account');
+    expect(msg).toContain('(555) 000-1234');
+  });
+
+  it('never suggests retrying will succeed (unlike friendlyPortalError)', () => {
+    const msg = nceBalanceBlockedError('(555) 000-1234');
+    expect(msg.toLowerCase()).not.toContain('try again');
+  });
+
+  it('defaults to portalPhone() when no phone is passed', () => {
+    delete process.env.NEXT_PUBLIC_PORTAL_PHONE;
+    expect(nceBalanceBlockedError()).toContain('(631) 517-0186');
   });
 });

@@ -41,15 +41,18 @@ const req = () => ({ nextUrl: { origin: 'https://portal.test' } }) as unknown as
 const ctx = (id = ID) => ({ params: Promise.resolve({ id }) });
 
 type Row = Record<string, unknown>;
-// #187c: a second read (`.select('view_only').eq('id', id).maybeSingle()`)
+// #187c: a second read (`.select('view_only, is_nce').eq('id', id).maybeSingle()`)
 // fires right before the Valor call as a TOCTOU re-check. `single()` stays
 // the FIRST fetch's terminal (unchanged); `maybeSingle()` is the re-check's
-// terminal — defaults to mirroring the same row's view_only, unless
-// `opts.recheckViewOnly` overrides it to simulate a flip mid-request, or
-// `opts.recheckDeleted` (#187 review FIX 3, #660) forces `data: null` to
-// simulate the row being deleted BETWEEN the first fetch and the re-check
-// (the first fetch still succeeds normally with `quote`).
-function makeSb(quote: Row | null, opts: { recheckViewOnly?: boolean; recheckDeleted?: boolean } = {}) {
+// terminal — defaults to mirroring the same row's view_only/is_nce, unless
+// `opts.recheckViewOnly`/`opts.recheckIsNce` override it to simulate a flip
+// mid-request, or `opts.recheckDeleted` (#187 review FIX 3, #660) forces
+// `data: null` to simulate the row being deleted BETWEEN the first fetch and
+// the re-check (the first fetch still succeeds normally with `quote`).
+function makeSb(
+  quote: Row | null,
+  opts: { recheckViewOnly?: boolean; recheckIsNce?: boolean; recheckDeleted?: boolean } = {},
+) {
   const b: Record<string, unknown> = {};
   Object.assign(b, {
     from: () => b,
@@ -57,14 +60,17 @@ function makeSb(quote: Row | null, opts: { recheckViewOnly?: boolean; recheckDel
     eq: () => b,
     single: async () => ({ data: quote, error: quote ? null : { message: 'no rows' } }),
     maybeSingle: async () => ({
-      data: quote && !opts.recheckDeleted ? { view_only: opts.recheckViewOnly ?? quote.view_only } : null,
+      data:
+        quote && !opts.recheckDeleted
+          ? { view_only: opts.recheckViewOnly ?? quote.view_only, is_nce: opts.recheckIsNce ?? quote.is_nce ?? false }
+          : null,
       error: null,
     }),
   });
   return b;
 }
 
-const QUOTE = { id: ID, customer_name: 'Alice', customer_email: 'a@x.com', is_test: false, view_only: false };
+const QUOTE = { id: ID, customer_name: 'Alice', customer_email: 'a@x.com', is_test: false, view_only: false, is_nce: false };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -122,6 +128,28 @@ describe('POST /api/quotes/[id]/pay-balance', () => {
     const json = await res.json();
     expect(res.status).toBe(409);
     expect(json.code).toBe('view-only');
+    expect(createHostedPageSaleMock).not.toHaveBeenCalled();
+  });
+
+  // #199 — an NCE trade job's balance is never collectable here (it settles
+  // through NCE), checked before any invoice lookup or Valor call.
+  it('409s (nce) when the quote is NCE-tagged', async () => {
+    sbRef.current = makeSb({ ...QUOTE, is_nce: true });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('nce');
+    expect(getInvoiceByJobMock).not.toHaveBeenCalled();
+    expect(createHostedPageSaleMock).not.toHaveBeenCalled();
+  });
+
+  // #187c parity for #199 — the same pre-Valor re-check catches an NCE flip too.
+  it('409s (nce) when the flag flips ON between the fast-path check and the Valor call', async () => {
+    sbRef.current = makeSb({ ...QUOTE, is_nce: false }, { recheckIsNce: true });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('nce');
     expect(createHostedPageSaleMock).not.toHaveBeenCalled();
   });
 
