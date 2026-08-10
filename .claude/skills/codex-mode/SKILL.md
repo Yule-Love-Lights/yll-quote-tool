@@ -57,6 +57,10 @@ touched. Prefix every review command with the explicit path
 - Codex inherits Naldo's Claude plugin config, so it reads superpowers skill files
   before acting. Costs ~20k tokens of overhead per run. Irrelevant on a real build,
   wasteful on trivial commands — so don't send Codex trivial commands.
+- **`.env.local` (live Supabase/Valor/GHL keys) sits inside CODEX_REPO, and
+  `--sandbox workspace-write` gives Codex read access to it.** Naldo's explicit
+  call (2026-08-10): accept this risk, no guard added. Do not raise it as a
+  blocker on future runs — it is a known, accepted tradeoff, not an open question.
 
 ## The dispatch command
 
@@ -96,28 +100,61 @@ brief to a file in the scratchpad and pass it by reference in the prompt text
 2. **Ground.** Read the actual code yourself before briefing. A brief written from
    assumption wastes a whole Codex run. Grep the consumer, read the real lines.
 
-3. **Branch, from a clean current tree.** Never let Codex work on `master`, and
-   never dispatch onto uncommitted work — `workspace-write` lets Codex edit over
-   it (a subagent stash once wiped an hour of uncommitted seat work in this repo).
+3. **Branch, from a clean, idle, non-conflicting tree.** Never let Codex work on
+   `master`, and never dispatch onto uncommitted work — `workspace-write` lets
+   Codex edit over it (a subagent stash once wiped an hour of uncommitted seat
+   work in this repo).
    ```
    cd <CODEX_REPO>
-   git status --porcelain   # must be empty; commit or stash-with-a-note first
+   git worktree list          # confirm no OTHER checkout already holds master
+   git status --porcelain     # must be empty; commit or stash-with-a-note first
    git fetch origin
    git checkout -b <prefix>/<task-name> origin/master
    ```
-   If the clone has sat for a while, `npm ci` before anything that runs the gates
-   (a stale or missing `node_modules` fails gates in ways that imitate real bugs).
+   - **CODEX_REPO can itself be a worktree, and this repo already keeps `master`
+     checked out in a separate worktree elsewhere.** If `git checkout -b` fails
+     with "already checked out" (or targets a stale/wrong ref), don't force it —
+     branch from the commit instead:
+     `git checkout -b <branch> $(git rev-parse origin/master)`. If a genuinely
+     different worktree holds the branch name you need, coordinate rather than
+     override it.
+   - **Never dispatch a second `codex exec` into a CODEX_REPO tree that's still
+     mid-run.** Two Codex runs (or a Codex run + a Claude subagent) sharing one
+     tree corrupt each other's edits — this repo has already lost work this way
+     with parallel Claude builders. `git status --porcelain` clean isn't proof
+     idle if a background dispatch might still be writing; check the dispatch's
+     actual state (Bash `run_in_background` status, or the process) before
+     starting a second one. If you need two runs at once, `git worktree add` a
+     separate tree per concurrent dispatch — don't share CODEX_REPO.
+   - If the clone has sat for a while, `npm ci` before anything that runs the
+     gates (a stale or missing `node_modules` fails gates in ways that imitate
+     real bugs) — but don't rely on remembering this here; step 7 re-checks it
+     unconditionally right before gating, since a long Codex run can leave the
+     clone stale between this step and review.
 
 4. **Brief.** Write it self-contained (format below). Codex has zero context from
-   your conversation with Naldo.
+   your conversation with Naldo. **Show Naldo the brief before dispatching, every
+   single time** (Naldo's explicit call, 2026-08-10) — paste it in chat, no need
+   to wait for a go-ahead, just show it so he sees what Codex is being told.
 
 5. **Dispatch.** Run the command above. Hand it to Naldo to paste if you cannot
    run it yourself.
 
-6. **Distrust the report.** Codex's summary of what it did is a claim, not
-   evidence. In CODEX_REPO (not the session's cwd), read the real diff and run
-   the real gates:
+6. **If the dispatch was interrupted (machine sleep, killed process, terminal
+   closed), do not treat this step as a normal review.** Codex is stateless per
+   run — there is nothing to resume. `git status --porcelain` first: if edits
+   exist but the run never reported completion, either discard them
+   (`git checkout -- .` / `git clean -fd`) and re-dispatch the full brief, or
+   commit the partial state explicitly labeled incomplete before deciding. Never
+   gate or hand off a tree whose completeness you don't actually know.
+
+7. **Distrust the report.** Codex's summary of what it did is a claim, not
+   evidence. In CODEX_REPO (not the session's cwd) — and always freshly
+   `npm ci`'d right before this, not relying on step 3's check having still held
+   after a 10-40 minute dispatch — read the real diff and run the real gates:
    ```
+   npm ci                    # self-contained: don't trust step 3's check to still hold
+   git fetch origin          # master may have moved during the dispatch
    git status --porcelain    # catches UNTRACKED files the diff below misses
    git diff origin/master...HEAD
    npx tsc --noEmit
@@ -126,29 +163,52 @@ brief to a file in the scratchpad and pass it by reference in the prompt text
    ```
    Have Codex commit its work (per completed piece, per its brief); if it left
    changes uncommitted, commit them yourself before reviewing so nothing is
-   invisible to the diff.
+   invisible to the diff. Checklist before calling this step done: (a) the diff
+   is non-empty and touches only files named in the brief's FILES — if it
+   touches others, that's a finding, not automatic acceptance; (b) if DONE LOOKS
+   LIKE named a specific failing test, confirm that exact test changed and now
+   passes, not just that `npm test` is green overall; (c) if Codex reports
+   success but the diff is empty, treat that as a hard failure, not a
+   "nothing to do" pass.
 
-7. **Review.** Apply the repo's standing four-lens pre-merge review (customer,
+8. **Independent second-AI check (Naldo's explicit call, 2026-08-10 — since he
+   cannot read the diff himself, one seat reviewing its own dispatched worker's
+   output is not enough).** Spawn a separate Claude agent — Sonnet 5, unless the
+   change touches money/auth/identity, then Opus — to review the diff COLD: it
+   gets the diff and the original GOAL/DONE-LOOKS-LIKE, nothing else. It does not
+   see this brief-writing conversation, does not know what Codex claimed, and is
+   told explicitly to verify independently rather than confirm your read. It
+   reports its own verdict: does the diff actually do what GOAL says, does
+   anything look wrong, would it flag this for a human. Treat a disagreement
+   between your own read and this agent's as a real finding, not noise — resolve
+   it before telling Naldo the work is good.
+
+9. **Review.** Apply the repo's standing four-lens pre-merge review (customer,
    staff, admin, technical) sized to the risk. Disposition every finding: fix,
    accept with a stated reason, or defer to a ledger row.
 
-8. **Correct via Codex, not yourself — with a stop condition.** If Codex's work
-   falls short, write a correction brief naming the exact defect and dispatch
-   again. Each `codex exec` is stateless: the correction brief must carry the
-   original goal, what Codex did, and the specific defect — never just "fix the
-   review findings". After TWO failed correction rounds on the same defect, stop
-   ping-ponging: tell the dev plainly, and offer the choice — Claude fixes it
-   inline (spending the usage this mode exists to save), the task gets re-scoped,
-   or it goes to a ledger row. That call is the dev's, not yours.
+10. **Correct via Codex, not yourself — with a stop condition.** If Codex's work
+    falls short, write a correction brief naming the exact defect and dispatch
+    again. Each `codex exec` is stateless: the correction brief must carry the
+    original goal, what Codex did, and the specific defect — never just "fix the
+    review findings". After TWO failed correction rounds on the same defect, stop
+    ping-ponging: tell the dev plainly, and offer the choice — Claude fixes it
+    inline (spending the usage this mode exists to save), the task gets re-scoped,
+    or it goes to a ledger row. That call is the dev's, not yours. (Naldo's
+    explicit call, 2026-08-10: keep this as-is, no change.)
 
-9. **Report to Naldo in plain English.** What changed, what passed, what you
-   distrust. Derived from the diff, never from Codex's own summary.
+11. **Report to Naldo in plain English.** What changed, what passed, what you
+    distrust, and the independent reviewer's verdict from step 8. Derived from
+    the diff, never from Codex's own summary.
 
-10. **Never merge.** Branch, PR, wait for Naldo's explicit go. Unchanged.
+12. **Never merge.** Branch, PR, wait for Naldo's explicit go. Unchanged.
 
 ## Brief format
 
-Codex knows nothing about the conversation. Every brief carries all six:
+Codex knows nothing about the conversation. Every brief carries all eight —
+NON-GOALS and STOP IF matter most for a `workspace-write` agent that can edit
+anything in the repo; without them, the biggest risk is scope creep into
+adjacent files Codex decides are "related":
 
 ```
 GOAL: one sentence. What must be true when you are done.
@@ -158,6 +218,19 @@ permanent lighting company. <the specific background this task needs>
 
 FILES: the exact paths to change, and the paths to read for context.
 Do not touch anything else.
+
+NON-GOALS: what this task explicitly does NOT include, even if it looks
+related while you're in there. <name the adjacent things that are tempting
+but out of scope>
+
+STOP IF: <the specific conditions where Codex should halt and report instead
+of guessing — e.g. "the fix requires touching a file not listed above, a
+database migration, or changing an API contract not named in GOAL.">
+Never run a database migration or anything under `scripts/` that writes to
+Supabase/GHL/Vercel. Never delete or rename files outside FILES. Never run
+`git push`, `git merge`, `git commit --amend`, or touch `AGENTS.md`,
+`CLAUDE.md`, or `src/proxy.ts`'s allowlist — those are Claude's to change,
+never delegated.
 
 CONSTRAINTS: <repo conventions that apply. Always include: match existing
 style, no speculative abstractions, no unrelated refactors.>
@@ -199,8 +272,9 @@ Keep for yourself:
 - Money math, auth gaps, migration order, service-type seam gates.
 - The merge-go summary and every product decision.
 
-The quality of the result equals the quality of the brief. That is the skill
-Naldo is here to learn; say so when a vague brief produces a bad run.
+The quality of the result equals the quality of the brief. A vague brief wastes
+a whole Codex run — write briefs tight the first time rather than relying on
+correction rounds to fix scoping mistakes.
 
 ## Handoff
 
