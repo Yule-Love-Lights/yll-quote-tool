@@ -202,6 +202,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         { status: 409 },
       );
     }
+    // #199 delta-verify: the NCE check itself couldn't run (transient read
+    // failure). Nothing was settled — this is retryable, and deliberately
+    // NOT the nce-mismatch copy, which would accuse a normal cash job of
+    // being an NCE one. 503, not 409: the request wasn't wrong, we just
+    // couldn't verify it right now.
+    if (err instanceof InvoiceSettleError && err.code === 'nce-check-failed') {
+      return NextResponse.json(
+        {
+          error:
+            "Couldn't verify whether this invoice is an NCE trade job, so nothing was recorded. Try again in a moment.",
+          code: 'nce-check-failed',
+        },
+        { status: 503 },
+      );
+    }
     return NextResponse.json(
       { error: 'Invoice cannot be marked paid', code: 'cancelled' },
       { status: 409 },

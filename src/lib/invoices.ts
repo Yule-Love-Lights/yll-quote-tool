@@ -746,8 +746,8 @@ export async function setInvoiceStatus(id: string, to: InvoiceStatus): Promise<I
 // inspected the error — keeps its EXACT prior behavior for that case).
 // `nce-mismatch` is new: see the gate below.
 export class InvoiceSettleError extends Error {
-  code: 'cancelled' | 'nce-mismatch';
-  constructor(code: 'cancelled' | 'nce-mismatch', message: string) {
+  code: 'cancelled' | 'nce-mismatch' | 'nce-check-failed';
+  constructor(code: 'cancelled' | 'nce-mismatch' | 'nce-check-failed', message: string) {
     super(message);
     this.name = 'InvoiceSettleError';
     this.code = code;
@@ -820,11 +820,36 @@ export async function markInvoicePaidManually(
   }
 
   if (method !== 'nce' && current.quote_id) {
-    const { data: quoteRow } = await db
+    const { data: quoteRow, error: quoteErr } = await db
       .from('quotes')
       .select('is_nce')
       .eq('id', current.quote_id)
       .maybeSingle<{ is_nce: boolean }>();
+    // #199 delta-verify (MED): FAIL CLOSED when the is_nce read errors —
+    // the first cut discarded `error`, so a transient read failure made
+    // `quoteRow` null and waved the settle straight through. The asymmetry
+    // decides this: wrongly ALLOWING is unrecoverable in the UI (an NCE
+    // invoice settled as cash_check can never be relabeled — both the
+    // edit-reference affordance and updateInvoicePaymentReference refuse
+    // anything not already paid_method='nce'), while wrongly REFUSING costs
+    // a retry. A distinct code (not 'nce-mismatch') so the routes can say
+    // "couldn't verify, try again" instead of accusing a normal cash job of
+    // being an NCE one.
+    //
+    // NOTE: the sibling WT-18 reconsent gates in these same two routes
+    // swallow their own read error the same way — same class, deliberately
+    // NOT changed here (a silent behavior change to an unrelated money gate
+    // belongs in its own reviewed diff). Flagged for a follow-up row.
+    if (quoteErr) {
+      console.error(
+        `markInvoicePaidManually: could not verify is_nce for invoice ${id} (quote ${current.quote_id}) — refusing the ${method} settle:`,
+        quoteErr,
+      );
+      throw new InvoiceSettleError(
+        'nce-check-failed',
+        `markInvoicePaidManually: is_nce check failed for invoice ${id} — refusing a ${method} settle`,
+      );
+    }
     if (quoteRow?.is_nce) {
       throw new InvoiceSettleError(
         'nce-mismatch',

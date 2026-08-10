@@ -131,6 +131,23 @@ describe('POST /api/invoices/[id]/mark-paid', () => {
     expect(json.error).toMatch(/Mark paid . NCE/);
   });
 
+  // #199 delta-verify (MED): the NCE check itself can fail (transient read
+  // error) — distinct from nce-mismatch. Nothing was settled; the route must
+  // say "retry", not accuse a normal cash job of being NCE.
+  it('503s (nce-check-failed) with a retryable message when the helper could not verify is_nce', async () => {
+    markInvoicePaidManually.mockRejectedValueOnce(
+      new InvoiceSettleError(
+        'nce-check-failed',
+        'markInvoicePaidManually: is_nce check failed for invoice i1 — refusing a cash_check settle',
+      ),
+    );
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(503);
+    const json = await res.json();
+    expect(json.code).toBe('nce-check-failed');
+    expect(json.error).toMatch(/Couldn't verify/);
+  });
+
   it('200s with ok+paid+invoice shape on success', async () => {
     const res = await POST(req(), ctx());
     expect(res.status).toBe(200);
