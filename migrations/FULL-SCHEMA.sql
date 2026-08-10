@@ -793,6 +793,19 @@ create trigger properties_updated_at_trigger
   before update on public.properties
   for each row execute function public.customers_set_updated_at();
 
+-- 2026-08-07 Properties nickname + archive (#205) -- customer-profile
+-- Properties tab full manage. nickname: staff-only display label, purely
+-- cosmetic (never used for matching/dedup -- that stays on address_key).
+-- archived_at: hides a property from the default list WITHOUT deleting it
+-- (quotes/jobs/invoices reference properties by id) -- auto-clears the
+-- moment new quote activity lands on it again (see findOrCreateProperty's
+-- #205 comment in src/lib/customers.ts). Both nullable, no default beyond
+-- NULL. See migrations/2026-08-07-properties-nickname-and-archive.sql.
+alter table public.properties
+  add column if not exists nickname text;
+alter table public.properties
+  add column if not exists archived_at timestamptz;
+
 -- ── Quote ⇄ customer/property linkage (#83 Phase 5) ─────────────────────────
 -- Quotes reference the stable customer + property. Nullable: a quote with no
 -- identity at all (anonymous test entry) stays unlinked. ON DELETE SET NULL
@@ -856,6 +869,15 @@ create table if not exists public.jobs (
   -- Snapshot of the quote's priced line items at creation (jsonb). The job
   -- is a snapshot, not a live view of the quote.
   line_items    jsonb,
+
+  -- P4P Phase 1 planning estimate (2026-08-07): budgeted install hours and the
+  -- labor-revenue figure shadow-mode reporting builds from. Placeholder-rate
+  -- marker stays true until Jason's real production-rate session lands.
+  budgeted_hours numeric,
+  labor_revenue_cents integer,
+  rates_are_placeholder boolean not null default true,
+  budgeted_hours_overridden_at timestamptz,
+  budgeted_hours_overridden_by text,
 
   -- Install date — synced from home.works later (#84).
   install_date  date,

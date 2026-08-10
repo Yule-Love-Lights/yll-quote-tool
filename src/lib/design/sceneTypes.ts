@@ -149,7 +149,7 @@ export type WreathItem = ItemBase & {
   kind: 'wreath';
   x: number;
   y: number;
-  sizeIn: number; // 24 / 36 / 48 / 60 — VISUAL ONLY (not the billed size)
+  sizeIn: number; // any value valid/stored; quick-picks are 24 / 36 / 60 (#202) — VISUAL ONLY (not the billed size)
   withLights: boolean;
   withBow?: boolean; // missing ⇒ treat as true (back-compat); visual seed only
   colorId?: string; // legacy — unused; kept for back-compat
@@ -164,7 +164,7 @@ export type BowItem = ItemBase & {
   kind: 'bow';
   x: number;
   y: number;
-  sizeIn: number; // 12 / 18 / 24 / 36 / 48
+  sizeIn: number; // any value valid/stored; quick-picks are 12 / 24 / 48 (#202)
   rotation?: number;
 };
 
@@ -173,7 +173,7 @@ export type GarlandItem = ItemBase & {
   points: number[];
   drawingStyle: DrawingStyle;
   withLights: boolean;
-  sizeIn?: number; // 6 / 9 / 12 / 18 / 24 rope thickness — VISUAL ONLY
+  sizeIn?: number; // rope thickness, any value valid/stored; quick-picks are 6 / 12 / 24 (#202) — VISUAL ONLY
   // --- binding additions (§4) — garland is priced by length × sections × tier,
   // all staff-set; the drawn run length is VISUAL ONLY ---
   quoteLength?: QuoteGarlandLength; // 4.5ft / 9ft sections
@@ -186,7 +186,7 @@ export type SpritzerItem = ItemBase & {
   kind: 'spritzer';
   x: number;
   y: number;
-  sizeIn: number; // 16 / 24 / 36 / 48 — VISUAL ONLY (not the billed size)
+  sizeIn: number; // any value valid/stored; quick-picks are 16 / 24 / 48 (#202) — VISUAL ONLY (not the billed size)
   colorPattern: string[];
   // --- binding addition: the real billed spritzer size (staff-set) ---
   quoteSize?: QuoteSpritzerSize;
@@ -220,7 +220,7 @@ export type PoleItem = ItemBase & {
   kind: 'pole';
   x: number;
   y: number;
-  heightIn: number; // 96 / 120 / 144 / 180 (8 / 10 / 12 / 15 ft)
+  heightIn: number; // any value valid/stored; quick-picks are 96 / 120 / 180 (8 / 10 / 15 ft) (#202)
   baseType: 'none' | 'cube' | 'barrel';
 };
 

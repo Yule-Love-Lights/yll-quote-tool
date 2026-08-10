@@ -6,6 +6,10 @@ import {
   inputsToFormData,
   applyPrefill,
   resolveTagPayload,
+  resolveNceDepositPercent,
+  legacyRebookConfirmMessage,
+  nceConfirmMessage,
+  initialNceDepositProvenance,
 } from './quoteForm';
 import type { QuoteInputs } from './pricing/pricingEngine';
 import { makeDefaultPermanentFields } from './permanent/types';
@@ -495,6 +499,248 @@ describe('resolveTagPayload (#198 review — touched-ref tag chips)', () => {
     it('resolves each chip independently on insert too', () => {
       expect(resolveTagPayload(true, false, false, false, 'insert')).toEqual({ legacyRebook: true, isNce: false });
     });
+  });
+});
+
+// #199: resolveNceDepositPercent is the ONE rule the builder's applyIsNce
+// helper (both the chip click and contact-pick inheritance) funnels through,
+// mirroring resolveTagPayload's pure-function-stands-in-for-a-render-test
+// convention above.
+//
+// wasRuleSet (wrap-review F4 fix): a bare `current === 40` can't tell "the 40
+// THIS rule set" apart from "a 40 staff typed for an unrelated negotiated
+// deposit" — the exact colliding value this rule itself writes. Every OFF
+// case below is now parameterized on it.
+describe('resolveNceDepositPercent (#199 NCE 40% deposit default)', () => {
+  it('sets 40 when turning ON from blank (0)', () => {
+    expect(resolveNceDepositPercent(0, true, false, false)).toBe(40);
+  });
+
+  it('sets 40 when turning ON, overwriting whatever was there before', () => {
+    expect(resolveNceDepositPercent(25, true, false, false)).toBe(40);
+    expect(resolveNceDepositPercent(50, true, false, false)).toBe(40);
+  });
+
+  it('reverts a 40 THIS RULE set (wasRuleSet=true) back to 0 (blank) when turning OFF', () => {
+    expect(resolveNceDepositPercent(40, false, false, true)).toBe(0);
+  });
+
+  // #199 F4 (wrap-review): the exact colliding-value case a bare `current
+  // === 40` check couldn't distinguish — a staff-typed 40 that has NOTHING
+  // to do with the NCE rule (e.g. an unrelated negotiated deposit) must
+  // survive turning the chip OFF (or a no-op contact-pick re-confirmation
+  // upstream, which the caller now short-circuits before ever reaching here).
+  it('leaves a HAND-TYPED 40 alone when turning OFF (wasRuleSet=false — the collision case)', () => {
+    expect(resolveNceDepositPercent(40, false, false, false)).toBe(40);
+  });
+
+  it('leaves any other staff hand-set value alone when turning OFF, regardless of wasRuleSet', () => {
+    expect(resolveNceDepositPercent(25, false, false, true)).toBe(25);
+    expect(resolveNceDepositPercent(0, false, false, true)).toBe(0);
+    expect(resolveNceDepositPercent(25, false, false, false)).toBe(25);
+  });
+
+  it('never changes anything once locked (#177 freeze), regardless of direction or wasRuleSet', () => {
+    expect(resolveNceDepositPercent(0, true, true, false)).toBe(0);
+    expect(resolveNceDepositPercent(40, false, true, true)).toBe(40);
+    expect(resolveNceDepositPercent(25, true, true, false)).toBe(25);
+  });
+});
+
+// #215: the builder tag chips' confirm gate — mirrors LegacyRebookToggle/
+// NceToggle's (the admin quote-detail siblings) window.confirm+list pattern,
+// which the chips lacked. Pure-function coverage stands in for a render test
+// (QuoteBuilder has none), same convention as resolveTagPayload/
+// resolveNceDepositPercent above.
+describe('legacyRebookConfirmMessage (#215 builder chip confirm)', () => {
+  describe('turning ON', () => {
+    it('returns a message that names all three real consequences — full parity with LegacyRebookToggle', () => {
+      const msg = legacyRebookConfirmMessage(true, false);
+      expect(msg).not.toBeNull();
+      expect(msg).toContain('YLL Neighbor');
+      expect(msg).toContain("Last Year's Design"); // portal render
+      expect(msg).toContain('operator inbox'); // EXCLUDE_LEGACY_REBOOK_FROM_INBOX
+      expect(msg).toContain('Neighbors pipeline'); // resolvePipelineStages
+    });
+
+    it('omits the "already left draft" caveat for a still-draft (or brand-new) quote — nothing synced yet', () => {
+      const msg = legacyRebookConfirmMessage(true, false)!;
+      expect(msg).not.toContain('will NOT move');
+    });
+
+    it('adds the "already left draft" caveat once the quote has left draft, mirroring the admin control exactly', () => {
+      const msg = legacyRebookConfirmMessage(true, true)!;
+      expect(msg).toContain('This only affects future renders and syncs — it will NOT move any existing GHL card.');
+    });
+  });
+
+  // Fix round F2: OFF used to return null unconditionally ("removing the tag
+  // needs no warning"). It now always prompts too — reverting the portal
+  // view, re-showing the quote in the operator inbox, and rerouting any GHL
+  // sync back to normal are exactly as real a set of consequences as the ON
+  // direction's.
+  describe('turning OFF (#215 fix round F2)', () => {
+    it('always returns a message — the three reversed consequences are unconditional', () => {
+      expect(legacyRebookConfirmMessage(false, false)).not.toBeNull();
+      expect(legacyRebookConfirmMessage(false, true)).not.toBeNull();
+    });
+
+    it('names the three reversed consequences', () => {
+      const msg = legacyRebookConfirmMessage(false, false)!;
+      expect(msg).toContain('normal quote view');
+      expect(msg).toContain('operator inbox');
+      expect(msg).toContain('normal service-type pipeline');
+    });
+
+    it('omits the one-way-propagation caveat for a still-draft quote — nothing has propagated yet', () => {
+      const msg = legacyRebookConfirmMessage(false, false)!;
+      expect(msg).not.toContain('propagation is one-way');
+    });
+
+    it("adds the one-way-propagation caveat once the quote has left draft, mirroring LegacyRebookToggle's own OFF copy", () => {
+      const msg = legacyRebookConfirmMessage(false, true)!;
+      expect(msg).toContain('stays tagged YLL Neighbor');
+      expect(msg).toContain('propagation is one-way');
+    });
+  });
+});
+
+describe('nceConfirmMessage (#215 builder chip confirm)', () => {
+  // 4th arg = wasRuleSet (#199 provenance): true only while the current 40 is
+  // one THIS rule wrote. The ON direction never reads it (ON force-writes 40
+  // regardless), so those cases pass `false` as the neutral value. 5th arg =
+  // alreadyLeftDraft (#215 fix round F3/F4) — neutral `false` in cases not
+  // specifically testing it; its own describe blocks below cover it.
+  describe('turning ON', () => {
+    it('always returns a message (the balance-collection block is unconditional)', () => {
+      expect(nceConfirmMessage(true, 0, false, false, false)).not.toBeNull();
+      expect(nceConfirmMessage(true, 40, false, true, false)).not.toBeNull();
+      expect(nceConfirmMessage(true, 25, true, false, false)).not.toBeNull();
+    });
+
+    it('names the 40% deposit when it will actually change', () => {
+      const msg = nceConfirmMessage(true, 0, false, false, false);
+      expect(msg).toContain('40%');
+    });
+
+    it('omits the deposit line when the deposit is already 40 (no real change)', () => {
+      const msg = nceConfirmMessage(true, 40, false, true, false)!;
+      expect(msg).not.toContain('40%');
+    });
+
+    it('omits the deposit line when locked (#177 freeze — applyIsNce is a no-op there)', () => {
+      const msg = nceConfirmMessage(true, 25, true, false, false)!;
+      expect(msg).not.toContain('deposit');
+    });
+
+    it('always names the balance-collection block, deposit-change or not', () => {
+      expect(nceConfirmMessage(true, 40, false, true, false)).toContain('card or pay-link');
+      expect(nceConfirmMessage(true, 25, true, false, false)).toContain('card or pay-link');
+    });
+
+    // Fix round F4: full parity with NceToggle's booked-specific bullet —
+    // reachable here too since neither builder chip disables on a
+    // locked/booked quote.
+    describe('the "Charge saved card" lock bullet (#215 fix round F4)', () => {
+      it('appears when locked, mirroring NceToggle', () => {
+        const msg = nceConfirmMessage(true, 25, true, false, false)!;
+        expect(msg).toContain('Charge saved card');
+        expect(msg).toContain('locks immediately too');
+      });
+
+      it('is absent when not locked', () => {
+        const msg = nceConfirmMessage(true, 0, false, false, false)!;
+        expect(msg).not.toContain('Charge saved card');
+      });
+    });
+  });
+
+  describe('turning OFF', () => {
+    it('returns null when the deposit is not the untouched 40 and the quote is still draft (nothing to disclose)', () => {
+      expect(nceConfirmMessage(false, 25, false, true, false)).toBeNull();
+      expect(nceConfirmMessage(false, 0, false, true, false)).toBeNull();
+    });
+
+    it('returns null when locked and still draft, even if the deposit is 40 (#177 freeze — no-op)', () => {
+      expect(nceConfirmMessage(false, 40, true, true, false)).toBeNull();
+    });
+
+    it('returns a message naming the deposit revert when the deposit is the untouched 40', () => {
+      const msg = nceConfirmMessage(false, 40, false, true, false);
+      expect(msg).not.toBeNull();
+      expect(msg).toContain('40%');
+      expect(msg).toContain('blank');
+    });
+
+    // #199 provenance × #215 copy: the exact case the merge of these two
+    // branches created. A 40 the STAFF typed (not this rule) is deliberately
+    // left alone by resolveNceDepositPercent on OFF — so the confirm must
+    // stay silent about the deposit rather than promising a revert that will
+    // never happen (still returns null here since alreadyLeftDraft is also
+    // false — see the F3 describe block below for the case where it isn't).
+    it('returns null when the 40 was hand-typed by staff, not set by the rule, and the quote is still draft', () => {
+      expect(nceConfirmMessage(false, 40, false, false, false)).toBeNull();
+    });
+
+    // Fix round F3: OFF used to stay silent whenever the deposit wasn't
+    // reverting, even on a sent+tagged quote whose customer profile had
+    // already been stamped by propagateQuoteTagsToCustomer. The
+    // one-way-propagation caveat is now its OWN reason to prompt,
+    // independent of the deposit.
+    describe('the one-way-propagation caveat (#215 fix round F3)', () => {
+      it('prompts once the quote has left draft even when the deposit is NOT reverting (staff-typed 40)', () => {
+        const msg = nceConfirmMessage(false, 40, false, false, true);
+        expect(msg).not.toBeNull();
+        expect(msg).toContain('stays tagged NCE');
+        expect(msg).toContain('propagation is one-way');
+        expect(msg).not.toContain('Reverts'); // no real deposit change in this case
+      });
+
+      it('prompts once the quote has left draft even with no deposit at all', () => {
+        const msg = nceConfirmMessage(false, 0, false, true, true);
+        expect(msg).not.toBeNull();
+        expect(msg).toContain('propagation is one-way');
+      });
+
+      it('still stays silent on a still-draft quote with nothing to revert', () => {
+        expect(nceConfirmMessage(false, 25, false, true, false)).toBeNull();
+      });
+
+      it('combines both the deposit-revert bullet and the propagation caveat when both apply', () => {
+        const msg = nceConfirmMessage(false, 40, false, true, true)!;
+        expect(msg).toContain('Reverts');
+        expect(msg).toContain('40%');
+        expect(msg).toContain('propagation is one-way');
+      });
+    });
+  });
+});
+
+// #199 delta-verify (MED): initialNceDepositProvenance seeds QuoteBuilder's
+// nceDepositSetByRuleRef on mount — the first cut started it `false` always,
+// so reopening an already-NCE quote at 40% and clicking the chip OFF left
+// the deposit at 40 on a now-untagged quote. Extracted pure (mirrors
+// resolveNceDepositPercent above) so the seed is unit-testable without a
+// render harness.
+describe('initialNceDepositProvenance (#199 delta-verify — mount-seed provenance)', () => {
+  it('reopened quote, is_nce + depositPercent exactly 40 → rule-owned (true)', () => {
+    expect(initialNceDepositProvenance({ isNce: true, depositPercent: 40 }, undefined)).toBe(true);
+  });
+
+  it('reopened quote, is_nce but depositPercent is something else → NOT rule-owned (false)', () => {
+    expect(initialNceDepositProvenance({ isNce: true, depositPercent: 25 }, undefined)).toBe(false);
+  });
+
+  it('reopened quote, depositPercent 40 but NOT is_nce → NOT rule-owned (false)', () => {
+    expect(initialNceDepositProvenance({ isNce: false, depositPercent: 40 }, undefined)).toBe(false);
+  });
+
+  it('brand-new quote (no initialQuote), prefilled from an NCE-tagged lead → rule-owned (true)', () => {
+    expect(initialNceDepositProvenance(null, true)).toBe(true);
+  });
+
+  it('brand-new quote, no prefill at all → NOT rule-owned (false)', () => {
+    expect(initialNceDepositProvenance(null, undefined)).toBe(false);
   });
 });
 

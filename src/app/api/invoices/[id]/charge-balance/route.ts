@@ -67,6 +67,12 @@
 // is the release valve for this wave; a real customer-facing re-approval flow
 // is separate, later work.
 //
+// #199: an NCE-tagged quote's balance settles through the NCE trade system,
+// never a card charge — blocked ahead of the cash-preference check (fires
+// regardless of payment_preference). Body `{ overrideNce: true }` is the
+// release valve, mirroring overridePreference exactly; the two can combine
+// (an NCE + cash_check invoice needs both flags to charge the card anyway).
+//
 // Response: { ok, charged, invoice } | { ok:false, reason, error }
 //   reason additionally includes (this idempotency pre-claim):
 //     'charge-in-flight' — a charge is already being attempted (409); retry later.
@@ -125,6 +131,7 @@ type QuoteCardRow = {
   customer_email: string | null;
   approval_snapshot: { amendments?: AmendmentTrailEntry[] } | null;
   status: QuoteStatus | null;
+  is_nce: boolean;
 };
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -139,15 +146,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Invalid invoice id' }, { status: 400 });
   }
 
-  let body: { overrideReconsent?: unknown; overridePreference?: unknown } = {};
+  let body: { overrideReconsent?: unknown; overridePreference?: unknown; overrideNce?: unknown } = {};
   try {
-    body = (await req.json()) as { overrideReconsent?: unknown; overridePreference?: unknown };
+    body = (await req.json()) as { overrideReconsent?: unknown; overridePreference?: unknown; overrideNce?: unknown };
   } catch {
     body = {};
   }
   const override =
     body.overrideReconsent === true || req.nextUrl.searchParams.get('override') === 'true';
   const overridePreference = body.overridePreference === true;
+  // #199: mirrors overridePreference exactly (request-scoped, never persisted).
+  const overrideNce = body.overrideNce === true;
 
   // Gate: no auto-charge capability confirmed → don't attempt anything.
   if (!isAutoChargeEnabled()) {
@@ -175,6 +184,36 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ ok: false, reason: 'no-quote', error: 'Invoice has no linked quote' }, { status: 409 });
   }
 
+  // The saved card + customer live on the quote (+ the WT-18 amendment trail
+  // + #199's is_nce). Moved ahead of the cash-preference/over-cap checks
+  // below so the NCE block (right after) can fire BEFORE them — an NCE
+  // quote's balance is never a card charge, full stop, regardless of
+  // payment_preference or the amount.
+  const sb = getSupabaseServiceClient()!;
+  const { data: quote, error: qErr } = await sb
+    .from('quotes')
+    .select('valor_vault_token, customer_name, customer_email, approval_snapshot, status, is_nce')
+    .eq('id', invoice.quote_id)
+    .single<QuoteCardRow>();
+  if (qErr || !quote) {
+    return NextResponse.json({ ok: false, reason: 'no-quote', error: 'Linked quote not found' }, { status: 409 });
+  }
+
+  // #199: an NCE trade job's balance settles through NCE, never a card
+  // charge. Checked BEFORE the cash-preference gate below — an NCE quote is
+  // blocked regardless of its payment_preference.
+  if (quote.is_nce && !overrideNce) {
+    return NextResponse.json(
+      {
+        ok: false,
+        reason: 'nce-blocked',
+        error:
+          'This is an NCE trade job — the balance settles through NCE, not a card charge. Record it with "Mark paid — NCE", or pass the explicit override to charge the card anyway.',
+      },
+      { status: 409 },
+    );
+  }
+
   // #170(d): the customer said they'd settle in cash/check — never one-click
   // charge their card. The UI mirrors this (button replaced by an explicit
   // "charge anyway" override); the server enforces it so no other caller can skip it.
@@ -200,17 +239,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       },
       { status: 409 },
     );
-  }
-
-  // The saved card + customer live on the quote (+ the WT-18 amendment trail).
-  const sb = getSupabaseServiceClient()!;
-  const { data: quote, error: qErr } = await sb
-    .from('quotes')
-    .select('valor_vault_token, customer_name, customer_email, approval_snapshot, status')
-    .eq('id', invoice.quote_id)
-    .single<QuoteCardRow>();
-  if (qErr || !quote) {
-    return NextResponse.json({ ok: false, reason: 'no-quote', error: 'Linked quote not found' }, { status: 409 });
   }
 
   if (!override) {

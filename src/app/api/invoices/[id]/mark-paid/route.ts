@@ -17,15 +17,42 @@
 // `{ overrideReconsent: true }` or `?override=true`) is the release valve for
 // this wave; a real customer-facing re-approval flow is separate, later work.
 //
+// #199: body `{ method?: 'cash_check' | 'nce', reference?: string }` — method
+// defaults 'cash_check' (back-compat: every existing caller keeps behaving
+// identically). method==='nce' REQUIRES a non-empty trimmed reference (an
+// empty ref means the trade payment hasn't actually happened yet) — 400
+// otherwise, before the WT-18 gate even runs. The WT-18 reconsent gate above
+// applies to BOTH methods identically (settling is settling).
+//
+// A SEPARATE mode, `{ updateReferenceOnly: true, reference }`, edits the NCE
+// reference on an ALREADY-PAID NCE invoice (a typo fix) — no settlement, no
+// status/balance change, no job-close, no WT-18 gate (nothing to re-consent
+// to). 409 unless the invoice is already paid AND paid_method==='nce'.
+//
+// #199 (F2): markInvoicePaidManually itself refuses a non-'nce' method on an
+// NCE-linked invoice (409 code 'nce-mismatch' here) — a single gate covering
+// both this route's back-compat default AND PipelineActionsMenu's generic
+// "collect-payment" action (which POSTs an empty body).
+//
 // Response: { ok, paid, invoice: { id, status, balance } } | { error, code? }
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
-import { getInvoice, markInvoicePaidManually } from '@/lib/invoices';
+import {
+  getInvoice,
+  markInvoicePaidManually,
+  updateInvoicePaymentReference,
+  InvoiceSettleError,
+  type PaidMethod,
+} from '@/lib/invoices';
 import { getJob, setJobStatus } from '@/lib/jobs';
 import { latestConsentAmendment, blocksSettlement, amendedQuoteStatus, type AmendmentTrailEntry } from '@/lib/amend';
 import type { QuoteStatus } from '@/lib/quoteStatus';
+
+// #199: cap mirrors the column's practical use — a trade reference number,
+// not a free-text note. Generous enough for any real NCE reference format.
+const MAX_REFERENCE_LEN = 200;
 
 export const runtime = 'nodejs';
 
@@ -48,9 +75,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Invalid invoice id' }, { status: 400 });
   }
 
-  let body: { overrideReconsent?: unknown } = {};
+  let body: {
+    overrideReconsent?: unknown;
+    method?: unknown;
+    reference?: unknown;
+    updateReferenceOnly?: unknown;
+  } = {};
   try {
-    body = (await req.json()) as { overrideReconsent?: unknown };
+    body = (await req.json()) as typeof body;
   } catch {
     body = {};
   }
@@ -62,6 +94,69 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const invoice = await getInvoice(id);
   if (!invoice) {
     return NextResponse.json({ error: 'Invoice not found' }, { status: 404 });
+  }
+
+  // #199: the reference-only edit path — a correction to an ALREADY-SETTLED
+  // NCE invoice, never a settlement itself. Returns before the WT-18 gate
+  // (nothing here re-opens the invoice or moves money, so there's nothing to
+  // re-consent to).
+  if (body.updateReferenceOnly === true) {
+    if (invoice.status !== 'paid' || invoice.paid_method !== 'nce') {
+      return NextResponse.json(
+        { error: 'Can only edit the reference on an already-paid NCE invoice.', code: 'not-nce-paid' },
+        { status: 409 },
+      );
+    }
+    const editReference = typeof body.reference === 'string' ? body.reference.trim() : '';
+    if (!editReference) {
+      return NextResponse.json(
+        {
+          error: 'An NCE payment reference # is required — no ref means the trade payment has not happened yet.',
+          code: 'reference-required',
+        },
+        { status: 400 },
+      );
+    }
+    if (editReference.length > MAX_REFERENCE_LEN) {
+      return NextResponse.json(
+        { error: `Payment reference is too long (${MAX_REFERENCE_LEN} characters max).`, code: 'reference-too-long' },
+        { status: 400 },
+      );
+    }
+    const updated = await updateInvoicePaymentReference(id, editReference);
+    if (!updated) {
+      return NextResponse.json({ error: 'Could not update the reference', code: 'update-failed' }, { status: 500 });
+    }
+    return NextResponse.json({
+      ok: true,
+      paid: true,
+      invoice: { id: updated.id, status: updated.status, balance: updated.balance },
+    });
+  }
+
+  // #199: method defaults 'cash_check' for back-compat — every EXISTING
+  // caller (no body, or a body without `method`) keeps writing exactly what
+  // it always wrote. method==='nce' requires a non-empty trimmed reference.
+  const method: PaidMethod = body.method === 'nce' ? 'nce' : 'cash_check';
+  let reference: string | null = null;
+  if (method === 'nce') {
+    const raw = typeof body.reference === 'string' ? body.reference.trim() : '';
+    if (!raw) {
+      return NextResponse.json(
+        {
+          error: 'An NCE payment reference # is required — no ref means the trade payment has not happened yet.',
+          code: 'reference-required',
+        },
+        { status: 400 },
+      );
+    }
+    if (raw.length > MAX_REFERENCE_LEN) {
+      return NextResponse.json(
+        { error: `Payment reference is too long (${MAX_REFERENCE_LEN} characters max).`, code: 'reference-too-long' },
+        { status: 400 },
+      );
+    }
+    reference = raw;
   }
 
   if (!override && invoice.quote_id) {
@@ -90,9 +185,38 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   let paid;
   try {
-    paid = await markInvoicePaidManually(id);
+    paid = await markInvoicePaidManually(id, method, reference);
   } catch (err) {
     console.error('[api/invoices/:id/mark-paid]', err);
+    // #199 (F2): a cash_check/omitted-method settle attempt on an NCE invoice
+    // — via THIS route's own back-compat default, or PipelineActionsMenu's
+    // "collect-payment" empty-body POST — gets a specific, actionable message
+    // instead of the generic 'cancelled' fallback below.
+    if (err instanceof InvoiceSettleError && err.code === 'nce-mismatch') {
+      return NextResponse.json(
+        {
+          error:
+            'This is an NCE trade job — settle it with "Mark paid — NCE" and a trade reference number, not a cash/check mark-paid.',
+          code: 'nce-mismatch',
+        },
+        { status: 409 },
+      );
+    }
+    // #199 delta-verify: the NCE check itself couldn't run (transient read
+    // failure). Nothing was settled — this is retryable, and deliberately
+    // NOT the nce-mismatch copy, which would accuse a normal cash job of
+    // being an NCE one. 503, not 409: the request wasn't wrong, we just
+    // couldn't verify it right now.
+    if (err instanceof InvoiceSettleError && err.code === 'nce-check-failed') {
+      return NextResponse.json(
+        {
+          error:
+            "Couldn't verify whether this invoice is an NCE trade job, so nothing was recorded. Try again in a moment.",
+          code: 'nce-check-failed',
+        },
+        { status: 503 },
+      );
+    }
     return NextResponse.json(
       { error: 'Invoice cannot be marked paid', code: 'cancelled' },
       { status: 409 },

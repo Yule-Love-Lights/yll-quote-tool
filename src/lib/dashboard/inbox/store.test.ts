@@ -216,6 +216,7 @@ vi.mock('@/lib/supabase', () => ({
 
 import {
   closeQuoteInboxNoise,
+  dismissItem,
   ensureFollowUp,
   EXCLUDE_LEGACY_REBOOK_FROM_INBOX,
   excludeLegacyRebookItems,
@@ -226,6 +227,8 @@ import {
   listOpenItems,
   listEscalatableItems,
   markFollowUpDone,
+  markItemCompleted,
+  markItemHandledLocal,
   quoteIdPrefix,
   sweepOrphanedFollowUps,
 } from './store';
@@ -239,7 +242,9 @@ function makeBuilder(result: { data: unknown; error: null | { message: string };
   // #185: 'not' and 'gte' added for getReopenCounts (dashboard_activity's
   // .not('inbox_item_id','is',null) + .gte('created_at', sinceIso)) and
   // listInWorks (.not('followed_up_at','is',null) / .not('status','in',...)).
-  for (const m of ['select', 'eq', 'order', 'limit', 'in', 'or', 'is', 'update', 'not', 'gte', 'insert']) {
+  // #208: 'neq' added for markItemHandledLocal/dismissItem's double-apply guard
+  // (.neq('status','handled'|'dismissed')).
+  for (const m of ['select', 'eq', 'neq', 'order', 'limit', 'in', 'or', 'is', 'update', 'not', 'gte', 'insert']) {
     self[m] = (...args: unknown[]) => {
       calls.push({ method: m, args });
       return self;
@@ -247,6 +252,10 @@ function makeBuilder(result: { data: unknown; error: null | { message: string };
   }
   // Terminal await — vitest resolves a thenable.
   self.then = (resolve: (v: unknown) => void) => resolve(result);
+  // #208: explicit terminal .maybeSingle() (markItemHandledLocal/dismissItem's
+  // priorStateOf + update...select...maybeSingle chains call this directly
+  // rather than awaiting the builder itself).
+  self.maybeSingle = async () => result;
   return { builder: self, calls };
 }
 
@@ -1850,5 +1859,142 @@ describe('closeQuoteInboxNoise — I/O wiring (#187a)', () => {
   it('no-ops (no throw) when the service client is not configured', async () => {
     sbRef.current = null;
     await expect(closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID)).resolves.toBeUndefined();
+  });
+});
+
+// #208: inbox_items.handled_by is a `uuid references auth.users(id)` column.
+// The route callers used to fall back to the literal string 'system' when no
+// operator resolved (operator?.id ?? 'system') — a non-uuid string a uuid
+// column rejects outright. The fix widened operatorId to `string | null` and
+// the callers now pass `?? null`. These functions' own write logic was
+// already a straight passthrough (never the bug); these tests lock in that
+// both a real uuid AND null now flow through to handled_by correctly.
+describe('markItemHandledLocal / dismissItem / markItemCompleted — handled_by uuid-or-null (#208)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  const ITEM_ID = 'item-42';
+  const OPERATOR_ID = '11111111-2222-3333-4444-555555555555';
+  const NOW = new Date('2026-08-07T12:00:00Z');
+
+  /** Dispatch .from('inbox_items') by call order: 1st = priorStateOf's plain
+   *  SELECT, 2nd = the function's own UPDATE (...) chain. .from('dashboard_activity')
+   *  gets its own builder, mirroring makeSbForCleanup above. */
+  function makeSbFor(itemUpdateResult: { data: unknown; error: null | { message: string } }) {
+    const { builder: priorBuilder } = makeBuilder({ data: null, error: null });
+    const { builder: updateBuilder, calls: updateCalls } = makeBuilder(itemUpdateResult);
+    const { builder: activityBuilder, calls: activityCalls } = makeBuilder({ data: null, error: null });
+    let inboxCallCount = 0;
+    const from = (table: string) => {
+      if (table === 'inbox_items') {
+        inboxCallCount += 1;
+        return inboxCallCount === 1 ? priorBuilder : updateBuilder;
+      }
+      if (table === 'dashboard_activity') return activityBuilder;
+      throw new Error(`unexpected table: ${table}`);
+    };
+    return { from, updateCalls, activityCalls };
+  }
+
+  it('markItemHandledLocal writes the real operator uuid to handled_by on the normal path', async () => {
+    const { from, updateCalls, activityCalls } = makeSbFor({
+      data: { source: 'ghl', external_id: 'ext-1', source_message_id: null, dashboard_contacts: null },
+      error: null,
+    });
+    sbRef.current = { from };
+
+    const res = await markItemHandledLocal(ITEM_ID, OPERATOR_ID, NOW);
+    expect(res.ok).toBe(true);
+
+    const updateCall = updateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ status: 'handled', handled_by: OPERATOR_ID });
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toMatchObject({ actor: OPERATOR_ID, action: 'handled' });
+  });
+
+  it('markItemHandledLocal writes NULL (never a sentinel string) to handled_by when no operator resolved', async () => {
+    const { from, updateCalls } = makeSbFor({
+      data: { source: 'ghl', external_id: 'ext-1', source_message_id: null, dashboard_contacts: null },
+      error: null,
+    });
+    sbRef.current = { from };
+
+    const res = await markItemHandledLocal(ITEM_ID, null, NOW);
+    expect(res.ok).toBe(true);
+
+    const updateCall = updateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ handled_by: null });
+    expect(updateCall!.args[0]).not.toMatchObject({ handled_by: 'system' });
+  });
+
+  it('markItemHandledLocal still surfaces a real DB error (never silently swallowed)', async () => {
+    const { from } = makeSbFor({ data: null, error: { message: 'connection reset' } });
+    sbRef.current = { from };
+
+    const res = await markItemHandledLocal(ITEM_ID, OPERATOR_ID, NOW);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toBe('connection reset');
+  });
+
+  it('dismissItem writes the real operator uuid to handled_by on the normal path', async () => {
+    const { from, updateCalls, activityCalls } = makeSbFor({
+      data: { dashboard_contacts: null },
+      error: null,
+    });
+    sbRef.current = { from };
+
+    const res = await dismissItem(ITEM_ID, OPERATOR_ID, NOW);
+    expect(res.ok).toBe(true);
+
+    const updateCall = updateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ status: 'dismissed', handled_by: OPERATOR_ID });
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toMatchObject({ actor: OPERATOR_ID, action: 'dismissed' });
+  });
+
+  it('dismissItem writes NULL (never a sentinel string) to handled_by when no operator resolved', async () => {
+    const { from, updateCalls } = makeSbFor({ data: { dashboard_contacts: null }, error: null });
+    sbRef.current = { from };
+
+    const res = await dismissItem(ITEM_ID, null, NOW);
+    expect(res.ok).toBe(true);
+
+    const updateCall = updateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ handled_by: null });
+  });
+
+  it('markItemCompleted writes the real operator uuid to handled_by on the normal path', async () => {
+    const { from, updateCalls, activityCalls } = makeSbFor({ data: [{ id: ITEM_ID }], error: null });
+    sbRef.current = { from };
+
+    const res = await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
+    expect(res.ok).toBe(true);
+
+    const updateCall = updateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ status: 'completed', handled_by: OPERATOR_ID });
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toMatchObject({ actor: OPERATOR_ID, action: 'completed' });
+  });
+
+  it('markItemCompleted writes NULL (never a sentinel string) to handled_by when no operator resolved', async () => {
+    const { from, updateCalls } = makeSbFor({ data: [{ id: ITEM_ID }], error: null });
+    sbRef.current = { from };
+
+    const res = await markItemCompleted(ITEM_ID, null, NOW);
+    expect(res.ok).toBe(true);
+
+    const updateCall = updateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ handled_by: null });
+    expect(updateCall!.args[0]).not.toMatchObject({ handled_by: 'system' });
+  });
+
+  it('markItemCompleted still surfaces a real DB error (never silently swallowed)', async () => {
+    const { from } = makeSbFor({ data: null, error: { message: 'connection reset' } });
+    sbRef.current = { from };
+
+    const res = await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe('connection reset');
   });
 });
