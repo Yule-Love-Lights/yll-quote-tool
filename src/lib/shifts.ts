@@ -8,6 +8,7 @@ export type Shift = {
   clockInAt: string;
   clockOutAt: string | null;
   source: ShiftSource;
+  closeSource: ShiftSource | null;
   deviceTime: string | null;
   createdAt: string | null;
   updatedAt: string | null;
@@ -19,13 +20,14 @@ type Row = {
   clock_in_at: string;
   clock_out_at: string | null;
   source: ShiftSource;
+  close_source: ShiftSource | null;
   device_time: string | null;
   created_at: string | null;
   updated_at: string | null;
 };
 
 const SELECT =
-  'id, crew_member_id, clock_in_at, clock_out_at, source, device_time, created_at, updated_at';
+  'id, crew_member_id, clock_in_at, clock_out_at, source, close_source, device_time, created_at, updated_at';
 
 function toShift(row: Row): Shift {
   return {
@@ -34,6 +36,7 @@ function toShift(row: Row): Shift {
     clockInAt: row.clock_in_at,
     clockOutAt: row.clock_out_at,
     source: row.source,
+    closeSource: row.close_source,
     deviceTime: row.device_time,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -118,12 +121,11 @@ export async function clockOut(
 
   const trimmedShiftId = shiftId.trim();
   const trimmedCrewMemberId = crewMemberId.trim();
-  void source;
 
   const now = new Date().toISOString();
   const { data, error } = await db
     .from('shifts')
-    .update({ clock_out_at: now })
+    .update({ clock_out_at: now, close_source: source })
     .eq('id', trimmedShiftId)
     .eq('crew_member_id', trimmedCrewMemberId)
     .is('clock_out_at', null)

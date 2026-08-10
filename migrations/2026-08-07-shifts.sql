@@ -9,6 +9,12 @@
 -- idempotency guarantee that one person can have at most one OPEN shift at a
 -- time: a partial unique index on crew_member_id where clock_out_at is null.
 --
+-- `source` records how the shift was OPENED; `close_source` records how it
+-- was CLOSED (nullable — null while the shift is still open). They can differ
+-- — clocked in via the Telegram bot, clocked out by an office correction, say
+-- — and per the contract's audit rules, both ends of a consequential action
+-- get their own source, not one field standing in for both.
+--
 -- RLS ENABLED, ZERO POLICIES - service-role only for now. Matches the
 -- crew_members / bot_users pattern and fails closed until the Flow B routes
 -- and policies ship.
@@ -24,6 +30,7 @@ create table if not exists public.shifts (
   clock_in_at     timestamptz not null default now(),
   clock_out_at    timestamptz,
   source          text not null check (source in ('pwa', 'telegram', 'office', 'system')),
+  close_source    text check (close_source in ('pwa', 'telegram', 'office', 'system')),
   device_time     timestamptz,
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now()

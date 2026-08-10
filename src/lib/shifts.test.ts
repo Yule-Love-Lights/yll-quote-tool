@@ -6,6 +6,7 @@ type ShiftRow = {
   clock_in_at: string;
   clock_out_at: string | null;
   source: 'pwa' | 'telegram' | 'office' | 'system';
+  close_source: 'pwa' | 'telegram' | 'office' | 'system' | null;
   device_time: string | null;
   created_at: string | null;
   updated_at: string | null;
@@ -19,6 +20,7 @@ const OPEN_SHIFT: ShiftRow = {
   clock_in_at: '2026-08-10T12:00:00.000Z',
   clock_out_at: null,
   source: 'pwa',
+  close_source: null,
   device_time: null,
   created_at: '2026-08-10T12:00:00.000Z',
   updated_at: '2026-08-10T12:00:00.000Z',
@@ -30,6 +32,7 @@ const CLOSED_SHIFT: ShiftRow = {
   clock_in_at: '2026-08-10T08:00:00.000Z',
   clock_out_at: '2026-08-10T10:00:00.000Z',
   source: 'office',
+  close_source: 'office',
   device_time: null,
   created_at: '2026-08-10T08:00:00.000Z',
   updated_at: '2026-08-10T10:00:00.000Z',
@@ -61,6 +64,7 @@ function makeInsertedRow(payload: Record<string, unknown>): ShiftRow {
     clock_in_at: now,
     clock_out_at: null,
     source: payload.source as ShiftRow['source'],
+    close_source: null,
     device_time: (payload.device_time as string | null | undefined) ?? null,
     created_at: now,
     updated_at: now,
@@ -201,6 +205,7 @@ describe('getOpenShift', () => {
       clockInAt: '2026-08-10T12:00:00.000Z',
       clockOutAt: null,
       source: 'pwa',
+      closeSource: null,
       deviceTime: null,
       createdAt: '2026-08-10T12:00:00.000Z',
       updatedAt: '2026-08-10T12:00:00.000Z',
@@ -221,6 +226,7 @@ describe('clockIn', () => {
       clockInAt: '2026-08-10T15:30:00.000Z',
       clockOutAt: null,
       source: 'telegram',
+      closeSource: null,
       deviceTime: null,
       createdAt: '2026-08-10T15:30:00.000Z',
       updatedAt: '2026-08-10T15:30:00.000Z',
@@ -237,6 +243,7 @@ describe('clockIn', () => {
       clockInAt: '2026-08-10T12:00:00.000Z',
       clockOutAt: null,
       source: 'pwa',
+      closeSource: null,
       deviceTime: null,
       createdAt: '2026-08-10T12:00:00.000Z',
       updatedAt: '2026-08-10T12:00:00.000Z',
@@ -253,6 +260,7 @@ describe('clockIn', () => {
       clock_in_at: '2026-08-10T15:29:59.000Z',
       clock_out_at: null,
       source: 'pwa',
+      close_source: null,
       device_time: null,
       created_at: '2026-08-10T15:29:59.000Z',
       updated_at: '2026-08-10T15:29:59.000Z',
@@ -264,6 +272,7 @@ describe('clockIn', () => {
       clockInAt: '2026-08-10T15:29:59.000Z',
       clockOutAt: null,
       source: 'pwa',
+      closeSource: null,
       deviceTime: null,
       createdAt: '2026-08-10T15:29:59.000Z',
       updatedAt: '2026-08-10T15:29:59.000Z',
@@ -282,12 +291,15 @@ describe('clockOut', () => {
       clockInAt: '2026-08-10T12:00:00.000Z',
       clockOutAt: '2026-08-10T15:30:00.000Z',
       source: 'pwa',
+      closeSource: 'office',
       deviceTime: null,
       createdAt: '2026-08-10T12:00:00.000Z',
       updatedAt: '2026-08-10T15:30:00.000Z',
     });
 
-    expect(stateRef.current.updated).toEqual([{ clock_out_at: '2026-08-10T15:30:00.000Z' }]);
+    expect(stateRef.current.updated).toEqual([
+      { clock_out_at: '2026-08-10T15:30:00.000Z', close_source: 'office' },
+    ]);
   });
 
   it("rejects when the shift belongs to someone else", async () => {
