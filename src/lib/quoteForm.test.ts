@@ -505,29 +505,44 @@ describe('resolveTagPayload (#198 review — touched-ref tag chips)', () => {
 // helper (both the chip click and contact-pick inheritance) funnels through,
 // mirroring resolveTagPayload's pure-function-stands-in-for-a-render-test
 // convention above.
+//
+// wasRuleSet (wrap-review F4 fix): a bare `current === 40` can't tell "the 40
+// THIS rule set" apart from "a 40 staff typed for an unrelated negotiated
+// deposit" — the exact colliding value this rule itself writes. Every OFF
+// case below is now parameterized on it.
 describe('resolveNceDepositPercent (#199 NCE 40% deposit default)', () => {
   it('sets 40 when turning ON from blank (0)', () => {
-    expect(resolveNceDepositPercent(0, true, false)).toBe(40);
+    expect(resolveNceDepositPercent(0, true, false, false)).toBe(40);
   });
 
   it('sets 40 when turning ON, overwriting whatever was there before', () => {
-    expect(resolveNceDepositPercent(25, true, false)).toBe(40);
-    expect(resolveNceDepositPercent(50, true, false)).toBe(40);
+    expect(resolveNceDepositPercent(25, true, false, false)).toBe(40);
+    expect(resolveNceDepositPercent(50, true, false, false)).toBe(40);
   });
 
-  it('reverts an untouched 40 back to 0 (blank) when turning OFF', () => {
-    expect(resolveNceDepositPercent(40, false, false)).toBe(0);
+  it('reverts a 40 THIS RULE set (wasRuleSet=true) back to 0 (blank) when turning OFF', () => {
+    expect(resolveNceDepositPercent(40, false, false, true)).toBe(0);
   });
 
-  it('leaves a staff hand-set value alone when turning OFF (not the 40 this rule set)', () => {
-    expect(resolveNceDepositPercent(25, false, false)).toBe(25);
-    expect(resolveNceDepositPercent(0, false, false)).toBe(0);
+  // #199 F4 (wrap-review): the exact colliding-value case a bare `current
+  // === 40` check couldn't distinguish — a staff-typed 40 that has NOTHING
+  // to do with the NCE rule (e.g. an unrelated negotiated deposit) must
+  // survive turning the chip OFF (or a no-op contact-pick re-confirmation
+  // upstream, which the caller now short-circuits before ever reaching here).
+  it('leaves a HAND-TYPED 40 alone when turning OFF (wasRuleSet=false — the collision case)', () => {
+    expect(resolveNceDepositPercent(40, false, false, false)).toBe(40);
   });
 
-  it('never changes anything once locked (#177 freeze), regardless of direction', () => {
-    expect(resolveNceDepositPercent(0, true, true)).toBe(0);
-    expect(resolveNceDepositPercent(40, false, true)).toBe(40);
-    expect(resolveNceDepositPercent(25, true, true)).toBe(25);
+  it('leaves any other staff hand-set value alone when turning OFF, regardless of wasRuleSet', () => {
+    expect(resolveNceDepositPercent(25, false, false, true)).toBe(25);
+    expect(resolveNceDepositPercent(0, false, false, true)).toBe(0);
+    expect(resolveNceDepositPercent(25, false, false, false)).toBe(25);
+  });
+
+  it('never changes anything once locked (#177 freeze), regardless of direction or wasRuleSet', () => {
+    expect(resolveNceDepositPercent(0, true, true, false)).toBe(0);
+    expect(resolveNceDepositPercent(40, false, true, true)).toBe(40);
+    expect(resolveNceDepositPercent(25, true, true, false)).toBe(25);
   });
 });
 
@@ -563,49 +578,60 @@ describe('legacyRebookConfirmMessage (#215 builder chip confirm)', () => {
 });
 
 describe('nceConfirmMessage (#215 builder chip confirm)', () => {
+  // 4th arg = wasRuleSet (#199 provenance): true only while the current 40 is
+  // one THIS rule wrote. The ON direction never reads it (ON force-writes 40
+  // regardless), so those cases pass `false` as the neutral value.
   describe('turning ON', () => {
     it('always returns a message (the balance-collection block is unconditional)', () => {
-      expect(nceConfirmMessage(true, 0, false)).not.toBeNull();
-      expect(nceConfirmMessage(true, 40, false)).not.toBeNull();
-      expect(nceConfirmMessage(true, 25, true)).not.toBeNull();
+      expect(nceConfirmMessage(true, 0, false, false)).not.toBeNull();
+      expect(nceConfirmMessage(true, 40, false, true)).not.toBeNull();
+      expect(nceConfirmMessage(true, 25, true, false)).not.toBeNull();
     });
 
     it('names the 40% deposit when it will actually change', () => {
-      const msg = nceConfirmMessage(true, 0, false);
+      const msg = nceConfirmMessage(true, 0, false, false);
       expect(msg).toContain('40%');
     });
 
     it('omits the deposit line when the deposit is already 40 (no real change)', () => {
-      const msg = nceConfirmMessage(true, 40, false)!;
+      const msg = nceConfirmMessage(true, 40, false, true)!;
       expect(msg).not.toContain('40%');
     });
 
     it('omits the deposit line when locked (#177 freeze — applyIsNce is a no-op there)', () => {
-      const msg = nceConfirmMessage(true, 25, true)!;
+      const msg = nceConfirmMessage(true, 25, true, false)!;
       expect(msg).not.toContain('deposit');
     });
 
     it('always names the balance-collection block, deposit-change or not', () => {
-      expect(nceConfirmMessage(true, 40, false)).toContain('card or pay-link');
-      expect(nceConfirmMessage(true, 25, true)).toContain('card or pay-link');
+      expect(nceConfirmMessage(true, 40, false, true)).toContain('card or pay-link');
+      expect(nceConfirmMessage(true, 25, true, false)).toContain('card or pay-link');
     });
   });
 
   describe('turning OFF', () => {
     it('returns null when the deposit is not the untouched 40 (nothing actually changes)', () => {
-      expect(nceConfirmMessage(false, 25, false)).toBeNull();
-      expect(nceConfirmMessage(false, 0, false)).toBeNull();
+      expect(nceConfirmMessage(false, 25, false, true)).toBeNull();
+      expect(nceConfirmMessage(false, 0, false, true)).toBeNull();
     });
 
     it('returns null when locked, even if the deposit is 40 (#177 freeze — no-op)', () => {
-      expect(nceConfirmMessage(false, 40, true)).toBeNull();
+      expect(nceConfirmMessage(false, 40, true, true)).toBeNull();
     });
 
     it('returns a message naming the deposit revert when the deposit is the untouched 40', () => {
-      const msg = nceConfirmMessage(false, 40, false);
+      const msg = nceConfirmMessage(false, 40, false, true);
       expect(msg).not.toBeNull();
       expect(msg).toContain('40%');
       expect(msg).toContain('blank');
+    });
+
+    // #199 provenance × #215 copy: the exact case the merge of these two
+    // branches created. A 40 the STAFF typed (not this rule) is deliberately
+    // left alone by resolveNceDepositPercent on OFF — so the confirm must
+    // stay silent rather than promising a revert that will never happen.
+    it('returns null when the 40 was hand-typed by staff, not set by the rule', () => {
+      expect(nceConfirmMessage(false, 40, false, false)).toBeNull();
     });
   });
 });

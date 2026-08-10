@@ -53,12 +53,23 @@ export type RebookSource = {
 // falls through to live app_settings rates (it reads existing?.result?.<vertical>RatesSnapshot
 // ?? live for whichever vertical). rebookLastSeason doesn't filter by service_type, so
 // the source can be either vertical. No-op for holiday results (no snapshot present).
+//
+// #199 (F1 review fix): also strips result.depositRate — a SNAPSHOT only a
+// full recompute writes (Calculate / POST /api/quote). Money-read call sites
+// now prefer live inputs.depositPercent over this field (see
+// chargesFromResult's own comment, derivePackages.ts), so an NCE clone's 40%
+// already displays correctly even with this stale — but leaving a
+// last-season rate sitting here is misleading dead data on a fresh draft,
+// and any FUTURE direct reader of result.depositRate (bypassing
+// chargesFromResult) would otherwise see last season's rate. Unconditional,
+// like the other three strips: every rebooked draft re-prices at Calculate.
 function stripRatesSnapshots(result: RebookSource['result']): RebookSource['result'] {
   if (!result || typeof result !== 'object') return result;
   const rest = { ...(result as Record<string, unknown>) };
   delete rest.permanentRatesSnapshot;
   delete rest.eventRatesSnapshot;
   delete rest.permanentBistroRatesSnapshot;
+  delete rest.depositRate;
   return rest as RebookSource['result'];
 }
 

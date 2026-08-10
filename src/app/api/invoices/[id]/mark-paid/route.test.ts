@@ -22,10 +22,18 @@ vi.mock('@/lib/supabase', () => ({
   getSupabaseServiceClient: () => sbRef.current,
 }));
 vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: requireOperatorMock }));
-vi.mock('@/lib/invoices', () => ({ markInvoicePaidManually, updateInvoicePaymentReference, getInvoice }));
+// #199 F2: importOriginal keeps InvoiceSettleError (the real class, needed for
+// the route's `instanceof` check) — only the DB-touching fns are mocked.
+vi.mock('@/lib/invoices', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/invoices')>()),
+  markInvoicePaidManually,
+  updateInvoicePaymentReference,
+  getInvoice,
+}));
 vi.mock('@/lib/jobs', () => ({ getJob, setJobStatus }));
 
 import { POST } from './route';
+import { InvoiceSettleError } from '@/lib/invoices';
 
 const ID = '22222222-2222-2222-2222-222222222222';
 const JOB_ID = '33333333-3333-3333-3333-333333333333';
@@ -105,6 +113,22 @@ describe('POST /api/invoices/[id]/mark-paid', () => {
     expect(res.status).toBe(409);
     const json = await res.json();
     expect(json.code).toBe('cancelled');
+  });
+
+  // #199 F2 (wrap-review HIGH): the mark-paid data layer refuses a cash_check/
+  // omitted-method settle on an NCE-linked invoice (a single gate covering
+  // both this route's back-compat default AND PipelineActionsMenu's
+  // "collect-payment" empty-body POST) — the route must surface THAT specific
+  // reason, not fall through to the generic 'cancelled' message.
+  it('409s (nce-mismatch) with an actionable message when the helper refuses an NCE cash-settle', async () => {
+    markInvoicePaidManually.mockRejectedValueOnce(
+      new InvoiceSettleError('nce-mismatch', "invoice i1's quote is NCE — refusing a cash_check settle"),
+    );
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(409);
+    const json = await res.json();
+    expect(json.code).toBe('nce-mismatch');
+    expect(json.error).toMatch(/Mark paid . NCE/);
   });
 
   it('200s with ok+paid+invoice shape on success', async () => {

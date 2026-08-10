@@ -20,6 +20,7 @@ import {
   listInvoicesForCustomer,
   markInvoicePaidManually,
   updateInvoicePaymentReference,
+  InvoiceSettleError,
   appendRetiredTxn,
   mergeInvoicesNewestFirst,
   reconcileInvoice,
@@ -989,6 +990,105 @@ describe('markInvoicePaidManually', () => {
       const inv = await markInvoicePaidManually('i1', 'cash_check', null);
       expect(inv!.paid_method).toBe('nce');
       expect(inv!.payment_reference).toBe('NCE-1');
+    });
+
+    // #199 (wrap-review LOW, accepted-narrow): the idempotent-return race —
+    // a concurrent settle wins, this call's params are discarded — still
+    // returns the existing row unchanged (never overwrites a real
+    // settlement), but now leaves a cheap, honest trace when what's stored
+    // doesn't match what THIS call asked for.
+    it('warns (but still returns the existing row unchanged) when a concurrent settle won with a DIFFERENT method/reference', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const fake = makeFakeSupabase({
+        invoices: [
+          { id: 'i1', status: 'paid', balance: 0, paid_at: '2026-01-01T00:00:00Z', paid_method: 'cash_check', payment_reference: null },
+        ],
+      });
+      sbRef.current = fake.client;
+      const inv = await markInvoicePaidManually('i1', 'nce', 'NCE-9');
+      expect(inv!.paid_method).toBe('cash_check'); // the earlier settle wins
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('already settled'));
+      warnSpy.mockRestore();
+    });
+
+    it('does not warn when the idempotent return already matches what this call asked for', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const fake = makeFakeSupabase({
+        invoices: [
+          { id: 'i1', status: 'paid', balance: 0, paid_at: '2026-01-01T00:00:00Z', paid_method: 'nce', payment_reference: 'NCE-1' },
+        ],
+      });
+      sbRef.current = fake.client;
+      await markInvoicePaidManually('i1', 'nce', 'NCE-1');
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+  });
+
+  // #199 F2 (wrap-review HIGH): a single positive gate covering BOTH real
+  // call sites (job-close's bare force-settle; the mark-paid route, itself
+  // reachable from PipelineActionsMenu's generic "collect-payment" empty-body
+  // POST) — an NCE-linked invoice can only ever settle as method:'nce'.
+  describe('#199 F2 — NCE settle-method gate', () => {
+    it('throws InvoiceSettleError(nce-mismatch) for a cash_check settle on an NCE-linked invoice', async () => {
+      const fake = makeFakeSupabase({
+        invoices: [{ id: 'i1', quote_id: 'q1', status: 'awaiting_payment', balance: 500, paid_at: null }],
+        quotes: [{ id: 'q1', is_nce: true }],
+      });
+      sbRef.current = fake.client;
+      await expect(markInvoicePaidManually('i1')).rejects.toThrow(InvoiceSettleError);
+      await expect(markInvoicePaidManually('i1')).rejects.toMatchObject({ code: 'nce-mismatch' });
+    });
+
+    it('throws for the SAME reason when method is omitted entirely (the bare job-close call shape)', async () => {
+      const fake = makeFakeSupabase({
+        invoices: [{ id: 'i1', quote_id: 'q1', status: 'awaiting_payment', balance: 500, paid_at: null }],
+        quotes: [{ id: 'q1', is_nce: true }],
+      });
+      sbRef.current = fake.client;
+      await expect(markInvoicePaidManually('i1')).rejects.toThrow(/is NCE/);
+    });
+
+    it('does NOT settle (no write) when it refuses — the invoice stays unpaid', async () => {
+      const fake = makeFakeSupabase({
+        invoices: [{ id: 'i1', quote_id: 'q1', status: 'awaiting_payment', balance: 500, paid_at: null }],
+        quotes: [{ id: 'q1', is_nce: true }],
+      });
+      sbRef.current = fake.client;
+      await expect(markInvoicePaidManually('i1')).rejects.toThrow();
+      const inv = fake.tables.invoices.find((i) => i.id === 'i1')!;
+      expect(inv.status).toBe('awaiting_payment');
+    });
+
+    it('allows method:"nce" on an NCE-linked invoice', async () => {
+      const fake = makeFakeSupabase({
+        invoices: [{ id: 'i1', quote_id: 'q1', status: 'awaiting_payment', balance: 500, paid_at: null }],
+        quotes: [{ id: 'q1', is_nce: true }],
+      });
+      sbRef.current = fake.client;
+      const inv = await markInvoicePaidManually('i1', 'nce', 'NCE-1');
+      expect(inv!.status).toBe('paid');
+      expect(inv!.paid_method).toBe('nce');
+    });
+
+    it('allows a cash_check settle on a NON-NCE invoice (unaffected)', async () => {
+      const fake = makeFakeSupabase({
+        invoices: [{ id: 'i1', quote_id: 'q1', status: 'awaiting_payment', balance: 500, paid_at: null }],
+        quotes: [{ id: 'q1', is_nce: false }],
+      });
+      sbRef.current = fake.client;
+      const inv = await markInvoicePaidManually('i1');
+      expect(inv!.status).toBe('paid');
+      expect(inv!.paid_method).toBe('cash_check');
+    });
+
+    it('allows a cash_check settle when the invoice has no linked quote (nothing to check)', async () => {
+      const fake = makeFakeSupabase({
+        invoices: [{ id: 'i1', quote_id: null, status: 'awaiting_payment', balance: 500, paid_at: null }],
+      });
+      sbRef.current = fake.client;
+      const inv = await markInvoicePaidManually('i1');
+      expect(inv!.status).toBe('paid');
     });
   });
 });

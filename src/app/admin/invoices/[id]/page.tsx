@@ -688,6 +688,14 @@ export default function InvoiceDetailPage() {
                           onClick={() => {
                             setNceRefPanelOpen(false);
                             setNceRefInput('');
+                            // #199 (wrap-review LOW): a prior failed attempt
+                            // may have left the reconsent-override banner
+                            // rendered (reconsentBlocked==='mark-paid-nce') —
+                            // without clearing it here too, it stays visible
+                            // after Cancel, and its retry button silently
+                            // no-ops (markPaidNce reads the now-EMPTY
+                            // nceRefInput and refuses).
+                            setReconsentBlocked(null);
                           }}
                           className="text-xs text-gray-500 hover:text-gray-700 disabled:opacity-60"
                         >
@@ -700,6 +708,36 @@ export default function InvoiceDetailPage() {
                   {data?.isNce && (
                     <p className="text-xs text-gray-500 mt-1.5">
                       NCE trade job — the balance is not collectable by pay-link (it settles through NCE instead).
+                    </p>
+                  )}
+
+                  {/* #199 (wrap-review LOW): rendered BEFORE the cash/check note
+                      below to match the SERVER's check order (charge-balance/route.ts
+                      fires the NCE gate before the cash-preference one) — an NCE +
+                      cash/check invoice shows BOTH notes, and both overrides can
+                      combine (chargeBalance merges the accumulated ref flags into
+                      one request body), but the VISUALLY-first button must be the
+                      one that actually clears the FIRST server-side block, or
+                      clicking it just 409s with the other note's reason instead. */}
+                  {data?.autoChargeEnabled && data.isNce && (
+                    <p className="text-xs text-gray-500 mt-1.5">
+                      This is an NCE trade job — the balance settles through NCE, not a card charge.{' '}
+                      <button
+                        type="button"
+                        disabled={charging}
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              'This is an NCE trade job. Charge their saved card anyway?',
+                            )
+                          ) {
+                            void chargeBalance({ overrideNce: true });
+                          }
+                        }}
+                        className="underline text-gray-600 hover:text-gray-800 disabled:opacity-60"
+                      >
+                        Charge the card anyway
+                      </button>
                     </p>
                   )}
 
@@ -716,31 +754,6 @@ export default function InvoiceDetailPage() {
                             )
                           ) {
                             void chargeBalance({ overridePreference: true });
-                          }
-                        }}
-                        className="underline text-gray-600 hover:text-gray-800 disabled:opacity-60"
-                      >
-                        Charge the card anyway
-                      </button>
-                    </p>
-                  )}
-
-                  {/* #199: independent of payment_preference above — an NCE + cash/check
-                      invoice shows BOTH notes, and both overrides can combine (chargeBalance
-                      merges the accumulated ref flags into one request body). */}
-                  {data?.autoChargeEnabled && data.isNce && (
-                    <p className="text-xs text-gray-500 mt-1.5">
-                      This is an NCE trade job — the balance settles through NCE, not a card charge.{' '}
-                      <button
-                        type="button"
-                        disabled={charging}
-                        onClick={() => {
-                          if (
-                            window.confirm(
-                              'This is an NCE trade job. Charge their saved card anyway?',
-                            )
-                          ) {
-                            void chargeBalance({ overrideNce: true });
                           }
                         }}
                         className="underline text-gray-600 hover:text-gray-800 disabled:opacity-60"

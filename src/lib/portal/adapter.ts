@@ -687,15 +687,18 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
   // FIRST: the flag rides migrated HOLIDAY quotes, so the holiday fall-through
   // below would otherwise build A/B/C + the empty Build-Your-Own slot.
   const isLegacyRebook = row.legacy_rebook === true;
+  // #199 F1: row.inputs?.depositPercent threaded to every branch — see
+  // chargesFromResult's own comment (derivePackages.ts) for why the live
+  // input must win over a possibly-stale result.depositRate.
   const allPackages = isLegacyRebook
-    ? derivePackagesLegacyRebook(lineItems, row.result)
+    ? derivePackagesLegacyRebook(lineItems, row.result, row.inputs?.depositPercent)
     : isPermanent
-      ? derivePackagesPermanent(lineItems, row.result)
+      ? derivePackagesPermanent(lineItems, row.result, row.inputs?.depositPercent)
       : isEvent
-        ? derivePackagesEvent(lineItems, row.result)
+        ? derivePackagesEvent(lineItems, row.result, row.inputs?.depositPercent)
         : isPermanentBistro
-          ? derivePackagesPermanentBistro(lineItems, row.result)
-          : derivePackages(lineItems, row.result, roofline);
+          ? derivePackagesPermanentBistro(lineItems, row.result, row.inputs?.depositPercent)
+          : derivePackages(lineItems, row.result, roofline, row.inputs?.depositPercent);
   // The approval gate threshold — hoisted (was inline in the return below) so
   // the package filter next uses the IDENTICAL value the approve gate enforces.
   // $1,000 for holiday/event, the permanent quote's FROZEN rate-snapshot
@@ -737,7 +740,11 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
   //     maintenance add-on lifts the quote past auto-waive while sitting in
   //     no package), keep them all — a portal with zero tiles is worse than
   //     below-min tiles, and the "tiles never all vanish" invariant holds.
-  const jobCharges = chargesFromResult(row.result);
+  // #199 F1: this IS the live portal's `charges` prop (see `charges:
+  // { ...jobCharges, manualDiscount }` below) — SelectionContext reads
+  // jobCharges.depositRate directly as the customer's displayed pre-approval
+  // deposit rate, so this is the critical call site for the NCE-tag-inert bug.
+  const jobCharges = chargesFromResult(row.result, row.inputs?.depositPercent);
   const defaultOnFees =
     (jobCharges.rush.defaultOn ? jobCharges.rush.amount : 0) +
     (jobCharges.takedown.defaultOn ? jobCharges.takedown.amount : 0);

@@ -245,20 +245,31 @@ export function resolveTagPayload(
  * - locked: never changes here — the #177 freeze (server 409 on a changed
  *   depositPercent post-approval) owns an approved/booked quote's deposit.
  * - turning ON: 40 (NCE's contractual deposit rate vs the 50% default).
- * - turning OFF: an UNTOUCHED 40 (this same rule's own prior default) reverts
- *   to 0 (blank = 50%); any OTHER value is a staff hand-edit and is left alone.
+ * - turning OFF: reverts to 0 (blank = 50%) ONLY when BOTH `current === 40`
+ *   AND `wasRuleSet` — i.e. THIS rule's own prior turn-ON is what put the 40
+ *   there. A bare `current === 40` can't tell that apart from a value staff
+ *   hand-typed for an unrelated reason (a coincidentally-40% negotiated
+ *   deposit) — wrap-review F4: without `wasRuleSet`, turning the chip OFF (or
+ *   even a same-tick contact-pick re-confirmation that never actually
+ *   changes isNce — see the caller's own no-op-flip guard) would silently
+ *   wipe a hand-typed 40 the chip never touched. Any other value is always
+ *   left alone regardless of `wasRuleSet`.
  *
  * Returns `current` unchanged when no rule applies (including the locked
- * case), so callers can always assign the result unconditionally.
+ * case), so callers can always assign the result unconditionally. Callers
+ * are expected to skip calling this entirely when nextIsNce hasn't actually
+ * changed from the current isNce (this function has no way to know that on
+ * its own — it only sees the NEXT value).
  */
 export function resolveNceDepositPercent(
   current: number,
   nextIsNce: boolean,
   locked: boolean,
+  wasRuleSet: boolean,
 ): number {
   if (locked) return current;
   if (nextIsNce) return 40;
-  return current === 40 ? 0 : current;
+  return wasRuleSet && current === 40 ? 0 : current;
 }
 
 /**
@@ -319,19 +330,26 @@ export function legacyRebookConfirmMessage(
  *   itself needs no warning (same reasoning as Neighbor's OFF), but silently
  *   dropping a 40% deposit back to blank would be a silent money change.
  *
- * depositPercent/locked are the same inputs applyIsNce's caller already has
- * (form.depositPercent, the #177 approved/booked freeze). This calls
- * resolveNceDepositPercent itself rather than taking a precomputed
- * "will it change" boolean, so the copy can never drift from what applyIsNce
- * actually does — including staying silent about the deposit once locked,
- * since resolveNceDepositPercent is a no-op there too.
+ * depositPercent/locked/wasRuleSet are the same inputs applyIsNce's caller
+ * already has (form.depositPercent, the #177 approved/booked freeze, and
+ * nceDepositSetByRuleRef — #199's provenance flag, true only while the
+ * current 40 is one THIS rule wrote). This calls resolveNceDepositPercent
+ * itself rather than taking a precomputed "will it change" boolean, so the
+ * copy can never drift from what applyIsNce actually does — including
+ * staying silent about the deposit once locked (resolveNceDepositPercent is
+ * a no-op there too), and, post-#199, staying silent about an OFF-revert
+ * that will NOT happen because the 40 was hand-typed by staff rather than
+ * set by this rule. Without threading provenance through, the OFF prompt
+ * would promise "reverts your deposit to blank" and then correctly leave a
+ * staff-typed 40 alone — warning about a change that never comes.
  */
 export function nceConfirmMessage(
   turningOn: boolean,
   depositPercent: number,
   locked: boolean,
+  wasRuleSet: boolean,
 ): string | null {
-  const nextDepositPercent = resolveNceDepositPercent(depositPercent, turningOn, locked);
+  const nextDepositPercent = resolveNceDepositPercent(depositPercent, turningOn, locked, wasRuleSet);
   const depositChanges = nextDepositPercent !== depositPercent;
 
   if (turningOn) {

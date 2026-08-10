@@ -59,12 +59,32 @@ export type InvoiceRow = {
   // actually collected. null covers both a legacy manual mark-paid (predates
   // this column) and a Valor-settled invoice (never written by the balance
   // webhook / charge-balance route) — see migrations/2026-08-07-invoices-
-  // manual-payment-method.sql. Optional: the column ships migration-first, so
-  // a pre-migration select simply omits the key rather than erroring.
+  // manual-payment-method.sql. Optional here ONLY so tsc/tests don't require
+  // the column to exist — this is NOT a claim that a pre-migration read
+  // degrades gracefully (wrap-review LOW: it doesn't). PostgREST fails the
+  // WHOLE query when a selected column is missing (verified live: `column
+  // invoices.paid_method does not exist`, code 42703) — INVOICE_SELECT is a
+  // literal column list, so EVERY read through it (getInvoice, listInvoices,
+  // …) fails pre-migration. Reads only LOOK unaffected because every one of
+  // those callers already catches its own error and degrades (console.error
+  // + return null/[]) — a pre-existing resilience pattern, not something
+  // #199 added. The WRITE side is worse and not just cosmetic:
+  // markInvoicePaidManually's update+select(INVOICE_SELECT) fails the SAME
+  // way for a PLAIN CASH invoice too (not just NCE) — its caller (mark-paid/
+  // route.ts) then returns the misleading 'Invoice not found' for an invoice
+  // that exists and just failed to update. createInvoiceFromJob's
+  // insert+select(INVOICE_SELECT) fails identically — an INSERT...RETURNING
+  // with a missing column fails atomically (nothing commits), so completing
+  // a job creates NO invoice at all pre-migration. Migration-first (AGENTS.md
+  // Pitfalls) means the seat applies migrations/2026-08-07-… BEFORE this code
+  // merges — the above is the blast radius if that order is ever missed, not
+  // an expected/tolerated intermediate state.
   paid_method?: PaidMethod | null;
   // #199: the NCE trade-system payment reference number. Required at NCE
   // mark-paid time (app-enforced, not a DB constraint); editable afterward
-  // for a typo fix. Optional for the same pre-migration-tolerant reason.
+  // for a typo fix. Optional for the same tsc/tests-only reason as
+  // paid_method above — see its comment for the real pre-migration blast
+  // radius (this is not a "degrades gracefully" annotation).
   payment_reference?: string | null;
   created_at: string;
   paid_at: string | null;
@@ -719,6 +739,21 @@ export async function setInvoiceStatus(id: string, to: InvoiceStatus): Promise<I
   return data as unknown as InvoiceRow;
 }
 
+// #199 (F2, wrap-review HIGH): a typed throw so callers can tell WHY
+// markInvoicePaidManually refused, instead of pattern-matching a message
+// string. `cancelled` mirrors the pre-existing throw exactly (message
+// unchanged, so the mark-paid route's existing generic catch — which never
+// inspected the error — keeps its EXACT prior behavior for that case).
+// `nce-mismatch` is new: see the gate below.
+export class InvoiceSettleError extends Error {
+  code: 'cancelled' | 'nce-mismatch';
+  constructor(code: 'cancelled' | 'nce-mismatch', message: string) {
+    super(message);
+    this.name = 'InvoiceSettleError';
+    this.code = code;
+  }
+}
+
 /**
  * Manually mark an invoice paid — an operator recording an offline/external
  * payment (cash / check / NCE trade / paid in the Valor terminal). Atomic
@@ -734,6 +769,18 @@ export async function setInvoiceStatus(id: string, to: InvoiceStatus): Promise<I
  * force-settle) keeps writing exactly what it always wrote, now just also
  * labelled. Validating `reference` (required + non-empty for 'nce') is the
  * CALLER's job (the mark-paid route) — this is a thin, unconditional write.
+ *
+ * #199 (F2, wrap-review HIGH): ONE positive gate here, not N patches at every
+ * caller — an invoice whose linked quote is_nce can ONLY ever settle with
+ * method:'nce'. Without this, EITHER of this function's two call sites
+ * (job-close's bare force-settle; the mark-paid route, itself reachable from
+ * BOTH the dedicated NCE panel AND PipelineActionsMenu's generic
+ * "collect-payment"/"close" actions, which POST an empty body) would silently
+ * settle an NCE invoice as cash_check — and that mislabel is UNRECOVERABLE in
+ * the UI (updateInvoicePaymentReference refuses anything that isn't already
+ * paid_method==='nce'). Skipped when the invoice has no linked quote (nothing
+ * to check against — same permissive default as every other quote_id-gated
+ * lookup in this file).
  *
  * W1-022: the claim excludes BOTH 'paid' AND 'cancelled'. The cancelled pre-check
  * above is read-then-write, so a concurrent order-cancel that flips the invoice to
@@ -752,9 +799,40 @@ export async function markInvoicePaidManually(
   const current = await getInvoice(id);
   if (!current) return null;
   if (current.status === 'cancelled') {
-    throw new Error(`markInvoicePaidManually: invoice ${id} is cancelled`);
+    throw new InvoiceSettleError('cancelled', `markInvoicePaidManually: invoice ${id} is cancelled`);
   }
-  if (current.status === 'paid') return current; // idempotent no-op
+  if (current.status === 'paid') {
+    // #199 (wrap-review LOW, accepted-narrow): idempotent no-op — a
+    // concurrent settle already won, so THIS call's method/reference is
+    // silently discarded (never overwrites a real settlement). The race is
+    // narrow (two settle attempts landing within the same request window)
+    // and returning the existing row is still the correct, safe choice —
+    // but when what's actually stored doesn't match what THIS caller asked
+    // for, that's worth a cheap, honest trace for reconciliation (never a
+    // behavior change or a client-facing error).
+    if (current.paid_method !== method || (reference != null && current.payment_reference !== reference)) {
+      console.warn(
+        `markInvoicePaidManually: invoice ${id} was already settled (paid_method=${current.paid_method ?? 'null'}) ` +
+          `when this call asked for method=${method}${reference != null ? ` reference=${reference}` : ''} — the earlier settle wins, this call's params were discarded`,
+      );
+    }
+    return current;
+  }
+
+  if (method !== 'nce' && current.quote_id) {
+    const { data: quoteRow } = await db
+      .from('quotes')
+      .select('is_nce')
+      .eq('id', current.quote_id)
+      .maybeSingle<{ is_nce: boolean }>();
+    if (quoteRow?.is_nce) {
+      throw new InvoiceSettleError(
+        'nce-mismatch',
+        `markInvoicePaidManually: invoice ${id}'s quote is NCE — refusing a ${method} settle`,
+      );
+    }
+  }
+
   const paidAt = new Date().toISOString();
   const { data, error } = await db
     .from('invoices')
