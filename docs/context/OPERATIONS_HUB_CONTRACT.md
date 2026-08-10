@@ -1,4 +1,4 @@
-# Operations Hub <-> Quote Tool contract, v1.3.0-draft
+# Operations Hub <-> Quote Tool contract, v1.4.0-draft
 
 > Canonical authority resides at
 > `yll-quote-tool/docs/context/OPERATIONS_HUB_CONTRACT.md`. The byte-identical
@@ -407,6 +407,114 @@ Semantics (state machine, QT-enforced):
   and attendance; admins receive all four. The QT morning ops digest and the
   hub coaching digest fold into this model; digest content APIs follow the
   same provisional-pay display law.
+
+## 8c. Flow H: commitment verification events (QT -> commitment store), v1.4.0-draft
+
+> Proposed by the Quote Tool side 2026-08-07 under the §10 change process, for
+> ledger #217 (post-call commitment engine). MINOR bump: new endpoints, no
+> changed semantics on any existing flow. Codex is the named reviewer for the
+> consumer side; a human merges. No money movement and no ownership change, so
+> no DECISIONS.md line is required.
+
+**Purpose.** The copilot extracts typed COMMITMENTS from call transcripts ("send
+the quote today", "call back at 3"). Those items are only worth having if they
+CLOSE on evidence rather than on a rep remembering to tick a box — the standing
+caution from our own data is that two machine-generated queues already exist and
+die unworked (`second_mile_touches`, 108 rows, 0 ever completed). The Quote Tool
+holds the ground truth for closure: it sends the quotes and mirrors outbound SMS,
+and the copilot logs every call attempt. Flow H is the feed that carries that
+evidence.
+
+**Direction and ownership.** QT is the sole producer. QT owns the event
+definitions and the `/api/ops/v1/commitment-events` route, consistent with §0
+(the Quote Tool assistant is the single author of `/api/ops/v1`). The consumer is
+the commitment store; the hub renders a board over it and never writes
+verification events.
+
+**Store location (resolved 2026-08-07).** `call_commitments` lives in the copilot
+DB, alongside the transcripts and the LLM passes that produce it. This was
+blocked while the copilot's anon key held full read/write on 26 tables of
+transcript PII (ledger #221, Supabase advisor CRITICAL). #221 shipped
+2026-08-07 — RLS enabled on every public table, verified at the
+`pg_class`/`pg_roles`/`pg_policies` level, plus a follow-up revoking the
+redundant anon/authenticated GRANTs and the default privileges that would have
+re-granted them on future tables — so the blocker is retired and the natural
+home wins.
+
+### Events
+
+Three event types. Each carries the FULL §1 envelope: `idempotency_key`,
+`source`, `entity_version`, `correlation_id` + `causation_id`, accepted server
+time, and `contract_version`. A bare contact-keyed stream is explicitly NOT the
+shape.
+
+| Event | Emitted when | Carries |
+|---|---|---|
+| `QuoteSent` | `quotes.quote_sent_at` transitions null -> non-null | quote id, quote_number, contact ref, sending rep identity, sent-at, total in integer cents |
+| `OutboundMessageSent` | an outbound SMS or email to a contact is mirrored | contact ref, channel, sent-at, `has_media`, `has_portal_link` |
+| `CallAttempted` | a call attempt is logged | contact ref, direction, duration seconds, `connected`, attempted-at |
+
+`OutboundMessageSent` deliberately carries BOOLEAN content signals, never the
+message body. The clearing rules need to know whether an outbound contained
+media or a portal link; that is answerable without shipping customer message text
+across a service boundary. Least data that satisfies the rule (and it keeps this
+flow out of scope for the retention question in ledger #226).
+
+### Transport
+
+- Transactional outbox on QT, inbox dedup on the reader (§1). Same
+  `idempotency_key` + same payload returns the original result; same key with a
+  different payload is rejected as `conflict_idempotency`.
+- PULL, not push, for v1:
+  `GET /api/ops/v1/commitment-events?since=<cursor>&limit=<n>`, cursor-paginated
+  per §1's pagination rule. A pull feed means a consumer outage costs latency,
+  never lost evidence, and it needs no inbound credential on the copilot side.
+- **Authentication is stated explicitly here because the §1 envelope does NOT
+  provide it.** Idempotency keys and outbox/inbox dedup solve duplicate delivery;
+  they authenticate nothing. Flow H uses the §1 environment-scoped machine
+  credential for the QT->consumer direction, with signed timestamp + nonce replay
+  protection. (An S54 review of the #217 plan caught that plan citing the
+  envelope as if it covered auth. It does not.)
+- Kill switch `COMMITMENT_EVENTS_ENABLED`, independent per §1. Switched off the
+  endpoint returns `kill_switched` — never a silent empty page, which is
+  indistinguishable from "nothing happened" and would stall every open commitment
+  into expiry while looking healthy.
+- The route enters `operatorGate`'s allowlist in the SAME PR that builds it,
+  verified on a signed-out request (§1 and the AGENTS.md pitfall: with the gate
+  on, a missing path is default-denied BEFORE the route runs, and it hides in
+  every test where you are signed in).
+
+### Clearing rules the feed must support
+
+Binding, from the #217 plan's own acceptance criteria:
+
+- A clearing event closes the OLDEST open commitment of that kind for the
+  contact, NEVER every open item of that kind. One contact can hold two open
+  `send_quote` promises from two different calls; closing both on one send marks
+  a promise kept that never was.
+- Auto-verify is OFF (manual check-off only) for any commitment whose contact
+  fails clean identity resolution. Such items are flagged manual-only at creation
+  and routed to a no-match review lane — never left to age into expiry looking
+  ignored, which is the false-OPEN mirror of a false-clear.
+- A clear by a DIFFERENT rep than the promising rep closes the item VISIBLY
+  ("done by <rep>"), never silently.
+
+### Open dependency: customer identity
+
+§2's Flow I maps STAFF only (`employee_id` <-> `crew_members.id` <-> phone <->
+`telegram_user_id`). There is no canonical CUSTOMER identity mapping, and
+`quotes.highlevel_contact_id` is nullable with a demonstrated ~99% null rate on
+one backfill class (166 of 168). Flow H therefore carries the contact reference
+AS IS and does not pretend to resolve it; the digits-suffix phone fallback
+matcher and the no-match review lane are #217's own work, not this contract's.
+
+Separately, the copilot's `rep_email` / `ghl_user_id` do NOT appear in Flow I's
+mapping at all. Attributing a commitment to a hub `employee_id` requires adding
+that link to Flow I (additive, a patch bump) before any per-employee board can
+key its lanes. Named here so it is not rediscovered mid-build. Inbound calls
+additionally carry no attribution at all until ledger #219 lands
+(`call_recordings.ghl_user_id` is NULL on every inbound call), which is why the
+plan routes unattributed inbound to a shared unclaimed lane in the interim.
 
 ## 9. Sequencing hooks (F1)
 
