@@ -4,6 +4,7 @@ import {
   escalationEmailSubject,
   escalationEmailHtml,
   eodDigestSubject,
+  eodDigestHtml,
 } from './notify';
 
 describe('formatWaiting', () => {
@@ -42,9 +43,33 @@ describe('escalationEmailHtml', () => {
     const html = escalationEmailHtml({
       level: 2,
       items: [{ name: 'Jane Doe', preview: 'Can I get a quote?', waiting: '4h 10m' }],
+      baseUrl: 'https://quote.yulelovelights.com',
     });
     expect(html).toContain('Jane Doe');
     expect(html).toContain('Can I get a quote?');
     expect(html).toContain('4h 10m');
+  });
+
+  // Email clients have no page origin: a bare href="/inbox" resolves as the
+  // HOSTNAME "inbox" (DNS_PROBE_FINISHED_NXDOMAIN), so the link must be absolute.
+  it('links to the inbox with an absolute URL', () => {
+    const html = escalationEmailHtml({
+      level: 2,
+      items: [{ name: 'Jane Doe', preview: null, waiting: '4h 10m' }],
+      baseUrl: 'https://quote.yulelovelights.com',
+    });
+    expect(html).toContain('href="https://quote.yulelovelights.com/inbox"');
+    expect(html).not.toContain('href="/inbox"');
+  });
+});
+
+describe('eodDigestHtml', () => {
+  it('links to the inbox with an absolute URL', () => {
+    const html = eodDigestHtml(
+      [{ name: 'Jane Doe', preview: null, waiting: '9h' }],
+      'https://quote.yulelovelights.com/',
+    );
+    expect(html).toContain('href="https://quote.yulelovelights.com/inbox"');
+    expect(html).not.toContain('href="/inbox"');
   });
 });
