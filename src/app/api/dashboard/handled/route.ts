@@ -33,7 +33,9 @@ export async function POST(req: NextRequest) {
   const now = new Date();
 
   // 1. Stamp local first — instant + authoritative, even if GHL is down.
-  const local = await markItemHandledLocal(itemId, operator?.id ?? 'system', now);
+  // handled_by is a uuid FK (auth.users) — NULL, never the string 'system',
+  // on the narrow path where the auth gate is dormant and no operator resolved.
+  const local = await markItemHandledLocal(itemId, operator?.id ?? null, now);
   if (!local.ok) return NextResponse.json({ error: local.error }, { status: 409 });
 
   // 2. Best-effort source write-back: GHL mark-read + handled-by tag + ensure the
