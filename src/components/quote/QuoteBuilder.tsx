@@ -399,6 +399,16 @@ export default function QuoteBuilder({
   // render-closure read (`!isNce`) — this ref restores the same
   // never-stale guarantee for computing "next" at the call site.
   const isNceRef = useRef(isNce);
+  // #215 (fix round F1, sibling-guard parity with isNceRef just above): a ref
+  // mirror of `legacyRebook`, updated synchronously by applyLegacyRebook (the
+  // ONLY place legacyRebook changes post-mount — see its own comment). Same
+  // bug class as isNceRef fixed for NCE: pre-#215 the chip's onClick used
+  // setLegacyRebook's own functional form (`(v) => !v`), always current by
+  // construction. #215 needed a plain boolean BEFORE window.confirm and
+  // regressed to a render-closure read (`!legacyRebook`) — stale the instant
+  // the contact-pick tag-inheritance callback (a few hundred lines down)
+  // fires an auto-set between renders.
+  const legacyRebookRef = useRef(legacyRebook);
   // View-only portal (#176) — purely from the saved row, never set for a brand-new quote.
   const viewOnly = initialQuote?.viewOnly ?? false;
   // Customer tenure (#178) — purely from the saved row, never set for a brand-new quote.
@@ -2374,6 +2384,17 @@ export default function QuoteBuilder({
   const set = <K extends keyof QuoteFormData>(k: K, v: QuoteFormData[K]) =>
     setForm(f => ({ ...f, [k]: v }));
 
+  // #215 (fix round F1): the ONE place legacyRebook changes post-mount (the
+  // chip click below + contact-pick tag inheritance a few hundred lines
+  // down) — mirrors applyIsNce's ref-then-state ordering exactly so
+  // legacyRebookRef.current is synchronously correct the instant this
+  // returns, no deposit cascade needed here (legacyRebook has no money side
+  // effect, unlike isNce).
+  const applyLegacyRebook = (next: boolean) => {
+    legacyRebookRef.current = next;
+    setLegacyRebook(next);
+  };
+
   // NCE 40% deposit default (#199): the ONE helper every LIVE isNce flip
   // funnels through (the chip click below + contact-pick tag inheritance a
   // few hundred lines down) — mirrors resolveTagPayload's shared-mechanism
@@ -2636,7 +2657,7 @@ export default function QuoteBuilder({
       .then((data: { customers?: Array<{ is_nce?: boolean; is_yll_neighbor?: boolean }> }) => {
         if (tagLookupSeq !== attachSeqRef.current) return; // superseded by a later pick
         const tags = data.customers?.[0];
-        if (!legacyRebookTouchedRef.current) setLegacyRebook(tags?.is_yll_neighbor ?? false);
+        if (!legacyRebookTouchedRef.current) applyLegacyRebook(tags?.is_yll_neighbor ?? false);
         // #199: routed through applyIsNce (not a bare setIsNce) so an
         // inherited NCE tag also seeds the 40% deposit default, same as a
         // manual chip click.
@@ -3527,7 +3548,7 @@ export default function QuoteBuilder({
               nceConfirmMessage, quoteForm.ts — each owns its own per-direction
               when-to-prompt rule and exact copy). Automatic paths (the
               contact-pick tag inheritance a few hundred lines down, the
-              mount-hydrate useState above) call setLegacyRebook/applyIsNce
+              mount-hydrate useState above) call applyLegacyRebook/applyIsNce
               directly and never prompt. Declining leaves the tag, deposit,
               and touched-ref exactly as they were — the touched-ref is set
               AFTER the confirm returns true, never before. */}
@@ -3535,11 +3556,16 @@ export default function QuoteBuilder({
             <button
               type="button"
               onClick={() => {
-                const turningOn = !legacyRebook;
+                // Direction comes from legacyRebookRef, NOT the render-closure
+                // legacyRebook (#215 fix round F1 — sibling-guard parity with
+                // the isNceRef fix just below): a stale closure read here
+                // would prompt with one direction's consequences and then
+                // apply the other's.
+                const turningOn = !legacyRebookRef.current;
                 const confirmMsg = legacyRebookConfirmMessage(turningOn, legacyRebookLeftDraft);
                 if (confirmMsg && !window.confirm(confirmMsg)) return;
                 legacyRebookTouchedRef.current = true;
-                setLegacyRebook(turningOn);
+                applyLegacyRebook(turningOn);
               }}
               aria-pressed={legacyRebook}
               title={legacyRebook ? 'YLL Neighbor — click to remove' : 'Mark as YLL Neighbor'}
