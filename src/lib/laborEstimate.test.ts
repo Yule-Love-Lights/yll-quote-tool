@@ -65,4 +65,19 @@ describe('estimateLaborForQuote', () => {
   it('returns null when a service type is missing the saved geometry block it depends on', () => {
     expect(estimateLaborForQuote('permanent', buildQuoteInputs(initialFormData))).toBeNull();
   });
+
+  it('returns null for a permanent_bistro quote with no saved bistro geometry (not a confident $0/0-hour estimate)', () => {
+    // Regression test for the S57 wrap review finding: sanitizePermanentBistroBlock
+    // used to return {} instead of undefined on an empty block. {} is truthy, so
+    // sanitizeQuoteInputs' `permanentBistro === undefined` guard never fired, and an
+    // empty bistro quote silently priced as a real (wrong) zero-hour job instead of
+    // this null "unknown, don't estimate" result. This mirrors the 'permanent' test
+    // above — same contract, the sibling service type that had it right already.
+    expect(
+      estimateLaborForQuote(
+        'permanent_bistro',
+        buildQuoteInputs({ ...initialFormData, serviceType: 'permanent_bistro' }),
+      ),
+    ).toBeNull();
+  });
 });
