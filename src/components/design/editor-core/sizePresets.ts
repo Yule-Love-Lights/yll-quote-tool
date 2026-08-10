@@ -15,8 +15,9 @@
 // reached via the anchor-resize handles) are real numbers that stay exactly as
 // stored; this module never snaps/coerces them — `sizePresetLabel` returns
 // null for a value that isn't one of `options` rather than guessing the
-// nearest tier, so the caller renders "no button active" for it (same as
-// today's behavior for any off-preset value).
+// nearest tier, so none of the 3 PRESET buttons render active for it. (#202
+// F1 below adds a 4th button for exactly this case, so the value stays
+// visible/active/clickable — it just isn't coerced onto one of the 3 tiers.)
 //
 // Split out from `editor.ts` (same reason as yardstick-scale.ts: a small pure
 // module the Konva-orchestrating file can import, and this repo can actually
