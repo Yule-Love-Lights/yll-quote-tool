@@ -101,6 +101,7 @@ export type QuoteReconcileSummary = {
   ingested: number;
   skipped: number;
   followUpsCreated: number;
+  followUpsSuppressed: number;
   followUpsClosed: number;
   errors: number;
   error?: string;
@@ -133,6 +134,7 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
     let ingested = 0;
     let skipped = 0;
     let followUpsCreated = 0;
+    let followUpsSuppressed = 0;
     let followUpsClosed = 0;
     let errors = 0;
     for (const q of quotes) {
@@ -155,6 +157,16 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
         // (days)" setting actually controls when this follow-up is due.
         await ensureFollowUp({ inboxItemId: res.itemId, contactId: res.contactId, reason: decision.reason, sentAt: decision.sentAt, afterDays: followUpDays });
         followUpsCreated++;
+      } else if (res.itemId && decision.kind === 'suppress') {
+        // #220: internal recipients never mint a real follow-up row.
+        // Log every suppression so a false positive is visible immediately.
+        console.warn('[inbox] quotetool follow-up suppressed for internal recipient:', {
+          quoteId: q.id,
+          quoteNumber: q.quote_number ?? null,
+          customerEmail: q.customer_email ?? null,
+          suppression: decision.suppression,
+        });
+        followUpsSuppressed++;
       } else if (res.itemId && decision.kind === 'close') {
         if ((await closeFollowUp(res.itemId, decision.reason)) > 0) followUpsClosed++;
       }
@@ -165,11 +177,11 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
     // reconcile closes those.
     followUpsClosed += await sweepOrphanedFollowUps(FOLLOWUP_REASONS.quoteSentNoReply);
     await recordSyncRun('quotetool', errors > 0 ? 'error' : 'ok', errors > 0 ? `${errors} item error(s)` : undefined);
-    return { ok: true, scanned: quotes.length, ingested, skipped, followUpsCreated, followUpsClosed, errors };
+    return { ok: true, scanned: quotes.length, ingested, skipped, followUpsCreated, followUpsSuppressed, followUpsClosed, errors };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     await recordSyncRun('quotetool', 'error', error);
-    return { ok: false, scanned: 0, ingested: 0, skipped: 0, followUpsCreated: 0, followUpsClosed: 0, errors: 1, error };
+    return { ok: false, scanned: 0, ingested: 0, skipped: 0, followUpsCreated: 0, followUpsSuppressed: 0, followUpsClosed: 0, errors: 1, error };
   }
 }
 

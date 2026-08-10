@@ -21,6 +21,8 @@ vi.mock('@/lib/integrations/gmail', () => ({
 
 const ingestTouchMock = vi.fn();
 const closeFollowUpMock = vi.fn();
+const ensureFollowUpMock = vi.fn();
+const recordSyncRunMock = vi.fn();
 const sweepOrphanedFollowUpsMock = vi.fn();
 
 vi.mock('./store', () => ({
@@ -29,11 +31,11 @@ vi.mock('./store', () => ({
   // imports this flag from './store'; the strict vitest mock throws on any
   // accessed export the factory doesn't define.
   EXCLUDE_LEGACY_REBOOK_FROM_INBOX: true,
-  ensureFollowUp: vi.fn(),
+  ensureFollowUp: (...args: unknown[]) => ensureFollowUpMock(...args),
   getSyncCursor: vi.fn(),
   ingestTouch: (...args: unknown[]) => ingestTouchMock(...args),
   listEscalatableItems: vi.fn(),
-  recordSyncRun: vi.fn().mockResolvedValue(undefined),
+  recordSyncRun: (...args: unknown[]) => recordSyncRunMock(...args),
   setEscalation: vi.fn(),
   setSyncCursor: vi.fn(),
   sweepOrphanedFollowUps: (...args: unknown[]) => sweepOrphanedFollowUpsMock(...args),
@@ -228,6 +230,8 @@ describe('runHandledWriteback — WT-49 (no opportunity write)', () => {
 describe('runQuoteToolReconcile — orphan follow-up sweep wiring (#183 BUG 3)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    ensureFollowUpMock.mockResolvedValue(undefined);
+    recordSyncRunMock.mockResolvedValue(undefined);
     getFollowUpDaysMock.mockResolvedValue(3);
     listQuotesForDashboardMock.mockResolvedValue([]);
   });
@@ -276,5 +280,47 @@ describe('runQuoteToolReconcile — orphan follow-up sweep wiring (#183 BUG 3)',
     const summary = await runQuoteToolReconcile(new Date());
 
     expect(summary.followUpsClosed).toBe(1 + 3);
+  });
+
+  it('counts and logs a suppressed internal-domain quote instead of creating its follow-up (#220)', async () => {
+    listQuotesForDashboardMock.mockResolvedValue([
+      {
+        id: 'q1262',
+        customer_name: 'Yule Love Lights',
+        customer_email: 'sales@mail.yulelovelights.com',
+        customer_phone: null,
+        total: 348,
+        created_at: '2026-08-06T10:00:00Z',
+        quote_sent_at: '2026-08-06T11:00:00Z',
+        customer_approved_at: null,
+        deposit_paid_at: null,
+        homeworks_sent_at: null,
+        homeworks_signed_at: null,
+        highlevel_contact_id: null,
+        service_type: null,
+        quote_number: 1262,
+      },
+    ]);
+    ingestTouchMock.mockResolvedValue(OK_RESULT);
+    sweepOrphanedFollowUpsMock.mockResolvedValue(0);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const summary = await runQuoteToolReconcile(new Date('2026-08-07T12:00:00Z'));
+
+      expect(summary.followUpsCreated).toBe(0);
+      expect(summary.followUpsSuppressed).toBe(1);
+      expect(ensureFollowUpMock).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[inbox] quotetool follow-up suppressed for internal recipient:',
+        expect.objectContaining({
+          quoteId: 'q1262',
+          quoteNumber: 1262,
+          customerEmail: 'sales@mail.yulelovelights.com',
+        }),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
