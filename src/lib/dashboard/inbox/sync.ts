@@ -37,6 +37,7 @@ import {
   setSyncCursor,
   sweepOrphanedFollowUps,
 } from './store';
+import { appBaseUrl } from '@/lib/integrations/telegramNotify';
 import { escalationLevel, isDueForEodDigest, newlyCrossedLevel } from './escalation';
 import { etDayKey } from './normalize';
 import { ESCALATION_LEVEL } from './types';
@@ -397,10 +398,10 @@ export async function runEscalation(now: Date): Promise<EscalationSummary> {
 
   // Send first; advance notified_levels only for the levels whose email went out.
   const redSent = red.length
-    ? await emailTeamSafe(escalationEmailSubject({ level: ESCALATION_LEVEL.RED, count: red.length }), escalationEmailHtml({ level: ESCALATION_LEVEL.RED, items: red }))
+    ? await emailTeamSafe(escalationEmailSubject({ level: ESCALATION_LEVEL.RED, count: red.length }), escalationEmailHtml({ level: ESCALATION_LEVEL.RED, items: red, baseUrl: appBaseUrl() }))
     : true;
   const amberSent = amber.length
-    ? await emailTeamSafe(escalationEmailSubject({ level: ESCALATION_LEVEL.AMBER, count: amber.length }), escalationEmailHtml({ level: ESCALATION_LEVEL.AMBER, items: amber }))
+    ? await emailTeamSafe(escalationEmailSubject({ level: ESCALATION_LEVEL.AMBER, count: amber.length }), escalationEmailHtml({ level: ESCALATION_LEVEL.AMBER, items: amber, baseUrl: appBaseUrl() }))
     : true;
   const sendFailed = (red.length > 0 && !redSent) || (amber.length > 0 && !amberSent);
 
@@ -421,7 +422,7 @@ export async function runEscalation(now: Date): Promise<EscalationSummary> {
   const alreadySentToday = (prev.cursor?.eodDigestDate as string | undefined) === today;
   let eodSent = false;
   if (eod.length && !alreadySentToday) {
-    eodSent = await emailTeamSafe(eodDigestSubject(eod.length), eodDigestHtml(eod));
+    eodSent = await emailTeamSafe(eodDigestSubject(eod.length), eodDigestHtml(eod, appBaseUrl()));
   }
 
   // Watchdog: the engine just resumed after a gap — flag it so a silent outage

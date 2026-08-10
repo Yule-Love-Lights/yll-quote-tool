@@ -1,13 +1,16 @@
 # Operations Hub <-> Quote Tool contract, v1.3.0-draft
 
-> CANONICAL copy. The mirror lives at
-> `yll-call-copilot/docs/operations-hub/INTEGRATION-CONTRACT.md` and must carry
-> the same version string. Neither repo builds against anything not in this
-> file. Built 2026-08-06 from CODEX-PLAN §19-21, OPERATIONS-HUB-SPEC §3-§7,
-> CLAUDE-PLAN A3/A8, the union checklist from the cross-doc gap audit, and
-> Naldo's rulings R1-R8 + F1-F4 (DECISIONS.md in the hub repo). Approved by the
-> Claude/Quote Tool side as v1.3.0-draft; becomes v1.0.0 when Codex confirms
-> the mirror matches and Naldo approves the master plan.
+> Canonical authority resides at
+> `yll-quote-tool/docs/context/OPERATIONS_HUB_CONTRACT.md`. The byte-identical
+> mirror resides at
+> `yll-call-copilot/docs/operations-hub/INTEGRATION-CONTRACT.md`.
+>
+> This file is the complete normative contract. Historical Hub plans,
+> proposals, and decision logs are provenance only. Implementations may
+> additionally consume only the OpenAPI and JSON Schema artifacts explicitly
+> generated from this file. The draft becomes `v1.3.0` only through the paired
+> review and human-approval process in section 10; it is never renumbered
+> downward to `v1.0.0`.
 
 ## 0. Ownership (final, per rulings F2/R8)
 
@@ -31,12 +34,8 @@
 - TLS; environment-scoped machine credentials per direction; replay
   protection (signed timestamp+nonce); key rotation; request-size limits;
   service keys never in a browser.
-- Every mutation carries: acting `employee_id`, `idempotency_key`,
-  `device_time` + timezone, `source` (`pwa` | `telegram` | `office` |
-  `system`), app/device version, optional GPS + accuracy, `expected_version`,
-  optional reason/evidence.
-- Every response returns: canonical id, accepted server time, state enum,
-  new version, review flag, safe error code.
+- Every mutation and response uses the common command fields below plus the
+  endpoint-specific payload fields defined by the relevant flow.
 - Same key + same payload returns the original result. Same key + different
   payload is rejected. Dedupe keys are retained at least 45 days (covers
   offline retry windows), retention recorded here.
@@ -55,15 +54,100 @@
   tested; production fails closed.
 - Independent kill switches: QT time-writes, QT job-reads, completion
   commands, Telegram relay, hub advertising writes, route collection.
-- **Vocabulary (v1.1.0, from the risk audit): three distinct version fields,
-  never the bare word "version":** `contract_version` (this file's semver),
-  `client_app_version` (the calling app/device build), `entity_version` (the
-  per-aggregate optimistic-concurrency counter; `expected_entity_version` on
-  requests). `review_flag` enum: `none` | `needs_review` | `quarantined`.
-  Error-code enum (extendable only by contract PR): `unauthorized`,
-  `forbidden`, `not_found`, `conflict_stale_version`,
-  `conflict_idempotency`, `validation_failed`, `gate_locked`,
-  `kill_switched`, `rate_limited`, `internal`.
+- **Vocabulary:** never use the bare word `version`. `contract_version` is
+  this contract's semver, `schema_version` is the shared schema artifact's
+  semver, `client_version` is the caller build, and `entity_version` is the
+  per-aggregate optimistic-concurrency counter
+  (`expected_entity_version` on requests).
+
+### 1.1 Canonical command request
+
+Every consequential mutation carries these common fields. A nullable field is
+still present with `null` when it does not apply so all clients validate the
+same shape.
+
+```text
+command_id                    UUID; one human intent, stable across retries
+idempotency_key               string; stable for transport retries
+semantic_operation           string; employee:date:operation:entity
+actor_employee_id             UUID
+impersonating_actor_id        UUID | null
+source                        hub_pwa | telegram | office | admin | system
+contract_version              string
+schema_version                string
+client_version                string
+expected_entity_version       non-negative integer | null
+device_occurred_at            RFC3339 timestamp
+device_timezone               IANA timezone
+client_sequence               non-negative integer
+effective_at_requested        RFC3339 timestamp | null
+offline_packet_id             UUID | null
+active_department_id          UUID | null
+membership_version            non-negative integer | null
+gps_evidence                  object | null
+reason                        string | null
+evidence_refs                 string[]
+correlation_id                UUID
+```
+
+`gps_evidence` contains latitude, longitude, `accuracy_meters`, captured-at
+timestamp, and capture source. `idempotency_key` protects a transport retry;
+`semantic_operation` protects the same human action arriving through another
+channel. A duplicate returns the original canonical result and never creates a
+second effect.
+
+### 1.2 Canonical command response
+
+```text
+command_id                    UUID
+canonical_operation_id        UUID
+command_status                accepted | accepted_with_review | pending |
+                              rejected | superseded
+received_at                   RFC3339 timestamp
+effective_at                  RFC3339 timestamp | null
+entity_version                non-negative integer
+review_flag                   none | needs_review | quarantined
+error_code                    error_code | null
+duplicate_of_command_id       UUID | null
+correlation_id                UUID
+```
+
+`pending` means durably received but not canonically applied. `accepted` means
+the operation is canonical. `accepted_with_review` means it is canonical and
+has a named exception. `rejected` creates no business effect. `superseded`
+returns the prior operation through `duplicate_of_command_id`.
+
+The closed `error_code` enum is extendable only through a contract PR:
+
+```text
+unauthorized
+forbidden
+not_found
+conflict_stale_version
+conflict_idempotency
+validation_failed
+gate_locked
+kill_switched
+rate_limited
+internal
+contract_version_unsupported
+schema_version_unsupported
+entity_version_conflict
+identity_not_linked
+membership_stale
+active_department_required
+clock_required
+offline_packet_expired
+offline_packet_scope_denied
+effective_time_review_required
+placement_ack_pending
+inventory_reconciliation_required
+pay_period_locked
+```
+
+`GET /api/ops/v1/commands/{command_id}` returns this same response shape so a
+caller can resolve a timeout, offline retry, or Telegram interim reply.
+
 - **One shared schema artifact.** The envelope, enums, and event shapes are
   published as a versioned JSON Schema (generated from the OpenAPI
   fragments); BOTH repos validate requests and responses against the same
@@ -82,17 +166,41 @@
 - Immutable mapping, one row per person: hub `employee_id` (canonical) <->
   QT `crew_members.id` <-> phone <-> `telegram_user_id`. Runtime linkage
   never by name or email text.
-- Hub emits `EmployeeUpserted` (employee_id, display_name, department
-  memberships[], role, active, telegram_user_id?, language) and
-  `EmployeeDeactivated` (employee_id, at, reason; also kills Telegram
-  pairing and integration credentials).
+- Hub emits `EmployeeUpserted` carrying `employee_id`, display name, role,
+  active state, optional Telegram id, language, `membership_version`, and
+  memberships[] (`department_id`, state, `effective_at`, optional
+  `revoked_at`). Hub emits `EmployeeMembershipChanged` with the same complete
+  membership snapshot, new `membership_version`, effective time, actor, reason,
+  and correlation id; omission from an older snapshot never implies
+  revocation. `EmployeeDeactivated` carries employee id, effective time,
+  reason, and final membership version and also kills Telegram pairing and
+  integration credentials.
 - QT `crew_members` additionally holds the pay-side fields (QT truth):
   `base_rate_cents`, `in_p4p_pool`, `pay_mode` (`hourly`|`shadow`|`p4p`),
   `language`. `hub_employee_id` is nullable until Hub Phase 0 lands, then
   backfilled; partial provisioning is labeled and retried, never a silent
   duplicate.
-- Departments are MEMBERSHIPS (one or more per employee, per ruling R7) with
-  ONE active department context per shift.
+- Departments are memberships and eligibility facts, not authorization
+  grants. Non-sensitive navigation may reflect the union of an employee's
+  memberships; multiple memberships never union sensitive permissions.
+- For an open paid-day envelope, the server maintains a non-overlapping
+  timeline of department-context intervals with exactly one active context at
+  each effective instant. Clock In opens the first interval. An accepted
+  context switch atomically closes the current interval and opens the next; it
+  never retroactively reclassifies an earlier interval.
+- Every department-scoped request is denied unless the server verifies: an
+  active linked employee; a current membership and matching
+  `membership_version`; the required explicit capability; the active
+  department context when the action belongs to paid work; and assignment or
+  resource scope. A role or membership string alone never authorizes a read or
+  mutation.
+- QT stores only the latest acknowledged Hub membership snapshot. A command's
+  `membership_version` must exactly match it. Missing, stale, out-of-order, or
+  deactivated membership state fails closed and enters reconciliation; it
+  invalidates affected signed offline packets and cached grants.
+- Owner/Admin capabilities are provisioned only to Naldo and Jason in V1 and
+  their sensitive reads are access-logged. Manager capabilities remain
+  unprovisioned; every Manager claim is denied in V1.
 - **Interim identity rule (unblocks the Sept 21 Track A target):** until Hub
   Phase 0's OTP lands, `employees` rows may be ADMIN-SEEDED (Naldo/Jason
   create the five people without OTP sign-in), or Flow B commands originating
@@ -112,10 +220,21 @@
   until an accepted clock-in exists (the gate, F4): pre-clock-in it returns
   only the non-sensitive summary (date, start time, crew names, prep notes);
   post-clock-in it returns exact addresses, customer contact, route order,
-  and job action affordances. Enforced server-side on every request; cached
-  screens cannot bypass; office/admin roles exempt; the audited owner
-  emergency override and the signed offline work packet ("Clock-in waiting
-  to sync") are the only exceptions.
+  and job action affordances only for a current Installer context,
+  `membership_version`, explicit installer capability, and assigned resource
+  scope. Enforced server-side on every request; cached screens cannot bypass.
+  The audited owner emergency override and signed offline work packet
+  ("Clock-in waiting to sync") are the only crew-gate exceptions.
+- Exact address, customer contact, route, design/load-list, private note, and
+  job-action fields are filtered server-side from the authenticated actor; an
+  `assigned_to` query parameter is a filter, never authorization.
+- Office and Owner/Admin work does not bypass the crew gate through a role or
+  secondary membership. It uses separate capability-gated office/admin
+  operations. Office access requires an accepted Clock In, current Office
+  context, explicit `office_job_operations` capability, and resource scope.
+  Owner/Admin access is limited to Naldo and Jason and is audited. A
+  multi-department employee switches context before performing work for a
+  different department.
 - `GET /api/ops/v1/jobs?assigned_to={employee_id}&date=` — job_id, customer
   display name, address (role-gated), lat/lng, window, assigned
   employee_ids[], budgeted_hours, canonical status, service type.
@@ -197,8 +316,8 @@ Semantics (state machine, QT-enforced):
 
 ## 6. Flow D: operational completion
 
-- `jobs/{id}/complete` stores a NON-financial state, names locked from
-  CODEX-PLAN §19: `field_work_completed` or
+- `jobs/{id}/complete` stores a NON-financial state using the contract-defined
+  values `field_work_completed` or
   `completion_submitted_for_office_review`. Emits `JobStatusChanged` back.
   NEVER touches invoices, deposits, or money. One canonical operation for
   PWA, Telegram, and office (extends the existing bot `completeInstall`).
@@ -221,7 +340,7 @@ Semantics (state machine, QT-enforced):
   `floor_true_up_cents`, bonuses[] (training +$4/hr, referral, manual
   adjustments), forfeitures[] (job, documented reason, employee response
   state), pay_mode, and the week-N hours / week-N-1 performance split.
-- **Display law (binding, CLAUDE-PLAN A3):** provisional renders EXACTLY as
+- **Display law (binding):** provisional renders EXACTLY as
   `Pending quality review` with its close date. Never earned/made/owed/paid,
   never in earned totals, exports, or leaderboards. The server supplies
   states and timestamps; the Hub never infers or computes them. Only
@@ -266,12 +385,19 @@ Semantics (state machine, QT-enforced):
   everyone else (Flow B clock-in/out; advertising's exclusion from attendance
   is repealed by this ruling). Placement Runs remain productivity sessions;
   the day clock is the hours record.
-- Hub reports pay inputs weekly: `AdvertisingWeekClosed` event per employee
-  per week: accepted placement count (verified placements only, voids
-  excluded), campaign breakdown, signs issued, signs reconciled
-  (issued - placed - returned), entity_version. The QT computes pay from the
-  COUNT; the sign-inventory reconciliation informs restock and loss review,
-  never a wage deduction (NY §193 applies to the ad crew too).
+- Advertising `paid_seconds` are the approved union of paid-day intervals whose
+  active department context is Advertising, excluding unpaid breaks. They
+  include authorized allocation pickup, loading, travel between placements,
+  placement work, offline recovery, and return reconciliation. Placement Run
+  duration is a productivity metric and never substitutes for paid seconds.
+- Hub reports pay inputs weekly through the `AdvertisingWeekClosed` event in
+  P11. The QT computes pay only from the accepted-and-acknowledged net pay
+  count. Inventory reports `signs_issued`, accepted sign placements,
+  `expected_back = signs_issued + signs_transferred_in -
+  signs_transferred_out - accepted_sign_placements`, returned signs, approved
+  damage/loss observations, transfers, and variance as distinct fields.
+  Inventory reconciliation informs restock and review and never changes or
+  deducts wages (NY §193 applies to the ad crew too).
 - Sign inventory ledger is Hub-owned (advertising domain): stock on hand,
   weekly issuance per person, placement decrements, week-end reconciliation.
 - Piece-rate pay basis requires its own written comp terms and WTPA notice,
@@ -295,120 +421,328 @@ feature-flagged. External Copilot CRM cancels only after schedule/time
 parity plus two clean weeks; YLL Call Copilot the codebase is preserved and
 renamed.
 
-## 9b. v1.3.0 amendments (accepted from CONTRACT-V1.3-PROPOSAL.md, 2026-08-07)
+## 9b. v1.3.0 canonical amendments
 
-Codex's P1-P15 proposal sections are ACCEPTED and normative as follows.
-Dispositions: P1-P5, P7-P15 accepted; P6 accepted with one clarification;
-P16 is the open-decision list and lives with DECISIONS.md. Where this section
-and the flows above differ in field naming, this section wins; semantics
-merge, never weaken.
+P1-P15 below are the complete normative amendments. P16 configuration status
+is recorded in this file. Historical proposal and decision files are not
+required to implement this contract. Where this section and earlier flows
+differ, this section wins; semantics merge and never weaken.
 
-- **P1 versions:** three values on every request/response and a health
-  surface: `contract_version`, `schema_version` (the shared JSON Schema
-  artifact's own version), `client_version`. Deploys fail on
-  contract/schema incompatibility; CI byte-compares canonical vs mirror
-  after canonical merge.
-- **P2 envelope:** the canonical mutation envelope and response are the
-  proposal's shapes (command_id, idempotency_key, **semantic_operation**
-  `employee:date:operation:entity` protecting the same human action across
-  channels, actor_employee_id, source, versions, device times,
-  client_sequence, effective_at_requested, offline_packet_id,
-  active_department_id + membership_version, gps_evidence, reason,
-  evidence_refs, correlation_id; response: canonical_operation_id,
-  command_status enum, effective_at, entity_version, review_flag,
-  error_code, duplicate_of_command_id). Add
-  `GET /api/ops/v1/commands/{command_id}` for post-timeout resolution.
-  Error-code enum = the union of section 1's list and the proposal's
-  additions (CONTRACT_VERSION_UNSUPPORTED, SCHEMA_VERSION_UNSUPPORTED,
-  ENTITY_VERSION_CONFLICT, IDENTITY_NOT_LINKED, MEMBERSHIP_STALE,
-  ACTIVE_DEPARTMENT_REQUIRED, CLOCK_REQUIRED, OFFLINE_PACKET_EXPIRED,
-  OFFLINE_PACKET_SCOPE_DENIED, EFFECTIVE_TIME_REVIEW_REQUIRED,
-  PLACEMENT_ACK_PENDING, INVENTORY_RECONCILIATION_REQUIRED,
-  PAY_PERIOD_LOCKED).
-- **P3 identity:** admin-seeded `crew_members` start Track A; QT never
-  creates or mutates Hub employees; owner-only
-  `POST /api/ops/v1/identity-links` with optimistic versioning; events
-  IdentityLinked/Changed/Unlinked; duplicate phone/Telegram/employee links
-  hard-fail into an owner review queue.
-- **P4 departments:** one `active_department_id` per paid shift; ClockIn
-  requires it plus membership_version;
-  `POST /api/ops/v1/me/department-context/switch`; switching during an open
-  break/segment/run defaults to reject-with-review until Naldo rules
-  (P16.2); DepartmentContextChanged event; no retroactive reclassification.
-- **P5 offline packets:** signed scoped `POST /api/ops/v1/me/offline-packets`
-  (employee, day, allowed operations, issued/expires, versions, nonce);
-  drift/GPS-age/sequence limits are P16.1 launch config; missing GPS
-  review-flags, never erases or fabricates; server persists device time,
-  receipt time, requested and chosen effective time, and the chooser.
-- **P6 time (accepted with clarification):** semantic operations clock_in,
-  break_start/end, arrive_job, depart_job, travel_start/end,
-  non_billable_start/end, clock_out. Unsegmented day time returns as
-  `unclassified_seconds`; the Hub never infers travel. CLARIFICATION
-  (preserves Naldo's drive-time ruling): travel remains PAID day time inside
-  the envelope; explicit travel ops or an approved classification rule
-  assign it; the unclassified residual exists to surface missed taps, not to
-  unpay time. Typed exceptions and correction-request endpoints as proposed;
-  locked periods adjust forward only. The six-year wage-record retention in
-  section 5 stands unchanged.
-- **P7 job facts:** assignment reads add budgeted_elapsed_hours,
-  planned_crew_size, budgeted_crew_hours, job_lead_employee_id,
-  assigned_crew[] with roles, design/load-list refs, notes, gate state,
-  source version. Pre-clock responses omit sensitive fields and action
-  tokens. Audited emergency override as specified.
-- **P8 completion:** two dimensions: `field_work_state`
-  (not_started | in_progress | field_work_completed) and
-  `completion_review_state` (not_submitted |
-  completion_submitted_for_office_review | accepted | needs_changes);
-  `depart_behavior` on the command; pinned material fields unchanged;
-  offline completion drafts with checksum media manifest and
-  durable-before-submit; events FieldWorkCompleted,
-  CompletionReviewChanged, JobDeparted; never financial.
-- **P9 quality and deactivation:** employee-readable quality-case API
-  (evidence, reason code, response state/deadline, reviewer, window close);
-  `GET /api/ops/v1/crew/{id}/deactivation-readiness` listing every open
-  item before deactivation; retained final-pay/audit records never deleted.
-- **P10 placement events:** PlacementAccepted / PlacementReversed
-  (/ PlacementAcceptanceCorrected) with the proposal's field list; batch
-  delivery with per-event acks; QT dedupes by event id; reconciliation read
-  comparing Hub vs QT totals by employee/campaign/week.
-- **P11 advertising weeks:** week states open ->
-  submitted_for_reconciliation -> ready_to_close -> closed -> adjusted;
-  close blocked while events/links/inventory unresolved;
-  AdvertisingWeekClosed carries the full proposed field list;
-  compensation config effective-dates the rates, initial values **250
-  cents per accepted placement, 1700 cents/hour floor**; QT computes and
-  returns unit pay, floor comparison, true-up, total, blockers; inventory
-  variance is never a wage deduction; door-hanger pay stays unconfigured
-  until ruled.
-- **P12 office metrics:** versioned effective-dated qualified-call formula;
-  stat reads expose numerator/denominator/exclusions/source-through/formula
-  version; sold_by uses immutable identity with an owner correction flow;
-  never name-matching.
-- **P13 digests:** four types (office, advertising, install, management);
-  canonical facts endpoint or event bundle per type/period with
-  source-through and versions; Hub composes and delivers; persisted digest
-  records with input versions, recipients, artifact checksum, delivery
-  state; admins receive all four; display law applies; scheduled delivery
-  has its own deadline/retry policy distinct from the 2-second command SLA.
-- **P14 payroll:** QT-owned readiness/blocker read, owner close/lock, raw
-  CSV generation, post-export adjustment listing; blockers as proposed; CSV
-  carries no provisional values, one row per pay line with stable ids and
-  types (hourly base, installer performance earned, advertising piece rate,
-  floor true-up, training bonus, referral bonus, manual adjustment);
-  vendor column mapping is an owner/payroll decision; QuickBooks out of V1.
-- **P15 observability:** stable event ids, at-least-once outbox with
-  idempotent consumers, DLQ metrics (depth, oldest age, operation, last
-  error) alerting through the QT bot, reconciliation jobs for every event
-  family, replay never duplicates effects.
+- **P1 versions:** every request, response, event, and health surface carries
+  `contract_version`, `schema_version`, and `client_version`. Deploys fail on
+  contract/schema incompatibility; CI byte-compares canonical and mirror.
+- **P2 envelope:** the complete request, response, status, review, and error
+  shapes are in sections 1.1 and 1.2. Every consequential mutation uses them.
+  `GET /api/ops/v1/commands/{command_id}` resolves post-timeout state.
+- **P3 identity:** admin-seeded `crew_members` may start Track A; QT never
+  creates or mutates Hub employees. Owner-only
+  `POST /api/ops/v1/identity-links` carries:
+
+  ```text
+  quote_crew_member_id
+  hub_employee_id
+  verified_phone_e164
+  telegram_user_id | null
+  reason
+  effective_at_requested
+  expected_entity_version
+  ```
+
+  `IdentityLinked`, `IdentityLinkChanged`, and `IdentityUnlinked` each carry
+  `quote_crew_member_id`, `hub_employee_id`, `phone_e164`, optional
+  `telegram_user_id`, `prior_link_version`, `entity_version`, `effective_at`,
+  `actor_employee_id`, reason, and correlation id. Duplicate phone, Telegram,
+  or employee links hard-fail into an owner review queue.
+- **P4 departments:** section 2's interval and authorization rules apply.
+  Clock In requires `active_department_id` plus `membership_version`.
+  `POST /api/ops/v1/me/department-context/switch` atomically changes the
+  current interval and emits `DepartmentContextChanged`. A switch during an
+  open break, segment, or Placement Run rejects with review until P16.2 is
+  ruled. No retroactive reclassification.
+- **P5 offline packets:** signed scoped
+  `POST /api/ops/v1/me/offline-packets` returns a packet containing:
+
+  ```text
+  employee_id
+  business_date
+  allowed_operations[]
+  allowed_entity_ids[]
+  issued_at
+  expires_at
+  contract_version
+  schema_version
+  membership_version
+  device_id
+  job_snapshot_versions[]
+  nonce
+  ```
+
+  Drift, GPS-age, and sequence limits are P16.1 launch configuration. Missing
+  GPS review-flags a command and never erases it or fabricates evidence. The
+  server persists device time, receipt time, requested effective time, chosen
+  effective time, and the policy/reviewer that selected it.
+
+  A packet may authorize an encrypted sensitive job snapshot only after an
+  accepted Clock In and current Installer context, membership version,
+  capability, assignment scope, and registered device all validate. The
+  snapshot manifest carries job/design/load-list entity versions, generation
+  time, expiry, and purge deadline. The Hub binds it to a non-exportable device
+  key and purges it on expiry, logout, account change, accepted department
+  switch, deactivation/revocation receipt, or the next app open after any of
+  those states. Until P16.1 sets and tests packet lifetime, device binding,
+  encryption, and purge behavior, offline sensitive-detail rendering is
+  disabled; non-sensitive summaries and advertising capture remain available.
+- **P6 time:** semantic operations are `clock_in`, `break_start`, `break_end`,
+  `arrive_job`, `depart_job`, `travel_start`, `travel_end`,
+  `non_billable_start`, `non_billable_end`, and `clock_out`. Unsegmented paid
+  day time returns as `unclassified_seconds`; the Hub never infers travel.
+  Travel remains paid day time inside the envelope, and explicit operations or
+  an approved classification rule assign it. The unclassified residual
+  surfaces missed taps; it does not unpay time.
+
+  ```text
+  time_exception_type =
+    forgotten_clock_out | open_break | open_segment | missed_tap | overlap |
+    duplicate | device_clock_drift | gps_missing | gps_poor_accuracy |
+    overnight_or_dst | active_department_mismatch | offline_packet_issue |
+    correction_request
+
+  correction_target_type =
+    day | break | segment | classification | department | effective_time
+  ```
+
+  `POST /api/ops/v1/me/time-correction-requests` carries `target_type`,
+  `target_id`, optional `requested_effective_at`, `requested_value`, reason,
+  and `evidence_refs[]`. Employee-scoped
+  `GET /api/ops/v1/me/time-correction-requests` and
+  `GET /api/ops/v1/me/time-correction-requests/{id}` return request id, target,
+  submitted values/time, state (`submitted` | `under_review` | `accepted` |
+  `partially_accepted` | `rejected` | `adjusted_forward`), safe resolution
+  reason, chosen effective time, resulting entity version, and any forward
+  adjustment reference. `TimeCorrectionRequested` and
+  `TimeCorrectionResolved` events carry the same employee-safe state. Owner-only
+  `POST /api/ops/v1/time-correction-requests/{id}/resolve` carries decision
+  (`accepted` | `partially_accepted` | `rejected`), chosen effective time,
+  before, after, reason, actor, and entity version. Locked periods adjust
+  forward only. Six-year retention in section 5 stands.
+- **P7 job facts:** assignment reads add `budgeted_elapsed_hours`,
+  `planned_crew_size`, `budgeted_crew_hours`, `job_lead_employee_id`,
+  `assigned_crew[]` with roles, design/load-list refs, notes, gate state, and
+  source version. Pre-clock responses omit sensitive fields and action tokens.
+  An audited emergency override carries `requester_employee_id`,
+  `approver_employee_id`, `affected_employee_id`, reason, `starts_at`,
+  `expires_at`, and `correlation_id`.
+- **P8 completion:** two independent dimensions:
+  `field_work_state` (`not_started` | `in_progress` |
+  `field_work_completed`) and `completion_review_state` (`not_submitted` |
+  `completion_submitted_for_office_review` | `accepted` | `needs_changes`).
+  `depart_behavior` is `depart_at_completion` (atomically close the actor's
+  open job segment and submit completion) or `keep_segment_open` (submit and
+  return an explicit open-segment warning). Pinned material fields remain.
+  Offline drafts use a checksum media manifest and durable-before-submit.
+  Events are `FieldWorkCompleted`, `CompletionReviewChanged`, and
+  `JobDeparted`; none is financial completion.
+- **P9 quality and deactivation:** an employee-readable quality case carries:
+
+  ```text
+  quality_case_id
+  job_id
+  state
+  quality_window_closes_at
+  evidence_refs[]
+  reason_code
+  responsibility_scope
+  employee_response_state
+  employee_response_deadline
+  reviewer_employee_id | null
+  final_event_version
+  ```
+
+  `GET /api/ops/v1/crew/{id}/deactivation-readiness` lists `open_clocks[]`,
+  `open_corrections[]`, `unclosed_pay_weeks[]`,
+  `provisional_quality_cases[]`, `pending_payroll_adjustments[]`,
+  `unacknowledged_placement_events[]`, `inventory_allocations[]`,
+  `dead_letter_commands[]`, and `identity_links[]`. Retained final-pay and
+  audit records are never deleted.
+- **P10 placement events:** event types are `PlacementAccepted`,
+  `PlacementReversed`, and `PlacementAcceptanceCorrected`. Every event carries:
+
+  ```text
+  event_id
+  event_type
+  placement_id
+  placement_entity_version
+  employee_id
+  identity_link_version
+  membership_version_at_capture
+  paid_day_envelope_id
+  advertising_context_interval_id
+  campaign_id
+  unit_type
+  business_date
+  effective_at
+  captured_at
+  hub_received_at
+  reviewer_employee_id | null
+  reason_code | null
+  inventory_event_id | null
+  contract_version
+  schema_version
+  correlation_id
+  ```
+
+  `PlacementReversed` carries `reverses_event_id` referencing the original
+  accepted event. `PlacementAcceptanceCorrected` carries `corrects_event_id`,
+  `prior_values`, and `corrected_values`.
+  `POST /api/ops/v1/advertising/placement-events/batch` returns per event:
+  `event_id`, status (`accepted` | `duplicate` | `rejected` |
+  `needs_review`), optional `canonical_operation_id`, optional
+  `duplicate_of_event_id`, optional error code, optional entity version,
+  optional `earning_business_date`, optional `compensation_config_version`,
+  and optional `piece_rate_cents_snapshot`. QT dedupes by event id.
+
+  QT acknowledges a placement as payable only after the linked paid-day
+  envelope and Advertising context interval cover `effective_at`, the employee
+  and membership version match, the unit is pay-enabled, and the acceptance is
+  otherwise valid. A Hub-accepted placement missing that linkage remains
+  `needs_review`, cannot enter `net_pay_count`, and blocks week close rather
+  than disappearing. On payable acknowledgment, QT derives the earning
+  business date and persists the effective compensation-config version and
+  piece-rate-cents snapshot. The Hub never supplies or computes the rate.
+  Reversal/correction applies an append-only delta against the original
+  snapshot; it never reprices the original event at today's rate. A correction
+  that validly changes the earning date records both old and new snapshots.
+  `GET /api/ops/v1/advertising/placement-reconciliation` groups by
+  `employee_id`, `campaign_id`, `week_start`, `week_end`, and `unit_type` and
+  returns Hub/QT accepted and reversed counts, difference, and
+  `source_through`.
+- **P11 advertising weeks:** states are `open` ->
+  `submitted_for_reconciliation` -> `ready_to_close` -> `closed` ->
+  `adjusted`. Close blocks on `placement_events_unacknowledged`,
+  `identity_link_unresolved`, or `inventory_reconciliation_incomplete`.
+  `AdvertisingWeekClosed` carries:
+
+  ```text
+  event_id
+  employee_id
+  week_start
+  week_end
+  timezone
+  entity_version
+  closed_by_employee_id
+  closed_at
+  approved_by_employee_id
+  approved_at
+  accepted_count
+  reversed_count
+  net_pay_count
+  campaign_unit_breakdown[]
+  signs_issued
+  signs_transferred_in
+  signs_transferred_out
+  signs_placed
+  signs_returned
+  approved_damage_or_loss
+  expected_back
+  actual_back
+  variance
+  source_event_high_water_marks[]
+  reconciliation_status
+  contract_version
+  schema_version
+  correlation_id
+  ```
+
+  Each campaign/unit item carries `campaign_id`, `unit_type`, accepted count,
+  reversed count, and net pay count. Those aggregate counts are reconciliation
+  claims, not authoritative rates or pay. QT rebuilds the payable count from
+  acknowledged event-level snapshots and blocks close on any mismatch.
+  Compensation config effective-dates the rates; initial values are **250 cents
+  per accepted sign placement** and a **1700 cents/hour floor**. QT returns
+  `rate_config_breakdown[]` (earning date/range, compensation-config version,
+  piece rate cents, net pay count, unit pay cents), aggregate `net_pay_count`,
+  `unit_pay_cents`, `floor_rate_cents_per_hour`, `paid_seconds`,
+  `floor_required_pay_cents`, `floor_true_up_cents`, `total_pay_cents`, state,
+  and blockers. Only acknowledged accepted sign placements enter pay.
+  Inventory variance is never a wage deduction. Door-hanger pay stays
+  unconfigured.
+
+  For one employee and America/New_York workweek, using the rate versions
+  effective on each work date:
+
+  ```text
+  unit_pay_cents =
+    sum(event_net_count x event_piece_rate_cents_snapshot)
+  floor_required_pay_cents =
+    ceil(sum(paid_seconds x effective_floor_rate_cents_per_hour) / 3600)
+  floor_true_up_cents = max(0, floor_required_pay_cents - unit_pay_cents)
+  total_pay_cents = unit_pay_cents + floor_true_up_cents
+  ```
+
+  All inputs and outputs are integers. The ceiling occurs once after summing
+  the effective-rate segments for the week so the floor is never rounded down.
+  Reversals or corrections after a closed/locked/exported period create a
+  forward adjustment that references the original event and rate snapshot;
+  they never mutate or reprice the exported period.
+  Overtime and blended-rate treatment remains disabled until P16 configuration
+  is approved; this formula does not authorize a pay flip before that gate.
+- **P12 office metrics:** qualified-call formula is versioned and
+  effective-dated. Stat reads expose numerator, denominator, exclusions,
+  source-through time, and formula version. Seller attribution uses immutable
+  identity and an owner correction flow, never name matching.
+- **P13 digests:** types are `office`, `advertising`, `install`, and
+  `management`. A canonical facts endpoint or event bundle per type/period
+  carries source-through time and versions. Hub composes and delivers.
+  Persisted digest records carry input versions, recipients, artifact
+  checksum, and delivery state. Naldo and Jason receive all four. The display
+  law applies; scheduled delivery has a separate deadline/retry policy from
+  the two-second command SLA.
+- **P14 payroll:** QT owns:
+
+  ```text
+  GET  /api/ops/v1/payroll/periods/{id}/readiness
+  POST /api/ops/v1/payroll/periods/{id}/close
+  POST /api/ops/v1/payroll/periods/{id}/exports
+  GET  /api/ops/v1/payroll/periods/{id}/adjustments
+  ```
+
+  Blocking reason codes are `unapproved_time`, `open_clock`, `open_break`,
+  `open_job_segment`, `unresolved_quality_state`,
+  `placement_acknowledgment_mismatch`, `advertising_week_mismatch`,
+  `identity_issue`, `compensation_config_missing`, and `pending_adjustment`.
+  A blocker record carries code, employee id, affected entity id, detected
+  time, safe description, and resolution state. Only Naldo or Jason may close
+  or override with an audited reason.
+
+  CSV carries no provisional value. Each pay-line row has a stable
+  `pay_line_id`. Valid pay line types are `hourly_base`,
+  `installer_performance_earned`, `advertising_piece_rate`, `floor_true_up`,
+  `training_bonus`, `referral_bonus`, `manual_adjustment`, and
+  `employee_subtotal`. The required per-employee subtotal row uses
+  `line_type = employee_subtotal`, a stable id
+  `subtotal:{employee_id}:{period_start}:{period_end}`, blank
+  quantity/unit/rate/reference fields, and `amount_cents` equal to that
+  employee's included pay-line sum. Vendor mapping and overtime/blended-rate
+  treatment remain owner/payroll decisions; QuickBooks is out of V1.
+- **P15 observability:** every event has stable event id, aggregate/entity
+  version, occurred/effective time, contract/schema version, actor/source, and
+  correlation id. Outbox delivery is at-least-once with idempotent consumers.
+  DLQ metrics include depth, oldest age, operation, and last error and alert
+  through the QT bot. Reconciliation runs for every event family. Replay never
+  duplicates business effects.
 
 ### v1.3.0 configuration rulings (Naldo, 2026-08-07; P16 items 5, 6, 8, 10)
 
 - **Door hangers (P16.5): pay OFF.** No door-hanger pay unit is configured;
   door-hanger placements never enter a pay count or an
-  `AdvertisingWeekClosed` net count until a later ruling. Capture may exist
-  under the protective residential-privacy default. Any door-hanger pay field
-  stays null, and the engine treats a configured-null unit as
-  "feature disabled", never as zero-value work.
+  `AdvertisingWeekClosed` net count until a later ruling. The protective
+  residential-privacy default lets the capturing employee see exact evidence
+  only while the placement is local, pending, under review, or inside its
+  correction window. After verification, exact address, coordinates, and
+  photos are Naldo/Jason-only; employee maps aggregate/round them. Exact
+  residential evidence never appears on internal-public maps, leaderboards, or
+  digests. Any door-hanger pay field stays null, and the engine treats a
+  configured-null unit as "feature disabled", never as zero-value work.
 - **Completion media (P16.6): NOT REQUIRED, three prompts.** The completion
   command never blocks on `photo_refs[]`. The surface prompts at most three
   times, then completes without media. The same three-attempt cadence is the
@@ -419,13 +753,34 @@ merge, never weaken.
   escalation policy remains open.
 - **Payroll CSV (P16.10): generic vendor-neutral format for now.** One row
   per pay line, UTF-8, header row, no provisional values:
-  `employee_id, employee_name, period_start, period_end, line_type,
-  description, job_or_campaign_ref, quantity, unit, rate_cents, amount_cents,
-  state, notes`, with a per-employee subtotal row. `line_type` enum:
+  `pay_line_id, employee_id, employee_name, period_start, period_end,
+  line_type, description, job_or_campaign_ref, quantity, unit, rate_cents,
+  amount_cents, state, notes`, with the P14 per-employee subtotal row.
+  `line_type` enum:
   `hourly_base`, `installer_performance_earned`, `advertising_piece_rate`,
-  `floor_true_up`, `training_bonus`, `referral_bonus`, `manual_adjustment`.
+  `floor_true_up`, `training_bonus`, `referral_bonus`, `manual_adjustment`,
+  `employee_subtotal`.
   Vendor column mapping and OT/blended-rate treatment stay open for the
   payroll professional; QuickBooks remains out of V1.
+
+### v1.3.0 unresolved launch configuration
+
+These values are intentionally absent and disable only their named behavior:
+
+1. Offline-packet lifetime, device-clock drift, GPS age/accuracy, and allowed
+   operations.
+2. Department switching during an open Placement Run, job segment, or break,
+   plus approval rights. Safe default: reject with review.
+3. Installer travel-classification and missed-tap thresholds.
+4. Placement rejection/reversal reason codes, reviewer SLA, and advertising
+   week-close roles.
+5. Qualified-call formula and seller-credit correction policy.
+6. Digest escalation after configured retries.
+7. Deactivated-employee self-service duration.
+8. Payroll overtime and blended-rate treatment.
+
+An unresolved configuration disables only its affected behavior. Clients must
+not infer a value, silently choose a default, or weaken a safety gate.
 
 **Shared schema artifact path (planned, Phase 0):**
 `yll-quote-tool/docs/context/ops-contract-schema/` (generated from the
@@ -438,7 +793,7 @@ against it and the Hub vendors the same files byte-identically).
    or WITH the implementation.
 2. Both assistants named reviewers; a human merges.
 3. Money movement, ownership changes, or display-law changes need Naldo's
-   line in DECISIONS.md.
+   explicit approval recorded in both paired PRs.
 4. Version bumps: patch for additive fields, minor for new endpoints, major
    for semantics. Both repos must reference the identical version before
    either builds against a change.
