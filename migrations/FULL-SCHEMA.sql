@@ -1784,3 +1784,97 @@ drop trigger if exists bot_users_updated_at on public.bot_users;
 create trigger bot_users_updated_at
   before update on public.bot_users
   for each row execute function public.bot_users_set_updated_at();
+
+-- ---------------------------------------------------------------------
+-- crew_members (2026-08-07, migrations/2026-08-07-crew-members.sql +
+-- migrations/2026-08-07-crew-members-name-unique.sql) — the P4P / Operations
+-- Hub identity + pay-config cache. `hub_employee_id` stays nullable until the
+-- Hub's OTP auth ships and backfills it. `telegram_user_id` links to
+-- bot_users when known. RLS ENABLED, ZERO POLICIES — service-role only.
+-- Folded into this canonical file at the S57 wrap review (was missing here
+-- even though both migrations were already applied to prod — a fresh
+-- onboarding DB built from this file alone would have had no crew_members
+-- table at all).
+-- ---------------------------------------------------------------------
+create table if not exists public.crew_members (
+  id               uuid primary key default gen_random_uuid(),
+  hub_employee_id  uuid,
+  telegram_user_id text,
+  display_name     text not null,
+  base_rate_cents  integer not null,
+  in_p4p_pool      boolean not null default false,
+  pay_mode         text not null default 'hourly' check (pay_mode in ('hourly', 'shadow', 'p4p')),
+  language         text not null default 'en',
+  active           boolean not null default true,
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now()
+);
+
+create unique index if not exists crew_members_hub_employee_id_key
+  on public.crew_members (hub_employee_id) where hub_employee_id is not null;
+
+create unique index if not exists crew_members_telegram_user_id_key
+  on public.crew_members (telegram_user_id) where telegram_user_id is not null;
+
+create unique index if not exists crew_members_display_name_key
+  on public.crew_members (lower(trim(display_name)));
+
+alter table public.crew_members enable row level security;
+
+create or replace function public.crew_members_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists crew_members_updated_at on public.crew_members;
+create trigger crew_members_updated_at
+  before update on public.crew_members
+  for each row execute function public.crew_members_set_updated_at();
+
+-- ---------------------------------------------------------------------
+-- shifts (2026-08-07, migrations/2026-08-07-shifts.sql) — the canonical
+-- day-level clock ledger for Operations Hub Flow B. `source` records how the
+-- shift was opened; `close_source` how it was closed (nullable — null while
+-- open); they can differ (opened via the Telegram bot, closed by an office
+-- correction, say). The partial unique index is the real idempotency
+-- guarantee — at most one open shift per person, enforced by the DB, not an
+-- application check. RLS ENABLED, ZERO POLICIES — service-role only, fails
+-- closed until the Flow B routes and policies ship. Folded into this
+-- canonical file at the S57 wrap review (see the crew_members note above —
+-- same gap, same fix).
+-- ---------------------------------------------------------------------
+create table if not exists public.shifts (
+  id              uuid primary key default gen_random_uuid(),
+  crew_member_id  uuid not null references public.crew_members(id),
+  clock_in_at     timestamptz not null default now(),
+  clock_out_at    timestamptz,
+  source          text not null check (source in ('pwa', 'telegram', 'office', 'system')),
+  close_source    text check (close_source in ('pwa', 'telegram', 'office', 'system')),
+  device_time     timestamptz,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
+);
+
+create unique index if not exists shifts_one_open_per_person
+  on public.shifts (crew_member_id) where clock_out_at is null;
+
+create index if not exists shifts_crew_member_id_idx
+  on public.shifts (crew_member_id);
+
+alter table public.shifts enable row level security;
+
+create or replace function public.shifts_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists shifts_updated_at on public.shifts;
+create trigger shifts_updated_at
+  before update on public.shifts
+  for each row execute function public.shifts_set_updated_at();

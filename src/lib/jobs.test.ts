@@ -188,7 +188,13 @@ describe('createJobFromQuote', () => {
       expect(inserts.jobs[0]).toMatchObject({
         budgeted_hours: null,
         labor_revenue_cents: null,
-        rates_are_placeholder: true,
+        // No estimate was computed at all (missing geometry), so nothing here
+        // is a "placeholder rate" needing a future recompute — it needs a
+        // full re-estimate instead. S57 fix: this used to hard-code `true`
+        // regardless, which would have wrongly swept this job into any future
+        // rate-recompute query alongside jobs that genuinely used placeholder
+        // rates.
+        rates_are_placeholder: false,
       });
       expect(warn).toHaveBeenCalledWith(
         'createJobFromQuote: budgeted-hours estimate skipped for quote quote-1 (service_type=permanent).',

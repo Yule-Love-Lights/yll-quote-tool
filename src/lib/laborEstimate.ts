@@ -250,7 +250,13 @@ function sanitizePermanentBistroBlock(value: unknown): QuoteInputs['permanentBis
     ...(integerOrZero(value.poles) > 0 ? { poles: integerOrZero(value.poles) } : {}),
     ...(bistro.length > 0 ? { bistro } : {}),
   };
-  return Object.keys(permanentBistro).length > 0 ? permanentBistro : {};
+  // Matches sanitizeEventBlock's contract exactly: an empty block is "no
+  // saved geometry", not "a real zero-quantity job" — undefined, not {}. `{}`
+  // is truthy, so sanitizeQuoteInputs' `permanentBistro === undefined` guard
+  // would otherwise let an empty block sail through as a confidently-priced
+  // $0/0-hour estimate instead of the intended null (unknown, don't
+  // estimate). Caught in the S57 wrap review.
+  return Object.keys(permanentBistro).length > 0 ? permanentBistro : undefined;
 }
 
 function sanitizeQuoteInputs(serviceType: ServiceType, value: unknown): QuoteInputs | null {
