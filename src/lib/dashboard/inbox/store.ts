@@ -96,6 +96,16 @@ export type IngestPlan = {
 // stays skipped as noise (a cold outbound Gmail/GHL touch is not a lead we owe
 // a reply to). The item auto-resolves to 'handled', so it anchors the follow-up
 // without entering the operator's open inbox list.
+//
+// ACCEPTED TRADEOFF (#222 pre-merge review): this also covers SENT legacy_rebook
+// ("YLL Neighbor") quotes. Today that is 2 rows. But the Neighbor pool is ~114-124
+// quotes designed to go out as a deliberate send WAVE (#155/#157) — if a scripted
+// wave ever sends them faster than the 5-minute cron can observe any of them as a
+// draft, each one mints a follow-up in a single tick and lands in the due-today
+// strip at once. Accepted rather than special-cased here: a quote we actually sent
+// genuinely is owed a follow-up, and the alternative (teaching this pure,
+// source-generic reducer about a quote-specific flag) is worse. If that wave is
+// ever scripted, stagger the sends or cap follow-up creation per reconcile run.
 const TRACKS_OUTBOUND_FIRST_OBSERVATION: ReadonlySet<InboxSource> = new Set<InboxSource>(['quotetool']);
 
 /**
