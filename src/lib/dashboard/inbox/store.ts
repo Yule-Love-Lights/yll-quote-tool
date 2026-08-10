@@ -626,9 +626,12 @@ export type MarkHandledResult = { ok: true; target: HandledTarget } | { ok: fals
 /**
  * Stamp an item handled locally FIRST (attribution never depends on the external
  * write-back), and return the coordinates the route needs to mark the source
- * read. Uses a status guard so two operators can't double-apply.
+ * read. Uses a status guard so two operators can't double-apply. `operatorId`
+ * must be a real auth.users uuid, or null — inbox_items.handled_by is a
+ * nullable `uuid` column ("NULL when system auto-resolved" per its schema
+ * comment); never pass a display name/email string here.
  */
-export async function markItemHandledLocal(itemId: string, operatorId: string, now: Date): Promise<MarkHandledResult> {
+export async function markItemHandledLocal(itemId: string, operatorId: string | null, now: Date): Promise<MarkHandledResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const from = await priorStateOf(sb, itemId);
@@ -656,7 +659,9 @@ export async function markItemHandledLocal(itemId: string, operatorId: string, n
   };
 }
 
-export async function dismissItem(itemId: string, operatorId: string, now: Date): Promise<{ ok: boolean; error?: string }> {
+/** `operatorId` must be a real auth.users uuid, or null — see markItemHandledLocal's
+ *  doc comment; inbox_items.handled_by never accepts a display name/email string. */
+export async function dismissItem(itemId: string, operatorId: string | null, now: Date): Promise<{ ok: boolean; error?: string }> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const from = await priorStateOf(sb, itemId);
@@ -1400,10 +1405,12 @@ export async function listInWorks(limit = 200): Promise<InWorksResult> {
 }
 
 /** Mark an item completed: capture prior state, stamp status + handled fields,
- *  clear followed_up_at, and write a detailed activity log entry. */
+ *  clear followed_up_at, and write a detailed activity log entry. `operatorId`
+ *  must be a real auth.users uuid, or null — see markItemHandledLocal's doc
+ *  comment; inbox_items.handled_by never accepts a display name/email string. */
 export async function markItemCompleted(
   itemId: string,
-  operatorId: string,
+  operatorId: string | null,
   now: Date,
 ): Promise<{ ok: boolean; error?: string }> {
   const sb = getSupabaseServiceClient();
