@@ -166,6 +166,10 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
           customerEmail: q.customer_email ?? null,
           suppression: decision.suppression,
         });
+        // Close any stale pending quote_sent_no_reply row left over from before
+        // the suppression rule existed, but keep this counted as one
+        // suppression event instead of double-counting it as a close too.
+        await closeFollowUp(res.itemId, FOLLOWUP_REASONS.quoteSentNoReply);
         followUpsSuppressed++;
       } else if (res.itemId && decision.kind === 'close') {
         if ((await closeFollowUp(res.itemId, decision.reason)) > 0) followUpsClosed++;

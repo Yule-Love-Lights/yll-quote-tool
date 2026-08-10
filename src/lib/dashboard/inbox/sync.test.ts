@@ -302,6 +302,7 @@ describe('runQuoteToolReconcile — orphan follow-up sweep wiring (#183 BUG 3)',
       },
     ]);
     ingestTouchMock.mockResolvedValue(OK_RESULT);
+    closeFollowUpMock.mockResolvedValue(0);
     sweepOrphanedFollowUpsMock.mockResolvedValue(0);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
@@ -310,7 +311,9 @@ describe('runQuoteToolReconcile — orphan follow-up sweep wiring (#183 BUG 3)',
 
       expect(summary.followUpsCreated).toBe(0);
       expect(summary.followUpsSuppressed).toBe(1);
+      expect(summary.followUpsClosed).toBe(0);
       expect(ensureFollowUpMock).not.toHaveBeenCalled();
+      expect(closeFollowUpMock).toHaveBeenCalledWith('item-1', 'quote_sent_no_reply');
       expect(warnSpy).toHaveBeenCalledWith(
         '[inbox] quotetool follow-up suppressed for internal recipient:',
         expect.objectContaining({
@@ -322,5 +325,120 @@ describe('runQuoteToolReconcile — orphan follow-up sweep wiring (#183 BUG 3)',
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  it('closes an already-pending internal-recipient follow-up without double-counting it as closed (#220 live quote 1262)', async () => {
+    listQuotesForDashboardMock.mockResolvedValue([
+      {
+        id: 'q1262',
+        customer_name: 'Yule Love Lights',
+        customer_email: 'sales@mail.yulelovelights.com',
+        customer_phone: null,
+        total: 348,
+        created_at: '2026-08-06T10:00:00Z',
+        quote_sent_at: '2026-08-06T11:00:00Z',
+        customer_approved_at: null,
+        deposit_paid_at: null,
+        homeworks_sent_at: null,
+        homeworks_signed_at: null,
+        highlevel_contact_id: null,
+        service_type: null,
+        quote_number: 1262,
+      },
+    ]);
+    ingestTouchMock.mockResolvedValue(OK_RESULT);
+    closeFollowUpMock.mockResolvedValue(1);
+    sweepOrphanedFollowUpsMock.mockResolvedValue(0);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const summary = await runQuoteToolReconcile(new Date('2026-08-10T12:00:00Z'));
+
+      expect(summary.followUpsCreated).toBe(0);
+      expect(summary.followUpsSuppressed).toBe(1);
+      expect(summary.followUpsClosed).toBe(0);
+      expect(ensureFollowUpMock).not.toHaveBeenCalled();
+      expect(closeFollowUpMock).toHaveBeenCalledTimes(1);
+      expect(closeFollowUpMock).toHaveBeenCalledWith('item-1', 'quote_sent_no_reply');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('stays idempotent on a second suppress pass for the same internal quote (#220)', async () => {
+    listQuotesForDashboardMock.mockResolvedValue([
+      {
+        id: 'q1262',
+        customer_name: 'Yule Love Lights',
+        customer_email: 'sales@mail.yulelovelights.com',
+        customer_phone: null,
+        total: 348,
+        created_at: '2026-08-06T10:00:00Z',
+        quote_sent_at: '2026-08-06T11:00:00Z',
+        customer_approved_at: null,
+        deposit_paid_at: null,
+        homeworks_sent_at: null,
+        homeworks_signed_at: null,
+        highlevel_contact_id: null,
+        service_type: null,
+        quote_number: 1262,
+      },
+    ]);
+    ingestTouchMock.mockResolvedValue(OK_RESULT);
+    closeFollowUpMock.mockResolvedValueOnce(1).mockResolvedValueOnce(0);
+    sweepOrphanedFollowUpsMock.mockResolvedValue(0);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const first = await runQuoteToolReconcile(new Date('2026-08-10T12:00:00Z'));
+      const second = await runQuoteToolReconcile(new Date('2026-08-10T12:05:00Z'));
+
+      expect(first.followUpsSuppressed).toBe(1);
+      expect(first.followUpsClosed).toBe(0);
+      expect(second.followUpsSuppressed).toBe(1);
+      expect(second.followUpsClosed).toBe(0);
+      expect(closeFollowUpMock).toHaveBeenNthCalledWith(1, 'item-1', 'quote_sent_no_reply');
+      expect(closeFollowUpMock).toHaveBeenNthCalledWith(2, 'item-1', 'quote_sent_no_reply');
+      expect(ensureFollowUpMock).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('still creates a quote_sent_no_reply follow-up for a real customer quote (#220 regression guard)', async () => {
+    listQuotesForDashboardMock.mockResolvedValue([
+      {
+        id: 'q-real',
+        customer_name: 'Yelena Nossa',
+        customer_email: 'yelena.nossa@gmail.com',
+        customer_phone: null,
+        total: 1200,
+        created_at: '2026-08-06T10:00:00Z',
+        quote_sent_at: '2026-08-06T11:00:00Z',
+        customer_approved_at: null,
+        deposit_paid_at: null,
+        homeworks_sent_at: null,
+        homeworks_signed_at: null,
+        highlevel_contact_id: null,
+        service_type: null,
+        quote_number: 2201,
+      },
+    ]);
+    ingestTouchMock.mockResolvedValue(OK_RESULT);
+    sweepOrphanedFollowUpsMock.mockResolvedValue(0);
+
+    const summary = await runQuoteToolReconcile(new Date('2026-08-10T12:00:00Z'));
+
+    expect(summary.followUpsCreated).toBe(1);
+    expect(summary.followUpsSuppressed).toBe(0);
+    expect(summary.followUpsClosed).toBe(0);
+    expect(ensureFollowUpMock).toHaveBeenCalledWith({
+      inboxItemId: 'item-1',
+      contactId: 'contact-1',
+      reason: 'quote_sent_no_reply',
+      sentAt: new Date('2026-08-06T11:00:00Z'),
+      afterDays: 3,
+    });
+    expect(closeFollowUpMock).not.toHaveBeenCalled();
   });
 });
