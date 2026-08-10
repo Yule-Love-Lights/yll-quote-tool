@@ -426,7 +426,15 @@ export async function createJobFromQuote(quoteId: string): Promise<JobRow | null
       line_items: quote.result?.lineItems ?? null,
       budgeted_hours: estimate?.budgetedHours ?? null,
       labor_revenue_cents: estimate?.laborRevenueCents ?? null,
-      rates_are_placeholder: true,
+      // Only true when an estimate was actually computed WITH placeholder
+      // rates. A job with no estimate at all (missing/malformed geometry —
+      // the console.warn case above) has nothing placeholder about it; it
+      // needs a full re-estimate once the underlying data issue is fixed,
+      // not a rate recompute. Keeping these two "needs attention" reasons
+      // distinguishable is what makes a future `WHERE rates_are_placeholder`
+      // recompute query correct instead of silently skipping (false) or
+      // wrongly including (stuck at true) the no-estimate case.
+      rates_are_placeholder: estimate != null,
       ...(jobNumber != null ? { job_number: jobNumber } : {}),
     })
     .select(JOB_SELECT)

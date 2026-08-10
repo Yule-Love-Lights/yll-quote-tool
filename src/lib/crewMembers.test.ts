@@ -128,6 +128,15 @@ function makeDb() {
           if (val === null) filtered = filtered.filter((row) => row[col] === null);
           return builder;
         },
+        // Case-insensitive exact match (no wildcards used against this column
+        // in real code) — mirrors real Postgres ilike closely enough for the
+        // race-recovery re-fetch this mock supports.
+        ilike: (col: keyof Row, val: unknown) => {
+          filtered = filtered.filter(
+            (row) => String(row[col]).toLowerCase() === String(val).toLowerCase(),
+          );
+          return builder;
+        },
         order: () => Promise.resolve({ data: filtered, error: stateRef.current.error }),
         maybeSingle: () => Promise.resolve({ data: filtered[0] ?? null, error: stateRef.current.error }),
         insert: (payload: Record<string, unknown>) => {
@@ -169,6 +178,28 @@ function makeDb() {
                     maybeSingle: () => Promise.resolve({ data: null, error: stateRef.current.error }),
                   }),
                 };
+              }
+
+              if (payload.display_name !== undefined) {
+                const collision = stateRef.current.rows.find(
+                  (row, i) =>
+                    i !== idx &&
+                    normalizeDisplayName(row.display_name) === normalizeDisplayName(String(payload.display_name)),
+                );
+                if (collision) {
+                  return {
+                    select: () => ({
+                      maybeSingle: () =>
+                        Promise.resolve({
+                          data: null,
+                          error: {
+                            code: '23505',
+                            message: 'duplicate key value violates unique constraint "crew_members_display_name_key"',
+                          },
+                        }),
+                    }),
+                  };
+                }
               }
 
               const existing = stateRef.current.rows[idx];
@@ -351,18 +382,23 @@ describe('insertCrewMember', () => {
     ]);
   });
 
-  it('surfaces a duplicate-display-name unique-constraint failure on retry', async () => {
-    await expect(
-      insertCrewMember({
-        displayName: ' Little James ',
-        baseRateCents: 1700,
-        inP4pPool: true,
-        payMode: 'shadow',
-      }),
-    ).resolves.toMatchObject({
-      id: 'generated-4',
-      displayName: 'Little James',
+  it('recovers the winner of a concurrent double insert instead of throwing (S57 fix)', async () => {
+    // Was: the second call rejected with the raw Postgres unique-violation
+    // error. A technical-lens session review caught that this is the EXACT
+    // race migrations/2026-08-07-crew-members-name-unique.sql names as its
+    // own threat model ("two concurrent calls to crewMembers.ts's insert
+    // path with no id... could each create a second row for the same
+    // human") — and shifts.ts's clockIn, written the same session, already
+    // handles the identical shape correctly. This is the sibling-guard
+    // parity fix: insertCrewMember now catches the unique violation and
+    // re-fetches the winner, same as clockIn does.
+    const first = await insertCrewMember({
+      displayName: ' Little James ',
+      baseRateCents: 1700,
+      inP4pPool: true,
+      payMode: 'shadow',
     });
+    expect(first).toMatchObject({ id: 'generated-4', displayName: 'Little James' });
 
     await expect(
       insertCrewMember({
@@ -371,7 +407,9 @@ describe('insertCrewMember', () => {
         inP4pPool: true,
         payMode: 'shadow',
       }),
-    ).rejects.toThrow('insertCrewMember: duplicate key value violates unique constraint "crew_members_display_name_key"');
+    ).resolves.toEqual(first);
+
+    // No second row was created — the race was recovered, not duplicated.
     expect(stateRef.current.rows).toHaveLength(4);
   });
 
@@ -451,5 +489,21 @@ describe('updateCrewMember', () => {
         displayName: 'Missing',
       }),
     ).rejects.toThrow('updateCrewMember: no row found for id missing-id');
+  });
+
+  it('rejects a rename to another crew member\'s name with a clear conflict error, never returning their row (S57 fix)', async () => {
+    // Unlike insertCrewMember's race (recover the SAME person's winning row),
+    // a rename collision here is a genuine conflict between two DIFFERENT
+    // people — CREW_1 ("SonSon") tries to rename to CREW_2's ("Big James")
+    // name. Silently "recovering" by returning CREW_2's row would hand back
+    // someone else's pay data as if it were this update's result; the only
+    // safe behavior is a clear, specific rejection.
+    await expect(updateCrewMember('crew-1', { displayName: 'Big James' })).rejects.toThrow(
+      'updateCrewMember: display name "Big James" is already in use by another crew member',
+    );
+
+    // Nothing was mutated by the rejected attempt.
+    const untouched = stateRef.current.rows.find((row) => row.id === 'crew-1');
+    expect(untouched?.display_name).toBe('SonSon');
   });
 });
