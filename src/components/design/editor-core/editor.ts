@@ -19,15 +19,52 @@ import { renderMiniArea } from "./miniArea";
 import { preloadAssets } from "./assets";
 import { renderYardstick, pxPerFoot, yardstickLabel } from "./yardstick";
 import { DEFAULT_KEYMAP, resolveAction, type KeyMap } from "./keymap";
+import {
+  WREATH_SIZES,
+  BOW_SIZES,
+  GARLAND_SIZES,
+  SPRITZER_SIZES,
+  POLE_HEIGHTS,
+  sizePresetLabel,
+  formatRawSize,
+  offPresetSizeSuffix,
+} from "./sizePresets";
+import { isLineDrawContext } from "./drawContext";
 
 // Default real-world width for newly-placed custom uploads — about 3 feet,
 // big enough to spot on the photo, small enough to resize down with the
 // Transformer if needed. Aspect is preserved from the natural image.
 const DEFAULT_CUSTOM_WIDTH_IN = 36;
 
-// Pole height options (in inches) and labels (in feet for the UI).
-const POLE_HEIGHTS = [96, 120, 144, 180] as const;
 type PoleBaseType = PoleItem["baseType"];
+
+// Renders a Size/Height quick-pick row's buttons (#202 F1): the 3 kept
+// presets from `options`, PLUS -- when `values` is a single value that isn't
+// one of them -- a 4th button showing the real stored number, marked active.
+// That 4th button is how an off-preset item (an old design's dropped tier,
+// a stale saved default loaded via applyDefaultsForCurrentType, or anything
+// reached via the resize handles) stays visible, labeled, and clickable-back-
+// to within the session, instead of the row rendering three unlit buttons
+// with no indication of the item's actual size. Every button also gets a
+// `title` with the real number, so hovering any preset confirms its exact
+// inches/feet.
+// `values` mirrors offPresetSizeSuffix (pass [tool.xSizeIn] for a single new-
+// item value, or a bulk-edit panel's uniq'd `sharedSize`/`sharedHeight` --
+// a mixed multi-select is `values.length > 1`, which gets no 4th button
+// since there's no one number to show). `attr` picks the data attribute the
+// existing click handlers already read (data-s for decor, data-h for poles)
+// -- this only changes what's rendered into the row, not how clicks are
+// wired: each render site's `querySelectorAll("#<row-id> button")` already
+// wires every button in the container, this 4th one included.
+function sizeButtons(options: readonly number[], values: number[], attr: "data-s" | "data-h", unit: "in" | "ft" = "in"): string {
+  const isActive = (v: number) => values.length === 1 && values[0] === v;
+  const preset = options
+    .map((v) => `<button ${attr}="${v}" class="${isActive(v) ? "active" : ""}" title="${formatRawSize(v, unit)}">${sizePresetLabel(options, v)}</button>`)
+    .join("");
+  if (values.length !== 1 || sizePresetLabel(options, values[0]) !== null) return preset;
+  const raw = formatRawSize(values[0], unit);
+  return preset + `<button ${attr}="${values[0]}" class="active" title="${raw}">${raw}</button>`;
+}
 
 const BULB_TYPES: { id: BulbType; label: string }[] = [
   { id: "c9", label: "C9" },
@@ -116,11 +153,6 @@ type ToolState = {
   poleHeightIn: number;
   poleBaseType: PoleBaseType;
 };
-
-const WREATH_SIZES = [24, 36, 48, 60];
-const BOW_SIZES = [12, 18, 24, 36, 48];
-const GARLAND_SIZES = [6, 9, 12, 18, 24];
-const SPRITZER_SIZES = [16, 24, 36, 48];
 
 export async function renderEditor(
   root: HTMLElement,
@@ -1526,9 +1558,9 @@ export async function renderEditor(
         <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">None for permanent in-ground installs or attaching to existing poles/buildings.</div>
       </section>
       <section>
-        <h3>Height</h3>
+        <h3>Height${offPresetSizeSuffix(POLE_HEIGHTS, [tool.poleHeightIn], "ft")}</h3>
         <div class="spacing-row" id="pole-heights">
-          ${POLE_HEIGHTS.map((h) => `<button data-h="${h}" class="${tool.poleHeightIn === h ? "active" : ""}">${h / 12} ft</button>`).join("")}
+          ${sizeButtons(POLE_HEIGHTS, [tool.poleHeightIn], "data-h", "ft")}
         </div>
       </section>
       ${(() => {
@@ -1741,9 +1773,9 @@ export async function renderEditor(
       </section>
       ${tool.decorType === "wreath" ? `
       <section>
-        <h3>Size (in)</h3>
+        <h3>Size${offPresetSizeSuffix(WREATH_SIZES, [tool.wreathSizeIn])}</h3>
         <div class="spacing-row" id="wreath-sizes">
-          ${WREATH_SIZES.map((s) => `<button data-s="${s}" class="${tool.wreathSizeIn === s ? "active" : ""}">${s}"</button>`).join("")}
+          ${sizeButtons(WREATH_SIZES, [tool.wreathSizeIn], "data-s")}
         </div>
       </section>
       <section>
@@ -1765,9 +1797,9 @@ export async function renderEditor(
       </section>
       ` : tool.decorType === "bow" ? `
       <section>
-        <h3>Size (in)</h3>
+        <h3>Size${offPresetSizeSuffix(BOW_SIZES, [tool.bowSizeIn])}</h3>
         <div class="spacing-row" id="bow-sizes">
-          ${BOW_SIZES.map((s) => `<button data-s="${s}" class="${tool.bowSizeIn === s ? "active" : ""}">${s}"</button>`).join("")}
+          ${sizeButtons(BOW_SIZES, [tool.bowSizeIn], "data-s")}
         </div>
       </section>
       <section>
@@ -1775,9 +1807,9 @@ export async function renderEditor(
       </section>
       ` : tool.decorType === "garland" ? `
       <section>
-        <h3>Size (in)</h3>
+        <h3>Size${offPresetSizeSuffix(GARLAND_SIZES, [tool.garlandSizeIn])}</h3>
         <div class="spacing-row" id="garland-sizes">
-          ${GARLAND_SIZES.map((s) => `<button data-s="${s}" class="${tool.garlandSizeIn === s ? "active" : ""}">${s}"</button>`).join("")}
+          ${sizeButtons(GARLAND_SIZES, [tool.garlandSizeIn], "data-s")}
         </div>
         <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Thickness of the greenery rope on the photo.</div>
       </section>
@@ -1797,9 +1829,9 @@ export async function renderEditor(
       </section>
       ` : `
       <section>
-        <h3>Size (in)</h3>
+        <h3>Size${offPresetSizeSuffix(SPRITZER_SIZES, [tool.spritzerSizeIn])}</h3>
         <div class="spacing-row" id="spritzer-sizes">
-          ${SPRITZER_SIZES.map((s) => `<button data-s="${s}" class="${tool.spritzerSizeIn === s ? "active" : ""}">${s}"</button>`).join("")}
+          ${sizeButtons(SPRITZER_SIZES, [tool.spritzerSizeIn], "data-s")}
         </div>
         <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Diameter of the radial spray on the photo.</div>
       </section>
@@ -2848,9 +2880,9 @@ export async function renderEditor(
         </button></section>`;
       })()}
       <section>
-        <h3>Size (in)</h3>
+        <h3>Size${offPresetSizeSuffix(WREATH_SIZES, sharedSize)}</h3>
         <div class="spacing-row" id="sel-wreath-sizes">
-          ${WREATH_SIZES.map((s) => `<button data-s="${s}" class="${sharedSize.length === 1 && sharedSize[0] === s ? "active" : ""}">${s}"</button>`).join("")}
+          ${sizeButtons(WREATH_SIZES, sharedSize, "data-s")}
         </div>
       </section>
       <section>
@@ -2978,9 +3010,9 @@ export async function renderEditor(
         </button></section>`;
       })()}
       <section>
-        <h3>Size (in)</h3>
+        <h3>Size${offPresetSizeSuffix(BOW_SIZES, sharedSize)}</h3>
         <div class="spacing-row" id="sel-bow-sizes">
-          ${BOW_SIZES.map((s) => `<button data-s="${s}" class="${sharedSize.length === 1 && sharedSize[0] === s ? "active" : ""}">${s}"</button>`).join("")}
+          ${sizeButtons(BOW_SIZES, sharedSize, "data-s")}
         </div>
       </section>
       <section style="display:flex;gap:6px">
@@ -3046,9 +3078,9 @@ export async function renderEditor(
         </button></section>`;
       })()}
       <section>
-        <h3>Size (in)${sharedSize.length > 1 ? " — mixed" : ""}</h3>
+        <h3>Size${sharedSize.length > 1 ? " — mixed" : offPresetSizeSuffix(GARLAND_SIZES, sharedSize)}</h3>
         <div class="spacing-row" id="sel-garland-sizes">
-          ${GARLAND_SIZES.map((s) => `<button data-s="${s}" class="${sharedSize.length === 1 && sharedSize[0] === s ? "active" : ""}">${s}"</button>`).join("")}
+          ${sizeButtons(GARLAND_SIZES, sharedSize, "data-s")}
         </div>
         <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Thickness of the greenery rope.</div>
       </section>
@@ -3202,9 +3234,9 @@ export async function renderEditor(
         </button></section>`;
       })()}
       <section>
-        <h3>Size (in)${sharedSize.length > 1 ? " — mixed" : ""}</h3>
+        <h3>Size${sharedSize.length > 1 ? " — mixed" : offPresetSizeSuffix(SPRITZER_SIZES, sharedSize)}</h3>
         <div class="spacing-row" id="sel-spritzer-sizes">
-          ${SPRITZER_SIZES.map((s) => `<button data-s="${s}" class="${sharedSize.length === 1 && sharedSize[0] === s ? "active" : ""}">${s}"</button>`).join("")}
+          ${sizeButtons(SPRITZER_SIZES, sharedSize, "data-s")}
         </div>
       </section>
       <section>
@@ -3858,9 +3890,9 @@ export async function renderEditor(
         </div>
       </section>
       <section>
-        <h3>Height${sharedHeight.length > 1 ? " (mixed)" : ""}</h3>
+        <h3>Height${sharedHeight.length > 1 ? " (mixed)" : offPresetSizeSuffix(POLE_HEIGHTS, sharedHeight, "ft")}</h3>
         <div class="spacing-row" id="sel-pole-heights">
-          ${POLE_HEIGHTS.map((h) => `<button data-h="${h}" class="${sharedHeight.length === 1 && sharedHeight[0] === h ? "active" : ""}">${h / 12} ft</button>`).join("")}
+          ${sizeButtons(POLE_HEIGHTS, sharedHeight, "data-h", "ft")}
         </div>
       </section>
       <section style="display:flex;gap:6px">
@@ -4612,11 +4644,47 @@ export async function renderEditor(
   // select-guards are bypassed. Read live; the tool-change handlers redrawScene()
   // so the draggable flag this gates stays fresh across tool switches.
   function isStrandDrawContext(): boolean {
-    return (
-      toolMode === "draw" &&
-      tool.drawingStyle === "strand" &&
-      !tool.scattershot &&
-      ((tool.category === "lights" && tool.bulbType !== "bistro") || drawingGarland())
+    return isLineDrawContext(
+      {
+        toolMode,
+        drawingStyle: tool.drawingStyle,
+        scattershot: tool.scattershot,
+        category: tool.category,
+        bulbType: tool.bulbType,
+        decorType: tool.decorType,
+      },
+      "strand",
+    );
+  }
+
+  // #203: mirrors isStrandDrawContext() (#63) for the "trace" style, via the
+  // same isLineDrawContext() gate (see drawContext.ts for why the two
+  // deliberately share one function instead of two copies that could drift
+  // apart again). Used ONLY at the mousedown per-item-guard site below, to
+  // let the very FIRST click of a fresh trace fall through into the
+  // trace-start pipeline when it lands on an existing strand/garland/
+  // miniArea — trace's own pre-existing `!tracePts` exception already
+  // covers every click AFTER the first (continuing an in-progress trace);
+  // this closes the gap for the first one, where tracePts is still null.
+  // Deliberately NOT wired into isStrandDrawContext()'s other call sites
+  // (draggable(false), the item click-handler bypass, the drawOverItemId /
+  // mouseup drag-distance decision) — those implement strand's click-vs-
+  // drag disambiguation, which doesn't fit trace's multi-click accumulation
+  // model (traced through: routing trace over drawOverItemId would fire
+  // selectDrawOverItem() and an unconditional redrawScene() on mouseup,
+  // destroying the live trace preview node and mis-selecting the traced-
+  // over item mid-gesture).
+  function isTraceDrawContext(): boolean {
+    return isLineDrawContext(
+      {
+        toolMode,
+        drawingStyle: tool.drawingStyle,
+        scattershot: tool.scattershot,
+        category: tool.category,
+        bulbType: tool.bulbType,
+        decorType: tool.decorType,
+      },
+      "trace",
     );
   }
 
@@ -4718,8 +4786,13 @@ export async function renderEditor(
       // fall through to the draw pipeline below (skip the per-item return-guards).
     } else {
       // Click on a strand group — selection handler runs; suppress draw. EXCEPT
-      // when a trace polyline is in progress: that click must continue the trace.
-      if (e.target.findAncestor(".strand", true) && !tracePts) return;
+      // when a trace polyline is in progress: that click must continue the
+      // trace. #203: OR when a fresh trace is about to START on top of it —
+      // mirrors the same exception for the very first click, which used to be
+      // swallowed here because tracePts is still null at that instant (the
+      // pre-existing !tracePts exception only ever covered clicks AFTER the
+      // first one).
+      if (e.target.findAncestor(".strand", true) && !tracePts && !isTraceDrawContext()) return;
 
       // Click on an existing wreath — let its click handler select it; don't draw.
       if (e.target.findAncestor(".wreath", true)) return;
@@ -4728,8 +4801,9 @@ export async function renderEditor(
       if (e.target.findAncestor(".bow", true)) return;
 
       // Click on an existing garland — let its click handler select it; don't draw.
-      // (Exception while a trace is in progress, same as for strands.)
-      if (e.target.findAncestor(".garland", true) && !tracePts) return;
+      // (Exception while a trace is in progress, or about to start — #203 — same
+      // as for strands.)
+      if (e.target.findAncestor(".garland", true) && !tracePts && !isTraceDrawContext()) return;
 
       // Click on an existing spritzer — same deal as wreath/bow.
       if (e.target.findAncestor(".spritzer", true)) return;
@@ -4737,8 +4811,9 @@ export async function renderEditor(
       // Click on an existing mini-light area — let its click handler select it;
       // don't fall through to the place/draw pipeline (which would drop a
       // duplicate box and destroy the pressed group mid-gesture). Same trace
-      // exception as strands/garlands: mid-trace clicks continue the polyline.
-      if (e.target.findAncestor(".miniArea", true) && !tracePts) return;
+      // exception as strands/garlands (continuing OR about to start — #203):
+      // mid-trace clicks continue the polyline.
+      if (e.target.findAncestor(".miniArea", true) && !tracePts && !isTraceDrawContext()) return;
 
       // Click on an existing text item — same.
       if (e.target.findAncestor(".text", true)) return;

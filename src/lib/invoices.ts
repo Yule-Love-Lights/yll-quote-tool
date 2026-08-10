@@ -55,12 +55,46 @@ export type InvoiceRow = {
   // one-click card charge with an explicit override (never charge a card the
   // customer said they'd settle in cash). null = unset (no gating).
   payment_preference: PaymentPreference | null;
+  // #199: how a MANUALLY-settled invoice (mark-paid, not a Valor charge) was
+  // actually collected. null covers both a legacy manual mark-paid (predates
+  // this column) and a Valor-settled invoice (never written by the balance
+  // webhook / charge-balance route) — see migrations/2026-08-07-invoices-
+  // manual-payment-method.sql. Optional here ONLY so tsc/tests don't require
+  // the column to exist — this is NOT a claim that a pre-migration read
+  // degrades gracefully (wrap-review LOW: it doesn't). PostgREST fails the
+  // WHOLE query when a selected column is missing (verified live: `column
+  // invoices.paid_method does not exist`, code 42703) — INVOICE_SELECT is a
+  // literal column list, so EVERY read through it (getInvoice, listInvoices,
+  // …) fails pre-migration. Reads only LOOK unaffected because every one of
+  // those callers already catches its own error and degrades (console.error
+  // + return null/[]) — a pre-existing resilience pattern, not something
+  // #199 added. The WRITE side is worse and not just cosmetic:
+  // markInvoicePaidManually's update+select(INVOICE_SELECT) fails the SAME
+  // way for a PLAIN CASH invoice too (not just NCE) — its caller (mark-paid/
+  // route.ts) then returns the misleading 'Invoice not found' for an invoice
+  // that exists and just failed to update. createInvoiceFromJob's
+  // insert+select(INVOICE_SELECT) fails identically — an INSERT...RETURNING
+  // with a missing column fails atomically (nothing commits), so completing
+  // a job creates NO invoice at all pre-migration. Migration-first (AGENTS.md
+  // Pitfalls) means the seat applies migrations/2026-08-07-… BEFORE this code
+  // merges — the above is the blast radius if that order is ever missed, not
+  // an expected/tolerated intermediate state.
+  paid_method?: PaidMethod | null;
+  // #199: the NCE trade-system payment reference number. Required at NCE
+  // mark-paid time (app-enforced, not a DB constraint); editable afterward
+  // for a typo fix. Optional for the same tsc/tests-only reason as
+  // paid_method above — see its comment for the real pre-migration blast
+  // radius (this is not a "degrades gracefully" annotation).
+  payment_reference?: string | null;
   created_at: string;
   paid_at: string | null;
   updated_at: string;
 };
 
 export type PaymentPreference = 'card_on_file' | 'cash_check';
+
+// #199: how a manually-settled (mark-paid) invoice was actually collected.
+export type PaidMethod = 'cash_check' | 'nce';
 
 export type RetiredTxnEntry = {
   txnId: string;
@@ -73,7 +107,8 @@ export type RetiredTxnEntry = {
 const INVOICE_SELECT =
   'id, invoice_number, job_id, quote_id, customer_id, subtotal, discount, tax, total, ' +
   'deposit_applied, balance, credit_note, tax_overridden, status, valor_balance_txn_id, ' +
-  'valor_receipt_url, valor_txn_log, payment_preference, created_at, paid_at, updated_at';
+  'valor_receipt_url, valor_txn_log, payment_preference, paid_method, payment_reference, ' +
+  'created_at, paid_at, updated_at';
 
 // ─── Pure totals math ───────────────────────────────────────────────────────
 
@@ -345,6 +380,8 @@ export type InvoiceAdminCard = {
   customerName: string | null;
   customerAddress: string | null;
   isTest: boolean;
+  // #199: the linked quote's NCE tag — drives the NceBadge on the list row.
+  isNce: boolean;
   total: number;
   depositApplied: number;
   balance: number;
@@ -362,8 +399,8 @@ export type InvoiceAdminCard = {
 
 /**
  * The invoices list for the operator billing view (/admin/invoices) — every
- * invoice (newest first) with each linked quote's customer name/address + is_test
- * joined. Returns [] when Supabase isn't configured.
+ * invoice (newest first) with each linked quote's customer name/address +
+ * is_test/is_nce joined. Returns [] when Supabase isn't configured.
  */
 export async function listInvoicesForAdmin(limit = 500): Promise<InvoiceAdminCard[]> {
   const db = sb();
@@ -375,18 +412,19 @@ export async function listInvoicesForAdmin(limit = 500): Promise<InvoiceAdminCar
   const quoteIds = [...new Set(invoices.map((i) => i.quote_id).filter((x): x is string => !!x))];
   const byQuote = new Map<
     string,
-    { name: string | null; address: string | null; isTest: boolean; highlevelContactId: string | null; customerId: string | null }
+    { name: string | null; address: string | null; isTest: boolean; isNce: boolean; highlevelContactId: string | null; customerId: string | null }
   >();
   if (quoteIds.length) {
     const { data } = await db
       .from('quotes')
-      .select('id, customer_name, customer_address, is_test, highlevel_contact_id, customer_id')
+      .select('id, customer_name, customer_address, is_test, is_nce, highlevel_contact_id, customer_id')
       .in('id', quoteIds);
     for (const q of (data ?? []) as {
       id: string;
       customer_name: string | null;
       customer_address: string | null;
       is_test: boolean | null;
+      is_nce: boolean | null;
       highlevel_contact_id: string | null;
       customer_id: string | null;
     }[]) {
@@ -394,6 +432,7 @@ export async function listInvoicesForAdmin(limit = 500): Promise<InvoiceAdminCar
         name: q.customer_name ?? null,
         address: q.customer_address ?? null,
         isTest: !!q.is_test,
+        isNce: !!q.is_nce,
         highlevelContactId: q.highlevel_contact_id ?? null,
         customerId: q.customer_id ?? null,
       });
@@ -410,6 +449,7 @@ export async function listInvoicesForAdmin(limit = 500): Promise<InvoiceAdminCar
       customerName: c?.name ?? null,
       customerAddress: c?.address ?? null,
       isTest: c?.isTest ?? false,
+      isNce: c?.isNce ?? false,
       total: inv.total,
       depositApplied: inv.deposit_applied,
       balance: inv.balance,
@@ -423,7 +463,7 @@ export async function listInvoicesForAdmin(limit = 500): Promise<InvoiceAdminCar
 }
 
 // The full billing detail for one invoice (/admin/invoices/[id]): the invoice, the
-// linked quote's customer identity + is_test, and the linked job's number/status.
+// linked quote's customer identity + is_test/is_nce, and the linked job's number/status.
 export type InvoiceDetail = {
   invoice: InvoiceRow;
   customerName: string | null;
@@ -431,6 +471,9 @@ export type InvoiceDetail = {
   customerPhone: string | null;
   customerAddress: string | null;
   isTest: boolean;
+  // #199: the linked quote's NCE tag — gates the charge-button/send-balance-
+  // link UI and the "Mark paid — NCE" affordance on the invoice detail page.
+  isNce: boolean;
   jobNumber: number | null;
   jobStatus: string | null;
   // #177 fix 4: the linked quote's stamped deposit_amount_usd — the deposit
@@ -444,8 +487,8 @@ export type InvoiceDetail = {
 
 /**
  * The billing detail for one invoice — the invoice + the linked quote's customer
- * identity + is_test + the linked job's number/status. Returns null when Supabase
- * isn't configured or the invoice is missing.
+ * identity + is_test/is_nce + the linked job's number/status. Returns null when
+ * Supabase isn't configured or the invoice is missing.
  */
 export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null> {
   const db = sb();
@@ -459,11 +502,12 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
   let customerPhone: string | null = null;
   let customerAddress: string | null = null;
   let isTest = false;
+  let isNce = false;
   let intendedDepositUsd: number | null = null;
   if (invoice.quote_id) {
     const { data } = await db
       .from('quotes')
-      .select('customer_name, customer_email, customer_phone, customer_address, is_test, deposit_amount_usd')
+      .select('customer_name, customer_email, customer_phone, customer_address, is_test, is_nce, deposit_amount_usd')
       .eq('id', invoice.quote_id)
       .maybeSingle<{
         customer_name: string | null;
@@ -471,6 +515,7 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
         customer_phone: string | null;
         customer_address: string | null;
         is_test: boolean | null;
+        is_nce: boolean | null;
         deposit_amount_usd: number | null;
       }>();
     if (data) {
@@ -479,6 +524,7 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
       customerPhone = data.customer_phone ?? null;
       customerAddress = data.customer_address ?? null;
       isTest = !!data.is_test;
+      isNce = !!data.is_nce;
       intendedDepositUsd = data.deposit_amount_usd ?? null;
     }
   }
@@ -504,6 +550,7 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
     customerPhone,
     customerAddress,
     isTest,
+    isNce,
     jobNumber,
     jobStatus,
     intendedDepositUsd,
@@ -692,13 +739,48 @@ export async function setInvoiceStatus(id: string, to: InvoiceStatus): Promise<I
   return data as unknown as InvoiceRow;
 }
 
+// #199 (F2, wrap-review HIGH): a typed throw so callers can tell WHY
+// markInvoicePaidManually refused, instead of pattern-matching a message
+// string. `cancelled` mirrors the pre-existing throw exactly (message
+// unchanged, so the mark-paid route's existing generic catch — which never
+// inspected the error — keeps its EXACT prior behavior for that case).
+// `nce-mismatch` is new: see the gate below.
+export class InvoiceSettleError extends Error {
+  code: 'cancelled' | 'nce-mismatch' | 'nce-check-failed';
+  constructor(code: 'cancelled' | 'nce-mismatch' | 'nce-check-failed', message: string) {
+    super(message);
+    this.name = 'InvoiceSettleError';
+    this.code = code;
+  }
+}
+
 /**
  * Manually mark an invoice paid — an operator recording an offline/external
- * payment (cash / check / paid in the Valor terminal). Atomic claim mirroring
- * the Valor balance webhook: status='paid', balance=0, paid_at=now. Idempotent
- * (a paid invoice is a no-op). Throws on a cancelled invoice. Does NOT touch the
- * job — closing the job is the caller's concern (the close route / collect-then-
- * close flow).
+ * payment (cash / check / NCE trade / paid in the Valor terminal). Atomic
+ * claim mirroring the Valor balance webhook: status='paid', balance=0,
+ * paid_at=now (+ #199's paid_method/payment_reference). Idempotent (a paid
+ * invoice is a no-op — its EXISTING method/reference are left untouched, not
+ * overwritten by this call's params). Throws on a cancelled invoice. Does NOT
+ * touch the job — closing the job is the caller's concern (the close route /
+ * collect-then-close flow).
+ *
+ * #199: `method`/`reference` default to 'cash_check'/null — every EXISTING
+ * caller (the mark-paid route's back-compat body-less request, the job-close
+ * force-settle) keeps writing exactly what it always wrote, now just also
+ * labelled. Validating `reference` (required + non-empty for 'nce') is the
+ * CALLER's job (the mark-paid route) — this is a thin, unconditional write.
+ *
+ * #199 (F2, wrap-review HIGH): ONE positive gate here, not N patches at every
+ * caller — an invoice whose linked quote is_nce can ONLY ever settle with
+ * method:'nce'. Without this, EITHER of this function's two call sites
+ * (job-close's bare force-settle; the mark-paid route, itself reachable from
+ * BOTH the dedicated NCE panel AND PipelineActionsMenu's generic
+ * "collect-payment"/"close" actions, which POST an empty body) would silently
+ * settle an NCE invoice as cash_check — and that mislabel is UNRECOVERABLE in
+ * the UI (updateInvoicePaymentReference refuses anything that isn't already
+ * paid_method==='nce'). Skipped when the invoice has no linked quote (nothing
+ * to check against — same permissive default as every other quote_id-gated
+ * lookup in this file).
  *
  * W1-022: the claim excludes BOTH 'paid' AND 'cancelled'. The cancelled pre-check
  * above is read-then-write, so a concurrent order-cancel that flips the invoice to
@@ -707,19 +789,79 @@ export async function setInvoiceStatus(id: string, to: InvoiceStatus): Promise<I
  * Excluding cancelled in the write itself closes that TOCTOU — the same terminal-
  * status guard the balance webhook gets from `.in('status',['draft','awaiting_payment'])`.
  */
-export async function markInvoicePaidManually(id: string): Promise<InvoiceRow | null> {
+export async function markInvoicePaidManually(
+  id: string,
+  method: PaidMethod = 'cash_check',
+  reference: string | null = null,
+): Promise<InvoiceRow | null> {
   const db = sb();
   if (!db) return null;
   const current = await getInvoice(id);
   if (!current) return null;
   if (current.status === 'cancelled') {
-    throw new Error(`markInvoicePaidManually: invoice ${id} is cancelled`);
+    throw new InvoiceSettleError('cancelled', `markInvoicePaidManually: invoice ${id} is cancelled`);
   }
-  if (current.status === 'paid') return current; // idempotent no-op
+  if (current.status === 'paid') {
+    // #199 (wrap-review LOW, accepted-narrow): idempotent no-op — a
+    // concurrent settle already won, so THIS call's method/reference is
+    // silently discarded (never overwrites a real settlement). The race is
+    // narrow (two settle attempts landing within the same request window)
+    // and returning the existing row is still the correct, safe choice —
+    // but when what's actually stored doesn't match what THIS caller asked
+    // for, that's worth a cheap, honest trace for reconciliation (never a
+    // behavior change or a client-facing error).
+    if (current.paid_method !== method || (reference != null && current.payment_reference !== reference)) {
+      console.warn(
+        `markInvoicePaidManually: invoice ${id} was already settled (paid_method=${current.paid_method ?? 'null'}) ` +
+          `when this call asked for method=${method}${reference != null ? ` reference=${reference}` : ''} — the earlier settle wins, this call's params were discarded`,
+      );
+    }
+    return current;
+  }
+
+  if (method !== 'nce' && current.quote_id) {
+    const { data: quoteRow, error: quoteErr } = await db
+      .from('quotes')
+      .select('is_nce')
+      .eq('id', current.quote_id)
+      .maybeSingle<{ is_nce: boolean }>();
+    // #199 delta-verify (MED): FAIL CLOSED when the is_nce read errors —
+    // the first cut discarded `error`, so a transient read failure made
+    // `quoteRow` null and waved the settle straight through. The asymmetry
+    // decides this: wrongly ALLOWING is unrecoverable in the UI (an NCE
+    // invoice settled as cash_check can never be relabeled — both the
+    // edit-reference affordance and updateInvoicePaymentReference refuse
+    // anything not already paid_method='nce'), while wrongly REFUSING costs
+    // a retry. A distinct code (not 'nce-mismatch') so the routes can say
+    // "couldn't verify, try again" instead of accusing a normal cash job of
+    // being an NCE one.
+    //
+    // NOTE: the sibling WT-18 reconsent gates in these same two routes
+    // swallow their own read error the same way — same class, deliberately
+    // NOT changed here (a silent behavior change to an unrelated money gate
+    // belongs in its own reviewed diff). Flagged for a follow-up row.
+    if (quoteErr) {
+      console.error(
+        `markInvoicePaidManually: could not verify is_nce for invoice ${id} (quote ${current.quote_id}) — refusing the ${method} settle:`,
+        quoteErr,
+      );
+      throw new InvoiceSettleError(
+        'nce-check-failed',
+        `markInvoicePaidManually: is_nce check failed for invoice ${id} — refusing a ${method} settle`,
+      );
+    }
+    if (quoteRow?.is_nce) {
+      throw new InvoiceSettleError(
+        'nce-mismatch',
+        `markInvoicePaidManually: invoice ${id}'s quote is NCE — refusing a ${method} settle`,
+      );
+    }
+  }
+
   const paidAt = new Date().toISOString();
   const { data, error } = await db
     .from('invoices')
-    .update({ status: 'paid', balance: 0, paid_at: paidAt })
+    .update({ status: 'paid', balance: 0, paid_at: paidAt, paid_method: method, payment_reference: reference })
     .eq('id', id)
     .neq('status', 'paid')
     .neq('status', 'cancelled')
@@ -730,6 +872,40 @@ export async function markInvoicePaidManually(id: string): Promise<InvoiceRow | 
   }
   if (!data || (Array.isArray(data) && data.length === 0)) return await getInvoice(id); // raced
   return (Array.isArray(data) ? data[0] : data) as unknown as InvoiceRow;
+}
+
+/**
+ * Edit the NCE payment reference on an already-paid NCE invoice (a typo fix
+ * after mark-paid, #199) — a correction to an existing NCE settlement record,
+ * never a way to backdate a reference onto an unpaid or cash-settled invoice.
+ * Refuses (returns null) unless the invoice is status==='paid' AND
+ * paid_method==='nce'. `reference` must be non-empty after trimming (the
+ * caller — the mark-paid route — is expected to have already validated this,
+ * but the guard holds regardless of caller). Mirrors setInvoicePaymentPreference's
+ * shape: a plain update+select, null on error/not-found/refused.
+ */
+export async function updateInvoicePaymentReference(
+  id: string,
+  reference: string,
+): Promise<InvoiceRow | null> {
+  const db = sb();
+  if (!db) return null;
+  const trimmed = reference.trim();
+  if (!trimmed) return null;
+  const current = await getInvoice(id);
+  if (!current) return null;
+  if (current.status !== 'paid' || current.paid_method !== 'nce') return null;
+  const { data, error } = await db
+    .from('invoices')
+    .update({ payment_reference: trimmed })
+    .eq('id', id)
+    .select(INVOICE_SELECT)
+    .maybeSingle();
+  if (error) {
+    console.error('updateInvoicePaymentReference error:', error);
+    return null;
+  }
+  return (data as unknown as InvoiceRow | null) ?? null;
 }
 
 /**

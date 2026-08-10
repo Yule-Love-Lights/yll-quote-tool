@@ -759,6 +759,43 @@ describe('quoteRowToPortalQuote — fallback deposit rounds to CENTS (legacy / s
   });
 });
 
+// #199 F1 (wrap-review HIGH): the PRE-approval live portal — package tiles +
+// SelectionContext's live total (both sourced from portal.charges /
+// jobCharges = chargesFromResult(row.result, row.inputs?.depositPercent)) —
+// must reflect the quote's CURRENT inputs.depositPercent even when result was
+// priced BEFORE it changed. The admin NCE toggle route and rebook.ts both
+// patch ONLY inputs.depositPercent, never result, so trusting result.depositRate
+// alone left the NCE 40% inert on exactly this path (a customer browsing
+// pre-approval saw 50%, unaffected by staff tagging NCE from the admin page).
+describe('quoteRowToPortalQuote — PRE-approval charges reflect a live depositPercent over a stale result (#199 F1)', () => {
+  it('portal.charges.depositRate follows the live inputs.depositPercent, not the (stale) result.depositRate baked in at calculateQuote time', () => {
+    // A real priced result — computed with NO depositPercent override, so
+    // result.depositRate === 0.5 (BUSINESS_RULES default), exactly like a
+    // quote priced before an NCE tag existed.
+    const result = calculateQuote(emptyInputs({ santasFootage: 100 }));
+    expect(result.depositRate).toBe(0.5);
+
+    // The row's CURRENT inputs say NCE (40%) — simulating the admin toggle
+    // route / rebook having patched inputs.depositPercent after that price.
+    const portal = portalFrom(result, emptyInputs({ santasFootage: 100, depositPercent: 40 }))!;
+    expect(portal.charges.depositRate).toBe(0.4);
+  });
+
+  it('the package tile deposit dollar amounts are priced at the live 40%, not the stale 50%', () => {
+    const result = calculateQuote(emptyInputs({ santasFootage: 100 }));
+    const staleDeposit = portalFrom(result, emptyInputs({ santasFootage: 100 }))!.packages.find(
+      (p) => p.id === 'A',
+    )!.deposit;
+    const liveDeposit = portalFrom(
+      result,
+      emptyInputs({ santasFootage: 100, depositPercent: 40 }),
+    )!.packages.find((p) => p.id === 'A')!.deposit;
+    // 40% of the same total must be LESS than 50% of it, and the ratio must
+    // be exact (not just "different").
+    expect(liveDeposit).toBeCloseTo(staleDeposit * 0.8, 2); // 0.40 / 0.50 = 0.8
+  });
+});
+
 // #177 fix 2 — buildApproval must expose the FROZEN depositRate (what the
 // customer actually approved with), preferring the snapshot's own depositRate
 // over the live inputs.depositPercent, so a later staff edit can't retro-change

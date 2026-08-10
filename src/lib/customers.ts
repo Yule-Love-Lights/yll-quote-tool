@@ -54,6 +54,17 @@ export type PropertyRow = {
   lng: number | null;
   created_at: string;
   updated_at: string;
+  /** Staff-only display label (#205), e.g. "Talonda's House" — see
+   *  migrations/2026-08-07-properties-nickname-and-archive.sql. Optional
+   *  because this type must typecheck against a pre-migration DB row too
+   *  (that migration is applied out-of-band, not by this PR). */
+  nickname?: string | null;
+  /** Set = hidden from the customer profile's default property list, WITHOUT
+   *  deleting the row (#205; same migration as nickname). Cleared the moment
+   *  real quote activity lands on this row again — see
+   *  findOrCreateProperty's #205 comment below. Optional for the same
+   *  pre-migration reason as nickname. */
+  archived_at?: string | null;
 };
 
 // The identity-bearing columns of a quote row (the backfill + attach inputs).
@@ -664,10 +675,23 @@ export async function findOrCreateProperty(
 
   const existing = await sb
     .from('properties')
-    .select('id, address, lat, lng')
+    .select('id, address, lat, lng, archived_at')
     .eq('customer_id', customerId)
     .eq('address_key', address_key)
-    .maybeSingle<Pick<PropertyRow, 'id' | 'address' | 'lat' | 'lng'>>();
+    .maybeSingle<Pick<PropertyRow, 'id' | 'address' | 'lat' | 'lng' | 'archived_at'>>();
+  // #205 review fix (admin/technical MED, F4): pre-migration (archived_at
+  // column not yet added) this SELECT errors — existing.data comes back
+  // null either way, indistinguishable from "not found", so the function
+  // already falls through to INSERT → 23505 → retry-select and still
+  // resolves to the right row (nothing crashes, no bad linkage). But this
+  // is a HOT path (every quote save/send/re-attach that touches an
+  // existing property) and the error was never even logged: every such
+  // call wastes a doomed INSERT, and the W2-026 newest-win refresh below is
+  // silently disabled for the whole pre-migration window with zero trace.
+  // Log-only fix, per review instruction — do not restructure further.
+  if (existing.error) {
+    console.error('findOrCreateProperty existing-row lookup error (falls through to insert/retry-recover):', existing.error);
+  }
   if (existing.data) {
     // W2-026 (newest-win) — same normalized address_key, so refresh the display
     // address + geo to this quote's newer values when present (formatting/geo can
@@ -676,12 +700,31 @@ export async function findOrCreateProperty(
     const nextAddress = norm(address) ?? row.address;
     const nextLat = geo?.lat ?? row.lat;
     const nextLng = geo?.lng ?? row.lng;
-    if (nextAddress !== row.address || nextLat !== row.lat || nextLng !== row.lng) {
+    // #205 ARCHIVE RESURRECTION RULE: real quote activity landing on an
+    // archived property means it's live again — a silently-hidden-but-
+    // active property is a worse state than simply unarchiving it. This is
+    // the ONLY other change to this function; nickname is untouched here
+    // (that's the manual createPropertyForCustomer add's territory below).
+    //
+    // #205 review fix (admin MED, F5): this function is reached from
+    // attachQuoteToCustomer, which fires from a plain quote save, send,
+    // mark-sent, the #198 nce/legacy-rebook re-attach on OLD drafts, and
+    // backfillCustomersFromQuotes — a wide, largely-invisible trigger
+    // surface. Log the resurrection so it's traceable (a one-line
+    // console.info, not a restructure); logged only when it actually
+    // happens and the write succeeds, never on the routine address/geo-only
+    // refresh path.
+    const resurrect = row.archived_at != null;
+    if (nextAddress !== row.address || nextLat !== row.lat || nextLng !== row.lng || resurrect) {
       const { error: updErr } = await sb
         .from('properties')
-        .update({ address: nextAddress, lat: nextLat, lng: nextLng })
+        .update({ address: nextAddress, lat: nextLat, lng: nextLng, archived_at: null })
         .eq('id', row.id);
-      if (updErr) console.error('findOrCreateProperty newest-win update error:', updErr);
+      if (updErr) {
+        console.error('findOrCreateProperty newest-win update error:', updErr);
+      } else if (resurrect) {
+        console.info(`findOrCreateProperty: un-archived property ${row.id} for customer ${customerId} (new quote activity)`);
+      }
     }
     return { id: row.id as string };
   }
@@ -864,19 +907,198 @@ export async function getCustomer(id: string): Promise<CustomerRow | null> {
   return (data as CustomerRow | null) ?? null;
 }
 
-export async function getPropertiesForCustomer(customerId: string): Promise<PropertyRow[]> {
+// #205: `opts.includeArchived` defaults FALSE — the one caller this function
+// had before #205 (the customer profile page's rebook-property list) gets
+// this for free, which is the right behavior there too (an archived
+// property is a poor rebook target). The Properties tab passes
+// includeArchived:true to fetch the full list once and toggles "Show
+// archived" client-side rather than re-fetching.
+export async function getPropertiesForCustomer(
+  customerId: string,
+  opts?: { includeArchived?: boolean },
+): Promise<PropertyRow[]> {
   const sb = svc();
   if (!sb) return [];
-  const { data, error } = await sb
-    .from('properties')
-    .select('*')
-    .eq('customer_id', customerId)
-    .order('created_at', { ascending: true });
+  let query = sb.from('properties').select('*').eq('customer_id', customerId);
+  if (!opts?.includeArchived) query = query.is('archived_at', null);
+  const { data, error } = await query.order('created_at', { ascending: true });
   if (error) {
     console.error('getPropertiesForCustomer error:', error);
     return [];
   }
   return (data ?? []) as PropertyRow[];
+}
+
+// ─── Property management (#205 — customer profile Properties tab) ──────────
+
+// nickname normalization: trim, cap at 80 chars (defense-in-depth — the "Add
+// property" / inline-edit UI enforces the same cap via maxLength so this
+// should never actually bite in normal use), empty string -> null (an
+// explicit clear, same convention as norm() above).
+const NICKNAME_MAX_LEN = 80;
+function normalizeNickname(v: string | null | undefined): string | null {
+  const t = norm(v);
+  if (!t) return null;
+  return t.slice(0, NICKNAME_MAX_LEN);
+}
+
+// #205: edit a property's nickname (the customer-profile Properties tab's
+// click-to-edit label).
+//
+// Scoped by customer_id AND id in the SAME update — not a separate
+// ownership pre-check-then-act — so a propertyId belonging to a DIFFERENT
+// customer simply matches zero rows and resolves to the same {data: null,
+// error: null} "not found" shape an unknown id already produces, with no
+// TOCTOU-prone lookup in between. Mirrors this file's other customer_id-
+// scoped queries (findOrCreateProperty above, createPropertyForCustomer
+// below) — the established guard idiom for a property row in this module.
+// (Deliberate deviation from the ledger brief's suggested
+// updateProperty(propertyId, patch) signature — see the PR notes.)
+//
+// {data, error} return shape mirrors setCustomerTags below — the caller
+// (the route) needs to tell a DB error (500) apart from "no such property
+// for this customer" (404).
+export async function updateProperty(
+  customerId: string,
+  propertyId: string,
+  patch: { nickname?: string | null },
+): Promise<{ data: PropertyRow | null; error: { message: string } | null }> {
+  const sb = svc();
+  if (!sb) return { data: null, error: { message: 'Supabase not configured' } };
+  const update: Record<string, unknown> = {};
+  if ('nickname' in patch) update.nickname = normalizeNickname(patch.nickname);
+  const { data, error } = await sb
+    .from('properties')
+    .update(update)
+    .eq('id', propertyId)
+    .eq('customer_id', customerId)
+    .select('*')
+    .maybeSingle<PropertyRow>();
+  return { data: (data as PropertyRow | null) ?? null, error };
+}
+
+// #205: archive / unarchive a property — hides/reveals it from
+// getPropertiesForCustomer's default list WITHOUT deleting the row (quotes/
+// jobs/invoices reference properties by id; a hard delete would orphan
+// those money records — no UI in this codebase issues one). Same
+// customer_id + id scoping as updateProperty above; see that comment.
+export async function archiveProperty(
+  customerId: string,
+  propertyId: string,
+): Promise<{ data: PropertyRow | null; error: { message: string } | null }> {
+  const sb = svc();
+  if (!sb) return { data: null, error: { message: 'Supabase not configured' } };
+  const { data, error } = await sb
+    .from('properties')
+    .update({ archived_at: new Date().toISOString() })
+    .eq('id', propertyId)
+    .eq('customer_id', customerId)
+    .select('*')
+    .maybeSingle<PropertyRow>();
+  return { data: (data as PropertyRow | null) ?? null, error };
+}
+
+export async function unarchiveProperty(
+  customerId: string,
+  propertyId: string,
+): Promise<{ data: PropertyRow | null; error: { message: string } | null }> {
+  const sb = svc();
+  if (!sb) return { data: null, error: { message: 'Supabase not configured' } };
+  const { data, error } = await sb
+    .from('properties')
+    .update({ archived_at: null })
+    .eq('id', propertyId)
+    .eq('customer_id', customerId)
+    .select('*')
+    .maybeSingle<PropertyRow>();
+  return { data: (data as PropertyRow | null) ?? null, error };
+}
+
+// #205: MANUAL "Add property" for a never-quoted property (the customer-
+// profile Properties tab's inline add panel). Reuses findOrCreateProperty's
+// normalizeAddress/address_key + UNIQUE(customer_id, address_key) race-safe
+// posture — a manual add that collides with an existing row (a formatting
+// variant of an address quote activity already created) resolves to that
+// row rather than erroring; no duplicate property for one physical address.
+//
+// When the resolved row is ARCHIVED, this manual add is treated as a
+// deliberate staff signal that the property should be live + labeled again:
+// unarchive it. Either way (live or archived), an EXPLICITLY-typed nickname
+// is applied — staff typed it deliberately, so silently dropping it on the
+// (more common) live-collision path was a real "my work vanished" bug
+// (#205 review fix, staff/customer MED, F2). A caller that provides no
+// nickname at all never touches whatever the row already had.
+//
+// `created` distinguishes a fresh INSERT from a resolve-to-existing-row (the
+// route surfaces this so the panel can tell staff the truth — "already
+// existed" vs "added" — instead of silently doing something other than what
+// the form implied, #205 review fix F2). true only when THIS call's own
+// insert attempt is what created the row; a race-retry recovery is
+// `created: false` even though the row is brand new, because it wasn't
+// created BY this call.
+//
+// customerId existence is NOT re-checked here (properties.customer_id is a
+// NOT NULL FK) — the route pre-checks via getCustomer so a bogus id 404s
+// cleanly instead of surfacing as an opaque FK-violation 500.
+export async function createPropertyForCustomer(
+  customerId: string,
+  input: { address: string; nickname?: string | null },
+): Promise<{ data: PropertyRow | null; error: { message: string } | null; created: boolean }> {
+  const sb = svc();
+  if (!sb) return { data: null, error: { message: 'Supabase not configured' }, created: false };
+  const address_key = normalizeAddress(input.address);
+  const nickname = normalizeNickname(input.nickname);
+
+  // sb is narrowed non-null above, but that narrowing doesn't cross into a
+  // nested function's body — resolve() only ever runs synchronously within
+  // this same call, after the same guard, so the assertion is sound here
+  // (mirrors findOrCreateCustomer's adopt() helper above).
+  async function resolve(
+    row: PropertyRow,
+  ): Promise<{ data: PropertyRow | null; error: { message: string } | null; created: false }> {
+    const patch: Record<string, unknown> = {};
+    if (row.archived_at) patch.archived_at = null;
+    if (nickname != null) patch.nickname = nickname; // explicit nickname wins on ANY collision (F2)
+    if (Object.keys(patch).length === 0) return { data: row, error: null, created: false }; // nothing to change
+    const { data, error } = await sb!
+      .from('properties')
+      .update(patch)
+      .eq('id', row.id)
+      .select('*')
+      .maybeSingle<PropertyRow>();
+    if (error) console.error('createPropertyForCustomer resolve-update error:', error);
+    return { data: (data as PropertyRow | null) ?? null, error, created: false };
+  }
+
+  const existing = await sb
+    .from('properties')
+    .select('*')
+    .eq('customer_id', customerId)
+    .eq('address_key', address_key)
+    .maybeSingle<PropertyRow>();
+  if (existing.data) return resolve(existing.data);
+
+  const ins = await sb
+    .from('properties')
+    .insert({ customer_id: customerId, address: norm(input.address), address_key, nickname })
+    .select('*')
+    .single<PropertyRow>();
+  if (!ins.error && ins.data) return { data: ins.data, error: null, created: true };
+
+  // Lost the insert race -> recover the winner's row (mirrors findOrCreateProperty).
+  const retry = await sb
+    .from('properties')
+    .select('*')
+    .eq('customer_id', customerId)
+    .eq('address_key', address_key)
+    .maybeSingle<PropertyRow>();
+  if (retry.data) return resolve(retry.data);
+  console.error('createPropertyForCustomer error:', ins.error);
+  return {
+    data: null,
+    error: ins.error ? { message: ins.error.message } : { message: 'insert failed' },
+    created: false,
+  };
 }
 
 // Read-only lookup by HighLevel contact id — unlike findOrCreateCustomer this

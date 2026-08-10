@@ -9,6 +9,13 @@
 // order ref is `bal_<quoteId>` so the Valor webhook can tell a BALANCE payment from
 // a deposit and mark the INVOICE paid (not re-book). A test quote never reaches
 // Valor (it has no real balance to collect).
+//
+// #199: an NCE-tagged quote's balance is never collectable here either (it
+// settles through the NCE trade system) — 409 {code:'nce'}, checked both at
+// fetch time and in the #187c pre-Valor re-check (same TOCTOU posture as
+// view_only). This is the ONE deliberate NCE-facing message on the customer
+// portal; the client (portal/[quoteId]/pay-balance/page.tsx) branches on
+// this code to show nceBalanceBlockedError() instead of the generic copy.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { rateLimitResponse } from '@/lib/rateLimit';
@@ -29,6 +36,9 @@ type QuoteRow = {
   // View-only portal (#176): a staff-flagged browse-only quote can never pay
   // a real balance either — see the check right after the fetch below.
   view_only: boolean;
+  // NCE (#199): an NCE trade job's balance settles through NCE, not Valor —
+  // see the check right after the fetch below.
+  is_nce: boolean;
 };
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -54,7 +64,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
-    .select('id, customer_name, customer_email, is_test, view_only')
+    .select('id, customer_name, customer_email, is_test, view_only, is_nce')
     .eq('id', id)
     .single<QuoteRow>();
   if (fetchErr || !quote) {
@@ -68,6 +78,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (quote.view_only) {
     return NextResponse.json(
       { error: 'This quote is view-only', code: 'view-only' },
+      { status: 409 },
+    );
+  }
+
+  // NCE (#199): the balance settles through the NCE trade system, never
+  // Valor — same fast-path posture as view_only above (checked before any
+  // invoice/balance lookup or Valor call).
+  if (quote.is_nce) {
+    return NextResponse.json(
+      { error: 'This balance is handled through your NCE trade account — nothing is due here.', code: 'nce' },
       { status: 409 },
     );
   }
@@ -106,7 +126,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // before handing off to Valor so a real hosted-page charge is never opened
   // on a quote that's now view-only. This window is near-unreachable today (a
   // booked quote already refuses the toggle), so this is cheap insurance, not
-  // a load-bearing guard.
+  // a load-bearing guard. #199 rides the same re-check (is_nce is just as
+  // staff-toggleable mid-request as view_only).
   //
   // #187 review FIX 3 (#660): fail CLOSED, not open, when the row is gone.
   // `recheck?.view_only` is equally falsy whether the row still exists with
@@ -115,15 +136,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // of 404ing (mirrors the fetch-time miss above).
   const { data: recheck } = await sb
     .from('quotes')
-    .select('view_only')
+    .select('view_only, is_nce')
     .eq('id', id)
-    .maybeSingle<{ view_only: boolean }>();
+    .maybeSingle<{ view_only: boolean; is_nce: boolean }>();
   if (!recheck) {
     return NextResponse.json({ error: 'Quote not found' }, { status: 404 });
   }
   if (recheck.view_only) {
     return NextResponse.json(
       { error: 'This quote is view-only', code: 'view-only' },
+      { status: 409 },
+    );
+  }
+  if (recheck.is_nce) {
+    return NextResponse.json(
+      { error: 'This balance is handled through your NCE trade account — nothing is due here.', code: 'nce' },
       { status: 409 },
     );
   }
