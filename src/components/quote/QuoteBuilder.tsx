@@ -26,6 +26,8 @@ import {
   applyPrefill,
   resolveTagPayload,
   resolveNceDepositPercent,
+  legacyRebookConfirmMessage,
+  nceConfirmMessage,
   initialNceDepositProvenance,
 } from '@/lib/quoteForm';
 import type { CrmContact } from '@/lib/integrations/types';
@@ -409,6 +411,16 @@ export default function QuoteBuilder({
   // render-closure read (`!isNce`) — this ref restores the same
   // never-stale guarantee for computing "next" at the call site.
   const isNceRef = useRef(isNce);
+  // #215 (fix round F1, sibling-guard parity with isNceRef just above): a ref
+  // mirror of `legacyRebook`, updated synchronously by applyLegacyRebook (the
+  // ONLY place legacyRebook changes post-mount — see its own comment). Same
+  // bug class as isNceRef fixed for NCE: pre-#215 the chip's onClick used
+  // setLegacyRebook's own functional form (`(v) => !v`), always current by
+  // construction. #215 needed a plain boolean BEFORE window.confirm and
+  // regressed to a render-closure read (`!legacyRebook`) — stale the instant
+  // the contact-pick tag-inheritance callback (a few hundred lines down)
+  // fires an auto-set between renders.
+  const legacyRebookRef = useRef(legacyRebook);
   // View-only portal (#176) — purely from the saved row, never set for a brand-new quote.
   const viewOnly = initialQuote?.viewOnly ?? false;
   // Customer tenure (#178) — purely from the saved row, never set for a brand-new quote.
@@ -426,6 +438,17 @@ export default function QuoteBuilder({
         status: initialQuote.status ?? null,
       })
     : null;
+  // #215: mirrors LegacyRebookToggle's/NceToggle's own `status !== 'draft'`
+  // check (the admin siblings — both ultimately read deriveStatus) so EITHER
+  // chip's confirm can show the SAME "already left draft" caveats once a
+  // quote has left draft — the "won't move an existing GHL card" caveat on
+  // Neighbor's ON path, and (fix round F2/F3) the one-way-propagation
+  // caveat on both chips' OFF paths. A brand-new (never-saved) quote has
+  // savedStatus === null, which counts as still-draft here too. Renamed from
+  // legacyRebookLeftDraft (fix round F3) once the NCE chip's confirm started
+  // reading it too — it was never actually Neighbor-specific, just the
+  // generic "has this quote left draft" signal.
+  const quoteLeftDraft = savedStatus != null && savedStatus !== 'draft';
   const quoteNumber = initialQuote?.quoteNumber ?? null;
   // PS-G2: the booked quote's job id (null pre-booking) — drives the "Amend
   // order" banner below, which links to the job page's Record-amendment
@@ -2378,6 +2401,17 @@ export default function QuoteBuilder({
   const set = <K extends keyof QuoteFormData>(k: K, v: QuoteFormData[K]) =>
     setForm(f => ({ ...f, [k]: v }));
 
+  // #215 (fix round F1): the ONE place legacyRebook changes post-mount (the
+  // chip click below + contact-pick tag inheritance a few hundred lines
+  // down) — mirrors applyIsNce's ref-then-state ordering exactly so
+  // legacyRebookRef.current is synchronously correct the instant this
+  // returns, no deposit cascade needed here (legacyRebook has no money side
+  // effect, unlike isNce).
+  const applyLegacyRebook = (next: boolean) => {
+    legacyRebookRef.current = next;
+    setLegacyRebook(next);
+  };
+
   // NCE 40% deposit default (#199): the ONE helper every LIVE isNce flip
   // funnels through (the chip click below + contact-pick tag inheritance a
   // few hundred lines down) — mirrors resolveTagPayload's shared-mechanism
@@ -2396,14 +2430,23 @@ export default function QuoteBuilder({
   // isNceRef (wrap-review LOW), not the render-closure isNce — always
   // synchronously current, kept in lockstep by this same function (the ONLY
   // place isNce ever changes).
+  //
+  // Hoisted to a named const (#215) so the chip's confirm copy
+  // (nceConfirmMessage) can ask the identical "is this locked" question
+  // before it prompts, instead of a second inline expression that could drift.
+  const nceDepositLocked = savedStatus === 'approved' || savedStatus === 'booked';
   const applyIsNce = (next: boolean) => {
     const wasNce = isNceRef.current;
     isNceRef.current = next;
     setIsNce(next);
     if (next === wasNce) return;
-    const locked = savedStatus === 'approved' || savedStatus === 'booked';
     setForm(f => {
-      const resolved = resolveNceDepositPercent(f.depositPercent, next, locked, nceDepositSetByRuleRef.current);
+      const resolved = resolveNceDepositPercent(
+        f.depositPercent,
+        next,
+        nceDepositLocked,
+        nceDepositSetByRuleRef.current,
+      );
       return resolved === f.depositPercent ? f : { ...f, depositPercent: resolved };
     });
     // Provenance: resolveNceDepositPercent force-writes 40 in exactly one
@@ -2412,7 +2455,7 @@ export default function QuoteBuilder({
     // just fired or the value was left alone as a hand-edit, there is no
     // rule-owned value anymore). Locked leaves it untouched — resolveNceDepositPercent
     // never wrote anything, so there's nothing new to record either way.
-    if (!locked) nceDepositSetByRuleRef.current = next;
+    if (!nceDepositLocked) nceDepositSetByRuleRef.current = next;
   };
 
   // ─── Referral program redemption (#41 PR 2) ─────────────────────────────
@@ -2631,7 +2674,7 @@ export default function QuoteBuilder({
       .then((data: { customers?: Array<{ is_nce?: boolean; is_yll_neighbor?: boolean }> }) => {
         if (tagLookupSeq !== attachSeqRef.current) return; // superseded by a later pick
         const tags = data.customers?.[0];
-        if (!legacyRebookTouchedRef.current) setLegacyRebook(tags?.is_yll_neighbor ?? false);
+        if (!legacyRebookTouchedRef.current) applyLegacyRebook(tags?.is_yll_neighbor ?? false);
         // #199: routed through applyIsNce (not a bare setIsNce) so an
         // inherited NCE tag also seeds the 40% deposit default, same as a
         // manual chip click.
@@ -3504,11 +3547,11 @@ export default function QuoteBuilder({
             )}
           </div>
           {/* NCE + YLL Neighbor tag chips (#198) — directly under the heading,
-              toggleable in BOTH new-quote and edit modes. Pure form state (no
-              confirm dialog, no immediate API call, unlike the admin detail
-              page's LegacyRebookToggle/NceToggle) — the chosen state
-              persists on the next Calculate/Save like any other form field,
-              same mount-hydrate-only convention as isTest/viewOnly (a
+              toggleable in BOTH new-quote and edit modes. Sets form state only,
+              no immediate API call (unlike the admin detail page's
+              LegacyRebookToggle/NceToggle, which fetch on click) — the chosen
+              state persists on the next Calculate/Save like any other form
+              field, same mount-hydrate-only convention as isTest/viewOnly (a
               customer tagged elsewhere mid-session isn't live-reflected
               here; staff re-check on reopen). This strip is the ONE place to
               see + set both tags in the builder — it replaces the old
@@ -3516,13 +3559,32 @@ export default function QuoteBuilder({
               badge row above (no duplicate/contradictory Neighbor UI).
               NCE-tagging here also seeds the 40% deposit default via
               applyIsNce (#199, pre-approval only — see its own comment);
-              the deposit input itself stays hand-editable after. */}
+              the deposit input itself stays hand-editable after.
+              #215: a MANUAL click now window.confirms first — Neighbor in
+              BOTH directions, NCE in ON always and OFF when there's a real
+              deposit or propagation consequence to disclose — mirroring the
+              admin siblings' confirm+list pattern (legacyRebookConfirmMessage/
+              nceConfirmMessage, quoteForm.ts — each owns its own per-direction
+              when-to-prompt rule and exact copy). Automatic paths (the
+              contact-pick tag inheritance a few hundred lines down, the
+              mount-hydrate useState above) call applyLegacyRebook/applyIsNce
+              directly and never prompt. Declining leaves the tag, deposit,
+              and touched-ref exactly as they were — the touched-ref is set
+              AFTER the confirm returns true, never before. */}
           <div className="flex items-center gap-2 mt-2">
             <button
               type="button"
               onClick={() => {
+                // Direction comes from legacyRebookRef, NOT the render-closure
+                // legacyRebook (#215 fix round F1 — sibling-guard parity with
+                // the isNceRef fix just below): a stale closure read here
+                // would prompt with one direction's consequences and then
+                // apply the other's.
+                const turningOn = !legacyRebookRef.current;
+                const confirmMsg = legacyRebookConfirmMessage(turningOn, quoteLeftDraft);
+                if (confirmMsg && !window.confirm(confirmMsg)) return;
                 legacyRebookTouchedRef.current = true;
-                setLegacyRebook((v) => !v);
+                applyLegacyRebook(turningOn);
               }}
               aria-pressed={legacyRebook}
               title={legacyRebook ? 'YLL Neighbor — click to remove' : 'Mark as YLL Neighbor'}
@@ -3537,13 +3599,26 @@ export default function QuoteBuilder({
             <button
               type="button"
               onClick={() => {
+                // Direction comes from isNceRef, NOT the render-closure isNce
+                // (#199 wrap-review LOW): restores the always-current guarantee
+                // the pre-#199 bare `setIsNce((v) => !v)` functional form had.
+                // #215 derives `turningOn` from that SAME ref so the confirm
+                // copy and the apply can never disagree about which way this
+                // click goes — a stale closure here would prompt with one
+                // direction's consequences and then apply the other's.
+                const turningOn = !isNceRef.current;
+                const confirmMsg = nceConfirmMessage(
+                  turningOn,
+                  form.depositPercent,
+                  nceDepositLocked,
+                  nceDepositSetByRuleRef.current,
+                  quoteLeftDraft,
+                );
+                if (confirmMsg && !window.confirm(confirmMsg)) return;
                 isNceTouchedRef.current = true;
                 // #199: applyIsNce (not a bare toggle) so turning the chip
-                // on/off also sets/reverts the 40% deposit default. Reads
-                // isNceRef (wrap-review LOW), not the render-closure isNce —
-                // restores the always-current guarantee the pre-#199 bare
-                // setIsNce((v) => !v) functional form had.
-                applyIsNce(!isNceRef.current);
+                // on/off also sets/reverts the 40% deposit default.
+                applyIsNce(turningOn);
               }}
               aria-pressed={isNce}
               title={isNce ? 'NCE — click to remove' : 'Mark as NCE (barter/trade network)'}
