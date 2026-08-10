@@ -51,8 +51,19 @@ const req = (body: unknown) =>
 const ctx = (id = ID) => ({ params: Promise.resolve({ id }) });
 
 type Row = Record<string, unknown>;
-function makeSb(quote: Row | null, fresh: Row | null = quote, quoteUpdateRows: Row[] = [{ id: ID }]) {
+function makeSb(
+  quote: Row | null,
+  fresh: Row | null = quote,
+  quoteUpdateRows: Row[] = [{ id: ID }],
+  // #208: opt-in knobs so a test can drive resolveInboxRequest's inbox_items
+  // branch (every pre-existing test leaves inboxItem null, so the
+  // maybeSingle() lookup keeps returning nothing and resolveInboxRequest
+  // short-circuits before ever reaching these — unchanged behavior for them).
+  inboxOpts: { inboxItem?: Row | null; inboxUpdateError?: { message: string } | null } = {},
+) {
+  const { inboxItem = null, inboxUpdateError = null } = inboxOpts;
   const updates: { quotes: Row[]; inbox_items: Row[] } = { quotes: [], inbox_items: [] };
+  const activityInserts: Row[] = [];
   const eqCalls: Array<[string, unknown]> = [];
   let table = '';
   let updating = false;
@@ -68,22 +79,33 @@ function makeSb(quote: Row | null, fresh: Row | null = quote, quoteUpdateRows: R
       (updates as Record<string, Row[]>)[table]?.push(payload);
       return b;
     },
-    insert: () => b,
+    insert: (payload: Row) => {
+      if (table === 'dashboard_activity') activityInserts.push(payload);
+      return b;
+    },
     eq: (col: string, val: unknown) => {
       eqCalls.push([col, val]);
       return b;
     },
     single: async () => ({ data: quote, error: quote ? null : { message: 'no rows' } }),
-    maybeSingle: async () => (table === 'inbox_items' ? { data: null, error: null } : { data: fresh, error: null }),
+    maybeSingle: async () => (table === 'inbox_items' ? { data: inboxItem, error: null } : { data: fresh, error: null }),
     // Models the CAS write: a quotes UPDATE resolves to the rows that matched the
     // .eq('approval_snapshot', ...) filter — [] simulates a lost concurrency race.
+    // An inbox_items UPDATE (resolveInboxRequest) resolves per inboxUpdateError.
     then: (resolve: (v: unknown) => void) => {
-      const data = updating && table === 'quotes' ? quoteUpdateRows : null;
+      let data: unknown = null;
+      let error: unknown = null;
+      if (updating && table === 'quotes') {
+        data = quoteUpdateRows;
+      } else if (updating && table === 'inbox_items') {
+        error = inboxUpdateError;
+        data = inboxUpdateError ? null : [{ id: (inboxItem as Row | null)?.id }];
+      }
       updating = false;
-      resolve({ data, error: null });
+      resolve({ data, error });
     },
   });
-  return { client: b, updates, eqCalls };
+  return { client: b, updates, eqCalls, activityInserts };
 }
 
 function bookedQuote(overrides: Row = {}, pending: Row | null = {
@@ -322,5 +344,78 @@ describe('POST /api/quotes/[id]/apply-color-request', () => {
     expect(res.status).toBe(200);
     expect(sendSmsMock).not.toHaveBeenCalled();
     expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+});
+
+// #208: resolveInboxRequest was writing the `by` DISPLAY STRING (e.g.
+// 'staff:naldo') into inbox_items.handled_by, a `uuid references
+// auth.users(id)` column — Postgres rejects non-uuid text, so the WHOLE
+// update (status/handled_at too) silently failed on every real call, and the
+// error was never checked. These tests exercise resolveInboxRequest's actual
+// DB write (the pre-existing suite above never does: its `makeSb` always
+// leaves the inbox_items lookup empty, so resolveInboxRequest short-circuits
+// before reaching the update at all).
+describe('POST /api/quotes/[id]/apply-color-request — resolveInboxRequest handled_by (#208)', () => {
+  const INBOX_ITEM = { id: 'inbox-item-1' };
+
+  it('APPLY stamps the real operator uuid onto handled_by — never the "staff:name" display string', async () => {
+    getOperatorMock.mockResolvedValueOnce({ id: 'op-uuid-123', name: 'naldo', email: 'naldo@yulelovelights.com' });
+    const { client, updates, activityInserts } = makeSb(bookedQuote(), undefined, undefined, {
+      inboxItem: INBOX_ITEM,
+    });
+    sbRef.current = client;
+
+    const res = await POST(req({ action: 'apply' }), ctx());
+    expect(res.status).toBe(200);
+
+    expect(updates.inbox_items).toHaveLength(1);
+    expect(updates.inbox_items[0]).toMatchObject({ status: 'completed', handled_by: 'op-uuid-123' });
+    expect(updates.inbox_items[0].handled_by).not.toContain('staff:');
+    expect(activityInserts[0]).toMatchObject({ actor: 'op-uuid-123', action: 'completed' });
+  });
+
+  it('DISMISS stamps the real operator uuid onto handled_by — never the "staff:name" display string', async () => {
+    getOperatorMock.mockResolvedValueOnce({ id: 'op-uuid-456', name: 'jason', email: 'jason@yulelovelights.com' });
+    const { client, updates } = makeSb(bookedQuote(), undefined, undefined, { inboxItem: INBOX_ITEM });
+    sbRef.current = client;
+
+    const res = await POST(req({ action: 'dismiss', reason: 'discussed by phone' }), ctx());
+    expect(res.status).toBe(200);
+
+    expect(updates.inbox_items[0]).toMatchObject({ status: 'completed', handled_by: 'op-uuid-456' });
+  });
+
+  it('writes NULL (never a sentinel string) to handled_by when no operator resolves', async () => {
+    getOperatorMock.mockResolvedValueOnce(null);
+    const { client, updates } = makeSb(bookedQuote(), undefined, undefined, { inboxItem: INBOX_ITEM });
+    sbRef.current = client;
+
+    const res = await POST(req({ action: 'apply' }), ctx());
+    expect(res.status).toBe(200);
+
+    expect(updates.inbox_items[0].handled_by).toBeNull();
+  });
+
+  it('logs (does not swallow) an inbox_items update failure, and still 200s the request (best-effort)', async () => {
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      getOperatorMock.mockResolvedValueOnce({ id: 'op-uuid-123', name: 'naldo' });
+      const { client, activityInserts } = makeSb(bookedQuote(), undefined, undefined, {
+        inboxItem: INBOX_ITEM,
+        inboxUpdateError: { message: 'invalid input syntax for type uuid' },
+      });
+      sbRef.current = client;
+
+      const res = await POST(req({ action: 'apply' }), ctx());
+      expect(res.status).toBe(200); // the quote-level apply still succeeds — inbox resolve is best-effort
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        '[api/quotes/:id/apply-color-request] inbox item resolve failed (non-fatal):',
+        'invalid input syntax for type uuid',
+      );
+      // Never claims "completed" in the activity log when the item update didn't land.
+      expect(activityInserts).toHaveLength(0);
+    } finally {
+      consoleWarnSpy.mockRestore();
+    }
   });
 });

@@ -512,6 +512,38 @@ describe('listJobsForAdmin', () => {
     // ('job-cust-2') is preferred over the quote's ('quote-cust-2').
     expect(cards[1]).toMatchObject({ id: 'j2', highlevelContactId: null, customerId: 'job-cust-2' });
   });
+
+  // #199: is_nce joins the same way is_test does above — feeds the NceBadge.
+  it('joins is_nce from the linked quote', async () => {
+    const { client } = makeSb({
+      jobs: {
+        list: [
+          { id: 'j1', job_number: 1001, quote_id: 'q1', status: 'to_schedule', type: 'one_off', install_date: null, created_at: '2026-06-01', line_items: [] },
+          { id: 'j2', job_number: 1002, quote_id: 'q2', status: 'to_schedule', type: 'one_off', install_date: null, created_at: '2026-06-02', line_items: [] },
+        ],
+      },
+      quotes: {
+        list: [
+          { id: 'q1', customer_name: 'Alice', is_test: false, is_nce: true },
+          { id: 'q2', customer_name: 'Bob', is_test: false, is_nce: false },
+        ],
+      },
+    });
+    sbRef.current = client;
+
+    const cards = await listJobsForAdmin();
+    expect(cards[0]).toMatchObject({ id: 'j1', isNce: true });
+    expect(cards[1]).toMatchObject({ id: 'j2', isNce: false });
+  });
+
+  it('defaults isNce to false when a job has no linked quote', async () => {
+    const { client } = makeSb({
+      jobs: { list: [{ id: 'j1', job_number: null, quote_id: null, status: 'to_schedule', type: 'one_off', install_date: null, created_at: '2026-06-01', line_items: null }] },
+    });
+    sbRef.current = client;
+    const cards = await listJobsForAdmin();
+    expect(cards[0].isNce).toBe(false);
+  });
 });
 
 describe('getJobDetail', () => {
@@ -579,6 +611,31 @@ describe('getJobDetail', () => {
 
     const detail = await getJobDetail('j1');
     expect(detail?.intendedDepositUsd).toBe(800);
+  });
+
+  // #199: is_nce joins the same way is_test does — drives the NceBadge on
+  // the job detail header.
+  it('surfaces the linked quote\'s is_nce', async () => {
+    const { client } = makeSb({
+      jobs: { read: { id: 'j1', quote_id: 'q1', status: 'to_schedule' } },
+      quotes: { read: { customer_name: 'Erin', is_nce: true } },
+      invoices: { read: null },
+    });
+    sbRef.current = client;
+
+    const detail = await getJobDetail('j1');
+    expect(detail?.isNce).toBe(true);
+  });
+
+  it('defaults isNce to false when the job has no linked quote', async () => {
+    const { client } = makeSb({
+      jobs: { read: { id: 'j1', quote_id: null, status: 'to_schedule' } },
+      invoices: { read: null },
+    });
+    sbRef.current = client;
+
+    const detail = await getJobDetail('j1');
+    expect(detail?.isNce).toBe(false);
   });
 
   it('returns null when the job does not exist', async () => {

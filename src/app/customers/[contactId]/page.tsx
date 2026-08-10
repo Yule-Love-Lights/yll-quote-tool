@@ -12,6 +12,7 @@ import { PipelineActionsMenuRefresh } from '@/components/admin/PipelineActionsMe
 import { RebookButton } from '@/components/dashboard/RebookButton';
 import { CustomerTenureEditor } from '@/components/dashboard/CustomerTenureEditor';
 import { CustomerTagsEditor } from '@/components/dashboard/CustomerTagsEditor';
+import { CustomerPropertiesPanel } from '@/components/dashboard/CustomerPropertiesPanel';
 import { getPropertiesForCustomer, getCustomer } from '@/lib/customers';
 import { getCustomerTenure, tenureHeaderLabel } from '@/lib/customerTenure';
 import { getContact, isHighLevelConfigured } from '@/lib/integrations/highlevel';
@@ -129,9 +130,33 @@ export default async function CustomerDetailPage({
   // so RebookButton can scope the clone to a KNOWN building instead of falling
   // back to a system-wide "most recently approved" guess when a customer has
   // more than one property.
-  const rebookProperties = customerId
-    ? (await getPropertiesForCustomer(customerId)).map(p => ({ id: p.id, address: p.address }))
+  //
+  // #205: fetched ONCE with includeArchived:true (the full set) so the new
+  // Properties panel below can toggle "Show archived" client-side without a
+  // second round trip.
+  //
+  // #205 review fix (customer/staff HIGH, F1): rebookProperties now passes
+  // ALL properties (archived included) to RebookButton, NOT a live-only
+  // filter. Archived-ness is a display preference, not a claim about quote
+  // history — a customer can have a LIVE property with zero history and an
+  // ARCHIVED one holding last season's approved quote; filtering archived
+  // out here made "1 visible property" stop meaning "unambiguous", so a
+  // click could silently post against the wrong (empty) property and 404.
+  // See RebookButton's decideRebookClick + rebook.ts's own #205 comments.
+  const allProperties = customerId
+    ? await getPropertiesForCustomer(customerId, { includeArchived: true })
     : [];
+  const rebookProperties = allProperties.map(p => ({
+    id: p.id,
+    address: p.address,
+    archivedAt: p.archived_at ?? null,
+  }));
+  const propertiesPanelData = allProperties.map(p => ({
+    id: p.id,
+    address: p.address,
+    nickname: p.nickname ?? null,
+    archivedAt: p.archived_at ?? null,
+  }));
 
   // Customer tenure (#178): auto-derived (deposit-paid + legacy-rebook years)
   // unioned with staff-entered manual years. Matches by EITHER id kind, same
@@ -232,6 +257,22 @@ export default async function CustomerDetailPage({
             </p>
           )}
         </section>
+
+        {/* Properties (#205, full manage): every address this customer has had
+            quote activity on, plus any staff added by hand. Nickname label,
+            a Google Maps pin link, add/archive — archiving hides a property
+            from the default list without deleting it (quotes/jobs/invoices
+            reference properties by id). Same pre-backfill guard as tenure/
+            tags above — a customerId is required to fetch/save against. */}
+        {customerId && (
+          <section
+            className="rounded-lg border p-4 mb-6"
+            style={{ background: 'var(--op-bg-raised)', borderColor: 'var(--op-border)' }}
+          >
+            <h2 className="text-sm font-semibold mb-3" style={{ color: 'var(--op-text)' }}>Properties</h2>
+            <CustomerPropertiesPanel customerId={customerId} initialProperties={propertiesPanelData} />
+          </section>
+        )}
 
         {/* Quote history (this tool's data) */}
         <section
