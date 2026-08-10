@@ -6,17 +6,14 @@
 -- the same row: budgeted hours, labor revenue, a placeholder-rates marker, and
 -- future manual-override audit columns.
 --
--- HOW TO APPLY: paste into the Supabase SQL Editor and Run. Idempotent; safe to
--- re-run.
+-- HOW TO APPLY: applied directly via Supabase MCP (see AGENTS.md's migration-
+-- application default) rather than the manual SQL-editor paste this repo used
+-- before 2026-08-07. Idempotent; safe to re-run.
 -- =====================================================================
 
-BEGIN;
-
-ALTER TABLE public.jobs
-  ADD COLUMN IF NOT EXISTS budgeted_hours numeric,
-  ADD COLUMN IF NOT EXISTS labor_revenue_cents integer,
-  ADD COLUMN IF NOT EXISTS rates_are_placeholder boolean NOT NULL DEFAULT true,
-  ADD COLUMN IF NOT EXISTS budgeted_hours_overridden_at timestamptz,
-  ADD COLUMN IF NOT EXISTS budgeted_hours_overridden_by text;
-
-COMMIT;
+alter table public.jobs
+  add column if not exists budgeted_hours numeric,
+  add column if not exists labor_revenue_cents integer,
+  add column if not exists rates_are_placeholder boolean not null default true,
+  add column if not exists budgeted_hours_overridden_at timestamptz,
+  add column if not exists budgeted_hours_overridden_by text;

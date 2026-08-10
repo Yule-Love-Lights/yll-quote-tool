@@ -1,4 +1,5 @@
 import { calculateEventQuote } from './event/pricing';
+import { moneyTimesRate } from './money';
 import { calculatePermanentQuote } from './permanent/pricing';
 import { makeDefaultPermanentFields } from './permanent/types';
 import { calculatePermanentBistro } from './permanentBistro/pricing';
@@ -438,9 +439,17 @@ export function estimateLaborForQuote(
       budgetedHours += hoursFromQuantity(customLineItems, PLACEHOLDER.defaultUnmappedMinutes);
     }
 
+    // moneyTimesRate is this repo's one shared amount-times-rate helper (used by
+    // pricingEngine.ts itself) — it converts to integer cents/millionths before
+    // multiplying so a binary-float rounding edge can't move an exact half-cent
+    // below the boundary. Reusing it here keeps labor_revenue_cents on the same
+    // rounding rule as every other money figure in this codebase, rather than a
+    // third slightly-different inline variant.
+    const laborRevenueUsd = moneyTimesRate(result.taxableAmount, PLACEHOLDER.laborRevenuePercentage);
+
     return {
       budgetedHours: roundHours(budgetedHours),
-      laborRevenueCents: Math.round(result.taxableAmount * 100 * PLACEHOLDER.laborRevenuePercentage),
+      laborRevenueCents: Math.round(laborRevenueUsd * 100),
       ratesArePlaceholder: true,
       unmappedCategories: [...unmappedCategories],
     };
