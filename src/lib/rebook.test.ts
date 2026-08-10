@@ -29,10 +29,17 @@ type Row = Record<string, unknown>;
 // #198: customers is optional/empty by default — rebookLastSeason now also
 // reads getCustomer(customerId) for tag inheritance; most existing tests
 // never seed it, which correctly resolves to "no customer row" (null).
-function makeFakeSupabase(initial: { quotes?: Row[]; customers?: Row[] } = {}) {
+//
+// #205 (F1 test infra): properties is likewise optional/empty by default —
+// resurrectPropertyForRebook reads it, and an un-seeded table (the dynamic
+// tables[table] ?? (tables[table] = []) fallback below) correctly resolves
+// to "no such row", a graceful no-op. update() support was added ONLY for
+// this — every OTHER existing use of this fake is select/insert-only.
+function makeFakeSupabase(initial: { quotes?: Row[]; customers?: Row[]; properties?: Row[] } = {}) {
   const tables: Record<string, Row[]> = {
     quotes: initial.quotes ? initial.quotes.map((r) => ({ ...r })) : [],
     customers: initial.customers ? initial.customers.map((r) => ({ ...r })) : [],
+    properties: initial.properties ? initial.properties.map((r) => ({ ...r })) : [],
   };
   let counter = 0;
 
@@ -45,6 +52,14 @@ function makeFakeSupabase(initial: { quotes?: Row[]; customers?: Row[] } = {}) {
       filters: [] as Array<(r: Row) => boolean>,
       orderBy: null as null | { col: string; asc: boolean },
       limitN: null as number | null,
+    };
+    // #205 (F1 test infra): plain filter-then-assign — no uniqueness
+    // modeling needed (unlike customers.test.ts's fuller fake), since
+    // nothing here ever updates a column with a uniqueness constraint.
+    const doUpdate = () => {
+      const matched = rows.filter((r) => state.filters.every((f) => f(r)));
+      for (const r of matched) Object.assign(r, state.updateRow);
+      return matched;
     };
     const match = () => {
       let out = rows.filter((r) => state.filters.every((f) => f(r)));
@@ -76,6 +91,11 @@ function makeFakeSupabase(initial: { quotes?: Row[]; customers?: Row[] } = {}) {
         state.insertRow = row;
         return builder;
       },
+      update(row: Row) {
+        state.op = 'update';
+        state.updateRow = row;
+        return builder;
+      },
       eq(col: string, val: unknown) {
         state.filters.push((r) => r[col] === val);
         return builder;
@@ -102,6 +122,10 @@ function makeFakeSupabase(initial: { quotes?: Row[]; customers?: Row[] } = {}) {
       },
       async maybeSingle() {
         if (state.op === 'insert') return { data: doInsert(), error: null };
+        if (state.op === 'update') {
+          const matched = doUpdate();
+          return { data: matched[0] ?? null, error: null };
+        }
         return { data: match()[0] ?? null, error: null };
       },
       async single() {
@@ -547,6 +571,85 @@ describe('rebookLastSeason', () => {
     const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
     expect(created.created_by ?? null).toBeNull();
   });
+
+  // #205 review fix (customer/staff HIGH, F1): a rebook that resolves onto
+  // an ARCHIVED property must resurrect it — a raw quote insert bypasses
+  // findOrCreateProperty's own resurrection rule entirely, so without this
+  // fix a brand-new LIVE draft could silently point at a still-archived
+  // property.
+  describe('archive resurrection on rebook (#205 F1)', () => {
+    it('un-archives the target property when rebooking resolves onto an archived one', async () => {
+      const fake = makeFakeSupabase({
+        quotes: [{ id: 'a', customer_id: 'c1', property_id: 'p1', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 } }],
+        properties: [{ id: 'p1', customer_id: 'c1', archived_at: '2026-01-01T00:00:00Z' }],
+      });
+      sbRef.current = fake.client;
+
+      const res = await rebookLastSeason('c1');
+
+      expect(res?.quoteId).toBeTruthy();
+      expect(fake.tables.properties.find((p) => p.id === 'p1')!.archived_at).toBeNull();
+    });
+
+    it('logs the resurrection (customer + property named, "triggered by rebook")', async () => {
+      const fake = makeFakeSupabase({
+        quotes: [{ id: 'a', customer_id: 'c1', property_id: 'p1', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 } }],
+        properties: [{ id: 'p1', customer_id: 'c1', archived_at: '2026-01-01T00:00:00Z' }],
+      });
+      sbRef.current = fake.client;
+      const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+
+      await rebookLastSeason('c1');
+
+      expect(infoSpy).toHaveBeenCalledTimes(1);
+      expect(infoSpy.mock.calls[0][0]).toContain('p1');
+      expect(infoSpy.mock.calls[0][0]).toContain('c1');
+      expect(infoSpy.mock.calls[0][0]).toContain('rebook');
+      infoSpy.mockRestore();
+    });
+
+    it('leaves an already-live property untouched (no needless write, no log)', async () => {
+      const fake = makeFakeSupabase({
+        quotes: [{ id: 'a', customer_id: 'c1', property_id: 'p1', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 } }],
+        properties: [{ id: 'p1', customer_id: 'c1', archived_at: null }],
+      });
+      sbRef.current = fake.client;
+      const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+
+      const res = await rebookLastSeason('c1');
+
+      expect(res?.quoteId).toBeTruthy();
+      expect(fake.tables.properties.find((p) => p.id === 'p1')!.archived_at).toBeNull();
+      expect(infoSpy).not.toHaveBeenCalled();
+      infoSpy.mockRestore();
+    });
+
+    it('resurrects the EXPLICITLY-scoped property (propertyId param), not just the source quote\'s own', async () => {
+      const fake = makeFakeSupabase({
+        quotes: [
+          { id: 'a', customer_id: 'c1', property_id: 'p-home', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 } },
+        ],
+        properties: [{ id: 'p-home', customer_id: 'c1', archived_at: '2026-01-01T00:00:00Z' }],
+      });
+      sbRef.current = fake.client;
+
+      await rebookLastSeason('c1', 'p-home');
+
+      expect(fake.tables.properties.find((p) => p.id === 'p-home')!.archived_at).toBeNull();
+    });
+
+    it('does not throw when the target property row does not exist (best-effort)', async () => {
+      const fake = makeFakeSupabase({
+        quotes: [{ id: 'a', customer_id: 'c1', property_id: 'ghost', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 } }],
+        // no properties row for 'ghost'
+      });
+      sbRef.current = fake.client;
+
+      const res = await rebookLastSeason('c1');
+
+      expect(res?.quoteId).toBeTruthy();
+    });
+  });
 });
 
 // ─── DB: rebookFromQuote (#116 — revive a specific dead quote) ────────────────
@@ -685,5 +788,38 @@ describe('rebookFromQuote', () => {
     const res = await rebookFromQuote('a');
     const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
     expect(created.created_by ?? null).toBeNull();
+  });
+
+  // #205 review fix (customer/staff HIGH, F1 — same root cause as
+  // rebookLastSeason's own describe block above): rebookFromQuote ALSO
+  // inserts via a raw quote insert that bypasses findOrCreateProperty, and
+  // always carries the source quote's OWN property_id through unchanged
+  // (no override param) — a #116 revive of an old declined/cancelled quote
+  // whose property has since been archived must resurrect it too.
+  describe('archive resurrection on rebook (#205 F1)', () => {
+    it("un-archives the source quote's property when it is archived", async () => {
+      const fake = makeFakeSupabase({
+        quotes: [{ id: 'dead', customer_id: 'c1', property_id: 'p1', status: 'declined', inputs: {}, result: { total: 5 } }],
+        properties: [{ id: 'p1', customer_id: 'c1', archived_at: '2026-01-01T00:00:00Z' }],
+      });
+      sbRef.current = fake.client;
+
+      const res = await rebookFromQuote('dead');
+
+      expect(res?.quoteId).toBeTruthy();
+      expect(fake.tables.properties.find((p) => p.id === 'p1')!.archived_at).toBeNull();
+    });
+
+    it('leaves an already-live property untouched', async () => {
+      const fake = makeFakeSupabase({
+        quotes: [{ id: 'dead', customer_id: 'c1', property_id: 'p1', status: 'declined', inputs: {}, result: { total: 5 } }],
+        properties: [{ id: 'p1', customer_id: 'c1', archived_at: null }],
+      });
+      sbRef.current = fake.client;
+
+      await rebookFromQuote('dead');
+
+      expect(fake.tables.properties.find((p) => p.id === 'p1')!.archived_at).toBeNull();
+    });
   });
 });

@@ -5,7 +5,12 @@ import { useRouter } from 'next/navigation';
 
 type RebookState = 'idle' | 'picking' | 'loading' | 'no-source' | 'error';
 
-export type RebookProperty = { id: string; address: string | null };
+// #205 review fix (customer/staff HIGH, F1): archivedAt is a DISPLAY
+// preference (see CustomerPropertiesPanel), not a claim about quote
+// history — the caller must pass ALL of a customer's properties here
+// (archived included), never a pre-filtered live-only subset. See this
+// function's own comment for why.
+export type RebookProperty = { id: string; address: string | null; archivedAt?: string | null };
 
 // PURE: decides what a click on "Rebook last season" should do, given the
 // customer's properties (WT-53). A customer with 0 or 1 property has an
@@ -15,6 +20,18 @@ export type RebookProperty = { id: string; address: string | null };
 // system-wide "most recently approved" guess that could clone the wrong
 // building. Exported + unit-tested directly (mirrors buildRebookInsert in
 // src/lib/rebook.ts).
+//
+// #205 review fix (customer/staff HIGH, F1): `properties` MUST be the
+// customer's FULL set, archived included — archived-ness is a display
+// preference on the Properties tab (CustomerPropertiesPanel), not a claim
+// that a property has no history. Before this fix, the caller passed only
+// LIVE properties, so "1 visible property" stopped meaning "unambiguous" —
+// it could mean "the real source (an approved quote's property) is
+// archived and hidden from this list", and the click would silently post
+// against the WRONG (empty-history) property, 404ing with "No approved
+// quote to rebook from" on a customer who demonstrably has one. This
+// function's own count logic doesn't change (it never looked at archived
+// state) — only what the CALLER must pass in changed.
 export function decideRebookClick(
   properties: RebookProperty[],
 ): { kind: 'post'; propertyId?: string } | { kind: 'pick' } {
@@ -107,7 +124,7 @@ export function RebookButton({
           <option value="">Choose a property…</option>
           {properties.map((p) => (
             <option key={p.id} value={p.id}>
-              {p.address ?? p.id.slice(0, 8)}
+              {(p.address ?? p.id.slice(0, 8)) + (p.archivedAt ? ' (archived)' : '')}
             </option>
           ))}
         </select>

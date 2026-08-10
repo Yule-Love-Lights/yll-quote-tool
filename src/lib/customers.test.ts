@@ -27,6 +27,10 @@ import {
   propagateQuoteTagsToCustomer,
   setCustomerTags,
   quoteRowToIdentity,
+  updateProperty,
+  archiveProperty,
+  unarchiveProperty,
+  createPropertyForCustomer,
 } from './customers';
 
 // ─── #214: quoteRowToIdentity — stored-row → attach identity ────────────────
@@ -109,6 +113,13 @@ function makeFakeSupabase(initial: { quotes?: Row[]; customers?: Row[]; properti
   // unique-violation (23505), simulating a concurrent-create race — the retry
   // re-select is the code path this recovers via.
   const forceInsertErrorOnce: Partial<Record<string, { code: string; message: string }>> = {};
+  // #205 (F4 test infra): lets a test force the NEXT plain SELECT on a given
+  // table to fail — models a pre-migration "column does not exist" error on
+  // findOrCreateProperty's existing-row lookup (archived_at added by a
+  // migration this PR ships but doesn't apply). Scoped to the plain-select
+  // fallback only (never insert/update), same one-shot-consume shape as
+  // forceInsertErrorOnce above.
+  const forceSelectErrorOnce: Partial<Record<string, { message: string }>> = {};
 
   function from(table: string) {
     const rows = tables[table] ?? (tables[table] = []);
@@ -177,6 +188,12 @@ function makeFakeSupabase(initial: { quotes?: Row[]; customers?: Row[]; properti
     const takeForcedInsertError = () => {
       const err = forceInsertErrorOnce[table];
       if (err) delete forceInsertErrorOnce[table];
+      return err ?? null;
+    };
+    // #205 (F4 test infra): same one-shot consume, for the plain-select fallback.
+    const takeForcedSelectError = () => {
+      const err = forceSelectErrorOnce[table];
+      if (err) delete forceSelectErrorOnce[table];
       return err ?? null;
     };
 
@@ -257,6 +274,8 @@ function makeFakeSupabase(initial: { quotes?: Row[]; customers?: Row[]; properti
           }
           return { data: matched[0] ?? null, error: null };
         }
+        const forcedSelect = takeForcedSelectError();
+        if (forcedSelect) return { data: null, error: forcedSelect };
         return { data: match()[0] ?? null, error: null };
       },
       async single() {
@@ -291,6 +310,9 @@ function makeFakeSupabase(initial: { quotes?: Row[]; customers?: Row[]; properti
     tables,
     forceInsertErrorOnce: (table: string, err: { code: string; message: string }) => {
       forceInsertErrorOnce[table] = err;
+    },
+    forceSelectErrorOnce: (table: string, err: { message: string }) => {
+      forceSelectErrorOnce[table] = err;
     },
   };
 }
@@ -958,17 +980,37 @@ describe('findOrCreateProperty', () => {
 
   // W2-010: same race-recovery coverage as findOrCreateCustomer, for the
   // identical branch in findOrCreateProperty (UNIQUE(customer_id, address_key)).
+  //
+  // #205 review fix (F6 — pre-existing test repair, reviewer-verified):
+  // this test used to pre-seed the WINNER row directly, so
+  // findOrCreateProperty's own up-front existing-row SELECT found it
+  // immediately and returned WITHOUT ever attempting an insert — the
+  // forced 23505 sat unconsumed, and the retry-recovery branch this test
+  // claims to cover never actually ran (it "passed" only because the
+  // direct-hit path produces the identical observable result). Repaired
+  // using the SAME genuine-concurrency technique this file already uses
+  // for findOrCreateCustomer (see "two concurrent findOrCreateCustomer
+  // calls..." below): Promise.all with NO pre-seed and NO forced error.
+  // Traced precisely via the fake's microtask interleaving — both calls
+  // SUSPEND at their own first await (the existing-row SELECT, finding
+  // nothing, since the table starts empty), so both proceed to INSERT;
+  // the winner's insert lands first and genuinely occupies the
+  // address_key; the loser's insert then hits a REAL (unforced) 23505 —
+  // by the time its own single() resolves, the winner's row already
+  // exists — and ITS retry-select genuinely recovers the winner. This is
+  // what actually exercises the retry-recovery branch.
   it('recovers the existing row on a 23505 unique-violation race (concurrent create)', async () => {
-    const fake = makeFakeSupabase({
-      properties: [{ id: 'winner-1', customer_id: 'cust-1', address_key: '123 main st' }],
-    });
+    const fake = makeFakeSupabase();
     sbRef.current = fake.client;
-    fake.forceInsertErrorOnce('properties', { code: '23505', message: 'duplicate key value violates unique constraint' });
 
-    const res = await findOrCreateProperty('cust-1', '123 Main St.');
+    const [a, b] = await Promise.all([
+      findOrCreateProperty('cust-1', '123 Main St.'),
+      findOrCreateProperty('cust-1', '123 Main St.'),
+    ]);
 
-    expect(res?.id).toBe('winner-1');
-    expect(fake.tables.properties).toHaveLength(1);
+    expect(a?.id).toBeTruthy();
+    expect(b?.id).toBe(a?.id); // both converge on the SAME row
+    expect(fake.tables.properties).toHaveLength(1); // never duplicated
   });
 
   it('returns null on a genuine hard insert error (not a recoverable race)', async () => {
@@ -1424,5 +1466,460 @@ describe('setCustomerTags', () => {
     const { data, error } = await setCustomerTags('cust-1', { isNce: true });
     expect(data).toBeNull();
     expect(error).not.toBeNull();
+  });
+});
+
+// ─── #205: property management (nickname, archive, manual add) ─────────────
+
+describe('getPropertiesForCustomer — includeArchived (#205)', () => {
+  it('excludes archived properties by default', async () => {
+    const fake = makeFakeSupabase({
+      properties: [
+        { id: 'p1', customer_id: 'cust-1', address_key: 'a', archived_at: null },
+        { id: 'p2', customer_id: 'cust-1', address_key: 'b', archived_at: '2026-01-01T00:00:00Z' },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const list = await getPropertiesForCustomer('cust-1');
+    expect(list.map((p) => p.id)).toEqual(['p1']);
+  });
+
+  it('includes archived properties when includeArchived is true', async () => {
+    const fake = makeFakeSupabase({
+      properties: [
+        { id: 'p1', customer_id: 'cust-1', address_key: 'a', archived_at: null },
+        { id: 'p2', customer_id: 'cust-1', address_key: 'b', archived_at: '2026-01-01T00:00:00Z' },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const list = await getPropertiesForCustomer('cust-1', { includeArchived: true });
+    expect(list.map((p) => p.id).sort()).toEqual(['p1', 'p2']);
+  });
+});
+
+describe('updateProperty', () => {
+  it('trims whitespace from the nickname', async () => {
+    const fake = makeFakeSupabase({
+      properties: [{ id: 'p1', customer_id: 'cust-1', address_key: '1 a st', nickname: null }],
+    });
+    sbRef.current = fake.client;
+
+    const { data, error } = await updateProperty('cust-1', 'p1', { nickname: "  Talonda's House  " });
+    expect(error).toBeNull();
+    expect(data?.nickname).toBe("Talonda's House");
+  });
+
+  it('caps the nickname at 80 characters', async () => {
+    const fake = makeFakeSupabase({
+      properties: [{ id: 'p1', customer_id: 'cust-1', address_key: '1 a st', nickname: null }],
+    });
+    sbRef.current = fake.client;
+
+    const long = 'x'.repeat(100);
+    const { data } = await updateProperty('cust-1', 'p1', { nickname: long });
+    expect(data?.nickname).toBe('x'.repeat(80));
+  });
+
+  it('treats an empty/whitespace-only nickname as a clear (-> null)', async () => {
+    const fake = makeFakeSupabase({
+      properties: [{ id: 'p1', customer_id: 'cust-1', address_key: '1 a st', nickname: 'Old Label' }],
+    });
+    sbRef.current = fake.client;
+
+    const { data } = await updateProperty('cust-1', 'p1', { nickname: '   ' });
+    expect(data?.nickname).toBeNull();
+  });
+
+  it('returns no data (not found) for a property that belongs to a DIFFERENT customer — never edited', async () => {
+    const fake = makeFakeSupabase({
+      properties: [{ id: 'p1', customer_id: 'cust-OTHER', address_key: '1 a st', nickname: null }],
+    });
+    sbRef.current = fake.client;
+
+    const { data, error } = await updateProperty('cust-1', 'p1', { nickname: 'Hijack' });
+    expect(data).toBeNull();
+    expect(error).toBeNull();
+    expect(fake.tables.properties[0].nickname).toBeNull(); // untouched
+  });
+
+  it('returns no data (not found) for an unknown property id', async () => {
+    const fake = makeFakeSupabase();
+    sbRef.current = fake.client;
+    const { data, error } = await updateProperty('cust-1', 'missing', { nickname: 'x' });
+    expect(data).toBeNull();
+    expect(error).toBeNull();
+  });
+
+  it('returns an error (not a throw) when Supabase is unconfigured', async () => {
+    sbRef.current = null;
+    const { data, error } = await updateProperty('cust-1', 'p1', { nickname: 'x' });
+    expect(data).toBeNull();
+    expect(error).not.toBeNull();
+  });
+});
+
+describe('archiveProperty / unarchiveProperty', () => {
+  it('archiving stamps archived_at and hides the property from the default list', async () => {
+    const fake = makeFakeSupabase({
+      properties: [{ id: 'p1', customer_id: 'cust-1', address: '1 A St', address_key: '1 a st', archived_at: null }],
+    });
+    sbRef.current = fake.client;
+
+    const { data, error } = await archiveProperty('cust-1', 'p1');
+    expect(error).toBeNull();
+    expect(data?.archived_at).toBeTruthy();
+
+    expect(await getPropertiesForCustomer('cust-1')).toHaveLength(0);
+    expect(await getPropertiesForCustomer('cust-1', { includeArchived: true })).toHaveLength(1);
+  });
+
+  it('unarchiving clears archived_at and the property reappears in the default list', async () => {
+    const fake = makeFakeSupabase({
+      properties: [{ id: 'p1', customer_id: 'cust-1', address_key: '1 a st', archived_at: '2026-01-01T00:00:00Z' }],
+    });
+    sbRef.current = fake.client;
+
+    const { data, error } = await unarchiveProperty('cust-1', 'p1');
+    expect(error).toBeNull();
+    expect(data?.archived_at).toBeNull();
+    expect(await getPropertiesForCustomer('cust-1')).toHaveLength(1);
+  });
+
+  it('never archives a property belonging to a DIFFERENT customer', async () => {
+    const fake = makeFakeSupabase({
+      properties: [{ id: 'p1', customer_id: 'cust-OTHER', address_key: '1 a st', archived_at: null }],
+    });
+    sbRef.current = fake.client;
+
+    const { data } = await archiveProperty('cust-1', 'p1');
+    expect(data).toBeNull();
+    expect(fake.tables.properties[0].archived_at).toBeNull(); // untouched
+  });
+
+  it('never unarchives a property belonging to a DIFFERENT customer', async () => {
+    const fake = makeFakeSupabase({
+      properties: [{ id: 'p1', customer_id: 'cust-OTHER', address_key: '1 a st', archived_at: '2026-01-01T00:00:00Z' }],
+    });
+    sbRef.current = fake.client;
+
+    const { data } = await unarchiveProperty('cust-1', 'p1');
+    expect(data).toBeNull();
+    expect(fake.tables.properties[0].archived_at).toBe('2026-01-01T00:00:00Z'); // untouched
+  });
+});
+
+describe('createPropertyForCustomer', () => {
+  it('creates a brand-new property with the given nickname, created:true', async () => {
+    const fake = makeFakeSupabase();
+    sbRef.current = fake.client;
+
+    const { data, error, created } = await createPropertyForCustomer('cust-1', { address: '1 Main St', nickname: 'Home' });
+    expect(error).toBeNull();
+    expect(created).toBe(true);
+    expect(data?.address).toBe('1 Main St');
+    expect(data?.nickname).toBe('Home');
+    expect(fake.tables.properties).toHaveLength(1);
+  });
+
+  // #205 review fix (staff/customer MED, F2): a live collision used to
+  // silently DROP an explicitly-typed nickname (staff types "Warehouse",
+  // sees the form close, believes it saved — it didn't). An explicit
+  // nickname now applies on ANY collision, live or archived, symmetric with
+  // the archived-collision behavior below.
+  it('a collision with an existing LIVE property resolves to that row AND applies an explicitly-typed nickname, created:false', async () => {
+    const fake = makeFakeSupabase({
+      properties: [
+        {
+          id: 'p1',
+          customer_id: 'cust-1',
+          address: '1 Main St',
+          address_key: '1 main st',
+          nickname: 'Original Label',
+          archived_at: null,
+        },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const { data, error, created } = await createPropertyForCustomer('cust-1', { address: '1  MAIN st.', nickname: 'New Label' });
+    expect(error).toBeNull();
+    expect(created).toBe(false);
+    expect(data?.id).toBe('p1');
+    expect(data?.nickname).toBe('New Label'); // now APPLIED — the whole point of F2
+    expect(fake.tables.properties).toHaveLength(1); // no duplicate
+  });
+
+  it('a collision with an existing LIVE property and NO nickname provided leaves its existing nickname untouched', async () => {
+    const fake = makeFakeSupabase({
+      properties: [
+        {
+          id: 'p1',
+          customer_id: 'cust-1',
+          address: '1 Main St',
+          address_key: '1 main st',
+          nickname: 'Original Label',
+          archived_at: null,
+        },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const { data, error, created } = await createPropertyForCustomer('cust-1', { address: '1  MAIN st.' });
+    expect(error).toBeNull();
+    expect(created).toBe(false);
+    expect(data?.id).toBe('p1');
+    expect(data?.nickname).toBe('Original Label'); // nothing to apply — untouched
+    expect(fake.tables.properties).toHaveLength(1);
+  });
+
+  it('a collision with an ARCHIVED property unarchives it and applies the nickname, created:false', async () => {
+    const fake = makeFakeSupabase({
+      properties: [
+        {
+          id: 'p1',
+          customer_id: 'cust-1',
+          address: '1 Main St',
+          address_key: '1 main st',
+          nickname: null,
+          archived_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const { data, error, created } = await createPropertyForCustomer('cust-1', { address: '1 Main St', nickname: 'Resurrected' });
+    expect(error).toBeNull();
+    expect(created).toBe(false);
+    expect(data?.id).toBe('p1');
+    expect(data?.archived_at).toBeNull();
+    expect(data?.nickname).toBe('Resurrected');
+    expect(fake.tables.properties).toHaveLength(1); // no duplicate
+  });
+
+  it('a collision with an ARCHIVED property and no nickname provided keeps its existing nickname', async () => {
+    const fake = makeFakeSupabase({
+      properties: [
+        {
+          id: 'p1',
+          customer_id: 'cust-1',
+          address: '1 Main St',
+          address_key: '1 main st',
+          nickname: 'Keep Me',
+          archived_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const { data, created } = await createPropertyForCustomer('cust-1', { address: '1 Main St' });
+    expect(created).toBe(false);
+    expect(data?.archived_at).toBeNull();
+    expect(data?.nickname).toBe('Keep Me');
+  });
+
+  // Mirrors findOrCreateProperty's own "genuine hard insert error" test —
+  // nothing pre-exists, so the retry re-select genuinely (not just
+  // theoretically) finds nothing and the function fails safely rather than
+  // throwing or fabricating a row.
+  it('returns an error on a genuine hard insert error (not a recoverable race)', async () => {
+    const fake = makeFakeSupabase();
+    sbRef.current = fake.client;
+    fake.forceInsertErrorOnce('properties', { code: '500', message: 'connection reset' });
+
+    const { data, error, created } = await createPropertyForCustomer('cust-1', { address: '9 New Rd' });
+    expect(data).toBeNull();
+    expect(error).not.toBeNull();
+    expect(created).toBe(false);
+    expect(fake.tables.properties).toHaveLength(0);
+  });
+
+  it('returns an error (not a throw) when Supabase is unconfigured', async () => {
+    sbRef.current = null;
+    const { data, error, created } = await createPropertyForCustomer('cust-1', { address: '1 Main St' });
+    expect(data).toBeNull();
+    expect(error).not.toBeNull();
+    expect(created).toBe(false);
+  });
+
+  // #205 review fix (F6): a genuine concurrent race — no pre-seed, no
+  // forced error. Traced precisely via the fake's microtask interleaving
+  // (Promise.all queues both calls; each SUSPENDS at its own first await,
+  // so both existing-row SELECTs run against the still-empty table before
+  // either INSERT lands): the winner's insert succeeds normally: the
+  // loser's insert then hits a REAL (unforced) 23505 — by the time its
+  // .single() resolves, the winner's row is already in the table — and its
+  // retry-select genuinely recovers the winner. This is the SAME technique
+  // customers.test.ts already uses for findOrCreateCustomer (see "two
+  // concurrent findOrCreateCustomer calls..." above) and is what actually
+  // exercises the retry-recovery branch — unlike a pre-seed +
+  // forceInsertErrorOnce, which the direct existing-row hit short-circuits
+  // before insert is ever attempted (see the sibling fix to
+  // findOrCreateProperty's own race test below).
+  describe('concurrent calls (#205 F6 — genuine race, retry-recovery path)', () => {
+    it('two concurrent calls for the SAME new address converge on ONE row (no duplicate)', async () => {
+      const fake = makeFakeSupabase();
+      sbRef.current = fake.client;
+
+      const [a, b] = await Promise.all([
+        createPropertyForCustomer('cust-1', { address: '9 New Rd' }),
+        createPropertyForCustomer('cust-1', { address: '9 New Rd' }),
+      ]);
+
+      expect(a.data?.id).toBeTruthy();
+      expect(b.data?.id).toBe(a.data?.id); // same row, not a duplicate
+      expect(fake.tables.properties).toHaveLength(1);
+      // Exactly one of the two calls actually performed the insert; the
+      // other resolved via the retry-recovery path (created:false).
+      expect([a.created, b.created].sort()).toEqual([false, true]);
+    });
+
+    // The "asserting the archived-winner un-archive + nickname behavior"
+    // ask, traced precisely: pre-seeding an ARCHIVED row means BOTH
+    // concurrent calls' up-front existing-row SELECT finds it directly —
+    // neither one's insert is ever attempted, so this exercises the
+    // DIRECT-HIT path on both sides (created:false for both), not the
+    // retry-select branch specifically. A retry-select can only ever
+    // recover a row that did NOT exist when this invocation's OWN
+    // existing-row SELECT ran — and a row created by that same race is, by
+    // construction, brand new and never archived. There is no way to make
+    // a losing call's retry-select find a PRE-EXISTING archived row in this
+    // synchronous fake (nothing removes/hides it between the two calls'
+    // identical up-front reads) — reported per the review's own "if a
+    // shape is wrong, do the correct thing and say so loudly" instruction.
+    // What this test DOES prove, and is genuinely valuable: real
+    // concurrent staff double-clicks (or a client retry) on "add property"
+    // for an address that resolves to an archived row still converge on
+    // ONE row, correctly un-archived, with a typed nickname applied — not
+    // two racing writes fighting over the result.
+    it('two concurrent calls resolving onto a PRE-EXISTING ARCHIVED row converge on it, un-archived (direct-hit path, both sides)', async () => {
+      const fake = makeFakeSupabase({
+        properties: [
+          {
+            id: 'p1',
+            customer_id: 'cust-1',
+            address: '9 New Rd',
+            address_key: '9 new rd',
+            nickname: null,
+            archived_at: '2026-01-01T00:00:00Z',
+          },
+        ],
+      });
+      sbRef.current = fake.client;
+
+      const [a, b] = await Promise.all([
+        createPropertyForCustomer('cust-1', { address: '9 New Rd', nickname: 'Warehouse' }),
+        createPropertyForCustomer('cust-1', { address: '9 New Rd' }),
+      ]);
+
+      expect(a.data?.id).toBe('p1');
+      expect(b.data?.id).toBe('p1');
+      expect(a.created).toBe(false);
+      expect(b.created).toBe(false);
+      expect(fake.tables.properties).toHaveLength(1); // never duplicated
+      expect(fake.tables.properties[0].archived_at).toBeNull(); // resurrected
+      // Deterministic, not a coin-flip: A (first in the Promise.all array)
+      // reads the row, computes its OWN patch {archived_at:null,
+      // nickname:'Warehouse'}, and its update lands FIRST (same await-depth
+      // as B, FIFO microtask order). B reads the row BEFORE A's write
+      // lands, so B's own patch is {archived_at:null} only (no nickname to
+      // apply) — B's later update never touches the nickname field at all,
+      // so A's value survives untouched.
+      expect(fake.tables.properties[0].nickname).toBe('Warehouse');
+    });
+  });
+});
+
+describe('findOrCreateProperty — archive resurrection (#205)', () => {
+  it('clears archived_at when new quote activity lands on an archived property', async () => {
+    const fake = makeFakeSupabase({
+      properties: [
+        {
+          id: 'p1',
+          customer_id: 'cust-1',
+          address: '1 Main St',
+          address_key: '1 main st',
+          nickname: 'Keep Me',
+          archived_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const res = await findOrCreateProperty('cust-1', '1 Main St');
+    expect(res?.id).toBe('p1');
+    expect(fake.tables.properties[0].archived_at).toBeNull();
+    // nickname is untouched — findOrCreateProperty's scope stops at
+    // address/geo/archived_at; nickname is createPropertyForCustomer's job.
+    expect(fake.tables.properties[0].nickname).toBe('Keep Me');
+  });
+
+  it('does not write archived_at for a property that was already live (no needless write)', async () => {
+    const fake = makeFakeSupabase({
+      properties: [{ id: 'p1', customer_id: 'cust-1', address: '1 Main St', address_key: '1 main st', archived_at: null }],
+    });
+    sbRef.current = fake.client;
+
+    const res = await findOrCreateProperty('cust-1', '1 Main St');
+    expect(res?.id).toBe('p1');
+    expect(fake.tables.properties[0].archived_at).toBeNull();
+  });
+
+  // #205 review fix (admin MED, F5): the resurrection is otherwise
+  // invisible — attachQuoteToCustomer's trigger surface (save/send/mark-
+  // sent/nce/legacy-rebook re-attach/backfill) is wide and largely
+  // automatic, so a one-line log naming customer + property is the only
+  // trace an operator gets.
+  it('logs the resurrection (customer + property named) when it actually happens', async () => {
+    const fake = makeFakeSupabase({
+      properties: [{ id: 'p1', customer_id: 'cust-1', address: '1 Main St', address_key: '1 main st', archived_at: '2026-01-01T00:00:00Z' }],
+    });
+    sbRef.current = fake.client;
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+
+    await findOrCreateProperty('cust-1', '1 Main St');
+
+    expect(infoSpy).toHaveBeenCalledTimes(1);
+    expect(infoSpy.mock.calls[0][0]).toContain('p1');
+    expect(infoSpy.mock.calls[0][0]).toContain('cust-1');
+    infoSpy.mockRestore();
+  });
+
+  it('does NOT log a resurrection for the routine address/geo-only refresh path (already live)', async () => {
+    const fake = makeFakeSupabase({
+      properties: [{ id: 'p1', customer_id: 'cust-1', address: '1 Main St', address_key: '1 main st', archived_at: null }],
+    });
+    sbRef.current = fake.client;
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+
+    await findOrCreateProperty('cust-1', '1 MAIN ST.', { lat: 5, lng: 6 }); // triggers the address/geo update, not a resurrection
+
+    expect(infoSpy).not.toHaveBeenCalled();
+    infoSpy.mockRestore();
+  });
+});
+
+// #205 review fix (admin/technical MED, F4): pre-migration, the existing-row
+// SELECT errors (archived_at column not yet added); that error was
+// previously swallowed with zero trace, on a hot path reached from every
+// quote save/send/re-attach. Uses forceSelectErrorOnce (harness extension
+// below) to drive a genuine { data: null, error } from the up-front SELECT.
+describe('findOrCreateProperty — existing-row lookup error is logged (#205 F4)', () => {
+  it('logs existing.error and still falls through to create/retry-recover safely', async () => {
+    const fake = makeFakeSupabase();
+    sbRef.current = fake.client;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    fake.forceSelectErrorOnce('properties', { message: 'column "archived_at" does not exist' });
+
+    const res = await findOrCreateProperty('cust-1', '1 Main St.');
+
+    // Falls through to a normal create — never crashes, resolves correctly.
+    expect(res?.id).toBeTruthy();
+    expect(fake.tables.properties).toHaveLength(1);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls[0][0]).toMatch(/existing-row lookup error/i);
+    expect(errorSpy.mock.calls[0][1]).toMatchObject({ message: 'column "archived_at" does not exist' });
+    errorSpy.mockRestore();
   });
 });

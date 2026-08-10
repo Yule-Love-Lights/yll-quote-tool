@@ -1,7 +1,7 @@
 import { getSupabaseClient, getSupabaseServiceClient } from './supabase';
 import { cloneDesignToNewQuote } from './designs';
 import { allocateNumber } from './displayId';
-import { getCustomer } from './customers';
+import { getCustomer, unarchiveProperty } from './customers';
 
 // "Rebook last season" (ledger #83, Phase 5). One click clones a customer/
 // property's last APPROVED quote — its priced inputs/result + its design (scene
@@ -152,6 +152,49 @@ async function allocateRebookQuoteNumber(caller: string): Promise<number | null>
   }
 }
 
+// #205 review fix (customer/staff HIGH, F1 — "related, same root"): a
+// rebook that resolves onto an ARCHIVED property resurrects it. Both
+// rebookLastSeason and rebookFromQuote below insert the new quote via a
+// raw `.from('quotes').insert()` that bypasses findOrCreateProperty
+// entirely — the function that normally carries the archive-resurrection
+// rule (see its own #205 comment in customers.ts) — so without this, a
+// rebook could silently point a brand-new LIVE draft at a property staff
+// had archived: exactly the "silently-hidden-but-active" state that rule
+// exists to prevent, reached through a different door.
+//
+// Read-then-write (not an unconditional unarchiveProperty call) so this
+// only writes — and only logs — when a resurrection is ACTUALLY happening;
+// rebooking onto an already-live property stays a no-op, same "no needless
+// write" discipline as findOrCreateProperty's own resurrection branch.
+//
+// Best-effort: a failure here must never block the rebook itself (mirrors
+// attachQuoteToCustomer's hl_contact_id heal in customers.ts).
+async function resurrectPropertyForRebook(
+  sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  customerId: string | null | undefined,
+  propertyId: string | null | undefined,
+  caller: string,
+): Promise<void> {
+  if (!customerId || !propertyId) return;
+  try {
+    const { data: propRow } = await sb
+      .from('properties')
+      .select('archived_at')
+      .eq('id', propertyId)
+      .eq('customer_id', customerId)
+      .maybeSingle<{ archived_at: string | null }>();
+    if (!propRow?.archived_at) return; // already live, or no such row — nothing to do
+    const { error } = await unarchiveProperty(customerId, propertyId);
+    if (error) {
+      console.warn(`${caller}: resurrect-on-rebook failed for property ${propertyId} (customer ${customerId}):`, error);
+    } else {
+      console.info(`${caller}: un-archived property ${propertyId} for customer ${customerId} (triggered by rebook)`);
+    }
+  } catch (err) {
+    console.warn(`${caller}: resurrect-on-rebook threw for property ${propertyId} (customer ${customerId}):`, err);
+  }
+}
+
 // Clone a customer's last APPROVED quote (+ its design) into a fresh draft.
 // `propertyId` optionally scopes the source to one property (a customer with a
 // home + a rental rebooks the right one). Returns the new quote id + the cloned
@@ -197,11 +240,14 @@ export async function rebookLastSeason(
   const customer = await getCustomer(customerId);
 
   const quoteNumber = await allocateRebookQuoteNumber('rebookLastSeason');
+  // Honor an explicit property scope; otherwise keep the source's property.
+  const targetPropertyId = propertyId ?? src.property_id ?? null;
+  // #205 F1: resurrect if the target is archived — see resurrectPropertyForRebook.
+  await resurrectPropertyForRebook(sb, customerId, targetPropertyId, 'rebookLastSeason');
   const insertRow = {
     ...buildRebookInsert({
       ...src,
-      // Honor an explicit property scope; otherwise keep the source's property.
-      property_id: propertyId ?? src.property_id ?? null,
+      property_id: targetPropertyId,
       legacy_rebook: customer?.is_yll_neighbor ?? src.legacy_rebook ?? false,
       is_nce: customer?.is_nce ?? src.is_nce ?? false,
     }),
@@ -260,6 +306,11 @@ export async function rebookFromQuote(
   const src = data as RebookSource & { id: string };
 
   const quoteNumber = await allocateRebookQuoteNumber('rebookFromQuote');
+  // #205 F1: resurrect if the source's property is archived — same rule as
+  // rebookLastSeason above; rebookFromQuote always carries src.property_id
+  // through unchanged (no property-scope override param), so that's the
+  // one target to check here.
+  await resurrectPropertyForRebook(sb, src.customer_id, src.property_id, 'rebookFromQuote');
   const insertRow = {
     ...buildRebookInsert(src),
     ...(quoteNumber != null ? { quote_number: quoteNumber } : {}),
