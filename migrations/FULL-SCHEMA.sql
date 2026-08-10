@@ -870,6 +870,15 @@ create table if not exists public.jobs (
   -- is a snapshot, not a live view of the quote.
   line_items    jsonb,
 
+  -- P4P Phase 1 planning estimate (2026-08-07): budgeted install hours and the
+  -- labor-revenue figure shadow-mode reporting builds from. Placeholder-rate
+  -- marker stays true until Jason's real production-rate session lands.
+  budgeted_hours numeric,
+  labor_revenue_cents integer,
+  rates_are_placeholder boolean not null default true,
+  budgeted_hours_overridden_at timestamptz,
+  budgeted_hours_overridden_by text,
+
   -- Install date — synced from home.works later (#84).
   install_date  date,
 

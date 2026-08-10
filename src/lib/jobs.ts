@@ -13,7 +13,9 @@ import { getSupabaseServiceClient, getSupabaseClient } from './supabase';
 import { allocateNumber } from './displayId';
 import { canTransition, type JobStatus } from './jobStatus';
 import { getInvoiceByJob, type InvoiceRow } from './invoices';
+import { estimateLaborForQuote } from './laborEstimate';
 import type { LineItem } from './pricing/pricingEngine';
+import { asServiceType } from './serviceType';
 
 // The job row as the billing side reads/writes it. `fulfillment_stage` is the
 // #82 axis — present in the type for completeness but owned by inventory.
@@ -28,6 +30,9 @@ export type JobRow = {
   status: JobStatus;
   fulfillment_stage: string | null;
   line_items: LineItem[] | null;
+  budgeted_hours: number | null;
+  labor_revenue_cents: number | null;
+  rates_are_placeholder: boolean;
   install_date: string | null;
   completed_at: string | null;
   created_at: string;
@@ -36,7 +41,8 @@ export type JobRow = {
 
 const JOB_SELECT =
   'id, job_number, quote_id, design_id, customer_id, property_id, type, status, ' +
-  'fulfillment_stage, line_items, install_date, completed_at, created_at, updated_at';
+  'fulfillment_stage, line_items, budgeted_hours, labor_revenue_cents, rates_are_placeholder, ' +
+  'install_date, completed_at, created_at, updated_at';
 
 function sb() {
   return getSupabaseServiceClient() ?? getSupabaseClient();
@@ -316,6 +322,7 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
 type QuoteForJob = {
   id: string;
   service_type: string | null;
+  inputs: unknown;
   result: { lineItems?: LineItem[] } | null;
 };
 
@@ -342,7 +349,7 @@ export async function createJobFromQuote(quoteId: string): Promise<JobRow | null
   // Load the quote we're snapshotting from.
   const { data: quote, error: qErr } = await db
     .from('quotes')
-    .select('id, service_type, result')
+    .select('id, service_type, inputs, result')
     .eq('id', quoteId)
     .maybeSingle<QuoteForJob>();
   if (qErr) {
@@ -386,6 +393,14 @@ export async function createJobFromQuote(quoteId: string): Promise<JobRow | null
   // jobs feed the APL puck/track BOM + Glow365 ops machinery, none of which
   // applies to café string lights. Revisit if bistro grows its own ops track.
   const type: JobRow['type'] = quote.service_type === 'permanent' ? 'permanent' : 'one_off';
+  const serviceType = asServiceType(quote.service_type);
+  const estimate = serviceType ? estimateLaborForQuote(serviceType, quote.inputs) : null;
+  if (!estimate) {
+    const rawType = quote.service_type ?? 'null';
+    console.warn(
+      `createJobFromQuote: budgeted-hours estimate skipped for quote ${quoteId} (service_type=${rawType}).`,
+    );
+  }
 
   // Sequential display number (Job #1000…). Best-effort, exactly like
   // saveQuote's quote_number: a failed allocation (sequence missing pre-migration)
@@ -409,6 +424,9 @@ export async function createJobFromQuote(quoteId: string): Promise<JobRow | null
       status: 'to_schedule' satisfies JobStatus,
       // fulfillment_stage intentionally omitted (NULL) — owned by #82.
       line_items: quote.result?.lineItems ?? null,
+      budgeted_hours: estimate?.budgetedHours ?? null,
+      labor_revenue_cents: estimate?.laborRevenueCents ?? null,
+      rates_are_placeholder: true,
       ...(jobNumber != null ? { job_number: jobNumber } : {}),
     })
     .select(JOB_SELECT)
