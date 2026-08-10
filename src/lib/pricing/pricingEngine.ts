@@ -77,6 +77,36 @@ export const BUSINESS_RULES = {
   // Standalone bow — a bow sold on its own, not on a wreath/garland (#28).
   // Flat $35 per bow (Naldo, #17).
   standaloneBowPrice: 35,
+
+  // P4P labor-planning placeholders (2026-08-07): clearly fake seed numbers for
+  // shadow-mode budgeted-hours stamping only. These are NOT Jason's real
+  // production rates yet; replace them after the follow-up called out in
+  // docs/context/project_p4p_labor.md A7 item 2.
+  laborPlanningPlaceholders: {
+    rooflineFeetPerHour: {
+      easy: 10,
+      medium: 7,
+      hard: 5,
+    },
+    stakeLightingFeetPerHour: {
+      easy: 12,
+      medium: 9,
+      hard: 6,
+    },
+    // Permanent side footage has no stored difficulty tier, so v1 uses one flat
+    // placeholder until Jason's real rate session lands.
+    permanentLightingFeetPerHour: 7,
+    perItemMinutes: {
+      miniLights: 20,
+      spritzers: 20,
+      wreaths: 20,
+      garland: 20,
+      bistroRuns: 20,
+    },
+    defaultUnmappedMinutes: 30,
+    // Flat v1 labor-share dial from the Phase 1 plan's shadow-mode starting point.
+    laborRevenuePercentage: 0.33,
+  },
 } as const;
 
 // ─────────────────────────────────────────────────────────
