@@ -1038,6 +1038,27 @@ alter table public.invoices drop constraint if exists invoices_payment_preferenc
 alter table public.invoices add constraint invoices_payment_preference_check
   check (payment_preference is null or payment_preference in ('card_on_file', 'cash_check'));
 
+-- 2026-08-07 Manual payment method + NCE reference (#199):
+--   paid_method — how a MANUALLY-settled invoice (mark-paid, not a Valor
+--     charge) was actually collected: 'cash_check' | 'nce' | null. null covers
+--     BOTH a legacy manual mark-paid (predates this column) and a
+--     Valor-settled invoice (the balance webhook / charge-balance route settle
+--     via valor_balance_txn_id, never write this column) — the two null cases
+--     are told apart by whether valor_balance_txn_id is set.
+--   payment_reference — the NCE trade-system payment reference number.
+--     Required at NCE mark-paid time (enforced in the app, not a DB
+--     constraint — an empty ref means the trade payment hasn't happened yet);
+--     editable afterward for a typo fix.
+-- These MUST be here: INVOICE_SELECT (src/lib/invoices.ts) is a literal column
+-- list, so a DB built from this file without them fails EVERY invoice read and
+-- every job-completion invoice creation (PostgREST 42703), not just NCE ones.
+-- See migrations/2026-08-07-invoices-manual-payment-method.sql.
+alter table public.invoices add column if not exists paid_method text;
+alter table public.invoices add column if not exists payment_reference text;
+alter table public.invoices drop constraint if exists invoices_paid_method_check;
+alter table public.invoices add constraint invoices_paid_method_check
+  check (paid_method is null or paid_method in ('cash_check', 'nce'));
+
 
 -- =====================================================================
 -- Dashboard tables (#58) — 6 net-new tables behind the /inbox tab.
