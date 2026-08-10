@@ -19,7 +19,16 @@ import { renderMiniArea } from "./miniArea";
 import { preloadAssets } from "./assets";
 import { renderYardstick, pxPerFoot, yardstickLabel } from "./yardstick";
 import { DEFAULT_KEYMAP, resolveAction, type KeyMap } from "./keymap";
-import { WREATH_SIZES, BOW_SIZES, GARLAND_SIZES, SPRITZER_SIZES, POLE_HEIGHTS, sizePresetLabel } from "./sizePresets";
+import {
+  WREATH_SIZES,
+  BOW_SIZES,
+  GARLAND_SIZES,
+  SPRITZER_SIZES,
+  POLE_HEIGHTS,
+  sizePresetLabel,
+  formatRawSize,
+  offPresetSizeSuffix,
+} from "./sizePresets";
 
 // Default real-world width for newly-placed custom uploads — about 3 feet,
 // big enough to spot on the photo, small enough to resize down with the
@@ -27,6 +36,34 @@ import { WREATH_SIZES, BOW_SIZES, GARLAND_SIZES, SPRITZER_SIZES, POLE_HEIGHTS, s
 const DEFAULT_CUSTOM_WIDTH_IN = 36;
 
 type PoleBaseType = PoleItem["baseType"];
+
+// Renders a Size/Height quick-pick row's buttons (#202 F1): the 3 kept
+// presets from `options`, PLUS -- when `values` is a single value that isn't
+// one of them -- a 4th button showing the real stored number, marked active.
+// That 4th button is how an off-preset item (an old design's dropped tier,
+// a stale saved default loaded via applyDefaultsForCurrentType, or anything
+// reached via the resize handles) stays visible, labeled, and clickable-back-
+// to within the session, instead of the row rendering three unlit buttons
+// with no indication of the item's actual size. Every button also gets a
+// `title` with the real number, so hovering any preset confirms its exact
+// inches/feet.
+// `values` mirrors offPresetSizeSuffix (pass [tool.xSizeIn] for a single new-
+// item value, or a bulk-edit panel's uniq'd `sharedSize`/`sharedHeight` --
+// a mixed multi-select is `values.length > 1`, which gets no 4th button
+// since there's no one number to show). `attr` picks the data attribute the
+// existing click handlers already read (data-s for decor, data-h for poles)
+// -- this only changes what's rendered into the row, not how clicks are
+// wired: each render site's `querySelectorAll("#<row-id> button")` already
+// wires every button in the container, this 4th one included.
+function sizeButtons(options: readonly number[], values: number[], attr: "data-s" | "data-h", unit: "in" | "ft" = "in"): string {
+  const isActive = (v: number) => values.length === 1 && values[0] === v;
+  const preset = options
+    .map((v) => `<button ${attr}="${v}" class="${isActive(v) ? "active" : ""}" title="${formatRawSize(v, unit)}">${sizePresetLabel(options, v)}</button>`)
+    .join("");
+  if (values.length !== 1 || sizePresetLabel(options, values[0]) !== null) return preset;
+  const raw = formatRawSize(values[0], unit);
+  return preset + `<button ${attr}="${values[0]}" class="active" title="${raw}">${raw}</button>`;
+}
 
 const BULB_TYPES: { id: BulbType; label: string }[] = [
   { id: "c9", label: "C9" },
@@ -1520,9 +1557,9 @@ export async function renderEditor(
         <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">None for permanent in-ground installs or attaching to existing poles/buildings.</div>
       </section>
       <section>
-        <h3>Height</h3>
+        <h3>Height${offPresetSizeSuffix(POLE_HEIGHTS, [tool.poleHeightIn], "ft")}</h3>
         <div class="spacing-row" id="pole-heights">
-          ${POLE_HEIGHTS.map((h) => `<button data-h="${h}" class="${tool.poleHeightIn === h ? "active" : ""}">${sizePresetLabel(POLE_HEIGHTS, h)}</button>`).join("")}
+          ${sizeButtons(POLE_HEIGHTS, [tool.poleHeightIn], "data-h", "ft")}
         </div>
       </section>
       ${(() => {
@@ -1735,9 +1772,9 @@ export async function renderEditor(
       </section>
       ${tool.decorType === "wreath" ? `
       <section>
-        <h3>Size</h3>
+        <h3>Size${offPresetSizeSuffix(WREATH_SIZES, [tool.wreathSizeIn])}</h3>
         <div class="spacing-row" id="wreath-sizes">
-          ${WREATH_SIZES.map((s) => `<button data-s="${s}" class="${tool.wreathSizeIn === s ? "active" : ""}">${sizePresetLabel(WREATH_SIZES, s)}</button>`).join("")}
+          ${sizeButtons(WREATH_SIZES, [tool.wreathSizeIn], "data-s")}
         </div>
       </section>
       <section>
@@ -1759,9 +1796,9 @@ export async function renderEditor(
       </section>
       ` : tool.decorType === "bow" ? `
       <section>
-        <h3>Size</h3>
+        <h3>Size${offPresetSizeSuffix(BOW_SIZES, [tool.bowSizeIn])}</h3>
         <div class="spacing-row" id="bow-sizes">
-          ${BOW_SIZES.map((s) => `<button data-s="${s}" class="${tool.bowSizeIn === s ? "active" : ""}">${sizePresetLabel(BOW_SIZES, s)}</button>`).join("")}
+          ${sizeButtons(BOW_SIZES, [tool.bowSizeIn], "data-s")}
         </div>
       </section>
       <section>
@@ -1769,9 +1806,9 @@ export async function renderEditor(
       </section>
       ` : tool.decorType === "garland" ? `
       <section>
-        <h3>Size</h3>
+        <h3>Size${offPresetSizeSuffix(GARLAND_SIZES, [tool.garlandSizeIn])}</h3>
         <div class="spacing-row" id="garland-sizes">
-          ${GARLAND_SIZES.map((s) => `<button data-s="${s}" class="${tool.garlandSizeIn === s ? "active" : ""}">${sizePresetLabel(GARLAND_SIZES, s)}</button>`).join("")}
+          ${sizeButtons(GARLAND_SIZES, [tool.garlandSizeIn], "data-s")}
         </div>
         <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Thickness of the greenery rope on the photo.</div>
       </section>
@@ -1791,9 +1828,9 @@ export async function renderEditor(
       </section>
       ` : `
       <section>
-        <h3>Size</h3>
+        <h3>Size${offPresetSizeSuffix(SPRITZER_SIZES, [tool.spritzerSizeIn])}</h3>
         <div class="spacing-row" id="spritzer-sizes">
-          ${SPRITZER_SIZES.map((s) => `<button data-s="${s}" class="${tool.spritzerSizeIn === s ? "active" : ""}">${sizePresetLabel(SPRITZER_SIZES, s)}</button>`).join("")}
+          ${sizeButtons(SPRITZER_SIZES, [tool.spritzerSizeIn], "data-s")}
         </div>
         <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Diameter of the radial spray on the photo.</div>
       </section>
@@ -2842,9 +2879,9 @@ export async function renderEditor(
         </button></section>`;
       })()}
       <section>
-        <h3>Size</h3>
+        <h3>Size${offPresetSizeSuffix(WREATH_SIZES, sharedSize)}</h3>
         <div class="spacing-row" id="sel-wreath-sizes">
-          ${WREATH_SIZES.map((s) => `<button data-s="${s}" class="${sharedSize.length === 1 && sharedSize[0] === s ? "active" : ""}">${sizePresetLabel(WREATH_SIZES, s)}</button>`).join("")}
+          ${sizeButtons(WREATH_SIZES, sharedSize, "data-s")}
         </div>
       </section>
       <section>
@@ -2972,9 +3009,9 @@ export async function renderEditor(
         </button></section>`;
       })()}
       <section>
-        <h3>Size</h3>
+        <h3>Size${offPresetSizeSuffix(BOW_SIZES, sharedSize)}</h3>
         <div class="spacing-row" id="sel-bow-sizes">
-          ${BOW_SIZES.map((s) => `<button data-s="${s}" class="${sharedSize.length === 1 && sharedSize[0] === s ? "active" : ""}">${sizePresetLabel(BOW_SIZES, s)}</button>`).join("")}
+          ${sizeButtons(BOW_SIZES, sharedSize, "data-s")}
         </div>
       </section>
       <section style="display:flex;gap:6px">
@@ -3040,9 +3077,9 @@ export async function renderEditor(
         </button></section>`;
       })()}
       <section>
-        <h3>Size${sharedSize.length > 1 ? " — mixed" : ""}</h3>
+        <h3>Size${sharedSize.length > 1 ? " — mixed" : offPresetSizeSuffix(GARLAND_SIZES, sharedSize)}</h3>
         <div class="spacing-row" id="sel-garland-sizes">
-          ${GARLAND_SIZES.map((s) => `<button data-s="${s}" class="${sharedSize.length === 1 && sharedSize[0] === s ? "active" : ""}">${sizePresetLabel(GARLAND_SIZES, s)}</button>`).join("")}
+          ${sizeButtons(GARLAND_SIZES, sharedSize, "data-s")}
         </div>
         <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Thickness of the greenery rope.</div>
       </section>
@@ -3196,9 +3233,9 @@ export async function renderEditor(
         </button></section>`;
       })()}
       <section>
-        <h3>Size${sharedSize.length > 1 ? " — mixed" : ""}</h3>
+        <h3>Size${sharedSize.length > 1 ? " — mixed" : offPresetSizeSuffix(SPRITZER_SIZES, sharedSize)}</h3>
         <div class="spacing-row" id="sel-spritzer-sizes">
-          ${SPRITZER_SIZES.map((s) => `<button data-s="${s}" class="${sharedSize.length === 1 && sharedSize[0] === s ? "active" : ""}">${sizePresetLabel(SPRITZER_SIZES, s)}</button>`).join("")}
+          ${sizeButtons(SPRITZER_SIZES, sharedSize, "data-s")}
         </div>
       </section>
       <section>
@@ -3852,9 +3889,9 @@ export async function renderEditor(
         </div>
       </section>
       <section>
-        <h3>Height${sharedHeight.length > 1 ? " (mixed)" : ""}</h3>
+        <h3>Height${sharedHeight.length > 1 ? " (mixed)" : offPresetSizeSuffix(POLE_HEIGHTS, sharedHeight, "ft")}</h3>
         <div class="spacing-row" id="sel-pole-heights">
-          ${POLE_HEIGHTS.map((h) => `<button data-h="${h}" class="${sharedHeight.length === 1 && sharedHeight[0] === h ? "active" : ""}">${sizePresetLabel(POLE_HEIGHTS, h)}</button>`).join("")}
+          ${sizeButtons(POLE_HEIGHTS, sharedHeight, "data-h", "ft")}
         </div>
       </section>
       <section style="display:flex;gap:6px">
