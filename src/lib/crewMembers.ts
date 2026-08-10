@@ -12,8 +12,8 @@ export type CrewMember = {
   payMode: CrewPayMode;
   language: string;
   active: boolean;
-  createdAt: string | null;
-  updatedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type CrewMemberUpsertFields = {
@@ -39,12 +39,16 @@ type Row = {
   pay_mode: CrewPayMode;
   language: string;
   active: boolean;
-  created_at: string | null;
-  updated_at: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 const SELECT =
   'id, hub_employee_id, telegram_user_id, display_name, base_rate_cents, in_p4p_pool, pay_mode, language, active, created_at, updated_at';
+
+function isDisplayNameUniqueViolation(error: { code?: string; message?: string } | null): boolean {
+  return error?.code === '23505' && error.message?.includes('crew_members_display_name_key') === true;
+}
 
 function buildCrewMemberInsertPayload(input: NewCrewMemberInput): Record<string, unknown> {
   const payload: Record<string, unknown> = {
@@ -128,6 +132,13 @@ export async function listActiveCrewMembers(): Promise<CrewMember[]> {
   return (data ?? []).map((row) => toCrewMember(row as Row));
 }
 
+// insertCrewMember has no `id` in its input by design (that's the whole
+// point of the insert/update split — see the review that split them), so it
+// cannot check "does this id already exist" before inserting. The one race
+// the crew_members_display_name_key migration itself names as the threat
+// model — two concurrent no-id insert calls for the same person — is only
+// closed HERE, by catching that specific unique-violation and re-fetching the
+// winner, mirroring shifts.ts's clockIn (same session, same race shape).
 export async function insertCrewMember(input: NewCrewMemberInput): Promise<CrewMember> {
   const db = getSupabaseServiceClient();
   if (!db) throw new Error('Supabase service role not configured');
@@ -135,7 +146,18 @@ export async function insertCrewMember(input: NewCrewMemberInput): Promise<CrewM
   const payload = buildCrewMemberInsertPayload(input);
 
   const { data, error } = await db.from('crew_members').insert(payload).select(SELECT).maybeSingle();
-  if (error || !data) throw new Error(`insertCrewMember: ${error?.message ?? 'no row returned'}`);
+  if (error) {
+    if (isDisplayNameUniqueViolation(error as { code?: string; message?: string })) {
+      const { data: winner, error: refetchError } = await db
+        .from('crew_members')
+        .select(SELECT)
+        .ilike('display_name', String(payload.display_name))
+        .maybeSingle();
+      if (!refetchError && winner) return toCrewMember(winner as Row);
+    }
+    throw new Error(`insertCrewMember: ${error.message}`);
+  }
+  if (!data) throw new Error('insertCrewMember: no row returned');
   return toCrewMember(data as Row);
 }
 
@@ -150,7 +172,19 @@ export async function updateCrewMember(
   const payload = buildCrewMemberUpdatePayload(patch);
 
   const { data, error } = await db.from('crew_members').update(payload).eq('id', crewMemberId).select(SELECT).maybeSingle();
-  if (error) throw new Error(`updateCrewMember: ${error.message}`);
+  if (error) {
+    // Unlike insertCrewMember's race, a rename-to-duplicate collision here is
+    // a genuine conflict (this person's name, colliding with a DIFFERENT
+    // existing person) — never "recover" by returning the other row, that
+    // would silently hand back someone else's data as if it were this
+    // update's result. Surface a clear, specific error instead.
+    if (isDisplayNameUniqueViolation(error as { code?: string; message?: string })) {
+      throw new Error(
+        `updateCrewMember: display name "${String(payload.display_name)}" is already in use by another crew member`,
+      );
+    }
+    throw new Error(`updateCrewMember: ${error.message}`);
+  }
   if (!data) throw new Error(`updateCrewMember: no row found for id ${crewMemberId}`);
   return toCrewMember(data as Row);
 }

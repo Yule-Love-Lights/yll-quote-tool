@@ -356,6 +356,27 @@ route optimization (YLL runs 1-3 jobs a day, not 12-stop mow routes), GHL change
 
 11. **AGENTS.md ownership row for Codex** with a named reviewer, before parallel
     work starts.
+12. **Placeholder-rate recompute mechanism (flagged by the S57 wrap review's
+    admin lens).** Every job created by Phase 1's `createJobFromQuote` wiring
+    stamps `jobs.rates_are_placeholder = true` (only when an estimate was
+    actually computed — a job with no estimate at all, e.g. missing geometry,
+    gets `false`, since there's nothing placeholder about a number that was
+    never computed). Nothing reads this flag today; it exists purely so a
+    future pass can find and fix the jobs that used guessed production
+    rates once the Jason seed-rates session (A7 item 2) produces real ones.
+    Until that recompute pass is built, the manual query is:
+    `select id, quote_id, budgeted_hours, labor_revenue_cents from jobs
+    where rates_are_placeholder = true order by created_at`. This item is the
+    actual follow-up; the flag by itself does nothing.
+13. **Real crew wage data (SonSon, Little James, Big James, Jason Balroop's
+    hourly rates) is committed in plaintext, permanently, in
+    `migrations/2026-08-07-crew-members.sql`'s git history.** Flagged to
+    Naldo twice now during the S57 session (once at the PR #712 review, once
+    at the wrap review) with no decision either way — recorded here so it
+    isn't lost a third time. Options if it ever needs revisiting: leave it
+    (small team, already-similar-risk data lives in Copilot CRM today), or
+    move future rate seeding to an out-of-band admin action instead of a
+    tracked migration file.
 
 ## A7. Immediate next actions
 
