@@ -111,9 +111,9 @@ export type QuoteReconcileSummary = {
  * Fold Quote-Tool leads into the inbox from the SAME Supabase DB (no API, no
  * trigger). A draft quote → an unresponded lead; a sent/approved quote auto-
  * resolves; a sent-but-unapproved quote spawns a quote_sent_no_reply follow-up
- * (closed on approval). Follow-ups anchor on the inbox item, so a quote sent
- * without ever being seen as a draft (rare) gets no inbox follow-up — the home
- * worklist's sent-no-reply remains the backstop for that edge.
+ * (closed on approval). Quotetool's first-seen outbound sends still mint a
+ * handled inbox item, so fast-sent quotes keep their follow-up anchor without
+ * surfacing as open inbox noise.
  *
  * #181: normalizeQuoteTouch returns null for an unsent YLL Neighbor
  * (legacy_rebook) draft — those are skipped before ingestTouch/follow-up, so

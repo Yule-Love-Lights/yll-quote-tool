@@ -28,13 +28,6 @@ export function normalizeQuoteTouch(q: DashboardQuote): NormalizedTouch | null {
   // on). Sent legacy_rebook quotes fall through to the normal mapping below
   // unchanged, regardless of the flag.
   //
-  // Reviewed + accepted gap: because this guard means a legacy_rebook draft is
-  // NEVER ingested while unsent, one that's later marked sent always hits the
-  // "sent without ever being seen as a draft" edge (per the file header above)
-  // — no prior inbox item to attach a follow-up to, so no quote_sent_no_reply
-  // follow-up fires for it. The dashboard worklist's own quote_sent_at-age nudge
-  // (src/lib/dashboard/needsAction.ts, independent of inbox state) covers that
-  // gap, so this is accepted rather than fixed here.
   if (EXCLUDE_LEGACY_REBOOK_FROM_INBOX && q.legacy_rebook && !q.quote_sent_at) return null;
   // Sent OR approved means we've acted on this lead; only an untouched draft is
   // still "owed a quote".

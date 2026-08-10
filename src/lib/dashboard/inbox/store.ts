@@ -66,9 +66,11 @@ export type ItemRow = {
 };
 
 export type IngestPlan = {
-  /** When true, do nothing: an outbound touch with no existing item is us
-   *  cold-contacting — there's no unresponded lead to track (avoids noise). A
-   *  conversation we REPLIED to keeps its existing item and still auto-resolves. */
+  /** When true, do nothing: an outbound touch with no existing item is usually
+   *  us cold-contacting — there's no unresponded lead to track (avoids noise).
+   *  Some sources deliberately track outbound-only first observations (positive
+   *  allowlist below); a conversation we REPLIED to keeps its existing item and
+   *  still auto-resolves. */
   skip: boolean;
   /** When true, a resolved item (handled/completed/dismissed) is being re-ingested
    *  with NOTHING to persist — same status, same last_message_at, no reopen /
@@ -83,6 +85,18 @@ export type IngestPlan = {
   ambiguous: boolean;
   clearFollowedUp: boolean;
 };
+
+// #222: sources listed here need an inbox item even when FIRST seen as outbound,
+// because downstream work (the quote_sent_no_reply follow-up) anchors on that
+// item. A quote created and sent between two 5-minute cron ticks is only ever
+// observed as outbound, so without this it got no item and therefore no
+// follow-up — a real customer silently owed one (live case: quote #1263, a
+// 7.75-second draft window). Positive allowlist, never a negative test, per
+// AGENTS.md Pitfalls: every other source's outbound-only first observation
+// stays skipped as noise (a cold outbound Gmail/GHL touch is not a lead we owe
+// a reply to). The item auto-resolves to 'handled', so it anchors the follow-up
+// without entering the operator's open inbox list.
+const TRACKS_OUTBOUND_FIRST_OBSERVATION: ReadonlySet<InboxSource> = new Set<InboxSource>(['quotetool']);
 
 /**
  * Decide what an inbound/outbound touch should do, given the matching contact
@@ -174,7 +188,7 @@ export function planIngest(input: {
   };
 
   return {
-    skip: !existing && touch.direction === 'outbound',
+    skip: !existing && touch.direction === 'outbound' && !TRACKS_OUTBOUND_FIRST_OBSERVATION.has(touch.source),
     noopReingest,
     contactOp,
     item,
