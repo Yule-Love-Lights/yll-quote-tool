@@ -28,6 +28,8 @@ import {
   setJobStatus,
   type JobRow,
 } from './jobs';
+import { buildQuoteInputs, initialFormData } from './quoteForm';
+import { makeDefaultPermanentFields } from './permanent/types';
 
 // ── A tiny per-table fake Supabase ──────────────────────────────────────────
 // Records every insert/update payload and serves canned reads per table. Each
@@ -83,6 +85,11 @@ function makeSb(tables: Record<string, TableData>) {
 const QUOTE = {
   id: 'quote-1',
   service_type: 'holiday',
+  inputs: buildQuoteInputs({
+    ...initialFormData,
+    santasFootage: 1,
+    santasDifficulty: 'easy',
+  }),
   result: { lineItems: [{ label: 'Roofline', amount: 1200 }], total: 2700 },
 };
 
@@ -112,6 +119,9 @@ describe('createJobFromQuote', () => {
       status: 'to_schedule',
       job_number: 1000,
       line_items: [{ label: 'Roofline', amount: 1200 }],
+      budgeted_hours: 0.1,
+      labor_revenue_cents: 264,
+      rates_are_placeholder: true,
     });
     // fulfillment_stage is the #82 axis — left unset (NULL) by the billing creator.
     expect(payload.fulfillment_stage ?? null).toBeNull();
@@ -137,13 +147,55 @@ describe('createJobFromQuote', () => {
   it('maps a permanent service_type to a permanent job type', async () => {
     const { client, inserts } = makeSb({
       jobs: { read: null },
-      quotes: { read: { ...QUOTE, service_type: 'permanent' } },
+      quotes: {
+        read: {
+          ...QUOTE,
+          service_type: 'permanent',
+          inputs: buildQuoteInputs({
+            ...initialFormData,
+            serviceType: 'permanent',
+            permanent: { ...makeDefaultPermanentFields(), frontFootage: 70 },
+          }),
+        },
+      },
       designs: { read: null },
     });
     sbRef.current = client;
 
     await createJobFromQuote('quote-1');
     expect(inserts.jobs[0]).toMatchObject({ type: 'permanent', design_id: null });
+  });
+
+  it('logs a warning and still creates the job when the saved geometry block is missing for the service type', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { client, inserts } = makeSb({
+      jobs: { read: null },
+      quotes: {
+        read: {
+          ...QUOTE,
+          service_type: 'permanent',
+          inputs: buildQuoteInputs(initialFormData),
+        },
+      },
+      designs: { read: null },
+    });
+    sbRef.current = client;
+
+    try {
+      const job = await createJobFromQuote('quote-1');
+
+      expect(job).not.toBeNull();
+      expect(inserts.jobs[0]).toMatchObject({
+        budgeted_hours: null,
+        labor_revenue_cents: null,
+        rates_are_placeholder: true,
+      });
+      expect(warn).toHaveBeenCalledWith(
+        'createJobFromQuote: budgeted-hours estimate skipped for quote quote-1 (service_type=permanent).',
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('carries the quote customer_id/property_id onto the job (Phase 5 linkage)', async () => {
