@@ -57,6 +57,10 @@ touched. Prefix every review command with the explicit path
 - Codex inherits Naldo's Claude plugin config, so it reads superpowers skill files
   before acting. Costs ~20k tokens of overhead per run. Irrelevant on a real build,
   wasteful on trivial commands — so don't send Codex trivial commands.
+- **`.env.local` (live Supabase/Valor/GHL keys) sits inside CODEX_REPO, and
+  `--sandbox workspace-write` gives Codex read access to it.** Naldo's explicit
+  call (2026-08-10): accept this risk, no guard added. Do not raise it as a
+  blocker on future runs — it is a known, accepted tradeoff, not an open question.
 
 ## The dispatch command
 
@@ -109,7 +113,9 @@ brief to a file in the scratchpad and pass it by reference in the prompt text
    (a stale or missing `node_modules` fails gates in ways that imitate real bugs).
 
 4. **Brief.** Write it self-contained (format below). Codex has zero context from
-   your conversation with Naldo.
+   your conversation with Naldo. **Show Naldo the brief before dispatching, every
+   single time** (Naldo's explicit call, 2026-08-10) — paste it in chat, no need
+   to wait for a go-ahead, just show it so he sees what Codex is being told.
 
 5. **Dispatch.** Run the command above. Hand it to Naldo to paste if you cannot
    run it yourself.
@@ -128,23 +134,37 @@ brief to a file in the scratchpad and pass it by reference in the prompt text
    changes uncommitted, commit them yourself before reviewing so nothing is
    invisible to the diff.
 
-7. **Review.** Apply the repo's standing four-lens pre-merge review (customer,
+7. **Independent second-AI check (Naldo's explicit call, 2026-08-10 — since he
+   cannot read the diff himself, one seat reviewing its own dispatched worker's
+   output is not enough).** Spawn a separate Claude agent — Sonnet 5, unless the
+   change touches money/auth/identity, then Opus — to review the diff COLD: it
+   gets the diff and the original GOAL/DONE-LOOKS-LIKE, nothing else. It does not
+   see this brief-writing conversation, does not know what Codex claimed, and is
+   told explicitly to verify independently rather than confirm your read. It
+   reports its own verdict: does the diff actually do what GOAL says, does
+   anything look wrong, would it flag this for a human. Treat a disagreement
+   between your own read and this agent's as a real finding, not noise — resolve
+   it before telling Naldo the work is good.
+
+8. **Review.** Apply the repo's standing four-lens pre-merge review (customer,
    staff, admin, technical) sized to the risk. Disposition every finding: fix,
    accept with a stated reason, or defer to a ledger row.
 
-8. **Correct via Codex, not yourself — with a stop condition.** If Codex's work
+9. **Correct via Codex, not yourself — with a stop condition.** If Codex's work
    falls short, write a correction brief naming the exact defect and dispatch
    again. Each `codex exec` is stateless: the correction brief must carry the
    original goal, what Codex did, and the specific defect — never just "fix the
    review findings". After TWO failed correction rounds on the same defect, stop
    ping-ponging: tell the dev plainly, and offer the choice — Claude fixes it
    inline (spending the usage this mode exists to save), the task gets re-scoped,
-   or it goes to a ledger row. That call is the dev's, not yours.
+   or it goes to a ledger row. That call is the dev's, not yours. (Naldo's
+   explicit call, 2026-08-10: keep this as-is, no change.)
 
-9. **Report to Naldo in plain English.** What changed, what passed, what you
-   distrust. Derived from the diff, never from Codex's own summary.
+10. **Report to Naldo in plain English.** What changed, what passed, what you
+    distrust, and the independent reviewer's verdict from step 7. Derived from
+    the diff, never from Codex's own summary.
 
-10. **Never merge.** Branch, PR, wait for Naldo's explicit go. Unchanged.
+11. **Never merge.** Branch, PR, wait for Naldo's explicit go. Unchanged.
 
 ## Brief format
 
@@ -199,8 +219,9 @@ Keep for yourself:
 - Money math, auth gaps, migration order, service-type seam gates.
 - The merge-go summary and every product decision.
 
-The quality of the result equals the quality of the brief. That is the skill
-Naldo is here to learn; say so when a vague brief produces a bad run.
+The quality of the result equals the quality of the brief. A vague brief wastes
+a whole Codex run — write briefs tight the first time rather than relying on
+correction rounds to fix scoping mistakes.
 
 ## Handoff
 

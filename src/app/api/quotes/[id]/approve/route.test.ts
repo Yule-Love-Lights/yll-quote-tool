@@ -277,6 +277,39 @@ describe('POST /api/quotes/[id]/approve — server recompute', () => {
     expect(snap.customerSelection.depositRate).toBe(0.5);
   });
 
+  // #199 F1 (wrap-review HIGH): inputs.depositPercent and result.depositRate
+  // are independently-writable — a tag write (the NCE admin toggle) or a
+  // rebook clone patches ONLY inputs.depositPercent, never result. Before this
+  // fix, currentDepositUsd derived from chargesFromResult(quote.result) alone
+  // (the STALE result.depositRate), while the snapshot's OWN depositRate field
+  // was a separate live effectiveDepositRate(inputs.depositPercent) call — the
+  // frozen record said "40%" but charged 50%'s worth of dollars. Proves both
+  // fields now agree, sourced from the SAME resolved rate, even with a result
+  // that was priced BEFORE the tag/percent changed.
+  it('freezes a 40%-CONSISTENT rate + dollar amount when inputs.depositPercent disagrees with a STALE result.depositRate (#199 F1)', async () => {
+    const { client, updatePayloads } = makeSb(
+      baseQuote({
+        inputs: { depositPercent: 40 },
+        // Simulates a quote priced BEFORE the NCE tag/depositPercent write —
+        // the admin NCE toggle route and rebook.ts patch ONLY inputs, never
+        // result, so this stays stuck at the OLD 50% forever without this fix.
+        result: { ...RESULT, depositRate: 0.5 },
+      }),
+    );
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      customerSelection: { currentTotalUsd: number; currentDepositUsd: number; depositRate: number };
+    };
+    // Santa's $1200 + spritzer-1 $300 = $1500 subtotal, +8.75% tax = $1631.25.
+    expect(snap.customerSelection.currentTotalUsd).toBeCloseTo(1631.25, 2);
+    expect(snap.customerSelection.depositRate).toBe(0.4);
+    // 1631.25 * 0.40 = 652.50 — NOT the stale-rate 815.63 (50%).
+    expect(snap.customerSelection.currentDepositUsd).toBeCloseTo(652.5, 2);
+  });
+
   it('drops unknown selectedItemIds the client sends', async () => {
     const { client, updatePayloads } = makeSb(baseQuote());
     sbRef.current = client;

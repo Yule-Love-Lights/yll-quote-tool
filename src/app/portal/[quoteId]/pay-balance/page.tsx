@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { friendlyPortalError } from '@/components/portal/friendlyError';
+import { friendlyPortalError, nceBalanceBlockedError } from '@/components/portal/friendlyError';
 import { track } from '@/lib/analytics/posthog';
 import { categorizeApproveError, type ApproveErrorCategory } from '@/lib/analytics/errorCategory';
 
@@ -61,6 +61,15 @@ export default function PayBalancePage() {
       const res = await fetch(`/api/quotes/${quoteId}/pay-balance`, { method: 'POST' });
       failureStatus = res.status;
       const body = await res.json();
+      // NCE trade-settled balance (#199) — mirrors DepositCheckout's
+      // view-only branch: a dead end retrying never fixes, so name the real
+      // state instead of falling through to the generic checkout-error copy
+      // below. The ONE deliberate NCE mention on the customer portal.
+      if (!res.ok && body.code === 'nce') {
+        setError(nceBalanceBlockedError());
+        setBusy(false);
+        return;
+      }
       if (!res.ok || !body.redirectUrl) throw new Error('unavailable');
       window.location.href = body.redirectUrl as string;
     } catch (err) {

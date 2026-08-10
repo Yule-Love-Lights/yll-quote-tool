@@ -102,6 +102,18 @@ describe('POST /api/quotes/[id]/send-balance', () => {
     expect(sendSmsMock).not.toHaveBeenCalled();
   });
 
+  // #199: an NCE trade job's balance is not collectable by pay-link.
+  it('409s (nce-blocked) for an NCE quote, without sending or touching the job/invoice', async () => {
+    sbRef.current = makeSb({ ...QUOTE, is_nce: true });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('nce-blocked');
+    expect(sendSmsMock).not.toHaveBeenCalled();
+    expect(sendEmailMock).not.toHaveBeenCalled();
+    expect(getJobByQuoteMock).not.toHaveBeenCalled();
+  });
+
   it('409s when there is no invoice yet', async () => {
     getInvoiceByJobMock.mockResolvedValueOnce(null);
     const res = await POST(req(), ctx());

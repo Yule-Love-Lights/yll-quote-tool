@@ -1,0 +1,113 @@
+// Property nickname edit + archive/unarchive (#205) — the customer-profile
+// Properties tab's click-to-edit label and "Remove" (= archive, never a
+// hard delete — quotes/jobs/invoices reference properties by id) controls.
+// Mirrors tags/route.ts's shape.
+//
+// POST /api/customers/[customerId]/properties/[propertyId]   (operator-only)
+// Body: { nickname?: string | null, archived?: boolean }   — at least one
+//   required; each, when present, validated. Partial update: only the
+//   provided key(s) are written (both may be sent together; applied as two
+//   sequential single-field writes, same simplicity tradeoff tags/route.ts
+//   makes for its own two independently-toggleable fields — the UI here
+//   never actually sends both in one call, so this stays untested-but-inert
+//   complexity rather than a real perf concern).
+// Response: { ok: true, property } | { error, code? }
+//
+// POST (not PATCH) to match every OTHER route in this customers/[customerId]
+// folder (tags, tenure-years, rebook are all POST-only) — the closer, more
+// numerous sibling convention wins over the one PATCH example elsewhere in
+// the codebase (designs/[id]/photos/[photoId], a different route family).
+//
+// Guard: propertyId must belong to customerId — every write below scopes
+// its query by BOTH ids in the SAME call (updateProperty/archiveProperty/
+// unarchiveProperty all take customerId + propertyId — see their comments
+// in src/lib/customers.ts), so a propertyId from a DIFFERENT customer
+// simply matches zero rows -> 404, never edited.
+
+import { NextRequest, NextResponse } from 'next/server';
+import { isSupabaseServiceConfigured } from '@/lib/supabase';
+import { requireOperator } from '@/lib/auth/supabaseServer';
+import { updateProperty, archiveProperty, unarchiveProperty, type PropertyRow } from '@/lib/customers';
+
+export const runtime = 'nodejs';
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function toJson(row: PropertyRow) {
+  return {
+    id: row.id,
+    address: row.address,
+    nickname: row.nickname ?? null,
+    archivedAt: row.archived_at ?? null,
+  };
+}
+
+export async function POST(
+  req: NextRequest,
+  { params }: { params: Promise<{ customerId: string; propertyId: string }> },
+) {
+  const denied = await requireOperator();
+  if (denied) return denied;
+
+  if (!isSupabaseServiceConfigured()) {
+    return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
+  }
+
+  const { customerId, propertyId } = await params;
+  if (!UUID_RE.test(customerId) || !UUID_RE.test(propertyId)) {
+    return NextResponse.json({ error: 'Invalid customer or property id' }, { status: 400 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+
+  const { nickname, archived } = (body as { nickname?: unknown; archived?: unknown } | null) ?? {};
+  if (nickname !== undefined && nickname !== null && typeof nickname !== 'string') {
+    return NextResponse.json(
+      { error: 'nickname must be a string or null if provided', code: 'invalid-body' },
+      { status: 400 },
+    );
+  }
+  if (archived !== undefined && typeof archived !== 'boolean') {
+    return NextResponse.json(
+      { error: 'archived must be a boolean if provided', code: 'invalid-body' },
+      { status: 400 },
+    );
+  }
+  if (nickname === undefined && archived === undefined) {
+    return NextResponse.json(
+      { error: 'At least one of nickname/archived must be provided', code: 'invalid-body' },
+      { status: 400 },
+    );
+  }
+
+  let row: PropertyRow | null = null;
+
+  if (nickname !== undefined) {
+    const { data, error } = await updateProperty(customerId, propertyId, { nickname });
+    if (error) {
+      console.error('[api/customers/:customerId/properties/:propertyId] nickname update failed:', error);
+      return NextResponse.json({ error: 'Failed to update this property' }, { status: 500 });
+    }
+    if (!data) return NextResponse.json({ error: 'Property not found' }, { status: 404 });
+    row = data;
+  }
+
+  if (archived !== undefined) {
+    const { data, error } = archived
+      ? await archiveProperty(customerId, propertyId)
+      : await unarchiveProperty(customerId, propertyId);
+    if (error) {
+      console.error('[api/customers/:customerId/properties/:propertyId] archive update failed:', error);
+      return NextResponse.json({ error: 'Failed to update this property' }, { status: 500 });
+    }
+    if (!data) return NextResponse.json({ error: 'Property not found' }, { status: 404 });
+    row = data;
+  }
+
+  return NextResponse.json({ ok: true, property: toJson(row!) });
+}

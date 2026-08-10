@@ -7,6 +7,7 @@ import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import type { JobAdminCard } from '@/lib/jobs';
 import { JOB_STATUSES, type JobStatus } from '@/lib/jobStatus';
 import { JobStatusBadge, JOB_STATUS_LABELS } from '@/components/admin/JobStatusBadge';
+import { NceBadge } from '@/components/admin/NceBadge';
 import { PipelineActionsMenu } from '@/components/admin/PipelineActionsMenu';
 
 // Operator BILLING list of jobs (ledger #83). A job is auto-created when a quote
@@ -178,6 +179,8 @@ export default function JobsAdminPage() {
                             Test
                           </span>
                         )}
+                        {/* NCE (#199) — the barter/trade network tag. */}
+                        {j.isNce && <NceBadge />}
                       </div>
                     </td>
                     <td className="px-3 py-2 text-gray-500 truncate max-w-[14rem]">{j.customerAddress ?? '—'}</td>

@@ -49,10 +49,14 @@ function priceIds(
 export function derivePackagesPermanent(
   lineItems: PortalLineItem[],
   result: QuoteResult,
+  // #199 F1: threaded straight to chargesFromResult — see its own comment
+  // (derivePackages.ts) for why the live inputs.depositPercent must win over
+  // a possibly-stale result.depositRate.
+  depositPercent?: number,
 ): PortalPackage[] {
   // Permanent never carries rush/takedown — force both off. Same tax source
   // (chargesFromResult) as holiday so the money math stays identical.
-  const charges = effectiveCharges(chargesFromResult(result), false, false);
+  const charges = effectiveCharges(chargesFromResult(result, depositPercent), false, false);
 
   const hasFront = lineItems.some((li) => li.id === FRONT_ID);
   // The sides package bundles whichever side lines this result carries: the

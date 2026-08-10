@@ -7,11 +7,10 @@
 // Response: { ok: true, isNce: boolean } | { error, code? }
 //
 // NCE = the barter/trade network YLL belongs to. Unlike legacy_rebook, this
-// tag currently drives NO real tool behavior on its own — no inbox exclusion,
-// no portal variant, no GHL pipeline change. It's storage + visibility only
-// (#198); the money behaviors (40% deposit default, balance-collection
-// blocks, invoice mark-paid-NCE) are ledger #199, layered on top of this tag
-// later.
+// tag drives no inbox exclusion, portal variant, or GHL pipeline change — it's
+// storage + visibility (#198), plus the #199 40% deposit default below (the
+// OTHER #199 money behaviors — balance-collection blocks, invoice
+// mark-paid-NCE — live on their own routes, not here).
 //
 // Tag propagation (#198): when this quote is ALREADY SENT and linked to a
 // customers row, turning the tag ON propagates it onto that customer
@@ -19,6 +18,17 @@
 // rule regardless of which UI set the tag). Forward-only: turning the tag
 // OFF never untags the customer. Best-effort: a propagation failure never
 // fails the toggle itself.
+//
+// NCE 40% deposit default (#199): pre-approval only (customer_approved_at
+// null — the #177 freeze owns an approved/booked quote's deposit). Turning ON
+// writes inputs.depositPercent=40 ONLY when the quote has no existing
+// override (absent or 0) — unlike the builder chip (applyIsNce, which
+// force-sets 40 unconditionally on every turn-on), this route NEVER
+// overwrites a value staff already hand-set, because it fires on quotes the
+// operator isn't actively editing in the builder right now. Turning OFF
+// removes an untouched 40 (reverting to blank/50%); any other value is left
+// alone. Best-effort, like propagation below — a write failure never fails
+// the toggle itself.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
@@ -69,7 +79,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // future writer breaks the /send + /mark-sent guards. #214: the identity
     // columns ride along too, feeding the verify-or-reattach below.
     .select(
-      'id, is_nce, quote_sent_at, customer_id, is_test, deposit_paid_at, highlevel_contact_id, customer_name, customer_email, customer_phone, customer_address',
+      'id, is_nce, quote_sent_at, customer_id, is_test, deposit_paid_at, highlevel_contact_id, customer_name, customer_email, customer_phone, customer_address, inputs, customer_approved_at',
     )
     .maybeSingle<{
       id: string;
@@ -83,6 +93,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       customer_email: string | null;
       customer_phone: string | null;
       customer_address: string | null;
+      inputs: Record<string, unknown> | null;
+      customer_approved_at: string | null;
     }>();
 
   if (error) {
@@ -91,6 +103,54 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
   if (!data) {
     return NextResponse.json({ error: 'Quote not found' }, { status: 404 });
+  }
+
+  // #199 40% deposit default — see the header comment for the full rule.
+  if (!data.customer_approved_at) {
+    const inputs = data.inputs ?? {};
+    const currentDepositPercent =
+      typeof inputs.depositPercent === 'number' ? inputs.depositPercent : undefined;
+    let depositWrite: Record<string, unknown> | null = null;
+    if (isNce && (currentDepositPercent === undefined || currentDepositPercent === 0)) {
+      depositWrite = { ...inputs, depositPercent: 40 };
+    } else if (!isNce && currentDepositPercent === 40) {
+      const { depositPercent: _drop, ...rest } = inputs;
+      void _drop; // mirrors apply-color-request/route.ts's same destructure-drop idiom
+      depositWrite = rest;
+    }
+    if (depositWrite) {
+      // #199 (F3, wrap-review MED-HIGH): this is a read-modify-write of the
+      // WHOLE inputs jsonb — un-guarded, a concurrent builder Calculate/save
+      // racing this toggle would silently revert the save's entire inputs
+      // blob (the closest sibling on this table, free-items/route.ts, CASes
+      // for exactly this — mirrored here). CAS against the EXACT inputs we
+      // read above; .is() for the null case (a never-priced quote) since a
+      // SQL NULL never matches .eq('col','null') (mirrors charge-balance's
+      // own null-vs-sentinel CAS split). ALSO re-checks customer_approved_at
+      // is STILL null at write time (not just at our read above, seconds
+      // earlier) — closes the narrow approve-vs-write TOCTOU where the
+      // customer approves in that window, which would otherwise let this
+      // pre-approval-only write land on a now-#177-frozen quote. A lost race
+      // on EITHER guard skips the write (0 rows) — best-effort, matching this
+      // route's existing design (never fails the tag toggle itself).
+      let depositUpdateQuery = sb
+        .from('quotes')
+        .update({ inputs: depositWrite })
+        .eq('id', id)
+        .is('customer_approved_at', null);
+      depositUpdateQuery =
+        data.inputs === null
+          ? depositUpdateQuery.is('inputs', null)
+          : depositUpdateQuery.eq('inputs', JSON.stringify(data.inputs));
+      const { data: casRows, error: depErr } = await depositUpdateQuery.select('id');
+      if (depErr) {
+        console.warn('[api/quotes/:id/nce] #199 deposit-default write failed (non-fatal):', depErr);
+      } else if (!casRows || casRows.length === 0) {
+        console.warn(
+          `[api/quotes/:id/nce] #199 deposit-default write skipped for quote ${id} — inputs or approval state changed concurrently (non-fatal, best-effort)`,
+        );
+      }
+    }
   }
 
   // #214: propagation target = the CACHED customer_id first, with a

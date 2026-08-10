@@ -6,7 +6,10 @@
 > against the two prod Supabase projects), Naldo's four rulings recorded below,
 > and the in-flight OPERATIONS_HUB_CONTRACT (PR #701). Quick-win siblings:
 > ledger #218–#221. Hardened at the S53 wrap by a four-lens review (13 findings
-> fixed into this doc, 2 accepted; see the S53 session-log entry).
+> fixed into this doc, 2 accepted; see the S53 session-log entry), then again at
+> S54 post-merge by a second four-lens review whose four HIGH findings are recorded
+> below as **binding acceptance criteria** (read that section before building any
+> slice; it supersedes one of the open questions).
 
 ## The problem, evidenced (Wed 2026-08-06)
 
@@ -121,7 +124,7 @@ GHL calls ──► copilot sync ──► transcripts ──► NEW: commitment
   matches on contact + rep + a content/duration signal:
   | Commitment | Clears when | False-clear guard |
   |---|---|---|
-  | send_quote | a quote linked to the contact gets `quote_sent_at` (direct: `quotes.highlevel_contact_id`, nullable — fall back through `customers.hl_contact_id`) | sent by a DIFFERENT rep → item closes visibly as "done by <rep>", never silently |
+  | send_quote | a quote linked to the contact gets `quote_sent_at` (direct: `quotes.highlevel_contact_id`, nullable — fall back through `customers.hl_contact_id`) | sent by a DIFFERENT rep → item closes visibly as "done by <rep>", never silently. Clears the OLDEST open item of this kind only (criterion 2), and does not run at all for an unresolved contact (criterion 3) |
   | send_photos / send_info | outbound SMS/email to the contact **containing media or a portal/lookbook link** | any other outbound → item goes "needs-confirm" (one tap), never auto-clears |
   | callback @T | a **connected** outbound call to the contact (≥20s — the copilot's own threshold) or manual tap | a failed attempt (voicemail / short) suppresses the breach ping but does NOT clear the item |
   | schedule_estimate | v1: manual check-off | calendar/GHL appointment wiring is v2 |
@@ -139,6 +142,56 @@ GHL calls ──► copilot sync ──► transcripts ──► NEW: commitment
   digest sweep can ship FIRST (QT bot is live today); the hub board renders
   the same table when the hub ships. Destination per ruling 1 is unchanged —
   flag to Naldo that v1's visible surface starts as Telegram + digest.
+
+## Binding acceptance criteria (S54 review, four HIGH findings)
+
+A second four-lens review ran against the merged plan on 2026-08-07 (S54, PR #707
+post-merge). Four HIGH findings survived the S53 pass. They are recorded here as
+**binding acceptance criteria**, not suggestions: a slice does not ship until its
+criterion below is met.
+
+1. **`call_commitments` lands in the QT database, not the copilot database, until
+   ledger #221 is closed.** (Blocks slice 1.) Ledger #221 documents that the
+   copilot's Supabase anon key has read/write on 26 tables holding 1,210 rows of
+   transcript PII, flagged CRITICAL by the Supabase advisor. Writing a new table of
+   contact + rep + verbatim promise text into that project adds a second class of
+   PII to the exposed surface for as long as #221 sits open. This supersedes the
+   "where `call_commitments` lives" open question below: QT until #221 is verified
+   closed, at which point the location may be revisited with Codex.
+2. **A clearing event closes the OLDEST open commitment of that kind for the
+   contact, never all of them.** (Blocks slice 3.) The auto-verify table below
+   matches on contact + rep + kind, which silently clears every open item of that
+   kind when one `quote_sent_at` arrives. A contact can hold two open `send_quote`
+   promises made on two different calls (Sheryl M. already has three transcripts in
+   today's evidence), and the second promise would close having never been kept.
+3. **Auto-verify is OFF (manual check-off only) for any commitment whose contact
+   fails clean identity resolution.** (Blocks slice 3.) The open question below
+   correctly records that the `ghl_contact_id` fallback matcher does not exist. The
+   auto-verify table states the join as settled fact. Until the matcher ships, a
+   commitment keyed to an unresolvable contact can never match an event: it sits
+   open, ages, and hits the 7-day expiry without ever having had a chance to clear.
+   Such items must be flagged manual-only at creation and routed to the no-match
+   review lane, not left to expire as if they were ignored.
+4. **A per-rep ping ceiling and batching window are stated before slice 2 is
+   built.** (Blocks slice 2.) As written, every open loop is its own Telegram DM,
+   plus breach pings, on top of the morning digest. The evidenced day carried 22
+   call events; a December day is heavier. This plan exists to reduce Naldo's
+   after-work load, and an uncapped ping stream converts that load into after-hours
+   notifications instead of removing it. Name the rolling batch window, the per-rep
+   daily ceiling, and whether breach pings notify only the rep or admins too.
+
+Carried as build-time notes (MEDIUM, not blocking): no retention or redaction
+policy exists for `transcripts` or `call_commitments` (recorded customer calls
+containing names, addresses, and payment talk, kept indefinitely across two
+databases); Flow H's authentication mechanism is never named in this plan (the §1
+envelope solves duplicate delivery, not authentication, so name the shared secret
+or signature scheme inline before Flow H ships); the slice-1 dedupe key's exact
+composition is unspecified; `promised_at` must be anchored to the call's wall-clock
+time in `America/New_York` (the `nyToday()` pattern in
+`src/lib/integrations/opsDigest.ts`), not to extraction time, which today runs
+45 to 75 minutes late; the dismiss-reason set has no "miscategorized" option and so
+can force a rep to record something untrue to clear a row, and nothing is named as
+actually reading the dismissal feedback.
 
 ## Build slices (each independently shippable)
 
@@ -175,9 +228,11 @@ mirroring · no coaching/scoring changes · no new inbox.
   class was 166/168 NULL). Design a digits-suffix phone fallback matcher + a
   no-match review lane, or items false-OPEN forever (the inverse hazard of
   false-clear).
-- Where `call_commitments` lives: copilot DB (proposed — transcripts + jobs
-  there; hub reads it naturally) vs QT DB (events are born there). Decide with
-  Codex when Flow H is drafted; either works with the contract's envelope.
+- ~~Where `call_commitments` lives~~ **RESOLVED by criterion 1: QT DB until ledger
+  #221 is verified closed.** Original framing: copilot DB (transcripts + jobs
+  there; hub reads it naturally) vs QT DB (events are born there). Either works
+  with the contract's envelope, so the PII exposure decides it. Revisit with Codex
+  once #221 is closed.
 - Extraction cadence: piggyback the existing hourly-ish learnings batch first,
   or a faster per-transcript trigger (a 6:51 PM promise extracted at 8 PM is
   fine for the digest, marginal for same-evening pings).
