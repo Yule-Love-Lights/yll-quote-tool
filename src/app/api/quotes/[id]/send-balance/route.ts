@@ -5,6 +5,12 @@
 // SENDS a message — no money moves, no stage change, no booking. The customer
 // pays the balance on Valor's hosted page via the existing pay-balance route.
 //
+// #199: an NCE-tagged quote's balance is never collectable by pay-link (it
+// settles through NCE) — 409s before any job/invoice lookup or GHL send, no
+// override (unlike charge-balance's overrideNce — there is no "send it
+// anyway" here; the pay-link itself would just dead-end at the portal's own
+// #199 block).
+//
 // Body: { channel?: 'email' | 'sms' | 'both' }  (default 'both')
 // Response: { ok, smsSent, emailSent, messageError?, channel, balanceUsd } | { error, code? }
 
@@ -43,6 +49,7 @@ type QuoteRow = {
   highlevel_contact_id: string | null;
   customer_name: string | null;
   is_test: boolean;
+  is_nce: boolean;
 };
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -75,7 +82,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
-    .select('id, highlevel_contact_id, customer_name, is_test')
+    .select('id, highlevel_contact_id, customer_name, is_test, is_nce')
     .eq('id', id)
     .single<QuoteRow>();
   if (fetchErr || !quote) {
@@ -83,6 +90,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
   if (quote.is_test) {
     return NextResponse.json({ error: 'Test quote — no real balance to collect', code: 'test-quote' }, { status: 400 });
+  }
+  // #199: an NCE trade job's balance is not collectable by pay-link — never
+  // send it, checked before any job/invoice lookup or GHL send.
+  if (quote.is_nce) {
+    return NextResponse.json(
+      {
+        error: 'This is an NCE trade job — the balance is not collectable by pay-link. The link was NOT sent.',
+        code: 'nce-blocked',
+      },
+      { status: 409 },
+    );
   }
 
   // The balance lives on the invoice (created when the job is completed).

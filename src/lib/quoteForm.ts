@@ -234,6 +234,75 @@ export function resolveTagPayload(
 }
 
 /**
+ * NCE 40% deposit default (#199): the depositPercent a quote's Deposit %
+ * field should carry when the NCE chip flips, given the CURRENT depositPercent
+ * and whether the quote is locked post-approval (the #177 freeze). Pure so
+ * every place the builder flips isNce (the chip click, contact-pick tag
+ * inheritance) funnels through identical logic — and it's unit-testable
+ * without a React render harness (QuoteBuilder has none; see resolveTagPayload
+ * above for the same convention).
+ *
+ * - locked: never changes here — the #177 freeze (server 409 on a changed
+ *   depositPercent post-approval) owns an approved/booked quote's deposit.
+ * - turning ON: 40 (NCE's contractual deposit rate vs the 50% default).
+ * - turning OFF: reverts to 0 (blank = 50%) ONLY when BOTH `current === 40`
+ *   AND `wasRuleSet` — i.e. THIS rule's own prior turn-ON is what put the 40
+ *   there. A bare `current === 40` can't tell that apart from a value staff
+ *   hand-typed for an unrelated reason (a coincidentally-40% negotiated
+ *   deposit) — wrap-review F4: without `wasRuleSet`, turning the chip OFF (or
+ *   even a same-tick contact-pick re-confirmation that never actually
+ *   changes isNce — see the caller's own no-op-flip guard) would silently
+ *   wipe a hand-typed 40 the chip never touched. Any other value is always
+ *   left alone regardless of `wasRuleSet`.
+ *
+ * Returns `current` unchanged when no rule applies (including the locked
+ * case), so callers can always assign the result unconditionally. Callers
+ * are expected to skip calling this entirely when nextIsNce hasn't actually
+ * changed from the current isNce (this function has no way to know that on
+ * its own — it only sees the NEXT value).
+ */
+export function resolveNceDepositPercent(
+  current: number,
+  nextIsNce: boolean,
+  locked: boolean,
+  wasRuleSet: boolean,
+): number {
+  if (locked) return current;
+  if (nextIsNce) return 40;
+  return wasRuleSet && current === 40 ? 0 : current;
+}
+
+/**
+ * #199 delta-verify (MED): seeds nceDepositSetByRuleRef's value on MOUNT —
+ * whether QuoteBuilder's CURRENT depositPercent is a value the NCE rule
+ * itself would have written, so a chip turn-OFF later knows whether it's
+ * allowed to revert it. Pure + exported so it's unit-testable without a
+ * render harness (QuoteBuilder has none — mirrors resolveTagPayload's own
+ * convention above, and sits next to resolveNceDepositPercent, the live-flip
+ * rule it seeds the provenance ref FOR).
+ *
+ * Reopened quote (`initial` non-null): rule-owned only when the saved row is
+ * BOTH tagged is_nce AND sitting at EXACTLY 40 — every path that can produce
+ * that combination (the builder chip, the admin "Mark as NCE" toggle route,
+ * the rebook clone) writes it via this same 40%-on-turn-on rule. The
+ * residual is deliberate: staff who hand-typed exactly 40 on an NCE quote,
+ * closed it, and reopened it will see a later chip OFF revert that 40 to
+ * blank — recoverable in one keystroke, versus the bug this replaces
+ * (silently billing an untagged customer at the NCE rate).
+ *
+ * Brand-new quote (`initial` null): rule-owned exactly when prefilled from
+ * an already-NCE-tagged lead (mirrors the mount seed that force-writes 40 in
+ * that case — see QuoteBuilder's form initializer, the `prefill?.isNce`
+ * branch).
+ */
+export function initialNceDepositProvenance(
+  initial: { isNce?: boolean; depositPercent?: number } | null,
+  prefillIsNce?: boolean,
+): boolean {
+  return initial ? initial.isNce === true && initial.depositPercent === 40 : prefillIsNce === true;
+}
+
+/**
  * Merge a lead's prefill values onto a blank QuoteFormData. Applied ONLY as
  * the blank-slate builder's INITIAL state (QuoteBuilder's lazy useState
  * initializer) — never re-applied after mount, so a reopened quote

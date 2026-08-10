@@ -461,6 +461,33 @@ describe('chargesFromResult — per-quote fee config (#4)', () => {
     expect(chargesFromResult(resultWith({})).depositRate).toBe(BUSINESS_RULES.depositPercentage);
   });
 
+  // #199 F1 (wrap-review HIGH): a caller with a LIVE inputs.depositPercent to
+  // offer (the 2nd param) must win over a possibly-STALE result.depositRate —
+  // a tag/rebook write patches ONLY inputs.depositPercent, never result, so
+  // trusting result.depositRate alone leaves the NCE 40% (or any depositPercent
+  // change) inert pre-approval.
+  describe('live depositPercent precedence (#199 F1)', () => {
+    it('prefers the live depositPercent over a stale result.depositRate', () => {
+      expect(chargesFromResult(resultWith({ depositRate: 0.5 }), 40).depositRate).toBe(0.4);
+    });
+
+    it('a blank/0 live depositPercent still resolves to the BUSINESS_RULES default — not a fall-through to a stale result.depositRate', () => {
+      expect(chargesFromResult(resultWith({ depositRate: 0.25 }), 0).depositRate).toBe(
+        BUSINESS_RULES.depositPercentage,
+      );
+    });
+
+    it('falls back to result.depositRate when the caller offers no live value at all (back-compat, no param passed)', () => {
+      expect(chargesFromResult(resultWith({ depositRate: 0.25 })).depositRate).toBe(0.25);
+    });
+
+    it('an out-of-range live depositPercent resolves to the BUSINESS_RULES default (mirrors effectiveDepositRate)', () => {
+      expect(chargesFromResult(resultWith({ depositRate: 0.25 }), 150).depositRate).toBe(
+        BUSINESS_RULES.depositPercentage,
+      );
+    });
+  });
+
   // Audit fix (g18): on a near-zero taxable base the rounded taxAmount used to
   // back-derive an inflated rate (e.g. 0.01 / 0.10 = 0.10 ≠ 0.0875) that then
   // got applied to every package/selection total. The canonical rate is used

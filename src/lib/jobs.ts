@@ -150,6 +150,8 @@ export type JobAdminCard = {
   customerName: string | null;
   customerAddress: string | null;
   isTest: boolean;
+  // #199: the linked quote's NCE tag — drives the NceBadge on the list row.
+  isNce: boolean;
   createdAt: string;
   itemCount: number;
   // Customer detail-page route id fields (same precedence as QuoteListItem /
@@ -163,9 +165,9 @@ export type JobAdminCard = {
 
 /**
  * The jobs list for the operator billing view (/admin/jobs). Reads every job
- * (newest first) and joins each linked quote's customer name/address + is_test.
- * Test jobs stay VISIBLE here (badged) — only the dashboard metrics exclude them
- * (#93). Returns [] when Supabase isn't configured.
+ * (newest first) and joins each linked quote's customer name/address +
+ * is_test/is_nce. Test jobs stay VISIBLE here (badged) — only the dashboard
+ * metrics exclude them (#93). Returns [] when Supabase isn't configured.
  */
 export async function listJobsForAdmin(limit = 500): Promise<JobAdminCard[]> {
   const db = sb();
@@ -177,18 +179,19 @@ export async function listJobsForAdmin(limit = 500): Promise<JobAdminCard[]> {
   const quoteIds = [...new Set(jobs.map((j) => j.quote_id).filter((x): x is string => !!x))];
   const byQuote = new Map<
     string,
-    { name: string | null; address: string | null; isTest: boolean; highlevelContactId: string | null; customerId: string | null }
+    { name: string | null; address: string | null; isTest: boolean; isNce: boolean; highlevelContactId: string | null; customerId: string | null }
   >();
   if (quoteIds.length) {
     const { data } = await db
       .from('quotes')
-      .select('id, customer_name, customer_address, is_test, highlevel_contact_id, customer_id')
+      .select('id, customer_name, customer_address, is_test, is_nce, highlevel_contact_id, customer_id')
       .in('id', quoteIds);
     for (const q of (data ?? []) as {
       id: string;
       customer_name: string | null;
       customer_address: string | null;
       is_test: boolean | null;
+      is_nce: boolean | null;
       highlevel_contact_id: string | null;
       customer_id: string | null;
     }[]) {
@@ -196,6 +199,7 @@ export async function listJobsForAdmin(limit = 500): Promise<JobAdminCard[]> {
         name: q.customer_name ?? null,
         address: q.customer_address ?? null,
         isTest: !!q.is_test,
+        isNce: !!q.is_nce,
         highlevelContactId: q.highlevel_contact_id ?? null,
         customerId: q.customer_id ?? null,
       });
@@ -213,6 +217,7 @@ export async function listJobsForAdmin(limit = 500): Promise<JobAdminCard[]> {
       customerName: c?.name ?? null,
       customerAddress: c?.address ?? null,
       isTest: c?.isTest ?? false,
+      isNce: c?.isNce ?? false,
       createdAt: j.created_at,
       itemCount: Array.isArray(j.line_items) ? j.line_items.length : 0,
       highlevelContactId: c?.highlevelContactId ?? null,
@@ -222,7 +227,7 @@ export async function listJobsForAdmin(limit = 500): Promise<JobAdminCard[]> {
 }
 
 // The full billing detail for one job (/admin/jobs/[id]): the job row, the linked
-// quote's customer identity + is_test, and the linked invoice (if one exists yet).
+// quote's customer identity + is_test/is_nce, and the linked invoice (if one exists yet).
 export type JobDetail = {
   job: JobRow;
   customerName: string | null;
@@ -230,6 +235,8 @@ export type JobDetail = {
   customerPhone: string | null;
   customerAddress: string | null;
   isTest: boolean;
+  // #199: the linked quote's NCE tag — drives the NceBadge on the detail header.
+  isNce: boolean;
   // The linked quote's service_type (#117), for surfaces that need to tell a
   // 'permanent_bistro' one_off job apart from an ordinary holiday/event one_off
   // (the type column alone collapses both to 'one_off' — see createJobFromQuote's
@@ -245,8 +252,8 @@ export type JobDetail = {
 
 /**
  * The billing detail for one job — the job row + the linked quote's customer
- * identity + is_test + service_type + the linked invoice (null until the job
- * is completed). Returns null when Supabase isn't configured or the job is missing.
+ * identity + is_test/is_nce + service_type + the linked invoice (null until the
+ * job is completed). Returns null when Supabase isn't configured or the job is missing.
  */
 export async function getJobDetail(id: string): Promise<JobDetail | null> {
   const db = sb();
@@ -260,12 +267,13 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
   let customerPhone: string | null = null;
   let customerAddress: string | null = null;
   let isTest = false;
+  let isNce = false;
   let quoteServiceType: string | null = null;
   let intendedDepositUsd: number | null = null;
   if (job.quote_id) {
     const { data } = await db
       .from('quotes')
-      .select('customer_name, customer_email, customer_phone, customer_address, is_test, service_type, deposit_amount_usd')
+      .select('customer_name, customer_email, customer_phone, customer_address, is_test, is_nce, service_type, deposit_amount_usd')
       .eq('id', job.quote_id)
       .maybeSingle<{
         customer_name: string | null;
@@ -273,6 +281,7 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
         customer_phone: string | null;
         customer_address: string | null;
         is_test: boolean | null;
+        is_nce: boolean | null;
         service_type: string | null;
         deposit_amount_usd: number | null;
       }>();
@@ -282,6 +291,7 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
       customerPhone = data.customer_phone ?? null;
       customerAddress = data.customer_address ?? null;
       isTest = !!data.is_test;
+      isNce = !!data.is_nce;
       quoteServiceType = data.service_type ?? null;
       intendedDepositUsd = data.deposit_amount_usd ?? null;
     }
@@ -295,6 +305,7 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
     customerPhone,
     customerAddress,
     isTest,
+    isNce,
     quoteServiceType,
     invoice,
     intendedDepositUsd,

@@ -6,6 +6,8 @@ import {
   inputsToFormData,
   applyPrefill,
   resolveTagPayload,
+  resolveNceDepositPercent,
+  initialNceDepositProvenance,
 } from './quoteForm';
 import type { QuoteInputs } from './pricing/pricingEngine';
 import { makeDefaultPermanentFields } from './permanent/types';
@@ -495,6 +497,79 @@ describe('resolveTagPayload (#198 review — touched-ref tag chips)', () => {
     it('resolves each chip independently on insert too', () => {
       expect(resolveTagPayload(true, false, false, false, 'insert')).toEqual({ legacyRebook: true, isNce: false });
     });
+  });
+});
+
+// #199: resolveNceDepositPercent is the ONE rule the builder's applyIsNce
+// helper (both the chip click and contact-pick inheritance) funnels through,
+// mirroring resolveTagPayload's pure-function-stands-in-for-a-render-test
+// convention above.
+//
+// wasRuleSet (wrap-review F4 fix): a bare `current === 40` can't tell "the 40
+// THIS rule set" apart from "a 40 staff typed for an unrelated negotiated
+// deposit" — the exact colliding value this rule itself writes. Every OFF
+// case below is now parameterized on it.
+describe('resolveNceDepositPercent (#199 NCE 40% deposit default)', () => {
+  it('sets 40 when turning ON from blank (0)', () => {
+    expect(resolveNceDepositPercent(0, true, false, false)).toBe(40);
+  });
+
+  it('sets 40 when turning ON, overwriting whatever was there before', () => {
+    expect(resolveNceDepositPercent(25, true, false, false)).toBe(40);
+    expect(resolveNceDepositPercent(50, true, false, false)).toBe(40);
+  });
+
+  it('reverts a 40 THIS RULE set (wasRuleSet=true) back to 0 (blank) when turning OFF', () => {
+    expect(resolveNceDepositPercent(40, false, false, true)).toBe(0);
+  });
+
+  // #199 F4 (wrap-review): the exact colliding-value case a bare `current
+  // === 40` check couldn't distinguish — a staff-typed 40 that has NOTHING
+  // to do with the NCE rule (e.g. an unrelated negotiated deposit) must
+  // survive turning the chip OFF (or a no-op contact-pick re-confirmation
+  // upstream, which the caller now short-circuits before ever reaching here).
+  it('leaves a HAND-TYPED 40 alone when turning OFF (wasRuleSet=false — the collision case)', () => {
+    expect(resolveNceDepositPercent(40, false, false, false)).toBe(40);
+  });
+
+  it('leaves any other staff hand-set value alone when turning OFF, regardless of wasRuleSet', () => {
+    expect(resolveNceDepositPercent(25, false, false, true)).toBe(25);
+    expect(resolveNceDepositPercent(0, false, false, true)).toBe(0);
+    expect(resolveNceDepositPercent(25, false, false, false)).toBe(25);
+  });
+
+  it('never changes anything once locked (#177 freeze), regardless of direction or wasRuleSet', () => {
+    expect(resolveNceDepositPercent(0, true, true, false)).toBe(0);
+    expect(resolveNceDepositPercent(40, false, true, true)).toBe(40);
+    expect(resolveNceDepositPercent(25, true, true, false)).toBe(25);
+  });
+});
+
+// #199 delta-verify (MED): initialNceDepositProvenance seeds QuoteBuilder's
+// nceDepositSetByRuleRef on mount — the first cut started it `false` always,
+// so reopening an already-NCE quote at 40% and clicking the chip OFF left
+// the deposit at 40 on a now-untagged quote. Extracted pure (mirrors
+// resolveNceDepositPercent above) so the seed is unit-testable without a
+// render harness.
+describe('initialNceDepositProvenance (#199 delta-verify — mount-seed provenance)', () => {
+  it('reopened quote, is_nce + depositPercent exactly 40 → rule-owned (true)', () => {
+    expect(initialNceDepositProvenance({ isNce: true, depositPercent: 40 }, undefined)).toBe(true);
+  });
+
+  it('reopened quote, is_nce but depositPercent is something else → NOT rule-owned (false)', () => {
+    expect(initialNceDepositProvenance({ isNce: true, depositPercent: 25 }, undefined)).toBe(false);
+  });
+
+  it('reopened quote, depositPercent 40 but NOT is_nce → NOT rule-owned (false)', () => {
+    expect(initialNceDepositProvenance({ isNce: false, depositPercent: 40 }, undefined)).toBe(false);
+  });
+
+  it('brand-new quote (no initialQuote), prefilled from an NCE-tagged lead → rule-owned (true)', () => {
+    expect(initialNceDepositProvenance(null, true)).toBe(true);
+  });
+
+  it('brand-new quote, no prefill at all → NOT rule-owned (false)', () => {
+    expect(initialNceDepositProvenance(null, undefined)).toBe(false);
   });
 });
 

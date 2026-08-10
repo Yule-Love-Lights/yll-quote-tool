@@ -469,6 +469,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   let snapshotTotalUsd = currentTotal;
   let snapshotDepositUsd = currentDeposit;
   let snapshotInstallDiscountUsd = installDiscountUsd;
+  // #199 F1 fix: ONE resolved deposit rate for this whole approval — used for
+  // BOTH snapshotDepositUsd (via chargesFromResult below, when quote.result
+  // exists) AND the frozen customerSelection.depositRate field, so the two
+  // can never disagree within one frozen record (previously: currentDepositUsd
+  // derived from the possibly-STALE result.depositRate via chargesFromResult,
+  // while depositRate was a SEPARATE live effectiveDepositRate(...) call —
+  // an NCE tag set without a recompute made the snapshot self-contradict: it
+  // said "40%" but charged 50%'s worth of dollars). Starts as the live rate
+  // (matches the no-result fallback path below, which has no `config` to
+  // unify with); overwritten from `config.depositRate` once a result exists.
+  let snapshotDepositRate = effectiveDepositRate(quote.inputs?.depositPercent);
 
   if (quote.result) {
     const { lineItems, roofline } = buildPortalLineItems(quote.result, quote.inputs);
@@ -503,7 +514,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         ? 0
         : round2(serverSubtotal * installDiscountRate(installTiming));
 
-    const config = chargesFromResult(quote.result);
+    // #199 F1: thread the live inputs.depositPercent through so an NCE tag
+    // (or any depositPercent change) lands even without a recompute — see
+    // chargesFromResult's own comment.
+    const config = chargesFromResult(quote.result, quote.inputs?.depositPercent);
     const breakdown = priceSelection(
       serverSubtotal,
       effectiveCharges(config, rushSelected, takedownSelected, discountRate, discountFlat),
@@ -576,6 +590,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     snapshotSelectedItemIds = validIds;
     snapshotTotalUsd = breakdown.total;
     snapshotDepositUsd = breakdown.deposit;
+    // #199 F1: the SAME resolved rate that priced breakdown.deposit above —
+    // not a second independent effectiveDepositRate(...) call — so this and
+    // snapshotDepositUsd cannot disagree by construction. PortalCharges types
+    // depositRate optional even though chargesFromResult always populates it;
+    // the `??` fallback here is type-satisfying only, never actually hit.
+    snapshotDepositRate = config.depositRate ?? effectiveDepositRate(quote.inputs?.depositPercent);
   }
 
   // Freeze the approval snapshot FIRST, before any messaging. This preserves
@@ -594,9 +614,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       selectedItemIds: snapshotSelectedItemIds,
       currentTotalUsd: snapshotTotalUsd,
       currentDepositUsd: snapshotDepositUsd,
-      // #177 — freeze the effective rate at THIS approval, from the same
-      // quote fetch used for depositPercent everywhere else in this route.
-      depositRate: effectiveDepositRate(quote.inputs?.depositPercent),
+      // #177 / #199 F1 — freeze the effective rate at THIS approval. The SAME
+      // resolved value that produced currentDepositUsd above (see
+      // snapshotDepositRate's own comment) — never a second independent call,
+      // so this field and currentDepositUsd cannot disagree.
+      depositRate: snapshotDepositRate,
       rushSelected,
       takedownSelected,
       colorSchemeId,
