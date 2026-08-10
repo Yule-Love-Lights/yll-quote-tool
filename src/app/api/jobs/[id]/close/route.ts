@@ -143,6 +143,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           { status: 409 },
         );
       }
+      // #199 delta-verify: the NCE check couldn't run (transient read
+      // failure). The invoice was NOT settled and the job was NOT closed —
+      // retryable, and deliberately distinct from the nce-mismatch copy.
+      if (err instanceof InvoiceSettleError && err.code === 'nce-check-failed') {
+        return NextResponse.json(
+          {
+            error:
+              "Couldn't verify whether this job's invoice is an NCE trade job, so nothing was settled or closed. Try again in a moment.",
+            code: 'nce-check-failed',
+            invoiceId: invoice.id,
+          },
+          { status: 503 },
+        );
+      }
       return NextResponse.json(
         { error: 'Could not settle the invoice', code: 'settle-failed' },
         { status: 409 },

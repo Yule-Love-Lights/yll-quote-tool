@@ -19,6 +19,7 @@ import { renderMiniArea } from "./miniArea";
 import { preloadAssets } from "./assets";
 import { renderYardstick, pxPerFoot, yardstickLabel } from "./yardstick";
 import { DEFAULT_KEYMAP, resolveAction, type KeyMap } from "./keymap";
+import { isLineDrawContext } from "./drawContext";
 
 // Default real-world width for newly-placed custom uploads — about 3 feet,
 // big enough to spot on the photo, small enough to resize down with the
@@ -4612,11 +4613,47 @@ export async function renderEditor(
   // select-guards are bypassed. Read live; the tool-change handlers redrawScene()
   // so the draggable flag this gates stays fresh across tool switches.
   function isStrandDrawContext(): boolean {
-    return (
-      toolMode === "draw" &&
-      tool.drawingStyle === "strand" &&
-      !tool.scattershot &&
-      ((tool.category === "lights" && tool.bulbType !== "bistro") || drawingGarland())
+    return isLineDrawContext(
+      {
+        toolMode,
+        drawingStyle: tool.drawingStyle,
+        scattershot: tool.scattershot,
+        category: tool.category,
+        bulbType: tool.bulbType,
+        decorType: tool.decorType,
+      },
+      "strand",
+    );
+  }
+
+  // #203: mirrors isStrandDrawContext() (#63) for the "trace" style, via the
+  // same isLineDrawContext() gate (see drawContext.ts for why the two
+  // deliberately share one function instead of two copies that could drift
+  // apart again). Used ONLY at the mousedown per-item-guard site below, to
+  // let the very FIRST click of a fresh trace fall through into the
+  // trace-start pipeline when it lands on an existing strand/garland/
+  // miniArea — trace's own pre-existing `!tracePts` exception already
+  // covers every click AFTER the first (continuing an in-progress trace);
+  // this closes the gap for the first one, where tracePts is still null.
+  // Deliberately NOT wired into isStrandDrawContext()'s other call sites
+  // (draggable(false), the item click-handler bypass, the drawOverItemId /
+  // mouseup drag-distance decision) — those implement strand's click-vs-
+  // drag disambiguation, which doesn't fit trace's multi-click accumulation
+  // model (traced through: routing trace over drawOverItemId would fire
+  // selectDrawOverItem() and an unconditional redrawScene() on mouseup,
+  // destroying the live trace preview node and mis-selecting the traced-
+  // over item mid-gesture).
+  function isTraceDrawContext(): boolean {
+    return isLineDrawContext(
+      {
+        toolMode,
+        drawingStyle: tool.drawingStyle,
+        scattershot: tool.scattershot,
+        category: tool.category,
+        bulbType: tool.bulbType,
+        decorType: tool.decorType,
+      },
+      "trace",
     );
   }
 
@@ -4718,8 +4755,13 @@ export async function renderEditor(
       // fall through to the draw pipeline below (skip the per-item return-guards).
     } else {
       // Click on a strand group — selection handler runs; suppress draw. EXCEPT
-      // when a trace polyline is in progress: that click must continue the trace.
-      if (e.target.findAncestor(".strand", true) && !tracePts) return;
+      // when a trace polyline is in progress: that click must continue the
+      // trace. #203: OR when a fresh trace is about to START on top of it —
+      // mirrors the same exception for the very first click, which used to be
+      // swallowed here because tracePts is still null at that instant (the
+      // pre-existing !tracePts exception only ever covered clicks AFTER the
+      // first one).
+      if (e.target.findAncestor(".strand", true) && !tracePts && !isTraceDrawContext()) return;
 
       // Click on an existing wreath — let its click handler select it; don't draw.
       if (e.target.findAncestor(".wreath", true)) return;
@@ -4728,8 +4770,9 @@ export async function renderEditor(
       if (e.target.findAncestor(".bow", true)) return;
 
       // Click on an existing garland — let its click handler select it; don't draw.
-      // (Exception while a trace is in progress, same as for strands.)
-      if (e.target.findAncestor(".garland", true) && !tracePts) return;
+      // (Exception while a trace is in progress, or about to start — #203 — same
+      // as for strands.)
+      if (e.target.findAncestor(".garland", true) && !tracePts && !isTraceDrawContext()) return;
 
       // Click on an existing spritzer — same deal as wreath/bow.
       if (e.target.findAncestor(".spritzer", true)) return;
@@ -4737,8 +4780,9 @@ export async function renderEditor(
       // Click on an existing mini-light area — let its click handler select it;
       // don't fall through to the place/draw pipeline (which would drop a
       // duplicate box and destroy the pressed group mid-gesture). Same trace
-      // exception as strands/garlands: mid-trace clicks continue the polyline.
-      if (e.target.findAncestor(".miniArea", true) && !tracePts) return;
+      // exception as strands/garlands (continuing OR about to start — #203):
+      // mid-trace clicks continue the polyline.
+      if (e.target.findAncestor(".miniArea", true) && !tracePts && !isTraceDrawContext()) return;
 
       // Click on an existing text item — same.
       if (e.target.findAncestor(".text", true)) return;

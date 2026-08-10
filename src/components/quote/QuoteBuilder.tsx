@@ -28,6 +28,7 @@ import {
   resolveNceDepositPercent,
   legacyRebookConfirmMessage,
   nceConfirmMessage,
+  initialNceDepositProvenance,
 } from '@/lib/quoteForm';
 import type { CrmContact } from '@/lib/integrations/types';
 import { type ServiceType, SERVICE_TYPES, SERVICE_TYPE_LABELS } from '@/lib/serviceType';
@@ -385,12 +386,23 @@ export default function QuoteBuilder({
   // applyIsNce itself just wrote (a turn-ON), never a coincidence. Cleared on
   // turning OFF (whether or not a revert fired) and on any DIRECT manual edit
   // of the deposit input (see its own onChange) — a staff hand-edit, even to
-  // 40, is never "the rule's" value again. Starts false on every mount
-  // (including a reopened already-NCE quote) — provenance isn't persisted, so
-  // a freshly-loaded 40% is conservatively treated as staff-owned rather than
-  // guessed at from the coincidental value alone (the same guess this fix
-  // removes from the OFF path itself).
-  const nceDepositSetByRuleRef = useRef(false);
+  // 40, is never "the rule's" value again.
+  //
+  // SEEDED ON MOUNT (delta-verify MED): provenance isn't persisted, and the
+  // first cut started `false` on EVERY mount — so reopening an already-NCE
+  // quote sitting at 40% and clicking the chip OFF left the deposit at 40 on
+  // a now-untagged quote (the chip said "not NCE", the money said otherwise).
+  // Seeding from the loaded state fixes that — see initialNceDepositProvenance
+  // (quoteForm.ts, next to resolveNceDepositPercent) for the full reasoning
+  // and the disclosed residual; extracted there (pure, exported) so it's
+  // unit-testable without a render harness, same convention as
+  // resolveNceDepositPercent itself.
+  const nceDepositSetByRuleRef = useRef(
+    initialNceDepositProvenance(
+      initialQuote ? { isNce: initialQuote.isNce, depositPercent: initialQuote.inputs?.depositPercent } : null,
+      prefill?.isNce,
+    ),
+  );
   // #199 (wrap-review LOW): a ref mirror of `isNce`, updated synchronously by
   // applyIsNce (the ONLY place isNce ever changes — see its own reconcile
   // note). Pre-#199, the chip's onClick used setIsNce's own functional form

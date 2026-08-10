@@ -9,6 +9,7 @@ import {
   resolveNceDepositPercent,
   legacyRebookConfirmMessage,
   nceConfirmMessage,
+  initialNceDepositProvenance,
 } from './quoteForm';
 import type { QuoteInputs } from './pricing/pricingEngine';
 import { makeDefaultPermanentFields } from './permanent/types';
@@ -712,6 +713,34 @@ describe('nceConfirmMessage (#215 builder chip confirm)', () => {
         expect(msg).toContain('propagation is one-way');
       });
     });
+  });
+});
+
+// #199 delta-verify (MED): initialNceDepositProvenance seeds QuoteBuilder's
+// nceDepositSetByRuleRef on mount — the first cut started it `false` always,
+// so reopening an already-NCE quote at 40% and clicking the chip OFF left
+// the deposit at 40 on a now-untagged quote. Extracted pure (mirrors
+// resolveNceDepositPercent above) so the seed is unit-testable without a
+// render harness.
+describe('initialNceDepositProvenance (#199 delta-verify — mount-seed provenance)', () => {
+  it('reopened quote, is_nce + depositPercent exactly 40 → rule-owned (true)', () => {
+    expect(initialNceDepositProvenance({ isNce: true, depositPercent: 40 }, undefined)).toBe(true);
+  });
+
+  it('reopened quote, is_nce but depositPercent is something else → NOT rule-owned (false)', () => {
+    expect(initialNceDepositProvenance({ isNce: true, depositPercent: 25 }, undefined)).toBe(false);
+  });
+
+  it('reopened quote, depositPercent 40 but NOT is_nce → NOT rule-owned (false)', () => {
+    expect(initialNceDepositProvenance({ isNce: false, depositPercent: 40 }, undefined)).toBe(false);
+  });
+
+  it('brand-new quote (no initialQuote), prefilled from an NCE-tagged lead → rule-owned (true)', () => {
+    expect(initialNceDepositProvenance(null, true)).toBe(true);
+  });
+
+  it('brand-new quote, no prefill at all → NOT rule-owned (false)', () => {
+    expect(initialNceDepositProvenance(null, undefined)).toBe(false);
   });
 });
 

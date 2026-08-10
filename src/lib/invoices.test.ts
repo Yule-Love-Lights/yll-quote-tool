@@ -1091,6 +1091,49 @@ describe('markInvoicePaidManually', () => {
       expect(inv!.status).toBe('paid');
     });
   });
+
+  // #199 delta-verify (MED): the is_nce read can fail on its own (a transient
+  // network blip / RLS hiccup) independent of what it would have found. The
+  // first cut discarded that error, so `quoteRow` came back null and the
+  // settle sailed through as if the quote were confirmed non-NCE — wrongly
+  // ALLOWING is unrecoverable (see markInvoicePaidManually's own doc
+  // comment), so this proves the fix now FAILS CLOSED instead.
+  describe('#199 delta-verify — fails closed when the is_nce read errors', () => {
+    it('throws InvoiceSettleError(nce-check-failed) and does NOT settle when the quotes read errors', async () => {
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const fake = makeFakeSupabase({
+        invoices: [{ id: 'i1', quote_id: 'q1', status: 'awaiting_payment', balance: 500, paid_at: null }],
+      });
+      // A local wrapper: every table but `quotes` delegates straight to the
+      // real fake; `quotes` simulates a transient read error instead of a
+      // normal maybeSingle() resolution. makeFakeSupabase has no error
+      // injection — deliberately not retrofitting that in for one test, many
+      // other tests depend on its current all-success behavior.
+      const erroringClient = {
+        from(table: string) {
+          if (table !== 'quotes') return fake.client.from(table);
+          return {
+            select: () => ({
+              eq: () => ({
+                maybeSingle: async () => ({ data: null, error: { message: 'connection reset' } }),
+              }),
+            }),
+          };
+        },
+        rpc: fake.client.rpc,
+      };
+      sbRef.current = erroringClient;
+
+      await expect(markInvoicePaidManually('i1')).rejects.toThrow(InvoiceSettleError);
+      await expect(markInvoicePaidManually('i1')).rejects.toMatchObject({ code: 'nce-check-failed' });
+
+      const inv = fake.tables.invoices.find((i) => i.id === 'i1')!;
+      expect(inv.status).toBe('awaiting_payment');
+      expect(inv.paid_at).toBeNull();
+      expect(errSpy).toHaveBeenCalled();
+      errSpy.mockRestore();
+    });
+  });
 });
 
 // ─── DB: updateInvoicePaymentReference ──────────────────────────────────────

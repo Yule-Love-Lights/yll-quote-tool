@@ -224,6 +224,29 @@ describe('POST /api/jobs/[id]/close', () => {
     // The job must NOT advance — it stays exactly where it was.
     expect(setJobStatus).not.toHaveBeenCalled();
   });
+
+  // #199 delta-verify (MED): the NCE check itself can fail (transient read
+  // error) — distinct from nce-mismatch. Neither the invoice nor the job may
+  // move: not settled, not closed, retryable.
+  it('503s (nce-check-failed) with the invoice id when the NCE check itself errors — job stays open', async () => {
+    getJob.mockResolvedValueOnce(JOB_REQUIRES_INVOICING);
+    getInvoiceByJob.mockResolvedValueOnce(UNPAID_INVOICE);
+    markInvoicePaidManually.mockRejectedValueOnce(
+      new InvoiceSettleError(
+        'nce-check-failed',
+        'markInvoicePaidManually: is_nce check failed for invoice x — refusing a cash_check settle',
+      ),
+    );
+
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(503);
+    const json = await res.json();
+    expect(json.code).toBe('nce-check-failed');
+    expect(json.invoiceId).toBe(UNPAID_INVOICE.id);
+    expect(json.error).toMatch(/Couldn't verify/);
+    // The job must NOT advance — it stays exactly where it was.
+    expect(setJobStatus).not.toHaveBeenCalled();
+  });
 });
 
 describe('POST /api/jobs/[id]/close — WT-18 re-consent settlement gate', () => {
