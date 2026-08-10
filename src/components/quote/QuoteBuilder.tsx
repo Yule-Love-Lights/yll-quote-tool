@@ -426,12 +426,17 @@ export default function QuoteBuilder({
         status: initialQuote.status ?? null,
       })
     : null;
-  // #215: mirrors LegacyRebookToggle's own `status !== 'draft'` check (the
-  // admin sibling — both ultimately read deriveStatus) so the Neighbor
-  // chip's confirm can show the SAME "won't move an existing GHL card"
-  // caveat once a quote has left draft. A brand-new (never-saved) quote has
-  // savedStatus === null, which counts as still-draft here too.
-  const legacyRebookLeftDraft = savedStatus != null && savedStatus !== 'draft';
+  // #215: mirrors LegacyRebookToggle's/NceToggle's own `status !== 'draft'`
+  // check (the admin siblings — both ultimately read deriveStatus) so EITHER
+  // chip's confirm can show the SAME "already left draft" caveats once a
+  // quote has left draft — the "won't move an existing GHL card" caveat on
+  // Neighbor's ON path, and (fix round F2/F3) the one-way-propagation
+  // caveat on both chips' OFF paths. A brand-new (never-saved) quote has
+  // savedStatus === null, which counts as still-draft here too. Renamed from
+  // legacyRebookLeftDraft (fix round F3) once the NCE chip's confirm started
+  // reading it too — it was never actually Neighbor-specific, just the
+  // generic "has this quote left draft" signal.
+  const quoteLeftDraft = savedStatus != null && savedStatus !== 'draft';
   const quoteNumber = initialQuote?.quoteNumber ?? null;
   // PS-G2: the booked quote's job id (null pre-booking) — drives the "Amend
   // order" banner below, which links to the job page's Record-amendment
@@ -3543,7 +3548,9 @@ export default function QuoteBuilder({
               NCE-tagging here also seeds the 40% deposit default via
               applyIsNce (#199, pre-approval only — see its own comment);
               the deposit input itself stays hand-editable after.
-              #215: a MANUAL turn-on now window.confirms first, mirroring the
+              #215: a MANUAL click now window.confirms first — Neighbor in
+              BOTH directions, NCE in ON always and OFF when there's a real
+              deposit or propagation consequence to disclose — mirroring the
               admin siblings' confirm+list pattern (legacyRebookConfirmMessage/
               nceConfirmMessage, quoteForm.ts — each owns its own per-direction
               when-to-prompt rule and exact copy). Automatic paths (the
@@ -3562,7 +3569,7 @@ export default function QuoteBuilder({
                 // would prompt with one direction's consequences and then
                 // apply the other's.
                 const turningOn = !legacyRebookRef.current;
-                const confirmMsg = legacyRebookConfirmMessage(turningOn, legacyRebookLeftDraft);
+                const confirmMsg = legacyRebookConfirmMessage(turningOn, quoteLeftDraft);
                 if (confirmMsg && !window.confirm(confirmMsg)) return;
                 legacyRebookTouchedRef.current = true;
                 applyLegacyRebook(turningOn);
@@ -3593,6 +3600,7 @@ export default function QuoteBuilder({
                   form.depositPercent,
                   nceDepositLocked,
                   nceDepositSetByRuleRef.current,
+                  quoteLeftDraft,
                 );
                 if (confirmMsg && !window.confirm(confirmMsg)) return;
                 isNceTouchedRef.current = true;
