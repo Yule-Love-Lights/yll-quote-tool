@@ -14,6 +14,34 @@ type ShiftRow = {
 
 type DbError = { code?: string; message: string };
 
+type BreakRow = {
+  id: string;
+  shift_id: string;
+  crew_member_id: string;
+  started_at: string;
+  ended_at: string | null;
+  source: ShiftRow['source'];
+  end_source: ShiftRow['source'] | null;
+  auto_closed: boolean;
+  device_time: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+const OPEN_BREAK: BreakRow = {
+  id: 'break-open-1',
+  shift_id: 'shift-open-1',
+  crew_member_id: 'crew-1',
+  started_at: '2026-08-10T14:00:00.000Z',
+  ended_at: null,
+  source: 'telegram',
+  end_source: null,
+  auto_closed: false,
+  device_time: null,
+  created_at: '2026-08-10T14:00:00.000Z',
+  updated_at: '2026-08-10T14:00:00.000Z',
+};
+
 const OPEN_SHIFT: ShiftRow = {
   id: 'shift-open-1',
   crew_member_id: 'crew-1',
@@ -48,6 +76,8 @@ const { dbRef, stateRef } = vi.hoisted(() => ({
       inserted: [] as Record<string, unknown>[],
       updated: [] as Record<string, unknown>[],
       insertRaceRow: null as ShiftRow | null,
+      breaks: [] as BreakRow[],
+      breakUpdates: [] as Record<string, unknown>[],
     },
   },
 }));
@@ -75,9 +105,55 @@ function matches(row: ShiftRow, filters: Partial<Record<keyof ShiftRow, unknown>
   return Object.entries(filters).every(([key, value]) => row[key as keyof ShiftRow] === value);
 }
 
+/**
+ * The `shift_breaks` half of the mock. `clockOut` auto-closes a running break,
+ * so this table is now reachable from these tests. Only the guarded update that
+ * `closeOpenBreakForShift` issues is modelled.
+ */
+function makeBreaksBuilder() {
+  const breaksBuilder = {
+    update: (payload: Record<string, unknown>) => {
+      const filters: Record<string, unknown> = {};
+      const updateBuilder = {
+        eq: (col: string, val: unknown) => {
+          filters[col] = val;
+          return updateBuilder;
+        },
+        is: (col: string, val: unknown) => {
+          filters[col] = val;
+          return updateBuilder;
+        },
+        select: () => ({
+          maybeSingle: () => {
+            const idx = stateRef.current.breaks.findIndex((row) =>
+              Object.entries(filters).every(
+                ([key, value]) => (row as unknown as Record<string, unknown>)[key] === value,
+              ),
+            );
+            if (idx === -1) return Promise.resolve({ data: null, error: null });
+            stateRef.current.breakUpdates.push(payload);
+            const next = {
+              ...stateRef.current.breaks[idx],
+              ...payload,
+              updated_at: new Date().toISOString(),
+            } as BreakRow;
+            stateRef.current.breaks[idx] = next;
+            return Promise.resolve({ data: next, error: null });
+          },
+        }),
+      };
+      return updateBuilder;
+    },
+  };
+  return breaksBuilder;
+}
+
 function makeDb() {
   return {
     from(table: string) {
+      if (table === 'shift_breaks') {
+        return makeBreaksBuilder() as never;
+      }
       if (table !== 'shifts') {
         throw new Error(`shifts.test.ts: unexpected table ${table}`);
       }
@@ -183,6 +259,8 @@ beforeEach(() => {
     inserted: [],
     updated: [],
     insertRaceRow: null,
+    breaks: [],
+    breakUpdates: [],
   };
   dbRef.current = makeDb();
 });
@@ -318,5 +396,48 @@ describe('clockOut', () => {
     await expect(clockOut('missing-shift', 'crew-2', 'office')).rejects.toThrow(
       'clockOut: no shift found for id missing-shift',
     );
+  });
+
+  it('auto-closes a break still running, at the punch time, flagged for review', async () => {
+    stateRef.current.breaks = [{ ...OPEN_BREAK }];
+
+    await expect(clockOut('shift-open-1', 'crew-1', 'office')).resolves.toMatchObject({
+      clockOutAt: '2026-08-10T15:30:00.000Z',
+    });
+
+    expect(stateRef.current.breakUpdates).toEqual([
+      { ended_at: '2026-08-10T15:30:00.000Z', end_source: 'office', auto_closed: true },
+    ]);
+    expect(stateRef.current.breaks[0]).toMatchObject({
+      ended_at: '2026-08-10T15:30:00.000Z',
+      auto_closed: true,
+    });
+  });
+
+  it('does not touch an already-ended break on clock-out', async () => {
+    stateRef.current.breaks = [
+      {
+        ...OPEN_BREAK,
+        ended_at: '2026-08-10T14:30:00.000Z',
+        end_source: 'telegram',
+      },
+    ];
+
+    await clockOut('shift-open-1', 'crew-1', 'office');
+
+    expect(stateRef.current.breakUpdates).toEqual([]);
+    expect(stateRef.current.breaks[0].ended_at).toBe('2026-08-10T14:30:00.000Z');
+    expect(stateRef.current.breaks[0].auto_closed).toBe(false);
+  });
+
+  it('does not attempt a break close when the clock-out itself was rejected', async () => {
+    stateRef.current.breaks = [{ ...OPEN_BREAK }];
+
+    await expect(clockOut('shift-open-1', 'crew-2', 'office')).rejects.toThrow(
+      'clockOut: shift shift-open-1 belongs to crew-1, not crew-2',
+    );
+
+    expect(stateRef.current.breakUpdates).toEqual([]);
+    expect(stateRef.current.breaks[0].ended_at).toBeNull();
   });
 });
