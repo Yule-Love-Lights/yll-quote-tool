@@ -1,6 +1,7 @@
 import sharp from 'sharp';
 import { getSupabaseServiceClient } from './supabase';
 import type { Scene } from './design/sceneTypes';
+import { pruneOrphanedMiniGroups } from './design/sceneTypes';
 import { seedLinesHaveContent, type RooflineSeedLines } from './design/seedRoofline';
 import {
   seedSceneFromAnalysis,
@@ -1027,11 +1028,15 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
     const freshScene = (freshData as { scene?: DesignScene | null } | null)?.scene ?? scene;
     if (freshScene && Array.isArray(freshScene.items) && freshScene.items.some(it => it.photoId === photoId)) {
       const prunedIds = new Set(freshScene.items.filter(it => it.photoId === photoId).map(it => it.id));
+      // #227: pruneOrphanedMiniGroups drops any miniGroup left with zero
+      // surviving member strands by this photo delete (it would otherwise
+      // render nothing, be unselectable in the editor, and keep billing
+      // forever via projectScene).
       await updateDesignScene(id, {
         ...freshScene,
-        items: freshScene.items.filter(
+        items: pruneOrphanedMiniGroups(freshScene.items.filter(
           it => it.photoId !== photoId && !(it.linkedToId && prunedIds.has(it.linkedToId)),
-        ),
+        )),
       });
     }
   } catch (err) {

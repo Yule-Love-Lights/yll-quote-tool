@@ -372,3 +372,24 @@ export function isMiniArea(item: SceneItem): item is MiniAreaItem {
 export function isMiniGroup(item: SceneItem): item is MiniGroupItem {
   return item.kind === 'miniGroup';
 }
+
+// #227: a `miniGroup` (a grouped railing/curtain) whose member strands have
+// ALL been deleted renders nothing (it has no points of its own — its extent
+// is its members'), so the editor gives no way to select or delete it, yet
+// `projectScene` would otherwise keep emitting it and billing its
+// `stringCount` forever. Call this immediately after ANY operation that
+// removes strand items from a scene's `items` array, so the dangling group is
+// deleted in the same edit instead of surviving as an unbillable-but-still-
+// billed ghost. A PARTIALLY orphaned group (some members still alive) is left
+// alone — it still bills normally. A group with an empty `memberIds` (never
+// produced by the editor's own grouping flow, which requires >=2 selected
+// strands) is also left alone — this only targets the "used to have members,
+// now has none" case.
+export function pruneOrphanedMiniGroups(items: SceneItem[]): SceneItem[] {
+  const strandIds = new Set(items.filter(isStrand).map((i) => i.id));
+  return items.filter((item) => {
+    if (!isMiniGroup(item)) return true;
+    if (item.memberIds.length === 0) return true;
+    return item.memberIds.some((id) => strandIds.has(id));
+  });
+}

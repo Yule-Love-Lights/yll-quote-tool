@@ -158,6 +158,13 @@ export function projectScene(scene: Scene): Projection {
   const items: ProjectedLineItem[] = [];
   const bistro: BistroLine[] = [];
   const sceneItems = Array.isArray(scene?.items) ? scene.items : [];
+  // #227 defensive guard: the id set of strand items still IN the scene, used
+  // below to skip a miniGroup that has been fully orphaned (every member
+  // strand deleted, none surviving). This is belt-and-braces — the editor-core
+  // fix (pruneOrphanedMiniGroups) is meant to delete such a group the moment
+  // its last member goes, so a healthy scene never reaches this branch — but
+  // projectScene is on the pricing path, so it gets its own guard too.
+  const liveStrandIds = new Set(sceneItems.filter(isStrand).map((i) => i.id));
 
   for (const item of sceneItems) {
     if (!isIncluded(item)) continue;
@@ -199,6 +206,12 @@ export function projectScene(scene: Scene): Projection {
     // A2: a grouped railing → one mini unit. The members are what render, so the
     // portal hides/shows them as a unit (sceneItemIds = the member ids).
     if (isMiniGroup(item)) {
+      // #227: FULLY orphaned (had members, none survive) → never bill it. A
+      // PARTIALLY orphaned group (at least one member still alive) bills
+      // normally, unchanged — same as a zero-member group (never this bug).
+      const isFullyOrphaned =
+        item.memberIds.length > 0 && !item.memberIds.some((id) => liveStrandIds.has(id));
+      if (isFullyOrphaned) continue;
       const s = asMiniSurface(item.surface);
       if (s) {
         const sceneItemIds = item.memberIds.length > 0 ? [...item.memberIds] : [item.id];

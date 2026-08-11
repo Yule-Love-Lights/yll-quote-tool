@@ -4,7 +4,7 @@ import Konva from "konva";
 // storage connector (createEditorApi, below), and the sibling renderers live in
 // THIS folder (./). Everything else in this file is byte-identical with the
 // design tool's canonical editor.ts — keep it that way.
-import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, isItemOnPhoto, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type SideOfHouse, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
+import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, isItemOnPhoto, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type SideOfHouse, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, pruneOrphanedMiniGroups, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
 import { createEditorApi } from "./storage";
 import { COLORS, setPalette } from "./colors";
 import { renderStrand, strandLengthPx } from "./strand";
@@ -1322,11 +1322,14 @@ export async function renderEditor(
     // #13 linked twins: deleting a CANONICAL removes its render-only twins on
     // every photo (they'd dangle otherwise); deleting a twin removes just that
     // depiction — the canonical (and the billing) is untouched.
+    // #227: pruneOrphanedMiniGroups drops any miniGroup left with zero
+    // surviving member strands by this delete (it would otherwise render
+    // nothing, be unselectable, and keep billing forever).
     scene = {
       ...scene,
-      items: scene.items.filter(
+      items: pruneOrphanedMiniGroups(scene.items.filter(
         (s) => !selectedIds.has(s.id) && !(s.linkedToId && selectedIds.has(s.linkedToId)),
-      ),
+      )),
     };
     selectedIds.clear();
     // Discrete keyboard action — not a multi-node Transformer gesture — so the
@@ -2269,7 +2272,8 @@ export async function renderEditor(
         const row = (btn as HTMLElement).closest(".strand-row") as HTMLElement | null;
         const id = row?.dataset.id;
         if (!id) return;
-        scene = { ...scene, items: scene.items.filter((s) => s.id !== id) };
+        // #227: prune a miniGroup left with zero surviving members by this delete.
+        scene = { ...scene, items: pruneOrphanedMiniGroups(scene.items.filter((s) => s.id !== id)) };
         scheduleSave();
         commit();
         redrawScene();
@@ -4063,10 +4067,11 @@ export async function renderEditor(
         `Deleting this yardstick will delete ${strandIds.length} strand${strandIds.length === 1 ? "" : "s"} too (no other yardstick to fall back to). Continue?`,
       );
       if (!ok) return;
+      // #227: prune a miniGroup left with zero surviving members by this delete.
       scene = {
         ...scene,
         yardsticks: scene.yardsticks.filter((y) => y.id !== ysId),
-        items: scene.items.filter((s) => !strandIds.includes(s.id)),
+        items: pruneOrphanedMiniGroups(scene.items.filter((s) => !strandIds.includes(s.id))),
       };
       selectedYardstickId = null;
       scheduleSave();
@@ -4131,10 +4136,11 @@ export async function renderEditor(
       redrawScene();
     });
     bg.querySelector("#ys-modal-delete-strands")!.addEventListener("click", () => {
+      // #227: prune a miniGroup left with zero surviving members by this delete.
       scene = {
         ...scene,
         yardsticks: scene.yardsticks.filter((y) => y.id !== ysId),
-        items: scene.items.filter((s) => !strandIds.includes(s.id)),
+        items: pruneOrphanedMiniGroups(scene.items.filter((s) => !strandIds.includes(s.id))),
       };
       selectedYardstickId = null;
       scheduleSave();
