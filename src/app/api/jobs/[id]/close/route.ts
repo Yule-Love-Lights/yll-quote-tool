@@ -31,11 +31,14 @@
 // release valve for this wave; a real customer-facing re-approval flow is
 // separate, later work.
 //
+// #225: passes the resolved operator's uuid through as settledBy so this
+// force-settle also records WHO closed the job, not just when/how.
+//
 // Response: { ok, closed:true } | { ok, alreadyDone:true } | { error, code? }
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
-import { requireOperator } from '@/lib/auth/supabaseServer';
+import { getOperator, requireOperator } from '@/lib/auth/supabaseServer';
 import { getJob, setJobStatus, type JobRow } from '@/lib/jobs';
 import { getInvoiceByJob, markInvoicePaidManually, InvoiceSettleError } from '@/lib/invoices';
 import { moveQuoteCardToInstalled } from '@/lib/integrations/ghlQuoteCard';
@@ -123,8 +126,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         );
       }
     }
+    const operator = await getOperator();
     try {
-      await markInvoicePaidManually(invoice.id);
+      await markInvoicePaidManually(invoice.id, 'cash_check', null, operator?.id ?? null);
     } catch (err) {
       console.error('[api/jobs/:id/close] settle failed:', err);
       // #199 (F2, wrap-review HIGH): this bare call always defaults to

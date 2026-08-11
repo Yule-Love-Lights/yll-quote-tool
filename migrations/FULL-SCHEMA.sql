@@ -1059,6 +1059,12 @@ alter table public.invoices drop constraint if exists invoices_paid_method_check
 alter table public.invoices add constraint invoices_paid_method_check
   check (paid_method is null or paid_method in ('cash_check', 'nce'));
 
+-- 2026-08-11 settled_by (#225): the operator who manually settled the
+-- invoice. Mirrors inbox_items.handled_by — nullable uuid FK to auth.users,
+-- ON DELETE SET NULL. See migrations/2026-08-11-invoices-settled-by.sql.
+alter table public.invoices
+  add column if not exists settled_by uuid references auth.users(id) on delete set null;
+
 
 -- =====================================================================
 -- Dashboard tables (#58) — 6 net-new tables behind the /inbox tab.
