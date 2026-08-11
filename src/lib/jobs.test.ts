@@ -580,6 +580,58 @@ describe('getJobDetail', () => {
     });
   });
 
+  it('carries the labor numbers in tagged form, flagged when the rates are placeholder', async () => {
+    // GET /api/jobs/[id] serializes this object wholesale to consumers outside
+    // this repo, where the lint guardrail cannot reach. The tagged plan is what
+    // stops a placeholder figure arriving there looking measured.
+    const { client } = makeSb({
+      jobs: {
+        read: {
+          id: 'j1',
+          quote_id: 'q1',
+          status: 'to_schedule',
+          budgeted_hours: 12.5,
+          labor_revenue_cents: 26400,
+          rates_are_placeholder: true,
+        },
+      },
+      quotes: { read: { customer_name: 'Dana' } },
+      invoices: { read: null },
+    });
+    sbRef.current = client;
+
+    const detail = await getJobDetail('j1');
+    expect(detail?.laborPlan).toMatchObject({
+      status: 'placeholder',
+      budgetedHours: 12.5,
+      laborRevenueCents: 26400,
+    });
+  });
+
+  it('tags the labor plan as real once the placeholder flag is cleared', async () => {
+    const { client } = makeSb({
+      jobs: {
+        read: {
+          id: 'j1',
+          quote_id: 'q1',
+          status: 'to_schedule',
+          budgeted_hours: 8,
+          labor_revenue_cents: 10000,
+          rates_are_placeholder: false,
+        },
+      },
+      quotes: { read: { customer_name: 'Dana' } },
+      invoices: { read: null },
+    });
+    sbRef.current = client;
+
+    expect((await getJobDetail('j1'))?.laborPlan).toEqual({
+      status: 'real',
+      budgetedHours: 8,
+      laborRevenueCents: 10000,
+    });
+  });
+
   it('returns a null invoice (and carries is_test) when no invoice exists yet', async () => {
     const { client } = makeSb({
       jobs: { read: { id: 'j1', quote_id: 'q1', status: 'to_schedule' } },

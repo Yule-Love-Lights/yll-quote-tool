@@ -10,6 +10,7 @@
 // `migrations/2026-06-27-jobs.sql`.
 
 import { getSupabaseServiceClient, getSupabaseClient } from './supabase';
+import { readLaborPlan, type LaborPlan } from './laborPlan';
 import { allocateNumber } from './displayId';
 import { canTransition, type JobStatus } from './jobStatus';
 import { getInvoiceByJob, type InvoiceRow } from './invoices';
@@ -254,6 +255,14 @@ export type JobDetail = {
   // reconcileInvoice alongside `invoice` so short-deposit compares against
   // the real intended amount, not a blanket 40%-of-total heuristic.
   intendedDepositUsd: number | null;
+  // The job's labor numbers in tagged form. `job` above still carries the raw
+  // columns, which is fine for callers inside this repo (the ESLint rule in
+  // eslint.config.mjs stops them being read directly), but this detail object
+  // is serialized wholesale by GET /api/jobs/[id] and read by out-of-repo
+  // consumers that no lint rule can reach. Shipping the tagged form alongside
+  // means such a consumer gets `status: 'placeholder'` in the payload itself,
+  // instead of a bare number that looks measured. See src/lib/laborPlan.ts.
+  laborPlan: LaborPlan;
 };
 
 /**
@@ -315,6 +324,7 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
     quoteServiceType,
     invoice,
     intendedDepositUsd,
+    laborPlan: readLaborPlan(job),
   };
 }
 

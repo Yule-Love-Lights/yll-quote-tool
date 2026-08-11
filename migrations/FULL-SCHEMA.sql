@@ -1905,3 +1905,55 @@ drop trigger if exists shifts_updated_at on public.shifts;
 create trigger shifts_updated_at
   before update on public.shifts
   for each row execute function public.shifts_set_updated_at();
+
+-- ---------------------------------------------------------------------
+-- shift_breaks (2026-08-11, migrations/2026-08-11-shift-breaks.sql) — unpaid
+-- break tracking on the shifts ledger. Breaks are UNPAID, so paid time for a
+-- shift is the clock envelope MINUS break time (the arithmetic lives in
+-- src/lib/shiftBreaks.ts, with its own tests, because it feeds P4P payout
+-- math). The partial unique index is the idempotency guarantee — at most one
+-- open break per shift, enforced by the DB. `auto_closed` marks a break that a
+-- clock-out ended rather than the crew member, which is what feeds the
+-- `open_break` time exception queue; it is a review state, not an error.
+-- `crew_member_id` is denormalized from the parent shift so the write path can
+-- authorize without a join. RLS ENABLED, ZERO POLICIES — service-role only,
+-- fails closed until the Flow B routes and policies ship.
+-- ---------------------------------------------------------------------
+create table if not exists public.shift_breaks (
+  id              uuid primary key default gen_random_uuid(),
+  shift_id        uuid not null references public.shifts(id),
+  crew_member_id  uuid not null references public.crew_members(id),
+  started_at      timestamptz not null default now(),
+  ended_at        timestamptz,
+  source          text not null check (source in ('pwa', 'telegram', 'office', 'system')),
+  end_source      text check (end_source in ('pwa', 'telegram', 'office', 'system')),
+  auto_closed     boolean not null default false,
+  device_time     timestamptz,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now(),
+  constraint shift_breaks_ends_after_start check (ended_at is null or ended_at >= started_at)
+);
+
+create unique index if not exists shift_breaks_one_open_per_shift
+  on public.shift_breaks (shift_id) where ended_at is null;
+
+create index if not exists shift_breaks_shift_id_idx
+  on public.shift_breaks (shift_id);
+
+create index if not exists shift_breaks_crew_member_id_idx
+  on public.shift_breaks (crew_member_id);
+
+alter table public.shift_breaks enable row level security;
+
+create or replace function public.shift_breaks_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists shift_breaks_updated_at on public.shift_breaks;
+create trigger shift_breaks_updated_at
+  before update on public.shift_breaks
+  for each row execute function public.shift_breaks_set_updated_at();
