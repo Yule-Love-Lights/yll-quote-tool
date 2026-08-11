@@ -1155,4 +1155,49 @@ describe('POST /api/quote — deposit percent locked post-approval (#177 fix 3b)
     expect(res.status).toBe(200);
     expect(update).toHaveBeenCalledTimes(1);
   });
+
+  // #226 round 2 (delta-verify HIGH): the #226 NCE-off fixes write an
+  // EXPLICIT stored depositPercent: 0 (never a deleted key). The real
+  // browser client can NEVER emit an explicit 0 — quoteForm.ts's
+  // buildQuoteInputs only sends the key when `form.depositPercent > 0` — so
+  // every ordinary re-save (fixing a typo, adjusting footage) on such a
+  // quote omits depositPercent entirely. Before this fix, stored 0 vs
+  // incoming undefined compared !== and 409'd on EVERY save, discarding the
+  // unrelated edit. Both values mean "no override, use the 50% default" and
+  // must now compare equal.
+  it('allows a routine re-save (no depositPercent field at all) on an approved quote whose stored depositPercent is an explicit 0 (#226)', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      inputs: { depositPercent: 0 },
+    };
+    // Mirrors the REAL client shape: no depositPercent key at all (buildQuoteInputs
+    // omits it whenever form.depositPercent is 0/blank) — validInputs() already
+    // carries no depositPercent field.
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  // Same starting state as above, but this time a GENUINE override is being
+  // added on top of the reset-to-0 quote — the #177 freeze must still catch
+  // it. Proves the fix didn't just widen the hole to admit every case.
+  it('still rejects a GENUINE override added on top of a stored explicit 0 (#226 fix does not weaken #177)', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      inputs: { depositPercent: 0 },
+    };
+    const res = await POST(makeReq({ inputs: { ...validInputs(), depositPercent: 25 }, quoteId: REAL_UUID }));
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; code?: string };
+    expect(body.code).toBe('deposit-percent-locked');
+    expect(update).not.toHaveBeenCalled();
+  });
 });

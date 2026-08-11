@@ -26,9 +26,19 @@
 // force-sets 40 unconditionally on every turn-on), this route NEVER
 // overwrites a value staff already hand-set, because it fires on quotes the
 // operator isn't actively editing in the builder right now. Turning OFF
-// removes an untouched 40 (reverting to blank/50%); any other value is left
-// alone. Best-effort, like propagation below — a write failure never fails
-// the toggle itself.
+// resets an untouched 40 to an explicit depositPercent=0 (reverting to the
+// 50% default via effectiveDepositRate — see #226 below); any other value is
+// left alone. Best-effort, like propagation below — a write failure never
+// fails the toggle itself.
+//
+// #226 (adversarial-review HIGH, live-prod bug): turning OFF used to DELETE
+// the depositPercent key instead of writing 0. That left downstream callers
+// passing `undefined` depositPercent into chargesFromResult, which falls
+// through to a possibly-STALE `result.depositRate` frozen the last time
+// Calculate ran — still 0.4 if that happened while NCE was ON. An explicit 0
+// resolves through effectiveDepositRate to the 50% default correctly (0 is
+// out of its [1,100] range), matching the builder chip's own OFF behavior
+// (resolveNceDepositPercent in quoteForm.ts already returns 0, not undefined).
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
@@ -114,9 +124,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (isNce && (currentDepositPercent === undefined || currentDepositPercent === 0)) {
       depositWrite = { ...inputs, depositPercent: 40 };
     } else if (!isNce && currentDepositPercent === 40) {
-      const { depositPercent: _drop, ...rest } = inputs;
-      void _drop; // mirrors apply-color-request/route.ts's same destructure-drop idiom
-      depositWrite = rest;
+      // #226: write an explicit 0, never delete the key — a deleted key
+      // reads back as `undefined`, which chargesFromResult treats as "no
+      // live value to offer" and falls through to a possibly-stale
+      // result.depositRate (still 0.4 if Calculate last ran while NCE was
+      // ON). An explicit 0 resolves through effectiveDepositRate to the 50%
+      // default correctly.
+      depositWrite = { ...inputs, depositPercent: 0 };
     }
     if (depositWrite) {
       // #199 (F3, wrap-review MED-HIGH): this is a read-modify-write of the

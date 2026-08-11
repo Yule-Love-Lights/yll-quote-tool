@@ -730,10 +730,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // the deposit" email must quote that same number, not a divergent one.
     const depositUsd = snapshotDepositUsd;
     const totalUsd = snapshotTotalUsd;
-    // #177: the quote's ACTUAL deposit percent (integer, for the copy below) —
-    // derived from inputs.depositPercent directly (works whether or not
-    // quote.result exists), never a hardcoded 50.
-    const depositPercent = Math.round(effectiveDepositRate(quote.inputs?.depositPercent) * 100);
+    // #177 / #226 fix: the quote's ACTUAL deposit percent (integer, for the
+    // copy below) — derived from `snapshotDepositRate`, the SAME already-
+    // resolved rate that produced depositUsd/snapshotDepositUsd above (and
+    // was frozen into the snapshot's own depositRate field), never a SECOND
+    // independent effectiveDepositRate(...) call. Two separate calls could
+    // disagree if inputs.depositPercent were read differently by each (e.g.
+    // a future refactor), which would put a dollar figure and a percent
+    // figure from different resolutions into the SAME customer message.
+    const depositPercent = Math.round(snapshotDepositRate * 100);
 
     // 1. Customer — confirm approval + that we'll reach out for the deposit.
     //    SMS needs the contact to have a phone (real customers do); a 422 there

@@ -418,7 +418,13 @@ describe('POST /api/quotes/[id]/nce — NCE 40% deposit default (#199)', () => {
     expect(updatePayloads).toHaveLength(1);
   });
 
-  it('removes an untouched 40 when turning OFF pre-approval', async () => {
+  // #226 (adversarial-review HIGH, live-prod bug fix): this used to DELETE
+  // the depositPercent key instead of writing 0. A deleted key reads back as
+  // `undefined`, which chargesFromResult treats as "no live value to offer"
+  // and falls through to a possibly-stale result.depositRate (still 0.4 if
+  // Calculate last ran while NCE was ON) — see derivePackages.test.ts's own
+  // #226 trap test. An explicit 0 resolves correctly via effectiveDepositRate.
+  it('resets an untouched 40 to an explicit depositPercent=0 (not a dropped key) when turning OFF pre-approval (#226)', async () => {
     const { client, updatePayloads } = makeSb({
       id: VALID_UUID,
       is_nce: true,
@@ -428,7 +434,7 @@ describe('POST /api/quotes/[id]/nce — NCE 40% deposit default (#199)', () => {
     sbRef.current = client;
 
     await POST(makeReq({ isNce: false }), makeParams(VALID_UUID));
-    expect(updatePayloads[1]).toEqual({ inputs: { a: 1 } });
+    expect(updatePayloads[1]).toEqual({ inputs: { a: 1, depositPercent: 0 } });
   });
 
   it('leaves a non-40 depositPercent alone when turning OFF', async () => {
