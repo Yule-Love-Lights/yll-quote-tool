@@ -1327,7 +1327,7 @@ export async function renderEditor(
     // nothing, be unselectable, and keep billing forever).
     scene = {
       ...scene,
-      items: pruneOrphanedMiniGroups(scene.items.filter(
+      items: pruneOrphanedMiniGroupsNotify(scene.items.filter(
         (s) => !selectedIds.has(s.id) && !(s.linkedToId && selectedIds.has(s.linkedToId)),
       )),
     };
@@ -1511,6 +1511,43 @@ export async function renderEditor(
     banner.className = "unsaved-banner";
     banner.textContent = "Some earlier edits may not have saved. Make any change to re-save.";
     root.querySelector(".editor")?.prepend(banner);
+  }
+
+  // #227 FIX 3: a miniGroup's `stringCount` is a deliberate staff billing
+  // decision, and pruneOrphanedMiniGroups deletes it silently at every call
+  // site below — including the one that already confirms the STRAND deletion
+  // but never mentions the group it takes with it. A confirm dialog would
+  // over-interrupt routine strand cleanup, so this is a non-blocking,
+  // auto-dismissing notice instead — the SAME bare-div insert pattern as
+  // showUnsavedBannerIfNeeded just above (this editor has no toast/snackbar
+  // component to reach for; reusing that exact minimal precedent rather than
+  // building new UI infrastructure into a vendored file).
+  const MINI_SURFACE_LABELS: Record<string, string> = {
+    bush: "Bush", tree: "Tree", column: "Column", railing: "Railing", curtain: "Curtain",
+  };
+  function showTransientNotice(text: string) {
+    const host = root.querySelector(".editor");
+    if (!host) return;
+    const n = document.createElement("div");
+    n.className = "transient-notice";
+    n.textContent = text;
+    host.prepend(n);
+    window.setTimeout(() => n.remove(), 5000);
+  }
+  // Wraps pruneOrphanedMiniGroups: diffs which miniGroup item(s) it actually
+  // dropped and surfaces one notice per group. Every call site below should
+  // call THIS, not pruneOrphanedMiniGroups directly.
+  function pruneOrphanedMiniGroupsNotify(items: SceneItem[]): SceneItem[] {
+    const before = items.filter(isMiniGroup);
+    const after = pruneOrphanedMiniGroups(items);
+    if (after.length === items.length) return after; // nothing pruned — the common case
+    const afterIds = new Set(after.filter(isMiniGroup).map((g) => g.id));
+    before.filter((g) => !afterIds.has(g.id)).forEach((g) => {
+      const label = MINI_SURFACE_LABELS[g.surface ?? ""] ?? "group";
+      const n = g.stringCount ?? 1;
+      showTransientNotice(`Also removed empty group: ${label} — ${n} string${n === 1 ? "" : "s"}`);
+    });
+    return after;
   }
 
   // --- Sidebar ---
@@ -2273,7 +2310,7 @@ export async function renderEditor(
         const id = row?.dataset.id;
         if (!id) return;
         // #227: prune a miniGroup left with zero surviving members by this delete.
-        scene = { ...scene, items: pruneOrphanedMiniGroups(scene.items.filter((s) => s.id !== id)) };
+        scene = { ...scene, items: pruneOrphanedMiniGroupsNotify(scene.items.filter((s) => s.id !== id)) };
         scheduleSave();
         commit();
         redrawScene();
@@ -2569,7 +2606,7 @@ export async function renderEditor(
       </section>
       ` : ""}
 
-      ${opts.showQuoteBinding && sel.length >= 2 && sel.every((s) => s.bulbType === "mini" && !s.groupId) ? `
+      ${opts.showQuoteBinding && sel.length >= 2 && sel.every((s) => s.bulbType === "mini" && !s.groupId && !s.linkedToId) ? `
       <section>
         <button id="sel-group-mini" style="width:100%">Group as one quote unit</button>
         <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Bills these ${sel.length} mini strands as a single unit (e.g. a railing).</div>
@@ -2797,6 +2834,11 @@ export async function renderEditor(
     // MiniGroupItem owning the billed attrs; members get groupId and are
     // skipped by the quote's projection.
     const groupSelectedMini = (surface: Surface, stringCount: number) => {
+      // #227 FIX 2 belt-and-braces: both call sites already gate on `!s.linkedToId`,
+      // but guard here too (mirrors the projectScene defensive re-guard for the
+      // same bug) so a future third caller can't reintroduce the stale-autosave
+      // resurrection bug described above the surfSel handler.
+      if (sel.some((s) => s.linkedToId)) return;
       const memberIds = sel.map((s) => s.id);
       const groupId = cryptoId();
       const grp: MiniGroupItem = {
@@ -2828,7 +2870,15 @@ export async function renderEditor(
         // from these strands — emit a single MiniGroupItem (projection bills one
         // "Railing – N strings" / "Curtain Lights – N strings") instead of tagging
         // each strand as its own billed unit. Default the string count to the member count.
-        if ((v === "railing" || v === "curtain") && sel.length >= 2 && sel.every((s) => s.bulbType === "mini" && !s.groupId)) {
+        // #227 FIX 2: exclude a selection containing a #13 linked twin — grouping
+        // a twin (a render-only depiction of a canonical strand on ANOTHER photo)
+        // lets a later delete of that OTHER photo's canonical cascade-prune the
+        // group server-side while this already-mounted editor's stale in-memory
+        // scene still holds it, so the next autosave resurrects the (still-
+        // billing) group. Twins never bill on their own (projectScene skips
+        // `linkedToId` items), so falling through to a plain surface tag below is
+        // harmless — it just doesn't create a group to resurrect.
+        if ((v === "railing" || v === "curtain") && sel.length >= 2 && sel.every((s) => s.bulbType === "mini" && !s.groupId && !s.linkedToId)) {
           groupSelectedMini(v, sel.length);
           return;
         }
@@ -4071,7 +4121,7 @@ export async function renderEditor(
       scene = {
         ...scene,
         yardsticks: scene.yardsticks.filter((y) => y.id !== ysId),
-        items: pruneOrphanedMiniGroups(scene.items.filter((s) => !strandIds.includes(s.id))),
+        items: pruneOrphanedMiniGroupsNotify(scene.items.filter((s) => !strandIds.includes(s.id))),
       };
       selectedYardstickId = null;
       scheduleSave();
@@ -4140,7 +4190,7 @@ export async function renderEditor(
       scene = {
         ...scene,
         yardsticks: scene.yardsticks.filter((y) => y.id !== ysId),
-        items: pruneOrphanedMiniGroups(scene.items.filter((s) => !strandIds.includes(s.id))),
+        items: pruneOrphanedMiniGroupsNotify(scene.items.filter((s) => !strandIds.includes(s.id))),
       };
       selectedYardstickId = null;
       scheduleSave();
