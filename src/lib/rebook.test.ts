@@ -314,6 +314,21 @@ describe('buildRebookInsert', () => {
       const row = buildRebookInsert({ ...src, is_nce: true, inputs: null });
       expect(row.inputs).toBeNull();
     });
+
+    // #226 (adversarial-review HIGH, live-prod bug): the OFF/false path used
+    // to be a pure no-op, letting a source quote's carried-over
+    // depositPercent=40 price and charge a non-NCE clone at 40%. Mirrors the
+    // admin nce route's own OFF rule — see rebook.ts's own #226 comment.
+    it('resets a carried-over depositPercent=40 to 0 when the clone resolves NCE=false (#226)', () => {
+      const row = buildRebookInsert({ ...src, is_nce: false, inputs: { depositPercent: 40, a: 1 } });
+      expect((row.inputs as Record<string, unknown>).depositPercent).toBe(0);
+      expect((row.inputs as Record<string, unknown>).a).toBe(1);
+    });
+
+    it('leaves a non-40 depositPercent untouched when the clone resolves NCE=false (#226)', () => {
+      const row = buildRebookInsert({ ...src, is_nce: false, inputs: { depositPercent: 25 } });
+      expect((row.inputs as Record<string, unknown>).depositPercent).toBe(25);
+    });
   });
 });
 

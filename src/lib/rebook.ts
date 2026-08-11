@@ -63,6 +63,15 @@ export type RebookSource = {
 // and any FUTURE direct reader of result.depositRate (bypassing
 // chargesFromResult) would otherwise see last season's rate. Unconditional,
 // like the other three strips: every rebooked draft re-prices at Calculate.
+//
+// #226 (adversarial-review HIGH, live-prod bug): the strip above only covers
+// result.depositRate. inputs.depositPercent itself was NEVER reset on a
+// false-resolving NCE clone — applyNceDepositDefault below only ever ADDED
+// 40 on the true path. rebookLastSeason resolves is_nce from the CUSTOMER's
+// CURRENT tag (deliberate — see its own #198 comment), so a customer who
+// left the barter network since their last approved quote could still get
+// rebooked with a carried-over depositPercent=40, pricing and charging the
+// new draft at 40% under a false is_nce.
 function stripRatesSnapshots(result: RebookSource['result']): RebookSource['result'] {
   if (!result || typeof result !== 'object') return result;
   const rest = { ...(result as Record<string, unknown>) };
@@ -98,11 +107,34 @@ function stripDiscountAndReferralCredit(inputs: unknown): unknown {
 // stripDiscountAndReferralCredit's own guard. Runs for BOTH rebook paths
 // (rebookLastSeason's customer-tag resolution + #116's exact-quote revive)
 // since both build their insert row through buildRebookInsert.
+//
+// #226 (adversarial-review HIGH, live-prod bug fix): the false/OFF path used
+// to be a pure no-op, so a source quote's depositPercent=40 passed straight
+// through unchanged even when this clone resolves NCE=false — mirrors the
+// admin nce route's own OFF rule exactly: only an UNTOUCHED 40 resets, to an
+// explicit 0 (never a deleted key — see chargesFromResult's stale-fallback
+// trap, #226 in the nce route). Any other value (including staff-typed 40s
+// from a DIFFERENT source than this rule) is left alone by the same `=== 40`
+// guard the ON path and the admin route both use.
+//
+// Known tradeoff (accepted, sibling parity with the admin route's own
+// `=== 40` guard): there is no persisted provenance on `inputs` recording
+// WHETHER a stored 40 was set by the NCE rule or hand-typed by staff last
+// season (`wasRuleSet` in quoteForm.ts is live builder UI state only, never
+// stored on the quote). So this rule will also reset a deliberately
+// hand-typed 40 from last season to the 50% default on a non-NCE rebook —
+// the same false positive the admin route already accepts.
 function applyNceDepositDefault(inputs: unknown, isNce: boolean): unknown {
-  if (!isNce || !inputs || typeof inputs !== 'object') return inputs;
+  if (!inputs || typeof inputs !== 'object') return inputs;
   const current = (inputs as { depositPercent?: unknown }).depositPercent;
-  if (typeof current === 'number' && current > 0) return inputs; // explicit hand-set — keep
-  return { ...(inputs as Record<string, unknown>), depositPercent: 40 };
+  if (isNce) {
+    if (typeof current === 'number' && current > 0) return inputs; // explicit hand-set — keep
+    return { ...(inputs as Record<string, unknown>), depositPercent: 40 };
+  }
+  if (current === 40) {
+    return { ...(inputs as Record<string, unknown>), depositPercent: 0 };
+  }
+  return inputs;
 }
 
 export function buildRebookInsert(src: RebookSource): Record<string, unknown> {
