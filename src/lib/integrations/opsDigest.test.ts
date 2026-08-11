@@ -70,6 +70,10 @@ const emptyData: OpsDigestData = {
   depositsPendingCount: 0,
   inboxOpenCount: 0,
   inboxFollowUpsDueCount: 0,
+  followUpsOverdueCount: 0,
+  overdueFollowUps: [],
+  quotesAwaitingReplyNamed: [],
+  depositsPendingNamed: [],
 };
 
 beforeEach(() => {
@@ -150,6 +154,78 @@ describe('collectOpsDigest', () => {
     // 2026-07-21T02:00Z is still Mon Jul 20 in New York.
     expect(data.dateLabel).toBe('Mon, Jul 20');
   });
+
+  // #223: named detail underneath the counts.
+  it('lists quotes awaiting reply by name + days since sent, sorted oldest-first, excluding test/view-only/rebook', async () => {
+    listQuotes.mockResolvedValue([
+      quote({ id: 'a', quote_number: 201, customer_name: 'Ana', quote_sent_at: '2026-07-01T00:00:00Z' }), // ~19d
+      quote({ id: 'b', quote_number: 202, customer_name: 'Ben', viewed_at: '2026-07-15T00:00:00Z' }), // ~5d
+      quote({ id: 'c', quote_number: 203, customer_name: 'Cara', is_test: true, quote_sent_at: '2026-01-01T00:00:00Z' }),
+      quote({ id: 'd', quote_number: 204, customer_name: 'Dan', view_only: true, quote_sent_at: '2026-01-01T00:00:00Z' }),
+      quote({ id: 'e', quote_number: 205, customer_name: 'Eve', legacy_rebook: true, quote_sent_at: '2026-01-01T00:00:00Z' }),
+    ]);
+    const data = await collectOpsDigest();
+    // legacy_rebook (Eve) is excluded from `real` entirely, same as the count.
+    expect(data.quotesAwaitingReplyCount).toBe(2); // a, b
+    expect(data.quotesAwaitingReplyNamed).toEqual([
+      { customerName: 'Ana', quoteNumber: 201, daysSinceSent: expect.any(Number) },
+      { customerName: 'Ben', quoteNumber: 202, daysSinceSent: expect.any(Number) },
+    ]);
+    expect(data.quotesAwaitingReplyNamed[0].daysSinceSent).toBeGreaterThan(data.quotesAwaitingReplyNamed[1].daysSinceSent);
+  });
+
+  it('lists deposits pending by name + dollar total, sorted highest-first', async () => {
+    listQuotes.mockResolvedValue([
+      quote({ id: 'a', quote_number: 301, customer_name: 'Ana', total: 5000, customer_approved_at: '2026-07-01T00:00:00Z' }),
+      quote({ id: 'b', quote_number: 302, customer_name: 'Ben', total: 1200, customer_approved_at: '2026-07-01T00:00:00Z' }),
+    ]);
+    const data = await collectOpsDigest();
+    expect(data.depositsPendingNamed).toEqual([
+      { customerName: 'Ana', quoteNumber: 301, total: 5000 },
+      { customerName: 'Ben', quoteNumber: 302, total: 1200 },
+    ]);
+  });
+
+  it('caps named lists at 5 with the overflow left to the count (formatter shows "+N more")', async () => {
+    listQuotes.mockResolvedValue(
+      Array.from({ length: 8 }, (_, i) =>
+        quote({ id: `q${i}`, quote_number: 400 + i, customer_name: `Cust${i}`, quote_sent_at: '2026-07-01T00:00:00Z' }),
+      ),
+    );
+    const data = await collectOpsDigest();
+    expect(data.quotesAwaitingReplyCount).toBe(8);
+    expect(data.quotesAwaitingReplyNamed).toHaveLength(5);
+  });
+
+  it('lists overdue follow-ups by contact name + days overdue, excluding due-today (0 days)', async () => {
+    listDueFollowUps.mockResolvedValue({
+      ok: true,
+      items: [
+        { id: 'f1', reason: 'call back', dueAt: '2026-07-18T12:00:00Z', contactName: 'Overdue Olive' }, // ~2d overdue
+        { id: 'f2', reason: 'call back', dueAt: '2026-07-15T12:00:00Z', contactName: 'Way Overdue Wes' }, // ~5d overdue
+        { id: 'f3', reason: 'call back', dueAt: '2026-07-21T01:00:00Z', contactName: 'Due Today Dave' }, // due today, not overdue
+      ],
+    });
+    const data = await collectOpsDigest();
+    expect(data.inboxFollowUpsDueCount).toBe(3); // matches the inbox strip (due today + overdue)
+    expect(data.followUpsOverdueCount).toBe(2);
+    expect(data.overdueFollowUps).toEqual([
+      { contactName: 'Way Overdue Wes', daysOverdue: expect.any(Number) },
+      { contactName: 'Overdue Olive', daysOverdue: expect.any(Number) },
+    ]);
+  });
+
+  it('degrades only the overdue-follow-ups section on a read failure — quote-derived lists are unaffected', async () => {
+    listQuotes.mockResolvedValue([
+      quote({ id: 'a', quote_number: 201, customer_name: 'Ana', quote_sent_at: '2026-07-01T00:00:00Z' }),
+    ]);
+    listDueFollowUps.mockRejectedValue(new Error('boom'));
+    const data = await collectOpsDigest();
+    expect(data.inboxFollowUpsDueCount).toBeNull();
+    expect(data.followUpsOverdueCount).toBeNull();
+    expect(data.overdueFollowUps).toEqual([]);
+    expect(data.quotesAwaitingReplyNamed).toEqual([{ customerName: 'Ana', quoteNumber: 201, daysSinceSent: expect.any(Number) }]);
+  });
 });
 
 describe('opsDigestMessage (pure formatter — heartbeat)', () => {
@@ -202,6 +278,53 @@ describe('opsDigestMessage (pure formatter — heartbeat)', () => {
     const msg = opsDigestMessage({ ...emptyData, inboxOpenCount: null, inboxFollowUpsDueCount: null }, 'https://x');
     expect(msg).toContain('📥 Inbox\n→ https://x/inbox');
     expect(msg).not.toContain('to respond');
+  });
+
+  it('#223: renders named awaiting-reply, deposits-pending, and overdue-follow-up lists with an overflow marker', () => {
+    const msg = opsDigestMessage(
+      {
+        ...emptyData,
+        quotesAwaitingReplyCount: 8,
+        quotesAwaitingReplyNamed: [
+          { customerName: 'Eve', quoteNumber: 205, daysSinceSent: 21 },
+          { customerName: 'Ana', quoteNumber: 201, daysSinceSent: 19 },
+        ],
+        depositsPendingCount: 2,
+        depositsPendingNamed: [
+          { customerName: 'Ana', quoteNumber: 301, total: 5000 },
+          { customerName: null, quoteNumber: 302, total: 1200 },
+        ],
+        followUpsOverdueCount: 7,
+        overdueFollowUps: [
+          { contactName: 'Way Overdue Wes', daysOverdue: 5 },
+          { contactName: null, daysOverdue: 3 },
+        ],
+      },
+      'https://x',
+    );
+    expect(msg).toContain('• Eve — 21d');
+    expect(msg).toContain('• Ana — 19d');
+    expect(msg).toContain('+6 more'); // 8 awaiting - 2 shown
+    expect(msg).toContain('• Ana — $5,000');
+    expect(msg).toContain('• (no name) — $1,200');
+    expect(msg).toContain('Overdue follow-ups:');
+    expect(msg).toContain('• Way Overdue Wes — 5d overdue');
+    expect(msg).toContain('• (no name) — 3d overdue');
+    expect(msg).toContain('+5 more'); // 7 overdue - 2 shown
+  });
+
+  it('#223: omits the overdue-follow-ups block entirely when nothing is overdue (heartbeat stays clean)', () => {
+    const msg = opsDigestMessage(emptyData, 'https://x');
+    expect(msg).not.toContain('Overdue follow-ups:');
+  });
+
+  it('#223: a null followUpsOverdueCount (read failure) also omits the overdue block, not a crash', () => {
+    const msg = opsDigestMessage(
+      { ...emptyData, inboxOpenCount: null, inboxFollowUpsDueCount: null, followUpsOverdueCount: null },
+      'https://x',
+    );
+    expect(msg).not.toContain('Overdue follow-ups:');
+    expect(msg).toContain('📥 Inbox\n→ https://x/inbox');
   });
 
   it('normalizes a trailing slash on the base url', () => {

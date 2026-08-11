@@ -35,6 +35,17 @@ type DigestInstall = {
   isTest: boolean;
 };
 
+// #223: named detail beneath the counts, so the digest answers "who" not just
+// "how many" — the 2026-08-06 miss (3 promised quotes silently dropped inside
+// a "4 awaiting reply" count) is exactly what this surfaces. Every named list
+// is capped (Telegram has a length limit) with an explicit overflow marker —
+// never a silent truncation.
+const NAMED_LIST_CAP = 5;
+
+type NamedFollowUp = { contactName: string | null; daysOverdue: number };
+type NamedAwaitingReply = { customerName: string | null; quoteNumber: number | null; daysSinceSent: number };
+type NamedDeposit = { customerName: string | null; quoteNumber: number | null; total: number | null };
+
 export type OpsDigestData = {
   /** "Tue, Aug 5" in the shop's timezone — the heartbeat header. */
   dateLabel: string;
@@ -56,6 +67,18 @@ export type OpsDigestData = {
   inboxOpenCount: number | null;
   /** Follow-ups due today or overdue, matching the inbox follow-up strip. */
   inboxFollowUpsDueCount: number | null;
+  /** #223: of the above, how many are strictly PAST due (not just due today) —
+   *  null on the same read failure as inboxFollowUpsDueCount (same fetch). */
+  followUpsOverdueCount: number | null;
+  /** #223: named, capped to NAMED_LIST_CAP, sorted most-overdue first. */
+  overdueFollowUps: NamedFollowUp[];
+  /** #223: named quotes awaiting reply, capped, sorted longest-waiting first.
+   *  Derives from the same `real` quote read as quotesAwaitingReplyCount, so
+   *  it degrades with that count (no separate read to fail). */
+  quotesAwaitingReplyNamed: NamedAwaitingReply[];
+  /** #223: named deposits pending, capped, sorted highest total first. Same
+   *  degrade-with-the-count relationship as above. */
+  depositsPendingNamed: NamedDeposit[];
 };
 
 /** Current date (YYYY-MM-DD) in the shop's timezone — never the server's. */
@@ -118,6 +141,30 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
     (q) => !q.is_test && !q.view_only && q.legacy_rebook && deriveStatus(q) === 'draft',
   ).length;
 
+  // #223: named detail for the two "who has to be chased" buckets. Derived
+  // from the SAME `real` array as the counts above, so a listQuotes read
+  // failure degrades both the count and the named list together (listQuotes
+  // itself fails soft to [] — no separate try/catch needed here).
+  const daysSince = (iso: string | null): number =>
+    Math.max(0, Math.floor((now.getTime() - new Date(iso ?? now).getTime()) / 86_400_000));
+  const quotesAwaitingReplyNamed = real
+    .filter((q) => {
+      const s = deriveStatus(q);
+      return s === 'sent' || s === 'viewed';
+    })
+    .map((q) => ({
+      customerName: q.customer_name,
+      quoteNumber: q.quote_number,
+      daysSinceSent: daysSince(q.quote_sent_at ?? q.viewed_at ?? q.created_at),
+    }))
+    .sort((a, b) => b.daysSinceSent - a.daysSinceSent)
+    .slice(0, NAMED_LIST_CAP);
+  const depositsPendingNamed = real
+    .filter((q) => deriveStatus(q) === 'approved')
+    .map((q) => ({ customerName: q.customer_name, quoteNumber: q.quote_number, total: q.total }))
+    .sort((a, b) => (b.total ?? 0) - (a.total ?? 0))
+    .slice(0, NAMED_LIST_CAP);
+
   // Inbox: reuse the /inbox surface's own reads so the counts match the page.
   // open-items (totalOpen) carries the legacy-rebook exclusion; follow-ups-due
   // mirrors the inbox follow-up strip as-is. Never let a Telegram-side summary
@@ -126,10 +173,31 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
     const res = await listOpenItems();
     return res.ok ? res.totalOpen : null;
   }, 'open items');
-  const inboxFollowUpsDueCount = await safeCount(async () => {
+
+  // #223: one read feeds three derived values (the due count, the overdue
+  // subset count, and the named overdue list) — read once, degrade all three
+  // together on failure rather than issuing (and possibly failing) 3 reads.
+  let inboxFollowUpsDueCount: number | null = null;
+  let followUpsOverdueCount: number | null = null;
+  let overdueFollowUps: NamedFollowUp[] = [];
+  try {
     const res = await listDueFollowUps(now);
-    return res.ok ? res.items.length : null;
-  }, 'due follow-ups');
+    if (res.ok) {
+      inboxFollowUpsDueCount = res.items.length;
+      // "Overdue" = strictly past due, not merely due today — daysOverdue >= 1.
+      const overdue = res.items
+        .map((it) => ({
+          contactName: it.contactName,
+          daysOverdue: Math.floor((now.getTime() - new Date(it.dueAt).getTime()) / 86_400_000),
+        }))
+        .filter((it) => it.daysOverdue >= 1)
+        .sort((a, b) => b.daysOverdue - a.daysOverdue);
+      followUpsOverdueCount = overdue.length;
+      overdueFollowUps = overdue.slice(0, NAMED_LIST_CAP);
+    }
+  } catch (err) {
+    console.error('[opsDigest] due follow-ups read failed:', err);
+  }
 
   return {
     dateLabel: nyDateLabel(),
@@ -142,6 +210,10 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
     depositsPendingCount,
     inboxOpenCount,
     inboxFollowUpsDueCount,
+    followUpsOverdueCount,
+    overdueFollowUps,
+    quotesAwaitingReplyNamed,
+    depositsPendingNamed,
   };
 }
 
@@ -152,6 +224,26 @@ async function safeCount(read: () => Promise<number | null>, label: string): Pro
     console.error(`[opsDigest] ${label} read failed:`, err);
     return null;
   }
+}
+
+/** Dollar formatting for `quotes.total` (stored as a dollar amount, matching
+ *  the rest of the dashboard — see KpiStrip.tsx). Null/undefined → "$0". */
+function formatDollars(total: number | null | undefined): string {
+  return (total ?? 0).toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+}
+
+/**
+ * #223: push a capped, named list with an explicit "+N more" overflow marker
+ * — NEVER a silent truncation (Telegram has a length limit; a cap that
+ * doesn't say so reads as "that's everything" when it isn't). `totalCount` is
+ * the real population size; `shown` is already capped to NAMED_LIST_CAP by
+ * the caller (collectOpsDigest).
+ */
+function pushNamedList<T>(lines: string[], shown: T[], totalCount: number, render: (item: T) => string): void {
+  if (!shown.length) return;
+  for (const item of shown) lines.push(render(item));
+  const remaining = totalCount - shown.length;
+  if (remaining > 0) lines.push(`+${remaining} more`);
 }
 
 /**
@@ -174,8 +266,20 @@ export function opsDigestMessage(data: OpsDigestData, baseUrl: string): string {
   lines.push(`📝 Quotes to send: ${data.quotesToSendCount}`);
   lines.push(`🏘️ Neighbor (rebook) drafts: ${data.rebookDraftCount}`);
   lines.push(`⏳ Quotes awaiting reply: ${data.quotesAwaitingReplyCount}`);
+  pushNamedList(
+    lines,
+    data.quotesAwaitingReplyNamed,
+    data.quotesAwaitingReplyCount,
+    (r) => `• ${r.customerName ?? '(no name)'} — ${r.daysSinceSent}d`,
+  );
   lines.push(`✏️ Changes requested: ${data.changesRequestedCount}`);
   lines.push(`💰 Deposits pending: ${data.depositsPendingCount}`);
+  pushNamedList(
+    lines,
+    data.depositsPendingNamed,
+    data.depositsPendingCount,
+    (r) => `• ${r.customerName ?? '(no name)'} — ${formatDollars(r.total)}`,
+  );
   lines.push(`→ ${base}/admin/quotes`);
 
   lines.push('');
@@ -183,6 +287,15 @@ export function opsDigestMessage(data: OpsDigestData, baseUrl: string): string {
   if (data.inboxOpenCount != null) inboxBits.push(`${data.inboxOpenCount} to respond`);
   if (data.inboxFollowUpsDueCount != null) inboxBits.push(`${data.inboxFollowUpsDueCount} follow-ups due`);
   lines.push(inboxBits.length ? `📥 Inbox — ${inboxBits.join(' · ')}` : '📥 Inbox');
+  if (data.followUpsOverdueCount != null && data.followUpsOverdueCount > 0) {
+    lines.push(`Overdue follow-ups:`);
+    pushNamedList(
+      lines,
+      data.overdueFollowUps,
+      data.followUpsOverdueCount,
+      (r) => `• ${r.contactName ?? '(no name)'} — ${r.daysOverdue}d overdue`,
+    );
+  }
   lines.push(`→ ${base}/inbox`);
 
   lines.push('');
