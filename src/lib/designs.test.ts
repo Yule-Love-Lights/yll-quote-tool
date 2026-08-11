@@ -409,6 +409,51 @@ describe('extra street photos (#13)', () => {
     expect(items.map(i => i.id)).toEqual(['unrelated']);
   });
 
+  // #227: deleting a photo removes every strand drawn on it. If that leaves a
+  // miniGroup with zero surviving members, the group must be pruned too — it
+  // would otherwise render nothing, be unselectable in the editor, and keep
+  // billing its stringCount on every Calculate forever.
+  it('removeDesignExtraPhoto prunes a miniGroup left with zero surviving members (#227)', async () => {
+    const { client, state } = makeExtrasSb({
+      extra_photos: [{ id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 10, h: 10, title: null }],
+      scene: {
+        yardsticks: [],
+        items: [
+          { id: 's1', kind: 'strand', photoId: PHOTO_A, groupId: 'g1' },
+          { id: 's2', kind: 'strand', photoId: PHOTO_A, groupId: 'g1' },
+          { id: 'g1', kind: 'miniGroup', memberIds: ['s1', 's2'], surface: 'railing', stringCount: 8 },
+          { id: 'unrelated', kind: 'wreath' },
+        ],
+      },
+    });
+    sbRef.current = client;
+
+    expect(await removeDesignExtraPhoto(ID, PHOTO_A)).toBe(true);
+    const items = (state.row.scene as { items: Array<{ id: string }> }).items;
+    // s1/s2 pruned (drawn on the removed photo); g1 now has zero surviving
+    // members and must be pruned too, not left dangling and still billed.
+    expect(items.map(i => i.id)).toEqual(['unrelated']);
+  });
+
+  it('removeDesignExtraPhoto keeps a miniGroup with a surviving member elsewhere (partial orphan bills normally) (#227)', async () => {
+    const { client, state } = makeExtrasSb({
+      extra_photos: [{ id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 10, h: 10, title: null }],
+      scene: {
+        yardsticks: [],
+        items: [
+          { id: 's1', kind: 'strand', photoId: PHOTO_A, groupId: 'g1' }, // dies with the photo
+          { id: 's2', kind: 'strand', groupId: 'g1' }, // on the base photo — survives
+          { id: 'g1', kind: 'miniGroup', memberIds: ['s1', 's2'], surface: 'railing', stringCount: 8 },
+        ],
+      },
+    });
+    sbRef.current = client;
+
+    expect(await removeDesignExtraPhoto(ID, PHOTO_A)).toBe(true);
+    const items = (state.row.scene as { items: Array<{ id: string }> }).items;
+    expect(items.map(i => i.id).sort()).toEqual(['g1', 's2']);
+  });
+
   // W2-016: a CONCURRENT scene autosave landing between the prune's read and
   // its write must not be clobbered by a stale-snapshot prune. Simulate the
   // race via onSceneUpdate: right before the prune's scene-only update fires,
