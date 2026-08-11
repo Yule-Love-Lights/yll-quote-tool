@@ -1,4 +1,5 @@
 import { getSupabaseServiceClient } from '@/lib/supabase';
+import { closeOpenBreakForShift } from '@/lib/shiftBreaks';
 
 export type ShiftSource = 'pwa' | 'telegram' | 'office' | 'system';
 
@@ -133,7 +134,21 @@ export async function clockOut(
     .maybeSingle();
 
   if (error) throw new Error(`clockOut: ${error.message}`);
-  if (data) return toShift(data as Row);
+  if (data) {
+    // Flow B: clock-out closes any break still running, at the punch time, and
+    // flags it for review (`auto_closed`). It never rejects the clock-out —
+    // refusing to let someone go home over a forgotten break-end is worse than
+    // flagging it. A failure here is logged rather than thrown for the same
+    // reason: the shift is already closed, so throwing would leave a retry
+    // hitting "already closed", and the open break is exactly what the
+    // `open_break` exception queue exists to catch.
+    try {
+      await closeOpenBreakForShift(trimmedShiftId, now, source);
+    } catch (breakError) {
+      console.error('clockOut: failed to auto-close the open break:', breakError);
+    }
+    return toShift(data as Row);
+  }
 
   const row = await getShiftRowById(db, trimmedShiftId);
   if (!row) throw new Error(`clockOut: no shift found for id ${trimmedShiftId}`);

@@ -212,6 +212,16 @@ numbers are trusted.
 
 ### Phase 2: time capture
 
+**Shipped so far:** the `shifts` day-clock ledger (S57) and `shift_breaks`
+(S58, `migrations/2026-08-11-shift-breaks.sql`, applied to prod 2026-08-11).
+Breaks are unpaid, so paid time is the shift envelope minus break time;
+`src/lib/shiftBreaks.ts` owns that arithmetic, merges overlapping breaks so an
+office correction cannot subtract the same minutes twice, and clips breaks to
+the envelope. Clock-out auto-closes a running break at the punch time and marks
+it `auto_closed` for the `open_break` exception queue, per the contract's Flow B
+semantics — it never rejects the clock-out. Still unbuilt: job
+arrive/depart/complete segments, travel, and the Telegram wiring.
+
 - `job_time_entries`: job, crew member, start, stop, source (bot / office /
   hub), **`stoppage_reason`** (completed / weather / no-access / materials /
   other), `entry_kind` (install / rework / non-billable / travel),
@@ -368,15 +378,44 @@ route optimization (YLL runs 1-3 jobs a day, not 12-stop mow routes), GHL change
     `select id, quote_id, budgeted_hours, labor_revenue_cents from jobs
     where rates_are_placeholder = true order by created_at`. This item is the
     actual follow-up; the flag by itself does nothing.
-13. **Real crew wage data (SonSon, Little James, Big James, Jason Balroop's
-    hourly rates) is committed in plaintext, permanently, in
-    `migrations/2026-08-07-crew-members.sql`'s git history.** Flagged to
-    Naldo twice now during the S57 session (once at the PR #712 review, once
-    at the wrap review) with no decision either way — recorded here so it
-    isn't lost a third time. Options if it ever needs revisiting: leave it
-    (small team, already-similar-risk data lives in Copilot CRM today), or
-    move future rate seeding to an out-of-band admin action instead of a
-    tracked migration file.
+13. **DECIDED 2026-08-11 (Naldo, S58) — accepted risk, closed. Do not
+    re-open.** Real crew wage data (SonSon, Little James, Big James, Jason
+    Balroop's hourly rates) is committed in plaintext, permanently, in
+    `migrations/2026-08-07-crew-members.sql` and its git history. Naldo's
+    ruling: leave it as is and write down what that accepts. It was raised
+    twice during S57 (at the PR #712 review and again at the wrap review)
+    with no decision, and asked a third time at the start of S58.
+
+    **The reasoning:** private repo, small team, and comparable data already
+    sits in Copilot CRM today. The exposure is not worth the cost of moving
+    it.
+
+    **What is being accepted, stated plainly so nobody has to rediscover it:**
+
+    - Anyone with read access to this repository can see every crew member's
+      hourly wage. That is both devs, any assistant session either dev runs,
+      and anyone either of them grants access to later.
+    - Anyone who has ever cloned this repository already has the values on
+      their disk, including clones made before this decision.
+    - Git history retains the values permanently. Deleting or editing the
+      migration file changes nothing about that — the original blob stays
+      reachable in history, so a later "let's just take it out" edit would
+      look like a fix without being one.
+    - Scrubbing history is the only thing that would actually remove them,
+      and it was considered and rejected: it rewrites every commit hash,
+      breaks every open PR and every existing clone, and buys little given
+      the access list above.
+    - Any host the repository is mirrored to inherits the same exposure. This
+      matters most if the repo is ever made public or handed to an outside
+      contractor. **That is the one condition that should reopen this
+      decision** — not a general re-litigation, but specifically a change in
+      who can read the repo.
+
+    **Forward-looking preference, not a blocker:** future rate seeding is
+    better done as an out-of-band admin action than as a tracked migration
+    file, since new rows would otherwise widen this same exposure. That is a
+    preference for new work, not a reason to revisit the rows already
+    committed.
 
 ## A7. Immediate next actions
 

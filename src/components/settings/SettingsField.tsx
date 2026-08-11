@@ -10,6 +10,22 @@ import type { BulbColor } from '@/lib/design/sceneTypes';
 
 const selCls = 'border border-gray-300 rounded px-2 py-1 text-sm bg-white';
 
+// The <option> values to render for a 'spacing' select: the preset list, plus
+// -- only when `value` isn't one of them -- a trailing entry for the actual
+// stored value. #223: trimming a type's presets (e.g. wreath 4→3, #202) can
+// leave an already-saved staff default (an old design's dropped tier) outside
+// the new option list. A plain <select value={value}> with no matching
+// <option> renders blank/unselected, which both hides what's actually stored
+// AND risks the field looking "empty" to staff who never touch it -- so keep
+// the real value selectable and visibly marked instead of letting it vanish
+// from the control. The stored default itself is untouched either way: this
+// only changes what's rendered, not `value`, so an unrelated Save on the same
+// page still round-trips the legacy number exactly as stored. Mirrors
+// editor.ts's sizeButtons() 4th "you are here" button for the same #202 case.
+export function spacingSelectOptions(options: readonly number[], value: number): number[] {
+  return options.includes(value) ? [...options] : [...options, value];
+}
+
 export function SettingsField({
   spec,
   value,
@@ -38,12 +54,14 @@ function renderControl(
   switch (spec.kind) {
     case 'spacing': {
       const v = typeof value === 'number' ? value : spec.options[0];
+      const opts = spacingSelectOptions(spec.options, v);
       return (
         <select className={selCls} value={v} onChange={(e) => onChange(Number(e.target.value))}>
-          {spec.options.map((o) => (
+          {opts.map((o) => (
             <option key={o} value={o}>
               {o}
               {spec.unit ?? ''}
+              {!spec.options.includes(o) ? ' (current)' : ''}
             </option>
           ))}
         </select>
