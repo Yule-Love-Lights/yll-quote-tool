@@ -1157,7 +1157,7 @@ export type DueFollowUpsResult = { ok: true; items: DueFollowUp[] } | { ok: fals
 
 /** Pending follow-ups due today or overdue (ET), for the top strip.
  *
- *  #223 review HIGH1: a quotetool-sourced follow-up anchored to a
+ *  #229 review HIGH1: a quotetool-sourced follow-up anchored to a
  *  legacy_rebook quote IS reachable here (quoteFollowUpDecision creates it
  *  with no legacy_rebook check — the reconcile chokepoint only filters
  *  is_test/view_only, see quotetool.ts's comment). This function itself
@@ -1192,7 +1192,7 @@ export async function listDueFollowUps(now: Date): Promise<DueFollowUpsResult> {
     return d ? isDueToday(new Date(d), now) : false;
   });
 
-  // #223 review HIGH1: batch-lookup which of THIS page's quotetool-sourced
+  // #229 review HIGH1: batch-lookup which of THIS page's quotetool-sourced
   // rows are anchored to a legacy_rebook quote (same shape as listOpenItems'
   // exclusion above, but flags rather than filters — see doc comment).
   const quotetoolIds = [

@@ -924,7 +924,7 @@ describe('listOpenItems — legacy-rebook exclusion wiring (#157, #183)', () => 
   });
 });
 
-// ─── listDueFollowUps — legacy-rebook flag + phone/email fallback (#223 review) ─
+// ─── listDueFollowUps — legacy-rebook flag + phone/email fallback (#229 review) ─
 //
 // HIGH1: a legacy_rebook-anchored follow-up is reachable here (quoteFollowUpDecision
 // creates it with no legacy_rebook check). This function keeps SHOWING it — matches
@@ -932,7 +932,7 @@ describe('listOpenItems — legacy-rebook exclusion wiring (#157, #183)', () => 
 // downstream consumer (the digest) can filter it out of a NAMED list.
 // HIGH2: dashboard_contacts.primary_phone/primary_email now ride along as fallback
 // identifiers for a nameless contact.
-describe('listDueFollowUps — legacy-rebook flag + contact fallback fields (#223 review)', () => {
+describe('listDueFollowUps — legacy-rebook flag + contact fallback fields (#229 review)', () => {
   beforeEach(() => {
     sbRef.current = null;
   });

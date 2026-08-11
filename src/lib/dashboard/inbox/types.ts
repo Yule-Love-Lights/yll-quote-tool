@@ -98,12 +98,12 @@ export type DueFollowUp = {
   reason: string;
   dueAt: string;
   contactName: string | null;
-  // #223: fallback identifiers for the morning digest's named list, so a
+  // #229: fallback identifiers for the morning digest's named list, so a
   // contact with no display_name (the exact Aug-6 dropped-lead shape) still
   // renders as SOMETHING actionable instead of "(no name)".
   contactPhone: string | null;
   contactEmail: string | null;
-  // #223 review HIGH1: true when this follow-up is anchored to a
+  // #229 review HIGH1: true when this follow-up is anchored to a
   // legacy_rebook ("YLL Neighbor") quote. This page (the /inbox strip) keeps
   // showing it — that's existing, documented behavior — but a consumer that
   // must never surface a rebook customer by name (the digest) filters on it.

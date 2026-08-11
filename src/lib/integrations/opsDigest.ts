@@ -35,14 +35,14 @@ type DigestInstall = {
   isTest: boolean;
 };
 
-// #223: named detail beneath the counts, so the digest answers "who" not just
+// #229: named detail beneath the counts, so the digest answers "who" not just
 // "how many" — the 2026-08-06 miss (3 promised quotes silently dropped inside
 // a "4 awaiting reply" count) is exactly what this surfaces. Every named list
 // is capped (Telegram has a length limit) with an explicit overflow marker —
 // never a silent truncation.
 const NAMED_LIST_CAP = 5;
 
-// #223 review HIGH2: contactPhone/contactEmail are fallback identifiers — a
+// #229 review HIGH2: contactPhone/contactEmail are fallback identifiers — a
 // contact with no display_name (the exact Aug-6 dropped-lead shape) still
 // renders as something actionable instead of an unusable "(no name)".
 type NamedFollowUp = { contactName: string | null; contactPhone: string | null; contactEmail: string | null; daysOverdue: number };
@@ -70,16 +70,16 @@ export type OpsDigestData = {
   inboxOpenCount: number | null;
   /** Follow-ups due today or overdue, matching the inbox follow-up strip. */
   inboxFollowUpsDueCount: number | null;
-  /** #223: of the above, how many are strictly PAST due (not just due today) —
+  /** #229: of the above, how many are strictly PAST due (not just due today) —
    *  null on the same read failure as inboxFollowUpsDueCount (same fetch). */
   followUpsOverdueCount: number | null;
-  /** #223: named, capped to NAMED_LIST_CAP, sorted most-overdue first. */
+  /** #229: named, capped to NAMED_LIST_CAP, sorted most-overdue first. */
   overdueFollowUps: NamedFollowUp[];
-  /** #223: named quotes awaiting reply, capped, sorted longest-waiting first.
+  /** #229: named quotes awaiting reply, capped, sorted longest-waiting first.
    *  Derives from the same `real` quote read as quotesAwaitingReplyCount, so
    *  it degrades with that count (no separate read to fail). */
   quotesAwaitingReplyNamed: NamedAwaitingReply[];
-  /** #223: named deposits pending, capped, sorted highest total first. Same
+  /** #229: named deposits pending, capped, sorted highest total first. Same
    *  degrade-with-the-count relationship as above. */
   depositsPendingNamed: NamedDeposit[];
 };
@@ -144,13 +144,13 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
     (q) => !q.is_test && !q.view_only && q.legacy_rebook && deriveStatus(q) === 'draft',
   ).length;
 
-  // #223: named detail for the two "who has to be chased" buckets. Derived
+  // #229: named detail for the two "who has to be chased" buckets. Derived
   // from the SAME `real` array as the counts above, so a listQuotes read
   // failure degrades both the count and the named list together (listQuotes
   // itself fails soft to [] — no separate try/catch needed here).
   const daysSince = (iso: string | null): number =>
     Math.max(0, Math.floor((now.getTime() - new Date(iso ?? now).getTime()) / 86_400_000));
-  // #223 review MEDIUM4: oldest-first + a hard cap systematically hides the
+  // #229 review MEDIUM4: oldest-first + a hard cap systematically hides the
   // MOST-recently-sent quote behind "+N more" — the exact shape of the Aug-6
   // miss (a customer texted a promise 12h earlier). Fix: anything sent in the
   // last 24h ALWAYS sorts ahead of the cap, so it can only be pushed out by
@@ -182,7 +182,7 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
       const aRecent = a.daysSinceSent < 1;
       const bRecent = b.daysSinceSent < 1;
       if (aRecent !== bRecent) return aRecent ? -1 : 1; // <24h always sorts first
-      // #223 delta-verify: the two groups tie-break in OPPOSITE directions, on
+      // #229 delta-verify: the two groups tie-break in OPPOSITE directions, on
       // purpose. Within the <24h group, NEWEST first — with more than
       // NAMED_LIST_CAP same-day sends, an oldest-first tie-break would push the
       // freshest promises into "+N more", which is exactly the miss this
@@ -208,7 +208,7 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
     return res.ok ? res.totalOpen : null;
   }, 'open items');
 
-  // #223: one read feeds three derived values (the due count, the overdue
+  // #229: one read feeds three derived values (the due count, the overdue
   // subset count, and the named overdue list) — read once, degrade all three
   // together on failure rather than issuing (and possibly failing) 3 reads.
   let inboxFollowUpsDueCount: number | null = null;
@@ -219,7 +219,7 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
     if (res.ok) {
       // inboxFollowUpsDueCount intentionally stays UNFILTERED — it mirrors the
       // /inbox strip's own count (documented above), which does not exclude
-      // rebook. #223 review HIGH1: the NAMED list is a different promise ("never
+      // rebook. #229 review HIGH1: the NAMED list is a different promise ("never
       // surface a rebook customer by name") — filter isLegacyRebook out here,
       // downstream of the shared read, so the strip's own behavior is untouched.
       inboxFollowUpsDueCount = res.items.length;
@@ -269,7 +269,7 @@ async function safeCount(read: () => Promise<number | null>, label: string): Pro
 }
 
 /** Dollar formatting for `quotes.total` (stored as a dollar amount, matching
- *  the rest of the dashboard — see KpiStrip.tsx). #223 review MEDIUM3: a null
+ *  the rest of the dashboard — see KpiStrip.tsx). #229 review MEDIUM3: a null
  *  total must NOT render as "$0" — that reads as "nothing owed" to someone
  *  skimming at 7:30am, when it actually means "we don't know". Callers must
  *  check for null themselves; this only formats a REAL number. */
@@ -277,7 +277,7 @@ function formatDollars(total: number): string {
   return total.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
 }
 
-/** #223 review HIGH2: name, else phone, else email, else give up — a contact
+/** #229 review HIGH2: name, else phone, else email, else give up — a contact
  *  with no display_name (the real Aug-6 dropped-lead shape) still renders as
  *  something actionable instead of an unusable "(no name)". */
 function followUpDisplayName(f: NamedFollowUp): string {
@@ -285,7 +285,7 @@ function followUpDisplayName(f: NamedFollowUp): string {
 }
 
 /**
- * #223: push a capped, named list with an explicit "+N more" overflow marker
+ * #229: push a capped, named list with an explicit "+N more" overflow marker
  * — NEVER a silent truncation (Telegram has a length limit; a cap that
  * doesn't say so reads as "that's everything" when it isn't). `totalCount` is
  * the real population size; `shown` is already capped to NAMED_LIST_CAP by
@@ -311,7 +311,7 @@ export function opsDigestMessage(data: OpsDigestData, baseUrl: string): string {
   const installLine = (i: DigestInstall) =>
     `• Job #${i.jobNumber ?? '—'} ${i.customerName ?? '(no name)'} (${i.stageLabel})${i.isTest ? ' [TEST]' : ''}`;
   // Always show both counts (heartbeat), then list names under each day present.
-  // #223 review (lower priority): installs are otherwise UNBOUNDED — every
+  // #229 review (lower priority): installs are otherwise UNBOUNDED — every
   // fulfillment card for the date, no cap — the main thing pushing the
   // message toward Telegram's length limit in peak season. Cap the same way
   // as the named lists below; the header counts above stay the REAL totals.
@@ -340,7 +340,7 @@ export function opsDigestMessage(data: OpsDigestData, baseUrl: string): string {
     lines,
     data.depositsPendingNamed,
     data.depositsPendingCount,
-    // #223 review MEDIUM3: null total → "amount unknown", never "$0".
+    // #229 review MEDIUM3: null total → "amount unknown", never "$0".
     (r) => `• ${r.customerName ?? '(no name)'} — ${r.total == null ? 'amount unknown' : formatDollars(r.total)}`,
   );
   lines.push(`→ ${base}/admin/quotes`);

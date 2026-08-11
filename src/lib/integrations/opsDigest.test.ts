@@ -166,7 +166,7 @@ describe('collectOpsDigest', () => {
     expect(data.dateLabel).toBe('Mon, Jul 20');
   });
 
-  // #223: named detail underneath the counts.
+  // #229: named detail underneath the counts.
   it('lists quotes awaiting reply by name + days since sent, sorted oldest-first, excluding test/view-only/rebook', async () => {
     listQuotes.mockResolvedValue([
       quote({ id: 'a', quote_number: 201, customer_name: 'Ana', quote_sent_at: '2026-07-01T00:00:00Z' }), // ~19d
@@ -226,7 +226,7 @@ describe('collectOpsDigest', () => {
     ]);
   });
 
-  // #223 review HIGH1: a legacy_rebook quotetool follow-up is REACHABLE (the
+  // #229 review HIGH1: a legacy_rebook quotetool follow-up is REACHABLE (the
   // reconcile chokepoint doesn't filter legacy_rebook, only is_test/view_only
   // — see quotetool.ts) and must never be NAMED, even though the /inbox
   // strip's own due-count keeps including it (documented, unchanged).
@@ -245,7 +245,7 @@ describe('collectOpsDigest', () => {
     expect(data.overdueFollowUps[0].contactName).toBe('Real Customer Rae');
   });
 
-  // #223 review HIGH2: no display_name, but a phone/email exists — must still
+  // #229 review HIGH2: no display_name, but a phone/email exists — must still
   // render as SOMETHING actionable (the real Aug-6 dropped-lead shape).
   it('carries contactPhone/contactEmail through for a nameless overdue contact', async () => {
     listDueFollowUps.mockResolvedValue({
@@ -258,7 +258,7 @@ describe('collectOpsDigest', () => {
     expect(data.overdueFollowUps[0]).toMatchObject({ contactName: null, contactPhone: '555-0100' });
   });
 
-  // #223 review MEDIUM4: a quote sent 12h ago must survive the cap even when
+  // #229 review MEDIUM4: a quote sent 12h ago must survive the cap even when
   // 5 older quotes would otherwise fill every slot — the exact Aug-6 shape.
   it('keeps a <24h-old awaiting-reply quote visible even when 5 older ones would fill the cap', async () => {
     vi.setSystemTime(new Date('2026-07-21T12:00:00Z')); // noon UTC = 8am NY
@@ -274,7 +274,7 @@ describe('collectOpsDigest', () => {
     expect(data.quotesAwaitingReplyNamed.map((r) => r.customerName)).toContain('Just Texted Jane');
   });
 
-  it('keeps the FRESHEST sends when more than the cap went out in the last 24h (#223 delta-verify)', async () => {
+  it('keeps the FRESHEST sends when more than the cap went out in the last 24h (#229 delta-verify)', async () => {
     vi.setSystemTime(new Date('2026-07-21T12:00:00Z')); // noon UTC = 8am NY
     // Seven quotes all sent within the last 24h, at 1h through 23h ago. The cap
     // is 5, so two must be dropped. An oldest-first tie-break inside the recent
@@ -370,7 +370,7 @@ describe('opsDigestMessage (pure formatter — heartbeat)', () => {
     expect(msg).not.toContain('to respond');
   });
 
-  it('#223: renders named awaiting-reply, deposits-pending, and overdue-follow-up lists with an overflow marker', () => {
+  it('#229: renders named awaiting-reply, deposits-pending, and overdue-follow-up lists with an overflow marker', () => {
     const msg = opsDigestMessage(
       {
         ...emptyData,
@@ -403,7 +403,7 @@ describe('opsDigestMessage (pure formatter — heartbeat)', () => {
     expect(msg).toContain('+5 more'); // 7 overdue - 2 shown
   });
 
-  // #223 review HIGH2
+  // #229 review HIGH2
   it('falls back to phone, then email, when a follow-up contact has no name', () => {
     const withPhone = opsDigestMessage(
       {
@@ -436,7 +436,7 @@ describe('opsDigestMessage (pure formatter — heartbeat)', () => {
     expect(withNeither).toContain('• (no name) — 2d overdue');
   });
 
-  // #223 review MEDIUM3
+  // #229 review MEDIUM3
   it('renders a null deposit total as "amount unknown", never "$0"', () => {
     const msg = opsDigestMessage(
       {
@@ -450,7 +450,7 @@ describe('opsDigestMessage (pure formatter — heartbeat)', () => {
     expect(msg).not.toContain('$0');
   });
 
-  // #223 review (lower priority): installs cap
+  // #229 review (lower priority): installs cap
   it('caps the installs list with an overflow marker, but keeps the header count real', () => {
     const msg = opsDigestMessage(
       {
@@ -471,12 +471,12 @@ describe('opsDigestMessage (pure formatter — heartbeat)', () => {
     expect(msg).toContain('+3 more');
   });
 
-  it('#223: omits the overdue-follow-ups block entirely when nothing is overdue (heartbeat stays clean)', () => {
+  it('#229: omits the overdue-follow-ups block entirely when nothing is overdue (heartbeat stays clean)', () => {
     const msg = opsDigestMessage(emptyData, 'https://x');
     expect(msg).not.toContain('Overdue follow-ups:');
   });
 
-  it('#223: a null followUpsOverdueCount (read failure) also omits the overdue block, not a crash', () => {
+  it('#229: a null followUpsOverdueCount (read failure) also omits the overdue block, not a crash', () => {
     const msg = opsDigestMessage(
       { ...emptyData, inboxOpenCount: null, inboxFollowUpsDueCount: null, followUpsOverdueCount: null },
       'https://x',
