@@ -36,6 +36,10 @@ export type RebookSource = {
   // leaves them as-is, so a revived quote simply keeps its own tags.
   legacy_rebook?: boolean | null;
   is_nce?: boolean | null;
+  // #226 round 3: the source quote's approval timestamp — see
+  // rebookFromQuote's own #226 comment for why this (not status) is the
+  // correct decoupling signal for its resetNceDepositOnOff decision.
+  customer_approved_at?: string | null;
 };
 
 // PURE — the column set a rebooked quote INSERTs. Copies the customer + the
@@ -122,13 +126,23 @@ function stripDiscountAndReferralCredit(inputs: unknown): unknown {
 //     NCE residue, so resetting has a real signal behind it. Passes
 //     resetOnOff=true.
 //   - rebookFromQuote (#116 exact-quote revive) resolves is_nce from the
-//     SOURCE QUOTE's own tag. If that quote's is_nce is false, the NCE rule
-//     NEVER set that quote's depositPercent — any 40 there was hand-typed by
-//     staff (the builder DOES track this provenance — nceDepositSetByRuleRef
-//     in quoteForm.ts, added by #199 F4 specifically to protect a hand-edited
-//     40). Resetting it here would destroy deliberate staff intent with zero
-//     signal. Passes resetOnOff=false (the default) — behaves exactly as it
-//     did before #226, i.e. a pure no-op on this path.
+//     SOURCE QUOTE's own tag. Round 2 assumed "is_nce=false on that quote ⇒
+//     the NCE rule never touched its depositPercent ⇒ any 40 is hand-typed"
+//     and always passed resetOnOff=false. ROUND 3 (delta-verify HIGH): that
+//     premise is false on a reachable path — the admin nce route
+//     (src/app/api/quotes/[id]/nce/route.ts) only resets depositPercent on
+//     toggle-OFF while `customer_approved_at` is still null (the #177 freeze
+//     guard). An NCE-tagged, then-approved, then-untagged quote is left
+//     holding is_nce=false + a RULE-SET depositPercent=40 that toggle-off
+//     was never allowed to touch — is_nce and depositPercent have decoupled.
+//     `customer_approved_at` surviving into a later terminal status
+//     (declined via staff-decline's approved→declined transition, or
+//     cancelled) doesn't change this: the nce route's guard keys on
+//     customer_approved_at, not on status, so the same decoupling holds. A
+//     never-approved source is unaffected — there the toggle-off DOES reset,
+//     so a surviving 40 really is hand-typed. rebookFromQuote below therefore
+//     passes resetOnOff = (src.customer_approved_at != null), mirroring the
+//     nce route's own guard exactly instead of guessing from is_nce alone.
 // Any other stored value (not exactly 40) is left alone regardless of
 // resetOnOff, same as before.
 function applyNceDepositDefault(inputs: unknown, isNce: boolean, resetOnOff: boolean): unknown {
@@ -181,7 +195,7 @@ export function buildRebookInsert(
 // The columns the source-quote lookup selects (kept in one place so the query +
 // the RebookSource shape stay in sync).
 const SOURCE_COLUMNS =
-  'id, customer_name, customer_address, customer_phone, customer_email, highlevel_contact_id, service_type, inputs, result, customer_id, property_id, is_test, legacy_rebook, is_nce';
+  'id, customer_name, customer_address, customer_phone, customer_email, highlevel_contact_id, service_type, inputs, result, customer_id, property_id, is_test, legacy_rebook, is_nce, customer_approved_at';
 
 // Best-effort sequential quote_number (ledger #83, SPEC §4.6) for a rebooked
 // clone — same allocateNumber('quote_number_seq') + try/catch-omit pattern
@@ -366,7 +380,13 @@ export async function rebookFromQuote(
   // one target to check here.
   await resurrectPropertyForRebook(sb, src.customer_id, src.property_id, 'rebookFromQuote');
   const insertRow = {
-    ...buildRebookInsert(src),
+    ...buildRebookInsert(src, {
+      // #226 round 3: reset an untouched depositPercent=40 exactly when the
+      // source quote was EVER approved — the same signal the nce route's own
+      // toggle-off guard checks (customer_approved_at, not status). See
+      // applyNceDepositDefault's own comment above for the full trace.
+      resetNceDepositOnOff: src.customer_approved_at != null,
+    }),
     ...(quoteNumber != null ? { quote_number: quoteNumber } : {}),
     created_by: createdBy,
   };
