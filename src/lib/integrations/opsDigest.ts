@@ -42,7 +42,10 @@ type DigestInstall = {
 // never a silent truncation.
 const NAMED_LIST_CAP = 5;
 
-type NamedFollowUp = { contactName: string | null; daysOverdue: number };
+// #223 review HIGH2: contactPhone/contactEmail are fallback identifiers — a
+// contact with no display_name (the exact Aug-6 dropped-lead shape) still
+// renders as something actionable instead of an unusable "(no name)".
+type NamedFollowUp = { contactName: string | null; contactPhone: string | null; contactEmail: string | null; daysOverdue: number };
 type NamedAwaitingReply = { customerName: string | null; quoteNumber: number | null; daysSinceSent: number };
 type NamedDeposit = { customerName: string | null; quoteNumber: number | null; total: number | null };
 
@@ -147,6 +150,13 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
   // itself fails soft to [] — no separate try/catch needed here).
   const daysSince = (iso: string | null): number =>
     Math.max(0, Math.floor((now.getTime() - new Date(iso ?? now).getTime()) / 86_400_000));
+  // #223 review MEDIUM4: oldest-first + a hard cap systematically hides the
+  // MOST-recently-sent quote behind "+N more" — the exact shape of the Aug-6
+  // miss (a customer texted a promise 12h earlier). Fix: anything sent in the
+  // last 24h ALWAYS sorts ahead of the cap, so it can only be pushed out by
+  // more than NAMED_LIST_CAP other same-day sends (a rare, accepted edge —
+  // the alternative of never capping same-day sends would blow the Telegram
+  // length limit on a genuinely busy morning).
   const quotesAwaitingReplyNamed = real
     .filter((q) => {
       const s = deriveStatus(q);
@@ -157,7 +167,12 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
       quoteNumber: q.quote_number,
       daysSinceSent: daysSince(q.quote_sent_at ?? q.viewed_at ?? q.created_at),
     }))
-    .sort((a, b) => b.daysSinceSent - a.daysSinceSent)
+    .sort((a, b) => {
+      const aRecent = a.daysSinceSent < 1;
+      const bRecent = b.daysSinceSent < 1;
+      if (aRecent !== bRecent) return aRecent ? -1 : 1; // <24h always sorts first
+      return b.daysSinceSent - a.daysSinceSent; // then oldest-first within each group
+    })
     .slice(0, NAMED_LIST_CAP);
   const depositsPendingNamed = real
     .filter((q) => deriveStatus(q) === 'approved')
@@ -183,11 +198,19 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
   try {
     const res = await listDueFollowUps(now);
     if (res.ok) {
+      // inboxFollowUpsDueCount intentionally stays UNFILTERED — it mirrors the
+      // /inbox strip's own count (documented above), which does not exclude
+      // rebook. #223 review HIGH1: the NAMED list is a different promise ("never
+      // surface a rebook customer by name") — filter isLegacyRebook out here,
+      // downstream of the shared read, so the strip's own behavior is untouched.
       inboxFollowUpsDueCount = res.items.length;
       // "Overdue" = strictly past due, not merely due today — daysOverdue >= 1.
       const overdue = res.items
+        .filter((it) => !it.isLegacyRebook)
         .map((it) => ({
           contactName: it.contactName,
+          contactPhone: it.contactPhone,
+          contactEmail: it.contactEmail,
           daysOverdue: Math.floor((now.getTime() - new Date(it.dueAt).getTime()) / 86_400_000),
         }))
         .filter((it) => it.daysOverdue >= 1)
@@ -227,9 +250,19 @@ async function safeCount(read: () => Promise<number | null>, label: string): Pro
 }
 
 /** Dollar formatting for `quotes.total` (stored as a dollar amount, matching
- *  the rest of the dashboard — see KpiStrip.tsx). Null/undefined → "$0". */
-function formatDollars(total: number | null | undefined): string {
-  return (total ?? 0).toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+ *  the rest of the dashboard — see KpiStrip.tsx). #223 review MEDIUM3: a null
+ *  total must NOT render as "$0" — that reads as "nothing owed" to someone
+ *  skimming at 7:30am, when it actually means "we don't know". Callers must
+ *  check for null themselves; this only formats a REAL number. */
+function formatDollars(total: number): string {
+  return total.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+}
+
+/** #223 review HIGH2: name, else phone, else email, else give up — a contact
+ *  with no display_name (the real Aug-6 dropped-lead shape) still renders as
+ *  something actionable instead of an unusable "(no name)". */
+function followUpDisplayName(f: NamedFollowUp): string {
+  return f.contactName ?? f.contactPhone ?? f.contactEmail ?? '(no name)';
 }
 
 /**
@@ -259,9 +292,19 @@ export function opsDigestMessage(data: OpsDigestData, baseUrl: string): string {
   const installLine = (i: DigestInstall) =>
     `• Job #${i.jobNumber ?? '—'} ${i.customerName ?? '(no name)'} (${i.stageLabel})${i.isTest ? ' [TEST]' : ''}`;
   // Always show both counts (heartbeat), then list names under each day present.
+  // #223 review (lower priority): installs are otherwise UNBOUNDED — every
+  // fulfillment card for the date, no cap — the main thing pushing the
+  // message toward Telegram's length limit in peak season. Cap the same way
+  // as the named lists below; the header counts above stay the REAL totals.
   lines.push(`🔧 Installs — today: ${data.installsToday.length} · tomorrow: ${data.installsTomorrow.length}`);
-  if (data.installsToday.length) lines.push('Today:', ...data.installsToday.map(installLine));
-  if (data.installsTomorrow.length) lines.push('Tomorrow:', ...data.installsTomorrow.map(installLine));
+  if (data.installsToday.length) {
+    lines.push('Today:');
+    pushNamedList(lines, data.installsToday.slice(0, NAMED_LIST_CAP), data.installsToday.length, installLine);
+  }
+  if (data.installsTomorrow.length) {
+    lines.push('Tomorrow:');
+    pushNamedList(lines, data.installsTomorrow.slice(0, NAMED_LIST_CAP), data.installsTomorrow.length, installLine);
+  }
 
   lines.push(`📝 Quotes to send: ${data.quotesToSendCount}`);
   lines.push(`🏘️ Neighbor (rebook) drafts: ${data.rebookDraftCount}`);
@@ -278,7 +321,8 @@ export function opsDigestMessage(data: OpsDigestData, baseUrl: string): string {
     lines,
     data.depositsPendingNamed,
     data.depositsPendingCount,
-    (r) => `• ${r.customerName ?? '(no name)'} — ${formatDollars(r.total)}`,
+    // #223 review MEDIUM3: null total → "amount unknown", never "$0".
+    (r) => `• ${r.customerName ?? '(no name)'} — ${r.total == null ? 'amount unknown' : formatDollars(r.total)}`,
   );
   lines.push(`→ ${base}/admin/quotes`);
 
@@ -293,7 +337,7 @@ export function opsDigestMessage(data: OpsDigestData, baseUrl: string): string {
       lines,
       data.overdueFollowUps,
       data.followUpsOverdueCount,
-      (r) => `• ${r.contactName ?? '(no name)'} — ${r.daysOverdue}d overdue`,
+      (r) => `• ${followUpDisplayName(r)} — ${r.daysOverdue}d overdue`,
     );
   }
   lines.push(`→ ${base}/inbox`);

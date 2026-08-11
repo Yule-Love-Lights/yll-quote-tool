@@ -1155,31 +1155,82 @@ export async function sweepOrphanedFollowUps(reason: string): Promise<number> {
 
 export type DueFollowUpsResult = { ok: true; items: DueFollowUp[] } | { ok: false; error: string };
 
-/** Pending follow-ups due today or overdue (ET), for the top strip. */
+/** Pending follow-ups due today or overdue (ET), for the top strip.
+ *
+ *  #223 review HIGH1: a quotetool-sourced follow-up anchored to a
+ *  legacy_rebook quote IS reachable here (quoteFollowUpDecision creates it
+ *  with no legacy_rebook check — the reconcile chokepoint only filters
+ *  is_test/view_only, see quotetool.ts's comment). This function itself
+ *  deliberately keeps showing it (matches the /inbox strip's own documented
+ *  "as-is, does NOT exclude rebook" behavior — FollowUpStrip.tsx) — but each
+ *  item now carries `isLegacyRebook` so a DOWNSTREAM consumer that must not
+ *  name a rebook customer (the digest) can filter without changing this
+ *  page's behavior. Computed via the SAME excludeLegacyRebookItems lookup
+ *  pattern listOpenItems/listEscalatableItems use, joined through
+ *  inbox_items (source, external_id) since follow_ups itself doesn't carry
+ *  those columns.
+ *
+ *  is_test/view_only quotes cannot reach this table at all today (the single
+ *  insertion path, runQuoteToolReconcile, reads listQuotesForDashboardResult
+ *  which already filters both) — no flag needed for those two; a test pins
+ *  that invariant so a future insertion path can't silently regress it.
+ */
 export async function listDueFollowUps(now: Date): Promise<DueFollowUpsResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const { data, error } = await sb
     .from('follow_ups')
-    .select('id, reason, due_at, dashboard_contacts ( display_name )')
+    .select(
+      'id, reason, due_at, dashboard_contacts ( display_name, primary_phone, primary_email ), inbox_items ( source, external_id )',
+    )
     .eq('status', 'pending')
     .order('due_at', { ascending: true })
     .limit(100);
   if (error) return { ok: false, error: error.message };
-  const items = ((data ?? []) as unknown as Record<string, unknown>[])
-    .filter((r) => {
-      const d = r.due_at as string | null;
-      return d ? isDueToday(new Date(d), now) : false;
-    })
-    .map((r): DueFollowUp => {
-      const c = (r.dashboard_contacts as Record<string, unknown> | null) ?? null;
-      return {
-        id: String(r.id),
-        reason: r.reason as string,
-        dueAt: r.due_at as string,
-        contactName: (c?.display_name as string | null) ?? null,
-      };
-    });
+  const rows = ((data ?? []) as unknown as Record<string, unknown>[]).filter((r) => {
+    const d = r.due_at as string | null;
+    return d ? isDueToday(new Date(d), now) : false;
+  });
+
+  // #223 review HIGH1: batch-lookup which of THIS page's quotetool-sourced
+  // rows are anchored to a legacy_rebook quote (same shape as listOpenItems'
+  // exclusion above, but flags rather than filters — see doc comment).
+  const quotetoolIds = [
+    ...new Set(
+      rows
+        .map((r) => (r.inbox_items as Record<string, unknown> | null) ?? null)
+        .filter((ii): ii is Record<string, unknown> => !!ii && ii.source === 'quotetool')
+        .map((ii) => quoteIdPrefix(String(ii.external_id)))
+        .filter(isUuid),
+    ),
+  ];
+  const legacyQuoteIds = new Set<string>();
+  if (quotetoolIds.length) {
+    const { data: quoteRows, error: quoteErr } = await sb.from('quotes').select('id, legacy_rebook').in('id', quotetoolIds);
+    if (quoteErr) {
+      // Fail open (unflagged) but VISIBLY — mirrors listOpenItems' same call.
+      console.error('[inbox] legacy-rebook flag lookup failed (due follow-ups):', quoteErr.message);
+    } else {
+      for (const q of (quoteRows ?? []) as { id: string; legacy_rebook: boolean | null }[]) {
+        if (q.legacy_rebook === true) legacyQuoteIds.add(String(q.id));
+      }
+    }
+  }
+
+  const items = rows.map((r): DueFollowUp => {
+    const c = (r.dashboard_contacts as Record<string, unknown> | null) ?? null;
+    const ii = (r.inbox_items as Record<string, unknown> | null) ?? null;
+    const isLegacyRebook = !!ii && ii.source === 'quotetool' && legacyQuoteIds.has(quoteIdPrefix(String(ii.external_id)));
+    return {
+      id: String(r.id),
+      reason: r.reason as string,
+      dueAt: r.due_at as string,
+      contactName: (c?.display_name as string | null) ?? null,
+      contactPhone: (c?.primary_phone as string | null) ?? null,
+      contactEmail: (c?.primary_email as string | null) ?? null,
+      isLegacyRebook,
+    };
+  });
   return { ok: true, items };
 }
 

@@ -59,6 +59,17 @@ const card = (over: Partial<FulfillmentCard>): FulfillmentCard => ({
   ...over,
 });
 
+const dueFollowUp = (over: Partial<Record<string, unknown>>) => ({
+  id: 'f1',
+  reason: 'call back',
+  dueAt: '2026-07-18T12:00:00Z',
+  contactName: 'Overdue Olive',
+  contactPhone: null,
+  contactEmail: null,
+  isLegacyRebook: false,
+  ...over,
+});
+
 const emptyData: OpsDigestData = {
   dateLabel: 'Tue, Aug 5',
   installsToday: [],
@@ -201,18 +212,66 @@ describe('collectOpsDigest', () => {
     listDueFollowUps.mockResolvedValue({
       ok: true,
       items: [
-        { id: 'f1', reason: 'call back', dueAt: '2026-07-18T12:00:00Z', contactName: 'Overdue Olive' }, // ~2d overdue
-        { id: 'f2', reason: 'call back', dueAt: '2026-07-15T12:00:00Z', contactName: 'Way Overdue Wes' }, // ~5d overdue
-        { id: 'f3', reason: 'call back', dueAt: '2026-07-21T01:00:00Z', contactName: 'Due Today Dave' }, // due today, not overdue
+        dueFollowUp({ id: 'f1', dueAt: '2026-07-18T12:00:00Z', contactName: 'Overdue Olive' }), // ~2d overdue
+        dueFollowUp({ id: 'f2', dueAt: '2026-07-15T12:00:00Z', contactName: 'Way Overdue Wes' }), // ~5d overdue
+        dueFollowUp({ id: 'f3', dueAt: '2026-07-21T01:00:00Z', contactName: 'Due Today Dave' }), // due today, not overdue
       ],
     });
     const data = await collectOpsDigest();
     expect(data.inboxFollowUpsDueCount).toBe(3); // matches the inbox strip (due today + overdue)
     expect(data.followUpsOverdueCount).toBe(2);
     expect(data.overdueFollowUps).toEqual([
-      { contactName: 'Way Overdue Wes', daysOverdue: expect.any(Number) },
-      { contactName: 'Overdue Olive', daysOverdue: expect.any(Number) },
+      { contactName: 'Way Overdue Wes', contactPhone: null, contactEmail: null, daysOverdue: expect.any(Number) },
+      { contactName: 'Overdue Olive', contactPhone: null, contactEmail: null, daysOverdue: expect.any(Number) },
     ]);
+  });
+
+  // #223 review HIGH1: a legacy_rebook quotetool follow-up is REACHABLE (the
+  // reconcile chokepoint doesn't filter legacy_rebook, only is_test/view_only
+  // — see quotetool.ts) and must never be NAMED, even though the /inbox
+  // strip's own due-count keeps including it (documented, unchanged).
+  it('excludes an isLegacyRebook follow-up from the named list and its count, but NOT from inboxFollowUpsDueCount', async () => {
+    listDueFollowUps.mockResolvedValue({
+      ok: true,
+      items: [
+        dueFollowUp({ id: 'f1', dueAt: '2026-07-15T12:00:00Z', contactName: 'Real Customer Rae' }), // ~5d overdue
+        dueFollowUp({ id: 'f2', dueAt: '2026-07-15T12:00:00Z', contactName: 'Rebook Randy', isLegacyRebook: true }), // ~5d overdue but rebook
+      ],
+    });
+    const data = await collectOpsDigest();
+    expect(data.inboxFollowUpsDueCount).toBe(2); // unfiltered, matches /inbox
+    expect(data.followUpsOverdueCount).toBe(1); // named-list count excludes rebook
+    expect(data.overdueFollowUps).toHaveLength(1);
+    expect(data.overdueFollowUps[0].contactName).toBe('Real Customer Rae');
+  });
+
+  // #223 review HIGH2: no display_name, but a phone/email exists — must still
+  // render as SOMETHING actionable (the real Aug-6 dropped-lead shape).
+  it('carries contactPhone/contactEmail through for a nameless overdue contact', async () => {
+    listDueFollowUps.mockResolvedValue({
+      ok: true,
+      items: [
+        dueFollowUp({ id: 'f1', dueAt: '2026-07-15T12:00:00Z', contactName: null, contactPhone: '555-0100', contactEmail: null }),
+      ],
+    });
+    const data = await collectOpsDigest();
+    expect(data.overdueFollowUps[0]).toMatchObject({ contactName: null, contactPhone: '555-0100' });
+  });
+
+  // #223 review MEDIUM4: a quote sent 12h ago must survive the cap even when
+  // 5 older quotes would otherwise fill every slot — the exact Aug-6 shape.
+  it('keeps a <24h-old awaiting-reply quote visible even when 5 older ones would fill the cap', async () => {
+    vi.setSystemTime(new Date('2026-07-21T12:00:00Z')); // noon UTC = 8am NY
+    listQuotes.mockResolvedValue([
+      ...Array.from({ length: 5 }, (_, i) =>
+        quote({ id: `old${i}`, quote_number: 500 + i, customer_name: `Old${i}`, quote_sent_at: '2026-07-01T00:00:00Z' }),
+      ),
+      quote({ id: 'fresh', quote_number: 600, customer_name: 'Just Texted Jane', quote_sent_at: '2026-07-21T00:00:00Z' }), // 12h ago
+    ]);
+    const data = await collectOpsDigest();
+    expect(data.quotesAwaitingReplyCount).toBe(6);
+    expect(data.quotesAwaitingReplyNamed).toHaveLength(5); // still capped
+    expect(data.quotesAwaitingReplyNamed.map((r) => r.customerName)).toContain('Just Texted Jane');
   });
 
   it('degrades only the overdue-follow-ups section on a read failure — quote-derived lists are unaffected', async () => {
@@ -296,8 +355,8 @@ describe('opsDigestMessage (pure formatter — heartbeat)', () => {
         ],
         followUpsOverdueCount: 7,
         overdueFollowUps: [
-          { contactName: 'Way Overdue Wes', daysOverdue: 5 },
-          { contactName: null, daysOverdue: 3 },
+          { contactName: 'Way Overdue Wes', contactPhone: null, contactEmail: null, daysOverdue: 5 },
+          { contactName: null, contactPhone: null, contactEmail: null, daysOverdue: 3 },
         ],
       },
       'https://x',
@@ -311,6 +370,74 @@ describe('opsDigestMessage (pure formatter — heartbeat)', () => {
     expect(msg).toContain('• Way Overdue Wes — 5d overdue');
     expect(msg).toContain('• (no name) — 3d overdue');
     expect(msg).toContain('+5 more'); // 7 overdue - 2 shown
+  });
+
+  // #223 review HIGH2
+  it('falls back to phone, then email, when a follow-up contact has no name', () => {
+    const withPhone = opsDigestMessage(
+      {
+        ...emptyData,
+        followUpsOverdueCount: 1,
+        overdueFollowUps: [{ contactName: null, contactPhone: '555-0100', contactEmail: null, daysOverdue: 2 }],
+      },
+      'https://x',
+    );
+    expect(withPhone).toContain('• 555-0100 — 2d overdue');
+
+    const withEmail = opsDigestMessage(
+      {
+        ...emptyData,
+        followUpsOverdueCount: 1,
+        overdueFollowUps: [{ contactName: null, contactPhone: null, contactEmail: 'jane@example.com', daysOverdue: 2 }],
+      },
+      'https://x',
+    );
+    expect(withEmail).toContain('• jane@example.com — 2d overdue');
+
+    const withNeither = opsDigestMessage(
+      {
+        ...emptyData,
+        followUpsOverdueCount: 1,
+        overdueFollowUps: [{ contactName: null, contactPhone: null, contactEmail: null, daysOverdue: 2 }],
+      },
+      'https://x',
+    );
+    expect(withNeither).toContain('• (no name) — 2d overdue');
+  });
+
+  // #223 review MEDIUM3
+  it('renders a null deposit total as "amount unknown", never "$0"', () => {
+    const msg = opsDigestMessage(
+      {
+        ...emptyData,
+        depositsPendingCount: 1,
+        depositsPendingNamed: [{ customerName: 'Ana', quoteNumber: 301, total: null }],
+      },
+      'https://x',
+    );
+    expect(msg).toContain('• Ana — amount unknown');
+    expect(msg).not.toContain('$0');
+  });
+
+  // #223 review (lower priority): installs cap
+  it('caps the installs list with an overflow marker, but keeps the header count real', () => {
+    const msg = opsDigestMessage(
+      {
+        ...emptyData,
+        installsToday: Array.from({ length: 8 }, (_, i) => ({
+          jobNumber: 100 + i,
+          customerName: `Cust${i}`,
+          stageLabel: 'Scheduled',
+          isTest: false,
+        })),
+      },
+      'https://x',
+    );
+    expect(msg).toContain('🔧 Installs — today: 8 · tomorrow: 0');
+    expect(msg).toContain('• Job #100 Cust0 (Scheduled)');
+    expect(msg).toContain('• Job #104 Cust4 (Scheduled)');
+    expect(msg).not.toContain('Cust5');
+    expect(msg).toContain('+3 more');
   });
 
   it('#223: omits the overdue-follow-ups block entirely when nothing is overdue (heartbeat stays clean)', () => {

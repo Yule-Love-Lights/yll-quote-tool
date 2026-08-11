@@ -242,6 +242,7 @@ import {
   findViewOnlyFollowUpItems,
   getReopenCounts,
   listInWorks,
+  listDueFollowUps,
   listOpenItems,
   listEscalatableItems,
   markFollowUpDone,
@@ -920,6 +921,100 @@ describe('listOpenItems — legacy-rebook exclusion wiring (#157, #183)', () => 
     } finally {
       consoleErrorSpy.mockRestore();
     }
+  });
+});
+
+// ─── listDueFollowUps — legacy-rebook flag + phone/email fallback (#223 review) ─
+//
+// HIGH1: a legacy_rebook-anchored follow-up is reachable here (quoteFollowUpDecision
+// creates it with no legacy_rebook check). This function keeps SHOWING it — matches
+// the /inbox strip's own documented "as-is" behavior — but flags isLegacyRebook so a
+// downstream consumer (the digest) can filter it out of a NAMED list.
+// HIGH2: dashboard_contacts.primary_phone/primary_email now ride along as fallback
+// identifiers for a nameless contact.
+describe('listDueFollowUps — legacy-rebook flag + contact fallback fields (#223 review)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  const LEGACY_ID = '33333333-3333-3333-3333-333333333333';
+  const NORMAL_ID = '44444444-4444-4444-4444-444444444444';
+  const NOW = new Date('2026-07-21T12:00:00Z');
+
+  const row = (id: string, dueAt: string, contact: Record<string, unknown> | null, inboxItem: Record<string, unknown> | null) => ({
+    id,
+    reason: 'quote_sent_no_reply',
+    due_at: dueAt,
+    dashboard_contacts: contact,
+    inbox_items: inboxItem,
+  });
+
+  it('flags isLegacyRebook true only for a quotetool follow-up anchored to a legacy_rebook quote', async () => {
+    const rows = [
+      row('f-legacy', '2026-07-18T00:00:00Z', { display_name: 'Rebook Randy', primary_phone: null, primary_email: null }, {
+        source: 'quotetool',
+        external_id: LEGACY_ID,
+      }),
+      row('f-normal', '2026-07-18T00:00:00Z', { display_name: 'Real Rae', primary_phone: null, primary_email: null }, {
+        source: 'quotetool',
+        external_id: NORMAL_ID,
+      }),
+      row('f-manual', '2026-07-18T00:00:00Z', { display_name: 'Manual Mike', primary_phone: null, primary_email: null }, null),
+    ];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
+    const { builder: quotesBuilder, calls: quotesCalls } = makeBuilder({
+      data: [
+        { id: LEGACY_ID, legacy_rebook: true },
+        { id: NORMAL_ID, legacy_rebook: false },
+      ],
+      error: null,
+    });
+    let callCount = 0;
+    sbRef.current = {
+      from: (_table: string) => {
+        callCount += 1;
+        return callCount === 1 ? mainBuilder : quotesBuilder;
+      },
+    };
+
+    const result = await listDueFollowUps(NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const byId = Object.fromEntries(result.items.map((i) => [i.id, i]));
+    expect(byId['f-legacy'].isLegacyRebook).toBe(true);
+    expect(byId['f-normal'].isLegacyRebook).toBe(false);
+    expect(byId['f-manual'].isLegacyRebook).toBe(false); // no inbox_items relation → never flagged
+
+    // Only quotetool ids were looked up — never a null/manual row.
+    const inCall = quotesCalls.find((c) => c.method === 'in');
+    expect(inCall!.args[1]).toEqual(expect.arrayContaining([LEGACY_ID, NORMAL_ID]));
+    expect(inCall!.args[1]).toHaveLength(2);
+  });
+
+  it('carries contactPhone/contactEmail through from dashboard_contacts', async () => {
+    const rows = [row('f1', '2026-07-18T00:00:00Z', { display_name: null, primary_phone: '555-0100', primary_email: 'jane@x.com' }, null)];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
+    sbRef.current = { from: () => mainBuilder };
+
+    const result = await listDueFollowUps(NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items[0]).toMatchObject({ contactName: null, contactPhone: '555-0100', contactEmail: 'jane@x.com' });
+  });
+
+  it('skips the quotes lookup entirely when no row is quotetool-sourced', async () => {
+    const rows = [row('f1', '2026-07-18T00:00:00Z', { display_name: 'Manual Mike', primary_phone: null, primary_email: null }, null)];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
+    let fromCalls = 0;
+    sbRef.current = {
+      from: () => {
+        fromCalls += 1;
+        return mainBuilder;
+      },
+    };
+    const result = await listDueFollowUps(NOW);
+    expect(result.ok).toBe(true);
+    expect(fromCalls).toBe(1);
   });
 });
 
