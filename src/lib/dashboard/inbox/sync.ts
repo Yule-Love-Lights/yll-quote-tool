@@ -101,6 +101,7 @@ export type QuoteReconcileSummary = {
   ingested: number;
   skipped: number;
   followUpsCreated: number;
+  followUpsSuppressed: number;
   followUpsClosed: number;
   errors: number;
   error?: string;
@@ -110,9 +111,9 @@ export type QuoteReconcileSummary = {
  * Fold Quote-Tool leads into the inbox from the SAME Supabase DB (no API, no
  * trigger). A draft quote → an unresponded lead; a sent/approved quote auto-
  * resolves; a sent-but-unapproved quote spawns a quote_sent_no_reply follow-up
- * (closed on approval). Follow-ups anchor on the inbox item, so a quote sent
- * without ever being seen as a draft (rare) gets no inbox follow-up — the home
- * worklist's sent-no-reply remains the backstop for that edge.
+ * (closed on approval). Quotetool's first-seen outbound sends still mint a
+ * handled inbox item, so fast-sent quotes keep their follow-up anchor without
+ * surfacing as open inbox noise.
  *
  * #181: normalizeQuoteTouch returns null for an unsent YLL Neighbor
  * (legacy_rebook) draft — those are skipped before ingestTouch/follow-up, so
@@ -133,6 +134,7 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
     let ingested = 0;
     let skipped = 0;
     let followUpsCreated = 0;
+    let followUpsSuppressed = 0;
     let followUpsClosed = 0;
     let errors = 0;
     for (const q of quotes) {
@@ -155,6 +157,20 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
         // (days)" setting actually controls when this follow-up is due.
         await ensureFollowUp({ inboxItemId: res.itemId, contactId: res.contactId, reason: decision.reason, sentAt: decision.sentAt, afterDays: followUpDays });
         followUpsCreated++;
+      } else if (res.itemId && decision.kind === 'suppress') {
+        // #220: internal recipients never mint a real follow-up row.
+        // Log every suppression so a false positive is visible immediately.
+        console.warn('[inbox] quotetool follow-up suppressed for internal recipient:', {
+          quoteId: q.id,
+          quoteNumber: q.quote_number ?? null,
+          customerEmail: q.customer_email ?? null,
+          suppression: decision.suppression,
+        });
+        // Close any stale pending quote_sent_no_reply row left over from before
+        // the suppression rule existed, but keep this counted as one
+        // suppression event instead of double-counting it as a close too.
+        await closeFollowUp(res.itemId, FOLLOWUP_REASONS.quoteSentNoReply);
+        followUpsSuppressed++;
       } else if (res.itemId && decision.kind === 'close') {
         if ((await closeFollowUp(res.itemId, decision.reason)) > 0) followUpsClosed++;
       }
@@ -165,11 +181,11 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
     // reconcile closes those.
     followUpsClosed += await sweepOrphanedFollowUps(FOLLOWUP_REASONS.quoteSentNoReply);
     await recordSyncRun('quotetool', errors > 0 ? 'error' : 'ok', errors > 0 ? `${errors} item error(s)` : undefined);
-    return { ok: true, scanned: quotes.length, ingested, skipped, followUpsCreated, followUpsClosed, errors };
+    return { ok: true, scanned: quotes.length, ingested, skipped, followUpsCreated, followUpsSuppressed, followUpsClosed, errors };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     await recordSyncRun('quotetool', 'error', error);
-    return { ok: false, scanned: 0, ingested: 0, skipped: 0, followUpsCreated: 0, followUpsClosed: 0, errors: 1, error };
+    return { ok: false, scanned: 0, ingested: 0, skipped: 0, followUpsCreated: 0, followUpsSuppressed: 0, followUpsClosed: 0, errors: 1, error };
   }
 }
 

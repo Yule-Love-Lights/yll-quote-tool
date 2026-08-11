@@ -121,6 +121,52 @@ describe('quoteFollowUpDecision', () => {
   });
 });
 
+// #220: internal recipients must never mint a quote_sent_no_reply
+// follow-up. Positive-match only: explicit internal signals suppress;
+// ordinary customer emails must keep creating as before.
+describe('quoteFollowUpDecision — internal recipient suppression (#220)', () => {
+  it('suppresses a sent, unapproved quote sent to the company mail subdomain (the live quote 1262 shape)', () => {
+    const d = quoteFollowUpDecision(
+      quote({
+        quote_sent_at: '2026-06-29T10:00:00Z',
+        customer_email: 'sales@mail.yulelovelights.com',
+      }),
+    );
+    expect(d).toEqual({ kind: 'suppress', suppression: 'internal_email_domain' });
+  });
+
+  it('suppresses a sent, unapproved quote sent to the bare yulelovelights.com domain', () => {
+    const d = quoteFollowUpDecision(
+      quote({
+        quote_sent_at: '2026-06-29T10:00:00Z',
+        customer_email: 'someone@yulelovelights.com',
+      }),
+    );
+    expect(d).toEqual({ kind: 'suppress', suppression: 'internal_email_domain' });
+  });
+
+  it('still creates for a normal customer recipient (the regression guard that matters)', () => {
+    const d = quoteFollowUpDecision(
+      quote({
+        quote_sent_at: '2026-06-29T10:00:00Z',
+        customer_email: 'yelena.nossa@gmail.com',
+      }),
+    );
+    expect(d.kind).toBe('create');
+    if (d.kind === 'create') expect(d.reason).toBe(FOLLOWUP_REASONS.quoteSentNoReply);
+  });
+
+  it('still creates when customer_email is null (missing email is not internal)', () => {
+    const d = quoteFollowUpDecision(
+      quote({
+        quote_sent_at: '2026-06-29T10:00:00Z',
+        customer_email: null,
+      }),
+    );
+    expect(d.kind).toBe('create');
+  });
+});
+
 // #183 BUG 2: a quote in a terminal/dead state must close its "sent, no
 // reply" follow-up, not just re-create it forever. The live case: a DECLINED
 // quote (christina piacquadio) whose follow-up kept resurrecting daily

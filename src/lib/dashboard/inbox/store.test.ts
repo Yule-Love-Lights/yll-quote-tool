@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { planIngest } from './store';
+import { ingestTouch, planIngest } from './store';
 import type { ExistingItem } from './store';
 import type { NormalizedTouch, StoredContact } from './types';
+import { quoteFollowUpDecision } from './quotetool';
+import type { DashboardQuote } from '@/lib/dashboard/types';
 
 const T = new Date('2026-06-28T15:00:00Z');
 const at = (ms: number) => new Date(T.getTime() + ms);
@@ -86,6 +88,22 @@ describe('planIngest — skip outbound-with-no-existing (avoid noise)', () => {
   it('skips an outbound touch that has no existing item (we cold-contacted; nothing to track)', () => {
     const plan = planIngest({ candidates: [], existing: null, touch: touch({ direction: 'outbound' }), now: at(HOUR) });
     expect(plan.skip).toBe(true);
+  });
+  it('still skips a gmail outbound touch that has no existing item', () => {
+    const plan = planIngest({ candidates: [], existing: null, touch: touch({ source: 'gmail', externalId: 'thread-1', direction: 'outbound' }), now: at(HOUR) });
+    expect(plan.skip).toBe(true);
+  });
+  it('does NOT skip a quotetool outbound-first touch, and auto-resolves it handled', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: null,
+      touch: touch({ source: 'quotetool', externalId: 'quote-1', direction: 'outbound', channel: 'app' }),
+      now: at(HOUR),
+    });
+    expect(plan.skip).toBe(false);
+    expect(plan.item.status).toBe('handled');
+    expect(plan.item.escalation_level).toBe(0);
+    expect(plan.autoResolved).toBe(true);
   });
   it('never skips an inbound touch', () => {
     const plan = planIngest({ candidates: [], existing: null, touch: touch(), now: at(HOUR) });
@@ -216,6 +234,7 @@ vi.mock('@/lib/supabase', () => ({
 
 import {
   closeQuoteInboxNoise,
+  dismissItem,
   ensureFollowUp,
   EXCLUDE_LEGACY_REBOOK_FROM_INBOX,
   excludeLegacyRebookItems,
@@ -226,6 +245,8 @@ import {
   listOpenItems,
   listEscalatableItems,
   markFollowUpDone,
+  markItemCompleted,
+  markItemHandledLocal,
   quoteIdPrefix,
   sweepOrphanedFollowUps,
 } from './store';
@@ -239,7 +260,9 @@ function makeBuilder(result: { data: unknown; error: null | { message: string };
   // #185: 'not' and 'gte' added for getReopenCounts (dashboard_activity's
   // .not('inbox_item_id','is',null) + .gte('created_at', sinceIso)) and
   // listInWorks (.not('followed_up_at','is',null) / .not('status','in',...)).
-  for (const m of ['select', 'eq', 'order', 'limit', 'in', 'or', 'is', 'update', 'not', 'gte', 'insert']) {
+  // #208: 'neq' added for markItemHandledLocal/dismissItem's double-apply guard
+  // (.neq('status','handled'|'dismissed')).
+  for (const m of ['select', 'eq', 'neq', 'order', 'limit', 'in', 'or', 'is', 'update', 'not', 'gte', 'insert']) {
     self[m] = (...args: unknown[]) => {
       calls.push({ method: m, args });
       return self;
@@ -247,6 +270,10 @@ function makeBuilder(result: { data: unknown; error: null | { message: string };
   }
   // Terminal await — vitest resolves a thenable.
   self.then = (resolve: (v: unknown) => void) => resolve(result);
+  // #208: explicit terminal .maybeSingle() (markItemHandledLocal/dismissItem's
+  // priorStateOf + update...select...maybeSingle chains call this directly
+  // rather than awaiting the builder itself).
+  self.maybeSingle = async () => result;
   return { builder: self, calls };
 }
 
@@ -1040,6 +1067,238 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
 });
 
 // ─── planIngest — clearFollowedUp ────────────────────────────────────────────
+
+describe('quotetool fast-sent quote lifecycle (#222)', () => {
+  type ContactRow = {
+    id: string;
+    ghl_contact_id: string | null;
+    emails: string[];
+    phones: string[];
+    display_name: string | null;
+    primary_email: string | null;
+    primary_phone: string | null;
+  };
+  type InboxItemRow = Record<string, unknown> & {
+    id: string;
+    source: string;
+    external_id: string;
+  };
+  type FollowUpRow = Record<string, unknown> & {
+    id: string;
+    inbox_item_id: string;
+    reason: string;
+    status: string;
+  };
+
+  function makeQuoteInboxFake() {
+    const contacts: ContactRow[] = [];
+    const inboxItems: InboxItemRow[] = [];
+    const followUps: FollowUpRow[] = [];
+    const activity: Record<string, unknown>[] = [];
+    let nextContactId = 1;
+    let nextItemId = 1;
+    let nextFollowUpId = 1;
+
+    function builderFor(table: string) {
+      const filters: Record<string, unknown> = {};
+      let mode: 'select' | 'insert' | 'update' | 'upsert' | null = null;
+      let insertRow: Record<string, unknown> | undefined;
+      let orClause: string | undefined;
+      const self: Record<string, unknown> = {};
+      self.select = () => {
+        if (mode === null) mode = 'select';
+        return self;
+      };
+      self.eq = (col: string, val: unknown) => {
+        filters[col] = val;
+        return self;
+      };
+      self.or = (clause: string) => {
+        orClause = clause;
+        return self;
+      };
+      self.limit = () => self;
+      self.insert = (row: Record<string, unknown>) => {
+        mode = 'insert';
+        insertRow = row;
+        return self;
+      };
+      self.update = () => self;
+      self.upsert = (row: Record<string, unknown>) => {
+        mode = 'upsert';
+        insertRow = row;
+        return self;
+      };
+      self.single = async () => {
+        if (table === 'dashboard_contacts' && mode === 'insert') {
+          const row: ContactRow = {
+            id: `contact-${nextContactId++}`,
+            ghl_contact_id: (insertRow?.ghl_contact_id as string | null) ?? null,
+            emails: (insertRow?.emails as string[] | null) ?? [],
+            phones: (insertRow?.phones as string[] | null) ?? [],
+            display_name: (insertRow?.display_name as string | null) ?? null,
+            primary_email: (insertRow?.primary_email as string | null) ?? null,
+            primary_phone: (insertRow?.primary_phone as string | null) ?? null,
+          };
+          contacts.push(row);
+          return { data: { id: row.id }, error: null };
+        }
+        if (table === 'inbox_items' && mode === 'upsert') {
+          const keySource = String(insertRow?.source);
+          const keyExternalId = String(insertRow?.external_id);
+          let row = inboxItems.find((item) => item.source === keySource && item.external_id === keyExternalId);
+          if (!row) {
+            row = { id: `item-${nextItemId++}`, ...insertRow, source: keySource, external_id: keyExternalId } as InboxItemRow;
+            inboxItems.push(row);
+          } else {
+            Object.assign(row, insertRow);
+          }
+          return { data: { id: row.id }, error: null };
+        }
+        return { data: null, error: { message: `unexpected single() on ${table}` } };
+      };
+      self.maybeSingle = async () => {
+        if (table === 'inbox_items') {
+          const row = inboxItems.find(
+            (item) => item.source === filters.source && item.external_id === filters.external_id,
+          );
+          if (!row) return { data: null, error: null };
+          return {
+            data: {
+              id: row.id,
+              contact_id: row.contact_id ?? null,
+              status: row.status,
+              notified_levels: row.notified_levels ?? [],
+              last_message_at: row.last_message_at ?? null,
+            },
+            error: null,
+          };
+        }
+        return { data: null, error: null };
+      };
+      self.then = (resolve: (v: unknown) => void) => {
+        if (table === 'dashboard_contacts' && mode === 'select' && orClause) {
+          resolve({ data: [], error: null });
+          return;
+        }
+        if (table === 'dashboard_activity' && mode === 'insert') {
+          activity.push(insertRow ?? {});
+          resolve({ data: null, error: null });
+          return;
+        }
+        if (table === 'follow_ups' && mode === 'select') {
+          const matched = followUps.filter((row) =>
+            Object.entries(filters).every(([k, v]) => row[k] === v),
+          );
+          resolve({ data: matched.map((row) => ({ id: row.id })), error: null });
+          return;
+        }
+        if (table === 'follow_ups' && mode === 'upsert') {
+          const existing = followUps.find(
+            (row) => row.inbox_item_id === insertRow?.inbox_item_id && row.reason === insertRow?.reason,
+          );
+          if (existing) {
+            Object.assign(existing, insertRow);
+            resolve({ data: [existing], error: null });
+            return;
+          }
+          const row: FollowUpRow = {
+            id: `fu-${nextFollowUpId++}`,
+            inbox_item_id: String(insertRow?.inbox_item_id),
+            reason: String(insertRow?.reason),
+            status: String(insertRow?.status),
+            ...insertRow,
+          };
+          followUps.push(row);
+          resolve({ data: [row], error: null });
+          return;
+        }
+        resolve({ data: [], error: null });
+      };
+      return self;
+    }
+
+    return {
+      contacts,
+      inboxItems,
+      followUps,
+      activity,
+      from: (table: string) => builderFor(table),
+    };
+  }
+
+  function fastSentQuote(over: Partial<DashboardQuote> = {}): DashboardQuote {
+    return {
+      id: 'quote-1263',
+      customer_name: 'Fast Send',
+      customer_email: 'fastsend@example.com',
+      customer_phone: '(631) 555-0000',
+      total: 1500,
+      created_at: '2026-08-10T16:32:54.950Z',
+      quote_sent_at: '2026-08-10T16:33:02.700Z',
+      customer_approved_at: null,
+      deposit_paid_at: null,
+      homeworks_sent_at: null,
+      homeworks_signed_at: null,
+      highlevel_contact_id: null,
+      service_type: null,
+      ...over,
+    };
+  }
+
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('creates one handled inbox item and one quote_sent_no_reply follow-up across two reconcile-like passes', async () => {
+    const fake = makeQuoteInboxFake();
+    sbRef.current = fake;
+    const quote = fastSentQuote({ legacy_rebook: true });
+    const decision = quoteFollowUpDecision(quote);
+    expect(decision.kind).toBe('create');
+    if (decision.kind !== 'create') throw new Error('expected create decision');
+
+    const touch: NormalizedTouch = {
+      source: 'quotetool',
+      externalId: quote.id,
+      direction: 'outbound',
+      channel: 'app',
+      lastMessageAt: new Date(quote.quote_sent_at!),
+      preview: `Quote — $${quote.total}`,
+      subject: null,
+      identity: {
+        ghlContactId: null,
+        emails: ['fastsend@example.com'],
+        phones: ['+16315550000'],
+        displayName: 'Fast Send',
+      },
+      raw: quote,
+      leadKind: 'lead',
+      quoteValue: quote.total,
+    };
+
+    for (const now of [new Date('2026-08-10T16:35:00Z'), new Date('2026-08-10T16:40:00Z')]) {
+      const ingest = await ingestTouch(touch, now);
+      expect(ingest.ok).toBe(true);
+      if (!ingest.ok) throw new Error(ingest.error);
+      expect(ingest.itemId).not.toBeNull();
+      if (ingest.itemId) {
+        await ensureFollowUp({
+          inboxItemId: ingest.itemId,
+          contactId: ingest.contactId,
+          reason: decision.reason,
+          sentAt: decision.sentAt,
+        });
+      }
+    }
+
+    expect(fake.inboxItems).toHaveLength(1);
+    expect(fake.followUps).toHaveLength(1);
+    expect(fake.inboxItems[0].status).toBe('handled');
+    expect(fake.followUps[0].inbox_item_id).toBe(fake.inboxItems[0].id);
+    expect(fake.followUps[0].reason).toBe('quote_sent_no_reply');
+  });
+});
 
 describe('planIngest — clearFollowedUp', () => {
   it('sets clearFollowedUp=true when touch.lastMessageAt is genuinely newer than existing.lastMessageAt', () => {
@@ -1850,5 +2109,142 @@ describe('closeQuoteInboxNoise — I/O wiring (#187a)', () => {
   it('no-ops (no throw) when the service client is not configured', async () => {
     sbRef.current = null;
     await expect(closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID)).resolves.toBeUndefined();
+  });
+});
+
+// #208: inbox_items.handled_by is a `uuid references auth.users(id)` column.
+// The route callers used to fall back to the literal string 'system' when no
+// operator resolved (operator?.id ?? 'system') — a non-uuid string a uuid
+// column rejects outright. The fix widened operatorId to `string | null` and
+// the callers now pass `?? null`. These functions' own write logic was
+// already a straight passthrough (never the bug); these tests lock in that
+// both a real uuid AND null now flow through to handled_by correctly.
+describe('markItemHandledLocal / dismissItem / markItemCompleted — handled_by uuid-or-null (#208)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  const ITEM_ID = 'item-42';
+  const OPERATOR_ID = '11111111-2222-3333-4444-555555555555';
+  const NOW = new Date('2026-08-07T12:00:00Z');
+
+  /** Dispatch .from('inbox_items') by call order: 1st = priorStateOf's plain
+   *  SELECT, 2nd = the function's own UPDATE (...) chain. .from('dashboard_activity')
+   *  gets its own builder, mirroring makeSbForCleanup above. */
+  function makeSbFor(itemUpdateResult: { data: unknown; error: null | { message: string } }) {
+    const { builder: priorBuilder } = makeBuilder({ data: null, error: null });
+    const { builder: updateBuilder, calls: updateCalls } = makeBuilder(itemUpdateResult);
+    const { builder: activityBuilder, calls: activityCalls } = makeBuilder({ data: null, error: null });
+    let inboxCallCount = 0;
+    const from = (table: string) => {
+      if (table === 'inbox_items') {
+        inboxCallCount += 1;
+        return inboxCallCount === 1 ? priorBuilder : updateBuilder;
+      }
+      if (table === 'dashboard_activity') return activityBuilder;
+      throw new Error(`unexpected table: ${table}`);
+    };
+    return { from, updateCalls, activityCalls };
+  }
+
+  it('markItemHandledLocal writes the real operator uuid to handled_by on the normal path', async () => {
+    const { from, updateCalls, activityCalls } = makeSbFor({
+      data: { source: 'ghl', external_id: 'ext-1', source_message_id: null, dashboard_contacts: null },
+      error: null,
+    });
+    sbRef.current = { from };
+
+    const res = await markItemHandledLocal(ITEM_ID, OPERATOR_ID, NOW);
+    expect(res.ok).toBe(true);
+
+    const updateCall = updateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ status: 'handled', handled_by: OPERATOR_ID });
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toMatchObject({ actor: OPERATOR_ID, action: 'handled' });
+  });
+
+  it('markItemHandledLocal writes NULL (never a sentinel string) to handled_by when no operator resolved', async () => {
+    const { from, updateCalls } = makeSbFor({
+      data: { source: 'ghl', external_id: 'ext-1', source_message_id: null, dashboard_contacts: null },
+      error: null,
+    });
+    sbRef.current = { from };
+
+    const res = await markItemHandledLocal(ITEM_ID, null, NOW);
+    expect(res.ok).toBe(true);
+
+    const updateCall = updateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ handled_by: null });
+    expect(updateCall!.args[0]).not.toMatchObject({ handled_by: 'system' });
+  });
+
+  it('markItemHandledLocal still surfaces a real DB error (never silently swallowed)', async () => {
+    const { from } = makeSbFor({ data: null, error: { message: 'connection reset' } });
+    sbRef.current = { from };
+
+    const res = await markItemHandledLocal(ITEM_ID, OPERATOR_ID, NOW);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toBe('connection reset');
+  });
+
+  it('dismissItem writes the real operator uuid to handled_by on the normal path', async () => {
+    const { from, updateCalls, activityCalls } = makeSbFor({
+      data: { dashboard_contacts: null },
+      error: null,
+    });
+    sbRef.current = { from };
+
+    const res = await dismissItem(ITEM_ID, OPERATOR_ID, NOW);
+    expect(res.ok).toBe(true);
+
+    const updateCall = updateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ status: 'dismissed', handled_by: OPERATOR_ID });
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toMatchObject({ actor: OPERATOR_ID, action: 'dismissed' });
+  });
+
+  it('dismissItem writes NULL (never a sentinel string) to handled_by when no operator resolved', async () => {
+    const { from, updateCalls } = makeSbFor({ data: { dashboard_contacts: null }, error: null });
+    sbRef.current = { from };
+
+    const res = await dismissItem(ITEM_ID, null, NOW);
+    expect(res.ok).toBe(true);
+
+    const updateCall = updateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ handled_by: null });
+  });
+
+  it('markItemCompleted writes the real operator uuid to handled_by on the normal path', async () => {
+    const { from, updateCalls, activityCalls } = makeSbFor({ data: [{ id: ITEM_ID }], error: null });
+    sbRef.current = { from };
+
+    const res = await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
+    expect(res.ok).toBe(true);
+
+    const updateCall = updateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ status: 'completed', handled_by: OPERATOR_ID });
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toMatchObject({ actor: OPERATOR_ID, action: 'completed' });
+  });
+
+  it('markItemCompleted writes NULL (never a sentinel string) to handled_by when no operator resolved', async () => {
+    const { from, updateCalls } = makeSbFor({ data: [{ id: ITEM_ID }], error: null });
+    sbRef.current = { from };
+
+    const res = await markItemCompleted(ITEM_ID, null, NOW);
+    expect(res.ok).toBe(true);
+
+    const updateCall = updateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ handled_by: null });
+    expect(updateCall!.args[0]).not.toMatchObject({ handled_by: 'system' });
+  });
+
+  it('markItemCompleted still surfaces a real DB error (never silently swallowed)', async () => {
+    const { from } = makeSbFor({ data: null, error: { message: 'connection reset' } });
+    sbRef.current = { from };
+
+    const res = await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe('connection reset');
   });
 });

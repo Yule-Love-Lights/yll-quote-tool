@@ -793,6 +793,19 @@ create trigger properties_updated_at_trigger
   before update on public.properties
   for each row execute function public.customers_set_updated_at();
 
+-- 2026-08-07 Properties nickname + archive (#205) -- customer-profile
+-- Properties tab full manage. nickname: staff-only display label, purely
+-- cosmetic (never used for matching/dedup -- that stays on address_key).
+-- archived_at: hides a property from the default list WITHOUT deleting it
+-- (quotes/jobs/invoices reference properties by id) -- auto-clears the
+-- moment new quote activity lands on it again (see findOrCreateProperty's
+-- #205 comment in src/lib/customers.ts). Both nullable, no default beyond
+-- NULL. See migrations/2026-08-07-properties-nickname-and-archive.sql.
+alter table public.properties
+  add column if not exists nickname text;
+alter table public.properties
+  add column if not exists archived_at timestamptz;
+
 -- ── Quote ⇄ customer/property linkage (#83 Phase 5) ─────────────────────────
 -- Quotes reference the stable customer + property. Nullable: a quote with no
 -- identity at all (anonymous test entry) stays unlinked. ON DELETE SET NULL
@@ -856,6 +869,15 @@ create table if not exists public.jobs (
   -- Snapshot of the quote's priced line items at creation (jsonb). The job
   -- is a snapshot, not a live view of the quote.
   line_items    jsonb,
+
+  -- P4P Phase 1 planning estimate (2026-08-07): budgeted install hours and the
+  -- labor-revenue figure shadow-mode reporting builds from. Placeholder-rate
+  -- marker stays true until Jason's real production-rate session lands.
+  budgeted_hours numeric,
+  labor_revenue_cents integer,
+  rates_are_placeholder boolean not null default true,
+  budgeted_hours_overridden_at timestamptz,
+  budgeted_hours_overridden_by text,
 
   -- Install date — synced from home.works later (#84).
   install_date  date,
@@ -1015,6 +1037,27 @@ alter table public.invoices add column if not exists payment_preference text;
 alter table public.invoices drop constraint if exists invoices_payment_preference_check;
 alter table public.invoices add constraint invoices_payment_preference_check
   check (payment_preference is null or payment_preference in ('card_on_file', 'cash_check'));
+
+-- 2026-08-07 Manual payment method + NCE reference (#199):
+--   paid_method — how a MANUALLY-settled invoice (mark-paid, not a Valor
+--     charge) was actually collected: 'cash_check' | 'nce' | null. null covers
+--     BOTH a legacy manual mark-paid (predates this column) and a
+--     Valor-settled invoice (the balance webhook / charge-balance route settle
+--     via valor_balance_txn_id, never write this column) — the two null cases
+--     are told apart by whether valor_balance_txn_id is set.
+--   payment_reference — the NCE trade-system payment reference number.
+--     Required at NCE mark-paid time (enforced in the app, not a DB
+--     constraint — an empty ref means the trade payment hasn't happened yet);
+--     editable afterward for a typo fix.
+-- These MUST be here: INVOICE_SELECT (src/lib/invoices.ts) is a literal column
+-- list, so a DB built from this file without them fails EVERY invoice read and
+-- every job-completion invoice creation (PostgREST 42703), not just NCE ones.
+-- See migrations/2026-08-07-invoices-manual-payment-method.sql.
+alter table public.invoices add column if not exists paid_method text;
+alter table public.invoices add column if not exists payment_reference text;
+alter table public.invoices drop constraint if exists invoices_paid_method_check;
+alter table public.invoices add constraint invoices_paid_method_check
+  check (paid_method is null or paid_method in ('cash_check', 'nce'));
 
 
 -- =====================================================================
@@ -1762,3 +1805,97 @@ drop trigger if exists bot_users_updated_at on public.bot_users;
 create trigger bot_users_updated_at
   before update on public.bot_users
   for each row execute function public.bot_users_set_updated_at();
+
+-- ---------------------------------------------------------------------
+-- crew_members (2026-08-07, migrations/2026-08-07-crew-members.sql +
+-- migrations/2026-08-07-crew-members-name-unique.sql) — the P4P / Operations
+-- Hub identity + pay-config cache. `hub_employee_id` stays nullable until the
+-- Hub's OTP auth ships and backfills it. `telegram_user_id` links to
+-- bot_users when known. RLS ENABLED, ZERO POLICIES — service-role only.
+-- Folded into this canonical file at the S57 wrap review (was missing here
+-- even though both migrations were already applied to prod — a fresh
+-- onboarding DB built from this file alone would have had no crew_members
+-- table at all).
+-- ---------------------------------------------------------------------
+create table if not exists public.crew_members (
+  id               uuid primary key default gen_random_uuid(),
+  hub_employee_id  uuid,
+  telegram_user_id text,
+  display_name     text not null,
+  base_rate_cents  integer not null,
+  in_p4p_pool      boolean not null default false,
+  pay_mode         text not null default 'hourly' check (pay_mode in ('hourly', 'shadow', 'p4p')),
+  language         text not null default 'en',
+  active           boolean not null default true,
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now()
+);
+
+create unique index if not exists crew_members_hub_employee_id_key
+  on public.crew_members (hub_employee_id) where hub_employee_id is not null;
+
+create unique index if not exists crew_members_telegram_user_id_key
+  on public.crew_members (telegram_user_id) where telegram_user_id is not null;
+
+create unique index if not exists crew_members_display_name_key
+  on public.crew_members (lower(trim(display_name)));
+
+alter table public.crew_members enable row level security;
+
+create or replace function public.crew_members_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists crew_members_updated_at on public.crew_members;
+create trigger crew_members_updated_at
+  before update on public.crew_members
+  for each row execute function public.crew_members_set_updated_at();
+
+-- ---------------------------------------------------------------------
+-- shifts (2026-08-07, migrations/2026-08-07-shifts.sql) — the canonical
+-- day-level clock ledger for Operations Hub Flow B. `source` records how the
+-- shift was opened; `close_source` how it was closed (nullable — null while
+-- open); they can differ (opened via the Telegram bot, closed by an office
+-- correction, say). The partial unique index is the real idempotency
+-- guarantee — at most one open shift per person, enforced by the DB, not an
+-- application check. RLS ENABLED, ZERO POLICIES — service-role only, fails
+-- closed until the Flow B routes and policies ship. Folded into this
+-- canonical file at the S57 wrap review (see the crew_members note above —
+-- same gap, same fix).
+-- ---------------------------------------------------------------------
+create table if not exists public.shifts (
+  id              uuid primary key default gen_random_uuid(),
+  crew_member_id  uuid not null references public.crew_members(id),
+  clock_in_at     timestamptz not null default now(),
+  clock_out_at    timestamptz,
+  source          text not null check (source in ('pwa', 'telegram', 'office', 'system')),
+  close_source    text check (close_source in ('pwa', 'telegram', 'office', 'system')),
+  device_time     timestamptz,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
+);
+
+create unique index if not exists shifts_one_open_per_person
+  on public.shifts (crew_member_id) where clock_out_at is null;
+
+create index if not exists shifts_crew_member_id_idx
+  on public.shifts (crew_member_id);
+
+alter table public.shifts enable row level security;
+
+create or replace function public.shifts_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists shifts_updated_at on public.shifts;
+create trigger shifts_updated_at
+  before update on public.shifts
+  for each row execute function public.shifts_set_updated_at();

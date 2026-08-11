@@ -66,9 +66,11 @@ export type ItemRow = {
 };
 
 export type IngestPlan = {
-  /** When true, do nothing: an outbound touch with no existing item is us
-   *  cold-contacting — there's no unresponded lead to track (avoids noise). A
-   *  conversation we REPLIED to keeps its existing item and still auto-resolves. */
+  /** When true, do nothing: an outbound touch with no existing item is usually
+   *  us cold-contacting — there's no unresponded lead to track (avoids noise).
+   *  Some sources deliberately track outbound-only first observations (positive
+   *  allowlist below); a conversation we REPLIED to keeps its existing item and
+   *  still auto-resolves. */
   skip: boolean;
   /** When true, a resolved item (handled/completed/dismissed) is being re-ingested
    *  with NOTHING to persist — same status, same last_message_at, no reopen /
@@ -83,6 +85,28 @@ export type IngestPlan = {
   ambiguous: boolean;
   clearFollowedUp: boolean;
 };
+
+// #222: sources listed here need an inbox item even when FIRST seen as outbound,
+// because downstream work (the quote_sent_no_reply follow-up) anchors on that
+// item. A quote created and sent between two 5-minute cron ticks is only ever
+// observed as outbound, so without this it got no item and therefore no
+// follow-up — a real customer silently owed one (live case: quote #1263, a
+// 7.75-second draft window). Positive allowlist, never a negative test, per
+// AGENTS.md Pitfalls: every other source's outbound-only first observation
+// stays skipped as noise (a cold outbound Gmail/GHL touch is not a lead we owe
+// a reply to). The item auto-resolves to 'handled', so it anchors the follow-up
+// without entering the operator's open inbox list.
+//
+// ACCEPTED TRADEOFF (#222 pre-merge review): this also covers SENT legacy_rebook
+// ("YLL Neighbor") quotes. Today that is 2 rows. But the Neighbor pool is ~114-124
+// quotes designed to go out as a deliberate send WAVE (#155/#157) — if a scripted
+// wave ever sends them faster than the 5-minute cron can observe any of them as a
+// draft, each one mints a follow-up in a single tick and lands in the due-today
+// strip at once. Accepted rather than special-cased here: a quote we actually sent
+// genuinely is owed a follow-up, and the alternative (teaching this pure,
+// source-generic reducer about a quote-specific flag) is worse. If that wave is
+// ever scripted, stagger the sends or cap follow-up creation per reconcile run.
+const TRACKS_OUTBOUND_FIRST_OBSERVATION: ReadonlySet<InboxSource> = new Set<InboxSource>(['quotetool']);
 
 /**
  * Decide what an inbound/outbound touch should do, given the matching contact
@@ -174,7 +198,7 @@ export function planIngest(input: {
   };
 
   return {
-    skip: !existing && touch.direction === 'outbound',
+    skip: !existing && touch.direction === 'outbound' && !TRACKS_OUTBOUND_FIRST_OBSERVATION.has(touch.source),
     noopReingest,
     contactOp,
     item,
@@ -626,9 +650,12 @@ export type MarkHandledResult = { ok: true; target: HandledTarget } | { ok: fals
 /**
  * Stamp an item handled locally FIRST (attribution never depends on the external
  * write-back), and return the coordinates the route needs to mark the source
- * read. Uses a status guard so two operators can't double-apply.
+ * read. Uses a status guard so two operators can't double-apply. `operatorId`
+ * must be a real auth.users uuid, or null — inbox_items.handled_by is a
+ * nullable `uuid` column ("NULL when system auto-resolved" per its schema
+ * comment); never pass a display name/email string here.
  */
-export async function markItemHandledLocal(itemId: string, operatorId: string, now: Date): Promise<MarkHandledResult> {
+export async function markItemHandledLocal(itemId: string, operatorId: string | null, now: Date): Promise<MarkHandledResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const from = await priorStateOf(sb, itemId);
@@ -656,7 +683,9 @@ export async function markItemHandledLocal(itemId: string, operatorId: string, n
   };
 }
 
-export async function dismissItem(itemId: string, operatorId: string, now: Date): Promise<{ ok: boolean; error?: string }> {
+/** `operatorId` must be a real auth.users uuid, or null — see markItemHandledLocal's
+ *  doc comment; inbox_items.handled_by never accepts a display name/email string. */
+export async function dismissItem(itemId: string, operatorId: string | null, now: Date): Promise<{ ok: boolean; error?: string }> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const from = await priorStateOf(sb, itemId);
@@ -1400,10 +1429,12 @@ export async function listInWorks(limit = 200): Promise<InWorksResult> {
 }
 
 /** Mark an item completed: capture prior state, stamp status + handled fields,
- *  clear followed_up_at, and write a detailed activity log entry. */
+ *  clear followed_up_at, and write a detailed activity log entry. `operatorId`
+ *  must be a real auth.users uuid, or null — see markItemHandledLocal's doc
+ *  comment; inbox_items.handled_by never accepts a display name/email string. */
 export async function markItemCompleted(
   itemId: string,
-  operatorId: string,
+  operatorId: string | null,
   now: Date,
 ): Promise<{ ok: boolean; error?: string }> {
   const sb = getSupabaseServiceClient();
