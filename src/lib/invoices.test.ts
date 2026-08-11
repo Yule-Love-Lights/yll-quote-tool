@@ -1025,6 +1025,49 @@ describe('markInvoicePaidManually', () => {
     });
   });
 
+  // #225: the operator who manually settled the invoice.
+  describe('#225 settled_by operator attribution', () => {
+    it('defaults to null when no settledBy is passed (back-compat, every pre-#225 caller)', async () => {
+      const fake = makeFakeSupabase({
+        invoices: [{ id: 'i1', status: 'awaiting_payment', balance: 500, paid_at: null }],
+      });
+      sbRef.current = fake.client;
+      const inv = await markInvoicePaidManually('i1');
+      expect(inv!.settled_by ?? null).toBeNull();
+    });
+
+    it('writes the operator uuid when passed', async () => {
+      const fake = makeFakeSupabase({
+        invoices: [{ id: 'i1', status: 'awaiting_payment', balance: 500, paid_at: null }],
+      });
+      sbRef.current = fake.client;
+      const inv = await markInvoicePaidManually('i1', 'cash_check', null, 'op-uuid-1');
+      expect(inv!.settled_by).toBe('op-uuid-1');
+    });
+
+    it('still settles successfully (writing null) when the operator identity is unknown', async () => {
+      const fake = makeFakeSupabase({
+        invoices: [{ id: 'i1', status: 'awaiting_payment', balance: 500, paid_at: null }],
+      });
+      sbRef.current = fake.client;
+      const inv = await markInvoicePaidManually('i1', 'cash_check', null, null);
+      expect(inv).toBeTruthy();
+      expect(inv!.status).toBe('paid');
+      expect(inv!.settled_by ?? null).toBeNull();
+    });
+
+    it('an idempotent already-paid call returns the EXISTING settled_by, ignoring this call\'s param', async () => {
+      const fake = makeFakeSupabase({
+        invoices: [
+          { id: 'i1', status: 'paid', balance: 0, paid_at: '2026-01-01T00:00:00Z', settled_by: 'op-original' },
+        ],
+      });
+      sbRef.current = fake.client;
+      const inv = await markInvoicePaidManually('i1', 'cash_check', null, 'op-new');
+      expect(inv!.settled_by).toBe('op-original');
+    });
+  });
+
   // #199 F2 (wrap-review HIGH): a single positive gate covering BOTH real
   // call sites (job-close's bare force-settle; the mark-paid route, itself
   // reachable from PipelineActionsMenu's generic "collect-payment" empty-body
