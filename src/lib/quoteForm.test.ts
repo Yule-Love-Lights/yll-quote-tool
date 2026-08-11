@@ -7,6 +7,7 @@ import {
   applyPrefill,
   resolveTagPayload,
   resolveNceDepositPercent,
+  clearHolidayOnlyDiscountState,
   legacyRebookConfirmMessage,
   nceConfirmMessage,
   initialNceDepositProvenance,
@@ -355,6 +356,12 @@ describe('inputsToFormData', () => {
   it('round-trips an early-install quote (no manual discount)', () => {
     const form: QuoteFormData = {
       ...fullForm,
+      // installTiming is holiday-only (#212) — fullForm's base serviceType is
+      // 'event' (to exercise that field elsewhere in this suite), which isn't
+      // a coherent combination with an early-install pick. Event fields reset
+      // to blank too, since buildQuoteInputs only sends them for 'event'.
+      serviceType: 'holiday',
+      event: { barrelBoxes: 0, installDate: '', eventDate: '', takedownDate: '' },
       rushFee: false, // early-install clears rush (mutually exclusive)
       discountEnabled: true,
       discountType: 'percentage',
@@ -363,6 +370,29 @@ describe('inputsToFormData', () => {
     };
     const hydrated = inputsToFormData(form.customer, buildQuoteInputs(form), form.serviceType);
     expect(hydrated).toEqual(form);
+  });
+
+  it('#212 finding 2 — normalizes a stale non-holiday installTiming at hydrate so a subsequently-typed discount reaches buildQuoteInputs', () => {
+    // Simulates a row that predates the #212 switch-clear fix (or reaches this
+    // shape via any future path): service_type is non-holiday but the stored
+    // inputs jsonb still carries a holiday-only early-install month.
+    const stale = inputsToFormData({}, { installTiming: 'september' }, 'event');
+    // Normalized away, not carried into the form.
+    expect(stale.installTiming).toBe('none');
+    // Discount toggle isn't force-opened by the stale value either.
+    expect(stale.discountEnabled).toBe(false);
+    // The regression this closes: if a staffer now types a real manual
+    // discount on top of the hydrated form, it must actually reach the save
+    // payload — pre-fix, buildQuoteInputs's `discount` gate stayed shut
+    // because the un-normalized installTiming was still 'september'.
+    const typed: QuoteFormData = { ...stale, discountEnabled: true, discountType: 'flat', discountAmount: 75 };
+    expect(buildQuoteInputs(typed).discount).toEqual({ type: 'flat', amount: 75 });
+  });
+
+  it('#212 finding 2 — a holiday quote is unaffected by the normalization', () => {
+    const sep = inputsToFormData({}, { installTiming: 'september' }, 'holiday');
+    expect(sep.installTiming).toBe('september');
+    expect(sep.discountEnabled).toBe(true);
   });
 
   it('strips the Anonymous / (no address) sentinels back to blank fields', () => {
@@ -544,6 +574,40 @@ describe('resolveNceDepositPercent (#199 NCE 40% deposit default)', () => {
     expect(resolveNceDepositPercent(0, true, true, false)).toBe(0);
     expect(resolveNceDepositPercent(40, false, true, true)).toBe(40);
     expect(resolveNceDepositPercent(25, true, true, false)).toBe(25);
+  });
+});
+
+describe('clearHolidayOnlyDiscountState (#212 fix round, finding 1)', () => {
+  it('clears installTiming + discountEnabled + discountAmount when switching away from holiday with an early-install pick active', () => {
+    const reset = clearHolidayOnlyDiscountState('event', {
+      installTiming: 'september',
+      discountEnabled: true,
+      discountAmount: 0, // blank — the amount input is hidden while a month is picked
+    });
+    expect(reset).toEqual({ installTiming: 'none', discountEnabled: false, discountAmount: 0 });
+  });
+
+  it('leaves a genuine typed manual discount untouched (installTiming was already none)', () => {
+    const reset = clearHolidayOnlyDiscountState('permanent', {
+      installTiming: 'none',
+      discountEnabled: true,
+      discountAmount: 20,
+    });
+    expect(reset).toEqual({});
+  });
+
+  it('is a no-op switching INTO holiday, regardless of installTiming', () => {
+    expect(
+      clearHolidayOnlyDiscountState('holiday', { installTiming: 'october', discountEnabled: true, discountAmount: 0 }),
+    ).toEqual({});
+  });
+
+  it('is a no-op for any non-holiday target when installTiming is already none', () => {
+    for (const st of ['event', 'permanent', 'permanent_bistro'] as const) {
+      expect(
+        clearHolidayOnlyDiscountState(st, { installTiming: 'none', discountEnabled: false, discountAmount: 0 }),
+      ).toEqual({});
+    }
   });
 });
 

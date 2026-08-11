@@ -26,6 +26,7 @@ import {
   applyPrefill,
   resolveTagPayload,
   resolveNceDepositPercent,
+  clearHolidayOnlyDiscountState,
   legacyRebookConfirmMessage,
   nceConfirmMessage,
   initialNceDepositProvenance,
@@ -3773,10 +3774,13 @@ export default function QuoteBuilder({
                         // pick — leaving it set while switching to a non-holiday type
                         // would silently block buildQuoteInputs's `discount` field
                         // (guarded on installTiming === 'none') while the builder's
-                        // discount checkbox still LOOKED applied. Clear it whenever the
-                        // new type isn't holiday; a no-op for a same-type click or a
-                        // switch INTO holiday (its own toggle already governs the field).
-                        ...(st !== 'holiday' && f.installTiming !== 'none' ? { installTiming: 'none' as const } : {}),
+                        // discount checkbox still LOOKED applied. clearHolidayOnlyDiscountState
+                        // (quoteForm.ts) clears installTiming AND brings
+                        // discountEnabled/discountAmount to a coherent rest state along
+                        // with it — a no-op for a same-type click, a switch INTO holiday,
+                        // or when installTiming was already 'none' (a genuine typed
+                        // manual discount survives untouched; see that function's doc).
+                        ...clearHolidayOnlyDiscountState(st, f),
                       }))}
                       className={`px-3 py-1.5 rounded-md border text-sm font-medium transition-colors ${
                         selected
