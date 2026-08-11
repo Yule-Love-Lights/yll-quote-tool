@@ -274,6 +274,37 @@ describe('collectOpsDigest', () => {
     expect(data.quotesAwaitingReplyNamed.map((r) => r.customerName)).toContain('Just Texted Jane');
   });
 
+  it('keeps the FRESHEST sends when more than the cap went out in the last 24h (#223 delta-verify)', async () => {
+    vi.setSystemTime(new Date('2026-07-21T12:00:00Z')); // noon UTC = 8am NY
+    // Seven quotes all sent within the last 24h, at 1h through 23h ago. The cap
+    // is 5, so two must be dropped. An oldest-first tie-break inside the recent
+    // group would drop the 1h and 3h sends — the two most salvageable promises,
+    // and precisely the miss the recency rule was added to prevent.
+    const hoursAgo = [23, 20, 15, 10, 5, 3, 1];
+    listQuotes.mockResolvedValue(
+      hoursAgo.map((h, i) =>
+        quote({
+          id: `r${i}`,
+          quote_number: 700 + i,
+          customer_name: `Sent${h}hAgo`,
+          quote_sent_at: new Date(Date.parse('2026-07-21T12:00:00Z') - h * 3600_000).toISOString(),
+        }),
+      ),
+    );
+    const data = await collectOpsDigest();
+    expect(data.quotesAwaitingReplyCount).toBe(7);
+    expect(data.quotesAwaitingReplyNamed).toHaveLength(5);
+    const named = data.quotesAwaitingReplyNamed.map((r) => r.customerName);
+    // The two freshest survive the cap...
+    expect(named).toContain('Sent1hAgo');
+    expect(named).toContain('Sent3hAgo');
+    // ...and the two stalest of the same-day batch are the ones that spill.
+    expect(named).not.toContain('Sent23hAgo');
+    expect(named).not.toContain('Sent20hAgo');
+    // Newest-first ordering within the recent group.
+    expect(named[0]).toBe('Sent1hAgo');
+  });
+
   it('degrades only the overdue-follow-ups section on a read failure — quote-derived lists are unaffected', async () => {
     listQuotes.mockResolvedValue([
       quote({ id: 'a', quote_number: 201, customer_name: 'Ana', quote_sent_at: '2026-07-01T00:00:00Z' }),

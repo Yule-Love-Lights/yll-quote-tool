@@ -162,18 +162,37 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
       const s = deriveStatus(q);
       return s === 'sent' || s === 'viewed';
     })
-    .map((q) => ({
-      customerName: q.customer_name,
-      quoteNumber: q.quote_number,
-      daysSinceSent: daysSince(q.quote_sent_at ?? q.viewed_at ?? q.created_at),
-    }))
+    .map((q) => {
+      const sentIso = q.quote_sent_at ?? q.viewed_at ?? q.created_at;
+      // sentAtMs is a SORT KEY ONLY and is stripped before this leaves the
+      // function. daysSinceSent is whole days, so every same-day send ties at
+      // 0 — sorting on it alone cannot tell a 1-hour-old promise from a
+      // 23-hour-old one, and the cap would then keep whichever order the DB
+      // happened to return. The raw timestamp is the only thing with enough
+      // resolution to order the group this rule exists to protect.
+      const parsed = sentIso ? Date.parse(sentIso) : NaN;
+      return {
+        customerName: q.customer_name,
+        quoteNumber: q.quote_number,
+        daysSinceSent: daysSince(sentIso),
+        sentAtMs: Number.isFinite(parsed) ? parsed : 0,
+      };
+    })
     .sort((a, b) => {
       const aRecent = a.daysSinceSent < 1;
       const bRecent = b.daysSinceSent < 1;
       if (aRecent !== bRecent) return aRecent ? -1 : 1; // <24h always sorts first
-      return b.daysSinceSent - a.daysSinceSent; // then oldest-first within each group
+      // #223 delta-verify: the two groups tie-break in OPPOSITE directions, on
+      // purpose. Within the <24h group, NEWEST first — with more than
+      // NAMED_LIST_CAP same-day sends, an oldest-first tie-break would push the
+      // freshest promises into "+N more", which is exactly the miss this
+      // recency rule exists to prevent (a customer texted a promise hours ago
+      // is the most salvageable). Within the older group, OLDEST first, because
+      // there the longest-ignored quote is the most urgent.
+      return aRecent ? b.sentAtMs - a.sentAtMs : a.sentAtMs - b.sentAtMs;
     })
-    .slice(0, NAMED_LIST_CAP);
+    .slice(0, NAMED_LIST_CAP)
+    .map(({ sentAtMs: _sentAtMs, ...row }) => row);
   const depositsPendingNamed = real
     .filter((q) => deriveStatus(q) === 'approved')
     .map((q) => ({ customerName: q.customer_name, quoteNumber: q.quote_number, total: q.total }))
