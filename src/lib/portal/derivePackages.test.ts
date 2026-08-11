@@ -481,6 +481,24 @@ describe('chargesFromResult — per-quote fee config (#4)', () => {
       expect(chargesFromResult(resultWith({ depositRate: 0.25 })).depositRate).toBe(0.25);
     });
 
+    // #226 (adversarial-review HIGH, live-prod bug): the exact trap that
+    // shipped — a caller with an ABSENT depositPercent (e.g. the old NCE-OFF
+    // route that deleted the key instead of writing 0) falls through to a
+    // STALE result.depositRate frozen at 0.4 from the last Calculate run
+    // while NCE was ON. No existing test named this specific shape before
+    // #226; this one documents the trap so it can't silently regress. The
+    // fix is at the CALLER (writing an explicit 0) — this function's
+    // back-compat fallback above is intentional and unchanged.
+    it('documents the #226 trap: absent depositPercent + a stale 0.4 result.depositRate yields 0.4, not the default', () => {
+      expect(chargesFromResult(resultWith({ depositRate: 0.4 })).depositRate).toBe(0.4);
+    });
+
+    it('an explicit 0 depositPercent correctly overrides a stale 0.4 result.depositRate to the BUSINESS_RULES default (#226)', () => {
+      expect(chargesFromResult(resultWith({ depositRate: 0.4 }), 0).depositRate).toBe(
+        BUSINESS_RULES.depositPercentage,
+      );
+    });
+
     it('an out-of-range live depositPercent resolves to the BUSINESS_RULES default (mirrors effectiveDepositRate)', () => {
       expect(chargesFromResult(resultWith({ depositRate: 0.25 }), 150).depositRate).toBe(
         BUSINESS_RULES.depositPercentage,

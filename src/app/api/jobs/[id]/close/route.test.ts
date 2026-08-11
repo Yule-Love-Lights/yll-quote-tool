@@ -4,13 +4,14 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
 
-const { getJob, setJobStatus, getInvoiceByJob, markInvoicePaidManually, requireOperatorMock, sbRef, hl } =
+const { getJob, setJobStatus, getInvoiceByJob, markInvoicePaidManually, requireOperatorMock, getOperatorMock, sbRef, hl } =
   vi.hoisted(() => ({
     getJob: vi.fn(),
     setJobStatus: vi.fn(),
     getInvoiceByJob: vi.fn(),
     markInvoicePaidManually: vi.fn(),
     requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
+    getOperatorMock: vi.fn(async (): Promise<unknown> => null),
     sbRef: { current: null as unknown },
     hl: {
       configured: { value: false },
@@ -27,7 +28,7 @@ vi.mock('@/lib/supabase', () => ({
   // gate is only reached when the fixture's invoice carries a quote_id.
   getSupabaseServiceClient: () => sbRef.current,
 }));
-vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: requireOperatorMock }));
+vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: requireOperatorMock, getOperator: getOperatorMock }));
 vi.mock('@/lib/jobs', () => ({ getJob, setJobStatus }));
 // #199 F2: importOriginal keeps InvoiceSettleError (the real class, needed
 // for the route's `instanceof` check) — only the DB-touching fns are mocked.
@@ -64,6 +65,9 @@ function makeQuoteSb(quote: Record<string, unknown> | null) {
 const ID = '33333333-3333-3333-3333-333333333333';
 const INV_ID = '44444444-4444-4444-4444-444444444444';
 const QUOTE_ID = '66666666-6666-6666-6666-666666666666';
+// #225: the operator whose uuid should flow through as markInvoicePaidManually's
+// settledBy arg.
+const OPERATOR_ID = '88888888-8888-8888-8888-888888888888';
 
 const denied401 = () => NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 // A callable request builder: default (no body / no query) mirrors the real UI
@@ -89,6 +93,7 @@ const PAID_INVOICE = { id: INV_ID, status: 'paid' as const, balance: 0 };
 beforeEach(() => {
   vi.clearAllMocks();
   requireOperatorMock.mockResolvedValue(null);
+  getOperatorMock.mockResolvedValue({ id: OPERATOR_ID, email: 'op@yulelovelights.com', role: 'operator', name: null });
   getInvoiceByJob.mockResolvedValue(null);
   markInvoicePaidManually.mockResolvedValue(PAID_INVOICE);
   setJobStatus.mockImplementation(async (_id: string, to: string) => ({ id: ID, status: to }));
@@ -144,7 +149,7 @@ describe('POST /api/jobs/[id]/close', () => {
     const json = await res.json();
     expect(json).toMatchObject({ ok: true, closed: true });
 
-    expect(markInvoicePaidManually).toHaveBeenCalledWith(INV_ID);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(INV_ID, 'cash_check', null, OPERATOR_ID);
     expect(setJobStatus).toHaveBeenCalledWith(ID, 'done');
   });
 
@@ -249,6 +254,30 @@ describe('POST /api/jobs/[id]/close', () => {
   });
 });
 
+describe('POST /api/jobs/[id]/close — settled_by operator attribution (#225)', () => {
+  it('passes the resolved operator uuid through as the 4th (settledBy) arg', async () => {
+    getJob.mockResolvedValueOnce(JOB_REQUIRES_INVOICING);
+    getInvoiceByJob.mockResolvedValueOnce(UNPAID_INVOICE);
+    getOperatorMock.mockResolvedValueOnce({ id: OPERATOR_ID, email: 'op@yulelovelights.com', role: 'operator', name: null });
+
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(INV_ID, 'cash_check', null, OPERATOR_ID);
+  });
+
+  it('still settles + closes (passing null) when the operator identity is unknown — no crash', async () => {
+    getJob.mockResolvedValueOnce(JOB_REQUIRES_INVOICING);
+    getInvoiceByJob.mockResolvedValueOnce(UNPAID_INVOICE);
+    getOperatorMock.mockResolvedValueOnce(null);
+
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json).toMatchObject({ ok: true, closed: true });
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(INV_ID, 'cash_check', null, null);
+  });
+});
+
 describe('POST /api/jobs/[id]/close — WT-18 re-consent settlement gate', () => {
   beforeEach(() => {
     getJob.mockResolvedValue(JOB_REQUIRES_INVOICING);
@@ -275,7 +304,7 @@ describe('POST /api/jobs/[id]/close — WT-18 re-consent settlement gate', () =>
     });
     const res = await POST(req({ overrideReconsent: true }), ctx());
     expect(res.status).toBe(200);
-    expect(markInvoicePaidManually).toHaveBeenCalledWith(INV_ID);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(INV_ID, 'cash_check', null, OPERATOR_ID);
   });
 
   it('succeeds with an operator override via the ?override=true query param', async () => {
@@ -285,7 +314,7 @@ describe('POST /api/jobs/[id]/close — WT-18 re-consent settlement gate', () =>
     });
     const res = await POST(req(undefined, 'override=true'), ctx());
     expect(res.status).toBe(200);
-    expect(markInvoicePaidManually).toHaveBeenCalledWith(INV_ID);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(INV_ID, 'cash_check', null, OPERATOR_ID);
   });
 
   it('does NOT block a non-increasing (price-DECREASING) amendment', async () => {
@@ -295,7 +324,7 @@ describe('POST /api/jobs/[id]/close — WT-18 re-consent settlement gate', () =>
     });
     const res = await POST(req(), ctx());
     expect(res.status).toBe(200);
-    expect(markInvoicePaidManually).toHaveBeenCalledWith(INV_ID);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(INV_ID, 'cash_check', null, OPERATOR_ID);
   });
 
   it('does NOT block a zero-delta (cosmetic) amendment', async () => {
@@ -339,7 +368,7 @@ describe('POST /api/jobs/[id]/close — WT-18 re-consent settlement gate', () =>
     getInvoiceByJob.mockResolvedValueOnce({ ...UNPAID_INVOICE, quote_id: null });
     const res = await POST(req(), ctx());
     expect(res.status).toBe(200);
-    expect(markInvoicePaidManually).toHaveBeenCalledWith(INV_ID);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(INV_ID, 'cash_check', null, OPERATOR_ID);
   });
 });
 

@@ -86,6 +86,12 @@ export type InvoiceRow = {
   // paid_method above — see its comment for the real pre-migration blast
   // radius (this is not a "degrades gracefully" annotation).
   payment_reference?: string | null;
+  // #225: the operator who manually settled the invoice (mark-paid route /
+  // job-close force-settle). null = legacy row (predates this column), a
+  // Valor-settled invoice (never written here), or a settle whose operator
+  // identity genuinely couldn't be resolved. Optional here for the same
+  // pre-migration tsc/tests reason as paid_method above.
+  settled_by?: string | null;
   created_at: string;
   paid_at: string | null;
   updated_at: string;
@@ -107,7 +113,7 @@ export type RetiredTxnEntry = {
 const INVOICE_SELECT =
   'id, invoice_number, job_id, quote_id, customer_id, subtotal, discount, tax, total, ' +
   'deposit_applied, balance, credit_note, tax_overridden, status, valor_balance_txn_id, ' +
-  'valor_receipt_url, valor_txn_log, payment_preference, paid_method, payment_reference, ' +
+  'valor_receipt_url, valor_txn_log, payment_preference, paid_method, payment_reference, settled_by, ' +
   'created_at, paid_at, updated_at';
 
 // ─── Pure totals math ───────────────────────────────────────────────────────
@@ -770,6 +776,13 @@ export class InvoiceSettleError extends Error {
  * labelled. Validating `reference` (required + non-empty for 'nce') is the
  * CALLER's job (the mark-paid route) — this is a thin, unconditional write.
  *
+ * #225: `settledBy` (an auth.users uuid, or null) defaults to null — every
+ * EXISTING caller that doesn't pass one keeps writing exactly what it always
+ * wrote (nothing). Resolving the real operator id is the CALLER's job
+ * (mirrors `reference`'s validation split above); this is a thin,
+ * unconditional write. Ignored on the idempotent-already-paid branch, same
+ * as method/reference — the earlier settle's attribution wins.
+ *
  * #199 (F2, wrap-review HIGH): ONE positive gate here, not N patches at every
  * caller — an invoice whose linked quote is_nce can ONLY ever settle with
  * method:'nce'. Without this, EITHER of this function's two call sites
@@ -793,6 +806,7 @@ export async function markInvoicePaidManually(
   id: string,
   method: PaidMethod = 'cash_check',
   reference: string | null = null,
+  settledBy: string | null = null,
 ): Promise<InvoiceRow | null> {
   const db = sb();
   if (!db) return null;
@@ -861,7 +875,14 @@ export async function markInvoicePaidManually(
   const paidAt = new Date().toISOString();
   const { data, error } = await db
     .from('invoices')
-    .update({ status: 'paid', balance: 0, paid_at: paidAt, paid_method: method, payment_reference: reference })
+    .update({
+      status: 'paid',
+      balance: 0,
+      paid_at: paidAt,
+      paid_method: method,
+      payment_reference: reference,
+      settled_by: settledBy,
+    })
     .eq('id', id)
     .neq('status', 'paid')
     .neq('status', 'cancelled')

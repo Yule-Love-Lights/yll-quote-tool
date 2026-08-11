@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
 
-const { markInvoicePaidManually, updateInvoicePaymentReference, getInvoice, getJob, setJobStatus, requireOperatorMock, sbRef } =
+const { markInvoicePaidManually, updateInvoicePaymentReference, getInvoice, getJob, setJobStatus, requireOperatorMock, getOperatorMock, sbRef } =
   vi.hoisted(() => ({
     markInvoicePaidManually: vi.fn(),
     updateInvoicePaymentReference: vi.fn(),
@@ -14,6 +14,7 @@ const { markInvoicePaidManually, updateInvoicePaymentReference, getInvoice, getJ
     getJob: vi.fn(),
     setJobStatus: vi.fn(),
     requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
+    getOperatorMock: vi.fn(async (): Promise<unknown> => null),
     sbRef: { current: null as unknown },
   }));
 
@@ -21,7 +22,7 @@ vi.mock('@/lib/supabase', () => ({
   isSupabaseServiceConfigured: () => true,
   getSupabaseServiceClient: () => sbRef.current,
 }));
-vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: requireOperatorMock }));
+vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: requireOperatorMock, getOperator: getOperatorMock }));
 // #199 F2: importOriginal keeps InvoiceSettleError (the real class, needed for
 // the route's `instanceof` check) — only the DB-touching fns are mocked.
 vi.mock('@/lib/invoices', async (importOriginal) => ({
@@ -38,6 +39,9 @@ import { InvoiceSettleError } from '@/lib/invoices';
 const ID = '22222222-2222-2222-2222-222222222222';
 const JOB_ID = '33333333-3333-3333-3333-333333333333';
 const QUOTE_ID = '55555555-5555-5555-5555-555555555555';
+// #225: the operator whose uuid should flow through as markInvoicePaidManually's
+// settledBy arg.
+const OPERATOR_ID = '77777777-7777-7777-7777-777777777777';
 const denied401 = () => NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 // A callable request builder: default (no body / no query) mirrors the real UI
 // call site (`fetch(url, { method: 'POST' })` — no body at all), which is why
@@ -76,6 +80,7 @@ function makeSb(quote: Record<string, unknown> | null) {
 beforeEach(() => {
   vi.clearAllMocks();
   requireOperatorMock.mockResolvedValue(null);
+  getOperatorMock.mockResolvedValue({ id: OPERATOR_ID, email: 'op@yulelovelights.com', role: 'operator', name: null });
   getInvoice.mockResolvedValue({ ...PAID_INVOICE });
   markInvoicePaidManually.mockResolvedValue(PAID_INVOICE);
   updateInvoicePaymentReference.mockResolvedValue(PAID_INVOICE);
@@ -159,7 +164,7 @@ describe('POST /api/invoices/[id]/mark-paid', () => {
     });
     // #199: back-compat default — a body-less request keeps writing exactly
     // what it always wrote (now just also labelled 'cash_check'/null).
-    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID, 'cash_check', null);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID, 'cash_check', null, OPERATOR_ID);
   });
 
   it('advances the linked job to done when it is at requires_invoicing (mirrors the balance webhook)', async () => {
@@ -228,21 +233,21 @@ describe('POST /api/invoices/[id]/mark-paid — WT-18 re-consent settlement gate
     sbRef.current = makeSb({ approval_snapshot: { amendments: [{ delta: 500, new_total: 6000 }] }, status: 'booked' });
     const res = await POST(req({ overrideReconsent: true }), ctx());
     expect(res.status).toBe(200);
-    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID, 'cash_check', null);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID, 'cash_check', null, OPERATOR_ID);
   });
 
   it('succeeds with an operator override via the ?override=true query param', async () => {
     sbRef.current = makeSb({ approval_snapshot: { amendments: [{ delta: 500, new_total: 6000 }] }, status: 'booked' });
     const res = await POST(req(undefined, 'override=true'), ctx());
     expect(res.status).toBe(200);
-    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID, 'cash_check', null);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID, 'cash_check', null, OPERATOR_ID);
   });
 
   it('does NOT block a non-increasing (price-DECREASING) amendment', async () => {
     sbRef.current = makeSb({ approval_snapshot: { amendments: [{ delta: -500, new_total: 4500 }] }, status: 'booked' });
     const res = await POST(req(), ctx());
     expect(res.status).toBe(200);
-    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID, 'cash_check', null);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID, 'cash_check', null, OPERATOR_ID);
   });
 
   it('does NOT block a zero-delta (cosmetic) amendment', async () => {
@@ -292,19 +297,37 @@ describe('POST /api/invoices/[id]/mark-paid — NCE method/reference (#199)', ()
   it('marks paid with method nce + a trimmed reference', async () => {
     const res = await POST(req({ method: 'nce', reference: '  NCE-4821  ' }), ctx());
     expect(res.status).toBe(200);
-    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID, 'nce', 'NCE-4821');
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID, 'nce', 'NCE-4821', OPERATOR_ID);
   });
 
   it('defaults to cash_check with a null reference when method is omitted (back-compat)', async () => {
     const res = await POST(req(), ctx());
     expect(res.status).toBe(200);
-    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID, 'cash_check', null);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID, 'cash_check', null, OPERATOR_ID);
   });
 
   it('treats an unrecognized method value as cash_check (back-compat)', async () => {
     const res = await POST(req({ method: 'bogus' }), ctx());
     expect(res.status).toBe(200);
-    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID, 'cash_check', null);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID, 'cash_check', null, OPERATOR_ID);
+  });
+});
+
+describe('POST /api/invoices/[id]/mark-paid — settled_by operator attribution (#225)', () => {
+  it('passes the resolved operator uuid through as the 4th (settledBy) arg', async () => {
+    getOperatorMock.mockResolvedValueOnce({ id: OPERATOR_ID, email: 'op@yulelovelights.com', role: 'operator', name: null });
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID, 'cash_check', null, OPERATOR_ID);
+  });
+
+  it('still settles (passing null) when the operator identity is unknown — no crash', async () => {
+    getOperatorMock.mockResolvedValueOnce(null);
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.ok).toBe(true);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID, 'cash_check', null, null);
   });
 });
 

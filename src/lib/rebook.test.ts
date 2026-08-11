@@ -314,6 +314,43 @@ describe('buildRebookInsert', () => {
       const row = buildRebookInsert({ ...src, is_nce: true, inputs: null });
       expect(row.inputs).toBeNull();
     });
+
+    // #226 round 2 (delta-verify HIGH: round 1's OFF-reset was too broad —
+    // see applyNceDepositDefault's own comment): resetNceDepositOnOff is an
+    // opt-in the CALLER passes, defaulting to false (a pure no-op, matching
+    // pre-#226 behavior — the shape rebookFromQuote below always uses).
+    // Explicitly opting in (the shape rebookLastSeason uses, because its
+    // is_nce comes from the CUSTOMER's current tag — a real signal) resets an
+    // untouched depositPercent=40 to 0. Mirrors the admin nce route's own OFF
+    // rule — see rebook.ts's own #226 comment.
+    it('resets a carried-over depositPercent=40 to 0 when the clone resolves NCE=false AND resetNceDepositOnOff is opted in', () => {
+      const row = buildRebookInsert(
+        { ...src, is_nce: false, inputs: { depositPercent: 40, a: 1 } },
+        { resetNceDepositOnOff: true },
+      );
+      expect((row.inputs as Record<string, unknown>).depositPercent).toBe(0);
+      expect((row.inputs as Record<string, unknown>).a).toBe(1);
+    });
+
+    it('leaves a non-40 depositPercent untouched when the clone resolves NCE=false, even with resetNceDepositOnOff opted in', () => {
+      const row = buildRebookInsert(
+        { ...src, is_nce: false, inputs: { depositPercent: 25 } },
+        { resetNceDepositOnOff: true },
+      );
+      expect((row.inputs as Record<string, unknown>).depositPercent).toBe(25);
+    });
+
+    // #226 round 2: the DEFAULT (no opts) leaves an untouched 40 alone —
+    // buildRebookInsert's own no-signal-to-reset posture. rebookFromQuote
+    // (round 3) now passes this default specifically when the source quote
+    // was never approved, where a surviving 40 really is hand-typed; see
+    // rebook.test.ts's own rebookFromQuote describe block below for the
+    // conditional (customer_approved_at-based) opts it passes.
+    it('leaves a carried-over depositPercent=40 UNTOUCHED when the clone resolves NCE=false and resetNceDepositOnOff is NOT passed (buildRebookInsert default)', () => {
+      const row = buildRebookInsert({ ...src, is_nce: false, inputs: { depositPercent: 40, a: 1 } });
+      expect((row.inputs as Record<string, unknown>).depositPercent).toBe(40);
+      expect((row.inputs as Record<string, unknown>).a).toBe(1);
+    });
   });
 });
 
@@ -516,6 +553,31 @@ describe('rebookLastSeason', () => {
       const res = await rebookLastSeason('c1');
       const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
       expect(created.inputs).toEqual({});
+    });
+
+    // #226 round 2: rebookLastSeason resolves is_nce from the CUSTOMER's
+    // CURRENT tag — a false reading is a real "left the barter network"
+    // signal, so it opts into resetNceDepositOnOff and a carried-over 40
+    // resets to 0. Contrast with rebookFromQuote's own #226 test below.
+    it('resets a carried-over source depositPercent=40 to 0 when the CUSTOMER-inherited tag resolves NCE=false (#226)', async () => {
+      const fake = makeFakeSupabase({
+        quotes: [
+          {
+            id: 'a',
+            customer_id: 'c1',
+            customer_approved_at: '2025-01-01',
+            inputs: { depositPercent: 40 },
+            result: { total: 5 },
+            is_nce: true,
+          },
+        ],
+        customers: [{ id: 'c1', is_nce: false }],
+      });
+      sbRef.current = fake.client;
+      const res = await rebookLastSeason('c1');
+      const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+      expect(created.is_nce).toBe(false);
+      expect((created.inputs as Record<string, unknown>).depositPercent).toBe(0);
     });
   });
 
@@ -731,6 +793,93 @@ describe('rebookFromQuote', () => {
     const res = await rebookFromQuote('a');
     const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
     expect((created.inputs as Record<string, unknown>).depositPercent).toBe(40);
+  });
+
+  // #226 round 2 (delta-verify HIGH): rebookFromQuote resolves is_nce from
+  // THIS SOURCE QUOTE's own tag, not the customer's current tag. ROUND 3
+  // narrows WHEN a stored 40 counts as "hand-typed": on a source that was
+  // NEVER approved (customer_approved_at null), the admin nce route's
+  // toggle-off DOES reset depositPercent, so a surviving 40 really is
+  // hand-typed and must survive the revive untouched. Contrast with
+  // rebookLastSeason's own #226 test above (always resets), and with the
+  // approved-source regression test below (resets, because the nce route's
+  // own toggle-off guard would have too).
+  it('leaves a source quote\'s hand-typed depositPercent=40 UNTOUCHED when the source quote itself is NOT NCE and was NEVER approved (#226)', async () => {
+    const fake = makeFakeSupabase({
+      quotes: [
+        {
+          id: 'a',
+          customer_id: 'c1',
+          status: 'declined',
+          customer_approved_at: null,
+          inputs: { depositPercent: 40 },
+          result: { total: 5 },
+          is_nce: false,
+        },
+      ],
+    });
+    sbRef.current = fake.client;
+    const res = await rebookFromQuote('a');
+    const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+    expect(created.is_nce).toBe(false);
+    expect((created.inputs as Record<string, unknown>).depositPercent).toBe(40);
+  });
+
+  // #226 round 3 (delta-verify HIGH, THE DEFECT THIS ROUND FIXES): is_nce
+  // and depositPercent can legitimately decouple on an APPROVED quote — the
+  // admin nce route writes depositPercent=40 on NCE tag-ON pre-approval, the
+  // #177 freeze then locks it, and a later toggle-OFF is skipped entirely
+  // (its whole deposit-write block is gated on customer_approved_at being
+  // null) because it must never touch a signed/frozen deposit. The row is
+  // left holding is_nce=false + a RULE-SET 40 that was never hand-typed.
+  // Reviving that quote must reset the stale 40, not carry it into a fresh
+  // draft under a false is_nce. This test FAILS against HEAD 05836813 (round
+  // 2's unconditional resetOnOff=false left the 40 untouched here too).
+  it('resets a source quote\'s stale RULE-SET depositPercent=40 to 0 when the source quote WAS approved, even though its is_nce now reads false (#226 round 3)', async () => {
+    const fake = makeFakeSupabase({
+      quotes: [
+        {
+          id: 'a',
+          customer_id: 'c1',
+          status: 'approved',
+          customer_approved_at: '2025-01-01',
+          inputs: { depositPercent: 40 },
+          result: { total: 5 },
+          is_nce: false,
+        },
+      ],
+    });
+    sbRef.current = fake.client;
+    const res = await rebookFromQuote('a');
+    const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+    expect(created.is_nce).toBe(false);
+    expect((created.inputs as Record<string, unknown>).depositPercent).toBe(0);
+  });
+
+  // #226 round 3: the SAME decoupling reaches a TERMINAL status too — a
+  // staff-decline (approved → declined, legal per quoteStatus.ts) never
+  // clears customer_approved_at, and the nce route's toggle-off guard keys
+  // on that field, not on status. A declined-but-formerly-approved source
+  // must reset the same as a still-'approved' one.
+  it('resets the stale 40 the same way when the approved source has since moved to a TERMINAL status (declined)', async () => {
+    const fake = makeFakeSupabase({
+      quotes: [
+        {
+          id: 'a',
+          customer_id: 'c1',
+          status: 'declined',
+          customer_approved_at: '2025-01-01', // staff-decline never clears this
+          inputs: { depositPercent: 40 },
+          result: { total: 5 },
+          is_nce: false,
+        },
+      ],
+    });
+    sbRef.current = fake.client;
+    const res = await rebookFromQuote('a');
+    const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+    expect(created.is_nce).toBe(false);
+    expect((created.inputs as Record<string, unknown>).depositPercent).toBe(0);
   });
 
   it('survives a throwing design clone (best-effort)', async () => {

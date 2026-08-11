@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { calculateQuote, QuoteInputs, MINI_LIGHT_TYPES } from '@/lib/pricing/pricingEngine';
+import { calculateQuote, QuoteInputs, MINI_LIGHT_TYPES, normalizedDepositOverride } from '@/lib/pricing/pricingEngine';
 import { saveQuote, updateQuote, getQuoteRaw, Customer } from '@/lib/quotes';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { getDesign, isValidDesignId } from '@/lib/designs';
@@ -581,9 +581,21 @@ export async function POST(req: NextRequest) {
     // quote can still be re-priced through this route for every OTHER field
     // (existing intended behavior — approved isn't in REPRICE_LOCKED_STATUSES).
     if (isUpdate && existing?.customer_approved_at) {
-      const incomingDepositPercent = typeof q.depositPercent === 'number' ? q.depositPercent : undefined;
-      const storedDepositPercent =
-        typeof existing.inputs?.depositPercent === 'number' ? existing.inputs.depositPercent : undefined;
+      // #226 fix: normalize BOTH sides through the same "actual override"
+      // predicate effectiveDepositRate uses, instead of a bare `typeof ===
+      // 'number'` check. A stored explicit 0 (written by the NCE-off reset)
+      // and an incoming `undefined` (the real client can never emit an
+      // explicit 0 — see quoteForm.ts's buildQuoteInputs) both mean "no
+      // override, use the 50% default" and must compare EQUAL here so an
+      // unrelated field edit on an approved-but-unbooked quote doesn't 409.
+      // A genuine change (e.g. 40 → 25, or 40 → blank) still normalizes to
+      // two DIFFERENT values and still 409s — the #177 freeze is unweakened.
+      const incomingDepositPercent = normalizedDepositOverride(
+        typeof q.depositPercent === 'number' ? q.depositPercent : undefined,
+      );
+      const storedDepositPercent = normalizedDepositOverride(
+        typeof existing.inputs?.depositPercent === 'number' ? existing.inputs.depositPercent : undefined,
+      );
       if (incomingDepositPercent !== storedDepositPercent) {
         return NextResponse.json(
           {

@@ -34,11 +34,15 @@
 // both this route's back-compat default AND PipelineActionsMenu's generic
 // "collect-payment" action (which POSTs an empty body).
 //
+// #225: passes the resolved operator's uuid through as settledBy so a
+// successful manual settle records WHO, not just when/how. null (dormant
+// auth gate, or no session) is written rather than guessed — never a fake id.
+//
 // Response: { ok, paid, invoice: { id, status, balance } } | { error, code? }
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
-import { requireOperator } from '@/lib/auth/supabaseServer';
+import { getOperator, requireOperator } from '@/lib/auth/supabaseServer';
 import {
   getInvoice,
   markInvoicePaidManually,
@@ -183,9 +187,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
   }
 
+  const operator = await getOperator();
   let paid;
   try {
-    paid = await markInvoicePaidManually(id, method, reference);
+    paid = await markInvoicePaidManually(id, method, reference, operator?.id ?? null);
   } catch (err) {
     console.error('[api/invoices/:id/mark-paid]', err);
     // #199 (F2): a cash_check/omitted-method settle attempt on an NCE invoice

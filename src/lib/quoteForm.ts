@@ -273,6 +273,44 @@ export function resolveNceDepositPercent(
 }
 
 /**
+ * #212 fix round (finding 1): what to clear on the form when staff switch the
+ * service type away from holiday. installTiming (Sep/Oct early-install) is
+ * holiday-only — none of the other engines read it, so the builder's own
+ * switch handler already clears it back to 'none'. But that clear alone left
+ * an INCOHERENT rest-state reachable today: pick September (installTiming
+ * set, discountEnabled true, discountAmount untouched/blank because the
+ * amount input is hidden while an early-install month is picked), then
+ * switch to event/permanent/bistro — the new Discount section rendered with
+ * "Apply discount" still checked and an empty amount, with nothing telling
+ * the staffer their September pick had vanished.
+ *
+ * Resting position chosen: clear discountEnabled/discountAmount too, but
+ * ONLY when installTiming was actually driving them (i.e. it wasn't already
+ * 'none'). A genuine manual discount is entered with installTiming left at
+ * 'none' (the Percentage/Flat radios each force it back to 'none' — see the
+ * JSX) — so whenever installTiming is already 'none', this is a no-op and a
+ * hand-typed discount survives the switch untouched. Whenever installTiming
+ * is NOT 'none', discountAmount/discountEnabled were only ever in that state
+ * BECAUSE of the early-install pick (the amount field was hidden the whole
+ * time an install month was selected, so nothing typed there could be a
+ * deliberate value the staffer means to keep) — discarding the whole block
+ * gives a clean, coherent unchecked "Apply discount" on the new vertical,
+ * matching what a staffer switching type would expect to see.
+ *
+ * Pure so the reset is unit-testable without a React render harness
+ * (QuoteBuilder has none — see resolveNceDepositPercent above for the same
+ * convention). No-op (returns {}) when switching INTO holiday, or when
+ * installTiming was already 'none' — callers can always spread the result.
+ */
+export function clearHolidayOnlyDiscountState(
+  newServiceType: ServiceType,
+  form: Pick<QuoteFormData, 'installTiming' | 'discountEnabled' | 'discountAmount'>,
+): Partial<QuoteFormData> {
+  if (newServiceType === 'holiday' || form.installTiming === 'none') return {};
+  return { installTiming: 'none', discountEnabled: false, discountAmount: 0 };
+}
+
+/**
  * Builder tag-chip confirm gate (#215): whether a MANUAL click on the YLL
  * Neighbor chip should window.confirm before the tag flips, and what it says
  * if so. Full consequence parity with LegacyRebookToggle's (the admin
@@ -656,6 +694,19 @@ export function inputsToFormData(
 ): QuoteFormData {
   const i = inputs ?? {};
   const d = i.discount;
+  const resolvedServiceType = serviceType ?? DEFAULT_SERVICE_TYPE;
+  // #212 fix round (finding 2, defensive): installTiming is holiday-only —
+  // the builder's own switch handler (clearHolidayOnlyDiscountState above)
+  // now prevents a non-holiday quote from ever SAVING a non-'none' value
+  // going forward, but hydrate had no equivalent guard of its own. A row
+  // that predates that fix (or reaches this shape via any future path) would
+  // otherwise rehydrate discountEnabled=true off a stale installTiming while
+  // buildQuoteInputs's `discount` gate (installTiming === 'none') stays shut
+  // — a manual discount the staffer then types would silently never reach
+  // the save payload. Normalizing here, at the one place ALL hydration flows
+  // through, closes that regardless of how the stale value got there.
+  // Verified against prod: zero rows currently match this precondition.
+  const effectiveInstallTiming = resolvedServiceType === 'holiday' ? (i.installTiming ?? 'none') : 'none';
   return {
     customer: {
       name: customerField(customer?.name, NAME_SENTINEL),
@@ -663,7 +714,7 @@ export function inputsToFormData(
       phone: customerField(customer?.phone),
       email: customerField(customer?.email),
     },
-    serviceType: serviceType ?? DEFAULT_SERVICE_TYPE,
+    serviceType: resolvedServiceType,
     santasFootage: i.santasFootage ?? 0,
     // #102: a stored positive custom rate rehydrates the dropdown to 'custom'
     // and seeds the numeric field; otherwise the stored preset difficulty.
@@ -692,14 +743,16 @@ export function inputsToFormData(
     takedown: i.takedown ?? 'included',
     rushFee: i.rushFee ?? false,
     // "Apply discount" is open when there's a manual discount OR an early-install
-    // promo (#40) — both live under that one toggle now.
-    discountEnabled: d != null || (i.installTiming ?? 'none') !== 'none',
+    // promo (#40) — both live under that one toggle now. effectiveInstallTiming
+    // (not the raw stored value) so a stale non-holiday installTiming can't
+    // open this on its own (#212 finding 2).
+    discountEnabled: d != null || effectiveInstallTiming !== 'none',
     discountType: d?.type ?? 'percentage',
     discountAmount:
       d == null ? 0 : d.type === 'percentage' ? fractionToWholePercent(d.amount) : d.amount,
     waiveMinimum: i.waiveMinimum ?? false,
     depositPercent: i.depositPercent ?? 0,
-    installTiming: i.installTiming ?? 'none',
+    installTiming: effectiveInstallTiming,
     // #104: hydrate the per-quote overrides map (legacy quotes → {}).
     lineItemPriceOverrides: i.lineItemPriceOverrides ?? {},
     winterWonderlandRecommended: i.winterWonderlandRecommended ?? false,
