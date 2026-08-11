@@ -310,6 +310,38 @@ describe('POST /api/quotes/[id]/approve — server recompute', () => {
     expect(snap.customerSelection.currentDepositUsd).toBeCloseTo(652.5, 2);
   });
 
+  // #226 fix: the internal "go collect the deposit" SMS's `${depositPercent}%`
+  // copy used to be a SECOND, independent effectiveDepositRate(...) call
+  // instead of deriving from the SAME resolved rate as the dollar figure
+  // above it — two computations of one number that could disagree. Proven
+  // with the exact same "stale result.depositRate" shape as the #199 F1 test
+  // above, but with inputs.depositPercent ABSENT (not merely disagreeing):
+  // chargesFromResult falls through to the stale result.depositRate (0.4)
+  // for the dollar figures, while the pre-fix message calc — effective
+  // DepositRate(undefined) — resolved the LIVE default (0.5) instead. Before
+  // this fix the SMS said "50% deposit (about $815.63 worth of 40%'s
+  // dollars)"; after, both read 40%.
+  it("derives the confirmation SMS's deposit percent from the SAME resolved rate as the dollar figure, not a second call (#226)", async () => {
+    hl.configured.value = true;
+    const { client } = makeSb(
+      baseQuote({
+        highlevel_contact_id: 'c1',
+        inputs: {}, // no depositPercent override — the divergence trigger
+        result: { ...RESULT, depositRate: 0.4 }, // stale snapshot from an earlier 40%-rate Calculate
+      }),
+    );
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+    expect(res.status).toBe(200);
+    expect(hl.sendSms).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('40% deposit') }),
+    );
+    expect(hl.sendSms).not.toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('50% deposit') }),
+    );
+  });
+
   it('drops unknown selectedItemIds the client sends', async () => {
     const { client, updatePayloads } = makeSb(baseQuote());
     sbRef.current = client;

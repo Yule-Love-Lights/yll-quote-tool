@@ -104,40 +104,50 @@ function stripDiscountAndReferralCredit(inputs: unknown): unknown {
 // explicit staff-set depositPercent (kept — a deliberate hand-edit from last
 // season carries forward, same "no lock, no lost work" posture as every
 // other rebooked input). No-op when inputs isn't a plain object, mirroring
-// stripDiscountAndReferralCredit's own guard. Runs for BOTH rebook paths
-// (rebookLastSeason's customer-tag resolution + #116's exact-quote revive)
-// since both build their insert row through buildRebookInsert.
+// stripDiscountAndReferralCredit's own guard. The ON branch runs for BOTH
+// rebook paths (rebookLastSeason's customer-tag resolution + #116's
+// exact-quote revive) since both build their insert row through
+// buildRebookInsert — there's no false-positive risk turning ON, the NCE
+// rule is the only thing that ever writes 40 to begin with.
 //
-// #226 (adversarial-review HIGH, live-prod bug fix): the false/OFF path used
-// to be a pure no-op, so a source quote's depositPercent=40 passed straight
-// through unchanged even when this clone resolves NCE=false — mirrors the
-// admin nce route's own OFF rule exactly: only an UNTOUCHED 40 resets, to an
-// explicit 0 (never a deleted key — see chargesFromResult's stale-fallback
-// trap, #226 in the nce route). Any other value (including staff-typed 40s
-// from a DIFFERENT source than this rule) is left alone by the same `=== 40`
-// guard the ON path and the admin route both use.
-//
-// Known tradeoff (accepted, sibling parity with the admin route's own
-// `=== 40` guard): there is no persisted provenance on `inputs` recording
-// WHETHER a stored 40 was set by the NCE rule or hand-typed by staff last
-// season (`wasRuleSet` in quoteForm.ts is live builder UI state only, never
-// stored on the quote). So this rule will also reset a deliberately
-// hand-typed 40 from last season to the 50% default on a non-NCE rebook —
-// the same false positive the admin route already accepts.
-function applyNceDepositDefault(inputs: unknown, isNce: boolean): unknown {
+// #226 (adversarial-review HIGH, live-prod bug fix, ROUND 2 — delta-verify
+// caught the round-1 fix was too broad): the OFF/false path resets an
+// untouched depositPercent=40 to an explicit 0 (never a deleted key — see
+// chargesFromResult's stale-fallback trap, #226 in the nce route) — but
+// ONLY when `resetOnOff` is true. The two callers resolve is_nce=false from
+// DIFFERENT signals:
+//   - rebookLastSeason resolves is_nce from the CUSTOMER's CURRENT tag. If
+//     that's false, the customer genuinely left the barter network since
+//     their last approved quote — a carried-over 40 is very likely stale
+//     NCE residue, so resetting has a real signal behind it. Passes
+//     resetOnOff=true.
+//   - rebookFromQuote (#116 exact-quote revive) resolves is_nce from the
+//     SOURCE QUOTE's own tag. If that quote's is_nce is false, the NCE rule
+//     NEVER set that quote's depositPercent — any 40 there was hand-typed by
+//     staff (the builder DOES track this provenance — nceDepositSetByRuleRef
+//     in quoteForm.ts, added by #199 F4 specifically to protect a hand-edited
+//     40). Resetting it here would destroy deliberate staff intent with zero
+//     signal. Passes resetOnOff=false (the default) — behaves exactly as it
+//     did before #226, i.e. a pure no-op on this path.
+// Any other stored value (not exactly 40) is left alone regardless of
+// resetOnOff, same as before.
+function applyNceDepositDefault(inputs: unknown, isNce: boolean, resetOnOff: boolean): unknown {
   if (!inputs || typeof inputs !== 'object') return inputs;
   const current = (inputs as { depositPercent?: unknown }).depositPercent;
   if (isNce) {
     if (typeof current === 'number' && current > 0) return inputs; // explicit hand-set — keep
     return { ...(inputs as Record<string, unknown>), depositPercent: 40 };
   }
-  if (current === 40) {
+  if (resetOnOff && current === 40) {
     return { ...(inputs as Record<string, unknown>), depositPercent: 0 };
   }
   return inputs;
 }
 
-export function buildRebookInsert(src: RebookSource): Record<string, unknown> {
+export function buildRebookInsert(
+  src: RebookSource,
+  opts: { resetNceDepositOnOff?: boolean } = {},
+): Record<string, unknown> {
   const isNce = src.is_nce ?? false;
   return {
     customer_name: src.customer_name ?? 'Anonymous',
@@ -147,7 +157,11 @@ export function buildRebookInsert(src: RebookSource): Record<string, unknown> {
     highlevel_contact_id: src.highlevel_contact_id ?? null,
     status: 'draft',
     ...(src.service_type ? { service_type: src.service_type } : {}),
-    inputs: applyNceDepositDefault(stripDiscountAndReferralCredit(src.inputs), isNce),
+    inputs: applyNceDepositDefault(
+      stripDiscountAndReferralCredit(src.inputs),
+      isNce,
+      opts.resetNceDepositOnOff ?? false,
+    ),
     result: stripRatesSnapshots(src.result),
     total: src.result?.total ?? 0,
     customer_id: src.customer_id ?? null,
@@ -277,12 +291,20 @@ export async function rebookLastSeason(
   // #205 F1: resurrect if the target is archived — see resurrectPropertyForRebook.
   await resurrectPropertyForRebook(sb, customerId, targetPropertyId, 'rebookLastSeason');
   const insertRow = {
-    ...buildRebookInsert({
-      ...src,
-      property_id: targetPropertyId,
-      legacy_rebook: customer?.is_yll_neighbor ?? src.legacy_rebook ?? false,
-      is_nce: customer?.is_nce ?? src.is_nce ?? false,
-    }),
+    ...buildRebookInsert(
+      {
+        ...src,
+        property_id: targetPropertyId,
+        legacy_rebook: customer?.is_yll_neighbor ?? src.legacy_rebook ?? false,
+        is_nce: customer?.is_nce ?? src.is_nce ?? false,
+      },
+      // #226 round 2: is_nce here resolves from the CUSTOMER's current tag
+      // (not this quote's own history), so a false reading is a real signal
+      // the customer left the barter network — reset an untouched 40. See
+      // applyNceDepositDefault's own comment for why rebookFromQuote below
+      // does NOT pass this.
+      { resetNceDepositOnOff: true },
+    ),
     ...(quoteNumber != null ? { quote_number: quoteNumber } : {}),
     created_by: createdBy,
   };
