@@ -116,6 +116,15 @@ const BISTRO_RESULT = {
   permanentBistroRatesSnapshot: { perFt: 30, perPole: 100, minimum: 500 },
 };
 
+// An EVENT QuoteResult (#96 / #212): reuses RESULT's exact roofline + spritzer
+// shape (event pricing generates the same portal line-item ids as holiday —
+// only the fee zeroing in chargesFromResult differs, keyed off
+// eventRatesSnapshot's presence) with the snapshot marker attached.
+const EVENT_RESULT = {
+  ...RESULT,
+  eventRatesSnapshot: { roofline: { easy: 10, medium: 12, hard: 15 } },
+};
+
 const ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 
 function baseQuote(overrides: Record<string, unknown> = {}) {
@@ -846,6 +855,31 @@ describe('POST /api/quotes/[id]/approve — permanent (#88 P6)', () => {
     expect(res.status).toBe(200);
   });
 
+  // #212: a staff manual discount on a permanent quote survives into the
+  // frozen snapshot exactly like holiday's (the recompute reads
+  // quote.inputs?.discount unconditionally — never gated on service_type).
+  it('a manual discount reaches the recomputed total on a permanent selection', async () => {
+    const { client, updatePayloads } = makeSb(
+      baseQuote({
+        result: PERM_RESULT,
+        service_type: 'permanent',
+        inputs: { discount: { type: 'percentage', amount: 0.1 } },
+      }),
+    );
+    sbRef.current = client;
+    const res = await POST(
+      makeReq({ ...validBody, selectedItemIds: ['permanent-front'] }), // $4000
+      { params },
+    );
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      customerSelection: { currentTotalUsd: number; currentDepositUsd: number };
+    };
+    // $4000 - 10% ($400) = $3600 taxable, +8.75% tax ($315) = $3915, deposit $1957.50.
+    expect(snap.customerSelection.currentTotalUsd).toBeCloseTo(3915, 2);
+    expect(snap.customerSelection.currentDepositUsd).toBeCloseTo(1957.5, 2);
+  });
+
   // GAP 1 (P6b-2 review) — a permanent quote's color choice is validated + frozen
   // against the FIXED permanent scheme set, never the holiday swatches. A forged/
   // stale holiday id can't be frozen as a permanent color choice.
@@ -1028,5 +1062,69 @@ describe('POST /api/quotes/[id]/approve — permanent bistro', () => {
       { params },
     );
     expect(res.status).toBe(200);
+  });
+
+  // #212: a staff manual discount on a permanent bistro quote survives into
+  // the frozen snapshot exactly like holiday's (same unconditional
+  // quote.inputs?.discount read as the permanent test above).
+  it('a manual discount reaches the recomputed total on a permanent bistro selection', async () => {
+    const { client, updatePayloads } = makeSb(
+      baseQuote({
+        result: BISTRO_RESULT,
+        service_type: 'permanent_bistro',
+        inputs: { discount: { type: 'flat', amount: 100 } },
+      }),
+    );
+    sbRef.current = client;
+    const res = await POST(
+      makeReq({ ...validBody, selectedItemIds: ['permanent-bistro-0'] }), // $700
+      { params },
+    );
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      customerSelection: { currentTotalUsd: number; currentDepositUsd: number };
+    };
+    // $700 - $100 flat = $600 taxable, +8.75% tax ($52.50) = $652.50, deposit $326.25.
+    expect(snap.customerSelection.currentTotalUsd).toBeCloseTo(652.5, 2);
+    expect(snap.customerSelection.currentDepositUsd).toBeCloseTo(326.25, 2);
+  });
+});
+
+// #212: event gets the same manual-discount builder UI as permanent/bistro,
+// still minus early-install (a holiday-seasonal promo).
+describe('POST /api/quotes/[id]/approve — event discount (#212)', () => {
+  it('a manual discount reaches the recomputed total on an event quote', async () => {
+    const { client, updatePayloads } = makeSb(
+      baseQuote({
+        result: EVENT_RESULT,
+        service_type: 'event',
+        inputs: { discount: { type: 'percentage', amount: 0.2 } },
+      }),
+    );
+    sbRef.current = client;
+    // validBody selects roofline-santas ($1200) + spritzer-1 ($300) = $1500,
+    // the same subtotal the generic "manual PERCENTAGE discount" test above
+    // prices on a holiday quote — same numbers prove the pipeline doesn't
+    // branch on service_type.
+    const res = await POST(makeReq(validBody), { params });
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      customerSelection: { currentTotalUsd: number; currentDepositUsd: number };
+    };
+    expect(snap.customerSelection.currentTotalUsd).toBeCloseTo(1305, 2);
+    expect(snap.customerSelection.currentDepositUsd).toBeCloseTo(652.5, 2);
+  });
+
+  it('never applies an early-install discount on an event quote, even if installTiming is forged', async () => {
+    const { client, updatePayloads } = makeSb(baseQuote({ result: EVENT_RESULT, service_type: 'event' }));
+    sbRef.current = client;
+    const res = await POST(makeReq({ ...validBody, installTiming: 'september' }), { params });
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      customerSelection: { installTiming: string; installDiscountUsd: number; currentTotalUsd: number };
+    };
+    expect(snap.customerSelection.installTiming).toBe('none');
+    expect(snap.customerSelection.installDiscountUsd).toBe(0);
+    expect(snap.customerSelection.currentTotalUsd).toBeCloseTo(1631.25, 2);
   });
 });
