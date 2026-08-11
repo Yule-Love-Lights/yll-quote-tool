@@ -11,6 +11,17 @@
 // in lockstep) but it is NOT a byte-identical core file — no relay.
 
 import type { ToolDefaults } from '@/lib/design/sceneTypes';
+// #223: the decor/pole size options below must mirror the editor's own
+// preset lists (#202 trimmed each to 3) — importing them (rather than
+// re-listing the numbers) means the two can't drift apart again. Pure
+// module, same reason colors.ts/renderSettings.ts are imported here too.
+import {
+  WREATH_SIZES,
+  BOW_SIZES,
+  GARLAND_SIZES,
+  SPRITZER_SIZES,
+  POLE_HEIGHTS,
+} from '@/components/design/editor-core/sizePresets';
 
 // Factory defaults — the per-type starting values (mirror the design tool's
 // FACTORY_DEFAULTS / DEFAULT_TOOL_DEFAULTS). Also the target of "Reset".
@@ -108,7 +119,7 @@ export const SECTIONS: SectionSpec[] = [
     key: 'wreath',
     label: 'Wreaths',
     fields: [
-      { key: 'sizeIn', label: 'Default size', kind: 'spacing', options: [24, 36, 48, 60], unit: '"' },
+      { key: 'sizeIn', label: 'Default size', kind: 'spacing', options: WREATH_SIZES, unit: '"' },
       { key: 'withLights', label: 'With lights by default', kind: 'bool' },
       { key: 'withBow', label: 'Include bow by default', kind: 'bool' },
       { key: 'colorPattern', label: 'Default color', kind: 'color-pattern' },
@@ -117,13 +128,13 @@ export const SECTIONS: SectionSpec[] = [
   {
     key: 'bow',
     label: 'Bows',
-    fields: [{ key: 'sizeIn', label: 'Default size', kind: 'spacing', options: [12, 18, 24, 36, 48], unit: '"' }],
+    fields: [{ key: 'sizeIn', label: 'Default size', kind: 'spacing', options: BOW_SIZES, unit: '"' }],
   },
   {
     key: 'garland',
     label: 'Garland',
     fields: [
-      { key: 'sizeIn', label: 'Default size', kind: 'spacing', options: [6, 9, 12, 18, 24], unit: '"' },
+      { key: 'sizeIn', label: 'Default size', kind: 'spacing', options: GARLAND_SIZES, unit: '"' },
       { key: 'withLights', label: 'With lights by default', kind: 'bool' },
       { key: 'drawingStyle', label: 'Default drawing style', kind: 'style', options: DRAWING_STYLES },
     ],
@@ -132,7 +143,7 @@ export const SECTIONS: SectionSpec[] = [
     key: 'spritzer',
     label: 'Spritzers',
     fields: [
-      { key: 'sizeIn', label: 'Default size', kind: 'spacing', options: [16, 24, 36, 48], unit: '"' },
+      { key: 'sizeIn', label: 'Default size', kind: 'spacing', options: SPRITZER_SIZES, unit: '"' },
       { key: 'colorPattern', label: 'Default color', kind: 'color-pattern' },
     ],
   },
@@ -154,7 +165,7 @@ export const SECTIONS: SectionSpec[] = [
     key: 'pole',
     label: 'Poles',
     fields: [
-      { key: 'heightIn', label: 'Default height', kind: 'spacing', options: [96, 120, 144, 180], unit: '"' },
+      { key: 'heightIn', label: 'Default height', kind: 'spacing', options: [...POLE_HEIGHTS], unit: '"' },
       { key: 'baseType', label: 'Default base type', kind: 'style', options: ['none', 'cube', 'barrel'] },
     ],
   },

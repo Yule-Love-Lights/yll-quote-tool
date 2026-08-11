@@ -83,6 +83,29 @@ which is why the item lifecycle below is a v1 deliverable, not a later polish.
 4. Quick wins greenlit as ledger rows: #218 transcription-failure triage,
    #219 inbound rep attribution, #220 no follow-ups on internal quotes,
    #221 copilot RLS lockdown.
+5. **Ping cadence and quiet hours (Naldo, 2026-08-07 — satisfies binding
+   criterion 4 below; slice 2 is now specified).** The two ping types get
+   OPPOSITE treatment, because they have opposite urgency:
+   - **New-open-loop DMs batch HOURLY.** Extraction already runs 30–75 minutes
+     behind the call, so these are stale on arrival no matter what; batching
+     costs nothing and collapses a scattered stream into one readable message.
+     On the evidenced day (4 real conversations, ~4–12 commitments) this is
+     roughly 3–5 DMs across a business day, not 22.
+   - **Breach pings fire IMMEDIATELY, never batched.** A 3:00 promise missed at
+     3:30 must not wait for a 4:00 window — the entire value is catching it
+     while the callback is still worth making. They are self-limiting anyway:
+     one only fires when a rep named a specific time and missed it, so a
+     handful a day at most. No ceiling needed; promptness is the requirement.
+   - **Quiet hours 9:00 PM – 7:00 AM America/New_York.** Neither type sends in
+     that window. Anything accumulated (including a breach that lands inside
+     quiet hours) delivers in the 7:00 AM window. A 9 PM ping about an 8:45 PM
+     call is precisely the after-work load this plan exists to remove.
+   - **Breach pings go to the REP ONLY.** Admin/owner CC is explicitly a LATER
+     option, recorded here as a note and NOT built in v1: on a three-person team
+     an owner copied on every missed promise reads as surveillance rather than
+     help, and adoption is the thing this plan is judged on. Revisit once the
+     board has real usage; the unclaimed-lane rule already puts unattributed
+     items in both admins' digests, so nothing goes unowned in the meantime.
 
 ## Architecture (respecting the hub contract's ownership split)
 
@@ -179,6 +202,9 @@ criterion below is met.
    after-work load, and an uncapped ping stream converts that load into after-hours
    notifications instead of removing it. Name the rolling batch window, the per-rep
    daily ceiling, and whether breach pings notify only the rep or admins too.
+   **✅ SATISFIED by ruling 5 above (Naldo, 2026-08-07): hourly batch for new open
+   loops, immediate for breach pings, quiet hours 9 PM – 7 AM ET, rep-only with the
+   admin CC deferred as a named later option. Slice 2 is unblocked.**
 
 Carried as build-time notes (MEDIUM, not blocking): no retention or redaction
 policy exists for `transcripts` or `call_commitments` (recorded customer calls
