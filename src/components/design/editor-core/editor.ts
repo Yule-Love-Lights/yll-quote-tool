@@ -1518,10 +1518,16 @@ export async function renderEditor(
   // site below — including the one that already confirms the STRAND deletion
   // but never mentions the group it takes with it. A confirm dialog would
   // over-interrupt routine strand cleanup, so this is a non-blocking,
-  // auto-dismissing notice instead — the SAME bare-div insert pattern as
-  // showUnsavedBannerIfNeeded just above (this editor has no toast/snackbar
-  // component to reach for; reusing that exact minimal precedent rather than
-  // building new UI infrastructure into a vendored file).
+  // auto-dismissing notice instead.
+  //
+  // Styled INLINE and positioned FIXED on purpose. The first cut reused
+  // showUnsavedBannerIfNeeded's bare `prepend` + className pattern, but that
+  // class has no CSS rule anywhere in this repo — so the notice rendered as a
+  // full-width, normal-flow block that shoved the whole canvas down the page
+  // (caught on Jason's device check). Inline styles also travel with the file
+  // when it is hand-relayed into the standalone design tool, which has its own
+  // separate stylesheet — a class-based fix would silently render unstyled
+  // there for exactly the same reason.
   const MINI_SURFACE_LABELS: Record<string, string> = {
     bush: "Bush", tree: "Tree", column: "Column", railing: "Railing", curtain: "Curtain",
   };
@@ -1531,7 +1537,31 @@ export async function renderEditor(
     const n = document.createElement("div");
     n.className = "transient-notice";
     n.textContent = text;
-    host.prepend(n);
+    // Stack downward if several groups are pruned by one delete, so notices
+    // don't render on top of each other.
+    const offset = root.querySelectorAll(".transient-notice").length * 40;
+    n.style.cssText = [
+      "position:fixed",
+      `top:${12 + offset}px`,
+      "left:50%",
+      "transform:translateX(-50%)",
+      "z-index:9999",
+      "pointer-events:none",
+      "max-width:min(90vw,420px)",
+      "padding:8px 14px",
+      "border-radius:8px",
+      "background:rgba(24,24,27,0.95)",
+      "color:#fafafa",
+      "border:1px solid rgba(250,250,250,0.15)",
+      "box-shadow:0 4px 14px rgba(0,0,0,0.35)",
+      "font-size:13px",
+      "line-height:1.35",
+      "text-align:center",
+      "white-space:nowrap",
+      "overflow:hidden",
+      "text-overflow:ellipsis",
+    ].join(";");
+    host.appendChild(n);
     window.setTimeout(() => n.remove(), 5000);
   }
   // Wraps pruneOrphanedMiniGroups: diffs which miniGroup item(s) it actually
