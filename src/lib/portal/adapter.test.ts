@@ -1286,6 +1286,35 @@ describe('quoteRowToPortalQuote — permanent bistro (single package + own gate,
     expect(poles.label).toBe('Poles (2)');
   });
 
+  it("#246 HIGH: a SCENE-LINKED run (real prod shape — a UUID scene-item id, never the synthesized permanent-bistro-N fallback) still loses its footage suffix", () => {
+    // Real prod quote 652c88f8-f474-4a4e-87f5-4e6bed5badf7 holds rows shaped
+    // exactly like this: a permanent-bistro run drawn on the design carries
+    // the SCENE item's own uuid (permanentBistro/pricing.ts withIdentity:
+    // `id: item.id ?? fallbackId` — the synthesized id is only a fallback for
+    // a manual run with no scene link). A uuid never matches the id-keyed
+    // 'permanent-bistro' branch above, so this locks the fallthrough
+    // generic-kind path instead of the synthetic-id fixture the rest of this
+    // describe block uses.
+    const sceneId = 'd2bca72e-f474-4a4e-87f5-4e6bed5badf7';
+    const inputs = bistroInputs({
+      permanentBistro: { bistro: [{ footage: 20, id: sceneId }], poles: 0 },
+    });
+    const result = calculatePermanentBistro(inputs, { ...DEFAULT_PERMANENT_BISTRO_RATES, minimum: 0 });
+    const engineRun = result.lineItems.find((li) => li.id === sceneId)!;
+    expect(engineRun.label).toBe('Permanent Bistro Lighting – 20ft'); // sanity: same engine shape as the synthesized-id case
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(result, inputs), service_type: 'permanent_bistro' },
+      photos: PHOTOS,
+    })!;
+    // The generic (non-id-keyed) path assigns its own synthetic portal id
+    // (buildLineItemId) — the engine's uuid survives only as stableId.
+    const run = portal.lineItems.find((li) => li.stableId === sceneId)!;
+    expect(run.kind).toBe('bistro');
+    expect(run.label).toBe('Permanent Bistro Lighting'); // not "Permanent Bistro Lighting – 20ft"
+    expect(run.detail).toBe(''); // not "20 ft" (parseLineItem's extractFootage)
+    expect(run.price).toBe(engineRun.amount); // price untouched
+  });
+
   it('approvalGate is 0 (gate off) when the bistro rate snapshot minimum is 0', () => {
     const inputs = bistroInputs();
     const result = calculatePermanentBistro(inputs, { ...DEFAULT_PERMANENT_BISTRO_RATES, minimum: 0 });
