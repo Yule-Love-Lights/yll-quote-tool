@@ -224,6 +224,15 @@ function polylineLength(lines: LineSegment[], aspect: number): number {
   return total;
 }
 
+// #255: mini-group surface labels for the pruned-group warning — matches the
+// wording editor.ts's own pruneOrphanedMiniGroupsNotify toast uses
+// (editor-core/editor.ts MINI_SURFACE_LABELS), kept as a separate copy here
+// rather than importing from editor-core (vendored/relay-shared; this display
+// string doesn't belong in that surface).
+const MINI_SURFACE_LABELS: Record<string, string> = {
+  bush: 'Bush', tree: 'Tree', column: 'Column', railing: 'Railing', curtain: 'Curtain',
+};
+
 // Permanent Lighting (#88 / S23): the four house sides traced on the satellite
 // view. Colors match the portal's satellite groups (lib/portal/satelliteLines).
 const PERMANENT_SIDES = ['front', 'left', 'right', 'back'] as const;
@@ -697,6 +706,13 @@ export default function QuoteBuilder({
   // #90: how many AI-seeded garland runs had no scale to estimate length (so they
   // fall back to 1 section). Surfaced as a builder warning so staff set the count.
   const [garlandUnestimated, setGarlandUnestimated] = useState(0);
+  // #255: mini group(s) (railing/curtain/etc.) a re-analyze just orphaned —
+  // seedSceneFromAnalysis prunes them silently (no member strands left to
+  // re-detect), so a "Railing — 3 strings" line can vanish from the quote
+  // total with nothing else explaining it. Only the re-analyze path can ever
+  // populate this (a brand-new design's seed scene starts empty, so create
+  // never has a pre-existing group to orphan).
+  const [prunedMiniGroups, setPrunedMiniGroups] = useState<{ surface: string | null; stringCount: number }[]>([]);
   // Bumped when the design's scene/photo changes outside the editor (roofline
   // seed, photo replacement) so a remount reloads it.
   const [designEditorKey, setDesignEditorKey] = useState(0);
@@ -881,6 +897,10 @@ export default function QuoteBuilder({
         setGarlandUnestimated(
           typeof data.garlandSectionsUnestimated === 'number' ? data.garlandSectionsUnestimated : 0,
         );
+        // #255: warn when this re-analyze orphaned a staff-created mini group
+        // (its member strands weren't re-detected) — the group is gone, and
+        // with it a real billed line, with no other indication.
+        setPrunedMiniGroups(Array.isArray(data.prunedMiniGroups) ? data.prunedMiniGroups : []);
         setDesignEditorKey((k) => k + 1);
       }
     } catch {
@@ -4156,6 +4176,25 @@ export default function QuoteBuilder({
                     ⚠️ {garlandUnestimated} garland {garlandUnestimated === 1 ? 'run' : 'runs'} had no scale to
                     estimate length — billed as 1 section{garlandUnestimated === 1 ? '' : ' each'} for now. Draw a
                     yardstick or set the section count on the design before quoting.
+                  </p>
+                )}
+                {/* #255: re-analyze can drop a staff-created mini group (its member
+                    strands weren't re-detected) — unlike routine strand cleanup in
+                    the editor, this quietly removes a billed line with nothing else
+                    calling it out, so it gets the same standing-warning treatment as
+                    the garland-scale notice above. */}
+                {prunedMiniGroups.length > 0 && (
+                  <p className="text-sm text-amber-700 mb-2">
+                    ⚠️ Re-analyze removed {prunedMiniGroups.length} mini{' '}
+                    {prunedMiniGroups.length === 1 ? 'group' : 'groups'} that lost all their strands:{' '}
+                    {prunedMiniGroups
+                      .map((g, i) => {
+                        const label = MINI_SURFACE_LABELS[g.surface ?? ''] ?? 'group';
+                        const n = g.stringCount;
+                        return `${label} — ${n} string${n === 1 ? '' : 's'}${i < prunedMiniGroups.length - 1 ? ', ' : ''}`;
+                      })
+                      .join('')}
+                    . Redraw them on the design if they&apos;re still there.
                   </p>
                 )}
                 {designId ? (
