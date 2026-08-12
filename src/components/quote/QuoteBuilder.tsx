@@ -2753,7 +2753,7 @@ export default function QuoteBuilder({
       const attachKey = `${savedQuoteId}:${c.id}`;
       if (lastAttachKey.current !== attachKey) {
         lastAttachKey.current = attachKey;
-        void queueAttach(savedQuoteId, c.id, hlAddress, contactIdentityOf(c));
+        void queueAttach(savedQuoteId, c.id, contactIdentityOf(c));
       }
     }
     // NCE + YLL Neighbor tag inheritance (#198): if the picked contact maps
@@ -2846,11 +2846,10 @@ export default function QuoteBuilder({
   const queueAttach = (
     quoteId: string,
     contactId: string,
-    addressHint?: string,
     contactIdentity?: ReturnType<typeof contactIdentityOf>,
   ): Promise<boolean> => {
     const run = (attachPromiseRef.current ?? Promise.resolve(false)).then(() =>
-      attachQuoteToHighLevel(quoteId, contactId, addressHint, contactIdentity),
+      attachQuoteToHighLevel(quoteId, contactId, contactIdentity),
     );
     attachPromiseRef.current = run;
     return run;
@@ -2861,15 +2860,14 @@ export default function QuoteBuilder({
   // pre-send guard. Returns true only when the GHL card exists AND the local
   // quote row was linked — the route's linked:false (card fine, DB write
   // failed) still leaves the send gate closed, so it counts as failure here.
-  // addressHint: pick-time caller passes the picked contact's address because
-  // the form state hasn't flushed yet in that tick.
   // contactIdentity: the picked contact's own fields (contactIdentityOf) —
   // the route's #214 customers re-resolution runs ONLY off these, never the
-  // stored quote fields.
+  // stored quote fields. Its contactName (the same pick-time value as
+  // hlName, captured before the form state flushes) also supplies the
+  // #247 fallback-create card name below, so no separate hint is needed.
   const attachQuoteToHighLevel = async (
     quoteId: string,
     contactId: string,
-    addressHint?: string,
     contactIdentity?: ReturnType<typeof contactIdentityOf>,
   ): Promise<boolean> => {
     // Staleness token: if a later pick/clear bumps the seq while we're in
@@ -2882,14 +2880,17 @@ export default function QuoteBuilder({
       setAttachError(null);
     }
     try {
-      const address = (addressHint || form.customer.address).trim();
+      // #247: card name is the customer's name, matching the send route's
+      // shape (quote.customer_name?.trim() || fallback) — was hardcoded
+      // "Holiday Lights — {address}" regardless of vertical.
+      const customerName = (contactIdentity?.contactName || form.customer.name || '').trim();
       const res = await fetch('/api/integrations/highlevel/attach', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           quoteId,
           contactId,
-          opportunityName: address ? `Holiday Lights — ${address}` : undefined,
+          opportunityName: customerName || undefined,
           // #107: the GHL card carries the "Full Yule" ceiling pre-approval (the
           // deposit webhook later resets it to the customer's actual selection).
           monetaryValue: result?.fullYule?.total ?? result?.total,
@@ -2978,7 +2979,7 @@ export default function QuoteBuilder({
       }
       if (!linked) {
         lastAttachKey.current = attachKey;
-        linked = await queueAttach(savedQuoteId, highlevelContact.id, undefined, contactIdentityOf(highlevelContact));
+        linked = await queueAttach(savedQuoteId, highlevelContact.id, contactIdentityOf(highlevelContact));
       }
       if (!linked) {
         setSendStatus('idle');
@@ -3352,7 +3353,7 @@ export default function QuoteBuilder({
         // S30 wrap review MED: route through the serialized queue like every
         // other attach call site — a direct call could race a rapid re-pick
         // and leave the DB linked to the stale contact.
-        void queueAttach(newQuoteId, highlevelContact.id, undefined, contactIdentityOf(highlevelContact));
+        void queueAttach(newQuoteId, highlevelContact.id, contactIdentityOf(highlevelContact));
       } else if (highlevelContact?.id && !newQuoteId) {
         // Quote wasn't persisted (Supabase not configured). Tell the
         // operator the HL link won't be made either.

@@ -181,7 +181,7 @@ export type CreateOpportunityInput = {
   contactId: string;
   pipelineId: string;
   pipelineStageId: string;
-  name: string;            // e.g., "2026 Holiday Lights — 123 Main St"
+  name: string;            // the customer's name, e.g., "Jane Smith" (#247)
   monetaryValue?: number;  // quote total
   source?: string;         // e.g., 'ai-quote-tool'
 };
