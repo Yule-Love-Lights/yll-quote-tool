@@ -1341,6 +1341,104 @@ describe('quoteRowToPortalQuote — #246 event Bistro Lighting label footage str
   });
 });
 
+// ── #246: real PROD label audit ─────────────────────────────────────────────
+// Naldo queried every distinct `result.lineItems[].label` on a customer-
+// visible (sent/viewed/approved/booked) non-test quote that contains a
+// footage- or strand-shaped substring. These are the ACTUAL stored bytes —
+// not a re-derivation of the strip regexes — run through the real
+// `quoteRowToPortalQuote` entry point every other test in this file uses.
+// Leak detectors below are DELIBERATELY independent of adapter.ts's own
+// regexes: this test must be able to fail if stripFootageSuffix/
+// MINI_LIGHT_SUFFIX_RE/the permanent regex are themselves wrong, not just
+// echo them back.
+describe('#246: real prod label audit — actual stored strings through the real adapter', () => {
+  const FOOTAGE_LEAK_RE = /\d+(?:\.\d+)?\s*ft\b/i; // "50ft" / "50 ft" / "9.5ft"
+  const STRAND_LEAK_RE = /\d+\s*strings?\b/i;
+  const RATE_LEAK_RE = /\$[\d.,]+\s*\/\s*ft/i; // an exposed per-ft rate is worse than bare footage
+
+  function assertClean(resultLabel: string, originalLabel: string) {
+    expect(resultLabel, `"${originalLabel}" → "${resultLabel}" leaks footage`).not.toMatch(FOOTAGE_LEAK_RE);
+    expect(resultLabel, `"${originalLabel}" → "${resultLabel}" leaks a strand count`).not.toMatch(STRAND_LEAK_RE);
+    expect(resultLabel, `"${originalLabel}" → "${resultLabel}" leaks a per-ft rate`).not.toMatch(RATE_LEAK_RE);
+  }
+
+  it('holiday-family: roofline, ridge, stake, and every mini-light kind (incl. curtain) come out clean', () => {
+    // Representative rows from the real population Naldo queried (footages/
+    // difficulties/strand-counts vary in prod; these span the reported range).
+    const cases: Array<{ label: string; amount: number }> = [
+      { label: "Santa's Roofline – 80ft (easy)", amount: 640 },
+      { label: "Santa's Roofline – 345ft (medium)", amount: 3450 },
+      { label: 'Gingerbread – 240ft (front + ridge + sides)', amount: 2400 },
+      { label: 'Gingerbread – 110ft (front + ridge + sides)', amount: 1100 },
+      { label: 'Stake Lighting – 70ft (easy)', amount: 560 },
+      { label: 'Stake Lighting – 55ft (medium)', amount: 385 },
+      { label: 'Stake Lighting – 30ft (medium)', amount: 210 },
+      { label: 'Bush – canopy wrap, 1 string', amount: 35 },
+      { label: 'Bush – canopy wrap, 3 strings', amount: 105 },
+      { label: 'Bush – canopy wrap, 6 strings', amount: 210 },
+      { label: 'Tree – trunk wrap, 8 strings', amount: 280 },
+      { label: 'Tree – canopy wrap, 11 strings', amount: 385 },
+      { label: 'Railing – 4 strings', amount: 140 },
+      { label: 'Column – 3 strings', amount: 105 },
+      { label: 'Column – 4 strings', amount: 140 },
+      // Curtain's product word ('Curtain Lights') differs from the other mini
+      // kinds — this is the one that would silently leak if `curtain` were
+      // ever dropped from MINI_LIGHT_KINDS. Verified end-to-end, not assumed.
+      { label: 'Curtain Lights – 42 strings', amount: 1470 },
+      { label: 'Curtain Lights – 30 strings', amount: 1050 },
+    ];
+    const fresh = calculateQuote(emptyInputs());
+    const legacy = { ...fresh, rooflineOptions: undefined, lineItems: cases } as unknown as QuoteResult;
+    const portal = portalFrom(legacy)!;
+    expect(portal.lineItems).toHaveLength(cases.length); // no row silently dropped
+    cases.forEach((c, i) => assertClean(portal.lineItems[i].label, c.label));
+
+    // Curtain specifically classified + stripped to the bare product name —
+    // the direct answer to "is curtain in MINI_LIGHT_KINDS", proven by
+    // behavior rather than by reading the Set.
+    const curtains = portal.lineItems.filter((li) => li.kind === 'curtain');
+    expect(curtains).toHaveLength(2);
+    expect(curtains.every((li) => li.label === 'Curtain Lights')).toBe(true);
+  });
+
+  it('decor SIZE labels are customer-facing by design and must survive byte-for-byte', () => {
+    const cases = [
+      { label: "9' of Noble Garland", amount: 220 },
+      { label: '48" Noble Wreath', amount: 175 },
+    ];
+    const fresh = calculateQuote(emptyInputs());
+    const legacy = { ...fresh, rooflineOptions: undefined, lineItems: cases } as unknown as QuoteResult;
+    const portal = portalFrom(legacy)!;
+    expect(portal.lineItems).toHaveLength(2);
+    expect(portal.lineItems[0].label).toBe("9' of Noble Garland");
+    expect(portal.lineItems[1].label).toBe('48" Noble Wreath');
+  });
+
+  it('permanent front/left/right/back: the exact prod shape (hyphen, space before "ft") strips BOTH the footage and the exposed $/ft rate', () => {
+    const cases = [
+      { label: 'Permanent Lighting - Front - 50 ft ($40/ft)', amount: 2000, id: 'permanent-front' },
+      { label: 'Permanent Lighting - Left Side - 30 ft ($35/ft)', amount: 1050, id: 'permanent-left' },
+      { label: 'Permanent Lighting - Right Side - 35 ft ($35/ft)', amount: 1225, id: 'permanent-right' },
+      { label: 'Permanent Lighting - Back - 120 ft ($40/ft)', amount: 4800, id: 'permanent-back' },
+    ];
+    const fresh = calculateQuote(emptyInputs());
+    const legacy = { ...fresh, rooflineOptions: undefined, lineItems: cases } as unknown as QuoteResult;
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(legacy), service_type: 'permanent' },
+      photos: PHOTOS,
+    })!;
+    expect(portal.lineItems).toHaveLength(cases.length);
+    cases.forEach((c, i) => assertClean(portal.lineItems[i].label, c.label));
+    // Exact resulting labels — the surface name only, rate AND footage gone.
+    expect(portal.lineItems.map((li) => li.label)).toEqual([
+      'Permanent Lighting - Front',
+      'Permanent Lighting - Left Side',
+      'Permanent Lighting - Right Side',
+      'Permanent Lighting - Back',
+    ]);
+  });
+});
+
 // -- PS-C1/WT-L1: a staff-approved quote must never seed an EMPTY portal
 // selection ($0 total, every item off, the minimum-gate wall) just because
 // its vertical's packages have no lettered 'C' tier. Reproduces the exact
