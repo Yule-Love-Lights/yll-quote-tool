@@ -151,6 +151,26 @@ export function InteractiveHero({
   // uploaded photo, not just the 8/5 Street View. Fallback to 8/5 when unknown.
   const mediaAspect = activeW && activeH ? `${activeW} / ${activeH}` : undefined;
 
+  // #238 — "Build your own" (package D) selects into an EMPTY state: the
+  // customer needs to scroll down to WhatsIncluded to actually pick items,
+  // but selecting alone leaves them looking at the tabs with no cue that
+  // anything happened below the fold. Same jump-and-focus shape as
+  // DesignReprise's goToColors (#10/#48): scrollIntoView then a
+  // preventScroll focus so keyboard/SR users land there too. Scrolls to the
+  // WhatsIncluded heading itself (portal-dark-included-heading) rather than
+  // adding a new id to its section — the heading is already the natural
+  // landing point (it's what aria-labelledby points screen readers at) and
+  // this avoids touching that component for a second id. No reduced-motion
+  // gate: the pattern being copied doesn't have one either (only CSS
+  // animations are gated elsewhere in this codebase), so this doesn't
+  // invent a new convention.
+  const goToIncluded = () => {
+    const el = document.getElementById('portal-dark-included-heading');
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    el.focus({ preventScroll: true });
+  };
+
   return (
     <section
       aria-labelledby="portal-snow-hero-heading"
@@ -375,6 +395,9 @@ export function InteractiveHero({
                     onClick={() => {
                       selectPackage(p.id);
                       track('package_selected', { quote_id: quoteId, package: p.id });
+                      // #238: only Build Your Own needs the scroll-down cue —
+                      // every other package's tabs stay exactly as they were.
+                      if (p.id === 'D') goToIncluded();
                     }}
                     data-active={packageId === p.id}
                     className="portal-snow-pack-tab focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F]"
