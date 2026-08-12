@@ -61,7 +61,7 @@ function emptyBucket(): StageBucket {
 const TERMINAL_STATUSES: ReadonlySet<QuoteStatus> = new Set<QuoteStatus>([
   'cancelled',
   'declined',
-  'lost',
+  'abandoned',
   'changes_requested',
 ]);
 

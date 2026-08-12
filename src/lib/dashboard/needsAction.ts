@@ -77,7 +77,7 @@ const BALANCE_THRESHOLD_DAYS = 2;
 const TERMINAL_STATUSES: ReadonlySet<QuoteStatus> = new Set<QuoteStatus>([
   'declined',
   'cancelled',
-  'lost',
+  'abandoned',
   'changes_requested',
 ]);
 
