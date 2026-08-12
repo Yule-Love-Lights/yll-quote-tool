@@ -111,6 +111,68 @@ describe('planIngest — skip outbound-with-no-existing (avoid noise)', () => {
   });
 });
 
+// #252: the opposite-polarity twin of the block above. An activity-noise
+// touch (isActivityNoise) must NEVER be skipped when there is no existing
+// item (a conversation's first-ever touch must always be observable, even
+// when GHL's rolled-up latest-event snapshot is pure CRM activity) — but MUST
+// be skipped when an item already exists, so noise can't bump/reopen it.
+describe('planIngest — GHL activity-noise touch skip (#252, opposite polarity)', () => {
+  it('does NOT skip an activity-noise touch with no existing item (must never swallow a first touch)', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: null,
+      touch: touch({ isActivityNoise: true, direction: null, channel: null, preview: null }),
+      now: at(HOUR),
+    });
+    expect(plan.skip).toBe(false);
+    expect(plan.skipReason).toBeNull();
+    expect(plan.contactOp.kind).toBe('insert'); // the conversation actually gets ingested
+  });
+
+  it('skips an activity-noise touch that HAS an existing item (never lets noise bump a real conversation), labeled skipReason "activity-noise-existing"', () => {
+    const existing: ExistingItem = { id: 'i1', contactId: 'A', status: 'unresponded', notifiedLevels: [], lastMessageAt: T };
+    const plan = planIngest({
+      candidates: [],
+      existing,
+      touch: touch({ isActivityNoise: true, lastMessageAt: at(HOUR) }),
+      now: at(2 * HOUR),
+    });
+    expect(plan.skip).toBe(true);
+    expect(plan.skipReason).toBe('activity-noise-existing');
+  });
+
+  // Only sound PAIRED with the test above (proves reason 2 exists at all) —
+  // this one alone would also pass an implementation that omits reason 2
+  // entirely, since it never exercises the noise+existing combination.
+  it('does not skip a normal (non-noise) inbound touch on an existing item, even though existing is truthy', () => {
+    const existing: ExistingItem = { id: 'i1', contactId: 'A', status: 'unresponded', notifiedLevels: [], lastMessageAt: T };
+    const plan = planIngest({
+      candidates: [],
+      existing,
+      touch: touch({ isActivityNoise: false, lastMessageAt: at(HOUR) }),
+      now: at(2 * HOUR),
+    });
+    expect(plan.skip).toBe(false);
+    expect(plan.skipReason).toBeNull();
+  });
+
+  // #252 delta-verify MEDIUM: a touch can be BOTH activity-noise AND
+  // cold-outbound-with-no-existing-item at once (live GHL data shows
+  // direction varies independently of message type). That must resolve to
+  // reason 1 (cold-outbound skip), never reason 2 — touch.isActivityNoise
+  // being true is NOT sufficient on its own to imply the #252 reason fired.
+  it('labels a cold-outbound activity-noise touch (no existing item) skipReason "cold-outbound", not "activity-noise-existing"', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: null,
+      touch: touch({ isActivityNoise: true, direction: 'outbound' }),
+      now: at(HOUR),
+    });
+    expect(plan.skip).toBe(true); // reason 1 still applies
+    expect(plan.skipReason).toBe('cold-outbound');
+  });
+});
+
 // ─── planIngest — new fields flow through ────────────────────────────────────
 
 describe('planIngest — leadKind + quoteValue thread through to item row', () => {

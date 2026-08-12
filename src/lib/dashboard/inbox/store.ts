@@ -66,12 +66,29 @@ export type ItemRow = {
 };
 
 export type IngestPlan = {
-  /** When true, do nothing: an outbound touch with no existing item is usually
-   *  us cold-contacting — there's no unresponded lead to track (avoids noise).
-   *  Some sources deliberately track outbound-only first observations (positive
-   *  allowlist below); a conversation we REPLIED to keeps its existing item and
-   *  still auto-resolves. */
+  /** When true, do nothing. Two independent reasons feed this:
+   *   1. An outbound touch with no existing item is usually us cold-contacting
+   *      — there's no unresponded lead to track (avoids noise). Some sources
+   *      deliberately track outbound-only first observations (positive
+   *      allowlist below); a conversation we REPLIED to keeps its existing
+   *      item and still auto-resolves.
+   *   2. #252: a GHL activity-noise touch (touch.isActivityNoise) that has an
+   *      EXISTING item — skip so pure CRM activity can never bump/reopen a
+   *      real conversation. The opposite-polarity twin of reason 1: that rule
+   *      skips on `!existing`, this one skips on `existing`. An activity-noise
+   *      touch with NO existing item is deliberately never skipped here — a
+   *      conversation's first-ever touch must always be observable, even when
+   *      the only snapshot GHL ever hands the poller is an activity row (see
+   *      ghl.ts's ACTIVITY_NOISE_TYPES comment for the full swallow scenario). */
   skip: boolean;
+  /** WHY `skip` is true (null when it's false). Exists so a caller (sync.ts's
+   *  activityNoiseSkipped counter) can tell the two skip reasons apart —
+   *  `touch.isActivityNoise` alone is NOT enough, because it says nothing about
+   *  whether `existing` was present: a brand-new (no existing item) GHL
+   *  conversation whose latest event is BOTH activity noise AND outbound is a
+   *  reason-1 cold-outbound skip, not a #252 reason-2 skip, even though
+   *  isActivityNoise is true on that touch. */
+  skipReason: 'cold-outbound' | 'activity-noise-existing' | null;
   /** When true, a resolved item (handled/completed/dismissed) is being re-ingested
    *  with NOTHING to persist — same status, same last_message_at, no reopen /
    *  auto-resolve / snooze-clear. The reconcile cron re-reads these every minute,
@@ -197,8 +214,22 @@ export function planIngest(input: {
     quote_value: touch.quoteValue ?? null,
   };
 
+  // #252: reason 1 (outbound, no existing item) OR reason 2 (activity noise,
+  // existing item) — see the `skip`/`skipReason` field docs above. Mutually
+  // exclusive by construction (reason 1 requires `!existing`, reason 2
+  // requires `existing`), so evaluation order doesn't matter.
+  const coldOutboundSkip =
+    !existing && touch.direction === 'outbound' && !TRACKS_OUTBOUND_FIRST_OBSERVATION.has(touch.source);
+  const activityNoiseExistingSkip = !!existing && !!touch.isActivityNoise;
+  const skipReason: IngestPlan['skipReason'] = activityNoiseExistingSkip
+    ? 'activity-noise-existing'
+    : coldOutboundSkip
+      ? 'cold-outbound'
+      : null;
+
   return {
-    skip: !existing && touch.direction === 'outbound' && !TRACKS_OUTBOUND_FIRST_OBSERVATION.has(touch.source),
+    skip: coldOutboundSkip || activityNoiseExistingSkip,
+    skipReason,
     noopReingest,
     contactOp,
     item,
@@ -283,7 +314,19 @@ function contactInsertRow(identity: ContactIdentity) {
 }
 
 export type IngestOutcome =
-  | { ok: true; skipped: boolean; itemId: string | null; contactId: string | null; autoResolved: boolean; reopened: boolean; ambiguous: boolean }
+  | {
+      ok: true;
+      skipped: boolean;
+      itemId: string | null;
+      contactId: string | null;
+      autoResolved: boolean;
+      reopened: boolean;
+      ambiguous: boolean;
+      /** #252: WHY a skip happened (null when not skipped, or skipped for a
+       *  reason other than planIngest's `skip` — e.g. #110 W7-004's
+       *  noopReingest). Mirrors IngestPlan.skipReason; see its doc. */
+      skipReason: 'cold-outbound' | 'activity-noise-existing' | null;
+    }
   | { ok: false; error: string };
 
 /**
@@ -301,15 +344,15 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
 
   // Outbound with no existing item → nothing to track. Do not write.
   if (plan.skip) {
-    return { ok: true, skipped: true, itemId: null, contactId: null, autoResolved: false, reopened: false, ambiguous: false };
+    return { ok: true, skipped: true, itemId: null, contactId: null, autoResolved: false, reopened: false, ambiguous: false, skipReason: plan.skipReason };
   }
 
   // #110 W7-004: a resolved item re-ingested with nothing to persist — skip the
   // item upsert AND the 'ingested' activity insert so the every-minute reconcile
   // cron stops flooding both tables with no-change writes. `existing` is non-null
-  // whenever noopReingest is true.
+  // whenever noopReingest is true. Not a plan.skip reason, so skipReason is null.
   if (plan.noopReingest) {
-    return { ok: true, skipped: true, itemId: existing?.id ?? null, contactId: existing?.contactId ?? null, autoResolved: false, reopened: false, ambiguous: false };
+    return { ok: true, skipped: true, itemId: existing?.id ?? null, contactId: existing?.contactId ?? null, autoResolved: false, reopened: false, ambiguous: false, skipReason: null };
   }
 
   // 1. Resolve the contact id.
@@ -388,6 +431,7 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
     autoResolved: plan.autoResolved,
     reopened: plan.reopened,
     ambiguous: plan.ambiguous,
+    skipReason: null,
   };
 }
 

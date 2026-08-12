@@ -98,6 +98,31 @@ describe('gmailMessageFromMe', () => {
   it('is false for a customer message', () => {
     expect(gmailMessageFromMe(gm({ from: 'cust@example.com' }), { ourEmail: OUR })).toBe(false);
   });
+
+  // #252: our own automated mail (marketing sends, "Quote viewed" alerts, the
+  // escalation email, the EOD digest) sends from sales@mail.yulelovelights.com
+  // — a subdomain of ourDomain, not an exact match.
+  it('is true for a sender on a SUBDOMAIN of ourDomain (the live sales@mail.yulelovelights.com shape)', () => {
+    expect(
+      gmailMessageFromMe(gm({ from: 'Yule Love Lights <sales@mail.yulelovelights.com>' }), {
+        ourEmail: OUR,
+        ourDomain: 'yulelovelights.com',
+      }),
+    ).toBe(true);
+  });
+
+  // GMAIL_USER is a masked prod env var nobody here can read — the self-ingest
+  // filter must hold even when ourDomain never got derived from it (falls back
+  // to classify.ts's static internal-domain list).
+  it('is true for our subdomain even when ourDomain is unset (GMAIL_USER-unset shape)', () => {
+    expect(gmailMessageFromMe(gm({ from: 'sales@mail.yulelovelights.com' }), { ourEmail: 'me' })).toBe(true);
+  });
+
+  it('does NOT match a lookalike domain (notyulelovelights.com)', () => {
+    expect(
+      gmailMessageFromMe(gm({ from: 'anyone@notyulelovelights.com' }), { ourEmail: OUR, ourDomain: 'yulelovelights.com' }),
+    ).toBe(false);
+  });
 });
 
 describe('mapGmailThread — raw Gmail payload → GmailThreadLite', () => {

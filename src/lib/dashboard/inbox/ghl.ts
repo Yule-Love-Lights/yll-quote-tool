@@ -16,10 +16,37 @@ const CHANNEL_BY_TYPE: Record<string, Channel> = {
   TYPE_SMS: 'sms',
   TYPE_EMAIL: 'email',
   TYPE_CALL: 'call',
+  // #252: a live 4-call sweep against a test contact (2026-08-12) found GHL
+  // reports an INBOUND call — answered, or answered-with-voicemail-left — as
+  // TYPE_IVR_CALL, not TYPE_CALL (outbound calls stay TYPE_CALL). Without this
+  // every inbound call fell through to channel: null and was invisible in the
+  // inbox (no "📞 Inbound call" preview, see previewOf below).
+  TYPE_IVR_CALL: 'call',
+  // Aspirational: the 2026-06-28 spike guessed voicemails carry this type, but
+  // the #252 live sweep never observed it — a voicemail is actually a
+  // completed TYPE_IVR_CALL plus a separate GHL notification EMAIL ("X just
+  // left a voicemail"). Left mapped in case GHL emits it from another path.
   TYPE_VOICEMAIL: 'call',
   TYPE_FACEBOOK: 'fb',
   TYPE_INSTAGRAM: 'ig',
+  // TYPE_CAMPAIGN_EMAIL, TYPE_NO_SHOW: also seen in the #252 live sweep, still
+  // unmapped on purpose — deliberately NOT guessed here, see ledger #252.
 };
+
+// #252: pure GHL system/CRM activity, not a customer touch (e.g. "Opportunity
+// created", "DnD enabled by user"). This is NOT an ingest-time exclusion —
+// that was the original #252 bug. searchConversations (highlevel.ts) returns
+// only the SINGLE most-recent event per conversation, no message history, so
+// unconditionally returning null here whenever that latest event happens to
+// be activity noise could swallow a brand-new lead's FIRST-EVER touch forever
+// (a GHL automation logging "Opportunity created" seconds after the customer's
+// real message becomes the only thing the poller ever sees). A conversation
+// with no existing inbox row must always be observable, whatever its latest
+// event type is. So this only sets a flag; store.ts's planIngest is the one
+// place that knows whether a row already exists, and decides there — skip the
+// write when a row exists (never let noise bump/reopen a real conversation),
+// ingest normally when it does not.
+const ACTIVITY_NOISE_TYPES = new Set(['TYPE_ACTIVITY_CONTACT', 'TYPE_ACTIVITY_OPPORTUNITY']);
 
 function channelOf(lastMessageType: string | undefined): Channel | null {
   if (!lastMessageType) return null;
@@ -41,6 +68,7 @@ function previewOf(c: GhlConversation, channel: Channel | null, direction: Direc
 }
 
 export function normalizeGhlConversation(c: GhlConversation, suppressed?: Set<string>): NormalizedTouch {
+  const isActivityNoise = !!c.lastMessageType && ACTIVITY_NOISE_TYPES.has(c.lastMessageType);
   const channel = channelOf(c.lastMessageType);
   const direction = directionOf(c.lastMessageDirection);
   const email = c.email ? normalizeEmail(c.email) : null;
@@ -66,5 +94,6 @@ export function normalizeGhlConversation(c: GhlConversation, suppressed?: Set<st
     },
     raw: c,
     leadKind: isSuppressed ? 'automated' : classifyMessage({ fromAddress: null, subject: null, preview }),
+    isActivityNoise,
   };
 }

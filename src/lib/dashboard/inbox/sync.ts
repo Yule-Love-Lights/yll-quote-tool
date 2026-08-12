@@ -56,6 +56,18 @@ export type ReconcileSummary = {
   scanned: number;
   ingested: number;
   skipped: number;
+  /** #252: subset of `skipped` whose IngestOutcome.skipReason was specifically
+   *  'activity-noise-existing' (planIngest reason 2 — pure GHL activity noise
+   *  bumping an ALREADY-EXISTING item). Keyed off skipReason, NOT off
+   *  touch.isActivityNoise directly — that flag alone can't tell reason 2
+   *  apart from an ordinary reason-1 cold-outbound skip (a brand-new,
+   *  no-existing-item conversation whose latest event happens to be BOTH
+   *  activity noise and outbound-direction is an ordinary cold-outbound skip,
+   *  not #252 noise). Distinguishable from the generic `skipped` count
+   *  (which also includes cold-outbound + noop-reingest) so a #252 swallow
+   *  regression would be observable in prod, not lumped into a count that's
+   *  expected to be nonzero for unrelated reasons every run. */
+  activityNoiseSkipped: number;
   autoResolved: number;
   ambiguous: number;
   errors: number;
@@ -69,17 +81,28 @@ export async function runGhlReconcile(now: Date, opts: { limit?: number } = {}):
     const suppressed = await getSuppressedSenders();
     let ingested = 0;
     let skipped = 0;
+    let activityNoiseSkipped = 0;
     let autoResolved = 0;
     let ambiguous = 0;
     let errors = 0;
     for (const c of conversations) {
-      const res = await ingestTouch(normalizeGhlConversation(c, suppressed), now);
+      // #252: normalizeGhlConversation always returns a touch now — pure GHL
+      // activity noise (e.g. "Opportunity created") is FLAGGED
+      // (isActivityNoise), never excluded here, so a conversation's first-ever
+      // touch is never silently swallowed. planIngest (store.ts) is the one
+      // that decides whether to skip, based on whether an item already exists,
+      // and reports WHY via IngestOutcome.skipReason.
+      const touch = normalizeGhlConversation(c, suppressed);
+      const res = await ingestTouch(touch, now);
       if (!res.ok) {
         errors++;
         continue;
       }
       if (res.skipped) {
         skipped++;
+        // Keyed off res.skipReason, NOT touch.isActivityNoise (see the field's
+        // own doc above for why that flag alone would over-count).
+        if (res.skipReason === 'activity-noise-existing') activityNoiseSkipped++;
         continue;
       }
       ingested++;
@@ -87,11 +110,11 @@ export async function runGhlReconcile(now: Date, opts: { limit?: number } = {}):
       if (res.ambiguous) ambiguous++;
     }
     await recordSyncRun('ghl', errors > 0 ? 'error' : 'ok', errors > 0 ? `${errors} item error(s)` : undefined);
-    return { ok: true, scanned: conversations.length, ingested, skipped, autoResolved, ambiguous, errors };
+    return { ok: true, scanned: conversations.length, ingested, skipped, activityNoiseSkipped, autoResolved, ambiguous, errors };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     await recordSyncRun('ghl', 'error', error);
-    return { ok: false, scanned: 0, ingested: 0, skipped: 0, autoResolved: 0, ambiguous: 0, errors: 1, error };
+    return { ok: false, scanned: 0, ingested: 0, skipped: 0, activityNoiseSkipped: 0, autoResolved: 0, ambiguous: 0, errors: 1, error };
   }
 }
 

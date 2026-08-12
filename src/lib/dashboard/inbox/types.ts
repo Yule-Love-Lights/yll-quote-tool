@@ -62,6 +62,11 @@ export type NormalizedTouch = {
   raw?: unknown;
   leadKind?: 'lead' | 'automated' | null;
   quoteValue?: number | null;
+  /** #252: true when this touch is pure GHL system/CRM activity (e.g.
+   *  "Opportunity created"), not a customer message. Resolved by the adapter;
+   *  consumed only by store.ts's planIngest, which is the one place that knows
+   *  whether a row already exists for this conversation — see its `skip` doc. */
+  isActivityNoise?: boolean | null;
 };
 
 /** A single open inbox item shaped for the /inbox UI (server-fetch → client prop).

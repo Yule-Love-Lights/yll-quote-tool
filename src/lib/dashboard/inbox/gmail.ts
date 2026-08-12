@@ -11,7 +11,7 @@
 import type { NormalizedTouch } from './types';
 import { normalizeEmail, normalizeName } from './normalize';
 import { isAnsweredByOutbound } from './escalation';
-import { classifyMessage } from './classify';
+import { classifyMessage, isFromUs } from './classify';
 
 export type GmailMessageLite = {
   /** Did the YLL workspace account send this message (a SENT message). */
@@ -97,8 +97,11 @@ function parseDisplayName(headerValue: string): string | null {
  * → outbound → the reducer skips it (never a fake lead).
  *
  * The identity object widens the check from a single address to our whole domain
- * and any explicitly listed internal addresses (e.g. sales@), so escalation emails
- * sent from sub-addresses on our domain never appear as fake leads.
+ * (and any of its SUBDOMAINS — our own automated mail sends from
+ * sales@mail.yulelovelights.com, #252) and any explicitly listed internal
+ * addresses (e.g. sales@), so escalation emails sent from sub-addresses on our
+ * domain never appear as fake leads. Domain matching itself delegates to the
+ * shared classify.ts isFromUs so this can't drift from the other two adapters.
  */
 export type GmailIdentity = { ourEmail: string; ourDomain?: string | null; internalAddrs?: string[] };
 
@@ -108,8 +111,7 @@ export function gmailMessageFromMe(m: RawGmailMessage, identity: GmailIdentity):
   const addr = from ? parseEmailAddress(from) : null;
   if (!addr) return false;
   if (addr === identity.ourEmail.trim().toLowerCase()) return true;
-  if (identity.ourDomain && addr.endsWith(`@${identity.ourDomain.trim().toLowerCase()}`)) return true;
-  return (identity.internalAddrs ?? []).some((a) => a.trim().toLowerCase() === addr);
+  return isFromUs(addr, { ourDomain: identity.ourDomain, internalAddrs: identity.internalAddrs });
 }
 
 export function mapGmailThread(raw: RawGmailThread, identity: GmailIdentity): GmailThreadLite {
