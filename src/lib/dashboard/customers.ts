@@ -5,7 +5,7 @@ import { deriveStatus } from '@/lib/quoteStatus';
 /**
  * Lifecycle status of a single quote. BUG-1 (S22): this used to read ONLY the
  * timestamp chain (approved > sent > draft), so a quote in a state the
- * timestamps can't express — declined / cancelled / lost / changes_requested —
+ * timestamps can't express — declined / cancelled / abandoned / changes_requested —
  * kept reading as its stale 'sent'/'approved'. It now delegates to the canonical
  * `deriveStatus` (persisted branch/terminal `status` wins, else the timestamps),
  * so the customers list + detail history badge matches the admin quotes list,
