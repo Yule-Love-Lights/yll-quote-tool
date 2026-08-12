@@ -496,8 +496,10 @@ export function isHiddenLegacyRebookQuote(q: {
  * to document hiding "regardless of quote_sent_at" as an accepted, narrower-
  * than-ingest tradeoff). Batch-fetches only the ids passed in; empty input
  * skips the query entirely (the common case for ghl/gmail/homeworks-only
- * pages). Fails OPEN + VISIBLY on a lookup error (#183 BUG 1(c)) — returns an
- * empty set (nothing hidden) rather than swallow the error or throw.
+ * pages). Fails OPEN + VISIBLY on a lookup error (#183 BUG 1) — returns an
+ * empty set (nothing hidden) rather than swallow the error or throw. Hiding a
+ * real customer on a transient query failure is the worse outcome; #252 exists
+ * because a hidden customer went unnoticed for 14 days.
  */
 async function fetchHiddenLegacyRebookQuoteIds(
   sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
