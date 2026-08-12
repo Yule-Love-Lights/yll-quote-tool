@@ -475,11 +475,14 @@ describe('runGhlReconcile — activity-noise skip counter (#252)', () => {
     };
   }
 
-  it('counts an activity-noise conversation that ingestTouch skips (existing item) as activityNoiseSkipped', async () => {
+  it('counts an activity-noise conversation that ingestTouch skips FOR REASON 2 (existing item) as activityNoiseSkipped', async () => {
     searchConversationsMock.mockResolvedValue({
       conversations: [conv({ id: 'a1', lastMessageType: 'TYPE_ACTIVITY_OPPORTUNITY' })],
     });
-    ingestTouchMock.mockResolvedValue({ ...OK_RESULT, skipped: true });
+    // The real ingestTouch/planIngest shape for "existing item + activity
+    // noise" (proved by store.test.ts) — skipReason is what the counter is
+    // keyed off, not touch.isActivityNoise.
+    ingestTouchMock.mockResolvedValue({ ...OK_RESULT, skipped: true, skipReason: 'activity-noise-existing' });
 
     const summary = await runGhlReconcile(new Date());
 
@@ -493,7 +496,7 @@ describe('runGhlReconcile — activity-noise skip counter (#252)', () => {
     searchConversationsMock.mockResolvedValue({
       conversations: [conv({ id: 'a2', lastMessageType: 'TYPE_SMS' })],
     });
-    ingestTouchMock.mockResolvedValue({ ...OK_RESULT, skipped: true });
+    ingestTouchMock.mockResolvedValue({ ...OK_RESULT, skipped: true, skipReason: 'cold-outbound' });
 
     const summary = await runGhlReconcile(new Date());
 
@@ -505,12 +508,42 @@ describe('runGhlReconcile — activity-noise skip counter (#252)', () => {
     searchConversationsMock.mockResolvedValue({
       conversations: [conv({ id: 'a3', lastMessageType: 'TYPE_ACTIVITY_CONTACT' })],
     });
-    ingestTouchMock.mockResolvedValue({ ...OK_RESULT, skipped: false });
+    ingestTouchMock.mockResolvedValue({ ...OK_RESULT, skipped: false, skipReason: null });
 
     const summary = await runGhlReconcile(new Date());
 
     expect(summary.ingested).toBe(1);
     expect(summary.skipped).toBe(0);
+    expect(summary.activityNoiseSkipped).toBe(0);
+  });
+
+  // #252 delta-verify MEDIUM: a brand-new conversation (no existing row) whose
+  // latest GHL event is BOTH outbound-direction AND activity noise is skipped
+  // for REASON 1 (cold-outbound — an ordinary "we cold-contacted, nothing to
+  // track" skip) even though the touch's isActivityNoise flag is still true.
+  // Pre-fix, this counter was keyed off touch.isActivityNoise alone and had
+  // no way to tell the two skip reasons apart, so it over-counted this case as
+  // #252 noise even though zero reason-2 events occurred (live GHL data shows
+  // direction varies independently of message type, so this is a real,
+  // reachable combination, not a hypothetical).
+  it('does NOT count a cold-outbound activity-noise touch (no existing row) toward activityNoiseSkipped', async () => {
+    searchConversationsMock.mockResolvedValue({
+      conversations: [conv({ id: 'a4', lastMessageType: 'TYPE_ACTIVITY_OPPORTUNITY', lastMessageDirection: 'outbound' })],
+    });
+    ingestTouchMock.mockImplementation(async (touch: { isActivityNoise?: boolean | null }) => {
+      // Sanity: the real (unmocked) ghl.ts adapter did flag this touch as
+      // activity noise — that's exactly why keying the counter off it alone,
+      // instead of off the outcome's skipReason, over-counts.
+      expect(touch.isActivityNoise).toBe(true);
+      // The real ingestTouch/planIngest shape for "no existing item + cold
+      // outbound" (proved by store.test.ts): skipped, but skipReason is
+      // 'cold-outbound', NOT #252's 'activity-noise-existing'.
+      return { ...OK_RESULT, skipped: true, skipReason: 'cold-outbound' };
+    });
+
+    const summary = await runGhlReconcile(new Date());
+
+    expect(summary.skipped).toBe(1);
     expect(summary.activityNoiseSkipped).toBe(0);
   });
 });
