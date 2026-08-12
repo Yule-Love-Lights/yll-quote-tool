@@ -290,22 +290,28 @@ describe('POST /api/quotes/[id]/send — GHL sync state', () => {
     expect(hl.sendSms).not.toHaveBeenCalled();
   });
 
-  it('an already-sent quote WITHOUT ?retryGhl still short-circuits (alreadySent)', async () => {
+  it('an already-sent quote WITHOUT ?retryGhl still short-circuits (alreadySent) and reports the ORIGINAL sentAt, nothing re-delivered', async () => {
     const alreadySent = {
       ...FRESH_QUOTE,
       quote_sent_at: '2026-06-26T00:00:00Z',
       ghl_stage_synced_at: null,
       status: 'sent',
     };
-    const { client } = makeSb(alreadySent);
+    const { client, updatePayloads } = makeSb(alreadySent);
     sbRef.current = client;
 
     const res = await POST(makeReq(false), { params });
     const json = await res.json();
 
     expect(json.alreadySent).toBe(true);
+    // #241: the builder UI reads sentAt off this response to tell staff WHEN
+    // the quote was actually delivered (it must be the ORIGINAL timestamp,
+    // not a re-stamp) — pin the contract the UI depends on.
+    expect(json.sentAt).toBe('2026-06-26T00:00:00Z');
     expect(hl.updateOpportunity).not.toHaveBeenCalled();
     expect(hl.sendSms).not.toHaveBeenCalled();
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+    expect(updatePayloads).toHaveLength(0);
   });
 
   // W1-017: a ?retryGhl reconcile must check the CURRENT status. A quote that was

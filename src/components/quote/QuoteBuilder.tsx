@@ -582,7 +582,7 @@ export default function QuoteBuilder({
   // entry stage) instead of creating/reusing one — staff must see that, since
   // a reopened card can re-enter stage-triggered GHL automations.
   const [attachResurrected, setAttachResurrected] = useState(false);
-  const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
+  const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'already-sent' | 'error'>('idle');
   // #92 — a fulfillability BLOCK (design has items we can't supply), kept distinct
   // from a send FAILURE so we never tell the operator to share the link manually.
   const [sendBlockedMsg, setSendBlockedMsg] = useState<string | null>(null);
@@ -592,6 +592,12 @@ export default function QuoteBuilder({
   // failure puts Send in the error state while preserving the valid portal URL.
   const [deliveryWarning, setDeliveryWarning] = useState<string | null>(null);
   const [deliveryRetryChannel, setDeliveryRetryChannel] = useState<'sms' | 'email' | 'both' | null>(null);
+  // #241: when the send route short-circuits with alreadySent:true (a
+  // double-click / re-click on an already-sent quote), nothing was texted or
+  // emailed — this holds the ORIGINAL quote_sent_at so the UI can say so
+  // instead of rendering an identical plain success. Cleared on any fresh
+  // send attempt or recalculation.
+  const [alreadySentAt, setAlreadySentAt] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState(false);
   // GHL stage-sync result of the last send: a non-null message means the quote
   // WAS sent locally but the HighLevel card did NOT advance to "Bid Sent" (the
@@ -2945,6 +2951,7 @@ export default function QuoteBuilder({
     setGhlSyncWarning(null);
     setDeliveryWarning(null);
     setDeliveryRetryChannel(null);
+    setAlreadySentAt(null);
     setCopiedUrl(false);
 
     // #172 pre-send guard: the picked contact may not be attached yet (a
@@ -3031,6 +3038,17 @@ export default function QuoteBuilder({
         }
         throw new Error(data.error ?? `Send failed (${res.status})`);
       }
+      // #241: the route short-circuited — this click delivered NOTHING (no
+      // SMS, no email, no CRM stage move, no re-stamped quote_sent_at). Don't
+      // render the identical success state; surface it loudly and offer a
+      // one-click force-redeliver via the existing ?retryDelivery=1 path
+      // instead of falling through to the normal "sent" handling below.
+      if (data.alreadySent) {
+        setSendStatus('already-sent');
+        setAlreadySentAt(typeof data.sentAt === 'string' ? data.sentAt : null);
+        setDeliveryRetryChannel('both');
+        return;
+      }
       setSendStatus('sent');
       if (failedChannels.length > 0) {
         const retryChannel = failedChannels.length === 2 ? 'both' : failedChannels[0];
@@ -3082,6 +3100,7 @@ export default function QuoteBuilder({
       setSendStatus('sent');
       setDeliveryWarning(null);
       setDeliveryRetryChannel(null);
+      setAlreadySentAt(null);
     } catch (err) {
       setSendStatus('error');
       setSendError(err instanceof Error ? err.message : 'Delivery retry failed');
@@ -3143,6 +3162,7 @@ export default function QuoteBuilder({
     }
     setSendStatus('idle');
     setSendError(null);
+    setAlreadySentAt(null);
     setCopiedUrl(false);
     setTrainStatus('idle');
     setTrainError(null);
@@ -5872,6 +5892,30 @@ export default function QuoteBuilder({
                   : '📨 Send Quote to Customer'}
               </button>
             </div>
+
+            {/* #241: the guard short-circuited — nothing was texted or emailed
+                this click. Say so plainly instead of rendering the same
+                "✓ Sent" state as a real delivery, and offer a one-click
+                force-redeliver (reuses the existing ?retryDelivery=1 path —
+                does not re-stamp quote_sent_at or move the CRM card again). */}
+            {sendStatus === 'already-sent' && (
+              <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                <p>
+                  Nothing was delivered — this quote was already sent
+                  {alreadySentAt ? ` on ${new Date(alreadySentAt).toLocaleString()}` : ' earlier'}.
+                  Clicking Send again does not re-text or re-email the customer.
+                </p>
+                {deliveryRetryChannel && (
+                  <button
+                    type="button"
+                    onClick={handleRetryDelivery}
+                    className="mt-2 text-xs font-medium text-amber-900 underline hover:no-underline"
+                  >
+                    Force redeliver (SMS + email) now
+                  </button>
+                )}
+              </div>
+            )}
 
             {sendStatus === 'error' && (
               <div className="mt-3 text-sm text-red-600">
