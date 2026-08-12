@@ -17,7 +17,12 @@
 --
 -- HOW TO APPLY: apply directly via Supabase MCP (AGENTS.md migration-
 -- application default — nullable add-column is on the allowlist). Idempotent;
--- safe to re-run. NOT applied by this commit — that is the operator's step.
+-- safe to re-run. APPLIED to prod 2026-08-11 (S36) under Jason's named go, BEFORE
+-- PR #739 merged - `settled_by` rides inside INVOICE_SELECT, so code without the
+-- column would have failed EVERY invoice read, not just the settle write.
+-- Verified after applying against information_schema + pg_constraint; both
+-- existing invoice rows undisturbed. (The original text here said "NOT applied
+-- by this commit" and went stale the moment it was applied - S36 wrap, technical lens LOW.)
 -- =====================================================================
 
 alter table public.invoices
