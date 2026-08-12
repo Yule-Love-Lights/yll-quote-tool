@@ -582,7 +582,15 @@ export default function QuoteBuilder({
   // entry stage) instead of creating/reusing one — staff must see that, since
   // a reopened card can re-enter stage-triggered GHL automations.
   const [attachResurrected, setAttachResurrected] = useState(false);
-  const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
+  const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'already-sent' | 'error'>('idle');
+  // #241 defect 2 (review MEDIUM): a Force-Redeliver click can ALSO fall
+  // through the route's alreadySent short-circuit (send/route.ts's
+  // isDeliveryRetry only honors 'sent'/'viewed' — a quote that's since gone
+  // approved/booked/deposit-paid isn't retry-eligible either, W1-017's same
+  // guard). True once we've learned THAT click delivered nothing, so the
+  // already-sent box can say so instead of repeating the original message +
+  // a doomed retry button.
+  const [retryIneligible, setRetryIneligible] = useState(false);
   // #92 — a fulfillability BLOCK (design has items we can't supply), kept distinct
   // from a send FAILURE so we never tell the operator to share the link manually.
   const [sendBlockedMsg, setSendBlockedMsg] = useState<string | null>(null);
@@ -592,6 +600,12 @@ export default function QuoteBuilder({
   // failure puts Send in the error state while preserving the valid portal URL.
   const [deliveryWarning, setDeliveryWarning] = useState<string | null>(null);
   const [deliveryRetryChannel, setDeliveryRetryChannel] = useState<'sms' | 'email' | 'both' | null>(null);
+  // #241: when the send route short-circuits with alreadySent:true (a
+  // double-click / re-click on an already-sent quote), nothing was texted or
+  // emailed — this holds the ORIGINAL quote_sent_at so the UI can say so
+  // instead of rendering an identical plain success. Cleared on any fresh
+  // send attempt or recalculation.
+  const [alreadySentAt, setAlreadySentAt] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState(false);
   // GHL stage-sync result of the last send: a non-null message means the quote
   // WAS sent locally but the HighLevel card did NOT advance to "Bid Sent" (the
@@ -2945,7 +2959,9 @@ export default function QuoteBuilder({
     setGhlSyncWarning(null);
     setDeliveryWarning(null);
     setDeliveryRetryChannel(null);
+    setAlreadySentAt(null);
     setCopiedUrl(false);
+    setRetryIneligible(false);
 
     // #172 pre-send guard: the picked contact may not be attached yet (a
     // pick-time attach can fail, or still be in flight). A real send
@@ -3031,6 +3047,17 @@ export default function QuoteBuilder({
         }
         throw new Error(data.error ?? `Send failed (${res.status})`);
       }
+      // #241: the route short-circuited — this click delivered NOTHING (no
+      // SMS, no email, no CRM stage move, no re-stamped quote_sent_at). Don't
+      // render the identical success state; surface it loudly and offer a
+      // one-click force-redeliver via the existing ?retryDelivery=1 path
+      // instead of falling through to the normal "sent" handling below.
+      if (data.alreadySent) {
+        setSendStatus('already-sent');
+        setAlreadySentAt(typeof data.sentAt === 'string' ? data.sentAt : null);
+        setDeliveryRetryChannel('both');
+        return;
+      }
       setSendStatus('sent');
       if (failedChannels.length > 0) {
         const retryChannel = failedChannels.length === 2 ? 'both' : failedChannels[0];
@@ -3069,6 +3096,15 @@ export default function QuoteBuilder({
 
   const handleRetryDelivery = async () => {
     if (!savedQuoteId || !deliveryRetryChannel) return;
+    // #241 (review MEDIUM, mirrors #172's sendInFlightRef guard on
+    // handleSendToCustomer above — see the comment at its declaration): a
+    // genuine double-click on Force Redeliver has no synchronous guard
+    // otherwise, and the route has no idempotency key of its own for a
+    // retry — two clicks in one tick really do text/email the customer
+    // twice. Shared with Send's own guard since both hit the same real
+    // delivery mechanism; either one in flight blocks the other.
+    if (sendInFlightRef.current) return;
+    sendInFlightRef.current = true;
     setSendStatus('sending');
     setSendError(null);
     try {
@@ -3079,12 +3115,28 @@ export default function QuoteBuilder({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `Delivery retry failed (${res.status})`);
+      // #241 defect 2 (review MEDIUM): the retry can ALSO fall through the
+      // route's alreadySent short-circuit (e.g. the customer approved or
+      // the job got booked between the original send and this click — see
+      // send/route.ts's isDeliveryRetry / W1-017 comment). A 200 here is
+      // not proof of delivery; don't render "✓ Sent". Drop the retry
+      // affordance (clicking it again hits the identical short-circuit)
+      // and tell the operator plainly instead of a false success.
+      if (data.alreadySent) {
+        setSendStatus('already-sent');
+        setDeliveryRetryChannel(null);
+        setRetryIneligible(true);
+        return;
+      }
       setSendStatus('sent');
       setDeliveryWarning(null);
       setDeliveryRetryChannel(null);
+      setAlreadySentAt(null);
     } catch (err) {
       setSendStatus('error');
       setSendError(err instanceof Error ? err.message : 'Delivery retry failed');
+    } finally {
+      sendInFlightRef.current = false;
     }
   };
 
@@ -3143,6 +3195,13 @@ export default function QuoteBuilder({
     }
     setSendStatus('idle');
     setSendError(null);
+    setAlreadySentAt(null);
+    // #241: reset alongside its siblings. Not visible today (the notice that
+    // reads it is gated on sendStatus === 'already-sent', which this same block
+    // clears, and both places that re-enter that status reset this flag first)
+    // — but leaving it dangling true after a recalc is a trap for any future
+    // path that sets 'already-sent' without going through those two functions.
+    setRetryIneligible(false);
     setCopiedUrl(false);
     setTrainStatus('idle');
     setTrainError(null);
@@ -5872,6 +5931,56 @@ export default function QuoteBuilder({
                   : '📨 Send Quote to Customer'}
               </button>
             </div>
+
+            {/* #241: the guard short-circuited — nothing was texted or emailed
+                this click. Say so plainly instead of rendering the same
+                "✓ Sent" state as a real delivery, and offer a one-click
+                force-redeliver (reuses the existing ?retryDelivery=1 path —
+                does not re-stamp quote_sent_at or move the CRM card again). */}
+            {sendStatus === 'already-sent' && (
+              <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                {retryIneligible ? (
+                  // #241 defect 2 (review MEDIUM): Force Redeliver was
+                  // clicked and ALSO hit the alreadySent short-circuit — the
+                  // quote moved past sent/viewed (approved/booked/deposit
+                  // paid) since the original send. Retrying again would hit
+                  // the identical guard, so don't repeat the same doomed
+                  // button — point at the manual copy field above instead.
+                  <p>
+                    Redeliver didn&apos;t send anything either — this quote has
+                    moved past &ldquo;sent&rdquo;/&ldquo;viewed&rdquo; (approved,
+                    booked, or a deposit was paid), so an automatic resend is
+                    blocked to protect the CRM pipeline. Copy the Customer
+                    Portal URL above and share it with the customer directly.
+                  </p>
+                ) : (
+                  <p>
+                    Nothing was delivered — this quote was already sent
+                    {alreadySentAt ? ` on ${new Date(alreadySentAt).toLocaleString()}` : ' earlier'}.
+                    Clicking Send again does not re-text or re-email the customer.
+                  </p>
+                )}
+                {/* No `disabled={sendStatus === 'sending'}` here (and on its
+                    two siblings below) — this button only renders while
+                    sendStatus is exactly 'already-sent', a value mutually
+                    exclusive with 'sending' in the union, so the comparison
+                    is dead code (tsc flags it: TS2367). Unlike the always-
+                    mounted main Send button, this button UNMOUNTS the
+                    instant a click flips sendStatus to 'sending' — that's
+                    the render-level guard; handleRetryDelivery's
+                    sendInFlightRef check is what closes the real
+                    same-tick double-click race. */}
+                {!retryIneligible && deliveryRetryChannel && (
+                  <button
+                    type="button"
+                    onClick={handleRetryDelivery}
+                    className="mt-2 text-xs font-medium text-amber-900 underline hover:no-underline"
+                  >
+                    Force redeliver (SMS + email) now
+                  </button>
+                )}
+              </div>
+            )}
 
             {sendStatus === 'error' && (
               <div className="mt-3 text-sm text-red-600">

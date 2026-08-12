@@ -290,22 +290,28 @@ describe('POST /api/quotes/[id]/send — GHL sync state', () => {
     expect(hl.sendSms).not.toHaveBeenCalled();
   });
 
-  it('an already-sent quote WITHOUT ?retryGhl still short-circuits (alreadySent)', async () => {
+  it('an already-sent quote WITHOUT ?retryGhl still short-circuits (alreadySent) and reports the ORIGINAL sentAt, nothing re-delivered', async () => {
     const alreadySent = {
       ...FRESH_QUOTE,
       quote_sent_at: '2026-06-26T00:00:00Z',
       ghl_stage_synced_at: null,
       status: 'sent',
     };
-    const { client } = makeSb(alreadySent);
+    const { client, updatePayloads } = makeSb(alreadySent);
     sbRef.current = client;
 
     const res = await POST(makeReq(false), { params });
     const json = await res.json();
 
     expect(json.alreadySent).toBe(true);
+    // #241: the builder UI reads sentAt off this response to tell staff WHEN
+    // the quote was actually delivered (it must be the ORIGINAL timestamp,
+    // not a re-stamp) — pin the contract the UI depends on.
+    expect(json.sentAt).toBe('2026-06-26T00:00:00Z');
     expect(hl.updateOpportunity).not.toHaveBeenCalled();
     expect(hl.sendSms).not.toHaveBeenCalled();
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+    expect(updatePayloads).toHaveLength(0);
   });
 
   // W1-017: a ?retryGhl reconcile must check the CURRENT status. A quote that was
@@ -985,6 +991,39 @@ describe('POST /api/quotes/[id]/send — portal and delivery gates', () => {
     expect(hl.sendEmail).not.toHaveBeenCalled();
     expect(hl.updateOpportunity).not.toHaveBeenCalled();
     expect(updatePayloads.some((p) => 'quote_sent_at' in p)).toBe(false);
+  });
+
+  // #241 defect 2 (review MEDIUM): isDeliveryRetry is only honored while
+  // currentStatus is 'sent'/'viewed' (W1-017's same guard, reused). A quote
+  // that progressed to approved/booked/deposit-paid between the original
+  // send and a Force-Redeliver click falls through to the plain alreadySent
+  // short-circuit below — same as a fresh send would. Pin that a retry gets
+  // NO special pass around that guard: it must never deliver, and the
+  // response must carry nothing that looks like a receipt, so the client
+  // can tell "retry also did nothing" apart from "retry delivered."
+  it('a retryDelivery request against a since-BOOKED quote also short-circuits as alreadySent — never delivers', async () => {
+    const bookedButRetried = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-07-18T12:00:00.000Z',
+      customer_approved_at: '2026-07-19T00:00:00.000Z',
+      deposit_paid_at: '2026-07-20T00:00:00.000Z', // deriveStatus → 'booked'
+      ghl_stage_synced_at: '2026-07-18T12:00:01.000Z',
+      status: 'booked',
+    };
+    const { client, updatePayloads } = makeSb(bookedButRetried);
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ channel: 'both' }, true), { params });
+    const json = await res.json();
+
+    expect(json.alreadySent).toBe(true);
+    expect(json.deliveryRetry).toBeUndefined();
+    expect(json.smsSent).toBeUndefined();
+    expect(json.emailSent).toBeUndefined();
+    expect(hl.sendSms).not.toHaveBeenCalled();
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
+    expect(updatePayloads).toHaveLength(0);
   });
 });
 
