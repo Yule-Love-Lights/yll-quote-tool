@@ -30,6 +30,7 @@ import {
   offPresetSizeSuffix,
 } from "./sizePresets";
 import { isLineDrawContext } from "./drawContext";
+import { surfaceOptionsForBulbType } from "./surfaceOptions";
 
 // Default real-world width for newly-placed custom uploads — about 3 feet,
 // big enough to spot on the photo, small enough to resize down with the
@@ -125,6 +126,11 @@ type ToolState = {
   showBeam: boolean;
   // Bistro-only: per-strand catenary sag as a fraction of horizontal span.
   bistroSagFactor: number;
+  // #249: pre-draw billing-category tag — baked into new strands/mini areas at
+  // creation time (see quoteDefaultsForNewStrand). "" = untagged (today's
+  // default); only ever holds a value valid for the current bulbType (see the
+  // #bulb-types click handler, which resets it on a type switch).
+  surface: Surface | "";
   // Decor sub-type
   decorType: DecorType;
   // Decor — wreath
@@ -325,6 +331,7 @@ export async function renderEditor(
     showCoverage: false,
     showBeam: true,
     bistroSagFactor: 0.10,
+    surface: "",
     decorType: "wreath",
     wreathSizeIn: 36,
     wreathWithLights: true,
@@ -1819,6 +1826,29 @@ export async function renderEditor(
         </div>
         <div class="style-help">${tool.scattershot ? SCATTERSHOT_HELP : STYLE_HELP[tool.drawingStyle]}</div>
       </section>
+      ${(() => {
+        // #249: pre-draw quick-tag — sets the Surface billing category BEFORE
+        // drawing so new strands (and scattershot mini areas) carry it
+        // automatically instead of a post-hoc draw→select→dropdown cycle per
+        // item. Options track the current bulbType via the same lookup the
+        // post-hoc #sel-surface dropdown uses (surfaceOptionsForBulbType), so
+        // the two pickers can't drift apart. Hidden entirely when this bulb
+        // type has no surface tag (permanent/bistro) or the design isn't
+        // quote-bound (standalone design tool / non-binding mounts).
+        if (!opts.showQuoteBinding) return "";
+        const toolSurfaceOpts = surfaceOptionsForBulbType(tool.bulbType);
+        if (toolSurfaceOpts.length === 0) return "";
+        return `
+      <section>
+        <h3>Surface</h3>
+        <div class="bulb-types" id="tool-surfaces">
+          <button data-surface="" class="${tool.surface === "" ? "active" : ""}">None</button>
+          ${toolSurfaceOpts.map(([v, l]) => `<button data-surface="${v}" class="${tool.surface === v ? "active" : ""}">${l}</button>`).join("")}
+        </div>
+        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Tags every new item you draw with this billing category. Leave on None to tag after drawing, same as before.</div>
+      </section>
+        `;
+      })()}
       ${tool.bulbType === "permanent" ? `
       <section>
         <h3>Beam Length <span id="tool-beam-len-val" style="float:right;color:var(--text);font-weight:400"></span></h3>
@@ -2047,8 +2077,22 @@ export async function renderEditor(
         applyDefaultsForCurrentType();
         const spacings = SPACINGS[tool.bulbType];
         if (!spacings.includes(tool.spacingIn)) tool.spacingIn = spacings[Math.floor(spacings.length / 2)];
+        // #249: a picked surface tag can be invalid for the new bulb type
+        // (e.g. "santas-roofline" carried over from c9 into mini) — drop it
+        // back to untagged rather than silently mis-tagging the next item.
+        if (!surfaceOptionsForBulbType(tool.bulbType).some(([v]) => v === tool.surface)) tool.surface = "";
         renderSidebar();
         redrawScene(); // #63: bistro vs non-bistro flips strand-draw context
+      }),
+    );
+    sb.querySelectorAll("#tool-surfaces button").forEach((b) =>
+      b.addEventListener("click", () => {
+        // #249: pre-draw quick-tag — sets the default `surface` baked into the
+        // next drawn strand/mini area (see quoteDefaultsForNewStrand /
+        // commitMiniArea). Purely a tool-state change; doesn't touch any
+        // already-drawn item, so no redrawScene needed.
+        tool.surface = ((b as HTMLElement).dataset.surface ?? "") as Surface | "";
+        renderSidebar();
       }),
     );
     sb.querySelectorAll("#decor-types button").forEach((b) =>
@@ -2724,14 +2768,12 @@ export async function renderEditor(
       </section>
       ` : ""}
       ${opts.showQuoteBinding ? (() => {
-        // RELAY: this surfaceOpts tuple is shared with the standalone design tool —
-        // mirror any change there too (see task_ledger Stake Lighting relay note).
+        // #249: pulled from surfaceOptionsForBulbType (surfaceOptions.ts) so this
+        // dropdown and the pre-draw quick-tag section can't drift apart. That
+        // function itself carries the RELAY comment for the standalone design
+        // tool now — see task_ledger Stake Lighting relay note.
         const surfaceOpts: [string, string][] =
-          sharedBulbType.length === 1 && sharedBulbType[0] === "c9"
-            ? [["santas-roofline", "Santa's Roofline"], ["gingerbread", "Gingerbread"], ["winter-wonderland", "Winter Wonderland"], ["stake-lighting", "Stake Lighting"]]
-            : sharedBulbType.length === 1 && sharedBulbType[0] === "mini"
-            ? [["bush", "Bush"], ["tree", "Tree"], ["column", "Column"], ["railing", "Railing"], ["curtain", "Curtain"]]
-            : [];
+          sharedBulbType.length === 1 ? surfaceOptionsForBulbType(sharedBulbType[0] as BulbType) : [];
         // RELAY: roof-feature options are shared with the standalone design tool —
         // mirror any change there too (#82 Slice 2b clip-feature tag). Shown only
         // for c9 roofline runs; drives the inventory clip-SKU selection.
@@ -4566,6 +4608,9 @@ export async function renderEditor(
   }
 
   // Commit a scattershot box drawn via drag (Lights → Scattershot style).
+  // #249: scattershot only exists for bulbType "mini" (see the Drawing Style
+  // section), so tool.surface here is always either "" or a valid mini
+  // surface — falls back to the pre-existing "bush" default when untagged.
   function commitMiniArea(r: { x: number; y: number; width: number; height: number }) {
     const area: MiniAreaItem = {
       id: cryptoId(),
@@ -4578,7 +4623,7 @@ export async function renderEditor(
       density: 0.5,
       colorPattern: [...tool.colorPattern],
       yardstickId: activeYs()?.id ?? null,
-      surface: "bush",
+      surface: tool.surface || "bush",
       wrapStyle: "canopy",
       stringCount: 1,
       included: true,
@@ -4676,11 +4721,15 @@ export async function renderEditor(
   }
 
   // Quote-binding defaults baked onto newly-created items so the quote can
-  // project them out of the box (operator still sets `surface`). Harmless in the
-  // standalone tool — ignored unless a quote reads them.
+  // project them out of the box. #249: `surface` comes from the pre-draw
+  // quick-tag (tool.surface) when the operator set one; otherwise the item is
+  // untagged, same as before this feature (the operator sets `surface`
+  // post-hoc via the #sel-surface dropdown). Harmless in the standalone tool —
+  // ignored unless a quote reads them.
   function quoteDefaultsForNewStrand(): Partial<StrandItem> {
     const d: Partial<StrandItem> = { included: true };
     if (tool.bulbType === "mini") { d.stringCount = 1; d.wrapStyle = "canopy"; }
+    if (tool.surface) d.surface = tool.surface;
     return d;
   }
   function quoteDefaultsForNewGarland(): Partial<GarlandItem> {
