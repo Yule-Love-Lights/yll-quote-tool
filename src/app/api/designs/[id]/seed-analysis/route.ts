@@ -22,6 +22,7 @@ import {
   countSeededItems,
   countSeededGarlandUnestimated,
 } from '@/lib/design/seedFromAnalysis';
+import { isMiniGroup } from '@/lib/design/sceneTypes';
 
 export const runtime = 'nodejs';
 
@@ -64,16 +65,34 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
+  // #255: a staff-created miniGroup (railing/curtain, etc.) is never seed-
+  // prefixed, so seedSceneFromAnalysis's own `kept` filter always lets it
+  // through — the ONLY way one disappears between the pre-seed scene and the
+  // post-seed scene is pruneOrphanedMiniGroups dropping it because a
+  // re-analyze didn't re-detect its last surviving member. A plain id diff of
+  // the two scenes' miniGroups is therefore an exact (not approximate) report
+  // of what THIS call pruned — no need to plumb a new return value out of
+  // seedSceneFromAnalysis and touch its 45 existing call sites in
+  // seedFromAnalysis.test.ts.
+  const beforeGroups = (row.scene ?? EMPTY_SCENE).items.filter(isMiniGroup);
   const scene = seedSceneFromAnalysis(row.scene ?? EMPTY_SCENE, seed, row.photo_w, row.photo_h);
   const ok = await updateDesignScene(id, scene);
   if (!ok) {
     return NextResponse.json({ error: 'Failed to save the seeded scene' }, { status: 500 });
   }
+  const afterGroupIds = new Set(scene.items.filter(isMiniGroup).map((g) => g.id));
+  const prunedMiniGroups = beforeGroups
+    .filter((g) => !afterGroupIds.has(g.id))
+    .map((g) => ({ surface: g.surface ?? null, stringCount: g.stringCount ?? 1 }));
   return NextResponse.json({
     ok: true,
     seeded: countSeededItems(scene),
     // #90: garland runs seeded with no scale → the builder warns staff to set
     // their section counts before quoting (silent fallback to 1 = under-bill).
     garlandSectionsUnestimated: countSeededGarlandUnestimated(seed, scene, row.photo_w, row.photo_h),
+    // #255: a re-analyze that orphans a staff billing decision (a miniGroup)
+    // gets reported here — the builder warns instead of the total silently
+    // dropping a line with no explanation.
+    prunedMiniGroups,
   });
 }

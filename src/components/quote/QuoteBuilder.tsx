@@ -53,7 +53,7 @@ import { hasSatellitePayload } from '@/lib/design/analysisSatellitePayload';
 import { deriveSideMeasure } from '@/lib/permanent/satelliteMeasure';
 import { roundFootageUpTo5 } from '@/lib/permanent/types';
 import { deriveTrackAccessories, hasAccessorySignal } from '@/lib/permanent/trackAccessories';
-import { isStrand, isLinkedTwin } from '@/lib/design/sceneTypes';
+import { isStrand, isLinkedTwin, type Surface } from '@/lib/design/sceneTypes';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
 import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
 import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
@@ -222,6 +222,41 @@ function polylineLength(lines: LineSegment[], aspect: number): number {
     }
   }
   return total;
+}
+
+// #255: mini-group surface labels for the pruned-group warning — matches the
+// wording editor.ts's own pruneOrphanedMiniGroupsNotify toast uses
+// (editor-core/editor.ts MINI_SURFACE_LABELS), kept as a separate copy here
+// rather than importing from editor-core (vendored/relay-shared; this display
+// string doesn't belong in that surface).
+// #741 defect 4: typed exhaustive over Surface (not the loose Record<string,
+// string> this started as) so adding a new Surface value fails `tsc` right
+// here instead of silently rendering "group" in whichever copy (this one or
+// editor.ts's) got missed. Only bush/tree/column/railing/curtain can ever
+// actually reach a MiniGroupItem's `surface`, but Surface is the one shared
+// type — the roofline/C9 entries below are unreachable in practice, present
+// only so the object literal type-checks as complete.
+const MINI_SURFACE_LABELS: Record<Surface, string> = {
+  bush: 'Bush', tree: 'Tree', column: 'Column', railing: 'Railing', curtain: 'Curtain',
+  'santas-roofline': 'Roofline', gingerbread: 'Gingerbread', 'winter-wonderland': 'Winter Wonderland',
+  'stake-lighting': 'Stake Lighting',
+};
+function miniSurfaceLabel(surface: string | null): string {
+  return surface && surface in MINI_SURFACE_LABELS ? MINI_SURFACE_LABELS[surface as Surface] : 'group';
+}
+// #741 defect 5: prunedMiniGroups previously trusted `Array.isArray` alone,
+// then the render below dereferences g.surface/g.stringCount per element — a
+// malformed element (from either the seed-analysis or photo-delete response)
+// would throw and crash the whole builder render. Sibling
+// garlandSectionsUnestimated uses a typeof guard with a safe fallback; give
+// this the same element-shape parity instead of trusting the array's contents.
+function sanitizePrunedMiniGroups(raw: unknown): { surface: string | null; stringCount: number }[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((g): g is { surface: string | null; stringCount: number } => {
+    if (typeof g !== 'object' || g === null) return false;
+    const r = g as Record<string, unknown>;
+    return (typeof r.surface === 'string' || r.surface === null) && typeof r.stringCount === 'number';
+  });
 }
 
 // Permanent Lighting (#88 / S23): the four house sides traced on the satellite
@@ -697,6 +732,28 @@ export default function QuoteBuilder({
   // #90: how many AI-seeded garland runs had no scale to estimate length (so they
   // fall back to 1 section). Surfaced as a builder warning so staff set the count.
   const [garlandUnestimated, setGarlandUnestimated] = useState(0);
+  // #255 / #741 defect 3: mini group(s) (railing/curtain/etc.) a re-analyze OR
+  // a photo delete just orphaned — seedSceneFromAnalysis and
+  // removeDesignExtraPhoto both prune a group silently (no member strands
+  // left), so a "Railing — 3 strings" line can vanish from the quote total
+  // with nothing else explaining it. `cause` drives which guidance the banner
+  // shows (#741 defect 4 — the two triggers need DIFFERENT copy: a re-analyze
+  // miss may still be redrawable, a photo-delete prune's strands are gone for
+  // good with the deleted photo). null = no standing warning.
+  const [prunedMiniGroups, setPrunedMiniGroups] = useState<{
+    cause: 'reanalyze' | 'photo-delete';
+    groups: { surface: string | null; stringCount: number }[];
+  } | null>(null);
+  // #741 defect 3: reports a NEW prune from one of the two triggers. An empty
+  // result never overwrites a real, unaddressed warning already standing from
+  // the OTHER trigger — e.g. a re-analyze orphans "Curtain — 6 strings"
+  // (banner shows), then the operator deletes an unrelated empty extra photo
+  // (reports []) — that must not silently make the still-unresolved warning
+  // disappear. Only a NON-empty report ever changes the banner.
+  const reportPrunedMiniGroups = (cause: 'reanalyze' | 'photo-delete', raw: unknown) => {
+    const groups = sanitizePrunedMiniGroups(raw);
+    if (groups.length > 0) setPrunedMiniGroups({ cause, groups });
+  };
   // Bumped when the design's scene/photo changes outside the editor (roofline
   // seed, photo replacement) so a remount reloads it.
   const [designEditorKey, setDesignEditorKey] = useState(0);
@@ -797,6 +854,10 @@ export default function QuoteBuilder({
   // Capture awaits it so it never snapshots a scene the 600ms autosave debounce
   // hasn't persisted yet.
   const editorFlushRef = useRef<(() => Promise<void>) | null>(null);
+  // #741 defect 1: the editor's discardPending, re-registered alongside
+  // flushSave on each (re)mount — see seedDesignFromAnalysis. Returns whether
+  // it actually discarded a real pending edit (#741 defect 6).
+  const editorDiscardRef = useRef<(() => boolean) | null>(null);
   const captureExample = async (source: 'auto-send' | 'manual') => {
     if (!savedQuoteId) return;
     setTrainStatus('saving');
@@ -869,6 +930,18 @@ export default function QuoteBuilder({
   // staff-drawn items always survive. Remounts the editor to show the result.
   const seedDesignFromAnalysis = async (id: string, seed: AnalysisSeed) => {
     try {
+      // #741 defect 1 consequence B: flush any pending debounced edit BEFORE
+      // the seed POST reads/replaces the scene server-side — same pattern
+      // captureExample/capturePermanentExample already use above. This alone
+      // only SHRINKS the stale-overwrite window (the analyze round trip is
+      // multi-second); the discard below is what actually closes it.
+      if (editorFlushRef.current) {
+        try {
+          await editorFlushRef.current();
+        } catch {
+          // best-effort — proceed with whatever was last persisted.
+        }
+      }
       const res = await fetch(`/api/designs/${id}/seed-analysis`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -881,6 +954,19 @@ export default function QuoteBuilder({
         setGarlandUnestimated(
           typeof data.garlandSectionsUnestimated === 'number' ? data.garlandSectionsUnestimated : 0,
         );
+        // #255: warn when this re-analyze orphaned a staff-created mini group
+        // (its member strands weren't re-detected) — the group is gone, and
+        // with it a real billed line, with no other indication.
+        reportPrunedMiniGroups('reanalyze', data.prunedMiniGroups);
+        // #741 defect 1: discard (never flush) whatever the OUTGOING editor
+        // instance has pending before the key bump below tears it down — an
+        // edit made during this multi-second analyze round trip must not be
+        // written back over the scene the server just seeded/pruned.
+        // #741 defect 6: tell the operator only when there was actually
+        // something to throw away.
+        if (editorDiscardRef.current?.()) {
+          window.alert("An unsaved edit made during the re-analyze was discarded (it hadn't saved yet).");
+        }
         setDesignEditorKey((k) => k + 1);
       }
     } catch {
@@ -4158,6 +4244,35 @@ export default function QuoteBuilder({
                     yardstick or set the section count on the design before quoting.
                   </p>
                 )}
+                {/* #255 / #741 defects 3+4: a re-analyze OR a photo delete can drop
+                    a staff-created mini group (its member strands weren't
+                    re-detected, or lived only on the deleted photo) — unlike
+                    routine strand cleanup in the editor, this quietly removes a
+                    billed line with nothing else calling it out, so it gets the
+                    same standing-warning treatment as the garland-scale notice
+                    above. The closing guidance is CAUSE-SPECIFIC (defect 4): a
+                    re-analyze miss may genuinely still be drawn on the photo,
+                    undetected — true "redraw if still there". A photo-delete
+                    prune's strands lived on a photo the server permanently
+                    deleted along with them — there is nothing left to "still be
+                    there"; that copy would be false. */}
+                {prunedMiniGroups && (
+                  <p className="text-sm text-amber-700 mb-2">
+                    ⚠️ Removed {prunedMiniGroups.groups.length} mini{' '}
+                    {prunedMiniGroups.groups.length === 1 ? 'group' : 'groups'} that lost all their strands:{' '}
+                    {prunedMiniGroups.groups
+                      .map((g, i) => {
+                        const label = miniSurfaceLabel(g.surface);
+                        const n = g.stringCount;
+                        return `${label} — ${n} string${n === 1 ? '' : 's'}${i < prunedMiniGroups.groups.length - 1 ? ', ' : ''}`;
+                      })
+                      .join('')}
+                    .{' '}
+                    {prunedMiniGroups.cause === 'reanalyze'
+                      ? "Redraw them on the design if they're still there."
+                      : 'They lived on the deleted photo, which is gone for good — recreate the group if you still need it.'}
+                  </p>
+                )}
                 {designId ? (
                   <>
                     <DesignEditor
@@ -4166,7 +4281,8 @@ export default function QuoteBuilder({
                       height={640}
                       permanentOnly={form.serviceType === 'permanent'}
                       bistroOnly={form.serviceType === 'permanent_bistro'}
-                      onReady={(flush) => { editorFlushRef.current = flush; }}
+                      onReady={(flush, discard) => { editorFlushRef.current = flush; editorDiscardRef.current = discard; }}
+                      onPrunedMiniGroups={(groups) => reportPrunedMiniGroups('photo-delete', groups)}
                     />
                     {form.serviceType === 'permanent' ? (
                       <p className="text-xs text-gray-400 mt-2">

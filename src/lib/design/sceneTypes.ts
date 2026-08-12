@@ -393,3 +393,23 @@ export function pruneOrphanedMiniGroups(items: SceneItem[]): SceneItem[] {
     return item.memberIds.some((id) => strandIds.has(id));
   });
 }
+
+// #741 defect 1 (round 2): drop every item tagged to `photoId` (plus any
+// linked twin of one of those — it would otherwise dangle, render-only,
+// forever, per #13), then prune any miniGroup left with zero surviving
+// members. Pure — mirrors designs.ts's server-side removeDesignExtraPhoto
+// prune exactly, and is shared by TWO call sites in editor.ts: the live-scene
+// splice (removePhotoItems) AND the undo/redo history rewrite that must apply
+// this identical edit to every snapshot already sitting in `past`/`future`,
+// so that walking back (or forward) through history can never resurrect a
+// deleted photo's items. Returns the SAME array reference when nothing on
+// `items` is tagged to `photoId`, so callers can cheaply no-op.
+export function removeItemsForPhoto(items: SceneItem[], photoId: string): SceneItem[] {
+  const droppedIds = new Set(
+    items.filter((it) => it.photoId === photoId).map((it) => it.id),
+  );
+  if (droppedIds.size === 0) return items;
+  return pruneOrphanedMiniGroups(
+    items.filter((it) => it.photoId !== photoId && !(it.linkedToId && droppedIds.has(it.linkedToId))),
+  );
+}
