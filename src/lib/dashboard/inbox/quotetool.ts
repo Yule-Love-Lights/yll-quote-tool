@@ -6,11 +6,17 @@
 // Separately, a sent-but-unapproved quote spawns a quote_sent_no_reply follow-up
 // (closed when the quote is approved). Pure — the reconcile glue does the I/O.
 //
-// #181: an unsent legacy_rebook ("YLL Neighbor") draft is a deliberately-parked
-// rebooking-pool quote (migrations/2026-07-16-legacy-rebook.sql), not a real
-// unresponded lead — normalizeQuoteTouch returns null for it (no inbox item,
-// no follow-up). Once it's sent it behaves like any other quote again. Gated
-// on the SAME EXCLUDE_LEGACY_REBOOK_FROM_INBOX flag store.ts's listOpenItems/
+// #181/#252: an unsent, still-DRAFT legacy_rebook ("YLL Neighbor") quote is a
+// deliberately-parked rebooking-pool quote (migrations/2026-07-16-legacy-
+// rebook.sql), not a real unresponded lead — normalizeQuoteTouch returns null
+// for it (no inbox item, no follow-up). Once it's sent, or its status moves
+// past 'draft' (sent/viewed/approved/booked/etc.), it behaves like any other
+// quote again — #252 slice G narrowed this from "any unsent Neighbor quote"
+// to "status='draft' AND unsent" (both positive-matched, AGENTS.md seam-gate
+// rule) to match store.ts's isHiddenLegacyRebookQuote: 3 prod rows are
+// `status='booked'` with `quote_sent_at IS NULL`, and a booked quote is never
+// a parked draft however it got there. Gated on the SAME
+// EXCLUDE_LEGACY_REBOOK_FROM_INBOX flag store.ts's listOpenItems/
 // listEscalatableItems use, so the documented rollback (flip the flag false)
 // is one switch end-to-end — otherwise this ingest-time guard would keep
 // suppressing unsent drafts even after the display-side filter was flipped off.
@@ -23,12 +29,13 @@ import { EXCLUDE_LEGACY_REBOOK_FROM_INBOX } from './store';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 
 export function normalizeQuoteTouch(q: DashboardQuote): NormalizedTouch | null {
-  // #181: unsent YLL Neighbor drafts are parked send-wave inventory, not leads
-  // owed a response — suppress before any touch is built (while the flag is
-  // on). Sent legacy_rebook quotes fall through to the normal mapping below
-  // unchanged, regardless of the flag.
+  // #181/#252: unsent, still-DRAFT YLL Neighbor quotes are parked send-wave
+  // inventory, not leads owed a response — suppress before any touch is built
+  // (while the flag is on). A sent, or non-draft (sent/viewed/approved/
+  // booked/etc.), legacy_rebook quote falls through to the normal mapping
+  // below unchanged, regardless of the flag.
   //
-  if (EXCLUDE_LEGACY_REBOOK_FROM_INBOX && q.legacy_rebook && !q.quote_sent_at) return null;
+  if (EXCLUDE_LEGACY_REBOOK_FROM_INBOX && q.legacy_rebook && q.status === 'draft' && !q.quote_sent_at) return null;
   // Sent OR approved means we've acted on this lead; only an untouched draft is
   // still "owed a quote".
   const answered = !!(q.customer_approved_at || q.quote_sent_at);

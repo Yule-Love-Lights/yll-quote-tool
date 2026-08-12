@@ -448,19 +448,81 @@ export function quoteIdPrefix(externalId: string): string {
 }
 
 /**
- * #157: drop items backed by a legacy_rebook=true ("YLL Neighbor") quote. Only
- * a 'quotetool' item can match — its external_id is the quote id, optionally
+ * #157: drop items whose backing quote id is in `hiddenQuoteIds`. Only a
+ * 'quotetool' item can match — its external_id is the quote id, optionally
  * suffixed `:color-request` (quoteIdPrefix strips it, #183 BUG 1) — so every
  * other source is untouched by construction, even if an id happened to
  * collide. Pure — no I/O — hence unit-testable on its own (store.test.ts).
+ * `hiddenQuoteIds` is produced by fetchHiddenLegacyRebookQuoteIds below (the
+ * #252 slice-G predicate, not a raw legacy_rebook flag) — see that function's
+ * doc comment for what "hidden" means.
  */
 export function excludeLegacyRebookItems<T extends { source: unknown; external_id: unknown }>(
   items: T[],
-  legacyQuoteIds: ReadonlySet<string>,
+  hiddenQuoteIds: ReadonlySet<string>,
 ): T[] {
-  if (legacyQuoteIds.size === 0) return items;
+  if (hiddenQuoteIds.size === 0) return items;
   return items.filter(
-    (item) => !(item.source === 'quotetool' && legacyQuoteIds.has(quoteIdPrefix(String(item.external_id)))),
+    (item) => !(item.source === 'quotetool' && hiddenQuoteIds.has(quoteIdPrefix(String(item.external_id)))),
+  );
+}
+
+/**
+ * #252 slice G: a legacy_rebook ("YLL Neighbor") quote is hidden from the
+ * inbox/escalation surfaces ONLY when it's a genuine parked draft nobody has
+ * sent — status='draft' AND quote_sent_at IS NULL, both POSITIVE-matched
+ * (AGENTS.md seam-gate rule: never gate a hide on `!== 'sent'`, or every
+ * future status silently inherits the old hide-everything behavior). #157/
+ * #181 originally hid every legacy_rebook quote regardless of status or
+ * quote_sent_at — that blanket rule swallowed a real customer's live BOOKED
+ * colour-change ask (quote #1129) for 14 days. 3 prod rows are `status =
+ * 'booked'` with `quote_sent_at IS NULL` — a booked quote is never a parked
+ * draft however it got there, so `quote_sent_at IS NULL` alone is not a safe
+ * proxy for "unsent draft"; both conditions are required. Pure — no I/O.
+ */
+export function isHiddenLegacyRebookQuote(q: {
+  legacy_rebook: boolean | null;
+  status: string | null;
+  quote_sent_at: string | null;
+}): boolean {
+  return q.legacy_rebook === true && q.status === 'draft' && q.quote_sent_at === null;
+}
+
+/**
+ * #252 slice G: the ONE seam listOpenItems and listEscalatableItems both call
+ * to decide which of the quotetool ids on their current page back a hidden
+ * (parked-draft) legacy_rebook quote — so the two surfaces can't drift onto
+ * different predicates again (they had: listEscalatableItems' own comment used
+ * to document hiding "regardless of quote_sent_at" as an accepted, narrower-
+ * than-ingest tradeoff). Batch-fetches only the ids passed in; empty input
+ * skips the query entirely (the common case for ghl/gmail/homeworks-only
+ * pages). Fails OPEN + VISIBLY on a lookup error (#183 BUG 1(c)) — returns an
+ * empty set (nothing hidden) rather than swallow the error or throw.
+ */
+async function fetchHiddenLegacyRebookQuoteIds(
+  sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  quotetoolIds: readonly string[],
+): Promise<Set<string>> {
+  if (quotetoolIds.length === 0) return new Set();
+  const { data: quoteRows, error } = await sb
+    .from('quotes')
+    .select('id, legacy_rebook, status, quote_sent_at')
+    .in('id', quotetoolIds);
+  if (error) {
+    console.error('[inbox] legacy-rebook exclusion lookup failed:', error.message);
+    return new Set();
+  }
+  return new Set(
+    (
+      (quoteRows ?? []) as {
+        id: string;
+        legacy_rebook: boolean | null;
+        status: string | null;
+        quote_sent_at: string | null;
+      }[]
+    )
+      .filter(isHiddenLegacyRebookQuote)
+      .map((q) => String(q.id)),
   );
 }
 
@@ -488,9 +550,11 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
   let rows = (data ?? []) as unknown as Record<string, unknown>[];
   let legacyExcluded = 0;
 
-  // #157: batch-fetch the quotetool ids present on THIS page and drop any that
-  // are a legacy_rebook quote. Skips the extra query entirely when the page has
-  // no quotetool items (the common case for ghl/gmail/homeworks-only pages).
+  // #157/#252: batch-fetch the quotetool ids present on THIS page and drop any
+  // that back a hidden (parked-draft) legacy_rebook quote — see
+  // isHiddenLegacyRebookQuote for the exact predicate. Skips the extra query
+  // entirely when the page has no quotetool items (the common case for
+  // ghl/gmail/homeworks-only pages).
   // #183 BUG 1: derive+filter through quoteIdPrefix/isUuid — a suffixed
   // `:color-request` id (or any other malformed value) is NOT a valid uuid, and
   // Postgres's `.in()` rejects the ENTIRE query (22P02) if even one entry in the
@@ -506,21 +570,10 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
       ),
     ];
     if (quotetoolIds.length) {
-      const { data: quoteRows, error: quoteErr } = await sb.from('quotes').select('id, legacy_rebook').in('id', quotetoolIds);
-      if (quoteErr) {
-        // Fail open (unexcluded) but VISIBLY — a silent swallow here is exactly
-        // what let ~129 legacy drafts flood the inbox undetected (#183).
-        console.error('[inbox] legacy-rebook exclusion lookup failed:', quoteErr.message);
-      } else {
-        const legacyQuoteIds = new Set(
-          ((quoteRows ?? []) as { id: string; legacy_rebook: boolean | null }[])
-            .filter((q) => q.legacy_rebook === true)
-            .map((q) => String(q.id)),
-        );
-        const before = rows.length;
-        rows = excludeLegacyRebookItems(rows as { source: unknown; external_id: unknown }[], legacyQuoteIds);
-        legacyExcluded = before - rows.length;
-      }
+      const hiddenQuoteIds = await fetchHiddenLegacyRebookQuoteIds(sb, quotetoolIds);
+      const before = rows.length;
+      rows = excludeLegacyRebookItems(rows as { source: unknown; external_id: unknown }[], hiddenQuoteIds);
+      legacyExcluded = before - rows.length;
     }
   }
 
@@ -760,16 +813,18 @@ export async function listEscalatableItems(): Promise<EscalatableResult> {
 
   let rows = (data ?? []) as unknown as Record<string, unknown>[];
 
-  // #181: the same #157 exclusion listOpenItems applies to the /inbox display —
-  // a YLL Neighbor item must never fire an amber/red alert or land in the EOD
-  // digest either, so it stays invisible on every escalation surface, not just
-  // the open-items list. Reuses excludeLegacyRebookItems (the exact #157
-  // predicate, fed the same way: batch-fetch quotes for the quotetool ids on
-  // this read) so the two surfaces can never disagree. NOTE this excludes a
-  // legacy_rebook quote's item regardless of quote_sent_at — broader than the
-  // quotetool.ts ingest-time guard (#181's normalizeQuoteTouch, which only
-  // suppresses UNSENT ones from ever being created) — matching #157's existing
-  // display behavior (all Neighbor items hidden) rather than fighting it.
+  // #181/#252: the same #157 exclusion listOpenItems applies to the /inbox
+  // display — a YLL Neighbor item must never fire an amber/red alert or land
+  // in the EOD digest either, so it stays invisible on every escalation
+  // surface, not just the open-items list. Reuses excludeLegacyRebookItems +
+  // fetchHiddenLegacyRebookQuoteIds (the exact same predicate, fed the same
+  // way: batch-fetch quotes for the quotetool ids on this read) so the two
+  // surfaces can never disagree.
+  // #252 slice G: narrowed from "every legacy_rebook item, regardless of
+  // status/quote_sent_at" to "only a genuine unsent DRAFT" (see
+  // isHiddenLegacyRebookQuote) — a sent/viewed/approved/booked Neighbor quote
+  // now behaves like a normal quote here too, matching quotetool.ts's ingest-
+  // time guard rather than the old, broader hide-everything rule.
   // #183 BUG 1: same fix as listOpenItems — derive+filter through
   // quoteIdPrefix/isUuid so a suffixed `:color-request` id can't poison the
   // `.in()` lookup (Postgres 22P02 on a malformed uuid), and check the lookup
@@ -784,17 +839,8 @@ export async function listEscalatableItems(): Promise<EscalatableResult> {
       ),
     ];
     if (quotetoolIds.length) {
-      const { data: quoteRows, error: quoteErr } = await sb.from('quotes').select('id, legacy_rebook').in('id', quotetoolIds);
-      if (quoteErr) {
-        console.error('[inbox] legacy-rebook exclusion lookup failed:', quoteErr.message);
-      } else {
-        const legacyQuoteIds = new Set(
-          ((quoteRows ?? []) as { id: string; legacy_rebook: boolean | null }[])
-            .filter((q) => q.legacy_rebook === true)
-            .map((q) => String(q.id)),
-        );
-        rows = excludeLegacyRebookItems(rows as { source: unknown; external_id: unknown }[], legacyQuoteIds);
-      }
+      const hiddenQuoteIds = await fetchHiddenLegacyRebookQuoteIds(sb, quotetoolIds);
+      rows = excludeLegacyRebookItems(rows as { source: unknown; external_id: unknown }[], hiddenQuoteIds);
     }
   }
 

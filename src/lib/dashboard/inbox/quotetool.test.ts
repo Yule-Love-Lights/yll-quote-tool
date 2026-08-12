@@ -26,6 +26,12 @@ function quote(over: Partial<DashboardQuote> = {}): DashboardQuote {
     homeworks_signed_at: null,
     highlevel_contact_id: 'g1',
     service_type: null,
+    // #252 slice G: the default fixture represents a not-yet-sent draft (the
+    // describe block above's own name for it) — the legacy_rebook guard below
+    // now reads `status` too, so it needs a real value here rather than
+    // undefined. Every non-legacy-rebook test is unaffected (normalizeQuoteTouch
+    // only reads status inside the legacy_rebook branch).
+    status: 'draft',
     ...over,
   };
 }
@@ -83,15 +89,29 @@ describe('normalizeQuoteTouch — leadKind + quoteValue', () => {
 // the const's current value and tests the pure exclusion predicate directly
 // instead) — the hardcoded-const coupling makes a true false-path test here
 // no more straightforward than it is there.
-describe('normalizeQuoteTouch — legacy_rebook (#181, YLL Neighbor inbox noise)', () => {
-  it('suppresses an unsent legacy_rebook draft entirely (no inbox item)', () => {
-    expect(normalizeQuoteTouch(quote({ legacy_rebook: true, quote_sent_at: null }))).toBeNull();
+describe('normalizeQuoteTouch — legacy_rebook (#181/#252, YLL Neighbor inbox noise)', () => {
+  it('suppresses an unsent, still-DRAFT legacy_rebook quote entirely (no inbox item)', () => {
+    expect(normalizeQuoteTouch(quote({ legacy_rebook: true, status: 'draft', quote_sent_at: null }))).toBeNull();
   });
 
   it('a SENT legacy_rebook quote behaves like any other sent quote (normal outbound item)', () => {
-    const t = mustTouch(normalizeQuoteTouch(quote({ legacy_rebook: true, quote_sent_at: '2026-06-29T10:00:00Z' })));
+    const t = mustTouch(
+      normalizeQuoteTouch(quote({ legacy_rebook: true, status: 'sent', quote_sent_at: '2026-06-29T10:00:00Z' })),
+    );
     expect(t.direction).toBe('outbound');
-    expect(quoteFollowUpDecision(quote({ legacy_rebook: true, quote_sent_at: '2026-06-29T10:00:00Z' })).kind).toBe('create');
+    expect(
+      quoteFollowUpDecision(quote({ legacy_rebook: true, status: 'sent', quote_sent_at: '2026-06-29T10:00:00Z' })).kind,
+    ).toBe('create');
+  });
+
+  // #252 slice G refinement: 3 prod rows are `status='booked'` with
+  // `quote_sent_at IS NULL` — a booked quote is never a parked draft however it
+  // got there, so `!quote_sent_at` alone (the old, blanket condition) is NOT a
+  // safe proxy for "still a draft nobody sent". This is the case a naive
+  // "unsent = suppress" implementation would get wrong.
+  it('does NOT suppress a BOOKED legacy_rebook quote even though quote_sent_at is null', () => {
+    const t = mustTouch(normalizeQuoteTouch(quote({ legacy_rebook: true, status: 'booked', quote_sent_at: null })));
+    expect(t).not.toBeNull();
   });
 
   it('an unsent NON-legacy draft is still a normal inbound lead (unchanged behavior)', () => {
