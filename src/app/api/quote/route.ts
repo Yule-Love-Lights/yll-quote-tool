@@ -71,7 +71,7 @@ const REPRICE_LOCKED_STATUSES: ReadonlySet<QuoteStatus> = new Set<QuoteStatus>([
   'booked',
   'declined',
   'cancelled',
-  'lost',
+  'abandoned',
 ]);
 
 function isNonNegNumber(v: unknown): v is number {
@@ -558,7 +558,7 @@ export async function POST(req: NextRequest) {
     // it updates result/inputs in place (updateQuote writes only inputs/result/total/
     // service_type — never deposit_paid_at or status, so the lifecycle stays booked),
     // which the operator immediately follows with the amend record. Terminal statuses
-    // (declined/cancelled/lost) stay hard-locked — a dead order is never re-priced.
+    // (declined/cancelled/abandoned) stay hard-locked — a dead order is never re-priced.
     if (isUpdate && existing) {
       const currentStatus = deriveStatus(existing);
       const amendRepriceAllowed = amendReprice && currentStatus === 'booked';
