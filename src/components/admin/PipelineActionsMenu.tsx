@@ -72,6 +72,21 @@ async function run(action: PipelineAction, rec: PipelineRecord): Promise<Respons
         body: JSON.stringify({ reason: entered.trim() }),
       });
     }
+    case 'mark-abandoned': {
+      // #235: archive a quote that went cold — never approved, never
+      // declined. Optional note — Cancel on the prompt aborts; an empty note
+      // is allowed.
+      const entered = window.prompt(
+        'Mark this quote abandoned (gone cold — no reply, never approved or declined)? Optional note:',
+        '',
+      );
+      if (entered === null) return null; // user cancelled
+      return fetch(`/api/quotes/${q}/staff-abandon`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ reason: entered.trim() }),
+      });
+    }
     case 'convert-to-job': {
       const entered = window.prompt('Deposit received (USD)? Enter 0 if none.', '');
       if (entered === null) return null; // user cancelled
