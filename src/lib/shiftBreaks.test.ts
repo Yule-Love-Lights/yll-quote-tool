@@ -91,6 +91,8 @@ const { dbRef, stateRef } = vi.hoisted(() => ({
       inserted: [] as Record<string, unknown>[],
       updated: [] as Record<string, unknown>[],
       insertRaceRow: null as BreakRow | null,
+      selectError: null as DbError | null,
+      updateError: null as DbError | null,
     },
   },
 }));
@@ -150,11 +152,28 @@ function makeDb() {
           }
           return builder;
         },
-        order: () => builder,
-        maybeSingle: () => Promise.resolve({ data: filtered[0] ?? null, error: null }),
+        order: (col: string, opts?: { ascending?: boolean }) => {
+          // Real ordering, so a test can actually prove the sort rather than
+          // relying on a single-row fixture (S58 wrap review, technical lens).
+          const ascending = opts?.ascending !== false;
+          filtered = [...filtered].sort((a, b) => {
+            const av = String(a[col] ?? '');
+            const bv = String(b[col] ?? '');
+            return ascending ? av.localeCompare(bv) : bv.localeCompare(av);
+          });
+          return builder;
+        },
+        maybeSingle: () =>
+          Promise.resolve({
+            data: stateRef.current.selectError ? null : (filtered[0] ?? null),
+            error: stateRef.current.selectError,
+          }),
         // The real query builder is thenable; awaiting it resolves the list form.
         then: (resolve: (value: { data: unknown; error: DbError | null }) => unknown) =>
-          resolve({ data: filtered, error: null }),
+          resolve({
+            data: stateRef.current.selectError ? null : filtered,
+            error: stateRef.current.selectError,
+          }),
         insert: (payload: Record<string, unknown>) => {
           stateRef.current.inserted.push(payload);
 
@@ -198,6 +217,9 @@ function makeDb() {
             },
             select: () => ({
               maybeSingle: () => {
+                if (stateRef.current.updateError) {
+                  return Promise.resolve({ data: null, error: stateRef.current.updateError });
+                }
                 const rows = source();
                 const idx = rows.findIndex((row) => matches(row, updateFilters));
                 if (idx === -1) return Promise.resolve({ data: null, error: null });
@@ -228,6 +250,8 @@ beforeEach(() => {
     inserted: [],
     updated: [],
     insertRaceRow: null,
+    selectError: null,
+    updateError: null,
   };
   dbRef.current = makeDb();
 });
@@ -360,8 +384,9 @@ describe('paidSecondsForShift', () => {
     expect(value).toBe(11);
   });
 
-  it('rounds a sub-second break remainder in the same direction', () => {
-    // 60s envelope minus a 10.5s break = 49.5s of paid time, rounded up to 50.
+  it('rounds a sub-second break DOWN, which also favors the employee', () => {
+    // 60s envelope, a 10.5s break. Break floors to 10, so paid is 60 - 10 = 50:
+    // the half second of break is not charged against the crew member.
     const value = paidSecondsForShift(
       shift('2026-08-10T08:00:00.000Z', '2026-08-10T08:01:00.000Z'),
       [brk('2026-08-10T08:00:10.000Z', '2026-08-10T08:00:20.500Z')],
@@ -389,10 +414,52 @@ describe('breakSecondsForShift', () => {
     ).toBe(45 * 60);
   });
 
-  it('and the two always sum back to the envelope', () => {
+  it('and the two sum back to the envelope on whole-second inputs', () => {
     const s = shift('2026-08-10T08:00:00.000Z', '2026-08-10T16:00:00.000Z');
     const breaks = [brk('2026-08-10T12:00:00.000Z', '2026-08-10T12:30:00.000Z')];
     expect(paidSecondsForShift(s, breaks) + breakSecondsForShift(s, breaks)).toBe(8 * 3600);
+  });
+
+  it('and they still sum back to the envelope on MILLISECOND inputs', () => {
+    // The case the earlier implementation got wrong, and the earlier version of
+    // this test never covered: rounding each half up independently gave
+    // paid 11 + break 1 = 12 against an 11-second envelope. Real timestamps
+    // carry milliseconds, so this is the normal case, not an edge case.
+    const s = shift('2026-08-10T08:00:00.000Z', '2026-08-10T08:00:10.700Z');
+    const breaks = [brk('2026-08-10T08:00:00.000Z', '2026-08-10T08:00:00.400Z')];
+
+    const envelope = 11; // ceil(10_700 / 1000)
+    expect(paidSecondsForShift(s, breaks) + breakSecondsForShift(s, breaks)).toBe(envelope);
+  });
+
+  it('holds the identity across a spread of awkward millisecond values', () => {
+    const cases: Array<[string, string, string, string]> = [
+      ['08:00:00.000', '08:00:10.700', '08:00:00.000', '08:00:00.400'],
+      ['08:00:00.123', '09:17:43.987', '08:30:00.500', '08:45:12.250'],
+      ['08:00:00.999', '16:00:00.001', '12:00:00.001', '12:30:00.999'],
+      ['08:00:00.500', '08:00:01.499', '08:00:00.600', '08:00:00.900'],
+    ];
+
+    for (const [inAt, outAt, bStart, bEnd] of cases) {
+      const s = shift(`2026-08-10T${inAt}Z`, `2026-08-10T${outAt}Z`);
+      const breaks = [brk(`2026-08-10T${bStart}Z`, `2026-08-10T${bEnd}Z`)];
+      const paid = paidSecondsForShift(s, breaks);
+      const unpaid = breakSecondsForShift(s, breaks);
+
+      expect(Number.isInteger(paid)).toBe(true);
+      expect(Number.isInteger(unpaid)).toBe(true);
+      expect(paid).toBeGreaterThanOrEqual(0);
+      // The whole envelope is accounted for: nothing vanishes, nothing is minted.
+      const envelope = paidSecondsForShift(s, []);
+      expect(paid + unpaid).toBe(envelope);
+    }
+  });
+
+  it('never lets break time exceed the envelope it is subtracted from', () => {
+    const s = shift('2026-08-10T08:00:00.000Z', '2026-08-10T09:00:00.000Z');
+    const breaks = [brk('2026-08-10T07:00:00.000Z', '2026-08-10T18:00:00.000Z')];
+    expect(breakSecondsForShift(s, breaks)).toBe(3600);
+    expect(paidSecondsForShift(s, breaks)).toBe(0);
   });
 });
 
@@ -430,6 +497,82 @@ describe('listBreaks', () => {
 
   it('returns an empty array for a shift with none', async () => {
     await expect(listBreaks('shift-nobreaks')).resolves.toEqual([]);
+  });
+
+  it('returns the breaks oldest-first, proven with more than one row', async () => {
+    stateRef.current.breaks = [
+      { ...OPEN_BREAK, id: 'b-late', started_at: '2026-08-10T14:00:00.000Z', ended_at: null },
+      {
+        ...ENDED_BREAK,
+        id: 'b-early',
+        shift_id: 'shift-open-1',
+        crew_member_id: 'crew-1',
+        started_at: '2026-08-10T09:00:00.000Z',
+      },
+      {
+        ...ENDED_BREAK,
+        id: 'b-middle',
+        shift_id: 'shift-open-1',
+        crew_member_id: 'crew-1',
+        started_at: '2026-08-10T11:30:00.000Z',
+      },
+    ];
+
+    const rows = await listBreaks('shift-open-1');
+    expect(rows.map((row) => row.id)).toEqual(['b-early', 'b-middle', 'b-late']);
+  });
+});
+
+// These cover the error branches that the mocks previously never reached, so a
+// broken `error.message` interpolation would have shipped green (S58 wrap
+// review, technical lens).
+describe('database error handling', () => {
+  const dbError = { code: '08006', message: 'connection terminated' };
+
+  it('getOpenBreak swallows a read error and reports no open break', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      stateRef.current.selectError = dbError;
+      await expect(getOpenBreak('shift-open-1')).resolves.toBeNull();
+      expect(spy).toHaveBeenCalled();
+      expect(String(spy.mock.calls[0]?.[1])).toContain('connection terminated');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('listBreaks swallows a read error and reports no breaks', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      stateRef.current.selectError = dbError;
+      await expect(listBreaks('shift-open-1')).resolves.toEqual([]);
+      expect(spy).toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('startBreak surfaces a shift-lookup error rather than opening a break blind', async () => {
+    stateRef.current.selectError = dbError;
+    await expect(startBreak('shift-open-1', 'crew-1', 'pwa')).rejects.toThrow(
+      'startBreak: connection terminated',
+    );
+    expect(stateRef.current.inserted).toEqual([]);
+  });
+
+  it('endBreak surfaces an update error rather than reporting a close that did not happen', async () => {
+    stateRef.current.updateError = dbError;
+    await expect(endBreak('break-open-1', 'crew-1', 'office')).rejects.toThrow(
+      'endBreak: connection terminated',
+    );
+    expect(stateRef.current.breaks.find((row) => row.id === 'break-open-1')?.ended_at).toBeNull();
+  });
+
+  it('closeOpenBreakForShift surfaces an update error to its caller', async () => {
+    stateRef.current.updateError = dbError;
+    await expect(
+      closeOpenBreakForShift('shift-open-1', '2026-08-10T15:30:00.000Z', 'office'),
+    ).rejects.toThrow('closeOpenBreakForShift: connection terminated');
   });
 });
 
