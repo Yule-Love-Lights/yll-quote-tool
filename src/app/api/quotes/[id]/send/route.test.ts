@@ -992,6 +992,39 @@ describe('POST /api/quotes/[id]/send — portal and delivery gates', () => {
     expect(hl.updateOpportunity).not.toHaveBeenCalled();
     expect(updatePayloads.some((p) => 'quote_sent_at' in p)).toBe(false);
   });
+
+  // #241 defect 2 (review MEDIUM): isDeliveryRetry is only honored while
+  // currentStatus is 'sent'/'viewed' (W1-017's same guard, reused). A quote
+  // that progressed to approved/booked/deposit-paid between the original
+  // send and a Force-Redeliver click falls through to the plain alreadySent
+  // short-circuit below — same as a fresh send would. Pin that a retry gets
+  // NO special pass around that guard: it must never deliver, and the
+  // response must carry nothing that looks like a receipt, so the client
+  // can tell "retry also did nothing" apart from "retry delivered."
+  it('a retryDelivery request against a since-BOOKED quote also short-circuits as alreadySent — never delivers', async () => {
+    const bookedButRetried = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-07-18T12:00:00.000Z',
+      customer_approved_at: '2026-07-19T00:00:00.000Z',
+      deposit_paid_at: '2026-07-20T00:00:00.000Z', // deriveStatus → 'booked'
+      ghl_stage_synced_at: '2026-07-18T12:00:01.000Z',
+      status: 'booked',
+    };
+    const { client, updatePayloads } = makeSb(bookedButRetried);
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ channel: 'both' }, true), { params });
+    const json = await res.json();
+
+    expect(json.alreadySent).toBe(true);
+    expect(json.deliveryRetry).toBeUndefined();
+    expect(json.smsSent).toBeUndefined();
+    expect(json.emailSent).toBeUndefined();
+    expect(hl.sendSms).not.toHaveBeenCalled();
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
+    expect(updatePayloads).toHaveLength(0);
+  });
 });
 
 describe('POST /api/quotes/[id]/send — NCE + YLL Neighbor tag propagation (#198)', () => {
