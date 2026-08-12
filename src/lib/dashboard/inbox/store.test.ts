@@ -303,6 +303,7 @@ import {
   findOrphanedFollowUpItems,
   findViewOnlyFollowUpItems,
   getReopenCounts,
+  isHiddenLegacyRebookQuote,
   listInWorks,
   listOpenItems,
   listEscalatableItems,
@@ -409,6 +410,41 @@ describe('excludeLegacyRebookItems (#157 — YLL Neighbors inbox exclusion)', ()
     ];
     const result = excludeLegacyRebookItems(items, new Set(['quote-legacy']));
     expect(result.map((i) => i.external_id)).toEqual(['quote-normal']);
+  });
+});
+
+// ─── isHiddenLegacyRebookQuote — #252 slice G (pure) ─────────────────────────
+
+describe('isHiddenLegacyRebookQuote (#252 slice G — narrowed to genuine unsent drafts)', () => {
+  it('hides an unsent, still-DRAFT legacy_rebook quote', () => {
+    expect(isHiddenLegacyRebookQuote({ legacy_rebook: true, status: 'draft', quote_sent_at: null })).toBe(true);
+  });
+
+  it('does NOT hide a SENT legacy_rebook quote', () => {
+    expect(
+      isHiddenLegacyRebookQuote({ legacy_rebook: true, status: 'sent', quote_sent_at: '2026-07-01T00:00:00Z' }),
+    ).toBe(false);
+  });
+
+  it('does NOT hide an APPROVED legacy_rebook quote', () => {
+    expect(
+      isHiddenLegacyRebookQuote({ legacy_rebook: true, status: 'approved', quote_sent_at: '2026-07-01T00:00:00Z' }),
+    ).toBe(false);
+  });
+
+  // #252 refinement: 3 prod rows are booked with quote_sent_at IS NULL — a
+  // naive "unsent = hidden" predicate would wrongly hide these. Both
+  // conditions (status='draft' AND quote_sent_at IS NULL) are required.
+  it('does NOT hide a BOOKED legacy_rebook quote even though quote_sent_at is null', () => {
+    expect(isHiddenLegacyRebookQuote({ legacy_rebook: true, status: 'booked', quote_sent_at: null })).toBe(false);
+  });
+
+  it('does NOT hide a non-legacy_rebook draft, even if unsent', () => {
+    expect(isHiddenLegacyRebookQuote({ legacy_rebook: false, status: 'draft', quote_sent_at: null })).toBe(false);
+  });
+
+  it('does NOT hide a legacy_rebook quote with a null legacy_rebook read (defensive)', () => {
+    expect(isHiddenLegacyRebookQuote({ legacy_rebook: null, status: 'draft', quote_sent_at: null })).toBe(false);
   });
 });
 
@@ -821,7 +857,7 @@ describe('listOpenItems — legacy-rebook exclusion wiring (#157, #183)', () => 
     dashboard_contacts: null,
   });
 
-  it('excludes a quotetool item whose quote is legacy_rebook=true, keeps normal quotetool + other sources', async () => {
+  it('excludes an unsent DRAFT legacy_rebook quotetool item, keeps normal quotetool + other sources', async () => {
     const rows = [
       row('i-legacy', 'quotetool', LEGACY_ID),
       row('i-normal', 'quotetool', NORMAL_ID),
@@ -830,8 +866,8 @@ describe('listOpenItems — legacy-rebook exclusion wiring (#157, #183)', () => 
     const { builder: mainBuilder } = makeBuilder({ data: rows, error: null, count: 3 });
     const { builder: quotesBuilder, calls: quotesCalls } = makeBuilder({
       data: [
-        { id: LEGACY_ID, legacy_rebook: true },
-        { id: NORMAL_ID, legacy_rebook: false },
+        { id: LEGACY_ID, legacy_rebook: true, status: 'draft', quote_sent_at: null },
+        { id: NORMAL_ID, legacy_rebook: false, status: 'draft', quote_sent_at: null },
       ],
       error: null,
     });
@@ -895,8 +931,8 @@ describe('listOpenItems — legacy-rebook exclusion wiring (#157, #183)', () => 
     const { builder: mainBuilder } = makeBuilder({ data: rows, error: null, count: 4 });
     const { builder: quotesBuilder, calls: quotesCalls } = makeBuilder({
       data: [
-        { id: LEGACY_ID, legacy_rebook: true },
-        { id: NORMAL_ID, legacy_rebook: false },
+        { id: LEGACY_ID, legacy_rebook: true, status: 'draft', quote_sent_at: null },
+        { id: NORMAL_ID, legacy_rebook: false, status: 'draft', quote_sent_at: null },
       ],
       error: null,
     });
@@ -950,6 +986,58 @@ describe('listOpenItems — legacy-rebook exclusion wiring (#157, #183)', () => 
 
     const inCall = quotesCalls.find((c) => c.method === 'in');
     expect(inCall!.args[1]).toEqual([NORMAL_ID]);
+  });
+
+  // #252 slice G: narrowed from "every legacy_rebook item" to "only a genuine
+  // unsent DRAFT" — a SENT/APPROVED/BOOKED Neighbor quote's item now behaves
+  // like a normal quotetool item on the open-items list (this is the row #252
+  // set out to fix: quote #1129, BOOKED, sat invisible for 14 days under the
+  // old blanket rule).
+  it('does NOT exclude a SENT legacy_rebook quotetool item', async () => {
+    const rows = [row('i-sent-legacy', 'quotetool', LEGACY_ID), row('i-ghl', 'ghl', 'ghl-msg-1')];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null, count: 2 });
+    const { builder: quotesBuilder } = makeBuilder({
+      data: [{ id: LEGACY_ID, legacy_rebook: true, status: 'sent', quote_sent_at: '2026-07-20T10:00:00Z' }],
+      error: null,
+    });
+
+    let callCount = 0;
+    sbRef.current = {
+      from: () => {
+        callCount += 1;
+        return callCount === 1 ? mainBuilder : quotesBuilder;
+      },
+    };
+
+    const result = await listOpenItems(100);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items.map((i) => i.id)).toEqual(['i-sent-legacy', 'i-ghl']);
+  });
+
+  // #252 refinement: 3 prod rows are BOOKED with quote_sent_at IS NULL — a
+  // naive "unsent = hidden" implementation would still wrongly hide this one,
+  // since it never checks status. Pin it explicitly.
+  it('does NOT exclude a BOOKED legacy_rebook quotetool item even though quote_sent_at is null', async () => {
+    const rows = [row('i-booked-legacy', 'quotetool', LEGACY_ID)];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null, count: 1 });
+    const { builder: quotesBuilder } = makeBuilder({
+      data: [{ id: LEGACY_ID, legacy_rebook: true, status: 'booked', quote_sent_at: null }],
+      error: null,
+    });
+
+    let callCount = 0;
+    sbRef.current = {
+      from: () => {
+        callCount += 1;
+        return callCount === 1 ? mainBuilder : quotesBuilder;
+      },
+    };
+
+    const result = await listOpenItems(100);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items.map((i) => i.id)).toEqual(['i-booked-legacy']);
   });
 
   // #183 BUG 1 (c): the lookup error must be visible, and the fail-open must
@@ -1459,14 +1547,14 @@ describe('listEscalatableItems — .or filter excludes automated but keeps NULL'
   });
 });
 
-// ─── listEscalatableItems — legacy-rebook exclusion wiring (#181 / #157) ────
+// ─── listEscalatableItems — legacy-rebook exclusion wiring (#181 / #157 / #252) ─
 //
 // Same #157 exclusion listOpenItems already applies to the /inbox display,
 // extended (#181) to escalation: a YLL Neighbor item must never trip an
 // amber/red alert or land in the EOD digest either. Mirrors the listOpenItems
-// legacy-rebook wiring tests above.
+// legacy-rebook wiring tests above, including the #252 slice-G narrowing.
 
-describe('listEscalatableItems — legacy-rebook exclusion wiring (#181, #183)', () => {
+describe('listEscalatableItems — legacy-rebook exclusion wiring (#181, #183, #252)', () => {
   beforeEach(() => {
     sbRef.current = null;
   });
@@ -1487,7 +1575,7 @@ describe('listEscalatableItems — legacy-rebook exclusion wiring (#181, #183)',
     dashboard_contacts: null,
   });
 
-  it('excludes a quotetool item whose quote is legacy_rebook=true, keeps normal quotetool + other sources', async () => {
+  it('excludes an unsent DRAFT legacy_rebook quotetool item, keeps normal quotetool + other sources', async () => {
     const rows = [
       row('i-legacy', 'quotetool', LEGACY_ID),
       row('i-normal', 'quotetool', NORMAL_ID),
@@ -1496,8 +1584,8 @@ describe('listEscalatableItems — legacy-rebook exclusion wiring (#181, #183)',
     const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
     const { builder: quotesBuilder, calls: quotesCalls } = makeBuilder({
       data: [
-        { id: LEGACY_ID, legacy_rebook: true },
-        { id: NORMAL_ID, legacy_rebook: false },
+        { id: LEGACY_ID, legacy_rebook: true, status: 'draft', quote_sent_at: null },
+        { id: NORMAL_ID, legacy_rebook: false, status: 'draft', quote_sent_at: null },
       ],
       error: null,
     });
@@ -1524,17 +1612,22 @@ describe('listEscalatableItems — legacy-rebook exclusion wiring (#181, #183)',
     expect(inCall!.args[1]).toHaveLength(2);
   });
 
-  it('a SENT legacy_rebook quote is excluded here too — broader than the quotetool.ts ingest-time guard (#181), matching #157 display behavior rather than fighting it', async () => {
+  // #252 slice G: narrowed from "every legacy_rebook item, regardless of
+  // quote_sent_at" (the old behavior this test used to pin) to "only a
+  // genuine unsent DRAFT" — a SENT Neighbor quote now behaves like a normal
+  // quote here too, matching quotetool.ts's ingest-time guard rather than
+  // fighting it.
+  it('does NOT exclude a SENT legacy_rebook quote here either', async () => {
     const rows = [row('i-sent-legacy', 'quotetool', LEGACY_ID)];
     const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
     const { builder: quotesBuilder } = makeBuilder({
-      data: [{ id: LEGACY_ID, legacy_rebook: true }],
+      data: [{ id: LEGACY_ID, legacy_rebook: true, status: 'sent', quote_sent_at: '2026-07-20T10:00:00Z' }],
       error: null,
     });
 
     let callCount = 0;
     sbRef.current = {
-      from: (_table: string) => {
+      from: () => {
         callCount += 1;
         return callCount === 1 ? mainBuilder : quotesBuilder;
       },
@@ -1543,7 +1636,58 @@ describe('listEscalatableItems — legacy-rebook exclusion wiring (#181, #183)',
     const result = await listEscalatableItems();
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.items).toHaveLength(0);
+    expect(result.items.map((i) => i.id)).toEqual(['i-sent-legacy']);
+  });
+
+  // #252 the row this fix ships for: quote #1129 is a BOOKED, legacy_rebook
+  // quote whose colour-change-request item sat invisible in escalation (never
+  // triggered an amber/red alert or the EOD digest) for 14 days under the old
+  // blanket rule.
+  it('does NOT exclude a BOOKED legacy_rebook quote', async () => {
+    const rows = [row('i-booked-legacy', 'quotetool', LEGACY_ID)];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
+    const { builder: quotesBuilder } = makeBuilder({
+      data: [{ id: LEGACY_ID, legacy_rebook: true, status: 'booked', quote_sent_at: '2026-07-01T10:00:00Z' }],
+      error: null,
+    });
+
+    let callCount = 0;
+    sbRef.current = {
+      from: () => {
+        callCount += 1;
+        return callCount === 1 ? mainBuilder : quotesBuilder;
+      },
+    };
+
+    const result = await listEscalatableItems();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items.map((i) => i.id)).toEqual(['i-booked-legacy']);
+  });
+
+  // #252 refinement: 3 prod rows are BOOKED with quote_sent_at IS NULL — pin
+  // this explicitly since a naive "unsent = hidden" predicate would still
+  // wrongly hide it (it never checks status).
+  it('does NOT exclude a BOOKED legacy_rebook quote even when quote_sent_at is null', async () => {
+    const rows = [row('i-booked-unsent-legacy', 'quotetool', LEGACY_ID)];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
+    const { builder: quotesBuilder } = makeBuilder({
+      data: [{ id: LEGACY_ID, legacy_rebook: true, status: 'booked', quote_sent_at: null }],
+      error: null,
+    });
+
+    let callCount = 0;
+    sbRef.current = {
+      from: () => {
+        callCount += 1;
+        return callCount === 1 ? mainBuilder : quotesBuilder;
+      },
+    };
+
+    const result = await listEscalatableItems();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items.map((i) => i.id)).toEqual(['i-booked-unsent-legacy']);
   });
 
   it('skips the quotes lookup entirely when the page has no quotetool items', async () => {
@@ -1578,7 +1722,7 @@ describe('listEscalatableItems — legacy-rebook exclusion wiring (#181, #183)',
     ];
     const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
     const { builder: quotesBuilder, calls: quotesCalls } = makeBuilder({
-      data: [{ id: LEGACY_ID, legacy_rebook: true }],
+      data: [{ id: LEGACY_ID, legacy_rebook: true, status: 'draft', quote_sent_at: null }],
       error: null,
     });
 
