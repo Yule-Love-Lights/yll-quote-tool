@@ -3196,6 +3196,12 @@ export default function QuoteBuilder({
     setSendStatus('idle');
     setSendError(null);
     setAlreadySentAt(null);
+    // #241: reset alongside its siblings. Not visible today (the notice that
+    // reads it is gated on sendStatus === 'already-sent', which this same block
+    // clears, and both places that re-enter that status reset this flag first)
+    // — but leaving it dangling true after a recalc is a trap for any future
+    // path that sets 'already-sent' without going through those two functions.
+    setRetryIneligible(false);
     setCopiedUrl(false);
     setTrainStatus('idle');
     setTrainError(null);
