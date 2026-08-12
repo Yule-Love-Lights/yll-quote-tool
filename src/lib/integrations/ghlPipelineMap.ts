@@ -29,6 +29,8 @@ export type PipelineStages = {
   installed: string;
   /** Customer (or staff on their behalf) declined. */
   declined: string;
+  /** #235: quote went cold — never approved, never declined. */
+  abandoned: string;
 };
 
 // ─── The three pipelines, one per ServiceType ──────────────────────────────
@@ -40,6 +42,7 @@ const PIPELINE_MAP: Record<ServiceType, PipelineStages> = {
     depositPaid: '90e7a535-689c-441e-b759-d16742bbd5a9', // ⏰Approved
     installed: 'aa6263d6-20bb-4b65-bd8c-23b75831716b', // ⭐Installed
     declined: '92090ef4-b8d6-4d68-b0f6-b4462e60d658', // ⛔Declined
+    abandoned: 'eb127233-055b-44fb-a942-cefd7d6bef1f', // ⛔Abandoned (#235, discovered live 2026-08-11)
   },
   event: {
     pipelineId: 'YfCi5jy8Alc3oD5AfXmV', // Event Lighting
@@ -48,6 +51,7 @@ const PIPELINE_MAP: Record<ServiceType, PipelineStages> = {
     depositPaid: '4f6a7739-9bc9-4c27-a140-1ca9f58798fd', // Booked
     installed: '3375d0d6-0c1d-4e22-a40e-1430a771afc3', // Installed
     declined: '239ec700-bd21-49ba-9691-f0a9b44637b0', // Declined
+    abandoned: 'b133090d-9890-405f-a075-16c8ee9c73e7', // Abandoned (#235, discovered live 2026-08-11)
   },
   permanent: {
     pipelineId: 'OqpjVflTdgmjmUQmbcSF', // Permanent Lighting
@@ -55,10 +59,14 @@ const PIPELINE_MAP: Record<ServiceType, PipelineStages> = {
     sent: '4e507d3d-a939-44c3-a448-250a4b0ed353', // Proposal Sent
     depositPaid: 'f4bfe29f-5d5a-4725-a6d2-1f5f19ec4010', // Closed
     installed: 'b2192f2e-eee9-4a1b-9749-4f458f007c55', // Installed
-    // The permanent pipeline has NO dedicated "Declined" stage in GHL — the dev
-    // chose "Abandoned" as the closest equivalent (2026-07-09). Revisit if a
-    // real Declined stage is added later.
-    declined: '5a5f2e27-6dde-452c-8619-df1871908c8c', // Abandoned
+    // #235 (Jason, 2026-08-11, live GHL evidence): the permanent pipeline DOES
+    // now have a real "Declined" stage — the 2026-07-09 note below claiming it
+    // has none was true THEN but is stale; the old "Abandoned" reuse as a
+    // declined substitute was the conflation this repoint undoes. Declined
+    // repointed to the real stage; Abandoned is now free to mean gone-cold,
+    // consistent with the other three pipelines.
+    declined: '2714e48e-b486-457e-9da2-59893196d404', // Declined
+    abandoned: '5a5f2e27-6dde-452c-8619-df1871908c8c', // Abandoned
   },
   // Permanent Bistro Lighting (#117): rides the LANDSCAPE LIGHTING pipeline
   // (Naldo 2026-07-11 — bistro cards live there, not in Permanent). Stage ids
@@ -74,6 +82,7 @@ const PIPELINE_MAP: Record<ServiceType, PipelineStages> = {
     depositPaid: '8c7765b3-a2ba-4928-8618-5ec5a1182cb2', // Booked
     installed: 'bf068cce-4d71-480f-9bbc-bab144114e6c', // Installed
     declined: 'ad2127e1-692f-4d42-aecf-3f381793dfeb', // Declined
+    abandoned: 'd9d1ebea-8b31-4651-a687-db80a7482a6a', // Abandoned (#235, discovered live 2026-08-11)
   },
 };
 
@@ -96,7 +105,14 @@ const NEIGHBORS_STAGES: PipelineStages = {
   sent: '9ada8238-1e95-4242-b567-7edf3bef6c2c', // Bid Sent
   depositPaid: 'da6521b1-b945-4484-8251-6c6dc487c860', // Booked
   installed: 'eb773949-401d-4e61-959c-3d5b1d92f77e', // Installed
-  declined: 'abe1ed98-1091-4b70-bc6f-ae786cbea333', // Declined for 2025
+  declined: 'abe1ed98-1091-4b70-bc6f-ae786cbea333', // Declined for 2026
+  // #235 (Jason, 2026-08-11): this pipeline has NO dedicated Abandoned stage in
+  // GHL, so abandoning a Neighbors quote routes to the SAME "Declined for 2026"
+  // stage as a real decline — those two states are indistinguishable in GHL
+  // for this one pipeline. Accepted tradeoff: our tool's quote status (declined
+  // vs abandoned) still tells them apart. Do NOT "fix" this by hunting for a
+  // separate stage — there isn't one.
+  abandoned: 'abe1ed98-1091-4b70-bc6f-ae786cbea333', // Declined for 2026
 };
 
 /**
@@ -106,9 +122,9 @@ const NEIGHBORS_STAGES: PipelineStages = {
  * (HIGHLEVEL_PIPELINE_ID, HIGHLEVEL_STAGE_QUOTE_CREATED/SENT/APPROVED, with
  * SIGNED as the APPROVED fallback) override the map wherever they're set —
  * Vercel already has these configured for prod, and this keeps holiday's
- * behavior byte-identical. There are no legacy env vars for `installed` or
- * `declined` (nothing moved those stages before this change), so those two
- * always come from the map even for holiday.
+ * behavior byte-identical. There are no legacy env vars for `installed`,
+ * `declined`, or `abandoned` (nothing moved those stages before this change),
+ * so those three always come from the map even for holiday.
  *
  * Permanent and Event always use their own map entries — no env override.
  * An unknown/missing service_type falls back to the default (holiday), same
@@ -147,6 +163,9 @@ export function resolvePipelineStages(
       depositPaid: process.env.HIGHLEVEL_STAGE_NEIGHBORS_DEPOSIT_PAID || NEIGHBORS_STAGES.depositPaid,
       installed: process.env.HIGHLEVEL_STAGE_NEIGHBORS_INSTALLED || NEIGHBORS_STAGES.installed,
       declined: process.env.HIGHLEVEL_STAGE_NEIGHBORS_DECLINED || NEIGHBORS_STAGES.declined,
+      // #235: no per-env override — same "no dedicated Abandoned stage" reason
+      // NEIGHBORS_STAGES.abandoned reuses the Declined id.
+      abandoned: NEIGHBORS_STAGES.abandoned,
     };
   }
 
@@ -164,6 +183,7 @@ export function resolvePipelineStages(
     depositPaid: approvedStage || base.depositPaid,
     installed: base.installed,
     declined: base.declined,
+    abandoned: base.abandoned,
   };
 }
 
