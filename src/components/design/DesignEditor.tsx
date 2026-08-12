@@ -26,8 +26,23 @@ type Props = {
    * (#8 Stage A) — the parent awaits it before training capture / pricing so
    * neither reads a stale scene. Called with null on unmount. Re-fires on each
    * (re)mount since the editor remounts on re-seed.
+   *
+   * #741 defect 1: also handed a discard() that cancels a pending debounced
+   * save WITHOUT persisting it — the parent calls this (instead of flush)
+   * right after a server-side scene change (a re-analyze reseed) lands and
+   * BEFORE forcing this component to remount (e.g. bumping a `key`), so the
+   * outgoing mount's teardown flush can't PUT its now-stale resident scene
+   * back over what the server just wrote.
    */
-  onReady?: (flush: (() => Promise<void>) | null) => void;
+  onReady?: (flush: (() => Promise<void>) | null, discard: (() => void) | null) => void;
+  /**
+   * #741 defect 3: handed the mini group(s) (railing/curtain/etc.) a photo
+   * delete's server-side prune just orphaned — deleting the last photo
+   * holding a group's only surviving member strands removes a real billed
+   * line with nothing else telling staff. The parent surfaces this the same
+   * way it already surfaces a re-analyze's pruned groups (#255).
+   */
+  onPrunedMiniGroups?: (groups: { surface: string | null; stringCount: number }[]) => void;
 };
 
 const BAR_HEIGHT = 40; // px — the React control bar above the editor.
@@ -48,7 +63,7 @@ type PhotoTab = { id: string | null; title: string };
 // `height:100%` grid always resolves to a real box and its ResizeObserver can
 // refit the canvas. The editor stays mounted across the toggle, so nothing is
 // lost; it simply refits to the new size.
-export default function DesignEditor({ designId, onClose, height = 600, onReady, permanentOnly, bistroOnly }: Props) {
+export default function DesignEditor({ designId, onClose, height = 600, onReady, onPrunedMiniGroups, permanentOnly, bistroOnly }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
   // This operator's editor hotkeys (#98), loaded on mount; defaults until then.
@@ -60,14 +75,14 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
   const [photoTabs, setPhotoTabs] = useState<PhotoTab[] | null>(null);
   const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
   const [photoBusy, setPhotoBusy] = useState(false);
-  // #254: bumped after any successful photo delete to force the mount effect
-  // below to re-run even when neither designId nor activePhotoId changed (i.e.
-  // the deleted photo wasn't the one currently mounted) — see deletePhoto.
-  const [photoReloadNonce, setPhotoReloadNonce] = useState(0);
   const addFileRef = useRef<HTMLInputElement>(null);
   // The current mount's flushSave, for our own pre-switch flush (onReady hands
   // the same thing to the parent).
   const flushRef = useRef<(() => Promise<void>) | null>(null);
+  // #741 defect 1: the current mount's discardPending — see deletePhoto.
+  const discardRef = useRef<(() => void) | null>(null);
+  // #741 defect 2: the current mount's removePhotoItems — see deletePhoto.
+  const removePhotoItemsRef = useRef<((photoId: string) => void) | null>(null);
   // Keep the latest onReady in a ref so the mount effect doesn't depend on it
   // (a new callback identity each render would needlessly remount the editor).
   const onReadyRef = useRef(onReady);
@@ -149,16 +164,22 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
         return;
       }
       flushRef.current = handle.flushSave ? () => handle!.flushSave!() : null;
-      onReadyRef.current?.(flushRef.current);
+      discardRef.current = handle.discardPending ? () => handle!.discardPending!() : null;
+      removePhotoItemsRef.current = handle.removePhotoItems
+        ? (photoId: string) => handle!.removePhotoItems!(photoId)
+        : null;
+      onReadyRef.current?.(flushRef.current, discardRef.current);
     })();
 
     return () => {
       cancelled = true;
       flushRef.current = null;
-      onReadyRef.current?.(null);
+      discardRef.current = null;
+      removePhotoItemsRef.current = null;
+      onReadyRef.current?.(null, null);
       handle?.();
     };
-  }, [designId, activePhotoId, permanentOnly, bistroOnly, photoReloadNonce]);
+  }, [designId, activePhotoId, permanentOnly, bistroOnly]);
 
   // ─── #13 photo strip actions ───
   const switchPhoto = async (id: string | null) => {
@@ -218,30 +239,47 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
       // #254: flush any pending debounced edit on the CURRENTLY MOUNTED photo
       // before the delete goes out — same pre-teardown flush switchPhoto
       // already does, so a real in-flight edit lands before the server-side
-      // prune runs (and before the forced remount below).
+      // prune runs.
       try {
         await flushRef.current?.();
       } catch {
-        // destroy() also flushes best-effort; proceed.
+        // #741 defect 6: this is NOT protected by "destroy() also flushes" —
+        // deleting the ACTIVE photo discards this edit outright below (it's
+        // on the doomed photo); deleting an INACTIVE tab doesn't tear the
+        // editor down at all (see removePhotoItemsRef below). Either way a
+        // failed flush here just leaves the edit queued — the editor's own
+        // autosave retry (doSave's 4s backoff) picks it up on its own.
       }
       const res = await fetch(`/api/designs/${designId}/photos/${id}`, { method: 'DELETE' });
       if (!res.ok) {
         alert("Couldn't delete the photo.");
         return;
       }
-      // #254: the mounted editor holds EVERY photo's items in memory for its
-      // whole lifetime and autosaves the WHOLE scene (see the mount effect's
-      // comment above) — so deleting a photo the editor ISN'T currently
-      // showing (activePhotoId !== id) leaves that photo's items, and any
-      // mini group the server just pruned off it, resident in memory. The
-      // next autosave would silently write them straight back, resurrecting
-      // deleted billing with no tab left to reach it from. Force a full
-      // remount UNCONDITIONALLY so the editor reloads server truth regardless
-      // of which photo was deleted — when the active photo is the one deleted
-      // the activePhotoId reset below already remounts too, so this is
-      // belt-and-suspenders there and the only fix for the inactive case.
-      setPhotoReloadNonce((n) => n + 1);
-      if (activePhotoId === id) setActivePhotoId(null);
+      // #741 defect 3: report any mini group the server's prune just orphaned
+      // (a "Curtain — 6 strings" line can vanish with this deleted photo) so
+      // the parent can warn staff the same way it already does for #255.
+      const data = await res.json().catch(() => ({}));
+      onPrunedMiniGroups?.(Array.isArray(data.prunedMiniGroups) ? data.prunedMiniGroups : []);
+      if (activePhotoId === id) {
+        // #741 defects 1/2: the editor is mounted ON the deleted photo — its
+        // resident scene predates the server's delete+prune, so discard
+        // (never flush) whatever it has pending before the activePhotoId
+        // reset below triggers the mount effect's normal remount onto the
+        // base photo. Flushing here would PUT the stale scene straight back
+        // over the row the server just pruned.
+        discardRef.current?.();
+        setActivePhotoId(null);
+      } else {
+        // #741 defect 2: the editor is mounted on a DIFFERENT, surviving
+        // photo — do NOT remount it (that would blow away live zoom,
+        // selection, undo history, and any in-progress trace/drag that lives
+        // only in editor-local closures, never in scene.items, for a routine
+        // "clean up a stray tab" action). Splice the deleted photo's items
+        // out of the resident scene in place instead, mirroring the server's
+        // own prune — the resident scene then already matches server truth,
+        // so no remount and no discard are needed here.
+        removePhotoItemsRef.current?.(id);
+      }
       await refreshPhotoTabs(designId);
     } finally {
       setPhotoBusy(false);

@@ -1494,6 +1494,21 @@ export async function renderEditor(
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
     if (pendingSave) await doSave();
   }
+  // #741 defect 1: cancel any pending debounced save WITHOUT persisting it.
+  // destroy() unconditionally best-effort flushes on teardown (below) — that's
+  // right for a normal navigate-away/unmount, but wrong for a caller-forced
+  // remount that follows a server-side change already landing (a photo
+  // delete's prune, a re-analyze's reseed): the resident `scene` this mount
+  // holds predates that change, so flushing it would PUT it straight back
+  // over the server's fresh row, resurrecting exactly what the server just
+  // removed. The caller awaits the server response, then calls this BEFORE
+  // triggering the remount, so destroy()'s flushSave() becomes a no-op.
+  // Trade-off: a genuine edit made during that round trip is discarded too —
+  // accepted, since resurrecting deleted/pruned billing is the worse failure.
+  function discardPending() {
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+    pendingSave = false;
+  }
   // AUDIT FIX (editor-autosave-honest-failure): non-blocking banner shown when a
   // prior teardown flush may have failed to persist (marker set in destroy()).
   // Cleared on the next successful doSave().
@@ -1578,6 +1593,30 @@ export async function renderEditor(
       showTransientNotice(`Also removed empty group: ${label} — ${n} string${n === 1 ? "" : "s"}`);
     });
     return after;
+  }
+  // #741 defect 2: splice a deleted photo's items out of the RESIDENT
+  // in-memory scene WITHOUT tearing the editor down — for when the deleted
+  // photo is NOT the one this mount is showing. A full remount there would
+  // reset zoom/selection/undo history and silently drop any in-progress
+  // drawing that lives only in editor-local closures (never in scene.items,
+  // so no flush could have saved it) — routine work for an operator who was
+  // simply cleaning up a stray extra-photo tab. Mirrors designs.ts's
+  // removeDesignExtraPhoto server-side prune exactly: drop items tagged to
+  // the deleted photo, drop any linked twin of one of those (it would
+  // otherwise dangle, render-only, forever), then prune any miniGroup left
+  // with zero surviving members. Once this returns, the resident scene
+  // matches server truth, so a later teardown flush is harmless.
+  function removePhotoItems(photoId: string) {
+    const droppedIds = new Set(scene.items.filter((it) => it.photoId === photoId).map((it) => it.id));
+    if (droppedIds.size === 0) return;
+    scene = {
+      ...scene,
+      items: pruneOrphanedMiniGroupsNotify(scene.items.filter(
+        (it) => it.photoId !== photoId && !(it.linkedToId && droppedIds.has(it.linkedToId)),
+      )),
+    };
+    commit();
+    redrawScene();
   }
 
   // --- Sidebar ---
@@ -5473,9 +5512,15 @@ export async function renderEditor(
 
   const handle = destroy as EditorHandle;
   handle.flushSave = flushSave;
+  handle.discardPending = discardPending;
+  handle.removePhotoItems = removePhotoItems;
   return handle;
 }
-export type EditorHandle = (() => void) & { flushSave?: () => Promise<void> };
+export type EditorHandle = (() => void) & {
+  flushSave?: () => Promise<void>;
+  discardPending?: () => void;
+  removePhotoItems?: (photoId: string) => void;
+};
 
 function loadHTMLImage(url: string): Promise<HTMLImageElement> {
   return new Promise((res, rej) => {

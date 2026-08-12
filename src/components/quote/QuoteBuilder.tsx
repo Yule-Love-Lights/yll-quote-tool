@@ -53,7 +53,7 @@ import { hasSatellitePayload } from '@/lib/design/analysisSatellitePayload';
 import { deriveSideMeasure } from '@/lib/permanent/satelliteMeasure';
 import { roundFootageUpTo5 } from '@/lib/permanent/types';
 import { deriveTrackAccessories, hasAccessorySignal } from '@/lib/permanent/trackAccessories';
-import { isStrand, isLinkedTwin } from '@/lib/design/sceneTypes';
+import { isStrand, isLinkedTwin, type Surface } from '@/lib/design/sceneTypes';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
 import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
 import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
@@ -229,9 +229,35 @@ function polylineLength(lines: LineSegment[], aspect: number): number {
 // (editor-core/editor.ts MINI_SURFACE_LABELS), kept as a separate copy here
 // rather than importing from editor-core (vendored/relay-shared; this display
 // string doesn't belong in that surface).
-const MINI_SURFACE_LABELS: Record<string, string> = {
+// #741 defect 4: typed exhaustive over Surface (not the loose Record<string,
+// string> this started as) so adding a new Surface value fails `tsc` right
+// here instead of silently rendering "group" in whichever copy (this one or
+// editor.ts's) got missed. Only bush/tree/column/railing/curtain can ever
+// actually reach a MiniGroupItem's `surface`, but Surface is the one shared
+// type — the roofline/C9 entries below are unreachable in practice, present
+// only so the object literal type-checks as complete.
+const MINI_SURFACE_LABELS: Record<Surface, string> = {
   bush: 'Bush', tree: 'Tree', column: 'Column', railing: 'Railing', curtain: 'Curtain',
+  'santas-roofline': 'Roofline', gingerbread: 'Gingerbread', 'winter-wonderland': 'Winter Wonderland',
+  'stake-lighting': 'Stake Lighting',
 };
+function miniSurfaceLabel(surface: string | null): string {
+  return surface && surface in MINI_SURFACE_LABELS ? MINI_SURFACE_LABELS[surface as Surface] : 'group';
+}
+// #741 defect 5: prunedMiniGroups previously trusted `Array.isArray` alone,
+// then the render below dereferences g.surface/g.stringCount per element — a
+// malformed element (from either the seed-analysis or photo-delete response)
+// would throw and crash the whole builder render. Sibling
+// garlandSectionsUnestimated uses a typeof guard with a safe fallback; give
+// this the same element-shape parity instead of trusting the array's contents.
+function sanitizePrunedMiniGroups(raw: unknown): { surface: string | null; stringCount: number }[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((g): g is { surface: string | null; stringCount: number } => {
+    if (typeof g !== 'object' || g === null) return false;
+    const r = g as Record<string, unknown>;
+    return (typeof r.surface === 'string' || r.surface === null) && typeof r.stringCount === 'number';
+  });
+}
 
 // Permanent Lighting (#88 / S23): the four house sides traced on the satellite
 // view. Colors match the portal's satellite groups (lib/portal/satelliteLines).
@@ -706,12 +732,12 @@ export default function QuoteBuilder({
   // #90: how many AI-seeded garland runs had no scale to estimate length (so they
   // fall back to 1 section). Surfaced as a builder warning so staff set the count.
   const [garlandUnestimated, setGarlandUnestimated] = useState(0);
-  // #255: mini group(s) (railing/curtain/etc.) a re-analyze just orphaned —
-  // seedSceneFromAnalysis prunes them silently (no member strands left to
-  // re-detect), so a "Railing — 3 strings" line can vanish from the quote
-  // total with nothing else explaining it. Only the re-analyze path can ever
-  // populate this (a brand-new design's seed scene starts empty, so create
-  // never has a pre-existing group to orphan).
+  // #255 / #741 defect 3: mini group(s) (railing/curtain/etc.) a re-analyze OR
+  // a photo delete just orphaned — seedSceneFromAnalysis and
+  // removeDesignExtraPhoto both prune a group silently (no member strands
+  // left), so a "Railing — 3 strings" line can vanish from the quote total
+  // with nothing else explaining it. Reset (not accumulated) on each trigger,
+  // same as garlandUnestimated, so a resolved warning clears.
   const [prunedMiniGroups, setPrunedMiniGroups] = useState<{ surface: string | null; stringCount: number }[]>([]);
   // Bumped when the design's scene/photo changes outside the editor (roofline
   // seed, photo replacement) so a remount reloads it.
@@ -813,6 +839,9 @@ export default function QuoteBuilder({
   // Capture awaits it so it never snapshots a scene the 600ms autosave debounce
   // hasn't persisted yet.
   const editorFlushRef = useRef<(() => Promise<void>) | null>(null);
+  // #741 defect 1: the editor's discardPending, re-registered alongside
+  // flushSave on each (re)mount — see seedDesignFromAnalysis.
+  const editorDiscardRef = useRef<(() => void) | null>(null);
   const captureExample = async (source: 'auto-send' | 'manual') => {
     if (!savedQuoteId) return;
     setTrainStatus('saving');
@@ -885,6 +914,18 @@ export default function QuoteBuilder({
   // staff-drawn items always survive. Remounts the editor to show the result.
   const seedDesignFromAnalysis = async (id: string, seed: AnalysisSeed) => {
     try {
+      // #741 defect 1 consequence B: flush any pending debounced edit BEFORE
+      // the seed POST reads/replaces the scene server-side — same pattern
+      // captureExample/capturePermanentExample already use above. This alone
+      // only SHRINKS the stale-overwrite window (the analyze round trip is
+      // multi-second); the discard below is what actually closes it.
+      if (editorFlushRef.current) {
+        try {
+          await editorFlushRef.current();
+        } catch {
+          // best-effort — proceed with whatever was last persisted.
+        }
+      }
       const res = await fetch(`/api/designs/${id}/seed-analysis`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -900,7 +941,12 @@ export default function QuoteBuilder({
         // #255: warn when this re-analyze orphaned a staff-created mini group
         // (its member strands weren't re-detected) — the group is gone, and
         // with it a real billed line, with no other indication.
-        setPrunedMiniGroups(Array.isArray(data.prunedMiniGroups) ? data.prunedMiniGroups : []);
+        setPrunedMiniGroups(sanitizePrunedMiniGroups(data.prunedMiniGroups));
+        // #741 defect 1: discard (never flush) whatever the OUTGOING editor
+        // instance has pending before the key bump below tears it down — an
+        // edit made during this multi-second analyze round trip must not be
+        // written back over the scene the server just seeded/pruned.
+        editorDiscardRef.current?.();
         setDesignEditorKey((k) => k + 1);
       }
     } catch {
@@ -4178,18 +4224,21 @@ export default function QuoteBuilder({
                     yardstick or set the section count on the design before quoting.
                   </p>
                 )}
-                {/* #255: re-analyze can drop a staff-created mini group (its member
-                    strands weren't re-detected) — unlike routine strand cleanup in
-                    the editor, this quietly removes a billed line with nothing else
-                    calling it out, so it gets the same standing-warning treatment as
-                    the garland-scale notice above. */}
+                {/* #255 / #741 defect 3: a re-analyze OR a photo delete can drop a
+                    staff-created mini group (its member strands weren't
+                    re-detected, or lived only on the deleted photo) — unlike
+                    routine strand cleanup in the editor, this quietly removes a
+                    billed line with nothing else calling it out, so it gets the
+                    same standing-warning treatment as the garland-scale notice
+                    above. Wording stays cause-agnostic since either trigger can
+                    populate this. */}
                 {prunedMiniGroups.length > 0 && (
                   <p className="text-sm text-amber-700 mb-2">
-                    ⚠️ Re-analyze removed {prunedMiniGroups.length} mini{' '}
+                    ⚠️ Removed {prunedMiniGroups.length} mini{' '}
                     {prunedMiniGroups.length === 1 ? 'group' : 'groups'} that lost all their strands:{' '}
                     {prunedMiniGroups
                       .map((g, i) => {
-                        const label = MINI_SURFACE_LABELS[g.surface ?? ''] ?? 'group';
+                        const label = miniSurfaceLabel(g.surface);
                         const n = g.stringCount;
                         return `${label} — ${n} string${n === 1 ? '' : 's'}${i < prunedMiniGroups.length - 1 ? ', ' : ''}`;
                       })
@@ -4205,7 +4254,8 @@ export default function QuoteBuilder({
                       height={640}
                       permanentOnly={form.serviceType === 'permanent'}
                       bistroOnly={form.serviceType === 'permanent_bistro'}
-                      onReady={(flush) => { editorFlushRef.current = flush; }}
+                      onReady={(flush, discard) => { editorFlushRef.current = flush; editorDiscardRef.current = discard; }}
+                      onPrunedMiniGroups={(groups) => setPrunedMiniGroups(sanitizePrunedMiniGroups(groups))}
                     />
                     {form.serviceType === 'permanent' ? (
                       <p className="text-xs text-gray-400 mt-2">
