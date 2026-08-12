@@ -429,8 +429,13 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
                 {tab.id && (
                   <button
                     type="button"
-                    className="ml-0.5 text-[#6b7484] hover:text-red-400"
+                    className="ml-0.5 text-[#6b7484] hover:text-red-400 disabled:opacity-40"
                     title="Delete this photo"
+                    // #741: parity with the "+ Add photo" button below — without
+                    // this, two overlapping deletes on two different tabs each
+                    // force their own corrective save (removePhotoItems), racing
+                    // two full-scene PUTs the server resolves by arrival order.
+                    disabled={photoBusy}
                     onClick={(e) => {
                       e.stopPropagation();
                       void deletePhoto(tab.id!, tab.title);
