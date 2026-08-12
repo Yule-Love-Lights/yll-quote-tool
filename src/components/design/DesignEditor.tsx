@@ -60,6 +60,10 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
   const [photoTabs, setPhotoTabs] = useState<PhotoTab[] | null>(null);
   const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
   const [photoBusy, setPhotoBusy] = useState(false);
+  // #254: bumped after any successful photo delete to force the mount effect
+  // below to re-run even when neither designId nor activePhotoId changed (i.e.
+  // the deleted photo wasn't the one currently mounted) — see deletePhoto.
+  const [photoReloadNonce, setPhotoReloadNonce] = useState(0);
   const addFileRef = useRef<HTMLInputElement>(null);
   // The current mount's flushSave, for our own pre-switch flush (onReady hands
   // the same thing to the parent).
@@ -154,7 +158,7 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
       onReadyRef.current?.(null);
       handle?.();
     };
-  }, [designId, activePhotoId, permanentOnly, bistroOnly]);
+  }, [designId, activePhotoId, permanentOnly, bistroOnly, photoReloadNonce]);
 
   // ─── #13 photo strip actions ───
   const switchPhoto = async (id: string | null) => {
@@ -211,11 +215,32 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
     if (!window.confirm(`Delete "${title}" and everything drawn on it? The main photo and its items are unaffected.`)) return;
     setPhotoBusy(true);
     try {
+      // #254: flush any pending debounced edit on the CURRENTLY MOUNTED photo
+      // before the delete goes out — same pre-teardown flush switchPhoto
+      // already does, so a real in-flight edit lands before the server-side
+      // prune runs (and before the forced remount below).
+      try {
+        await flushRef.current?.();
+      } catch {
+        // destroy() also flushes best-effort; proceed.
+      }
       const res = await fetch(`/api/designs/${designId}/photos/${id}`, { method: 'DELETE' });
       if (!res.ok) {
         alert("Couldn't delete the photo.");
         return;
       }
+      // #254: the mounted editor holds EVERY photo's items in memory for its
+      // whole lifetime and autosaves the WHOLE scene (see the mount effect's
+      // comment above) — so deleting a photo the editor ISN'T currently
+      // showing (activePhotoId !== id) leaves that photo's items, and any
+      // mini group the server just pruned off it, resident in memory. The
+      // next autosave would silently write them straight back, resurrecting
+      // deleted billing with no tab left to reach it from. Force a full
+      // remount UNCONDITIONALLY so the editor reloads server truth regardless
+      // of which photo was deleted — when the active photo is the one deleted
+      // the activePhotoId reset below already remounts too, so this is
+      // belt-and-suspenders there and the only fix for the inactive case.
+      setPhotoReloadNonce((n) => n + 1);
       if (activePhotoId === id) setActivePhotoId(null);
       await refreshPhotoTabs(designId);
     } finally {
