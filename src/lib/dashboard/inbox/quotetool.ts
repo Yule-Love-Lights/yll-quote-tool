@@ -21,6 +21,7 @@ import { normalizeEmail, normalizeName, normalizePhone, toDate } from './normali
 import { FOLLOWUP_REASONS } from './followups';
 import { EXCLUDE_LEGACY_REBOOK_FROM_INBOX } from './store';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
+import { isFromUs } from './classify';
 
 export function normalizeQuoteTouch(q: DashboardQuote): NormalizedTouch | null {
   // #181: unsent YLL Neighbor drafts are parked send-wave inventory, not leads
@@ -71,9 +72,10 @@ export type QuoteFollowUpDecision =
 // the nudge should stay live.
 const DEAD_QUOTE_STATUSES: ReadonlySet<QuoteStatus> = new Set(['declined', 'cancelled', 'lost']);
 
-// #220: add new internal domains here when a company-owned recipient should
-// suppress quote_sent_no_reply follow-ups. Bare domain + any subdomain match.
-export const INTERNAL_QUOTE_EMAIL_DOMAINS = ['yulelovelights.com'] as const;
+// #220: internal domains that should suppress quote_sent_no_reply follow-ups
+// now live in classify.ts's INTERNAL_EMAIL_DOMAINS (#252 — shared with the
+// GHL and Gmail adapters so the three can't drift apart again). Add new
+// internal domains there, not here.
 
 // Do not check q.is_test here. runQuoteToolReconcile only sees rows from
 // listQuotesForDashboardResult in src/lib/dashboard/queries.ts, and that
@@ -83,12 +85,7 @@ export const INTERNAL_QUOTE_EMAIL_DOMAINS = ['yulelovelights.com'] as const;
 function internalQuoteRecipientSuppression(q: DashboardQuote): 'internal_email_domain' | null {
   const email = q.customer_email ? normalizeEmail(q.customer_email) : null;
   if (!email) return null;
-  const at = email.lastIndexOf('@');
-  if (at < 0) return null;
-  const domain = email.slice(at + 1);
-  return INTERNAL_QUOTE_EMAIL_DOMAINS.some((internalDomain) => domain === internalDomain || domain.endsWith(`.${internalDomain}`))
-    ? 'internal_email_domain'
-    : null;
+  return isFromUs(email) ? 'internal_email_domain' : null;
 }
 
 /**

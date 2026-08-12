@@ -17,6 +17,40 @@ describe('isFromUs', () => {
   });
 });
 
+// #252: our own automated mail (marketing sends, "Quote viewed" alerts, the
+// escalation email, the EOD digest) goes out from sales@mail.yulelovelights.com
+// — a SUBDOMAIN. 152 of these self-ingested as fake leads over 14 days because
+// the old check was exact-domain-only.
+describe('isFromUs — subdomain-aware internal domain matching (#252)', () => {
+  it('matches a subdomain of ourDomain (the live sales@mail.yulelovelights.com shape)', () => {
+    expect(isFromUs('sales@mail.yulelovelights.com', { ourDomain: 'yulelovelights.com' })).toBe(true);
+  });
+
+  it('matches the bare domain with no explicit ourDomain passed (falls back to the static internal list)', () => {
+    expect(isFromUs('someone@yulelovelights.com', {})).toBe(true);
+  });
+
+  it('matches a subdomain with no explicit ourDomain passed (falls back to the static internal list)', () => {
+    expect(isFromUs('sales@mail.yulelovelights.com', {})).toBe(true);
+  });
+
+  it('matches a subdomain with opts entirely omitted (GMAIL_USER-unset shape — no domain source at all)', () => {
+    expect(isFromUs('sales@mail.yulelovelights.com')).toBe(true);
+  });
+
+  it('does NOT match a lookalike domain that merely starts with ours (notyulelovelights.com)', () => {
+    expect(isFromUs('anyone@notyulelovelights.com', { ourDomain: 'yulelovelights.com' })).toBe(false);
+  });
+
+  it('does NOT match a lookalike domain that merely ends with ours as a suffix without a dot (yulelovelights.com.evil.co)', () => {
+    expect(isFromUs('anyone@yulelovelights.com.evil.co', { ourDomain: 'yulelovelights.com' })).toBe(false);
+  });
+
+  it('still rejects a real customer address on an unrelated domain', () => {
+    expect(isFromUs('jane@gmail.com', { ourDomain: 'yulelovelights.com' })).toBe(false);
+  });
+});
+
 describe('classifyMessage', () => {
   it('flags a List-Unsubscribe message as automated', () => {
     expect(classifyMessage({ fromAddress: 'news@getjobber.com', subject: 'Last day', preview: 'Grab a $499 ticket', hasListUnsubscribe: true })).toBe('automated');

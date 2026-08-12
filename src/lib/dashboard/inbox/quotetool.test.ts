@@ -156,6 +156,18 @@ describe('quoteFollowUpDecision — internal recipient suppression (#220)', () =
     if (d.kind === 'create') expect(d.reason).toBe(FOLLOWUP_REASONS.quoteSentNoReply);
   });
 
+  // #252: the shared isInternalDomain match must stay '.'-bounded — a
+  // lookalike domain must not falsely suppress a real customer's follow-up.
+  it('still creates for a lookalike domain that merely starts with ours (notyulelovelights.com)', () => {
+    const d = quoteFollowUpDecision(
+      quote({
+        quote_sent_at: '2026-06-29T10:00:00Z',
+        customer_email: 'someone@notyulelovelights.com',
+      }),
+    );
+    expect(d.kind).toBe('create');
+  });
+
   it('still creates when customer_email is null (missing email is not internal)', () => {
     const d = quoteFollowUpDecision(
       quote({
