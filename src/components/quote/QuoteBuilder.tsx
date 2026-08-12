@@ -364,7 +364,7 @@ const STATUS_BADGE: Record<QuoteStatus, { label: string; cls: string }> = {
   changes_requested: { label: 'Changes', cls: 'bg-orange-100 text-orange-700' },
   declined: { label: 'Declined', cls: 'bg-red-100 text-red-700' },
   cancelled: { label: 'Cancelled', cls: 'bg-gray-200 text-gray-600' },
-  lost: { label: 'Lost', cls: 'bg-gray-200 text-gray-600' },
+  abandoned: { label: 'Abandoned', cls: 'bg-gray-200 text-gray-600' },
 };
 
 // ─── Builder component ───────────────────────────────────────────────────────

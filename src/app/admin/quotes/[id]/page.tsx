@@ -42,7 +42,7 @@ const STATUS_LABELS: Record<QuoteStatus, string> = {
   changes_requested: 'Changes requested',
   declined: 'Declined',
   cancelled: 'Cancelled',
-  lost: 'Lost',
+  abandoned: 'Abandoned',
 };
 
 const STATUS_STYLES: Record<QuoteStatus, string> = {
@@ -54,7 +54,7 @@ const STATUS_STYLES: Record<QuoteStatus, string> = {
   changes_requested: 'bg-orange-100 text-orange-700',
   declined: 'bg-red-100 text-red-700',
   cancelled: 'bg-gray-200 text-gray-600',
-  lost: 'bg-gray-200 text-gray-600',
+  abandoned: 'bg-gray-200 text-gray-600',
 };
 
 const money = (n: number | null | undefined) =>
