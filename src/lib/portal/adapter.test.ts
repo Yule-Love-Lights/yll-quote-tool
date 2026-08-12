@@ -589,7 +589,7 @@ describe('quoteRowToPortalQuote — quoteStatus + declineReason (Bug 3)', () => 
     };
     const portal = quoteRowToPortalQuote({ row: rowSent, photos: PHOTOS })!;
     // deriveStatus → 'sent' (timestamp-based), not a terminal/branch state
-    expect(['declined', 'cancelled', 'lost', 'changes_requested']).not.toContain(portal.quoteStatus);
+    expect(['declined', 'cancelled', 'abandoned', 'changes_requested']).not.toContain(portal.quoteStatus);
   });
 });
 
