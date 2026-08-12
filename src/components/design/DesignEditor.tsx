@@ -33,8 +33,13 @@ type Props = {
    * BEFORE forcing this component to remount (e.g. bumping a `key`), so the
    * outgoing mount's teardown flush can't PUT its now-stale resident scene
    * back over what the server just wrote.
+   *
+   * #741 defect 6: discard() returns whether it actually discarded a real
+   * pending edit (vs. the common no-op case) — the parent surfaces a short
+   * notice to the operator only when it did, so a genuine in-progress edit
+   * isn't lost with zero indication.
    */
-  onReady?: (flush: (() => Promise<void>) | null, discard: (() => void) | null) => void;
+  onReady?: (flush: (() => Promise<void>) | null, discard: (() => boolean) | null) => void;
   /**
    * #741 defect 3: handed the mini group(s) (railing/curtain/etc.) a photo
    * delete's server-side prune just orphaned — deleting the last photo
@@ -80,7 +85,7 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
   // the same thing to the parent).
   const flushRef = useRef<(() => Promise<void>) | null>(null);
   // #741 defect 1: the current mount's discardPending — see deletePhoto.
-  const discardRef = useRef<(() => void) | null>(null);
+  const discardRef = useRef<(() => boolean) | null>(null);
   // #741 defect 2: the current mount's removePhotoItems — see deletePhoto.
   const removePhotoItemsRef = useRef<((photoId: string) => void) | null>(null);
   // Keep the latest onReady in a ref so the mount effect doesn't depend on it
@@ -267,7 +272,13 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
         // reset below triggers the mount effect's normal remount onto the
         // base photo. Flushing here would PUT the stale scene straight back
         // over the row the server just pruned.
-        discardRef.current?.();
+        // #741 defect 6: tell the operator only when there was actually
+        // something to throw away (an edit made during the DELETE round
+        // trip, after the pre-delete flush above already ran) — the common
+        // case discards nothing and stays silent.
+        if (discardRef.current?.()) {
+          alert("An unsaved edit made while deleting was discarded (it hadn't saved yet).");
+        }
         setActivePhotoId(null);
       } else {
         // #741 defect 2: the editor is mounted on a DIFFERENT, surviving

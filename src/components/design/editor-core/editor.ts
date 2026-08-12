@@ -4,7 +4,7 @@ import Konva from "konva";
 // storage connector (createEditorApi, below), and the sibling renderers live in
 // THIS folder (./). Everything else in this file is byte-identical with the
 // design tool's canonical editor.ts — keep it that way.
-import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, isItemOnPhoto, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type SideOfHouse, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, pruneOrphanedMiniGroups, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
+import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, isItemOnPhoto, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type SideOfHouse, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, pruneOrphanedMiniGroups, removeItemsForPhoto, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
 import { createEditorApi } from "./storage";
 import { COLORS, setPalette } from "./colors";
 import { renderStrand, strandLengthPx } from "./strand";
@@ -1505,9 +1505,15 @@ export async function renderEditor(
   // triggering the remount, so destroy()'s flushSave() becomes a no-op.
   // Trade-off: a genuine edit made during that round trip is discarded too —
   // accepted, since resurrecting deleted/pruned billing is the worse failure.
-  function discardPending() {
+  // #741 defect 6: returns whether it actually discarded a real pending edit
+  // (vs. the common no-op case where the caller's own pre-action flush
+  // already cleared everything) so the caller can tell the operator their
+  // in-progress edit was thrown away, instead of losing it silently.
+  function discardPending(): boolean {
+    const hadPending = pendingSave;
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
     pendingSave = false;
+    return hadPending;
   }
   // AUDIT FIX (editor-autosave-honest-failure): non-blocking banner shown when a
   // prior teardown flush may have failed to persist (marker set in destroy()).
@@ -1607,16 +1613,52 @@ export async function renderEditor(
   // with zero surviving members. Once this returns, the resident scene
   // matches server truth, so a later teardown flush is harmless.
   function removePhotoItems(photoId: string) {
-    const droppedIds = new Set(scene.items.filter((it) => it.photoId === photoId).map((it) => it.id));
-    if (droppedIds.size === 0) return;
-    scene = {
-      ...scene,
-      items: pruneOrphanedMiniGroupsNotify(scene.items.filter(
-        (it) => it.photoId !== photoId && !(it.linkedToId && droppedIds.has(it.linkedToId)),
-      )),
-    };
+    const nextItems = removeItemsForPhoto(scene.items, photoId);
+    if (nextItems === scene.items) return; // nothing tagged to this photo — no-op
+
+    // #741 defect 1 (round 2, HIGH): also scrub every EXISTING undo/redo
+    // snapshot's copy of this photo's items — commit() below only appends a
+    // new (already-clean) snapshot and clears `future`; it does nothing about
+    // snapshots already sitting in `past`. Without this, one Ctrl+Z (or a
+    // click on #undo-btn) after this delete restores a pre-delete snapshot
+    // that still holds the deleted photo's items (and any mini group they
+    // carried) into the resident scene — and undo()'s unconditional
+    // scheduleSave() then autosaves them straight back over the server row
+    // this delete just correctly pruned, re-entering the #227/#254 dead-
+    // billing failure through undo. `future` doesn't need the same treatment:
+    // commit() unconditionally clears it right below, on every call.
+    past = past.map((s) => {
+      const filtered = removeItemsForPhoto(s.items, photoId);
+      return filtered === s.items ? s : { ...s, items: filtered };
+    });
+
+    // #741 defect 2: no in-canvas toast here (unlike deleteSelected's
+    // pruneOrphanedMiniGroupsNotify) — the caller already reports this exact
+    // server-side prune up to QuoteBuilder's persistent banner (the
+    // authoritative channel: it reflects what the server actually did).
+    // Firing both duplicated one removal into two differently-worded notices.
+    scene = { ...scene, items: nextItems };
     commit();
     redrawScene();
+
+    // #741 defect 5 (MED): close the autosave race during the delete round
+    // trip. Nothing gates canvas input while the DELETE request is in
+    // flight — if the operator draws on THIS (surviving, still-mounted)
+    // photo during that window, scheduleSave()'s 600ms debounce can fire and
+    // PUT the still-un-spliced scene, landing AFTER the server's own prune
+    // write and silently reverting it. Force an immediate corrective save of
+    // the now-spliced scene right after processing: it cancels any debounce
+    // timer so the PUT goes out now rather than later, and — because doSave()
+    // only applies the LATEST saveSeq's outcome (AUDIT FIX W3-008) — this
+    // becomes the save whose success updates the "Saved" pill even if an
+    // earlier stale PUT is still in flight. This narrows the race rather than
+    // closing it outright (no row lock — a slower stale PUT could in theory
+    // still land after this one), same trade-off already accepted by the
+    // pre-delete flush in DesignEditor.deletePhoto and seedDesignFromAnalysis.
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+    pendingSave = true;
+    savingEl.textContent = "Saving…";
+    void doSave();
   }
 
   // --- Sidebar ---
@@ -5518,7 +5560,7 @@ export async function renderEditor(
 }
 export type EditorHandle = (() => void) & {
   flushSave?: () => Promise<void>;
-  discardPending?: () => void;
+  discardPending?: () => boolean;
   removePhotoItems?: (photoId: string) => void;
 };
 
