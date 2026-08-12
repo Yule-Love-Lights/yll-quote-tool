@@ -11,6 +11,7 @@ import { calculatePermanentQuote } from '@/lib/permanent/pricing';
 import { DEFAULT_PERMANENT_RATES } from '@/lib/permanent/types';
 import { calculatePermanentBistro } from '@/lib/permanentBistro/pricing';
 import { DEFAULT_PERMANENT_BISTRO_RATES } from '@/lib/permanentBistro/types';
+import { calculateEventQuote } from '@/lib/event/pricing';
 import type { ServiceType } from '@/lib/serviceType';
 import type { PortalPhotos } from './photos';
 
@@ -211,8 +212,70 @@ describe('quoteRowToPortalQuote — roofline as mutually-exclusive line items (#
     const legacy = { ...result, rooflineOptions: undefined } as unknown as QuoteResult;
     const portal = portalFrom(legacy)!;
     expect(portal.roofline).toBeUndefined();
-    // The single roofline stays a normal line item, with its footage label intact.
-    expect(portal.lineItems.some((li) => li.kind === 'roofline')).toBe(true);
+    // The single roofline stays a normal line item — footage stripped (#246).
+    const roofline = portal.lineItems.find((li) => li.kind === 'roofline');
+    expect(roofline).toBeDefined();
+    expect(roofline!.label).toBe("Santa's Roofline");
+  });
+
+  // ── #246: legacy pre-#104 quotes leak footage through the LABEL, not just
+  // `detail` — WhatsIncluded never renders `detail`, but it does render
+  // `label`, and a legacy row (no rooflineOptions) keeps its single billed
+  // roofline/ridge line item untouched by buildPortalLineItems. Locks the
+  // render-time strip that catches it regardless of when the quote was made.
+  describe('#246: legacy roofline/ridge label leaks no footage to the customer', () => {
+    it("strips a legacy Santa's Roofline label (hyphen variant — a stored label is a hypothesis, not a guarantee of the engine's exact dash byte)", () => {
+      const fresh = calculateQuote(emptyInputs({ santasFootage: 100, rooflineChoice: 'santas' }));
+      const legacy = {
+        ...fresh,
+        rooflineOptions: undefined,
+        lineItems: [{ label: "Santa's Roofline - 180ft (medium)", amount: 1200 }],
+      } as unknown as QuoteResult;
+      const portal = portalFrom(legacy)!;
+      const roofline = portal.lineItems.find((li) => li.kind === 'roofline')!;
+      expect(roofline.label).toBe("Santa's Roofline");
+      expect(roofline.detail).toBe('');
+      expect(roofline.price).toBe(1200); // price is untouched
+    });
+
+    it('strips a legacy Gingerbread label the same way', () => {
+      const fresh = calculateQuote(emptyInputs({ santasFootage: 100, rooflineChoice: 'santas' }));
+      const legacy = {
+        ...fresh,
+        rooflineOptions: undefined,
+        lineItems: [{ label: 'Gingerbread – 90ft (medium)', amount: 900 }],
+      } as unknown as QuoteResult;
+      const portal = portalFrom(legacy)!;
+      const ginger = portal.lineItems.find((li) => li.kind === 'ridge')!;
+      expect(ginger.label).toBe('Gingerbread');
+      expect(ginger.detail).toBe('');
+      expect(ginger.price).toBe(900);
+    });
+
+    it('NEGATIVE: a non-light custom label that legitimately contains "Nft" text is left completely alone', () => {
+      // Garland sizes are explicitly fine to show (only LIGHT footage/strand
+      // counts are the business rule) — and even if staff typed a custom item
+      // that happens to start with "Gingerbread"/"Roofline", the strip is
+      // anchored to the ENGINE'S exact product-name prefix, so it must survive.
+      const fresh = calculateQuote(emptyInputs({ santasFootage: 100, rooflineChoice: 'santas' }));
+      const legacy = {
+        ...fresh,
+        rooflineOptions: undefined,
+        lineItems: [
+          { label: "Santa's Roofline - 180ft (medium)", amount: 1200 },
+          { label: 'Gingerbread house display – 3ft tall', amount: 250 },
+          { label: '9ft Noble Garland – Full Decor', amount: 180 },
+          { label: 'Extension Cords × 3', amount: 45 },
+        ],
+      } as unknown as QuoteResult;
+      const portal = portalFrom(legacy)!;
+      const custom = portal.lineItems.find((li) => li.price === 250)!;
+      expect(custom.label).toBe('Gingerbread house display – 3ft tall');
+      const garland = portal.lineItems.find((li) => li.price === 180)!;
+      expect(garland.label).toBe('9ft Noble Garland – Full Decor');
+      const cords = portal.lineItems.find((li) => li.price === 45)!;
+      expect(cords.label).toBe('Extension Cords × 3');
+    });
   });
 
   // ── #110 W1-005: drop the billed roofline by IDENTITY, not label ──────────
@@ -1204,6 +1267,25 @@ describe('quoteRowToPortalQuote — permanent bistro (single package + own gate,
     expect(portal.lineItems.map((li) => li.id)).toEqual(['permanent-bistro-0', 'permanent-bistro-poles']);
   });
 
+  it('#246: strips the run\'s footage suffix — the customer sees just the product name, poles keep its count', () => {
+    const inputs = bistroInputs();
+    const result = calculatePermanentBistro(inputs, { ...DEFAULT_PERMANENT_BISTRO_RATES, minimum: 0 });
+    const engineRun = result.lineItems.find((li) => li.id === 'permanent-bistro-0')!;
+    expect(engineRun.label).toBe('Permanent Bistro Lighting – 40ft'); // sanity on the shape we're stripping
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(result, inputs), service_type: 'permanent_bistro' },
+      photos: PHOTOS,
+    })!;
+    const run = portal.lineItems.find((li) => li.id === 'permanent-bistro-0')!;
+    expect(run.label).toBe('Permanent Bistro Lighting');
+    expect(run.detail).toBe('');
+    expect(run.price).toBe(engineRun.amount); // price untouched
+    // Poles is a QUANTITY, not light footage — the business rule doesn't
+    // apply, and its label carries no footage suffix to strip anyway.
+    const poles = portal.lineItems.find((li) => li.id === 'permanent-bistro-poles')!;
+    expect(poles.label).toBe('Poles (2)');
+  });
+
   it('approvalGate is 0 (gate off) when the bistro rate snapshot minimum is 0', () => {
     const inputs = bistroInputs();
     const result = calculatePermanentBistro(inputs, { ...DEFAULT_PERMANENT_BISTRO_RATES, minimum: 0 });
@@ -1238,6 +1320,24 @@ describe('quoteRowToPortalQuote — permanent bistro (single package + own gate,
     })!;
     expect(portal.charges.rush.amount).toBe(0);
     expect(portal.charges.takedown.amount).toBe(0);
+  });
+});
+
+// ── #246: event vertical's temporary Bistro Lighting — footage strip ───────
+describe('quoteRowToPortalQuote — #246 event Bistro Lighting label footage strip', () => {
+  it("strips the run's footage suffix — the customer sees just the product name", () => {
+    const inputs = emptyInputs({ event: { bistro: [{ footage: 50 }] } } as Partial<QuoteInputs>);
+    const result = calculateEventQuote(inputs);
+    const engineRun = result.lineItems.find((li) => li.label.startsWith('Bistro Lighting'))!;
+    expect(engineRun.label).toBe('Bistro Lighting – 50ft'); // sanity on the shape we're stripping
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(result, inputs), service_type: 'event' },
+      photos: PHOTOS,
+    })!;
+    const run = portal.lineItems.find((li) => li.kind === 'bistro')!;
+    expect(run.label).toBe('Bistro Lighting');
+    expect(run.detail).toBe('');
+    expect(run.price).toBe(engineRun.amount); // price untouched
   });
 });
 

@@ -201,6 +201,25 @@ const MINI_LIGHT_KINDS: ReadonlySet<PortalLineItemKind> = new Set([
 // left untouched (see the stripped !== item.label guard at the call site).
 const MINI_LIGHT_SUFFIX_RE = /\s*–\s*(?:(?:canopy|trunk)\s+wrap,\s*)?\d+\s+strings?\s*$/i;
 
+// #246: the customer must never see LIGHT footage (business rule — wreath/
+// garland SIZES are fine, this is scoped to footage specifically). Several
+// engine labels carry it as a trailing "– Nft" suffix, sometimes followed by
+// a "(<difficulty>|($X/ft))" parenthetical (roofline family) and sometimes
+// not (bistro). Anchored to the EXACT known product-name prefix — not just
+// the item's `kind` — so a staff-typed CUSTOM item that merely shares a
+// kind's classifying word is never silently truncated (same defense as the
+// #138/S30/W1-005 label-identity guards elsewhere in this file). Accepts
+// either a hyphen or an en dash before the footage, since a pre-#104 stored
+// label is a data hypothesis, not a guarantee of the engine's exact byte.
+// Returns the bare product name when the shape matched, else null (the
+// label is left completely untouched).
+function stripFootageSuffix(label: string, productName: string, requireParen: boolean): string | null {
+  const re = requireParen
+    ? new RegExp(`^${productName} [-–] [\\d,]+(?:\\.\\d+)?\\s*ft\\s*\\(`, 'i')
+    : new RegExp(`^${productName} [-–] [\\d,]+(?:\\.\\d+)?\\s*ft\\s*$`, 'i');
+  return re.test(label) ? productName : null;
+}
+
 function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null): PortalLineItem[] {
   // Defensive: old rows or partial saves may have a missing / non-array
   // lineItems field. Treat as empty so the portal still renders (the
@@ -227,10 +246,15 @@ function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null):
       // label already carries footage). Any future permanent-only logic keyed on
       // this prefix must still exclude 'permanent-bistro-'.
       if (typeof raw.id === 'string' && raw.id.startsWith('permanent-bistro')) {
+        // #246: strip the run's engine footage suffix ("Permanent Bistro
+        // Lighting – 40ft", permanentBistro/pricing.ts calculateBistroLines).
+        // The poles/maintenance rows sharing this id prefix ("Poles (N)",
+        // "Annual Maintenance Plan") don't match the shape and pass through.
+        const bareLabel = stripFootageSuffix(raw.label, 'Permanent Bistro Lighting', false);
         const item: PortalLineItem = {
           id: raw.id,
           kind: 'bistro',
-          label: raw.label,
+          label: bareLabel ?? raw.label,
           detail: '',
           price: raw.amount,
           stableId: raw.id,
@@ -283,19 +307,51 @@ function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null):
       // items that happened to start with "Winter Wonderland" (S30 live bug:
       // "Winter Wonderland Display Package · …" rendered as just "Winter
       // Wonderland" on the portal). Same only-if-the-pattern-matched guard as
-      // the mini-light strip below.
-      if (kind === 'ridge' && /^Winter Wonderland – [\d,]+\s*ft\s*\(/i.test(item.label)) {
-        item.label = 'Winter Wonderland';
-        item.detail = '';
+      // the mini-light strip below. Gingerbread shares this kind (RIDGE_RE
+      // matches both words) and the same engine shape (#246).
+      if (kind === 'ridge') {
+        const bare =
+          stripFootageSuffix(item.label, 'Winter Wonderland', true) ??
+          stripFootageSuffix(item.label, 'Gingerbread', true);
+        if (bare) {
+          item.label = bare;
+          item.detail = '';
+        }
+      }
+      // Santa's Roofline (#246): the plain roofline family's own footage
+      // suffix — same shape as Winter Wonderland/Gingerbread above, this is
+      // the fix for a LEGACY pre-#104 quote (no rooflineOptions), whose single
+      // billed roofline line survives buildPortalLineItems untouched and
+      // otherwise carries footage straight to the customer.
+      if (kind === 'roofline') {
+        const bare = stripFootageSuffix(item.label, "Santa's Roofline", true);
+        if (bare) {
+          item.label = bare;
+          item.detail = '';
+        }
       }
       // Stake Lighting (Jason, portal-label-detail-strip): the customer card
       // shows just "Stake Lighting" — the engine's " – Nft (rate)" footage/
       // difficulty suffix (pricingEngine.ts calculateStakeLighting ~525) is
       // operator detail. Same engine-shape match as the #138 WW strip above so
       // a custom item named "Stake Lighting …" can never be truncated.
-      if (kind === 'stake-lighting' && /^Stake Lighting – [\d,]+\s*ft\s*\(/i.test(item.label)) {
-        item.label = 'Stake Lighting';
-        item.detail = '';
+      if (kind === 'stake-lighting') {
+        const bare = stripFootageSuffix(item.label, 'Stake Lighting', true);
+        if (bare) {
+          item.label = bare;
+          item.detail = '';
+        }
+      }
+      // Bistro Lighting (#246): the EVENT vertical's temporary bistro run
+      // (event/pricing.ts calculateBistro) — no trailing parenthetical, unlike
+      // the roofline family. The permanent-bistro sibling is stripped earlier,
+      // in its own id-keyed branch above (it never reaches this generic path).
+      if (kind === 'bistro') {
+        const bare = stripFootageSuffix(item.label, 'Bistro Lighting', false);
+        if (bare) {
+          item.label = bare;
+          item.detail = '';
+        }
       }
       // Mini lights — Tree/Bush/Column/Railing/Curtain Lights (Jason,
       // portal-label-detail-strip): the customer card shows just the surface
