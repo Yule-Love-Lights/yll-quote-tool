@@ -140,6 +140,51 @@ describe('normalizeGhlConversation — GHL activity noise is flagged, not exclud
   });
 });
 
+// #252: TYPE_NO_SHOW is GHL logging a missed booked appointment, not a
+// customer message. It carries no body and isn't in CHANNEL_BY_TYPE (not a
+// real communication channel), so it must be forced 'automated' here or it
+// counts as an unanswered lead and can escalate (a real prod row hit
+// escalation_level 2/RED this way — see ledger #252).
+describe('normalizeGhlConversation — TYPE_NO_SHOW is automated, not a lead (#252)', () => {
+  it('classifies a no-show as automated', () => {
+    const t = mustTouch(normalizeGhlConversation(
+      conversation({ lastMessageType: 'TYPE_NO_SHOW', lastMessageBody: '' }),
+    ));
+    expect(t.leadKind).toBe('automated');
+  });
+
+  it('leaves channel null for a no-show (not a real communication channel)', () => {
+    const t = mustTouch(normalizeGhlConversation(
+      conversation({ lastMessageType: 'TYPE_NO_SHOW', lastMessageBody: '' }),
+    ));
+    expect(t.channel).toBeNull();
+  });
+
+  it('synthesizes a "missed appointment" preview for a no-show so the row is never blank', () => {
+    const t = mustTouch(normalizeGhlConversation(
+      conversation({ lastMessageType: 'TYPE_NO_SHOW', lastMessageBody: '' }),
+    ));
+    expect(t.preview).toBe('🚫 No-show (missed appointment)');
+  });
+
+  // Regression guard: the bug this fixes must not spread — a real customer
+  // touch on the SAME channel-agnostic path (no body, e.g. an inbound call)
+  // still classifies as a lead.
+  it('does not affect a real customer touch (a call with no body still classifies as a lead)', () => {
+    const t = mustTouch(normalizeGhlConversation(
+      conversation({ lastMessageType: 'TYPE_CALL', lastMessageBody: '', lastMessageDirection: 'inbound' }),
+    ));
+    expect(t.leadKind).toBe('lead');
+  });
+
+  it('does not affect a normal SMS conversation (still classifies as a lead)', () => {
+    const t = mustTouch(normalizeGhlConversation(
+      conversation({ lastMessageType: 'TYPE_SMS', lastMessageBody: 'Can you come out Tuesday?' }),
+    ));
+    expect(t.leadKind).toBe('lead');
+  });
+});
+
 describe('normalizeGhlConversation — sender-suppression set (layer 3)', () => {
   it('classifies as automated when the normalized email is in the suppressed set', () => {
     // normalizeEmail('cristina@example.com') → 'cristina@example.com'
