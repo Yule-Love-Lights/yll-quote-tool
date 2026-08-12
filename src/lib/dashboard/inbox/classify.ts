@@ -48,7 +48,10 @@ export function isFromUs(
 ): boolean {
   const addr = bareAddress(fromAddress);
   if (!addr) return false;
-  const domain = addr.slice(addr.lastIndexOf('@') + 1);
+  // #252 LOW: strip one trailing dot (a technically-valid FQDN, e.g.
+  // "sales@mail.yulelovelights.com.") before comparing, so it isn't missed by
+  // isInternalDomain's exact/subdomain check below and slip past self-ingest.
+  const domain = addr.slice(addr.lastIndexOf('@') + 1).replace(/\.$/, '');
   // #252: always check the static INTERNAL_EMAIL_DOMAINS list too, not only
   // opts.ourDomain — so this holds even when the caller's own domain source
   // (e.g. GMAIL_USER) is unset.

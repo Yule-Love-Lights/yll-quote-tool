@@ -2,12 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { normalizeGhlConversation } from './ghl';
 import type { GhlConversation } from './ghl';
 
-// #252: normalizeGhlConversation is nullable (an activity-noise type
-// suppresses to null) — this asserts non-null for tests exercising the
-// unaffected normal-conversation paths, so their existing assertions stay
-// unchanged (same pattern as quotetool.test.ts's mustTouch, #181).
+// #252: normalizeGhlConversation always returns a touch (never null) — kept
+// as a thin passthrough so the normal-conversation assertions below read the
+// same as before the #252 fix (it used to unwrap a nullable activity-noise
+// return; same pattern as quotetool.test.ts's mustTouch, #181).
 function mustTouch(t: ReturnType<typeof normalizeGhlConversation>) {
-  if (!t) throw new Error('expected a touch, got null');
   return t;
 }
 
@@ -110,19 +109,34 @@ describe('normalizeGhlConversation — maps a raw GHL conversation to a Normaliz
 });
 
 // #252: pure GHL system/CRM activity ("Opportunity created", "DnD enabled by
-// user") must never become an inbox touch at all — an ingest-time exclusion,
-// not a channel mapping or a leadKind classification.
-describe('normalizeGhlConversation — GHL activity noise exclusion (#252)', () => {
-  it('excludes a TYPE_ACTIVITY_CONTACT conversation entirely (returns null)', () => {
-    expect(normalizeGhlConversation(conversation({ lastMessageType: 'TYPE_ACTIVITY_CONTACT' }))).toBeNull();
+// user") is FLAGGED (isActivityNoise), never excluded at this layer — an
+// unconditional null-return here used to be able to swallow a conversation's
+// FIRST-EVER touch forever (searchConversations only ever hands the poller
+// the single most-recent event; see ghl.ts's ACTIVITY_NOISE_TYPES comment).
+// store.ts's planIngest decides whether to skip, based on whether a row
+// already exists — see store.test.ts's "GHL activity-noise touch" describe.
+describe('normalizeGhlConversation — GHL activity noise is flagged, not excluded (#252)', () => {
+  // Pre-#252-fix, normalizeGhlConversation returned null unconditionally for
+  // these types — this assertion is the one that would fail against that
+  // implementation (a null touch here means sync.ts never even calls
+  // ingestTouch, so a brand-new lead with no existing row is swallowed).
+  it('still produces a touch for a TYPE_ACTIVITY_CONTACT conversation (never swallowed)', () => {
+    const t = normalizeGhlConversation(conversation({ lastMessageType: 'TYPE_ACTIVITY_CONTACT' }));
+    expect(t).not.toBeNull();
+    expect(t.isActivityNoise).toBe(true);
+    expect(t.source).toBe('ghl');
+    expect(t.externalId).toBe('iuNLqFmTCIRAGCsoXcYw');
   });
 
-  it('excludes a TYPE_ACTIVITY_OPPORTUNITY conversation entirely (returns null)', () => {
-    expect(normalizeGhlConversation(conversation({ lastMessageType: 'TYPE_ACTIVITY_OPPORTUNITY' }))).toBeNull();
+  it('still produces a touch for a TYPE_ACTIVITY_OPPORTUNITY conversation (never swallowed)', () => {
+    const t = normalizeGhlConversation(conversation({ lastMessageType: 'TYPE_ACTIVITY_OPPORTUNITY' }));
+    expect(t).not.toBeNull();
+    expect(t.isActivityNoise).toBe(true);
   });
 
-  it('does not exclude a real SMS conversation (the regression guard that matters)', () => {
-    expect(normalizeGhlConversation(conversation({ lastMessageType: 'TYPE_SMS' }))).not.toBeNull();
+  it('does not flag a real SMS conversation as activity noise (the regression guard that matters)', () => {
+    const t = normalizeGhlConversation(conversation({ lastMessageType: 'TYPE_SMS' }));
+    expect(t.isActivityNoise).toBe(false);
   });
 });
 

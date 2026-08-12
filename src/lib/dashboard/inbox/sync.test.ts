@@ -64,6 +64,7 @@ const addContactTagsMock = vi.fn();
 const findOrCreateOpportunityForContactMock = vi.fn();
 const isHighLevelConfiguredMock = vi.fn();
 const markConversationReadMock = vi.fn();
+const searchConversationsMock = vi.fn();
 
 vi.mock('@/lib/integrations/highlevel', () => ({
   addContactTags: (...args: unknown[]) => addContactTagsMock(...args),
@@ -73,11 +74,14 @@ vi.mock('@/lib/integrations/highlevel', () => ({
   findOrCreateOpportunityForContact: (...args: unknown[]) => findOrCreateOpportunityForContactMock(...args),
   isHighLevelConfigured: (...args: unknown[]) => isHighLevelConfiguredMock(...args),
   markConversationRead: (...args: unknown[]) => markConversationReadMock(...args),
-  searchConversations: vi.fn(),
+  searchConversations: (...args: unknown[]) => searchConversationsMock(...args),
   sendEmail: vi.fn(),
 }));
 
-import { runGmailPoll, runHandledWriteback, runQuoteToolReconcile } from './sync';
+// normalizeGhlConversation ('./ghl') is deliberately NOT mocked below — the
+// #252 activity-noise counter test exercises the real adapter so it proves
+// the isActivityNoise flag actually flows from ghl.ts into sync.ts's summary.
+import { runGhlReconcile, runGmailPoll, runHandledWriteback, runQuoteToolReconcile } from './sync';
 import type { HandledTarget } from './store';
 
 function threadRefs(count: number) {
@@ -440,5 +444,73 @@ describe('runQuoteToolReconcile — orphan follow-up sweep wiring (#183 BUG 3)',
       afterDays: 3,
     });
     expect(closeFollowUpMock).not.toHaveBeenCalled();
+  });
+});
+
+// #252: activityNoiseSkipped must stay a distinguishable subset of `skipped`
+// in the reconcile summary, so a swallow regression is observable in prod
+// (the raw `skipped` count is expected to be nonzero every run for unrelated
+// reasons — outbound-no-existing, noop-reingest — so it alone proves nothing).
+describe('runGhlReconcile — activity-noise skip counter (#252)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function conv(over: Record<string, unknown> = {}) {
+    return {
+      id: 'conv-1',
+      locationId: 'loc-1',
+      lastMessageDate: 1782693272654,
+      lastMessageType: 'TYPE_SMS',
+      lastMessageBody: 'hello',
+      lastMessageDirection: 'inbound',
+      unreadCount: 1,
+      contactId: 'contact-1',
+      fullName: 'Jane Doe',
+      contactName: 'Jane Doe',
+      email: 'jane@example.com',
+      phone: '(631) 555-2223',
+      type: 'TYPE_PHONE',
+      ...over,
+    };
+  }
+
+  it('counts an activity-noise conversation that ingestTouch skips (existing item) as activityNoiseSkipped', async () => {
+    searchConversationsMock.mockResolvedValue({
+      conversations: [conv({ id: 'a1', lastMessageType: 'TYPE_ACTIVITY_OPPORTUNITY' })],
+    });
+    ingestTouchMock.mockResolvedValue({ ...OK_RESULT, skipped: true });
+
+    const summary = await runGhlReconcile(new Date());
+
+    expect(summary.ok).toBe(true);
+    expect(summary.skipped).toBe(1);
+    expect(summary.activityNoiseSkipped).toBe(1);
+    expect(summary.ingested).toBe(0);
+  });
+
+  it('does NOT count an ordinary (non-noise) skip as activity-noise', async () => {
+    searchConversationsMock.mockResolvedValue({
+      conversations: [conv({ id: 'a2', lastMessageType: 'TYPE_SMS' })],
+    });
+    ingestTouchMock.mockResolvedValue({ ...OK_RESULT, skipped: true });
+
+    const summary = await runGhlReconcile(new Date());
+
+    expect(summary.skipped).toBe(1);
+    expect(summary.activityNoiseSkipped).toBe(0);
+  });
+
+  it('ingests an activity-noise conversation normally when ingestTouch reports it was NOT skipped (no existing item — the #252 swallow case)', async () => {
+    searchConversationsMock.mockResolvedValue({
+      conversations: [conv({ id: 'a3', lastMessageType: 'TYPE_ACTIVITY_CONTACT' })],
+    });
+    ingestTouchMock.mockResolvedValue({ ...OK_RESULT, skipped: false });
+
+    const summary = await runGhlReconcile(new Date());
+
+    expect(summary.ingested).toBe(1);
+    expect(summary.skipped).toBe(0);
+    expect(summary.activityNoiseSkipped).toBe(0);
   });
 });

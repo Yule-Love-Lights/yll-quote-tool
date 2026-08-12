@@ -34,9 +34,18 @@ const CHANNEL_BY_TYPE: Record<string, Channel> = {
 };
 
 // #252: pure GHL system/CRM activity, not a customer touch (e.g. "Opportunity
-// created", "DnD enabled by user") — must never surface as an inbox lead. This
-// is an ingest-time EXCLUSION (no touch at all), not a channel mapping, same
-// shape as #181's normalizeQuoteTouch null-return for an unsent legacy_rebook.
+// created", "DnD enabled by user"). This is NOT an ingest-time exclusion —
+// that was the original #252 bug. searchConversations (highlevel.ts) returns
+// only the SINGLE most-recent event per conversation, no message history, so
+// unconditionally returning null here whenever that latest event happens to
+// be activity noise could swallow a brand-new lead's FIRST-EVER touch forever
+// (a GHL automation logging "Opportunity created" seconds after the customer's
+// real message becomes the only thing the poller ever sees). A conversation
+// with no existing inbox row must always be observable, whatever its latest
+// event type is. So this only sets a flag; store.ts's planIngest is the one
+// place that knows whether a row already exists, and decides there — skip the
+// write when a row exists (never let noise bump/reopen a real conversation),
+// ingest normally when it does not.
 const ACTIVITY_NOISE_TYPES = new Set(['TYPE_ACTIVITY_CONTACT', 'TYPE_ACTIVITY_OPPORTUNITY']);
 
 function channelOf(lastMessageType: string | undefined): Channel | null {
@@ -58,8 +67,8 @@ function previewOf(c: GhlConversation, channel: Channel | null, direction: Direc
   return null;
 }
 
-export function normalizeGhlConversation(c: GhlConversation, suppressed?: Set<string>): NormalizedTouch | null {
-  if (c.lastMessageType && ACTIVITY_NOISE_TYPES.has(c.lastMessageType)) return null;
+export function normalizeGhlConversation(c: GhlConversation, suppressed?: Set<string>): NormalizedTouch {
+  const isActivityNoise = !!c.lastMessageType && ACTIVITY_NOISE_TYPES.has(c.lastMessageType);
   const channel = channelOf(c.lastMessageType);
   const direction = directionOf(c.lastMessageDirection);
   const email = c.email ? normalizeEmail(c.email) : null;
@@ -85,5 +94,6 @@ export function normalizeGhlConversation(c: GhlConversation, suppressed?: Set<st
     },
     raw: c,
     leadKind: isSuppressed ? 'automated' : classifyMessage({ fromAddress: null, subject: null, preview }),
+    isActivityNoise,
   };
 }

@@ -49,6 +49,13 @@ describe('isFromUs — subdomain-aware internal domain matching (#252)', () => {
   it('still rejects a real customer address on an unrelated domain', () => {
     expect(isFromUs('jane@gmail.com', { ourDomain: 'yulelovelights.com' })).toBe(false);
   });
+
+  // #252 LOW: a trailing-dot FQDN (technically valid, e.g. an address a mail
+  // client normalized) must still match our subdomain, not slip past the
+  // self-ingest filter. Not reachable via real Gmail/GHL payloads today.
+  it('matches a subdomain with a trailing dot (a technically-valid FQDN)', () => {
+    expect(isFromUs('sales@mail.yulelovelights.com.', { ourDomain: 'yulelovelights.com' })).toBe(true);
+  });
 });
 
 describe('classifyMessage', () => {

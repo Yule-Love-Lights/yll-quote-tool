@@ -66,11 +66,20 @@ export type ItemRow = {
 };
 
 export type IngestPlan = {
-  /** When true, do nothing: an outbound touch with no existing item is usually
-   *  us cold-contacting — there's no unresponded lead to track (avoids noise).
-   *  Some sources deliberately track outbound-only first observations (positive
-   *  allowlist below); a conversation we REPLIED to keeps its existing item and
-   *  still auto-resolves. */
+  /** When true, do nothing. Two independent reasons feed this:
+   *   1. An outbound touch with no existing item is usually us cold-contacting
+   *      — there's no unresponded lead to track (avoids noise). Some sources
+   *      deliberately track outbound-only first observations (positive
+   *      allowlist below); a conversation we REPLIED to keeps its existing
+   *      item and still auto-resolves.
+   *   2. #252: a GHL activity-noise touch (touch.isActivityNoise) that has an
+   *      EXISTING item — skip so pure CRM activity can never bump/reopen a
+   *      real conversation. The opposite-polarity twin of reason 1: that rule
+   *      skips on `!existing`, this one skips on `existing`. An activity-noise
+   *      touch with NO existing item is deliberately never skipped here — a
+   *      conversation's first-ever touch must always be observable, even when
+   *      the only snapshot GHL ever hands the poller is an activity row (see
+   *      ghl.ts's ACTIVITY_NOISE_TYPES comment for the full swallow scenario). */
   skip: boolean;
   /** When true, a resolved item (handled/completed/dismissed) is being re-ingested
    *  with NOTHING to persist — same status, same last_message_at, no reopen /
@@ -198,7 +207,11 @@ export function planIngest(input: {
   };
 
   return {
-    skip: !existing && touch.direction === 'outbound' && !TRACKS_OUTBOUND_FIRST_OBSERVATION.has(touch.source),
+    // #252: reason 1 (outbound, no existing item) OR reason 2 (activity noise,
+    // existing item) — see the `skip` field doc above.
+    skip:
+      (!existing && touch.direction === 'outbound' && !TRACKS_OUTBOUND_FIRST_OBSERVATION.has(touch.source)) ||
+      (!!existing && !!touch.isActivityNoise),
     noopReingest,
     contactOp,
     item,

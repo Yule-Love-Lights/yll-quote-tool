@@ -111,6 +111,46 @@ describe('planIngest — skip outbound-with-no-existing (avoid noise)', () => {
   });
 });
 
+// #252: the opposite-polarity twin of the block above. An activity-noise
+// touch (isActivityNoise) must NEVER be skipped when there is no existing
+// item (a conversation's first-ever touch must always be observable, even
+// when GHL's rolled-up latest-event snapshot is pure CRM activity) — but MUST
+// be skipped when an item already exists, so noise can't bump/reopen it.
+describe('planIngest — GHL activity-noise touch skip (#252, opposite polarity)', () => {
+  it('does NOT skip an activity-noise touch with no existing item (must never swallow a first touch)', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: null,
+      touch: touch({ isActivityNoise: true, direction: null, channel: null, preview: null }),
+      now: at(HOUR),
+    });
+    expect(plan.skip).toBe(false);
+    expect(plan.contactOp.kind).toBe('insert'); // the conversation actually gets ingested
+  });
+
+  it('skips an activity-noise touch that HAS an existing item (never lets noise bump a real conversation)', () => {
+    const existing: ExistingItem = { id: 'i1', contactId: 'A', status: 'unresponded', notifiedLevels: [], lastMessageAt: T };
+    const plan = planIngest({
+      candidates: [],
+      existing,
+      touch: touch({ isActivityNoise: true, lastMessageAt: at(HOUR) }),
+      now: at(2 * HOUR),
+    });
+    expect(plan.skip).toBe(true);
+  });
+
+  it('does not skip a normal (non-noise) inbound touch on an existing item, even though existing is truthy', () => {
+    const existing: ExistingItem = { id: 'i1', contactId: 'A', status: 'unresponded', notifiedLevels: [], lastMessageAt: T };
+    const plan = planIngest({
+      candidates: [],
+      existing,
+      touch: touch({ isActivityNoise: false, lastMessageAt: at(HOUR) }),
+      now: at(2 * HOUR),
+    });
+    expect(plan.skip).toBe(false);
+  });
+});
+
 // ─── planIngest — new fields flow through ────────────────────────────────────
 
 describe('planIngest — leadKind + quoteValue thread through to item row', () => {

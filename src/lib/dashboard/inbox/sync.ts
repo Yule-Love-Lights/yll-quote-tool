@@ -56,6 +56,12 @@ export type ReconcileSummary = {
   scanned: number;
   ingested: number;
   skipped: number;
+  /** #252: subset of `skipped` that was pure GHL activity noise bumping an
+   *  ALREADY-EXISTING item (planIngest reason 2) — kept distinguishable from
+   *  the generic `skipped` count (outbound-no-existing, noop-reingest) so a
+   *  swallow regression would be observable in prod, not lumped into a count
+   *  that's expected to be nonzero for unrelated reasons every run. */
+  activityNoiseSkipped: number;
   autoResolved: number;
   ambiguous: number;
   errors: number;
@@ -69,17 +75,17 @@ export async function runGhlReconcile(now: Date, opts: { limit?: number } = {}):
     const suppressed = await getSuppressedSenders();
     let ingested = 0;
     let skipped = 0;
+    let activityNoiseSkipped = 0;
     let autoResolved = 0;
     let ambiguous = 0;
     let errors = 0;
     for (const c of conversations) {
-      // #252: normalizeGhlConversation returns null for pure GHL system/CRM
-      // activity (e.g. "Opportunity created") — never a customer touch.
+      // #252: normalizeGhlConversation always returns a touch now — pure GHL
+      // activity noise (e.g. "Opportunity created") is FLAGGED
+      // (isActivityNoise), never excluded here, so a conversation's first-ever
+      // touch is never silently swallowed. planIngest (store.ts) is the one
+      // that decides whether to skip, based on whether an item already exists.
       const touch = normalizeGhlConversation(c, suppressed);
-      if (!touch) {
-        skipped++;
-        continue;
-      }
       const res = await ingestTouch(touch, now);
       if (!res.ok) {
         errors++;
@@ -87,6 +93,7 @@ export async function runGhlReconcile(now: Date, opts: { limit?: number } = {}):
       }
       if (res.skipped) {
         skipped++;
+        if (touch.isActivityNoise) activityNoiseSkipped++;
         continue;
       }
       ingested++;
@@ -94,11 +101,11 @@ export async function runGhlReconcile(now: Date, opts: { limit?: number } = {}):
       if (res.ambiguous) ambiguous++;
     }
     await recordSyncRun('ghl', errors > 0 ? 'error' : 'ok', errors > 0 ? `${errors} item error(s)` : undefined);
-    return { ok: true, scanned: conversations.length, ingested, skipped, autoResolved, ambiguous, errors };
+    return { ok: true, scanned: conversations.length, ingested, skipped, activityNoiseSkipped, autoResolved, ambiguous, errors };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     await recordSyncRun('ghl', 'error', error);
-    return { ok: false, scanned: 0, ingested: 0, skipped: 0, autoResolved: 0, ambiguous: 0, errors: 1, error };
+    return { ok: false, scanned: 0, ingested: 0, skipped: 0, activityNoiseSkipped: 0, autoResolved: 0, ambiguous: 0, errors: 1, error };
   }
 }
 
