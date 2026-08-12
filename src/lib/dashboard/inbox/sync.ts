@@ -73,7 +73,14 @@ export async function runGhlReconcile(now: Date, opts: { limit?: number } = {}):
     let ambiguous = 0;
     let errors = 0;
     for (const c of conversations) {
-      const res = await ingestTouch(normalizeGhlConversation(c, suppressed), now);
+      // #252: normalizeGhlConversation returns null for pure GHL system/CRM
+      // activity (e.g. "Opportunity created") — never a customer touch.
+      const touch = normalizeGhlConversation(c, suppressed);
+      if (!touch) {
+        skipped++;
+        continue;
+      }
+      const res = await ingestTouch(touch, now);
       if (!res.ok) {
         errors++;
         continue;
