@@ -941,7 +941,7 @@ describe('listOpenItems — legacy-rebook exclusion wiring (#157, #183)', () => 
 
     let callCount = 0;
     sbRef.current = {
-      from: (_table: string) => {
+      from: () => {
         callCount += 1;
         return callCount === 1 ? mainBuilder : quotesBuilder;
       },
@@ -966,7 +966,7 @@ describe('listOpenItems — legacy-rebook exclusion wiring (#157, #183)', () => 
 
     let callCount = 0;
     sbRef.current = {
-      from: (_table: string) => {
+      from: () => {
         callCount += 1;
         return callCount === 1 ? mainBuilder : quotesBuilder;
       },
@@ -1565,7 +1565,7 @@ describe('listEscalatableItems — legacy-rebook exclusion wiring (#181, #183, #
 
     let callCount = 0;
     sbRef.current = {
-      from: (_table: string) => {
+      from: () => {
         callCount += 1;
         return callCount === 1 ? mainBuilder : quotesBuilder;
       },
@@ -1591,7 +1591,7 @@ describe('listEscalatableItems — legacy-rebook exclusion wiring (#181, #183, #
 
     let callCount = 0;
     sbRef.current = {
-      from: (_table: string) => {
+      from: () => {
         callCount += 1;
         return callCount === 1 ? mainBuilder : quotesBuilder;
       },
@@ -1616,7 +1616,7 @@ describe('listEscalatableItems — legacy-rebook exclusion wiring (#181, #183, #
 
     let callCount = 0;
     sbRef.current = {
-      from: (_table: string) => {
+      from: () => {
         callCount += 1;
         return callCount === 1 ? mainBuilder : quotesBuilder;
       },
