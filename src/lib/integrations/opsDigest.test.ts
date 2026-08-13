@@ -6,7 +6,7 @@ import type { FulfillmentCard } from '@/lib/inventory/jobs';
 const { listQuotes, listFulfillmentCards, listOpenItems, listDueFollowUps } = vi.hoisted(() => ({
   listQuotes: vi.fn(async (): Promise<unknown[]> => []),
   listFulfillmentCards: vi.fn(async (): Promise<unknown[]> => []),
-  listOpenItems: vi.fn(async (): Promise<unknown> => ({ ok: true, items: [], totalOpen: 0, truncated: false })),
+  listOpenItems: vi.fn(async (): Promise<unknown> => ({ ok: true, items: [], totalOpen: 0, totalLeads: 0, truncated: false })),
   listDueFollowUps: vi.fn(async (): Promise<unknown> => ({ ok: true, items: [] })),
 }));
 vi.mock('@/lib/quotes', () => ({ listQuotes }));
@@ -76,7 +76,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   listQuotes.mockResolvedValue([]);
   listFulfillmentCards.mockResolvedValue([]);
-  listOpenItems.mockResolvedValue({ ok: true, items: [], totalOpen: 0, truncated: false });
+  listOpenItems.mockResolvedValue({ ok: true, items: [], totalOpen: 0, totalLeads: 0, truncated: false });
   listDueFollowUps.mockResolvedValue({ ok: true, items: [] });
 });
 
@@ -129,12 +129,23 @@ describe('collectOpsDigest', () => {
     expect(listQuotes).toHaveBeenCalledWith(10_000);
   });
 
-  it('reads inbox open + due-follow-up counts from the inbox surface (totalOpen, not the capped page)', async () => {
-    listOpenItems.mockResolvedValue({ ok: true, items: [{}, {}], totalOpen: 64, truncated: true });
+  it('reads inbox open + due-follow-up counts from the inbox surface (totalLeads, not the capped page)', async () => {
+    listOpenItems.mockResolvedValue({ ok: true, items: [{}, {}], totalOpen: 64, totalLeads: 40, truncated: true });
     listDueFollowUps.mockResolvedValue({ ok: true, items: [{}, {}, {}] });
     const data = await collectOpsDigest();
-    expect(data.inboxOpenCount).toBe(64);
+    expect(data.inboxOpenCount).toBe(40);
     expect(data.inboxFollowUpsDueCount).toBe(3);
+  });
+
+  // #265: pins the actual field the digest reads — totalOpen counts EVERY open
+  // item (leads + lead_kind='automated' noise); totalLeads excludes the noise,
+  // matching /inbox's own "Open leads" tile. Before the fix, the digest read
+  // totalOpen and over-counted by exactly the automated total.
+  it('reads totalLeads specifically, NOT totalOpen — the digest must not re-count automated noise as leads (#265)', async () => {
+    listOpenItems.mockResolvedValue({ ok: true, items: [{}], totalOpen: 167, totalLeads: 127, truncated: false });
+    const data = await collectOpsDigest();
+    expect(data.inboxOpenCount).toBe(127);
+    expect(data.inboxOpenCount).not.toBe(167);
   });
 
   it('falls back to null inbox counts when the inbox read fails — never breaks the digest', async () => {

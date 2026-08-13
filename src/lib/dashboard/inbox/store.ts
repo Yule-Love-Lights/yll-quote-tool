@@ -442,8 +442,19 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
 // but `totalOpen` is the REAL count of open items (via Postgrest's exact count,
 // unaffected by .limit()), so the UI can say "N more not shown" instead of
 // silently under-reporting once open items exceed the cap.
+//
+// #265: `totalOpen` (and `items`) deliberately stay UNFILTERED by lead_kind —
+// they describe the same raw "every open item" population the /inbox page's
+// "Show N filtered" toggle (InboxList.tsx) needs to fetch automated rows to
+// display on demand. `totalLeads` is the sibling number: the same population
+// minus lead_kind='automated' noise (mirrors listEscalatableItems' own
+// `.or('lead_kind.is.null,lead_kind.neq.automated')` filter), for consumers
+// that want "how many actually need a reply" — currently only the morning
+// digest. Never repurpose `totalOpen` itself for this: it must stay the same
+// population as `items`/`items.length`, or the WT-41 truncation math above
+// (`totalOpen - items.length`) can go negative/silently stop firing.
 export type OpenItemsResult =
-  | { ok: true; items: OpenInboxItem[]; totalOpen: number; truncated: boolean }
+  | { ok: true; items: OpenInboxItem[]; totalOpen: number; totalLeads: number; truncated: boolean }
   | { ok: false; error: string };
 
 // ─── Legacy-rebook inbox exclusion (#157, escalation coverage + ingest-time
@@ -623,6 +634,20 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
     }
   }
 
+  // #265: automated-noise count within the SAME fetch window `legacyExcluded`
+  // above already used (post-legacy-exclusion `rows`, before the page slice) —
+  // feeds totalLeads below. Computed here (not via a query-level `.or(...)`
+  // filter like listEscalatableItems' sibling filter) because this query's
+  // `rows`/`items` must keep INCLUDING automated rows — InboxList.tsx's
+  // "Show N filtered" toggle depends on them still being fetched so staff can
+  // view automated notices (e.g. a TYPE_NO_SHOW touch) on demand. Filtering
+  // the query itself would silently break that toggle for every consumer.
+  // Structurally safe to subtract straight from totalOpen below: a quotetool
+  // item is NEVER lead_kind='automated' (quotetool.ts's normalizeQuoteTouch
+  // hardcodes leadKind: 'lead'), so this set and the legacy-rebook-hidden set
+  // (quotetool-only, per excludeLegacyRebookItems) never overlap.
+  const automatedInWindow = rows.filter((r) => r.lead_kind === 'automated').length;
+
   const trimmed = rows.slice(0, limit);
 
   // "Returning" proxy: a contact with >1 inbox_items across ALL statuses (any
@@ -691,7 +716,14 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
   // given the buffer above) — errs toward over-, never under-, reporting,
   // matching the pre-#157 behavior this WT-41 signal already relies on.
   const totalOpen = Math.max((count ?? rows.length) - legacyExcluded, items.length);
-  return { ok: true, items, totalOpen, truncated: totalOpen > items.length };
+  // #265: totalOpen minus the SAME window's automated count (see
+  // automatedInWindow above) — the sibling-parity fix for the digest/inbox
+  // count disagreement. Floored against the page's own lead-only tally
+  // (never report fewer leads than are literally sitting in `items`),
+  // mirroring totalOpen's own floor against items.length one line up.
+  const leadItemsInPage = items.filter((i) => i.leadKind !== 'automated').length;
+  const totalLeads = Math.max(totalOpen - automatedInWindow, leadItemsInPage);
+  return { ok: true, items, totalOpen, totalLeads, truncated: totalOpen > items.length };
 }
 
 // ─── Claim / assign (shared-queue "I've got this", Phase 1.5) ───────────────

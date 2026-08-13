@@ -16,6 +16,13 @@
 // they match /inbox — the open-items count carries the legacy-rebook exclusion
 // (like the /inbox open list); follow-ups-due mirrors the inbox follow-up strip
 // as-is (which does NOT exclude rebook), so it can exceed "awaiting reply".
+//
+// #265: reads totalLeads, NOT totalOpen — totalOpen counts every open item
+// (leads AND lead_kind='automated' system noise like a no-show notice);
+// totalLeads excludes the noise, matching what the /inbox page's own "Open
+// leads" tile (buildInboxSummary) and the dashboard nav badge already show.
+// Before this fix the digest's "N to respond" over-counted by exactly the
+// automated total (#265: 40 rows on 2026-08-13), disagreeing with /inbox.
 
 import { listQuotes } from '@/lib/quotes';
 import { listFulfillmentCards } from '@/lib/inventory/jobs';
@@ -119,12 +126,14 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
   ).length;
 
   // Inbox: reuse the /inbox surface's own reads so the counts match the page.
-  // open-items (totalOpen) carries the legacy-rebook exclusion; follow-ups-due
-  // mirrors the inbox follow-up strip as-is. Never let a Telegram-side summary
-  // break on an inbox read hiccup — fall back to null (rendered as no number).
+  // open-items (totalLeads) carries the legacy-rebook exclusion AND excludes
+  // lead_kind='automated' noise (#265), matching /inbox's own "Open leads"
+  // tile; follow-ups-due mirrors the inbox follow-up strip as-is. Never let a
+  // Telegram-side summary break on an inbox read hiccup — fall back to null
+  // (rendered as no number).
   const inboxOpenCount = await safeCount(async () => {
     const res = await listOpenItems();
-    return res.ok ? res.totalOpen : null;
+    return res.ok ? res.totalLeads : null;
   }, 'open items');
   const inboxFollowUpsDueCount = await safeCount(async () => {
     const res = await listDueFollowUps(now);

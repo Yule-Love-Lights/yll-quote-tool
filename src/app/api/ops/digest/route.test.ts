@@ -8,7 +8,7 @@ const { listQuotes, listFulfillmentCards, listOpenItems, listDueFollowUps, notif
   vi.hoisted(() => ({
     listQuotes: vi.fn(async (): Promise<unknown[]> => []),
     listFulfillmentCards: vi.fn(async (): Promise<unknown[]> => []),
-    listOpenItems: vi.fn(async (): Promise<unknown> => ({ ok: true, items: [], totalOpen: 0, truncated: false })),
+    listOpenItems: vi.fn(async (): Promise<unknown> => ({ ok: true, items: [], totalOpen: 0, totalLeads: 0, truncated: false })),
     listDueFollowUps: vi.fn(async (): Promise<unknown> => ({ ok: true, items: [] })),
     notifyTelegramAudience: vi.fn<(audience: string, text: string) => Promise<void>>(),
     tg: { enabled: true, configured: true },
@@ -67,7 +67,7 @@ beforeEach(() => {
   tg.configured = true;
   listQuotes.mockResolvedValue([]);
   listFulfillmentCards.mockResolvedValue([]);
-  listOpenItems.mockResolvedValue({ ok: true, items: [], totalOpen: 0, truncated: false });
+  listOpenItems.mockResolvedValue({ ok: true, items: [], totalOpen: 0, totalLeads: 0, truncated: false });
   listDueFollowUps.mockResolvedValue({ ok: true, items: [] });
   process.env.CRON_SECRET = SECRET;
 });
@@ -104,7 +104,9 @@ describe('GET /api/ops/digest', () => {
 
   it('sends the assembled digest routed to the ops audience', async () => {
     listQuotes.mockResolvedValue([draftQuote]);
-    listOpenItems.mockResolvedValue({ ok: true, items: [{}], totalOpen: 64, truncated: true });
+    // #265: totalOpen (raw, incl. automated noise) and totalLeads (leads only)
+    // deliberately DIFFER here — pins that the digest text shows totalLeads.
+    listOpenItems.mockResolvedValue({ ok: true, items: [{}], totalOpen: 64, totalLeads: 40, truncated: true });
     listDueFollowUps.mockResolvedValue({ ok: true, items: [{}, {}] });
     const res = await GET(makeReq(SECRET));
     expect(await res.json()).toEqual({ ok: true, sent: true });
@@ -113,7 +115,8 @@ describe('GET /api/ops/digest', () => {
     const msg = notifyTelegramAudience.mock.calls[0][1];
     expect(msg).toContain('☀️ YLL morning digest');
     expect(msg).toContain('📝 Quotes to send: 1');
-    expect(msg).toContain('📥 Inbox — 64 to respond · 2 follow-ups due');
+    expect(msg).toContain('📥 Inbox — 40 to respond · 2 follow-ups due');
+    expect(msg).not.toContain('64 to respond');
     expect(msg).toContain('→ https://quote.yulelovelights.com/admin/quotes');
     expect(msg).toContain('→ https://quote.yulelovelights.com/inbox');
     expect(msg).toContain('Dashboard → https://quote.yulelovelights.com/');
