@@ -925,6 +925,42 @@ describe('listOpenItems — totalLeads excludes automated lead_kind (#265)', () 
     expect(result.totalLeads).toBe(2);
   });
 
+  it('totalLeads is computed from the WINDOW (rows, pre-page-slice), not the page — automated rows beyond the page cap still get subtracted', async () => {
+    // 6 rows come back inside the query window, but limit=2 caps the
+    // returned PAGE to the oldest 2 (both leads). All 4 automated rows sit
+    // at positions 3-6 — entirely beyond the page. If automatedInWindow were
+    // computed from the page (trimmed/items) instead of the full window
+    // (rows), it would see ZERO automated rows and totalLeads would wrongly
+    // collapse to totalOpen (6) via the floor, instead of the true 2. This
+    // is the scenario the digest actually depends on — the whole point of
+    // totalLeads (like totalOpen before it) is to see past the page cap.
+    const rows = [
+      row('a', 'lead'),
+      row('b', 'lead'),
+      row('c', 'automated'),
+      row('d', 'automated'),
+      row('e', 'automated'),
+      row('f', 'automated'),
+    ];
+    const { builder } = makeBuilder({ data: rows, error: null, count: 6 });
+    sbRef.current = { from: () => builder };
+
+    const result = await listOpenItems(2);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Sanity: the returned PAGE carries no automated-row signal at all —
+    // confirms this is a genuine window-vs-page scenario, not accidentally
+    // page-visible.
+    expect(result.items).toHaveLength(2);
+    expect(result.items.every((i) => i.leadKind === 'lead')).toBe(true);
+    expect(result.truncated).toBe(true);
+
+    expect(result.totalOpen).toBe(6);
+    // All 4 automated rows (beyond the page) are subtracted — not 0.
+    expect(result.totalLeads).toBe(2);
+  });
+
   it('combines correctly with the #157 legacy-rebook exclusion — a hidden Neighbor draft (always lead_kind=lead) never interacts with the automated count', async () => {
     const LEGACY_ID = '11111111-1111-1111-1111-111111111111';
     const rows = [

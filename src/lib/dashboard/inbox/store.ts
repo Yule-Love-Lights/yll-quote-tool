@@ -646,6 +646,11 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
   // item is NEVER lead_kind='automated' (quotetool.ts's normalizeQuoteTouch
   // hardcodes leadKind: 'lead'), so this set and the legacy-rebook-hidden set
   // (quotetool-only, per excludeLegacyRebookItems) never overlap.
+  // Same truncation-safety direction as totalOpen's own count below: if raw
+  // unresponded volume ever exceeds fetchLimit, this only sees automated rows
+  // INSIDE the window, so it under-counts automated noise — which means
+  // totalLeads (totalOpen − this) errs toward OVER-, never under-, reporting.
+  // A true lead can never silently vanish from the digest's count this way.
   const automatedInWindow = rows.filter((r) => r.lead_kind === 'automated').length;
 
   const trimmed = rows.slice(0, limit);
