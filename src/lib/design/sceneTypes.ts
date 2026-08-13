@@ -143,6 +143,19 @@ export type StrandItem = ItemBase & MiniBilling & {
   // null/absent = unset. Set by staff on c9 + permanent strands. A tag only — no
   // pricing yet. RELAY: shared with the standalone design tool.
   sideOfHouse?: SideOfHouse | null;
+  // #249 review fix: PROVENANCE for `sideOfHouse` — true = baked on by the
+  // pre-draw quick-tag default (sticky across strands drawn on the same
+  // photo), not a deliberate per-strand choice. False/absent = a human
+  // explicitly set or confirmed the tag via the post-hoc dropdown (or the
+  // field predates this flag). Additive + optional — old scenes and the
+  // un-relayed standalone tool are unaffected; harmless there either way
+  // since only this repo's training capture reads it. Consumers: bills,
+  // displays, and the portal per-side toggle all read `sideOfHouse` alone and
+  // ignore this flag (an auto tag is still a fine on-screen label); ONLY
+  // permanent-lighting training-example capture (trainingExamples.ts) gates
+  // on it, to keep unconfirmed sticky tags out of AI ground truth. RELAY:
+  // shared with the standalone design tool.
+  sideOfHouseAuto?: boolean;
 };
 
 export type WreathItem = ItemBase & {

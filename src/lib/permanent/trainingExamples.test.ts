@@ -72,6 +72,34 @@ const STREET_SCENE: Scene = {
   ],
 };
 
+// #249 review fix (provenance): separate fixture so STREET_SCENE's exact-match
+// assertion above stays untouched. Covers the three sideOfHouseAuto states a
+// strand can be in by the time a quote sends.
+const PROVENANCE_SCENE: Scene = {
+  yardsticks: [],
+  items: [
+    // Sticky pre-draw quick-tag default, never touched by a human — dropped.
+    {
+      id: 'p1', yardstickId: null, kind: 'strand', bulbType: 'permanent', spacingIn: 8,
+      drawingStyle: 'strand', colorPattern: ['warm-white'], points: [0, 0, 100, 0],
+      sideOfHouse: 'front', sideOfHouseAuto: true, included: true,
+    },
+    // No auto flag at all (legacy shape / drawn before #249) — kept, same as STREET_SCENE's s1.
+    {
+      id: 'p2', yardstickId: null, kind: 'strand', bulbType: 'permanent', spacingIn: 8,
+      drawingStyle: 'strand', colorPattern: ['warm-white'], points: [0, 0, 100, 0],
+      sideOfHouse: 'left', included: true,
+    },
+    // Auto tag later confirmed/overwritten via the #sel-side-of-house dropdown
+    // (which clears the flag to false) — kept.
+    {
+      id: 'p3', yardstickId: null, kind: 'strand', bulbType: 'permanent', spacingIn: 8,
+      drawingStyle: 'strand', colorPattern: ['warm-white'], points: [0, 0, 100, 0],
+      sideOfHouse: 'right', sideOfHouseAuto: false, included: true,
+    },
+  ],
+};
+
 describe('extractFinalStreetRuns', () => {
   it('keeps only street-visible (front/left/right) permanent, non-twin strands, normalized to 0-1', () => {
     const runs = extractFinalStreetRuns(STREET_SCENE, 1000, 500);
@@ -82,6 +110,11 @@ describe('extractFinalStreetRuns', () => {
     expect(extractFinalStreetRuns(STREET_SCENE, 0, 500)).toEqual([]);
     expect(extractFinalStreetRuns(STREET_SCENE, 1000, null)).toEqual([]);
     expect(extractFinalStreetRuns(null, 1000, 500)).toEqual([]);
+  });
+
+  it('excludes an unconfirmed sticky pre-draw tag (sideOfHouseAuto) from training ground truth, but keeps manual and dropdown-confirmed tags', () => {
+    const runs = extractFinalStreetRuns(PROVENANCE_SCENE, 1000, 500);
+    expect(runs.map((r) => r.side)).toEqual(['left', 'right']);
   });
 });
 

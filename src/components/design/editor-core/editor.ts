@@ -3121,7 +3121,17 @@ export async function renderEditor(
       });
       const sideSel = sb.querySelector("#sel-side-of-house") as HTMLSelectElement | null;
       sideSel?.addEventListener("change", () => {
-        updateSelected((s) => ({ ...s, sideOfHouse: sideSel.value ? (sideSel.value as SideOfHouse) : null }));
+        // #249 review fix (provenance): any deliberate write through this
+        // dropdown — including re-confirming the side the sticky pre-draw tag
+        // already guessed — clears sideOfHouseAuto, so training-example
+        // capture (trainingExamples.ts extractFinalStreetRuns) treats the tag
+        // as human-confirmed from here on. updateSelected replaces the whole
+        // strand object per selected item, so the flag reliably clears.
+        updateSelected((s) => ({
+          ...s,
+          sideOfHouse: sideSel.value ? (sideSel.value as SideOfHouse) : null,
+          sideOfHouseAuto: false,
+        }));
       });
       const wrapSel = sb.querySelector("#sel-wrapstyle") as HTMLSelectElement | null;
       wrapSel?.addEventListener("change", () => {
@@ -4810,11 +4820,21 @@ export async function renderEditor(
   // ignored unless a quote reads them. `sideOfHouse` mirrors the same pattern,
   // permanent bulb type only (tool.sideOfHouse only ever holds a value while
   // tool.bulbType === "permanent" — see resetToolSideOfHouseIfInvalid).
+  // #249 review fix (provenance): a strand tagged HERE (the sticky pre-draw
+  // default) also gets `sideOfHouseAuto = true` — it bills/displays/toggles
+  // exactly like a deliberate tag, but training-example capture
+  // (trainingExamples.ts extractFinalStreetRuns) excludes auto tags from AI
+  // ground truth until a human confirms them via the #sel-side-of-house
+  // dropdown (which clears the flag). RELAY: mirror to the standalone design
+  // tool alongside the sideOfHouseAuto field itself.
   function quoteDefaultsForNewStrand(): Partial<StrandItem> {
     const d: Partial<StrandItem> = { included: true };
     if (tool.bulbType === "mini") { d.stringCount = 1; d.wrapStyle = "canopy"; }
     if (tool.surface) d.surface = tool.surface;
-    if (tool.bulbType === "permanent" && tool.sideOfHouse) d.sideOfHouse = tool.sideOfHouse;
+    if (tool.bulbType === "permanent" && tool.sideOfHouse) {
+      d.sideOfHouse = tool.sideOfHouse;
+      d.sideOfHouseAuto = true;
+    }
     return d;
   }
   function quoteDefaultsForNewGarland(): Partial<GarlandItem> {
