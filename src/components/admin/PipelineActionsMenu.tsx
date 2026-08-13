@@ -1,5 +1,6 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import Link from 'next/link';
 import { pipelineActions, type PipelineRecord, type PipelineAction } from '@/lib/pipeline/pipelineActions';
 
@@ -169,6 +170,33 @@ async function run(action: PipelineAction, rec: PipelineRecord): Promise<Respons
   }
 }
 
+// Menu width mirrors the `w-52` class below (13rem = 208px) — the position
+// math needs the number, Tailwind only has the class.
+const MENU_WIDTH = 208;
+const VIEWPORT_MARGIN = 8;
+
+// Right-align the menu under the trigger (matching the old `right-0` visual
+// result), flipping above the trigger when there isn't room below. Clamped
+// to the viewport on every axis so the menu is always fully reachable, never
+// partly off-screen (#Options-menu-clipped: the table's overflow-x-auto
+// wrapper was clipping an absolutely-positioned menu — see the portal below).
+function computeMenuPosition(triggerRect: DOMRect, menuHeight: number): { top: number; left: number } {
+  let left = triggerRect.right - MENU_WIDTH;
+  left = Math.min(Math.max(left, VIEWPORT_MARGIN), window.innerWidth - MENU_WIDTH - VIEWPORT_MARGIN);
+
+  const spaceBelow = window.innerHeight - triggerRect.bottom;
+  const spaceAbove = triggerRect.top;
+  let top: number;
+  if (spaceBelow >= menuHeight + VIEWPORT_MARGIN || spaceBelow >= spaceAbove) {
+    top = triggerRect.bottom + 4;
+  } else {
+    top = triggerRect.top - menuHeight - 4;
+  }
+  // Final clamp: whichever side was picked, keep the whole menu on-screen.
+  top = Math.min(Math.max(top, VIEWPORT_MARGIN), Math.max(VIEWPORT_MARGIN, window.innerHeight - menuHeight - VIEWPORT_MARGIN));
+  return { top, left };
+}
+
 export function PipelineActionsMenu({
   quoteId,
   onDone,
@@ -180,10 +208,27 @@ export function PipelineActionsMenu({
   const [rec, setRec] = useState<PipelineRecord | null>(null);
   const [busy, setBusy] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  // Portal target isn't safe until after client mount (no `document` during
+  // SSR); the menu itself only ever renders once `open` is client-triggered,
+  // but gate on `mounted` too so this stays correct even if that changes.
+  const [mounted, setMounted] = useState(false);
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    // Defer out of the synchronous effect body (project rule:
+    // react-hooks/set-state-in-effect is at error in this repo).
+    queueMicrotask(() => setMounted(true));
+  }, []);
 
   async function toggle() {
     if (open) {
-      setOpen(false);
+      // Same close path as every other close reason, so `position` can't be
+      // left stale on a manual close (harmless today — the effect recomputes
+      // on the next open — but one close path that skips the reset is exactly
+      // the kind of asymmetry that stops being harmless after the next edit).
+      closeAndReset();
       return;
     }
     setOpen(true);
@@ -200,6 +245,57 @@ export function PipelineActionsMenu({
     }
   }
 
+  function closeAndReset() {
+    // Deferred (see the react-hooks/set-state-in-effect note above) since
+    // this is called from listeners registered inside an effect below.
+    queueMicrotask(() => {
+      setOpen(false);
+      setPosition(null);
+    });
+  }
+
+  // Measure + (re)position after every render of the open menu — its height
+  // changes between the "Loading…"/error placeholder and the real action
+  // list, so this reruns when `rec`/`fetchError` land, not just on open.
+  useEffect(() => {
+    if (!open || !triggerRef.current || !menuRef.current) return;
+    // Measure synchronously (accurate layout), defer only the setState call
+    // (react-hooks/set-state-in-effect) — a microtask still runs before
+    // paint, so there's no visible flash.
+    const triggerRect = triggerRef.current.getBoundingClientRect();
+    const menuHeight = menuRef.current.offsetHeight;
+    queueMicrotask(() => setPosition(computeMenuPosition(triggerRect, menuHeight)));
+  }, [open, rec, fetchError]);
+
+  // Close on outside click, Escape, window resize, or a scroll anywhere
+  // (capture:true on window catches scroll events fired on a nested
+  // scroller — e.g. the table's overflow-x-auto wrapper — even though
+  // `scroll` doesn't bubble; the capturing phase still walks window → target).
+  useEffect(() => {
+    if (!open) return;
+    function handlePointerDown(e: MouseEvent) {
+      const target = e.target as Node;
+      if (menuRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
+      closeAndReset();
+    }
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') closeAndReset();
+    }
+    function closeOnScrollOrResize() {
+      closeAndReset();
+    }
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('scroll', closeOnScrollOrResize, true);
+    window.addEventListener('resize', closeOnScrollOrResize);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('scroll', closeOnScrollOrResize, true);
+      window.removeEventListener('resize', closeOnScrollOrResize);
+    };
+  }, [open]);
+
   async function onPick(action: PipelineAction) {
     if (action.kind === 'details') return; // rendered as a <Link>, not a button
     if (!rec) return;
@@ -211,7 +307,7 @@ export function PipelineActionsMenu({
         alert((body as { error?: string }).error ?? 'Action failed');
       }
       if (res && res.ok) {
-        setOpen(false);
+        closeAndReset();
         onDone?.();
       }
     } finally {
@@ -219,46 +315,65 @@ export function PipelineActionsMenu({
     }
   }
 
+  // The open menu (Task 1 fix): portaled to document.body with position:fixed
+  // instead of an absolutely-positioned child of the trigger. An
+  // absolutely-positioned descendant can't escape an ancestor's
+  // overflow-x-auto — every one of this component's real render sites wraps
+  // its table in exactly that (admin/quotes, admin/jobs, admin/invoices,
+  // customers/[contactId]) — so the old menu was clipped, only reachable by
+  // scrolling the table. Until `position` is measured, render invisibly (not
+  // at all) so there's no flash at the wrong spot.
+  const menu = open && mounted && (
+    <div
+      ref={menuRef}
+      style={
+        position
+          ? { position: 'fixed', top: position.top, left: position.left, visibility: 'visible' }
+          : { position: 'fixed', top: 0, left: 0, visibility: 'hidden' }
+      }
+      className="z-50 w-52 rounded-md border border-gray-200 bg-white shadow-lg py-1"
+    >
+      {fetchError ? (
+        <p className="px-3 py-2 text-xs text-red-600">{fetchError}</p>
+      ) : !rec ? (
+        <p className="px-3 py-2 text-xs text-gray-400">Loading…</p>
+      ) : (
+        pipelineActions(rec).map((a, i) =>
+          a.kind === 'details' ? (
+            <Link
+              key={i}
+              href={a.href}
+              className="block px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50"
+            >
+              {a.label}
+            </Link>
+          ) : (
+            <button
+              key={i}
+              type="button"
+              disabled={busy}
+              onClick={() => onPick(a)}
+              className="block w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+            >
+              {a.label}
+            </button>
+          ),
+        )
+      )}
+    </div>
+  );
+
   return (
-    <div className="relative inline-block text-left">
+    <div className="inline-block text-left">
       <button
+        ref={triggerRef}
         type="button"
         onClick={toggle}
         className="px-2 py-1 text-xs rounded border border-gray-300 hover:bg-gray-50 text-gray-700"
       >
         Options ▾
       </button>
-      {open && (
-        <div className="absolute right-0 z-10 mt-1 w-52 rounded-md border border-gray-200 bg-white shadow-lg py-1">
-          {fetchError ? (
-            <p className="px-3 py-2 text-xs text-red-600">{fetchError}</p>
-          ) : !rec ? (
-            <p className="px-3 py-2 text-xs text-gray-400">Loading…</p>
-          ) : (
-            pipelineActions(rec).map((a, i) =>
-              a.kind === 'details' ? (
-                <Link
-                  key={i}
-                  href={a.href}
-                  className="block px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50"
-                >
-                  {a.label}
-                </Link>
-              ) : (
-                <button
-                  key={i}
-                  type="button"
-                  disabled={busy}
-                  onClick={() => onPick(a)}
-                  className="block w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
-                >
-                  {a.label}
-                </button>
-              ),
-            )
-          )}
-        </div>
-      )}
+      {menu && createPortal(menu, document.body)}
     </div>
   );
 }
