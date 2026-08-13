@@ -34,6 +34,7 @@ import type { RenderSettings } from '@/components/design/editor-core/renderSetti
 import type { ServiceType } from '@/lib/serviceType';
 import { portalPhotos } from '@/lib/portal/photos';
 import { effectSpeedMs } from '@/lib/design/permanentScenes';
+import { isEmptyCustomSlot } from '@/lib/portal/derivePackages';
 // The live design render uses Konva — load it client-side only (no SSR).
 const DesignCanvas = dynamic(() => import('../../design/DesignCanvas'), { ssr: false });
 
@@ -395,9 +396,16 @@ export function InteractiveHero({
                     onClick={() => {
                       selectPackage(p.id);
                       track('package_selected', { quote_id: quoteId, package: p.id });
-                      // #238: only Build Your Own needs the scroll-down cue —
-                      // every other package's tabs stay exactly as they were.
-                      if (p.id === 'D') goToIncluded();
+                      // #238 (review fix): 'D' is overloaded across verticals
+                      // (a legacy rebook's single PRE-FILLED tile, permanent's
+                      // populated "Whole Home" bundle, and event/bistro's
+                      // single populated package all use id 'D' too) — only
+                      // isEmptyCustomSlot's real-emptiness check (see its doc
+                      // comment in derivePackages.ts) means "this tile still
+                      // needs the customer to pick items". Whole Home is
+                      // deliberately NOT scrolled here — an open product call
+                      // for Jason, not decided silently.
+                      if (isEmptyCustomSlot(p)) goToIncluded();
                     }}
                     data-active={packageId === p.id}
                     className="portal-snow-pack-tab focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F]"
