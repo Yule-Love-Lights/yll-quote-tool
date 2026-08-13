@@ -655,6 +655,35 @@ describe('HighLevel client (audit fix g19-highlevel)', () => {
       expect((err as Error).message).toMatch(/timed out after 10000ms/);
     });
 
+    // #264 round 2, FIX 2: headers arriving fast previously let the timer get
+    // cleared before the body was ever read — a fast-headers/slow-body
+    // response hung unbounded (confirmed live against a real HTTP server
+    // whose body never completes). This pins the SAME 10s deadline against
+    // that specific phase: fetch() itself resolves immediately (ok:true), and
+    // only .json() hangs until the abort fires.
+    it('a hung response BODY (fast headers, stalled body) also times out within the deadline — not just a hung connection', async () => {
+      vi.useFakeTimers();
+      const fetchMock = vi.fn((_url: string, init: RequestInit) => Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => new Promise((_resolve, reject) => {
+          (init.signal as AbortSignal).addEventListener('abort', () =>
+            reject(new DOMException('The operation was aborted.', 'AbortError')),
+          );
+        }),
+        text: async () => '',
+      }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const errPromise = sendSms({ contactId: 'c1', message: 'hi' }).catch((err: unknown) => err);
+      await vi.advanceTimersByTimeAsync(10_000);
+      const err = await errPromise;
+
+      expect(err).toBeInstanceOf(HighLevelError);
+      expect(err).toMatchObject({ timedOut: true });
+      expect((err as Error).message).toMatch(/timed out after 10000ms \(reading the response body\)/);
+    });
+
     it('the same deadline covers a second, unrelated GHL call (proves the central choke point)', async () => {
       vi.useFakeTimers();
       vi.stubGlobal('fetch', hangingFetchMock());

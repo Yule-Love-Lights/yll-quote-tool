@@ -101,41 +101,66 @@ async function ghlFetch<T>(
   const { apiKey } = requireConfig();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), GHL_TIMEOUT_MS);
-  let res: Response;
+  const label = `${init.method ?? 'GET'} ${path}`;
+  function timeoutError(phase: string): HighLevelError {
+    return new HighLevelError(
+      `HighLevel ${label} timed out after ${GHL_TIMEOUT_MS}ms (${phase})`,
+      undefined,
+      undefined,
+      true,
+    );
+  }
+  // #264 round 2, FIX 2: the timer is now cleared only after the ENTIRE call
+  // — headers AND body — has been consumed. Round 1 cleared it right after
+  // fetch() resolved, so a fast-headers/slow-body response (confirmed live:
+  // a local server that sends 200 headers then stalls the body) hung past
+  // the "10s bounds the whole class" claim — the deadline never covered the
+  // res.json()/res.text() read at all. An abort mid-body-read rejects that
+  // read with the same AbortError fetch() itself throws on a connect-phase
+  // abort (verified against a real hung-body response), so the same
+  // controller.signal.aborted check classifies it.
   try {
-    res = await fetch(`${API_BASE}${path}`, {
-      ...init,
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Version': version,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        ...(init.headers ?? {}),
-      },
-      signal: controller.signal,
-    });
-  } catch (err) {
-    if (controller.signal.aborted) {
+    let res: Response;
+    try {
+      res = await fetch(`${API_BASE}${path}`, {
+        ...init,
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Version': version,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          ...(init.headers ?? {}),
+        },
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (controller.signal.aborted) throw timeoutError('connecting');
+      throw err;
+    }
+    if (!res.ok) {
+      // A body-read abort here still resolves to an empty string (the same
+      // fallback the original `.catch(() => '')` already used) rather than
+      // being reclassified as timedOut: the HTTP status already arrived and
+      // is a KNOWN, non-ambiguous outcome (GHL responded with a real non-2xx
+      // code) — only the descriptive error text is missing, unlike the
+      // connect-phase and success-body-read cases below, where a timeout
+      // means we never learned the outcome at all.
+      const body = await res.text().catch(() => '');
       throw new HighLevelError(
-        `HighLevel ${init.method ?? 'GET'} ${path} timed out after ${GHL_TIMEOUT_MS}ms`,
-        undefined,
-        undefined,
-        true,
+        `HighLevel ${label} → ${res.status}: ${body.slice(0, 400)}`,
+        res.status,
+        body.slice(0, 2000),
       );
     }
-    throw err;
+    try {
+      return (await res.json()) as T;
+    } catch (err) {
+      if (controller.signal.aborted) throw timeoutError('reading the response body');
+      throw err;
+    }
   } finally {
     clearTimeout(timer);
   }
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new HighLevelError(
-      `HighLevel ${init.method ?? 'GET'} ${path} → ${res.status}: ${body.slice(0, 400)}`,
-      res.status,
-      body.slice(0, 2000),
-    );
-  }
-  return res.json() as Promise<T>;
 }
 
 // ─── Contact search ───────────────────────────────────────────────────────
