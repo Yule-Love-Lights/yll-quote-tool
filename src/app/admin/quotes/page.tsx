@@ -62,8 +62,10 @@ const STATUS_STYLES: Record<QuoteStatus, string> = {
   abandoned: 'bg-gray-200 text-gray-600',
 };
 
-// The statuses offered as filter chips. Ordered along the lifecycle; the two
-// portal branch states (Changes/Declined) sit at the end.
+// The statuses offered as filter chips. Ordered along the lifecycle; the
+// portal branch states (Changes/Declined) and the staff-only terminal state
+// (Abandoned, #235's "Mark abandoned" action) sit at the end. `cancelled` is
+// deliberately NOT offered here — prod has zero cancelled quotes ever.
 const FILTER_STATUSES: QuoteStatus[] = [
   'draft',
   'sent',
@@ -72,6 +74,7 @@ const FILTER_STATUSES: QuoteStatus[] = [
   'booked',
   'changes_requested',
   'declined',
+  'abandoned',
 ];
 
 export default function QuotesAdminPage() {
@@ -85,6 +88,14 @@ export default function QuotesAdminPage() {
   // Second chip row (this task): filter by service-line type, composing with
   // statusFilter + search as AND conditions.
   const [serviceFilter, setServiceFilter] = useState<'All' | ServiceType>('All');
+  // Test-only toggle (this task): narrows to is_test rows; AND's with every
+  // other filter. Kept separate from serviceFilter (a radio) rather than as a
+  // fourth service-type option, since "permanent AND test" must stay
+  // expressible — a radio would make Test mutually exclusive with the real
+  // service types. Off by default: test quotes stay visible either way (see
+  // listQuotes()'s "intentionally keeps test quotes VISIBLE" comment) — this
+  // only narrows TO them, it never hides them.
+  const [testOnly, setTestOnly] = useState(false);
   const [search, setSearch] = useState('');
 
   const refresh = async () => {
@@ -154,6 +165,7 @@ export default function QuotesAdminPage() {
   const visible = items.filter(q => {
     if (statusFilter !== 'All' && rowStatus(q) !== statusFilter) return false;
     if (serviceFilter !== 'All' && (q.service_type ?? DEFAULT_SERVICE_TYPE) !== serviceFilter) return false;
+    if (testOnly && !q.is_test) return false;
     if (!term) return true;
     return [q.customer_name, q.customer_address, q.customer_phone, q.customer_email, q.id]
       .some(v => v != null && v.toLowerCase().includes(term));
@@ -243,6 +255,22 @@ export default function QuotesAdminPage() {
                     {s === 'All' ? 'All' : SERVICE_TYPE_LABELS[s]}
                   </button>
                 ))}
+                {/* Test-only toggle: a separate boolean, not a service-type
+                    option (see the testOnly state comment above). A divider
+                    + distinct color keeps it from reading as a fifth service
+                    type. */}
+                <span className="w-px self-stretch bg-gray-300 mx-1" aria-hidden="true" />
+                <button
+                  onClick={() => setTestOnly(v => !v)}
+                  aria-pressed={testOnly}
+                  className={`text-xs font-medium px-2.5 py-1 rounded-md border ${
+                    testOnly
+                      ? 'bg-violet-600 text-white border-violet-600'
+                      : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                  }`}
+                >
+                  Test only
+                </button>
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
