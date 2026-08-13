@@ -55,7 +55,7 @@ import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/sup
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { deriveStatus, canRevive } from '@/lib/quoteStatus';
 import { attachQuoteToCustomer, propagateQuoteTagsToCustomer, quoteRowToIdentity } from '@/lib/customers';
-import { logQuoteDelivery } from '@/lib/quoteDeliveries';
+import { logQuoteDelivery, DELIVERY_TIMEOUT_ERROR_PREFIX } from '@/lib/quoteDeliveries';
 
 export const runtime = 'nodejs';
 
@@ -70,7 +70,12 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // own DB budget (see that file's comment for why DB gets a tighter bound than
 // GHL's 10s). Deliberately scoped to code IN this route file — the shared
 // find-or-create helpers tagPropagation calls into (src/lib/customers.ts) are
-// multi-route library code, out of scope here (see the ledger #264 report).
+// multi-route library code, so they're bounded at the CALL SITE instead (a
+// deadline race around the tagPropagation() call below), not edited directly.
+// (#264 round 2 correction: round 1's "rarely runs, low priority" framing for
+// that gap was wrong — prod data showed 149/182 sent quotes, 82%, carry
+// legacy_rebook=true, so tagPropagation is the MAJORITY path, not an edge
+// case. See TAG_PROPAGATION_DEADLINE_MS below.)
 const SEND_ROUTE_DB_TIMEOUT_MS = 5_000;
 
 // postgrest-js query builders are only PromiseLike (a bare `.then()`, no
@@ -102,12 +107,33 @@ function hlErrorMessage(err: unknown): string {
 // and even fully processed the request before our socket gave up waiting on
 // the response, so the error text must say the outcome is unknown rather than
 // reading like a confirmed failure. HighLevelError#timedOut (set only by
-// ghlFetch's own timeout branch) is the discriminator.
-function deliveryErrorMessage(err: unknown): string {
+// ghlFetch's own timeout branch) is the discriminator. The "timeout — " lead
+// is DELIVERY_TIMEOUT_ERROR_PREFIX (src/lib/quoteDeliveries.ts) — the one
+// exported constant a future reporting query matches on, not a private
+// literal duplicated here.
+//
+// #264 round 2, FIX 7: the identical ambiguity applies to a timed-out GHL
+// STAGE move (updateOpportunity/createOpportunity/etc. inside ghlStageChain
+// below) — the card may have already advanced before our socket gave up
+// waiting — so stageError gets the same hedge, via this one parameterized
+// helper rather than a near-duplicate third function. stageError's home
+// (quotes.ghl_sync_error) is free text with no CHECK constraint forcing a
+// binary read, unlike quote_deliveries.outcome, but the honesty reasoning —
+// don't let an unconfirmed timeout read like a confirmed rejection — is the
+// same either way.
+function timeoutHedgedErrorMessage(err: unknown, whatsUnknown: string, mayHaveAlready: string): string {
   const message = hlErrorMessage(err);
   return err instanceof HighLevelError && err.timedOut
-    ? `timeout — delivery outcome unknown (GHL may have still delivered it): ${message}`
+    ? `${DELIVERY_TIMEOUT_ERROR_PREFIX}${whatsUnknown} outcome unknown (GHL may have ${mayHaveAlready}): ${message}`
     : message;
+}
+
+function deliveryErrorMessage(err: unknown): string {
+  return timeoutHedgedErrorMessage(err, 'delivery', 'still delivered it');
+}
+
+function stageErrorMessage(err: unknown): string {
+  return timeoutHedgedErrorMessage(err, 'stage', 'already advanced the card');
 }
 
 // The linked card was deleted in GHL (our stored opportunity id is stale) —
@@ -487,7 +513,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
             opportunityId = null;
           } else {
             console.warn('[api/quotes/:id/send] HL opportunity update failed:', err);
-            stageError = hlErrorMessage(err);
+            stageError = stageErrorMessage(err);
           }
         }
       }
@@ -546,7 +572,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
             }
           } catch (err) {
             console.warn('[api/quotes/:id/send] find-or-create opportunity failed:', err);
-            stageError = hlErrorMessage(err);
+            stageError = stageErrorMessage(err);
           }
         }
       }
@@ -726,7 +752,78 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
   };
 
-  await Promise.allSettled([ghlStageChain(), customerSms(), customerEmail(), tagPropagation()]);
+  // #264 round 2, FIX 1 (HIGH): tagPropagation is NOT the rare path round 1's
+  // brief assumed — prod: 149/182 sent quotes (82%) carry legacy_rebook=true,
+  // +5 more via is_nce, so this closure's ~5+ unbounded DB round trips
+  // (findOrCreateCustomer + findOrCreateProperty + the hl_contact_id heal +
+  // the quotes relink, then propagateQuoteTagsToCustomer's update — all in
+  // src/lib/customers.ts) sit in the MAJORITY of real sends. Promise.allSettled
+  // below waits for every task to SETTLE, not just avoid propagating a
+  // rejection — a hang in this one task (customers.ts is shared multi-route
+  // infra, so it isn't bounded directly, same reasoning as round 1) still
+  // stalls the whole response even after the customer's SMS/email already
+  // delivered, exactly the failure #264 exists to kill.
+  //
+  // Bounded here with a deadline race instead (mirrors ghlTenure.ts's
+  // PUSH_DEADLINE_MS Promise.race exactly, including clearing the timer in
+  // finally regardless of which side wins).
+  //
+  // 15s, not this route's 5s per-DB-call figure: that 5s is a per-call FAILURE
+  // ceiling on a call that's normally sub-second, not a typical duration — so
+  // it doesn't multiply linearly across tagPropagation's ~5-8 sequential calls
+  // (5s × 8 would be 40s, which defeats the point of a "still respond in
+  // reasonable time" deadline). 15s is roughly 3x a single call's ceiling:
+  // generous enough that a couple of individually slow-but-not-hung calls in
+  // the chain still finish inside budget, while still bounding the genuine
+  // hang this fix targets to a fixed ceiling instead of leaving it unbounded.
+  //
+  // HONESTY: Promise.race does not cancel the loser. A raced-out
+  // tagPropagation() keeps running in the background after this route has
+  // already responded, and may still complete — the identical tradeoff
+  // ghlTenure.ts's own PUSH_DEADLINE_MS documents for the same reason. Verified
+  // safe here specifically: findOrCreateCustomer is explicitly race-safe
+  // (UNIQUE-constraint retry-recovery, see its own #213 comments) and
+  // deterministic (the same identity always resolves to the same row);
+  // findOrCreateProperty is documented "Idempotent + race-safe via
+  // UNIQUE(customer_id, address_key)"; the hl_contact_id heal only writes when
+  // the column is CURRENTLY null (`.is('hl_contact_id', null)` — a no-op once
+  // already set); and propagateQuoteTagsToCustomer only ever SETS is_nce/
+  // is_yll_neighbor to true, never clears — a late background write lands the
+  // same tags a retried send would have produced anyway. No customer-facing
+  // side effect (no message, no GHL card move) is gated on this task, so a
+  // late finish is invisible to the customer and, ordinarily, to the
+  // operator — the quotes.customer_id/property_id relink is the one write in
+  // this chain that isn't purely additive; it's deterministic given a stable
+  // identity, but a background completion COULD overwrite a customer_id an
+  // admin manually changed in the narrow window before it lands (a
+  // pre-existing race this fix doesn't introduce — tagPropagation already ran
+  // fully unbounded before this change — but now that race window can extend
+  // past the HTTP response too; noted as residual risk in the report).
+  const TAG_PROPAGATION_DEADLINE_MS = 15_000;
+  const tagPropagationRaced = async (): Promise<void> => {
+    let timer: ReturnType<typeof setTimeout>;
+    const deadline = new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        console.warn(
+          `[api/quotes/:id/send] tag propagation exceeded ${TAG_PROPAGATION_DEADLINE_MS}ms — responding without it; it may still complete in the background (see FIX 1's comment above for why that's safe).`,
+        );
+        resolve();
+      }, TAG_PROPAGATION_DEADLINE_MS);
+    });
+    try {
+      await Promise.race([tagPropagation(), deadline]);
+    } finally {
+      clearTimeout(timer!);
+    }
+  };
+
+  // #264 round 2: the allSettled batch's bounded worst case is now roughly
+  // ghlStageChain's ~5 sequential GHL calls at 10s each (~50s) vs. Vercel's
+  // Fluid Compute default function timeout of 300s (verified via Vercel docs
+  // + this project's plan) — comfortably inside budget with no maxDuration
+  // export needed (round-2 staff-lens correction to round 1's fix 5, which
+  // had assumed a 60s default).
+  await Promise.allSettled([ghlStageChain(), customerSms(), customerEmail(), tagPropagationRaced()]);
 
   // Join the two message errors deterministically (SMS first, then email),
   // preserving the original "a; b" concatenation shape.
