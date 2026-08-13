@@ -28,9 +28,10 @@ function quote(over: Partial<DashboardQuote> = {}): DashboardQuote {
     service_type: null,
     // #252 slice G: the default fixture represents a not-yet-sent draft (the
     // describe block above's own name for it) — the legacy_rebook guard below
-    // now reads `status` too, so it needs a real value here rather than
-    // undefined. Every non-legacy-rebook test is unaffected (normalizeQuoteTouch
-    // only reads status inside the legacy_rebook branch).
+    // reads `status`, so it needs a real value here rather than undefined.
+    // #266: normalizeQuoteTouch now also reads status for every quote (a dead
+    // one is answered whatever its timestamps say), so 'draft' here is what
+    // keeps the existing inbound-lead assertions meaning what they say.
     status: 'draft',
     ...over,
   };
@@ -66,6 +67,63 @@ describe('normalizeQuoteTouch', () => {
     expect(t.identity.emails).toEqual([]);
     expect(t.identity.phones).toEqual([]);
     expect(t.identity.ghlContactId).toBeNull();
+  });
+});
+
+describe('normalizeQuoteTouch — dead statuses (#266)', () => {
+  // The live shape this closes: a quote declined BEFORE it was ever sent keeps
+  // quote_sent_at NULL, so the timestamps alone read it as an untouched draft.
+  // Two real prod rows sat in the queue as urgent unanswered leads on exactly
+  // this shape (Karen L. Adams #1125, Thomas Humel #1180, both escalation 2).
+  it('treats a quote declined before it was ever sent as outbound, not an unanswered lead', () => {
+    const t = mustTouch(normalizeQuoteTouch(quote({ status: 'declined', quote_sent_at: null, customer_approved_at: null })));
+    expect(t.direction).toBe('outbound');
+  });
+
+  it('treats a cancelled quote as outbound even with no lifecycle timestamps', () => {
+    const t = mustTouch(normalizeQuoteTouch(quote({ status: 'cancelled' })));
+    expect(t.direction).toBe('outbound');
+  });
+
+  // #235's staff-abandon allows abandoning a never-sent draft; without this the
+  // brand-new one-click archive would fail on precisely its intended case — the
+  // quote would keep re-rendering as an open lead every reconcile.
+  it('treats an abandoned never-sent draft as outbound, so #235 Mark-Abandoned sticks', () => {
+    const t = mustTouch(normalizeQuoteTouch(quote({ status: 'abandoned' })));
+    expect(t.direction).toBe('outbound');
+  });
+
+  // changes_requested is NOT dead — that quote is being revised and is still
+  // owed a response, so it must keep reading as an inbound lead.
+  //
+  // The fixture state (changes_requested with quote_sent_at NULL) is not
+  // reachable in prod — canTransition only allows changes_requested from
+  // sent/viewed, both of which have already stamped quote_sent_at. That is
+  // deliberate: it isolates the STATUS check from the timestamp check, so this
+  // pins the exclusion itself rather than passing on the timestamp OR-clause.
+  it('leaves a changes_requested quote inbound (being revised, not closed)', () => {
+    const t = mustTouch(normalizeQuoteTouch(quote({ status: 'changes_requested' })));
+    expect(t.direction).toBe('inbound');
+  });
+
+  // Order matters: the legacy_rebook suppression is positive-matched on
+  // status==='draft', so a DECLINED Neighbor quote is not a parked draft — it
+  // must produce an outbound touch that heals the stuck row, never a null that
+  // would leave it open forever.
+  it('emits an outbound touch (not null) for a declined, unsent legacy_rebook quote', () => {
+    const t = normalizeQuoteTouch(quote({ legacy_rebook: true, status: 'declined', quote_sent_at: null }));
+    expect(t).not.toBeNull();
+    expect(t!.direction).toBe('outbound');
+  });
+
+  // Both consumers read the same shared isDeadQuote(), so they cannot drift.
+  // quote_sent_at stays NULL on purpose: with it set, the touch half of this
+  // assertion would pass on the timestamp alone and prove nothing about the
+  // status check (the pre-#266 implementation would satisfy it too).
+  it('reads the status through one shared predicate, so the two consumers cannot drift', () => {
+    const q = quote({ status: 'declined', quote_sent_at: null, customer_approved_at: null });
+    expect(mustTouch(normalizeQuoteTouch(q)).direction).toBe('outbound');
+    expect(quoteFollowUpDecision(q).kind).toBe('close');
   });
 });
 
