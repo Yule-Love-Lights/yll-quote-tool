@@ -61,12 +61,53 @@ export const runtime = 'nodejs';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// #264: this route's own direct Supabase calls (the quote fetch, the
+// quote_sent_at stamp, the opportunity-link write, the GHL sync-state write)
+// previously had no timeout either — bounded with the same manual-
+// AbortController idiom as ghlFetch (src/lib/integrations/highlevel.ts) and
+// logQuoteDelivery (src/lib/quoteDeliveries.ts), for the same reason: a hung
+// DB connection stalled the route indefinitely. 5s matches quoteDeliveries'
+// own DB budget (see that file's comment for why DB gets a tighter bound than
+// GHL's 10s). Deliberately scoped to code IN this route file — the shared
+// find-or-create helpers tagPropagation calls into (src/lib/customers.ts) are
+// multi-route library code, out of scope here (see the ledger #264 report).
+const SEND_ROUTE_DB_TIMEOUT_MS = 5_000;
+
+// postgrest-js query builders are only PromiseLike (a bare `.then()`, no
+// `.catch()`/`.finally()` — confirmed by reading PostgrestBuilder's own class
+// declaration), so the timer can't be cleared with a `.finally()` chained
+// directly onto the query. This wraps a builder-producing callback (called
+// with the AbortSignal to attach via `.abortSignal(signal)`) and clears the
+// timer off a REAL Promise instead. Keeps every call site a single
+// destructured `const`, matching the surrounding style.
+function withDbTimeout<T>(build: (signal: AbortSignal) => PromiseLike<T>): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SEND_ROUTE_DB_TIMEOUT_MS);
+  return Promise.resolve(build(controller.signal)).finally(() => clearTimeout(timer));
+}
+
 function hlErrorMessage(err: unknown): string {
   return err instanceof HighLevelError
     ? err.message
     : err instanceof Error
       ? err.message
       : 'Unknown HighLevel error';
+}
+
+// #264 honesty nuance: quote_deliveries.outcome is a binary CHECK constraint
+// ('sent' | 'failed' — see migrations/2026-08-12-quote-deliveries.sql), so a
+// timed-out send still has to log as 'failed' (the conservative choice — it
+// offers a delivery retry rather than silently trusting an unconfirmed send).
+// But a timeout is NOT a confirmed rejection: GHL may have already received
+// and even fully processed the request before our socket gave up waiting on
+// the response, so the error text must say the outcome is unknown rather than
+// reading like a confirmed failure. HighLevelError#timedOut (set only by
+// ghlFetch's own timeout branch) is the discriminator.
+function deliveryErrorMessage(err: unknown): string {
+  const message = hlErrorMessage(err);
+  return err instanceof HighLevelError && err.timedOut
+    ? `timeout — delivery outcome unknown (GHL may have still delivered it): ${message}`
+    : message;
 }
 
 // The linked card was deleted in GHL (our stored opportunity id is stale) —
@@ -183,11 +224,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const doEmail = channel === 'both' || channel === 'email';
 
   const sb = getSupabaseServiceClient()!;
-  const { data: quote, error: fetchErr } = await sb
-    .from('quotes')
-    .select('id, highlevel_opportunity_id, highlevel_contact_id, customer_name, service_type, total, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status, ghl_stage_synced_at, is_test, legacy_rebook, is_nce, view_only, customer_id, customer_email, customer_phone, customer_address')
-    .eq('id', id)
-    .single<QuoteRow>();
+  const { data: quote, error: fetchErr } = await withDbTimeout((signal) =>
+    sb
+      .from('quotes')
+      .select('id, highlevel_opportunity_id, highlevel_contact_id, customer_name, service_type, total, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status, ghl_stage_synced_at, is_test, legacy_rebook, is_nce, view_only, customer_id, customer_email, customer_phone, customer_address')
+      .eq('id', id)
+      .abortSignal(signal)
+      .single<QuoteRow>(),
+  );
 
   if (fetchErr || !quote) {
     return NextResponse.json(
@@ -352,13 +396,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // staff-approve). `.is('deposit_paid_at', null)` additionally guards a
     // revive-stamp from clobbering customer_approved_at/viewed_at on a quote
     // that's now paid. `.select('id')` reports whether we actually won.
-    const { data: stampedRows, error: stampErr } = await sb
-      .from('quotes')
-      .update(stampPayload)
-      .eq('id', id)
-      .eq('view_only', false)
-      .is('deposit_paid_at', null)
-      .select('id');
+    const { data: stampedRows, error: stampErr } = await withDbTimeout((signal) =>
+      sb
+        .from('quotes')
+        .update(stampPayload)
+        .eq('id', id)
+        .eq('view_only', false)
+        .is('deposit_paid_at', null)
+        .select('id')
+        .abortSignal(signal),
+    );
     if (stampErr) {
       console.error('[api/quotes/:id/send] stamp failed:', stampErr);
       return NextResponse.json(
@@ -487,10 +534,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
             }
             stageUpdated = true;
             // Persist the resolved card id so future send/approve calls find it.
-            const { error: linkErr } = await sb
-              .from('quotes')
-              .update({ highlevel_opportunity_id: opportunityId })
-              .eq('id', id);
+            const { error: linkErr } = await withDbTimeout((signal) =>
+              sb
+                .from('quotes')
+                .update({ highlevel_opportunity_id: opportunityId })
+                .eq('id', id)
+                .abortSignal(signal),
+            );
             if (linkErr) {
               console.warn('[api/quotes/:id/send] failed to relink opportunity id:', linkErr.message);
             }
@@ -538,7 +588,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const syncPayload = quote.is_test || stageUpdated
       ? { ghl_stage_synced_at: new Date().toISOString(), ghl_sync_error: null }
       : { ghl_sync_error: stageError ?? 'GHL stage not synced' };
-    const { error: syncErr } = await sb.from('quotes').update(syncPayload).eq('id', id);
+    const { error: syncErr } = await withDbTimeout((signal) =>
+      sb.from('quotes').update(syncPayload).eq('id', id).abortSignal(signal),
+    );
     if (syncErr) {
       console.warn('[api/quotes/:id/send] failed to persist GHL sync state:', syncErr.message);
     }
@@ -573,7 +625,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       smsSent = true;
     } catch (err) {
       console.warn('[api/quotes/:id/send] SMS send failed:', err);
-      smsError = hlErrorMessage(err);
+      smsError = deliveryErrorMessage(err);
     }
     // #250: durable delivery record, written AFTER smsSent/smsError are final
     // so a logging hiccup can never influence the send outcome itself — see
@@ -600,7 +652,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       emailSent = true;
     } catch (err) {
       console.warn('[api/quotes/:id/send] Email send failed:', err);
-      emailError = hlErrorMessage(err);
+      emailError = deliveryErrorMessage(err);
     }
     // #250: durable delivery record — see customerSms above for why this is
     // written after the outcome is final.

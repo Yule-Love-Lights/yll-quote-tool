@@ -118,6 +118,12 @@ function makeSb(
     },
     eq: () => builder,
     is: () => builder,
+    // #264: real route code now chains `.abortSignal(signal)` on every direct
+    // query (see withDbTimeout in route.ts) — no-op passthrough here, same
+    // shape as eq()/is() above; the timeout behavior itself is covered by
+    // highlevel.test.ts (ghlFetch) and quoteDeliveries.test.ts (the DB insert),
+    // not re-proven per call site in this file.
+    abortSignal: () => builder,
     single: async () => ({ data: quote, error: quote ? null : { message: 'no row' } }),
     then: (resolve: (v: unknown) => void) => {
       let res: unknown;
