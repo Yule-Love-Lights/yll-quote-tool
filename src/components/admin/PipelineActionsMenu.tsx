@@ -170,9 +170,6 @@ async function run(action: PipelineAction, rec: PipelineRecord): Promise<Respons
   }
 }
 
-// Menu width mirrors the `w-52` class below (13rem = 208px) — the position
-// math needs the number, Tailwind only has the class.
-const MENU_WIDTH = 208;
 const VIEWPORT_MARGIN = 8;
 
 // Right-align the menu under the trigger (matching the old `right-0` visual
@@ -180,9 +177,17 @@ const VIEWPORT_MARGIN = 8;
 // to the viewport on every axis so the menu is always fully reachable, never
 // partly off-screen (#Options-menu-clipped: the table's overflow-x-auto
 // wrapper was clipping an absolutely-positioned menu — see the portal below).
-function computeMenuPosition(triggerRect: DOMRect, menuHeight: number): { top: number; left: number } {
-  let left = triggerRect.right - MENU_WIDTH;
-  left = Math.min(Math.max(left, VIEWPORT_MARGIN), window.innerWidth - MENU_WIDTH - VIEWPORT_MARGIN);
+// Width/height are MEASURED (offsetWidth/offsetHeight) by the caller rather
+// than hard-coded here — a hard-coded width constant previously mirrored the
+// `w-52` class below with nothing tying the two together, so they could
+// silently drift if either one changed alone.
+function computeMenuPosition(
+  triggerRect: DOMRect,
+  menuSize: { width: number; height: number },
+): { top: number; left: number } {
+  const { width: menuWidth, height: menuHeight } = menuSize;
+  let left = triggerRect.right - menuWidth;
+  left = Math.min(Math.max(left, VIEWPORT_MARGIN), window.innerWidth - menuWidth - VIEWPORT_MARGIN);
 
   const spaceBelow = window.innerHeight - triggerRect.bottom;
   const spaceAbove = triggerRect.top;
@@ -197,6 +202,12 @@ function computeMenuPosition(triggerRect: DOMRect, menuHeight: number): { top: n
   return { top, left };
 }
 
+// Narrowed form of the selector `useModalFocus` (src/components/portal/
+// useModalFocus.ts) uses for its own dialogs — this menu only ever renders
+// <button>/<a href> action items, never a text input, so the wider selector
+// isn't needed here.
+const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled])';
+
 export function PipelineActionsMenu({
   quoteId,
   onDone,
@@ -208,19 +219,22 @@ export function PipelineActionsMenu({
   const [rec, setRec] = useState<PipelineRecord | null>(null);
   const [busy, setBusy] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  // Portal target isn't safe until after client mount (no `document` during
-  // SSR); the menu itself only ever renders once `open` is client-triggered,
-  // but gate on `mounted` too so this stays correct even if that changes.
-  const [mounted, setMounted] = useState(false);
-  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+  // `key` is the contentKey (below) the position was MEASURED for — see the
+  // measure effect and `isVisible`. Lets the render distinguish "measured
+  // and ready to show" from "measured for content that has since changed."
+  const [position, setPosition] = useState<{ top: number; left: number; key: string } | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    // Defer out of the synchronous effect body (project rule:
-    // react-hooks/set-state-in-effect is at error in this repo).
-    queueMicrotask(() => setMounted(true));
-  }, []);
+  // What the menu is CURRENTLY showing. Drives both the content-keyed reveal
+  // (`isVisible` below — a position measured for a different key stays
+  // hidden) and the measure effect's re-run trigger.
+  const contentKey = fetchError ? 'error' : rec ? 'ready' : 'loading';
+  // True only once `position` was measured FOR the content currently being
+  // rendered. A stale measurement (e.g. taken for the "Loading…" placeholder,
+  // now showing the full action list) stays hidden rather than painting at
+  // the wrong size/position for one frame — see the `menu` comment below.
+  const isVisible = !!position && position.key === contentKey;
 
   async function toggle() {
     if (open) {
@@ -245,32 +259,60 @@ export function PipelineActionsMenu({
     }
   }
 
-  function closeAndReset() {
+  // `skipFocusRestore` is for a close that's actually a navigation (the
+  // Details link, below) — forcing focus back onto a trigger that's about
+  // to be navigated away from fights the click the user just made.
+  function closeAndReset(opts?: { skipFocusRestore?: boolean }) {
     // Deferred (see the react-hooks/set-state-in-effect note above) since
     // this is called from listeners registered inside an effect below.
     queueMicrotask(() => {
       setOpen(false);
       setPosition(null);
+      if (opts?.skipFocusRestore) return;
+      // Only reclaim focus if nothing else has already claimed it. Clicking
+      // a DIFFERENT row's trigger to switch menus fires THIS row's
+      // outside-mousedown close too, and by the time this microtask runs the
+      // browser has already moved focus onto that other trigger (the
+      // browser's default mousedown-focus behavior runs before our deferred
+      // callback) — force-focusing our own trigger here would yank focus
+      // back off the button the user just clicked.
+      const active = document.activeElement;
+      if (active === document.body || active === null || menuRef.current?.contains(active)) {
+        triggerRef.current?.focus();
+      }
     });
   }
 
   // Measure + (re)position after every render of the open menu — its height
   // changes between the "Loading…"/error placeholder and the real action
   // list, so this reruns when `rec`/`fetchError` land, not just on open.
+  // Stamps the `contentKey` it measured FOR onto `position` so the render
+  // below can tell a stale measurement (computed for different content)
+  // apart from a current one — see `isVisible` and the two-phase-reveal
+  // note on `menu`.
   useEffect(() => {
     if (!open || !triggerRef.current || !menuRef.current) return;
     // Measure synchronously (accurate layout), defer only the setState call
     // (react-hooks/set-state-in-effect) — a microtask still runs before
     // paint, so there's no visible flash.
     const triggerRect = triggerRef.current.getBoundingClientRect();
+    const menuWidth = menuRef.current.offsetWidth;
     const menuHeight = menuRef.current.offsetHeight;
-    queueMicrotask(() => setPosition(computeMenuPosition(triggerRect, menuHeight)));
-  }, [open, rec, fetchError]);
+    const measuredKey = contentKey;
+    queueMicrotask(() =>
+      setPosition({
+        ...computeMenuPosition(triggerRect, { width: menuWidth, height: menuHeight }),
+        key: measuredKey,
+      }),
+    );
+  }, [open, rec, fetchError, contentKey]);
 
   // Close on outside click, Escape, window resize, or a scroll anywhere
   // (capture:true on window catches scroll events fired on a nested
   // scroller — e.g. the table's overflow-x-auto wrapper — even though
   // `scroll` doesn't bubble; the capturing phase still walks window → target).
+  // Escape/Tab also live here (not a separate effect) since they need the
+  // same open-gated add/remove lifecycle as the rest.
   useEffect(() => {
     if (!open) return;
     function handlePointerDown(e: MouseEvent) {
@@ -279,7 +321,34 @@ export function PipelineActionsMenu({
       closeAndReset();
     }
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') closeAndReset();
+      if (e.key === 'Escape') {
+        closeAndReset();
+        return;
+      }
+      // Trap Tab/Shift+Tab within the menu — the portal appends it as the
+      // LAST node in document.body, so without this, Tab from the trigger
+      // (focus never otherwise moves off it) skips the menu entirely and
+      // lands on the NEXT ROW's trigger, and a keyboard-opened menu never
+      // closes on the way past (Tab doesn't fire mousedown) — two menus
+      // end up open with independent, ambiguous state. Roving arrow-key
+      // navigation is deliberately NOT added — Tab-through is enough here.
+      if (e.key !== 'Tab' || !menuRef.current) return;
+      const items = Array.from(menuRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
+      if (items.length === 0) {
+        // Still "Loading…" — nothing to wrap Tab between yet. Pin focus in
+        // place instead of letting it escape the portal into the row below.
+        e.preventDefault();
+        return;
+      }
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
     }
     function closeOnScrollOrResize() {
       closeAndReset();
@@ -295,6 +364,38 @@ export function PipelineActionsMenu({
       window.removeEventListener('resize', closeOnScrollOrResize);
     };
   }, [open]);
+
+  // Move focus into the menu whenever it's visible but focus isn't already
+  // inside it — self-healing rather than a one-shot "focused this open"
+  // flag, and that's load-bearing, not just simpler: the "Loading…"
+  // placeholder has nothing focusable, so the first reveal falls back to
+  // focusing the CONTAINER (tabindex=-1, like useModalFocus does) — and a
+  // browser auto-blurs whatever currently holds focus to <body> the moment
+  // that element goes `visibility:hidden`, which is exactly what happens to
+  // the container for one commit when the placeholder swaps for the real
+  // action list (the content-key mismatch frame on `menu`, below). A
+  // one-shot flag would never notice focus had escaped to <body> and leave
+  // it stranded there; checking "is focus already inside the menu" on every
+  // reveal instead notices and recovers, landing on the first REAL action
+  // once the list exists. Safe to re-run like this because Tab is fully
+  // trapped (see `handleKeyDown`'s items.length===0 case) whenever there's
+  // nothing focusable yet, so the user can't have tabbed elsewhere in the
+  // meantime. Gated on `isVisible`, not just `open`, so this can't try to
+  // focus an element that's still `visibility:hidden` (focus() is a no-op
+  // on a non-rendered element) — it only runs on the render where the DOM
+  // has actually committed the visible style.
+  useEffect(() => {
+    if (!open || !isVisible || !menuRef.current) return;
+    const menuEl = menuRef.current;
+    if (menuEl.contains(document.activeElement)) return;
+    const first = menuEl.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
+    if (first) {
+      first.focus();
+    } else {
+      menuEl.setAttribute('tabindex', '-1');
+      menuEl.focus();
+    }
+  }, [open, isVisible]);
 
   async function onPick(action: PipelineAction) {
     if (action.kind === 'details') return; // rendered as a <Link>, not a button
@@ -321,16 +422,42 @@ export function PipelineActionsMenu({
   // overflow-x-auto — every one of this component's real render sites wraps
   // its table in exactly that (admin/quotes, admin/jobs, admin/invoices,
   // customers/[contactId]) — so the old menu was clipped, only reachable by
-  // scrolling the table. Until `position` is measured, render invisibly (not
-  // at all) so there's no flash at the wrong spot.
-  const menu = open && mounted && (
+  // scrolling the table.
+  //
+  // Gated on `open` alone — no separate SSR-safety `mounted` flag. `open`
+  // starts false and can only ever become true from a user click, which
+  // can't happen until after client hydration, so SSR always renders
+  // `open === false` (no portal, no `document` access) and the first
+  // client render matches it byte-for-byte; a `mounted` flag was one more
+  // state + effect + re-render per row (182 of them on a full quotes table)
+  // enforcing a guarantee `open` already gives for free.
+  //
+  // Visible only when `isVisible` (position was measured FOR the content
+  // currently rendered) — otherwise hidden, never at the wrong spot. This
+  // covers TWO reveals, not just the first: the initial open (nothing
+  // measured yet, `position === null`) AND every later content swap (e.g.
+  // "Loading…" -> the real action list, which is a different height and
+  // sometimes flips the menu from below the trigger to above it). Without
+  // the second case, the already-visible "Loading…" menu would repaint at
+  // the real list's size at the STALE position for at least one frame
+  // before the re-measure effect moved it — a visible jump, worst on a
+  // bottom-of-viewport row where the flip direction also reverses.
+  const menu = open && (
     <div
       ref={menuRef}
-      style={
-        position
-          ? { position: 'fixed', top: position.top, left: position.left, visibility: 'visible' }
-          : { position: 'fixed', top: 0, left: 0, visibility: 'hidden' }
-      }
+      style={{
+        position: 'fixed',
+        // Keeps VIEWPORT_MARGIN the single source for "how close to the
+        // screen edge" — a menu taller than the viewport (not reachable
+        // today, but not impossible as actions grow) would otherwise clamp
+        // to VIEWPORT_MARGIN from the top with its bottom run off-screen,
+        // unreachable (position:fixed ignores page scroll).
+        maxHeight: `calc(100vh - ${2 * VIEWPORT_MARGIN}px)`,
+        overflowY: 'auto',
+        ...(isVisible && position
+          ? { top: position.top, left: position.left, visibility: 'visible' as const }
+          : { top: 0, left: 0, visibility: 'hidden' as const }),
+      }}
       className="z-50 w-52 rounded-md border border-gray-200 bg-white shadow-lg py-1"
     >
       {fetchError ? (
@@ -343,6 +470,13 @@ export function PipelineActionsMenu({
             <Link
               key={i}
               href={a.href}
+              // Bypassed closeAndReset entirely before (this is a <Link>,
+              // not a button routed through onPick) — left `open === true`
+              // and all four listeners above attached until unmount.
+              // skipFocusRestore: true because this closes the menu by
+              // NAVIGATING; force-focusing the trigger back would fight
+              // that navigation instead of letting it proceed.
+              onClick={() => closeAndReset({ skipFocusRestore: true })}
               className="block px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50"
             >
               {a.label}
@@ -369,6 +503,8 @@ export function PipelineActionsMenu({
         ref={triggerRef}
         type="button"
         onClick={toggle}
+        aria-haspopup="menu"
+        aria-expanded={open}
         className="px-2 py-1 text-xs rounded border border-gray-300 hover:bg-gray-50 text-gray-700"
       >
         Options ▾
