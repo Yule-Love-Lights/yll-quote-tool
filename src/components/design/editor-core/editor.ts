@@ -1592,6 +1592,23 @@ export async function renderEditor(
     host.appendChild(n);
     window.setTimeout(() => n.remove(), 5000);
   }
+  // #249/#753 review fix: clears tool.surface the moment it's no longer valid
+  // for the current bulbType/scattershot combo (e.g. a c9-only tag surviving
+  // a switch to mini, or "curtain" surviving a switch into Scattershot) and
+  // tells the operator via a transient notice — reusing showTransientNotice
+  // rather than inventing a second mechanism (mirrors
+  // pruneOrphanedMiniGroupsNotify's silent-correction notice below). Without
+  // this, a silently-reset tag could leave the operator drawing several
+  // untagged items before noticing the row flipped to None.
+  function resetToolSurfaceIfInvalid(contextLabel: string) {
+    if (!tool.surface) return;
+    const stillValid = surfaceOptionsForBulbType(tool.bulbType, { scattershot: tool.scattershot }).some(
+      ([v]) => v === tool.surface,
+    );
+    if (stillValid) return;
+    showTransientNotice(`Surface tag cleared — pick again for ${contextLabel}.`);
+    tool.surface = "";
+  }
   // Wraps pruneOrphanedMiniGroups: diffs which miniGroup item(s) it actually
   // dropped and surfaces one notice per group. Every call site below should
   // call THIS, not pruneOrphanedMiniGroups directly.
@@ -1835,8 +1852,13 @@ export async function renderEditor(
         // the two pickers can't drift apart. Hidden entirely when this bulb
         // type has no surface tag (permanent/bistro) or the design isn't
         // quote-bound (standalone design tool / non-binding mounts).
+        // #753 review fix: also passes the live scattershot flag, which drops
+        // "curtain" from the row while Scattershot is active — the item that
+        // style commits (a MiniAreaItem) has no `curtain` option in its OWN
+        // edit panel (#sel-ma-surface), so pre-tagging it would bake on a tag
+        // that panel could never show or correct (see surfaceOptions.ts).
         if (!opts.showQuoteBinding) return "";
-        const toolSurfaceOpts = surfaceOptionsForBulbType(tool.bulbType);
+        const toolSurfaceOpts = surfaceOptionsForBulbType(tool.bulbType, { scattershot: tool.scattershot });
         if (toolSurfaceOpts.length === 0) return "";
         return `
       <section>
@@ -2077,10 +2099,11 @@ export async function renderEditor(
         applyDefaultsForCurrentType();
         const spacings = SPACINGS[tool.bulbType];
         if (!spacings.includes(tool.spacingIn)) tool.spacingIn = spacings[Math.floor(spacings.length / 2)];
-        // #249: a picked surface tag can be invalid for the new bulb type
-        // (e.g. "santas-roofline" carried over from c9 into mini) — drop it
-        // back to untagged rather than silently mis-tagging the next item.
-        if (!surfaceOptionsForBulbType(tool.bulbType).some(([v]) => v === tool.surface)) tool.surface = "";
+        // #249/#753: a picked surface tag can be invalid for the new bulb type
+        // (e.g. "santas-roofline" carried over from c9 into mini) — clear it
+        // and tell the operator (resetToolSurfaceIfInvalid), rather than
+        // silently mis-tagging the next item.
+        resetToolSurfaceIfInvalid(BULB_TYPES.find((t) => t.id === tool.bulbType)?.label ?? tool.bulbType);
         renderSidebar();
         redrawScene(); // #63: bistro vs non-bistro flips strand-draw context
       }),
@@ -2420,6 +2443,11 @@ export async function renderEditor(
         // into tool.drawingStyle (that type is shared with garland drawing).
         if (s === "scattershot") {
           tool.scattershot = true;
+          // #753 review fix: entering Scattershot can invalidate a pre-picked
+          // "curtain" tag (see surfaceOptionsForBulbType) — clear + notify
+          // the same way a bulb-type switch does, so the state never bakes
+          // an unreachable tag onto the next commitMiniArea.
+          resetToolSurfaceIfInvalid("Scattershot");
         } else {
           tool.scattershot = false;
           tool.drawingStyle = s as DrawingStyle;
@@ -4611,6 +4639,10 @@ export async function renderEditor(
   // #249: scattershot only exists for bulbType "mini" (see the Drawing Style
   // section), so tool.surface here is always either "" or a valid mini
   // surface — falls back to the pre-existing "bush" default when untagged.
+  // #753 review fix: never "curtain" specifically — the pre-draw row filters
+  // it out (and resets it) the moment Scattershot is active, because
+  // #sel-ma-surface (this item's own edit panel, below) has no curtain
+  // option to show/correct it with.
   function commitMiniArea(r: { x: number; y: number; width: number; height: number }) {
     const area: MiniAreaItem = {
       id: cryptoId(),

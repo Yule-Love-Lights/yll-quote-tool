@@ -31,4 +31,28 @@ describe("surfaceOptionsForBulbType", () => {
   it("bistro has no surface tag", () => {
     expect(surfaceOptionsForBulbType("bistro")).toEqual([]);
   });
+
+  // #753 review fix: scattershot excludes curtain (invisible to #sel-ma-surface,
+  // the MiniAreaItem panel — see the header comment) but keeps railing (which
+  // that panel already lists, so pre-tagging it stays fully visible/editable).
+  it("mini + scattershot drops curtain but keeps railing and the rest", () => {
+    expect(surfaceOptionsForBulbType("mini", { scattershot: true })).toEqual([
+      ["bush", "Bush"],
+      ["tree", "Tree"],
+      ["column", "Column"],
+      ["railing", "Railing"],
+    ]);
+  });
+
+  it("mini + scattershot:false is identical to omitting opts", () => {
+    expect(surfaceOptionsForBulbType("mini", { scattershot: false })).toEqual(
+      surfaceOptionsForBulbType("mini"),
+    );
+  });
+
+  it("scattershot has no effect on c9 (already has no curtain option)", () => {
+    expect(surfaceOptionsForBulbType("c9", { scattershot: true })).toEqual(
+      surfaceOptionsForBulbType("c9"),
+    );
+  });
 });
