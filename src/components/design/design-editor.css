@@ -77,7 +77,7 @@
   .editor {
     display: grid;
     grid-template-rows: 48px 1fr 56px;
-    grid-template-columns: 1fr 280px;
+    grid-template-columns: 1fr 320px;
     height: 100vh;
   }
   .editor.embedded { height: 100%; }
@@ -161,8 +161,15 @@
   }
   .editor .sidebar section { margin-bottom: 20px; }
 
-  .bulb-types { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
-  .bulb-types button { padding: 8px 4px; font-size: 12px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  /* minmax(0, 1fr), not the 1fr shorthand (== minmax(auto, 1fr)): plain 1fr's
+     "auto" minimum is the track's min-content width, so one long unbreakable
+     button label (e.g. "Winter Wonderland") refuses to let its column shrink
+     and forces the whole grid past the sidebar's edge into a horizontal
+     scrollbar. minmax(0, 1fr) lets the track shrink freely; the button's own
+     overflow-wrap:anywhere below handles the label itself. Both halves are
+     required together — this ISN'T redundant belt-and-suspenders. */
+  .bulb-types { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+  .bulb-types button { padding: 8px 4px; font-size: 12px; display: flex; flex-direction: column; align-items: center; gap: 4px; overflow-wrap: anywhere; text-align: center; }
   .bulb-types button.active { background: var(--accent); border-color: var(--accent); }
 
   .colors { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }

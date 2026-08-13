@@ -31,6 +31,7 @@ import {
 } from "./sizePresets";
 import { isLineDrawContext } from "./drawContext";
 import { surfaceOptionsForBulbType } from "./surfaceOptions";
+import { sideOfHouseOptions } from "./sideOfHouseOptions";
 
 // Default real-world width for newly-placed custom uploads — about 3 feet,
 // big enough to spot on the photo, small enough to resize down with the
@@ -131,6 +132,11 @@ type ToolState = {
   // default); only ever holds a value valid for the current bulbType (see the
   // #bulb-types click handler, which resets it on a type switch).
   surface: Surface | "";
+  // #249 (permanent side-of-house pre-draw tag): same shape as `surface` above
+  // but for permanent bulb type only — baked onto new permanent strands (see
+  // quoteDefaultsForNewStrand). "" = untagged. Reset on leaving permanent (see
+  // resetToolSideOfHouseIfInvalid).
+  sideOfHouse: SideOfHouse | "";
   // Decor sub-type
   decorType: DecorType;
   // Decor — wreath
@@ -332,6 +338,7 @@ export async function renderEditor(
     showBeam: true,
     bistroSagFactor: 0.10,
     surface: "",
+    sideOfHouse: "",
     decorType: "wreath",
     wreathSizeIn: 36,
     wreathWithLights: true,
@@ -1609,6 +1616,17 @@ export async function renderEditor(
     showTransientNotice(`Surface tag cleared — pick again for ${contextLabel}.`);
     tool.surface = "";
   }
+  // #249 (side-of-house pre-draw tag): mirrors resetToolSurfaceIfInvalid above
+  // — clears tool.sideOfHouse the moment the bulb type leaves permanent (the
+  // only bulb type the pre-draw section applies to) and tells the operator via
+  // the same transient-notice mechanism, so a stale tag can't silently survive
+  // a switch away and mis-tag the next item drawn after switching back.
+  function resetToolSideOfHouseIfInvalid(contextLabel: string) {
+    if (!tool.sideOfHouse) return;
+    if (tool.bulbType === "permanent") return;
+    showTransientNotice(`Side of house tag cleared — pick again for ${contextLabel}.`);
+    tool.sideOfHouse = "";
+  }
   // Wraps pruneOrphanedMiniGroups: diffs which miniGroup item(s) it actually
   // dropped and surfaces one notice per group. Every call site below should
   // call THIS, not pruneOrphanedMiniGroups directly.
@@ -1871,6 +1889,27 @@ export async function renderEditor(
       </section>
         `;
       })()}
+      ${(() => {
+        // #249 (permanent side-of-house pre-draw tag): mirrors the Surface
+        // quick-tag section above, but permanent-only (locked by the dev — c9
+        // also has a side-of-house tag post-hoc, but its pre-draw sidebar is
+        // already the crowded one Part A had to fix, so it does NOT get this
+        // pre-draw section too). Options come from the same lookup the
+        // post-hoc #sel-side-of-house dropdown uses (sideOfHouseOptions), so
+        // the two pickers can't drift apart.
+        if (!opts.showQuoteBinding) return "";
+        if (tool.bulbType !== "permanent") return "";
+        return `
+      <section>
+        <h3>Side of House</h3>
+        <div class="bulb-types" id="tool-side-of-house">
+          <button data-side="" class="${tool.sideOfHouse === "" ? "active" : ""}">None</button>
+          ${sideOfHouseOptions().map(([v, l]) => `<button data-side="${v}" class="${tool.sideOfHouse === v ? "active" : ""}">${l}</button>`).join("")}
+        </div>
+        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Tags every new item you draw with this side. Left/right = the HOMEOWNER's left/right facing OUT from the house, not as seen from the road. Leave on None to tag after drawing, same as before.</div>
+      </section>
+        `;
+      })()}
       ${tool.bulbType === "permanent" ? `
       <section>
         <h3>Beam Length <span id="tool-beam-len-val" style="float:right;color:var(--text);font-weight:400"></span></h3>
@@ -2104,6 +2143,7 @@ export async function renderEditor(
         // and tell the operator (resetToolSurfaceIfInvalid), rather than
         // silently mis-tagging the next item.
         resetToolSurfaceIfInvalid(BULB_TYPES.find((t) => t.id === tool.bulbType)?.label ?? tool.bulbType);
+        resetToolSideOfHouseIfInvalid(BULB_TYPES.find((t) => t.id === tool.bulbType)?.label ?? tool.bulbType);
         renderSidebar();
         redrawScene(); // #63: bistro vs non-bistro flips strand-draw context
       }),
@@ -2115,6 +2155,16 @@ export async function renderEditor(
         // commitMiniArea). Purely a tool-state change; doesn't touch any
         // already-drawn item, so no redrawScene needed.
         tool.surface = ((b as HTMLElement).dataset.surface ?? "") as Surface | "";
+        renderSidebar();
+      }),
+    );
+    sb.querySelectorAll("#tool-side-of-house button").forEach((b) =>
+      b.addEventListener("click", () => {
+        // #249: pre-draw quick-tag — sets the default `sideOfHouse` baked into
+        // the next drawn permanent strand (see quoteDefaultsForNewStrand).
+        // Purely a tool-state change; doesn't touch any already-drawn item, so
+        // no redrawScene needed (mirrors #tool-surfaces just above).
+        tool.sideOfHouse = ((b as HTMLElement).dataset.side ?? "") as SideOfHouse | "";
         renderSidebar();
       }),
     );
@@ -2816,16 +2866,15 @@ export async function renderEditor(
           ["metal", "Metal roof (flag)"],
         ];
         const sRoofFeature = uniq(sel.map((s) => s.roofFeature ?? ""));
-        // RELAY: side-of-house options are shared with the standalone design tool
-        // (#103). A staff tag shown for c9 + permanent strands; no pricing yet.
+        // #249: pulled from sideOfHouseOptions (sideOfHouseOptions.ts) so this
+        // dropdown and the permanent-only pre-draw quick-tag section can't
+        // drift apart — mirrors the surfaceOpts precedent just above. That
+        // module itself carries the RELAY comment for the standalone design
+        // tool (#103). A staff tag shown for c9 + permanent strands; no
+        // pricing yet.
         const showSideOfHouse =
           sharedBulbType.length === 1 && (sharedBulbType[0] === "c9" || sharedBulbType[0] === "permanent");
-        const sideOfHouseOpts: [string, string][] = [
-          ["front", "Front"],
-          ["back", "Back"],
-          ["left", "Left"],
-          ["right", "Right"],
-        ];
+        const sideOfHouseOpts: [string, string][] = sideOfHouseOptions();
         const sSideOfHouse = uniq(sel.map((s) => s.sideOfHouse ?? ""));
         const sSurface = uniq(sel.map((s) => s.surface ?? ""));
         const sInc = uniq(sel.map((s) => s.included ?? true));
@@ -2860,6 +2909,7 @@ export async function renderEditor(
           <option value="">${sSideOfHouse.length > 1 ? "— mixed —" : "— none —"}</option>
           ${sideOfHouseOpts.map(([v, l]) => `<option value="${v}" ${sSideOfHouse.length === 1 && sSideOfHouse[0] === v ? "selected" : ""}>${l}</option>`).join("")}
         </select>
+        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Left/right = the HOMEOWNER's left/right facing OUT from the house, not as seen from the road.</div>
         ` : ""}
         ${wrapSurface ? `
         <label style="display:block;margin-top:8px;margin-bottom:2px;font-size:11px;color:var(--text-dim)">Wrap style</label>
@@ -4757,11 +4807,14 @@ export async function renderEditor(
   // quick-tag (tool.surface) when the operator set one; otherwise the item is
   // untagged, same as before this feature (the operator sets `surface`
   // post-hoc via the #sel-surface dropdown). Harmless in the standalone tool —
-  // ignored unless a quote reads them.
+  // ignored unless a quote reads them. `sideOfHouse` mirrors the same pattern,
+  // permanent bulb type only (tool.sideOfHouse only ever holds a value while
+  // tool.bulbType === "permanent" — see resetToolSideOfHouseIfInvalid).
   function quoteDefaultsForNewStrand(): Partial<StrandItem> {
     const d: Partial<StrandItem> = { included: true };
     if (tool.bulbType === "mini") { d.stringCount = 1; d.wrapStyle = "canopy"; }
     if (tool.surface) d.surface = tool.surface;
+    if (tool.bulbType === "permanent" && tool.sideOfHouse) d.sideOfHouse = tool.sideOfHouse;
     return d;
   }
   function quoteDefaultsForNewGarland(): Partial<GarlandItem> {
