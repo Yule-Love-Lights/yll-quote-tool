@@ -58,9 +58,14 @@ vi.mock('@/lib/integrations/highlevel', () => ({
   sendSms: hl.sendSms,
   sendEmail: hl.sendEmail,
   isHighLevelConfigured: () => hl.configured.value,
+  // #264 round 2: constructor now mirrors the real class exactly (message,
+  // status, body, timedOut) so a test can construct a timed-out error the
+  // same way ghlFetch does, instead of hand-setting fields after the fact.
   HighLevelError: class HighLevelError extends Error {
-    status?: number;
-    body?: string;
+    constructor(message: string, public status?: number, public body?: string, public timedOut?: boolean) {
+      super(message);
+      this.name = 'HighLevelError';
+    }
   },
 }));
 
@@ -71,6 +76,8 @@ vi.mock('@/lib/integrations/quoteMessages', () => ({
 }));
 
 import { POST } from './route';
+import { HighLevelError } from '@/lib/integrations/highlevel';
+import { DELIVERY_TIMEOUT_ERROR_PREFIX } from '@/lib/quoteDeliveries';
 
 // Fake Supabase: read = from().select().eq().single(); each write =
 // from().update(payload).eq() (awaited). Records every update payload so we
@@ -118,6 +125,12 @@ function makeSb(
     },
     eq: () => builder,
     is: () => builder,
+    // #264: real route code now chains `.abortSignal(signal)` on every direct
+    // query (see withDbTimeout in route.ts) — no-op passthrough here, same
+    // shape as eq()/is() above; the timeout behavior itself is covered by
+    // highlevel.test.ts (ghlFetch) and quoteDeliveries.test.ts (the DB insert),
+    // not re-proven per call site in this file.
+    abortSignal: () => builder,
     single: async () => ({ data: quote, error: quote ? null : { message: 'no row' } }),
     then: (resolve: (v: unknown) => void) => {
       let res: unknown;
@@ -1258,6 +1271,32 @@ describe('POST /api/quotes/[id]/send — quote delivery log (#250)', () => {
     });
   });
 
+  // #264 round 2, FIX 8: closes the untested-contract gap — proves a timed-out
+  // send (HighLevelError#timedOut, the exact shape ghlFetch throws) logs an
+  // 'error' string starting with the EXPORTED DELIVERY_TIMEOUT_ERROR_PREFIX
+  // (src/lib/quoteDeliveries.ts), not just some ad hoc "timeout" substring —
+  // a future reporting query matches on the real exported contract.
+  it('a TIMED-OUT send logs outcome:"failed" with an error starting with DELIVERY_TIMEOUT_ERROR_PREFIX (honesty hedge)', async () => {
+    hl.sendSms.mockRejectedValueOnce(
+      new HighLevelError('HighLevel POST /conversations/messages timed out after 10000ms (connecting)', undefined, undefined, true),
+    );
+    hl.sendEmail.mockResolvedValueOnce({ messageId: 'email_msg_1' });
+    const { client, insertPayloads } = makeSb({ ...FRESH_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+
+    const deliveryRows = insertPayloads.filter((p) => p.table === 'quote_deliveries');
+    const smsRow = deliveryRows.find((p) => p.payload.channel === 'sms');
+    expect(smsRow?.payload.outcome).toBe('failed');
+    expect((smsRow?.payload.error as string).startsWith(DELIVERY_TIMEOUT_ERROR_PREFIX)).toBe(true);
+    expect(smsRow?.payload.error as string).toContain('delivery outcome unknown');
+    // The sibling "failed" test above already pins a NORMAL (non-timeout)
+    // failure's error as verbatim "SMS down" — confirming by construction
+    // that a normal failure does NOT carry this prefix.
+  });
+
   it('writes a "failed" row for BOTH channels when the whole requested delivery fails (502)', async () => {
     hl.sendSms.mockRejectedValueOnce(new Error('SMS down'));
     hl.sendEmail.mockRejectedValueOnce(new Error('Email down'));
@@ -1330,5 +1369,43 @@ describe('POST /api/quotes/[id]/send — quote delivery log (#250)', () => {
     const res = await POST(makeReq(true), { params });
     expect(res.status).toBe(200);
     expect(insertPayloads.filter((p) => p.table === 'quote_deliveries')).toHaveLength(0);
+  });
+});
+
+// #264 round 2, FIX 1 (HIGH): tagPropagation is NOT a rare path — prod:
+// 149/182 sent quotes (82%) carry legacy_rebook=true. Its own DB calls
+// (attachQuoteToCustomer et al, in src/lib/customers.ts) are mocked here via
+// attachQuoteToCustomerMock, so a hang there is simulated directly rather
+// than through a real Supabase client.
+describe('POST /api/quotes/[id]/send — tagPropagation deadline (#264 round 2, FIX 1)', () => {
+  it('a HUNG attachQuoteToCustomer does not stall the response past the 15s deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      // Never resolves — simulates a hung DB call inside the shared
+      // customers.ts find-or-create chain tagPropagation calls into.
+      attachQuoteToCustomerMock.mockImplementationOnce(() => new Promise(() => {}));
+      hl.sendSms.mockResolvedValueOnce({ messageId: 'sms_msg_1' });
+      hl.sendEmail.mockResolvedValueOnce({ messageId: 'email_msg_1' });
+      const { client } = makeSb({ ...FRESH_QUOTE, legacy_rebook: true });
+      sbRef.current = client;
+
+      const resPromise = POST(makeReq(), { params });
+      await vi.advanceTimersByTimeAsync(15_000);
+      const res = await resPromise;
+
+      // The route responded WITHOUT waiting for the still-hung
+      // attachQuoteToCustomer call (it's now an orphaned, never-settling
+      // promise in the background — exactly the documented, verified-safe
+      // tradeoff; see the comment above TAG_PROPAGATION_DEADLINE_MS).
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json.ok).toBe(true);
+      // The customer's own delivery is unaffected by tagPropagation hanging —
+      // proves the four allSettled tasks are genuinely independent.
+      expect(json.smsSent).toBe(true);
+      expect(json.emailSent).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
