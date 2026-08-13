@@ -3,11 +3,49 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import Link from 'next/link';
 import { pipelineActions, type PipelineRecord, type PipelineAction } from '@/lib/pipeline/pipelineActions';
+import { decideSendOutcome, type Channel, type SendResponseBody } from './pipelineSendOutcome';
 
 const money = (n: number) =>
   `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-async function run(action: PipelineAction, rec: PipelineRecord): Promise<Response | null> {
+// Row 270: 'send' is the only action kind that fully owns its own alerting
+// (success, partial delivery failure, the 502 delivery-failed case, and
+// alreadySent all need their own honest copy — see decideSendOutcome and the
+// 'send' case below) — so it returns this sentinel instead of a raw
+// Response, telling onPick whether to refresh WITHOUT onPick re-alerting
+// body.error itself (a 502 delivery-failed response still means the quote
+// got marked sent server-side, so refresh has to be independent of res.ok).
+// Every OTHER action kind still returns a plain Response | null.
+type Handled = { handled: true; refresh: boolean };
+
+// The full response body shape the 'send' case reads from — SendResponseBody
+// (pipelineSendOutcome.ts) covers the delivery-outcome fields; stageUpdated/
+// stageError are read here only, for the existing HighLevel stage line.
+type SendCaseBody = SendResponseBody & { stageUpdated?: boolean; stageError?: string };
+
+// Shared by the two retry entry points below (the failedChannels-driven
+// offer inside the 'send' case, and the alreadySent-driven offer also inside
+// the 'send' case) — POSTs the delivery-only retry, classifies the result,
+// alerts it, and — if THAT outcome still wants a retry — loops back for
+// another confirm-gated attempt. Bounded by the operator's own willingness
+// to keep clicking OK on window.confirm, never automatic: every iteration
+// requires a fresh explicit confirm, so there is no unbounded auto-retry.
+async function redeliverAndReport(quoteId: string, channel: Channel, prompt: string): Promise<void> {
+  if (!window.confirm(prompt)) return;
+  const res = await fetch(`/api/quotes/${quoteId}/send?retryDelivery=1`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ channel }),
+  });
+  const body = (await res.json().catch(() => ({}))) as SendResponseBody;
+  const outcome = decideSendOutcome(res.ok, body, channel, true);
+  alert(outcome.message || 'Delivered.');
+  if (outcome.retryChannel && outcome.retryPrompt) {
+    await redeliverAndReport(quoteId, outcome.retryChannel, outcome.retryPrompt);
+  }
+}
+
+async function run(action: PipelineAction, rec: PipelineRecord): Promise<Response | Handled | null> {
   const q = rec.quoteId;
   switch (action.kind) {
     case 'send': {
@@ -29,21 +67,41 @@ async function run(action: PipelineAction, rec: PipelineRecord): Promise<Respons
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ channel: action.channel }),
       });
-      if (res.ok) {
-        const body = (await res.clone().json().catch(() => ({}))) as {
-          stageUpdated?: boolean;
-          stageError?: string;
-          alreadySent?: boolean;
-        };
-        const stage = body.stageUpdated
-          ? '\nHighLevel: card moved to Bid Sent.'
-          : body.stageError
-            ? `\nHighLevel: ${body.stageError}`
-            : '';
-        const already = body.alreadySent ? ' (already sent earlier)' : '';
-        alert(`Portal URL${copied ? ' copied to clipboard' : ''}${already}:\n\n${portalUrl}${stage}`);
+      // Row 270: read via .clone() (leaves `res` itself unconsumed) so a
+      // response this case doesn't specially handle can still be returned
+      // raw below for onPick's existing generic path to read again.
+      const body = (await res.clone().json().catch(() => ({}))) as SendCaseBody;
+      // Untouched error paths (empty-quote, no-contact, view-only,
+      // deposit-paid, send-conflict, ...): not delivery-related, no server
+      // state changed, no retry applies. Falling through to onPick's
+      // existing generic `!res.ok` handler keeps these byte-identical to
+      // pre-row-270 behavior (bare `alert(body.error)`, menu stays open) —
+      // only a 502 delivery-failed (code below) and any res.ok shape
+      // (success / partial / alreadySent) get this case's OWN honesty
+      // handling.
+      if (!res.ok && body.code !== 'delivery-failed') {
+        return res;
       }
-      return res;
+      const stage = body.stageUpdated
+        ? '\nHighLevel: card moved to Bid Sent.'
+        : body.stageError
+          ? `\nHighLevel: ${body.stageError}`
+          : '';
+      const already = body.alreadySent ? ' (already sent earlier)' : '';
+      const outcome = decideSendOutcome(res.ok, body, action.channel, false);
+      alert(
+        `Portal URL${copied ? ' copied to clipboard' : ''}${already}:\n\n${portalUrl}${stage}${outcome.message ? `\n\n${outcome.message}` : ''}`,
+      );
+      if (outcome.retryChannel && outcome.retryPrompt) {
+        await redeliverAndReport(q, outcome.retryChannel, outcome.retryPrompt);
+      }
+      // Both remaining branches here change (or may have changed) server
+      // state: res.ok (success/partial/alreadySent — alreadySent changes
+      // nothing NEW, but refreshing is harmless and matches this case's
+      // pre-existing behavior of always refreshing on res.ok) and the 502
+      // delivery-failed case (the quote WAS stamped sent locally — see
+      // route.ts's `locallySent`), which never refreshed before this fix.
+      return { handled: true, refresh: true };
     }
     case 'mark-sent': {
       // #182: the quote was delivered outside the tool (hand-texted the
@@ -434,6 +492,19 @@ export function PipelineActionsMenu({
     setBusy(true);
     try {
       const res = await run(action, rec);
+      // Row 270: 'send' already did its own alerting inside run() (see
+      // Handled's doc comment above) — this branch only decides whether to
+      // refresh, and returns before either of the two generic branches below
+      // can double-alert. Every other action kind returns a plain
+      // Response | null (a real fetch Response has no `handled` property),
+      // so this check never fires for them and they fall through unchanged.
+      if (res && 'handled' in res) {
+        if (res.refresh) {
+          closeAndReset();
+          onDone?.();
+        }
+        return;
+      }
       if (res && !res.ok) {
         const body = await res.json().catch(() => ({}));
         alert((body as { error?: string }).error ?? 'Action failed');
