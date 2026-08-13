@@ -101,7 +101,7 @@ export type QuoteRowForPortal = {
   // yet paid. Optional for back-compat with older callers/tests.
   deposit_paid_at?: string | null;
   // Bug fix (B3): status + decline_reason let the portal gate the approve+pay
-  // UI for terminal/branch quotes (declined/cancelled/lost/changes_requested).
+  // UI for terminal/branch quotes (declined/cancelled/abandoned/changes_requested).
   // Optional for back-compat with older callers/tests that don't select them.
   status?: QuoteStatus | null;
   decline_reason?: string | null;

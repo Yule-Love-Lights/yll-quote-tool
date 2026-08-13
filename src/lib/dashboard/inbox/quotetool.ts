@@ -77,7 +77,7 @@ export type QuoteFollowUpDecision =
 // list (never a negative gate, per AGENTS.md Pitfalls) and deliberately
 // excludes 'changes_requested' — that quote is being revised, not dead, so
 // the nudge should stay live.
-const DEAD_QUOTE_STATUSES: ReadonlySet<QuoteStatus> = new Set(['declined', 'cancelled', 'lost']);
+const DEAD_QUOTE_STATUSES: ReadonlySet<QuoteStatus> = new Set(['declined', 'cancelled', 'abandoned']);
 
 // #220: internal domains that should suppress quote_sent_no_reply follow-ups
 // now live in classify.ts's INTERNAL_EMAIL_DOMAINS (#252 — shared with the
@@ -97,7 +97,7 @@ function internalQuoteRecipientSuppression(q: DashboardQuote): 'internal_email_d
 
 /**
  * Whether a quote should create or close its "sent, no reply" follow-up.
- * declined/cancelled/lost → close (dead, #183 BUG 2); approved → close (won);
+ * declined/cancelled/abandoned → close (dead, #183 BUG 2); approved → close (won);
  * sent-but-unapproved → create unless the recipient is internal (#220);
  * draft → none.
  */

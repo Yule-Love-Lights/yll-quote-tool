@@ -507,7 +507,7 @@ describe('POST /api/quotes/[id]/send — changes_requested resend (Bug 1)', () =
   });
 });
 
-describe('POST /api/quotes/[id]/send — #116 revive (declined/lost re-send)', () => {
+describe('POST /api/quotes/[id]/send — #116 revive (declined/abandoned re-send)', () => {
   it('revives a DECLINED quote: re-stamps status=sent + quote_sent_at, fires messaging, echoes revived:true', async () => {
     const declined = {
       ...FRESH_QUOTE,
@@ -536,13 +536,13 @@ describe('POST /api/quotes/[id]/send — #116 revive (declined/lost re-send)', (
     expect(hl.updateOpportunity).toHaveBeenCalled();
   });
 
-  it('revives a LOST quote the same way', async () => {
-    const lost = {
+  it('revives an ABANDONED quote the same way', async () => {
+    const abandoned = {
       ...FRESH_QUOTE,
       quote_sent_at: '2026-06-20T00:00:00Z',
-      status: 'lost',
+      status: 'abandoned',
     };
-    const { client, updatePayloads } = makeSb(lost);
+    const { client, updatePayloads } = makeSb(abandoned);
     sbRef.current = client;
 
     const res = await POST(makeReq(), { params });
@@ -561,7 +561,7 @@ describe('POST /api/quotes/[id]/send — #116 revive (declined/lost re-send)', (
     // the revive write didn't clear both, deriveStatus's timestamp fallback
     // would read 'approved'/'viewed' instead of 'sent' on the very next load
     // (see quoteStatus.test.ts — deriveStatus only trusts the persisted
-    // status column for declined/cancelled/lost/changes_requested, NOT sent).
+    // status column for declined/cancelled/abandoned/changes_requested, NOT sent).
     const approvedThenDeclined = {
       ...FRESH_QUOTE,
       quote_sent_at: '2026-06-20T00:00:00Z',

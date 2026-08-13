@@ -23,7 +23,7 @@ const STATUS_LABELS: Record<QuoteStatus, string> = {
   changes_requested: 'Changes requested',
   declined: 'Declined',
   cancelled: 'Cancelled',
-  lost: 'Lost',
+  abandoned: 'Abandoned',
 };
 
 function quoteLine(q: QuoteListItem): string {

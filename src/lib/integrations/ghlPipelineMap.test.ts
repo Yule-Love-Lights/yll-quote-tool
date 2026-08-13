@@ -55,6 +55,7 @@ describe('resolvePipelineStages', () => {
       depositPaid: '90e7a535-689c-441e-b759-d16742bbd5a9',
       installed: 'aa6263d6-20bb-4b65-bd8c-23b75831716b',
       declined: '92090ef4-b8d6-4d68-b0f6-b4462e60d658',
+      abandoned: 'eb127233-055b-44fb-a942-cefd7d6bef1f',
     });
   });
 
@@ -73,6 +74,7 @@ describe('resolvePipelineStages', () => {
     // holiday env vars set.
     expect(stages.installed).toBe('aa6263d6-20bb-4b65-bd8c-23b75831716b');
     expect(stages.declined).toBe('92090ef4-b8d6-4d68-b0f6-b4462e60d658');
+    expect(stages.abandoned).toBe('eb127233-055b-44fb-a942-cefd7d6bef1f');
   });
 
   it('holiday depositPaid falls back to HIGHLEVEL_STAGE_QUOTE_SIGNED when APPROVED is unset', () => {
@@ -99,7 +101,10 @@ describe('resolvePipelineStages', () => {
       sent: '4e507d3d-a939-44c3-a448-250a4b0ed353',
       depositPaid: 'f4bfe29f-5d5a-4725-a6d2-1f5f19ec4010',
       installed: 'b2192f2e-eee9-4a1b-9749-4f458f007c55',
-      declined: '5a5f2e27-6dde-452c-8619-df1871908c8c', // Abandoned (no real Declined stage)
+      // #235: repointed to the real Declined stage (the old note claiming
+      // permanent has no dedicated Declined stage went stale — it does now).
+      declined: '2714e48e-b486-457e-9da2-59893196d404', // Declined
+      abandoned: '5a5f2e27-6dde-452c-8619-df1871908c8c', // Abandoned
     });
   });
 
@@ -114,6 +119,7 @@ describe('resolvePipelineStages', () => {
       depositPaid: '4f6a7739-9bc9-4c27-a140-1ca9f58798fd',
       installed: '3375d0d6-0c1d-4e22-a40e-1430a771afc3',
       declined: '239ec700-bd21-49ba-9691-f0a9b44637b0',
+      abandoned: 'b133090d-9890-405f-a075-16c8ee9c73e7',
     });
   });
 
@@ -131,6 +137,7 @@ describe('resolvePipelineStages', () => {
       depositPaid: '90e7a535-689c-441e-b759-d16742bbd5a9',
       installed: 'aa6263d6-20bb-4b65-bd8c-23b75831716b',
       declined: '92090ef4-b8d6-4d68-b0f6-b4462e60d658',
+      abandoned: 'eb127233-055b-44fb-a942-cefd7d6bef1f',
     });
   });
 
@@ -152,6 +159,7 @@ describe('resolvePipelineStages', () => {
       depositPaid: '8c7765b3-a2ba-4928-8618-5ec5a1182cb2', // Booked
       installed: 'bf068cce-4d71-480f-9bbc-bab144114e6c', // Installed
       declined: 'ad2127e1-692f-4d42-aecf-3f381793dfeb', // Declined
+      abandoned: 'd9d1ebea-8b31-4651-a687-db80a7482a6a', // Abandoned
     });
     // Never the permanent pipeline (the v1 reuse this replaced).
     expect(stages.pipelineId).not.toBe(resolvePipelineStages('permanent').pipelineId);
@@ -166,6 +174,8 @@ describe('resolvePipelineStages', () => {
       depositPaid: 'da6521b1-b945-4484-8251-6c6dc487c860',
       installed: 'eb773949-401d-4e61-959c-3d5b1d92f77e',
       declined: 'abe1ed98-1091-4b70-bc6f-ae786cbea333',
+      // #235: Neighbors has no dedicated Abandoned stage — reuses Declined.
+      abandoned: 'abe1ed98-1091-4b70-bc6f-ae786cbea333',
     });
     // Never the Christmas Lights pipeline — the whole point of #156.
     expect(stages.pipelineId).not.toBe(resolvePipelineStages('holiday').pipelineId);
@@ -188,6 +198,7 @@ describe('resolvePipelineStages', () => {
       depositPaid: '90e7a535-689c-441e-b759-d16742bbd5a9',
       installed: 'aa6263d6-20bb-4b65-bd8c-23b75831716b',
       declined: '92090ef4-b8d6-4d68-b0f6-b4462e60d658',
+      abandoned: 'eb127233-055b-44fb-a942-cefd7d6bef1f',
     });
   });
 
@@ -206,6 +217,9 @@ describe('resolvePipelineStages', () => {
       depositPaid: 'env-neighbors-deposit',
       installed: 'env-neighbors-installed',
       declined: 'env-neighbors-declined',
+      // #235: no per-env override exists for abandoned — always the hardcoded
+      // Neighbors id, even with every other Neighbors env var set.
+      abandoned: 'abe1ed98-1091-4b70-bc6f-ae786cbea333',
     });
   });
 

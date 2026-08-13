@@ -110,7 +110,7 @@ type QuoteRow = {
   highlevel_contact_id: string | null;
   customer_approved_at: string | null;
   // Bug fix (B2): needed for the status gate — we must derive the current
-  // status and reject illegal transitions (declined/cancelled/lost can't
+  // status and reject illegal transitions (declined/cancelled/abandoned can't
   // be re-approved).
   status: QuoteStatus | null;
   deposit_paid_at: string | null;
@@ -364,7 +364,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // guard. Derive the current status (explicit persisted status wins for branch/
   // terminal states; timestamps are the fallback for legacy rows). Then reject
   // when the transition to 'approved' is not legal. This closes the window where
-  // a declined/cancelled/lost quote (customer_approved_at IS NULL, no guard) could
+  // a declined/cancelled/abandoned quote (customer_approved_at IS NULL, no guard) could
   // be re-approved + re-booked with a real deposit charge.
   const currentStatus = deriveStatus({
     quote_sent_at: quote.quote_sent_at,
@@ -655,7 +655,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // Bug fix (B2): also exclude terminal states in the atomic write so a
   // concurrent decline/cancel that fires between our SELECT and this UPDATE
   // can't be raced past. A row whose status just moved to 'declined',
-  // 'cancelled', or 'lost' will no longer match and we get 0 updated rows →
+  // 'cancelled', or 'abandoned' will no longer match and we get 0 updated rows →
   // safe 409 for the concurrent caller.
   //
   // Bug fix (W1-014): use the OR-with-null idiom instead of a bare `.not('status',
@@ -685,7 +685,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     .eq('id', id)
     .eq('view_only', false)
     .is('customer_approved_at', null)
-    .or('status.not.in.("declined","cancelled","lost"),status.is.null')
+    .or('status.not.in.("declined","cancelled","abandoned"),status.is.null')
     .select('id');
 
   if (snapshotErr) {

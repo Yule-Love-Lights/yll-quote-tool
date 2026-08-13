@@ -102,10 +102,10 @@ describe('computeWorkflowBoard — cancelled orders excluded from booked bucket 
     expect(board.quotes.booked.count + board.quotes.approved.count + board.quotes.awaitingResponse.count).toBe(0);
   });
 
-  it('declined and lost orders are also excluded from forward-progress buckets', () => {
+  it('declined and abandoned orders are also excluded from forward-progress buckets', () => {
     const board = computeWorkflowBoard([
       mkQuote({ id: 'd', total: 2000, quote_sent_at: '2026-06-02T00:00:00Z', status: 'declined' }),
-      mkQuote({ id: 'l', total: 1500, quote_sent_at: '2026-06-02T00:00:00Z', status: 'lost' }),
+      mkQuote({ id: 'l', total: 1500, quote_sent_at: '2026-06-02T00:00:00Z', status: 'abandoned' }),
     ]);
     // Neither should appear in awaitingResponse (even though they have quote_sent_at)
     expect(board.quotes.awaitingResponse).toEqual({ count: 0, totalUsd: 0 });

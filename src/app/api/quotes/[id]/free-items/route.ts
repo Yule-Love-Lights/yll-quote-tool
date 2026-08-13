@@ -98,14 +98,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
-  // Reject a terminal order (cancelled/declined/lost) — mirrors the amend gate.
+  // Reject a terminal order (cancelled/declined/abandoned) — mirrors the amend gate.
   const lifecycle = deriveStatus({
     quote_sent_at: null,
     customer_approved_at: quote.customer_approved_at,
     deposit_paid_at: quote.deposit_paid_at,
     status: quote.status,
   });
-  if (lifecycle === 'cancelled' || lifecycle === 'declined' || lifecycle === 'lost') {
+  if (lifecycle === 'cancelled' || lifecycle === 'declined' || lifecycle === 'abandoned') {
     return NextResponse.json(
       { error: `Cannot edit a ${lifecycle} order`, code: 'not-editable' },
       { status: 409 },

@@ -8,7 +8,7 @@
 // ?retryGhl re-runs ONLY the GHL stage-sync for an already-sent quote whose
 //   pipeline card never advanced (ghl_stage_synced_at IS NULL) — no re-stamp,
 //   no re-message (audit fix: send-route-ghl-sync-state).
-// #116 (re-send half): a DECLINED or LOST quote is revivable — this route
+// #116 (re-send half): a DECLINED or ABANDONED quote is revivable — this route
 //   treats it as a fresh send (re-stamp quote_sent_at + status='sent',
 //   re-message the customer, re-advance the GHL card to Bid Sent) instead of
 //   short-circuiting on the old quote_sent_at. CANCELLED stays excluded
@@ -234,7 +234,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     status: (quote.status as import('@/lib/quoteStatus').QuoteStatus | null) ?? null,
   });
   const isResend = currentStatus === 'changes_requested';
-  // #116 (re-send half): declined/lost are REVIVABLE — the operator re-sends
+  // #116 (re-send half): declined/abandoned are REVIVABLE — the operator re-sends
   // the SAME quote instead of rebooking a new draft. Deliberately a scoped
   // bypass here (canRevive), NOT a widened ALLOWED_TRANSITIONS entry — see
   // quoteStatus.ts. 'cancelled' is excluded (post-booking; refunds are
@@ -315,7 +315,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   // On a GHL-only retry the quote keeps its original sent timestamp.
-  // On a resend (changes_requested → sent) or a revive (declined/lost → sent)
+  // On a resend (changes_requested → sent) or a revive (declined/abandoned → sent)
   // we re-stamp with the current time so the audit trail reflects when the
   // quote was (re-)delivered.
   const sentAt = ((isGhlRetry || isDeliveryRetry) && !isResend)
@@ -332,7 +332,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (isRevive) {
       // #116: force deriveStatus to read 'sent' the moment this row is next
       // loaded. deriveStatus only trusts a persisted status for the
-      // declined/cancelled/lost/changes_requested branch states — NOT 'sent'
+      // declined/cancelled/abandoned/changes_requested branch states — NOT 'sent'
       // — so writing status='sent' alone falls straight through to the
       // timestamp fallback underneath it. A declined quote can carry a stale
       // customer_approved_at (#124 lets decline fire from 'approved') and/or
@@ -734,7 +734,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     failedChannels,
     // Task 10 — channel split: echo the resolved channel for observability.
     channel,
-    // #116: flags a revive run (declined/lost → sent on the SAME quote) so
+    // #116: flags a revive run (declined/abandoned → sent on the SAME quote) so
     // the operator UI can distinguish it from a fresh/first send.
     ...(isRevive ? { revived: true } : {}),
   });

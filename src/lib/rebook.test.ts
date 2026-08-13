@@ -885,7 +885,7 @@ describe('rebookFromQuote', () => {
   it('survives a throwing design clone (best-effort)', async () => {
     cloneMock.mockRejectedValue(new Error('storage down'));
     const fake = makeFakeSupabase({
-      quotes: [{ id: 'a', customer_id: 'c1', status: 'lost', inputs: {}, result: { total: 5 } }],
+      quotes: [{ id: 'a', customer_id: 'c1', status: 'abandoned', inputs: {}, result: { total: 5 } }],
     });
     sbRef.current = fake.client;
     const res = await rebookFromQuote('a');

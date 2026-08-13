@@ -191,14 +191,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   // APPLY only past here — reject a terminal order (re-freezing a colour onto a
-  // cancelled/declined/lost order is wrong; the dismiss above stays allowed).
+  // cancelled/declined/abandoned order is wrong; the dismiss above stays allowed).
   const lifecycle = deriveStatus({
     quote_sent_at: null,
     customer_approved_at: quote.customer_approved_at,
     deposit_paid_at: quote.deposit_paid_at,
     status: quote.status,
   });
-  if (lifecycle === 'cancelled' || lifecycle === 'declined' || lifecycle === 'lost') {
+  if (lifecycle === 'cancelled' || lifecycle === 'declined' || lifecycle === 'abandoned') {
     return NextResponse.json({ error: `Cannot act on a ${lifecycle} order`, code: 'not-editable' }, { status: 409 });
   }
 

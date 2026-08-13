@@ -29,7 +29,7 @@ const SERVICE_TYPE_STYLES: Record<ServiceType, string> = {
 // The lifecycle status of a row. Now sourced from the canonical model
 // (src/lib/quoteStatus.ts, ledger #83): deriveStatus prefers the persisted
 // `status` column for states timestamps can't express (declined /
-// changes_requested / cancelled / lost) and otherwise computes the latest state
+// changes_requested / cancelled / abandoned) and otherwise computes the latest state
 // from the lifecycle timestamps — so the same row reads identically here, on the
 // dashboard Workflow board, and in the data layer. Supersedes the old local
 // Draft/Sent/Viewed/Approved derivation (audit Finding #40).
@@ -47,7 +47,7 @@ const STATUS_LABELS: Record<QuoteStatus, string> = {
   changes_requested: 'Changes',
   declined: 'Declined',
   cancelled: 'Cancelled',
-  lost: 'Lost',
+  abandoned: 'Abandoned',
 };
 
 const STATUS_STYLES: Record<QuoteStatus, string> = {
@@ -59,7 +59,7 @@ const STATUS_STYLES: Record<QuoteStatus, string> = {
   changes_requested: 'bg-orange-100 text-orange-700',
   declined: 'bg-red-100 text-red-700',
   cancelled: 'bg-gray-200 text-gray-600',
-  lost: 'bg-gray-200 text-gray-600',
+  abandoned: 'bg-gray-200 text-gray-600',
 };
 
 // The statuses offered as filter chips. Ordered along the lifecycle; the two

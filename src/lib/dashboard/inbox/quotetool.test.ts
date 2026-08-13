@@ -216,8 +216,8 @@ describe('quoteFollowUpDecision — dead-quote close (#183 BUG 2)', () => {
     expect(d.kind).toBe('close');
   });
 
-  it('closes a LOST quote', () => {
-    const d = quoteFollowUpDecision(quote({ quote_sent_at: '2026-06-29T10:00:00Z', status: 'lost' }));
+  it('closes an ABANDONED quote', () => {
+    const d = quoteFollowUpDecision(quote({ quote_sent_at: '2026-06-29T10:00:00Z', status: 'abandoned' }));
     expect(d.kind).toBe('close');
   });
 

@@ -276,7 +276,7 @@ export type PortalQuote = {
   };
   // Bug fix (B3): the derived quote lifecycle status so the portal can gate the
   // approve+pay UI. When this is a terminal/branch state (declined/cancelled/
-  // lost/changes_requested) the portal must show a read-only closed/under-
+  // abandoned/changes_requested) the portal must show a read-only closed/under-
   // revision state instead of the approve+pay controls.
   quoteStatus?: string;
   // The reason the customer declined (or null/absent for non-declines). Shown

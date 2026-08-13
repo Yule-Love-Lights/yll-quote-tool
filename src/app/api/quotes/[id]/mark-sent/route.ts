@@ -22,7 +22,7 @@
 // 'changes_requested' (draft's still-in-the-set companion), though the
 // latter is moot here: reaching changes_requested requires having been sent
 // once already, so it always has quote_sent_at set and is caught by the
-// already-sent guard below first. An approved/booked/declined/cancelled/lost
+// already-sent guard below first. An approved/booked/declined/cancelled/abandoned
 // quote can never be "re-marked sent" — 409 illegal-transition.
 //
 // Idempotency + race safety: quote_sent_at set at read time → 409
