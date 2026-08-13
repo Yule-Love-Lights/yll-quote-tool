@@ -55,6 +55,7 @@ import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/sup
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { deriveStatus, canRevive } from '@/lib/quoteStatus';
 import { attachQuoteToCustomer, propagateQuoteTagsToCustomer, quoteRowToIdentity } from '@/lib/customers';
+import { logQuoteDelivery } from '@/lib/quoteDeliveries';
 
 export const runtime = 'nodejs';
 
@@ -562,8 +563,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const customerSms = async () => {
     if (!canMessage || !doSms || !quote.highlevel_contact_id) return;
+    let result: Awaited<ReturnType<typeof sendSms>> | undefined;
     try {
-      await sendSms({
+      result = await sendSms({
         contactId: quote.highlevel_contact_id,
         message: quoteSmsBody(firstName, portalUrl, quote.service_type),
         fromNumber,
@@ -573,12 +575,23 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       console.warn('[api/quotes/:id/send] SMS send failed:', err);
       smsError = hlErrorMessage(err);
     }
+    // #250: durable delivery record, written AFTER smsSent/smsError are final
+    // so a logging hiccup can never influence the send outcome itself — see
+    // logQuoteDelivery's own try/catch for the second layer of isolation.
+    await logQuoteDelivery({
+      quoteId: id,
+      channel: 'sms',
+      outcome: smsSent ? 'sent' : 'failed',
+      providerMessageId: result?.messageId ?? null,
+      error: smsSent ? null : (smsError ?? null),
+    });
   };
 
   const customerEmail = async () => {
     if (!canMessage || !doEmail || !quote.highlevel_contact_id) return;
+    let result: Awaited<ReturnType<typeof sendEmail>> | undefined;
     try {
-      await sendEmail({
+      result = await sendEmail({
         contactId: quote.highlevel_contact_id,
         subject: quoteEmailSubject(quote.service_type),
         html: quoteEmailHtml(firstName, portalUrl, quote.service_type),
@@ -589,6 +602,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       console.warn('[api/quotes/:id/send] Email send failed:', err);
       emailError = hlErrorMessage(err);
     }
+    // #250: durable delivery record — see customerSms above for why this is
+    // written after the outcome is final.
+    await logQuoteDelivery({
+      quoteId: id,
+      channel: 'email',
+      outcome: emailSent ? 'sent' : 'failed',
+      providerMessageId: result?.messageId ?? null,
+      error: emailSent ? null : (emailError ?? null),
+    });
   };
 
   // NCE + YLL Neighbor tag propagation (#198): a tagged quote auto-tags its

@@ -23,8 +23,10 @@ const { sbRef, hl, attachQuoteToCustomerMock, propagateMock } = vi.hoisted(() =>
     findOpportunityForContact: vi.fn(async () => null as { id: string } | null),
     resurrectDuplicateOpportunity: vi.fn(async (_err: unknown, _input: unknown) => null as { id: string } | null),
     upsertContactCustomField: vi.fn(async () => undefined),
-    sendSms: vi.fn(async () => undefined),
-    sendEmail: vi.fn(async () => undefined),
+    // #250: typed to allow tests to resolve a GHL-shaped { messageId } so the
+    // quote_deliveries provider_message_id capture can be asserted.
+    sendSms: vi.fn(async () => undefined as { messageId?: string } | undefined),
+    sendEmail: vi.fn(async () => undefined as { messageId?: string } | undefined),
     configured: { value: true },
   },
 }));
@@ -32,6 +34,7 @@ const { sbRef, hl, attachQuoteToCustomerMock, propagateMock } = vi.hoisted(() =>
 vi.mock('@/lib/supabase', () => ({
   isSupabaseServiceConfigured: () => true,
   getSupabaseServiceClient: () => sbRef.current,
+  getSupabaseClient: () => sbRef.current,
 }));
 
 vi.mock('@/lib/rateLimit', () => ({
@@ -80,14 +83,27 @@ import { POST } from './route';
 // (0 rows) for the ONE update call that carries `quote_sent_at` (the stamp).
 // Every other `.update()` in the route (GHL sync-state, quote-link field,
 // etc.) never reads `.data`, so giving them a non-empty array too is harmless.
+//
+// #250: `.insert()` support for quote_deliveries. `from(table)` records the
+// table name so an insert can be attributed; `opts.insertError` simulates a
+// logging-table failure (must never fail the send — see the tests below).
 type Quote = Record<string, unknown> | null;
-function makeSb(quote: Quote, opts: { stampRace?: boolean } = {}) {
+function makeSb(
+  quote: Quote,
+  opts: { stampRace?: boolean; insertError?: string } = {},
+) {
   const updatePayloads: Array<Record<string, unknown>> = [];
+  const insertPayloads: Array<{ table: string; payload: Record<string, unknown> }> = [];
   const builder: Record<string, unknown> = {};
   let isUpdate = false;
+  let isInsert = false;
   let lastUpdateIsStamp = false;
+  let lastTable = '';
   Object.assign(builder, {
-    from: () => builder,
+    from: (table: string) => {
+      lastTable = table;
+      return builder;
+    },
     select: () => builder,
     update: (payload: Record<string, unknown>) => {
       isUpdate = true;
@@ -95,22 +111,32 @@ function makeSb(quote: Quote, opts: { stampRace?: boolean } = {}) {
       updatePayloads.push(payload);
       return builder;
     },
+    insert: (payload: Record<string, unknown>) => {
+      isInsert = true;
+      insertPayloads.push({ table: lastTable, payload });
+      return builder;
+    },
     eq: () => builder,
     is: () => builder,
     single: async () => ({ data: quote, error: quote ? null : { message: 'no row' } }),
     then: (resolve: (v: unknown) => void) => {
       let res: unknown;
-      if (isUpdate) {
+      if (isInsert) {
+        res = opts.insertError
+          ? { data: null, error: { message: opts.insertError } }
+          : { data: null, error: null };
+      } else if (isUpdate) {
         const raceLost = lastUpdateIsStamp && opts.stampRace;
         res = { data: raceLost ? [] : [{ id: (quote as { id?: string } | null)?.id ?? ID }], error: null };
       } else {
         res = { data: quote, error: null };
       }
       isUpdate = false;
+      isInsert = false;
       resolve(res);
     },
   });
-  return { client: builder, updatePayloads };
+  return { client: builder, updatePayloads, insertPayloads };
 }
 
 const ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
@@ -1167,5 +1193,142 @@ describe('POST /api/quotes/[id]/send — NCE + YLL Neighbor tag propagation (#19
     const json = await res.json();
     expect(res.status).toBe(200);
     expect(json.ok).toBe(true);
+  });
+});
+
+describe('POST /api/quotes/[id]/send — quote delivery log (#250)', () => {
+  it('writes a "sent" quote_deliveries row for each channel on a successful fresh send', async () => {
+    hl.sendSms.mockResolvedValueOnce({ messageId: 'sms_msg_1' });
+    hl.sendEmail.mockResolvedValueOnce({ messageId: 'email_msg_1' });
+    const { client, insertPayloads } = makeSb({ ...FRESH_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+
+    const deliveryRows = insertPayloads.filter((p) => p.table === 'quote_deliveries');
+    expect(deliveryRows).toHaveLength(2);
+    expect(deliveryRows).toContainEqual({
+      table: 'quote_deliveries',
+      payload: {
+        quote_id: ID,
+        channel: 'sms',
+        outcome: 'sent',
+        provider_message_id: 'sms_msg_1',
+        error: null,
+      },
+    });
+    expect(deliveryRows).toContainEqual({
+      table: 'quote_deliveries',
+      payload: {
+        quote_id: ID,
+        channel: 'email',
+        outcome: 'sent',
+        provider_message_id: 'email_msg_1',
+        error: null,
+      },
+    });
+  });
+
+  it('writes a "failed" row with the error for a channel that fails, and a "sent" row for the one that succeeds', async () => {
+    hl.sendSms.mockRejectedValueOnce(new Error('SMS down'));
+    hl.sendEmail.mockResolvedValueOnce({ messageId: 'email_msg_1' });
+    const { client, insertPayloads } = makeSb({ ...FRESH_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+
+    const deliveryRows = insertPayloads.filter((p) => p.table === 'quote_deliveries');
+    const smsRow = deliveryRows.find((p) => p.payload.channel === 'sms');
+    const emailRow = deliveryRows.find((p) => p.payload.channel === 'email');
+    expect(smsRow?.payload).toMatchObject({
+      quote_id: ID,
+      channel: 'sms',
+      outcome: 'failed',
+      provider_message_id: null,
+    });
+    expect(smsRow?.payload.error).toContain('SMS down');
+    expect(emailRow?.payload).toMatchObject({
+      quote_id: ID,
+      channel: 'email',
+      outcome: 'sent',
+      provider_message_id: 'email_msg_1',
+      error: null,
+    });
+  });
+
+  it('writes a "failed" row for BOTH channels when the whole requested delivery fails (502)', async () => {
+    hl.sendSms.mockRejectedValueOnce(new Error('SMS down'));
+    hl.sendEmail.mockRejectedValueOnce(new Error('Email down'));
+    const { client, insertPayloads } = makeSb({ ...FRESH_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ channel: 'both' }), { params });
+    expect(res.status).toBe(502);
+
+    const deliveryRows = insertPayloads.filter((p) => p.table === 'quote_deliveries');
+    expect(deliveryRows).toHaveLength(2);
+    expect(deliveryRows.every((p) => p.payload.outcome === 'failed')).toBe(true);
+  });
+
+  it('a quote_deliveries insert failure does NOT fail the send (best-effort logging)', async () => {
+    hl.sendSms.mockResolvedValueOnce({ messageId: 'sms_msg_1' });
+    hl.sendEmail.mockResolvedValueOnce({ messageId: 'email_msg_1' });
+    const { client } = makeSb({ ...FRESH_QUOTE }, { insertError: 'relation "quote_deliveries" does not exist' });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.smsSent).toBe(true);
+    expect(json.emailSent).toBe(true);
+  });
+
+  it('logs delivery rows on a ?retryDelivery=1 re-delivery, the same as a fresh send', async () => {
+    hl.sendSms.mockResolvedValueOnce({ messageId: 'retry_msg_1' });
+    const { client, insertPayloads } = makeSb({
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-07-18T12:00:00.000Z',
+      ghl_stage_synced_at: '2026-07-18T12:00:01.000Z',
+      status: 'sent',
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ channel: 'sms' }, true), { params });
+    expect(res.status).toBe(200);
+
+    const deliveryRows = insertPayloads.filter((p) => p.table === 'quote_deliveries');
+    expect(deliveryRows).toHaveLength(1);
+    expect(deliveryRows[0].payload).toMatchObject({
+      quote_id: ID,
+      channel: 'sms',
+      outcome: 'sent',
+      provider_message_id: 'retry_msg_1',
+    });
+  });
+
+  it('does NOT log a delivery row for a TEST quote (never really sent)', async () => {
+    const { client, insertPayloads } = makeSb({ ...FRESH_QUOTE, is_test: true });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    expect(insertPayloads.filter((p) => p.table === 'quote_deliveries')).toHaveLength(0);
+  });
+
+  it('does NOT log a delivery row on a ?retryGhl reconcile (no customer message sent)', async () => {
+    const { client, insertPayloads } = makeSb({
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-26T00:00:00Z',
+      ghl_stage_synced_at: null,
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(true), { params });
+    expect(res.status).toBe(200);
+    expect(insertPayloads.filter((p) => p.table === 'quote_deliveries')).toHaveLength(0);
   });
 });
