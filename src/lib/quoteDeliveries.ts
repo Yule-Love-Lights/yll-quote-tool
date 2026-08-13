@@ -43,6 +43,20 @@ export type QuoteDeliveryInput = {
 
 const DELIVERY_LOG_TIMEOUT_MS = 5_000;
 
+// #264 round 2, FIX 8: marks a 'failed' row whose TRUE delivery outcome is
+// UNKNOWN — a timed-out send whose GHL request may have still gone through
+// before our socket gave up waiting — rather than a CONFIRMED rejection (see
+// deliveryErrorMessage() in the send route, the one writer of this prefix).
+// quote_deliveries.outcome has no third "unknown" state (see the migration's
+// CHECK constraint), so this is the only durable signal distinguishing the
+// two cases. A future "failed deliveries" report/query over this table
+// should carve rows starting with this prefix out separately (or at minimum
+// not present them as confirmed failures) rather than treating every
+// outcome='failed' row identically. Exported (not a private route.ts
+// literal) so a report-writer has one canonical string to match on instead
+// of re-deriving/duplicating it.
+export const DELIVERY_TIMEOUT_ERROR_PREFIX = 'timeout — ';
+
 export async function logQuoteDelivery(input: QuoteDeliveryInput): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -53,6 +67,9 @@ export async function logQuoteDelivery(input: QuoteDeliveryInput): Promise<void>
     }
     const controller = new AbortController();
     timer = setTimeout(() => controller.abort(), DELIVERY_LOG_TIMEOUT_MS);
+    // outcome/error are written verbatim from the caller — see
+    // DELIVERY_TIMEOUT_ERROR_PREFIX above for what an 'error' starting with
+    // "timeout — " means for a 'failed' outcome row.
     const { error } = await sb
       .from('quote_deliveries')
       .insert({
