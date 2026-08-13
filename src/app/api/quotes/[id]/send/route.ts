@@ -8,7 +8,7 @@
 // ?retryGhl re-runs ONLY the GHL stage-sync for an already-sent quote whose
 //   pipeline card never advanced (ghl_stage_synced_at IS NULL) — no re-stamp,
 //   no re-message (audit fix: send-route-ghl-sync-state).
-// #116 (re-send half): a DECLINED or LOST quote is revivable — this route
+// #116 (re-send half): a DECLINED or ABANDONED quote is revivable — this route
 //   treats it as a fresh send (re-stamp quote_sent_at + status='sent',
 //   re-message the customer, re-advance the GHL card to Bid Sent) instead of
 //   short-circuiting on the old quote_sent_at. CANCELLED stays excluded
