@@ -4,6 +4,7 @@ import type { ExistingItem } from './store';
 import type { NormalizedTouch, StoredContact } from './types';
 import { quoteFollowUpDecision } from './quotetool';
 import type { DashboardQuote } from '@/lib/dashboard/types';
+import { buildInboxSummary } from './summary';
 
 const T = new Date('2026-06-28T15:00:00Z');
 const at = (ms: number) => new Date(T.getTime() + ms);
@@ -918,6 +919,175 @@ describe('listOpenItems — truncation signal (WT-41)', () => {
 
     expect(result.totalOpen).toBe(0);
     expect(result.truncated).toBe(false);
+  });
+});
+
+// ─── listOpenItems — totalLeads excludes automated lead_kind (#265) ─────────
+//
+// listOpenItems' sibling listEscalatableItems filters lead_kind='automated'
+// rows out at the QUERY level (.or('lead_kind.is.null,lead_kind.neq.automated')).
+// listOpenItems deliberately does NOT — its `items`/`totalOpen` stay the raw,
+// unfiltered population because InboxList.tsx's "Show N filtered" toggle needs
+// automated rows to still be fetched so staff can view them on demand. Instead
+// `totalLeads` is a SEPARATE number, excluding automated noise, for consumers
+// (the morning digest) that want "how many actually need a reply" — matching
+// what /inbox's own "Open leads" tile (buildInboxSummary) already shows.
+
+describe('listOpenItems — totalLeads excludes automated lead_kind (#265)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  const row = (id: string, leadKind: string | null, source = 'gmail', externalId = `ext-${id}`) => ({
+    id,
+    source,
+    external_id: externalId,
+    channel: 'email',
+    direction: 'inbound',
+    last_message_at: '2026-08-01T10:00:00Z',
+    preview: null,
+    subject: null,
+    escalation_level: 0,
+    contact_id: null,
+    lead_kind: leadKind,
+    quote_value: null,
+    dashboard_contacts: null,
+  });
+
+  it('totalLeads excludes automated rows while items/totalOpen keep them (the "Show filtered" toggle still needs them fetched)', async () => {
+    const rows = [row('a', 'lead'), row('b', 'automated'), row('c', 'automated'), row('d', null)];
+    const { builder } = makeBuilder({ data: rows, error: null, count: 4 });
+    sbRef.current = { from: () => builder };
+
+    const result = await listOpenItems(100);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // items keeps ALL 4 rows (2 automated included) — the toggle depends on this.
+    expect(result.items).toHaveLength(4);
+    expect(result.items.map((i) => i.leadKind).sort()).toEqual(['automated', 'automated', 'lead', 'lead']);
+    // totalOpen is the raw mixed count, unaffected by lead_kind (unchanged behavior).
+    expect(result.totalOpen).toBe(4);
+    // totalLeads excludes the 2 automated rows — null (row d) counts as a lead,
+    // same as the sibling's .or('lead_kind.is.null,...') treats NULL.
+    expect(result.totalLeads).toBe(2);
+  });
+
+  it('totalLeads equals totalOpen when there is no automated noise (no behavior change for the common case)', async () => {
+    const rows = [row('a', 'lead'), row('b', null)];
+    const { builder } = makeBuilder({ data: rows, error: null, count: 2 });
+    sbRef.current = { from: () => builder };
+
+    const result = await listOpenItems(100);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.totalOpen).toBe(2);
+    expect(result.totalLeads).toBe(2);
+  });
+
+  it("totalLeads reflects Postgrest's exact count beyond the fetched page, same as totalOpen does (WT-41 parity)", async () => {
+    // Only 2 rows fetched (page cap), but the exact count says 10 rows exist
+    // total; of the 2 actually fetched, 1 is automated noise.
+    const rows = [row('a', 'lead'), row('b', 'automated')];
+    const { builder } = makeBuilder({ data: rows, error: null, count: 10 });
+    sbRef.current = { from: () => builder };
+
+    const result = await listOpenItems(2);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.totalOpen).toBe(10);
+    // totalOpen(10) - automatedInWindow(1, from the 2 fetched rows) = 9.
+    expect(result.totalLeads).toBe(9);
+  });
+
+  it('matches buildInboxSummary(items).openLeads when the page is not truncated — the /inbox tile and the digest agree (#265)', async () => {
+    const rows = [
+      row('a', 'lead'),
+      row('b', 'automated'),
+      row('c', 'lead'),
+      row('d', 'automated'),
+      row('e', 'automated'),
+    ];
+    const { builder } = makeBuilder({ data: rows, error: null, count: 5 });
+    sbRef.current = { from: () => builder };
+
+    const result = await listOpenItems(100);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.truncated).toBe(false); // sanity: this equivalence only holds un-truncated
+    const summary = buildInboxSummary(result.items, Date.now());
+    expect(result.totalLeads).toBe(summary.openLeads);
+    expect(result.totalLeads).toBe(2);
+  });
+
+  it('totalLeads is computed from the WINDOW (rows, pre-page-slice), not the page — automated rows beyond the page cap still get subtracted', async () => {
+    // 6 rows come back inside the query window, but limit=2 caps the
+    // returned PAGE to the oldest 2 (both leads). All 4 automated rows sit
+    // at positions 3-6 — entirely beyond the page. If automatedInWindow were
+    // computed from the page (trimmed/items) instead of the full window
+    // (rows), it would see ZERO automated rows and totalLeads would wrongly
+    // collapse to totalOpen (6) via the floor, instead of the true 2. This
+    // is the scenario the digest actually depends on — the whole point of
+    // totalLeads (like totalOpen before it) is to see past the page cap.
+    const rows = [
+      row('a', 'lead'),
+      row('b', 'lead'),
+      row('c', 'automated'),
+      row('d', 'automated'),
+      row('e', 'automated'),
+      row('f', 'automated'),
+    ];
+    const { builder } = makeBuilder({ data: rows, error: null, count: 6 });
+    sbRef.current = { from: () => builder };
+
+    const result = await listOpenItems(2);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Sanity: the returned PAGE carries no automated-row signal at all —
+    // confirms this is a genuine window-vs-page scenario, not accidentally
+    // page-visible.
+    expect(result.items).toHaveLength(2);
+    expect(result.items.every((i) => i.leadKind === 'lead')).toBe(true);
+    expect(result.truncated).toBe(true);
+
+    expect(result.totalOpen).toBe(6);
+    // All 4 automated rows (beyond the page) are subtracted — not 0.
+    expect(result.totalLeads).toBe(2);
+  });
+
+  it('combines correctly with the #157 legacy-rebook exclusion — a hidden Neighbor draft (always lead_kind=lead) never interacts with the automated count', async () => {
+    const LEGACY_ID = '11111111-1111-1111-1111-111111111111';
+    const rows = [
+      row('i-legacy', 'lead', 'quotetool', LEGACY_ID),
+      row('i-ghl-auto', 'automated', 'ghl'),
+      row('i-ghl-lead', 'lead', 'ghl'),
+    ];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null, count: 3 });
+    const { builder: quotesBuilder } = makeBuilder({
+      data: [{ id: LEGACY_ID, legacy_rebook: true, status: 'draft', quote_sent_at: null }],
+      error: null,
+    });
+
+    let callCount = 0;
+    sbRef.current = {
+      from: () => {
+        callCount += 1;
+        return callCount === 1 ? mainBuilder : quotesBuilder;
+      },
+    };
+
+    const result = await listOpenItems(100);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // The legacy quotetool row is hidden entirely (not in items, not in either count).
+    expect(result.items.map((i) => i.id)).toEqual(['i-ghl-auto', 'i-ghl-lead']);
+    expect(result.totalOpen).toBe(2); // 3 raw − 1 legacy-hidden
+    expect(result.totalLeads).toBe(1); // 2 open − 1 automated (i-ghl-auto)
   });
 });
 
