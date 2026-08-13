@@ -1906,7 +1906,7 @@ export async function renderEditor(
           <button data-side="" class="${tool.sideOfHouse === "" ? "active" : ""}">None</button>
           ${sideOfHouseOptions().map(([v, l]) => `<button data-side="${v}" class="${tool.sideOfHouse === v ? "active" : ""}">${l}</button>`).join("")}
         </div>
-        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Tags every new item you draw with this side. Left/right = the HOMEOWNER's left/right facing OUT from the house, not as seen from the road. Leave on None to tag after drawing, same as before.</div>
+        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Tags every new item you draw with this side. Left/right = the HOMEOWNER's, standing at the front door facing the street — the MIRROR of your own left/right looking at the house from the road. Leave on None to tag after drawing, same as before.</div>
       </section>
         `;
       })()}
@@ -2909,7 +2909,7 @@ export async function renderEditor(
           <option value="">${sSideOfHouse.length > 1 ? "— mixed —" : "— none —"}</option>
           ${sideOfHouseOpts.map(([v, l]) => `<option value="${v}" ${sSideOfHouse.length === 1 && sSideOfHouse[0] === v ? "selected" : ""}>${l}</option>`).join("")}
         </select>
-        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Left/right = the HOMEOWNER's left/right facing OUT from the house, not as seen from the road.</div>
+        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Left/right = the HOMEOWNER's, standing at the front door facing the street — the MIRROR of your own left/right looking at the house from the road.</div>
         ` : ""}
         ${wrapSurface ? `
         <label style="display:block;margin-top:8px;margin-bottom:2px;font-size:11px;color:var(--text-dim)">Wrap style</label>
