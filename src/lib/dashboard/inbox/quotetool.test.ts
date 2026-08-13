@@ -95,6 +95,12 @@ describe('normalizeQuoteTouch — dead statuses (#266)', () => {
 
   // changes_requested is NOT dead — that quote is being revised and is still
   // owed a response, so it must keep reading as an inbound lead.
+  //
+  // The fixture state (changes_requested with quote_sent_at NULL) is not
+  // reachable in prod — canTransition only allows changes_requested from
+  // sent/viewed, both of which have already stamped quote_sent_at. That is
+  // deliberate: it isolates the STATUS check from the timestamp check, so this
+  // pins the exclusion itself rather than passing on the timestamp OR-clause.
   it('leaves a changes_requested quote inbound (being revised, not closed)', () => {
     const t = mustTouch(normalizeQuoteTouch(quote({ status: 'changes_requested' })));
     expect(t.direction).toBe('inbound');
@@ -110,11 +116,12 @@ describe('normalizeQuoteTouch — dead statuses (#266)', () => {
     expect(t!.direction).toBe('outbound');
   });
 
-  // Reads through deriveStatus, not the raw column: a legacy row with a NULL
-  // status column but a decline recorded in the persisted status of a later
-  // write still resolves via the one shared source.
-  it('reads the status through deriveStatus, so the two consumers cannot drift', () => {
-    const q = quote({ status: 'declined', quote_sent_at: '2026-06-29T10:00:00Z' });
+  // Both consumers read the same shared isDeadQuote(), so they cannot drift.
+  // quote_sent_at stays NULL on purpose: with it set, the touch half of this
+  // assertion would pass on the timestamp alone and prove nothing about the
+  // status check (the pre-#266 implementation would satisfy it too).
+  it('reads the status through one shared predicate, so the two consumers cannot drift', () => {
+    const q = quote({ status: 'declined', quote_sent_at: null, customer_approved_at: null });
     expect(mustTouch(normalizeQuoteTouch(q)).direction).toBe('outbound');
     expect(quoteFollowUpDecision(q).kind).toBe('close');
   });

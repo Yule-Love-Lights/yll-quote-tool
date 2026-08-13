@@ -64,7 +64,11 @@ export function normalizeQuoteTouch(q: DashboardQuote): NormalizedTouch | null {
   //   (a) a quote declined before it was ever sent leaves quote_sent_at NULL, so
   //       the timestamps alone read it as an untouched draft — Karen L. Adams
   //       (#1125) and Thomas Humel (#1180) sat in the queue as urgent unanswered
-  //       leads at escalation 2 from 2026-07-16 on exactly this shape.
+  //       leads at escalation 2 from 2026-07-16 on exactly this shape. THREE prod
+  //       rows carry the shape, not two: edward doran (#1006) is the third, but a
+  //       human had already marked it 'completed', and the reducer's completed
+  //       branch leaves it alone. Two is the count that was screaming, three is
+  //       the count that was wrong.
   //   (b) #235's staff-abandon allows abandoning a never-sent draft, which also
   //       leaves quote_sent_at NULL — so the one-click archive would otherwise
   //       fail on precisely its intended case.
