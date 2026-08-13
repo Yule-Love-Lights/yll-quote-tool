@@ -70,6 +70,22 @@ describe('normalizeQuoteTouch', () => {
   });
 });
 
+// #267(a): a quote booked OFFLINE via the deposit webhook alone — money
+// moved — with neither customer_approved_at nor quote_sent_at ever stamped
+// was previously falling through both `answered` OR-terms and rendering as
+// an unanswered inbound lead. 0 prod rows carry this shape today (verified);
+// this pins the structural fix rather than an active incident.
+describe('normalizeQuoteTouch — deposit_paid_at (#267a)', () => {
+  it('treats a deposit-paid quote as outbound even with neither customer_approved_at nor quote_sent_at ever stamped', () => {
+    const t = mustTouch(
+      normalizeQuoteTouch(
+        quote({ quote_sent_at: null, customer_approved_at: null, deposit_paid_at: '2026-07-20T00:00:00Z' }),
+      ),
+    );
+    expect(t.direction).toBe('outbound');
+  });
+});
+
 describe('normalizeQuoteTouch — dead statuses (#266)', () => {
   // The live shape this closes: a quote declined BEFORE it was ever sent keeps
   // quote_sent_at NULL, so the timestamps alone read it as an untouched draft.
@@ -166,15 +182,49 @@ describe('normalizeQuoteTouch — legacy_rebook (#181/#252, YLL Neighbor inbox n
   // `quote_sent_at IS NULL` — a booked quote is never a parked draft however it
   // got there, so `!quote_sent_at` alone (the old, blanket condition) is NOT a
   // safe proxy for "still a draft nobody sent". This is the case a naive
-  // "unsent = suppress" implementation would get wrong.
+  // "unsent = suppress" implementation would get wrong. #263: deposit_paid_at
+  // is what actually backs a booked row now that the shared predicate derives
+  // off deriveStatus rather than the raw status column (every real prod row
+  // with status='booked' also carries deposit_paid_at, verified 2026-08-13).
   it('does NOT suppress a BOOKED legacy_rebook quote even though quote_sent_at is null', () => {
-    const t = mustTouch(normalizeQuoteTouch(quote({ legacy_rebook: true, status: 'booked', quote_sent_at: null })));
+    const t = mustTouch(
+      normalizeQuoteTouch(
+        quote({
+          legacy_rebook: true,
+          status: 'booked',
+          quote_sent_at: null,
+          customer_approved_at: '2026-07-15T00:00:00Z',
+          deposit_paid_at: '2026-07-16T00:00:00Z',
+        }),
+      ),
+    );
     expect(t).not.toBeNull();
   });
 
   it('an unsent NON-legacy draft is still a normal inbound lead (unchanged behavior)', () => {
     const t = mustTouch(normalizeQuoteTouch(quote({ legacy_rebook: false })));
     expect(t.direction).toBe('inbound');
+  });
+
+  // #267(b): a legacy_rebook row that's actually been PAID must never be
+  // suppressed to invisible, even if its persisted status column never
+  // advanced off 'draft' — the shared predicate derives off deriveStatus, so
+  // deposit_paid_at wins over the stale status string and this row falls
+  // through the suppression guard to the normal mapping (outbound, since
+  // `answered` also reads deposit_paid_at per #267a). 0 prod rows have this
+  // shape today; structural fix, not an active incident.
+  it('emits an outbound touch (not null) for a PAID legacy_rebook quote whose persisted status is still draft (#267b)', () => {
+    const t = normalizeQuoteTouch(
+      quote({
+        legacy_rebook: true,
+        status: 'draft',
+        quote_sent_at: null,
+        customer_approved_at: null,
+        deposit_paid_at: '2026-08-01T00:00:00Z',
+      }),
+    );
+    expect(t).not.toBeNull();
+    expect(t!.direction).toBe('outbound');
   });
 });
 

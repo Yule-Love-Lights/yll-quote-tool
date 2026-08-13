@@ -8,7 +8,7 @@
 import { listQuotes, type QuoteListItem } from '@/lib/quotes';
 import { listFulfillmentCards, type FulfillmentCard } from '@/lib/inventory/jobs';
 import { FULFILLMENT_STAGE_LABELS } from '@/lib/inventory/fulfillmentStage';
-import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
+import { deriveStatus, isParkedLegacyRebookDraft, type QuoteStatus } from '@/lib/quoteStatus';
 
 const MAX_HITS = 5; // cap each hit list so a common surname never balloons a reply
 
@@ -65,9 +65,11 @@ export async function runStatusTool(query: string): Promise<string> {
   // (#155) carry real customer names and would flood any name search. Once a
   // legacy quote is actually sent (the send wave), it's a live quote staff
   // legitimately ask about — only the unsent backlog stays invisible here.
-  const quotes = (await listQuotes()).filter(
-    (r) => !(r.legacy_rebook && deriveStatus(r) === 'draft'),
-  );
+  // #263: routed through the ONE shared "still parked?" predicate
+  // (isParkedLegacyRebookDraft, this same module) so this can't drift from
+  // the inbox's own definition the way it used to (both used to compute
+  // `deriveStatus(r) === 'draft'` independently).
+  const quotes = (await listQuotes()).filter((r) => !isParkedLegacyRebookDraft(r));
   const quoteHits = quotes.filter((r) =>
     numeric != null
       ? r.quote_number === numeric

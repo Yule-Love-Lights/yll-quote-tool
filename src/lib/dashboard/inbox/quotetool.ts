@@ -14,21 +14,24 @@
 // rebook.sql), not a real unresponded lead — normalizeQuoteTouch returns null
 // for it (no inbox item, no follow-up). Once it's sent, or its status moves
 // past 'draft' (sent/viewed/approved/booked/etc.), it behaves like any other
-// quote again — #252 slice G narrowed this from "any unsent Neighbor quote"
-// to "status='draft' AND unsent" (both positive-matched, AGENTS.md seam-gate
-// rule) to match store.ts's isHiddenLegacyRebookQuote: 3 prod rows are
-// `status='booked'` with `quote_sent_at IS NULL`, and a booked quote is never
-// a parked draft however it got there. Gated on the SAME
-// EXCLUDE_LEGACY_REBOOK_FROM_INBOX flag store.ts's listOpenItems/
-// listEscalatableItems use, so the documented rollback (flip the flag false)
-// is one switch end-to-end — otherwise this ingest-time guard would keep
-// suppressing unsent drafts even after the display-side filter was flipped off.
+// quote again. #263: the "still parked?" test is the ONE shared predicate
+// (isHiddenLegacyRebookQuote, imported from store.ts — a re-export of
+// isParkedLegacyRebookDraft, @/lib/quoteStatus) that store.ts's
+// listOpenItems/listEscalatableItems, the text-ops bot, and the morning
+// digest all now share, so this ingest guard and the inbox's display-side
+// filter can no longer silently disagree about what "parked" means (they
+// used to each define it independently — #252 slice G already paid for one
+// such drift once). Gated on the SAME EXCLUDE_LEGACY_REBOOK_FROM_INBOX flag
+// store.ts's listOpenItems/listEscalatableItems use, so the documented
+// rollback (flip the flag false) is one switch end-to-end — otherwise this
+// ingest-time guard would keep suppressing unsent drafts even after the
+// display-side filter was flipped off.
 
 import type { NormalizedTouch } from './types';
 import type { DashboardQuote } from '@/lib/dashboard/types';
 import { normalizeEmail, normalizeName, normalizePhone, toDate } from './normalize';
 import { FOLLOWUP_REASONS } from './followups';
-import { EXCLUDE_LEGACY_REBOOK_FROM_INBOX } from './store';
+import { EXCLUDE_LEGACY_REBOOK_FROM_INBOX, isHiddenLegacyRebookQuote } from './store';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { isFromUs } from './classify';
 
@@ -49,15 +52,23 @@ export function isDeadQuote(q: DashboardQuote): boolean {
 }
 
 export function normalizeQuoteTouch(q: DashboardQuote): NormalizedTouch | null {
-  // #181/#252: unsent, still-DRAFT YLL Neighbor quotes are parked send-wave
-  // inventory, not leads owed a response — suppress before any touch is built
-  // (while the flag is on). A sent, or non-draft (sent/viewed/approved/
-  // booked/etc.), legacy_rebook quote falls through to the normal mapping
-  // below unchanged, regardless of the flag.
+  // #181/#252/#263: unsent, still-DRAFT YLL Neighbor quotes are parked
+  // send-wave inventory, not leads owed a response — suppress before any
+  // touch is built (while the flag is on), via the ONE shared "still parked?"
+  // predicate (isHiddenLegacyRebookQuote, re-exported from store.ts). A sent,
+  // or non-draft (sent/viewed/approved/booked/etc.), legacy_rebook quote
+  // falls through to the normal mapping below unchanged, regardless of the
+  // flag — including #267(b): a legacy_rebook row that's actually been PAID
+  // (deposit_paid_at set) is never suppressed here even if its persisted
+  // status column lagged behind at 'draft', because the shared predicate
+  // derives off deriveStatus, not the raw column. A row that DOES fall
+  // through here (paid, or otherwise no longer parked) still hits the
+  // `answered` computation below, so a stale open inbox item for it heals to
+  // 'handled' on the next reconcile rather than staying stuck.
   //
-  if (EXCLUDE_LEGACY_REBOOK_FROM_INBOX && q.legacy_rebook && q.status === 'draft' && !q.quote_sent_at) return null;
-  // Sent OR approved means we've acted on this lead; only an untouched draft is
-  // still "owed a quote".
+  if (EXCLUDE_LEGACY_REBOOK_FROM_INBOX && isHiddenLegacyRebookQuote(q)) return null;
+  // Sent, approved, OR PAID means we've acted on this lead; only an untouched
+  // draft is still "owed a quote".
   //
   // #266: a DEAD quote (declined / cancelled / abandoned) is answered too, no
   // matter what its timestamps say. Two live cases this closes:
@@ -72,11 +83,18 @@ export function normalizeQuoteTouch(q: DashboardQuote): NormalizedTouch | null {
   //   (b) #235's staff-abandon allows abandoning a never-sent draft, which also
   //       leaves quote_sent_at NULL — so the one-click archive would otherwise
   //       fail on precisely its intended case.
+  // #267(a): deposit_paid_at now also counts as answered — a quote booked
+  // OFFLINE via the deposit webhook alone (customer_approved_at AND
+  // quote_sent_at both still null; deriveStatus already reads this shape as
+  // 'booked') was previously falling through both OR-terms and rendering as
+  // an unanswered inbound lead even though money had already moved. 0 prod
+  // rows carry this shape today (verified 2026-08-13, the #263/#267 build) —
+  // structural hole, not an active incident.
   // Outbound (not null) on purpose: the reducer auto-resolves an open item to
   // 'handled' on an outbound touch, so existing stuck rows heal themselves on
   // the next reconcile; returning null would leave them open forever. A
   // 'completed' item keeps its completion (the reducer's own guard).
-  const answered = isDeadQuote(q) || !!(q.customer_approved_at || q.quote_sent_at);
+  const answered = isDeadQuote(q) || !!(q.deposit_paid_at || q.customer_approved_at || q.quote_sent_at);
   const email = q.customer_email ? normalizeEmail(q.customer_email) : null;
   const phone = q.customer_phone ? normalizePhone(q.customer_phone) : null;
   return {

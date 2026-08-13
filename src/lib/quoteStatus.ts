@@ -97,6 +97,35 @@ export function deriveStatus(q: QuoteStatusRow): QuoteStatus {
 }
 
 /**
+ * #263: the ONE definition of "a legacy_rebook ('YLL Neighbor') quote that's
+ * still a genuinely parked, unsent draft" — every surface that needs to
+ * hide or bucket these (the inbox's listOpenItems/listEscalatableItems +
+ * quotetool.ts's ingest guard, the text-ops bot's name search, the morning
+ * digest's rebook line) routes through this so they can't drift into
+ * disagreeing definitions again — the same drift class #252 slice G already
+ * paid down once, when store.ts and quotetool.ts silently disagreed.
+ *
+ * Deliberately built on deriveStatus, NOT the raw persisted `status` column:
+ *   - #267(b): a legacy_rebook row that's actually been PAID (deposit_paid_at
+ *     set) derives 'booked' here even if its persisted status column never
+ *     got written past 'draft' — so a row representing real money can never
+ *     be suppressed to invisible. A raw `status === 'draft'` check can't see
+ *     that; deriveStatus's own precedence (deposit_paid_at wins over a stale
+ *     status string) closes the hole by construction.
+ *   - matches every OTHER lifecycle read in the app — deriveStatus is already
+ *     the canonical source of truth everywhere else (the admin list, the
+ *     dashboard, the bot's own STATUS_LABELS) — a raw-status-based side
+ *     channel here was exactly the kind of drift #263 flagged.
+ *
+ * `legacy_rebook` is checked with `=== true` (not merely truthy) so a
+ * null/undefined read (a surface that doesn't select the column) defaults to
+ * "not parked" rather than accidentally hiding a normal quote.
+ */
+export function isParkedLegacyRebookDraft(q: QuoteStatusRow & { legacy_rebook?: boolean | null }): boolean {
+  return q.legacy_rebook === true && deriveStatus(q) === 'draft';
+}
+
+/**
  * Legal status transitions. The forward lifecycle is linear
  * (draft→sent→viewed→approved→booked); the portal branches (decline / request
  * changes) and the admin cancel/abandoned can fire from the pre-booked states.

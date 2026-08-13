@@ -4,6 +4,12 @@
 // chunking/error-isolation shape, not the (separately-tested) pure decisions.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+// #263: real (unmocked) implementation — quotetool.ts now imports
+// isHiddenLegacyRebookQuote from './store' alongside EXCLUDE_LEGACY_REBOOK_FROM_INBOX;
+// the strict mock below must supply it so quotetool.ts's real suppression
+// logic keeps running for real (this file's existing intent), not throw on
+// an export the factory doesn't define.
+import { isParkedLegacyRebookDraft } from '@/lib/quoteStatus';
 
 const getThreadMock = vi.fn();
 const listInboxThreadsMock = vi.fn();
@@ -34,6 +40,10 @@ vi.mock('./store', () => ({
   ensureFollowUp: (...args: unknown[]) => ensureFollowUpMock(...args),
   getSyncCursor: vi.fn(),
   ingestTouch: (...args: unknown[]) => ingestTouchMock(...args),
+  // #263: real store.ts re-exports this as isParkedLegacyRebookDraft
+  // (@/lib/quoteStatus) — delegate to the real, unmocked predicate so
+  // quotetool.ts's suppression logic still runs for real here.
+  isHiddenLegacyRebookQuote: isParkedLegacyRebookDraft,
   listEscalatableItems: vi.fn(),
   recordSyncRun: (...args: unknown[]) => recordSyncRunMock(...args),
   setEscalation: vi.fn(),

@@ -415,36 +415,134 @@ describe('excludeLegacyRebookItems (#157 — YLL Neighbors inbox exclusion)', ()
 
 // ─── isHiddenLegacyRebookQuote — #252 slice G (pure) ─────────────────────────
 
-describe('isHiddenLegacyRebookQuote (#252 slice G — narrowed to genuine unsent drafts)', () => {
+describe('isHiddenLegacyRebookQuote (#252 slice G — narrowed to genuine unsent drafts; #263 re-export of the shared isParkedLegacyRebookDraft predicate)', () => {
   it('hides an unsent, still-DRAFT legacy_rebook quote', () => {
-    expect(isHiddenLegacyRebookQuote({ legacy_rebook: true, status: 'draft', quote_sent_at: null })).toBe(true);
+    expect(
+      isHiddenLegacyRebookQuote({
+        legacy_rebook: true,
+        status: 'draft',
+        quote_sent_at: null,
+        customer_approved_at: null,
+        deposit_paid_at: null,
+      }),
+    ).toBe(true);
   });
 
   it('does NOT hide a SENT legacy_rebook quote', () => {
     expect(
-      isHiddenLegacyRebookQuote({ legacy_rebook: true, status: 'sent', quote_sent_at: '2026-07-01T00:00:00Z' }),
+      isHiddenLegacyRebookQuote({
+        legacy_rebook: true,
+        status: 'sent',
+        quote_sent_at: '2026-07-01T00:00:00Z',
+        customer_approved_at: null,
+        deposit_paid_at: null,
+      }),
     ).toBe(false);
   });
 
   it('does NOT hide an APPROVED legacy_rebook quote', () => {
     expect(
-      isHiddenLegacyRebookQuote({ legacy_rebook: true, status: 'approved', quote_sent_at: '2026-07-01T00:00:00Z' }),
+      isHiddenLegacyRebookQuote({
+        legacy_rebook: true,
+        status: 'approved',
+        quote_sent_at: '2026-07-01T00:00:00Z',
+        customer_approved_at: '2026-07-02T00:00:00Z',
+        deposit_paid_at: null,
+      }),
     ).toBe(false);
   });
 
   // #252 refinement: 3 prod rows are booked with quote_sent_at IS NULL — a
-  // naive "unsent = hidden" predicate would wrongly hide these. Both
-  // conditions (status='draft' AND quote_sent_at IS NULL) are required.
+  // naive "unsent = hidden" predicate would wrongly hide these. #263: what
+  // actually keeps a booked row visible now is deposit_paid_at (what
+  // deriveStatus reads for 'booked'), not the persisted status string itself
+  // — verified every real prod row with status='booked' also carries
+  // deposit_paid_at (2026-08-13, all 14 rows), so this fixture now carries
+  // the timestamp that genuinely backs a booked row rather than only the label.
   it('does NOT hide a BOOKED legacy_rebook quote even though quote_sent_at is null', () => {
-    expect(isHiddenLegacyRebookQuote({ legacy_rebook: true, status: 'booked', quote_sent_at: null })).toBe(false);
+    expect(
+      isHiddenLegacyRebookQuote({
+        legacy_rebook: true,
+        status: 'booked',
+        quote_sent_at: null,
+        customer_approved_at: null,
+        deposit_paid_at: '2026-07-01T00:00:00Z',
+      }),
+    ).toBe(false);
+  });
+
+  // #263 BEHAVIOR CHANGE from the old raw-status check: deriveStatus does not
+  // trust a persisted 'booked' status string over the timestamps (see its own
+  // doc comment), so a status='booked' row with NOTHING backing it (no
+  // deposit_paid_at/customer_approved_at/viewed_at/quote_sent_at) now derives
+  // 'draft' and IS hidden. 0 real prod rows have this shape today (every
+  // status='booked' legacy_rebook row carries deposit_paid_at) — this pins the
+  // new, intentional behavior rather than leaving it undocumented.
+  it('DOES hide a legacy_rebook quote whose persisted status says booked but nothing backs it (unreached in prod today)', () => {
+    expect(
+      isHiddenLegacyRebookQuote({
+        legacy_rebook: true,
+        status: 'booked',
+        quote_sent_at: null,
+        customer_approved_at: null,
+        deposit_paid_at: null,
+      }),
+    ).toBe(true);
   });
 
   it('does NOT hide a non-legacy_rebook draft, even if unsent', () => {
-    expect(isHiddenLegacyRebookQuote({ legacy_rebook: false, status: 'draft', quote_sent_at: null })).toBe(false);
+    expect(
+      isHiddenLegacyRebookQuote({
+        legacy_rebook: false,
+        status: 'draft',
+        quote_sent_at: null,
+        customer_approved_at: null,
+        deposit_paid_at: null,
+      }),
+    ).toBe(false);
   });
 
   it('does NOT hide a legacy_rebook quote with a null legacy_rebook read (defensive)', () => {
-    expect(isHiddenLegacyRebookQuote({ legacy_rebook: null, status: 'draft', quote_sent_at: null })).toBe(false);
+    expect(
+      isHiddenLegacyRebookQuote({
+        legacy_rebook: null,
+        status: 'draft',
+        quote_sent_at: null,
+        customer_approved_at: null,
+        deposit_paid_at: null,
+      }),
+    ).toBe(false);
+  });
+
+  // Null-status edge (#263): a legacy row with no persisted status at all
+  // (0 rows today, but deriveStatus's own fallback path) still derives
+  // 'draft' when nothing else is set, so it's correctly hidden.
+  it('hides a legacy_rebook quote with a null persisted status and no timestamps (deriveStatus falls back to draft)', () => {
+    expect(
+      isHiddenLegacyRebookQuote({
+        legacy_rebook: true,
+        status: null,
+        quote_sent_at: null,
+        customer_approved_at: null,
+        deposit_paid_at: null,
+      }),
+    ).toBe(true);
+  });
+
+  // #267(b): a legacy_rebook row that's actually been PAID must never be
+  // hidden, even if its persisted status column never advanced off 'draft' —
+  // the exact live-money shape #267(b) named (0 prod rows today; structural
+  // fix, not an active incident).
+  it('does NOT hide a paid legacy_rebook quote even though its persisted status is still draft (#267b)', () => {
+    expect(
+      isHiddenLegacyRebookQuote({
+        legacy_rebook: true,
+        status: 'draft',
+        quote_sent_at: null,
+        customer_approved_at: null,
+        deposit_paid_at: '2026-08-01T00:00:00Z',
+      }),
+    ).toBe(false);
   });
 });
 
@@ -1017,12 +1115,24 @@ describe('listOpenItems — legacy-rebook exclusion wiring (#157, #183)', () => 
 
   // #252 refinement: 3 prod rows are BOOKED with quote_sent_at IS NULL — a
   // naive "unsent = hidden" implementation would still wrongly hide this one,
-  // since it never checks status. Pin it explicitly.
+  // since it never checks status. Pin it explicitly. #263: deposit_paid_at is
+  // what actually backs a booked row post-deriveStatus-switch (every real
+  // prod row with status='booked' also carries it, verified 2026-08-13).
   it('does NOT exclude a BOOKED legacy_rebook quotetool item even though quote_sent_at is null', async () => {
     const rows = [row('i-booked-legacy', 'quotetool', LEGACY_ID)];
     const { builder: mainBuilder } = makeBuilder({ data: rows, error: null, count: 1 });
     const { builder: quotesBuilder } = makeBuilder({
-      data: [{ id: LEGACY_ID, legacy_rebook: true, status: 'booked', quote_sent_at: null }],
+      data: [
+        {
+          id: LEGACY_ID,
+          legacy_rebook: true,
+          status: 'booked',
+          quote_sent_at: null,
+          customer_approved_at: '2026-07-01T09:00:00Z',
+          deposit_paid_at: '2026-07-01T10:00:00Z',
+          viewed_at: null,
+        },
+      ],
       error: null,
     });
 
@@ -1667,12 +1777,24 @@ describe('listEscalatableItems — legacy-rebook exclusion wiring (#181, #183, #
 
   // #252 refinement: 3 prod rows are BOOKED with quote_sent_at IS NULL — pin
   // this explicitly since a naive "unsent = hidden" predicate would still
-  // wrongly hide it (it never checks status).
+  // wrongly hide it (it never checks status). #263: deposit_paid_at is what
+  // actually backs a booked row post-deriveStatus-switch (every real prod row
+  // with status='booked' also carries it, verified 2026-08-13).
   it('does NOT exclude a BOOKED legacy_rebook quote even when quote_sent_at is null', async () => {
     const rows = [row('i-booked-unsent-legacy', 'quotetool', LEGACY_ID)];
     const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
     const { builder: quotesBuilder } = makeBuilder({
-      data: [{ id: LEGACY_ID, legacy_rebook: true, status: 'booked', quote_sent_at: null }],
+      data: [
+        {
+          id: LEGACY_ID,
+          legacy_rebook: true,
+          status: 'booked',
+          quote_sent_at: null,
+          customer_approved_at: '2026-06-30T09:00:00Z',
+          deposit_paid_at: '2026-07-01T10:00:00Z',
+          viewed_at: null,
+        },
+      ],
       error: null,
     });
 
