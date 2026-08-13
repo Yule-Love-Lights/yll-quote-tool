@@ -20,7 +20,7 @@
 import { listQuotes } from '@/lib/quotes';
 import { listFulfillmentCards } from '@/lib/inventory/jobs';
 import { FULFILLMENT_STAGE_LABELS } from '@/lib/inventory/fulfillmentStage';
-import { deriveStatus } from '@/lib/quoteStatus';
+import { deriveStatus, isParkedLegacyRebookDraft } from '@/lib/quoteStatus';
 import { listOpenItems, listDueFollowUps } from '@/lib/dashboard/inbox/store';
 
 // The digest's quote-pipeline counts must see EVERY open quote, not just the
@@ -114,8 +114,11 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
   }).length;
   const changesRequestedCount = real.filter((q) => deriveStatus(q) === 'changes_requested').length;
   const depositsPendingCount = real.filter((q) => deriveStatus(q) === 'approved').length;
+  // #263: "still parked?" routed through the ONE shared predicate
+  // (isParkedLegacyRebookDraft) — is_test/view_only stay local ANDs (a
+  // different, orthogonal exclusion, not part of what "parked" means).
   const rebookDraftCount = allQuotes.filter(
-    (q) => !q.is_test && !q.view_only && q.legacy_rebook && deriveStatus(q) === 'draft',
+    (q) => !q.is_test && !q.view_only && isParkedLegacyRebookDraft(q),
   ).length;
 
   // Inbox: reuse the /inbox surface's own reads so the counts match the page.

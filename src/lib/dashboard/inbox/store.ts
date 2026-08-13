@@ -32,6 +32,7 @@ import type { MetricItem, WindowKey, ReopenCounts } from './responseMetrics';
 import { addSuppressedSenders, removeSuppressedSenders } from './suppression';
 import { inverseOf, type ReverseAction } from './lifecycle';
 import { listOperatorAccounts } from '@/lib/auth/adminUsers';
+import { isParkedLegacyRebookDraft, type QuoteStatus } from '@/lib/quoteStatus';
 
 // ─── Pure ingest planner ────────────────────────────────────────────────────
 
@@ -514,23 +515,22 @@ export function excludeLegacyRebookItems<T extends { source: unknown; external_i
 /**
  * #252 slice G: a legacy_rebook ("YLL Neighbor") quote is hidden from the
  * inbox/escalation surfaces ONLY when it's a genuine parked draft nobody has
- * sent — status='draft' AND quote_sent_at IS NULL, both POSITIVE-matched
- * (AGENTS.md seam-gate rule: never gate a hide on `!== 'sent'`, or every
- * future status silently inherits the old hide-everything behavior). #157/
- * #181 originally hid every legacy_rebook quote regardless of status or
- * quote_sent_at — that blanket rule swallowed a real customer's live BOOKED
- * colour-change ask (quote #1129) for 14 days. 3 prod rows are `status =
- * 'booked'` with `quote_sent_at IS NULL` — a booked quote is never a parked
- * draft however it got there, so `quote_sent_at IS NULL` alone is not a safe
- * proxy for "unsent draft"; both conditions are required. Pure — no I/O.
+ * sent. #157/#181 originally hid every legacy_rebook quote regardless of
+ * status or quote_sent_at — that blanket rule swallowed a real customer's
+ * live BOOKED colour-change ask (quote #1129) for 14 days.
+ *
+ * #263: this is now a thin re-export of the ONE shared predicate
+ * (isParkedLegacyRebookDraft, @/lib/quoteStatus) instead of its own
+ * raw-`status`-column check — store.ts, quotetool.ts's ingest guard, the
+ * text-ops bot, and the morning digest all used to define "hidden draft"
+ * independently and could silently drift apart (they had: this function once
+ * trusted the persisted `status` string directly). Deriving off deriveStatus
+ * instead of the raw column also closes #267(b): a legacy_rebook row that's
+ * actually been PAID (deposit_paid_at set) is never hidden here even if its
+ * persisted status column lagged behind at 'draft'. See the predicate's own
+ * doc comment for the full reasoning. Pure — no I/O.
  */
-export function isHiddenLegacyRebookQuote(q: {
-  legacy_rebook: boolean | null;
-  status: string | null;
-  quote_sent_at: string | null;
-}): boolean {
-  return q.legacy_rebook === true && q.status === 'draft' && q.quote_sent_at === null;
-}
+export const isHiddenLegacyRebookQuote = isParkedLegacyRebookDraft;
 
 /**
  * #252 slice G: the ONE seam listOpenItems and listEscalatableItems both call
@@ -550,9 +550,13 @@ async function fetchHiddenLegacyRebookQuoteIds(
   quotetoolIds: readonly string[],
 ): Promise<Set<string>> {
   if (quotetoolIds.length === 0) return new Set();
+  // #263: the predicate moved from a raw `status` read to deriveStatus, which
+  // also needs deposit_paid_at/customer_approved_at/viewed_at — the original
+  // #252 SELECT only fetched `status`/`quote_sent_at` and would have silently
+  // under-derived every row to 'draft' on the missing columns.
   const { data: quoteRows, error } = await sb
     .from('quotes')
-    .select('id, legacy_rebook, status, quote_sent_at')
+    .select('id, legacy_rebook, status, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at')
     .in('id', quotetoolIds);
   if (error) {
     console.error('[inbox] legacy-rebook exclusion lookup failed:', error.message);
@@ -563,8 +567,11 @@ async function fetchHiddenLegacyRebookQuoteIds(
       (quoteRows ?? []) as {
         id: string;
         legacy_rebook: boolean | null;
-        status: string | null;
+        status: QuoteStatus | null;
         quote_sent_at: string | null;
+        customer_approved_at: string | null;
+        deposit_paid_at: string | null;
+        viewed_at: string | null;
       }[]
     )
       .filter(isHiddenLegacyRebookQuote)
