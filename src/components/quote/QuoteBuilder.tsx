@@ -3063,8 +3063,19 @@ export default function QuoteBuilder({
       if (failedChannels.length > 0) {
         const retryChannel = failedChannels.length === 2 ? 'both' : failedChannels[0];
         setDeliveryRetryChannel(retryChannel);
+        // #264 round 2, FIX 3: data.messageError already carries the
+        // backend's own honesty hedge (deliveryErrorMessage in route.ts —
+        // "timeout — delivery outcome unknown (GHL may have still delivered
+        // it): …" when the failure was a timeout our socket gave up on, vs.
+        // the real rejection text otherwise). This hardcoded sentence was
+        // silently discarding it, so a channel that actually timed out (the
+        // most likely real-world shape) rendered a confidently wrong
+        // "failed" here even though the backend explicitly did not know
+        // that. Appends it rather than re-deriving a new sentence, mirroring
+        // the existing pattern in src/app/admin/invoices/[id]/page.tsx's
+        // sendBalanceLink (surfaces body.messageError verbatim).
         setDeliveryWarning(
-          `${failedChannels.map((c: 'sms' | 'email') => c.toUpperCase()).join(' and ')} failed. The other requested channel was delivered.`,
+          `${failedChannels.map((c: 'sms' | 'email') => c.toUpperCase()).join(' and ')} failed. The other requested channel was delivered.${data.messageError ? ` (${data.messageError})` : ''}`,
         );
       }
       // PostHog v1 — staff-side confirmation the quote actually sent.
@@ -3129,10 +3140,55 @@ export default function QuoteBuilder({
         setRetryIneligible(true);
         return;
       }
+      // #264 round 2, FIX 4: mirror handleSendToCustomer's own failedChannels
+      // handling (above) — this success branch previously cleared
+      // deliveryWarning/deliveryRetryChannel UNCONDITIONALLY on any res.ok,
+      // never inspecting data.failedChannels. A PARTIAL retry failure (one
+      // channel finally delivered, the other times out/fails again) rendered
+      // a clean "✓ Sent" and dropped the retry affordance for the channel
+      // that's STILL undelivered. Only a full success now clears the
+      // warning/retry state; a partial failure keeps both, scoped to
+      // whichever channel(s) remain failed.
+      const retryFailedChannels = Array.isArray(data.failedChannels)
+        ? data.failedChannels.filter((value: unknown): value is 'sms' | 'email' => value === 'sms' || value === 'email')
+        : [];
       setSendStatus('sent');
-      setDeliveryWarning(null);
-      setDeliveryRetryChannel(null);
       setAlreadySentAt(null);
+      if (retryFailedChannels.length > 0) {
+        const retryChannel = retryFailedChannels.length === 2 ? 'both' : retryFailedChannels[0];
+        setDeliveryRetryChannel(retryChannel);
+        setDeliveryWarning(
+          `${retryFailedChannels.map((c: 'sms' | 'email') => c.toUpperCase()).join(' and ')} failed. The other requested channel was delivered.${data.messageError ? ` (${data.messageError})` : ''}`,
+        );
+      } else {
+        setDeliveryWarning(null);
+        setDeliveryRetryChannel(null);
+      }
+      // #264 round 2, FIX 6: a delivery-only retry structurally never
+      // attempts the GHL stage move — route.ts's ghlStageChain returns
+      // immediately whenever isDeliveryRetry (see its own comment) — so
+      // data.ghlSynced here can ONLY ever reflect a PRIOR sync, never one
+      // just performed by this call. This branch previously never read it at
+      // all, silently leaving whatever STALE ghlSyncWarning value was
+      // already in state. On the exact sequence this fix targets (the
+      // original stamp write times out client-side but commits server-side —
+      // the route returns before ever reaching ghlStageChain, so
+      // ghl_stage_synced_at is still null — the operator sees a bare error,
+      // retries, hits alreadySent, clicks Force Redeliver), that stale value
+      // was null, so the button rendered the FALSE "✓ Sent — stage moved to
+      // Bid Sent" (see the button label a few hundred lines down) even
+      // though no request in the whole sequence ever ran the stage move.
+      // data.stageError is always undefined here (ghlStageChain never ran to
+      // set it), so the generic handleSendToCustomer fallback text would be
+      // misleading about WHY — this uses delivery-retry-specific wording
+      // instead. Setting ghlSyncWarning also surfaces the existing "Retry CRM
+      // sync" button (?retryGhl) for free — that render block isn't gated to
+      // fresh sends only.
+      setGhlSyncWarning(
+        data.ghlSynced === false
+          ? 'This was a delivery-only retry, which never touches the CRM card.'
+          : null,
+      );
     } catch (err) {
       setSendStatus('error');
       setSendError(err instanceof Error ? err.message : 'Delivery retry failed');
