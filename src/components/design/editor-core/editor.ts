@@ -1897,6 +1897,11 @@ export async function renderEditor(
         // pre-draw section too). Options come from the same lookup the
         // post-hoc #sel-side-of-house dropdown uses (sideOfHouseOptions), so
         // the two pickers can't drift apart.
+        // #249 review fix (provenance): a tag set HERE is sticky/unconfirmed
+        // (sideOfHouseAuto = true, quoteDefaultsForNewStrand below) — it still
+        // bills, displays, and drives the portal per-side toggle like any
+        // other tag, but AI training capture never trusts it until a human
+        // confirms via the dropdown (trainingExamples.ts extractFinalStreetRuns).
         if (!opts.showQuoteBinding) return "";
         if (tool.bulbType !== "permanent") return "";
         return `
