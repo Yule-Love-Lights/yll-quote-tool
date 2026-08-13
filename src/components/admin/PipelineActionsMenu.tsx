@@ -208,6 +208,12 @@ function computeMenuPosition(
 // isn't needed here.
 const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled])';
 
+// A literal union, not `string` — shared by `contentKey` and `position.key`
+// so a future rename of one of these three values can't silently break the
+// `position.key === contentKey` comparison the content-keyed reveal depends
+// on (a typo'd string literal in only one place would still type-check).
+type MenuContentKey = 'loading' | 'ready' | 'error';
+
 export function PipelineActionsMenu({
   quoteId,
   onDone,
@@ -222,14 +228,14 @@ export function PipelineActionsMenu({
   // `key` is the contentKey (below) the position was MEASURED for — see the
   // measure effect and `isVisible`. Lets the render distinguish "measured
   // and ready to show" from "measured for content that has since changed."
-  const [position, setPosition] = useState<{ top: number; left: number; key: string } | null>(null);
+  const [position, setPosition] = useState<{ top: number; left: number; key: MenuContentKey } | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   // What the menu is CURRENTLY showing. Drives both the content-keyed reveal
   // (`isVisible` below — a position measured for a different key stays
   // hidden) and the measure effect's re-run trigger.
-  const contentKey = fetchError ? 'error' : rec ? 'ready' : 'loading';
+  const contentKey: MenuContentKey = fetchError ? 'error' : rec ? 'ready' : 'loading';
   // True only once `position` was measured FOR the content currently being
   // rendered. A stale measurement (e.g. taken for the "Loading…" placeholder,
   // now showing the full action list) stays hidden rather than painting at
@@ -268,6 +274,19 @@ export function PipelineActionsMenu({
     queueMicrotask(() => {
       setOpen(false);
       setPosition(null);
+      // Clear the cached fetch outcome too, not just position — `rec`
+      // otherwise survives a close, so a REOPEN's very first render already
+      // has contentKey 'ready' (or 'error') from the PREVIOUS fetch, before
+      // the fresh fetch this reopen just kicked off has landed. The
+      // content-keyed reveal only guards a mismatched key; it can't see a
+      // stale 'ready' → fresh 'ready' swap, since both sides say 'ready'.
+      // Net effect without this: reopening shows the old, fully-clickable
+      // action list (wrong balance/ids if the underlying record moved on)
+      // for the entire duration of the new fetch. `toggle`'s open path
+      // already clears `fetchError` for the same reason; this covers the
+      // close side, which was the gap, and covers `rec` either way.
+      setRec(null);
+      setFetchError(null);
       if (opts?.skipFocusRestore) return;
       // Only reclaim focus if nothing else has already claimed it. Clicking
       // a DIFFERENT row's trigger to switch menus fires THIS row's
@@ -278,7 +297,14 @@ export function PipelineActionsMenu({
       // back off the button the user just clicked.
       const active = document.activeElement;
       if (active === document.body || active === null || menuRef.current?.contains(active)) {
-        triggerRef.current?.focus();
+        // preventScroll: a bare focus() auto-scrolls the trigger into view
+        // if it isn't already — exactly wrong on the scroll-close path
+        // (closeOnScrollOrResize, below), where the user is actively
+        // scrolling and a forced scroll-to-trigger fights their own wheel
+        // gesture. The other close paths (Escape, outside click, action
+        // picked) all land here with the trigger already in view, so this
+        // is a no-op difference for them.
+        triggerRef.current?.focus({ preventScroll: true });
       }
     });
   }
@@ -325,27 +351,56 @@ export function PipelineActionsMenu({
         closeAndReset();
         return;
       }
-      // Trap Tab/Shift+Tab within the menu — the portal appends it as the
-      // LAST node in document.body, so without this, Tab from the trigger
-      // (focus never otherwise moves off it) skips the menu entirely and
-      // lands on the NEXT ROW's trigger, and a keyboard-opened menu never
-      // closes on the way past (Tab doesn't fire mousedown) — two menus
-      // end up open with independent, ambiguous state. Roving arrow-key
+      // Tab handling. The menu never auto-focuses itself on open (there is
+      // no reveal-time focus effect — see the removal note where one used
+      // to be, below) — opening via keyboard leaves focus ON THE TRIGGER,
+      // the standard WAI menu-button pattern. That matters beyond style:
+      // nothing is pre-armed under Enter. A reflexive second Enter right
+      // after opening just re-activates the trigger (closes the menu, see
+      // `toggle`), not the FIRST ACTION IN THE LIST — which, for a
+      // draft/sent/viewed/changes-requested/declined/abandoned row, is
+      // "Send (email + text)" with no confirmation gate. An earlier version
+      // of this fix auto-focused that button the instant it existed; a
+      // customer-lens review reproduced it live (activeElement sitting on
+      // Send with zero deliberate keystrokes — Tab to Options, Enter to
+      // open, reflexive second Enter or OS key-repeat sends a real email
+      // and text). This trap is what now owns getting focus INTO the menu,
+      // deliberately, instead of a separate effect doing it automatically.
+      //
+      // From the trigger, Tab steps IN (to the first item); from the first
+      // item, Shift+Tab steps back OUT (to the trigger) — undoing exactly
+      // that step; from the last item, Tab wraps to the first (never
+      // escapes the portal to the row behind it — the reason this trap
+      // exists at all, the portal being the LAST node in document.body).
+      // A middle item's Tab/Shift+Tab is left alone; native order already
+      // stays within the menu's own items there. Roving arrow-key
       // navigation is deliberately NOT added — Tab-through is enough here.
       if (e.key !== 'Tab' || !menuRef.current) return;
       const items = Array.from(menuRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
+      const active = document.activeElement;
       if (items.length === 0) {
-        // Still "Loading…" — nothing to wrap Tab between yet. Pin focus in
-        // place instead of letting it escape the portal into the row below.
-        e.preventDefault();
+        // Loading, or the error state (which has no focusable items either,
+        // and never self-heals into one). Nothing to step into yet, but
+        // this listener is document-wide — only pin Tab when it would
+        // otherwise escape FROM the trigger or the menu itself (the "don't
+        // skip to the next row" case). If focus is anywhere else on the
+        // page — the user tabbed on to something unrelated while this menu
+        // sat open in the background — this menu has no business
+        // intercepting that Tab press at all.
+        if (active === triggerRef.current || menuRef.current.contains(active)) {
+          e.preventDefault();
+        }
         return;
       }
       const first = items[0];
       const last = items[items.length - 1];
-      if (e.shiftKey && document.activeElement === first) {
+      if (!e.shiftKey && active === triggerRef.current) {
         e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
+        first.focus();
+      } else if (e.shiftKey && active === first) {
+        e.preventDefault();
+        triggerRef.current?.focus();
+      } else if (!e.shiftKey && active === last) {
         e.preventDefault();
         first.focus();
       }
@@ -365,37 +420,13 @@ export function PipelineActionsMenu({
     };
   }, [open]);
 
-  // Move focus into the menu whenever it's visible but focus isn't already
-  // inside it — self-healing rather than a one-shot "focused this open"
-  // flag, and that's load-bearing, not just simpler: the "Loading…"
-  // placeholder has nothing focusable, so the first reveal falls back to
-  // focusing the CONTAINER (tabindex=-1, like useModalFocus does) — and a
-  // browser auto-blurs whatever currently holds focus to <body> the moment
-  // that element goes `visibility:hidden`, which is exactly what happens to
-  // the container for one commit when the placeholder swaps for the real
-  // action list (the content-key mismatch frame on `menu`, below). A
-  // one-shot flag would never notice focus had escaped to <body> and leave
-  // it stranded there; checking "is focus already inside the menu" on every
-  // reveal instead notices and recovers, landing on the first REAL action
-  // once the list exists. Safe to re-run like this because Tab is fully
-  // trapped (see `handleKeyDown`'s items.length===0 case) whenever there's
-  // nothing focusable yet, so the user can't have tabbed elsewhere in the
-  // meantime. Gated on `isVisible`, not just `open`, so this can't try to
-  // focus an element that's still `visibility:hidden` (focus() is a no-op
-  // on a non-rendered element) — it only runs on the render where the DOM
-  // has actually committed the visible style.
-  useEffect(() => {
-    if (!open || !isVisible || !menuRef.current) return;
-    const menuEl = menuRef.current;
-    if (menuEl.contains(document.activeElement)) return;
-    const first = menuEl.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
-    if (first) {
-      first.focus();
-    } else {
-      menuEl.setAttribute('tabindex', '-1');
-      menuEl.focus();
-    }
-  }, [open, isVisible]);
+  // REMOVED: an effect used to live here that auto-focused the menu's
+  // first item (or the container, in an earlier iteration still) the
+  // instant it became visible. Deleted, not just reworked — a menu that
+  // pre-arms an unconfirmed customer send under the Enter key cannot ship;
+  // see `handleKeyDown`'s Tab handling, above, for what replaced it. Focus
+  // now moves into the menu ONLY on an explicit Tab from the trigger, never
+  // automatically on reveal.
 
   async function onPick(action: PipelineAction) {
     if (action.kind === 'details') return; // rendered as a <Link>, not a button
