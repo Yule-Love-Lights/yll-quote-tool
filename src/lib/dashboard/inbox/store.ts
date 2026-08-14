@@ -1057,6 +1057,20 @@ export async function closeFollowUp(inboxItemId: string, reason: string): Promis
   return data ? data.length : 0;
 }
 
+/** #230(a): the ONLY human-visible trace of a #220 internal-domain follow-up
+ *  suppression used to be a console.warn in a Vercel log stream nobody opens —
+ *  a real customer misclassified as internal would be silently dropped with no
+ *  way to notice. Logs it to dashboard_activity instead, which the /inbox
+ *  /activity page's ActivityLog already renders (it excludes only 'ingested'/
+ *  'escalated' — see listActivity's own doc). Best-effort, mirrors the other
+ *  system-actor activity writes (e.g. setEscalation's 'escalated' insert) —
+ *  never blocks the reconcile loop on a logging failure. */
+export async function recordSuppressedFollowUp(inboxItemId: string, detail: Record<string, unknown>): Promise<void> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return;
+  await sb.from('dashboard_activity').insert({ actor: 'system', action: 'followup_suppressed', inbox_item_id: inboxItemId, detail });
+}
+
 // ─── View-only toggle-ON inbox cleanup (#187a) ──────────────────────────────
 // queries.ts's dashboard chokepoint (`.eq('view_only', false)`) drops a
 // flipped-view-only quote out of the reconcile feed entirely, so

@@ -312,6 +312,7 @@ import {
   markItemCompleted,
   markItemHandledLocal,
   quoteIdPrefix,
+  recordSuppressedFollowUp,
   sweepOrphanedFollowUps,
 } from './store';
 
@@ -2819,5 +2820,33 @@ describe('markItemCompleted — status guard (#224)', () => {
     expect(res.ok).toBe(true);
     const insertCall = activityCalls.find((c) => c.method === 'insert');
     expect(insertCall!.args[0]).toMatchObject({ actor: OPERATOR_ID, action: 'completed' });
+  });
+});
+
+// #230(a): the previously-console.warn-only #220 suppression trace now also
+// lands in dashboard_activity, so it shows up on the /inbox/activity page.
+describe('recordSuppressedFollowUp (#230a — suppression visibility)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('inserts a followup_suppressed activity row for the item, actor system', async () => {
+    const { builder, calls } = makeBuilder({ data: null, error: null });
+    sbRef.current = { from: () => builder };
+
+    await recordSuppressedFollowUp('item-99', { quoteId: 'q1', quoteNumber: 1262 });
+
+    const insertCall = calls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toMatchObject({
+      actor: 'system',
+      action: 'followup_suppressed',
+      inbox_item_id: 'item-99',
+      detail: { quoteId: 'q1', quoteNumber: 1262 },
+    });
+  });
+
+  it('no-ops (no throw) when the service client is not configured', async () => {
+    sbRef.current = null;
+    await expect(recordSuppressedFollowUp('item-99', {})).resolves.toBeUndefined();
   });
 });
