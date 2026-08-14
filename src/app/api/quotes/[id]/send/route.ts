@@ -15,9 +15,21 @@
 //   (post-booking — refunds are manual, rebook-only). A revive with
 //   deposit_paid_at already set is refused 409 (fail closed).
 // Response:
-//   { ok: true, sentAt: ISO, stageUpdated: boolean, ghlSynced: boolean,
-//     ghlRetry: boolean, alreadySent?: boolean, revived?: true }
-//   { error: string, code?: string }
+//   { ok: true, sentAt: ISO, stageUpdated: boolean, opportunityCreated: boolean,
+//     opportunityId: string | null, stageError?: string, ghlRetry: boolean,
+//     deliveryRetry: boolean, ghlSynced: boolean, smsSent: boolean,
+//     emailSent: boolean, messageError?: string, failedChannels: ('sms'|'email')[],
+//     channel: 'sms' | 'email' | 'both', alreadySent?: boolean, revived?: true }
+//   { error: string, code?: string }  — no server state changed (empty-quote,
+//     no-contact, view-only, deposit-paid, send-conflict, a stamp-write failure)
+//   502 { ok: false, code: 'delivery-failed', error: string, locallySent: true,
+//     sentAt: ISO, smsSent: boolean, emailSent: boolean,
+//     failedChannels: ('sms'|'email')[], channel: 'sms' | 'email' | 'both',
+//     deliveryRetry: boolean, stageUpdated: boolean, stageError?: string,
+//     opportunityId: string | null, ghlSynced: boolean } — every requested
+//     customer channel failed, but the quote WAS stamped sent locally and the
+//     GHL stage move (fresh send only — see stageUpdated/ghlSynced above) may
+//     still have gone through (row 271).
 //
 // What happens:
 //   1. Validate the quote id
@@ -861,21 +873,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         deliveryRetry: isDeliveryRetry,
         // Row 271: mirror the 200 body's stage-outcome fields (below) — the
         // 502 branch sits AFTER the same Promise.allSettled that runs
-        // ghlStageChain, so stageUpdated/stageError/opportunityId are already
-        // settled by the time we get here. Omitting them made a split failure
-        // (message delivery dies, GHL card move succeeds) look like nothing
-        // happened at all: PipelineActionsMenu.tsx's stage line already reads
-        // these two fields whenever they're present, so this closes the gap
-        // route-side with no menu change needed. On a delivery-only retry
-        // (isDeliveryRetry) ghlStageChain returns immediately without
-        // touching these variables — they stay at their untouched values
-        // (stageUpdated false, stageError undefined, opportunityId whatever
-        // was already on the row), which correctly says "this attempt never
-        // touched the stage" rather than asserting a false move or a false
-        // error.
+        // ghlStageChain, so stageUpdated/stageError/opportunityId/ghlSynced
+        // are already settled by the time we get here. Omitting them made a
+        // split failure (message delivery dies, GHL card move succeeds) look
+        // like nothing happened at all: PipelineActionsMenu.tsx's stage line
+        // already reads stageUpdated/stageError whenever they're present, so
+        // this closes the gap route-side with no menu change needed. On a
+        // delivery-only retry (isDeliveryRetry) ghlStageChain returns
+        // immediately without touching stageUpdated/stageError/opportunityId
+        // — they stay at their untouched values (stageUpdated false,
+        // stageError undefined, opportunityId whatever was already on the
+        // row), which correctly says "this attempt never touched the stage"
+        // rather than asserting a false move or a false error. ghlSynced
+        // still reflects reality on a retry via the same expression the 200
+        // body uses: false unless a PRIOR send already synced the card
+        // (quote.ghl_stage_synced_at).
         stageUpdated,
         stageError,
         opportunityId,
+        ghlSynced: stageUpdated || (isDeliveryRetry && quote.ghl_stage_synced_at != null),
       },
       { status: 502 },
     );

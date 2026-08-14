@@ -1019,6 +1019,7 @@ describe('POST /api/quotes/[id]/send — portal and delivery gates', () => {
     expect(json.stageUpdated).toBe(true);
     expect(json.stageError).toBeUndefined();
     expect(json.opportunityId).toBe('opp_1');
+    expect(json.ghlSynced).toBe(true);
   });
 
   // Row 271 retry variant: ghlStageChain returns immediately for
@@ -1050,6 +1051,11 @@ describe('POST /api/quotes/[id]/send — portal and delivery gates', () => {
     // reflects whatever was already on the row (FRESH_QUOTE's 'opp_1'), not
     // a fresh resolution from this call.
     expect(json.opportunityId).toBe('opp_1');
+    // ghlSynced still reflects the row's PERSISTED sync state on a retry
+    // (this fixture's ghl_stage_synced_at is already set from a prior send),
+    // same expression the 200 body uses — stageUpdated:false alone would
+    // otherwise wrongly read as "never synced."
+    expect(json.ghlSynced).toBe(true);
   });
 
   it('returns success with a channel receipt when at least one requested channel delivers', async () => {
