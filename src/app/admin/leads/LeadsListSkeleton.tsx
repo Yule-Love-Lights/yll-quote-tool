@@ -9,9 +9,16 @@
 // #171b). Filter row + 8 rows only (no title placeholder) — the page's own
 // header renders unconditionally above this, so only loading.tsx (which has
 // no header yet) adds its own title bar.
-export function LeadsListSkeleton() {
+//
+// `bare` (#207 review round 2): loading.tsx has an EXTRA placeholder (the
+// title bar) that also needs to sit inside a busy region, so it supplies its
+// own outer role="status" around title + this component and passes
+// bare — avoiding a nested status region — while the internal-loading-branch
+// usage (LeadsAdminClient) is the ONLY placeholder in its context and keeps
+// this component's own role.
+export function LeadsListSkeleton({ bare = false }: { bare?: boolean } = {}) {
   return (
-    <div role="status" aria-busy="true">
+    <div role={bare ? undefined : 'status'} aria-busy={bare ? undefined : 'true'}>
       <div className="mb-3 h-8 w-full max-w-xs animate-pulse rounded-md bg-black/10" />
       <div className="space-y-2">
         <div className="h-12 animate-pulse rounded-md bg-black/10" />

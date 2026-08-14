@@ -14,12 +14,19 @@ import { LeadsListSkeleton } from './LeadsListSkeleton';
 // transition and the data fetch, no morph into a bare "Loading…" line in
 // between. Only this route boundary adds the title placeholder, since the
 // real page's header isn't mounted yet.
+//
+// This route has an EXTRA placeholder (the title bar) that LeadsListSkeleton
+// doesn't cover, so role="status" lives HERE (wrapping title + skeleton as
+// one busy region) and LeadsListSkeleton renders `bare` to avoid nesting a
+// second status region inside it (#207 review round 2).
 export default function Loading() {
   return (
     <OperatorShell active="leads">
       <div className="max-w-6xl mx-auto">
-        <div className="mb-6 h-8 w-48 animate-pulse rounded-lg bg-black/10" />
-        <LeadsListSkeleton />
+        <div role="status" aria-busy="true">
+          <div className="mb-6 h-8 w-48 animate-pulse rounded-lg bg-black/10" />
+          <LeadsListSkeleton bare />
+        </div>
       </div>
     </OperatorShell>
   );

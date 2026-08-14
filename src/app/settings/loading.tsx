@@ -19,14 +19,22 @@ import { SettingsPanelSkeleton } from './SettingsPanelSkeleton';
 // the page itself renders during its own client-fetch `loading` state — one
 // continuous skeleton across the route transition and the data fetch, no
 // morph into a bare "Loading settings…" line in between.
+//
+// This route has TWO extra placeholders (title + local tab strip) that
+// SettingsPanelSkeleton doesn't cover, so role="status" lives HERE (wrapping
+// all three as one busy region, excluding the real SettingsSubNav links) and
+// SettingsPanelSkeleton renders `bare` to avoid nesting a second status
+// region inside it (#207 review round 2).
 export default function Loading() {
   return (
     <OperatorShell active="settings">
       <main className="max-w-3xl mx-auto">
         <SettingsSubNav active="settings" />
-        <div className="mb-6 h-6 w-32 animate-pulse rounded-lg bg-black/10" />
-        <div className="mb-5 h-9 w-full animate-pulse rounded-md bg-black/10" />
-        <SettingsPanelSkeleton />
+        <div role="status" aria-busy="true">
+          <div className="mb-6 h-6 w-32 animate-pulse rounded-lg bg-black/10" />
+          <div className="mb-5 h-9 w-full animate-pulse rounded-md bg-black/10" />
+          <SettingsPanelSkeleton bare />
+        </div>
       </main>
     </OperatorShell>
   );
