@@ -225,6 +225,22 @@ export function isGroupExpanded(
   return !!expandedMap[group.key];
 }
 
+// #270 delta-verify fix (MED, fix-introduced by isGroupExpanded's own pin):
+// while composerFor pins a group open, its header toggle must not be allowed
+// to mutate the underlying expandedMap. Without this, a click during the pin
+// LOOKS like a no-op (the pin visually overrides the display either way) but
+// silently flips expandedMap[group.key] underneath it — and the instant the
+// reply sends and composerFor clears, isGroupExpanded falls back to that
+// stale flipped value, snapping the group collapsed with zero visible
+// operator action. Suppressing the toggle while pinned keeps expandedMap
+// exactly as it was BEFORE the pin, so releasing the pin restores the
+// pre-pin state instead of the swallowed click's retroactive one. Pure and
+// exported so both the header's `disabled` state and the toggle-suppression
+// share one decision (and it's unit-testable without rendering).
+export function canToggleGroup(group: InboxGroup, composerFor: string | null): boolean {
+  return !(composerFor !== null && group.members.some((m) => m.id === composerFor));
+}
+
 // A stable-identity row for ONE CONTACT, covering both shapes a contact can
 // take: a single open conversation (rendered bare, identical to a plain
 // ItemRow) or 2+ conversations (#252 slice D's collapsible header+members
@@ -311,6 +327,10 @@ function ContactRow({
   // group is actually expanded — never gated on `isMulti` alone, or a
   // single-conversation contact would render an empty <li>.
   const showMembers = !isMulti || expanded;
+  // #270 delta-verify fix: disabling the button (rather than only guarding
+  // the click handler) makes the "you can't collapse this while replying"
+  // state VISIBLE, not just structurally safe — see canToggleGroup's doc.
+  const canToggle = canToggleGroup(group, actions.composerFor);
 
   const rowChildren: ReactNode[] = [];
   if (isMulti) {
@@ -318,10 +338,12 @@ function ContactRow({
       <button
         key="header"
         type="button"
+        disabled={!canToggle}
+        title={canToggle ? undefined : 'Finish or cancel the reply to collapse this group'}
         aria-expanded={expanded}
         aria-controls={panelId}
         onClick={onToggleExpanded}
-        className="w-full flex items-start justify-between gap-3 text-left"
+        className="w-full flex items-start justify-between gap-3 text-left disabled:opacity-60 disabled:cursor-not-allowed"
       >
         <div className="min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
@@ -554,7 +576,12 @@ export function InboxList({
             key={group.key}
             group={group}
             expanded={isGroupExpanded(group, expanded, composerFor)}
-            onToggleExpanded={() => toggleExpanded(group.key)}
+            // #270 delta-verify fix: no-op while composerFor pins this group
+            // open — see canToggleGroup's doc comment for why a swallowed
+            // toggle during the pin must not mutate expandedMap.
+            onToggleExpanded={() => {
+              if (canToggleGroup(group, composerFor)) toggleExpanded(group.key);
+            }}
             actions={rowActions}
           />
         ))}

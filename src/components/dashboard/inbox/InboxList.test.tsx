@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { InboxList, isGroupExpanded } from './InboxList';
+import { InboxList, isGroupExpanded, canToggleGroup } from './InboxList';
 import type { OpenInboxItem } from '@/lib/dashboard/inbox/types';
 import type { InboxGroup } from '@/lib/dashboard/inbox/groupInboxItems';
 
@@ -108,5 +108,58 @@ describe('isGroupExpanded (#270 fix — composer pin)', () => {
       { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
     ]);
     expect(isGroupExpanded(group, {}, 'someone-elses-item-id')).toBe(false);
+  });
+});
+
+// #270 delta-verify fix (MED, fix-introduced by isGroupExpanded's own pin):
+// a header click while composerFor pins the group open used to LOOK like a
+// no-op (the pin visually overrode the display either way) but silently
+// flipped the underlying expandedMap — and the instant the reply sent and
+// composerFor cleared, isGroupExpanded fell back to that stale flipped
+// value, snapping the group collapsed with zero visible operator action.
+describe('canToggleGroup (#270 delta-verify fix — suppress toggle during pin)', () => {
+  it('returns false while composerFor points at a member of the group', () => {
+    const group = makeGroup([
+      { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
+      { ...base, id: 'm2', contactId: 'c1', lastMessageAt: at(2 * 3_600_000) },
+    ]);
+    expect(canToggleGroup(group, 'm1')).toBe(false);
+    expect(canToggleGroup(group, 'm2')).toBe(false);
+  });
+
+  it('returns true when composerFor is null or points at an item outside this group', () => {
+    const group = makeGroup([
+      { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
+    ]);
+    expect(canToggleGroup(group, null)).toBe(true);
+    expect(canToggleGroup(group, 'someone-elses-item-id')).toBe(true);
+  });
+
+  it('a toggle click during the pin is a no-op, and releasing the pin restores the PRE-PIN expandedMap value (the exact failing sequence this fix closes)', () => {
+    const group = makeGroup([
+      { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
+      { ...base, id: 'm2', contactId: 'c1', lastMessageAt: at(2 * 3_600_000) },
+    ]);
+    // 1. Operator manually expands the group before opening a reply.
+    let expandedMap: Record<string, boolean> = { c1: true };
+    // 2. Operator opens Reply on m1 — composerFor pins the group open.
+    const composerForDuringReply = 'm1';
+    expect(isGroupExpanded(group, expandedMap, composerForDuringReply)).toBe(true);
+
+    // 3. Operator clicks the header while composing. InboxList's real
+    // onToggleExpanded only mutates expandedMap when canToggleGroup allows
+    // it — mirror that guard here rather than mutating unconditionally.
+    const clickHeader = () => {
+      if (canToggleGroup(group, composerForDuringReply)) {
+        expandedMap = { ...expandedMap, [group.key]: !expandedMap[group.key] };
+      }
+    };
+    clickHeader();
+    expect(expandedMap).toEqual({ c1: true }); // unchanged — the click was suppressed, not silently applied
+
+    // 4. Reply sends -> composerFor clears. isGroupExpanded now falls
+    // through to the raw expandedMap, which still holds its PRE-PIN value
+    // (true) instead of a swallowed click's stale flip.
+    expect(isGroupExpanded(group, expandedMap, null)).toBe(true);
   });
 });
