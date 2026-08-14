@@ -107,4 +107,48 @@ describe('groupInboxItems', () => {
     expect(groups[0].primary.id).toBe('known-age');
     expect(groups[0].newest.id).toBe('unknown-age');
   });
+
+  // #270 fix round (technical LOW): lock in the branches the suite relied on
+  // but never actually exercised.
+
+  it('returns an empty array for empty input', () => {
+    expect(groupInboxItems([])).toEqual([]);
+  });
+
+  it('preserves input order for two null-lastMessageAt members in ONE group (the Infinity - Infinity = NaN comparator path)', () => {
+    // time(null) = Infinity for both, so byOldestFirst returns NaN. Per spec
+    // (CompareArrayElements: "If v is NaN, return +0") a NaN comparator
+    // result is normalized to 0, and Array.prototype.sort is stable (ES2019+)
+    // — so the two members keep their INPUT order rather than either
+    // arbitrarily winning.
+    const items: OpenInboxItem[] = [
+      { ...base, id: 'first-in', contactId: 'c1', lastMessageAt: null },
+      { ...base, id: 'second-in', contactId: 'c1', lastMessageAt: null },
+    ];
+    const groups = groupInboxItems(items);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].members.map((m) => m.id)).toEqual(['first-in', 'second-in']);
+  });
+
+  it('preserves first-occurrence order for two GROUPS whose primaries are both null-lastMessageAt', () => {
+    // Same NaN->0 stable-sort path, but at the groups.sort() level: neither
+    // group's primary has a real timestamp to compare, so the groups array
+    // keeps the order the Map first saw each contactId in.
+    const items: OpenInboxItem[] = [
+      { ...base, id: 'a', contactId: 'G1', lastMessageAt: null },
+      { ...base, id: 'b', contactId: 'G2', lastMessageAt: null },
+    ];
+    const groups = groupInboxItems(items);
+    expect(groups.map((g) => g.contactId)).toEqual(['G1', 'G2']);
+  });
+
+  it('preserves input order for two members with the exact same non-null timestamp', () => {
+    const tie = at(2 * 3_600_000, now);
+    const items: OpenInboxItem[] = [
+      { ...base, id: 'first-in', contactId: 'c1', lastMessageAt: tie },
+      { ...base, id: 'second-in', contactId: 'c1', lastMessageAt: tie },
+    ];
+    const groups = groupInboxItems(items);
+    expect(groups[0].members.map((m) => m.id)).toEqual(['first-in', 'second-in']);
+  });
 });

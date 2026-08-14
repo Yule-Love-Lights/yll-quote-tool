@@ -9,8 +9,9 @@
 
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { InboxList } from './InboxList';
+import { InboxList, isGroupExpanded } from './InboxList';
 import type { OpenInboxItem } from '@/lib/dashboard/inbox/types';
+import type { InboxGroup } from '@/lib/dashboard/inbox/groupInboxItems';
 
 const base: OpenInboxItem = {
   id: 'x', source: 'ghl', channel: null, direction: null, lastMessageAt: null, preview: null,
@@ -19,6 +20,20 @@ const base: OpenInboxItem = {
 };
 const now = 1_000_000_000_000;
 const at = (msAgo: number) => new Date(now - msAgo).toISOString();
+
+// Minimal InboxGroup fixture builder for the pure isGroupExpanded tests below
+// — doesn't need groupInboxItems' real sort, just a shape that satisfies the
+// type.
+function makeGroup(members: OpenInboxItem[]): InboxGroup {
+  return {
+    key: members[0].contactId ?? `item:${members[0].id}`,
+    contactId: members[0].contactId,
+    members,
+    primary: members[0],
+    newest: members[members.length - 1],
+    sourceCounts: {},
+  };
+}
 
 describe('InboxList (#252 slice D rollup)', () => {
   it('renders a single-conversation contact as one bare row (no group header)', () => {
@@ -55,5 +70,43 @@ describe('InboxList (#252 slice D rollup)', () => {
     expect(html).toContain('Unlinked One');
     expect(html).toContain('Unlinked Two');
     expect(html).not.toContain('aria-expanded');
+  });
+});
+
+// #270 fix round (staff HIGH, part c): the pin/auto-expand decision extracted
+// as a pure function so it's directly unit-testable without rendering — the
+// actual DOM-remount claim (why a stable component/key avoids losing
+// ReplyComposer's draft) is proven by the reconciliation trace in
+// ContactRow's own doc comment in InboxList.tsx, not by a test here (a
+// jsdom-free static render can't observe remounts).
+describe('isGroupExpanded (#270 fix — composer pin)', () => {
+  it('forces expanded=true when composerFor points at a member of the group, even with no expandedMap entry', () => {
+    const group = makeGroup([
+      { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
+    ]);
+    expect(isGroupExpanded(group, {}, 'm1')).toBe(true);
+  });
+
+  it('forces expanded=true for composerFor even when the SAME group key was explicitly collapsed in expandedMap', () => {
+    const group = makeGroup([
+      { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
+      { ...base, id: 'm2', contactId: 'c1', lastMessageAt: at(2 * 3_600_000) },
+    ]);
+    expect(isGroupExpanded(group, { c1: false }, 'm2')).toBe(true);
+  });
+
+  it('falls back to the raw expandedMap value when composerFor is null', () => {
+    const group = makeGroup([
+      { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
+    ]);
+    expect(isGroupExpanded(group, { c1: true }, null)).toBe(true);
+    expect(isGroupExpanded(group, {}, null)).toBe(false);
+  });
+
+  it('does not force-expand a DIFFERENT group just because some other group has the open composer', () => {
+    const group = makeGroup([
+      { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
+    ]);
+    expect(isGroupExpanded(group, {}, 'someone-elses-item-id')).toBe(false);
   });
 });

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { ChevronDown } from 'lucide-react';
 import type { OpenInboxItem } from '@/lib/dashboard/inbox/types';
@@ -29,9 +29,9 @@ function contactName(item: OpenInboxItem): string {
 }
 
 // Props threaded down to every per-conversation row, whether it's rendered
-// bare (single-conversation contact) or nested inside an expanded GroupRow
-// (#252 slice D). Bundled into one object so InboxList/GroupRow don't have to
-// repeat the same nine-prop list at every call site.
+// bare (single-conversation contact) or nested inside an expanded ContactRow
+// (#252 slice D). Bundled into one object so InboxList/ContactRow don't have
+// to repeat the same nine-prop list at every call site.
 type RowActions = {
   now: number;
   busyId: string | null;
@@ -47,7 +47,7 @@ type RowActions = {
 // One conversation's row — exactly what InboxList rendered inline before
 // slice D, just lifted out so it can be reused both as a top-level row (the
 // common single-conversation case) and as a member row inside an expanded
-// GroupRow. Occupants enumerated before restructuring (all preserved here):
+// ContactRow. Occupants enumerated before restructuring (all preserved here):
 // escalation dot, contact name, source label, quote value badge, new/
 // returning badge, filtered marker, subject line, preview line, escalation
 // label + waiting time, claim/release/take-over control, and the four action
@@ -211,14 +211,63 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
   );
 }
 
-// A rolled-up row for a contact with 2+ open conversations (#252 slice D):
-// collapsed by default, showing the oldest member's name/escalation/age (the
-// flat list is oldest-first so nothing gets buried under a fresher sibling),
-// a per-source badge summary, and the newest member's preview line. Expands
-// to the same ItemRow markup/actions each conversation has today. A native
-// <button> gives keyboard operability (Enter/Space) and aria-expanded for
-// free — no nested interactive controls live inside it, only badges/text.
-function GroupRow({
+// #270 fix (staff HIGH — see the finding this comment is attached to): a
+// group whose members include the item currently being composed to must
+// never render collapsed, or the operator's live ReplyComposer gets hidden
+// behind a collapsed header the instant a poll adds a sibling conversation.
+// Pure and exported so this decision is unit-testable without rendering.
+export function isGroupExpanded(
+  group: InboxGroup,
+  expandedMap: Record<string, boolean>,
+  composerFor: string | null,
+): boolean {
+  if (composerFor !== null && group.members.some((m) => m.id === composerFor)) return true;
+  return !!expandedMap[group.key];
+}
+
+// A stable-identity row for ONE CONTACT, covering both shapes a contact can
+// take: a single open conversation (rendered bare, identical to a plain
+// ItemRow) or 2+ conversations (#252 slice D's collapsible header+members
+// rollup). EVERY contact renders through this one component now, keyed by
+// `group.key` (contactId, or a per-item synthetic key — stable across a
+// poll either way) — see the reconciliation trace below for why that's the
+// point.
+//
+// #270 fix round (staff HIGH): the 25s poll (InboxList's `refresh`) can move
+// a contact across the 1<->2+ boundary in either direction (a second channel
+// reaches out, or a sibling conversation resolves). Before this fix, the
+// caller picked between `<ItemRow key={member.id}/>` and `<GroupRow
+// key={group.key}/>` for the same contact across two polls — different
+// component TYPE *and* different key at that tree position — so React tore
+// down and rebuilt the whole subtree on every crossing, silently wiping
+// ReplyComposer's local `draftText` (ReplyComposer.tsx, unlifted useState)
+// mid-reply. React reconciles by (type, key) at each tree position; this
+// component keeps every level from its own root <li> down to each
+// ItemRow's nested <ReplyComposer> at a CONSTANT type+key across the
+// boundary:
+//   - the root is always one <li> (never swaps to/from ItemRow's own <li>,
+//     which only ever appears NESTED inside this one, same as it did for
+//     the pre-existing 2+-member case)
+//   - the header button and the members <ul> are pushed into ONE explicit
+//     array as keyed entries ("header" / "members"), so the header
+//     appearing/disappearing (isMulti flipping) is an insert/remove at the
+//     FRONT of a keyed list — the textbook case React keys exist to make
+//     safe for the OTHER entries
+//   - the members <ul> keeps key="members" regardless of isMulti, and each
+//     member keeps key={member.id} inside it — so a member gaining or
+//     losing a sibling is an ordinary keyed-list insert/remove, which never
+//     disturbs the REMAINING members' mounted state (including an open
+//     ReplyComposer)
+// Net effect: a contact's ReplyComposer instance sits at the same tree path
+// (ContactRow[key=group.key] -> <li> -> <ul key="members"> ->
+// ItemRow[key=member.id] -> ReplyComposer) whether the group has 1 or 2+
+// members, so React updates it in place instead of remounting it. The
+// members <ul> is only ever OMITTED (not merely hidden) when the group is
+// both multi-member AND collapsed AND has no open composer inside it —
+// `isGroupExpanded` guarantees that never happens while composerFor points
+// at one of this group's members, so the one case that would lose state
+// never arises.
+function ContactRow({
   group,
   expanded,
   onToggleExpanded,
@@ -229,7 +278,16 @@ function GroupRow({
   onToggleExpanded: () => void;
   actions: RowActions;
 }) {
-  const esc = escalation(group.primary.escalationLevel);
+  const isMulti = group.members.length > 1;
+  // #270 fix (staff MED): the dot/label reflect the group's WORST member,
+  // not just the oldest (`primary`). `automated` members freeze near
+  // escalationLevel 0 (store.ts's listEscalatableItems excludes
+  // lead_kind='automated' from rescoring), so an older automated member as
+  // primary would otherwise mask a genuinely red sibling under
+  // Show-filtered. Waiting time still reads from `primary` (the oldest) —
+  // that's the honest "how long has someone been waiting" number.
+  const maxEscalation = Math.max(...group.members.map((m) => m.escalationLevel));
+  const esc = escalation(maxEscalation);
   const waiting = group.primary.lastMessageAt
     ? formatWaiting(actions.now - new Date(group.primary.lastMessageAt).getTime())
     : '';
@@ -238,10 +296,27 @@ function GroupRow({
   // isReturning/filtered stay per-member, visible once expanded, rather than
   // cluttering the rollup row this feature exists to keep scannable.
   const previewLine = group.newest.preview || group.newest.subject;
+  // #270 fix (admin MED): prefix the preview with the NEWEST member's own
+  // age. Without it, "Overdue · waiting 5h" (the oldest thread's badge) sits
+  // directly above the newest thread's preview text and can read as "overdue
+  // but already resolved" (e.g. "ok thanks, will call tomorrow") — this cue
+  // makes clear the preview is a DIFFERENT, fresher thread than the one the
+  // urgency badge is about.
+  const previewAge = group.newest.lastMessageAt
+    ? formatWaiting(actions.now - new Date(group.newest.lastMessageAt).getTime())
+    : '';
   const panelId = `inbox-group-panel-${group.key}`;
-  return (
-    <li className="rounded-lg border p-4" style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' }}>
+  // Members render whenever there's no collapse concept at all (a lone
+  // conversation is always fully visible, same as today's bare row) or the
+  // group is actually expanded — never gated on `isMulti` alone, or a
+  // single-conversation contact would render an empty <li>.
+  const showMembers = !isMulti || expanded;
+
+  const rowChildren: ReactNode[] = [];
+  if (isMulti) {
+    rowChildren.push(
       <button
+        key="header"
         type="button"
         aria-expanded={expanded}
         aria-controls={panelId}
@@ -269,6 +344,7 @@ function GroupRow({
           </p>
           {previewLine && (
             <p className="text-sm mt-1 truncate" style={{ color: 'var(--op-text-2)' }}>
+              {previewAge ? `${previewAge} ago · ` : ''}
               {previewLine}
             </p>
           )}
@@ -285,14 +361,29 @@ function GroupRow({
             transition: 'transform 150ms',
           }}
         />
-      </button>
-      {expanded && (
-        <ul id={panelId} className="mt-3 pl-4 space-y-3 border-l-2" style={{ borderColor: 'var(--op-border)' }}>
-          {group.members.map((member) => (
-            <ItemRow key={member.id} item={member} actions={actions} />
-          ))}
-        </ul>
-      )}
+      </button>,
+    );
+  }
+  if (showMembers) {
+    rowChildren.push(
+      <ul
+        key="members"
+        id={panelId}
+        className={isMulti ? 'mt-3 pl-4 space-y-3 border-l-2' : ''}
+        style={isMulti ? { borderColor: 'var(--op-border)' } : undefined}
+      >
+        {group.members.map((member) => (
+          <ItemRow key={member.id} item={member} actions={actions} />
+        ))}
+      </ul>,
+    );
+  }
+  return (
+    <li
+      className={isMulti ? 'rounded-lg border p-4' : ''}
+      style={isMulti ? { borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' } : undefined}
+    >
+      {rowChildren}
     </li>
   );
 }
@@ -452,23 +543,21 @@ export function InboxList({
         </p>
       ) : (
       <ul className="space-y-3">
-        {groups.map((group) =>
-          // Single-conversation contacts (the common case — most contacts
-          // have exactly one open row) render as a bare ItemRow: no group
-          // header, no expand affordance noise. Only a contact with 2+ open
-          // conversations gets the rolled-up GroupRow treatment.
-          group.members.length === 1 ? (
-            <ItemRow key={group.members[0].id} item={group.members[0]} actions={rowActions} />
-          ) : (
-            <GroupRow
-              key={group.key}
-              group={group}
-              expanded={!!expanded[group.key]}
-              onToggleExpanded={() => toggleExpanded(group.key)}
-              actions={rowActions}
-            />
-          ),
-        )}
+        {groups.map((group) => (
+          // #270 fix: every group — single-conversation or 2+ — renders
+          // through the SAME component (ContactRow) at the SAME key
+          // (group.key), so a 25s poll that moves a contact across the
+          // 1<->2+ boundary never swaps component type/key at this position.
+          // See ContactRow's own doc comment for the full reconciliation
+          // trace this fixes.
+          <ContactRow
+            key={group.key}
+            group={group}
+            expanded={isGroupExpanded(group, expanded, composerFor)}
+            onToggleExpanded={() => toggleExpanded(group.key)}
+            actions={rowActions}
+          />
+        ))}
       </ul>
       )}
     </>
