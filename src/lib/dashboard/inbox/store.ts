@@ -1567,7 +1567,18 @@ export async function listInWorks(limit = 200): Promise<InWorksResult> {
 /** Mark an item completed: capture prior state, stamp status + handled fields,
  *  clear followed_up_at, and write a detailed activity log entry. `operatorId`
  *  must be a real auth.users uuid, or null — see markItemHandledLocal's doc
- *  comment; inbox_items.handled_by never accepts a display name/email string. */
+ *  comment; inbox_items.handled_by never accepts a display name/email string.
+ *
+ * #224 (S35 wrap, staff MED): status-guarded like its siblings
+ * markItemHandledLocal/dismissItem — this used to run on `.eq('id', itemId)`
+ * ALONE (no guard at all), so a stale tab could silently re-complete (or
+ * un-dismiss into 'completed') an item another operator had already resolved,
+ * re-attributing handled_by. Guards out the two states completing should never
+ * clobber: 'dismissed' (sticky spam, per reducer.ts's own "never resurrect
+ * spam" rule) and 'completed' (idempotent re-apply, matching the siblings'
+ * own-action guard). 'unresponded' → completed and 'handled' → completed stay
+ * legal — both are real workflows (InboxList.tsx fires this directly from the
+ * open queue; InWorksSection.tsx fires it from the handled bucket). */
 export async function markItemCompleted(
   itemId: string,
   operatorId: string | null,
@@ -1576,7 +1587,7 @@ export async function markItemCompleted(
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const from = await priorStateOf(sb, itemId);
-  const { error } = await sb
+  const { data, error } = await sb
     .from('inbox_items')
     .update({
       status: 'completed',
@@ -1585,8 +1596,13 @@ export async function markItemCompleted(
       handled_at: now.toISOString(),
       updated_at: now.toISOString(),
     })
-    .eq('id', itemId);
+    .eq('id', itemId)
+    .neq('status', 'dismissed')
+    .neq('status', 'completed')
+    .select('id')
+    .maybeSingle();
   if (error) return { ok: false, error: error.message };
+  if (!data) return { ok: false, error: 'Item not found, already completed, or dismissed' };
   await sb.from('dashboard_activity').insert({
     actor: operatorId,
     action: 'completed',
