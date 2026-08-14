@@ -859,6 +859,23 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         failedChannels,
         channel,
         deliveryRetry: isDeliveryRetry,
+        // Row 271: mirror the 200 body's stage-outcome fields (below) — the
+        // 502 branch sits AFTER the same Promise.allSettled that runs
+        // ghlStageChain, so stageUpdated/stageError/opportunityId are already
+        // settled by the time we get here. Omitting them made a split failure
+        // (message delivery dies, GHL card move succeeds) look like nothing
+        // happened at all: PipelineActionsMenu.tsx's stage line already reads
+        // these two fields whenever they're present, so this closes the gap
+        // route-side with no menu change needed. On a delivery-only retry
+        // (isDeliveryRetry) ghlStageChain returns immediately without
+        // touching these variables — they stay at their untouched values
+        // (stageUpdated false, stageError undefined, opportunityId whatever
+        // was already on the row), which correctly says "this attempt never
+        // touched the stage" rather than asserting a false move or a false
+        // error.
+        stageUpdated,
+        stageError,
+        opportunityId,
       },
       { status: 502 },
     );
