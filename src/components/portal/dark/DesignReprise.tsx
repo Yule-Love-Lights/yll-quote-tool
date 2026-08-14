@@ -41,9 +41,13 @@ export type DesignRepriseProps = {
   // #245: gates the "Click here to change colors" jump-button — it must only
   // render for verticals where the LightColorPicker it jumps to actually
   // exists (canCustomerRecolor, shared with the picker's own gate in
-  // src/app/portal/[quoteId]/page.tsx). Absent ⇒ treated as holiday (matches
-  // the picker's own null handling).
-  serviceType?: ServiceType | null;
+  // src/app/portal/[quoteId]/page.tsx). REQUIRED (not optional, #245 review
+  // round): canCustomerRecolor(undefined) reads permissive (shows the
+  // button), so an optional prop meant a future call site that forgot to
+  // pass it would silently regress the exact bug this row fixes. Pass `null`
+  // explicitly for an unknown/legacy vertical — that's treated as holiday,
+  // matching the picker's own null handling.
+  serviceType: ServiceType | null;
 };
 
 export function DesignReprise({

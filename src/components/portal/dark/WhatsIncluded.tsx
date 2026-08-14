@@ -376,12 +376,12 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
                   regardless of the surrounding column. justify-center then centers
                   the two cards within. */}
               <div className="mx-auto flex flex-col gap-8 lg:max-w-[1500px] lg:flex-row lg:items-start lg:justify-center lg:gap-10 lg:px-8">
-                <DesignReprise design={design} palette={palette} renderSettings={renderSettings} serviceType={serviceType} className="" inRow />
+                <DesignReprise design={design} palette={palette} renderSettings={renderSettings} serviceType={serviceType ?? null} className="" inRow />
                 <SatelliteRoofView design={design} className="" inRow allowedSatelliteKeys={allowedSatelliteKeys} labelOverrides={satelliteLabelOverrides} />
               </div>
             </div>
           ) : (
-            <DesignReprise design={design} palette={palette} renderSettings={renderSettings} serviceType={serviceType} />
+            <DesignReprise design={design} palette={palette} renderSettings={renderSettings} serviceType={serviceType ?? null} />
           ))}
 
         {/* Optional add-ons — customer-toggleable rush + premium takedown (#4).
