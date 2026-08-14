@@ -73,6 +73,90 @@ describe('InboxList (#252 slice D rollup)', () => {
   });
 });
 
+// #268 fix round (staff HIGH): resolveReplyTarget (reply.ts) sends every
+// gmail-source row to a static "Reply in Gmail" note, which is structurally
+// wrong for a #268 lead-forward — its addressable Gmail party is the
+// platform's no-reply relay, and replying there reaches nobody.
+//
+// #268 fix round 3 (technical HIGH, fix-introduced by round 2): the original
+// marker (contact.phone) was WRONG — `dashboard_contacts.primary_phone` is a
+// cross-channel MERGED field, so a RETURNING customer (submitted a quote
+// earlier — carries a phone — then emails sales@ normally) would show a
+// phone on a genuine, replyable thread and falsely trigger the warning. The
+// marker is now MESSAGE-level (parseLeadForwardDisplay on subject+preview),
+// immune to contact merges since it never reads the contact.
+const GML_SUBJECT = 'New Lead from GML Media - Jamie Test';
+const GML_PREVIEW =
+  'Here ya go Naldoven: Jamie Test +15551234567 Email: jamie.test@example.com Street Address: 42 Fake Lane City: Faketown Areas to light up: Roof Line - (Premium Package)';
+
+describe('InboxList — #268 forwarded-lead reply affordance', () => {
+  it('a gmail row whose subject+preview parse as a GML lead-forward shows the phone + the forwarded-lead wording instead of "Reply in Gmail"', () => {
+    const items: OpenInboxItem[] = [
+      {
+        ...base,
+        id: 'fwd1',
+        source: 'gmail',
+        contactId: 'c-fwd',
+        subject: GML_SUBJECT,
+        preview: GML_PREVIEW,
+        contact: { displayName: 'Jamie Test', email: 'jamie.test@example.com', phone: null },
+        lastMessageAt: at(1 * 3_600_000),
+      },
+    ];
+    const html = renderToStaticMarkup(<InboxList initialItems={items} nowMs={now} />);
+    expect(html).toContain('Forwarded lead');
+    expect(html).toContain('no-reply relay');
+    expect(html).toContain('+15551234567');
+    expect(html).toContain('jamie.test@example.com');
+    expect(html).not.toContain('Reply in Gmail');
+  });
+
+  it('a gmail row with an ordinary subject/preview (no GML template) shows the unchanged "Reply in Gmail" note', () => {
+    const items: OpenInboxItem[] = [
+      {
+        ...base,
+        id: 'g1',
+        source: 'gmail',
+        contactId: 'c-real',
+        subject: 'Re: your lighting quote',
+        preview: 'Thanks! Can we add the porch too?',
+        contact: { displayName: 'A Real Conversation', email: 'them@example.com', phone: null },
+        lastMessageAt: at(1 * 3_600_000),
+      },
+    ];
+    const html = renderToStaticMarkup(<InboxList initialItems={items} nowMs={now} />);
+    expect(html).toContain('Reply in Gmail');
+    expect(html).not.toContain('Forwarded lead');
+  });
+
+  // THE EXACT HIGH this round fixes, pinned: a returning customer's ORDINARY
+  // Gmail thread (real subject, real body — no GML template anywhere) whose
+  // CONTACT nonetheless carries a phone (merged in from an earlier quote via
+  // email-match identity resolution) must NOT trigger the false forwarded-
+  // lead warning. Round 2's contact.phone-gated version would have failed
+  // this test.
+  it('a returning-customer shape (contact HAS a phone from an earlier quote, subject/preview are ordinary) never shows the false "Forwarded lead" warning', () => {
+    const items: OpenInboxItem[] = [
+      {
+        ...base,
+        id: 'returning1',
+        source: 'gmail',
+        contactId: 'c-returning',
+        subject: 'Re: quote for our house',
+        preview: 'Thanks so much! Can we do the front and the porch too?',
+        // Merged from an earlier quotetool touch via email-match identity
+        // resolution (store.ts's appendIdentifiers) — NOT from this message.
+        contact: { displayName: 'Returning Customer', email: 'returning@example.com', phone: '+15551234567' },
+        lastMessageAt: at(1 * 3_600_000),
+      },
+    ];
+    const html = renderToStaticMarkup(<InboxList initialItems={items} nowMs={now} />);
+    expect(html).toContain('Reply in Gmail');
+    expect(html).not.toContain('Forwarded lead');
+    expect(html).not.toContain('no-reply relay');
+  });
+});
+
 // #270 fix round (staff HIGH, part c): the pin/auto-expand decision extracted
 // as a pure function so it's directly unit-testable without rendering — the
 // actual DOM-remount claim (why a stable component/key avoids losing
