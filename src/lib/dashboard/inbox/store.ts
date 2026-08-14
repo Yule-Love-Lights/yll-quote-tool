@@ -1587,12 +1587,16 @@ export async function listInWorks(limit = 200): Promise<InWorksResult> {
  * markItemHandledLocal/dismissItem — this used to run on `.eq('id', itemId)`
  * ALONE (no guard at all), so a stale tab could silently re-complete (or
  * un-dismiss into 'completed') an item another operator had already resolved,
- * re-attributing handled_by. Guards out the two states completing should never
- * clobber: 'dismissed' (sticky spam, per reducer.ts's own "never resurrect
- * spam" rule) and 'completed' (idempotent re-apply, matching the siblings'
- * own-action guard). 'unresponded' → completed and 'handled' → completed stay
- * legal — both are real workflows (InboxList.tsx fires this directly from the
- * open queue; InWorksSection.tsx fires it from the handled bucket). */
+ * re-attributing handled_by. Only fires FROM the two states completing is a
+ * legal forward transition out of: 'unresponded' (InboxList.tsx fires this
+ * directly from the open queue) and 'handled' (InWorksSection.tsx fires it
+ * from the handled bucket). Positive `.in(...)` match, not a negative
+ * `.neq(...)` pair — the repo's positive-seam-gate convention (AGENTS.md
+ * Pitfalls): INBOX_STATUSES (types.ts) is a closed 4-value enum today so the
+ * two forms are provably identical, but a negative pair fails OPEN on a
+ * future 5th status (silently allowed through) while positive fails CLOSED
+ * (silently blocked, the safe direction — a blocked completion is visible to
+ * the operator via the ok:false path; a wrongly-allowed clobber is not). */
 export async function markItemCompleted(
   itemId: string,
   operatorId: string | null,
@@ -1611,8 +1615,7 @@ export async function markItemCompleted(
       updated_at: now.toISOString(),
     })
     .eq('id', itemId)
-    .neq('status', 'dismissed')
-    .neq('status', 'completed')
+    .in('status', ['unresponded', 'handled'])
     .select('id')
     .maybeSingle();
   if (error) return { ok: false, error: error.message };

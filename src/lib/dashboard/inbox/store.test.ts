@@ -2800,15 +2800,17 @@ describe('markItemCompleted — status guard (#224)', () => {
     expect(activityCalls.some((c) => c.method === 'insert')).toBe(false);
   });
 
-  it('the update chain excludes both dismissed and completed (the actual guard, not just the observed outcome)', async () => {
+  it('the update chain is a POSITIVE match on the two legal source statuses (the actual guard, not just the observed outcome)', async () => {
+    // Positive `.in(...)`, not a negative `.neq(...)` pair — see markItemCompleted's
+    // doc comment for the fail-open-vs-fail-closed reasoning (positive-seam-gate
+    // convention, AGENTS.md Pitfalls).
     const { from, updateCalls } = makeSbFor({ data: { id: ITEM_ID }, error: null });
     sbRef.current = { from };
 
     await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
 
-    const neqCalls = updateCalls.filter((c) => c.method === 'neq').map((c) => c.args);
-    expect(neqCalls).toContainEqual(['status', 'dismissed']);
-    expect(neqCalls).toContainEqual(['status', 'completed']);
+    const inCalls = updateCalls.filter((c) => c.method === 'in').map((c) => c.args);
+    expect(inCalls).toContainEqual(['status', ['unresponded', 'handled']]);
   });
 
   it('still allows the normal forward transitions (unresponded/handled → completed)', async () => {
