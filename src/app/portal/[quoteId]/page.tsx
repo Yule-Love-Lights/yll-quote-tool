@@ -64,6 +64,7 @@ import { loadPortalQuote, PortalConfigError } from '@/lib/portal/loader';
 import { pickInitialPackageId } from '@/lib/portal/derivePackages';
 import { deriveIsBooked, resolveApprovalSelectionSeed } from '@/lib/portal/adapter';
 import { isPortalActionable } from '@/lib/quoteStatus';
+import { canCustomerRecolor } from '@/lib/serviceType';
 import type { PortalQuote } from '@/components/portal/types';
 import { getAppSettings } from '@/lib/appSettings';
 import { fetchGoogleReviews } from '@/lib/googleReviews';
@@ -387,12 +388,11 @@ export default async function PortalPage({
             when a design is linked (recolor needs a live scene). Positive list
             (#117): permanent bistro is EXCLUDED — warm-white Edison bulbs only
             (its FAQ says so), and holiday Red & Green schemes would contradict
-            it. A future vertical must opt in here, not inherit the picker. */}
-        {quote.design &&
-          (quote.serviceType == null ||
-            quote.serviceType === 'holiday' ||
-            quote.serviceType === 'permanent' ||
-            quote.serviceType === 'event') && <LightColorPicker />}
+            it. A future vertical must opt in here, not inherit the picker.
+            canCustomerRecolor is the single source of truth for this gate —
+            DesignReprise's "Click here to change colors" jump-button (#245)
+            reads the SAME predicate so the two can never drift apart. */}
+        {quote.design && canCustomerRecolor(quote.serviceType) && <LightColorPicker />}
         {/* 1.5b #88 P6b-4 — permanent effect picker (Solid/Chase/Fade), a separate
             row under the color so any color can play any effect. */}
         {quote.design && quote.serviceType === 'permanent' && <PermanentEffectPicker />}

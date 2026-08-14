@@ -30,3 +30,22 @@ export function asServiceType(v: unknown): ServiceType | null {
     ? (v as ServiceType)
     : null;
 }
+
+/** Whether the customer portal's LightColorPicker applies to this vertical
+ *  (#48/#57, permanent via #88 P6b-4, #117 for the bistro exclusion). A
+ *  POSITIVE list (never `!== 'permanent'`/`!== 'permanent_bistro'`) so a
+ *  FUTURE vertical must opt in rather than inherit recolor UI by default —
+ *  permanent bistro is deliberately excluded (warm-white Edison bulbs only,
+ *  per its FAQ). Single source of truth for that gate: both the picker
+ *  itself (src/app/portal/[quoteId]/page.tsx) and any control that jumps to
+ *  it (DesignReprise's "Click here to change colors") call this instead of
+ *  carrying their own copy of the condition, so the two can never drift
+ *  apart (#245). */
+export function canCustomerRecolor(serviceType: ServiceType | null | undefined): boolean {
+  return (
+    serviceType == null ||
+    serviceType === 'holiday' ||
+    serviceType === 'permanent' ||
+    serviceType === 'event'
+  );
+}

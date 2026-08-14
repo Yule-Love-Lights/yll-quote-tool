@@ -20,6 +20,7 @@ import type { PortalDesign } from '../types';
 import { isItemOnPhoto, type BulbColor } from '@/lib/design/sceneTypes';
 import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
 import { portalPhotos } from '@/lib/portal/photos';
+import { canCustomerRecolor, type ServiceType } from '@/lib/serviceType';
 
 // Konva is client-only — keep it out of SSR (same pattern the hero uses).
 const DesignCanvas = dynamic(() => import('../../design/DesignCanvas'), { ssr: false });
@@ -37,6 +38,12 @@ export type DesignRepriseProps = {
   // (var(--row-h), set by the parent row) with width derived from the photo's
   // aspect, so it lines up at the same height as the satellite card next to it.
   inRow?: boolean;
+  // #245: gates the "Click here to change colors" jump-button — it must only
+  // render for verticals where the LightColorPicker it jumps to actually
+  // exists (canCustomerRecolor, shared with the picker's own gate in
+  // src/app/portal/[quoteId]/page.tsx). Absent ⇒ treated as holiday (matches
+  // the picker's own null handling).
+  serviceType?: ServiceType | null;
 };
 
 export function DesignReprise({
@@ -45,6 +52,7 @@ export function DesignReprise({
   renderSettings,
   className = 'mt-10 md:mt-12',
   inRow = false,
+  serviceType,
 }: DesignRepriseProps) {
   // Live selection (#27 D / #10): which drawn items are hidden + the chosen
   // light-color override. Shared with the hero via SelectionContext, so this
@@ -159,13 +167,15 @@ export function DesignReprise({
           </>
         )}
       </div>
-      <button
-        type="button"
-        onClick={goToColors}
-        className="mt-3 inline-flex items-center text-[13px] font-semibold text-[#E8B862] hover:text-[#F5CC7A] underline underline-offset-2 leading-[1.6] cursor-pointer transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] rounded-sm"
-      >
-        Click here to change colors
-      </button>
+      {canCustomerRecolor(serviceType) && (
+        <button
+          type="button"
+          onClick={goToColors}
+          className="mt-3 inline-flex items-center text-[13px] font-semibold text-[#E8B862] hover:text-[#F5CC7A] underline underline-offset-2 leading-[1.6] cursor-pointer transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#E8B862] rounded-sm"
+        >
+          Click here to change colors
+        </button>
+      )}
     </div>
   );
 }
