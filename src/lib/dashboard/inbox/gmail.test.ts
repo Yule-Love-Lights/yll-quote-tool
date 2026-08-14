@@ -207,6 +207,56 @@ describe('mapGmailThread — raw Gmail payload → GmailThreadLite', () => {
   });
 });
 
+describe('normalizeGmailThread — #268 GML-Media lead-forward override', () => {
+  // Synthetic — mirrors the real prod body shape (verified via Supabase for
+  // #268) with a fake name/phone/email. Never real customer PII in git history.
+  const GML_BODY =
+    'Here ya go Naldoven: Jamie Test +15551234567 Email: jamie.test@example.com Street Address: 42 Fake Lane City: Faketown Areas to light up: Roof Line + Roof Ridges - (Premium Package)';
+
+  const gmlThread = (over: Partial<GmailThreadLite> = {}) =>
+    thread({
+      from: { email: 'no-reply.fake123@zapiermail.com', name: 'GML Media' },
+      subject: 'New Lead from GML Media - Jamie Test',
+      messages: [msg(false, '2026-08-12T14:00:00Z', GML_BODY)],
+      ...over,
+    });
+
+  it('classifies as lead even when the platform sets List-Unsubscribe (defeats classify.ts\'s bulk-mail heuristic)', () => {
+    const t = normalizeGmailThread(gmlThread({ hasListUnsubscribe: true }));
+    expect(t.leadKind).toBe('lead');
+  });
+
+  it('classifies as lead even when the sender is in the suppression set — the REAL prod blocker for the observed GML address (verified live: no-reply.mj1fi9@zapiermail.com IS in dashboard.suppressedSenders)', () => {
+    const t = normalizeGmailThread(gmlThread(), new Set(['no-reply.fake123@zapiermail.com']));
+    expect(t.leadKind).toBe('lead');
+  });
+
+  it('extracts identity from the PARSED CUSTOMER, not the GML Media forwarder sender', () => {
+    const t = normalizeGmailThread(gmlThread());
+    expect(t.identity.displayName).toBe('Jamie Test');
+    expect(t.identity.emails).toEqual(['jamie.test@example.com']);
+    expect(t.identity.phones).toEqual(['+15551234567']);
+  });
+
+  it('the SAME forward body from an UNKNOWN sender (not a known platform) is unaffected — falls through to normal classification', () => {
+    const t = normalizeGmailThread(
+      gmlThread({ from: { email: 'someone@unknown-relay.example.com', name: 'Someone' }, hasListUnsubscribe: true }),
+    );
+    expect(t.leadKind).toBe('automated'); // hasListUnsubscribe still governs — no platform matched, no override
+    expect(t.identity.displayName).toBe('Someone'); // identity stays the sender's — no parse ran
+  });
+
+  it('a GML Media message with no parseable phone/email (fail-closed) falls through to unchanged classify/suppression behavior', () => {
+    const t = normalizeGmailThread(
+      gmlThread({
+        messages: [msg(false, '2026-08-12T14:00:00Z', 'Thanks for using GML Media! Your monthly statement is attached.')],
+        hasListUnsubscribe: true,
+      }),
+    );
+    expect(t.leadKind).toBe('automated'); // no override fired — same as pre-#268 behavior
+  });
+});
+
 describe('normalizeGmailThread — sender-suppression set (layer 3)', () => {
   it('classifies a suppressed sender as automated regardless of content', () => {
     const t = normalizeGmailThread(
