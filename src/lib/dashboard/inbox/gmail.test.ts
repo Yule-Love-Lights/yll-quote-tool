@@ -255,6 +255,25 @@ describe('normalizeGmailThread — #268 GML-Media lead-forward override', () => 
     );
     expect(t.leadKind).toBe('automated'); // no override fired — same as pre-#268 behavior
   });
+
+  // #268 fix round 3 (LOW 1): the top-of-file "residual, accepted risk" note
+  // names the worst case as contamination of an EXISTING contact (a forged
+  // template whose phone matches a real customer's, paired with an
+  // attacker-chosen email). This module's boundary is faithfully reporting
+  // what the message says — it never looks up or merges with any existing
+  // contact. Whether a phone match against an existing dashboard_contacts
+  // row causes a union is identity.ts's resolveIdentity/appendIdentifiers +
+  // store.ts's ingestTouch (both out of this module's reach, and store.ts is
+  // embargoed this round) — pin that this layer's output IS the forged
+  // identity verbatim, not that it's safe end-to-end.
+  it('a forged both-legs message whose phone matches a known real customer produces a touch identity that IS the forged data — the union/merge decision is downstream, not here', () => {
+    const KNOWN_CUSTOMER_PHONE = '+15551234567'; // stands in for a real existing contact's phone
+    const forgedBody = `Here ya go Naldoven: Totally Legit ${KNOWN_CUSTOMER_PHONE} Email: attacker@evil.example.com`;
+    const t = normalizeGmailThread(gmlThread({ messages: [msg(false, '2026-08-12T14:00:00Z', forgedBody)] }));
+    expect(t.leadKind).toBe('lead');
+    expect(t.identity.phones).toEqual([KNOWN_CUSTOMER_PHONE]);
+    expect(t.identity.emails).toEqual(['attacker@evil.example.com']);
+  });
 });
 
 describe('normalizeGmailThread — sender-suppression set (layer 3)', () => {

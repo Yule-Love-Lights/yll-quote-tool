@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { matchLeadForwardPlatform, parseLeadForward } from './leadForward';
+import { matchLeadForwardPlatform, parseLeadForward, parseLeadForwardDisplay } from './leadForward';
 
 // Synthetic fixtures only — never real customer PII in git history (repo
 // precedent: a real customer's name was scrubbed from a code comment in S37).
@@ -55,6 +55,14 @@ describe('matchLeadForwardPlatform — requires BOTH domain AND display name (#2
   it('is null-safe on missing sender/name', () => {
     expect(matchLeadForwardPlatform(null, null)).toBeNull();
     expect(matchLeadForwardPlatform(undefined, undefined)).toBeNull();
+  });
+
+  // #268 fix round 3 (LOW 2): the display-name leg was substring-contains,
+  // so a lookalike name containing "gml media" as a substring false-matched
+  // even with the correct domain. Tightened to normalized equality.
+  it('does NOT match a lookalike display name that merely CONTAINS "gml media" as a substring, even with the correct domain', () => {
+    expect(matchLeadForwardPlatform('no-reply.fake123@zapiermail.com', 'not gml media fan')).toBeNull();
+    expect(matchLeadForwardPlatform('no-reply.fake123@zapiermail.com', 'gml media fanpage')).toBeNull();
   });
 });
 
@@ -150,6 +158,65 @@ describe('parseLeadForward — template-scoped extraction (#268 fix round, techn
     const parsed = parseLeadForward({ ...GML_FROM, body: forgedBody });
     expect(parsed).not.toBeNull();
     expect(parsed?.email).toBe('attacker@evil.example.com');
+  });
+
+  // #268 fix round 3 (MED): with NO closing "Areas to light up:" marker, the
+  // scope used to run unbounded to the end of the body — routinely true for
+  // the real Gmail-truncated reaction-quoted shape. A footer/signature well
+  // beyond the real template's length must not leak in just because the
+  // closing marker never showed up.
+  it('caps the no-closing-marker scope at a bounded length — a footer phone/email placed well beyond the cap is not extracted', () => {
+    const filler = 'x'.repeat(280); // pushes the footer past TEMPLATE_MAX_LEN_WITHOUT_CLOSING_MARKER (300)
+    const body = `Here ya go Naldoven: Jamie Test ${filler} Call us also at +19995551234 or email leak@example.com`;
+    // No "Areas to light up:" anywhere in this body.
+    expect(parseLeadForward({ ...GML_FROM, body })).toBeNull();
+  });
+});
+
+describe('parseLeadForwardDisplay — message-level display marker (#268 fix round 3, technical HIGH)', () => {
+  const GML_SUBJECT_NAMED = 'New Lead from GML Media - Jamie Test';
+  const GML_SUBJECT_GENERIC = 'New Lead from GML Media!';
+
+  it('parses the direct-forward shape from subject + preview', () => {
+    const parsed = parseLeadForwardDisplay(GML_SUBJECT_NAMED, DIRECT_BODY);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.platformId).toBe('gml-media');
+    expect(parsed?.phone).toBe('+15551234567');
+    expect(parsed?.email).toBe('jamie.test@example.com');
+  });
+
+  it('parses the reaction-quoted shape from subject + preview', () => {
+    const parsed = parseLeadForwardDisplay(GML_SUBJECT_GENERIC, REACTION_BODY);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.phone).toBe('+15559876543');
+    expect(parsed?.email).toBe('pat.sample@example.com');
+  });
+
+  it('returns null when the subject does not carry the known marker, regardless of preview content', () => {
+    expect(parseLeadForwardDisplay('Re: your lighting quote', DIRECT_BODY)).toBeNull();
+  });
+
+  it('returns null when the subject matches but the preview has no parseable template (fail closed)', () => {
+    expect(parseLeadForwardDisplay(GML_SUBJECT_GENERIC, 'Thanks for using GML Media! Your statement is attached.')).toBeNull();
+  });
+
+  it('is null-safe on missing subject/preview', () => {
+    expect(parseLeadForwardDisplay(null, null)).toBeNull();
+    expect(parseLeadForwardDisplay(undefined, undefined)).toBeNull();
+  });
+
+  // The exact HIGH this function exists to fix: a RETURNING CUSTOMER'S
+  // ordinary Gmail thread (real subject, real body, no GML template
+  // anywhere) never triggers the affordance — the InboxList-level test pins
+  // that this stays "Reply in Gmail" even though `dashboard_contacts` may
+  // carry a phone from an earlier quote (a merged, contact-level fact this
+  // function never looks at).
+  it('an ordinary customer email — real subject, no GML template — never parses as a forward', () => {
+    const parsed = parseLeadForwardDisplay(
+      'Re: quote for our house',
+      'Thanks so much! Can we do the front and the porch too? Call me at +15551234567 if easier.',
+    );
+    expect(parsed).toBeNull();
   });
 });
 

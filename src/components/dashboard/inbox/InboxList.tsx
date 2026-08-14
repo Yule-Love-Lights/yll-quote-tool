@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { ChevronDown } from 'lucide-react';
 import type { OpenInboxItem } from '@/lib/dashboard/inbox/types';
+import { parseLeadForwardDisplay } from '@/lib/dashboard/inbox/leadForward';
 import { formatWaiting } from '@/lib/dashboard/inbox/notify';
 import { claimState } from '@/lib/dashboard/inbox/assignment';
 import { buildInboxSummary } from '@/lib/dashboard/inbox/summary';
@@ -53,15 +54,22 @@ type RowActions = {
 // label + waiting time, claim/release/take-over control, and the four action
 // buttons (Handled / Not a lead / Followed / Mark completed) plus Reply
 // (Gmail gets a static "Reply in Gmail" note instead — or, for a #268
-// lead-forward row with a parsed customer phone, an honest "call/text
-// directly" affordance instead, see the source==='gmail' branch below) with
-// its ReplyComposer.
+// lead-forward row, an honest "call/text directly" affordance instead, see
+// the source==='gmail' branch below) with its ReplyComposer.
 function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }) {
   const { now, busyId, claimBusy, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent } = actions;
   const esc = escalation(item.escalationLevel);
   const waiting = item.lastMessageAt ? formatWaiting(now - new Date(item.lastMessageAt).getTime()) : '';
   const cs = claimState(item.assignedTo, currentOperatorId);
   const cid = item.contactId;
+  // #268 fix round 3 (technical HIGH, fix-introduced by round 2): MUST be
+  // message-level (subject+preview), never `item.contact.phone` —
+  // `dashboard_contacts.primary_phone` is a cross-channel MERGED field, so a
+  // returning customer who submitted a quote earlier (which carries a phone)
+  // and later emails sales@ normally would show a phone on a genuine,
+  // replyable Gmail thread and falsely trigger this. parseLeadForwardDisplay
+  // never reads the contact at all — see its doc comment in leadForward.ts.
+  const forwarded = item.source === 'gmail' ? parseLeadForwardDisplay(item.subject, item.preview) : null;
   return (
     <li
       className="rounded-lg border p-4"
@@ -188,30 +196,22 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
             Mark completed
           </button>
           {item.source === 'gmail' ? (
-            item.contact?.phone ? (
+            forwarded ? (
               // #268 fix round (staff HIGH): resolveReplyTarget (reply.ts)
               // sends EVERY gmail-source row to "Reply in Gmail" — structurally
               // wrong for a #268 lead-forward, whose Gmail thread's addressable
               // party is the platform's no-reply relay (replying there reaches
-              // nobody). The only marker available at this layer that a gmail
-              // row IS a parsed forward (vs. a real Gmail conversation) is its
-              // contact carrying a PHONE at all: pre-#268, gmail-sourced
-              // identities always set `phones: []` (gmail.ts never had a phone
-              // signal); #268's leadForward parse is the one path that
-              // populates it. This is an IMPLICIT/indirect detection, not an
-              // explicit leadKind/source flag — if a future gmail path starts
-              // setting a phone for some other reason, this affordance would
-              // fire for it too; revisit with an explicit marker then. Display
-              // + copy only — no new mutating controls.
+              // nobody). `forwarded` (computed above via
+              // parseLeadForwardDisplay) is a MESSAGE-level re-derivation of
+              // the row's own subject+preview — see its doc comment for why
+              // this must never be contact-level (a returning customer's
+              // merged contact.phone false-triggered this in round 2).
+              // Display + copy only — no new mutating controls.
               <span className="px-3 py-1.5 text-sm text-right max-w-[220px]" style={{ color: 'var(--op-text-2)' }}>
                 Forwarded lead — email replies go to the platform&apos;s no-reply relay. Call or text the customer directly:{' '}
-                <span style={{ color: 'var(--op-text)' }}>{item.contact.phone}</span>
-                {item.contact.email ? (
-                  <>
-                    {' · '}
-                    <span style={{ color: 'var(--op-text)' }}>{item.contact.email}</span>
-                  </>
-                ) : null}
+                {forwarded.phone && <span style={{ color: 'var(--op-text)' }}>{forwarded.phone}</span>}
+                {forwarded.phone && forwarded.email ? ' · ' : null}
+                {forwarded.email && <span style={{ color: 'var(--op-text)' }}>{forwarded.email}</span>}
               </span>
             ) : (
               <span className="px-3 py-1.5 text-sm" style={{ color: 'var(--op-text-2)' }}>

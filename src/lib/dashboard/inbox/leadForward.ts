@@ -51,13 +51,30 @@ export type LeadForwardPlatform = {
   /** Bare sender domain(s) that identify this platform. Bare-or-subdomain
    *  match (same rule as classify.ts's isInternalDomain). */
   senderDomains?: string[];
-  /** Case-insensitive substrings of the From display name that also identify
-   *  this platform — a redundant signal to the domain, useful since some
-   *  lead-forward senders vary their address's local part per connection
-   *  (GML Media's is a fixed-but-opaque Zapier "Email by Zapier" token,
+  /** Normalized (trimmed, lowercased) EXACT match against the From display
+   *  name — a redundant signal to the domain, useful since some lead-forward
+   *  senders vary their address's local part per connection (GML Media's is
+   *  a fixed-but-opaque Zapier "Email by Zapier" token,
    *  `no-reply.mj1fi9@zapiermail.com`; a resend of the same Zap could get a
-   *  different token). */
-  displayNameContains?: string[];
+   *  different token). #268 fix round 3 (LOW 2): EXACT match, not substring —
+   *  substring-contains let a lookalike name ("not gml media fan", "gml
+   *  media fanpage") false-match. All 7 real prod rows are exactly
+   *  "GML Media", so exact costs zero real-world recall. */
+  displayNames?: string[];
+  /**
+   * Substring markers (case-insensitive) in the email SUBJECT that identify
+   * this platform for DISPLAY purposes only (parseLeadForwardDisplay, #268
+   * fix round 3) — the sender address/display name used by
+   * matchLeadForwardPlatform above isn't available client-side (OpenInboxItem
+   * only carries subject/preview, never the raw From header), so this is a
+   * deliberately lower-confidence, DISPLAY-ONLY approximation with NO
+   * write/mutation downstream: worst case a crafted subject shows a
+   * phone/email hint in the UI, nothing more — it never reaches identity
+   * resolution or a database write. Substring (not exact), since real
+   * subjects vary ("New Lead from GML Media - <Name>" / "New Lead from GML
+   * Media!").
+   */
+  displaySubjectContains?: string[];
 };
 
 // #268: ONE entry per known lead-forwarding platform — add the next one here.
@@ -73,7 +90,8 @@ export const LEAD_FORWARD_PLATFORMS: readonly LeadForwardPlatform[] = [
   {
     id: 'gml-media',
     senderDomains: ['zapiermail.com'],
-    displayNameContains: ['gml media'],
+    displayNames: ['gml media'],
+    displaySubjectContains: ['new lead from gml media'],
   },
 ];
 
@@ -109,7 +127,9 @@ function matchesDomain(domain: string, allow: string[]): boolean {
  * HIGH) — see the top-of-file note for why either alone is forgeable
  * (zapiermail.com is a shared multi-tenant relay; a display name is
  * attacker-chosen free text on most sending paths). All 7 real prod GML rows
- * carry both, so this costs zero real-world recall.
+ * carry both, so this costs zero real-world recall. The display-name match is
+ * EXACT (normalized), not substring (#268 fix round 3, LOW 2) — see
+ * LeadForwardPlatform.displayNames's doc.
  */
 export function matchLeadForwardPlatform(
   fromAddress: string | null | undefined,
@@ -119,8 +139,24 @@ export function matchLeadForwardPlatform(
   const name = (displayName ?? '').trim().toLowerCase();
   for (const platform of LEAD_FORWARD_PLATFORMS) {
     const domainHit = !!domain && !!platform.senderDomains?.length && matchesDomain(domain, platform.senderDomains);
-    const nameHit = !!name && !!platform.displayNameContains?.length && platform.displayNameContains.some((s) => name.includes(s));
+    const nameHit = !!name && !!platform.displayNames?.length && platform.displayNames.some((s) => name === s);
     if (domainHit && nameHit) return platform;
+  }
+  return null;
+}
+
+/**
+ * Which known lead-forward platform (if any) this SUBJECT belongs to —
+ * DISPLAY-ONLY sibling of matchLeadForwardPlatform for callers (client
+ * components) that only have subject/preview, not the raw sender. See
+ * LeadForwardPlatform.displaySubjectContains's doc for why this is
+ * deliberately lower-confidence and why that's an acceptable trade here.
+ */
+export function matchLeadForwardPlatformBySubject(subject: string | null | undefined): LeadForwardPlatform | null {
+  const s = (subject ?? '').trim().toLowerCase();
+  if (!s) return null;
+  for (const platform of LEAD_FORWARD_PLATFORMS) {
+    if (platform.displaySubjectContains?.some((m) => s.includes(m))) return platform;
   }
   return null;
 }
@@ -134,6 +170,18 @@ export function matchLeadForwardPlatform(
 //   Address: <addr> City: <city> Areas to light up: ...
 const TEMPLATE_START_RE = /Here ya go[^:]*:/i;
 const TEMPLATE_END_RE = /Areas to light up:/i;
+// #268 fix round 3 (MED): cap applied ONLY when TEMPLATE_END_RE isn't found.
+// Real fixtures put the phone+"Email:" block within ~80 chars of the "Here ya
+// go" marker; 300 leaves generous headroom for longer names/emails while
+// still bounding how far a footer/signature beyond the real template can
+// leak in. This matters more than it looks: Gmail's own snippet truncation
+// (~200 chars total) means the reaction-quoted shape ROUTINELY never reaches
+// "Areas to light up:" at all (its ~100-char "reacted via Gmail... wrote:"
+// preamble eats most of the budget) — so without this cap, the "no closing
+// marker → run to end of body" fallback was doing far more work than the
+// top-of-file design doc implied, on the MOST COMMON real shape (4 of 7 live
+// rows are reaction-quoted).
+const TEMPLATE_MAX_LEN_WITHOUT_CLOSING_MARKER = 300;
 const PHONE_RE = /\+1\d{10}/;
 const EMAIL_RE = /Email:\s*(\S+@\S+)/i;
 const NAME_RE = /Here ya go[^:]*:\s*(.+?)\s*(?=\+1\d{10})/i;
@@ -163,7 +211,10 @@ function templateScope(body: string): string | null {
   if (!start || start.index == null) return null;
   const tail = body.slice(start.index);
   const end = tail.match(TEMPLATE_END_RE);
-  return end && end.index != null ? tail.slice(0, end.index) : tail;
+  if (end && end.index != null) return tail.slice(0, end.index);
+  // No closing marker — cap instead of running to the end of the body (#268
+  // fix round 3, MED). See TEMPLATE_MAX_LEN_WITHOUT_CLOSING_MARKER's doc.
+  return tail.slice(0, TEMPLATE_MAX_LEN_WITHOUT_CLOSING_MARKER);
 }
 
 /** Match `re` against `scope`, trim, and strip any trailing punctuation a lazy
@@ -171,6 +222,16 @@ function templateScope(body: string): string | null {
 function extractField(scope: string, re: RegExp): string | null {
   const value = scope.match(re)?.[1]?.trim().replace(/[.,;]+$/, '');
   return value || null;
+}
+
+/** Shared by parseLeadForward and parseLeadForwardDisplay — pull the phone
+ *  and/or email out of an already-template-scoped slice. */
+function extractPhoneEmail(scope: string): { phone: string | null; email: string | null } {
+  const phoneRaw = scope.match(PHONE_RE)?.[0] ?? null;
+  const phone = phoneRaw ? normalizePhone(phoneRaw) : null;
+  const emailRaw = extractField(scope, EMAIL_RE);
+  const email = emailRaw ? normalizeEmail(emailRaw) : null;
+  return { phone, email };
 }
 
 /**
@@ -191,10 +252,7 @@ export function parseLeadForward(input: {
   if (!platform) return null;
   const scope = templateScope(input.body ?? '');
   if (scope == null) return null; // no known template found anywhere in the body
-  const phoneRaw = scope.match(PHONE_RE)?.[0] ?? null;
-  const phone = phoneRaw ? normalizePhone(phoneRaw) : null;
-  const emailRaw = extractField(scope, EMAIL_RE);
-  const email = emailRaw ? normalizeEmail(emailRaw) : null;
+  const { phone, email } = extractPhoneEmail(scope);
   if (!phone && !email) return null; // fail closed: no reachable customer info parsed
   const name = extractField(scope, NAME_RE);
   const street = extractField(scope, STREET_RE);
@@ -207,4 +265,55 @@ export function parseLeadForward(input: {
     street,
     city,
   };
+}
+
+export type ParsedLeadForwardDisplay = {
+  platformId: string;
+  phone: string | null;
+  email: string | null;
+};
+
+/**
+ * DISPLAY-ONLY sibling of parseLeadForward for client components (InboxList)
+ * that only have `subject`/`preview` on OpenInboxItem — never the raw sender
+ * address/display name parseLeadForward relies on.
+ *
+ * #268 fix round 3 (technical HIGH, fix-introduced by round 2's FIX B):
+ * gating the "Forwarded lead" reply affordance on the CONTACT's phone
+ * (`dashboard_contacts.primary_phone`, a cross-channel MERGED field) was
+ * unsound TODAY, not just future risk. Reproduced trace: a customer submits
+ * a quote (quotetool.ts populates phone+email together) → later emails
+ * sales@ normally from the same address → store.ts's resolveIdentity
+ * matches the existing contact by email, appendIdentifiers keeps the
+ * existing phone (the Gmail touch's OWN identity never had one) → the UI
+ * sees a phone on a genuine, replyable Gmail thread and would render the
+ * FALSE "email replies go to the platform's no-reply relay" warning —
+ * exactly the common returning-customer shape, likely a bigger population
+ * than the 7 GML rows this feature exists for.
+ *
+ * This function fixes that by being MESSAGE-level instead of contact-level:
+ * it re-derives the same phone/email the #268 ingest-time parser would have
+ * extracted, straight from THIS row's own subject+preview — it never reads
+ * the contact at all, so a contact-merge from an unrelated channel can't
+ * affect it.
+ *
+ * Deliberately lower-confidence than parseLeadForward (a subject substring,
+ * not sender domain+display-name equality — see
+ * LeadForwardPlatform.displaySubjectContains's doc) because the sender isn't
+ * available here. That trade is fine: this function only controls what TEXT
+ * renders in the UI. No write/mutation ever reads its result — worst case a
+ * crafted subject shows a phone/email hint that isn't really a lead-forward;
+ * there's no path from here to identity resolution or a database write.
+ */
+export function parseLeadForwardDisplay(
+  subject: string | null | undefined,
+  preview: string | null | undefined,
+): ParsedLeadForwardDisplay | null {
+  const platform = matchLeadForwardPlatformBySubject(subject);
+  if (!platform) return null;
+  const scope = templateScope(preview ?? '');
+  if (scope == null) return null;
+  const { phone, email } = extractPhoneEmail(scope);
+  if (!phone && !email) return null;
+  return { platformId: platform.id, phone, email };
 }
