@@ -149,6 +149,16 @@ export function InWorksSection({
           </div>
           <div className="flex shrink-0 gap-2 flex-wrap justify-end">
             {item.source === 'gmail' ? (
+              // #268 fix round (sibling-guard check against InboxList.tsx's
+              // matching fix): a #268 lead-forward's real fix is a
+              // "call/text directly" affordance keyed on the contact having a
+              // PHONE — NOT done here. `InWorksItem` (store.ts, embargoed for
+              // this fix round) only selects `dashboard_contacts.display_name`
+              // (IN_WORKS_SELECT), never phone/email, so that marker isn't
+              // available at this layer at all. Fixing this needs a store.ts
+              // change (add phone/email to IN_WORKS_SELECT + InWorksItem)
+              // that's out of scope here — tracked as a follow-up, not
+              // silently left both broken AND undocumented.
               <span className="px-3 py-1.5 text-sm" style={{ color: 'var(--op-text-2)' }}>
                 Reply in Gmail
               </span>

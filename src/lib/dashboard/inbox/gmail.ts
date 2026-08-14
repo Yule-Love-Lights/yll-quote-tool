@@ -158,6 +158,16 @@ export function normalizeGmailThread(thread: GmailThreadLite, suppressed?: Set<s
   // its "automated"-tagged forwards for spam), not by List-Unsubscribe — so
   // the override has to run BEFORE the suppression check, not just before
   // classifyMessage, or it would never fire for the sender it exists to fix.
+  //
+  // OPS NOTE (#268 fix round, admin MED): the zapiermail.com suppression
+  // entry in app_settings (dashboard.suppressedSenders) is LOAD-BEARING for
+  // the FAILED-parse fallback and must NOT be deleted as "stale" once this
+  // fix ships. classify.ts's NO_REPLY_RE requires the no-reply-ish token to
+  // be immediately followed by "@" (`^no[-_.]?reply@`); the real GML address
+  // is `no-reply.<token>@zapiermail.com` — the token sits BETWEEN "reply" and
+  // "@", so NO_REPLY_RE does not match it. That means a future GML
+  // receipt/digest that doesn't parse (leadForward returns null) would
+  // classify as a 'lead' by content alone without the suppression entry.
   const leadForward = parseLeadForward({
     fromAddress: thread.from?.email ?? null,
     displayName: thread.from?.name ?? null,

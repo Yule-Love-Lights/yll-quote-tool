@@ -14,24 +14,40 @@ const REACTION_BODY =
 
 const GML_FROM = { fromAddress: 'no-reply.fake123@zapiermail.com', displayName: 'GML Media' };
 
-describe('matchLeadForwardPlatform', () => {
-  it('matches on the known sender domain', () => {
-    expect(matchLeadForwardPlatform('no-reply.fake123@zapiermail.com', 'Somebody Else')).not.toBeNull();
+describe('matchLeadForwardPlatform — requires BOTH domain AND display name (#268 fix round, technical HIGH)', () => {
+  it('matches when both the domain and display name are correct', () => {
+    expect(matchLeadForwardPlatform('no-reply.fake123@zapiermail.com', 'GML Media')).not.toBeNull();
   });
-  it('matches on the display name alone (address on a different domain)', () => {
-    expect(matchLeadForwardPlatform('leads@another-relay.example.com', 'GML Media')).not.toBeNull();
+  it('is case-insensitive on the display name (both legs still correct)', () => {
+    expect(matchLeadForwardPlatform('no-reply.fake123@zapiermail.com', 'gml MEDIA')).not.toBeNull();
   });
-  it('is case-insensitive on the display name', () => {
-    expect(matchLeadForwardPlatform('x@other.example.com', 'gml MEDIA')).not.toBeNull();
+  it('matches a subdomain of the known sender domain (with the correct display name)', () => {
+    expect(matchLeadForwardPlatform('no-reply@relay.zapiermail.com', 'GML Media')).not.toBeNull();
   });
-  it('matches a subdomain of the known sender domain', () => {
-    expect(matchLeadForwardPlatform('no-reply@relay.zapiermail.com', null)).not.toBeNull();
+
+  // Attack shapes (#268 fix round): each leg alone is forgeable —
+  // zapiermail.com is Zapier's shared multi-tenant relay (any free Zapier
+  // account can send from it) and the display name is attacker-chosen free
+  // text on most sending paths — so neither may single-handedly authorize
+  // the override.
+  it('right DOMAIN, wrong display name → no match (the known domain alone is not enough)', () => {
+    expect(matchLeadForwardPlatform('no-reply.fake123@zapiermail.com', 'Somebody Else')).toBeNull();
   });
-  it('does NOT match a lookalike domain that merely starts with the real one', () => {
-    expect(matchLeadForwardPlatform('x@notzapiermail.com', null)).toBeNull();
+  it('right DISPLAY NAME, wrong domain → no match (a spoofed display name alone is not enough)', () => {
+    expect(matchLeadForwardPlatform('leads@another-relay.example.com', 'GML Media')).toBeNull();
   });
-  it('does NOT match a lookalike domain that merely ends with the real one as a suffix without a dot', () => {
-    expect(matchLeadForwardPlatform('x@zapiermail.com.evil.co', null)).toBeNull();
+  it('right display name, missing domain (no @) → no match', () => {
+    expect(matchLeadForwardPlatform('not-an-email', 'GML Media')).toBeNull();
+  });
+  it('right domain, missing display name → no match', () => {
+    expect(matchLeadForwardPlatform('no-reply@relay.zapiermail.com', null)).toBeNull();
+  });
+
+  it('does NOT match a lookalike domain that merely starts with the real one, even with the correct display name', () => {
+    expect(matchLeadForwardPlatform('x@notzapiermail.com', 'GML Media')).toBeNull();
+  });
+  it('does NOT match a lookalike domain that merely ends with the real one as a suffix without a dot, even with the correct display name', () => {
+    expect(matchLeadForwardPlatform('x@zapiermail.com.evil.co', 'GML Media')).toBeNull();
   });
   it('does NOT match an unrelated sender', () => {
     expect(matchLeadForwardPlatform('newsletter@example.com', 'Weekly Digest')).toBeNull();
@@ -91,6 +107,49 @@ describe('parseLeadForward — partial bodies still valid (phone OR email is eno
     expect(parsed).not.toBeNull();
     expect(parsed?.street).toBeNull();
     expect(parsed?.city).toBeNull();
+  });
+});
+
+describe('parseLeadForward — template-scoped extraction (#268 fix round, technical HIGH)', () => {
+  it('does NOT pick up a phone number in a footer/signature when there is no "Here ya go" template at all (fail closed)', () => {
+    const body = 'GML Media respects your privacy. Questions about your account? Call our office at +15551234567 any time.';
+    expect(parseLeadForward({ ...GML_FROM, body })).toBeNull();
+  });
+
+  it('ignores a real customer phone/email planted BEFORE the "Here ya go" marker', () => {
+    // A phone+email pair sitting in front of the template must never become
+    // the parsed identity — only content from "Here ya go" onward counts.
+    const body =
+      'Call our existing customer back at +19995551111, email old-lead@example.com. ' +
+      'Here ya go Naldoven: Jamie Test +15551234567 Email: jamie.test@example.com';
+    const parsed = parseLeadForward({ ...GML_FROM, body });
+    expect(parsed).not.toBeNull();
+    expect(parsed?.phone).toBe('+15551234567');
+    expect(parsed?.email).toBe('jamie.test@example.com');
+  });
+
+  it('ignores a second phone/email appended AFTER "Areas to light up:" (a footer/signature) — the template block has its own values, and only those are used', () => {
+    const body = `${DIRECT_BODY} Questions? Call our office at +19995551234 or email accounting@example.com.`;
+    const parsed = parseLeadForward({ ...GML_FROM, body });
+    expect(parsed).not.toBeNull();
+    // Still the TEMPLATE's own phone/email, never the footer's.
+    expect(parsed?.phone).toBe('+15551234567');
+    expect(parsed?.email).toBe('jamie.test@example.com');
+  });
+
+  it('fails closed when the template block itself has no phone/email, even though a footer AFTER it does', () => {
+    const body =
+      'Here ya go Naldoven: Jamie Test Street Address: 42 Fake Lane City: Faketown ' +
+      'Areas to light up: Roof Line - (Standard) ' +
+      'Questions? Call our office at +19995551234 or email accounting@example.com.';
+    expect(parseLeadForward({ ...GML_FROM, body })).toBeNull();
+  });
+
+  it('RESIDUAL, ACCEPTED RISK: a fully-forged template with BOTH platform legs spoofed still parses — documented, not fixed here (see leadForward.ts top-of-file note)', () => {
+    const forgedBody = 'Here ya go Naldoven: Jamie Test +15551234567 Email: attacker@evil.example.com';
+    const parsed = parseLeadForward({ ...GML_FROM, body: forgedBody });
+    expect(parsed).not.toBeNull();
+    expect(parsed?.email).toBe('attacker@evil.example.com');
   });
 });
 

@@ -73,6 +73,49 @@ describe('InboxList (#252 slice D rollup)', () => {
   });
 });
 
+// #268 fix round (staff HIGH): resolveReplyTarget (reply.ts) sends every
+// gmail-source row to a static "Reply in Gmail" note, which is structurally
+// wrong for a #268 lead-forward — its addressable Gmail party is the
+// platform's no-reply relay, and replying there reaches nobody. The only
+// available marker at this layer is the contact carrying a PHONE at all
+// (only #268's leadForward parse ever sets one for a gmail-sourced contact).
+describe('InboxList — #268 forwarded-lead reply affordance', () => {
+  it('a gmail row whose contact has a phone shows the phone + the forwarded-lead wording instead of "Reply in Gmail"', () => {
+    const items: OpenInboxItem[] = [
+      {
+        ...base,
+        id: 'fwd1',
+        source: 'gmail',
+        contactId: 'c-fwd',
+        contact: { displayName: 'Jamie Test', email: 'jamie.test@example.com', phone: '+15551234567' },
+        lastMessageAt: at(1 * 3_600_000),
+      },
+    ];
+    const html = renderToStaticMarkup(<InboxList initialItems={items} nowMs={now} />);
+    expect(html).toContain('Forwarded lead');
+    expect(html).toContain('no-reply relay');
+    expect(html).toContain('+15551234567');
+    expect(html).toContain('jamie.test@example.com');
+    expect(html).not.toContain('Reply in Gmail');
+  });
+
+  it('a gmail row without a contact phone shows the unchanged "Reply in Gmail" note', () => {
+    const items: OpenInboxItem[] = [
+      {
+        ...base,
+        id: 'g1',
+        source: 'gmail',
+        contactId: 'c-real',
+        contact: { displayName: 'A Real Conversation', email: 'them@example.com', phone: null },
+        lastMessageAt: at(1 * 3_600_000),
+      },
+    ];
+    const html = renderToStaticMarkup(<InboxList initialItems={items} nowMs={now} />);
+    expect(html).toContain('Reply in Gmail');
+    expect(html).not.toContain('Forwarded lead');
+  });
+});
+
 // #270 fix round (staff HIGH, part c): the pin/auto-expand decision extracted
 // as a pure function so it's directly unit-testable without rendering — the
 // actual DOM-remount claim (why a stable component/key avoids losing

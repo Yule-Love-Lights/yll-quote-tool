@@ -52,7 +52,10 @@ type RowActions = {
 // returning badge, filtered marker, subject line, preview line, escalation
 // label + waiting time, claim/release/take-over control, and the four action
 // buttons (Handled / Not a lead / Followed / Mark completed) plus Reply
-// (Gmail gets a static "Reply in Gmail" note instead) with its ReplyComposer.
+// (Gmail gets a static "Reply in Gmail" note instead — or, for a #268
+// lead-forward row with a parsed customer phone, an honest "call/text
+// directly" affordance instead, see the source==='gmail' branch below) with
+// its ReplyComposer.
 function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }) {
   const { now, busyId, claimBusy, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent } = actions;
   const esc = escalation(item.escalationLevel);
@@ -185,9 +188,36 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
             Mark completed
           </button>
           {item.source === 'gmail' ? (
-            <span className="px-3 py-1.5 text-sm" style={{ color: 'var(--op-text-2)' }}>
-              Reply in Gmail
-            </span>
+            item.contact?.phone ? (
+              // #268 fix round (staff HIGH): resolveReplyTarget (reply.ts)
+              // sends EVERY gmail-source row to "Reply in Gmail" — structurally
+              // wrong for a #268 lead-forward, whose Gmail thread's addressable
+              // party is the platform's no-reply relay (replying there reaches
+              // nobody). The only marker available at this layer that a gmail
+              // row IS a parsed forward (vs. a real Gmail conversation) is its
+              // contact carrying a PHONE at all: pre-#268, gmail-sourced
+              // identities always set `phones: []` (gmail.ts never had a phone
+              // signal); #268's leadForward parse is the one path that
+              // populates it. This is an IMPLICIT/indirect detection, not an
+              // explicit leadKind/source flag — if a future gmail path starts
+              // setting a phone for some other reason, this affordance would
+              // fire for it too; revisit with an explicit marker then. Display
+              // + copy only — no new mutating controls.
+              <span className="px-3 py-1.5 text-sm text-right max-w-[220px]" style={{ color: 'var(--op-text-2)' }}>
+                Forwarded lead — email replies go to the platform&apos;s no-reply relay. Call or text the customer directly:{' '}
+                <span style={{ color: 'var(--op-text)' }}>{item.contact.phone}</span>
+                {item.contact.email ? (
+                  <>
+                    {' · '}
+                    <span style={{ color: 'var(--op-text)' }}>{item.contact.email}</span>
+                  </>
+                ) : null}
+              </span>
+            ) : (
+              <span className="px-3 py-1.5 text-sm" style={{ color: 'var(--op-text-2)' }}>
+                Reply in Gmail
+              </span>
+            )
           ) : (
             <button
               type="button"
