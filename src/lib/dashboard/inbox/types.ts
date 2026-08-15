@@ -103,6 +103,22 @@ export type DueFollowUp = {
   reason: string;
   dueAt: string;
   contactName: string | null;
+  /** #229: contact phone/email alongside the name — lets a downstream NAMED
+   *  render (the morning digest) fall back name → phone → email when a
+   *  dashboard_contacts row has no display_name (a real live case: a dropped
+   *  lead whose contact row was created from a bare inbound touch). The strip
+   *  itself doesn't need these; they ride along for that one consumer. */
+  contactPhone: string | null;
+  contactEmail: string | null;
+  /** #229: true when this follow-up is anchored (via its linked inbox_items
+   *  row) to a hidden (parked-draft) legacy_rebook ("YLL Neighbor") quote —
+   *  the SAME predicate listOpenItems/listEscalatableItems already apply
+   *  (isHiddenLegacyRebookQuote). The /inbox strip deliberately keeps SHOWING
+   *  these (unchanged, existing behavior — the follow-ups-due count has never
+   *  excluded rebook); this flag exists solely so a consumer that renders
+   *  follow-ups BY NAME (the morning digest) can filter them out — the
+   *  Neighbor pool is ~124 quotes and would otherwise flood a by-name list. */
+  isLegacyRebookAnchored: boolean;
 };
 
 // ─── Follow-ups ─────────────────────────────────────────────────────────────

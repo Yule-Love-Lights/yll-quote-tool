@@ -1291,31 +1291,73 @@ export async function sweepOrphanedFollowUps(reason: string): Promise<number> {
 
 export type DueFollowUpsResult = { ok: true; items: DueFollowUp[] } | { ok: false; error: string };
 
-/** Pending follow-ups due today or overdue (ET), for the top strip. */
+/**
+ * Pending follow-ups due today or overdue (ET), for the top strip AND (#229)
+ * the morning digest's named "overdue follow-ups" detail.
+ *
+ * #229: also embeds `inbox_items ( source, external_id )` via the
+ * follow_ups.inbox_item_id FK and batch-looks-up (reusing
+ * fetchHiddenLegacyRebookQuoteIds, the SAME predicate listOpenItems already
+ * applies) whether the linked item backs a hidden (parked-draft)
+ * legacy_rebook ("YLL Neighbor") quote — a Neighbor draft CAN mint a
+ * quote_sent_no_reply follow-up (see TRACKS_OUTBOUND_FIRST_OBSERVATION's
+ * #222 doc: it's a deliberately accepted tradeoff, ~114-124 quotes). Flagged
+ * on `isLegacyRebookAnchored` rather than filtered out here — the strip's own
+ * count/consumer is UNCHANGED (it has never excluded rebook); only a
+ * downstream NAMED render (the digest) filters on the flag.
+ */
 export async function listDueFollowUps(now: Date): Promise<DueFollowUpsResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const { data, error } = await sb
     .from('follow_ups')
-    .select('id, reason, due_at, dashboard_contacts ( display_name )')
+    .select(
+      'id, reason, due_at, ' +
+        'dashboard_contacts ( display_name, primary_phone, primary_email ), ' +
+        'inbox_items ( source, external_id )',
+    )
     .eq('status', 'pending')
     .order('due_at', { ascending: true })
     .limit(100);
   if (error) return { ok: false, error: error.message };
-  const items = ((data ?? []) as unknown as Record<string, unknown>[])
-    .filter((r) => {
-      const d = r.due_at as string | null;
-      return d ? isDueToday(new Date(d), now) : false;
-    })
-    .map((r): DueFollowUp => {
-      const c = (r.dashboard_contacts as Record<string, unknown> | null) ?? null;
-      return {
-        id: String(r.id),
-        reason: r.reason as string,
-        dueAt: r.due_at as string,
-        contactName: (c?.display_name as string | null) ?? null,
-      };
-    });
+
+  const dueRows = ((data ?? []) as unknown as Record<string, unknown>[]).filter((r) => {
+    const d = r.due_at as string | null;
+    return d ? isDueToday(new Date(d), now) : false;
+  });
+
+  // #229: same batch-lookup shape as listOpenItems — collect the quotetool
+  // ids seen on THIS page (quoteIdPrefix/isUuid guard against a suffixed
+  // `:color-request` external_id poisoning the .in() lookup, #183 BUG 1),
+  // skip the extra query entirely when nothing here is quotetool-sourced.
+  const quotetoolIds = [
+    ...new Set(
+      dueRows
+        .map((r) => (r.inbox_items as Record<string, unknown> | null) ?? null)
+        .filter((ii): ii is Record<string, unknown> => !!ii && ii.source === 'quotetool')
+        .map((ii) => quoteIdPrefix(String(ii.external_id)))
+        .filter(isUuid),
+    ),
+  ];
+  const hiddenQuoteIds = quotetoolIds.length
+    ? await fetchHiddenLegacyRebookQuoteIds(sb, quotetoolIds)
+    : new Set<string>();
+
+  const items = dueRows.map((r): DueFollowUp => {
+    const c = (r.dashboard_contacts as Record<string, unknown> | null) ?? null;
+    const ii = (r.inbox_items as Record<string, unknown> | null) ?? null;
+    const isLegacyRebookAnchored =
+      !!ii && ii.source === 'quotetool' && hiddenQuoteIds.has(quoteIdPrefix(String(ii.external_id)));
+    return {
+      id: String(r.id),
+      reason: r.reason as string,
+      dueAt: r.due_at as string,
+      contactName: (c?.display_name as string | null) ?? null,
+      contactPhone: (c?.primary_phone as string | null) ?? null,
+      contactEmail: (c?.primary_email as string | null) ?? null,
+      isLegacyRebookAnchored,
+    };
+  });
   return { ok: true, items };
 }
 
