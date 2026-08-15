@@ -218,7 +218,7 @@ describe('POST /api/quotes/[id]/mark-sent — illegal transitions', () => {
     ['approved', { customer_approved_at: '2026-07-01T00:00:00Z' }],
     ['declined', { status: 'declined' as const }],
     ['cancelled', { status: 'cancelled' as const }],
-    ['lost', { status: 'lost' as const }],
+    ['abandoned', { status: 'abandoned' as const }],
   ])('409s (illegal-transition) from %s — quote_sent_at is null but the transition is not legal', async (_label, extra) => {
     const { client, updatePayloads } = makeSb({ ...DRAFT_QUOTE, ...extra });
     sbRef.current = client;

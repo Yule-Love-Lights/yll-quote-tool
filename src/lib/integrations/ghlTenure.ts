@@ -132,10 +132,12 @@ async function resolveTenureFieldId(): Promise<string | null> {
 }
 
 // Review fix batch (#200 staff-lens MED): the interactive tenure-editor save
-// and convert-to-job both AWAIT this call, and ghlFetch has no AbortController
-// (no fetch-level cancellation) — a slow/hung GHL call could otherwise block
-// a staff click for as long as the platform's own request timeout. Bounds the
-// WHOLE push (DB reads included, not just the GHL leg) to a flat deadline.
+// and convert-to-job both AWAIT this call — a slow/hung GHL call could
+// otherwise block a staff click. Bounds the WHOLE push (DB reads included,
+// not just the GHL leg) to a flat deadline. Since #264 (S38), ghlFetch also
+// carries its own 10s AbortController per call; this 6s race still wins
+// (6 < 10), so caller-visible timing is unchanged — the losing background
+// call is just bounded at ≤10s per leg now instead of running unbounded.
 const PUSH_DEADLINE_MS = 6000;
 
 /**
@@ -211,11 +213,13 @@ async function pushTenureYearsToGhlInner(
  * staff-save path that must complete regardless of a GHL hiccup.
  *
  * DEADLINE (review fix batch): bounded to PUSH_DEADLINE_MS via Promise.race.
- * On expiry this resolves { pushed: false } and logs a timeout — the
- * underlying DB/GHL calls are NOT cancelled (ghlFetch has no
- * AbortController; out of scope to add one here) and may still complete in
- * the background after this function has already returned. Acceptable: the
- * worst case is a late, otherwise-harmless GHL write racing a later push,
+ * On expiry this resolves { pushed: false } and logs a timeout — the race
+ * itself does not cancel the losing call, but since #264 (S38) each
+ * underlying ghlFetch leg carries its own 10s AbortController, so the
+ * background continuation is bounded at ≤10s per leg rather than unbounded;
+ * it may still complete after this function has already returned.
+ * Acceptable: the worst case is a late, otherwise-harmless GHL write racing
+ * a later push,
  * which the full-overwrite design already tolerates.
  */
 export async function pushTenureYearsToGhl(

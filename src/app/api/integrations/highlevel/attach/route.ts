@@ -22,7 +22,7 @@
 //   {
 //     quoteId: string       (UUID from our quotes table)
 //     contactId: string     (HighLevel contact id from autocomplete pick)
-//     opportunityName?: string  (used only if we have to create — e.g., "Holiday Lights — 123 Main St")
+//     opportunityName?: string  (used only if we have to create — e.g., "Jane Smith", the customer's name)
 //     monetaryValue?: number    (quote total, used as deal value if we create)
 //   }
 // Response:
@@ -167,7 +167,13 @@ export async function POST(req: NextRequest) {
       contactId: body.contactId,
       pipelineId: stages.pipelineId,
       fallbackStageId: stages.entry,
-      fallbackName: body.opportunityName?.trim() || `Holiday Lights quote ${body.quoteId.slice(0, 8)}`,
+      // #247: the card name is the customer's name (matching the send
+      // route's `quote.customer_name?.trim() || 'Yule Love Lights quote'`
+      // shape), not a vertical-specific literal — this route serves
+      // holiday, permanent, event and bistro alike. contactName is the
+      // same identity field the #214 customers re-resolution above uses,
+      // so it's a safe second try before the generic fallback.
+      fallbackName: body.opportunityName?.trim() || body.contactName?.trim() || 'Yule Love Lights quote',
       monetaryValue:
         typeof body.monetaryValue === 'number' && body.monetaryValue > 0
           ? body.monetaryValue

@@ -93,7 +93,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       { status: 409 },
     );
   }
-  // A dead order (cancelled/declined/lost) can't take colour-change requests —
+  // A dead order (cancelled/declined/abandoned) can't take colour-change requests —
   // mirror the sibling routes (amend / free-items / apply) that reject terminal.
   const lifecycle = deriveStatus({
     quote_sent_at: quote.quote_sent_at,
@@ -101,7 +101,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     deposit_paid_at: quote.deposit_paid_at,
     status: quote.status,
   });
-  if (lifecycle === 'cancelled' || lifecycle === 'declined' || lifecycle === 'lost') {
+  if (lifecycle === 'cancelled' || lifecycle === 'declined' || lifecycle === 'abandoned') {
     return NextResponse.json(
       { error: `This order is ${lifecycle}`, code: 'not-editable' },
       { status: 409 },

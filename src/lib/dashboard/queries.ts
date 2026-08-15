@@ -26,7 +26,7 @@ const DASHBOARD_QUOTES_SELECT =
   'homeworks_sent_at, homeworks_signed_at, highlevel_contact_id, ' +
   'service_type, ' +
   // B7 fix: status + viewed_at are required so deriveStatus can identify
-  // terminal states (cancelled/declined/lost) that timestamps alone can't
+  // terminal states (cancelled/declined/abandoned) that timestamps alone can't
   // express. Without status, a cancelled-but-deposited order falls through
   // deposit_paid_at→'booked' and inflates revenue and the board.
   'status, viewed_at, ' +

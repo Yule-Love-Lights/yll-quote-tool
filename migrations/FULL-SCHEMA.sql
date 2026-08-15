@@ -1957,3 +1957,32 @@ drop trigger if exists shift_breaks_updated_at on public.shift_breaks;
 create trigger shift_breaks_updated_at
   before update on public.shift_breaks
   for each row execute function public.shift_breaks_set_updated_at();
+
+-- ---------------------------------------------------------------------
+-- quote_deliveries (2026-08-12, migrations/2026-08-12-quote-deliveries.sql) —
+-- durable record of every attempt to deliver a quote (SMS/email via GHL) to a
+-- CUSTOMER (#250). One row per attempt (send + each ?retryDelivery=1
+-- redelivery), not one row per quote — see the migration file's own header
+-- for the table-vs-columns rationale and the exact call-site scope (only the
+-- POST /api/quotes/[id]/send customer messages; every other sendSms/sendEmail
+-- caller sends a different customer message and is out of scope). RLS
+-- ENABLED, ZERO POLICIES — service-role only, matches quote_view_events /
+-- self_serve_estimates.
+-- ---------------------------------------------------------------------
+create table if not exists public.quote_deliveries (
+  id                  uuid primary key default gen_random_uuid(),
+  created_at          timestamptz not null default now(),
+  quote_id            uuid not null references public.quotes(id) on delete cascade,
+  channel             text not null check (channel in ('sms', 'email')),
+  outcome             text not null check (outcome in ('sent', 'failed')),
+  provider_message_id text,
+  error               text
+);
+
+create index if not exists quote_deliveries_quote_id_idx
+  on public.quote_deliveries (quote_id, created_at desc);
+
+create index if not exists quote_deliveries_created_at_idx
+  on public.quote_deliveries (created_at desc);
+
+alter table public.quote_deliveries enable row level security;

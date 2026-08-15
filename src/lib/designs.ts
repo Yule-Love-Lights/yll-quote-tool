@@ -1,7 +1,7 @@
 import sharp from 'sharp';
 import { getSupabaseServiceClient } from './supabase';
 import type { Scene } from './design/sceneTypes';
-import { pruneOrphanedMiniGroups } from './design/sceneTypes';
+import { pruneOrphanedMiniGroups, isMiniGroup } from './design/sceneTypes';
 import { seedLinesHaveContent, type RooflineSeedLines } from './design/seedRoofline';
 import {
   seedSceneFromAnalysis,
@@ -961,13 +961,20 @@ export async function addDesignExtraPhoto(
   return entry;
 }
 
+// #741 defect 3: what a mini group's stringCount/surface report as, for the
+// staff-facing "these were removed" notice — mirrors the #255 seed-analysis
+// route's identical shape so QuoteBuilder can render both with one message.
+export type PrunedMiniGroupReport = { surface: string | null; stringCount: number };
+type RemoveDesignExtraPhotoResult = { ok: boolean; prunedMiniGroups: PrunedMiniGroupReport[] };
+const REMOVE_EXTRA_PHOTO_FAILED: RemoveDesignExtraPhotoResult = { ok: false, prunedMiniGroups: [] };
+
 // Remove one extra photo: its storage object, its array entry, AND every scene
 // item drawn on it (an item tagged to a deleted photo would otherwise be
 // invisible everywhere, forever). PR2b's linked twins refine delete semantics;
 // here any item with the matching photoId dies with its photo.
-export async function removeDesignExtraPhoto(id: string, photoId: string): Promise<boolean> {
+export async function removeDesignExtraPhoto(id: string, photoId: string): Promise<RemoveDesignExtraPhotoResult> {
   const sb = getSb();
-  if (!sb) return false;
+  if (!sb) return REMOVE_EXTRA_PHOTO_FAILED;
 
   // W2-033: read extra_photos AND scene in the one row fetch (previously a
   // second getDesign('*') re-read the row just for the scene, below).
@@ -982,10 +989,10 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
     scene = row.scene ?? undefined;
   } catch (err) {
     console.error('removeDesignExtraPhoto:', err);
-    return false;
+    return REMOVE_EXTRA_PHOTO_FAILED;
   }
   const entry = extras.find(p => p.id === photoId);
-  if (!entry) return false;
+  if (!entry) return REMOVE_EXTRA_PHOTO_FAILED;
 
   // Storage first (non-fatal on failure — the object is unreachable once the
   // entry is gone; deleteDesign's prefix-removal is the backstop).
@@ -1004,7 +1011,7 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
     await updateExtraPhotosAtomic(sb, id, (current) => current.filter(p => p.id !== photoId));
   } catch (err) {
     console.error('removeDesignExtraPhoto (row):', err);
-    return false;
+    return REMOVE_EXTRA_PHOTO_FAILED;
   }
 
   // Prune scene items drawn on the removed photo — plus any linked twins of a
@@ -1018,6 +1025,7 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
   // in the gap between this function's start and its prune write. A fresh
   // read-then-write still has a (much smaller) window, matching the same
   // last-write-wins risk the rest of the scene-autosave path already accepts.
+  let prunedMiniGroups: PrunedMiniGroupReport[] = [];
   try {
     const { data: freshData, error: freshErr } = await sb
       .from('designs')
@@ -1032,18 +1040,24 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
       // surviving member strands by this photo delete (it would otherwise
       // render nothing, be unselectable in the editor, and keep billing
       // forever via projectScene).
-      await updateDesignScene(id, {
-        ...freshScene,
-        items: pruneOrphanedMiniGroups(freshScene.items.filter(
-          it => it.photoId !== photoId && !(it.linkedToId && prunedIds.has(it.linkedToId)),
-        )),
-      });
+      // #741 defect 3: that drop was previously silent server-side — diff the
+      // miniGroups before/after (same technique the #255 seed-analysis route
+      // uses) so the caller can tell staff what just got removed.
+      const beforeGroups = freshScene.items.filter(isMiniGroup);
+      const keptItems = pruneOrphanedMiniGroups(freshScene.items.filter(
+        it => it.photoId !== photoId && !(it.linkedToId && prunedIds.has(it.linkedToId)),
+      ));
+      const afterGroupIds = new Set(keptItems.filter(isMiniGroup).map(g => g.id));
+      prunedMiniGroups = beforeGroups
+        .filter(g => !afterGroupIds.has(g.id))
+        .map(g => ({ surface: g.surface ?? null, stringCount: g.stringCount ?? 1 }));
+      await updateDesignScene(id, { ...freshScene, items: keptItems });
     }
   } catch (err) {
     console.error('removeDesignExtraPhoto: scene prune failed:', err);
   }
 
-  return true;
+  return { ok: true, prunedMiniGroups };
 }
 
 // Rename the BASE photo (#13) — null/empty clears back to "Photo 1".

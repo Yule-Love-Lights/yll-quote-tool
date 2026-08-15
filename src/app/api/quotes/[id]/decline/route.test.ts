@@ -284,14 +284,14 @@ describe('POST /api/quotes/[id]/decline — GHL card move (#GHL pipeline sync)',
     });
   });
 
-  it('a permanent quote moves the card to Abandoned (no real Declined stage in that pipeline)', async () => {
+  it('#235: a permanent quote moves the card to the real Declined stage (repointed off the old Abandoned reuse)', async () => {
     const { client } = makeSb(baseQuote({ highlevel_opportunity_id: 'opp_perm', service_type: 'permanent' }));
     sbRef.current = client;
 
     const res = await POST(makeReq({ reason: 'Budget' }), { params });
     expect(res.status).toBe(200);
     expect(hl.updateOpportunity).toHaveBeenCalledWith('opp_perm', {
-      pipelineStageId: '5a5f2e27-6dde-452c-8619-df1871908c8c', // Abandoned
+      pipelineStageId: '2714e48e-b486-457e-9da2-59893196d404', // Declined
     });
   });
 

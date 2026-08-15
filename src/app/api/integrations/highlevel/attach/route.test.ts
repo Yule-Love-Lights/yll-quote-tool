@@ -126,6 +126,38 @@ describe('HighLevel attach — detach (#172)', () => {
   });
 });
 
+// #247: the create-fallback card name must be the customer's name (or the
+// generic "Yule Love Lights quote"), never the old vertical-specific
+// "Holiday Lights quote {id}" literal — this route serves every vertical.
+describe('HighLevel attach — create-fallback card name (#247)', () => {
+  it('uses opportunityName when the caller supplies one', async () => {
+    sbRef.current = makeSb(HOLIDAY_QUOTE, null);
+
+    await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1', opportunityName: 'Jane Smith' }));
+    expect(hl.findOrCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ fallbackName: 'Jane Smith' }),
+    );
+  });
+
+  it('falls back to contactName when opportunityName is absent', async () => {
+    sbRef.current = makeSb(HOLIDAY_QUOTE, null);
+
+    await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1', contactName: 'John Q. Public' }));
+    expect(hl.findOrCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ fallbackName: 'John Q. Public' }),
+    );
+  });
+
+  it('falls back to the generic "Yule Love Lights quote" when neither name is available — never the old vertical-specific literal', async () => {
+    sbRef.current = makeSb(HOLIDAY_QUOTE, null);
+
+    await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+    expect(hl.findOrCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ fallbackName: 'Yule Love Lights quote' }),
+    );
+  });
+});
+
 describe('HighLevel attach — per-service-type pipeline (#GHL pipeline sync)', () => {
   it('a holiday quote still honors the legacy env vars (pipeline + entry stage)', async () => {
     sbRef.current = makeSb(HOLIDAY_QUOTE, null);

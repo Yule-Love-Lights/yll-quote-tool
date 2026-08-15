@@ -53,7 +53,7 @@ import { hasSatellitePayload } from '@/lib/design/analysisSatellitePayload';
 import { deriveSideMeasure } from '@/lib/permanent/satelliteMeasure';
 import { roundFootageUpTo5 } from '@/lib/permanent/types';
 import { deriveTrackAccessories, hasAccessorySignal } from '@/lib/permanent/trackAccessories';
-import { isStrand, isLinkedTwin } from '@/lib/design/sceneTypes';
+import { isStrand, isLinkedTwin, type Surface } from '@/lib/design/sceneTypes';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
 import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
 import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
@@ -224,6 +224,41 @@ function polylineLength(lines: LineSegment[], aspect: number): number {
   return total;
 }
 
+// #255: mini-group surface labels for the pruned-group warning — matches the
+// wording editor.ts's own pruneOrphanedMiniGroupsNotify toast uses
+// (editor-core/editor.ts MINI_SURFACE_LABELS), kept as a separate copy here
+// rather than importing from editor-core (vendored/relay-shared; this display
+// string doesn't belong in that surface).
+// #741 defect 4: typed exhaustive over Surface (not the loose Record<string,
+// string> this started as) so adding a new Surface value fails `tsc` right
+// here instead of silently rendering "group" in whichever copy (this one or
+// editor.ts's) got missed. Only bush/tree/column/railing/curtain can ever
+// actually reach a MiniGroupItem's `surface`, but Surface is the one shared
+// type — the roofline/C9 entries below are unreachable in practice, present
+// only so the object literal type-checks as complete.
+const MINI_SURFACE_LABELS: Record<Surface, string> = {
+  bush: 'Bush', tree: 'Tree', column: 'Column', railing: 'Railing', curtain: 'Curtain',
+  'santas-roofline': 'Roofline', gingerbread: 'Gingerbread', 'winter-wonderland': 'Winter Wonderland',
+  'stake-lighting': 'Stake Lighting',
+};
+function miniSurfaceLabel(surface: string | null): string {
+  return surface && surface in MINI_SURFACE_LABELS ? MINI_SURFACE_LABELS[surface as Surface] : 'group';
+}
+// #741 defect 5: prunedMiniGroups previously trusted `Array.isArray` alone,
+// then the render below dereferences g.surface/g.stringCount per element — a
+// malformed element (from either the seed-analysis or photo-delete response)
+// would throw and crash the whole builder render. Sibling
+// garlandSectionsUnestimated uses a typeof guard with a safe fallback; give
+// this the same element-shape parity instead of trusting the array's contents.
+function sanitizePrunedMiniGroups(raw: unknown): { surface: string | null; stringCount: number }[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((g): g is { surface: string | null; stringCount: number } => {
+    if (typeof g !== 'object' || g === null) return false;
+    const r = g as Record<string, unknown>;
+    return (typeof r.surface === 'string' || r.surface === null) && typeof r.stringCount === 'number';
+  });
+}
+
 // Permanent Lighting (#88 / S23): the four house sides traced on the satellite
 // view. Colors match the portal's satellite groups (lib/portal/satelliteLines).
 const PERMANENT_SIDES = ['front', 'left', 'right', 'back'] as const;
@@ -329,7 +364,7 @@ const STATUS_BADGE: Record<QuoteStatus, { label: string; cls: string }> = {
   changes_requested: { label: 'Changes', cls: 'bg-orange-100 text-orange-700' },
   declined: { label: 'Declined', cls: 'bg-red-100 text-red-700' },
   cancelled: { label: 'Cancelled', cls: 'bg-gray-200 text-gray-600' },
-  lost: { label: 'Lost', cls: 'bg-gray-200 text-gray-600' },
+  abandoned: { label: 'Abandoned', cls: 'bg-gray-200 text-gray-600' },
 };
 
 // ─── Builder component ───────────────────────────────────────────────────────
@@ -547,7 +582,15 @@ export default function QuoteBuilder({
   // entry stage) instead of creating/reusing one — staff must see that, since
   // a reopened card can re-enter stage-triggered GHL automations.
   const [attachResurrected, setAttachResurrected] = useState(false);
-  const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
+  const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'already-sent' | 'error'>('idle');
+  // #241 defect 2 (review MEDIUM): a Force-Redeliver click can ALSO fall
+  // through the route's alreadySent short-circuit (send/route.ts's
+  // isDeliveryRetry only honors 'sent'/'viewed' — a quote that's since gone
+  // approved/booked/deposit-paid isn't retry-eligible either, W1-017's same
+  // guard). True once we've learned THAT click delivered nothing, so the
+  // already-sent box can say so instead of repeating the original message +
+  // a doomed retry button.
+  const [retryIneligible, setRetryIneligible] = useState(false);
   // #92 — a fulfillability BLOCK (design has items we can't supply), kept distinct
   // from a send FAILURE so we never tell the operator to share the link manually.
   const [sendBlockedMsg, setSendBlockedMsg] = useState<string | null>(null);
@@ -557,6 +600,12 @@ export default function QuoteBuilder({
   // failure puts Send in the error state while preserving the valid portal URL.
   const [deliveryWarning, setDeliveryWarning] = useState<string | null>(null);
   const [deliveryRetryChannel, setDeliveryRetryChannel] = useState<'sms' | 'email' | 'both' | null>(null);
+  // #241: when the send route short-circuits with alreadySent:true (a
+  // double-click / re-click on an already-sent quote), nothing was texted or
+  // emailed — this holds the ORIGINAL quote_sent_at so the UI can say so
+  // instead of rendering an identical plain success. Cleared on any fresh
+  // send attempt or recalculation.
+  const [alreadySentAt, setAlreadySentAt] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState(false);
   // GHL stage-sync result of the last send: a non-null message means the quote
   // WAS sent locally but the HighLevel card did NOT advance to "Bid Sent" (the
@@ -697,6 +746,28 @@ export default function QuoteBuilder({
   // #90: how many AI-seeded garland runs had no scale to estimate length (so they
   // fall back to 1 section). Surfaced as a builder warning so staff set the count.
   const [garlandUnestimated, setGarlandUnestimated] = useState(0);
+  // #255 / #741 defect 3: mini group(s) (railing/curtain/etc.) a re-analyze OR
+  // a photo delete just orphaned — seedSceneFromAnalysis and
+  // removeDesignExtraPhoto both prune a group silently (no member strands
+  // left), so a "Railing — 3 strings" line can vanish from the quote total
+  // with nothing else explaining it. `cause` drives which guidance the banner
+  // shows (#741 defect 4 — the two triggers need DIFFERENT copy: a re-analyze
+  // miss may still be redrawable, a photo-delete prune's strands are gone for
+  // good with the deleted photo). null = no standing warning.
+  const [prunedMiniGroups, setPrunedMiniGroups] = useState<{
+    cause: 'reanalyze' | 'photo-delete';
+    groups: { surface: string | null; stringCount: number }[];
+  } | null>(null);
+  // #741 defect 3: reports a NEW prune from one of the two triggers. An empty
+  // result never overwrites a real, unaddressed warning already standing from
+  // the OTHER trigger — e.g. a re-analyze orphans "Curtain — 6 strings"
+  // (banner shows), then the operator deletes an unrelated empty extra photo
+  // (reports []) — that must not silently make the still-unresolved warning
+  // disappear. Only a NON-empty report ever changes the banner.
+  const reportPrunedMiniGroups = (cause: 'reanalyze' | 'photo-delete', raw: unknown) => {
+    const groups = sanitizePrunedMiniGroups(raw);
+    if (groups.length > 0) setPrunedMiniGroups({ cause, groups });
+  };
   // Bumped when the design's scene/photo changes outside the editor (roofline
   // seed, photo replacement) so a remount reloads it.
   const [designEditorKey, setDesignEditorKey] = useState(0);
@@ -797,6 +868,10 @@ export default function QuoteBuilder({
   // Capture awaits it so it never snapshots a scene the 600ms autosave debounce
   // hasn't persisted yet.
   const editorFlushRef = useRef<(() => Promise<void>) | null>(null);
+  // #741 defect 1: the editor's discardPending, re-registered alongside
+  // flushSave on each (re)mount — see seedDesignFromAnalysis. Returns whether
+  // it actually discarded a real pending edit (#741 defect 6).
+  const editorDiscardRef = useRef<(() => boolean) | null>(null);
   const captureExample = async (source: 'auto-send' | 'manual') => {
     if (!savedQuoteId) return;
     setTrainStatus('saving');
@@ -869,6 +944,18 @@ export default function QuoteBuilder({
   // staff-drawn items always survive. Remounts the editor to show the result.
   const seedDesignFromAnalysis = async (id: string, seed: AnalysisSeed) => {
     try {
+      // #741 defect 1 consequence B: flush any pending debounced edit BEFORE
+      // the seed POST reads/replaces the scene server-side — same pattern
+      // captureExample/capturePermanentExample already use above. This alone
+      // only SHRINKS the stale-overwrite window (the analyze round trip is
+      // multi-second); the discard below is what actually closes it.
+      if (editorFlushRef.current) {
+        try {
+          await editorFlushRef.current();
+        } catch {
+          // best-effort — proceed with whatever was last persisted.
+        }
+      }
       const res = await fetch(`/api/designs/${id}/seed-analysis`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -881,6 +968,19 @@ export default function QuoteBuilder({
         setGarlandUnestimated(
           typeof data.garlandSectionsUnestimated === 'number' ? data.garlandSectionsUnestimated : 0,
         );
+        // #255: warn when this re-analyze orphaned a staff-created mini group
+        // (its member strands weren't re-detected) — the group is gone, and
+        // with it a real billed line, with no other indication.
+        reportPrunedMiniGroups('reanalyze', data.prunedMiniGroups);
+        // #741 defect 1: discard (never flush) whatever the OUTGOING editor
+        // instance has pending before the key bump below tears it down — an
+        // edit made during this multi-second analyze round trip must not be
+        // written back over the scene the server just seeded/pruned.
+        // #741 defect 6: tell the operator only when there was actually
+        // something to throw away.
+        if (editorDiscardRef.current?.()) {
+          window.alert("An unsaved edit made during the re-analyze was discarded (it hadn't saved yet).");
+        }
         setDesignEditorKey((k) => k + 1);
       }
     } catch {
@@ -2653,7 +2753,7 @@ export default function QuoteBuilder({
       const attachKey = `${savedQuoteId}:${c.id}`;
       if (lastAttachKey.current !== attachKey) {
         lastAttachKey.current = attachKey;
-        void queueAttach(savedQuoteId, c.id, hlAddress, contactIdentityOf(c));
+        void queueAttach(savedQuoteId, c.id, contactIdentityOf(c));
       }
     }
     // NCE + YLL Neighbor tag inheritance (#198): if the picked contact maps
@@ -2746,11 +2846,10 @@ export default function QuoteBuilder({
   const queueAttach = (
     quoteId: string,
     contactId: string,
-    addressHint?: string,
     contactIdentity?: ReturnType<typeof contactIdentityOf>,
   ): Promise<boolean> => {
     const run = (attachPromiseRef.current ?? Promise.resolve(false)).then(() =>
-      attachQuoteToHighLevel(quoteId, contactId, addressHint, contactIdentity),
+      attachQuoteToHighLevel(quoteId, contactId, contactIdentity),
     );
     attachPromiseRef.current = run;
     return run;
@@ -2761,15 +2860,14 @@ export default function QuoteBuilder({
   // pre-send guard. Returns true only when the GHL card exists AND the local
   // quote row was linked — the route's linked:false (card fine, DB write
   // failed) still leaves the send gate closed, so it counts as failure here.
-  // addressHint: pick-time caller passes the picked contact's address because
-  // the form state hasn't flushed yet in that tick.
   // contactIdentity: the picked contact's own fields (contactIdentityOf) —
   // the route's #214 customers re-resolution runs ONLY off these, never the
-  // stored quote fields.
+  // stored quote fields. Its contactName (the same pick-time value as
+  // hlName, captured before the form state flushes) also supplies the
+  // #247 fallback-create card name below, so no separate hint is needed.
   const attachQuoteToHighLevel = async (
     quoteId: string,
     contactId: string,
-    addressHint?: string,
     contactIdentity?: ReturnType<typeof contactIdentityOf>,
   ): Promise<boolean> => {
     // Staleness token: if a later pick/clear bumps the seq while we're in
@@ -2782,14 +2880,17 @@ export default function QuoteBuilder({
       setAttachError(null);
     }
     try {
-      const address = (addressHint || form.customer.address).trim();
+      // #247: card name is the customer's name, matching the send route's
+      // shape (quote.customer_name?.trim() || fallback) — was hardcoded
+      // "Holiday Lights — {address}" regardless of vertical.
+      const customerName = (contactIdentity?.contactName || form.customer.name || '').trim();
       const res = await fetch('/api/integrations/highlevel/attach', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           quoteId,
           contactId,
-          opportunityName: address ? `Holiday Lights — ${address}` : undefined,
+          opportunityName: customerName || undefined,
           // #107: the GHL card carries the "Full Yule" ceiling pre-approval (the
           // deposit webhook later resets it to the customer's actual selection).
           monetaryValue: result?.fullYule?.total ?? result?.total,
@@ -2859,7 +2960,9 @@ export default function QuoteBuilder({
     setGhlSyncWarning(null);
     setDeliveryWarning(null);
     setDeliveryRetryChannel(null);
+    setAlreadySentAt(null);
     setCopiedUrl(false);
+    setRetryIneligible(false);
 
     // #172 pre-send guard: the picked contact may not be attached yet (a
     // pick-time attach can fail, or still be in flight). A real send
@@ -2876,7 +2979,7 @@ export default function QuoteBuilder({
       }
       if (!linked) {
         lastAttachKey.current = attachKey;
-        linked = await queueAttach(savedQuoteId, highlevelContact.id, undefined, contactIdentityOf(highlevelContact));
+        linked = await queueAttach(savedQuoteId, highlevelContact.id, contactIdentityOf(highlevelContact));
       }
       if (!linked) {
         setSendStatus('idle');
@@ -2945,12 +3048,34 @@ export default function QuoteBuilder({
         }
         throw new Error(data.error ?? `Send failed (${res.status})`);
       }
+      // #241: the route short-circuited — this click delivered NOTHING (no
+      // SMS, no email, no CRM stage move, no re-stamped quote_sent_at). Don't
+      // render the identical success state; surface it loudly and offer a
+      // one-click force-redeliver via the existing ?retryDelivery=1 path
+      // instead of falling through to the normal "sent" handling below.
+      if (data.alreadySent) {
+        setSendStatus('already-sent');
+        setAlreadySentAt(typeof data.sentAt === 'string' ? data.sentAt : null);
+        setDeliveryRetryChannel('both');
+        return;
+      }
       setSendStatus('sent');
       if (failedChannels.length > 0) {
         const retryChannel = failedChannels.length === 2 ? 'both' : failedChannels[0];
         setDeliveryRetryChannel(retryChannel);
+        // #264 round 2, FIX 3: data.messageError already carries the
+        // backend's own honesty hedge (deliveryErrorMessage in route.ts —
+        // "timeout — delivery outcome unknown (GHL may have still delivered
+        // it): …" when the failure was a timeout our socket gave up on, vs.
+        // the real rejection text otherwise). This hardcoded sentence was
+        // silently discarding it, so a channel that actually timed out (the
+        // most likely real-world shape) rendered a confidently wrong
+        // "failed" here even though the backend explicitly did not know
+        // that. Appends it rather than re-deriving a new sentence, mirroring
+        // the existing pattern in src/app/admin/invoices/[id]/page.tsx's
+        // sendBalanceLink (surfaces body.messageError verbatim).
         setDeliveryWarning(
-          `${failedChannels.map((c: 'sms' | 'email') => c.toUpperCase()).join(' and ')} failed. The other requested channel was delivered.`,
+          `${failedChannels.map((c: 'sms' | 'email') => c.toUpperCase()).join(' and ')} failed. The other requested channel was delivered.${data.messageError ? ` (${data.messageError})` : ''}`,
         );
       }
       // PostHog v1 — staff-side confirmation the quote actually sent.
@@ -2983,6 +3108,15 @@ export default function QuoteBuilder({
 
   const handleRetryDelivery = async () => {
     if (!savedQuoteId || !deliveryRetryChannel) return;
+    // #241 (review MEDIUM, mirrors #172's sendInFlightRef guard on
+    // handleSendToCustomer above — see the comment at its declaration): a
+    // genuine double-click on Force Redeliver has no synchronous guard
+    // otherwise, and the route has no idempotency key of its own for a
+    // retry — two clicks in one tick really do text/email the customer
+    // twice. Shared with Send's own guard since both hit the same real
+    // delivery mechanism; either one in flight blocks the other.
+    if (sendInFlightRef.current) return;
+    sendInFlightRef.current = true;
     setSendStatus('sending');
     setSendError(null);
     try {
@@ -2993,12 +3127,73 @@ export default function QuoteBuilder({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `Delivery retry failed (${res.status})`);
+      // #241 defect 2 (review MEDIUM): the retry can ALSO fall through the
+      // route's alreadySent short-circuit (e.g. the customer approved or
+      // the job got booked between the original send and this click — see
+      // send/route.ts's isDeliveryRetry / W1-017 comment). A 200 here is
+      // not proof of delivery; don't render "✓ Sent". Drop the retry
+      // affordance (clicking it again hits the identical short-circuit)
+      // and tell the operator plainly instead of a false success.
+      if (data.alreadySent) {
+        setSendStatus('already-sent');
+        setDeliveryRetryChannel(null);
+        setRetryIneligible(true);
+        return;
+      }
+      // #264 round 2, FIX 4: mirror handleSendToCustomer's own failedChannels
+      // handling (above) — this success branch previously cleared
+      // deliveryWarning/deliveryRetryChannel UNCONDITIONALLY on any res.ok,
+      // never inspecting data.failedChannels. A PARTIAL retry failure (one
+      // channel finally delivered, the other times out/fails again) rendered
+      // a clean "✓ Sent" and dropped the retry affordance for the channel
+      // that's STILL undelivered. Only a full success now clears the
+      // warning/retry state; a partial failure keeps both, scoped to
+      // whichever channel(s) remain failed.
+      const retryFailedChannels = Array.isArray(data.failedChannels)
+        ? data.failedChannels.filter((value: unknown): value is 'sms' | 'email' => value === 'sms' || value === 'email')
+        : [];
       setSendStatus('sent');
-      setDeliveryWarning(null);
-      setDeliveryRetryChannel(null);
+      setAlreadySentAt(null);
+      if (retryFailedChannels.length > 0) {
+        const retryChannel = retryFailedChannels.length === 2 ? 'both' : retryFailedChannels[0];
+        setDeliveryRetryChannel(retryChannel);
+        setDeliveryWarning(
+          `${retryFailedChannels.map((c: 'sms' | 'email') => c.toUpperCase()).join(' and ')} failed. The other requested channel was delivered.${data.messageError ? ` (${data.messageError})` : ''}`,
+        );
+      } else {
+        setDeliveryWarning(null);
+        setDeliveryRetryChannel(null);
+      }
+      // #264 round 2, FIX 6: a delivery-only retry structurally never
+      // attempts the GHL stage move — route.ts's ghlStageChain returns
+      // immediately whenever isDeliveryRetry (see its own comment) — so
+      // data.ghlSynced here can ONLY ever reflect a PRIOR sync, never one
+      // just performed by this call. This branch previously never read it at
+      // all, silently leaving whatever STALE ghlSyncWarning value was
+      // already in state. On the exact sequence this fix targets (the
+      // original stamp write times out client-side but commits server-side —
+      // the route returns before ever reaching ghlStageChain, so
+      // ghl_stage_synced_at is still null — the operator sees a bare error,
+      // retries, hits alreadySent, clicks Force Redeliver), that stale value
+      // was null, so the button rendered the FALSE "✓ Sent — stage moved to
+      // Bid Sent" (see the button label a few hundred lines down) even
+      // though no request in the whole sequence ever ran the stage move.
+      // data.stageError is always undefined here (ghlStageChain never ran to
+      // set it), so the generic handleSendToCustomer fallback text would be
+      // misleading about WHY — this uses delivery-retry-specific wording
+      // instead. Setting ghlSyncWarning also surfaces the existing "Retry CRM
+      // sync" button (?retryGhl) for free — that render block isn't gated to
+      // fresh sends only.
+      setGhlSyncWarning(
+        data.ghlSynced === false
+          ? 'This was a delivery-only retry, which never touches the CRM card.'
+          : null,
+      );
     } catch (err) {
       setSendStatus('error');
       setSendError(err instanceof Error ? err.message : 'Delivery retry failed');
+    } finally {
+      sendInFlightRef.current = false;
     }
   };
 
@@ -3057,6 +3252,13 @@ export default function QuoteBuilder({
     }
     setSendStatus('idle');
     setSendError(null);
+    setAlreadySentAt(null);
+    // #241: reset alongside its siblings. Not visible today (the notice that
+    // reads it is gated on sendStatus === 'already-sent', which this same block
+    // clears, and both places that re-enter that status reset this flag first)
+    // — but leaving it dangling true after a recalc is a trap for any future
+    // path that sets 'already-sent' without going through those two functions.
+    setRetryIneligible(false);
     setCopiedUrl(false);
     setTrainStatus('idle');
     setTrainError(null);
@@ -3207,7 +3409,7 @@ export default function QuoteBuilder({
         // S30 wrap review MED: route through the serialized queue like every
         // other attach call site — a direct call could race a rapid re-pick
         // and leave the DB linked to the stale contact.
-        void queueAttach(newQuoteId, highlevelContact.id, undefined, contactIdentityOf(highlevelContact));
+        void queueAttach(newQuoteId, highlevelContact.id, contactIdentityOf(highlevelContact));
       } else if (highlevelContact?.id && !newQuoteId) {
         // Quote wasn't persisted (Supabase not configured). Tell the
         // operator the HL link won't be made either.
@@ -4158,6 +4360,35 @@ export default function QuoteBuilder({
                     yardstick or set the section count on the design before quoting.
                   </p>
                 )}
+                {/* #255 / #741 defects 3+4: a re-analyze OR a photo delete can drop
+                    a staff-created mini group (its member strands weren't
+                    re-detected, or lived only on the deleted photo) — unlike
+                    routine strand cleanup in the editor, this quietly removes a
+                    billed line with nothing else calling it out, so it gets the
+                    same standing-warning treatment as the garland-scale notice
+                    above. The closing guidance is CAUSE-SPECIFIC (defect 4): a
+                    re-analyze miss may genuinely still be drawn on the photo,
+                    undetected — true "redraw if still there". A photo-delete
+                    prune's strands lived on a photo the server permanently
+                    deleted along with them — there is nothing left to "still be
+                    there"; that copy would be false. */}
+                {prunedMiniGroups && (
+                  <p className="text-sm text-amber-700 mb-2">
+                    ⚠️ Removed {prunedMiniGroups.groups.length} mini{' '}
+                    {prunedMiniGroups.groups.length === 1 ? 'group' : 'groups'} that lost all their strands:{' '}
+                    {prunedMiniGroups.groups
+                      .map((g, i) => {
+                        const label = miniSurfaceLabel(g.surface);
+                        const n = g.stringCount;
+                        return `${label} — ${n} string${n === 1 ? '' : 's'}${i < prunedMiniGroups.groups.length - 1 ? ', ' : ''}`;
+                      })
+                      .join('')}
+                    .{' '}
+                    {prunedMiniGroups.cause === 'reanalyze'
+                      ? "Redraw them on the design if they're still there."
+                      : 'They lived on the deleted photo, which is gone for good — recreate the group if you still need it.'}
+                  </p>
+                )}
                 {designId ? (
                   <>
                     <DesignEditor
@@ -4166,7 +4397,8 @@ export default function QuoteBuilder({
                       height={640}
                       permanentOnly={form.serviceType === 'permanent'}
                       bistroOnly={form.serviceType === 'permanent_bistro'}
-                      onReady={(flush) => { editorFlushRef.current = flush; }}
+                      onReady={(flush, discard) => { editorFlushRef.current = flush; editorDiscardRef.current = discard; }}
+                      onPrunedMiniGroups={(groups) => reportPrunedMiniGroups('photo-delete', groups)}
                     />
                     {form.serviceType === 'permanent' ? (
                       <p className="text-xs text-gray-400 mt-2">
@@ -5756,6 +5988,56 @@ export default function QuoteBuilder({
                   : '📨 Send Quote to Customer'}
               </button>
             </div>
+
+            {/* #241: the guard short-circuited — nothing was texted or emailed
+                this click. Say so plainly instead of rendering the same
+                "✓ Sent" state as a real delivery, and offer a one-click
+                force-redeliver (reuses the existing ?retryDelivery=1 path —
+                does not re-stamp quote_sent_at or move the CRM card again). */}
+            {sendStatus === 'already-sent' && (
+              <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                {retryIneligible ? (
+                  // #241 defect 2 (review MEDIUM): Force Redeliver was
+                  // clicked and ALSO hit the alreadySent short-circuit — the
+                  // quote moved past sent/viewed (approved/booked/deposit
+                  // paid) since the original send. Retrying again would hit
+                  // the identical guard, so don't repeat the same doomed
+                  // button — point at the manual copy field above instead.
+                  <p>
+                    Redeliver didn&apos;t send anything either — this quote has
+                    moved past &ldquo;sent&rdquo;/&ldquo;viewed&rdquo; (approved,
+                    booked, or a deposit was paid), so an automatic resend is
+                    blocked to protect the CRM pipeline. Copy the Customer
+                    Portal URL above and share it with the customer directly.
+                  </p>
+                ) : (
+                  <p>
+                    Nothing was delivered — this quote was already sent
+                    {alreadySentAt ? ` on ${new Date(alreadySentAt).toLocaleString()}` : ' earlier'}.
+                    Clicking Send again does not re-text or re-email the customer.
+                  </p>
+                )}
+                {/* No `disabled={sendStatus === 'sending'}` here (and on its
+                    two siblings below) — this button only renders while
+                    sendStatus is exactly 'already-sent', a value mutually
+                    exclusive with 'sending' in the union, so the comparison
+                    is dead code (tsc flags it: TS2367). Unlike the always-
+                    mounted main Send button, this button UNMOUNTS the
+                    instant a click flips sendStatus to 'sending' — that's
+                    the render-level guard; handleRetryDelivery's
+                    sendInFlightRef check is what closes the real
+                    same-tick double-click race. */}
+                {!retryIneligible && deliveryRetryChannel && (
+                  <button
+                    type="button"
+                    onClick={handleRetryDelivery}
+                    className="mt-2 text-xs font-medium text-amber-900 underline hover:no-underline"
+                  >
+                    Force redeliver (SMS + email) now
+                  </button>
+                )}
+              </div>
+            )}
 
             {sendStatus === 'error' && (
               <div className="mt-3 text-sm text-red-600">

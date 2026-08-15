@@ -11,7 +11,8 @@
 import type { NormalizedTouch } from './types';
 import { normalizeEmail, normalizeName } from './normalize';
 import { isAnsweredByOutbound } from './escalation';
-import { classifyMessage } from './classify';
+import { classifyMessage, isFromUs } from './classify';
+import { parseLeadForward } from './leadForward';
 
 export type GmailMessageLite = {
   /** Did the YLL workspace account send this message (a SENT message). */
@@ -97,8 +98,11 @@ function parseDisplayName(headerValue: string): string | null {
  * → outbound → the reducer skips it (never a fake lead).
  *
  * The identity object widens the check from a single address to our whole domain
- * and any explicitly listed internal addresses (e.g. sales@), so escalation emails
- * sent from sub-addresses on our domain never appear as fake leads.
+ * (and any of its SUBDOMAINS — our own automated mail sends from
+ * sales@mail.yulelovelights.com, #252) and any explicitly listed internal
+ * addresses (e.g. sales@), so escalation emails sent from sub-addresses on our
+ * domain never appear as fake leads. Domain matching itself delegates to the
+ * shared classify.ts isFromUs so this can't drift from the other two adapters.
  */
 export type GmailIdentity = { ourEmail: string; ourDomain?: string | null; internalAddrs?: string[] };
 
@@ -108,8 +112,7 @@ export function gmailMessageFromMe(m: RawGmailMessage, identity: GmailIdentity):
   const addr = from ? parseEmailAddress(from) : null;
   if (!addr) return false;
   if (addr === identity.ourEmail.trim().toLowerCase()) return true;
-  if (identity.ourDomain && addr.endsWith(`@${identity.ourDomain.trim().toLowerCase()}`)) return true;
-  return (identity.internalAddrs ?? []).some((a) => a.trim().toLowerCase() === addr);
+  return isFromUs(addr, { ourDomain: identity.ourDomain, internalAddrs: identity.internalAddrs });
 }
 
 export function mapGmailThread(raw: RawGmailThread, identity: GmailIdentity): GmailThreadLite {
@@ -145,15 +148,62 @@ export function normalizeGmailThread(thread: GmailThreadLite, suppressed?: Set<s
   const answered = isAnsweredByOutbound({ lastInboundAt, lastOutboundAt });
   const email = thread.from?.email ? normalizeEmail(thread.from.email) : null;
   const senderEmail = thread.from?.email;
+
+  // #268: a known lead-forwarding platform (e.g. GML Media) whose body parses
+  // out a real customer's phone/email wins over EVERY other signal — both
+  // classify.ts's bulk-mail heuristics (a no-reply-shaped sender, List-
+  // Unsubscribe) and layer-3 sender suppression. The live prod rows (7 as of
+  // #268) are actually blocked by suppression today (the forwarder's address
+  // is in dashboard.suppressedSenders, apparently added when staff mistook
+  // its "automated"-tagged forwards for spam), not by List-Unsubscribe — so
+  // the override has to run BEFORE the suppression check, not just before
+  // classifyMessage, or it would never fire for the sender it exists to fix.
+  //
+  // OPS NOTE (#268 fix round, admin MED): the zapiermail.com suppression
+  // entry in app_settings (dashboard.suppressedSenders) is LOAD-BEARING for
+  // the FAILED-parse fallback and must NOT be deleted as "stale" once this
+  // fix ships. classify.ts's NO_REPLY_RE requires the no-reply-ish token to
+  // be immediately followed by "@" (`^no[-_.]?reply@`); the real GML address
+  // is `no-reply.<token>@zapiermail.com` — the token sits BETWEEN "reply" and
+  // "@", so NO_REPLY_RE does not match it. That means a future GML
+  // receipt/digest that doesn't parse (leadForward returns null) would
+  // classify as a 'lead' by content alone without the suppression entry.
+  const leadForward = parseLeadForward({
+    fromAddress: thread.from?.email ?? null,
+    displayName: thread.from?.name ?? null,
+    body: latest?.snippet ?? null,
+  });
   const leadKind =
-    suppressed && senderEmail && suppressed.has(senderEmail.toLowerCase())
-      ? 'automated'
-      : classifyMessage({
-          fromAddress: thread.from?.email ?? null,
-          subject: thread.subject ?? null,
-          preview: latest?.snippet ?? null,
-          hasListUnsubscribe: thread.hasListUnsubscribe,
-        });
+    leadForward
+      ? 'lead'
+      : suppressed && senderEmail && suppressed.has(senderEmail.toLowerCase())
+        ? 'automated'
+        : classifyMessage({
+            fromAddress: thread.from?.email ?? null,
+            subject: thread.subject ?? null,
+            preview: latest?.snippet ?? null,
+            hasListUnsubscribe: thread.hasListUnsubscribe,
+          });
+
+  // #268: when the body parsed a real customer, build identity from THEM, not
+  // the forwarding platform's own sender address/name — otherwise every
+  // forward finds-or-creates onto the SAME forwarder contact, and contacting
+  // the real customer can never auto-resolve the row. Uses only the existing
+  // ContactIdentity fields; find-or-create's own matching is untouched.
+  const identity = leadForward
+    ? {
+        ghlContactId: null,
+        emails: leadForward.email ? [leadForward.email] : [],
+        phones: leadForward.phone ? [leadForward.phone] : [],
+        displayName: leadForward.name,
+      }
+    : {
+        ghlContactId: null,
+        emails: email ? [email] : [],
+        phones: [],
+        displayName: thread.from?.name ? normalizeName(thread.from.name) : null,
+      };
+
   return {
     source: 'gmail',
     externalId: thread.threadId,
@@ -163,12 +213,7 @@ export function normalizeGmailThread(thread: GmailThreadLite, suppressed?: Set<s
     lastMessageAt: latest ? latest.at : new Date(0),
     preview: latest?.snippet ?? null,
     subject: thread.subject ?? null,
-    identity: {
-      ghlContactId: null,
-      emails: email ? [email] : [],
-      phones: [],
-      displayName: thread.from?.name ? normalizeName(thread.from.name) : null,
-    },
+    identity,
     raw: thread,
     leadKind,
   };

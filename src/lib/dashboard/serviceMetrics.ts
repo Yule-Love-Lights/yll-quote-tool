@@ -11,14 +11,14 @@ import { deriveStatus } from '@/lib/quoteStatus';
 
 /**
  * B7 fix: returns true when a quote is in a terminal state (cancelled/declined/
- * lost). Terminal orders must not count toward booked/inCare/installed counts
+ * abandoned). Terminal orders must not count toward booked/inCare/installed counts
  * or revenue even when customer_approved_at or deposit_paid_at is set.
  * Requires `status` to be present on the row (selected by DASHBOARD_QUOTES_SELECT).
  * Exported so insights.ts (#110 W7-006) reuses the exact same revenue-terminal set.
  */
 export function isTerminalStatus(q: DashboardQuote): boolean {
   const s = deriveStatus(q);
-  return s === 'cancelled' || s === 'declined' || s === 'lost';
+  return s === 'cancelled' || s === 'declined' || s === 'abandoned';
 }
 
 /** NULL service_type rows are Holiday (the legacy default). */
@@ -54,7 +54,7 @@ export function computeHolidayBreakdown(quotes: DashboardQuote[]): HolidayBreakd
   for (const q of quotes) {
     if (serviceTypeOf(q) !== 'holiday') continue;
 
-    if (q.customer_approved_at && !isTerminalStatus(q)) { // B7 fix: exclude cancelled/declined/lost
+    if (q.customer_approved_at && !isTerminalStatus(q)) { // B7 fix: exclude cancelled/declined/abandoned
       bookedTotal += 1;
 
       // Install-month bucket: prefer the install proxy (homeworks_signed_at)
@@ -96,7 +96,7 @@ export function computePermanentSummary(quotes: DashboardQuote[]): PermanentSumm
 
   for (const q of quotes) {
     if (serviceTypeOf(q) !== 'permanent') continue;
-    if (q.customer_approved_at && !isTerminalStatus(q)) { // B7 fix: exclude cancelled/declined/lost
+    if (q.customer_approved_at && !isTerminalStatus(q)) { // B7 fix: exclude cancelled/declined/abandoned
       inCare += 1;
       bookedRevenue += q.total ?? 0;
     } else if (q.quote_sent_at && !isTerminalStatus(q)) {
@@ -114,7 +114,7 @@ export function computeEventSummary(quotes: DashboardQuote[]): EventSummary {
 
   for (const q of quotes) {
     if (serviceTypeOf(q) !== 'event') continue;
-    if (q.customer_approved_at && !isTerminalStatus(q)) { // B7 fix: exclude cancelled/declined/lost
+    if (q.customer_approved_at && !isTerminalStatus(q)) { // B7 fix: exclude cancelled/declined/abandoned
       booked += 1;
       bookedRevenue += q.total ?? 0;
     } else if (q.quote_sent_at && !isTerminalStatus(q)) {
@@ -134,7 +134,7 @@ export function computeBistroSummary(quotes: DashboardQuote[]): BistroSummary {
 
   for (const q of quotes) {
     if (serviceTypeOf(q) !== 'permanent_bistro') continue;
-    if (q.customer_approved_at && !isTerminalStatus(q)) { // B7: exclude cancelled/declined/lost
+    if (q.customer_approved_at && !isTerminalStatus(q)) { // B7: exclude cancelled/declined/abandoned
       booked += 1;
       bookedRevenue += q.total ?? 0;
     } else if (q.quote_sent_at && !isTerminalStatus(q)) {

@@ -190,7 +190,7 @@ export default async function PortalPage({
   });
 
   // Bug fix (#83 B3 UI + audit approved-portal-snapshot): a quote in a terminal
-  // branch (declined/cancelled/lost) or under revision (changes_requested) must
+  // branch (declined/cancelled/abandoned) or under revision (changes_requested) must
   // NOT show the approve+pay flow — the customer could otherwise pay/approve a
   // quote staff already killed or are revising. The server already rejects it
   // (the /approve status gate + /pay's approve-first guard); this is the matching
