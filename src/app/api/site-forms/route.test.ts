@@ -169,7 +169,10 @@ describe('separation from the sales pipeline', () => {
     expect(contactArg.email).toBe('nominator@example.com');
     expect(hl.upsertContact).toHaveBeenCalledTimes(1);
 
-    // The nominee's details are stored on the row for staff, not sent to GHL.
+    // The nominee's details are stored on the row for staff. Note the precise
+    // claim: they never become a GHL CONTACT and never enter automation. They
+    // do travel inside the staff alert email, which GHL delivers, so they
+    // persist there as message content — see siteFormAlerts.ts.
     const row = sb.inserted[0]!;
     expect((row.payload as Record<string, string>).nomineeName).toBe('Ruth Neighbour');
   });
@@ -302,5 +305,20 @@ describe('CORS', () => {
       headers: new Headers({ origin: 'https://evil.example' }),
     } as unknown as NextRequest);
     expect(bad.headers.get('access-control-allow-origin')).toBeNull();
+  });
+});
+
+describe('stored resume content type (wrap review finding)', () => {
+  it('never stores the caller-declared MIME type', async () => {
+    // A polyglot can start with "%PDF-" (passing the signature check) while the
+    // multipart part declares text/html. Storing that declared type would let a
+    // staff member's click render it on the storage origin instead of
+    // downloading a document, so the stored type comes from the verified
+    // extension instead.
+    const source = await import('node:fs').then((fs) =>
+      fs.promises.readFile(new URL('./route.ts', import.meta.url), 'utf8'),
+    );
+    expect(source).not.toContain('contentType: resume.type');
+    expect(source).toContain('RESUME_STORED_MIME[resumeExt]');
   });
 });
