@@ -32,6 +32,7 @@ import type { MetricItem, WindowKey, ReopenCounts } from './responseMetrics';
 import { addSuppressedSenders, removeSuppressedSenders } from './suppression';
 import { inverseOf, type ReverseAction } from './lifecycle';
 import { listOperatorAccounts } from '@/lib/auth/adminUsers';
+import { isParkedLegacyRebookDraft, type QuoteStatus } from '@/lib/quoteStatus';
 
 // ─── Pure ingest planner ────────────────────────────────────────────────────
 
@@ -66,12 +67,29 @@ export type ItemRow = {
 };
 
 export type IngestPlan = {
-  /** When true, do nothing: an outbound touch with no existing item is usually
-   *  us cold-contacting — there's no unresponded lead to track (avoids noise).
-   *  Some sources deliberately track outbound-only first observations (positive
-   *  allowlist below); a conversation we REPLIED to keeps its existing item and
-   *  still auto-resolves. */
+  /** When true, do nothing. Two independent reasons feed this:
+   *   1. An outbound touch with no existing item is usually us cold-contacting
+   *      — there's no unresponded lead to track (avoids noise). Some sources
+   *      deliberately track outbound-only first observations (positive
+   *      allowlist below); a conversation we REPLIED to keeps its existing
+   *      item and still auto-resolves.
+   *   2. #252: a GHL activity-noise touch (touch.isActivityNoise) that has an
+   *      EXISTING item — skip so pure CRM activity can never bump/reopen a
+   *      real conversation. The opposite-polarity twin of reason 1: that rule
+   *      skips on `!existing`, this one skips on `existing`. An activity-noise
+   *      touch with NO existing item is deliberately never skipped here — a
+   *      conversation's first-ever touch must always be observable, even when
+   *      the only snapshot GHL ever hands the poller is an activity row (see
+   *      ghl.ts's ACTIVITY_NOISE_TYPES comment for the full swallow scenario). */
   skip: boolean;
+  /** WHY `skip` is true (null when it's false). Exists so a caller (sync.ts's
+   *  activityNoiseSkipped counter) can tell the two skip reasons apart —
+   *  `touch.isActivityNoise` alone is NOT enough, because it says nothing about
+   *  whether `existing` was present: a brand-new (no existing item) GHL
+   *  conversation whose latest event is BOTH activity noise AND outbound is a
+   *  reason-1 cold-outbound skip, not a #252 reason-2 skip, even though
+   *  isActivityNoise is true on that touch. */
+  skipReason: 'cold-outbound' | 'activity-noise-existing' | null;
   /** When true, a resolved item (handled/completed/dismissed) is being re-ingested
    *  with NOTHING to persist — same status, same last_message_at, no reopen /
    *  auto-resolve / snooze-clear. The reconcile cron re-reads these every minute,
@@ -197,8 +215,22 @@ export function planIngest(input: {
     quote_value: touch.quoteValue ?? null,
   };
 
+  // #252: reason 1 (outbound, no existing item) OR reason 2 (activity noise,
+  // existing item) — see the `skip`/`skipReason` field docs above. Mutually
+  // exclusive by construction (reason 1 requires `!existing`, reason 2
+  // requires `existing`), so evaluation order doesn't matter.
+  const coldOutboundSkip =
+    !existing && touch.direction === 'outbound' && !TRACKS_OUTBOUND_FIRST_OBSERVATION.has(touch.source);
+  const activityNoiseExistingSkip = !!existing && !!touch.isActivityNoise;
+  const skipReason: IngestPlan['skipReason'] = activityNoiseExistingSkip
+    ? 'activity-noise-existing'
+    : coldOutboundSkip
+      ? 'cold-outbound'
+      : null;
+
   return {
-    skip: !existing && touch.direction === 'outbound' && !TRACKS_OUTBOUND_FIRST_OBSERVATION.has(touch.source),
+    skip: coldOutboundSkip || activityNoiseExistingSkip,
+    skipReason,
     noopReingest,
     contactOp,
     item,
@@ -283,7 +315,19 @@ function contactInsertRow(identity: ContactIdentity) {
 }
 
 export type IngestOutcome =
-  | { ok: true; skipped: boolean; itemId: string | null; contactId: string | null; autoResolved: boolean; reopened: boolean; ambiguous: boolean }
+  | {
+      ok: true;
+      skipped: boolean;
+      itemId: string | null;
+      contactId: string | null;
+      autoResolved: boolean;
+      reopened: boolean;
+      ambiguous: boolean;
+      /** #252: WHY a skip happened (null when not skipped, or skipped for a
+       *  reason other than planIngest's `skip` — e.g. #110 W7-004's
+       *  noopReingest). Mirrors IngestPlan.skipReason; see its doc. */
+      skipReason: 'cold-outbound' | 'activity-noise-existing' | null;
+    }
   | { ok: false; error: string };
 
 /**
@@ -301,15 +345,15 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
 
   // Outbound with no existing item → nothing to track. Do not write.
   if (plan.skip) {
-    return { ok: true, skipped: true, itemId: null, contactId: null, autoResolved: false, reopened: false, ambiguous: false };
+    return { ok: true, skipped: true, itemId: null, contactId: null, autoResolved: false, reopened: false, ambiguous: false, skipReason: plan.skipReason };
   }
 
   // #110 W7-004: a resolved item re-ingested with nothing to persist — skip the
   // item upsert AND the 'ingested' activity insert so the every-minute reconcile
   // cron stops flooding both tables with no-change writes. `existing` is non-null
-  // whenever noopReingest is true.
+  // whenever noopReingest is true. Not a plan.skip reason, so skipReason is null.
   if (plan.noopReingest) {
-    return { ok: true, skipped: true, itemId: existing?.id ?? null, contactId: existing?.contactId ?? null, autoResolved: false, reopened: false, ambiguous: false };
+    return { ok: true, skipped: true, itemId: existing?.id ?? null, contactId: existing?.contactId ?? null, autoResolved: false, reopened: false, ambiguous: false, skipReason: null };
   }
 
   // 1. Resolve the contact id.
@@ -388,6 +432,7 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
     autoResolved: plan.autoResolved,
     reopened: plan.reopened,
     ambiguous: plan.ambiguous,
+    skipReason: null,
   };
 }
 
@@ -398,8 +443,19 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
 // but `totalOpen` is the REAL count of open items (via Postgrest's exact count,
 // unaffected by .limit()), so the UI can say "N more not shown" instead of
 // silently under-reporting once open items exceed the cap.
+//
+// #265: `totalOpen` (and `items`) deliberately stay UNFILTERED by lead_kind —
+// they describe the same raw "every open item" population the /inbox page's
+// "Show N filtered" toggle (InboxList.tsx) needs to fetch automated rows to
+// display on demand. `totalLeads` is the sibling number: the same population
+// minus lead_kind='automated' noise (mirrors listEscalatableItems' own
+// `.or('lead_kind.is.null,lead_kind.neq.automated')` filter), for consumers
+// that want "how many actually need a reply" — currently only the morning
+// digest. Never repurpose `totalOpen` itself for this: it must stay the same
+// population as `items`/`items.length`, or the WT-41 truncation math above
+// (`totalOpen - items.length`) can go negative/silently stop firing.
 export type OpenItemsResult =
-  | { ok: true; items: OpenInboxItem[]; totalOpen: number; truncated: boolean }
+  | { ok: true; items: OpenInboxItem[]; totalOpen: number; totalLeads: number; truncated: boolean }
   | { ok: false; error: string };
 
 // ─── Legacy-rebook inbox exclusion (#157, escalation coverage + ingest-time
@@ -448,19 +504,89 @@ export function quoteIdPrefix(externalId: string): string {
 }
 
 /**
- * #157: drop items backed by a legacy_rebook=true ("YLL Neighbor") quote. Only
- * a 'quotetool' item can match — its external_id is the quote id, optionally
+ * #157: drop items whose backing quote id is in `hiddenQuoteIds`. Only a
+ * 'quotetool' item can match — its external_id is the quote id, optionally
  * suffixed `:color-request` (quoteIdPrefix strips it, #183 BUG 1) — so every
  * other source is untouched by construction, even if an id happened to
  * collide. Pure — no I/O — hence unit-testable on its own (store.test.ts).
+ * `hiddenQuoteIds` is produced by fetchHiddenLegacyRebookQuoteIds below (the
+ * #252 slice-G predicate, not a raw legacy_rebook flag) — see that function's
+ * doc comment for what "hidden" means.
  */
 export function excludeLegacyRebookItems<T extends { source: unknown; external_id: unknown }>(
   items: T[],
-  legacyQuoteIds: ReadonlySet<string>,
+  hiddenQuoteIds: ReadonlySet<string>,
 ): T[] {
-  if (legacyQuoteIds.size === 0) return items;
+  if (hiddenQuoteIds.size === 0) return items;
   return items.filter(
-    (item) => !(item.source === 'quotetool' && legacyQuoteIds.has(quoteIdPrefix(String(item.external_id)))),
+    (item) => !(item.source === 'quotetool' && hiddenQuoteIds.has(quoteIdPrefix(String(item.external_id)))),
+  );
+}
+
+/**
+ * #252 slice G: a legacy_rebook ("YLL Neighbor") quote is hidden from the
+ * inbox/escalation surfaces ONLY when it's a genuine parked draft nobody has
+ * sent. #157/#181 originally hid every legacy_rebook quote regardless of
+ * status or quote_sent_at — that blanket rule swallowed a real customer's
+ * live BOOKED colour-change ask (quote #1129) for 14 days.
+ *
+ * #263: this is now a thin re-export of the ONE shared predicate
+ * (isParkedLegacyRebookDraft, @/lib/quoteStatus) instead of its own
+ * raw-`status`-column check — store.ts, quotetool.ts's ingest guard, the
+ * text-ops bot, and the morning digest all used to define "hidden draft"
+ * independently and could silently drift apart (they had: this function once
+ * trusted the persisted `status` string directly). Deriving off deriveStatus
+ * instead of the raw column also closes #267(b): a legacy_rebook row that's
+ * actually been PAID (deposit_paid_at set) is never hidden here even if its
+ * persisted status column lagged behind at 'draft'. See the predicate's own
+ * doc comment for the full reasoning. Pure — no I/O.
+ */
+export const isHiddenLegacyRebookQuote = isParkedLegacyRebookDraft;
+
+/**
+ * #252 slice G: the ONE seam listOpenItems and listEscalatableItems both call
+ * to decide which of the quotetool ids on their current page back a hidden
+ * (parked-draft) legacy_rebook quote — so the two surfaces can't drift onto
+ * different predicates again (they had: listEscalatableItems' own comment used
+ * to document hiding "regardless of quote_sent_at" as an accepted, narrower-
+ * than-ingest tradeoff). Batch-fetches only the ids passed in; empty input
+ * skips the query entirely (the common case for ghl/gmail/homeworks-only
+ * pages). Fails OPEN + VISIBLY on a lookup error (#183 BUG 1) — returns an
+ * empty set (nothing hidden) rather than swallow the error or throw. Hiding a
+ * real customer on a transient query failure is the worse outcome; #252 exists
+ * because a hidden customer went unnoticed for 14 days.
+ */
+async function fetchHiddenLegacyRebookQuoteIds(
+  sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  quotetoolIds: readonly string[],
+): Promise<Set<string>> {
+  if (quotetoolIds.length === 0) return new Set();
+  // #263: the predicate moved from a raw `status` read to deriveStatus, which
+  // also needs deposit_paid_at/customer_approved_at/viewed_at — the original
+  // #252 SELECT only fetched `status`/`quote_sent_at` and would have silently
+  // under-derived every row to 'draft' on the missing columns.
+  const { data: quoteRows, error } = await sb
+    .from('quotes')
+    .select('id, legacy_rebook, status, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at')
+    .in('id', quotetoolIds);
+  if (error) {
+    console.error('[inbox] legacy-rebook exclusion lookup failed:', error.message);
+    return new Set();
+  }
+  return new Set(
+    (
+      (quoteRows ?? []) as {
+        id: string;
+        legacy_rebook: boolean | null;
+        status: QuoteStatus | null;
+        quote_sent_at: string | null;
+        customer_approved_at: string | null;
+        deposit_paid_at: string | null;
+        viewed_at: string | null;
+      }[]
+    )
+      .filter(isHiddenLegacyRebookQuote)
+      .map((q) => String(q.id)),
   );
 }
 
@@ -488,9 +614,11 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
   let rows = (data ?? []) as unknown as Record<string, unknown>[];
   let legacyExcluded = 0;
 
-  // #157: batch-fetch the quotetool ids present on THIS page and drop any that
-  // are a legacy_rebook quote. Skips the extra query entirely when the page has
-  // no quotetool items (the common case for ghl/gmail/homeworks-only pages).
+  // #157/#252: batch-fetch the quotetool ids present on THIS page and drop any
+  // that back a hidden (parked-draft) legacy_rebook quote — see
+  // isHiddenLegacyRebookQuote for the exact predicate. Skips the extra query
+  // entirely when the page has no quotetool items (the common case for
+  // ghl/gmail/homeworks-only pages).
   // #183 BUG 1: derive+filter through quoteIdPrefix/isUuid — a suffixed
   // `:color-request` id (or any other malformed value) is NOT a valid uuid, and
   // Postgres's `.in()` rejects the ENTIRE query (22P02) if even one entry in the
@@ -506,23 +634,31 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
       ),
     ];
     if (quotetoolIds.length) {
-      const { data: quoteRows, error: quoteErr } = await sb.from('quotes').select('id, legacy_rebook').in('id', quotetoolIds);
-      if (quoteErr) {
-        // Fail open (unexcluded) but VISIBLY — a silent swallow here is exactly
-        // what let ~129 legacy drafts flood the inbox undetected (#183).
-        console.error('[inbox] legacy-rebook exclusion lookup failed:', quoteErr.message);
-      } else {
-        const legacyQuoteIds = new Set(
-          ((quoteRows ?? []) as { id: string; legacy_rebook: boolean | null }[])
-            .filter((q) => q.legacy_rebook === true)
-            .map((q) => String(q.id)),
-        );
-        const before = rows.length;
-        rows = excludeLegacyRebookItems(rows as { source: unknown; external_id: unknown }[], legacyQuoteIds);
-        legacyExcluded = before - rows.length;
-      }
+      const hiddenQuoteIds = await fetchHiddenLegacyRebookQuoteIds(sb, quotetoolIds);
+      const before = rows.length;
+      rows = excludeLegacyRebookItems(rows as { source: unknown; external_id: unknown }[], hiddenQuoteIds);
+      legacyExcluded = before - rows.length;
     }
   }
+
+  // #265: automated-noise count within the SAME fetch window `legacyExcluded`
+  // above already used (post-legacy-exclusion `rows`, before the page slice) —
+  // feeds totalLeads below. Computed here (not via a query-level `.or(...)`
+  // filter like listEscalatableItems' sibling filter) because this query's
+  // `rows`/`items` must keep INCLUDING automated rows — InboxList.tsx's
+  // "Show N filtered" toggle depends on them still being fetched so staff can
+  // view automated notices (e.g. a TYPE_NO_SHOW touch) on demand. Filtering
+  // the query itself would silently break that toggle for every consumer.
+  // Structurally safe to subtract straight from totalOpen below: a quotetool
+  // item is NEVER lead_kind='automated' (quotetool.ts's normalizeQuoteTouch
+  // hardcodes leadKind: 'lead'), so this set and the legacy-rebook-hidden set
+  // (quotetool-only, per excludeLegacyRebookItems) never overlap.
+  // Same truncation-safety direction as totalOpen's own count below: if raw
+  // unresponded volume ever exceeds fetchLimit, this only sees automated rows
+  // INSIDE the window, so it under-counts automated noise — which means
+  // totalLeads (totalOpen − this) errs toward OVER-, never under-, reporting.
+  // A true lead can never silently vanish from the digest's count this way.
+  const automatedInWindow = rows.filter((r) => r.lead_kind === 'automated').length;
 
   const trimmed = rows.slice(0, limit);
 
@@ -592,7 +728,14 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
   // given the buffer above) — errs toward over-, never under-, reporting,
   // matching the pre-#157 behavior this WT-41 signal already relies on.
   const totalOpen = Math.max((count ?? rows.length) - legacyExcluded, items.length);
-  return { ok: true, items, totalOpen, truncated: totalOpen > items.length };
+  // #265: totalOpen minus the SAME window's automated count (see
+  // automatedInWindow above) — the sibling-parity fix for the digest/inbox
+  // count disagreement. Floored against the page's own lead-only tally
+  // (never report fewer leads than are literally sitting in `items`),
+  // mirroring totalOpen's own floor against items.length one line up.
+  const leadItemsInPage = items.filter((i) => i.leadKind !== 'automated').length;
+  const totalLeads = Math.max(totalOpen - automatedInWindow, leadItemsInPage);
+  return { ok: true, items, totalOpen, totalLeads, truncated: totalOpen > items.length };
 }
 
 // ─── Claim / assign (shared-queue "I've got this", Phase 1.5) ───────────────
@@ -760,16 +903,18 @@ export async function listEscalatableItems(): Promise<EscalatableResult> {
 
   let rows = (data ?? []) as unknown as Record<string, unknown>[];
 
-  // #181: the same #157 exclusion listOpenItems applies to the /inbox display —
-  // a YLL Neighbor item must never fire an amber/red alert or land in the EOD
-  // digest either, so it stays invisible on every escalation surface, not just
-  // the open-items list. Reuses excludeLegacyRebookItems (the exact #157
-  // predicate, fed the same way: batch-fetch quotes for the quotetool ids on
-  // this read) so the two surfaces can never disagree. NOTE this excludes a
-  // legacy_rebook quote's item regardless of quote_sent_at — broader than the
-  // quotetool.ts ingest-time guard (#181's normalizeQuoteTouch, which only
-  // suppresses UNSENT ones from ever being created) — matching #157's existing
-  // display behavior (all Neighbor items hidden) rather than fighting it.
+  // #181/#252: the same #157 exclusion listOpenItems applies to the /inbox
+  // display — a YLL Neighbor item must never fire an amber/red alert or land
+  // in the EOD digest either, so it stays invisible on every escalation
+  // surface, not just the open-items list. Reuses excludeLegacyRebookItems +
+  // fetchHiddenLegacyRebookQuoteIds (the exact same predicate, fed the same
+  // way: batch-fetch quotes for the quotetool ids on this read) so the two
+  // surfaces can never disagree.
+  // #252 slice G: narrowed from "every legacy_rebook item, regardless of
+  // status/quote_sent_at" to "only a genuine unsent DRAFT" (see
+  // isHiddenLegacyRebookQuote) — a sent/viewed/approved/booked Neighbor quote
+  // now behaves like a normal quote here too, matching quotetool.ts's ingest-
+  // time guard rather than the old, broader hide-everything rule.
   // #183 BUG 1: same fix as listOpenItems — derive+filter through
   // quoteIdPrefix/isUuid so a suffixed `:color-request` id can't poison the
   // `.in()` lookup (Postgres 22P02 on a malformed uuid), and check the lookup
@@ -784,17 +929,8 @@ export async function listEscalatableItems(): Promise<EscalatableResult> {
       ),
     ];
     if (quotetoolIds.length) {
-      const { data: quoteRows, error: quoteErr } = await sb.from('quotes').select('id, legacy_rebook').in('id', quotetoolIds);
-      if (quoteErr) {
-        console.error('[inbox] legacy-rebook exclusion lookup failed:', quoteErr.message);
-      } else {
-        const legacyQuoteIds = new Set(
-          ((quoteRows ?? []) as { id: string; legacy_rebook: boolean | null }[])
-            .filter((q) => q.legacy_rebook === true)
-            .map((q) => String(q.id)),
-        );
-        rows = excludeLegacyRebookItems(rows as { source: unknown; external_id: unknown }[], legacyQuoteIds);
-      }
+      const hiddenQuoteIds = await fetchHiddenLegacyRebookQuoteIds(sb, quotetoolIds);
+      rows = excludeLegacyRebookItems(rows as { source: unknown; external_id: unknown }[], hiddenQuoteIds);
     }
   }
 

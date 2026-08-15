@@ -262,7 +262,14 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
           </p>
           <h2
             id="portal-dark-included-heading"
-            className="font-display text-[30px] md:text-[46px] leading-[1.1] font-semibold text-[#F4ECD8] tracking-[-0.01em]"
+            // #238: tabIndex=-1 lets the "Build your own" scroll-jump
+            // (InteractiveHero's goToIncluded, same shape as DesignReprise's
+            // goToColors) move keyboard/SR focus HERE without adding the
+            // heading to the normal tab order; focus:outline-none suppresses
+            // the default ring since this isn't a real interactive control
+            // (mirrors LightColorPicker's id="light-color" section).
+            tabIndex={-1}
+            className="font-display text-[30px] md:text-[46px] leading-[1.1] font-semibold text-[#F4ECD8] tracking-[-0.01em] scroll-mt-6 focus:outline-none"
           >
             {formatIncludedHeading(activeName)}
           </h2>

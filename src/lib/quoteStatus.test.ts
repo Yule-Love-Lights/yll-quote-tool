@@ -101,8 +101,8 @@ describe('deriveStatus — persisted status fallback', () => {
     ).toBe('cancelled');
   });
 
-  it('honors a persisted lost', () => {
-    expect(deriveStatus(ts({ status: 'lost' }))).toBe('lost');
+  it('honors a persisted abandoned', () => {
+    expect(deriveStatus(ts({ status: 'abandoned' }))).toBe('abandoned');
   });
 
   it('does NOT trust a persisted forward status over timestamps (timestamps win)', () => {
@@ -120,7 +120,7 @@ describe('canTransition — legal transitions', () => {
     ['draft', 'sent'],
     ['draft', 'approved'],     // deliberate offline/in-person close (approvedWhileUnsent)
     ['draft', 'cancelled'],
-    ['draft', 'lost'],
+    ['draft', 'abandoned'],
     ['draft', 'declined'],     // #124 — a draft the customer declined before it was ever sent
     ['sent', 'viewed'],
     ['sent', 'approved'],
@@ -148,7 +148,7 @@ describe('canTransition — legal transitions', () => {
     ['booked', 'approved'],      // no going backward
     ['declined', 'sent'],        // terminal
     ['cancelled', 'draft'],      // terminal
-    ['lost', 'sent'],            // terminal
+    ['abandoned', 'sent'],       // terminal
     ['draft', 'draft'],          // same-state is not a transition
   ];
 
@@ -179,10 +179,10 @@ describe('isPortalActionable — customer approve+pay UI gate (Bug 3)', () => {
     }
   });
 
-  it('blocks terminal states (declined/cancelled/lost)', () => {
+  it('blocks terminal states (declined/cancelled/abandoned)', () => {
     expect(isPortalActionable('declined')).toBe(false);
     expect(isPortalActionable('cancelled')).toBe(false);
-    expect(isPortalActionable('lost')).toBe(false);
+    expect(isPortalActionable('abandoned')).toBe(false);
   });
 
   it('blocks changes_requested (being revised)', () => {
@@ -197,9 +197,9 @@ describe('isPortalActionable — customer approve+pay UI gate (Bug 3)', () => {
 });
 
 describe('canRevive — #116 re-send half (revive a dead quote in place)', () => {
-  it('is true only for declined and lost', () => {
+  it('is true only for declined and abandoned', () => {
     expect(canRevive('declined')).toBe(true);
-    expect(canRevive('lost')).toBe(true);
+    expect(canRevive('abandoned')).toBe(true);
   });
 
   it('is false for cancelled (post-booking — refunds are manual, rebook-only)', () => {
@@ -282,7 +282,7 @@ describe('deriveStatus — after a #116 revive write (the resurrection proof)', 
     ).toBe('viewed');
   });
 
-  it('a revived lost quote derives to sent the same way (lost and declined share the fix)', () => {
+  it('a revived abandoned quote derives to sent the same way (abandoned and declined share the fix)', () => {
     expect(
       deriveStatus(
         ts({

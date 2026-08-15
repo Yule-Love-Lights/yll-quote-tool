@@ -345,7 +345,7 @@ export async function rebookLastSeason(
 // Clone a SPECIFIC quote (by id, any status) into a fresh draft — the #116
 // "revive a dead quote" path. Unlike rebookLastSeason (which finds a customer's
 // last APPROVED quote), this reopens exactly the quote the operator picked,
-// including a declined / cancelled / lost one, and leaves the original terminal
+// including a declined / cancelled / abandoned one, and leaves the original terminal
 // quote INTACT for the audit trail. Reuses buildRebookInsert (strips the
 // lifecycle + the frozen rate snapshots so the draft re-prices at live rates)
 // and cloneDesignToNewQuote. Returns the new quote id + the cloned design id

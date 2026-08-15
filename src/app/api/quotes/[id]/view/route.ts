@@ -19,6 +19,10 @@
 //     is stamped first; a GHL failure is non-fatal (never blocks the portal).
 //   * Auth model mirrors /send + /approve: the quote UUID is the capability
 //     token. Rate-limited to blunt abuse.
+//   * #262 — also advances the PERSISTED `status` column sent → viewed (CAS-
+//     guarded, see the block below) so a surface reading `status` directly
+//     agrees with deriveStatus(). Best-effort/non-fatal — the view itself
+//     (viewed_at/view_count) is already the source of truth either way.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { rateLimitResponse } from '@/lib/rateLimit';
@@ -33,6 +37,7 @@ import {
 } from '@/lib/integrations/quoteMessages';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { isStaffPreview } from '@/lib/auth/staffDevice';
+import type { QuoteStatus } from '@/lib/quoteStatus';
 
 export const runtime = 'nodejs';
 
@@ -56,6 +61,9 @@ type QuoteRow = {
   quote_sent_at: string | null;
   viewed_at: string | null;
   view_count: number | null;
+  // #262 — the persisted lifecycle status, read so the status-advance block
+  // below can CAS it sent → viewed.
+  status: string | null;
 };
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -85,7 +93,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, highlevel_contact_id, quote_sent_at, viewed_at, view_count',
+      'id, customer_name, customer_address, customer_phone, customer_email, highlevel_contact_id, quote_sent_at, viewed_at, view_count, status',
     )
     .eq('id', id)
     .single<QuoteRow>();
@@ -124,6 +132,38 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (stampErr) {
     console.error('[api/quotes/:id/view] stamp failed:', stampErr);
     return NextResponse.json({ error: `Failed to record view: ${stampErr.message}` }, { status: 500 });
+  }
+
+  // #262 — advance the PERSISTED lifecycle status alongside the receipt above.
+  // The stamp above runs unconditionally on every sent quote regardless of its
+  // current status (an approved/booked/declined quote still tracks re-opens),
+  // but it never touched `status` itself — so a quote sitting at status='sent'
+  // with viewed_at set read "Sent" on any surface trusting the persisted
+  // column directly instead of deriveStatus(). Advance it ONLY when the row
+  // is still exactly 'sent': a CAS write (`.eq('status','sent')` re-asserts on
+  // the write the same condition the read above just saw, mirroring the
+  // mark-sent/send/invoices.ts idiom) so a concurrent status change between
+  // the fetch and this write can't be clobbered, and an approved/booked/
+  // declined/already-viewed quote is left byte-untouched. Deliberately a
+  // SEPARATE update from the stamp above, not folded in: folding a
+  // `.eq('status','sent')` guard onto THAT update would silently stop
+  // tracking view_count/last_viewed_at on every quote that isn't still
+  // 'sent' — i.e. most repeat views — which must keep working unconditionally.
+  // Runs on every non-skipped view (not just the first) so a row that already
+  // drifted (status='sent' with viewed_at already set from before this fix
+  // shipped) heals the moment it's opened again. Non-fatal on failure — the
+  // view itself is already durably recorded above; this is cosmetic reporting
+  // drift, not the source of truth (deriveStatus() reads viewed_at correctly
+  // either way).
+  if (quote.status === 'sent') {
+    const { error: statusErr } = await sb
+      .from('quotes')
+      .update({ status: 'viewed' satisfies QuoteStatus })
+      .eq('id', id)
+      .eq('status', 'sent');
+    if (statusErr) {
+      console.warn('[api/quotes/:id/view] status advance failed (non-fatal):', statusErr.message);
+    }
   }
 
   // Append a row to the per-view event log so the customer activity feed can show

@@ -16,11 +16,28 @@
 // they match /inbox — the open-items count carries the legacy-rebook exclusion
 // (like the /inbox open list); follow-ups-due mirrors the inbox follow-up strip
 // as-is (which does NOT exclude rebook), so it can exceed "awaiting reply".
+//
+// #265: reads totalLeads, NOT totalOpen — totalOpen counts every open item
+// (leads AND lead_kind='automated' system noise like a no-show notice);
+// totalLeads excludes the noise. This MATCHES what the /inbox page's own
+// "Open leads" tile (buildInboxSummary) and the dashboard nav badge show only
+// while the true lead population fits inside the page cap (items.length <=
+// listOpenItems' `limit`, 100 today) — totalLeads is derived from the wider
+// fetch WINDOW (up to 300 rows), not the page, so once automated-row volume
+// (or lead volume) pushes real leads beyond the page, totalLeads reads
+// HIGHER than the page tile would. That's the safe direction — same
+// never-under-report design as totalOpen's own WT-41 exact count — so the
+// digest stays accurate even on a day the /inbox tile itself would be
+// under-reporting due to page truncation.
+// Before this fix the digest's "N to respond" over-counted by the automated
+// total (a live snapshot on 2026-08-13 measured 40-41 rows — see the prod
+// query in PR #761; this bucket only grows, nothing resolves a marketing
+// email out of 'unresponded', so don't trust a hardcoded count here).
 
 import { listQuotes } from '@/lib/quotes';
 import { listFulfillmentCards } from '@/lib/inventory/jobs';
 import { FULFILLMENT_STAGE_LABELS } from '@/lib/inventory/fulfillmentStage';
-import { deriveStatus } from '@/lib/quoteStatus';
+import { deriveStatus, isParkedLegacyRebookDraft } from '@/lib/quoteStatus';
 import { listOpenItems, listDueFollowUps } from '@/lib/dashboard/inbox/store';
 
 // The digest's quote-pipeline counts must see EVERY open quote, not just the
@@ -54,6 +71,13 @@ export type OpsDigestData = {
   /** Open inbox items needing a first response, matching /inbox (null = read
    *  failed — show the line without a fake number rather than lie). */
   inboxOpenCount: number | null;
+  /** #265: lead_kind='automated' rows excluded from inboxOpenCount (totalOpen
+   *  − totalLeads) — the "hidden but real" bucket (system noise, plus any
+   *  real leads the classifier currently misfires on — see PR #761's notes;
+   *  not yet a filed ledger row as of this write). Rendered only when > 0 so
+   *  a quiet/noise-free morning stays clean; null on a failed inbox read
+   *  (same fail-soft contract as inboxOpenCount). */
+  inboxFilteredCount: number | null;
   /** Follow-ups due today or overdue, matching the inbox follow-up strip. */
   inboxFollowUpsDueCount: number | null;
 };
@@ -114,18 +138,28 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
   }).length;
   const changesRequestedCount = real.filter((q) => deriveStatus(q) === 'changes_requested').length;
   const depositsPendingCount = real.filter((q) => deriveStatus(q) === 'approved').length;
+  // #263: "still parked?" routed through the ONE shared predicate
+  // (isParkedLegacyRebookDraft) — is_test/view_only stay local ANDs (a
+  // different, orthogonal exclusion, not part of what "parked" means).
   const rebookDraftCount = allQuotes.filter(
-    (q) => !q.is_test && !q.view_only && q.legacy_rebook && deriveStatus(q) === 'draft',
+    (q) => !q.is_test && !q.view_only && isParkedLegacyRebookDraft(q),
   ).length;
 
   // Inbox: reuse the /inbox surface's own reads so the counts match the page.
-  // open-items (totalOpen) carries the legacy-rebook exclusion; follow-ups-due
-  // mirrors the inbox follow-up strip as-is. Never let a Telegram-side summary
-  // break on an inbox read hiccup — fall back to null (rendered as no number).
-  const inboxOpenCount = await safeCount(async () => {
+  // ONE listOpenItems() read feeds both numbers below — totalLeads (carries
+  // the legacy-rebook exclusion AND excludes lead_kind='automated' noise,
+  // #265) matches /inbox's own "Open leads" tile; totalOpen − totalLeads is
+  // the filtered-out count (#265). follow-ups-due mirrors the inbox
+  // follow-up strip as-is. Never let a Telegram-side summary break on an
+  // inbox read hiccup — fall back to null (rendered as no number) for BOTH.
+  const inboxOpen = await safeCount(async () => {
     const res = await listOpenItems();
-    return res.ok ? res.totalOpen : null;
+    return res.ok ? { leads: res.totalLeads, open: res.totalOpen } : null;
   }, 'open items');
+  const inboxOpenCount = inboxOpen ? inboxOpen.leads : null;
+  // Math.max(...,0) is defensive only — totalLeads <= totalOpen always by
+  // construction (store.ts), so this never actually clamps.
+  const inboxFilteredCount = inboxOpen ? Math.max(inboxOpen.open - inboxOpen.leads, 0) : null;
   const inboxFollowUpsDueCount = await safeCount(async () => {
     const res = await listDueFollowUps(now);
     return res.ok ? res.items.length : null;
@@ -141,11 +175,12 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
     changesRequestedCount,
     depositsPendingCount,
     inboxOpenCount,
+    inboxFilteredCount,
     inboxFollowUpsDueCount,
   };
 }
 
-async function safeCount(read: () => Promise<number | null>, label: string): Promise<number | null> {
+async function safeCount<T>(read: () => Promise<T | null>, label: string): Promise<T | null> {
   try {
     return await read();
   } catch (err) {
@@ -181,6 +216,12 @@ export function opsDigestMessage(data: OpsDigestData, baseUrl: string): string {
   lines.push('');
   const inboxBits: string[] = [];
   if (data.inboxOpenCount != null) inboxBits.push(`${data.inboxOpenCount} to respond`);
+  // #265: surface what got excluded (system noise, no-shows, etc.) instead of
+  // a silent cliff — only when nonzero, so a noise-free morning stays clean.
+  // Mirrors /inbox's own InboxSummaryStrip "· N filtered" texture.
+  if (data.inboxFilteredCount != null && data.inboxFilteredCount > 0) {
+    inboxBits.push(`${data.inboxFilteredCount} filtered`);
+  }
   if (data.inboxFollowUpsDueCount != null) inboxBits.push(`${data.inboxFollowUpsDueCount} follow-ups due`);
   lines.push(inboxBits.length ? `📥 Inbox — ${inboxBits.join(' · ')}` : '📥 Inbox');
   lines.push(`→ ${base}/inbox`);

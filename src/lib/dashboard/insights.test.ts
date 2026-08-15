@@ -121,7 +121,7 @@ describe('computeInsightStats', () => {
 });
 
 // B7 class (#110 W7-006): an approved-then-cancelled quote keeps its
-// customer_approved_at but carries status='cancelled'/'declined'/'lost' — it
+// customer_approved_at but carries status='cancelled'/'declined'/'abandoned' — it
 // must NOT count as booked revenue or a win. Mirrors the metrics/serviceMetrics/
 // workflowBoard fix that missed insights.ts.
 describe('insights — terminal statuses excluded from booked revenue (#110 W7-006)', () => {
@@ -137,11 +137,11 @@ describe('insights — terminal statuses excluded from booked revenue (#110 W7-0
     expect(out.find(b => b.key === '2026-06')!.revenue).toBe(1000);
   });
 
-  it('revenueByService excludes cancelled/declined/lost even when approved', () => {
+  it('revenueByService excludes cancelled/declined/abandoned even when approved', () => {
     const out = revenueByService([
       makeQuote({ total: 1000, customer_approved_at: '2026-06-10T00:00:00Z', service_type: 'holiday' }),
       makeQuote({ total: 8000, customer_approved_at: '2026-06-10T00:00:00Z', service_type: 'holiday', status: 'cancelled' }),
-      makeQuote({ total: 500, customer_approved_at: '2026-06-10T00:00:00Z', service_type: 'event', status: 'lost' }),
+      makeQuote({ total: 500, customer_approved_at: '2026-06-10T00:00:00Z', service_type: 'event', status: 'abandoned' }),
     ]);
     expect(out.find(s => s.service === 'holiday')!.revenue).toBe(1000);
     expect(out.find(s => s.service === 'event')!.revenue).toBe(0);

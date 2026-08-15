@@ -103,7 +103,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ ok: true, booked: true, alreadyPaid: true, simulated: true });
   }
 
-  // #124 money-safety: refuse to book a DEAD quote (declined / cancelled / lost) —
+  // #124 money-safety: refuse to book a DEAD quote (declined / cancelled / abandoned) —
   // same guard as convert-to-job + /pay (W1-007). approved→declined is now legal, so
   // a declined test quote can carry customer_approved_at (passing the approve gate
   // above) while status='declined'; without this it would be re-booked (declined→booked).
@@ -114,7 +114,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     quote_sent_at: null,
     viewed_at: null,
   });
-  if (lifecycle === 'declined' || lifecycle === 'cancelled' || lifecycle === 'lost') {
+  if (lifecycle === 'declined' || lifecycle === 'cancelled' || lifecycle === 'abandoned') {
     return NextResponse.json(
       { error: `Cannot book a ${lifecycle} quote`, code: 'not-bookable' },
       { status: 409 },
@@ -140,7 +140,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     })
     .eq('id', id)
     .is('deposit_paid_at', null)
-    .or('status.not.in.(declined,cancelled,lost),status.is.null')
+    .or('status.not.in.(declined,cancelled,abandoned),status.is.null')
     .select('id');
 
   if (stampErr) {

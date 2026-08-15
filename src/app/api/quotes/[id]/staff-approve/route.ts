@@ -183,7 +183,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   // untouched — was silently overwritten to 'approved', resurrecting a terminal
   // quote. Add the approvable-from status guard (the exact set canTransition allows
   // to 'approved' pre-booking: draft/sent/viewed, plus NULL for legacy rows) so a
-  // row that just moved to declined/cancelled/lost/changes_requested no longer
+  // row that just moved to declined/cancelled/abandoned/changes_requested no longer
   // matches. The OR-with-null idiom mirrors the decline + approve routes.
   //
   // View-only portal (#176 TOCTOU): the early view_only check above is a

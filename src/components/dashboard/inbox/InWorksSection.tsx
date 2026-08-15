@@ -149,6 +149,23 @@ export function InWorksSection({
           </div>
           <div className="flex shrink-0 gap-2 flex-wrap justify-end">
             {item.source === 'gmail' ? (
+              // #268 fix round (sibling-guard check against InboxList.tsx's
+              // matching fix), UPDATED round 3: InboxList's real fix is a
+              // "call/text directly" affordance driven by
+              // parseLeadForwardDisplay(subject, preview) — deliberately
+              // MESSAGE-level, not contact-level (round 2's contact.phone
+              // gate was a false-positive HIGH: dashboard_contacts.
+              // primary_phone is a cross-channel MERGED field, so a
+              // returning customer's ordinary reply could carry a phone from
+              // an earlier quote). NOT done here — `InWorksItem` (store.ts,
+              // embargoed for this fix round) only selects
+              // `dashboard_contacts.display_name` via IN_WORKS_SELECT; it has
+              // `preview` but NOT `subject`, and parseLeadForwardDisplay
+              // needs both (subject carries the platform marker, preview
+              // carries the phone/email). Fixing this needs a store.ts
+              // change (add `subject` to IN_WORKS_SELECT + InWorksItem)
+              // that's out of scope here — tracked as a follow-up, not
+              // silently left both broken AND undocumented.
               <span className="px-3 py-1.5 text-sm" style={{ color: 'var(--op-text-2)' }}>
                 Reply in Gmail
               </span>

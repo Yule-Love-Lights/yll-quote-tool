@@ -4,7 +4,7 @@
 // §3). Two entry points:
 //   - deriveStatus(row): the read fallback + backfill source of truth. Prefers a
 //     PERSISTED `status` for the states timestamps can't express (declined /
-//     changes_requested / cancelled / lost), otherwise computes the latest state
+//     changes_requested / cancelled / abandoned), otherwise computes the latest state
 //     reachable from the existing lifecycle timestamps (the only signal legacy
 //     rows + pre-migration prod carry).
 //   - canTransition(from, to): the legal-transitions table the write paths gate
@@ -22,7 +22,7 @@ export type QuoteStatus =
   | 'changes_requested'
   | 'declined'
   | 'cancelled'
-  | 'lost';
+  | 'abandoned';
 
 /** Every status, for validation (e.g. "is this persisted value a known status?"). */
 export const QUOTE_STATUSES: readonly QuoteStatus[] = [
@@ -34,7 +34,7 @@ export const QUOTE_STATUSES: readonly QuoteStatus[] = [
   'changes_requested',
   'declined',
   'cancelled',
-  'lost',
+  'abandoned',
 ] as const;
 
 export function isQuoteStatus(v: unknown): v is QuoteStatus {
@@ -68,7 +68,7 @@ export type QuoteLifecycleTimestamps = QuoteStatusRow;
 /**
  * The latest status for a row. Precedence:
  *   1. A PERSISTED `status` that timestamps can't represent — declined,
- *      changes_requested, cancelled, lost — wins (a declined quote may still
+ *      changes_requested, cancelled, abandoned — wins (a declined quote may still
  *      carry quote_sent_at/viewed_at, but its real state is "declined").
  *   2. Otherwise derive from timestamps, later stage winning:
  *      booked > approved > viewed > sent > draft. The "later stage wins" rule
@@ -84,7 +84,7 @@ const TERMINAL_OR_BRANCH: ReadonlySet<QuoteStatus> = new Set<QuoteStatus>([
   'changes_requested',
   'declined',
   'cancelled',
-  'lost',
+  'abandoned',
 ]);
 
 export function deriveStatus(q: QuoteStatusRow): QuoteStatus {
@@ -97,19 +97,48 @@ export function deriveStatus(q: QuoteStatusRow): QuoteStatus {
 }
 
 /**
+ * #263: the ONE definition of "a legacy_rebook ('YLL Neighbor') quote that's
+ * still a genuinely parked, unsent draft" — every surface that needs to
+ * hide or bucket these (the inbox's listOpenItems/listEscalatableItems +
+ * quotetool.ts's ingest guard, the text-ops bot's name search, the morning
+ * digest's rebook line) routes through this so they can't drift into
+ * disagreeing definitions again — the same drift class #252 slice G already
+ * paid down once, when store.ts and quotetool.ts silently disagreed.
+ *
+ * Deliberately built on deriveStatus, NOT the raw persisted `status` column:
+ *   - #267(b): a legacy_rebook row that's actually been PAID (deposit_paid_at
+ *     set) derives 'booked' here even if its persisted status column never
+ *     got written past 'draft' — so a row representing real money can never
+ *     be suppressed to invisible. A raw `status === 'draft'` check can't see
+ *     that; deriveStatus's own precedence (deposit_paid_at wins over a stale
+ *     status string) closes the hole by construction.
+ *   - matches every OTHER lifecycle read in the app — deriveStatus is already
+ *     the canonical source of truth everywhere else (the admin list, the
+ *     dashboard, the bot's own STATUS_LABELS) — a raw-status-based side
+ *     channel here was exactly the kind of drift #263 flagged.
+ *
+ * `legacy_rebook` is checked with `=== true` (not merely truthy) so a
+ * null/undefined read (a surface that doesn't select the column) defaults to
+ * "not parked" rather than accidentally hiding a normal quote.
+ */
+export function isParkedLegacyRebookDraft(q: QuoteStatusRow & { legacy_rebook?: boolean | null }): boolean {
+  return q.legacy_rebook === true && deriveStatus(q) === 'draft';
+}
+
+/**
  * Legal status transitions. The forward lifecycle is linear
  * (draft→sent→viewed→approved→booked); the portal branches (decline / request
- * changes) and the admin cancel/lost can fire from the pre-booked states.
+ * changes) and the admin cancel/abandoned can fire from the pre-booked states.
  *
- *   draft             → sent · approved · cancelled · lost · declined   (approved from draft = offline close; declined = the customer said no before it was ever sent)
- *   sent              → viewed · approved · changes_requested · declined · cancelled · lost
- *   viewed            → approved · changes_requested · declined · cancelled · lost
+ *   draft             → sent · approved · cancelled · abandoned · declined   (approved from draft = offline close; declined = the customer said no before it was ever sent)
+ *   sent              → viewed · approved · changes_requested · declined · cancelled · abandoned
+ *   viewed            → approved · changes_requested · declined · cancelled · abandoned
  *   approved          → booked · cancelled · declined   (#124 — declined = customer backed out BEFORE paying the deposit; approved ⇒ no deposit, so it's money-safe)
  *   booked            → cancelled                     (a PAID deal is never "declined" — only cancelled, refunds manual)
- *   changes_requested → sent · declined · cancelled · lost   (staff edit → resend, or it falls through)
+ *   changes_requested → sent · declined · cancelled · abandoned   (staff edit → resend, or it falls through)
  *   declined          → (terminal)
  *   cancelled         → (terminal)
- *   lost              → (terminal)
+ *   abandoned         → (terminal)
  *
  * The `declined` targets (#124) stay money-safe by construction: `deriveStatus`
  * returns 'booked' the moment a deposit is paid, so any status still reading
@@ -122,15 +151,15 @@ export function deriveStatus(q: QuoteStatusRow): QuoteStatus {
  * transition.
  */
 const ALLOWED_TRANSITIONS: Readonly<Record<QuoteStatus, readonly QuoteStatus[]>> = {
-  draft: ['sent', 'approved', 'cancelled', 'lost', 'declined'],
-  sent: ['viewed', 'approved', 'changes_requested', 'declined', 'cancelled', 'lost'],
-  viewed: ['approved', 'changes_requested', 'declined', 'cancelled', 'lost'],
+  draft: ['sent', 'approved', 'cancelled', 'abandoned', 'declined'],
+  sent: ['viewed', 'approved', 'changes_requested', 'declined', 'cancelled', 'abandoned'],
+  viewed: ['approved', 'changes_requested', 'declined', 'cancelled', 'abandoned'],
   approved: ['booked', 'cancelled', 'declined'],
   booked: ['cancelled'],
-  changes_requested: ['sent', 'declined', 'cancelled', 'lost'],
+  changes_requested: ['sent', 'declined', 'cancelled', 'abandoned'],
   declined: [],
   cancelled: [],
-  lost: [],
+  abandoned: [],
 };
 
 export function canTransition(from: QuoteStatus, to: QuoteStatus): boolean {
@@ -139,13 +168,13 @@ export function canTransition(from: QuoteStatus, to: QuoteStatus): boolean {
 
 /**
  * Ledger #116 (re-send half) — true for the two terminal statuses a dead
- * quote can be REVIVED from: 'declined' and 'lost'. Revive re-opens the SAME
+ * quote can be REVIVED from: 'declined' and 'abandoned'. Revive re-opens the SAME
  * quote to 'sent' (re-stamp, re-message, re-advance the GHL card) instead of
  * cloning a new draft (that's rebook, `rebookFromQuote`).
  *
  * Deliberately NOT modeled as a transition in ALLOWED_TRANSITIONS/canTransition
  * — that table is the general-purpose gate every staff-approve/decline route
- * shares, and widening it to allow declined/lost → sent would hand every one
+ * shares, and widening it to allow declined/abandoned → sent would hand every one
  * of those consumers a move they were never designed for. The /send route
  * checks canRevive() directly as a narrow, scoped bypass instead.
  *
@@ -155,12 +184,12 @@ export function canTransition(from: QuoteStatus, to: QuoteStatus): boolean {
  * quotes stay rebook-only (a fresh draft, the original left intact).
  */
 export function canRevive(status: QuoteStatus): boolean {
-  return status === 'declined' || status === 'lost';
+  return status === 'declined' || status === 'abandoned';
 }
 
 // Bug fix (B3 UI): the customer portal shows the approve + pay controls only
 // while a quote is still live. A quote in a terminal branch (declined /
-// cancelled / lost) is closed; one in changes_requested is being revised.
+// cancelled / abandoned) is closed; one in changes_requested is being revised.
 // In either case the customer must NOT be able to approve/pay — the server
 // already rejects it (the /approve status gate + /pay's approve-first guard),
 // this is the matching UI gate so they don't even SEE the controls.
@@ -171,7 +200,7 @@ export function canRevive(status: QuoteStatus): boolean {
 const NON_ACTIONABLE_PORTAL_STATUSES: ReadonlySet<string> = new Set([
   'declined',
   'cancelled',
-  'lost',
+  'abandoned',
   'changes_requested',
 ]);
 
