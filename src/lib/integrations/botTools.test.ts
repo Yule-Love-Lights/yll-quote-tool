@@ -32,6 +32,7 @@ const quote = (over: Partial<QuoteListItem>): QuoteListItem => ({
   is_test: false,
   service_type: null,
   legacy_rebook: false,
+  is_nce: false,
   view_only: false,
   highlevel_contact_id: null,
   customer_id: null,
@@ -101,6 +102,17 @@ describe('runStatusTool', () => {
       quote({ legacy_rebook: true, quote_sent_at: '2026-07-15T00:00:00Z' }),
     ]);
     expect(await runStatusTool('alvarez')).toContain('#101 Maria Alvarez — Sent, not viewed');
+  });
+
+  // #263: pins the shared isParkedLegacyRebookDraft predicate's deriveStatus
+  // basis directly (not just deriveStatus's own labeling, already covered
+  // above) — a legacy_rebook quote booked OFFLINE (deposit_paid_at set, never
+  // marked sent) must surface in search, not read as a still-parked draft.
+  it('finds a BOOKED legacy_rebook quote even though it was never marked sent', async () => {
+    listQuotes.mockResolvedValue([
+      quote({ legacy_rebook: true, quote_sent_at: null, deposit_paid_at: '2026-07-20T00:00:00Z' }),
+    ]);
+    expect(await runStatusTool('alvarez')).toContain('#101 Maria Alvarez — Booked (deposit paid)');
   });
 
   it('tags test rows and caps long hit lists', async () => {

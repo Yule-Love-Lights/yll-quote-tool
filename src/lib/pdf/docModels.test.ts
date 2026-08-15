@@ -284,6 +284,7 @@ function makeDetail(invoiceOverrides: Partial<InvoiceRow> = {}, detailOverrides:
     customerPhone: '555-0100',
     customerAddress: '1 Main St',
     isTest: false,
+    isNce: false,
     jobNumber: 500,
     jobStatus: 'requires_invoicing',
     ...detailOverrides,

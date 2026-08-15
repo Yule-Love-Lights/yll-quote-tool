@@ -8,6 +8,7 @@ import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { PipelineActionsMenu } from '@/components/admin/PipelineActionsMenu';
 import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
+import { NceBadge } from '@/components/admin/NceBadge';
 import { SERVICE_TYPE_LABELS, SERVICE_TYPES, DEFAULT_SERVICE_TYPE, type ServiceType } from '@/lib/serviceType';
 import { QuotesListSkeleton } from './QuotesListSkeleton';
 
@@ -28,7 +29,7 @@ const SERVICE_TYPE_STYLES: Record<ServiceType, string> = {
 // The lifecycle status of a row. Now sourced from the canonical model
 // (src/lib/quoteStatus.ts, ledger #83): deriveStatus prefers the persisted
 // `status` column for states timestamps can't express (declined /
-// changes_requested / cancelled / lost) and otherwise computes the latest state
+// changes_requested / cancelled / abandoned) and otherwise computes the latest state
 // from the lifecycle timestamps — so the same row reads identically here, on the
 // dashboard Workflow board, and in the data layer. Supersedes the old local
 // Draft/Sent/Viewed/Approved derivation (audit Finding #40).
@@ -46,7 +47,7 @@ const STATUS_LABELS: Record<QuoteStatus, string> = {
   changes_requested: 'Changes',
   declined: 'Declined',
   cancelled: 'Cancelled',
-  lost: 'Lost',
+  abandoned: 'Abandoned',
 };
 
 const STATUS_STYLES: Record<QuoteStatus, string> = {
@@ -58,11 +59,13 @@ const STATUS_STYLES: Record<QuoteStatus, string> = {
   changes_requested: 'bg-orange-100 text-orange-700',
   declined: 'bg-red-100 text-red-700',
   cancelled: 'bg-gray-200 text-gray-600',
-  lost: 'bg-gray-200 text-gray-600',
+  abandoned: 'bg-gray-200 text-gray-600',
 };
 
-// The statuses offered as filter chips. Ordered along the lifecycle; the two
-// portal branch states (Changes/Declined) sit at the end.
+// The statuses offered as filter chips. Ordered along the lifecycle; the
+// portal branch states (Changes/Declined) and the staff-only terminal state
+// (Abandoned, #235's "Mark abandoned" action) sit at the end. `cancelled` is
+// deliberately NOT offered here — prod has zero cancelled quotes ever.
 const FILTER_STATUSES: QuoteStatus[] = [
   'draft',
   'sent',
@@ -71,6 +74,7 @@ const FILTER_STATUSES: QuoteStatus[] = [
   'booked',
   'changes_requested',
   'declined',
+  'abandoned',
 ];
 
 export default function QuotesAdminPage() {
@@ -84,6 +88,14 @@ export default function QuotesAdminPage() {
   // Second chip row (this task): filter by service-line type, composing with
   // statusFilter + search as AND conditions.
   const [serviceFilter, setServiceFilter] = useState<'All' | ServiceType>('All');
+  // Test-only toggle (this task): narrows to is_test rows; AND's with every
+  // other filter. Kept separate from serviceFilter (a radio) rather than as a
+  // fourth service-type option, since "permanent AND test" must stay
+  // expressible — a radio would make Test mutually exclusive with the real
+  // service types. Off by default: test quotes stay visible either way (see
+  // listQuotes()'s "intentionally keeps test quotes VISIBLE" comment) — this
+  // only narrows TO them, it never hides them.
+  const [testOnly, setTestOnly] = useState(false);
   const [search, setSearch] = useState('');
 
   const refresh = async () => {
@@ -153,6 +165,7 @@ export default function QuotesAdminPage() {
   const visible = items.filter(q => {
     if (statusFilter !== 'All' && rowStatus(q) !== statusFilter) return false;
     if (serviceFilter !== 'All' && (q.service_type ?? DEFAULT_SERVICE_TYPE) !== serviceFilter) return false;
+    if (testOnly && !q.is_test) return false;
     if (!term) return true;
     return [q.customer_name, q.customer_address, q.customer_phone, q.customer_email, q.id]
       .some(v => v != null && v.toLowerCase().includes(term));
@@ -242,6 +255,22 @@ export default function QuotesAdminPage() {
                     {s === 'All' ? 'All' : SERVICE_TYPE_LABELS[s]}
                   </button>
                 ))}
+                {/* Test-only toggle: a separate boolean, not a service-type
+                    option (see the testOnly state comment above). A divider
+                    + distinct color keeps it from reading as a fifth service
+                    type. */}
+                <span className="w-px self-stretch bg-gray-300 mx-1" aria-hidden="true" />
+                <button
+                  onClick={() => setTestOnly(v => !v)}
+                  aria-pressed={testOnly}
+                  className={`text-xs font-medium px-2.5 py-1 rounded-md border ${
+                    testOnly
+                      ? 'bg-violet-600 text-white border-violet-600'
+                      : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                  }`}
+                >
+                  Test only
+                </button>
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -355,6 +384,8 @@ export default function QuotesAdminPage() {
                           )}
                           {/* YLL Neighbor (#158) — migrated from last year's Jobber data (#155). */}
                           {q.legacy_rebook && <YllNeighborBadge />}
+                          {/* NCE (#198) — the barter/trade network tag. Tags coexist. */}
+                          {q.is_nce && <NceBadge />}
                           {/* View-only portal (#176) — mirrors the detail page's pill. */}
                           {q.view_only && (
                             <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-100 text-sky-700">

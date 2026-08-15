@@ -52,28 +52,46 @@ function baseQuote(overrides: Record<string, unknown> = {}) {
     quote_sent_at: '2026-06-25T00:00:00Z',
     viewed_at: null,
     view_count: 0,
+    // #262 — the persisted lifecycle status. A normal freshly-sent quote is
+    // 'sent'; individual tests override this to exercise the status-advance
+    // guard (approved/booked/declined/viewed/null must all be left alone).
+    status: 'sent',
     ...overrides,
   };
 }
 
-// Models the view route's two awaited writes: `.update().eq()` (the stamp) and
-// `.insert()` (the event-log row), plus the `.select().eq().single()` fetch.
+// Models the view route's awaited writes: `.update().eq()...` (the stamp,
+// and — #262 — a second, separate `.update().eq().eq()` for the status
+// CAS), `.insert()` (the event-log row), plus the `.select().eq().single()`
+// fetch. Each update() call is recorded with its OWN `.eq()` args (in call
+// order) so a test can assert the status write carried the `status='sent'`
+// CAS filter, distinct from the unconditional stamp write.
 function makeSb(
   quote: Record<string, unknown> | null,
-  opts: { stampError?: { message: string } | null; eventError?: { message: string } | null } = {},
+  opts: {
+    stampError?: { message: string } | null;
+    statusUpdateError?: { message: string } | null;
+    eventError?: { message: string } | null;
+  } = {},
 ) {
-  const updatePayloads: Array<Record<string, unknown>> = [];
+  const updates: Array<{ payload: Record<string, unknown>; eqCalls: Array<[string, unknown]> }> = [];
   const insertPayloads: Array<Record<string, unknown>> = [];
   const builder: Record<string, unknown> = {};
   let mode: 'update' | 'insert' | null = null;
+  let updateCount = 0;
+  let pendingEqCalls: Array<[string, unknown]> = [];
   Object.assign(builder, {
     from: () => builder,
     select: () => builder,
-    eq: () => builder,
+    eq: (col: string, val: unknown) => {
+      pendingEqCalls.push([col, val]);
+      return builder;
+    },
     single: async () => ({ data: quote, error: quote ? null : { message: 'no row' } }),
     update: (payload: Record<string, unknown>) => {
       mode = 'update';
-      updatePayloads.push(payload);
+      pendingEqCalls = [];
+      updates.push({ payload, eqCalls: pendingEqCalls });
       return builder;
     },
     insert: (payload: Record<string, unknown>) => {
@@ -82,17 +100,22 @@ function makeSb(
       return builder;
     },
     then: (resolve: (v: unknown) => void) => {
-      const res =
-        mode === 'update'
-          ? { error: opts.stampError ?? null }
-          : mode === 'insert'
-            ? { error: opts.eventError ?? null }
-            : { data: quote, error: null };
+      let res: { error: { message: string } | null };
+      if (mode === 'update') {
+        updateCount += 1;
+        // 1st update() = the stamp (viewed_at/last_viewed_at/view_count);
+        // 2nd = the #262 status CAS. Each gets its own error control.
+        res = { error: (updateCount === 1 ? opts.stampError : opts.statusUpdateError) ?? null };
+      } else if (mode === 'insert') {
+        res = { error: opts.eventError ?? null };
+      } else {
+        res = { error: null };
+      }
       mode = null;
       resolve(res);
     },
   });
-  return { client: builder, updatePayloads, insertPayloads };
+  return { client: builder, updates, insertPayloads };
 }
 
 function makeReq(opts: { staffCookie?: boolean } = {}): NextRequest {
@@ -116,8 +139,8 @@ beforeEach(() => {
 });
 
 describe('POST /api/quotes/[id]/view — customer view (no operator session)', () => {
-  it('records the view on a sent quote — stamps + appends an event row', async () => {
-    const { client, updatePayloads, insertPayloads } = makeSb(baseQuote());
+  it('records the view on a sent quote — stamps + advances status + appends an event row', async () => {
+    const { client, updates, insertPayloads } = makeSb(baseQuote());
     sbRef.current = client;
 
     const res = await POST(makeReq(), { params });
@@ -126,9 +149,13 @@ describe('POST /api/quotes/[id]/view — customer view (no operator session)', (
     expect(res.status).toBe(200);
     expect(json.ok).toBe(true);
     expect(json.viewCount).toBe(1);
-    expect(updatePayloads).toHaveLength(1);
-    expect(updatePayloads[0].view_count).toBe(1);
-    expect(updatePayloads[0].last_viewed_at).toBeTruthy();
+    // #262: two separate update() calls — the unconditional stamp, then the
+    // CAS-guarded status advance.
+    expect(updates).toHaveLength(2);
+    expect(updates[0].payload.view_count).toBe(1);
+    expect(updates[0].payload.last_viewed_at).toBeTruthy();
+    expect(updates[1].payload.status).toBe('viewed');
+    expect(updates[1].eqCalls).toContainEqual(['status', 'sent']);
     expect(insertPayloads).toHaveLength(1);
     expect(insertPayloads[0].quote_id).toBe(ID);
   });
@@ -145,14 +172,14 @@ describe('POST /api/quotes/[id]/view — customer view (no operator session)', (
   });
 
   it('skips an unsent quote (no-op) — not a customer view yet', async () => {
-    const { client, updatePayloads } = makeSb(baseQuote({ quote_sent_at: null }));
+    const { client, updates } = makeSb(baseQuote({ quote_sent_at: null }));
     sbRef.current = client;
 
     const res = await POST(makeReq(), { params });
     const json = await res.json();
     expect(res.status).toBe(200);
     expect(json.skipped).toBe('not-sent');
-    expect(updatePayloads).toHaveLength(0);
+    expect(updates).toHaveLength(0);
     expect(hl.sendEmail).not.toHaveBeenCalled();
   });
 
@@ -169,7 +196,7 @@ describe('POST /api/quotes/[id]/view — staff view (operator session present)',
     hl.configured.value = true;
     process.env.HIGHLEVEL_INTERNAL_CONTACT_ID = 'internal-1';
     op.current = { id: 'op-1', email: 'staff@yulelovelights.com', role: 'operator', name: 'Sam' };
-    const { client, updatePayloads, insertPayloads } = makeSb(baseQuote());
+    const { client, updates, insertPayloads } = makeSb(baseQuote());
     sbRef.current = client;
 
     const res = await POST(makeReq(), { params });
@@ -177,20 +204,20 @@ describe('POST /api/quotes/[id]/view — staff view (operator session present)',
 
     expect(res.status).toBe(200);
     expect(json.skipped).toBe('staff');
-    expect(updatePayloads).toHaveLength(0);
+    expect(updates).toHaveLength(0);
     expect(insertPayloads).toHaveLength(0);
     expect(hl.sendEmail).not.toHaveBeenCalled();
   });
 
   it('an admin operator is also treated as staff', async () => {
     op.current = { id: 'op-2', email: 'admin@yulelovelights.com', role: 'admin', name: 'Admin' };
-    const { client, updatePayloads } = makeSb(baseQuote());
+    const { client, updates } = makeSb(baseQuote());
     sbRef.current = client;
 
     const res = await POST(makeReq(), { params });
     const json = await res.json();
     expect(json.skipped).toBe('staff');
-    expect(updatePayloads).toHaveLength(0);
+    expect(updates).toHaveLength(0);
   });
 });
 
@@ -200,7 +227,7 @@ describe('POST /api/quotes/[id]/view — staff view (device cookie, NO operator 
     // is the only staff signal — it must still skip the DB write + event + email.
     hl.configured.value = true;
     process.env.HIGHLEVEL_INTERNAL_CONTACT_ID = 'internal-1';
-    const { client, updatePayloads, insertPayloads } = makeSb(baseQuote());
+    const { client, updates, insertPayloads } = makeSb(baseQuote());
     sbRef.current = client;
 
     const res = await POST(makeReq({ staffCookie: true }), { params });
@@ -208,8 +235,120 @@ describe('POST /api/quotes/[id]/view — staff view (device cookie, NO operator 
 
     expect(res.status).toBe(200);
     expect(json.skipped).toBe('staff');
-    expect(updatePayloads).toHaveLength(0);
+    expect(updates).toHaveLength(0);
     expect(insertPayloads).toHaveLength(0);
     expect(hl.sendEmail).not.toHaveBeenCalled();
+  });
+});
+
+// Ledger #262: /view stamped viewed_at but never advanced the PERSISTED
+// `status` column, so a row could sit at status='sent' with viewed_at set —
+// any surface reading `status` directly (not through deriveStatus()) showed
+// "Sent" for a quote the customer demonstrably opened. Fixed by a CAS-guarded
+// second update (`status: 'viewed'` WHERE `status = 'sent'`), separate from
+// the unconditional stamp above so repeat-view tracking on an
+// approved/booked/declined/already-viewed quote is untouched.
+describe('POST /api/quotes/[id]/view — #262 status advance (persisted status sent → viewed)', () => {
+  it('advances status sent → viewed on a first view (fresh quote, viewed_at not yet set)', async () => {
+    const { client, updates } = makeSb(baseQuote({ status: 'sent', viewed_at: null }));
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.viewedAt).toBeTruthy();
+    expect(updates).toHaveLength(2);
+    expect(updates[1].payload.status).toBe('viewed');
+    expect(updates[1].eqCalls).toContainEqual(['id', ID]);
+    expect(updates[1].eqCalls).toContainEqual(['status', 'sent']);
+  });
+
+  // THE SUBTLE CASE (ledger #262's 19 drifted prod rows): status is still
+  // 'sent' but viewed_at was ALREADY stamped by an earlier view (from before
+  // this fix shipped). The stamp update's `viewed_at: quote.viewed_at ?? now`
+  // short-circuits and leaves viewed_at UNCHANGED on this call — the status
+  // CAS must not depend on that branch or a drifted row could never heal.
+  // It's a separate update keyed only off the row's persisted `status`, so it
+  // fires and heals the row regardless of the viewed_at short-circuit.
+  it('heals a DRIFTED row (status=sent, viewed_at already set) on the next view', async () => {
+    const staleViewedAt = '2026-07-01T12:00:00Z';
+    const { client, updates } = makeSb(
+      baseQuote({ status: 'sent', viewed_at: staleViewedAt, view_count: 3 }),
+    );
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    // viewed_at semantics are UNCHANGED by this fix — still the first-open
+    // timestamp, not touched by a later view.
+    expect(json.viewedAt).toBe(staleViewedAt);
+    expect(updates[0].payload.viewed_at).toBe(staleViewedAt);
+    expect(updates[0].payload.view_count).toBe(4);
+    // ...but the status CAS still fires and heals the drifted column.
+    expect(updates).toHaveLength(2);
+    expect(updates[1].payload.status).toBe('viewed');
+    expect(updates[1].eqCalls).toContainEqual(['status', 'sent']);
+  });
+
+  it('repeat view on an already-"viewed" quote is idempotent — no status write attempted', async () => {
+    const { client, updates } = makeSb(
+      baseQuote({ status: 'viewed', viewed_at: '2026-07-01T12:00:00Z', view_count: 1 }),
+    );
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+
+    expect(res.status).toBe(200);
+    // Only the unconditional stamp fires; the status CAS is never attempted
+    // because quote.status !== 'sent' — status is left byte-untouched.
+    expect(updates).toHaveLength(1);
+    expect(updates[0].payload.status).toBeUndefined();
+  });
+
+  it.each(['approved', 'declined', 'booked', 'cancelled', 'changes_requested'] as const)(
+    'a %s quote is left byte-untouched — no status write attempted',
+    async (status) => {
+      const { client, updates } = makeSb(
+        baseQuote({ status, viewed_at: '2026-07-01T12:00:00Z' }),
+      );
+      sbRef.current = client;
+
+      const res = await POST(makeReq(), { params });
+
+      expect(res.status).toBe(200);
+      expect(updates).toHaveLength(1); // only the unconditional stamp
+      expect(updates[0].payload.status).toBeUndefined();
+    },
+  );
+
+  it('a null persisted status (pre-backfill legacy row) is left alone — no status write attempted', async () => {
+    const { client, updates } = makeSb(baseQuote({ status: null }));
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+
+    expect(res.status).toBe(200);
+    expect(updates).toHaveLength(1);
+    expect(updates[0].payload.status).toBeUndefined();
+  });
+
+  it('a failed status-advance write is non-fatal — the view is still recorded successfully', async () => {
+    const { client, updates } = makeSb(baseQuote({ status: 'sent' }), {
+      statusUpdateError: { message: 'db unavailable' },
+    });
+    sbRef.current = client;
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(updates).toHaveLength(2); // the attempt still happened
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });

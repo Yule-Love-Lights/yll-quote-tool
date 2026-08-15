@@ -7,6 +7,7 @@ import { OperatorShell } from '@/components/OperatorShell';
 import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { JobStatusBadge } from '@/components/admin/JobStatusBadge';
 import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
+import { NceBadge } from '@/components/admin/NceBadge';
 import { reconcileInvoice } from '@/lib/invoices';
 import type { JobDetail } from '@/lib/jobs';
 
@@ -187,6 +188,8 @@ export default function JobDetailPage() {
                   Test
                 </span>
               )}
+              {/* NCE (#199) — the barter/trade network tag. */}
+              {data.isNce && <NceBadge />}
             </div>
             <p className="text-sm text-gray-500 mb-6">
               {data.job.type === 'permanent'

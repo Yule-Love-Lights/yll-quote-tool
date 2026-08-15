@@ -36,6 +36,7 @@ import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { accrueOnBooking, ensureReferralCode } from '@/lib/referrals';
 import { updateOpportunity, isHighLevelConfigured } from '@/lib/integrations/highlevel';
 import { resolvePipelineStages } from '@/lib/integrations/ghlPipelineMap';
+import { pushTenureYearsToGhl } from '@/lib/integrations/ghlTenure';
 
 export const runtime = 'nodejs';
 
@@ -120,7 +121,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ ok: true, alreadyBooked: true, jobId: job?.id ?? null });
   }
 
-  // #124 money-safety: a DEAD quote (declined / cancelled / lost) must never be
+  // #124 money-safety: a DEAD quote (declined / cancelled / abandoned) must never be
   // booked here — mirrors the /pay W1-007 guard. This route gates on the raw
   // customer_approved_at column, but #124 makes approved→declined legal, so a
   // declined quote can now carry customer_approved_at while status='declined'
@@ -133,7 +134,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     quote_sent_at: null,
     viewed_at: null,
   });
-  if (lifecycle === 'declined' || lifecycle === 'cancelled' || lifecycle === 'lost') {
+  if (lifecycle === 'declined' || lifecycle === 'cancelled' || lifecycle === 'abandoned') {
     return NextResponse.json(
       { error: `Cannot book a ${lifecycle} quote`, code: 'not-bookable' },
       { status: 409 },
@@ -197,7 +198,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     .update({ deposit_paid_at: bookedAt, deposit_amount_usd: clamped, status: 'booked' })
     .eq('id', id)
     .is('deposit_paid_at', null)
-    .or('status.not.in.(declined,cancelled,lost),status.is.null')
+    .or('status.not.in.(declined,cancelled,abandoned),status.is.null')
     .select('id');
 
   if (error) {
@@ -230,6 +231,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (quote.customer_id) await ensureReferralCode(quote.customer_id);
   } catch (err) {
     console.error('[api/quotes/:id/convert-to-job] referral code stamp failed:', err);
+  }
+
+  // GHL tenure mirror (#200): push this customer's full "years with YLL" set
+  // to their linked GHL contact at the booking event — a THIRD deposit-paid
+  // write site needing this (same reconciled writer list as the referral
+  // accrual above). Fail-open — must never block an operator's manual booking.
+  try {
+    if (quote.customer_id) await pushTenureYearsToGhl(quote.customer_id);
+  } catch (err) {
+    console.error('[api/quotes/:id/convert-to-job] GHL tenure push failed:', err);
   }
 
   // GHL pipeline sync (booking bug batch 2026-07-17): this is an OFFLINE close

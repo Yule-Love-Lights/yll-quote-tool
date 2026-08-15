@@ -77,6 +77,36 @@ export const BUSINESS_RULES = {
   // Standalone bow — a bow sold on its own, not on a wreath/garland (#28).
   // Flat $35 per bow (Naldo, #17).
   standaloneBowPrice: 35,
+
+  // P4P labor-planning placeholders (2026-08-07): clearly fake seed numbers for
+  // shadow-mode budgeted-hours stamping only. These are NOT Jason's real
+  // production rates yet; replace them after the follow-up called out in
+  // docs/context/project_p4p_labor.md A7 item 2.
+  laborPlanningPlaceholders: {
+    rooflineFeetPerHour: {
+      easy: 10,
+      medium: 7,
+      hard: 5,
+    },
+    stakeLightingFeetPerHour: {
+      easy: 12,
+      medium: 9,
+      hard: 6,
+    },
+    // Permanent side footage has no stored difficulty tier, so v1 uses one flat
+    // placeholder until Jason's real rate session lands.
+    permanentLightingFeetPerHour: 7,
+    perItemMinutes: {
+      miniLights: 20,
+      spritzers: 20,
+      wreaths: 20,
+      garland: 20,
+      bistroRuns: 20,
+    },
+    defaultUnmappedMinutes: 30,
+    // Flat v1 labor-share dial from the Phase 1 plan's shadow-mode starting point.
+    laborRevenuePercentage: 0.33,
+  },
 } as const;
 
 // ─────────────────────────────────────────────────────────
@@ -869,6 +899,22 @@ export function effectiveDepositRate(depositPercent?: number): number {
   return Number.isInteger(depositPercent) && (depositPercent as number) >= 1 && (depositPercent as number) <= 100
     ? (depositPercent as number) / 100
     : BUSINESS_RULES.depositPercentage;
+}
+
+// #226 fix: the "is this an actual staff override" predicate effectiveDepositRate
+// applies internally — exported so a caller that needs to COMPARE two raw
+// depositPercent values (the #177 approval-freeze lock in /api/quote) can
+// normalize both sides through the identical rule, instead of only checking
+// `typeof === 'number'`. Without this, a stored explicit 0 (out of [1,100],
+// so effectiveDepositRate already treats it as "no override") compared
+// !== an incoming undefined even though they mean the same thing — bricking
+// the freeze's own save path. Returns the valid percent, or undefined for
+// anything effectiveDepositRate would fall through to the default for
+// (undefined, 0, non-integers, out-of-range).
+export function normalizedDepositOverride(depositPercent?: number): number | undefined {
+  return Number.isInteger(depositPercent) && (depositPercent as number) >= 1 && (depositPercent as number) <= 100
+    ? (depositPercent as number)
+    : undefined;
 }
 
 // The subtotal → total tail: manual discount, early-install promo, rush + premium

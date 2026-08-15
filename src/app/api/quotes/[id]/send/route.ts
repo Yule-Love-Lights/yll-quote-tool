@@ -8,7 +8,7 @@
 // ?retryGhl re-runs ONLY the GHL stage-sync for an already-sent quote whose
 //   pipeline card never advanced (ghl_stage_synced_at IS NULL) — no re-stamp,
 //   no re-message (audit fix: send-route-ghl-sync-state).
-// #116 (re-send half): a DECLINED or LOST quote is revivable — this route
+// #116 (re-send half): a DECLINED or ABANDONED quote is revivable — this route
 //   treats it as a fresh send (re-stamp quote_sent_at + status='sent',
 //   re-message the customer, re-advance the GHL card to Bid Sent) instead of
 //   short-circuiting on the old quote_sent_at. CANCELLED stays excluded
@@ -54,10 +54,42 @@ import {
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { deriveStatus, canRevive } from '@/lib/quoteStatus';
+import { attachQuoteToCustomer, propagateQuoteTagsToCustomer, quoteRowToIdentity } from '@/lib/customers';
+import { logQuoteDelivery, DELIVERY_TIMEOUT_ERROR_PREFIX } from '@/lib/quoteDeliveries';
 
 export const runtime = 'nodejs';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// #264: this route's own direct Supabase calls (the quote fetch, the
+// quote_sent_at stamp, the opportunity-link write, the GHL sync-state write)
+// previously had no timeout either — bounded with the same manual-
+// AbortController idiom as ghlFetch (src/lib/integrations/highlevel.ts) and
+// logQuoteDelivery (src/lib/quoteDeliveries.ts), for the same reason: a hung
+// DB connection stalled the route indefinitely. 5s matches quoteDeliveries'
+// own DB budget (see that file's comment for why DB gets a tighter bound than
+// GHL's 10s). Deliberately scoped to code IN this route file — the shared
+// find-or-create helpers tagPropagation calls into (src/lib/customers.ts) are
+// multi-route library code, so they're bounded at the CALL SITE instead (a
+// deadline race around the tagPropagation() call below), not edited directly.
+// (#264 round 2 correction: round 1's "rarely runs, low priority" framing for
+// that gap was wrong — prod data showed 149/182 sent quotes, 82%, carry
+// legacy_rebook=true, so tagPropagation is the MAJORITY path, not an edge
+// case. See TAG_PROPAGATION_DEADLINE_MS below.)
+const SEND_ROUTE_DB_TIMEOUT_MS = 5_000;
+
+// postgrest-js query builders are only PromiseLike (a bare `.then()`, no
+// `.catch()`/`.finally()` — confirmed by reading PostgrestBuilder's own class
+// declaration), so the timer can't be cleared with a `.finally()` chained
+// directly onto the query. This wraps a builder-producing callback (called
+// with the AbortSignal to attach via `.abortSignal(signal)`) and clears the
+// timer off a REAL Promise instead. Keeps every call site a single
+// destructured `const`, matching the surrounding style.
+function withDbTimeout<T>(build: (signal: AbortSignal) => PromiseLike<T>): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SEND_ROUTE_DB_TIMEOUT_MS);
+  return Promise.resolve(build(controller.signal)).finally(() => clearTimeout(timer));
+}
 
 function hlErrorMessage(err: unknown): string {
   return err instanceof HighLevelError
@@ -65,6 +97,43 @@ function hlErrorMessage(err: unknown): string {
     : err instanceof Error
       ? err.message
       : 'Unknown HighLevel error';
+}
+
+// #264 honesty nuance: quote_deliveries.outcome is a binary CHECK constraint
+// ('sent' | 'failed' — see migrations/2026-08-12-quote-deliveries.sql), so a
+// timed-out send still has to log as 'failed' (the conservative choice — it
+// offers a delivery retry rather than silently trusting an unconfirmed send).
+// But a timeout is NOT a confirmed rejection: GHL may have already received
+// and even fully processed the request before our socket gave up waiting on
+// the response, so the error text must say the outcome is unknown rather than
+// reading like a confirmed failure. HighLevelError#timedOut (set only by
+// ghlFetch's own timeout branch) is the discriminator. The "timeout — " lead
+// is DELIVERY_TIMEOUT_ERROR_PREFIX (src/lib/quoteDeliveries.ts) — the one
+// exported constant a future reporting query matches on, not a private
+// literal duplicated here.
+//
+// #264 round 2, FIX 7: the identical ambiguity applies to a timed-out GHL
+// STAGE move (updateOpportunity/createOpportunity/etc. inside ghlStageChain
+// below) — the card may have already advanced before our socket gave up
+// waiting — so stageError gets the same hedge, via this one parameterized
+// helper rather than a near-duplicate third function. stageError's home
+// (quotes.ghl_sync_error) is free text with no CHECK constraint forcing a
+// binary read, unlike quote_deliveries.outcome, but the honesty reasoning —
+// don't let an unconfirmed timeout read like a confirmed rejection — is the
+// same either way.
+function timeoutHedgedErrorMessage(err: unknown, whatsUnknown: string, mayHaveAlready: string): string {
+  const message = hlErrorMessage(err);
+  return err instanceof HighLevelError && err.timedOut
+    ? `${DELIVERY_TIMEOUT_ERROR_PREFIX}${whatsUnknown} outcome unknown (GHL may have ${mayHaveAlready}): ${message}`
+    : message;
+}
+
+function deliveryErrorMessage(err: unknown): string {
+  return timeoutHedgedErrorMessage(err, 'delivery', 'still delivered it');
+}
+
+function stageErrorMessage(err: unknown): string {
+  return timeoutHedgedErrorMessage(err, 'stage', 'already advanced the card');
 }
 
 // The linked card was deleted in GHL (our stored opportunity id is stale) —
@@ -110,12 +179,24 @@ type QuoteRow = {
   // Legacy rebook (#156): routes to the Neighbors pipeline instead of the
   // service_type's own map — see resolvePipelineStages.
   legacy_rebook: boolean;
+  // NCE tag (#198): no pipeline/routing behavior of its own — read here only
+  // for the tag-propagation block below.
+  is_nce: boolean;
   // View-only portal (#176): a staff-flagged browse-only quote can never be
   // sent — see the check right after the fetch below. A real send would
   // reuse/overwrite the contact's GHL opportunity card and re-stamp their
   // quote-link field with the browse-only portal URL, so this must run
   // before any messaging or GHL work, not just before the DB stamp.
   view_only: boolean;
+  // #198 tag propagation: the linked customer (if any) + the raw identity
+  // columns, so an unlinked-but-tagged quote can be (re-)attached at send
+  // time using whatever contact info has accumulated on the row by now (a
+  // self-serve-estimate quote starts address-only; name/email/phone can land
+  // later via a path that never re-runs attachQuoteToCustomer).
+  customer_id: string | null;
+  customer_email: string | null;
+  customer_phone: string | null;
+  customer_address: string | null;
 };
 
 export function hasDeliverableQuoteResult(
@@ -169,11 +250,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const doEmail = channel === 'both' || channel === 'email';
 
   const sb = getSupabaseServiceClient()!;
-  const { data: quote, error: fetchErr } = await sb
-    .from('quotes')
-    .select('id, highlevel_opportunity_id, highlevel_contact_id, customer_name, service_type, total, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status, ghl_stage_synced_at, is_test, legacy_rebook, view_only')
-    .eq('id', id)
-    .single<QuoteRow>();
+  const { data: quote, error: fetchErr } = await withDbTimeout((signal) =>
+    sb
+      .from('quotes')
+      .select('id, highlevel_opportunity_id, highlevel_contact_id, customer_name, service_type, total, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status, ghl_stage_synced_at, is_test, legacy_rebook, is_nce, view_only, customer_id, customer_email, customer_phone, customer_address')
+      .eq('id', id)
+      .abortSignal(signal)
+      .single<QuoteRow>(),
+  );
 
   if (fetchErr || !quote) {
     return NextResponse.json(
@@ -220,7 +304,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     status: (quote.status as import('@/lib/quoteStatus').QuoteStatus | null) ?? null,
   });
   const isResend = currentStatus === 'changes_requested';
-  // #116 (re-send half): declined/lost are REVIVABLE — the operator re-sends
+  // #116 (re-send half): declined/abandoned are REVIVABLE — the operator re-sends
   // the SAME quote instead of rebooking a new draft. Deliberately a scoped
   // bypass here (canRevive), NOT a widened ALLOWED_TRANSITIONS entry — see
   // quoteStatus.ts. 'cancelled' is excluded (post-booking; refunds are
@@ -301,7 +385,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   // On a GHL-only retry the quote keeps its original sent timestamp.
-  // On a resend (changes_requested → sent) or a revive (declined/lost → sent)
+  // On a resend (changes_requested → sent) or a revive (declined/abandoned → sent)
   // we re-stamp with the current time so the audit trail reflects when the
   // quote was (re-)delivered.
   const sentAt = ((isGhlRetry || isDeliveryRetry) && !isResend)
@@ -318,7 +402,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (isRevive) {
       // #116: force deriveStatus to read 'sent' the moment this row is next
       // loaded. deriveStatus only trusts a persisted status for the
-      // declined/cancelled/lost/changes_requested branch states — NOT 'sent'
+      // declined/cancelled/abandoned/changes_requested branch states — NOT 'sent'
       // — so writing status='sent' alone falls straight through to the
       // timestamp fallback underneath it. A declined quote can carry a stale
       // customer_approved_at (#124 lets decline fire from 'approved') and/or
@@ -338,13 +422,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // staff-approve). `.is('deposit_paid_at', null)` additionally guards a
     // revive-stamp from clobbering customer_approved_at/viewed_at on a quote
     // that's now paid. `.select('id')` reports whether we actually won.
-    const { data: stampedRows, error: stampErr } = await sb
-      .from('quotes')
-      .update(stampPayload)
-      .eq('id', id)
-      .eq('view_only', false)
-      .is('deposit_paid_at', null)
-      .select('id');
+    const { data: stampedRows, error: stampErr } = await withDbTimeout((signal) =>
+      sb
+        .from('quotes')
+        .update(stampPayload)
+        .eq('id', id)
+        .eq('view_only', false)
+        .is('deposit_paid_at', null)
+        .select('id')
+        .abortSignal(signal),
+    );
     if (stampErr) {
       console.error('[api/quotes/:id/send] stamp failed:', stampErr);
       return NextResponse.json(
@@ -361,6 +448,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         { status: 409 },
       );
     }
+
+    // NCE + YLL Neighbor tag propagation (#198): moved into the delivery
+    // Promise.allSettled group below (review fix, customer MED, S34 #198
+    // review) — see the tagPropagation closure's own comment for why.
   }
 
   // HighLevel (#37): move the customer's opportunity to "📨Bid Sent" — creating
@@ -422,7 +513,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
             opportunityId = null;
           } else {
             console.warn('[api/quotes/:id/send] HL opportunity update failed:', err);
-            stageError = hlErrorMessage(err);
+            stageError = stageErrorMessage(err);
           }
         }
       }
@@ -469,16 +560,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
             }
             stageUpdated = true;
             // Persist the resolved card id so future send/approve calls find it.
-            const { error: linkErr } = await sb
-              .from('quotes')
-              .update({ highlevel_opportunity_id: opportunityId })
-              .eq('id', id);
+            const { error: linkErr } = await withDbTimeout((signal) =>
+              sb
+                .from('quotes')
+                .update({ highlevel_opportunity_id: opportunityId })
+                .eq('id', id)
+                .abortSignal(signal),
+            );
             if (linkErr) {
               console.warn('[api/quotes/:id/send] failed to relink opportunity id:', linkErr.message);
             }
           } catch (err) {
             console.warn('[api/quotes/:id/send] find-or-create opportunity failed:', err);
-            stageError = hlErrorMessage(err);
+            stageError = stageErrorMessage(err);
           }
         }
       }
@@ -520,7 +614,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const syncPayload = quote.is_test || stageUpdated
       ? { ghl_stage_synced_at: new Date().toISOString(), ghl_sync_error: null }
       : { ghl_sync_error: stageError ?? 'GHL stage not synced' };
-    const { error: syncErr } = await sb.from('quotes').update(syncPayload).eq('id', id);
+    const { error: syncErr } = await withDbTimeout((signal) =>
+      sb.from('quotes').update(syncPayload).eq('id', id).abortSignal(signal),
+    );
     if (syncErr) {
       console.warn('[api/quotes/:id/send] failed to persist GHL sync state:', syncErr.message);
     }
@@ -545,8 +641,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const customerSms = async () => {
     if (!canMessage || !doSms || !quote.highlevel_contact_id) return;
+    let result: Awaited<ReturnType<typeof sendSms>> | undefined;
     try {
-      await sendSms({
+      result = await sendSms({
         contactId: quote.highlevel_contact_id,
         message: quoteSmsBody(firstName, portalUrl, quote.service_type),
         fromNumber,
@@ -554,14 +651,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       smsSent = true;
     } catch (err) {
       console.warn('[api/quotes/:id/send] SMS send failed:', err);
-      smsError = hlErrorMessage(err);
+      smsError = deliveryErrorMessage(err);
     }
+    // #250: durable delivery record, written AFTER smsSent/smsError are final
+    // so a logging hiccup can never influence the send outcome itself — see
+    // logQuoteDelivery's own try/catch for the second layer of isolation.
+    await logQuoteDelivery({
+      quoteId: id,
+      channel: 'sms',
+      outcome: smsSent ? 'sent' : 'failed',
+      providerMessageId: result?.messageId ?? null,
+      error: smsSent ? null : (smsError ?? null),
+    });
   };
 
   const customerEmail = async () => {
     if (!canMessage || !doEmail || !quote.highlevel_contact_id) return;
+    let result: Awaited<ReturnType<typeof sendEmail>> | undefined;
     try {
-      await sendEmail({
+      result = await sendEmail({
         contactId: quote.highlevel_contact_id,
         subject: quoteEmailSubject(quote.service_type),
         html: quoteEmailHtml(firstName, portalUrl, quote.service_type),
@@ -570,11 +678,152 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       emailSent = true;
     } catch (err) {
       console.warn('[api/quotes/:id/send] Email send failed:', err);
-      emailError = hlErrorMessage(err);
+      emailError = deliveryErrorMessage(err);
+    }
+    // #250: durable delivery record — see customerSms above for why this is
+    // written after the outcome is final.
+    await logQuoteDelivery({
+      quoteId: id,
+      channel: 'email',
+      outcome: emailSent ? 'sent' : 'failed',
+      providerMessageId: result?.messageId ?? null,
+      error: emailSent ? null : (emailError ?? null),
+    });
+  };
+
+  // NCE + YLL Neighbor tag propagation (#198): a tagged quote auto-tags its
+  // customer the moment it BECOMES sent. Runs concurrently with the GHL
+  // stage move + customer messaging above (review fix, customer MED, S34
+  // #198 review) — this closure can do up to ~5 unbounded DB round trips
+  // (attachQuoteToCustomer's find-or-create-customer + find-or-create-
+  // property + relink, then propagateQuoteTagsToCustomer's update), which
+  // used to run SERIALLY between the sent-stamp and the Promise.allSettled
+  // group below — adding straight latency in front of the customer's SMS/
+  // email instead of alongside it. Only runs on a fresh stamp (mirrors the
+  // stamp block's own guard above — a retry never re-fires it, and it's
+  // idempotent even if it did) and never for a TEST quote (admin HIGH review
+  // fix — attachQuoteToCustomer must never run with test data; see the
+  // AGENTS.md-style rationale that used to sit above the old inline block,
+  // now folded into this guard).
+  const tagPropagation = async () => {
+    if (isGhlRetry || isDeliveryRetry) return;
+    if (quote.is_test || (!quote.legacy_rebook && !quote.is_nce)) return;
+    try {
+      // #214 (verify-or-reattach): ALWAYS re-resolve through
+      // attachQuoteToCustomer before propagating — quotes.customer_id is a
+      // cache of a past findOrCreateCustomer decision, and an identity edit
+      // since then can leave it pointing at the WRONG customer (the S34
+      // wrap's 3-HIGH seam). Re-running is idempotent (an unchanged identity
+      // re-resolves to the same row), heals the self-serve gap the old
+      // lazy-attach existed for (an address-only quote whose name/email/
+      // phone landed after save), fires the #700 hl heal, and re-links the
+      // quote row when the resolution moved. The cached id is only the
+      // FALLBACK — used when re-resolution can't produce an answer (identity
+      // -less quote, transient DB error), where propagating to the last
+      // known link beats silently dropping the tag. quoteRowToIdentity
+      // translates the row's 'Anonymous'/'(no address)' display sentinels
+      // back to null so they can never become identity evidence.
+      const resolved = await attachQuoteToCustomer(
+        quoteRowToIdentity({
+          id,
+          highlevel_contact_id: quote.highlevel_contact_id,
+          customer_name: quote.customer_name,
+          customer_email: quote.customer_email,
+          customer_phone: quote.customer_phone,
+          customer_address: quote.customer_address,
+        }),
+      );
+      // Repoint visibility (#214 review, WT-55 family): a send-time
+      // re-resolution that moved the quote off its cached row is loud.
+      if (resolved && quote.customer_id && resolved.customerId !== quote.customer_id) {
+        console.warn(
+          `[api/quotes/:id/send] #214 repoint: quote ${id} customer_id ${quote.customer_id} → ${resolved.customerId} at send time. Review for a manual merge (WT-55).`,
+        );
+      }
+      const linkedCustomerId = resolved?.customerId ?? quote.customer_id ?? null;
+      if (linkedCustomerId) {
+        await propagateQuoteTagsToCustomer(linkedCustomerId, {
+          isNce: quote.is_nce,
+          isYllNeighbor: quote.legacy_rebook,
+        });
+      }
+    } catch (err) {
+      console.warn('[api/quotes/:id/send] tag propagation failed (non-fatal):', err);
     }
   };
 
-  await Promise.allSettled([ghlStageChain(), customerSms(), customerEmail()]);
+  // #264 round 2, FIX 1 (HIGH): tagPropagation is NOT the rare path round 1's
+  // brief assumed — prod: 149/182 sent quotes (82%) carry legacy_rebook=true,
+  // +5 more via is_nce, so this closure's ~5+ unbounded DB round trips
+  // (findOrCreateCustomer + findOrCreateProperty + the hl_contact_id heal +
+  // the quotes relink, then propagateQuoteTagsToCustomer's update — all in
+  // src/lib/customers.ts) sit in the MAJORITY of real sends. Promise.allSettled
+  // below waits for every task to SETTLE, not just avoid propagating a
+  // rejection — a hang in this one task (customers.ts is shared multi-route
+  // infra, so it isn't bounded directly, same reasoning as round 1) still
+  // stalls the whole response even after the customer's SMS/email already
+  // delivered, exactly the failure #264 exists to kill.
+  //
+  // Bounded here with a deadline race instead (mirrors ghlTenure.ts's
+  // PUSH_DEADLINE_MS Promise.race exactly, including clearing the timer in
+  // finally regardless of which side wins).
+  //
+  // 15s, not this route's 5s per-DB-call figure: that 5s is a per-call FAILURE
+  // ceiling on a call that's normally sub-second, not a typical duration — so
+  // it doesn't multiply linearly across tagPropagation's ~5-8 sequential calls
+  // (5s × 8 would be 40s, which defeats the point of a "still respond in
+  // reasonable time" deadline). 15s is roughly 3x a single call's ceiling:
+  // generous enough that a couple of individually slow-but-not-hung calls in
+  // the chain still finish inside budget, while still bounding the genuine
+  // hang this fix targets to a fixed ceiling instead of leaving it unbounded.
+  //
+  // HONESTY: Promise.race does not cancel the loser. A raced-out
+  // tagPropagation() keeps running in the background after this route has
+  // already responded, and may still complete — the identical tradeoff
+  // ghlTenure.ts's own PUSH_DEADLINE_MS documents for the same reason. Verified
+  // safe here specifically: findOrCreateCustomer is explicitly race-safe
+  // (UNIQUE-constraint retry-recovery, see its own #213 comments) and
+  // deterministic (the same identity always resolves to the same row);
+  // findOrCreateProperty is documented "Idempotent + race-safe via
+  // UNIQUE(customer_id, address_key)"; the hl_contact_id heal only writes when
+  // the column is CURRENTLY null (`.is('hl_contact_id', null)` — a no-op once
+  // already set); and propagateQuoteTagsToCustomer only ever SETS is_nce/
+  // is_yll_neighbor to true, never clears — a late background write lands the
+  // same tags a retried send would have produced anyway. No customer-facing
+  // side effect (no message, no GHL card move) is gated on this task, so a
+  // late finish is invisible to the customer and, ordinarily, to the
+  // operator — the quotes.customer_id/property_id relink is the one write in
+  // this chain that isn't purely additive; it's deterministic given a stable
+  // identity, but a background completion COULD overwrite a customer_id an
+  // admin manually changed in the narrow window before it lands (a
+  // pre-existing race this fix doesn't introduce — tagPropagation already ran
+  // fully unbounded before this change — but now that race window can extend
+  // past the HTTP response too; noted as residual risk in the report).
+  const TAG_PROPAGATION_DEADLINE_MS = 15_000;
+  const tagPropagationRaced = async (): Promise<void> => {
+    let timer: ReturnType<typeof setTimeout>;
+    const deadline = new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        console.warn(
+          `[api/quotes/:id/send] tag propagation exceeded ${TAG_PROPAGATION_DEADLINE_MS}ms — responding without it; it may still complete in the background (see FIX 1's comment above for why that's safe).`,
+        );
+        resolve();
+      }, TAG_PROPAGATION_DEADLINE_MS);
+    });
+    try {
+      await Promise.race([tagPropagation(), deadline]);
+    } finally {
+      clearTimeout(timer!);
+    }
+  };
+
+  // #264 round 2: the allSettled batch's bounded worst case is now roughly
+  // ghlStageChain's ~5 sequential GHL calls at 10s each (~50s) vs. Vercel's
+  // Fluid Compute default function timeout of 300s (verified via Vercel docs
+  // + this project's plan) — comfortably inside budget with no maxDuration
+  // export needed (round-2 staff-lens correction to round 1's fix 5, which
+  // had assumed a 60s default).
+  await Promise.allSettled([ghlStageChain(), customerSms(), customerEmail(), tagPropagationRaced()]);
 
   // Join the two message errors deterministically (SMS first, then email),
   // preserving the original "a; b" concatenation shape.
@@ -634,7 +883,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     failedChannels,
     // Task 10 — channel split: echo the resolved channel for observability.
     channel,
-    // #116: flags a revive run (declined/lost → sent on the SAME quote) so
+    // #116: flags a revive run (declined/abandoned → sent on the SAME quote) so
     // the operator UI can distinguish it from a fresh/first send.
     ...(isRevive ? { revived: true } : {}),
   });

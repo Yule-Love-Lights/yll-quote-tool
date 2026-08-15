@@ -63,6 +63,7 @@ import { getJobWorkOrder } from '@/lib/inventory/jobs';
 import { notifyTelegramAudience } from '@/lib/integrations/telegramRouting';
 import { prepJobMessage } from '@/lib/integrations/telegramMessages';
 import { accrueOnBooking, ensureReferralCode } from '@/lib/referrals';
+import { pushTenureYearsToGhl } from '@/lib/integrations/ghlTenure';
 import { BUSINESS_RULES, type QuoteResult } from '@/lib/pricing/pricingEngine';
 
 export const runtime = 'nodejs';
@@ -376,7 +377,7 @@ type QuoteRow = {
   // Valor retry of the SAME transaction (W1-006).
   valor_txn_id: string | null;
   // Explicit lifecycle status (ledger #83) — used to refuse booking a dead
-  // (cancelled / declined / lost) quote even when it still holds a live pay link
+  // (cancelled / declined / abandoned) quote even when it still holds a live pay link
   // (W1-007).
   status: import('@/lib/quoteStatus').QuoteStatus | null;
   approval_snapshot: {
@@ -602,14 +603,14 @@ export async function POST(req: NextRequest) {
   }
 
   // W1-007: refuse to BOOK a dead quote. cancelled→booked is an illegal transition
-  // (quoteStatus.ts: cancelled/declined/lost are terminal), yet a cancelled quote
+  // (quoteStatus.ts: cancelled/declined/abandoned are terminal), yet a cancelled quote
   // could still hold a live pay link and an approved txn would otherwise flip it to
   // 'booked'. Fast-path check (mirrored by the terminal-status guard on the atomic
   // claim below, which closes the read-then-write race). Log LOUDLY — real money
   // moved on Valor's side (an approved '00'), so staff must reconcile/refund; ack
   // 200 so Valor stops retrying. Same gap class as the FIXED balance-path #83-005
   // cancelled-invoice resurrection.
-  if (quote.status === 'cancelled' || quote.status === 'declined' || quote.status === 'lost') {
+  if (quote.status === 'cancelled' || quote.status === 'declined' || quote.status === 'abandoned') {
     console.error(
       `[api/integrations/valor/webhook] APPROVED deposit txn for ${quote.status} quote ${quote.id} — NOT booking a dead order; real money may have moved (txn ${event.txnId}), staff must reconcile/refund`,
     );
@@ -678,7 +679,7 @@ export async function POST(req: NextRequest) {
     // legacy/NULL-status row still books — Postgres `NOT (NULL IN (…))` is NULL and
     // would silently exclude it (the same three-valued-logic trap fixed in /approve,
     // W1-014). Mirrors the /approve B2 guard + the decline route's null handling.
-    .or('status.not.in.("declined","cancelled","lost"),status.is.null')
+    .or('status.not.in.("declined","cancelled","abandoned"),status.is.null')
     .select('id');
 
   if (stampErr) {
@@ -903,6 +904,24 @@ export async function POST(req: NextRequest) {
     }
   };
 
+  // GHL tenure mirror (review fix batch, #200 customer-lens HIGH): push this
+  // customer's full "years with YLL" set to their linked GHL contact at the
+  // booking event — this webhook is ONE of the reconciled deposit_paid_at
+  // write sites (see AGENTS.md pitfall on cross-cutting seams). MOVED into
+  // this allSettled batch (was previously awaited ahead of createJobFromQuote)
+  // — same W1-027 rationale as the rest of this batch: an unbounded external
+  // GHL call must never sit ahead of job creation/receipts. pushTenureYearsToGhl
+  // has its own internal deadline + fail-soft contract; this wrapper only adds
+  // the customer_id guard + a log, matching every other task here.
+  const tenurePush = async () => {
+    if (!quote.customer_id) return;
+    try {
+      await pushTenureYearsToGhl(quote.customer_id);
+    } catch (err) {
+      console.error('[api/integrations/valor/webhook] GHL tenure push failed:', err);
+    }
+  };
+
   // Run the independent side effects concurrently. Each already swallows + logs
   // its own error; allSettled is belt-and-suspenders so one unexpected throw can
   // never reject the batch or the webhook.
@@ -910,6 +929,7 @@ export async function POST(req: NextRequest) {
     prepPing(),
     autoPO(),
     hlStageMove(),
+    tenurePush(),
     customerSms(),
     customerEmail(),
     internalEmail(),

@@ -152,6 +152,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   const op = await getOperator();
   const by = op?.name ? `staff:${op.name}` : op?.email ? `staff:${op.email}` : 'staff';
+  // inbox_items.handled_by is a uuid FK (auth.users) — the real operator uuid
+  // (or NULL), never the `by` display string above (#208: `by` was being
+  // written straight into handled_by, which silently failed the WHOLE update
+  // on every call since Postgres rejects non-uuid text for a uuid column).
+  const operatorId = op?.id ?? null;
 
   // ── DISMISS ────────────────────────────────────────────────────────────────
   // Allowed even on a terminal order (clearing a stranded marker is safe). CAS on
@@ -181,19 +186,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (!updatedRows || updatedRows.length === 0) {
       return NextResponse.json({ error: 'The order was just updated — please retry.', code: 'concurrent-edit' }, { status: 409 });
     }
-    await resolveInboxRequest(sb, id, by, `Dismissed colour change: ${reason}`);
+    await resolveInboxRequest(sb, id, operatorId, `Dismissed colour change: ${reason}`);
     return NextResponse.json({ ok: true, action: 'dismiss' });
   }
 
   // APPLY only past here — reject a terminal order (re-freezing a colour onto a
-  // cancelled/declined/lost order is wrong; the dismiss above stays allowed).
+  // cancelled/declined/abandoned order is wrong; the dismiss above stays allowed).
   const lifecycle = deriveStatus({
     quote_sent_at: null,
     customer_approved_at: quote.customer_approved_at,
     deposit_paid_at: quote.deposit_paid_at,
     status: quote.status,
   });
-  if (lifecycle === 'cancelled' || lifecycle === 'declined' || lifecycle === 'lost') {
+  if (lifecycle === 'cancelled' || lifecycle === 'declined' || lifecycle === 'abandoned') {
     return NextResponse.json({ error: `Cannot act on a ${lifecycle} order`, code: 'not-editable' }, { status: 409 });
   }
 
@@ -283,7 +288,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!updatedRows || updatedRows.length === 0) {
     return NextResponse.json({ error: 'The order changed while you were applying — please retry.', code: 'concurrent-edit' }, { status: 409 });
   }
-  await resolveInboxRequest(sb, id, by, `Applied colour change: ${label}`);
+  await resolveInboxRequest(sb, id, operatorId, `Applied colour change: ${label}`);
 
   // Notify the customer their colour change is locked in (owner decision:
   // apply notifies; dismiss stays silent — staff calls them). Best-effort,
@@ -335,11 +340,14 @@ function hlErrorMessage(err: unknown): string {
 }
 
 /** Best-effort: mark the Slice-A inbox notification (quotetool / <id>:color-request)
- *  handled so it clears from the operator queue. Never fails the request. */
+ *  handled so it clears from the operator queue. Never fails the request.
+ *  `operatorId` must be a real auth.users uuid, or null — inbox_items.handled_by
+ *  is a nullable `uuid` column ("NULL when system auto-resolved" per its schema
+ *  comment); never pass a display name/email string here (#208). */
 async function resolveInboxRequest(
   sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
   quoteId: string,
-  operatorId: string,
+  operatorId: string | null,
   detail: string,
 ): Promise<void> {
   try {
@@ -351,10 +359,14 @@ async function resolveInboxRequest(
       .maybeSingle();
     const itemId = (data as { id?: string } | null)?.id;
     if (!itemId) return;
-    await sb
+    const { error: updateErr } = await sb
       .from('inbox_items')
       .update({ status: 'completed', handled_by: operatorId, handled_at: new Date().toISOString() })
       .eq('id', itemId);
+    if (updateErr) {
+      console.warn('[api/quotes/:id/apply-color-request] inbox item resolve failed (non-fatal):', updateErr.message);
+      return;
+    }
     await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'completed', inbox_item_id: itemId, detail: { note: detail } });
   } catch (e) {
     console.warn('[api/quotes/:id/apply-color-request] inbox resolve failed (non-fatal):', e);

@@ -22,7 +22,7 @@
 // 'changes_requested' (draft's still-in-the-set companion), though the
 // latter is moot here: reaching changes_requested requires having been sent
 // once already, so it always has quote_sent_at set and is caught by the
-// already-sent guard below first. An approved/booked/declined/cancelled/lost
+// already-sent guard below first. An approved/booked/declined/cancelled/abandoned
 // quote can never be "re-marked sent" — 409 illegal-transition.
 //
 // Idempotency + race safety: quote_sent_at set at read time → 409
@@ -43,6 +43,7 @@ import {
   QUOTE_STATUSES,
   type QuoteStatus,
 } from '@/lib/quoteStatus';
+import { attachQuoteToCustomer, propagateQuoteTagsToCustomer, quoteRowToIdentity } from '@/lib/customers';
 
 export const runtime = 'nodejs';
 
@@ -61,6 +62,21 @@ type QuoteRow = {
   customer_approved_at: string | null;
   deposit_paid_at: string | null;
   view_only: boolean;
+  // NCE + YLL Neighbor tag propagation (#198) — see the sibling /send route's
+  // doc comment for the full rationale (same pattern, this is the OTHER
+  // become-sent writer the ledger names).
+  legacy_rebook: boolean;
+  is_nce: boolean;
+  // Test Quote (ledger #93) — review fix (admin HIGH, S34 #198 review): a
+  // tagged TEST mark-sent must never touch attachQuoteToCustomer/
+  // propagateQuoteTagsToCustomer with test data (same rationale as /send).
+  is_test: boolean;
+  customer_id: string | null;
+  highlevel_contact_id: string | null;
+  customer_name: string | null;
+  customer_email: string | null;
+  customer_phone: string | null;
+  customer_address: string | null;
 };
 
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -79,7 +95,9 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   const sb = getSupabaseServiceClient()!;
   const { data: quote } = await sb
     .from('quotes')
-    .select('id, status, quote_sent_at, viewed_at, customer_approved_at, deposit_paid_at, view_only')
+    .select(
+      'id, status, quote_sent_at, viewed_at, customer_approved_at, deposit_paid_at, view_only, legacy_rebook, is_nce, customer_id, highlevel_contact_id, customer_name, customer_email, customer_phone, customer_address, is_test',
+    )
     .eq('id', id)
     .maybeSingle<QuoteRow>();
 
@@ -146,6 +164,47 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       { error: 'Cannot mark this quote sent anymore', code: 'invalid-status' },
       { status: 409 },
     );
+  }
+
+  // NCE + YLL Neighbor tag propagation (#198) — mirrors the real /send
+  // route's block exactly (this route stamps the SAME become-sent DB
+  // end-state, just without messaging/GHL). Skipped entirely for an untagged
+  // quote (the common case). !quote.is_test is REQUIRED — see /send's
+  // sibling comment for the full rationale.
+  //
+  // #214 (verify-or-reattach): attach-first, cached-id fallback — see the
+  // /send route's sibling comment for the full rationale (the cached
+  // customer_id can be stale after an identity edit; re-resolution is
+  // idempotent and quoteRowToIdentity keeps the row's display sentinels out
+  // of the identity).
+  if (!quote.is_test && (quote.legacy_rebook || quote.is_nce)) {
+    try {
+      const resolved = await attachQuoteToCustomer(
+        quoteRowToIdentity({
+          id,
+          highlevel_contact_id: quote.highlevel_contact_id,
+          customer_name: quote.customer_name,
+          customer_email: quote.customer_email,
+          customer_phone: quote.customer_phone,
+          customer_address: quote.customer_address,
+        }),
+      );
+      // Repoint visibility (#214 review, WT-55 family) — mirrors /send.
+      if (resolved && quote.customer_id && resolved.customerId !== quote.customer_id) {
+        console.warn(
+          `[api/quotes/:id/mark-sent] #214 repoint: quote ${id} customer_id ${quote.customer_id} → ${resolved.customerId} at mark-sent. Review for a manual merge (WT-55).`,
+        );
+      }
+      const linkedCustomerId = resolved?.customerId ?? quote.customer_id ?? null;
+      if (linkedCustomerId) {
+        await propagateQuoteTagsToCustomer(linkedCustomerId, {
+          isNce: quote.is_nce,
+          isYllNeighbor: quote.legacy_rebook,
+        });
+      }
+    } catch (err) {
+      console.warn('[api/quotes/:id/mark-sent] tag propagation failed (non-fatal):', err);
+    }
   }
 
   return NextResponse.json({ ok: true, status: 'sent', sentAt });

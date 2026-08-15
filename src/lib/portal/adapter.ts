@@ -101,7 +101,7 @@ export type QuoteRowForPortal = {
   // yet paid. Optional for back-compat with older callers/tests.
   deposit_paid_at?: string | null;
   // Bug fix (B3): status + decline_reason let the portal gate the approve+pay
-  // UI for terminal/branch quotes (declined/cancelled/lost/changes_requested).
+  // UI for terminal/branch quotes (declined/cancelled/abandoned/changes_requested).
   // Optional for back-compat with older callers/tests that don't select them.
   status?: QuoteStatus | null;
   decline_reason?: string | null;
@@ -201,6 +201,37 @@ const MINI_LIGHT_KINDS: ReadonlySet<PortalLineItemKind> = new Set([
 // left untouched (see the stripped !== item.label guard at the call site).
 const MINI_LIGHT_SUFFIX_RE = /\s*–\s*(?:(?:canopy|trunk)\s+wrap,\s*)?\d+\s+strings?\s*$/i;
 
+// #246: the customer must never see LIGHT footage (business rule — wreath/
+// garland SIZES are fine, this is scoped to footage specifically). Several
+// engine labels carry it as a trailing "– Nft" suffix, sometimes followed by
+// a "(<difficulty>|($X/ft))" parenthetical (roofline family) and sometimes
+// not (bistro). Anchored to the EXACT known product-name prefix — not just
+// the item's `kind` — so a staff-typed CUSTOM item that merely shares a
+// kind's classifying word is never silently truncated (same defense as the
+// #138/S30/W1-005 label-identity guards elsewhere in this file). Accepts
+// either a hyphen or an en dash before the footage, since a pre-#104 stored
+// label is a data hypothesis, not a guarantee of the engine's exact byte.
+// Returns the bare product name when the shape matched, else null (the
+// label is left completely untouched). NOTE: this also blanks `detail` at
+// every call site below — that's not cosmetic. The web portal components
+// never read `detail`, but the customer-facing PDF does (docModels.ts ~115
+// -> PdfLineItemsTable.tsx ~29 renders it verbatim), so an unstripped/
+// unblanked `detail` would leak the same footage onto the PDF even when the
+// label itself is clean. Don't "simplify" the detail-blanking away as dead.
+//
+// `productName` is escaped before interpolation — every current caller below
+// is metacharacter-free (an apostrophe isn't special in a JS regex), so this
+// is a hardening move, not a live-bug fix: without it, a future product name
+// containing a regex metacharacter (. ( $ + etc.) would silently misparse
+// instead of erroring.
+function stripFootageSuffix(label: string, productName: string, requireParen: boolean): string | null {
+  const escaped = productName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = requireParen
+    ? new RegExp(`^${escaped} [-–] [\\d,]+(?:\\.\\d+)?\\s*ft\\s*\\(`, 'i')
+    : new RegExp(`^${escaped} [-–] [\\d,]+(?:\\.\\d+)?\\s*ft\\s*$`, 'i');
+  return re.test(label) ? productName : null;
+}
+
 function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null): PortalLineItem[] {
   // Defensive: old rows or partial saves may have a missing / non-array
   // lineItems field. Treat as empty so the portal still renders (the
@@ -226,11 +257,26 @@ function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null):
       // preserved exactly as the plain permanent branch, detail stays '' (the
       // label already carries footage). Any future permanent-only logic keyed on
       // this prefix must still exclude 'permanent-bistro-'.
+      //
+      // #246 HIGH (prod-confirmed, quote 652c88f8-…): this id-prefix check is
+      // NOT the only door a permanent-bistro run comes through. A run drawn on
+      // the design carries the SCENE item's own uuid as its id — the synthesized
+      // 'permanent-bistro-<i>' id (permanentBistro/pricing.ts withIdentity) is
+      // ONLY a fallback for a manual run with no scene link. A uuid never
+      // starts with 'permanent-bistro', so a scene-linked run falls through to
+      // the generic kind === 'bistro' branch below instead of here — that
+      // branch strips footage too (see its own comment) precisely because of
+      // this gap.
       if (typeof raw.id === 'string' && raw.id.startsWith('permanent-bistro')) {
+        // #246: strip the run's engine footage suffix ("Permanent Bistro
+        // Lighting – 40ft", permanentBistro/pricing.ts calculateBistroLines).
+        // The poles/maintenance rows sharing this id prefix ("Poles (N)",
+        // "Annual Maintenance Plan") don't match the shape and pass through.
+        const bareLabel = stripFootageSuffix(raw.label, 'Permanent Bistro Lighting', false);
         const item: PortalLineItem = {
           id: raw.id,
           kind: 'bistro',
-          label: raw.label,
+          label: bareLabel ?? raw.label,
           detail: '',
           price: raw.amount,
           stableId: raw.id,
@@ -283,19 +329,58 @@ function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null):
       // items that happened to start with "Winter Wonderland" (S30 live bug:
       // "Winter Wonderland Display Package · …" rendered as just "Winter
       // Wonderland" on the portal). Same only-if-the-pattern-matched guard as
-      // the mini-light strip below.
-      if (kind === 'ridge' && /^Winter Wonderland – [\d,]+\s*ft\s*\(/i.test(item.label)) {
-        item.label = 'Winter Wonderland';
-        item.detail = '';
+      // the mini-light strip below. Gingerbread shares this kind (RIDGE_RE
+      // matches both words) and the same engine shape (#246).
+      if (kind === 'ridge') {
+        const bare =
+          stripFootageSuffix(item.label, 'Winter Wonderland', true) ??
+          stripFootageSuffix(item.label, 'Gingerbread', true);
+        if (bare) {
+          item.label = bare;
+          item.detail = '';
+        }
+      }
+      // Santa's Roofline (#246): the plain roofline family's own footage
+      // suffix — same shape as Winter Wonderland/Gingerbread above, this is
+      // the fix for a LEGACY pre-#104 quote (no rooflineOptions), whose single
+      // billed roofline line survives buildPortalLineItems untouched and
+      // otherwise carries footage straight to the customer.
+      if (kind === 'roofline') {
+        const bare = stripFootageSuffix(item.label, "Santa's Roofline", true);
+        if (bare) {
+          item.label = bare;
+          item.detail = '';
+        }
       }
       // Stake Lighting (Jason, portal-label-detail-strip): the customer card
       // shows just "Stake Lighting" — the engine's " – Nft (rate)" footage/
       // difficulty suffix (pricingEngine.ts calculateStakeLighting ~525) is
       // operator detail. Same engine-shape match as the #138 WW strip above so
       // a custom item named "Stake Lighting …" can never be truncated.
-      if (kind === 'stake-lighting' && /^Stake Lighting – [\d,]+\s*ft\s*\(/i.test(item.label)) {
-        item.label = 'Stake Lighting';
-        item.detail = '';
+      if (kind === 'stake-lighting') {
+        const bare = stripFootageSuffix(item.label, 'Stake Lighting', true);
+        if (bare) {
+          item.label = bare;
+          item.detail = '';
+        }
+      }
+      // Bistro Lighting (#246): the EVENT vertical's temporary bistro run
+      // (event/pricing.ts calculateBistro) — no trailing parenthetical, unlike
+      // the roofline family. A MANUAL/no-scene-link permanent-bistro run is
+      // stripped earlier, in its own id-keyed branch above — but a
+      // SCENE-LINKED permanent-bistro run carries a uuid id (see the #246 HIGH
+      // note on that branch) and falls through to here instead, so this must
+      // also try the "Permanent Bistro Lighting" prefix, not just event's
+      // bare "Bistro Lighting" (prod-confirmed HIGH: quote 652c88f8-…, three
+      // rows shipped with footage still attached before this fix).
+      if (kind === 'bistro') {
+        const bare =
+          stripFootageSuffix(item.label, 'Permanent Bistro Lighting', false) ??
+          stripFootageSuffix(item.label, 'Bistro Lighting', false);
+        if (bare) {
+          item.label = bare;
+          item.detail = '';
+        }
       }
       // Mini lights — Tree/Bush/Column/Railing/Curtain Lights (Jason,
       // portal-label-detail-strip): the customer card shows just the surface
@@ -687,15 +772,18 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
   // FIRST: the flag rides migrated HOLIDAY quotes, so the holiday fall-through
   // below would otherwise build A/B/C + the empty Build-Your-Own slot.
   const isLegacyRebook = row.legacy_rebook === true;
+  // #199 F1: row.inputs?.depositPercent threaded to every branch — see
+  // chargesFromResult's own comment (derivePackages.ts) for why the live
+  // input must win over a possibly-stale result.depositRate.
   const allPackages = isLegacyRebook
-    ? derivePackagesLegacyRebook(lineItems, row.result)
+    ? derivePackagesLegacyRebook(lineItems, row.result, row.inputs?.depositPercent)
     : isPermanent
-      ? derivePackagesPermanent(lineItems, row.result)
+      ? derivePackagesPermanent(lineItems, row.result, row.inputs?.depositPercent)
       : isEvent
-        ? derivePackagesEvent(lineItems, row.result)
+        ? derivePackagesEvent(lineItems, row.result, row.inputs?.depositPercent)
         : isPermanentBistro
-          ? derivePackagesPermanentBistro(lineItems, row.result)
-          : derivePackages(lineItems, row.result, roofline);
+          ? derivePackagesPermanentBistro(lineItems, row.result, row.inputs?.depositPercent)
+          : derivePackages(lineItems, row.result, roofline, row.inputs?.depositPercent);
   // The approval gate threshold — hoisted (was inline in the return below) so
   // the package filter next uses the IDENTICAL value the approve gate enforces.
   // $1,000 for holiday/event, the permanent quote's FROZEN rate-snapshot
@@ -737,7 +825,11 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
   //     maintenance add-on lifts the quote past auto-waive while sitting in
   //     no package), keep them all — a portal with zero tiles is worse than
   //     below-min tiles, and the "tiles never all vanish" invariant holds.
-  const jobCharges = chargesFromResult(row.result);
+  // #199 F1: this IS the live portal's `charges` prop (see `charges:
+  // { ...jobCharges, manualDiscount }` below) — SelectionContext reads
+  // jobCharges.depositRate directly as the customer's displayed pre-approval
+  // deposit rate, so this is the critical call site for the NCE-tag-inert bug.
+  const jobCharges = chargesFromResult(row.result, row.inputs?.depositPercent);
   const defaultOnFees =
     (jobCharges.rush.defaultOn ? jobCharges.rush.amount : 0) +
     (jobCharges.takedown.defaultOn ? jobCharges.takedown.amount : 0);

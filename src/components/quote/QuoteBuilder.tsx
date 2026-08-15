@@ -24,6 +24,12 @@ import {
   buildQuoteInputs,
   inputsToFormData,
   applyPrefill,
+  resolveTagPayload,
+  resolveNceDepositPercent,
+  clearHolidayOnlyDiscountState,
+  legacyRebookConfirmMessage,
+  nceConfirmMessage,
+  initialNceDepositProvenance,
 } from '@/lib/quoteForm';
 import type { CrmContact } from '@/lib/integrations/types';
 import { type ServiceType, SERVICE_TYPES, SERVICE_TYPE_LABELS } from '@/lib/serviceType';
@@ -31,7 +37,10 @@ import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { EventSection } from './EventSection';
 import { OperatorShell } from '@/components/OperatorShell';
 import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
-import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
+// YllNeighborBadge/NceBadge (the read-only admin-surface pills) are NOT used
+// here (#198): the builder's own tag chips below are interactive buttons with
+// builder-specific title text, not those components' migration-specific
+// copy — see the chip strip's own comment.
 import { ReferredByPicker } from '@/components/quote/ReferredByPicker';
 import { ReferralCreditBanner } from '@/components/quote/ReferralCreditBanner';
 import { ReferralSpritzerBanner } from '@/components/quote/ReferralSpritzerBanner';
@@ -44,7 +53,7 @@ import { hasSatellitePayload } from '@/lib/design/analysisSatellitePayload';
 import { deriveSideMeasure } from '@/lib/permanent/satelliteMeasure';
 import { roundFootageUpTo5 } from '@/lib/permanent/types';
 import { deriveTrackAccessories, hasAccessorySignal } from '@/lib/permanent/trackAccessories';
-import { isStrand, isLinkedTwin } from '@/lib/design/sceneTypes';
+import { isStrand, isLinkedTwin, type Surface } from '@/lib/design/sceneTypes';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
 import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
 import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
@@ -215,6 +224,41 @@ function polylineLength(lines: LineSegment[], aspect: number): number {
   return total;
 }
 
+// #255: mini-group surface labels for the pruned-group warning — matches the
+// wording editor.ts's own pruneOrphanedMiniGroupsNotify toast uses
+// (editor-core/editor.ts MINI_SURFACE_LABELS), kept as a separate copy here
+// rather than importing from editor-core (vendored/relay-shared; this display
+// string doesn't belong in that surface).
+// #741 defect 4: typed exhaustive over Surface (not the loose Record<string,
+// string> this started as) so adding a new Surface value fails `tsc` right
+// here instead of silently rendering "group" in whichever copy (this one or
+// editor.ts's) got missed. Only bush/tree/column/railing/curtain can ever
+// actually reach a MiniGroupItem's `surface`, but Surface is the one shared
+// type — the roofline/C9 entries below are unreachable in practice, present
+// only so the object literal type-checks as complete.
+const MINI_SURFACE_LABELS: Record<Surface, string> = {
+  bush: 'Bush', tree: 'Tree', column: 'Column', railing: 'Railing', curtain: 'Curtain',
+  'santas-roofline': 'Roofline', gingerbread: 'Gingerbread', 'winter-wonderland': 'Winter Wonderland',
+  'stake-lighting': 'Stake Lighting',
+};
+function miniSurfaceLabel(surface: string | null): string {
+  return surface && surface in MINI_SURFACE_LABELS ? MINI_SURFACE_LABELS[surface as Surface] : 'group';
+}
+// #741 defect 5: prunedMiniGroups previously trusted `Array.isArray` alone,
+// then the render below dereferences g.surface/g.stringCount per element — a
+// malformed element (from either the seed-analysis or photo-delete response)
+// would throw and crash the whole builder render. Sibling
+// garlandSectionsUnestimated uses a typeof guard with a safe fallback; give
+// this the same element-shape parity instead of trusting the array's contents.
+function sanitizePrunedMiniGroups(raw: unknown): { surface: string | null; stringCount: number }[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((g): g is { surface: string | null; stringCount: number } => {
+    if (typeof g !== 'object' || g === null) return false;
+    const r = g as Record<string, unknown>;
+    return (typeof r.surface === 'string' || r.surface === null) && typeof r.stringCount === 'number';
+  });
+}
+
 // Permanent Lighting (#88 / S23): the four house sides traced on the satellite
 // view. Colors match the portal's satellite groups (lib/portal/satelliteLines).
 const PERMANENT_SIDES = ['front', 'left', 'right', 'back'] as const;
@@ -268,9 +312,13 @@ export type QuoteBuilderInitial = {
   // from the saved row, never re-read from the URL on edit (is_test is immutable).
   isTest?: boolean;
   // YLL Neighbor (#158): quote migrated from last year's Jobber data (#155).
-  // Read-only display flag from the saved row — legacy_rebook quotes only exist
-  // via that migration, so there's no "new quote" path that sets this.
+  // The saved row's value, hydrated ONCE at mount into a real toggleable chip
+  // (#198) — see the legacyRebook/isNce useState below. No live re-read after
+  // mount (matches every other saved-row flag here).
   legacyRebook?: boolean;
+  // NCE (#198): quote-level "Mark as NCE" tag (the barter/trade network YLL
+  // belongs to). Same mount-hydrate-once posture as legacyRebook above.
+  isNce?: boolean;
   // View-only portal (#176): staff-flagged browse-only quote. Read-only display
   // flag from the saved row — display-only here (the toggle itself lives on the
   // admin detail page, not the builder); mirrors legacyRebook exactly.
@@ -316,7 +364,7 @@ const STATUS_BADGE: Record<QuoteStatus, { label: string; cls: string }> = {
   changes_requested: { label: 'Changes', cls: 'bg-orange-100 text-orange-700' },
   declined: { label: 'Declined', cls: 'bg-red-100 text-red-700' },
   cancelled: { label: 'Cancelled', cls: 'bg-gray-200 text-gray-600' },
-  lost: { label: 'Lost', cls: 'bg-gray-200 text-gray-600' },
+  abandoned: { label: 'Abandoned', cls: 'bg-gray-200 text-gray-600' },
 };
 
 // ─── Builder component ───────────────────────────────────────────────────────
@@ -340,8 +388,75 @@ export default function QuoteBuilder({
   // the saved row (initialQuote.isTest). When true, the builder shows a TEST MODE
   // banner and Calculate persists the quote as is_test=true (saveQuote).
   const isTest = isTestProp ?? initialQuote?.isTest ?? false;
-  // YLL Neighbor (#158) — purely from the saved row, never set for a brand-new quote.
-  const legacyRebook = initialQuote?.legacyRebook ?? false;
+  // YLL Neighbor + NCE tags (#198) — staff-toggleable chips (below the
+  // header), in BOTH new-quote and edit modes. Hydrated ONCE at mount: from
+  // the saved row in edit mode, else from a resolved prefill (a tagged HL
+  // contact picked from the lead list) in new mode, else false — never
+  // live-refreshed after (mount-hydrate convention, matches isTest/viewOnly/
+  // every other saved-row flag here; a customer tagged elsewhere mid-session
+  // is picked up on next reopen, not live — DISCLOSED in the ledger spec).
+  const [legacyRebook, setLegacyRebook] = useState(
+    () => initialQuote?.legacyRebook ?? prefill?.legacyRebook ?? false,
+  );
+  const [isNce, setIsNce] = useState(() => initialQuote?.isNce ?? prefill?.isNce ?? false);
+  // Review fix (staff HIGH + tech MED, S34 #198 review): per-chip "did staff
+  // EXPLICITLY click this chip" trackers — set ONLY by the two chip onClick
+  // handlers below (never by mount-hydration, prefill, or the HL-contact-pick
+  // tag-lookup a few hundred lines down). Both /api/quote call sites
+  // (resolveTagPayload) use these on an UPDATE (an existing quoteId) to
+  // decide whether to send the chip's current value or `undefined` (server =
+  // leave the stored value alone) — without this, every save unconditionally
+  // wrote both tag columns, so a Calculate on a tab left open could silently
+  // revert a tag an admin toggled concurrently on the detail page. On an
+  // INSERT (no quoteId yet — this save creates the row) resolveTagPayload
+  // sends the displayed value regardless of touched, so a lead-prefilled or
+  // pick-inherited tag the staff never clicked still lands on the brand-new
+  // quote (round-1 of this fix wrongly gated inserts too, silently dropping
+  // an untouched inherited tag — corrected per resolveTagPayload's mode
+  // param; see its own doc comment). Refs (not state) because touching a
+  // chip shouldn't itself trigger a re-render.
+  const legacyRebookTouchedRef = useRef(false);
+  const isNceTouchedRef = useRef(false);
+  // #199 (wrap-review F4): provenance for resolveNceDepositPercent's OFF-side
+  // revert — true only while the CURRENT depositPercent===40 is a value
+  // applyIsNce itself just wrote (a turn-ON), never a coincidence. Cleared on
+  // turning OFF (whether or not a revert fired) and on any DIRECT manual edit
+  // of the deposit input (see its own onChange) — a staff hand-edit, even to
+  // 40, is never "the rule's" value again.
+  //
+  // SEEDED ON MOUNT (delta-verify MED): provenance isn't persisted, and the
+  // first cut started `false` on EVERY mount — so reopening an already-NCE
+  // quote sitting at 40% and clicking the chip OFF left the deposit at 40 on
+  // a now-untagged quote (the chip said "not NCE", the money said otherwise).
+  // Seeding from the loaded state fixes that — see initialNceDepositProvenance
+  // (quoteForm.ts, next to resolveNceDepositPercent) for the full reasoning
+  // and the disclosed residual; extracted there (pure, exported) so it's
+  // unit-testable without a render harness, same convention as
+  // resolveNceDepositPercent itself.
+  const nceDepositSetByRuleRef = useRef(
+    initialNceDepositProvenance(
+      initialQuote ? { isNce: initialQuote.isNce, depositPercent: initialQuote.inputs?.depositPercent } : null,
+      prefill?.isNce,
+    ),
+  );
+  // #199 (wrap-review LOW): a ref mirror of `isNce`, updated synchronously by
+  // applyIsNce (the ONLY place isNce ever changes — see its own reconcile
+  // note). Pre-#199, the chip's onClick used setIsNce's own functional form
+  // (`(v) => !v`), which is always guaranteed current. Routing the toggle
+  // through applyIsNce's plain-boolean signature regressed that to a
+  // render-closure read (`!isNce`) — this ref restores the same
+  // never-stale guarantee for computing "next" at the call site.
+  const isNceRef = useRef(isNce);
+  // #215 (fix round F1, sibling-guard parity with isNceRef just above): a ref
+  // mirror of `legacyRebook`, updated synchronously by applyLegacyRebook (the
+  // ONLY place legacyRebook changes post-mount — see its own comment). Same
+  // bug class as isNceRef fixed for NCE: pre-#215 the chip's onClick used
+  // setLegacyRebook's own functional form (`(v) => !v`), always current by
+  // construction. #215 needed a plain boolean BEFORE window.confirm and
+  // regressed to a render-closure read (`!legacyRebook`) — stale the instant
+  // the contact-pick tag-inheritance callback (a few hundred lines down)
+  // fires an auto-set between renders.
+  const legacyRebookRef = useRef(legacyRebook);
   // View-only portal (#176) — purely from the saved row, never set for a brand-new quote.
   const viewOnly = initialQuote?.viewOnly ?? false;
   // Customer tenure (#178) — purely from the saved row, never set for a brand-new quote.
@@ -359,6 +474,17 @@ export default function QuoteBuilder({
         status: initialQuote.status ?? null,
       })
     : null;
+  // #215: mirrors LegacyRebookToggle's/NceToggle's own `status !== 'draft'`
+  // check (the admin siblings — both ultimately read deriveStatus) so EITHER
+  // chip's confirm can show the SAME "already left draft" caveats once a
+  // quote has left draft — the "won't move an existing GHL card" caveat on
+  // Neighbor's ON path, and (fix round F2/F3) the one-way-propagation
+  // caveat on both chips' OFF paths. A brand-new (never-saved) quote has
+  // savedStatus === null, which counts as still-draft here too. Renamed from
+  // legacyRebookLeftDraft (fix round F3) once the NCE chip's confirm started
+  // reading it too — it was never actually Neighbor-specific, just the
+  // generic "has this quote left draft" signal.
+  const quoteLeftDraft = savedStatus != null && savedStatus !== 'draft';
   const quoteNumber = initialQuote?.quoteNumber ?? null;
   // PS-G2: the booked quote's job id (null pre-booking) — drives the "Amend
   // order" banner below, which links to the job page's Record-amendment
@@ -366,8 +492,26 @@ export default function QuoteBuilder({
   const savedJobId = initialQuote?.jobId ?? null;
   const [form, setForm] = useState<QuoteFormData>(() =>
     initialQuote
-      ? inputsToFormData(initialQuote.customer, initialQuote.inputs, initialQuote.serviceType)
-      : applyPrefill(initialFormData, prefill),
+      ? {
+          ...inputsToFormData(initialQuote.customer, initialQuote.inputs, initialQuote.serviceType),
+          // #214 (b): seed the form's hl link from the SAVED row so every
+          // save body carries the live session truth (inputsToFormData
+          // itself stays prefill-agnostic and returns null here). Pick /
+          // Clear below keep this field current; /api/quote uses it as
+          // identity input on updates (string = linked · null = no contact
+          // — never falls back to a stored id the session already dropped).
+          highlevelContactId: initialQuote.highlevelContactId ?? null,
+        }
+      : {
+          ...applyPrefill(initialFormData, prefill),
+          // NCE 40% deposit default (#199): a BRAND-NEW quote prefilled from
+          // an already-NCE-tagged lead (prefill.isNce, resolved server-side —
+          // see QuoteBuilderPrefill's own comment) starts at 40% too, same
+          // rule applyIsNce below applies to a live chip turn-on. Blank-slate
+          // only — there's nothing to clobber yet (initialFormData.depositPercent
+          // is always 0 here), unlike a reopened quote's already-resolved rate.
+          ...(prefill?.isNce ? { depositPercent: 40 } : {}),
+        },
   );
   // In edit mode the saved result hydrates too, so the operator sees the
   // current price breakdown (and the portal/send buttons) without recalculating.
@@ -438,7 +582,15 @@ export default function QuoteBuilder({
   // entry stage) instead of creating/reusing one — staff must see that, since
   // a reopened card can re-enter stage-triggered GHL automations.
   const [attachResurrected, setAttachResurrected] = useState(false);
-  const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
+  const [sendStatus, setSendStatus] = useState<'idle' | 'sending' | 'sent' | 'already-sent' | 'error'>('idle');
+  // #241 defect 2 (review MEDIUM): a Force-Redeliver click can ALSO fall
+  // through the route's alreadySent short-circuit (send/route.ts's
+  // isDeliveryRetry only honors 'sent'/'viewed' — a quote that's since gone
+  // approved/booked/deposit-paid isn't retry-eligible either, W1-017's same
+  // guard). True once we've learned THAT click delivered nothing, so the
+  // already-sent box can say so instead of repeating the original message +
+  // a doomed retry button.
+  const [retryIneligible, setRetryIneligible] = useState(false);
   // #92 — a fulfillability BLOCK (design has items we can't supply), kept distinct
   // from a send FAILURE so we never tell the operator to share the link manually.
   const [sendBlockedMsg, setSendBlockedMsg] = useState<string | null>(null);
@@ -448,6 +600,12 @@ export default function QuoteBuilder({
   // failure puts Send in the error state while preserving the valid portal URL.
   const [deliveryWarning, setDeliveryWarning] = useState<string | null>(null);
   const [deliveryRetryChannel, setDeliveryRetryChannel] = useState<'sms' | 'email' | 'both' | null>(null);
+  // #241: when the send route short-circuits with alreadySent:true (a
+  // double-click / re-click on an already-sent quote), nothing was texted or
+  // emailed — this holds the ORIGINAL quote_sent_at so the UI can say so
+  // instead of rendering an identical plain success. Cleared on any fresh
+  // send attempt or recalculation.
+  const [alreadySentAt, setAlreadySentAt] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState(false);
   // GHL stage-sync result of the last send: a non-null message means the quote
   // WAS sent locally but the HighLevel card did NOT advance to "Bid Sent" (the
@@ -588,6 +746,28 @@ export default function QuoteBuilder({
   // #90: how many AI-seeded garland runs had no scale to estimate length (so they
   // fall back to 1 section). Surfaced as a builder warning so staff set the count.
   const [garlandUnestimated, setGarlandUnestimated] = useState(0);
+  // #255 / #741 defect 3: mini group(s) (railing/curtain/etc.) a re-analyze OR
+  // a photo delete just orphaned — seedSceneFromAnalysis and
+  // removeDesignExtraPhoto both prune a group silently (no member strands
+  // left), so a "Railing — 3 strings" line can vanish from the quote total
+  // with nothing else explaining it. `cause` drives which guidance the banner
+  // shows (#741 defect 4 — the two triggers need DIFFERENT copy: a re-analyze
+  // miss may still be redrawable, a photo-delete prune's strands are gone for
+  // good with the deleted photo). null = no standing warning.
+  const [prunedMiniGroups, setPrunedMiniGroups] = useState<{
+    cause: 'reanalyze' | 'photo-delete';
+    groups: { surface: string | null; stringCount: number }[];
+  } | null>(null);
+  // #741 defect 3: reports a NEW prune from one of the two triggers. An empty
+  // result never overwrites a real, unaddressed warning already standing from
+  // the OTHER trigger — e.g. a re-analyze orphans "Curtain — 6 strings"
+  // (banner shows), then the operator deletes an unrelated empty extra photo
+  // (reports []) — that must not silently make the still-unresolved warning
+  // disappear. Only a NON-empty report ever changes the banner.
+  const reportPrunedMiniGroups = (cause: 'reanalyze' | 'photo-delete', raw: unknown) => {
+    const groups = sanitizePrunedMiniGroups(raw);
+    if (groups.length > 0) setPrunedMiniGroups({ cause, groups });
+  };
   // Bumped when the design's scene/photo changes outside the editor (roofline
   // seed, photo replacement) so a remount reloads it.
   const [designEditorKey, setDesignEditorKey] = useState(0);
@@ -651,6 +831,18 @@ export default function QuoteBuilder({
     satelliteFeetPerPixel?: number | null;
   };
   const pendingContextRef = useRef<AnalysisContext | null>(null);
+  // #204 review round: which address the currently-parked pendingContextRef
+  // satellite was pulled for — client-only bookkeeping, NEVER sent to the
+  // server (pushAnalysisContext's payload shape is unchanged). Stamped by
+  // applyPulledSatellite whenever it parks (rather than directly pushes) a
+  // satellite context; read by handlePhotoSelect to tell "same house, just a
+  // different photo source" (preserve) apart from "the operator moved on to a
+  // different address without re-pulling" (drop — the original wipe
+  // behavior). Compared against form.customer.address (the live-typed field,
+  // which changes on every keystroke) rather than googleAddress (which only
+  // changes on a fresh successful geocode and would miss an address EDIT that
+  // hasn't been re-pulled yet).
+  const pendingSatelliteAddressRef = useRef<string | null>(null);
   // designId mirrored in a ref so async callbacks (e.g. the FileReader in the
   // manual satellite upload) read the CURRENT id at fire time, not the stale
   // one captured in their closure when a design was created mid-flight.
@@ -676,6 +868,10 @@ export default function QuoteBuilder({
   // Capture awaits it so it never snapshots a scene the 600ms autosave debounce
   // hasn't persisted yet.
   const editorFlushRef = useRef<(() => Promise<void>) | null>(null);
+  // #741 defect 1: the editor's discardPending, re-registered alongside
+  // flushSave on each (re)mount — see seedDesignFromAnalysis. Returns whether
+  // it actually discarded a real pending edit (#741 defect 6).
+  const editorDiscardRef = useRef<(() => boolean) | null>(null);
   const captureExample = async (source: 'auto-send' | 'manual') => {
     if (!savedQuoteId) return;
     setTrainStatus('saving');
@@ -748,6 +944,18 @@ export default function QuoteBuilder({
   // staff-drawn items always survive. Remounts the editor to show the result.
   const seedDesignFromAnalysis = async (id: string, seed: AnalysisSeed) => {
     try {
+      // #741 defect 1 consequence B: flush any pending debounced edit BEFORE
+      // the seed POST reads/replaces the scene server-side — same pattern
+      // captureExample/capturePermanentExample already use above. This alone
+      // only SHRINKS the stale-overwrite window (the analyze round trip is
+      // multi-second); the discard below is what actually closes it.
+      if (editorFlushRef.current) {
+        try {
+          await editorFlushRef.current();
+        } catch {
+          // best-effort — proceed with whatever was last persisted.
+        }
+      }
       const res = await fetch(`/api/designs/${id}/seed-analysis`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -760,6 +968,19 @@ export default function QuoteBuilder({
         setGarlandUnestimated(
           typeof data.garlandSectionsUnestimated === 'number' ? data.garlandSectionsUnestimated : 0,
         );
+        // #255: warn when this re-analyze orphaned a staff-created mini group
+        // (its member strands weren't re-detected) — the group is gone, and
+        // with it a real billed line, with no other indication.
+        reportPrunedMiniGroups('reanalyze', data.prunedMiniGroups);
+        // #741 defect 1: discard (never flush) whatever the OUTGOING editor
+        // instance has pending before the key bump below tears it down — an
+        // edit made during this multi-second analyze round trip must not be
+        // written back over the scene the server just seeded/pruned.
+        // #741 defect 6: tell the operator only when there was actually
+        // something to throw away.
+        if (editorDiscardRef.current?.()) {
+          window.alert("An unsaved edit made during the re-analyze was discarded (it hadn't saved yet).");
+        }
         setDesignEditorKey((k) => k + 1);
       }
     } catch {
@@ -1473,8 +1694,38 @@ export default function QuoteBuilder({
     setGeoLng(null);
     setSvLat(null);
     setSvLng(null);
-    // A parked analysis context belongs to the PREVIOUS house — drop it.
-    pendingContextRef.current = null;
+    // A parked ANALYSIS belongs to the PREVIOUS photo (about to be replaced) —
+    // drop it. A parked SATELLITE-only context (#204: "Pull satellite", the
+    // no-Street-View fallback, or a manual satellite upload) belongs to the
+    // ADDRESS/house, not the street photo — the #97 promise above ("keeps the
+    // good satellite intact") covers its PERSISTED provenance too, so it
+    // survives a manual street-photo swap for the SAME house instead of being
+    // silently dropped before a design ever exists to receive it (the eager
+    // design effect only creates/updates a design once photoBase64 is set,
+    // which a satellite-only pull never does — so without this, the pulled
+    // satellite's image/scale would never reach the design row at all, even
+    // though the LIVE satelliteFeetPerPixel state stays correct).
+    //
+    // #204 review round (gap 2, HIGH portal): "same house" must be CHECKED,
+    // not assumed — the operator may have edited the address field after the
+    // pull without re-pulling (typing alone never re-geocodes), and house A's
+    // satellite must never persist onto house B's design. Compared against
+    // form.customer.address (changes on every keystroke) rather than
+    // googleAddress: googleAddress only changes on a fresh successful
+    // geocode, so it would still read "house A" here and miss an
+    // edited-but-not-yet-re-pulled address.
+    const currentAddress = form.customer.address.trim();
+    const parked = pendingContextRef.current;
+    if (parked?.satelliteBase64 != null && pendingSatelliteAddressRef.current === currentAddress) {
+      pendingContextRef.current = {
+        satelliteBase64: parked.satelliteBase64,
+        satelliteMediaType: parked.satelliteMediaType,
+        satelliteFeetPerPixel: parked.satelliteFeetPerPixel,
+      };
+    } else {
+      pendingContextRef.current = null;
+      pendingSatelliteAddressRef.current = null;
+    }
   };
 
   // Manual satellite upload (#9): a second photo slot so manually-photographed
@@ -1848,6 +2099,128 @@ export default function QuoteBuilder({
     setFewShotDegraded(data.fewShotBreakdown?.degraded ?? false);
   };
 
+  // #204: shared by "Pull satellite" (handlePullSatellite) and the
+  // analyze-address no-Street-View fallback below (both branches) — both
+  // receive the exact same satellite-only response shape (satelliteBase64 /
+  // satelliteMediaType / satelliteFeetPerPixel / formattedAddress), so both
+  // apply it through this ONE function instead of two hand-copied blocks that
+  // could drift out of parity. `pulledForAddress` is the EXACT address string
+  // used for the fetch (captured before the await, not re-read from form
+  // state afterward) — stamped onto a parked context for handlePhotoSelect's
+  // same-house check (#204 review round, gap 2). Returns false (no state
+  // touched at all) when the operator cancels the replace-confirm below.
+  const applyPulledSatellite = (
+    data: {
+      satelliteBase64?: string;
+      satelliteMediaType?: string;
+      satelliteFeetPerPixel?: number | null;
+      formattedAddress?: string;
+    },
+    pulledForAddress: string,
+  ): boolean => {
+    // #204 review round (gap 1, HIGH money): a RE-pull with lines already
+    // drawn would otherwise apply the NEW scale against the OLD (possibly
+    // different-house) geometry — the footage-derive effects would compute
+    // wrong billed footage from stale lines × a new feet-per-pixel, silently.
+    // Mirrors handleSatelliteSelect's exact pattern (~line 1519): confirm
+    // before replacing when anything's drawn, clear EVERY satellite line
+    // array on apply; silent when nothing's drawn yet (the common case — the
+    // first pull on a fresh quote).
+    const hasAnyLines =
+      satelliteSantasLines.length > 0 ||
+      satelliteGingerbreadLines.length > 0 ||
+      satelliteC9Lines.length > 0 ||
+      satelliteStakeLines.length > 0 ||
+      satelliteBistroLines.length > 0 ||
+      PERMANENT_SIDES.some((s) => permanentSatLines[s].length > 0);
+    if (hasAnyLines) {
+      const ok = window.confirm(
+        'Replaces the satellite image — traced roofline + footage will reset. Continue?',
+      );
+      if (!ok) return false;
+      setSatelliteSantasLines([]);
+      setSatelliteGingerbreadLines([]);
+      setSatelliteC9Lines([]);
+      setSatelliteStakeLines([]);
+      setSatelliteBistroLines([]);
+      hadBistroLinesRef.current = false;
+      setPermanentSatLines({ front: [], left: [], right: [], back: [] });
+    }
+    setGoogleAddress(data.formattedAddress ?? null);
+    setSatellitePreview(`data:${data.satelliteMediaType};base64,${data.satelliteBase64}`);
+    setSatelliteFeetPerPixel(data.satelliteFeetPerPixel ?? null);
+    // No street photo in this response — the Design tab has nothing to show
+    // yet, so surface the tab that DOES: the satellite the operator can draw on.
+    setViewMode('satellite');
+    setFewShotCount(0);
+    // #443-style: persist the satellite IMAGE onto the design so the portal's
+    // "Where the lights go" view has it, mirroring the imagery-only branch
+    // below and applyAnalysisResult's ctx push.
+    if (data.satelliteBase64) {
+      const satCtx = {
+        satelliteBase64: data.satelliteBase64,
+        satelliteMediaType: data.satelliteMediaType ?? 'image/png',
+        satelliteFeetPerPixel: data.satelliteFeetPerPixel ?? null,
+      };
+      // #204 review round (gap 3, MED): a design may already exist (a
+      // reopened quote, or the operator already uploaded/analyzed a photo
+      // earlier this session) — parking would sit unconsumed forever, since
+      // the eager design effect only flushes pendingContextRef on a
+      // photoBase64 CHANGE, which a satellite-only re-pull never causes.
+      // Mirrors handleSatelliteSelect's designIdRef.current branch: push
+      // directly when a design exists, park (+ stamp the address) otherwise.
+      const id = designIdRef.current;
+      if (id) {
+        void pushAnalysisContext(id, satCtx);
+      } else {
+        pendingContextRef.current = { ...(pendingContextRef.current ?? {}), ...satCtx };
+        pendingSatelliteAddressRef.current = pulledForAddress;
+      }
+    }
+    return true;
+  };
+
+  // #204: geocode the typed address and load JUST the satellite image + its
+  // real scale — no AI, instant. Built for houses Street View can't serve
+  // (analyze-address's full lookup 404s the WHOLE request on those); the
+  // operator draws channels by hand and footage derives from the drawn
+  // geometry as usual (same as any other satellite trace). Does NOT touch the
+  // street photo slot — upload one separately, then Analyze; the #190 guard
+  // (hasSatellitePayload) keeps this pulled scale intact through that later
+  // analyze (see analysisSatellitePayload.ts / the #204 ordering test).
+  const handlePullSatellite = async () => {
+    const addr = form.customer.address.trim();
+    if (!addr) {
+      setAnalysisError('Enter the property address above first.');
+      return;
+    }
+    setLookingUp(true);
+    setAnalysisError(null);
+    setAnalysisWarning(null);
+    setAnalysisNotes(null);
+    try {
+      const res = await fetch('/api/pull-satellite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address: addr }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Satellite pull failed');
+      // Cancel = no-op (the operator declined the replace-confirm inside
+      // applyPulledSatellite because lines were already drawn) — no message.
+      if (!applyPulledSatellite(data, addr)) return;
+      setAnalysisNotes(
+        data.streetViewAvailable
+          ? 'Satellite loaded. Draw the roofline/channels on the Satellite tab — footage follows the lines. Street View is also available for this address if you want the full "Analyze from Address" auto-measure instead.'
+          : 'Satellite loaded — no Street View available at this address. Upload a front photo below, then Analyze; the pulled satellite + scale stay intact.',
+      );
+    } catch (err) {
+      setAnalysisError(err instanceof Error ? err.message : 'Satellite pull failed');
+    } finally {
+      setLookingUp(false);
+    }
+  };
+
   const handleLookupAddress = async () => {
     const addr = form.customer.address.trim();
     if (!addr) {
@@ -1866,6 +2239,19 @@ export default function QuoteBuilder({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Address lookup failed');
+      // #204: partial success — Street View isn't available at this address,
+      // but the satellite leg doesn't need it. No AI ran server-side (nothing
+      // to show it without a street photo) — populate the satellite tab and
+      // tell the operator honestly, same shape as handlePullSatellite above.
+      if (data.streetViewUnavailable) {
+        // Cancel = no-op, same as handlePullSatellite (the operator declined
+        // the replace-confirm because lines were already drawn).
+        if (!applyPulledSatellite(data, addr)) return;
+        setAnalysisWarning(
+          'No Street View available at this address — upload a front photo below; the satellite image is loaded for measurements.',
+        );
+        return;
+      }
       // Show street view as the editable photo
       const streetUrl = `data:${data.photoMediaType};base64,${data.photoBase64}`;
       setPhotoPreview(streetUrl);
@@ -2116,6 +2502,63 @@ export default function QuoteBuilder({
   const set = <K extends keyof QuoteFormData>(k: K, v: QuoteFormData[K]) =>
     setForm(f => ({ ...f, [k]: v }));
 
+  // #215 (fix round F1): the ONE place legacyRebook changes post-mount (the
+  // chip click below + contact-pick tag inheritance a few hundred lines
+  // down) — mirrors applyIsNce's ref-then-state ordering exactly so
+  // legacyRebookRef.current is synchronously correct the instant this
+  // returns, no deposit cascade needed here (legacyRebook has no money side
+  // effect, unlike isNce).
+  const applyLegacyRebook = (next: boolean) => {
+    legacyRebookRef.current = next;
+    setLegacyRebook(next);
+  };
+
+  // NCE 40% deposit default (#199): the ONE helper every LIVE isNce flip
+  // funnels through (the chip click below + contact-pick tag inheritance a
+  // few hundred lines down) — mirrors resolveTagPayload's shared-mechanism
+  // convention so both sites can never drift. The rule itself is pure
+  // (resolveNceDepositPercent, quoteForm.ts) and reads/writes depositPercent
+  // via the SAME functional setForm update `set` uses, so it can't race a
+  // same-tick edit. Locked (savedStatus approved/booked) quotes are a no-op —
+  // the #177 freeze owns the deposit percent past approval; the tag itself
+  // still flips (money is unaffected, matching the admin toggle route).
+  //
+  // #199 (wrap-review F4): a no-op flip (`next` equals the CURRENT isNce —
+  // e.g. contact-pick inheritance re-confirming an already-false chip on a
+  // re-pick) must never touch the deposit field at all, even in passing —
+  // this is what made the OFF-side revert bug (below) invisible: the chip
+  // never visibly changed, yet a hand-typed 40 vanished. Compared against
+  // isNceRef (wrap-review LOW), not the render-closure isNce — always
+  // synchronously current, kept in lockstep by this same function (the ONLY
+  // place isNce ever changes).
+  //
+  // Hoisted to a named const (#215) so the chip's confirm copy
+  // (nceConfirmMessage) can ask the identical "is this locked" question
+  // before it prompts, instead of a second inline expression that could drift.
+  const nceDepositLocked = savedStatus === 'approved' || savedStatus === 'booked';
+  const applyIsNce = (next: boolean) => {
+    const wasNce = isNceRef.current;
+    isNceRef.current = next;
+    setIsNce(next);
+    if (next === wasNce) return;
+    setForm(f => {
+      const resolved = resolveNceDepositPercent(
+        f.depositPercent,
+        next,
+        nceDepositLocked,
+        nceDepositSetByRuleRef.current,
+      );
+      return resolved === f.depositPercent ? f : { ...f, depositPercent: resolved };
+    });
+    // Provenance: resolveNceDepositPercent force-writes 40 in exactly one
+    // case — turning ON while unlocked — so that's the only time the NEXT
+    // 40 is "the rule's". Turning OFF always clears it (whether a revert
+    // just fired or the value was left alone as a hand-edit, there is no
+    // rule-owned value anymore). Locked leaves it untouched — resolveNceDepositPercent
+    // never wrote anything, so there's nothing new to record either way.
+    if (!nceDepositLocked) nceDepositSetByRuleRef.current = next;
+  };
+
   // ─── Referral program redemption (#41 PR 2) ─────────────────────────────
   // Credit banner: the button is disabled whenever some OTHER discount (a
   // manual %/flat entry, or an early-install promo) already occupies the
@@ -2283,6 +2726,14 @@ export default function QuoteBuilder({
         email: c.email || f.customer.email,
         address: hlAddress || f.customer.address,
       },
+      // #214 (c): the pick REPLACES the form's hl link — before this, a
+      // lead-prefill's ghlContactId silently survived a re-pick, so the next
+      // Calculate saved/resolved identity under the STALE contact id
+      // (findOrCreateCustomer's hl-agree would then adopt the WRONG
+      // customer and newest-win overwrite its stored fields with this
+      // person's). The save body now always carries the contact actually
+      // picked.
+      highlevelContactId: c.id,
     }));
     // Reset attach status — the previous attach (if any) was against a
     // different contact and doesn't apply anymore. Bump the staleness token so
@@ -2302,14 +2753,49 @@ export default function QuoteBuilder({
       const attachKey = `${savedQuoteId}:${c.id}`;
       if (lastAttachKey.current !== attachKey) {
         lastAttachKey.current = attachKey;
-        void queueAttach(savedQuoteId, c.id, hlAddress);
+        void queueAttach(savedQuoteId, c.id, contactIdentityOf(c));
       }
     }
+    // NCE + YLL Neighbor tag inheritance (#198): if the picked contact maps
+    // to a customers row, sync the UNTOUCHED chip(s) to that contact's
+    // ACTUAL current tag state (true OR false) — review fix (staff MED×2 +
+    // tech LOW, S34 #198 review). Was merge-only-true (never cleared), which
+    // left a mis-pick's auto-true tag stuck after re-picking an untagged
+    // contact. A chip staff has explicitly clicked (legacyRebookTouchedRef/
+    // isNceTouchedRef — see their declaration) is NEVER auto-changed here;
+    // staff-touched state always wins over whatever the currently-picked
+    // contact carries.
+    // Staleness guard mirrors the attach flow's OWN use of this exact token
+    // 20-ish lines up (attachSeqRef bumped on every pick; a response whose
+    // captured seq no longer matches belongs to a SUPERSEDED pick and is
+    // dropped) — same shared ref, same pattern, not a second/parallel token.
+    const tagLookupSeq = attachSeqRef.current;
+    fetch(`/api/customers?hlContactId=${encodeURIComponent(c.id)}`)
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then((data: { customers?: Array<{ is_nce?: boolean; is_yll_neighbor?: boolean }> }) => {
+        if (tagLookupSeq !== attachSeqRef.current) return; // superseded by a later pick
+        const tags = data.customers?.[0];
+        if (!legacyRebookTouchedRef.current) applyLegacyRebook(tags?.is_yll_neighbor ?? false);
+        // #199: routed through applyIsNce (not a bare setIsNce) so an
+        // inherited NCE tag also seeds the 40% deposit default, same as a
+        // manual chip click.
+        if (!isNceTouchedRef.current) applyIsNce(tags?.is_nce ?? false);
+      })
+      // Network error or non-OK response: leave chips exactly as they are —
+      // "couldn't check" is not the same signal as "checked, no tags".
+      .catch(() => {});
   };
 
   const clearHighLevelContact = () => {
     attachSeqRef.current++;
     setHighLevelContact(null);
+    // #214 (c): a real undo clears the FORM's hl link too — leaving a
+    // prefill/reopen-seeded id here would put the dropped contact right back
+    // into the next save body (the same stale-id class the pick-time
+    // replacement above closes). null is meaningful on the wire: it tells
+    // /api/quote "this session has NO contact" so the update-path identity
+    // never falls back to the stored id being detached below.
+    setForm(f => ({ ...f, highlevelContactId: null }));
     setAttachStatus('idle');
     setAttachError(null);
     setAttachResurrected(false);
@@ -2337,11 +2823,33 @@ export default function QuoteBuilder({
     }
   };
 
+  // #214 review fix (3-lens HIGH): the attach route's customers
+  // re-resolution needs the PICKED CONTACT's own identity fields — the
+  // stored quote row's fields are whoever the quote used to describe
+  // (pre-pick), and pairing them with the fresh contact id builds a
+  // self-inconsistent identity that can adopt + overwrite the WRONG
+  // customer's row. Every attach call site derives this from the contact it
+  // is actually attaching.
+  const contactIdentityOf = (c: CrmContact) => {
+    const name = c.fullName || [c.firstName, c.lastName].filter(Boolean).join(' ');
+    const address = [c.address1, c.city, c.state, c.postalCode].filter(Boolean).join(', ');
+    return {
+      contactName: name || undefined,
+      contactEmail: c.email || undefined,
+      contactPhone: c.phone || undefined,
+      contactAddress: address || undefined,
+    };
+  };
+
   // #172: all attach/detach traffic runs through this chain — one at a time,
   // in click order — so concurrent picks/sends can't interleave DB writes.
-  const queueAttach = (quoteId: string, contactId: string, addressHint?: string): Promise<boolean> => {
+  const queueAttach = (
+    quoteId: string,
+    contactId: string,
+    contactIdentity?: ReturnType<typeof contactIdentityOf>,
+  ): Promise<boolean> => {
     const run = (attachPromiseRef.current ?? Promise.resolve(false)).then(() =>
-      attachQuoteToHighLevel(quoteId, contactId, addressHint),
+      attachQuoteToHighLevel(quoteId, contactId, contactIdentity),
     );
     attachPromiseRef.current = run;
     return run;
@@ -2352,12 +2860,15 @@ export default function QuoteBuilder({
   // pre-send guard. Returns true only when the GHL card exists AND the local
   // quote row was linked — the route's linked:false (card fine, DB write
   // failed) still leaves the send gate closed, so it counts as failure here.
-  // addressHint: pick-time caller passes the picked contact's address because
-  // the form state hasn't flushed yet in that tick.
+  // contactIdentity: the picked contact's own fields (contactIdentityOf) —
+  // the route's #214 customers re-resolution runs ONLY off these, never the
+  // stored quote fields. Its contactName (the same pick-time value as
+  // hlName, captured before the form state flushes) also supplies the
+  // #247 fallback-create card name below, so no separate hint is needed.
   const attachQuoteToHighLevel = async (
     quoteId: string,
     contactId: string,
-    addressHint?: string,
+    contactIdentity?: ReturnType<typeof contactIdentityOf>,
   ): Promise<boolean> => {
     // Staleness token: if a later pick/clear bumps the seq while we're in
     // flight, our result still returns to OUR caller, but we stop writing the
@@ -2369,17 +2880,21 @@ export default function QuoteBuilder({
       setAttachError(null);
     }
     try {
-      const address = (addressHint || form.customer.address).trim();
+      // #247: card name is the customer's name, matching the send route's
+      // shape (quote.customer_name?.trim() || fallback) — was hardcoded
+      // "Holiday Lights — {address}" regardless of vertical.
+      const customerName = (contactIdentity?.contactName || form.customer.name || '').trim();
       const res = await fetch('/api/integrations/highlevel/attach', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           quoteId,
           contactId,
-          opportunityName: address ? `Holiday Lights — ${address}` : undefined,
+          opportunityName: customerName || undefined,
           // #107: the GHL card carries the "Full Yule" ceiling pre-approval (the
           // deposit webhook later resets it to the customer's actual selection).
           monetaryValue: result?.fullYule?.total ?? result?.total,
+          ...(contactIdentity ?? {}),
         }),
       });
       const data = await res.json();
@@ -2445,7 +2960,9 @@ export default function QuoteBuilder({
     setGhlSyncWarning(null);
     setDeliveryWarning(null);
     setDeliveryRetryChannel(null);
+    setAlreadySentAt(null);
     setCopiedUrl(false);
+    setRetryIneligible(false);
 
     // #172 pre-send guard: the picked contact may not be attached yet (a
     // pick-time attach can fail, or still be in flight). A real send
@@ -2462,7 +2979,7 @@ export default function QuoteBuilder({
       }
       if (!linked) {
         lastAttachKey.current = attachKey;
-        linked = await queueAttach(savedQuoteId, highlevelContact.id);
+        linked = await queueAttach(savedQuoteId, highlevelContact.id, contactIdentityOf(highlevelContact));
       }
       if (!linked) {
         setSendStatus('idle');
@@ -2531,12 +3048,34 @@ export default function QuoteBuilder({
         }
         throw new Error(data.error ?? `Send failed (${res.status})`);
       }
+      // #241: the route short-circuited — this click delivered NOTHING (no
+      // SMS, no email, no CRM stage move, no re-stamped quote_sent_at). Don't
+      // render the identical success state; surface it loudly and offer a
+      // one-click force-redeliver via the existing ?retryDelivery=1 path
+      // instead of falling through to the normal "sent" handling below.
+      if (data.alreadySent) {
+        setSendStatus('already-sent');
+        setAlreadySentAt(typeof data.sentAt === 'string' ? data.sentAt : null);
+        setDeliveryRetryChannel('both');
+        return;
+      }
       setSendStatus('sent');
       if (failedChannels.length > 0) {
         const retryChannel = failedChannels.length === 2 ? 'both' : failedChannels[0];
         setDeliveryRetryChannel(retryChannel);
+        // #264 round 2, FIX 3: data.messageError already carries the
+        // backend's own honesty hedge (deliveryErrorMessage in route.ts —
+        // "timeout — delivery outcome unknown (GHL may have still delivered
+        // it): …" when the failure was a timeout our socket gave up on, vs.
+        // the real rejection text otherwise). This hardcoded sentence was
+        // silently discarding it, so a channel that actually timed out (the
+        // most likely real-world shape) rendered a confidently wrong
+        // "failed" here even though the backend explicitly did not know
+        // that. Appends it rather than re-deriving a new sentence, mirroring
+        // the existing pattern in src/app/admin/invoices/[id]/page.tsx's
+        // sendBalanceLink (surfaces body.messageError verbatim).
         setDeliveryWarning(
-          `${failedChannels.map((c: 'sms' | 'email') => c.toUpperCase()).join(' and ')} failed. The other requested channel was delivered.`,
+          `${failedChannels.map((c: 'sms' | 'email') => c.toUpperCase()).join(' and ')} failed. The other requested channel was delivered.${data.messageError ? ` (${data.messageError})` : ''}`,
         );
       }
       // PostHog v1 — staff-side confirmation the quote actually sent.
@@ -2569,6 +3108,15 @@ export default function QuoteBuilder({
 
   const handleRetryDelivery = async () => {
     if (!savedQuoteId || !deliveryRetryChannel) return;
+    // #241 (review MEDIUM, mirrors #172's sendInFlightRef guard on
+    // handleSendToCustomer above — see the comment at its declaration): a
+    // genuine double-click on Force Redeliver has no synchronous guard
+    // otherwise, and the route has no idempotency key of its own for a
+    // retry — two clicks in one tick really do text/email the customer
+    // twice. Shared with Send's own guard since both hit the same real
+    // delivery mechanism; either one in flight blocks the other.
+    if (sendInFlightRef.current) return;
+    sendInFlightRef.current = true;
     setSendStatus('sending');
     setSendError(null);
     try {
@@ -2579,12 +3127,73 @@ export default function QuoteBuilder({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `Delivery retry failed (${res.status})`);
+      // #241 defect 2 (review MEDIUM): the retry can ALSO fall through the
+      // route's alreadySent short-circuit (e.g. the customer approved or
+      // the job got booked between the original send and this click — see
+      // send/route.ts's isDeliveryRetry / W1-017 comment). A 200 here is
+      // not proof of delivery; don't render "✓ Sent". Drop the retry
+      // affordance (clicking it again hits the identical short-circuit)
+      // and tell the operator plainly instead of a false success.
+      if (data.alreadySent) {
+        setSendStatus('already-sent');
+        setDeliveryRetryChannel(null);
+        setRetryIneligible(true);
+        return;
+      }
+      // #264 round 2, FIX 4: mirror handleSendToCustomer's own failedChannels
+      // handling (above) — this success branch previously cleared
+      // deliveryWarning/deliveryRetryChannel UNCONDITIONALLY on any res.ok,
+      // never inspecting data.failedChannels. A PARTIAL retry failure (one
+      // channel finally delivered, the other times out/fails again) rendered
+      // a clean "✓ Sent" and dropped the retry affordance for the channel
+      // that's STILL undelivered. Only a full success now clears the
+      // warning/retry state; a partial failure keeps both, scoped to
+      // whichever channel(s) remain failed.
+      const retryFailedChannels = Array.isArray(data.failedChannels)
+        ? data.failedChannels.filter((value: unknown): value is 'sms' | 'email' => value === 'sms' || value === 'email')
+        : [];
       setSendStatus('sent');
-      setDeliveryWarning(null);
-      setDeliveryRetryChannel(null);
+      setAlreadySentAt(null);
+      if (retryFailedChannels.length > 0) {
+        const retryChannel = retryFailedChannels.length === 2 ? 'both' : retryFailedChannels[0];
+        setDeliveryRetryChannel(retryChannel);
+        setDeliveryWarning(
+          `${retryFailedChannels.map((c: 'sms' | 'email') => c.toUpperCase()).join(' and ')} failed. The other requested channel was delivered.${data.messageError ? ` (${data.messageError})` : ''}`,
+        );
+      } else {
+        setDeliveryWarning(null);
+        setDeliveryRetryChannel(null);
+      }
+      // #264 round 2, FIX 6: a delivery-only retry structurally never
+      // attempts the GHL stage move — route.ts's ghlStageChain returns
+      // immediately whenever isDeliveryRetry (see its own comment) — so
+      // data.ghlSynced here can ONLY ever reflect a PRIOR sync, never one
+      // just performed by this call. This branch previously never read it at
+      // all, silently leaving whatever STALE ghlSyncWarning value was
+      // already in state. On the exact sequence this fix targets (the
+      // original stamp write times out client-side but commits server-side —
+      // the route returns before ever reaching ghlStageChain, so
+      // ghl_stage_synced_at is still null — the operator sees a bare error,
+      // retries, hits alreadySent, clicks Force Redeliver), that stale value
+      // was null, so the button rendered the FALSE "✓ Sent — stage moved to
+      // Bid Sent" (see the button label a few hundred lines down) even
+      // though no request in the whole sequence ever ran the stage move.
+      // data.stageError is always undefined here (ghlStageChain never ran to
+      // set it), so the generic handleSendToCustomer fallback text would be
+      // misleading about WHY — this uses delivery-retry-specific wording
+      // instead. Setting ghlSyncWarning also surfaces the existing "Retry CRM
+      // sync" button (?retryGhl) for free — that render block isn't gated to
+      // fresh sends only.
+      setGhlSyncWarning(
+        data.ghlSynced === false
+          ? 'This was a delivery-only retry, which never touches the CRM card.'
+          : null,
+      );
     } catch (err) {
       setSendStatus('error');
       setSendError(err instanceof Error ? err.message : 'Delivery retry failed');
+    } finally {
+      sendInFlightRef.current = false;
     }
   };
 
@@ -2643,6 +3252,13 @@ export default function QuoteBuilder({
     }
     setSendStatus('idle');
     setSendError(null);
+    setAlreadySentAt(null);
+    // #241: reset alongside its siblings. Not visible today (the notice that
+    // reads it is gated on sendStatus === 'already-sent', which this same block
+    // clears, and both places that re-enter that status reset this flag first)
+    // — but leaving it dangling true after a recalc is a trap for any future
+    // path that sets 'already-sent' without going through those two functions.
+    setRetryIneligible(false);
     setCopiedUrl(false);
     setTrainStatus('idle');
     setTrainError(null);
@@ -2699,12 +3315,28 @@ export default function QuoteBuilder({
           // reopening a quote that never had one (adversarial-review fix;
           // both paths are idempotent, so a resave never duplicates it).
           referredByCustomerId: referredBy?.id ?? undefined,
-          // #leads "Create quote" link: seeded only by applyPrefill on a
-          // blank-slate builder. Sent on every save, but the server only ever
-          // honors it on the NEW-quote insert (saveQuote) — an update never
-          // touches highlevel_contact_id, so this can't clobber a contact the
-          // operator later picks/clears via the HL autocomplete.
-          highlevelContactId: form.highlevelContactId ?? undefined,
+          // #214: the session's LIVE hl link, sent explicitly on every save
+          // (string = linked via prefill/pick/reopen-seed · null = no
+          // contact this session). Insert: lands in the row (saveQuote).
+          // Update: identity-resolution input only — the server never
+          // writes the highlevel_contact_id column from this (the attach
+          // route stays that column's post-insert writer), so it can't
+          // clobber the stored link; explicit null stops the server falling
+          // back to a stored id the session already cleared.
+          highlevelContactId: form.highlevelContactId,
+          // NCE + YLL Neighbor tags (#198): 'insert' (no existingQuoteId yet
+          // — this save creates the row) sends the displayed value outright,
+          // so an inherited-but-unclicked tag lands on the brand-new quote;
+          // 'update' (existingQuoteId present) gates on touched, so a
+          // Calculate on a tab left open can't clobber a concurrent
+          // admin-detail toggle — see resolveTagPayload's doc comment.
+          ...resolveTagPayload(
+            legacyRebook,
+            legacyRebookTouchedRef.current,
+            isNce,
+            isNceTouchedRef.current,
+            existingQuoteId ? 'update' : 'insert',
+          ),
         }),
       });
       const data = await res.json();
@@ -2777,7 +3409,7 @@ export default function QuoteBuilder({
         // S30 wrap review MED: route through the serialized queue like every
         // other attach call site — a direct call could race a rapid re-pick
         // and leave the DB linked to the stale contact.
-        void queueAttach(newQuoteId, highlevelContact.id);
+        void queueAttach(newQuoteId, highlevelContact.id, contactIdentityOf(highlevelContact));
       } else if (highlevelContact?.id && !newQuoteId) {
         // Quote wasn't persisted (Supabase not configured). Tell the
         // operator the HL link won't be made either.
@@ -2809,7 +3441,40 @@ export default function QuoteBuilder({
         headers: { 'Content-Type': 'application/json' },
         // quoteId → re-price that quote in place; falls back to a fresh save
         // if the quote wasn't persisted (Supabase unconfigured).
-        body: JSON.stringify({ customer: form.customer, serviceType: form.serviceType, inputs, quoteId: savedQuoteId ?? undefined, designId: designId ?? undefined }),
+        body: JSON.stringify({
+          customer: form.customer,
+          serviceType: form.serviceType,
+          inputs,
+          quoteId: savedQuoteId ?? undefined,
+          designId: designId ?? undefined,
+          // #214 review fix (staff MED): recommendRoofline is the builder's
+          // SECOND /api/quote caller and was missed by the first #214 pass —
+          // sending customer WITHOUT the session hl made the server fall
+          // back to the STORED hl id (possibly the pre-pick one, if the
+          // pick-time attach hadn't landed) paired with the FRESH form
+          // fields: the same self-inconsistent identity class as the attach
+          // route's stale-fields bug, inverted. Same live value runQuote
+          // sends.
+          highlevelContactId: form.highlevelContactId,
+          // NCE + YLL Neighbor tags (#198 review fix, staff HIGH): this
+          // payload used to omit the tags entirely, so a toggled chip
+          // followed by a roofline-radio pick + Send never persisted the
+          // toggle (recommendRoofline is its own /api/quote round trip, not
+          // routed through runQuote). Same resolveTagPayload rule as the
+          // main Calculate/Save call, INCLUDING the insert/update derivation
+          // — recommendRoofline can itself fire pre-first-save (savedQuoteId
+          // still null: e.g. Supabase was briefly unconfigured on the
+          // original Calculate, so persisted:false and savedQuoteId was
+          // never set), so this re-derives mode from savedQuoteId fresh here
+          // rather than assuming an existing row.
+          ...resolveTagPayload(
+            legacyRebook,
+            legacyRebookTouchedRef.current,
+            isNce,
+            isNceTouchedRef.current,
+            savedQuoteId ? 'update' : 'insert',
+          ),
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Request failed');
@@ -3049,8 +3714,6 @@ export default function QuoteBuilder({
                 Test
               </span>
             )}
-            {/* YLL Neighbor (#158) — migrated from last year's Jobber data (#155). */}
-            {legacyRebook && <YllNeighborBadge />}
             {/* View-only portal (#176) — mirrors the admin detail page's pill. */}
             {viewOnly && (
               <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-100 text-sky-700">
@@ -3085,6 +3748,91 @@ export default function QuoteBuilder({
                 {quoteNumber != null ? `#${quoteNumber}` : `ID ${savedQuoteId.slice(0, 8)}`}
               </span>
             )}
+          </div>
+          {/* NCE + YLL Neighbor tag chips (#198) — directly under the heading,
+              toggleable in BOTH new-quote and edit modes. Sets form state only,
+              no immediate API call (unlike the admin detail page's
+              LegacyRebookToggle/NceToggle, which fetch on click) — the chosen
+              state persists on the next Calculate/Save like any other form
+              field, same mount-hydrate-only convention as isTest/viewOnly (a
+              customer tagged elsewhere mid-session isn't live-reflected
+              here; staff re-check on reopen). This strip is the ONE place to
+              see + set both tags in the builder — it replaces the old
+              read-only YllNeighborBadge display that used to sit in the
+              badge row above (no duplicate/contradictory Neighbor UI).
+              NCE-tagging here also seeds the 40% deposit default via
+              applyIsNce (#199, pre-approval only — see its own comment);
+              the deposit input itself stays hand-editable after.
+              #215: a MANUAL click now window.confirms first — Neighbor in
+              BOTH directions, NCE in ON always and OFF when there's a real
+              deposit or propagation consequence to disclose — mirroring the
+              admin siblings' confirm+list pattern (legacyRebookConfirmMessage/
+              nceConfirmMessage, quoteForm.ts — each owns its own per-direction
+              when-to-prompt rule and exact copy). Automatic paths (the
+              contact-pick tag inheritance a few hundred lines down, the
+              mount-hydrate useState above) call applyLegacyRebook/applyIsNce
+              directly and never prompt. Declining leaves the tag, deposit,
+              and touched-ref exactly as they were — the touched-ref is set
+              AFTER the confirm returns true, never before. */}
+          <div className="flex items-center gap-2 mt-2">
+            <button
+              type="button"
+              onClick={() => {
+                // Direction comes from legacyRebookRef, NOT the render-closure
+                // legacyRebook (#215 fix round F1 — sibling-guard parity with
+                // the isNceRef fix just below): a stale closure read here
+                // would prompt with one direction's consequences and then
+                // apply the other's.
+                const turningOn = !legacyRebookRef.current;
+                const confirmMsg = legacyRebookConfirmMessage(turningOn, quoteLeftDraft);
+                if (confirmMsg && !window.confirm(confirmMsg)) return;
+                legacyRebookTouchedRef.current = true;
+                applyLegacyRebook(turningOn);
+              }}
+              aria-pressed={legacyRebook}
+              title={legacyRebook ? 'YLL Neighbor — click to remove' : 'Mark as YLL Neighbor'}
+              className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border transition-colors ${
+                legacyRebook
+                  ? 'bg-sky-100 text-sky-700 border-sky-300'
+                  : 'text-gray-400 border-gray-300 hover:bg-gray-50'
+              }`}
+            >
+              YLL Neighbor
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                // Direction comes from isNceRef, NOT the render-closure isNce
+                // (#199 wrap-review LOW): restores the always-current guarantee
+                // the pre-#199 bare `setIsNce((v) => !v)` functional form had.
+                // #215 derives `turningOn` from that SAME ref so the confirm
+                // copy and the apply can never disagree about which way this
+                // click goes — a stale closure here would prompt with one
+                // direction's consequences and then apply the other's.
+                const turningOn = !isNceRef.current;
+                const confirmMsg = nceConfirmMessage(
+                  turningOn,
+                  form.depositPercent,
+                  nceDepositLocked,
+                  nceDepositSetByRuleRef.current,
+                  quoteLeftDraft,
+                );
+                if (confirmMsg && !window.confirm(confirmMsg)) return;
+                isNceTouchedRef.current = true;
+                // #199: applyIsNce (not a bare toggle) so turning the chip
+                // on/off also sets/reverts the 40% deposit default.
+                applyIsNce(turningOn);
+              }}
+              aria-pressed={isNce}
+              title={isNce ? 'NCE — click to remove' : 'Mark as NCE (barter/trade network)'}
+              className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded border transition-colors ${
+                isNce
+                  ? 'bg-rose-100 text-rose-700 border-rose-300'
+                  : 'text-gray-400 border-gray-300 hover:bg-gray-50'
+              }`}
+            >
+              NCE
+            </button>
           </div>
           {editMode && (
             <p className="text-xs text-gray-500 mt-1">
@@ -3221,7 +3969,21 @@ export default function QuoteBuilder({
                       type="button"
                       role="radio"
                       aria-checked={selected}
-                      onClick={() => setForm(f => ({ ...f, serviceType: st }))}
+                      onClick={() => setForm(f => ({
+                        ...f,
+                        serviceType: st,
+                        // #212: September/October early-install is a holiday-seasonal
+                        // pick — leaving it set while switching to a non-holiday type
+                        // would silently block buildQuoteInputs's `discount` field
+                        // (guarded on installTiming === 'none') while the builder's
+                        // discount checkbox still LOOKED applied. clearHolidayOnlyDiscountState
+                        // (quoteForm.ts) clears installTiming AND brings
+                        // discountEnabled/discountAmount to a coherent rest state along
+                        // with it — a no-op for a same-type click, a switch INTO holiday,
+                        // or when installTiming was already 'none' (a genuine typed
+                        // manual discount survives untouched; see that function's doc).
+                        ...clearHolidayOnlyDiscountState(st, f),
+                      }))}
                       className={`px-3 py-1.5 rounded-md border text-sm font-medium transition-colors ${
                         selected
                           ? 'bg-blue-600 border-blue-600 text-white'
@@ -3264,14 +4026,30 @@ export default function QuoteBuilder({
             <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
               <div className="flex items-center justify-between gap-3 mb-1">
                 <span className="text-sm font-medium text-blue-900">Look up on Google Maps</span>
-                <button
-                  type="button"
-                  onClick={handleLookupAddress}
-                  disabled={lookingUp || !form.customer.address.trim()}
-                  className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium text-sm px-4 py-2 rounded-md whitespace-nowrap"
-                >
-                  {lookingUp ? 'Looking up…' : '🏠 Analyze from Address'}
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handlePullSatellite}
+                    disabled={lookingUp || !form.customer.address.trim()}
+                    title={
+                      form.customer.address.trim()
+                        ? 'No Street View at this address? Skip straight to the satellite image + real scale — instant, no AI. Draw channels by hand.'
+                        : 'Enter the property address above first.'
+                    }
+                    className="bg-white hover:bg-blue-50 disabled:bg-blue-50 disabled:text-blue-300 text-blue-700 border border-blue-300 font-medium text-sm px-3 py-2 rounded-md whitespace-nowrap"
+                  >
+                    {lookingUp ? 'Working…' : '🛰️ Pull satellite'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleLookupAddress}
+                    disabled={lookingUp || !form.customer.address.trim()}
+                    title={form.customer.address.trim() ? undefined : 'Enter the property address above first.'}
+                    className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium text-sm px-4 py-2 rounded-md whitespace-nowrap"
+                  >
+                    {lookingUp ? 'Looking up…' : '🏠 Analyze from Address'}
+                  </button>
+                </div>
               </div>
               <p className="text-xs text-blue-700">
                 {form.serviceType === 'permanent'
@@ -3279,6 +4057,8 @@ export default function QuoteBuilder({
                   : form.serviceType === 'permanent_bistro'
                     ? 'Uses the Property Address above. Fetches Street View + satellite (with scale) so you draw the bistro runs on the Satellite tab.'
                     : 'Uses the Property Address above. Fetches Street View + satellite view, sends both to Claude.'}
+                {' '}
+                {'No Street View at the address? Use "Pull satellite" instead — just the satellite image + scale, instant, then upload your own front photo below.'}
               </p>
               {/* #95: quick link to open the house on Google Maps (standard pin, not
                   Street View) — precise coords once analyzed, else the matched/typed
@@ -3580,6 +4360,35 @@ export default function QuoteBuilder({
                     yardstick or set the section count on the design before quoting.
                   </p>
                 )}
+                {/* #255 / #741 defects 3+4: a re-analyze OR a photo delete can drop
+                    a staff-created mini group (its member strands weren't
+                    re-detected, or lived only on the deleted photo) — unlike
+                    routine strand cleanup in the editor, this quietly removes a
+                    billed line with nothing else calling it out, so it gets the
+                    same standing-warning treatment as the garland-scale notice
+                    above. The closing guidance is CAUSE-SPECIFIC (defect 4): a
+                    re-analyze miss may genuinely still be drawn on the photo,
+                    undetected — true "redraw if still there". A photo-delete
+                    prune's strands lived on a photo the server permanently
+                    deleted along with them — there is nothing left to "still be
+                    there"; that copy would be false. */}
+                {prunedMiniGroups && (
+                  <p className="text-sm text-amber-700 mb-2">
+                    ⚠️ Removed {prunedMiniGroups.groups.length} mini{' '}
+                    {prunedMiniGroups.groups.length === 1 ? 'group' : 'groups'} that lost all their strands:{' '}
+                    {prunedMiniGroups.groups
+                      .map((g, i) => {
+                        const label = miniSurfaceLabel(g.surface);
+                        const n = g.stringCount;
+                        return `${label} — ${n} string${n === 1 ? '' : 's'}${i < prunedMiniGroups.groups.length - 1 ? ', ' : ''}`;
+                      })
+                      .join('')}
+                    .{' '}
+                    {prunedMiniGroups.cause === 'reanalyze'
+                      ? "Redraw them on the design if they're still there."
+                      : 'They lived on the deleted photo, which is gone for good — recreate the group if you still need it.'}
+                  </p>
+                )}
                 {designId ? (
                   <>
                     <DesignEditor
@@ -3588,7 +4397,8 @@ export default function QuoteBuilder({
                       height={640}
                       permanentOnly={form.serviceType === 'permanent'}
                       bistroOnly={form.serviceType === 'permanent_bistro'}
-                      onReady={(flush) => { editorFlushRef.current = flush; }}
+                      onReady={(flush, discard) => { editorFlushRef.current = flush; editorDiscardRef.current = discard; }}
+                      onPrunedMiniGroups={(groups) => reportPrunedMiniGroups('photo-delete', groups)}
                     />
                     {form.serviceType === 'permanent' ? (
                       <p className="text-xs text-gray-400 mt-2">
@@ -4595,6 +5405,71 @@ export default function QuoteBuilder({
           </Section>
           )}
 
+          {/* Discount — event / permanent / permanent bistro (#212). The SAME
+              manual %/flat "Apply discount" control + referral-credit lock as
+              holiday's Options section above, MINUS the September/October
+              early-install promo: that's a holiday-seasonal off-peak-install
+              incentive, not a general discount, and none of these three
+              verticals' engines even read installTiming (event/permanentBistro
+              hardcode earlyInstallDiscountAmount 0; permanent forces
+              installTiming:'none' into the shared tail) — see
+              lib/event/pricing.ts, lib/permanent/pricing.ts,
+              lib/permanentBistro/pricing.ts. Positive list of the three types
+              (not `!== 'holiday'`), matching the Options-section gate above, so
+              a future 5th vertical defaults to no discount UI until explicitly
+              added. Takedown/rush/waive-minimum stay holiday-only — untouched. */}
+          {(form.serviceType === 'event' ||
+            form.serviceType === 'permanent' ||
+            form.serviceType === 'permanent_bistro') && (
+          <Section title="Discount">
+            {form.referralCredit ? (
+              <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                Discount locked. A referral credit is applied. Use Remove on the referral banner above to edit it manually.
+              </p>
+            ) : (
+              <>
+                <label className="flex items-center gap-2 text-sm cursor-pointer mb-3">
+                  <input type="checkbox" checked={form.discountEnabled}
+                    onChange={e => set('discountEnabled', e.target.checked)} />
+                  Apply discount
+                </label>
+                {form.discountEnabled && (
+                  <div className="pl-6 space-y-3">
+                    <div className="flex flex-wrap items-center gap-5">
+                      <label className="flex items-center gap-2 text-sm cursor-pointer">
+                        <input type="radio" name="discountKind"
+                          checked={form.discountType === 'percentage'}
+                          onChange={() => set('discountType', 'percentage')} />
+                        Percentage
+                      </label>
+                      <label className="flex items-center gap-2 text-sm cursor-pointer">
+                        <input type="radio" name="discountKind"
+                          checked={form.discountType === 'flat'}
+                          onChange={() => set('discountType', 'flat')} />
+                        Flat dollar
+                      </label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number" min="0"
+                        max={form.discountType === 'percentage' ? '100' : undefined}
+                        step="0.01"
+                        className="border border-gray-300 rounded-md px-3 py-2 text-sm w-28 focus:outline-none focus:ring-2 focus:ring-green-500"
+                        value={form.discountAmount || ''}
+                        placeholder={form.discountType === 'percentage' ? '20' : '100'}
+                        onChange={e => set('discountAmount', Number(e.target.value))}
+                      />
+                      <span className="text-xs text-gray-400">
+                        {form.discountType === 'percentage' ? 'e.g. 20 = 20% off' : 'e.g. 100 = $100 off'}
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </Section>
+          )}
+
           {/* Deposit % override (#177) — staff can set a per-quote deposit
               percent (integer 1-100); blank defaults to 50% (today's behavior).
               Rides inputs.depositPercent, like waiveMinimum above. Reachability
@@ -4618,7 +5493,16 @@ export default function QuoteBuilder({
                     ? 'Locked after approval — amend handles changes'
                     : undefined
                 }
-                onChange={e => set('depositPercent', Number(e.target.value))}
+                onChange={e => {
+                  // #199 (wrap-review F4): a DIRECT staff edit — to ANY value,
+                  // including coincidentally 40 — is never "the NCE rule's"
+                  // value again. Without this, hand-typing 40 right after
+                  // turning the chip off (or independently of it entirely)
+                  // would still get silently wiped by a LATER OFF-toggle that
+                  // still thought it owned this field.
+                  nceDepositSetByRuleRef.current = false;
+                  set('depositPercent', Number(e.target.value));
+                }}
               />
             </label>
             <span className="block text-xs text-gray-500 mt-1">
@@ -5104,6 +5988,56 @@ export default function QuoteBuilder({
                   : '📨 Send Quote to Customer'}
               </button>
             </div>
+
+            {/* #241: the guard short-circuited — nothing was texted or emailed
+                this click. Say so plainly instead of rendering the same
+                "✓ Sent" state as a real delivery, and offer a one-click
+                force-redeliver (reuses the existing ?retryDelivery=1 path —
+                does not re-stamp quote_sent_at or move the CRM card again). */}
+            {sendStatus === 'already-sent' && (
+              <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                {retryIneligible ? (
+                  // #241 defect 2 (review MEDIUM): Force Redeliver was
+                  // clicked and ALSO hit the alreadySent short-circuit — the
+                  // quote moved past sent/viewed (approved/booked/deposit
+                  // paid) since the original send. Retrying again would hit
+                  // the identical guard, so don't repeat the same doomed
+                  // button — point at the manual copy field above instead.
+                  <p>
+                    Redeliver didn&apos;t send anything either — this quote has
+                    moved past &ldquo;sent&rdquo;/&ldquo;viewed&rdquo; (approved,
+                    booked, or a deposit was paid), so an automatic resend is
+                    blocked to protect the CRM pipeline. Copy the Customer
+                    Portal URL above and share it with the customer directly.
+                  </p>
+                ) : (
+                  <p>
+                    Nothing was delivered — this quote was already sent
+                    {alreadySentAt ? ` on ${new Date(alreadySentAt).toLocaleString()}` : ' earlier'}.
+                    Clicking Send again does not re-text or re-email the customer.
+                  </p>
+                )}
+                {/* No `disabled={sendStatus === 'sending'}` here (and on its
+                    two siblings below) — this button only renders while
+                    sendStatus is exactly 'already-sent', a value mutually
+                    exclusive with 'sending' in the union, so the comparison
+                    is dead code (tsc flags it: TS2367). Unlike the always-
+                    mounted main Send button, this button UNMOUNTS the
+                    instant a click flips sendStatus to 'sending' — that's
+                    the render-level guard; handleRetryDelivery's
+                    sendInFlightRef check is what closes the real
+                    same-tick double-click race. */}
+                {!retryIneligible && deliveryRetryChannel && (
+                  <button
+                    type="button"
+                    onClick={handleRetryDelivery}
+                    className="mt-2 text-xs font-medium text-amber-900 underline hover:no-underline"
+                  >
+                    Force redeliver (SMS + email) now
+                  </button>
+                )}
+              </div>
+            )}
 
             {sendStatus === 'error' && (
               <div className="mt-3 text-sm text-red-600">

@@ -26,8 +26,21 @@ import { buildRebookInsert, rebookLastSeason, rebookFromQuote } from './rebook';
 
 type Row = Record<string, unknown>;
 
-function makeFakeSupabase(initial: { quotes?: Row[] } = {}) {
-  const tables: Record<string, Row[]> = { quotes: initial.quotes ? initial.quotes.map((r) => ({ ...r })) : [] };
+// #198: customers is optional/empty by default — rebookLastSeason now also
+// reads getCustomer(customerId) for tag inheritance; most existing tests
+// never seed it, which correctly resolves to "no customer row" (null).
+//
+// #205 (F1 test infra): properties is likewise optional/empty by default —
+// resurrectPropertyForRebook reads it, and an un-seeded table (the dynamic
+// tables[table] ?? (tables[table] = []) fallback below) correctly resolves
+// to "no such row", a graceful no-op. update() support was added ONLY for
+// this — every OTHER existing use of this fake is select/insert-only.
+function makeFakeSupabase(initial: { quotes?: Row[]; customers?: Row[]; properties?: Row[] } = {}) {
+  const tables: Record<string, Row[]> = {
+    quotes: initial.quotes ? initial.quotes.map((r) => ({ ...r })) : [],
+    customers: initial.customers ? initial.customers.map((r) => ({ ...r })) : [],
+    properties: initial.properties ? initial.properties.map((r) => ({ ...r })) : [],
+  };
   let counter = 0;
 
   function from(table: string) {
@@ -39,6 +52,14 @@ function makeFakeSupabase(initial: { quotes?: Row[] } = {}) {
       filters: [] as Array<(r: Row) => boolean>,
       orderBy: null as null | { col: string; asc: boolean },
       limitN: null as number | null,
+    };
+    // #205 (F1 test infra): plain filter-then-assign — no uniqueness
+    // modeling needed (unlike customers.test.ts's fuller fake), since
+    // nothing here ever updates a column with a uniqueness constraint.
+    const doUpdate = () => {
+      const matched = rows.filter((r) => state.filters.every((f) => f(r)));
+      for (const r of matched) Object.assign(r, state.updateRow);
+      return matched;
     };
     const match = () => {
       let out = rows.filter((r) => state.filters.every((f) => f(r)));
@@ -70,6 +91,11 @@ function makeFakeSupabase(initial: { quotes?: Row[] } = {}) {
         state.insertRow = row;
         return builder;
       },
+      update(row: Row) {
+        state.op = 'update';
+        state.updateRow = row;
+        return builder;
+      },
       eq(col: string, val: unknown) {
         state.filters.push((r) => r[col] === val);
         return builder;
@@ -96,6 +122,10 @@ function makeFakeSupabase(initial: { quotes?: Row[] } = {}) {
       },
       async maybeSingle() {
         if (state.op === 'insert') return { data: doInsert(), error: null };
+        if (state.op === 'update') {
+          const matched = doUpdate();
+          return { data: matched[0] ?? null, error: null };
+        }
         return { data: match()[0] ?? null, error: null };
       },
       async single() {
@@ -163,7 +193,7 @@ describe('buildRebookInsert', () => {
     expect(row).not.toHaveProperty('service_type');
   });
 
-  it('strips ALL frozen rate snapshots (permanent + event + permanent bistro) so the rebooked draft re-prices at live rates', () => {
+  it('strips ALL frozen rate snapshots (permanent + event + permanent bistro + #199 depositRate) so the rebooked draft re-prices at live rates', () => {
     const withSnaps = {
       ...src,
       result: {
@@ -172,12 +202,17 @@ describe('buildRebookInsert', () => {
         permanentRatesSnapshot: { frontPerFt: 40, sidesPerFt: 35, backPerFt: 35, minimumJobAmount: 2500, maintenancePrice: 0 },
         eventRatesSnapshot: { rooflinePerFt: 8 },
         permanentBistroRatesSnapshot: { perFt: 30, perPole: 100, minimum: 0 },
+        // #199 F1 (wrap-review HIGH): a stale rate here — pre-fix, this would
+        // outlive the clone's is_nce/depositPercent resolution and mislead
+        // any direct reader that bypasses chargesFromResult.
+        depositRate: 0.5,
       },
     } as unknown as Parameters<typeof buildRebookInsert>[0];
     const result = buildRebookInsert(withSnaps).result as Record<string, unknown>;
     expect(result).not.toHaveProperty('permanentRatesSnapshot');
     expect(result).not.toHaveProperty('eventRatesSnapshot');
     expect(result).not.toHaveProperty('permanentBistroRatesSnapshot');
+    expect(result).not.toHaveProperty('depositRate');
     // Other priced fields survive the strip; total still derives from the source.
     expect(result.total).toBe(4200);
     expect(result.lineItems).toEqual([{ id: 'permanent-front', amount: 2000 }]);
@@ -208,6 +243,27 @@ describe('buildRebookInsert', () => {
     expect(row.is_test).toBe(false);
   });
 
+  // #198: legacy_rebook/is_nce carry through from the source (same
+  // clone-field posture as is_test above) — this is the plain default;
+  // rebookLastSeason overrides these with the CUSTOMER's current tags before
+  // calling buildRebookInsert (see its own describe block below).
+  it('carries legacy_rebook/is_nce through from the source', () => {
+    expect(buildRebookInsert({ ...src, legacy_rebook: true, is_nce: true })).toMatchObject({
+      legacy_rebook: true,
+      is_nce: true,
+    });
+    expect(buildRebookInsert({ ...src, legacy_rebook: false, is_nce: false })).toMatchObject({
+      legacy_rebook: false,
+      is_nce: false,
+    });
+  });
+
+  it('defaults legacy_rebook/is_nce to false when the source omits them', () => {
+    const row = buildRebookInsert(src);
+    expect(row.legacy_rebook).toBe(false);
+    expect(row.is_nce).toBe(false);
+  });
+
   it('strips discount + referralCredit from inputs — a rebooked quote re-earns/re-applies its own credit, never clones a spent one (#41 adversarial-review fix)', () => {
     const withCredit = {
       ...src,
@@ -228,6 +284,73 @@ describe('buildRebookInsert', () => {
   it('is a no-op strip when inputs carry no discount/referralCredit', () => {
     const row = buildRebookInsert(src);
     expect(row.inputs).toEqual({ a: 1 });
+  });
+
+  // #199: the clone's NCE 40% deposit default — piggybacks on whichever
+  // is_nce this SAME call resolved (src.is_nce here; rebookLastSeason's
+  // customer-tag override is exercised in its own describe block below).
+  describe('NCE 40% deposit default (#199)', () => {
+    it('sets depositPercent=40 when the clone resolves NCE=true and the source had none', () => {
+      const row = buildRebookInsert({ ...src, is_nce: true, inputs: { a: 1 } });
+      expect(row.inputs).toEqual({ a: 1, depositPercent: 40 });
+    });
+
+    it('sets depositPercent=40 when the source explicitly stored 0', () => {
+      const row = buildRebookInsert({ ...src, is_nce: true, inputs: { depositPercent: 0 } });
+      expect((row.inputs as Record<string, unknown>).depositPercent).toBe(40);
+    });
+
+    it('keeps an explicit staff-set depositPercent from the source (hand-set last season)', () => {
+      const row = buildRebookInsert({ ...src, is_nce: true, inputs: { depositPercent: 25 } });
+      expect((row.inputs as Record<string, unknown>).depositPercent).toBe(25);
+    });
+
+    it('never sets a deposit default when the clone is NOT NCE', () => {
+      const row = buildRebookInsert({ ...src, is_nce: false, inputs: { a: 1 } });
+      expect(row.inputs).toEqual({ a: 1 });
+    });
+
+    it('is a no-op when inputs is not a plain object (mirrors the discard-strip guard)', () => {
+      const row = buildRebookInsert({ ...src, is_nce: true, inputs: null });
+      expect(row.inputs).toBeNull();
+    });
+
+    // #226 round 2 (delta-verify HIGH: round 1's OFF-reset was too broad —
+    // see applyNceDepositDefault's own comment): resetNceDepositOnOff is an
+    // opt-in the CALLER passes, defaulting to false (a pure no-op, matching
+    // pre-#226 behavior — the shape rebookFromQuote below always uses).
+    // Explicitly opting in (the shape rebookLastSeason uses, because its
+    // is_nce comes from the CUSTOMER's current tag — a real signal) resets an
+    // untouched depositPercent=40 to 0. Mirrors the admin nce route's own OFF
+    // rule — see rebook.ts's own #226 comment.
+    it('resets a carried-over depositPercent=40 to 0 when the clone resolves NCE=false AND resetNceDepositOnOff is opted in', () => {
+      const row = buildRebookInsert(
+        { ...src, is_nce: false, inputs: { depositPercent: 40, a: 1 } },
+        { resetNceDepositOnOff: true },
+      );
+      expect((row.inputs as Record<string, unknown>).depositPercent).toBe(0);
+      expect((row.inputs as Record<string, unknown>).a).toBe(1);
+    });
+
+    it('leaves a non-40 depositPercent untouched when the clone resolves NCE=false, even with resetNceDepositOnOff opted in', () => {
+      const row = buildRebookInsert(
+        { ...src, is_nce: false, inputs: { depositPercent: 25 } },
+        { resetNceDepositOnOff: true },
+      );
+      expect((row.inputs as Record<string, unknown>).depositPercent).toBe(25);
+    });
+
+    // #226 round 2: the DEFAULT (no opts) leaves an untouched 40 alone —
+    // buildRebookInsert's own no-signal-to-reset posture. rebookFromQuote
+    // (round 3) now passes this default specifically when the source quote
+    // was never approved, where a surviving 40 really is hand-typed; see
+    // rebook.test.ts's own rebookFromQuote describe block below for the
+    // conditional (customer_approved_at-based) opts it passes.
+    it('leaves a carried-over depositPercent=40 UNTOUCHED when the clone resolves NCE=false and resetNceDepositOnOff is NOT passed (buildRebookInsert default)', () => {
+      const row = buildRebookInsert({ ...src, is_nce: false, inputs: { depositPercent: 40, a: 1 } });
+      expect((row.inputs as Record<string, unknown>).depositPercent).toBe(40);
+      expect((row.inputs as Record<string, unknown>).a).toBe(1);
+    });
   });
 });
 
@@ -332,6 +455,132 @@ describe('rebookLastSeason', () => {
     expect(created.is_test).toBe(false);
   });
 
+  // #198 customer→quote inheritance: the rebooked draft inherits the
+  // CUSTOMER's CURRENT tags, not necessarily whatever the source (last
+  // approved) quote itself carried.
+  describe('NCE + YLL Neighbor tag inheritance (#198)', () => {
+    it("inherits the customer's CURRENT tags, overriding the source quote's own (possibly stale) tags", async () => {
+      const fake = makeFakeSupabase({
+        quotes: [
+          {
+            id: 'a',
+            customer_id: 'c1',
+            customer_approved_at: '2025-01-01',
+            inputs: {},
+            result: { total: 5 },
+            legacy_rebook: false, // the OLD approved quote was never tagged...
+            is_nce: false,
+          },
+        ],
+        // ...but the customer has since been tagged (profile edit / a later
+        // quote's propagation) — the rebook should reflect THAT, not the stale quote.
+        customers: [{ id: 'c1', is_nce: true, is_yll_neighbor: true }],
+      });
+      sbRef.current = fake.client;
+      const res = await rebookLastSeason('c1');
+      const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+      expect(created.is_nce).toBe(true);
+      expect(created.legacy_rebook).toBe(true);
+    });
+
+    it("does not inherit a tag the customer row explicitly has false, even if the source quote was tagged", async () => {
+      const fake = makeFakeSupabase({
+        quotes: [
+          { id: 'a', customer_id: 'c1', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 }, legacy_rebook: true, is_nce: true },
+        ],
+        customers: [{ id: 'c1', is_nce: false, is_yll_neighbor: false }],
+      });
+      sbRef.current = fake.client;
+      const res = await rebookLastSeason('c1');
+      const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+      expect(created.is_nce).toBe(false);
+      expect(created.legacy_rebook).toBe(false);
+    });
+
+    it("falls back to the source quote's own tags when no customer row exists (lookup miss)", async () => {
+      const fake = makeFakeSupabase({
+        quotes: [
+          { id: 'a', customer_id: 'c1', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 }, legacy_rebook: true, is_nce: false },
+        ],
+        // no customers row for c1
+      });
+      sbRef.current = fake.client;
+      const res = await rebookLastSeason('c1');
+      const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+      expect(created.legacy_rebook).toBe(true);
+      expect(created.is_nce).toBe(false);
+    });
+
+    it('defaults both tags false when neither the customer nor the source quote is tagged', async () => {
+      const fake = makeFakeSupabase({
+        quotes: [{ id: 'a', customer_id: 'c1', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 } }],
+      });
+      sbRef.current = fake.client;
+      const res = await rebookLastSeason('c1');
+      const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+      expect(created.legacy_rebook).toBe(false);
+      expect(created.is_nce).toBe(false);
+    });
+  });
+
+  // #199: the deposit default piggybacks on whatever is_nce this rebook
+  // resolved above (customer-inherited or source-quote fallback) — the pure
+  // rule itself is unit-tested directly in the buildRebookInsert describe
+  // block; this closes the loop end-to-end through the real orchestration.
+  describe('NCE 40% deposit default (#199)', () => {
+    it('seeds depositPercent=40 when the CUSTOMER-inherited tag resolves NCE=true', async () => {
+      const fake = makeFakeSupabase({
+        quotes: [
+          { id: 'a', customer_id: 'c1', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 }, is_nce: false },
+        ],
+        customers: [{ id: 'c1', is_nce: true }],
+      });
+      sbRef.current = fake.client;
+      const res = await rebookLastSeason('c1');
+      const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+      expect(created.is_nce).toBe(true);
+      expect((created.inputs as Record<string, unknown>).depositPercent).toBe(40);
+    });
+
+    it('does not touch the deposit when the resolved tag is NOT NCE', async () => {
+      const fake = makeFakeSupabase({
+        quotes: [
+          { id: 'a', customer_id: 'c1', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 }, is_nce: false },
+        ],
+        customers: [{ id: 'c1', is_nce: false }],
+      });
+      sbRef.current = fake.client;
+      const res = await rebookLastSeason('c1');
+      const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+      expect(created.inputs).toEqual({});
+    });
+
+    // #226 round 2: rebookLastSeason resolves is_nce from the CUSTOMER's
+    // CURRENT tag — a false reading is a real "left the barter network"
+    // signal, so it opts into resetNceDepositOnOff and a carried-over 40
+    // resets to 0. Contrast with rebookFromQuote's own #226 test below.
+    it('resets a carried-over source depositPercent=40 to 0 when the CUSTOMER-inherited tag resolves NCE=false (#226)', async () => {
+      const fake = makeFakeSupabase({
+        quotes: [
+          {
+            id: 'a',
+            customer_id: 'c1',
+            customer_approved_at: '2025-01-01',
+            inputs: { depositPercent: 40 },
+            result: { total: 5 },
+            is_nce: true,
+          },
+        ],
+        customers: [{ id: 'c1', is_nce: false }],
+      });
+      sbRef.current = fake.client;
+      const res = await rebookLastSeason('c1');
+      const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+      expect(created.is_nce).toBe(false);
+      expect((created.inputs as Record<string, unknown>).depositPercent).toBe(0);
+    });
+  });
+
   // rebook-number-createdby: a rebooked quote must get a sequential quote_number
   // (same allocateNumber('quote_number_seq') as saveQuote) so it isn't stuck on
   // the truncated-UUID fallback and stays findable by number search/sort.
@@ -383,6 +632,85 @@ describe('rebookLastSeason', () => {
     const res = await rebookLastSeason('c1');
     const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
     expect(created.created_by ?? null).toBeNull();
+  });
+
+  // #205 review fix (customer/staff HIGH, F1): a rebook that resolves onto
+  // an ARCHIVED property must resurrect it — a raw quote insert bypasses
+  // findOrCreateProperty's own resurrection rule entirely, so without this
+  // fix a brand-new LIVE draft could silently point at a still-archived
+  // property.
+  describe('archive resurrection on rebook (#205 F1)', () => {
+    it('un-archives the target property when rebooking resolves onto an archived one', async () => {
+      const fake = makeFakeSupabase({
+        quotes: [{ id: 'a', customer_id: 'c1', property_id: 'p1', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 } }],
+        properties: [{ id: 'p1', customer_id: 'c1', archived_at: '2026-01-01T00:00:00Z' }],
+      });
+      sbRef.current = fake.client;
+
+      const res = await rebookLastSeason('c1');
+
+      expect(res?.quoteId).toBeTruthy();
+      expect(fake.tables.properties.find((p) => p.id === 'p1')!.archived_at).toBeNull();
+    });
+
+    it('logs the resurrection (customer + property named, "triggered by rebook")', async () => {
+      const fake = makeFakeSupabase({
+        quotes: [{ id: 'a', customer_id: 'c1', property_id: 'p1', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 } }],
+        properties: [{ id: 'p1', customer_id: 'c1', archived_at: '2026-01-01T00:00:00Z' }],
+      });
+      sbRef.current = fake.client;
+      const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+
+      await rebookLastSeason('c1');
+
+      expect(infoSpy).toHaveBeenCalledTimes(1);
+      expect(infoSpy.mock.calls[0][0]).toContain('p1');
+      expect(infoSpy.mock.calls[0][0]).toContain('c1');
+      expect(infoSpy.mock.calls[0][0]).toContain('rebook');
+      infoSpy.mockRestore();
+    });
+
+    it('leaves an already-live property untouched (no needless write, no log)', async () => {
+      const fake = makeFakeSupabase({
+        quotes: [{ id: 'a', customer_id: 'c1', property_id: 'p1', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 } }],
+        properties: [{ id: 'p1', customer_id: 'c1', archived_at: null }],
+      });
+      sbRef.current = fake.client;
+      const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+
+      const res = await rebookLastSeason('c1');
+
+      expect(res?.quoteId).toBeTruthy();
+      expect(fake.tables.properties.find((p) => p.id === 'p1')!.archived_at).toBeNull();
+      expect(infoSpy).not.toHaveBeenCalled();
+      infoSpy.mockRestore();
+    });
+
+    it('resurrects the EXPLICITLY-scoped property (propertyId param), not just the source quote\'s own', async () => {
+      const fake = makeFakeSupabase({
+        quotes: [
+          { id: 'a', customer_id: 'c1', property_id: 'p-home', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 } },
+        ],
+        properties: [{ id: 'p-home', customer_id: 'c1', archived_at: '2026-01-01T00:00:00Z' }],
+      });
+      sbRef.current = fake.client;
+
+      await rebookLastSeason('c1', 'p-home');
+
+      expect(fake.tables.properties.find((p) => p.id === 'p-home')!.archived_at).toBeNull();
+    });
+
+    it('does not throw when the target property row does not exist (best-effort)', async () => {
+      const fake = makeFakeSupabase({
+        quotes: [{ id: 'a', customer_id: 'c1', property_id: 'ghost', customer_approved_at: '2025-01-01', inputs: {}, result: { total: 5 } }],
+        // no properties row for 'ghost'
+      });
+      sbRef.current = fake.client;
+
+      const res = await rebookLastSeason('c1');
+
+      expect(res?.quoteId).toBeTruthy();
+    });
   });
 });
 
@@ -436,10 +764,128 @@ describe('rebookFromQuote', () => {
     expect(created.is_test).toBe(true);
   });
 
+  // #198: rebookFromQuote is a "revive THIS exact quote" clone (#116), not a
+  // customer→quote inheritance site (it doesn't even take a customerId) — it
+  // simply carries the SOURCE quote's OWN tags forward, ignoring the
+  // customer's current tag state entirely.
+  it('carries the SOURCE quote\'s own legacy_rebook/is_nce tags through, unlike rebookLastSeason', async () => {
+    const fake = makeFakeSupabase({
+      quotes: [{ id: 'a', customer_id: 'c1', status: 'declined', inputs: {}, result: { total: 5 }, legacy_rebook: true, is_nce: true }],
+      // Even if the customer row disagrees, rebookFromQuote never reads it.
+      customers: [{ id: 'c1', is_nce: false, is_yll_neighbor: false }],
+    });
+    sbRef.current = fake.client;
+    const res = await rebookFromQuote('a');
+    const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+    expect(created.legacy_rebook).toBe(true);
+    expect(created.is_nce).toBe(true);
+  });
+
+  // #199: same buildRebookInsert plumbing as rebookLastSeason above, exercised
+  // once here through the #116 revive path too (its is_nce source differs —
+  // the quote's own tag, never the customer's — but the deposit rule downstream
+  // doesn't care which path resolved it).
+  it('seeds depositPercent=40 when the source quote is NCE', async () => {
+    const fake = makeFakeSupabase({
+      quotes: [{ id: 'a', customer_id: 'c1', status: 'declined', inputs: {}, result: { total: 5 }, is_nce: true }],
+    });
+    sbRef.current = fake.client;
+    const res = await rebookFromQuote('a');
+    const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+    expect((created.inputs as Record<string, unknown>).depositPercent).toBe(40);
+  });
+
+  // #226 round 2 (delta-verify HIGH): rebookFromQuote resolves is_nce from
+  // THIS SOURCE QUOTE's own tag, not the customer's current tag. ROUND 3
+  // narrows WHEN a stored 40 counts as "hand-typed": on a source that was
+  // NEVER approved (customer_approved_at null), the admin nce route's
+  // toggle-off DOES reset depositPercent, so a surviving 40 really is
+  // hand-typed and must survive the revive untouched. Contrast with
+  // rebookLastSeason's own #226 test above (always resets), and with the
+  // approved-source regression test below (resets, because the nce route's
+  // own toggle-off guard would have too).
+  it('leaves a source quote\'s hand-typed depositPercent=40 UNTOUCHED when the source quote itself is NOT NCE and was NEVER approved (#226)', async () => {
+    const fake = makeFakeSupabase({
+      quotes: [
+        {
+          id: 'a',
+          customer_id: 'c1',
+          status: 'declined',
+          customer_approved_at: null,
+          inputs: { depositPercent: 40 },
+          result: { total: 5 },
+          is_nce: false,
+        },
+      ],
+    });
+    sbRef.current = fake.client;
+    const res = await rebookFromQuote('a');
+    const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+    expect(created.is_nce).toBe(false);
+    expect((created.inputs as Record<string, unknown>).depositPercent).toBe(40);
+  });
+
+  // #226 round 3 (delta-verify HIGH, THE DEFECT THIS ROUND FIXES): is_nce
+  // and depositPercent can legitimately decouple on an APPROVED quote — the
+  // admin nce route writes depositPercent=40 on NCE tag-ON pre-approval, the
+  // #177 freeze then locks it, and a later toggle-OFF is skipped entirely
+  // (its whole deposit-write block is gated on customer_approved_at being
+  // null) because it must never touch a signed/frozen deposit. The row is
+  // left holding is_nce=false + a RULE-SET 40 that was never hand-typed.
+  // Reviving that quote must reset the stale 40, not carry it into a fresh
+  // draft under a false is_nce. This test FAILS against HEAD 05836813 (round
+  // 2's unconditional resetOnOff=false left the 40 untouched here too).
+  it('resets a source quote\'s stale RULE-SET depositPercent=40 to 0 when the source quote WAS approved, even though its is_nce now reads false (#226 round 3)', async () => {
+    const fake = makeFakeSupabase({
+      quotes: [
+        {
+          id: 'a',
+          customer_id: 'c1',
+          status: 'approved',
+          customer_approved_at: '2025-01-01',
+          inputs: { depositPercent: 40 },
+          result: { total: 5 },
+          is_nce: false,
+        },
+      ],
+    });
+    sbRef.current = fake.client;
+    const res = await rebookFromQuote('a');
+    const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+    expect(created.is_nce).toBe(false);
+    expect((created.inputs as Record<string, unknown>).depositPercent).toBe(0);
+  });
+
+  // #226 round 3: the SAME decoupling reaches a TERMINAL status too — a
+  // staff-decline (approved → declined, legal per quoteStatus.ts) never
+  // clears customer_approved_at, and the nce route's toggle-off guard keys
+  // on that field, not on status. A declined-but-formerly-approved source
+  // must reset the same as a still-'approved' one.
+  it('resets the stale 40 the same way when the approved source has since moved to a TERMINAL status (declined)', async () => {
+    const fake = makeFakeSupabase({
+      quotes: [
+        {
+          id: 'a',
+          customer_id: 'c1',
+          status: 'declined',
+          customer_approved_at: '2025-01-01', // staff-decline never clears this
+          inputs: { depositPercent: 40 },
+          result: { total: 5 },
+          is_nce: false,
+        },
+      ],
+    });
+    sbRef.current = fake.client;
+    const res = await rebookFromQuote('a');
+    const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+    expect(created.is_nce).toBe(false);
+    expect((created.inputs as Record<string, unknown>).depositPercent).toBe(0);
+  });
+
   it('survives a throwing design clone (best-effort)', async () => {
     cloneMock.mockRejectedValue(new Error('storage down'));
     const fake = makeFakeSupabase({
-      quotes: [{ id: 'a', customer_id: 'c1', status: 'lost', inputs: {}, result: { total: 5 } }],
+      quotes: [{ id: 'a', customer_id: 'c1', status: 'abandoned', inputs: {}, result: { total: 5 } }],
     });
     sbRef.current = fake.client;
     const res = await rebookFromQuote('a');
@@ -491,5 +937,38 @@ describe('rebookFromQuote', () => {
     const res = await rebookFromQuote('a');
     const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
     expect(created.created_by ?? null).toBeNull();
+  });
+
+  // #205 review fix (customer/staff HIGH, F1 — same root cause as
+  // rebookLastSeason's own describe block above): rebookFromQuote ALSO
+  // inserts via a raw quote insert that bypasses findOrCreateProperty, and
+  // always carries the source quote's OWN property_id through unchanged
+  // (no override param) — a #116 revive of an old declined/cancelled quote
+  // whose property has since been archived must resurrect it too.
+  describe('archive resurrection on rebook (#205 F1)', () => {
+    it("un-archives the source quote's property when it is archived", async () => {
+      const fake = makeFakeSupabase({
+        quotes: [{ id: 'dead', customer_id: 'c1', property_id: 'p1', status: 'declined', inputs: {}, result: { total: 5 } }],
+        properties: [{ id: 'p1', customer_id: 'c1', archived_at: '2026-01-01T00:00:00Z' }],
+      });
+      sbRef.current = fake.client;
+
+      const res = await rebookFromQuote('dead');
+
+      expect(res?.quoteId).toBeTruthy();
+      expect(fake.tables.properties.find((p) => p.id === 'p1')!.archived_at).toBeNull();
+    });
+
+    it('leaves an already-live property untouched', async () => {
+      const fake = makeFakeSupabase({
+        quotes: [{ id: 'dead', customer_id: 'c1', property_id: 'p1', status: 'declined', inputs: {}, result: { total: 5 } }],
+        properties: [{ id: 'p1', customer_id: 'c1', archived_at: null }],
+      });
+      sbRef.current = fake.client;
+
+      await rebookFromQuote('dead');
+
+      expect(fake.tables.properties.find((p) => p.id === 'p1')!.archived_at).toBeNull();
+    });
   });
 });

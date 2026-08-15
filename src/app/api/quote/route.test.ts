@@ -640,7 +640,7 @@ describe('POST /api/quote — created_by actor trail (#90)', () => {
     operatorRef.current = { id: 'op-1', email: 'a@b.com', role: 'operator' };
     const res = await POST(makeReq({ inputs: validInputs() }));
     expect(res.status).toBe(200);
-    // saveQuote(customer, inputs, result, serviceType, isTest, created_by, referredByCustomerId, highlevelContactId)
+    // saveQuote(customer, inputs, result, serviceType, isTest, created_by, referredByCustomerId, highlevelContactId, legacyRebook, isNce)
     expect(save).toHaveBeenCalledWith(
       expect.anything(), // customer
       expect.anything(), // inputs
@@ -650,6 +650,8 @@ describe('POST /api/quote — created_by actor trail (#90)', () => {
       'op-1', // created_by
       null, // referredByCustomerId (#41) — not supplied in this request
       null, // highlevelContactId (#leads) — not supplied in this request
+      undefined, // legacyRebook (#198) — not supplied in this request
+      undefined, // isNce (#198) — not supplied in this request
     );
   });
 
@@ -665,6 +667,8 @@ describe('POST /api/quote — created_by actor trail (#90)', () => {
       null,
       null,
       null,
+      undefined,
+      undefined,
     );
   });
 });
@@ -685,6 +689,8 @@ describe('POST /api/quote — referredByCustomerId (#41 "mention" attribution)',
       null,
       referrerId,
       null,
+      undefined,
+      undefined,
     );
   });
 
@@ -724,6 +730,8 @@ describe('POST /api/quote — highlevelContactId (#leads "Create quote" link)', 
       null,
       null,
       'ghl-contact-abc123',
+      undefined,
+      undefined,
     );
   });
 
@@ -745,15 +753,96 @@ describe('POST /api/quote — highlevelContactId (#leads "Create quote" link)', 
     expect(save).not.toHaveBeenCalled();
   });
 
-  it('does NOT thread highlevelContactId to updateQuote on the UPDATE path (never clobbers an existing link)', async () => {
+  // #214: the update path now RECEIVES the session's hl link — as
+  // updateQuote's identity-resolution input only (updateQuote never writes
+  // the highlevel_contact_id column; the attach route stays that column's
+  // post-insert writer). Tri-state on the wire: string = linked this
+  // session · explicit null = session has NO contact (never fall back to
+  // the stored id) · absent = legacy caller (updateQuote falls back to the
+  // stored id).
+  it('threads highlevelContactId to updateQuote (9th arg) on the UPDATE path', async () => {
     const res = await POST(
       makeReq({ inputs: validInputs(), quoteId: REAL_UUID, highlevelContactId: 'ghl-contact-abc123' }),
     );
     expect(res.status).toBe(200);
     expect(update).toHaveBeenCalledTimes(1);
-    // updateQuote(id, inputs, result, customer, serviceType, referredByCustomerId) — 6 args, no highlevelContactId slot.
+    // updateQuote(id, inputs, result, customer, serviceType, referredByCustomerId,
+    // legacyRebook, isNce, hlContactId)
     const updateArgs = update.mock.calls[0] as unknown[];
-    expect(updateArgs).toHaveLength(6);
+    expect(updateArgs[8]).toBe('ghl-contact-abc123');
+  });
+
+  it('accepts an EXPLICIT null and threads it through (session cleared the contact)', async () => {
+    const res = await POST(
+      makeReq({ inputs: validInputs(), quoteId: REAL_UUID, highlevelContactId: null }),
+    );
+    expect(res.status).toBe(200);
+    const updateArgs = update.mock.calls[0] as unknown[];
+    expect(updateArgs[8]).toBeNull();
+  });
+
+  it('threads undefined when the key is ABSENT (legacy caller — updateQuote falls back to the stored id)', async () => {
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    expect(res.status).toBe(200);
+    const updateArgs = update.mock.calls[0] as unknown[];
+    expect(updateArgs[8]).toBeUndefined();
+  });
+
+  it('a blank string collapses to null (not a stored-id fallback) on the update path', async () => {
+    const res = await POST(
+      makeReq({ inputs: validInputs(), quoteId: REAL_UUID, highlevelContactId: '   ' }),
+    );
+    expect(res.status).toBe(200);
+    const updateArgs = update.mock.calls[0] as unknown[];
+    expect(updateArgs[8]).toBeNull();
+  });
+});
+
+describe('POST /api/quote — NCE + YLL Neighbor tags (#198)', () => {
+  it('threads legacyRebook/isNce to saveQuote (9th/10th args) on a NEW save', async () => {
+    const res = await POST(makeReq({ inputs: validInputs(), legacyRebook: true, isNce: true }));
+    expect(res.status).toBe(200);
+    const saveArgs = save.mock.calls[0] as unknown[];
+    expect(saveArgs[8]).toBe(true); // legacyRebook
+    expect(saveArgs[9]).toBe(true); // isNce
+  });
+
+  it('defaults to undefined (saveQuote applies its own false default) when omitted', async () => {
+    const res = await POST(makeReq({ inputs: validInputs() }));
+    expect(res.status).toBe(200);
+    const saveArgs = save.mock.calls[0] as unknown[];
+    expect(saveArgs[8]).toBeUndefined();
+    expect(saveArgs[9]).toBeUndefined();
+  });
+
+  it('threads legacyRebook/isNce to updateQuote (7th/8th args) on the UPDATE path too — unlike highlevelContactId, tags ARE settable on a reopened quote', async () => {
+    const res = await POST(
+      makeReq({ inputs: validInputs(), quoteId: REAL_UUID, legacyRebook: false, isNce: true }),
+    );
+    expect(res.status).toBe(200);
+    const updateArgs = update.mock.calls[0] as unknown[];
+    expect(updateArgs[6]).toBe(false); // legacyRebook
+    expect(updateArgs[7]).toBe(true); // isNce
+  });
+
+  it('leaves the stored tags untouched on an update that omits them (undefined, not false)', async () => {
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    expect(res.status).toBe(200);
+    const updateArgs = update.mock.calls[0] as unknown[];
+    expect(updateArgs[6]).toBeUndefined();
+    expect(updateArgs[7]).toBeUndefined();
+  });
+
+  it('400s on a non-boolean legacyRebook', async () => {
+    const res = await POST(makeReq({ inputs: validInputs(), legacyRebook: 'yes' }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('400s on a non-boolean isNce', async () => {
+    const res = await POST(makeReq({ inputs: validInputs(), isNce: 'yes' }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
   });
 });
 
@@ -1065,5 +1154,50 @@ describe('POST /api/quote — deposit percent locked post-approval (#177 fix 3b)
     const res = await POST(makeReq({ inputs: { ...validInputs(), depositPercent: 40 }, quoteId: REAL_UUID }));
     expect(res.status).toBe(200);
     expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  // #226 round 2 (delta-verify HIGH): the #226 NCE-off fixes write an
+  // EXPLICIT stored depositPercent: 0 (never a deleted key). The real
+  // browser client can NEVER emit an explicit 0 — quoteForm.ts's
+  // buildQuoteInputs only sends the key when `form.depositPercent > 0` — so
+  // every ordinary re-save (fixing a typo, adjusting footage) on such a
+  // quote omits depositPercent entirely. Before this fix, stored 0 vs
+  // incoming undefined compared !== and 409'd on EVERY save, discarding the
+  // unrelated edit. Both values mean "no override, use the 50% default" and
+  // must now compare equal.
+  it('allows a routine re-save (no depositPercent field at all) on an approved quote whose stored depositPercent is an explicit 0 (#226)', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      inputs: { depositPercent: 0 },
+    };
+    // Mirrors the REAL client shape: no depositPercent key at all (buildQuoteInputs
+    // omits it whenever form.depositPercent is 0/blank) — validInputs() already
+    // carries no depositPercent field.
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  // Same starting state as above, but this time a GENUINE override is being
+  // added on top of the reset-to-0 quote — the #177 freeze must still catch
+  // it. Proves the fix didn't just widen the hole to admit every case.
+  it('still rejects a GENUINE override added on top of a stored explicit 0 (#226 fix does not weaken #177)', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      inputs: { depositPercent: 0 },
+    };
+    const res = await POST(makeReq({ inputs: { ...validInputs(), depositPercent: 25 }, quoteId: REAL_UUID }));
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; code?: string };
+    expect(body.code).toBe('deposit-percent-locked');
+    expect(update).not.toHaveBeenCalled();
   });
 });

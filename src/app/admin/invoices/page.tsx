@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { OperatorShell } from '@/components/OperatorShell';
 import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { InvoiceStatusBadge, INVOICE_STATUS_LABELS } from '@/components/admin/InvoiceStatusBadge';
+import { NceBadge } from '@/components/admin/NceBadge';
 import type { InvoiceAdminCard } from '@/lib/invoices';
 import { INVOICE_STATUSES, type InvoiceStatus } from '@/lib/invoiceStatus';
 import { PipelineActionsMenu } from '@/components/admin/PipelineActionsMenu';
@@ -169,6 +170,8 @@ export default function InvoicesAdminPage() {
                             Test
                           </span>
                         )}
+                        {/* NCE (#199) — the barter/trade network tag. */}
+                        {inv.isNce && <NceBadge />}
                       </div>
                     </td>
                     <td className="px-3 py-2 text-right text-gray-700 whitespace-nowrap">{money(inv.total)}</td>

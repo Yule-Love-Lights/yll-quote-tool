@@ -10,10 +10,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { type NextRequest } from 'next/server';
 
-const { createJobFromQuote, accrueOnBooking, ensureReferralCode } = vi.hoisted(() => ({
+const { createJobFromQuote, accrueOnBooking, ensureReferralCode, pushTenureYearsToGhl } = vi.hoisted(() => ({
   createJobFromQuote: vi.fn(async () => ({ id: 'job-1' })),
   accrueOnBooking: vi.fn(async () => ({ accrued: false })),
   ensureReferralCode: vi.fn(async () => 'CODE1234'),
+  pushTenureYearsToGhl: vi.fn(async () => ({ pushed: false })),
 }));
 
 let quoteRow: Record<string, unknown> | null = null;
@@ -51,6 +52,7 @@ vi.mock('@/lib/supabase', () => ({
 }));
 vi.mock('@/lib/jobs', () => ({ createJobFromQuote }));
 vi.mock('@/lib/referrals', () => ({ accrueOnBooking, ensureReferralCode }));
+vi.mock('@/lib/integrations/ghlTenure', () => ({ pushTenureYearsToGhl }));
 
 import { POST } from './route';
 
@@ -145,6 +147,30 @@ describe('POST /api/quotes/[id]/simulate-deposit (#93)', () => {
   it('still books even if the referral code stamp throws (fail-open, #41 PR 2)', async () => {
     quoteRow = { ...quoteRow, customer_id: 'cust-1' };
     ensureReferralCode.mockRejectedValueOnce(new Error('referrals table missing'));
+    const res = await POST(makeReq(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toMatchObject({ ok: true, booked: true, simulated: true });
+  });
+
+  // #200: GHL tenure mirror — wired for parity with the other two booking
+  // sites, though a test quote's customer_id is normally null in practice.
+  it('pushes the GHL tenure mirror for the quote\'s OWN linked customer on booking', async () => {
+    quoteRow = { ...quoteRow, customer_id: 'cust-1' };
+    const res = await POST(makeReq(), ctx());
+    expect(res.status).toBe(200);
+    expect(pushTenureYearsToGhl).toHaveBeenCalledWith('cust-1');
+  });
+
+  it('skips the GHL tenure push when the quote has no linked customer (typical for a test quote)', async () => {
+    const res = await POST(makeReq(), ctx());
+    expect(res.status).toBe(200);
+    expect(pushTenureYearsToGhl).not.toHaveBeenCalled();
+  });
+
+  it('still books even if the GHL tenure push throws (fail-open, #200)', async () => {
+    quoteRow = { ...quoteRow, customer_id: 'cust-1' };
+    pushTenureYearsToGhl.mockRejectedValueOnce(new Error('GHL down'));
     const res = await POST(makeReq(), ctx());
     const json = await res.json();
     expect(res.status).toBe(200);

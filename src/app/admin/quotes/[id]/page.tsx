@@ -6,6 +6,8 @@ import { JobStatusBadge } from '@/components/admin/JobStatusBadge';
 import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
 import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
 import { LegacyRebookToggle } from '@/components/admin/LegacyRebookToggle';
+import { NceBadge } from '@/components/admin/NceBadge';
+import { NceToggle } from '@/components/admin/NceToggle';
 import { ViewOnlyToggle } from '@/components/admin/ViewOnlyToggle';
 import { MarkAsSentButton } from '@/components/admin/MarkAsSentButton';
 import { FreeItemsPanel } from '@/components/admin/FreeItemsPanel';
@@ -40,7 +42,7 @@ const STATUS_LABELS: Record<QuoteStatus, string> = {
   changes_requested: 'Changes requested',
   declined: 'Declined',
   cancelled: 'Cancelled',
-  lost: 'Lost',
+  abandoned: 'Abandoned',
 };
 
 const STATUS_STYLES: Record<QuoteStatus, string> = {
@@ -52,7 +54,7 @@ const STATUS_STYLES: Record<QuoteStatus, string> = {
   changes_requested: 'bg-orange-100 text-orange-700',
   declined: 'bg-red-100 text-red-700',
   cancelled: 'bg-gray-200 text-gray-600',
-  lost: 'bg-gray-200 text-gray-600',
+  abandoned: 'bg-gray-200 text-gray-600',
 };
 
 const money = (n: number | null | undefined) =>
@@ -210,6 +212,9 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
           )}
           {/* YLL Neighbor (#158) — shared pill, replaces the old inline "Legacy rebook" span. */}
           {quote.legacy_rebook && <YllNeighborBadge />}
+          {/* NCE (#198) — the barter/trade network tag. Tags coexist: a quote
+              can be both Neighbor and NCE. */}
+          {quote.is_nce && <NceBadge />}
           {/* View-only portal (#176) — mirrors the Test pill above. */}
           {quote.view_only && (
             <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-100 text-sky-700">
@@ -220,6 +225,9 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
               lets staff set/unset the flag for a hand-built quote that missed
               the migration (e.g. #1191). */}
           <LegacyRebookToggle quoteId={id} legacyRebook={quote.legacy_rebook} status={status} />
+          {/* Staff-only toggle (#198) — beside the Neighbor toggle, same
+              placement precedent. */}
+          <NceToggle quoteId={id} isNce={quote.is_nce} />
           {/* Staff-only toggle (#176) — lets staff flag a quote as browse-only
               (a second quote spun up just for the colour picker). */}
           <ViewOnlyToggle quoteId={id} viewOnly={quote.view_only} status={status} />

@@ -9,16 +9,24 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-const { sbRef, hl } = vi.hoisted(() => ({
+const { sbRef, hl, attachQuoteToCustomerMock, propagateMock } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
+  // #198: mocked so (a) the existing legacy_rebook fixture (no customer_id set)
+  // doesn't hit the real attachQuoteToCustomer against this file's Supabase
+  // fake (which lacks .maybeSingle()), and (b) the tag-propagation tests below
+  // can assert on it directly.
+  attachQuoteToCustomerMock: vi.fn(async () => null as null | { customerId: string; propertyId: string }),
+  propagateMock: vi.fn(async () => {}),
   hl: {
     updateOpportunity: vi.fn(async () => ({ id: 'opp_1' })),
     createOpportunity: vi.fn(async () => ({ id: 'opp_new' })),
     findOpportunityForContact: vi.fn(async () => null as { id: string } | null),
     resurrectDuplicateOpportunity: vi.fn(async (_err: unknown, _input: unknown) => null as { id: string } | null),
     upsertContactCustomField: vi.fn(async () => undefined),
-    sendSms: vi.fn(async () => undefined),
-    sendEmail: vi.fn(async () => undefined),
+    // #250: typed to allow tests to resolve a GHL-shaped { messageId } so the
+    // quote_deliveries provider_message_id capture can be asserted.
+    sendSms: vi.fn(async () => undefined as { messageId?: string } | undefined),
+    sendEmail: vi.fn(async () => undefined as { messageId?: string } | undefined),
     configured: { value: true },
   },
 }));
@@ -26,10 +34,19 @@ const { sbRef, hl } = vi.hoisted(() => ({
 vi.mock('@/lib/supabase', () => ({
   isSupabaseServiceConfigured: () => true,
   getSupabaseServiceClient: () => sbRef.current,
+  getSupabaseClient: () => sbRef.current,
 }));
 
 vi.mock('@/lib/rateLimit', () => ({
   rateLimitResponse: () => null,
+}));
+
+// #214: importOriginal keeps quoteRowToIdentity (pure sentinel translation)
+// REAL — only the DB-touching fns are mocked.
+vi.mock('@/lib/customers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/customers')>()),
+  attachQuoteToCustomer: attachQuoteToCustomerMock,
+  propagateQuoteTagsToCustomer: propagateMock,
 }));
 
 vi.mock('@/lib/integrations/highlevel', () => ({
@@ -41,9 +58,14 @@ vi.mock('@/lib/integrations/highlevel', () => ({
   sendSms: hl.sendSms,
   sendEmail: hl.sendEmail,
   isHighLevelConfigured: () => hl.configured.value,
+  // #264 round 2: constructor now mirrors the real class exactly (message,
+  // status, body, timedOut) so a test can construct a timed-out error the
+  // same way ghlFetch does, instead of hand-setting fields after the fact.
   HighLevelError: class HighLevelError extends Error {
-    status?: number;
-    body?: string;
+    constructor(message: string, public status?: number, public body?: string, public timedOut?: boolean) {
+      super(message);
+      this.name = 'HighLevelError';
+    }
   },
 }));
 
@@ -54,6 +76,8 @@ vi.mock('@/lib/integrations/quoteMessages', () => ({
 }));
 
 import { POST } from './route';
+import { HighLevelError } from '@/lib/integrations/highlevel';
+import { DELIVERY_TIMEOUT_ERROR_PREFIX } from '@/lib/quoteDeliveries';
 
 // Fake Supabase: read = from().select().eq().single(); each write =
 // from().update(payload).eq() (awaited). Records every update payload so we
@@ -66,14 +90,27 @@ import { POST } from './route';
 // (0 rows) for the ONE update call that carries `quote_sent_at` (the stamp).
 // Every other `.update()` in the route (GHL sync-state, quote-link field,
 // etc.) never reads `.data`, so giving them a non-empty array too is harmless.
+//
+// #250: `.insert()` support for quote_deliveries. `from(table)` records the
+// table name so an insert can be attributed; `opts.insertError` simulates a
+// logging-table failure (must never fail the send — see the tests below).
 type Quote = Record<string, unknown> | null;
-function makeSb(quote: Quote, opts: { stampRace?: boolean } = {}) {
+function makeSb(
+  quote: Quote,
+  opts: { stampRace?: boolean; insertError?: string } = {},
+) {
   const updatePayloads: Array<Record<string, unknown>> = [];
+  const insertPayloads: Array<{ table: string; payload: Record<string, unknown> }> = [];
   const builder: Record<string, unknown> = {};
   let isUpdate = false;
+  let isInsert = false;
   let lastUpdateIsStamp = false;
+  let lastTable = '';
   Object.assign(builder, {
-    from: () => builder,
+    from: (table: string) => {
+      lastTable = table;
+      return builder;
+    },
     select: () => builder,
     update: (payload: Record<string, unknown>) => {
       isUpdate = true;
@@ -81,22 +118,38 @@ function makeSb(quote: Quote, opts: { stampRace?: boolean } = {}) {
       updatePayloads.push(payload);
       return builder;
     },
+    insert: (payload: Record<string, unknown>) => {
+      isInsert = true;
+      insertPayloads.push({ table: lastTable, payload });
+      return builder;
+    },
     eq: () => builder,
     is: () => builder,
+    // #264: real route code now chains `.abortSignal(signal)` on every direct
+    // query (see withDbTimeout in route.ts) — no-op passthrough here, same
+    // shape as eq()/is() above; the timeout behavior itself is covered by
+    // highlevel.test.ts (ghlFetch) and quoteDeliveries.test.ts (the DB insert),
+    // not re-proven per call site in this file.
+    abortSignal: () => builder,
     single: async () => ({ data: quote, error: quote ? null : { message: 'no row' } }),
     then: (resolve: (v: unknown) => void) => {
       let res: unknown;
-      if (isUpdate) {
+      if (isInsert) {
+        res = opts.insertError
+          ? { data: null, error: { message: opts.insertError } }
+          : { data: null, error: null };
+      } else if (isUpdate) {
         const raceLost = lastUpdateIsStamp && opts.stampRace;
         res = { data: raceLost ? [] : [{ id: (quote as { id?: string } | null)?.id ?? ID }], error: null };
       } else {
         res = { data: quote, error: null };
       }
       isUpdate = false;
+      isInsert = false;
       resolve(res);
     },
   });
-  return { client: builder, updatePayloads };
+  return { client: builder, updatePayloads, insertPayloads };
 }
 
 const ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
@@ -276,22 +329,28 @@ describe('POST /api/quotes/[id]/send — GHL sync state', () => {
     expect(hl.sendSms).not.toHaveBeenCalled();
   });
 
-  it('an already-sent quote WITHOUT ?retryGhl still short-circuits (alreadySent)', async () => {
+  it('an already-sent quote WITHOUT ?retryGhl still short-circuits (alreadySent) and reports the ORIGINAL sentAt, nothing re-delivered', async () => {
     const alreadySent = {
       ...FRESH_QUOTE,
       quote_sent_at: '2026-06-26T00:00:00Z',
       ghl_stage_synced_at: null,
       status: 'sent',
     };
-    const { client } = makeSb(alreadySent);
+    const { client, updatePayloads } = makeSb(alreadySent);
     sbRef.current = client;
 
     const res = await POST(makeReq(false), { params });
     const json = await res.json();
 
     expect(json.alreadySent).toBe(true);
+    // #241: the builder UI reads sentAt off this response to tell staff WHEN
+    // the quote was actually delivered (it must be the ORIGINAL timestamp,
+    // not a re-stamp) — pin the contract the UI depends on.
+    expect(json.sentAt).toBe('2026-06-26T00:00:00Z');
     expect(hl.updateOpportunity).not.toHaveBeenCalled();
     expect(hl.sendSms).not.toHaveBeenCalled();
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+    expect(updatePayloads).toHaveLength(0);
   });
 
   // W1-017: a ?retryGhl reconcile must check the CURRENT status. A quote that was
@@ -461,7 +520,7 @@ describe('POST /api/quotes/[id]/send — changes_requested resend (Bug 1)', () =
   });
 });
 
-describe('POST /api/quotes/[id]/send — #116 revive (declined/lost re-send)', () => {
+describe('POST /api/quotes/[id]/send — #116 revive (declined/abandoned re-send)', () => {
   it('revives a DECLINED quote: re-stamps status=sent + quote_sent_at, fires messaging, echoes revived:true', async () => {
     const declined = {
       ...FRESH_QUOTE,
@@ -490,13 +549,13 @@ describe('POST /api/quotes/[id]/send — #116 revive (declined/lost re-send)', (
     expect(hl.updateOpportunity).toHaveBeenCalled();
   });
 
-  it('revives a LOST quote the same way', async () => {
-    const lost = {
+  it('revives an ABANDONED quote the same way', async () => {
+    const abandoned = {
       ...FRESH_QUOTE,
       quote_sent_at: '2026-06-20T00:00:00Z',
-      status: 'lost',
+      status: 'abandoned',
     };
-    const { client, updatePayloads } = makeSb(lost);
+    const { client, updatePayloads } = makeSb(abandoned);
     sbRef.current = client;
 
     const res = await POST(makeReq(), { params });
@@ -515,7 +574,7 @@ describe('POST /api/quotes/[id]/send — #116 revive (declined/lost re-send)', (
     // the revive write didn't clear both, deriveStatus's timestamp fallback
     // would read 'approved'/'viewed' instead of 'sent' on the very next load
     // (see quoteStatus.test.ts — deriveStatus only trusts the persisted
-    // status column for declined/cancelled/lost/changes_requested, NOT sent).
+    // status column for declined/cancelled/abandoned/changes_requested, NOT sent).
     const approvedThenDeclined = {
       ...FRESH_QUOTE,
       quote_sent_at: '2026-06-20T00:00:00Z',
@@ -971,5 +1030,382 @@ describe('POST /api/quotes/[id]/send — portal and delivery gates', () => {
     expect(hl.sendEmail).not.toHaveBeenCalled();
     expect(hl.updateOpportunity).not.toHaveBeenCalled();
     expect(updatePayloads.some((p) => 'quote_sent_at' in p)).toBe(false);
+  });
+
+  // #241 defect 2 (review MEDIUM): isDeliveryRetry is only honored while
+  // currentStatus is 'sent'/'viewed' (W1-017's same guard, reused). A quote
+  // that progressed to approved/booked/deposit-paid between the original
+  // send and a Force-Redeliver click falls through to the plain alreadySent
+  // short-circuit below — same as a fresh send would. Pin that a retry gets
+  // NO special pass around that guard: it must never deliver, and the
+  // response must carry nothing that looks like a receipt, so the client
+  // can tell "retry also did nothing" apart from "retry delivered."
+  it('a retryDelivery request against a since-BOOKED quote also short-circuits as alreadySent — never delivers', async () => {
+    const bookedButRetried = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-07-18T12:00:00.000Z',
+      customer_approved_at: '2026-07-19T00:00:00.000Z',
+      deposit_paid_at: '2026-07-20T00:00:00.000Z', // deriveStatus → 'booked'
+      ghl_stage_synced_at: '2026-07-18T12:00:01.000Z',
+      status: 'booked',
+    };
+    const { client, updatePayloads } = makeSb(bookedButRetried);
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ channel: 'both' }, true), { params });
+    const json = await res.json();
+
+    expect(json.alreadySent).toBe(true);
+    expect(json.deliveryRetry).toBeUndefined();
+    expect(json.smsSent).toBeUndefined();
+    expect(json.emailSent).toBeUndefined();
+    expect(hl.sendSms).not.toHaveBeenCalled();
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
+    expect(updatePayloads).toHaveLength(0);
+  });
+});
+
+describe('POST /api/quotes/[id]/send — NCE + YLL Neighbor tag propagation (#198)', () => {
+  // #214: attach-first even when a cached customer_id exists — the cached
+  // link can be stale after an identity edit (verify-or-reattach). Here the
+  // re-resolution can't produce an answer (mock returns null), so the cached
+  // id is the fallback and the tag still lands.
+  it('re-verifies via attachQuoteToCustomer even when ALREADY linked, falling back to the cached id when re-resolution yields nothing', async () => {
+    const { client } = makeSb({ ...FRESH_QUOTE, legacy_rebook: true, is_nce: true, customer_id: 'cust-1' });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    expect(attachQuoteToCustomerMock).toHaveBeenCalledOnce();
+    expect(propagateMock).toHaveBeenCalledWith('cust-1', { isNce: true, isYllNeighbor: true });
+  });
+
+  it('propagates to the RE-RESOLVED customer (not the cached id) when re-attach lands on a different row — the stale-link heal', async () => {
+    attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'cust-right', propertyId: 'prop-1' });
+    const { client } = makeSb({ ...FRESH_QUOTE, legacy_rebook: true, is_nce: true, customer_id: 'cust-stale' });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    expect(propagateMock).toHaveBeenCalledWith('cust-right', { isNce: true, isYllNeighbor: true });
+  });
+
+  it('re-attaches via attachQuoteToCustomer when tagged but NOT yet linked, then propagates to the resolved customer', async () => {
+    attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'cust-resolved', propertyId: 'prop-1' });
+    const { client } = makeSb({
+      ...FRESH_QUOTE,
+      legacy_rebook: false,
+      is_nce: true,
+      customer_id: null,
+      customer_email: 'jane@x.com',
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    expect(attachQuoteToCustomerMock).toHaveBeenCalledWith(
+      expect.objectContaining({ id: ID, customer_email: 'jane@x.com' }),
+    );
+    expect(propagateMock).toHaveBeenCalledWith('cust-resolved', { isNce: true, isYllNeighbor: false });
+  });
+
+  it('does NOT attach or propagate when the quote carries neither tag', async () => {
+    const { client } = makeSb({ ...FRESH_QUOTE, legacy_rebook: false, is_nce: false, customer_id: null });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+    expect(propagateMock).not.toHaveBeenCalled();
+  });
+
+  // Review fix (admin HIGH, S34 #198 review): a tagged TEST quote must never
+  // run attach/propagation with test data — orphan real customer rows or a
+  // merge-overwrite of a REAL customer's identity fields, then tagging that
+  // real customer, would break the "test quotes never touch customers"
+  // invariant #200's tenure push also depends on.
+  it('does NOT attach or propagate for a TAGGED TEST quote, even unlinked — the send still succeeds', async () => {
+    const { client } = makeSb({
+      ...FRESH_QUOTE,
+      is_test: true,
+      legacy_rebook: true,
+      is_nce: true,
+      customer_id: null,
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+    expect(propagateMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT attach or propagate for a TAGGED TEST quote that IS already linked', async () => {
+    const { client } = makeSb({
+      ...FRESH_QUOTE,
+      is_test: true,
+      legacy_rebook: true,
+      is_nce: true,
+      customer_id: 'cust-1',
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+    expect(propagateMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT propagate when the re-attach attempt resolves to no customer', async () => {
+    attachQuoteToCustomerMock.mockResolvedValueOnce(null); // no identity to link (e.g. address-only quote)
+    const { client } = makeSb({ ...FRESH_QUOTE, is_nce: true, customer_id: null });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    expect(propagateMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT re-run propagation on a ?retryGhl reconcile (no fresh stamp)', async () => {
+    const { client } = makeSb({
+      ...FRESH_QUOTE,
+      is_nce: true,
+      customer_id: 'cust-1',
+      quote_sent_at: '2026-07-18T12:00:00.000Z',
+      ghl_stage_synced_at: null,
+      status: 'sent',
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(true), { params }); // retryGhl=true
+    expect(res.status).toBe(200);
+    expect(propagateMock).not.toHaveBeenCalled();
+  });
+
+  it('still sends successfully when the re-attach attempt throws (best-effort)', async () => {
+    attachQuoteToCustomerMock.mockRejectedValueOnce(new Error('customers table missing'));
+    const { client } = makeSb({ ...FRESH_QUOTE, is_nce: true, customer_id: null });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(propagateMock).not.toHaveBeenCalled();
+  });
+
+  it('still sends successfully when propagation itself throws (best-effort)', async () => {
+    propagateMock.mockRejectedValueOnce(new Error('customers table missing'));
+    const { client } = makeSb({ ...FRESH_QUOTE, is_nce: true, customer_id: 'cust-1' });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+  });
+});
+
+describe('POST /api/quotes/[id]/send — quote delivery log (#250)', () => {
+  it('writes a "sent" quote_deliveries row for each channel on a successful fresh send', async () => {
+    hl.sendSms.mockResolvedValueOnce({ messageId: 'sms_msg_1' });
+    hl.sendEmail.mockResolvedValueOnce({ messageId: 'email_msg_1' });
+    const { client, insertPayloads } = makeSb({ ...FRESH_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+
+    const deliveryRows = insertPayloads.filter((p) => p.table === 'quote_deliveries');
+    expect(deliveryRows).toHaveLength(2);
+    expect(deliveryRows).toContainEqual({
+      table: 'quote_deliveries',
+      payload: {
+        quote_id: ID,
+        channel: 'sms',
+        outcome: 'sent',
+        provider_message_id: 'sms_msg_1',
+        error: null,
+      },
+    });
+    expect(deliveryRows).toContainEqual({
+      table: 'quote_deliveries',
+      payload: {
+        quote_id: ID,
+        channel: 'email',
+        outcome: 'sent',
+        provider_message_id: 'email_msg_1',
+        error: null,
+      },
+    });
+  });
+
+  it('writes a "failed" row with the error for a channel that fails, and a "sent" row for the one that succeeds', async () => {
+    hl.sendSms.mockRejectedValueOnce(new Error('SMS down'));
+    hl.sendEmail.mockResolvedValueOnce({ messageId: 'email_msg_1' });
+    const { client, insertPayloads } = makeSb({ ...FRESH_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+
+    const deliveryRows = insertPayloads.filter((p) => p.table === 'quote_deliveries');
+    const smsRow = deliveryRows.find((p) => p.payload.channel === 'sms');
+    const emailRow = deliveryRows.find((p) => p.payload.channel === 'email');
+    expect(smsRow?.payload).toMatchObject({
+      quote_id: ID,
+      channel: 'sms',
+      outcome: 'failed',
+      provider_message_id: null,
+    });
+    expect(smsRow?.payload.error).toContain('SMS down');
+    expect(emailRow?.payload).toMatchObject({
+      quote_id: ID,
+      channel: 'email',
+      outcome: 'sent',
+      provider_message_id: 'email_msg_1',
+      error: null,
+    });
+  });
+
+  // #264 round 2, FIX 8: closes the untested-contract gap — proves a timed-out
+  // send (HighLevelError#timedOut, the exact shape ghlFetch throws) logs an
+  // 'error' string starting with the EXPORTED DELIVERY_TIMEOUT_ERROR_PREFIX
+  // (src/lib/quoteDeliveries.ts), not just some ad hoc "timeout" substring —
+  // a future reporting query matches on the real exported contract.
+  it('a TIMED-OUT send logs outcome:"failed" with an error starting with DELIVERY_TIMEOUT_ERROR_PREFIX (honesty hedge)', async () => {
+    hl.sendSms.mockRejectedValueOnce(
+      new HighLevelError('HighLevel POST /conversations/messages timed out after 10000ms (connecting)', undefined, undefined, true),
+    );
+    hl.sendEmail.mockResolvedValueOnce({ messageId: 'email_msg_1' });
+    const { client, insertPayloads } = makeSb({ ...FRESH_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+
+    const deliveryRows = insertPayloads.filter((p) => p.table === 'quote_deliveries');
+    const smsRow = deliveryRows.find((p) => p.payload.channel === 'sms');
+    expect(smsRow?.payload.outcome).toBe('failed');
+    expect((smsRow?.payload.error as string).startsWith(DELIVERY_TIMEOUT_ERROR_PREFIX)).toBe(true);
+    expect(smsRow?.payload.error as string).toContain('delivery outcome unknown');
+    // The sibling "failed" test above already pins a NORMAL (non-timeout)
+    // failure's error as verbatim "SMS down" — confirming by construction
+    // that a normal failure does NOT carry this prefix.
+  });
+
+  it('writes a "failed" row for BOTH channels when the whole requested delivery fails (502)', async () => {
+    hl.sendSms.mockRejectedValueOnce(new Error('SMS down'));
+    hl.sendEmail.mockRejectedValueOnce(new Error('Email down'));
+    const { client, insertPayloads } = makeSb({ ...FRESH_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ channel: 'both' }), { params });
+    expect(res.status).toBe(502);
+
+    const deliveryRows = insertPayloads.filter((p) => p.table === 'quote_deliveries');
+    expect(deliveryRows).toHaveLength(2);
+    expect(deliveryRows.every((p) => p.payload.outcome === 'failed')).toBe(true);
+  });
+
+  it('a quote_deliveries insert failure does NOT fail the send (best-effort logging)', async () => {
+    hl.sendSms.mockResolvedValueOnce({ messageId: 'sms_msg_1' });
+    hl.sendEmail.mockResolvedValueOnce({ messageId: 'email_msg_1' });
+    const { client } = makeSb({ ...FRESH_QUOTE }, { insertError: 'relation "quote_deliveries" does not exist' });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.smsSent).toBe(true);
+    expect(json.emailSent).toBe(true);
+  });
+
+  it('logs delivery rows on a ?retryDelivery=1 re-delivery, the same as a fresh send', async () => {
+    hl.sendSms.mockResolvedValueOnce({ messageId: 'retry_msg_1' });
+    const { client, insertPayloads } = makeSb({
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-07-18T12:00:00.000Z',
+      ghl_stage_synced_at: '2026-07-18T12:00:01.000Z',
+      status: 'sent',
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ channel: 'sms' }, true), { params });
+    expect(res.status).toBe(200);
+
+    const deliveryRows = insertPayloads.filter((p) => p.table === 'quote_deliveries');
+    expect(deliveryRows).toHaveLength(1);
+    expect(deliveryRows[0].payload).toMatchObject({
+      quote_id: ID,
+      channel: 'sms',
+      outcome: 'sent',
+      provider_message_id: 'retry_msg_1',
+    });
+  });
+
+  it('does NOT log a delivery row for a TEST quote (never really sent)', async () => {
+    const { client, insertPayloads } = makeSb({ ...FRESH_QUOTE, is_test: true });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    expect(insertPayloads.filter((p) => p.table === 'quote_deliveries')).toHaveLength(0);
+  });
+
+  it('does NOT log a delivery row on a ?retryGhl reconcile (no customer message sent)', async () => {
+    const { client, insertPayloads } = makeSb({
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-26T00:00:00Z',
+      ghl_stage_synced_at: null,
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(true), { params });
+    expect(res.status).toBe(200);
+    expect(insertPayloads.filter((p) => p.table === 'quote_deliveries')).toHaveLength(0);
+  });
+});
+
+// #264 round 2, FIX 1 (HIGH): tagPropagation is NOT a rare path — prod:
+// 149/182 sent quotes (82%) carry legacy_rebook=true. Its own DB calls
+// (attachQuoteToCustomer et al, in src/lib/customers.ts) are mocked here via
+// attachQuoteToCustomerMock, so a hang there is simulated directly rather
+// than through a real Supabase client.
+describe('POST /api/quotes/[id]/send — tagPropagation deadline (#264 round 2, FIX 1)', () => {
+  it('a HUNG attachQuoteToCustomer does not stall the response past the 15s deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      // Never resolves — simulates a hung DB call inside the shared
+      // customers.ts find-or-create chain tagPropagation calls into.
+      attachQuoteToCustomerMock.mockImplementationOnce(() => new Promise(() => {}));
+      hl.sendSms.mockResolvedValueOnce({ messageId: 'sms_msg_1' });
+      hl.sendEmail.mockResolvedValueOnce({ messageId: 'email_msg_1' });
+      const { client } = makeSb({ ...FRESH_QUOTE, legacy_rebook: true });
+      sbRef.current = client;
+
+      const resPromise = POST(makeReq(), { params });
+      await vi.advanceTimersByTimeAsync(15_000);
+      const res = await resPromise;
+
+      // The route responded WITHOUT waiting for the still-hung
+      // attachQuoteToCustomer call (it's now an orphaned, never-settling
+      // promise in the background — exactly the documented, verified-safe
+      // tradeoff; see the comment above TAG_PROPAGATION_DEADLINE_MS).
+      expect(res.status).toBe(200);
+      const json = await res.json();
+      expect(json.ok).toBe(true);
+      // The customer's own delivery is unaffected by tagPropagation hanging —
+      // proves the four allSettled tasks are genuinely independent.
+      expect(json.smsSent).toBe(true);
+      expect(json.emailSent).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

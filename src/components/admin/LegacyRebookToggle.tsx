@@ -37,6 +37,8 @@ export function LegacyRebookToggle({
           '- The customer portal will go back to the normal quote view.',
           '- The quote will show up in the operator inbox again.',
           '- Any GHL sync will route to the normal service-type pipeline instead of Neighbors.',
+          '',
+          "- If this already propagated to the customer's profile (the quote was sent while tagged), the customer stays tagged YLL Neighbor — propagation is one-way. Remove it on the customer's profile directly if that's also wrong.",
         ];
     // Already left draft (sent/viewed/approved/booked/etc.) — flipping the flag
     // now doesn't touch anything already synced to GHL, only what happens next.

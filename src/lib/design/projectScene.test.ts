@@ -422,7 +422,12 @@ describe('projectScene — A2 mini-light areas + grouped railings', () => {
   });
 
   it('projects a miniGroup as one mini unit; sceneItemIds = the member strands', () => {
-    const p = projectScene(scene([miniGroup({ id: 'g1', surface: 'bush', stringCount: 3, memberIds: ['s1', 's2', 's3'] })]));
+    const p = projectScene(scene([
+      strand({ id: 's1', surface: 'bush', groupId: 'g1' }),
+      strand({ id: 's2', surface: 'bush', groupId: 'g1' }),
+      strand({ id: 's3', surface: 'bush', groupId: 'g1' }),
+      miniGroup({ id: 'g1', surface: 'bush', stringCount: 3, memberIds: ['s1', 's2', 's3'] }),
+    ]));
     expect(p.miniLightItems).toEqual([{ type: 'bush', wrapStyle: 'canopy', stringCount: 3 }]);
     expect(p.items[0].sceneItemIds).toEqual(['s1', 's2', 's3']);
     expect(p.items[0].id).toBe('mini-g1');
@@ -457,10 +462,43 @@ describe('projectScene — A2 mini-light areas + grouped railings', () => {
 
   it('projects a railing surface (grouped strands) as a mini unit of type railing', () => {
     const p = projectScene(scene([
+      strand({ id: 's1', surface: 'railing', groupId: 'rail1' }),
+      strand({ id: 's2', surface: 'railing', groupId: 'rail1' }),
       miniGroup({ id: 'rail1', surface: 'railing', stringCount: 7, memberIds: ['s1', 's2'] }),
     ]));
     expect(p.miniLightItems).toEqual([{ type: 'railing', wrapStyle: 'canopy', stringCount: 7 }]);
     expect(p.items[0].sceneItemIds).toEqual(['s1', 's2']); // hides as its member strands
+  });
+
+  // #227: a miniGroup whose member strands have ALL been deleted (dangling —
+  // unselectable in the editor, zero points to render) must never bill.
+  it('#227 SKIPS a fully orphaned miniGroup (all members deleted, none survive)', () => {
+    const p = projectScene(scene([
+      miniGroup({ id: 'g1', surface: 'bush', stringCount: 8, memberIds: ['dead-1', 'dead-2'] }),
+    ]));
+    expect(p.items).toEqual([]);
+    expect(p.miniLightItems).toEqual([]);
+  });
+
+  it('#227 still bills a PARTIALLY orphaned miniGroup normally (at least one member alive)', () => {
+    const p = projectScene(scene([
+      strand({ id: 's1', surface: 'bush', groupId: 'g1' }), // the one survivor
+      miniGroup({ id: 'g1', surface: 'bush', stringCount: 4, memberIds: ['s1', 'dead-2', 'dead-3'] }),
+    ]));
+    expect(p.miniLightItems).toEqual([{ type: 'bush', wrapStyle: 'canopy', stringCount: 4 }]);
+    // Unchanged shape/ids vs. a healthy group — same as before the #227 fix.
+    expect(p.items[0]).toEqual({
+      id: 'mini-g1',
+      category: 'mini',
+      sceneItemIds: ['s1', 'dead-2', 'dead-3'],
+      input: { type: 'bush', wrapStyle: 'canopy', stringCount: 4 },
+      recommended: undefined,
+    });
+  });
+
+  it('#227 a zero-member miniGroup is NOT treated as orphaned (falls back to its own id, as before)', () => {
+    const p = projectScene(scene([miniGroup({ id: 'g0', surface: 'bush', memberIds: [] })]));
+    expect(p.items[0].sceneItemIds).toEqual(['g0']);
   });
 });
 

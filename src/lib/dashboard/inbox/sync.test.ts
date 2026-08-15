@@ -4,6 +4,12 @@
 // chunking/error-isolation shape, not the (separately-tested) pure decisions.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+// #263: real (unmocked) implementation — quotetool.ts now imports
+// isHiddenLegacyRebookQuote from './store' alongside EXCLUDE_LEGACY_REBOOK_FROM_INBOX;
+// the strict mock below must supply it so quotetool.ts's real suppression
+// logic keeps running for real (this file's existing intent), not throw on
+// an export the factory doesn't define.
+import { isParkedLegacyRebookDraft } from '@/lib/quoteStatus';
 
 const getThreadMock = vi.fn();
 const listInboxThreadsMock = vi.fn();
@@ -21,6 +27,8 @@ vi.mock('@/lib/integrations/gmail', () => ({
 
 const ingestTouchMock = vi.fn();
 const closeFollowUpMock = vi.fn();
+const ensureFollowUpMock = vi.fn();
+const recordSyncRunMock = vi.fn();
 const sweepOrphanedFollowUpsMock = vi.fn();
 
 vi.mock('./store', () => ({
@@ -29,11 +37,15 @@ vi.mock('./store', () => ({
   // imports this flag from './store'; the strict vitest mock throws on any
   // accessed export the factory doesn't define.
   EXCLUDE_LEGACY_REBOOK_FROM_INBOX: true,
-  ensureFollowUp: vi.fn(),
+  ensureFollowUp: (...args: unknown[]) => ensureFollowUpMock(...args),
   getSyncCursor: vi.fn(),
   ingestTouch: (...args: unknown[]) => ingestTouchMock(...args),
+  // #263: real store.ts re-exports this as isParkedLegacyRebookDraft
+  // (@/lib/quoteStatus) — delegate to the real, unmocked predicate so
+  // quotetool.ts's suppression logic still runs for real here.
+  isHiddenLegacyRebookQuote: isParkedLegacyRebookDraft,
   listEscalatableItems: vi.fn(),
-  recordSyncRun: vi.fn().mockResolvedValue(undefined),
+  recordSyncRun: (...args: unknown[]) => recordSyncRunMock(...args),
   setEscalation: vi.fn(),
   setSyncCursor: vi.fn(),
   sweepOrphanedFollowUps: (...args: unknown[]) => sweepOrphanedFollowUpsMock(...args),
@@ -62,6 +74,7 @@ const addContactTagsMock = vi.fn();
 const findOrCreateOpportunityForContactMock = vi.fn();
 const isHighLevelConfiguredMock = vi.fn();
 const markConversationReadMock = vi.fn();
+const searchConversationsMock = vi.fn();
 
 vi.mock('@/lib/integrations/highlevel', () => ({
   addContactTags: (...args: unknown[]) => addContactTagsMock(...args),
@@ -71,11 +84,14 @@ vi.mock('@/lib/integrations/highlevel', () => ({
   findOrCreateOpportunityForContact: (...args: unknown[]) => findOrCreateOpportunityForContactMock(...args),
   isHighLevelConfigured: (...args: unknown[]) => isHighLevelConfiguredMock(...args),
   markConversationRead: (...args: unknown[]) => markConversationReadMock(...args),
-  searchConversations: vi.fn(),
+  searchConversations: (...args: unknown[]) => searchConversationsMock(...args),
   sendEmail: vi.fn(),
 }));
 
-import { runGmailPoll, runHandledWriteback, runQuoteToolReconcile } from './sync';
+// normalizeGhlConversation ('./ghl') is deliberately NOT mocked below — the
+// #252 activity-noise counter test exercises the real adapter so it proves
+// the isActivityNoise flag actually flows from ghl.ts into sync.ts's summary.
+import { runGhlReconcile, runGmailPoll, runHandledWriteback, runQuoteToolReconcile } from './sync';
 import type { HandledTarget } from './store';
 
 function threadRefs(count: number) {
@@ -228,6 +244,8 @@ describe('runHandledWriteback — WT-49 (no opportunity write)', () => {
 describe('runQuoteToolReconcile — orphan follow-up sweep wiring (#183 BUG 3)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    ensureFollowUpMock.mockResolvedValue(undefined);
+    recordSyncRunMock.mockResolvedValue(undefined);
     getFollowUpDaysMock.mockResolvedValue(3);
     listQuotesForDashboardMock.mockResolvedValue([]);
   });
@@ -276,5 +294,266 @@ describe('runQuoteToolReconcile — orphan follow-up sweep wiring (#183 BUG 3)',
     const summary = await runQuoteToolReconcile(new Date());
 
     expect(summary.followUpsClosed).toBe(1 + 3);
+  });
+
+  it('counts and logs a suppressed internal-domain quote instead of creating its follow-up (#220)', async () => {
+    listQuotesForDashboardMock.mockResolvedValue([
+      {
+        id: 'q1262',
+        customer_name: 'Yule Love Lights',
+        customer_email: 'sales@mail.yulelovelights.com',
+        customer_phone: null,
+        total: 348,
+        created_at: '2026-08-06T10:00:00Z',
+        quote_sent_at: '2026-08-06T11:00:00Z',
+        customer_approved_at: null,
+        deposit_paid_at: null,
+        homeworks_sent_at: null,
+        homeworks_signed_at: null,
+        highlevel_contact_id: null,
+        service_type: null,
+        quote_number: 1262,
+      },
+    ]);
+    ingestTouchMock.mockResolvedValue(OK_RESULT);
+    closeFollowUpMock.mockResolvedValue(0);
+    sweepOrphanedFollowUpsMock.mockResolvedValue(0);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const summary = await runQuoteToolReconcile(new Date('2026-08-07T12:00:00Z'));
+
+      expect(summary.followUpsCreated).toBe(0);
+      expect(summary.followUpsSuppressed).toBe(1);
+      expect(summary.followUpsClosed).toBe(0);
+      expect(ensureFollowUpMock).not.toHaveBeenCalled();
+      expect(closeFollowUpMock).toHaveBeenCalledWith('item-1', 'quote_sent_no_reply');
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[inbox] quotetool follow-up suppressed for internal recipient:',
+        expect.objectContaining({
+          quoteId: 'q1262',
+          quoteNumber: 1262,
+          customerEmail: 'sales@mail.yulelovelights.com',
+        }),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('closes an already-pending internal-recipient follow-up without double-counting it as closed (#220 live quote 1262)', async () => {
+    listQuotesForDashboardMock.mockResolvedValue([
+      {
+        id: 'q1262',
+        customer_name: 'Yule Love Lights',
+        customer_email: 'sales@mail.yulelovelights.com',
+        customer_phone: null,
+        total: 348,
+        created_at: '2026-08-06T10:00:00Z',
+        quote_sent_at: '2026-08-06T11:00:00Z',
+        customer_approved_at: null,
+        deposit_paid_at: null,
+        homeworks_sent_at: null,
+        homeworks_signed_at: null,
+        highlevel_contact_id: null,
+        service_type: null,
+        quote_number: 1262,
+      },
+    ]);
+    ingestTouchMock.mockResolvedValue(OK_RESULT);
+    closeFollowUpMock.mockResolvedValue(1);
+    sweepOrphanedFollowUpsMock.mockResolvedValue(0);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const summary = await runQuoteToolReconcile(new Date('2026-08-10T12:00:00Z'));
+
+      expect(summary.followUpsCreated).toBe(0);
+      expect(summary.followUpsSuppressed).toBe(1);
+      expect(summary.followUpsClosed).toBe(0);
+      expect(ensureFollowUpMock).not.toHaveBeenCalled();
+      expect(closeFollowUpMock).toHaveBeenCalledTimes(1);
+      expect(closeFollowUpMock).toHaveBeenCalledWith('item-1', 'quote_sent_no_reply');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('stays idempotent on a second suppress pass for the same internal quote (#220)', async () => {
+    listQuotesForDashboardMock.mockResolvedValue([
+      {
+        id: 'q1262',
+        customer_name: 'Yule Love Lights',
+        customer_email: 'sales@mail.yulelovelights.com',
+        customer_phone: null,
+        total: 348,
+        created_at: '2026-08-06T10:00:00Z',
+        quote_sent_at: '2026-08-06T11:00:00Z',
+        customer_approved_at: null,
+        deposit_paid_at: null,
+        homeworks_sent_at: null,
+        homeworks_signed_at: null,
+        highlevel_contact_id: null,
+        service_type: null,
+        quote_number: 1262,
+      },
+    ]);
+    ingestTouchMock.mockResolvedValue(OK_RESULT);
+    closeFollowUpMock.mockResolvedValueOnce(1).mockResolvedValueOnce(0);
+    sweepOrphanedFollowUpsMock.mockResolvedValue(0);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const first = await runQuoteToolReconcile(new Date('2026-08-10T12:00:00Z'));
+      const second = await runQuoteToolReconcile(new Date('2026-08-10T12:05:00Z'));
+
+      expect(first.followUpsSuppressed).toBe(1);
+      expect(first.followUpsClosed).toBe(0);
+      expect(second.followUpsSuppressed).toBe(1);
+      expect(second.followUpsClosed).toBe(0);
+      expect(closeFollowUpMock).toHaveBeenNthCalledWith(1, 'item-1', 'quote_sent_no_reply');
+      expect(closeFollowUpMock).toHaveBeenNthCalledWith(2, 'item-1', 'quote_sent_no_reply');
+      expect(ensureFollowUpMock).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('still creates a quote_sent_no_reply follow-up for a real customer quote (#220 regression guard)', async () => {
+    listQuotesForDashboardMock.mockResolvedValue([
+      {
+        id: 'q-real',
+        customer_name: 'Yelena Nossa',
+        customer_email: 'yelena.nossa@gmail.com',
+        customer_phone: null,
+        total: 1200,
+        created_at: '2026-08-06T10:00:00Z',
+        quote_sent_at: '2026-08-06T11:00:00Z',
+        customer_approved_at: null,
+        deposit_paid_at: null,
+        homeworks_sent_at: null,
+        homeworks_signed_at: null,
+        highlevel_contact_id: null,
+        service_type: null,
+        quote_number: 2201,
+      },
+    ]);
+    ingestTouchMock.mockResolvedValue(OK_RESULT);
+    sweepOrphanedFollowUpsMock.mockResolvedValue(0);
+
+    const summary = await runQuoteToolReconcile(new Date('2026-08-10T12:00:00Z'));
+
+    expect(summary.followUpsCreated).toBe(1);
+    expect(summary.followUpsSuppressed).toBe(0);
+    expect(summary.followUpsClosed).toBe(0);
+    expect(ensureFollowUpMock).toHaveBeenCalledWith({
+      inboxItemId: 'item-1',
+      contactId: 'contact-1',
+      reason: 'quote_sent_no_reply',
+      sentAt: new Date('2026-08-06T11:00:00Z'),
+      afterDays: 3,
+    });
+    expect(closeFollowUpMock).not.toHaveBeenCalled();
+  });
+});
+
+// #252: activityNoiseSkipped must stay a distinguishable subset of `skipped`
+// in the reconcile summary, so a swallow regression is observable in prod
+// (the raw `skipped` count is expected to be nonzero every run for unrelated
+// reasons — outbound-no-existing, noop-reingest — so it alone proves nothing).
+describe('runGhlReconcile — activity-noise skip counter (#252)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function conv(over: Record<string, unknown> = {}) {
+    return {
+      id: 'conv-1',
+      locationId: 'loc-1',
+      lastMessageDate: 1782693272654,
+      lastMessageType: 'TYPE_SMS',
+      lastMessageBody: 'hello',
+      lastMessageDirection: 'inbound',
+      unreadCount: 1,
+      contactId: 'contact-1',
+      fullName: 'Jane Doe',
+      contactName: 'Jane Doe',
+      email: 'jane@example.com',
+      phone: '(631) 555-2223',
+      type: 'TYPE_PHONE',
+      ...over,
+    };
+  }
+
+  it('counts an activity-noise conversation that ingestTouch skips FOR REASON 2 (existing item) as activityNoiseSkipped', async () => {
+    searchConversationsMock.mockResolvedValue({
+      conversations: [conv({ id: 'a1', lastMessageType: 'TYPE_ACTIVITY_OPPORTUNITY' })],
+    });
+    // The real ingestTouch/planIngest shape for "existing item + activity
+    // noise" (proved by store.test.ts) — skipReason is what the counter is
+    // keyed off, not touch.isActivityNoise.
+    ingestTouchMock.mockResolvedValue({ ...OK_RESULT, skipped: true, skipReason: 'activity-noise-existing' });
+
+    const summary = await runGhlReconcile(new Date());
+
+    expect(summary.ok).toBe(true);
+    expect(summary.skipped).toBe(1);
+    expect(summary.activityNoiseSkipped).toBe(1);
+    expect(summary.ingested).toBe(0);
+  });
+
+  it('does NOT count an ordinary (non-noise) skip as activity-noise', async () => {
+    searchConversationsMock.mockResolvedValue({
+      conversations: [conv({ id: 'a2', lastMessageType: 'TYPE_SMS' })],
+    });
+    ingestTouchMock.mockResolvedValue({ ...OK_RESULT, skipped: true, skipReason: 'cold-outbound' });
+
+    const summary = await runGhlReconcile(new Date());
+
+    expect(summary.skipped).toBe(1);
+    expect(summary.activityNoiseSkipped).toBe(0);
+  });
+
+  it('ingests an activity-noise conversation normally when ingestTouch reports it was NOT skipped (no existing item — the #252 swallow case)', async () => {
+    searchConversationsMock.mockResolvedValue({
+      conversations: [conv({ id: 'a3', lastMessageType: 'TYPE_ACTIVITY_CONTACT' })],
+    });
+    ingestTouchMock.mockResolvedValue({ ...OK_RESULT, skipped: false, skipReason: null });
+
+    const summary = await runGhlReconcile(new Date());
+
+    expect(summary.ingested).toBe(1);
+    expect(summary.skipped).toBe(0);
+    expect(summary.activityNoiseSkipped).toBe(0);
+  });
+
+  // #252 delta-verify MEDIUM: a brand-new conversation (no existing row) whose
+  // latest GHL event is BOTH outbound-direction AND activity noise is skipped
+  // for REASON 1 (cold-outbound — an ordinary "we cold-contacted, nothing to
+  // track" skip) even though the touch's isActivityNoise flag is still true.
+  // Pre-fix, this counter was keyed off touch.isActivityNoise alone and had
+  // no way to tell the two skip reasons apart, so it over-counted this case as
+  // #252 noise even though zero reason-2 events occurred (live GHL data shows
+  // direction varies independently of message type, so this is a real,
+  // reachable combination, not a hypothetical).
+  it('does NOT count a cold-outbound activity-noise touch (no existing row) toward activityNoiseSkipped', async () => {
+    searchConversationsMock.mockResolvedValue({
+      conversations: [conv({ id: 'a4', lastMessageType: 'TYPE_ACTIVITY_OPPORTUNITY', lastMessageDirection: 'outbound' })],
+    });
+    ingestTouchMock.mockImplementation(async (touch: { isActivityNoise?: boolean | null }) => {
+      // Sanity: the real (unmocked) ghl.ts adapter did flag this touch as
+      // activity noise — that's exactly why keying the counter off it alone,
+      // instead of off the outcome's skipReason, over-counts.
+      expect(touch.isActivityNoise).toBe(true);
+      // The real ingestTouch/planIngest shape for "no existing item + cold
+      // outbound" (proved by store.test.ts): skipped, but skipReason is
+      // 'cold-outbound', NOT #252's 'activity-noise-existing'.
+      return { ...OK_RESULT, skipped: true, skipReason: 'cold-outbound' };
+    });
+
+    const summary = await runGhlReconcile(new Date());
+
+    expect(summary.skipped).toBe(1);
+    expect(summary.activityNoiseSkipped).toBe(0);
   });
 });

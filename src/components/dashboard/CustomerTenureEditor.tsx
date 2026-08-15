@@ -58,8 +58,12 @@ export function CustomerTenureEditor({
   function onAdd() {
     const year = Number(input);
     const currentYear = new Date().getUTCFullYear();
-    if (!Number.isInteger(year) || year < 2015 || year > currentYear) {
-      setError(`Enter a year between 2015 and ${currentYear}.`);
+    // 2022 mirrors MIN_TENURE_YEAR in src/lib/customerTenure.ts (ledger #200:
+    // YLL started 2022) — kept as a literal here on purpose, not an import:
+    // that module pulls in getSupabaseServiceClient (SUPABASE_SERVICE_ROLE_KEY),
+    // which a 'use client' component must never bundle. Update both by hand.
+    if (!Number.isInteger(year) || year < 2022 || year > currentYear) {
+      setError(`Enter a year between 2022 and ${currentYear}.`);
       return;
     }
     setInput('');

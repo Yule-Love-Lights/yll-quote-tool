@@ -1,6 +1,7 @@
 import { getSupabaseClient, getSupabaseServiceClient } from './supabase';
 import { cloneDesignToNewQuote } from './designs';
 import { allocateNumber } from './displayId';
+import { getCustomer, unarchiveProperty } from './customers';
 
 // "Rebook last season" (ledger #83, Phase 5). One click clones a customer/
 // property's last APPROVED quote — its priced inputs/result + its design (scene
@@ -27,6 +28,18 @@ export type RebookSource = {
   customer_id?: string | null;
   property_id?: string | null;
   is_test?: boolean | null;
+  // NCE + YLL Neighbor tags (#198): the SOURCE quote's own tags — carried
+  // forward as a plain clone-field default (like is_test above). rebookLastSeason
+  // overrides these with the CUSTOMER's current tags before calling
+  // buildRebookInsert (a customer may have been tagged more recently than
+  // their last approved quote); rebookFromQuote (#116 exact-quote revive)
+  // leaves them as-is, so a revived quote simply keeps its own tags.
+  legacy_rebook?: boolean | null;
+  is_nce?: boolean | null;
+  // #226 round 3: the source quote's approval timestamp — see
+  // rebookFromQuote's own #226 comment for why this (not status) is the
+  // correct decoupling signal for its resetNceDepositOnOff decision.
+  customer_approved_at?: string | null;
 };
 
 // PURE — the column set a rebooked quote INSERTs. Copies the customer + the
@@ -44,12 +57,32 @@ export type RebookSource = {
 // falls through to live app_settings rates (it reads existing?.result?.<vertical>RatesSnapshot
 // ?? live for whichever vertical). rebookLastSeason doesn't filter by service_type, so
 // the source can be either vertical. No-op for holiday results (no snapshot present).
+//
+// #199 (F1 review fix): also strips result.depositRate — a SNAPSHOT only a
+// full recompute writes (Calculate / POST /api/quote). Money-read call sites
+// now prefer live inputs.depositPercent over this field (see
+// chargesFromResult's own comment, derivePackages.ts), so an NCE clone's 40%
+// already displays correctly even with this stale — but leaving a
+// last-season rate sitting here is misleading dead data on a fresh draft,
+// and any FUTURE direct reader of result.depositRate (bypassing
+// chargesFromResult) would otherwise see last season's rate. Unconditional,
+// like the other three strips: every rebooked draft re-prices at Calculate.
+//
+// #226 (adversarial-review HIGH, live-prod bug): the strip above only covers
+// result.depositRate. inputs.depositPercent itself was NEVER reset on a
+// false-resolving NCE clone — applyNceDepositDefault below only ever ADDED
+// 40 on the true path. rebookLastSeason resolves is_nce from the CUSTOMER's
+// CURRENT tag (deliberate — see its own #198 comment), so a customer who
+// left the barter network since their last approved quote could still get
+// rebooked with a carried-over depositPercent=40, pricing and charging the
+// new draft at 40% under a false is_nce.
 function stripRatesSnapshots(result: RebookSource['result']): RebookSource['result'] {
   if (!result || typeof result !== 'object') return result;
   const rest = { ...(result as Record<string, unknown>) };
   delete rest.permanentRatesSnapshot;
   delete rest.eventRatesSnapshot;
   delete rest.permanentBistroRatesSnapshot;
+  delete rest.depositRate;
   return rest as RebookSource['result'];
 }
 
@@ -68,7 +101,68 @@ function stripDiscountAndReferralCredit(inputs: unknown): unknown {
   return rest;
 }
 
-export function buildRebookInsert(src: RebookSource): Record<string, unknown> {
+// NCE 40% deposit default (#199): mirrors the builder chip's/admin toggle's
+// turn-on rule (resolveNceDepositPercent / the nce route's own deposit-write)
+// for a REBOOKED quote — a clone that resolves NCE=true starts the new
+// season at NCE's 40% deposit unless the SOURCE quote already carried an
+// explicit staff-set depositPercent (kept — a deliberate hand-edit from last
+// season carries forward, same "no lock, no lost work" posture as every
+// other rebooked input). No-op when inputs isn't a plain object, mirroring
+// stripDiscountAndReferralCredit's own guard. The ON branch runs for BOTH
+// rebook paths (rebookLastSeason's customer-tag resolution + #116's
+// exact-quote revive) since both build their insert row through
+// buildRebookInsert — there's no false-positive risk turning ON, the NCE
+// rule is the only thing that ever writes 40 to begin with.
+//
+// #226 (adversarial-review HIGH, live-prod bug fix, ROUND 2 — delta-verify
+// caught the round-1 fix was too broad): the OFF/false path resets an
+// untouched depositPercent=40 to an explicit 0 (never a deleted key — see
+// chargesFromResult's stale-fallback trap, #226 in the nce route) — but
+// ONLY when `resetOnOff` is true. The two callers resolve is_nce=false from
+// DIFFERENT signals:
+//   - rebookLastSeason resolves is_nce from the CUSTOMER's CURRENT tag. If
+//     that's false, the customer genuinely left the barter network since
+//     their last approved quote — a carried-over 40 is very likely stale
+//     NCE residue, so resetting has a real signal behind it. Passes
+//     resetOnOff=true.
+//   - rebookFromQuote (#116 exact-quote revive) resolves is_nce from the
+//     SOURCE QUOTE's own tag. Round 2 assumed "is_nce=false on that quote ⇒
+//     the NCE rule never touched its depositPercent ⇒ any 40 is hand-typed"
+//     and always passed resetOnOff=false. ROUND 3 (delta-verify HIGH): that
+//     premise is false on a reachable path — the admin nce route
+//     (src/app/api/quotes/[id]/nce/route.ts) only resets depositPercent on
+//     toggle-OFF while `customer_approved_at` is still null (the #177 freeze
+//     guard). An NCE-tagged, then-approved, then-untagged quote is left
+//     holding is_nce=false + a RULE-SET depositPercent=40 that toggle-off
+//     was never allowed to touch — is_nce and depositPercent have decoupled.
+//     `customer_approved_at` surviving into a later terminal status
+//     (declined via staff-decline's approved→declined transition, or
+//     cancelled) doesn't change this: the nce route's guard keys on
+//     customer_approved_at, not on status, so the same decoupling holds. A
+//     never-approved source is unaffected — there the toggle-off DOES reset,
+//     so a surviving 40 really is hand-typed. rebookFromQuote below therefore
+//     passes resetOnOff = (src.customer_approved_at != null), mirroring the
+//     nce route's own guard exactly instead of guessing from is_nce alone.
+// Any other stored value (not exactly 40) is left alone regardless of
+// resetOnOff, same as before.
+function applyNceDepositDefault(inputs: unknown, isNce: boolean, resetOnOff: boolean): unknown {
+  if (!inputs || typeof inputs !== 'object') return inputs;
+  const current = (inputs as { depositPercent?: unknown }).depositPercent;
+  if (isNce) {
+    if (typeof current === 'number' && current > 0) return inputs; // explicit hand-set — keep
+    return { ...(inputs as Record<string, unknown>), depositPercent: 40 };
+  }
+  if (resetOnOff && current === 40) {
+    return { ...(inputs as Record<string, unknown>), depositPercent: 0 };
+  }
+  return inputs;
+}
+
+export function buildRebookInsert(
+  src: RebookSource,
+  opts: { resetNceDepositOnOff?: boolean } = {},
+): Record<string, unknown> {
+  const isNce = src.is_nce ?? false;
   return {
     customer_name: src.customer_name ?? 'Anonymous',
     customer_address: src.customer_address ?? '(no address)',
@@ -77,7 +171,11 @@ export function buildRebookInsert(src: RebookSource): Record<string, unknown> {
     highlevel_contact_id: src.highlevel_contact_id ?? null,
     status: 'draft',
     ...(src.service_type ? { service_type: src.service_type } : {}),
-    inputs: stripDiscountAndReferralCredit(src.inputs),
+    inputs: applyNceDepositDefault(
+      stripDiscountAndReferralCredit(src.inputs),
+      isNce,
+      opts.resetNceDepositOnOff ?? false,
+    ),
     result: stripRatesSnapshots(src.result),
     total: src.result?.total ?? 0,
     customer_id: src.customer_id ?? null,
@@ -87,13 +185,17 @@ export function buildRebookInsert(src: RebookSource): Record<string, unknown> {
     // dashboard/jobs/invoices/PO surfaces that trust is_test as the isolation
     // boundary (#93).
     is_test: src.is_test ?? false,
+    // NCE + YLL Neighbor tags (#198) — see the RebookSource field comments
+    // above for which value each caller passes in.
+    legacy_rebook: src.legacy_rebook ?? false,
+    is_nce: isNce,
   };
 }
 
 // The columns the source-quote lookup selects (kept in one place so the query +
 // the RebookSource shape stay in sync).
 const SOURCE_COLUMNS =
-  'id, customer_name, customer_address, customer_phone, customer_email, highlevel_contact_id, service_type, inputs, result, customer_id, property_id, is_test';
+  'id, customer_name, customer_address, customer_phone, customer_email, highlevel_contact_id, service_type, inputs, result, customer_id, property_id, is_test, legacy_rebook, is_nce, customer_approved_at';
 
 // Best-effort sequential quote_number (ledger #83, SPEC §4.6) for a rebooked
 // clone — same allocateNumber('quote_number_seq') + try/catch-omit pattern
@@ -107,6 +209,49 @@ async function allocateRebookQuoteNumber(caller: string): Promise<number | null>
   } catch (err) {
     console.warn(`${caller}: quote_number allocation skipped:`, err);
     return null;
+  }
+}
+
+// #205 review fix (customer/staff HIGH, F1 — "related, same root"): a
+// rebook that resolves onto an ARCHIVED property resurrects it. Both
+// rebookLastSeason and rebookFromQuote below insert the new quote via a
+// raw `.from('quotes').insert()` that bypasses findOrCreateProperty
+// entirely — the function that normally carries the archive-resurrection
+// rule (see its own #205 comment in customers.ts) — so without this, a
+// rebook could silently point a brand-new LIVE draft at a property staff
+// had archived: exactly the "silently-hidden-but-active" state that rule
+// exists to prevent, reached through a different door.
+//
+// Read-then-write (not an unconditional unarchiveProperty call) so this
+// only writes — and only logs — when a resurrection is ACTUALLY happening;
+// rebooking onto an already-live property stays a no-op, same "no needless
+// write" discipline as findOrCreateProperty's own resurrection branch.
+//
+// Best-effort: a failure here must never block the rebook itself (mirrors
+// attachQuoteToCustomer's hl_contact_id heal in customers.ts).
+async function resurrectPropertyForRebook(
+  sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  customerId: string | null | undefined,
+  propertyId: string | null | undefined,
+  caller: string,
+): Promise<void> {
+  if (!customerId || !propertyId) return;
+  try {
+    const { data: propRow } = await sb
+      .from('properties')
+      .select('archived_at')
+      .eq('id', propertyId)
+      .eq('customer_id', customerId)
+      .maybeSingle<{ archived_at: string | null }>();
+    if (!propRow?.archived_at) return; // already live, or no such row — nothing to do
+    const { error } = await unarchiveProperty(customerId, propertyId);
+    if (error) {
+      console.warn(`${caller}: resurrect-on-rebook failed for property ${propertyId} (customer ${customerId}):`, error);
+    } else {
+      console.info(`${caller}: un-archived property ${propertyId} for customer ${customerId} (triggered by rebook)`);
+    }
+  } catch (err) {
+    console.warn(`${caller}: resurrect-on-rebook threw for property ${propertyId} (customer ${customerId}):`, err);
   }
 }
 
@@ -146,13 +291,34 @@ export async function rebookLastSeason(
   if (!data) return null; // no approved quote to rebook from
   const src = data as RebookSource & { id: string };
 
+  // NCE + YLL Neighbor tags (#198): inherit the CUSTOMER's CURRENT tags
+  // (customer→quote inheritance), not necessarily whatever this particular
+  // old approved quote happened to carry — the customer may have been tagged
+  // more recently (profile edit, or propagation off a later quote) than their
+  // last approved one. Best-effort: getCustomer fails soft (null on error /
+  // unconfigured), which falls back to the source quote's own tag below.
+  const customer = await getCustomer(customerId);
+
   const quoteNumber = await allocateRebookQuoteNumber('rebookLastSeason');
+  // Honor an explicit property scope; otherwise keep the source's property.
+  const targetPropertyId = propertyId ?? src.property_id ?? null;
+  // #205 F1: resurrect if the target is archived — see resurrectPropertyForRebook.
+  await resurrectPropertyForRebook(sb, customerId, targetPropertyId, 'rebookLastSeason');
   const insertRow = {
-    ...buildRebookInsert({
-      ...src,
-      // Honor an explicit property scope; otherwise keep the source's property.
-      property_id: propertyId ?? src.property_id ?? null,
-    }),
+    ...buildRebookInsert(
+      {
+        ...src,
+        property_id: targetPropertyId,
+        legacy_rebook: customer?.is_yll_neighbor ?? src.legacy_rebook ?? false,
+        is_nce: customer?.is_nce ?? src.is_nce ?? false,
+      },
+      // #226 round 2: is_nce here resolves from the CUSTOMER's current tag
+      // (not this quote's own history), so a false reading is a real signal
+      // the customer left the barter network — reset an untouched 40. See
+      // applyNceDepositDefault's own comment for why rebookFromQuote below
+      // does NOT pass this.
+      { resetNceDepositOnOff: true },
+    ),
     ...(quoteNumber != null ? { quote_number: quoteNumber } : {}),
     created_by: createdBy,
   };
@@ -179,7 +345,7 @@ export async function rebookLastSeason(
 // Clone a SPECIFIC quote (by id, any status) into a fresh draft — the #116
 // "revive a dead quote" path. Unlike rebookLastSeason (which finds a customer's
 // last APPROVED quote), this reopens exactly the quote the operator picked,
-// including a declined / cancelled / lost one, and leaves the original terminal
+// including a declined / cancelled / abandoned one, and leaves the original terminal
 // quote INTACT for the audit trail. Reuses buildRebookInsert (strips the
 // lifecycle + the frozen rate snapshots so the draft re-prices at live rates)
 // and cloneDesignToNewQuote. Returns the new quote id + the cloned design id
@@ -208,8 +374,19 @@ export async function rebookFromQuote(
   const src = data as RebookSource & { id: string };
 
   const quoteNumber = await allocateRebookQuoteNumber('rebookFromQuote');
+  // #205 F1: resurrect if the source's property is archived — same rule as
+  // rebookLastSeason above; rebookFromQuote always carries src.property_id
+  // through unchanged (no property-scope override param), so that's the
+  // one target to check here.
+  await resurrectPropertyForRebook(sb, src.customer_id, src.property_id, 'rebookFromQuote');
   const insertRow = {
-    ...buildRebookInsert(src),
+    ...buildRebookInsert(src, {
+      // #226 round 3: reset an untouched depositPercent=40 exactly when the
+      // source quote was EVER approved — the same signal the nce route's own
+      // toggle-off guard checks (customer_approved_at, not status). See
+      // applyNceDepositDefault's own comment above for the full trace.
+      resetNceDepositOnOff: src.customer_approved_at != null,
+    }),
     ...(quoteNumber != null ? { quote_number: quoteNumber } : {}),
     created_by: createdBy,
   };

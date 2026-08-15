@@ -27,7 +27,15 @@ function makeReq(query: string): NextRequest {
   } as unknown as NextRequest;
 }
 
-type Row = { id: string; name: string | null; email: string | null; phone: string | null };
+type Row = {
+  id: string;
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  hl_contact_id?: string;
+  is_nce?: boolean;
+  is_yll_neighbor?: boolean;
+};
 
 function makeSb(rows: Row[]) {
   const builder: Record<string, unknown> = {};
@@ -37,8 +45,8 @@ function makeSb(rows: Row[]) {
     or: () => builder,
     order: () => builder,
     limit: async () => ({ data: rows, error: null }),
-    eq: (_col: string, val: unknown) => {
-      const hit = rows.find((r) => r.id === val) ?? null;
+    eq: (col: string, val: unknown) => {
+      const hit = rows.find((r) => (r as unknown as Record<string, unknown>)[col] === val) ?? null;
       return { maybeSingle: async () => ({ data: hit, error: null }) };
     },
   });
@@ -117,5 +125,57 @@ describe('GET /api/customers?id=<uuid> (redemption, PR 2)', () => {
     const res = await GET(makeReq('id=not-a-uuid'));
     const json = await res.json();
     expect(json.customers).toEqual([]);
+  });
+});
+
+describe('GET /api/customers?hlContactId=<id> (tag inheritance, #198)', () => {
+  const CONTACT_ID = 'ghl-contact-abc123';
+
+  beforeEach(() => {
+    sbRef.current = makeSb([
+      {
+        id: 'cust-1',
+        name: 'Jordan Smith',
+        email: 'jordan@example.com',
+        phone: '5165550123',
+        hl_contact_id: CONTACT_ID,
+        is_nce: true,
+        is_yll_neighbor: false,
+      },
+    ]);
+  });
+
+  it('returns the customer (with tags) for a known hl_contact_id', async () => {
+    const res = await GET(makeReq(`hlContactId=${CONTACT_ID}`));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    // toMatchObject (not toEqual): the real route only SELECTs the columns in
+    // CUSTOMER_COLUMNS (no hl_contact_id), but this fake returns the whole
+    // seeded row regardless of the select string — same pre-existing
+    // fidelity gap as every other fake in this file, not a new one.
+    expect(json.customers).toMatchObject([
+      {
+        id: 'cust-1',
+        name: 'Jordan Smith',
+        email: 'jordan@example.com',
+        phone: '5165550123',
+        is_nce: true,
+        is_yll_neighbor: false,
+        referralCreditUsd: 0,
+      },
+    ]);
+  });
+
+  it('returns an empty list for an unknown hl_contact_id — never creates a row', async () => {
+    const res = await GET(makeReq('hlContactId=unknown-contact'));
+    const json = await res.json();
+    expect(json.customers).toEqual([]);
+  });
+
+  it('takes precedence over q when both are somehow present, mirroring the id branch', async () => {
+    const res = await GET(makeReq(`hlContactId=${CONTACT_ID}&q=Jordan`));
+    const json = await res.json();
+    expect(json.customers).toHaveLength(1);
+    expect(json.customers[0].id).toBe('cust-1');
   });
 });

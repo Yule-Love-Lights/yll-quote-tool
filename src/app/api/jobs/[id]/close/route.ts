@@ -15,6 +15,13 @@
 // A close race (setJobStatus throws because a concurrent request already
 // advanced past a step) re-reads: if already `done`, returns success; else 409.
 //
+// #199 (F2): the bare markInvoicePaidManually call below always settles as
+// method:'cash_check' — an NCE-linked invoice REFUSES that (409
+// 'nce-mismatch'), so a job can't be silently closed with its NCE invoice
+// mislabeled. Staff must record the trade reference via the invoice's
+// "Mark paid — NCE" panel first; closing then proceeds normally (the invoice
+// is already 'paid', so this settle block is skipped entirely).
+//
 // WT-18: before settling the invoice, block a quote whose LATEST amendment is
 // a price-increasing change the customer hasn't re-approved yet
 // (src/lib/amend.ts blocksSettlement/requiresReconsent) — an amend-up silently
@@ -24,13 +31,16 @@
 // release valve for this wave; a real customer-facing re-approval flow is
 // separate, later work.
 //
+// #225: passes the resolved operator's uuid through as settledBy so this
+// force-settle also records WHO closed the job, not just when/how.
+//
 // Response: { ok, closed:true } | { ok, alreadyDone:true } | { error, code? }
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
-import { requireOperator } from '@/lib/auth/supabaseServer';
+import { getOperator, requireOperator } from '@/lib/auth/supabaseServer';
 import { getJob, setJobStatus, type JobRow } from '@/lib/jobs';
-import { getInvoiceByJob, markInvoicePaidManually } from '@/lib/invoices';
+import { getInvoiceByJob, markInvoicePaidManually, InvoiceSettleError } from '@/lib/invoices';
 import { moveQuoteCardToInstalled } from '@/lib/integrations/ghlQuoteCard';
 import { latestConsentAmendment, blocksSettlement, amendedQuoteStatus, type AmendmentTrailEntry } from '@/lib/amend';
 import type { QuoteStatus } from '@/lib/quoteStatus';
@@ -116,10 +126,41 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         );
       }
     }
+    const operator = await getOperator();
     try {
-      await markInvoicePaidManually(invoice.id);
+      await markInvoicePaidManually(invoice.id, 'cash_check', null, operator?.id ?? null);
     } catch (err) {
       console.error('[api/jobs/:id/close] settle failed:', err);
+      // #199 (F2, wrap-review HIGH): this bare call always defaults to
+      // method:'cash_check' — an NCE invoice REFUSES that settle (see
+      // markInvoicePaidManually's own gate). Do not silently leave the job
+      // open with no explanation — name the invoice + point staff at its
+      // dedicated "Mark paid — NCE" panel instead of the generic message.
+      if (err instanceof InvoiceSettleError && err.code === 'nce-mismatch') {
+        return NextResponse.json(
+          {
+            error:
+              'This job\'s invoice is an NCE trade job — record the NCE payment reference on the invoice\'s "Mark paid — NCE" panel before closing.',
+            code: 'nce-mismatch',
+            invoiceId: invoice.id,
+          },
+          { status: 409 },
+        );
+      }
+      // #199 delta-verify: the NCE check couldn't run (transient read
+      // failure). The invoice was NOT settled and the job was NOT closed —
+      // retryable, and deliberately distinct from the nce-mismatch copy.
+      if (err instanceof InvoiceSettleError && err.code === 'nce-check-failed') {
+        return NextResponse.json(
+          {
+            error:
+              "Couldn't verify whether this job's invoice is an NCE trade job, so nothing was settled or closed. Try again in a moment.",
+            code: 'nce-check-failed',
+            invoiceId: invoice.id,
+          },
+          { status: 503 },
+        );
+      }
       return NextResponse.json(
         { error: 'Could not settle the invoice', code: 'settle-failed' },
         { status: 409 },

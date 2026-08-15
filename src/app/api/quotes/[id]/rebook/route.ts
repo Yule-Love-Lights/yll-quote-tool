@@ -8,7 +8,7 @@ export const runtime = 'nodejs';
 // POST /api/quotes/[id]/rebook
 //
 // #116 — revive a dead quote. Clone THIS specific quote (any status, including a
-// terminal declined / cancelled / lost one) + its design into a fresh DRAFT so
+// terminal declined / cancelled / abandoned one) + its design into a fresh DRAFT so
 // the operator can start a new season/attempt from the same specs. The original
 // quote is left intact for the audit trail. Rebook-only (re-send of the same
 // quote is deliberately out of scope per the S23 council).

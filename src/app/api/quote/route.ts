@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { calculateQuote, QuoteInputs, MINI_LIGHT_TYPES } from '@/lib/pricing/pricingEngine';
+import { calculateQuote, QuoteInputs, MINI_LIGHT_TYPES, normalizedDepositOverride } from '@/lib/pricing/pricingEngine';
 import { saveQuote, updateQuote, getQuoteRaw, Customer } from '@/lib/quotes';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { getDesign, isValidDesignId } from '@/lib/designs';
@@ -71,7 +71,7 @@ const REPRICE_LOCKED_STATUSES: ReadonlySet<QuoteStatus> = new Set<QuoteStatus>([
   'booked',
   'declined',
   'cancelled',
-  'lost',
+  'abandoned',
 ]);
 
 function isNonNegNumber(v: unknown): v is number {
@@ -106,6 +106,8 @@ export async function POST(req: NextRequest) {
     amendReprice: rawAmendReprice,
     referredByCustomerId: rawReferredByCustomerId,
     highlevelContactId: rawHighlevelContactId,
+    legacyRebook: rawLegacyRebook,
+    isNce: rawIsNce,
   } = body as Record<string, unknown>;
 
   // Amend deadlock fix: an explicit, operator-only re-price mode for a BOOKED order.
@@ -143,15 +145,24 @@ export async function POST(req: NextRequest) {
   }
   const referredByCustomerId = typeof rawReferredByCustomerId === 'string' ? rawReferredByCustomerId : null;
 
-  // #leads "Create quote" link: the lead's HighLevel contact id, carried
-  // through so a lead-created quote links to that contact from birth. Opaque
-  // untrusted string — type + length only (no format assumed, unlike the
-  // UUID-shaped referredByCustomerId above). Optional; only honored on a NEW
-  // save (saveQuote) — an update never touches highlevel_contact_id (an
-  // operator's later HL-autocomplete pick/clear, via /api/integrations/
-  // highlevel/attach, is the only thing allowed to change it after insert).
-  if (rawHighlevelContactId !== undefined && typeof rawHighlevelContactId !== 'string') {
-    return NextResponse.json({ error: 'highlevelContactId must be a string if provided' }, { status: 400 });
+  // #leads "Create quote" link + #214 live-session link: the builder
+  // session's HighLevel contact id. Opaque untrusted string — type + length
+  // only (no format assumed, unlike the UUID-shaped referredByCustomerId
+  // above). On a NEW save it lands in the insert (saveQuote). On an UPDATE
+  // it is (since #214) threaded to updateQuote as IDENTITY input only —
+  // updateQuote still never writes the highlevel_contact_id column (the
+  // operator's HL-autocomplete pick/clear, via /api/integrations/highlevel/
+  // attach, stays that column's only post-insert writer). Tri-state: string
+  // = linked this session · explicit null = the session has NO contact
+  // (cleared / never linked — do NOT fall back to the stored id) ·
+  // absent/undefined = caller doesn't know (legacy) → updateQuote falls
+  // back to the stored id.
+  if (
+    rawHighlevelContactId !== undefined &&
+    rawHighlevelContactId !== null &&
+    typeof rawHighlevelContactId !== 'string'
+  ) {
+    return NextResponse.json({ error: 'highlevelContactId must be a string or null if provided' }, { status: 400 });
   }
   if (typeof rawHighlevelContactId === 'string' && rawHighlevelContactId.length > MAX_HL_CONTACT_ID_LEN) {
     return NextResponse.json(
@@ -162,6 +173,23 @@ export async function POST(req: NextRequest) {
   const highlevelContactIdTrimmed =
     typeof rawHighlevelContactId === 'string' ? rawHighlevelContactId.trim() : '';
   const highlevelContactId = highlevelContactIdTrimmed ? highlevelContactIdTrimmed : null;
+  // The tri-state form updateQuote takes (undefined preserved; blank → null).
+  const hlContactIdForUpdate: string | null | undefined =
+    rawHighlevelContactId === undefined ? undefined : highlevelContactId;
+
+  // NCE + YLL Neighbor tags (#198): the builder's chip strip sends the CURRENT
+  // chip state on every save (both new + edit mode) — optional booleans, same
+  // shape as isTest above. Unlike isTest, BOTH are honored on the update path
+  // too (see saveQuote/updateQuote's own param docs) so a reopened quote's
+  // toggled chip actually persists.
+  if (rawLegacyRebook !== undefined && typeof rawLegacyRebook !== 'boolean') {
+    return NextResponse.json({ error: 'legacyRebook must be a boolean if provided' }, { status: 400 });
+  }
+  const legacyRebook = typeof rawLegacyRebook === 'boolean' ? rawLegacyRebook : undefined;
+  if (rawIsNce !== undefined && typeof rawIsNce !== 'boolean') {
+    return NextResponse.json({ error: 'isNce must be a boolean if provided' }, { status: 400 });
+  }
+  const isNce = typeof rawIsNce === 'boolean' ? rawIsNce : undefined;
 
   // Testing mode: customer fields (name, address, phone, email) are all
   // optional. We still accept the customer object so future fields can be
@@ -530,7 +558,7 @@ export async function POST(req: NextRequest) {
     // it updates result/inputs in place (updateQuote writes only inputs/result/total/
     // service_type — never deposit_paid_at or status, so the lifecycle stays booked),
     // which the operator immediately follows with the amend record. Terminal statuses
-    // (declined/cancelled/lost) stay hard-locked — a dead order is never re-priced.
+    // (declined/cancelled/abandoned) stay hard-locked — a dead order is never re-priced.
     if (isUpdate && existing) {
       const currentStatus = deriveStatus(existing);
       const amendRepriceAllowed = amendReprice && currentStatus === 'booked';
@@ -553,9 +581,21 @@ export async function POST(req: NextRequest) {
     // quote can still be re-priced through this route for every OTHER field
     // (existing intended behavior — approved isn't in REPRICE_LOCKED_STATUSES).
     if (isUpdate && existing?.customer_approved_at) {
-      const incomingDepositPercent = typeof q.depositPercent === 'number' ? q.depositPercent : undefined;
-      const storedDepositPercent =
-        typeof existing.inputs?.depositPercent === 'number' ? existing.inputs.depositPercent : undefined;
+      // #226 fix: normalize BOTH sides through the same "actual override"
+      // predicate effectiveDepositRate uses, instead of a bare `typeof ===
+      // 'number'` check. A stored explicit 0 (written by the NCE-off reset)
+      // and an incoming `undefined` (the real client can never emit an
+      // explicit 0 — see quoteForm.ts's buildQuoteInputs) both mean "no
+      // override, use the 50% default" and must compare EQUAL here so an
+      // unrelated field edit on an approved-but-unbooked quote doesn't 409.
+      // A genuine change (e.g. 40 → 25, or 40 → blank) still normalizes to
+      // two DIFFERENT values and still 409s — the #177 freeze is unweakened.
+      const incomingDepositPercent = normalizedDepositOverride(
+        typeof q.depositPercent === 'number' ? q.depositPercent : undefined,
+      );
+      const storedDepositPercent = normalizedDepositOverride(
+        typeof existing.inputs?.depositPercent === 'number' ? existing.inputs.depositPercent : undefined,
+      );
       if (incomingDepositPercent !== storedDepositPercent) {
         return NextResponse.json(
           {
@@ -651,6 +691,15 @@ export async function POST(req: NextRequest) {
           // honors this too (create-once, idempotent) — see its own doc
           // comment for why an update needs a fresh pre-read of its own.
           referredByCustomerId,
+          // NCE + YLL Neighbor tags (#198): these ARE honored on the update
+          // path — undefined (not sent / chip strip not touched) leaves the
+          // stored value untouched.
+          legacyRebook,
+          isNce,
+          // #214: the session's live HL link, tri-state (see the validation
+          // block above) — identity-resolution input only; updateQuote never
+          // writes the highlevel_contact_id column.
+          hlContactIdForUpdate,
         )
       : await saveQuote(
           safeCustomer,
@@ -660,10 +709,16 @@ export async function POST(req: NextRequest) {
           isTest,
           operator?.id ?? null,
           referredByCustomerId,
-          // #leads "Create quote" link: only honored on this NEW-save path —
-          // never passed to updateQuote, so an existing/reopened quote's
-          // linked contact can't be clobbered by a resave.
+          // #leads "Create quote" link: written into the insert here. (Since
+          // #214 the update path ALSO receives it — as identity input only,
+          // never a column write, so an existing quote's linked contact
+          // still can't be clobbered by a resave.)
           highlevelContactId,
+          // NCE + YLL Neighbor tags (#198): the builder's chip strip's
+          // current state at first save; undefined → saveQuote's own
+          // default (false).
+          legacyRebook,
+          isNce,
         );
     return NextResponse.json({
       customer: safeCustomer,

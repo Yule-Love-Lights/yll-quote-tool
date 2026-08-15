@@ -25,7 +25,17 @@ const API_BASE = 'https://services.leadconnectorhq.com';
 const API_VERSION_HEADER = '2021-07-28';
 
 export class HighLevelError extends Error {
-  constructor(message: string, public status?: number, public body?: string) {
+  constructor(
+    message: string,
+    public status?: number,
+    public body?: string,
+    // #264: set only by ghlFetch's own timeout branch below — lets a caller
+    // (POST /api/quotes/[id]/send) tell "GHL rejected the request" apart from
+    // "we gave up waiting for a response," which matters because a timeout is
+    // NOT a confirmed failure (GHL may have already processed the request
+    // server-side before our socket gave up).
+    public timedOut?: boolean,
+  ) {
     super(message);
     this.name = 'HighLevelError';
   }
@@ -46,31 +56,111 @@ function requireConfig(): { apiKey: string; locationId: string } {
   return { apiKey, locationId };
 }
 
+// Hard per-call deadline (ledger #264). Every GHL call in this file funnels
+// through this one function, so ONE timeout here bounds the whole class —
+// contact ops, opportunity CRUD, conversations (SMS/email) send, custom
+// fields — with no per-caller changes needed. Previously ghlFetch had no
+// cancellation at all: a hung connection stalled the caller (most acutely
+// POST /api/quotes/[id]/send, whose four concurrent tasks all fail to settle
+// until every GHL call either resolves or rejects) indefinitely.
+//
+// This is a REAL cancellation (AbortController tears down the in-flight
+// socket), unlike ghlTenure.ts's PUSH_DEADLINE_MS: that wrapper is a
+// Promise.race the caller loses, but its own comment says the underlying
+// call "may still complete in the background" because "ghlFetch has no
+// AbortController; out of scope to add one here." This ships that
+// deferred piece at the source instead of re-wrapping each caller.
+//
+// Idiom: manual AbortController + setTimeout, cleared in finally — mirrors
+// valor.ts's HOSTED_PAGE_TIMEOUT_MS pattern (the closest analog: another
+// "wrap a 3rd-party API, throw a typed error, distinguish a timeout from a
+// real rejection" module), and the dominant convention across this repo's
+// other outbound integrations (googleMaps.ts, telegramMedia.ts,
+// transcribe.ts, valorVault.ts, valorBalance.ts). NOT AbortSignal.timeout():
+// confirmed empirically that vitest's vi.useFakeTimers()/advanceTimersByTimeAsync
+// does not advance AbortSignal.timeout()'s internal clock in this repo's test
+// environment (it does advance a plain setTimeout), so that idiom can't be
+// covered by the fake-timer test this fix requires (step 8) — a correctness
+// reason, not just a style preference.
+//
+// 10s matches this repo's other 3rd-party-API timeouts (Valor's
+// HOSTED_PAGE_TIMEOUT_MS / googleMaps.ts's DEFAULT_TIMEOUT_MS, both 10_000) —
+// generous for one HTTP round trip to a well-behaved SaaS API, while keeping
+// the send route's worst-case chain (findOpportunityForContact →
+// createOpportunity → resurrect's getOpportunity + updateOpportunity →
+// upsertContactCustomField, up to 5 sequential GHL calls when a duplicate
+// card is resurrected) bounded at ~50s instead of unbounded. Applied PER
+// CALL, not per logical operation.
+const GHL_TIMEOUT_MS = 10_000;
+
 async function ghlFetch<T>(
   path: string,
   init: RequestInit = {},
   version: string = API_VERSION_HEADER,
 ): Promise<T> {
   const { apiKey } = requireConfig();
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Version': version,
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      ...(init.headers ?? {}),
-    },
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new HighLevelError(
-      `HighLevel ${init.method ?? 'GET'} ${path} → ${res.status}: ${body.slice(0, 400)}`,
-      res.status,
-      body.slice(0, 2000),
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), GHL_TIMEOUT_MS);
+  const label = `${init.method ?? 'GET'} ${path}`;
+  function timeoutError(phase: string): HighLevelError {
+    return new HighLevelError(
+      `HighLevel ${label} timed out after ${GHL_TIMEOUT_MS}ms (${phase})`,
+      undefined,
+      undefined,
+      true,
     );
   }
-  return res.json() as Promise<T>;
+  // #264 round 2, FIX 2: the timer is now cleared only after the ENTIRE call
+  // — headers AND body — has been consumed. Round 1 cleared it right after
+  // fetch() resolved, so a fast-headers/slow-body response (confirmed live:
+  // a local server that sends 200 headers then stalls the body) hung past
+  // the "10s bounds the whole class" claim — the deadline never covered the
+  // res.json()/res.text() read at all. An abort mid-body-read rejects that
+  // read with the same AbortError fetch() itself throws on a connect-phase
+  // abort (verified against a real hung-body response), so the same
+  // controller.signal.aborted check classifies it.
+  try {
+    let res: Response;
+    try {
+      res = await fetch(`${API_BASE}${path}`, {
+        ...init,
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Version': version,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          ...(init.headers ?? {}),
+        },
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (controller.signal.aborted) throw timeoutError('connecting');
+      throw err;
+    }
+    if (!res.ok) {
+      // A body-read abort here still resolves to an empty string (the same
+      // fallback the original `.catch(() => '')` already used) rather than
+      // being reclassified as timedOut: the HTTP status already arrived and
+      // is a KNOWN, non-ambiguous outcome (GHL responded with a real non-2xx
+      // code) — only the descriptive error text is missing, unlike the
+      // connect-phase and success-body-read cases below, where a timeout
+      // means we never learned the outcome at all.
+      const body = await res.text().catch(() => '');
+      throw new HighLevelError(
+        `HighLevel ${label} → ${res.status}: ${body.slice(0, 400)}`,
+        res.status,
+        body.slice(0, 2000),
+      );
+    }
+    try {
+      return (await res.json()) as T;
+    } catch (err) {
+      if (controller.signal.aborted) throw timeoutError('reading the response body');
+      throw err;
+    }
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ─── Contact search ───────────────────────────────────────────────────────
@@ -181,7 +271,7 @@ export type CreateOpportunityInput = {
   contactId: string;
   pipelineId: string;
   pipelineStageId: string;
-  name: string;            // e.g., "2026 Holiday Lights — 123 Main St"
+  name: string;            // the customer's name, e.g., "Jane Smith" (#247)
   monetaryValue?: number;  // quote total
   source?: string;         // e.g., 'ai-quote-tool'
 };
@@ -550,6 +640,70 @@ export async function upsertContactCustomField(
     method: 'PUT',
     body: JSON.stringify({ customFields: [{ id: fieldId, value }] }),
   });
+}
+
+// ─── Location custom fields (list / create) ────────────────────────────────
+// Backs the #200 "Years with YLL" tenure field: every OTHER contact custom
+// field in this app (quoteLinkFieldId in ghlPipelineMap.ts, REFERRAL_LINK_
+// FIELD_ENV in referrals.ts) is a FIXED id pasted into an env var after the
+// dev hand-creates the field in the GHL UI. #200 locked a different design —
+// no new env var, no manual dashboard step — so the field is resolved BY
+// NAME at runtime and created via the API the first time it's missing (see
+// resolveTenureFieldId in src/lib/integrations/ghlTenure.ts, the only caller).
+//
+// Endpoints per the public docs (marketplace.gohighlevel.com/docs/ghl/
+// locations/{get-custom-fields,create-custom-field}): GET/POST /locations/
+// {locationId}/customFields, same API base + Version header as every other
+// call in this file. ⚠️ NOT independently confirmed against the live API (no
+// token in this build environment) — the response wrapper shapes below are
+// inferred from this file's own established conventions (an array response
+// wrapped under a name matching the resource, e.g. `conversations`/
+// `opportunities` above) and defensively parsed on the create side to accept
+// either shape. Needs a live verify at deploy (ledger #200 calls this out).
+export type GhlCustomField = {
+  id: string;
+  name: string;
+  fieldKey?: string;
+  dataType?: string;
+  model?: string;
+};
+
+/** Every custom field defined on the CONTACT model for this location. */
+export async function listLocationCustomFields(): Promise<GhlCustomField[]> {
+  const { locationId } = requireConfig();
+  const json = await ghlFetch<{ customFields?: GhlCustomField[] }>(
+    `/locations/${encodeURIComponent(locationId)}/customFields?model=contact`,
+  );
+  return json.customFields ?? [];
+}
+
+/**
+ * Create one new CONTACT custom field. NOT idempotent by itself — calling it
+ * twice with the same name creates two fields — callers must list-then-create
+ * (never call this blind); see resolveTenureFieldId's find-or-create.
+ *
+ * Response wrapper unconfirmed live (see the section note above): accepts
+ * either an unwrapped field object or one nested under `customField`.
+ */
+export async function createLocationCustomField(input: {
+  name: string;
+  dataType: string;
+}): Promise<GhlCustomField> {
+  const { locationId } = requireConfig();
+  const json = await ghlFetch<{ customField?: GhlCustomField } & Partial<GhlCustomField>>(
+    `/locations/${encodeURIComponent(locationId)}/customFields`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ name: input.name, dataType: input.dataType, model: 'contact' }),
+    },
+  );
+  const field = json.customField ?? (json as GhlCustomField);
+  if (!field?.id) {
+    throw new HighLevelError(
+      `HighLevel POST /locations/.../customFields returned no field id for "${input.name}"`,
+    );
+  }
+  return field;
 }
 
 // ─── Contact upsert (website lead capture) ─────────────────────────────────

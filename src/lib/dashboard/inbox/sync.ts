@@ -37,6 +37,7 @@ import {
   setSyncCursor,
   sweepOrphanedFollowUps,
 } from './store';
+import { appBaseUrl } from '@/lib/integrations/telegramNotify';
 import { escalationLevel, isDueForEodDigest, newlyCrossedLevel } from './escalation';
 import { etDayKey } from './normalize';
 import { ESCALATION_LEVEL } from './types';
@@ -55,6 +56,18 @@ export type ReconcileSummary = {
   scanned: number;
   ingested: number;
   skipped: number;
+  /** #252: subset of `skipped` whose IngestOutcome.skipReason was specifically
+   *  'activity-noise-existing' (planIngest reason 2 — pure GHL activity noise
+   *  bumping an ALREADY-EXISTING item). Keyed off skipReason, NOT off
+   *  touch.isActivityNoise directly — that flag alone can't tell reason 2
+   *  apart from an ordinary reason-1 cold-outbound skip (a brand-new,
+   *  no-existing-item conversation whose latest event happens to be BOTH
+   *  activity noise and outbound-direction is an ordinary cold-outbound skip,
+   *  not #252 noise). Distinguishable from the generic `skipped` count
+   *  (which also includes cold-outbound + noop-reingest) so a #252 swallow
+   *  regression would be observable in prod, not lumped into a count that's
+   *  expected to be nonzero for unrelated reasons every run. */
+  activityNoiseSkipped: number;
   autoResolved: number;
   ambiguous: number;
   errors: number;
@@ -68,17 +81,28 @@ export async function runGhlReconcile(now: Date, opts: { limit?: number } = {}):
     const suppressed = await getSuppressedSenders();
     let ingested = 0;
     let skipped = 0;
+    let activityNoiseSkipped = 0;
     let autoResolved = 0;
     let ambiguous = 0;
     let errors = 0;
     for (const c of conversations) {
-      const res = await ingestTouch(normalizeGhlConversation(c, suppressed), now);
+      // #252: normalizeGhlConversation always returns a touch now — pure GHL
+      // activity noise (e.g. "Opportunity created") is FLAGGED
+      // (isActivityNoise), never excluded here, so a conversation's first-ever
+      // touch is never silently swallowed. planIngest (store.ts) is the one
+      // that decides whether to skip, based on whether an item already exists,
+      // and reports WHY via IngestOutcome.skipReason.
+      const touch = normalizeGhlConversation(c, suppressed);
+      const res = await ingestTouch(touch, now);
       if (!res.ok) {
         errors++;
         continue;
       }
       if (res.skipped) {
         skipped++;
+        // Keyed off res.skipReason, NOT touch.isActivityNoise (see the field's
+        // own doc above for why that flag alone would over-count).
+        if (res.skipReason === 'activity-noise-existing') activityNoiseSkipped++;
         continue;
       }
       ingested++;
@@ -86,11 +110,11 @@ export async function runGhlReconcile(now: Date, opts: { limit?: number } = {}):
       if (res.ambiguous) ambiguous++;
     }
     await recordSyncRun('ghl', errors > 0 ? 'error' : 'ok', errors > 0 ? `${errors} item error(s)` : undefined);
-    return { ok: true, scanned: conversations.length, ingested, skipped, autoResolved, ambiguous, errors };
+    return { ok: true, scanned: conversations.length, ingested, skipped, activityNoiseSkipped, autoResolved, ambiguous, errors };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     await recordSyncRun('ghl', 'error', error);
-    return { ok: false, scanned: 0, ingested: 0, skipped: 0, autoResolved: 0, ambiguous: 0, errors: 1, error };
+    return { ok: false, scanned: 0, ingested: 0, skipped: 0, activityNoiseSkipped: 0, autoResolved: 0, ambiguous: 0, errors: 1, error };
   }
 }
 
@@ -100,6 +124,7 @@ export type QuoteReconcileSummary = {
   ingested: number;
   skipped: number;
   followUpsCreated: number;
+  followUpsSuppressed: number;
   followUpsClosed: number;
   errors: number;
   error?: string;
@@ -109,9 +134,9 @@ export type QuoteReconcileSummary = {
  * Fold Quote-Tool leads into the inbox from the SAME Supabase DB (no API, no
  * trigger). A draft quote → an unresponded lead; a sent/approved quote auto-
  * resolves; a sent-but-unapproved quote spawns a quote_sent_no_reply follow-up
- * (closed on approval). Follow-ups anchor on the inbox item, so a quote sent
- * without ever being seen as a draft (rare) gets no inbox follow-up — the home
- * worklist's sent-no-reply remains the backstop for that edge.
+ * (closed on approval). Quotetool's first-seen outbound sends still mint a
+ * handled inbox item, so fast-sent quotes keep their follow-up anchor without
+ * surfacing as open inbox noise.
  *
  * #181: normalizeQuoteTouch returns null for an unsent YLL Neighbor
  * (legacy_rebook) draft — those are skipped before ingestTouch/follow-up, so
@@ -132,6 +157,7 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
     let ingested = 0;
     let skipped = 0;
     let followUpsCreated = 0;
+    let followUpsSuppressed = 0;
     let followUpsClosed = 0;
     let errors = 0;
     for (const q of quotes) {
@@ -154,6 +180,20 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
         // (days)" setting actually controls when this follow-up is due.
         await ensureFollowUp({ inboxItemId: res.itemId, contactId: res.contactId, reason: decision.reason, sentAt: decision.sentAt, afterDays: followUpDays });
         followUpsCreated++;
+      } else if (res.itemId && decision.kind === 'suppress') {
+        // #220: internal recipients never mint a real follow-up row.
+        // Log every suppression so a false positive is visible immediately.
+        console.warn('[inbox] quotetool follow-up suppressed for internal recipient:', {
+          quoteId: q.id,
+          quoteNumber: q.quote_number ?? null,
+          customerEmail: q.customer_email ?? null,
+          suppression: decision.suppression,
+        });
+        // Close any stale pending quote_sent_no_reply row left over from before
+        // the suppression rule existed, but keep this counted as one
+        // suppression event instead of double-counting it as a close too.
+        await closeFollowUp(res.itemId, FOLLOWUP_REASONS.quoteSentNoReply);
+        followUpsSuppressed++;
       } else if (res.itemId && decision.kind === 'close') {
         if ((await closeFollowUp(res.itemId, decision.reason)) > 0) followUpsClosed++;
       }
@@ -164,11 +204,11 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
     // reconcile closes those.
     followUpsClosed += await sweepOrphanedFollowUps(FOLLOWUP_REASONS.quoteSentNoReply);
     await recordSyncRun('quotetool', errors > 0 ? 'error' : 'ok', errors > 0 ? `${errors} item error(s)` : undefined);
-    return { ok: true, scanned: quotes.length, ingested, skipped, followUpsCreated, followUpsClosed, errors };
+    return { ok: true, scanned: quotes.length, ingested, skipped, followUpsCreated, followUpsSuppressed, followUpsClosed, errors };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     await recordSyncRun('quotetool', 'error', error);
-    return { ok: false, scanned: 0, ingested: 0, skipped: 0, followUpsCreated: 0, followUpsClosed: 0, errors: 1, error };
+    return { ok: false, scanned: 0, ingested: 0, skipped: 0, followUpsCreated: 0, followUpsSuppressed: 0, followUpsClosed: 0, errors: 1, error };
   }
 }
 
@@ -397,10 +437,10 @@ export async function runEscalation(now: Date): Promise<EscalationSummary> {
 
   // Send first; advance notified_levels only for the levels whose email went out.
   const redSent = red.length
-    ? await emailTeamSafe(escalationEmailSubject({ level: ESCALATION_LEVEL.RED, count: red.length }), escalationEmailHtml({ level: ESCALATION_LEVEL.RED, items: red }))
+    ? await emailTeamSafe(escalationEmailSubject({ level: ESCALATION_LEVEL.RED, count: red.length }), escalationEmailHtml({ level: ESCALATION_LEVEL.RED, items: red, baseUrl: appBaseUrl() }))
     : true;
   const amberSent = amber.length
-    ? await emailTeamSafe(escalationEmailSubject({ level: ESCALATION_LEVEL.AMBER, count: amber.length }), escalationEmailHtml({ level: ESCALATION_LEVEL.AMBER, items: amber }))
+    ? await emailTeamSafe(escalationEmailSubject({ level: ESCALATION_LEVEL.AMBER, count: amber.length }), escalationEmailHtml({ level: ESCALATION_LEVEL.AMBER, items: amber, baseUrl: appBaseUrl() }))
     : true;
   const sendFailed = (red.length > 0 && !redSent) || (amber.length > 0 && !amberSent);
 
@@ -421,7 +461,7 @@ export async function runEscalation(now: Date): Promise<EscalationSummary> {
   const alreadySentToday = (prev.cursor?.eodDigestDate as string | undefined) === today;
   let eodSent = false;
   if (eod.length && !alreadySentToday) {
-    eodSent = await emailTeamSafe(eodDigestSubject(eod.length), eodDigestHtml(eod));
+    eodSent = await emailTeamSafe(eodDigestSubject(eod.length), eodDigestHtml(eod, appBaseUrl()));
   }
 
   // Watchdog: the engine just resumed after a gap — flag it so a silent outage

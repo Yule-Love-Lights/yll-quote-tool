@@ -13,8 +13,14 @@
 // resolve ONE known customer (the quote's linked customer_id) rather than a
 // name/email/phone search.
 //
-// Both branches attach `referralCreditUsd` (creditBalanceFor) to each row so
-// the credit banner doesn't need a second round trip.
+// GET /api/customers?hlContactId=<id> — tag inheritance (#198): a single-
+// customer lookup by hl_contact_id, same response shape, used by the quote
+// builder's HL-contact-pick flow to check whether the just-picked contact
+// maps to an already-tagged customer (so the builder's NCE/Neighbor chips can
+// turn on to match). Read-only — never creates a row.
+//
+// All three branches attach `referralCreditUsd` (creditBalanceFor) and the
+// NCE/Neighbor tags to each row so callers don't need a second round trip.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
@@ -34,7 +40,17 @@ function safeOrValue(v: string): boolean {
   return !v.includes(',') && !v.includes('(') && !v.includes(')');
 }
 
-type CustomerRow = { id: string; name: string | null; email: string | null; phone: string | null };
+type CustomerRow = {
+  id: string;
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  // NCE + YLL Neighbor tags (#198).
+  is_nce: boolean;
+  is_yll_neighbor: boolean;
+};
+
+const CUSTOMER_COLUMNS = 'id, name, email, phone, is_nce, is_yll_neighbor';
 
 // Referral program redemption (#41 PR 2): attach each row's spendable
 // referral credit balance. Capped at MAX_RESULTS (10) rows, so this is at
@@ -64,8 +80,26 @@ export async function GET(req: NextRequest) {
     }
     const { data, error } = await sb
       .from('customers')
-      .select('id, name, email, phone')
+      .select(CUSTOMER_COLUMNS)
       .eq('id', id)
+      .maybeSingle<CustomerRow>();
+    if (error || !data) {
+      return NextResponse.json({ customers: [] });
+    }
+    return NextResponse.json({ customers: await withCredit([data]) });
+  }
+
+  // Single-customer lookup by HighLevel contact id (tag inheritance, #198) —
+  // same shape as the id branch above, just keyed on hl_contact_id instead.
+  // Read-only: never creates a row (mirrors getCustomerByHlContactId in
+  // src/lib/customers.ts, which server components call directly for the same
+  // purpose — this branch exists for the CLIENT-side pick flow instead).
+  const hlContactId = req.nextUrl.searchParams.get('hlContactId')?.trim();
+  if (hlContactId) {
+    const { data, error } = await sb
+      .from('customers')
+      .select(CUSTOMER_COLUMNS)
+      .eq('hl_contact_id', hlContactId)
       .maybeSingle<CustomerRow>();
     if (error || !data) {
       return NextResponse.json({ customers: [] });
@@ -80,7 +114,7 @@ export async function GET(req: NextRequest) {
 
   const { data, error } = await sb
     .from('customers')
-    .select('id, name, email, phone')
+    .select(CUSTOMER_COLUMNS)
     .or(`name.ilike.%${q}%,email.ilike.%${q}%,phone.ilike.%${q}%`)
     .order('updated_at', { ascending: false })
     .limit(MAX_RESULTS);

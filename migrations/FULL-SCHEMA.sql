@@ -707,6 +707,10 @@ create trigger inventory_on_hand_updated_at_trigger
 --     (hl:<id> | email:<lower> | phone:<digits> | name:<lower>) — UNIQUE so
 --     find-or-create is race-safe. Reached only via the service-role client;
 --     RLS enabled with no policies (#90).
+--     #213: a candidate that doesn't clear the identity-agreement adoption
+--     bar (src/lib/customers.ts classifyCandidate) creates a NEW row keyed
+--     `dup:[["label","value"],...]` (JSON-encoded field pairs) instead of
+--     one of the four shapes above — still UNIQUE, still race-safe.
 -- ---------------------------------------------------------------------
 create table if not exists public.customers (
   id            uuid primary key default gen_random_uuid(),
@@ -789,6 +793,19 @@ create trigger properties_updated_at_trigger
   before update on public.properties
   for each row execute function public.customers_set_updated_at();
 
+-- 2026-08-07 Properties nickname + archive (#205) -- customer-profile
+-- Properties tab full manage. nickname: staff-only display label, purely
+-- cosmetic (never used for matching/dedup -- that stays on address_key).
+-- archived_at: hides a property from the default list WITHOUT deleting it
+-- (quotes/jobs/invoices reference properties by id) -- auto-clears the
+-- moment new quote activity lands on it again (see findOrCreateProperty's
+-- #205 comment in src/lib/customers.ts). Both nullable, no default beyond
+-- NULL. See migrations/2026-08-07-properties-nickname-and-archive.sql.
+alter table public.properties
+  add column if not exists nickname text;
+alter table public.properties
+  add column if not exists archived_at timestamptz;
+
 -- ── Quote ⇄ customer/property linkage (#83 Phase 5) ─────────────────────────
 -- Quotes reference the stable customer + property. Nullable: a quote with no
 -- identity at all (anonymous test entry) stays unlinked. ON DELETE SET NULL
@@ -852,6 +869,15 @@ create table if not exists public.jobs (
   -- Snapshot of the quote's priced line items at creation (jsonb). The job
   -- is a snapshot, not a live view of the quote.
   line_items    jsonb,
+
+  -- P4P Phase 1 planning estimate (2026-08-07): budgeted install hours and the
+  -- labor-revenue figure shadow-mode reporting builds from. Placeholder-rate
+  -- marker stays true until Jason's real production-rate session lands.
+  budgeted_hours numeric,
+  labor_revenue_cents integer,
+  rates_are_placeholder boolean not null default true,
+  budgeted_hours_overridden_at timestamptz,
+  budgeted_hours_overridden_by text,
 
   -- Install date — synced from home.works later (#84).
   install_date  date,
@@ -1011,6 +1037,33 @@ alter table public.invoices add column if not exists payment_preference text;
 alter table public.invoices drop constraint if exists invoices_payment_preference_check;
 alter table public.invoices add constraint invoices_payment_preference_check
   check (payment_preference is null or payment_preference in ('card_on_file', 'cash_check'));
+
+-- 2026-08-07 Manual payment method + NCE reference (#199):
+--   paid_method — how a MANUALLY-settled invoice (mark-paid, not a Valor
+--     charge) was actually collected: 'cash_check' | 'nce' | null. null covers
+--     BOTH a legacy manual mark-paid (predates this column) and a
+--     Valor-settled invoice (the balance webhook / charge-balance route settle
+--     via valor_balance_txn_id, never write this column) — the two null cases
+--     are told apart by whether valor_balance_txn_id is set.
+--   payment_reference — the NCE trade-system payment reference number.
+--     Required at NCE mark-paid time (enforced in the app, not a DB
+--     constraint — an empty ref means the trade payment hasn't happened yet);
+--     editable afterward for a typo fix.
+-- These MUST be here: INVOICE_SELECT (src/lib/invoices.ts) is a literal column
+-- list, so a DB built from this file without them fails EVERY invoice read and
+-- every job-completion invoice creation (PostgREST 42703), not just NCE ones.
+-- See migrations/2026-08-07-invoices-manual-payment-method.sql.
+alter table public.invoices add column if not exists paid_method text;
+alter table public.invoices add column if not exists payment_reference text;
+alter table public.invoices drop constraint if exists invoices_paid_method_check;
+alter table public.invoices add constraint invoices_paid_method_check
+  check (paid_method is null or paid_method in ('cash_check', 'nce'));
+
+-- 2026-08-11 settled_by (#225): the operator who manually settled the
+-- invoice. Mirrors inbox_items.handled_by — nullable uuid FK to auth.users,
+-- ON DELETE SET NULL. See migrations/2026-08-11-invoices-settled-by.sql.
+alter table public.invoices
+  add column if not exists settled_by uuid references auth.users(id) on delete set null;
 
 
 -- =====================================================================
@@ -1758,3 +1811,178 @@ drop trigger if exists bot_users_updated_at on public.bot_users;
 create trigger bot_users_updated_at
   before update on public.bot_users
   for each row execute function public.bot_users_set_updated_at();
+
+-- ---------------------------------------------------------------------
+-- crew_members (2026-08-07, migrations/2026-08-07-crew-members.sql +
+-- migrations/2026-08-07-crew-members-name-unique.sql) — the P4P / Operations
+-- Hub identity + pay-config cache. `hub_employee_id` stays nullable until the
+-- Hub's OTP auth ships and backfills it. `telegram_user_id` links to
+-- bot_users when known. RLS ENABLED, ZERO POLICIES — service-role only.
+-- Folded into this canonical file at the S57 wrap review (was missing here
+-- even though both migrations were already applied to prod — a fresh
+-- onboarding DB built from this file alone would have had no crew_members
+-- table at all).
+-- ---------------------------------------------------------------------
+create table if not exists public.crew_members (
+  id               uuid primary key default gen_random_uuid(),
+  hub_employee_id  uuid,
+  telegram_user_id text,
+  display_name     text not null,
+  base_rate_cents  integer not null,
+  in_p4p_pool      boolean not null default false,
+  pay_mode         text not null default 'hourly' check (pay_mode in ('hourly', 'shadow', 'p4p')),
+  language         text not null default 'en',
+  active           boolean not null default true,
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now()
+);
+
+create unique index if not exists crew_members_hub_employee_id_key
+  on public.crew_members (hub_employee_id) where hub_employee_id is not null;
+
+create unique index if not exists crew_members_telegram_user_id_key
+  on public.crew_members (telegram_user_id) where telegram_user_id is not null;
+
+create unique index if not exists crew_members_display_name_key
+  on public.crew_members (lower(trim(display_name)));
+
+alter table public.crew_members enable row level security;
+
+create or replace function public.crew_members_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists crew_members_updated_at on public.crew_members;
+create trigger crew_members_updated_at
+  before update on public.crew_members
+  for each row execute function public.crew_members_set_updated_at();
+
+-- ---------------------------------------------------------------------
+-- shifts (2026-08-07, migrations/2026-08-07-shifts.sql) — the canonical
+-- day-level clock ledger for Operations Hub Flow B. `source` records how the
+-- shift was opened; `close_source` how it was closed (nullable — null while
+-- open); they can differ (opened via the Telegram bot, closed by an office
+-- correction, say). The partial unique index is the real idempotency
+-- guarantee — at most one open shift per person, enforced by the DB, not an
+-- application check. RLS ENABLED, ZERO POLICIES — service-role only, fails
+-- closed until the Flow B routes and policies ship. Folded into this
+-- canonical file at the S57 wrap review (see the crew_members note above —
+-- same gap, same fix).
+-- ---------------------------------------------------------------------
+create table if not exists public.shifts (
+  id              uuid primary key default gen_random_uuid(),
+  crew_member_id  uuid not null references public.crew_members(id),
+  clock_in_at     timestamptz not null default now(),
+  clock_out_at    timestamptz,
+  source          text not null check (source in ('pwa', 'telegram', 'office', 'system')),
+  close_source    text check (close_source in ('pwa', 'telegram', 'office', 'system')),
+  device_time     timestamptz,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
+);
+
+create unique index if not exists shifts_one_open_per_person
+  on public.shifts (crew_member_id) where clock_out_at is null;
+
+create index if not exists shifts_crew_member_id_idx
+  on public.shifts (crew_member_id);
+
+alter table public.shifts enable row level security;
+
+create or replace function public.shifts_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists shifts_updated_at on public.shifts;
+create trigger shifts_updated_at
+  before update on public.shifts
+  for each row execute function public.shifts_set_updated_at();
+
+-- ---------------------------------------------------------------------
+-- shift_breaks (2026-08-11, migrations/2026-08-11-shift-breaks.sql) — unpaid
+-- break tracking on the shifts ledger. Breaks are UNPAID, so paid time for a
+-- shift is the clock envelope MINUS break time (the arithmetic lives in
+-- src/lib/shiftBreaks.ts, with its own tests, because it feeds P4P payout
+-- math). The partial unique index is the idempotency guarantee — at most one
+-- open break per shift, enforced by the DB. `auto_closed` marks a break that a
+-- clock-out ended rather than the crew member, which is what feeds the
+-- `open_break` time exception queue; it is a review state, not an error.
+-- `crew_member_id` is denormalized from the parent shift so the write path can
+-- authorize without a join. RLS ENABLED, ZERO POLICIES — service-role only,
+-- fails closed until the Flow B routes and policies ship.
+-- ---------------------------------------------------------------------
+create table if not exists public.shift_breaks (
+  id              uuid primary key default gen_random_uuid(),
+  shift_id        uuid not null references public.shifts(id),
+  crew_member_id  uuid not null references public.crew_members(id),
+  started_at      timestamptz not null default now(),
+  ended_at        timestamptz,
+  source          text not null check (source in ('pwa', 'telegram', 'office', 'system')),
+  end_source      text check (end_source in ('pwa', 'telegram', 'office', 'system')),
+  auto_closed     boolean not null default false,
+  device_time     timestamptz,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now(),
+  constraint shift_breaks_ends_after_start check (ended_at is null or ended_at >= started_at)
+);
+
+create unique index if not exists shift_breaks_one_open_per_shift
+  on public.shift_breaks (shift_id) where ended_at is null;
+
+create index if not exists shift_breaks_shift_id_idx
+  on public.shift_breaks (shift_id);
+
+create index if not exists shift_breaks_crew_member_id_idx
+  on public.shift_breaks (crew_member_id);
+
+alter table public.shift_breaks enable row level security;
+
+create or replace function public.shift_breaks_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists shift_breaks_updated_at on public.shift_breaks;
+create trigger shift_breaks_updated_at
+  before update on public.shift_breaks
+  for each row execute function public.shift_breaks_set_updated_at();
+
+-- ---------------------------------------------------------------------
+-- quote_deliveries (2026-08-12, migrations/2026-08-12-quote-deliveries.sql) —
+-- durable record of every attempt to deliver a quote (SMS/email via GHL) to a
+-- CUSTOMER (#250). One row per attempt (send + each ?retryDelivery=1
+-- redelivery), not one row per quote — see the migration file's own header
+-- for the table-vs-columns rationale and the exact call-site scope (only the
+-- POST /api/quotes/[id]/send customer messages; every other sendSms/sendEmail
+-- caller sends a different customer message and is out of scope). RLS
+-- ENABLED, ZERO POLICIES — service-role only, matches quote_view_events /
+-- self_serve_estimates.
+-- ---------------------------------------------------------------------
+create table if not exists public.quote_deliveries (
+  id                  uuid primary key default gen_random_uuid(),
+  created_at          timestamptz not null default now(),
+  quote_id            uuid not null references public.quotes(id) on delete cascade,
+  channel             text not null check (channel in ('sms', 'email')),
+  outcome             text not null check (outcome in ('sent', 'failed')),
+  provider_message_id text,
+  error               text
+);
+
+create index if not exists quote_deliveries_quote_id_idx
+  on public.quote_deliveries (quote_id, created_at desc);
+
+create index if not exists quote_deliveries_created_at_idx
+  on public.quote_deliveries (created_at desc);
+
+alter table public.quote_deliveries enable row level security;

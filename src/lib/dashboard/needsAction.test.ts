@@ -294,8 +294,8 @@ describe('buildNeedsAction — terminal & is_test exclusions', () => {
     expect(buildNeedsAction(makeInput({ quotes: [q] }))).toEqual([]);
   });
 
-  it('excludes a lost quote', () => {
-    const q = makeQuote({ id: 'ql', quote_sent_at: daysAgo(10), status: 'lost' });
+  it('excludes an abandoned quote', () => {
+    const q = makeQuote({ id: 'ql', quote_sent_at: daysAgo(10), status: 'abandoned' });
     expect(buildNeedsAction(makeInput({ quotes: [q] }))).toEqual([]);
   });
 

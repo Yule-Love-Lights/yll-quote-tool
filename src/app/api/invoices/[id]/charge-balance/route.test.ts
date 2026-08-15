@@ -402,6 +402,61 @@ describe('POST /api/invoices/[id]/charge-balance', () => {
   });
 });
 
+// ─── #199: NCE trade-settled balance ────────────────────────────────────────
+describe('POST /api/invoices/[id]/charge-balance — NCE trade-settled balance (#199)', () => {
+  it('409s (nce-blocked) without charging when the quote is NCE-tagged', async () => {
+    sbRef.current = makeSb({ ...QUOTE, is_nce: true });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.reason).toBe('nce-blocked');
+    expect(chargeMock).not.toHaveBeenCalled();
+    expect(invoiceCallsOf(sbRef.current)).toHaveLength(0);
+  });
+
+  it('charges an NCE quote only with the explicit overrideNce', async () => {
+    sbRef.current = makeSb({ ...QUOTE, is_nce: true }, SETTLE_OK);
+    const res = await POST(req({ overrideNce: true }), ctx());
+    expect(res.status).toBe(200);
+    expect(chargeMock).toHaveBeenCalled();
+  });
+
+  it('fires the NCE block BEFORE the cash-preference check when both apply', async () => {
+    getInvoiceMock.mockResolvedValueOnce({ ...INVOICE, payment_preference: 'cash_check' });
+    sbRef.current = makeSb({ ...QUOTE, is_nce: true });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.reason).toBe('nce-blocked'); // not 'cash-preference'
+    expect(chargeMock).not.toHaveBeenCalled();
+  });
+
+  it('an NCE + cash/check invoice needs BOTH overrides to actually charge', async () => {
+    // overrideNce alone clears NCE but still hits the cash-preference gate.
+    getInvoiceMock.mockResolvedValueOnce({ ...INVOICE, payment_preference: 'cash_check' });
+    sbRef.current = makeSb({ ...QUOTE, is_nce: true });
+    const res1 = await POST(req({ overrideNce: true }), ctx());
+    const json1 = await res1.json();
+    expect(res1.status).toBe(409);
+    expect(json1.reason).toBe('cash-preference');
+    expect(chargeMock).not.toHaveBeenCalled();
+
+    // Both overrides together clear both gates.
+    getInvoiceMock.mockResolvedValueOnce({ ...INVOICE, payment_preference: 'cash_check' });
+    sbRef.current = makeSb({ ...QUOTE, is_nce: true }, SETTLE_OK);
+    const res2 = await POST(req({ overrideNce: true, overridePreference: true }), ctx());
+    expect(res2.status).toBe(200);
+    expect(chargeMock).toHaveBeenCalled();
+  });
+
+  it('does not block a non-NCE quote', async () => {
+    sbRef.current = makeSb({ ...QUOTE, is_nce: false }, SETTLE_OK);
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+    expect(chargeMock).toHaveBeenCalled();
+  });
+});
+
 describe('POST /api/invoices/[id]/charge-balance — WT-18 re-consent settlement gate', () => {
   it('409s reconsent-required after a price-INCREASING amendment, without charging', async () => {
     sbRef.current = makeSb({ ...QUOTE, approval_snapshot: { amendments: [{ delta: 500, new_total: 6000 }] } });

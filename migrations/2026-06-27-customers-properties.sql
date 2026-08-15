@@ -27,6 +27,13 @@ BEGIN;
 -- find-or-create is race-safe (the code select-then-inserts and falls back to a
 -- re-select on the unique-violation race). hl_contact_id/name/email/phone are
 -- the representative contact fields chosen across the matched quotes.
+-- #213 (S34 #198 review): a candidate identity match that doesn't clear the
+-- adoption bar (see src/lib/customers.ts classifyCandidate) creates a NEW row
+-- instead of adopting — that row's match_key is instead a disambiguation key
+-- shaped `dup:[["label","value"],...]` (JSON-encoded field pairs, e.g.
+-- `dup:[["phone","5551234567"],["name","bob"]]`), never a plain hl:/email:/
+-- phone:/name: key. Still UNIQUE, still race-safe; just not one of the four
+-- "real" precedence-ranked shapes above.
 CREATE TABLE IF NOT EXISTS public.customers (
   id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   match_key     text UNIQUE,
