@@ -37,35 +37,63 @@
 // #229: counts alone don't say WHO — a promised customer buried inside "4
 // awaiting reply" is invisible. Beneath the existing counts (which stay the
 // TRUE totals, unchanged), three sections now also list names:
-//   - overdue follow-ups (from listDueFollowUps, legacy-rebook-anchored ones
-//     filtered — see isLegacyRebookAnchored's doc)
+//   - overdue follow-ups (from listDueFollowUps — EVERY due row, including
+//     one anchored to a SENT legacy_rebook "YLL Neighbor" quote; that's a
+//     real customer genuinely owed a reply, not noise to filter — see #229
+//     FIX 3 below)
 //   - quotes awaiting reply (sorted so a same-day promise and a week-old
 //     silence can't be confused — see the comparator below)
-//   - deposits pending (oldest-approved first, with the dollar amount)
-// Every named list is capped (NAMED_LIST_CAP) with an exact "+N more" — a
-// message must stay well under Telegram's 4096-char limit even on a heavy
-// day, and an unbounded by-name list was the #229 first-attempt's own bug
-// (the ~124-row Neighbor pool would have flooded it before the rebook filter
-// existed). Sort-only raw timestamps never leave collectOpsDigest — only the
-// derived whole-day counts do.
+//   - deposits pending (oldest-approved first, with the DEPOSIT dollar
+//     amount owed — see #229 FIX 1 below, NOT the full quote total)
+// The pipeline lists (overdue follow-ups / awaiting reply / deposits) are
+// capped (NAMED_LIST_CAP) with an exact "+N more" since a growing backlog
+// (e.g. the legacy_rebook pool) genuinely can balloon. Installs are NOT
+// capped (#229 FIX 4) — they're the day's actual bounded crew work, not a
+// pipeline, and a busy-morning render measured well under Telegram's
+// 4096-char limit even fully listed. Sort-only raw timestamps never leave
+// collectOpsDigest — only the derived whole-day counts do.
+//
+// #229 FIX 1 (round 3): "Deposits pending" renders the DEPOSIT owed, not
+// `total` (the full quote) — the deposit is a percentage of the total
+// (default 50%), so total roughly doubles the real figure (worse for a
+// partial approval). See fetchDepositAmounts's own doc for the exact source
+// and why it's a separate scoped query rather than widening listQuotes().
+//
+// #229 FIX 2 (round 3): "days overdue" now agrees with the CALENDAR-DAY rule
+// (etDayKey, mirroring listDueFollowUps' own isDueToday) that decided a
+// follow-up belongs in the list, instead of a floored elapsed-24h-block
+// count that can disagree with it by one right around the 7:30am ET cron —
+// see calendarDaysOverdue's own doc.
+//
+// #229 FIX 3 (round 3): the "legacy-rebook-anchored" flag + filter that
+// briefly lived here (and in listDueFollowUps) was REMOVED — the state it
+// tested for is structurally impossible (a quote_sent_no_reply follow-up
+// can only exist when quote_sent_at IS SET, which is mutually exclusive with
+// the "parked draft" predicate it required). Confirmed empirically against
+// prod. A legacy_rebook-anchored follow-up here is always for a SENT
+// Neighbor quote — a real owed reply — so it is never filtered by code;
+// whether to label it differently is a product decision, not a default.
 
 import { listQuotes, type QuoteListItem } from '@/lib/quotes';
 import { listFulfillmentCards } from '@/lib/inventory/jobs';
 import { FULFILLMENT_STAGE_LABELS } from '@/lib/inventory/fulfillmentStage';
 import { deriveStatus, isParkedLegacyRebookDraft } from '@/lib/quoteStatus';
 import { listOpenItems, listDueFollowUps } from '@/lib/dashboard/inbox/store';
-import type { DueFollowUp } from '@/lib/dashboard/inbox/types';
+import { getSupabaseServiceClient } from '@/lib/supabase';
+import { etDayKey } from '@/lib/dashboard/inbox/normalize';
 
 // The digest's quote-pipeline counts must see EVERY open quote, not just the
 // newest page — a high explicit scan limit (well above the foreseeable table
 // size) so listQuotes()'s default 500 cap can't silently truncate a count.
 const DIGEST_QUOTE_SCAN_LIMIT = 10_000;
 
-// #229: cap on every NAMED list (installs included) so a heavy day can't push
-// the message toward Telegram's 4096-char limit, and a by-name render can't
-// silently balloon the way the ~124-row legacy_rebook pool would if it ever
-// leaked in unfiltered. 5 is plenty to act on at a glance; the header count
-// beside it stays the TRUE total.
+// #229: cap on the pipeline NAMED lists (overdue follow-ups / awaiting reply /
+// deposits pending) — these are genuinely open-ended backlogs (the
+// legacy_rebook pool alone is ~124 quotes) that could otherwise push the
+// message toward Telegram's 4096-char limit. 5 is plenty to act on at a
+// glance; the header count beside each stays the TRUE total. Installs are
+// deliberately NOT capped (#229 FIX 4) — see opsDigestMessage's install
+// section for why.
 const NAMED_LIST_CAP = 5;
 
 const MS_PER_DAY = 86_400_000;
@@ -80,8 +108,11 @@ type DigestInstall = {
 /** A named line for the "overdue follow-ups" section beneath the inbox count. */
 export type DigestFollowUpItem = {
   displayName: string;
-  /** Whole days overdue, floored, clamped >= 0 (a follow-up due later today
-   *  reads 0, never negative). */
+  /** Whole CALENDAR days overdue (ET), clamped >= 0 — see calendarDaysOverdue's
+   *  doc for why this is a calendar-day diff (etDayKey), not a floored
+   *  elapsed-ms count (#229 FIX 2: those two disagree by one right around the
+   *  7:30am ET cron for anything due the evening before). A follow-up due
+   *  later TODAY (same ET calendar day) reads 0, never negative. */
   daysOverdue: number;
 };
 
@@ -97,8 +128,10 @@ export type DigestQuoteItem = {
 /** A named line for the "deposits pending" section. */
 export type DigestDepositItem = {
   displayName: string;
-  /** Pre-formatted ("$2,500") or "amount unknown" for a null total — never
-   *  render a null balance as "$0", which reads as nothing owed. */
+  /** Pre-formatted ("$2,500") or "amount unknown" — the DEPOSIT owed (a
+   *  percentage of the total, per #229 FIX 1), never the full quote total,
+   *  and never "$0" for a missing/unavailable figure (that reads as nothing
+   *  owed). See fetchDepositAmounts's doc for the exact source. */
   amountLabel: string;
 };
 
@@ -142,12 +175,13 @@ export type OpsDigestData = {
    *  (still INCLUDES legacy-rebook-anchored ones — unchanged, existing
    *  behavior; the strip itself has never excluded them). */
   inboxFollowUpsDueCount: number | null;
-  /** #229: named detail beneath inboxFollowUpsDueCount — legacy-rebook-
-   *  anchored follow-ups are FILTERED OUT here (unlike the count above), so a
-   *  Neighbor draft's system follow-up can't flood the message with ~124
-   *  named rows. null on a failed inbox read (same fail-soft contract as
-   *  inboxFollowUpsDueCount); [] when the read succeeded but nothing
-   *  (post-filter) is due. Uncapped here — opsDigestMessage caps the render. */
+  /** #229: named detail beneath inboxFollowUpsDueCount — the SAME rows as
+   *  the count above, by name (see #229 FIX 3: an earlier "legacy-rebook-
+   *  anchored" filter here tested for a structurally impossible state and
+   *  was removed; this list and the count can never disagree now). null on a
+   *  failed inbox read (same fail-soft contract as inboxFollowUpsDueCount);
+   *  [] when the read succeeded but nothing is due. Uncapped here —
+   *  opsDigestMessage caps the render. */
   overdueFollowUps: DigestFollowUpItem[] | null;
 };
 
@@ -186,19 +220,102 @@ function pickDisplayName(name: string | null, phone: string | null, email: strin
 
 /** Whole days between `ts` and `now`, floored, clamped to >= 0. An invalid/
  *  missing timestamp (NaN ms) reads as 0 rather than propagating NaN into the
- *  message — a bad date should degrade to "today", never render "NaN days". */
+ *  message — a bad date should degrade to "today", never render "NaN days".
+ *  Used for "days since sent" (awaiting reply) — there is no calendar-day
+ *  membership rule for that list to agree with (contrast calendarDaysOverdue
+ *  below, which the "overdue follow-ups" list needs). */
 function daysBetween(now: Date, ts: Date): number {
   const ms = now.getTime() - ts.getTime();
   if (!Number.isFinite(ms)) return 0;
   return Math.max(0, Math.floor(ms / MS_PER_DAY));
 }
 
-/** `total` is stored in DOLLARS (not cents) on the quotes table — mirrors
- *  needsAction.ts's own formatUsd comment/convention. A null total must never
- *  render as "$0" (reads as nothing owed) — "amount unknown" instead. */
-function formatDollarsOrUnknown(total: number | null): string {
-  if (total == null || !Number.isFinite(total)) return 'amount unknown';
-  return `$${Math.round(total).toLocaleString('en-US')}`;
+/** Parse an `etDayKey` "YYYY-MM-DD" ET calendar-day key into the UTC-midnight
+ *  ms for that calendar date — a pure calendar-day value, so diffing two of
+ *  these is an EXACT day count (never a rounding concern: both operands are
+ *  exact multiples of a day). */
+function dayKeyToUtcMs(key: string): number {
+  const [y, m, d] = key.split('-').map(Number);
+  return Date.UTC(y, m - 1, d);
+}
+
+/**
+ * Whole ET CALENDAR days between `dueAt` and `now` — i.e. etDayKey(now) minus
+ * etDayKey(dueAt), NOT a floored elapsed-24h-block count (daysBetween).
+ *
+ * #229 FIX 2: listDueFollowUps decides membership with isDueToday, which
+ * compares ET CALENDAR days (etDayKey(dueAt) <= etDayKey(now)) — but
+ * daysBetween measures raw elapsed milliseconds. Those two disagree by
+ * exactly one right around the 7:30am ET cron for anything due the evening
+ * before: e.g. due 8pm ET yesterday, now 7:30am ET today is only ~11.5
+ * elapsed hours (daysBetween floors to 0 -> "due today"), but it crossed an
+ * ET calendar-day boundary at midnight, so the rule that put the row in the
+ * list already calls it a day overdue. The displayed number must agree with
+ * the rule that selected the row, or the label contradicts why the row is
+ * even there. Clamped to >= 0 (same-day or a future-dated row never reads
+ * negative). An invalid `dueAt` (NaN ms — etDayKey itself throws on an
+ * Invalid Date) reads 0 rather than propagating an exception into the whole
+ * named-list build.
+ */
+function calendarDaysOverdue(now: Date, dueAt: Date): number {
+  if (!Number.isFinite(dueAt.getTime())) return 0;
+  const diff = dayKeyToUtcMs(etDayKey(now)) - dayKeyToUtcMs(etDayKey(dueAt));
+  return Math.max(0, Math.round(diff / MS_PER_DAY));
+}
+
+/** The deposit is stored in DOLLARS (not cents), same convention as `total`
+ *  and needsAction.ts's own formatUsd. A missing/unavailable amount must
+ *  never render as "$0" (reads as nothing owed) — "amount unknown" instead. */
+function formatDollarsOrUnknown(amount: number | null): string {
+  if (amount == null || !Number.isFinite(amount)) return 'amount unknown';
+  return `$${Math.round(amount).toLocaleString('en-US')}`;
+}
+
+/**
+ * #229 FIX 1: the deposit dollar amount actually owed for an approved-but-
+ * unpaid quote is NOT `total` (the full quote price) — the deposit is a
+ * PERCENTAGE of the total (default 50%, BUSINESS_RULES.depositPercentage),
+ * so rendering `total` roughly doubles the real figure on this line (worse
+ * for a partial approval, where `total` isn't even the agreed figure).
+ *
+ * The real amount is frozen server-side at approval time into
+ * `approval_snapshot.customerSelection.currentDepositUsd` (approve/route.ts)
+ * — priced off the customer's ACTUAL selected items (`breakdown.deposit`),
+ * so it already accounts for a partial approval correctly, and it's the
+ * EXACT figure /pay charges via Valor. It cannot be stale from a later
+ * amendment for this population specifically: /amend requires
+ * `deposit_paid_at` to already be set (a booked-order-only feature), and
+ * this list is strictly `deriveStatus === 'approved'` (`deposit_paid_at` IS
+ * null) — so no amendment could have touched it yet.
+ *
+ * `listQuotes()`'s shared select does not carry `approval_snapshot`, and
+ * this digest deliberately does NOT widen that shared select — every OTHER
+ * `listQuotes()` caller (the admin quotes list, botTools, /api/quotes) would
+ * then pay for a JSONB payload they never read. Instead this is a SEPARATE,
+ * SCOPED query for just the (typically single-digit) approved-unpaid quote
+ * ids — the same scoped-lookup shape store.ts's
+ * fetchHiddenLegacyRebookQuoteIds already uses for an analogous reason.
+ * Fails open (empty map -> every row renders "amount unknown") on a read
+ * error or missing config, mirroring this file's fail-soft convention —
+ * never blocks the section, let alone the send.
+ */
+type DepositSnapshot = { customerSelection?: { currentDepositUsd?: number } } | null;
+
+async function fetchDepositAmounts(quoteIds: string[]): Promise<Map<string, number>> {
+  const amounts = new Map<string, number>();
+  if (!quoteIds.length) return amounts;
+  const sb = getSupabaseServiceClient();
+  if (!sb) return amounts;
+  const { data, error } = await sb.from('quotes').select('id, approval_snapshot').in('id', quoteIds);
+  if (error) {
+    console.error('[opsDigest] deposit-amount lookup failed:', error.message);
+    return amounts;
+  }
+  for (const row of (data ?? []) as { id: string; approval_snapshot: DepositSnapshot }[]) {
+    const amt = row.approval_snapshot?.customerSelection?.currentDepositUsd;
+    if (typeof amt === 'number' && Number.isFinite(amt) && amt >= 0) amounts.set(row.id, amt);
+  }
+  return amounts;
 }
 
 /** Build a derived named list; on any unexpected error (a malformed row this
@@ -298,7 +415,11 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
 
   // #229: named "deposits pending" detail — oldest-approved-first (longest
   // pending is most urgent to collect), so the render cap keeps those, not
-  // whatever order listQuotes() happened to return.
+  // whatever order listQuotes() happened to return. FIX 1: the rendered
+  // amount is the DEPOSIT owed (fetchDepositAmounts — see its own doc), not
+  // `q.total`. depositsPendingCount above is computed independently of this
+  // lookup and is NOT affected by it either way.
+  const depositAmounts = await fetchDepositAmounts(depositsPendingQuotes.map((q) => q.id));
   const depositsPendingNamed = safeBuild(() => {
     return [...depositsPendingQuotes]
       .sort((a, b) => {
@@ -311,7 +432,7 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
       })
       .map((q) => ({
         displayName: pickDisplayName(q.customer_name, q.customer_phone, q.customer_email),
-        amountLabel: formatDollarsOrUnknown(q.total),
+        amountLabel: formatDollarsOrUnknown(depositAmounts.get(q.id) ?? null),
       }));
   }, 'deposits-pending named list');
 
@@ -331,11 +452,14 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
   // construction (store.ts), so this never actually clamps.
   const inboxFilteredCount = inboxOpen ? Math.max(inboxOpen.open - inboxOpen.leads, 0) : null;
 
-  // #229: ONE listDueFollowUps() read feeds both the count (unchanged — still
-  // includes legacy-rebook-anchored items, matching the strip's own existing
-  // behavior) and the named list (filtered — see isLegacyRebookAnchored's doc
-  // on DueFollowUp for why a Neighbor draft's system follow-up must not
-  // appear by name).
+  // #229: ONE listDueFollowUps() read feeds both the count and the named
+  // list — the SAME rows, by name. FIX 3: an earlier "legacy-rebook-
+  // anchored" filter here was removed (see the file header doc) — a
+  // legacy_rebook-anchored row is always for a SENT Neighbor quote (a real
+  // owed reply), so it is never filtered. FIX 2: daysOverdue uses
+  // calendarDaysOverdue (ET calendar-day diff), NOT daysBetween (elapsed-ms)
+  // — it must agree with isDueToday, the calendar-day rule that decided
+  // this row belongs in the list at all.
   const dueFollowUps = await safeCount(async () => {
     const res = await listDueFollowUps(now);
     return res.ok ? res.items : null;
@@ -344,12 +468,10 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
   const overdueFollowUps = dueFollowUps
     ? safeBuild(
         () =>
-          dueFollowUps
-            .filter((f: DueFollowUp) => !f.isLegacyRebookAnchored)
-            .map((f: DueFollowUp) => ({
-              displayName: pickDisplayName(f.contactName, f.contactPhone, f.contactEmail),
-              daysOverdue: daysBetween(now, new Date(f.dueAt)),
-            })),
+          dueFollowUps.map((f) => ({
+            displayName: pickDisplayName(f.contactName, f.contactPhone, f.contactEmail),
+            daysOverdue: calendarDaysOverdue(now, new Date(f.dueAt)),
+          })),
         'overdue follow-ups named list',
       )
     : null;
@@ -409,9 +531,10 @@ function renderCapped<T>(items: T[], cap: number, toLine: (item: T) => string): 
 /**
  * Render the digest. ALWAYS returns a message (the heartbeat) — even an
  * all-quiet morning sends, so a silent day means "broken", never "nothing
- * happening". Counts carry the pipeline; installs + (#229) overdue follow-ups /
- * awaiting-reply / deposits-pending are also listed by name beneath their
- * count, each capped at NAMED_LIST_CAP with an exact "+N more".
+ * happening". Counts carry the pipeline; installs (uncapped, #229 FIX 4) +
+ * (#229) overdue follow-ups / awaiting-reply / deposits-pending (each capped
+ * at NAMED_LIST_CAP with an exact "+N more") are also listed by name beneath
+ * their count.
  */
 export function opsDigestMessage(data: OpsDigestData, baseUrl: string): string {
   const base = baseUrl.replace(/\/+$/, ''); // strip trailing slash so `${base}/` is clean
@@ -419,14 +542,16 @@ export function opsDigestMessage(data: OpsDigestData, baseUrl: string): string {
 
   const installLine = (i: DigestInstall) =>
     `• Job #${i.jobNumber ?? '—'} ${i.customerName ?? '(no name)'} (${i.stageLabel})${i.isTest ? ' [TEST]' : ''}`;
-  // Always show both counts (heartbeat), then list names under each day
-  // present — capped (#229): the header count stays the TRUE total even when
-  // the list beneath it is trimmed.
+  // Always show both counts (heartbeat), then list every name for each day
+  // present. #229 FIX 4: deliberately UNCAPPED — installs are the day's
+  // actual (real-world bounded) crew work, not an open-ended pipeline like
+  // the legacy_rebook backlog, and a round-3 review found the length
+  // pressure that originally justified capping them didn't exist (a busy-
+  // morning render measured well under Telegram's 4096-char limit fully
+  // listed). Contrast the pipeline lists below, which ARE capped.
   lines.push(`🔧 Installs — today: ${data.installsToday.length} · tomorrow: ${data.installsTomorrow.length}`);
-  if (data.installsToday.length) lines.push('Today:', ...renderCapped(data.installsToday, NAMED_LIST_CAP, installLine));
-  if (data.installsTomorrow.length) {
-    lines.push('Tomorrow:', ...renderCapped(data.installsTomorrow, NAMED_LIST_CAP, installLine));
-  }
+  if (data.installsToday.length) lines.push('Today:', ...data.installsToday.map(installLine));
+  if (data.installsTomorrow.length) lines.push('Tomorrow:', ...data.installsTomorrow.map(installLine));
 
   lines.push(`📝 Quotes to send: ${data.quotesToSendCount}`);
   lines.push(`🏘️ Neighbor (rebook) drafts: ${data.rebookDraftCount}`);

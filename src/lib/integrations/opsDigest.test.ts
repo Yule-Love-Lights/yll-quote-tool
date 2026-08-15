@@ -3,17 +3,34 @@ import type { QuoteListItem } from '@/lib/quotes';
 import type { FulfillmentCard } from '@/lib/inventory/jobs';
 
 // IO seams mocked; the collect filtering + the pure formatter run for real.
-const { listQuotes, listFulfillmentCards, listOpenItems, listDueFollowUps } = vi.hoisted(() => ({
+const { listQuotes, listFulfillmentCards, listOpenItems, listDueFollowUps, sbRef } = vi.hoisted(() => ({
   listQuotes: vi.fn(async (): Promise<unknown[]> => []),
   listFulfillmentCards: vi.fn(async (): Promise<unknown[]> => []),
   listOpenItems: vi.fn(async (): Promise<unknown> => ({ ok: true, items: [], totalOpen: 0, totalLeads: 0, truncated: false })),
   listDueFollowUps: vi.fn(async (): Promise<unknown> => ({ ok: true, items: [] })),
+  sbRef: { current: null as unknown },
 }));
 vi.mock('@/lib/quotes', () => ({ listQuotes }));
 vi.mock('@/lib/inventory/jobs', () => ({ listFulfillmentCards }));
 vi.mock('@/lib/dashboard/inbox/store', () => ({ listOpenItems, listDueFollowUps }));
+// #229 FIX 1: fetchDepositAmounts' scoped quotes lookup — sbRef.current stays
+// null by default (every deposit renders "amount unknown"); tests that need a
+// real figure set sbRef.current to a fake client (see makeDepositClient).
+vi.mock('@/lib/supabase', () => ({ getSupabaseServiceClient: () => sbRef.current }));
 
 import { collectOpsDigest, opsDigestMessage, type OpsDigestData } from './opsDigest';
+
+/** Fake Supabase client for fetchDepositAmounts' `.from('quotes').select(...).in(...)`
+ *  chain — the only shape opsDigest.ts's deposit lookup ever calls. */
+function makeDepositClient(rows: { id: string; approval_snapshot: unknown }[] | null, error: { message: string } | null = null) {
+  return {
+    from: (_table: string) => ({
+      select: (_cols: string) => ({
+        in: (_col: string, _ids: string[]) => Promise.resolve({ data: rows, error }),
+      }),
+    }),
+  };
+}
 
 const quote = (over: Partial<QuoteListItem>): QuoteListItem => ({
   id: 'q1',
@@ -82,6 +99,7 @@ beforeEach(() => {
   listFulfillmentCards.mockResolvedValue([]);
   listOpenItems.mockResolvedValue({ ok: true, items: [], totalOpen: 0, totalLeads: 0, truncated: false });
   listDueFollowUps.mockResolvedValue({ ok: true, items: [] });
+  sbRef.current = null;
 });
 
 describe('collectOpsDigest', () => {
@@ -202,11 +220,10 @@ describe('collectOpsDigest — #229 named details', () => {
         {
           id: 'f1',
           reason: 'quote_sent_no_reply',
-          dueAt: '2026-08-04T12:00:00Z', // 2d 3h ago -> 2 whole days
+          dueAt: '2026-08-04T12:00:00Z', // 2 ET calendar days before Aug 6
           contactName: 'Sam Overdue',
           contactPhone: null,
           contactEmail: null,
-          isLegacyRebookAnchored: false,
         },
       ],
     });
@@ -214,11 +231,15 @@ describe('collectOpsDigest — #229 named details', () => {
     expect(data.overdueFollowUps).toEqual([{ displayName: 'Sam Overdue', daysOverdue: 2 }]);
   });
 
-  // Ledger #229's headline bug: a legacy_rebook ("YLL Neighbor") quote can mint
-  // a follow-up (#222's outbound-first allowlist) that must never appear by
-  // name — but the STRIP's own count is unchanged (it has never excluded
-  // rebook), so the header count here must still see both.
-  it('filters a legacy-rebook-anchored follow-up from the named list; the count stays unchanged (existing strip behavior)', async () => {
+  // #229 FIX 3: an earlier round filtered a "legacy-rebook-anchored" follow-up
+  // out of the named list — that state is structurally IMPOSSIBLE (a
+  // quote_sent_no_reply follow-up only ever exists when quote_sent_at IS SET,
+  // which is mutually exclusive with the "parked draft" predicate the filter
+  // required; confirmed empirically against prod). A follow-up linked to a
+  // legacy_rebook quote is for a SENT Neighbor quote — a real customer
+  // genuinely owed a reply — so it now appears by name like any other, and
+  // the named list always matches the count exactly (same rows, no filter).
+  it('never filters a legacy_rebook-linked follow-up out of the named list — the list matches the count exactly', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-06T15:00:00Z'));
     listDueFollowUps.mockResolvedValue({
@@ -231,7 +252,6 @@ describe('collectOpsDigest — #229 named details', () => {
           contactName: 'YLL Neighbor Lead',
           contactPhone: null,
           contactEmail: null,
-          isLegacyRebookAnchored: true,
         },
         {
           id: 'f2',
@@ -240,14 +260,15 @@ describe('collectOpsDigest — #229 named details', () => {
           contactName: 'Real Customer',
           contactPhone: null,
           contactEmail: null,
-          isLegacyRebookAnchored: false,
         },
       ],
     });
     const data = await collectOpsDigest();
-    expect(data.inboxFollowUpsDueCount).toBe(2); // unfiltered — matches the strip
-    expect(data.overdueFollowUps).toEqual([{ displayName: 'Real Customer', daysOverdue: 1 }]);
-    expect(data.overdueFollowUps?.some((f) => f.displayName === 'YLL Neighbor Lead')).toBe(false);
+    expect(data.inboxFollowUpsDueCount).toBe(2);
+    expect(data.overdueFollowUps).toEqual([
+      { displayName: 'YLL Neighbor Lead', daysOverdue: 1 },
+      { displayName: 'Real Customer', daysOverdue: 1 },
+    ]);
   });
 
   it('falls back name -> phone -> email -> "(no name)" for a nameless follow-up contact', async () => {
@@ -256,9 +277,9 @@ describe('collectOpsDigest — #229 named details', () => {
     listDueFollowUps.mockResolvedValue({
       ok: true,
       items: [
-        { id: 'f1', reason: 'x', dueAt: '2026-08-05T12:00:00Z', contactName: null, contactPhone: '+16315551234', contactEmail: 'lead@x.com', isLegacyRebookAnchored: false },
-        { id: 'f2', reason: 'x', dueAt: '2026-08-05T12:00:00Z', contactName: null, contactPhone: null, contactEmail: 'onlyemail@x.com', isLegacyRebookAnchored: false },
-        { id: 'f3', reason: 'x', dueAt: '2026-08-05T12:00:00Z', contactName: null, contactPhone: null, contactEmail: null, isLegacyRebookAnchored: false },
+        { id: 'f1', reason: 'x', dueAt: '2026-08-05T12:00:00Z', contactName: null, contactPhone: '+16315551234', contactEmail: 'lead@x.com' },
+        { id: 'f2', reason: 'x', dueAt: '2026-08-05T12:00:00Z', contactName: null, contactPhone: null, contactEmail: 'onlyemail@x.com' },
+        { id: 'f3', reason: 'x', dueAt: '2026-08-05T12:00:00Z', contactName: null, contactPhone: null, contactEmail: null },
       ],
     });
     const data = await collectOpsDigest();
@@ -275,10 +296,42 @@ describe('collectOpsDigest — #229 named details', () => {
   it('guards a malformed dueAt (invalid date) to 0 days rather than NaN', async () => {
     listDueFollowUps.mockResolvedValue({
       ok: true,
-      items: [{ id: 'f1', reason: 'x', dueAt: 'not-a-date', contactName: 'Bad Date Bob', contactPhone: null, contactEmail: null, isLegacyRebookAnchored: false }],
+      items: [{ id: 'f1', reason: 'x', dueAt: 'not-a-date', contactName: 'Bad Date Bob', contactPhone: null, contactEmail: null }],
     });
     const data = await collectOpsDigest();
     expect(data.overdueFollowUps).toEqual([{ displayName: 'Bad Date Bob', daysOverdue: 0 }]);
+  });
+
+  // #229 FIX 2: the 7:30am ET cron boundary. A follow-up due 8pm ET the
+  // PRIOR calendar day is only ~11.5 elapsed hours before 7:30am ET today —
+  // an elapsed-ms/24h-block count (the old daysBetween) floors that to 0
+  // ("due today"), but it already crossed an ET midnight, so the calendar-day
+  // rule that put the row in the list (isDueToday) already calls it a day
+  // overdue. The displayed number must agree with the rule that selected it.
+  it('reads "1 day overdue" (not "due today") for a follow-up due yesterday evening ET, at the 7:30am ET cron boundary', async () => {
+    vi.useFakeTimers();
+    // 7:30am EDT (UTC-4) on Aug 6.
+    vi.setSystemTime(new Date('2026-08-06T11:30:00Z'));
+    listDueFollowUps.mockResolvedValue({
+      ok: true,
+      items: [
+        {
+          id: 'f1',
+          reason: 'quote_sent_no_reply',
+          // 8:00pm EDT on Aug 5 == 2026-08-06T00:00:00Z — only 11.5 elapsed
+          // hours before 7:30am ET today, but a DIFFERENT ET calendar day.
+          dueAt: '2026-08-06T00:00:00Z',
+          contactName: 'Boundary Bea',
+          contactPhone: null,
+          contactEmail: null,
+        },
+      ],
+    });
+    const data = await collectOpsDigest();
+    expect(data.overdueFollowUps).toEqual([{ displayName: 'Boundary Bea', daysOverdue: 1 }]);
+    const msg = opsDigestMessage(data, 'https://x');
+    expect(msg).toContain('• Boundary Bea — 1 day overdue');
+    expect(msg).not.toContain('Boundary Bea — due today');
   });
 
   // ── Quotes awaiting reply (from listQuotes) ─────────────────────────────────
@@ -359,39 +412,66 @@ describe('collectOpsDigest — #229 named details', () => {
     expect(msg).toContain('+2 more');
   });
 
-  // ── Deposits pending (from listQuotes) ──────────────────────────────────────
+  // ── Deposits pending (from listQuotes + fetchDepositAmounts) ────────────────
+  //
+  // #229 FIX 1: the rendered amount is the DEPOSIT owed
+  // (approval_snapshot.customerSelection.currentDepositUsd, via a scoped
+  // fetchDepositAmounts lookup), NOT `q.total` (the full quote — roughly
+  // double the real figure). sbRef.current supplies the scoped lookup's fake
+  // Supabase client.
 
-  it('lists deposits pending by name and dollar amount', async () => {
+  it('lists deposits pending by name and the DEPOSIT amount (not the full quote total)', async () => {
     listQuotes.mockResolvedValue([
-      quote({ id: 'q1', customer_name: 'Approved Amy', customer_approved_at: '2026-07-10T00:00:00Z', total: 2500 }),
+      // total is $5,000 — if this rendered `total` it would show "$5,000",
+      // roughly double the real $2,500 deposit.
+      quote({ id: 'q1', customer_name: 'Approved Amy', customer_approved_at: '2026-07-10T00:00:00Z', total: 5000 }),
+    ]);
+    sbRef.current = makeDepositClient([
+      { id: 'q1', approval_snapshot: { customerSelection: { currentDepositUsd: 2500 } } },
     ]);
     const data = await collectOpsDigest();
     expect(data.depositsPendingNamed).toEqual([{ displayName: 'Approved Amy', amountLabel: '$2,500' }]);
   });
 
-  it('renders "amount unknown" — never "$0" — for a null total', async () => {
+  it('renders "amount unknown" — never "$0" — when the deposit lookup has no snapshot for the quote', async () => {
     listQuotes.mockResolvedValue([
-      quote({ id: 'q1', customer_name: 'No Total Nick', customer_approved_at: '2026-07-10T00:00:00Z', total: null }),
+      quote({ id: 'q1', customer_name: 'No Snapshot Nick', customer_approved_at: '2026-07-10T00:00:00Z', total: 2500 }),
     ]);
+    sbRef.current = makeDepositClient([{ id: 'q1', approval_snapshot: null }]);
     const data = await collectOpsDigest();
-    expect(data.depositsPendingNamed).toEqual([{ displayName: 'No Total Nick', amountLabel: 'amount unknown' }]);
+    expect(data.depositsPendingNamed).toEqual([{ displayName: 'No Snapshot Nick', amountLabel: 'amount unknown' }]);
   });
 
-  it('renders an actual $0 total as "$0", distinct from a null/unknown total', async () => {
+  it('renders "amount unknown" (never $0, never `total`) when the deposit lookup itself fails or is unconfigured', async () => {
     listQuotes.mockResolvedValue([
-      quote({ id: 'q1', customer_name: 'Zero Total', customer_approved_at: '2026-07-10T00:00:00Z', total: 0 }),
+      quote({ id: 'q1', customer_name: 'Lookup Failed Fred', customer_approved_at: '2026-07-10T00:00:00Z', total: 3000 }),
     ]);
+    // sbRef.current stays null (the beforeEach default) — Supabase unconfigured.
     const data = await collectOpsDigest();
-    expect(data.depositsPendingNamed).toEqual([{ displayName: 'Zero Total', amountLabel: '$0' }]);
+    expect(data.depositsPendingNamed).toEqual([{ displayName: 'Lookup Failed Fred', amountLabel: 'amount unknown' }]);
   });
 
-  it('sorts deposits pending oldest-approved-first (longest pending survives the cap)', async () => {
+  it('renders an actual $0 deposit as "$0", distinct from a missing/unknown one', async () => {
+    listQuotes.mockResolvedValue([
+      quote({ id: 'q1', customer_name: 'Zero Deposit', customer_approved_at: '2026-07-10T00:00:00Z', total: 500 }),
+    ]);
+    sbRef.current = makeDepositClient([
+      { id: 'q1', approval_snapshot: { customerSelection: { currentDepositUsd: 0 } } },
+    ]);
+    const data = await collectOpsDigest();
+    expect(data.depositsPendingNamed).toEqual([{ displayName: 'Zero Deposit', amountLabel: '$0' }]);
+  });
+
+  it('sorts deposits pending oldest-approved-first (longest pending survives the cap) — the count line is unaffected by the deposit lookup', async () => {
     listQuotes.mockResolvedValue([
       quote({ id: 'q1', customer_name: 'Newer', customer_approved_at: '2026-07-15T00:00:00Z', total: 1000 }),
       quote({ id: 'q2', customer_name: 'Older', customer_approved_at: '2026-07-01T00:00:00Z', total: 2000 }),
     ]);
     const data = await collectOpsDigest();
     expect(data.depositsPendingNamed.map((d) => d.displayName)).toEqual(['Older', 'Newer']);
+    // FIX 1's own re-check: the deposit-amount change must never alter the
+    // COUNT line — it's computed independently of the deposit lookup.
+    expect(data.depositsPendingCount).toBe(2);
   });
 
   // ── Fail-soft isolation (requirement 7 / "Done looks like" #5) ─────────────
@@ -401,12 +481,34 @@ describe('collectOpsDigest — #229 named details', () => {
     listQuotes.mockResolvedValue([
       quote({ id: 'q1', customer_name: 'Still Here', customer_approved_at: '2026-07-10T00:00:00Z', total: 500 }),
     ]);
+    sbRef.current = makeDepositClient([
+      { id: 'q1', approval_snapshot: { customerSelection: { currentDepositUsd: 250 } } },
+    ]);
     const data = await collectOpsDigest();
     expect(data.overdueFollowUps).toBeNull();
-    expect(data.depositsPendingNamed).toEqual([{ displayName: 'Still Here', amountLabel: '$500' }]);
+    expect(data.depositsPendingNamed).toEqual([{ displayName: 'Still Here', amountLabel: '$250' }]);
     const msg = opsDigestMessage(data, 'https://x');
     expect(msg).toContain('Still Here');
     expect(msg).toContain('☀️ YLL morning digest'); // heartbeat unaffected
+  });
+
+  // #229 FIX 1's own fail-soft leg: the deposit-amount lookup erroring must
+  // degrade to "amount unknown" per row, never throw and never block the
+  // rest of the section/message.
+  it('a deposit-amount lookup error degrades to "amount unknown" — never throws, never blocks the send', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      listQuotes.mockResolvedValue([
+        quote({ id: 'q1', customer_name: 'Lookup Error Liz', customer_approved_at: '2026-07-10T00:00:00Z', total: 1000 }),
+      ]);
+      sbRef.current = makeDepositClient(null, { message: 'connection reset' });
+      const data = await collectOpsDigest();
+      expect(data.depositsPendingNamed).toEqual([{ displayName: 'Lookup Error Liz', amountLabel: 'amount unknown' }]);
+      const msg = opsDigestMessage(data, 'https://x');
+      expect(msg).toContain('☀️ YLL morning digest');
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 });
 
@@ -489,29 +591,18 @@ describe('opsDigestMessage (pure formatter — heartbeat)', () => {
     expect(msg).not.toContain('https://x//');
   });
 
-  // ── #229: named-list capping (installs + all three new sections) ──────────
+  // ── #229: named-list capping (the pipeline sections only, #229 FIX 4) ──────
 
-  it('caps every named list at 5 with an exact "+N more", while header counts stay the TRUE totals', () => {
+  it('caps every PIPELINE named list at 5 with an exact "+N more", while header counts stay the TRUE totals', () => {
     const msg = opsDigestMessage(
       {
         ...emptyData,
-        installsToday: Array.from({ length: 8 }, (_, i) => ({
-          jobNumber: i,
-          customerName: `Cust${i}`,
-          stageLabel: 'Scheduled',
-          isTest: false,
-        })),
         overdueFollowUps: Array.from({ length: 7 }, (_, i) => ({ displayName: `Overdue${i + 1}`, daysOverdue: i })),
         awaitingReplyNamed: Array.from({ length: 9 }, (_, i) => ({ displayName: `Wait${i + 1}`, daysSinceSent: i })),
         depositsPendingNamed: Array.from({ length: 6 }, (_, i) => ({ displayName: `Dep${i + 1}`, amountLabel: `$${i + 1}` })),
       },
       'https://x',
     );
-    // Installs: header stays the true total (8); only 5 named + an exact overflow.
-    expect(msg).toContain('🔧 Installs — today: 8 · tomorrow: 0');
-    expect(msg).toContain('Cust0');
-    expect(msg).not.toContain('Cust5');
-    expect(msg).toContain('+3 more');
     // Overdue follow-ups: 7 -> 5 shown + "+2 more".
     expect(msg).toContain('Overdue1');
     expect(msg).not.toContain('Overdue6');
@@ -524,6 +615,28 @@ describe('opsDigestMessage (pure formatter — heartbeat)', () => {
     expect(msg).toContain('Dep1');
     expect(msg).not.toContain('Dep6');
     expect(msg).toContain('+1 more');
+  });
+
+  // #229 FIX 4: installs were wrongly capped in round 2 — the length pressure
+  // that justified it didn't exist, and they're the day's real, bounded crew
+  // work, not an open-ended pipeline. Locks in the revert: ALL of them render,
+  // no overflow marker, even well past the pipeline lists' cap of 5.
+  it('never caps installs — every job for the day renders by name, no overflow marker', () => {
+    const msg = opsDigestMessage(
+      {
+        ...emptyData,
+        installsToday: Array.from({ length: 8 }, (_, i) => ({
+          jobNumber: i,
+          customerName: `Cust${i}`,
+          stageLabel: 'Scheduled',
+          isTest: false,
+        })),
+      },
+      'https://x',
+    );
+    expect(msg).toContain('🔧 Installs — today: 8 · tomorrow: 0');
+    for (let i = 0; i < 8; i++) expect(msg).toContain(`Cust${i}`);
+    expect(msg).not.toMatch(/\+\d+ more/);
   });
 
   it('shows no overflow marker when a named list exactly fills the cap (no off-by-one)', () => {
@@ -563,7 +676,13 @@ describe('opsDigestMessage (pure formatter — heartbeat)', () => {
     expect(msg).toContain('📥 Inbox\n→ https://x/inbox');
   });
 
-  it('stays well under Telegram\'s 4096-char limit even on a heavy day (many installs + named entries across every section)', () => {
+  // #229 FIX 4: installs are UNCAPPED, so a heavy-day stress test must use a
+  // realistic (still generous) crew-capacity number for them — a lighting
+  // installer genuinely bounded by trucks/crews, not an open-ended pipeline
+  // like the follow-up/reply/deposit backlogs, which this test still stresses
+  // at 60 rows each (well past anything realistic) to prove the CAP, not the
+  // install count, is what keeps the message bounded.
+  it('stays well under Telegram\'s 4096-char limit even on a heavy day (a realistic-but-busy install day + a stress-tested pipeline backlog)', () => {
     const install = (i: number) => ({
       jobNumber: i,
       customerName: `Customer With A Fairly Long Name Number ${i}`,
@@ -573,8 +692,8 @@ describe('opsDigestMessage (pure formatter — heartbeat)', () => {
     const msg = opsDigestMessage(
       {
         ...emptyData,
-        installsToday: Array.from({ length: 40 }, (_, i) => install(i)),
-        installsTomorrow: Array.from({ length: 40 }, (_, i) => install(i)),
+        installsToday: Array.from({ length: 15 }, (_, i) => install(i)),
+        installsTomorrow: Array.from({ length: 10 }, (_, i) => install(i)),
         overdueFollowUps: Array.from({ length: 60 }, (_, i) => ({
           displayName: `Overdue Customer With A Longer Name ${i}`,
           daysOverdue: i,
