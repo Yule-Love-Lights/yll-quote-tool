@@ -1354,139 +1354,32 @@ describe('listOpenItems — legacy-rebook exclusion wiring (#157, #183)', () => 
   });
 });
 
-// ─── listDueFollowUps — legacy-rebook anchoring flag + contact fallback (#229) ─
+// ─── listDueFollowUps — contact fallback + due-window (#229) ────────────────
 //
-// Same batch-lookup shape as listOpenItems above: a SECOND sb.from('quotes')
-// call happens ONLY when a due follow-up is linked (via the follow_ups→
-// inbox_items FK embed) to a quotetool item — proving the flag is wired
-// end-to-end through the real query, not just pure-tested via
-// isHiddenLegacyRebookQuote (already covered above).
+// #229 FIX 3 (round 3): an earlier round added a legacy-rebook "anchoring"
+// flag + a quotetool->quotes batch lookup here, mirroring listOpenItems. That
+// state is IMPOSSIBLE by construction — isHiddenLegacyRebookQuote requires
+// deriveStatus === 'draft' (quote_sent_at NULL), but a quote_sent_no_reply
+// follow-up (quotetool.ts's quoteFollowUpDecision) only ever gets CREATED
+// when quote_sent_at IS SET. Confirmed empirically against prod: 28 pending
+// follow-ups, all with quote_sent_at set, zero parked drafts. Removed the
+// flag, the inbox_items embed, and the batch lookup entirely — a
+// legacy_rebook-anchored follow-up here is for a SENT Neighbor quote (a real
+// customer genuinely owed a reply), so it is never filtered.
 
-describe('listDueFollowUps — legacy-rebook anchoring flag + contact fallback (#229)', () => {
+describe('listDueFollowUps — contact fallback + due-window (#229)', () => {
   beforeEach(() => {
     sbRef.current = null;
   });
 
   const NOW = new Date('2026-08-06T15:00:00Z'); // Aug 6, 2026, ET morning
-  const LEGACY_ID = '11111111-1111-1111-1111-111111111111';
-  const NORMAL_ID = '22222222-2222-2222-2222-222222222222';
 
   const dueRow = (over: Record<string, unknown>) => ({
     id: 'fu-1',
     reason: 'quote_sent_no_reply',
     due_at: '2026-08-05T10:00:00Z', // yesterday ET — overdue
     dashboard_contacts: { display_name: 'Jane Doe', primary_phone: '+16315551234', primary_email: 'jane@x.com' },
-    inbox_items: null,
     ...over,
-  });
-
-  it('flags a follow-up anchored to a hidden (parked-draft) legacy_rebook quotetool item', async () => {
-    const rows = [dueRow({ inbox_items: { source: 'quotetool', external_id: LEGACY_ID } })];
-    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
-    const { builder: quotesBuilder, calls: quotesCalls } = makeBuilder({
-      data: [{ id: LEGACY_ID, legacy_rebook: true, status: 'draft', quote_sent_at: null }],
-      error: null,
-    });
-    let callCount = 0;
-    sbRef.current = { from: () => (++callCount === 1 ? mainBuilder : quotesBuilder) };
-
-    const result = await listDueFollowUps(NOW);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.items).toHaveLength(1);
-    expect(result.items[0].isLegacyRebookAnchored).toBe(true);
-
-    const inCall = quotesCalls.find((c) => c.method === 'in');
-    expect(inCall!.args[1]).toEqual([LEGACY_ID]);
-  });
-
-  it('does NOT flag a follow-up anchored to a SENT (not parked) legacy_rebook quotetool item', async () => {
-    const rows = [dueRow({ inbox_items: { source: 'quotetool', external_id: LEGACY_ID } })];
-    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
-    const { builder: quotesBuilder } = makeBuilder({
-      data: [{ id: LEGACY_ID, legacy_rebook: true, status: 'sent', quote_sent_at: '2026-08-01T00:00:00Z' }],
-      error: null,
-    });
-    let callCount = 0;
-    sbRef.current = { from: () => (++callCount === 1 ? mainBuilder : quotesBuilder) };
-
-    const result = await listDueFollowUps(NOW);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.items[0].isLegacyRebookAnchored).toBe(false);
-  });
-
-  it('does NOT flag a follow-up anchored to a NORMAL (non-rebook) quotetool item', async () => {
-    const rows = [dueRow({ inbox_items: { source: 'quotetool', external_id: NORMAL_ID } })];
-    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
-    const { builder: quotesBuilder } = makeBuilder({
-      data: [{ id: NORMAL_ID, legacy_rebook: false, status: 'draft', quote_sent_at: null }],
-      error: null,
-    });
-    let callCount = 0;
-    sbRef.current = { from: () => (++callCount === 1 ? mainBuilder : quotesBuilder) };
-
-    const result = await listDueFollowUps(NOW);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.items[0].isLegacyRebookAnchored).toBe(false);
-  });
-
-  it('never flags a ghl-sourced or manual (no linked item) follow-up, and skips the quotes lookup entirely', async () => {
-    const rows = [
-      dueRow({ id: 'fu-ghl', inbox_items: { source: 'ghl', external_id: 'ghl-msg-1' } }),
-      dueRow({ id: 'fu-manual', inbox_items: null }),
-    ];
-    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
-    let fromCalls = 0;
-    sbRef.current = {
-      from: () => {
-        fromCalls += 1;
-        return mainBuilder;
-      },
-    };
-
-    const result = await listDueFollowUps(NOW);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.items.every((i) => i.isLegacyRebookAnchored === false)).toBe(true);
-    expect(fromCalls).toBe(1); // no quotetool items on the page -> no quotes lookup
-  });
-
-  it('drops a malformed (non-uuid) quotetool external_id from the lookup instead of poisoning it, fails open to not-flagged', async () => {
-    const rows = [dueRow({ inbox_items: { source: 'quotetool', external_id: 'not-a-uuid' } })];
-    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
-    let fromCalls = 0;
-    sbRef.current = {
-      from: () => {
-        fromCalls += 1;
-        return mainBuilder;
-      },
-    };
-
-    const result = await listDueFollowUps(NOW);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.items[0].isLegacyRebookAnchored).toBe(false);
-    expect(fromCalls).toBe(1); // the malformed id never made it into a .in() lookup
-  });
-
-  it('logs and fails open (not flagged) when the quotes lookup itself errors', async () => {
-    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    try {
-      const rows = [dueRow({ inbox_items: { source: 'quotetool', external_id: LEGACY_ID } })];
-      const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
-      const { builder: quotesBuilder } = makeBuilder({ data: null, error: { message: 'connection reset' } });
-      let callCount = 0;
-      sbRef.current = { from: () => (++callCount === 1 ? mainBuilder : quotesBuilder) };
-
-      const result = await listDueFollowUps(NOW);
-      expect(result.ok).toBe(true);
-      if (!result.ok) return;
-      expect(result.items[0].isLegacyRebookAnchored).toBe(false);
-    } finally {
-      consoleErrorSpy.mockRestore();
-    }
   });
 
   it('carries contact phone/email alongside the name (nameless-contact fallback support downstream)', async () => {
@@ -1518,29 +1411,26 @@ describe('listDueFollowUps — legacy-rebook anchoring flag + contact fallback (
     expect(result.items).toHaveLength(0);
   });
 
-  // #229: is_test/view_only quotes CANNOT reach follow_ups in the first place —
-  // ensureFollowUp's ONE caller (sync.ts's runQuoteToolReconcile) sources its
-  // quotes from listQuotesForDashboard, which excludes both at the chokepoint
-  // (queries.ts; pinned by queries.test.ts's "Test Quote isolation (#93)"
-  // block). So a redundant is_test/view_only filter here would be dead code —
-  // this test pins that the shared legacy-rebook lookup's own select never
-  // references those columns, only legacy_rebook + the lifecycle timestamps.
-  it('the legacy-rebook lookup selects only legacy_rebook + lifecycle columns — never is_test/view_only (enforced upstream, see queries.test.ts)', async () => {
-    const rows = [dueRow({ inbox_items: { source: 'quotetool', external_id: LEGACY_ID } })];
+  // #229 FIX 3: locks in the corrected behavior — a follow-up anchored to a
+  // SENT legacy_rebook quote is a real, owed reply and must NOT be filtered
+  // (only ONE sb.from() call — no quotetool/quotes lookup exists anymore).
+  it('never filters or special-cases a legacy_rebook-linked follow-up (no anchoring lookup exists)', async () => {
+    const rows = [dueRow({ id: 'fu-neighbor', dashboard_contacts: { display_name: 'YLL Neighbor Lead', primary_phone: null, primary_email: null } })];
     const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
-    const { builder: quotesBuilder, calls: quotesCalls } = makeBuilder({
-      data: [{ id: LEGACY_ID, legacy_rebook: true, status: 'draft', quote_sent_at: null }],
-      error: null,
-    });
-    let callCount = 0;
-    sbRef.current = { from: () => (++callCount === 1 ? mainBuilder : quotesBuilder) };
+    let fromCalls = 0;
+    sbRef.current = {
+      from: () => {
+        fromCalls += 1;
+        return mainBuilder;
+      },
+    };
 
-    await listDueFollowUps(NOW);
-
-    const selectCall = quotesCalls.find((c) => c.method === 'select');
-    expect(selectCall).toBeDefined();
-    expect(selectCall!.args[0]).not.toMatch(/is_test|view_only/);
-    expect(selectCall!.args[0]).toMatch(/legacy_rebook/);
+    const result = await listDueFollowUps(NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].contactName).toBe('YLL Neighbor Lead');
+    expect(fromCalls).toBe(1); // no second (quotes) lookup — the anchoring machinery is gone
   });
 });
 
