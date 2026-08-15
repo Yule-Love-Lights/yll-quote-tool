@@ -160,7 +160,7 @@ function baseQuote(overrides: Record<string, unknown> = {}) {
 // not-matched), whereas the fixed `.or('status.not.in.(…),status.is.null')`
 // admits it. When the filter excludes the row, the guarded update matches 0 rows
 // regardless of `updateRows`.
-const TERMINAL_SET = new Set(['declined', 'cancelled', 'lost']);
+const TERMINAL_SET = new Set(['declined', 'cancelled', 'abandoned']);
 function makeSb(quote: Record<string, unknown> | null, updateRows: Array<{ id: string }> | null = [{ id: ID }]) {
   const updatePayloads: Array<Record<string, unknown>> = [];
   const builder: Record<string, unknown> = {};
@@ -178,7 +178,7 @@ function makeSb(quote: Record<string, unknown> | null, updateRows: Array<{ id: s
     },
     eq: () => builder,
     is: () => builder,
-    // Buggy form: `.not('status','in','("declined","cancelled","lost")')`.
+    // Buggy form: `.not('status','in','("declined","cancelled","abandoned")')`.
     // Postgres: NOT (status IN (…)) is NULL (→ excluded) when status IS NULL.
     not: (col: string, op: string) => {
       if (col === 'status' && op === 'in') {
@@ -742,9 +742,9 @@ describe('POST /api/quotes/[id]/approve — status gate (Bug 2)', () => {
     expect(updatePayloads.some((p) => 'customer_approved_at' in p)).toBe(false);
   });
 
-  it('rejects a lost quote with 409', async () => {
+  it('rejects an abandoned quote with 409', async () => {
     const { client, updatePayloads } = makeSb(
-      baseQuote({ status: 'lost', deposit_paid_at: null }),
+      baseQuote({ status: 'abandoned', deposit_paid_at: null }),
     );
     sbRef.current = client;
 
@@ -797,7 +797,7 @@ describe('POST /api/quotes/[id]/approve — status gate (Bug 2)', () => {
     const res = await POST(makeReq(validBody), { params });
     // changes_requested → approved is NOT in the transition table, so this is 409
     // (customer should wait for the resend; they can't self-approve a quote under revision)
-    // Actually check the transition table: changes_requested → ['sent','declined','cancelled','lost']
+    // Actually check the transition table: changes_requested → ['sent','declined','cancelled','abandoned']
     // 'approved' is NOT in that list, so this should be rejected too.
     expect(res.status).toBe(409);
     expect((await res.json()).code).toBe('illegal-transition');

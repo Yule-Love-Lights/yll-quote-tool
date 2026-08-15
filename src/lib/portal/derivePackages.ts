@@ -502,3 +502,15 @@ export function pickInitialPackageId(
   if (clearing) return clearing.id;
   return candidates.reduce((best, p) => (subtotalOf(p) > subtotalOf(best) ? p : best)).id;
 }
+
+// #238 (review fix): whether a package tile is the genuinely-EMPTY "Build
+// Your Own" slot the customer still needs to fill — true only for a package
+// D with no bundled items yet. Package D means something else in every other
+// derive path: a legacy rebook's single PRE-FILLED tile (derivePackagesLegacyRebook,
+// already selected on load), permanent's populated "Whole Home" bundle
+// (derivePackagesPermanent), or event/bistro's single populated package. This
+// checks real emptiness (includedItemIds) instead of proxying off the id, so
+// it doesn't need updating when a new vertical adds its own D meaning.
+export function isEmptyCustomSlot(p: PortalPackage): boolean {
+  return p.id === 'D' && p.includedItemIds.length === 0;
+}

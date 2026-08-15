@@ -4,7 +4,7 @@ import Konva from "konva";
 // storage connector (createEditorApi, below), and the sibling renderers live in
 // THIS folder (./). Everything else in this file is byte-identical with the
 // design tool's canonical editor.ts — keep it that way.
-import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, isItemOnPhoto, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type SideOfHouse, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, pruneOrphanedMiniGroups, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
+import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, isItemOnPhoto, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type SideOfHouse, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, pruneOrphanedMiniGroups, removeItemsForPhoto, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
 import { createEditorApi } from "./storage";
 import { COLORS, setPalette } from "./colors";
 import { renderStrand, strandLengthPx } from "./strand";
@@ -30,6 +30,8 @@ import {
   offPresetSizeSuffix,
 } from "./sizePresets";
 import { isLineDrawContext } from "./drawContext";
+import { surfaceOptionsForBulbType } from "./surfaceOptions";
+import { sideOfHouseOptions } from "./sideOfHouseOptions";
 
 // Default real-world width for newly-placed custom uploads — about 3 feet,
 // big enough to spot on the photo, small enough to resize down with the
@@ -125,6 +127,16 @@ type ToolState = {
   showBeam: boolean;
   // Bistro-only: per-strand catenary sag as a fraction of horizontal span.
   bistroSagFactor: number;
+  // #249: pre-draw billing-category tag — baked into new strands/mini areas at
+  // creation time (see quoteDefaultsForNewStrand). "" = untagged (today's
+  // default); only ever holds a value valid for the current bulbType (see the
+  // #bulb-types click handler, which resets it on a type switch).
+  surface: Surface | "";
+  // #249 (permanent side-of-house pre-draw tag): same shape as `surface` above
+  // but for permanent bulb type only — baked onto new permanent strands (see
+  // quoteDefaultsForNewStrand). "" = untagged. Reset on leaving permanent (see
+  // resetToolSideOfHouseIfInvalid).
+  sideOfHouse: SideOfHouse | "";
   // Decor sub-type
   decorType: DecorType;
   // Decor — wreath
@@ -325,6 +337,8 @@ export async function renderEditor(
     showCoverage: false,
     showBeam: true,
     bistroSagFactor: 0.10,
+    surface: "",
+    sideOfHouse: "",
     decorType: "wreath",
     wreathSizeIn: 36,
     wreathWithLights: true,
@@ -1494,6 +1508,27 @@ export async function renderEditor(
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
     if (pendingSave) await doSave();
   }
+  // #741 defect 1: cancel any pending debounced save WITHOUT persisting it.
+  // destroy() unconditionally best-effort flushes on teardown (below) — that's
+  // right for a normal navigate-away/unmount, but wrong for a caller-forced
+  // remount that follows a server-side change already landing (a photo
+  // delete's prune, a re-analyze's reseed): the resident `scene` this mount
+  // holds predates that change, so flushing it would PUT it straight back
+  // over the server's fresh row, resurrecting exactly what the server just
+  // removed. The caller awaits the server response, then calls this BEFORE
+  // triggering the remount, so destroy()'s flushSave() becomes a no-op.
+  // Trade-off: a genuine edit made during that round trip is discarded too —
+  // accepted, since resurrecting deleted/pruned billing is the worse failure.
+  // #741 defect 6: returns whether it actually discarded a real pending edit
+  // (vs. the common no-op case where the caller's own pre-action flush
+  // already cleared everything) so the caller can tell the operator their
+  // in-progress edit was thrown away, instead of losing it silently.
+  function discardPending(): boolean {
+    const hadPending = pendingSave;
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+    pendingSave = false;
+    return hadPending;
+  }
   // AUDIT FIX (editor-autosave-honest-failure): non-blocking banner shown when a
   // prior teardown flush may have failed to persist (marker set in destroy()).
   // Cleared on the next successful doSave().
@@ -1564,6 +1599,34 @@ export async function renderEditor(
     host.appendChild(n);
     window.setTimeout(() => n.remove(), 5000);
   }
+  // #249/#753 review fix: clears tool.surface the moment it's no longer valid
+  // for the current bulbType/scattershot combo (e.g. a c9-only tag surviving
+  // a switch to mini, or "curtain" surviving a switch into Scattershot) and
+  // tells the operator via a transient notice — reusing showTransientNotice
+  // rather than inventing a second mechanism (mirrors
+  // pruneOrphanedMiniGroupsNotify's silent-correction notice below). Without
+  // this, a silently-reset tag could leave the operator drawing several
+  // untagged items before noticing the row flipped to None.
+  function resetToolSurfaceIfInvalid(contextLabel: string) {
+    if (!tool.surface) return;
+    const stillValid = surfaceOptionsForBulbType(tool.bulbType, { scattershot: tool.scattershot }).some(
+      ([v]) => v === tool.surface,
+    );
+    if (stillValid) return;
+    showTransientNotice(`Surface tag cleared — pick again for ${contextLabel}.`);
+    tool.surface = "";
+  }
+  // #249 (side-of-house pre-draw tag): mirrors resetToolSurfaceIfInvalid above
+  // — clears tool.sideOfHouse the moment the bulb type leaves permanent (the
+  // only bulb type the pre-draw section applies to) and tells the operator via
+  // the same transient-notice mechanism, so a stale tag can't silently survive
+  // a switch away and mis-tag the next item drawn after switching back.
+  function resetToolSideOfHouseIfInvalid(contextLabel: string) {
+    if (!tool.sideOfHouse) return;
+    if (tool.bulbType === "permanent") return;
+    showTransientNotice(`Side of house tag cleared — pick again for ${contextLabel}.`);
+    tool.sideOfHouse = "";
+  }
   // Wraps pruneOrphanedMiniGroups: diffs which miniGroup item(s) it actually
   // dropped and surfaces one notice per group. Every call site below should
   // call THIS, not pruneOrphanedMiniGroups directly.
@@ -1578,6 +1641,66 @@ export async function renderEditor(
       showTransientNotice(`Also removed empty group: ${label} — ${n} string${n === 1 ? "" : "s"}`);
     });
     return after;
+  }
+  // #741 defect 2: splice a deleted photo's items out of the RESIDENT
+  // in-memory scene WITHOUT tearing the editor down — for when the deleted
+  // photo is NOT the one this mount is showing. A full remount there would
+  // reset zoom/selection/undo history and silently drop any in-progress
+  // drawing that lives only in editor-local closures (never in scene.items,
+  // so no flush could have saved it) — routine work for an operator who was
+  // simply cleaning up a stray extra-photo tab. Mirrors designs.ts's
+  // removeDesignExtraPhoto server-side prune exactly: drop items tagged to
+  // the deleted photo, drop any linked twin of one of those (it would
+  // otherwise dangle, render-only, forever), then prune any miniGroup left
+  // with zero surviving members. Once this returns, the resident scene
+  // matches server truth, so a later teardown flush is harmless.
+  function removePhotoItems(photoId: string) {
+    const nextItems = removeItemsForPhoto(scene.items, photoId);
+    if (nextItems === scene.items) return; // nothing tagged to this photo — no-op
+
+    // #741 defect 1 (round 2, HIGH): also scrub every EXISTING undo/redo
+    // snapshot's copy of this photo's items — commit() below only appends a
+    // new (already-clean) snapshot and clears `future`; it does nothing about
+    // snapshots already sitting in `past`. Without this, one Ctrl+Z (or a
+    // click on #undo-btn) after this delete restores a pre-delete snapshot
+    // that still holds the deleted photo's items (and any mini group they
+    // carried) into the resident scene — and undo()'s unconditional
+    // scheduleSave() then autosaves them straight back over the server row
+    // this delete just correctly pruned, re-entering the #227/#254 dead-
+    // billing failure through undo. `future` doesn't need the same treatment:
+    // commit() unconditionally clears it right below, on every call.
+    past = past.map((s) => {
+      const filtered = removeItemsForPhoto(s.items, photoId);
+      return filtered === s.items ? s : { ...s, items: filtered };
+    });
+
+    // #741 defect 2: no in-canvas toast here (unlike deleteSelected's
+    // pruneOrphanedMiniGroupsNotify) — the caller already reports this exact
+    // server-side prune up to QuoteBuilder's persistent banner (the
+    // authoritative channel: it reflects what the server actually did).
+    // Firing both duplicated one removal into two differently-worded notices.
+    scene = { ...scene, items: nextItems };
+    commit();
+    redrawScene();
+
+    // #741 defect 5 (MED): close the autosave race during the delete round
+    // trip. Nothing gates canvas input while the DELETE request is in
+    // flight — if the operator draws on THIS (surviving, still-mounted)
+    // photo during that window, scheduleSave()'s 600ms debounce can fire and
+    // PUT the still-un-spliced scene, landing AFTER the server's own prune
+    // write and silently reverting it. Force an immediate corrective save of
+    // the now-spliced scene right after processing: it cancels any debounce
+    // timer so the PUT goes out now rather than later, and — because doSave()
+    // only applies the LATEST saveSeq's outcome (AUDIT FIX W3-008) — this
+    // becomes the save whose success updates the "Saved" pill even if an
+    // earlier stale PUT is still in flight. This narrows the race rather than
+    // closing it outright (no row lock — a slower stale PUT could in theory
+    // still land after this one), same trade-off already accepted by the
+    // pre-delete flush in DesignEditor.deletePhoto and seedDesignFromAnalysis.
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+    pendingSave = true;
+    savingEl.textContent = "Saving…";
+    void doSave();
   }
 
   // --- Sidebar ---
@@ -1738,6 +1861,60 @@ export async function renderEditor(
         </div>
         <div class="style-help">${tool.scattershot ? SCATTERSHOT_HELP : STYLE_HELP[tool.drawingStyle]}</div>
       </section>
+      ${(() => {
+        // #249: pre-draw quick-tag — sets the Surface billing category BEFORE
+        // drawing so new strands (and scattershot mini areas) carry it
+        // automatically instead of a post-hoc draw→select→dropdown cycle per
+        // item. Options track the current bulbType via the same lookup the
+        // post-hoc #sel-surface dropdown uses (surfaceOptionsForBulbType), so
+        // the two pickers can't drift apart. Hidden entirely when this bulb
+        // type has no surface tag (permanent/bistro) or the design isn't
+        // quote-bound (standalone design tool / non-binding mounts).
+        // #753 review fix: also passes the live scattershot flag, which drops
+        // "curtain" from the row while Scattershot is active — the item that
+        // style commits (a MiniAreaItem) has no `curtain` option in its OWN
+        // edit panel (#sel-ma-surface), so pre-tagging it would bake on a tag
+        // that panel could never show or correct (see surfaceOptions.ts).
+        if (!opts.showQuoteBinding) return "";
+        const toolSurfaceOpts = surfaceOptionsForBulbType(tool.bulbType, { scattershot: tool.scattershot });
+        if (toolSurfaceOpts.length === 0) return "";
+        return `
+      <section>
+        <h3>Surface</h3>
+        <div class="bulb-types" id="tool-surfaces">
+          <button data-surface="" class="${tool.surface === "" ? "active" : ""}">None</button>
+          ${toolSurfaceOpts.map(([v, l]) => `<button data-surface="${v}" class="${tool.surface === v ? "active" : ""}">${l}</button>`).join("")}
+        </div>
+        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Tags every new item you draw with this billing category. Leave on None to tag after drawing, same as before.</div>
+      </section>
+        `;
+      })()}
+      ${(() => {
+        // #249 (permanent side-of-house pre-draw tag): mirrors the Surface
+        // quick-tag section above, but permanent-only (locked by the dev — c9
+        // also has a side-of-house tag post-hoc, but its pre-draw sidebar is
+        // already the crowded one Part A had to fix, so it does NOT get this
+        // pre-draw section too). Options come from the same lookup the
+        // post-hoc #sel-side-of-house dropdown uses (sideOfHouseOptions), so
+        // the two pickers can't drift apart.
+        // #249 review fix (provenance): a tag set HERE is sticky/unconfirmed
+        // (sideOfHouseAuto = true, quoteDefaultsForNewStrand below) — it still
+        // bills, displays, and drives the portal per-side toggle like any
+        // other tag, but AI training capture never trusts it until a human
+        // confirms via the dropdown (trainingExamples.ts extractFinalStreetRuns).
+        if (!opts.showQuoteBinding) return "";
+        if (tool.bulbType !== "permanent") return "";
+        return `
+      <section>
+        <h3>Side of House</h3>
+        <div class="bulb-types" id="tool-side-of-house">
+          <button data-side="" class="${tool.sideOfHouse === "" ? "active" : ""}">None</button>
+          ${sideOfHouseOptions().map(([v, l]) => `<button data-side="${v}" class="${tool.sideOfHouse === v ? "active" : ""}">${l}</button>`).join("")}
+        </div>
+        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Tags every new item you draw with this side. Left/right = the HOMEOWNER's, standing at the front door facing the street — the MIRROR of your own left/right looking at the house from the road. Leave on None to tag after drawing, same as before.</div>
+      </section>
+        `;
+      })()}
       ${tool.bulbType === "permanent" ? `
       <section>
         <h3>Beam Length <span id="tool-beam-len-val" style="float:right;color:var(--text);font-weight:400"></span></h3>
@@ -1966,8 +2143,34 @@ export async function renderEditor(
         applyDefaultsForCurrentType();
         const spacings = SPACINGS[tool.bulbType];
         if (!spacings.includes(tool.spacingIn)) tool.spacingIn = spacings[Math.floor(spacings.length / 2)];
+        // #249/#753: a picked surface tag can be invalid for the new bulb type
+        // (e.g. "santas-roofline" carried over from c9 into mini) — clear it
+        // and tell the operator (resetToolSurfaceIfInvalid), rather than
+        // silently mis-tagging the next item.
+        resetToolSurfaceIfInvalid(BULB_TYPES.find((t) => t.id === tool.bulbType)?.label ?? tool.bulbType);
+        resetToolSideOfHouseIfInvalid(BULB_TYPES.find((t) => t.id === tool.bulbType)?.label ?? tool.bulbType);
         renderSidebar();
         redrawScene(); // #63: bistro vs non-bistro flips strand-draw context
+      }),
+    );
+    sb.querySelectorAll("#tool-surfaces button").forEach((b) =>
+      b.addEventListener("click", () => {
+        // #249: pre-draw quick-tag — sets the default `surface` baked into the
+        // next drawn strand/mini area (see quoteDefaultsForNewStrand /
+        // commitMiniArea). Purely a tool-state change; doesn't touch any
+        // already-drawn item, so no redrawScene needed.
+        tool.surface = ((b as HTMLElement).dataset.surface ?? "") as Surface | "";
+        renderSidebar();
+      }),
+    );
+    sb.querySelectorAll("#tool-side-of-house button").forEach((b) =>
+      b.addEventListener("click", () => {
+        // #249: pre-draw quick-tag — sets the default `sideOfHouse` baked into
+        // the next drawn permanent strand (see quoteDefaultsForNewStrand).
+        // Purely a tool-state change; doesn't touch any already-drawn item, so
+        // no redrawScene needed (mirrors #tool-surfaces just above).
+        tool.sideOfHouse = ((b as HTMLElement).dataset.side ?? "") as SideOfHouse | "";
+        renderSidebar();
       }),
     );
     sb.querySelectorAll("#decor-types button").forEach((b) =>
@@ -2295,6 +2498,11 @@ export async function renderEditor(
         // into tool.drawingStyle (that type is shared with garland drawing).
         if (s === "scattershot") {
           tool.scattershot = true;
+          // #753 review fix: entering Scattershot can invalidate a pre-picked
+          // "curtain" tag (see surfaceOptionsForBulbType) — clear + notify
+          // the same way a bulb-type switch does, so the state never bakes
+          // an unreachable tag onto the next commitMiniArea.
+          resetToolSurfaceIfInvalid("Scattershot");
         } else {
           tool.scattershot = false;
           tool.drawingStyle = s as DrawingStyle;
@@ -2643,14 +2851,12 @@ export async function renderEditor(
       </section>
       ` : ""}
       ${opts.showQuoteBinding ? (() => {
-        // RELAY: this surfaceOpts tuple is shared with the standalone design tool —
-        // mirror any change there too (see task_ledger Stake Lighting relay note).
+        // #249: pulled from surfaceOptionsForBulbType (surfaceOptions.ts) so this
+        // dropdown and the pre-draw quick-tag section can't drift apart. That
+        // function itself carries the RELAY comment for the standalone design
+        // tool now — see task_ledger Stake Lighting relay note.
         const surfaceOpts: [string, string][] =
-          sharedBulbType.length === 1 && sharedBulbType[0] === "c9"
-            ? [["santas-roofline", "Santa's Roofline"], ["gingerbread", "Gingerbread"], ["winter-wonderland", "Winter Wonderland"], ["stake-lighting", "Stake Lighting"]]
-            : sharedBulbType.length === 1 && sharedBulbType[0] === "mini"
-            ? [["bush", "Bush"], ["tree", "Tree"], ["column", "Column"], ["railing", "Railing"], ["curtain", "Curtain"]]
-            : [];
+          sharedBulbType.length === 1 ? surfaceOptionsForBulbType(sharedBulbType[0] as BulbType) : [];
         // RELAY: roof-feature options are shared with the standalone design tool —
         // mirror any change there too (#82 Slice 2b clip-feature tag). Shown only
         // for c9 roofline runs; drives the inventory clip-SKU selection.
@@ -2665,16 +2871,15 @@ export async function renderEditor(
           ["metal", "Metal roof (flag)"],
         ];
         const sRoofFeature = uniq(sel.map((s) => s.roofFeature ?? ""));
-        // RELAY: side-of-house options are shared with the standalone design tool
-        // (#103). A staff tag shown for c9 + permanent strands; no pricing yet.
+        // #249: pulled from sideOfHouseOptions (sideOfHouseOptions.ts) so this
+        // dropdown and the permanent-only pre-draw quick-tag section can't
+        // drift apart — mirrors the surfaceOpts precedent just above. That
+        // module itself carries the RELAY comment for the standalone design
+        // tool (#103). A staff tag shown for c9 + permanent strands; no
+        // pricing yet.
         const showSideOfHouse =
           sharedBulbType.length === 1 && (sharedBulbType[0] === "c9" || sharedBulbType[0] === "permanent");
-        const sideOfHouseOpts: [string, string][] = [
-          ["front", "Front"],
-          ["back", "Back"],
-          ["left", "Left"],
-          ["right", "Right"],
-        ];
+        const sideOfHouseOpts: [string, string][] = sideOfHouseOptions();
         const sSideOfHouse = uniq(sel.map((s) => s.sideOfHouse ?? ""));
         const sSurface = uniq(sel.map((s) => s.surface ?? ""));
         const sInc = uniq(sel.map((s) => s.included ?? true));
@@ -2709,6 +2914,7 @@ export async function renderEditor(
           <option value="">${sSideOfHouse.length > 1 ? "— mixed —" : "— none —"}</option>
           ${sideOfHouseOpts.map(([v, l]) => `<option value="${v}" ${sSideOfHouse.length === 1 && sSideOfHouse[0] === v ? "selected" : ""}>${l}</option>`).join("")}
         </select>
+        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Left/right = the HOMEOWNER's, standing at the front door facing the street — the MIRROR of your own left/right looking at the house from the road.</div>
         ` : ""}
         ${wrapSurface ? `
         <label style="display:block;margin-top:8px;margin-bottom:2px;font-size:11px;color:var(--text-dim)">Wrap style</label>
@@ -2920,7 +3126,17 @@ export async function renderEditor(
       });
       const sideSel = sb.querySelector("#sel-side-of-house") as HTMLSelectElement | null;
       sideSel?.addEventListener("change", () => {
-        updateSelected((s) => ({ ...s, sideOfHouse: sideSel.value ? (sideSel.value as SideOfHouse) : null }));
+        // #249 review fix (provenance): any deliberate write through this
+        // dropdown — including re-confirming the side the sticky pre-draw tag
+        // already guessed — clears sideOfHouseAuto, so training-example
+        // capture (trainingExamples.ts extractFinalStreetRuns) treats the tag
+        // as human-confirmed from here on. updateSelected replaces the whole
+        // strand object per selected item, so the flag reliably clears.
+        updateSelected((s) => ({
+          ...s,
+          sideOfHouse: sideSel.value ? (sideSel.value as SideOfHouse) : null,
+          sideOfHouseAuto: false,
+        }));
       });
       const wrapSel = sb.querySelector("#sel-wrapstyle") as HTMLSelectElement | null;
       wrapSel?.addEventListener("change", () => {
@@ -4485,6 +4701,13 @@ export async function renderEditor(
   }
 
   // Commit a scattershot box drawn via drag (Lights → Scattershot style).
+  // #249: scattershot only exists for bulbType "mini" (see the Drawing Style
+  // section), so tool.surface here is always either "" or a valid mini
+  // surface — falls back to the pre-existing "bush" default when untagged.
+  // #753 review fix: never "curtain" specifically — the pre-draw row filters
+  // it out (and resets it) the moment Scattershot is active, because
+  // #sel-ma-surface (this item's own edit panel, below) has no curtain
+  // option to show/correct it with.
   function commitMiniArea(r: { x: number; y: number; width: number; height: number }) {
     const area: MiniAreaItem = {
       id: cryptoId(),
@@ -4497,7 +4720,7 @@ export async function renderEditor(
       density: 0.5,
       colorPattern: [...tool.colorPattern],
       yardstickId: activeYs()?.id ?? null,
-      surface: "bush",
+      surface: tool.surface || "bush",
       wrapStyle: "canopy",
       stringCount: 1,
       included: true,
@@ -4595,11 +4818,28 @@ export async function renderEditor(
   }
 
   // Quote-binding defaults baked onto newly-created items so the quote can
-  // project them out of the box (operator still sets `surface`). Harmless in the
-  // standalone tool — ignored unless a quote reads them.
+  // project them out of the box. #249: `surface` comes from the pre-draw
+  // quick-tag (tool.surface) when the operator set one; otherwise the item is
+  // untagged, same as before this feature (the operator sets `surface`
+  // post-hoc via the #sel-surface dropdown). Harmless in the standalone tool —
+  // ignored unless a quote reads them. `sideOfHouse` mirrors the same pattern,
+  // permanent bulb type only (tool.sideOfHouse only ever holds a value while
+  // tool.bulbType === "permanent" — see resetToolSideOfHouseIfInvalid).
+  // #249 review fix (provenance): a strand tagged HERE (the sticky pre-draw
+  // default) also gets `sideOfHouseAuto = true` — it bills/displays/toggles
+  // exactly like a deliberate tag, but training-example capture
+  // (trainingExamples.ts extractFinalStreetRuns) excludes auto tags from AI
+  // ground truth until a human confirms them via the #sel-side-of-house
+  // dropdown (which clears the flag). RELAY: mirror to the standalone design
+  // tool alongside the sideOfHouseAuto field itself.
   function quoteDefaultsForNewStrand(): Partial<StrandItem> {
     const d: Partial<StrandItem> = { included: true };
     if (tool.bulbType === "mini") { d.stringCount = 1; d.wrapStyle = "canopy"; }
+    if (tool.surface) d.surface = tool.surface;
+    if (tool.bulbType === "permanent" && tool.sideOfHouse) {
+      d.sideOfHouse = tool.sideOfHouse;
+      d.sideOfHouseAuto = true;
+    }
     return d;
   }
   function quoteDefaultsForNewGarland(): Partial<GarlandItem> {
@@ -5473,9 +5713,15 @@ export async function renderEditor(
 
   const handle = destroy as EditorHandle;
   handle.flushSave = flushSave;
+  handle.discardPending = discardPending;
+  handle.removePhotoItems = removePhotoItems;
   return handle;
 }
-export type EditorHandle = (() => void) & { flushSave?: () => Promise<void> };
+export type EditorHandle = (() => void) & {
+  flushSave?: () => Promise<void>;
+  discardPending?: () => boolean;
+  removePhotoItems?: (photoId: string) => void;
+};
 
 function loadHTMLImage(url: string): Promise<HTMLImageElement> {
   return new Promise((res, rej) => {

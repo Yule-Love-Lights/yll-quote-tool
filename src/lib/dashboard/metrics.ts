@@ -45,7 +45,7 @@ export function customerKey(q: DashboardQuote): string {
  * "reached" on one surface and not the other.
  *
  * A quote reached the customer if it was sent, OR it was approved while not
- * in a terminal state (cancelled/declined/lost). Approval implies it reached
+ * in a terminal state (cancelled/declined/abandoned). Approval implies it reached
  * them even when quote_sent_at was never stamped (in-person / imported /
  * offline close). A terminal quote that was never sent has NOT reached anyone.
  */
@@ -72,7 +72,7 @@ export function computeKpis(quotes: DashboardQuote[], now: Date): Kpis {
     const sentAt = q.quote_sent_at;
     const total = q.total ?? 0;
 
-    // B7 fix: exclude terminal-state orders (cancelled/declined/lost) from
+    // B7 fix: exclude terminal-state orders (cancelled/declined/abandoned) from
     // booked revenue even when customer_approved_at or deposit_paid_at is set.
     // isTerminalStatus requires `status` to be selected by DASHBOARD_QUOTES_SELECT.
     const isTerminal = isTerminalStatus(q);

@@ -36,7 +36,7 @@ export function monthlyRevenue(quotes: DashboardQuote[], now: Date, months = 12)
     index.set(key, point);
   }
   for (const q of quotes) {
-    if (!q.customer_approved_at || isTerminalStatus(q)) continue; // B7: skip cancelled/declined/lost
+    if (!q.customer_approved_at || isTerminalStatus(q)) continue; // B7: skip cancelled/declined/abandoned
     const point = index.get(monthKey(q.customer_approved_at));
     if (point) point.revenue += q.total ?? 0;
   }
@@ -50,7 +50,7 @@ export type ServiceRevenueSlice = { service: ServiceType; label: string; revenue
 export function revenueByService(quotes: DashboardQuote[]): ServiceRevenueSlice[] {
   const totals: Record<ServiceType, number> = { holiday: 0, permanent: 0, event: 0, permanent_bistro: 0 };
   for (const q of quotes) {
-    if (!q.customer_approved_at || isTerminalStatus(q)) continue; // B7: skip cancelled/declined/lost
+    if (!q.customer_approved_at || isTerminalStatus(q)) continue; // B7: skip cancelled/declined/abandoned
     totals[serviceTypeOf(q)] += q.total ?? 0;
   }
   return SERVICE_TYPES.map(s => ({ service: s, label: SERVICE_LABEL[s], revenue: totals[s] }));
@@ -79,7 +79,7 @@ export function computeInsightStats(quotes: DashboardQuote[]): InsightStats {
 
   for (const q of quotes) {
     allTotalSum += q.total ?? 0;
-    // B7 (#110 W7-006): a cancelled/declined/lost quote is NOT a win even if it
+    // B7 (#110 W7-006): a cancelled/declined/abandoned quote is NOT a win even if it
     // once carried customer_approved_at — exclude it from the booked/approved
     // rollups. Whether it still counts as `reached` is decided by the shared
     // `reached()` helper (WT-48) below, so closeRatio agrees with the

@@ -5,6 +5,21 @@ import nextTs from "eslint-config-next/typescript";
 const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
+  // Ledger #261: the `_`-prefix unused-arg convention (used ~24 places, e.g.
+  // inbox/store.test.ts's mock signatures) was never actually exempted —
+  // eslint-config-next/typescript sets @typescript-eslint/no-unused-vars to
+  // `warn` with NO ignore patterns, so every `_`-prefixed parameter has been
+  // warning since the convention started. This makes the convention real.
+  // Deliberately argsIgnorePattern ONLY (the row's exact scope): a `_`-prefixed
+  // unused VARIABLE still warns, which is honest — a variable you bound and
+  // never read is usually a leftover, while an unused arg is often required
+  // by a callback signature.
+  {
+    files: ["**/*.ts", "**/*.tsx"],
+    rules: {
+      "@typescript-eslint/no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
+    },
+  },
   // Override default ignores of eslint-config-next.
   globalIgnores([
     // Default ignores of eslint-config-next:

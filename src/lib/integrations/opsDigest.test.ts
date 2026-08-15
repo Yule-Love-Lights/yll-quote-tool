@@ -6,7 +6,7 @@ import type { FulfillmentCard } from '@/lib/inventory/jobs';
 const { listQuotes, listFulfillmentCards, listOpenItems, listDueFollowUps } = vi.hoisted(() => ({
   listQuotes: vi.fn(async (): Promise<unknown[]> => []),
   listFulfillmentCards: vi.fn(async (): Promise<unknown[]> => []),
-  listOpenItems: vi.fn(async (): Promise<unknown> => ({ ok: true, items: [], totalOpen: 0, truncated: false })),
+  listOpenItems: vi.fn(async (): Promise<unknown> => ({ ok: true, items: [], totalOpen: 0, totalLeads: 0, truncated: false })),
   listDueFollowUps: vi.fn(async (): Promise<unknown> => ({ ok: true, items: [] })),
 }));
 vi.mock('@/lib/quotes', () => ({ listQuotes }));
@@ -69,6 +69,7 @@ const emptyData: OpsDigestData = {
   changesRequestedCount: 0,
   depositsPendingCount: 0,
   inboxOpenCount: 0,
+  inboxFilteredCount: 0,
   inboxFollowUpsDueCount: 0,
 };
 
@@ -76,7 +77,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   listQuotes.mockResolvedValue([]);
   listFulfillmentCards.mockResolvedValue([]);
-  listOpenItems.mockResolvedValue({ ok: true, items: [], totalOpen: 0, truncated: false });
+  listOpenItems.mockResolvedValue({ ok: true, items: [], totalOpen: 0, totalLeads: 0, truncated: false });
   listDueFollowUps.mockResolvedValue({ ok: true, items: [] });
 });
 
@@ -129,19 +130,47 @@ describe('collectOpsDigest', () => {
     expect(listQuotes).toHaveBeenCalledWith(10_000);
   });
 
-  it('reads inbox open + due-follow-up counts from the inbox surface (totalOpen, not the capped page)', async () => {
-    listOpenItems.mockResolvedValue({ ok: true, items: [{}, {}], totalOpen: 64, truncated: true });
+  it('reads inbox open + due-follow-up counts from the inbox surface (totalLeads, not the capped page)', async () => {
+    listOpenItems.mockResolvedValue({ ok: true, items: [{}, {}], totalOpen: 64, totalLeads: 40, truncated: true });
     listDueFollowUps.mockResolvedValue({ ok: true, items: [{}, {}, {}] });
     const data = await collectOpsDigest();
-    expect(data.inboxOpenCount).toBe(64);
+    expect(data.inboxOpenCount).toBe(40);
     expect(data.inboxFollowUpsDueCount).toBe(3);
   });
 
-  it('falls back to null inbox counts when the inbox read fails — never breaks the digest', async () => {
+  // #265: pins the actual field the digest reads — totalOpen counts EVERY open
+  // item (leads + lead_kind='automated' noise); totalLeads excludes the noise,
+  // matching /inbox's own "Open leads" tile. Before the fix, the digest read
+  // totalOpen and over-counted by exactly the automated total.
+  it('reads totalLeads specifically, NOT totalOpen — the digest must not re-count automated noise as leads (#265)', async () => {
+    listOpenItems.mockResolvedValue({ ok: true, items: [{}], totalOpen: 167, totalLeads: 127, truncated: false });
+    const data = await collectOpsDigest();
+    expect(data.inboxOpenCount).toBe(127);
+    expect(data.inboxOpenCount).not.toBe(167);
+  });
+
+  // #265: the filtered count is the residual signal — what got excluded
+  // (totalOpen − totalLeads) — derived from the SAME listOpenItems() read
+  // as inboxOpenCount, not a second round-trip.
+  it('derives inboxFilteredCount as totalOpen minus totalLeads from a single inbox read', async () => {
+    listOpenItems.mockResolvedValue({ ok: true, items: [{}], totalOpen: 167, totalLeads: 127, truncated: false });
+    const data = await collectOpsDigest();
+    expect(data.inboxFilteredCount).toBe(40);
+    expect(listOpenItems).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports inboxFilteredCount 0 when there is no automated noise (no behavior change for the common case)', async () => {
+    listOpenItems.mockResolvedValue({ ok: true, items: [{}], totalOpen: 12, totalLeads: 12, truncated: false });
+    const data = await collectOpsDigest();
+    expect(data.inboxFilteredCount).toBe(0);
+  });
+
+  it('falls back to null inbox counts (including inboxFilteredCount) when the inbox read fails — never breaks the digest', async () => {
     listOpenItems.mockResolvedValue({ ok: false, error: 'db down' });
     listDueFollowUps.mockRejectedValue(new Error('boom'));
     const data = await collectOpsDigest();
     expect(data.inboxOpenCount).toBeNull();
+    expect(data.inboxFilteredCount).toBeNull();
     expect(data.inboxFollowUpsDueCount).toBeNull();
   });
 
@@ -164,6 +193,9 @@ describe('opsDigestMessage (pure formatter — heartbeat)', () => {
     expect(msg).toContain('💰 Deposits pending: 0');
     expect(msg).toContain('→ https://quote.yulelovelights.com/admin/quotes');
     expect(msg).toContain('📥 Inbox — 0 to respond · 0 follow-ups due');
+    // #265: a zero (noise-free) filtered count stays OMITTED — a quiet/clean
+    // morning must not grow a "· 0 filtered" clause nobody needs to read.
+    expect(msg).not.toContain('filtered');
     expect(msg).toContain('→ https://quote.yulelovelights.com/inbox');
     expect(msg).toContain('Dashboard → https://quote.yulelovelights.com/');
   });
@@ -180,6 +212,7 @@ describe('opsDigestMessage (pure formatter — heartbeat)', () => {
         changesRequestedCount: 1,
         depositsPendingCount: 2,
         inboxOpenCount: 64,
+        inboxFilteredCount: 10,
         inboxFollowUpsDueCount: 10,
       },
       'https://quote.yulelovelights.com',
@@ -195,13 +228,29 @@ describe('opsDigestMessage (pure formatter — heartbeat)', () => {
     expect(msg).toContain('✏️ Changes requested: 1');
     expect(msg).toContain('💰 Deposits pending: 2');
     expect(msg).toContain('→ https://quote.yulelovelights.com/admin/quotes');
-    expect(msg).toContain('📥 Inbox — 64 to respond · 10 follow-ups due');
+    expect(msg).toContain('📥 Inbox — 64 to respond · 10 filtered · 10 follow-ups due');
+  });
+
+  // #265: the residual signal — softens the count cliff on the first
+  // post-merge send (57 → 16 becomes "16 to respond · 41 filtered", which
+  // self-explains where the rest went) and mirrors /inbox's own
+  // InboxSummaryStrip "· N filtered" texture.
+  it('shows the filtered (excluded automated) count only when nonzero (#265)', () => {
+    const msg = opsDigestMessage(
+      { ...emptyData, inboxOpenCount: 16, inboxFilteredCount: 41, inboxFollowUpsDueCount: 3 },
+      'https://quote.yulelovelights.com',
+    );
+    expect(msg).toContain('📥 Inbox — 16 to respond · 41 filtered · 3 follow-ups due');
   });
 
   it('keeps the inbox line + link but drops the numbers when the inbox read failed', () => {
-    const msg = opsDigestMessage({ ...emptyData, inboxOpenCount: null, inboxFollowUpsDueCount: null }, 'https://x');
+    const msg = opsDigestMessage(
+      { ...emptyData, inboxOpenCount: null, inboxFilteredCount: null, inboxFollowUpsDueCount: null },
+      'https://x',
+    );
     expect(msg).toContain('📥 Inbox\n→ https://x/inbox');
     expect(msg).not.toContain('to respond');
+    expect(msg).not.toContain('filtered');
   });
 
   it('normalizes a trailing slash on the base url', () => {

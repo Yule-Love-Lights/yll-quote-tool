@@ -117,7 +117,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // cancelled (or otherwise terminal) order would still pass the check above.
   // Amending a dead order records a trail entry and can text the customer a new
   // balance — reject it. deriveStatus returns the persisted terminal status for a
-  // cancelled/declined/lost row; a live booked order (deposit_paid_at set) derives
+  // cancelled/declined/abandoned row; a live booked order (deposit_paid_at set) derives
   // 'booked'. The select carries `status` + `deposit_paid_at`, which is all
   // deriveStatus needs to resolve those states; the unselected timestamps are null.
   const lifecycleStatus = deriveStatus({
@@ -126,7 +126,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     deposit_paid_at: quote.deposit_paid_at,
     status: quote.status,
   });
-  if (lifecycleStatus === 'cancelled' || lifecycleStatus === 'declined' || lifecycleStatus === 'lost') {
+  if (lifecycleStatus === 'cancelled' || lifecycleStatus === 'declined' || lifecycleStatus === 'abandoned') {
     return NextResponse.json(
       { error: `Cannot amend a ${lifecycleStatus} order`, code: 'not-amendable' },
       { status: 409 },

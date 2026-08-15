@@ -37,7 +37,7 @@ type QuoteRow = {
   valor_order_ref: string | null;
   approval_snapshot: { customerSelection?: { currentDepositUsd?: number } } | null;
   // Explicit lifecycle status (ledger #83) — used to refuse a dead (cancelled /
-  // declined / lost) quote before it can mint a hosted page (W1-007).
+  // declined / abandoned) quote before it can mint a hosted page (W1-007).
   status: import('@/lib/quoteStatus').QuoteStatus | null;
   // Test Quote (ledger #93): a simulated quote must never reach real Valor.
   is_test: boolean;
@@ -114,7 +114,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
-  // W1-007: a dead quote (cancelled / declined / lost) must not be able to mint a
+  // W1-007: a dead quote (cancelled / declined / abandoned) must not be able to mint a
   // hosted page — otherwise a customer holding a live pay link could pay against a
   // cancelled order and the webhook would resurrect it to 'booked'. Gate here so a
   // terminal quote can't even start checkout (the webhook adds the matching guard
@@ -126,7 +126,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     deposit_paid_at: quote.deposit_paid_at,
     status: quote.status,
   });
-  if (lifecycleStatus === 'cancelled' || lifecycleStatus === 'declined' || lifecycleStatus === 'lost') {
+  if (lifecycleStatus === 'cancelled' || lifecycleStatus === 'declined' || lifecycleStatus === 'abandoned') {
     return NextResponse.json(
       { error: `This quote is ${lifecycleStatus} and can no longer be paid`, code: 'not-payable' },
       { status: 409 },
