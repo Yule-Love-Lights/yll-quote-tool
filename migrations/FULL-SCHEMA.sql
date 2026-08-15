@@ -1986,3 +1986,92 @@ create index if not exists quote_deliveries_created_at_idx
   on public.quote_deliveries (created_at desc);
 
 alter table public.quote_deliveries enable row level security;
+
+-- ---------------------------------------------------------------------
+-- job_segments (2026-08-12, migrations/2026-08-12-job-segments.sql) - per-job
+-- time on the shift clock (Flow B, Track A Phase 2 slice 2). Arrive opens a
+-- segment, depart closes it, at most one open per shift (partial unique index).
+-- MONEY: job seconds / budgeted_hours is the efficiency the P4P pool pays on.
+-- BREAKS PAUSE JOB TIME, so job seconds are segment spans MINUS overlapping
+-- break spans (src/lib/jobSegments.ts on src/lib/timeSpans.ts). stoppage_reason
+-- ships day one and cannot be backfilled. auto_closed marks a clock-out close,
+-- feeding the open_segment exception queue - a review state, not an error.
+-- RLS ENABLED, ZERO POLICIES - service-role only, fails closed until routes ship.
+-- ---------------------------------------------------------------------
+create table if not exists public.job_segments (
+  id              uuid primary key default gen_random_uuid(),
+  shift_id        uuid not null references public.shifts(id),
+  crew_member_id  uuid not null references public.crew_members(id),
+  job_id          uuid not null references public.jobs(id),
+
+  arrived_at      timestamptz not null default now(),
+  departed_at     timestamptz,
+
+  entry_kind      text not null default 'install'
+                    check (entry_kind in ('install', 'rework', 'non_billable')),
+
+  -- Null while the segment is open; required by the application on close.
+  stoppage_reason text
+                    check (stoppage_reason in ('completed', 'weather', 'no_access', 'materials', 'other')),
+
+  source          text not null check (source in ('pwa', 'telegram', 'office', 'system')),
+  end_source      text check (end_source in ('pwa', 'telegram', 'office', 'system')),
+
+  auto_closed     boolean not null default false,
+
+  -- Only meaningful for entry_kind = 'non_billable'.
+  approved_by     uuid references public.crew_members(id),
+  approved_at     timestamptz,
+
+  device_time     timestamptz,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now(),
+
+  -- A segment cannot end before it began. Guards an office-correction typo
+  -- from minting negative job time, which would understate efficiency.
+  constraint job_segments_ends_after_start
+    check (departed_at is null or departed_at >= arrived_at),
+
+  -- A closed segment must say WHY it closed; an open one must not pretend to.
+  constraint job_segments_reason_matches_state
+    check ((departed_at is null) = (stoppage_reason is null)),
+
+  -- Approval only belongs on a non_billable segment, and both halves travel
+  -- together so "approved by nobody at some time" cannot be recorded.
+  constraint job_segments_approval_shape
+    check (
+      (approved_by is null and approved_at is null)
+      or (entry_kind = 'non_billable' and approved_by is not null and approved_at is not null)
+    )
+);
+
+create unique index if not exists job_segments_one_open_per_shift
+  on public.job_segments (shift_id) where departed_at is null;
+
+create index if not exists job_segments_shift_id_idx
+  on public.job_segments (shift_id);
+
+create index if not exists job_segments_job_id_idx
+  on public.job_segments (job_id);
+
+create index if not exists job_segments_crew_member_id_idx
+  on public.job_segments (crew_member_id);
+
+-- The missed-tap backstop scans for open segments; keep that scan cheap.
+create index if not exists job_segments_open_arrived_at_idx
+  on public.job_segments (arrived_at) where departed_at is null;
+
+alter table public.job_segments enable row level security;
+
+create or replace function public.job_segments_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists job_segments_updated_at on public.job_segments;
+create trigger job_segments_updated_at
+  before update on public.job_segments
+  for each row execute function public.job_segments_set_updated_at();

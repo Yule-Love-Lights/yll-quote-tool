@@ -1,5 +1,15 @@
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import type { ShiftSource } from '@/lib/shifts';
+import {
+  ceilSeconds,
+  clipAndMerge,
+  envelopeMs,
+  floorSeconds,
+  resolveNowMs,
+  totalMs,
+  type OpenInterval,
+  type Span,
+} from '@/lib/timeSpans';
 
 /**
  * Break tracking on the shift clock ledger.
@@ -78,113 +88,41 @@ function isOpenBreakUniqueViolation(error: { code?: string; message?: string } |
 
 // ---------------------------------------------------------------------------
 // Money math. Pure, no database.
+//
+// The interval arithmetic itself now lives in `timeSpans.ts`, shared with job
+// segments. The rounding rule and the reasons behind it are documented there;
+// this module just adapts the shift/break shapes onto it.
 // ---------------------------------------------------------------------------
 
 type ShiftEnvelope = { clockInAt: string; clockOutAt: string | null };
 type BreakInterval = { startedAt: string; endedAt: string | null };
 
-type Span = { start: number; end: number };
-
-function parseMs(value: string): number | null {
-  const ms = Date.parse(value);
-  return Number.isFinite(ms) ? ms : null;
+/** Shift row shape -> the shared interval shape. */
+export function shiftEnvelopeInterval(shift: ShiftEnvelope): OpenInterval {
+  return { start: shift.clockInAt, end: shift.clockOutAt };
 }
 
-/**
- * The shift envelope in milliseconds. An open shift runs to `nowMs`. Returns
- * null when the clock-in is unparseable, and an empty span when the clock-out
- * precedes the clock-in — a corrupt row must not mint negative paid time.
- */
-function envelopeMs(shift: ShiftEnvelope, nowMs: number): Span | null {
-  const start = parseMs(shift.clockInAt);
-  if (start === null) return null;
-  const end = shift.clockOutAt === null ? nowMs : parseMs(shift.clockOutAt);
-  if (end === null) return null;
-  return { start, end: Math.max(start, end) };
+/** Break row shape -> the shared interval shape. */
+export function breakInterval(item: BreakInterval): OpenInterval {
+  return { start: item.startedAt, end: item.endedAt };
 }
 
-/**
- * Break spans clipped to the envelope and merged, so overlapping rows (two
- * office corrections on the same lunch, say) subtract their union once rather
- * than their sum twice. Double-subtracting would underpay the crew member.
- */
-function mergedBreakSpans(
-  envelope: Span,
+/** The merged, clipped break spans inside a shift. Exported for job-segment math. */
+export function breakSpansForShift(
+  shift: ShiftEnvelope,
   breaks: ReadonlyArray<BreakInterval>,
   nowMs: number,
 ): Span[] {
-  const spans: Span[] = [];
-
-  for (const item of breaks) {
-    const rawStart = parseMs(item.startedAt);
-    if (rawStart === null) continue;
-    const rawEnd = item.endedAt === null ? nowMs : parseMs(item.endedAt);
-    if (rawEnd === null) continue;
-
-    const start = Math.max(rawStart, envelope.start);
-    const end = Math.min(rawEnd, envelope.end);
-    if (end > start) spans.push({ start, end });
-  }
-
-  spans.sort((a, b) => a.start - b.start);
-
-  const merged: Span[] = [];
-  for (const span of spans) {
-    const last = merged[merged.length - 1];
-    if (last && span.start <= last.end) {
-      last.end = Math.max(last.end, span.end);
-    } else {
-      merged.push({ ...span });
-    }
-  }
-  return merged;
-}
-
-function breakMs(shift: ShiftEnvelope, breaks: ReadonlyArray<BreakInterval>, nowMs: number): number {
-  const envelope = envelopeMs(shift, nowMs);
-  if (!envelope) return 0;
-  return mergedBreakSpans(envelope, breaks, nowMs).reduce(
-    (total, span) => total + (span.end - span.start),
-    0,
-  );
-}
-
-/**
- * ROUNDING RULE, and why the two halves round in opposite directions.
- *
- * The envelope rounds UP and break time rounds DOWN. Both directions favor the
- * employee: a longer paid day, and less unpaid time subtracted from it.
- *
- * More importantly, defining paid seconds as `envelopeSeconds - breakSeconds`
- * makes the decomposition EXACT by construction:
- *
- *     paidSecondsForShift(...) + breakSecondsForShift(...) === envelopeSeconds
- *
- * An earlier version rounded each half up independently. That held for
- * whole-second inputs but broke on real millisecond timestamps: a 10,700 ms
- * envelope with a 400 ms break gave paid 11 + break 1 = 12 against an 11-second
- * envelope. Any later timesheet or payout code that composed "shift length
- * minus break time" would then disagree with this module's own answer, and the
- * crew member would have no way to tell which figure was real. Caught by the
- * S58 wrap review's crew lens.
- */
-function ceilSeconds(ms: number): number {
-  return Math.ceil(Math.max(0, ms) / 1000);
-}
-
-function floorSeconds(ms: number): number {
-  return Math.floor(Math.max(0, ms) / 1000);
+  const envelope = envelopeMs(shiftEnvelopeInterval(shift), nowMs);
+  if (!envelope) return [];
+  return clipAndMerge(envelope, breaks.map(breakInterval), nowMs);
 }
 
 /** The whole clock envelope in seconds, before break time comes off it. */
-function envelopeSeconds(shift: ShiftEnvelope, nowMs: number): number {
-  const envelope = envelopeMs(shift, nowMs);
+function envelopeSecondsForShift(shift: ShiftEnvelope, nowMs: number): number {
+  const envelope = envelopeMs(shiftEnvelopeInterval(shift), nowMs);
   if (!envelope) return 0;
   return ceilSeconds(envelope.end - envelope.start);
-}
-
-function resolveNowMs(nowIso?: string): number {
-  return nowIso ? (parseMs(nowIso) ?? Date.now()) : Date.now();
 }
 
 /**
@@ -197,7 +135,10 @@ export function breakSecondsForShift(
   nowIso?: string,
 ): number {
   const nowMs = resolveNowMs(nowIso);
-  return Math.min(floorSeconds(breakMs(shift, breaks, nowMs)), envelopeSeconds(shift, nowMs));
+  return Math.min(
+    floorSeconds(totalMs(breakSpansForShift(shift, breaks, nowMs))),
+    envelopeSecondsForShift(shift, nowMs),
+  );
 }
 
 /** Paid seconds for the shift: the clock envelope minus unpaid break time. Never negative. */
@@ -207,7 +148,10 @@ export function paidSecondsForShift(
   nowIso?: string,
 ): number {
   const nowMs = resolveNowMs(nowIso);
-  return Math.max(0, envelopeSeconds(shift, nowMs) - breakSecondsForShift(shift, breaks, nowIso));
+  return Math.max(
+    0,
+    envelopeSecondsForShift(shift, nowMs) - breakSecondsForShift(shift, breaks, nowIso),
+  );
 }
 
 // ---------------------------------------------------------------------------

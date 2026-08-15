@@ -1,5 +1,6 @@
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import { closeOpenBreakForShift } from '@/lib/shiftBreaks';
+import { closeOpenSegmentForShift } from '@/lib/jobSegments';
 
 export type ShiftSource = 'pwa' | 'telegram' | 'office' | 'system';
 
@@ -146,6 +147,15 @@ export async function clockOut(
       await closeOpenBreakForShift(trimmedShiftId, now, source);
     } catch (breakError) {
       console.error('clockOut: failed to auto-close the open break:', breakError);
+    }
+    // Same contract rule and same failure posture for a job segment left open.
+    // The auto-close records `other`, never `completed` — a clock-out says the
+    // day ended, not that the job finished. Each close is caught separately so
+    // one failing cannot stop the other from running.
+    try {
+      await closeOpenSegmentForShift(trimmedShiftId, now, source);
+    } catch (segmentError) {
+      console.error('clockOut: failed to auto-close the open job segment:', segmentError);
     }
     return toShift(data as Row);
   }
