@@ -371,9 +371,20 @@ route optimization (YLL runs 1-3 jobs a day, not 12-stop mow routes), GHL change
     stamps `jobs.rates_are_placeholder = true` (only when an estimate was
     actually computed — a job with no estimate at all, e.g. missing geometry,
     gets `false`, since there's nothing placeholder about a number that was
-    never computed). Nothing reads this flag today; it exists purely so a
-    future pass can find and fix the jobs that used guessed production
-    rates once the Jason seed-rates session (A7 item 2) produces real ones.
+    never computed).
+
+    **UPDATED S58 (2026-08-11): the flag IS now read.** `src/lib/laborPlan.ts`
+    reads it on every access to a job's labor numbers: `readLaborPlan` returns
+    a tagged union a caller must narrow before reaching a figure, and
+    `requireRealLaborPlan` throws rather than handing back an unpayable one. An
+    ESLint rule bans reading the raw columns anywhere outside that accessor and
+    the row mapper. So the flag now blocks placeholder numbers from silently
+    reaching pay math.
+
+    **What is still missing is the RECOMPUTE pass** — the thing that turns
+    placeholder numbers into real ones and clears the flag once the seed-rates
+    session (A7 item 2) produces real rates. That, not the flag's readership,
+    is what this item now tracks.
     Until that recompute pass is built, the manual query is:
     `select id, quote_id, budgeted_hours, labor_revenue_cents from jobs
     where rates_are_placeholder = true order by created_at`. This item is the
