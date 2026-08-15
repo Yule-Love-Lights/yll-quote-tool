@@ -78,6 +78,8 @@ const { dbRef, stateRef } = vi.hoisted(() => ({
       insertRaceRow: null as ShiftRow | null,
       breaks: [] as BreakRow[],
       breakUpdates: [] as Record<string, unknown>[],
+      segments: [] as Record<string, unknown>[],
+      segmentUpdates: [] as Record<string, unknown>[],
     },
   },
 }));
@@ -106,12 +108,20 @@ function matches(row: ShiftRow, filters: Partial<Record<keyof ShiftRow, unknown>
 }
 
 /**
- * The `shift_breaks` half of the mock. `clockOut` auto-closes a running break,
- * so this table is now reachable from these tests. Only the guarded update that
- * `closeOpenBreakForShift` issues is modelled.
+ * The child-table half of the mock, shared by `shift_breaks` and `job_segments`.
+ * `clockOut` auto-closes a running break AND a running job segment, so both are
+ * reachable from these tests. Only the guarded update those closers issue is
+ * modelled.
+ *
+ * This was previously breaks-only, and the `unexpected table` throw for
+ * job_segments was silently swallowed by clockOut's own try/catch — so the
+ * segment auto-close read as covered while never actually running.
  */
-function makeBreaksBuilder() {
-  const breaksBuilder = {
+function makeChildBuilder(
+  rows: () => Array<Record<string, unknown>>,
+  log: () => Array<Record<string, unknown>>,
+) {
+  const childBuilder = {
     update: (payload: Record<string, unknown>) => {
       const filters: Record<string, unknown> = {};
       const updateBuilder = {
@@ -125,19 +135,14 @@ function makeBreaksBuilder() {
         },
         select: () => ({
           maybeSingle: () => {
-            const idx = stateRef.current.breaks.findIndex((row) =>
-              Object.entries(filters).every(
-                ([key, value]) => (row as unknown as Record<string, unknown>)[key] === value,
-              ),
+            const list = rows();
+            const idx = list.findIndex((row) =>
+              Object.entries(filters).every(([key, value]) => row[key] === value),
             );
             if (idx === -1) return Promise.resolve({ data: null, error: null });
-            stateRef.current.breakUpdates.push(payload);
-            const next = {
-              ...stateRef.current.breaks[idx],
-              ...payload,
-              updated_at: new Date().toISOString(),
-            } as BreakRow;
-            stateRef.current.breaks[idx] = next;
+            log().push(payload);
+            const next = { ...list[idx], ...payload, updated_at: new Date().toISOString() };
+            list[idx] = next;
             return Promise.resolve({ data: next, error: null });
           },
         }),
@@ -145,14 +150,23 @@ function makeBreaksBuilder() {
       return updateBuilder;
     },
   };
-  return breaksBuilder;
+  return childBuilder;
 }
 
 function makeDb() {
   return {
     from(table: string) {
       if (table === 'shift_breaks') {
-        return makeBreaksBuilder() as never;
+        return makeChildBuilder(
+          () => stateRef.current.breaks as unknown as Array<Record<string, unknown>>,
+          () => stateRef.current.breakUpdates,
+        ) as never;
+      }
+      if (table === 'job_segments') {
+        return makeChildBuilder(
+          () => stateRef.current.segments,
+          () => stateRef.current.segmentUpdates,
+        ) as never;
       }
       if (table !== 'shifts') {
         throw new Error(`shifts.test.ts: unexpected table ${table}`);
@@ -261,6 +275,8 @@ beforeEach(() => {
     insertRaceRow: null,
     breaks: [],
     breakUpdates: [],
+    segments: [],
+    segmentUpdates: [],
   };
   dbRef.current = makeDb();
 });
@@ -428,6 +444,54 @@ describe('clockOut', () => {
     expect(stateRef.current.breakUpdates).toEqual([]);
     expect(stateRef.current.breaks[0].ended_at).toBe('2026-08-10T14:30:00.000Z');
     expect(stateRef.current.breaks[0].auto_closed).toBe(false);
+  });
+
+  it('auto-closes a job segment still running, at the punch time, reason "other"', async () => {
+    // A clock-out says the day ended, not that the job finished — recording
+    // `completed` here would corrupt the budgeted-hours learning signal.
+    stateRef.current.segments = [
+      { id: 'seg-1', shift_id: 'shift-open-1', departed_at: null, stoppage_reason: null, auto_closed: false },
+    ];
+
+    await clockOut('shift-open-1', 'crew-1', 'office');
+
+    expect(stateRef.current.segmentUpdates).toEqual([
+      {
+        departed_at: '2026-08-10T15:30:00.000Z',
+        stoppage_reason: 'other',
+        end_source: 'office',
+        auto_closed: true,
+      },
+    ]);
+  });
+
+  it('closes BOTH a running break and a running segment on the same clock-out', async () => {
+    stateRef.current.breaks = [{ ...OPEN_BREAK }];
+    stateRef.current.segments = [
+      { id: 'seg-1', shift_id: 'shift-open-1', departed_at: null, stoppage_reason: null, auto_closed: false },
+    ];
+
+    await clockOut('shift-open-1', 'crew-1', 'office');
+
+    expect(stateRef.current.breakUpdates).toHaveLength(1);
+    expect(stateRef.current.segmentUpdates).toHaveLength(1);
+  });
+
+  it('does not touch an already-departed segment', async () => {
+    stateRef.current.segments = [
+      {
+        id: 'seg-1',
+        shift_id: 'shift-open-1',
+        departed_at: '2026-08-10T14:00:00.000Z',
+        stoppage_reason: 'completed',
+        auto_closed: false,
+      },
+    ];
+
+    await clockOut('shift-open-1', 'crew-1', 'office');
+
+    expect(stateRef.current.segmentUpdates).toEqual([]);
+    expect(stateRef.current.segments[0].departed_at).toBe('2026-08-10T14:00:00.000Z');
   });
 
   it('does not attempt a break close when the clock-out itself was rejected', async () => {
