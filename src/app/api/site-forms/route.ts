@@ -81,6 +81,18 @@ const RESUME_ALLOWED = new Map<string, string>([
 // so the extension is the fallback rather than rejecting a real resume.
 const RESUME_ALLOWED_EXT = new Set(['pdf', 'doc', 'docx']);
 
+// The Content-Type we STORE, derived from the extension we verified by leading
+// bytes — never the caller-declared one. Storing the declared type would let a
+// polyglot (bytes starting "%PDF-" to pass the signature check, part declaring
+// text/html) sit in the bucket labelled as HTML, and a staff member opening the
+// signed URL in a new tab would render it on the storage origin instead of
+// downloading a document.
+const RESUME_STORED_MIME: Record<string, string> = {
+  pdf: 'application/pdf',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+};
+
 function resumeExtension(file: File): string | null {
   const byMime = RESUME_ALLOWED.get(file.type);
   if (byMime) return byMime;
@@ -326,7 +338,10 @@ export async function POST(req: NextRequest) {
     const buffer = Buffer.from(await resume.arrayBuffer());
     const { error: upErr } = await supabase.storage
       .from(RESUME_BUCKET)
-      .upload(path, buffer, { contentType: resume.type, upsert: true });
+      .upload(path, buffer, {
+        contentType: RESUME_STORED_MIME[resumeExt] ?? 'application/octet-stream',
+        upsert: true,
+      });
     if (upErr) {
       // Record it on the row. A silent failure here is indistinguishable from
       // "applied without a resume", so staff would never know to ask for one.
