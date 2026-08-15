@@ -150,21 +150,54 @@ function breakMs(shift: ShiftEnvelope, breaks: ReadonlyArray<BreakInterval>, now
 }
 
 /**
- * Sub-second remainders round UP, toward the employee. Whole-second inputs are
- * exact, so this only bites on device timestamps carrying milliseconds.
+ * ROUNDING RULE, and why the two halves round in opposite directions.
+ *
+ * The envelope rounds UP and break time rounds DOWN. Both directions favor the
+ * employee: a longer paid day, and less unpaid time subtracted from it.
+ *
+ * More importantly, defining paid seconds as `envelopeSeconds - breakSeconds`
+ * makes the decomposition EXACT by construction:
+ *
+ *     paidSecondsForShift(...) + breakSecondsForShift(...) === envelopeSeconds
+ *
+ * An earlier version rounded each half up independently. That held for
+ * whole-second inputs but broke on real millisecond timestamps: a 10,700 ms
+ * envelope with a 400 ms break gave paid 11 + break 1 = 12 against an 11-second
+ * envelope. Any later timesheet or payout code that composed "shift length
+ * minus break time" would then disagree with this module's own answer, and the
+ * crew member would have no way to tell which figure was real. Caught by the
+ * S58 wrap review's crew lens.
  */
-function toSeconds(ms: number): number {
+function ceilSeconds(ms: number): number {
   return Math.ceil(Math.max(0, ms) / 1000);
 }
 
-/** Unpaid break seconds inside the shift envelope, clipped and de-overlapped. */
+function floorSeconds(ms: number): number {
+  return Math.floor(Math.max(0, ms) / 1000);
+}
+
+/** The whole clock envelope in seconds, before break time comes off it. */
+function envelopeSeconds(shift: ShiftEnvelope, nowMs: number): number {
+  const envelope = envelopeMs(shift, nowMs);
+  if (!envelope) return 0;
+  return ceilSeconds(envelope.end - envelope.start);
+}
+
+function resolveNowMs(nowIso?: string): number {
+  return nowIso ? (parseMs(nowIso) ?? Date.now()) : Date.now();
+}
+
+/**
+ * Unpaid break seconds inside the shift envelope, clipped and de-overlapped.
+ * Capped at the envelope so it can never exceed the day it is subtracted from.
+ */
 export function breakSecondsForShift(
   shift: ShiftEnvelope,
   breaks: ReadonlyArray<BreakInterval>,
   nowIso?: string,
 ): number {
-  const nowMs = nowIso ? (parseMs(nowIso) ?? Date.now()) : Date.now();
-  return toSeconds(breakMs(shift, breaks, nowMs));
+  const nowMs = resolveNowMs(nowIso);
+  return Math.min(floorSeconds(breakMs(shift, breaks, nowMs)), envelopeSeconds(shift, nowMs));
 }
 
 /** Paid seconds for the shift: the clock envelope minus unpaid break time. Never negative. */
@@ -173,10 +206,8 @@ export function paidSecondsForShift(
   breaks: ReadonlyArray<BreakInterval>,
   nowIso?: string,
 ): number {
-  const nowMs = nowIso ? (parseMs(nowIso) ?? Date.now()) : Date.now();
-  const envelope = envelopeMs(shift, nowMs);
-  if (!envelope) return 0;
-  return toSeconds(envelope.end - envelope.start - breakMs(shift, breaks, nowMs));
+  const nowMs = resolveNowMs(nowIso);
+  return Math.max(0, envelopeSeconds(shift, nowMs) - breakSecondsForShift(shift, breaks, nowIso));
 }
 
 // ---------------------------------------------------------------------------
@@ -245,6 +276,20 @@ export async function listBreaks(shiftId: string): Promise<ShiftBreak[]> {
   }
 }
 
+/**
+ * Open a break on a shift.
+ *
+ * KNOWN ACCEPTED GAP (S58 wrap review, technical lens): the "is this shift still
+ * open" check is a plain SELECT, not a conditional write, so a break inserted in
+ * the microseconds after a concurrent `clockOut` can be orphaned open forever —
+ * the shift is closed, so nothing will ever call `closeOpenBreakForShift` for it
+ * again. Pay is NOT affected: an open break clips to the shift's recorded
+ * clock-out in the paid-time math, so the numbers self-heal. The damage is
+ * visibility: `getOpenBreak` would report "still on break" indefinitely. The
+ * real fix is the contract's `open_break` exception-queue sweep, which is not
+ * built yet, so this is recorded rather than papered over. See the ledger row
+ * for the sweep.
+ */
 export async function startBreak(
   shiftId: string,
   crewMemberId: string,
@@ -338,6 +383,15 @@ export async function endBreak(
  *
  * Returns null when nothing was running, which also makes a retried clock-out a
  * no-op rather than something that moves an already-recorded end time.
+ *
+ * ⚠️ THIS FUNCTION DOES NOT CHECK OWNERSHIP. It takes a shiftId and closes
+ * whatever break is open on it, with no crew_member_id guard of its own. The
+ * ONLY caller today is `clockOut`, which is safe because it establishes
+ * ownership first: its own UPDATE filters on `crew_member_id`, and this is
+ * called only after that UPDATE returned a row. Any new caller MUST do the
+ * same, or crew member A can close crew member B's break by supplying B's
+ * shift id. If you need a standalone break-close, add a crewMemberId guard
+ * mirroring `startBreak`/`endBreak` rather than calling this directly.
  */
 export async function closeOpenBreakForShift(
   shiftId: string,

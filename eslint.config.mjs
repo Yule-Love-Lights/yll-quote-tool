@@ -53,6 +53,12 @@ const eslintConfig = defineConfig([
   // Allowlisted below: laborPlan.ts itself (it is the door), jobs.ts (the row
   // mapper, which necessarily names the columns), and tests (they build
   // fixtures). Widen the allowlist only after reading that module's doc block.
+  //
+  // KNOWN LIMIT, stated so nobody mistakes this for airtight: a fully dynamic
+  // key (`const k = someRuntimeValue; job[k]`) cannot be caught by a static
+  // selector. Literal dot access, literal bracket access, destructuring, and
+  // literal-keyed object properties are all covered. The rule raises the cost
+  // of going around the accessor; it does not make it impossible.
   // ---------------------------------------------------------------------
   {
     files: ["src/**/*.ts", "src/**/*.tsx"],
@@ -72,8 +78,26 @@ const eslintConfig = defineConfig([
             "Do not read a job's raw labor columns. Use readLaborPlan() or requireRealLaborPlan() from src/lib/laborPlan.ts - every stored value is currently computed from placeholder production rates, and those helpers force you to handle that instead of showing an invented number as real.",
         },
         {
+          // Bracket access with a string literal: job["budgeted_hours"]. The
+          // dot-notation selector above uses computed=false and does NOT catch
+          // this - the S58 wrap review's technical lens proved it with a probe
+          // file that linted clean.
+          selector:
+            "MemberExpression[computed=true] > Literal[value=/^(budgeted_hours|labor_revenue_cents)$/]",
+          message:
+            "Do not read a job's raw labor columns, including by bracket access. Use readLaborPlan() or requireRealLaborPlan() from src/lib/laborPlan.ts - every stored value is currently computed from placeholder production rates.",
+        },
+        {
           selector:
             "Property > Identifier.key[name=/^(budgeted_hours|labor_revenue_cents)$/]",
+          message:
+            "Do not destructure or rebuild a job's raw labor columns outside the row mapper. Use readLaborPlan() or requireRealLaborPlan() from src/lib/laborPlan.ts - every stored value is currently computed from placeholder production rates.",
+        },
+        {
+          // String-literal property key: { "budgeted_hours": x }. The Identifier
+          // selector above only matches bare keys.
+          selector:
+            "Property > Literal.key[value=/^(budgeted_hours|labor_revenue_cents)$/]",
           message:
             "Do not destructure or rebuild a job's raw labor columns outside the row mapper. Use readLaborPlan() or requireRealLaborPlan() from src/lib/laborPlan.ts - every stored value is currently computed from placeholder production rates.",
         },
