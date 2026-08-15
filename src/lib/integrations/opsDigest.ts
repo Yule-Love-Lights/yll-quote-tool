@@ -582,9 +582,10 @@ export function opsDigestMessage(data: OpsDigestData, baseUrl: string): string {
   }
   if (data.inboxFollowUpsDueCount != null) inboxBits.push(`${data.inboxFollowUpsDueCount} follow-ups due`);
   lines.push(inboxBits.length ? `📥 Inbox — ${inboxBits.join(' · ')}` : '📥 Inbox');
-  // #229: named detail — null (read failed) or [] (nothing after the rebook
-  // filter) both render nothing extra here, same as the count above omitting
-  // itself on a failed read.
+  // #229: named detail — null (read failed) or [] (nothing due) both render
+  // nothing extra here, same as the count above omitting itself on a failed
+  // read. NB: there is no rebook filter on this list — an earlier draft had
+  // one, it was provably unreachable, and it was removed.
   if (data.overdueFollowUps && data.overdueFollowUps.length) {
     lines.push(
       ...renderCapped(data.overdueFollowUps, NAMED_LIST_CAP, (f) => `• ${f.displayName} — ${overdueLabel(f.daysOverdue)}`),
