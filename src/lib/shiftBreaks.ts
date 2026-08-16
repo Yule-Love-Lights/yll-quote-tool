@@ -134,7 +134,26 @@ export function breakSecondsForShift(
   breaks: ReadonlyArray<BreakInterval>,
   nowIso?: string,
 ): number {
-  const nowMs = resolveNowMs(nowIso);
+  return breakSecondsAt(shift, breaks, resolveNowMs(nowIso));
+}
+
+/**
+ * The `nowMs`-threaded form. Anything needing more than one figure for the SAME
+ * instant must use this rather than calling the public wrappers repeatedly.
+ *
+ * `paidSecondsForShift` used to resolve the clock for its envelope and then pass
+ * `nowIso` (undefined in the live case) down to `breakSecondsForShift`, which
+ * read the clock a SECOND time. On an open shift with an open break those two
+ * reads can straddle a second boundary, and the extra millisecond of break gets
+ * charged against an envelope measured before it existed — one paid second
+ * short, corresponding to no real instant. Caught by the S59 review's money
+ * lens; `jobSegments.ts` already threaded `nowMs` this way.
+ */
+function breakSecondsAt(
+  shift: ShiftEnvelope,
+  breaks: ReadonlyArray<BreakInterval>,
+  nowMs: number,
+): number {
   return Math.min(
     floorSeconds(totalMs(breakSpansForShift(shift, breaks, nowMs))),
     envelopeSecondsForShift(shift, nowMs),
@@ -147,11 +166,9 @@ export function paidSecondsForShift(
   breaks: ReadonlyArray<BreakInterval>,
   nowIso?: string,
 ): number {
+  // ONE clock read for the whole calculation.
   const nowMs = resolveNowMs(nowIso);
-  return Math.max(
-    0,
-    envelopeSecondsForShift(shift, nowMs) - breakSecondsForShift(shift, breaks, nowIso),
-  );
+  return Math.max(0, envelopeSecondsForShift(shift, nowMs) - breakSecondsAt(shift, breaks, nowMs));
 }
 
 // ---------------------------------------------------------------------------

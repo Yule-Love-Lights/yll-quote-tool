@@ -123,8 +123,14 @@ function makeDb() {
           if (v === null) filtered = filtered.filter((r) => r[c] === null);
           return b;
         },
-        order: (c: string) => {
-          filtered = [...filtered].sort((x, y) => String(x[c]).localeCompare(String(y[c])));
+        order: (c: string, opts?: { ascending?: boolean }) => {
+          // Honour the option, so a reversed sort is actually detectable.
+          const asc = opts?.ascending !== false;
+          filtered = [...filtered].sort((x, y) =>
+            asc
+              ? String(x[c]).localeCompare(String(y[c]))
+              : String(y[c]).localeCompare(String(x[c])),
+          );
           return b;
         },
         maybeSingle: () =>
@@ -216,6 +222,7 @@ beforeEach(() => {
 
 afterEach(() => vi.useRealTimers());
 
+import { breakSecondsForShift, paidSecondsForShift } from './shiftBreaks';
 import {
   arriveAtJob,
   closeOpenSegmentForShift,
@@ -343,6 +350,69 @@ describe('jobSecondsByJob', () => {
     const byJob = jobSecondsByJob(DAY, segs, breaks);
     const sum = Object.values(byJob).reduce((a, b) => a + b, 0);
     expect(sum).toBe(jobSecondsForShift(DAY, segs, breaks));
+  });
+
+  it('per-job totals EXCEED the shift total when different jobs overlap', () => {
+    // Pins the real relationship. This module's doc block once claimed the sum
+    // was "at most" the shift total and "less" on overlap — exactly backwards.
+    // Each job is independently credited with the overlapping minutes, which is
+    // a data error for the exception queue, not something to silently
+    // reallocate: moving minutes between jobs moves money between them.
+    const segs = [seg('job-a', T('09:00'), T('11:00')), seg('job-b', T('10:00'), T('12:00'))];
+    const byJob = jobSecondsByJob(DAY, segs, []);
+    const sum = Object.values(byJob).reduce((a, b) => a + b, 0);
+
+    expect(byJob).toEqual({ 'job-a': 2 * 3600, 'job-b': 2 * 3600 });
+    expect(sum).toBe(4 * 3600);
+    expect(jobSecondsForShift(DAY, segs, [])).toBe(3 * 3600);
+    expect(sum).toBeGreaterThan(jobSecondsForShift(DAY, segs, []));
+  });
+});
+
+describe('millisecond rounding on segment math', () => {
+  // The sibling break suite pins the ceil-up / floor-down contract on
+  // millisecond inputs; this suite did not, so a swapped ceil/floor in
+  // jobSecondsForShift or travelSecondsForShift would have shipped green.
+  const ms = (s: string) => `2026-08-12T${s}Z`;
+
+  it('job + travel + break account for exactly the rounded envelope', () => {
+    const shiftMs = { clockInAt: ms('08:00:00.000'), clockOutAt: ms('16:00:10.700') };
+    const segsMs = [
+      { jobId: 'job-a', arrivedAt: ms('09:00:00.000'), departedAt: ms('12:00:00.400') },
+    ];
+    const breaksMs = [brk(ms('10:00:00.000'), ms('10:30:00.400'))];
+
+    const job = jobSecondsForShift(shiftMs, segsMs, breaksMs);
+    const travel = travelSecondsForShift(shiftMs, segsMs, breaksMs);
+    const unpaidBreak = breakSecondsForShift(shiftMs, breaksMs);
+
+    // ceil(8h 0m 10.7s) = 28811
+    expect(job + travel + unpaidBreak).toBe(28811);
+    expect(Number.isInteger(job)).toBe(true);
+    expect(Number.isInteger(travel)).toBe(true);
+  });
+
+  it('holds across a spread of awkward millisecond values', () => {
+    const cases: Array<[string, string, string, string, string, string]> = [
+      ['08:00:00.000', '16:00:10.700', '09:00:00.000', '12:00:00.400', '10:00:00.000', '10:30:00.400'],
+      ['08:00:00.123', '15:59:59.987', '08:30:00.500', '11:45:12.250', '09:00:00.001', '09:20:00.999'],
+      ['08:00:00.999', '16:00:00.001', '10:00:00.001', '12:00:00.999', '11:00:00.500', '11:15:00.500'],
+    ];
+
+    for (const [inAt, outAt, segIn, segOut, bIn, bOut] of cases) {
+      const s = { clockInAt: ms(inAt), clockOutAt: ms(outAt) };
+      const segs = [{ jobId: 'j', arrivedAt: ms(segIn), departedAt: ms(segOut) }];
+      const breaks = [brk(ms(bIn), ms(bOut))];
+
+      const job = jobSecondsForShift(s, segs, breaks);
+      const travel = travelSecondsForShift(s, segs, breaks);
+      const unpaidBreak = breakSecondsForShift(s, breaks);
+      const envelope = paidSecondsForShift(s, []); // ceil of the whole envelope
+
+      expect(job + travel + unpaidBreak).toBe(envelope);
+      expect(job).toBeGreaterThanOrEqual(0);
+      expect(travel).toBeGreaterThanOrEqual(0);
+    }
   });
 });
 
@@ -553,6 +623,23 @@ describe('closeOpenSegmentForShift', () => {
       closeOpenSegmentForShift('shift-1', '2026-08-12T16:00:00.000Z', 'office'),
     ).resolves.toBeNull();
     expect(stateRef.current.updated).toEqual([]);
+  });
+
+  it('closes ONLY its own shift, leaving another open segment untouched', async () => {
+    // The shift_id filter is the only guard this function has, and nothing
+    // previously would have failed if it were removed (S59 review).
+    stateRef.current.segments = [
+      { ...OPEN_SEG, id: 'seg-mine', shift_id: 'shift-1' },
+      { ...OPEN_SEG, id: 'seg-theirs', shift_id: 'shift-other', crew_member_id: 'crew-9' },
+    ];
+
+    await closeOpenSegmentForShift('shift-1', '2026-08-12T16:00:00.000Z', 'office');
+
+    const mine = stateRef.current.segments.find((s) => s.id === 'seg-mine');
+    const theirs = stateRef.current.segments.find((s) => s.id === 'seg-theirs');
+    expect(mine?.departed_at).toBe('2026-08-12T16:00:00.000Z');
+    expect(theirs?.departed_at).toBeNull();
+    expect(theirs?.auto_closed).toBe(false);
   });
 
   it('is a no-op the second time, so a retried clock-out cannot move the time', async () => {

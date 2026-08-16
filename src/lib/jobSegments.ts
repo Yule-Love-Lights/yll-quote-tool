@@ -173,10 +173,21 @@ export function jobSecondsForShift(
  * Job seconds broken out per job id, breaks removed.
  *
  * Each job's spans are merged and break-subtracted independently, so a job
- * cannot be credited with another job's time. The per-job totals sum to at most
- * `jobSecondsForShift` — less when two segments for DIFFERENT jobs overlap,
- * which is a data error the exception queue should surface rather than
- * something this function should silently resolve.
+ * cannot be credited with another job's time.
+ *
+ * ⚠️ THE PER-JOB TOTALS CAN EXCEED `jobSecondsForShift`. When segments for
+ * DIFFERENT jobs overlap, each job is independently credited with the
+ * overlapping minutes, so the sum is MORE than the shift total, not less.
+ * Job A 09:00-11:00 and job B 10:00-12:00 give 2h + 2h = 4h against a 3h shift
+ * total. An earlier version of this comment asserted the opposite ("at most",
+ * "less"), which was exactly backwards; the S59 review caught it and
+ * `jobSecondsByJob` now has a test pinning the real relationship.
+ *
+ * That overlap is a DATA ERROR — the write path refuses to open a second
+ * segment while one is running, so it can only arise from office corrections —
+ * and surfacing it belongs to the exception queue. This function deliberately
+ * does not silently reconcile it, because silently reallocating minutes between
+ * jobs would move money between them with no record.
  */
 export function jobSecondsByJob(
   shift: ShiftEnvelope,
