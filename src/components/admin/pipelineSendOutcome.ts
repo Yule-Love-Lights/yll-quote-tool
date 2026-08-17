@@ -120,6 +120,22 @@ const TIMEOUT_HEDGE_PREFIX = 'timeout — ';
 // into body.error for the 502 shape — see SendResponseBody's doc comment
 // above) — the prefix lands mid-string whenever only the SECOND channel
 // timed out.
+//
+// PR #786 review (technical LOW, accepted trade): this is a plain substring
+// match over text that can carry up to 400 chars of GHL's own raw response
+// body verbatim (HighLevelError's message, built in ghlFetch's !res.ok
+// branch — src/lib/integrations/highlevel.ts ~148-153 — is
+// `... : ${body.slice(0, 400)}`). If a CONFIRMED (non-timeout) HighLevel
+// error body ever happened to literally contain the text "timeout — ", this
+// would misdetect it as timeout-hedged and over-gate a real, non-ambiguous
+// failure to typed-YES instead of confirm. Accepted because the failure
+// direction is SAFE (typed-YES is stricter than confirm, never looser — the
+// worst case is one extra keystroke, never a missed hedge) and the em-dash
+// makes an accidental collision unlikely. The real fix, if this ever bites,
+// is a structured boolean (e.g. route.ts setting a `timedOut` flag per
+// channel on the response body) instead of string-sniffing — not attempted
+// here since it's a route.ts response-shape change, out of scope for this
+// pure-function fix.
 function isTimeoutHedgedFailure(detail: string | undefined): boolean {
   return !!detail && detail.includes(TIMEOUT_HEDGE_PREFIX);
 }
@@ -127,22 +143,42 @@ function isTimeoutHedgedFailure(detail: string | undefined): boolean {
 // Row 290 fix (customer MED): the one place a partial/502 delivery failure
 // picks its RetryGate — see RetryGate's doc comment for the invariant this
 // implements. A confirmed failure (the normal case) stays low-friction
-// 'confirm'. A timeout-hedged failure routes to the SAME 'typed-yes' gate +
-// prompt shape as the alreadySent path below, because it carries the exact
-// same risk (the customer may already have the quote from GHL's side even
-// though our request errored). `channel` here may be 'both' (toRetryChannel
-// maps 2 failedChannels to 'both') — retrying 'both' would re-touch a
-// channel whose failure was CONFIRMED alongside one that wasn't, so
-// `timeoutHedged` being true for either component gates the WHOLE offer
+// 'confirm'. A timeout-hedged failure routes to the SAME 'typed-yes' gate as
+// the alreadySent path below (same underlying risk: the customer may
+// already have the quote from GHL's side even though our request errored),
+// with its OWN prompt wording — see the timeoutHedged branch below for why
+// it can't reuse alreadySent's exact copy. `channel` here may be 'both'
+// (toRetryChannel maps 2 failedChannels to 'both') — retrying 'both' would
+// re-touch a channel whose failure was CONFIRMED alongside one that wasn't,
+// so `timeoutHedged` being true for either component gates the WHOLE offer
 // (see isTimeoutHedgedFailure's `.includes` note above).
+//
+// `isRetry`/`timeoutHedged` are two adjacent booleans with no compiler check
+// stopping a transposed call (PR #786 review, technical LOW) — both call
+// sites below pass `isRetry` verbatim and a same-line
+// `isTimeoutHedgedFailure(...)` call, never a bare second boolean variable,
+// so there's nothing to transpose today; flagged here for whoever adds a
+// third call site later.
 function retryOfferFor(
   channel: Channel,
   isRetry: boolean,
   timeoutHedged: boolean,
 ): { retryPrompt: string; retryGate: RetryGate } {
   if (timeoutHedged) {
+    // PR #786 review (staff MED + customer LOW, converged): the prior
+    // wording ("GHL may have gone through anyway, so the customer may
+    // already have it") was accurate for a PURE timeout but overclaimed for
+    // a MIXED 'both' failure (one channel timeout-hedged, one confirmed
+    // rejection) — "the customer may already have it" reads as covering
+    // BOTH channels, when only the timeout-hedged one might have arrived.
+    // Taking it at face value, an operator could cancel the WHOLE retry on
+    // a channel that verifiably delivered nothing. This function only has a
+    // single `timeoutHedged` boolean (no per-channel detail — see the
+    // doc comment above for why that's the real granularity), so the copy
+    // is worded to stay true for BOTH the pure and mixed shapes without
+    // naming which specific channel is which.
     return {
-      retryPrompt: `This delivery attempt included a timeout — GHL may have gone through anyway, so the customer may already have it. Type YES to redeliver ${channelLabel(channel)} ${isRetry ? 'again' : 'now'}:`,
+      retryPrompt: `This attempt included a timeout — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver ${channelLabel(channel)} ${isRetry ? 'again' : 'now'}:`,
       retryGate: 'typed-yes',
     };
   }

@@ -76,7 +76,19 @@ async function redeliverAndReport(
   // place that tells them apart; this function only reads the gate it picks.
   if (gate === 'typed-yes') {
     const typed = window.prompt(prompt);
-    if (typed === null || typed.trim().toUpperCase() !== 'YES') return;
+    if (typed === null) return; // Cancel — deliberate, stays silent.
+    if (typed.trim().toUpperCase() !== 'YES') {
+      // PR #786 review (customer MED + staff LOW, converged): a non-null
+      // non-YES entry ("Yes please", "YSE", a stray space) used to hit this
+      // same silent return as a deliberate Cancel (typed === null) —
+      // indistinguishable to the operator, who couldn't tell a mistype from
+      // "I changed my mind" and might assume the redeliver silently failed
+      // for some other reason. Cancel stays silent (that IS the deliberate
+      // no-op); a mistype gets its own explicit feedback so the operator
+      // knows to click again and type YES exactly if they meant to confirm.
+      window.alert('Not redelivered — type YES exactly to confirm.');
+      return;
+    }
   } else if (!window.confirm(prompt)) {
     return;
   }

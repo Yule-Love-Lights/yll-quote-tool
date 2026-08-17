@@ -118,7 +118,7 @@ describe('decideSendOutcome', () => {
       expect(outcome.retryChannel).toBe('sms');
       expect(outcome.retryGate).toBe('typed-yes');
       expect(outcome.retryPrompt).toBe(
-        'This delivery attempt included a timeout — GHL may have gone through anyway, so the customer may already have it. Type YES to redeliver text now:',
+        'This attempt included a timeout — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver text now:',
       );
     });
 
@@ -147,7 +147,7 @@ describe('decideSendOutcome', () => {
       expect(outcome.retryChannel).toBe('email');
       expect(outcome.retryGate).toBe('typed-yes');
       expect(outcome.retryPrompt).toBe(
-        'This delivery attempt included a timeout — GHL may have gone through anyway, so the customer may already have it. Type YES to redeliver email now:',
+        'This attempt included a timeout — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver email now:',
       );
     });
 
@@ -169,7 +169,15 @@ describe('decideSendOutcome', () => {
     // construction produces (`[smsError, emailError].filter(Boolean).join('
     // ; ')`, folded into body.error for the 502 shape) when ONE requested
     // channel times out and the OTHER gets a confirmed rejection.
-    it('502 with BOTH channels failed, only ONE via timeout (mixed) — the joined error still trips typed-yes for the WHOLE "both" offer', () => {
+    //
+    // PR #786 review (staff MED + customer LOW, converged): also pins the
+    // PROMPT text is honest for this exact mixed shape, not just the gate —
+    // the prior wording's "the customer may already have it" read as
+    // covering BOTH channels, when here only the email leg is ambiguous and
+    // the sms leg verifiably delivered nothing. The new copy makes no
+    // per-channel claim (retryOfferFor only has ONE timeoutHedged boolean —
+    // see its doc comment) but is still true for both halves at once.
+    it('502 with BOTH channels failed, only ONE via timeout (mixed) — the joined error still trips typed-yes for the WHOLE "both" offer, with honest (non-overclaiming) prompt copy', () => {
       const mixedError = `SMS provider rejected the number (400); ${DELIVERY_TIMEOUT_ERROR_PREFIX}delivery outcome unknown (GHL may have still delivered it): email socket reset`;
       const outcome = decideSendOutcome(
         false,
@@ -184,9 +192,12 @@ describe('decideSendOutcome', () => {
       // than trusting the sms-side "confirmed rejection" half alone.
       expect(outcome.retryChannel).toBe('both');
       expect(outcome.retryGate).toBe('typed-yes');
+      expect(outcome.retryPrompt).toBe(
+        'This attempt included a timeout — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver email + text now:',
+      );
     });
 
-    it('502 mixed in the OTHER order (timeout first, plain second) — .includes catches it regardless of position', () => {
+    it('502 mixed in the OTHER order (timeout first, plain second) — .includes catches it regardless of position, same honest prompt', () => {
       const mixedError = `${DELIVERY_TIMEOUT_ERROR_PREFIX}delivery outcome unknown (GHL may have still delivered it): sms socket reset; Email rejected (400)`;
       const outcome = decideSendOutcome(
         false,
@@ -195,6 +206,9 @@ describe('decideSendOutcome', () => {
         false,
       );
       expect(outcome.retryGate).toBe('typed-yes');
+      expect(outcome.retryPrompt).toBe(
+        'This attempt included a timeout — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver email + text now:',
+      );
     });
 
     it('retry-still-fails on a timeout-hedged channel keeps typed-yes, "again" wording (isRetry:true)', () => {
@@ -210,7 +224,7 @@ describe('decideSendOutcome', () => {
       );
       expect(outcome.retryGate).toBe('typed-yes');
       expect(outcome.retryPrompt).toBe(
-        'This delivery attempt included a timeout — GHL may have gone through anyway, so the customer may already have it. Type YES to redeliver text again:',
+        'This attempt included a timeout — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver text again:',
       );
     });
   });
