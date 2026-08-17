@@ -240,14 +240,26 @@ export function normalizeGmailThread(thread: GmailThreadLite, suppressed?: Set<s
 
 /** Shared touch-builder for normalizeGmailThreadTouches's 1-parsed (hybrid)
  *  and 2+-parsed (per-message) shapes — both build a NormalizedTouch the same
- *  way from a single parsed lead-forward message; only externalId/direction
- *  differ per caller. */
+ *  way from a single parsed lead-forward message; only externalId/direction/
+ *  lastMessageAt differ per caller.
+ *
+ *  lastMessageAt is a REQUIRED explicit param, not derived from msg.at here
+ *  (fix round 3, HIGH): the hybrid caller must NOT pin it to the parsed
+ *  forward's own timestamp — msg never changes once parsed.length is stuck
+ *  at 1 (a genuine customer follow-up reply doesn't re-match the lead-forward
+ *  template, so it's never its own parsed candidate), so a msg.at-derived
+ *  lastMessageAt would FREEZE forever after the first parse, permanently
+ *  hiding every later reply from decideInboxState's newerInbound / reopen
+ *  check (and from planIngest's noopReingest, which would then swallow the
+ *  write with zero signal anywhere). See normalizeGmailThreadTouches's
+ *  1-parsed branch for what it passes instead. */
 function buildLeadForwardTouch(
   thread: GmailThreadLite,
   msg: GmailMessageLite,
   lead: ParsedLeadForward,
   externalId: string,
   direction: NormalizedTouch['direction'],
+  lastMessageAt: Date,
 ): NormalizedTouch {
   return {
     source: 'gmail',
@@ -255,7 +267,7 @@ function buildLeadForwardTouch(
     sourceMessageId: msg.id ?? null,
     direction,
     channel: 'email',
-    lastMessageAt: msg.at,
+    lastMessageAt,
     preview: msg.snippet ?? null,
     subject: thread.subject ?? null,
     identity: {
@@ -328,11 +340,14 @@ function buildLeadForwardTouch(
  * and not reused here) — never seen before, so it inserts a fresh item + a
  * fresh contact. UNIQUE(source, external_id) is a bare text column
  * (migrations/2026-06-28-dashboard-tables.sql), so a composite string needs
- * no schema change. A tie on `at` (possible — the Zapier relay) breaks on
- * the lexically-smaller message id, so "which message is earliest" can't
- * flip across polls on Gmail API array order alone (fix round, technical
- * MED: an unordered tiebreak would let a re-poll swap which customer owns
- * the bare-threadId item — the wrong-display bug via a new door).
+ * no schema change. A tie on `at` (possible — the Zapier relay) breaks on a
+ * locale-aware compare (String.localeCompare, this repo's house tiebreak
+ * idiom for an id — e.g. archiveImagery.ts) of the message id — equivalent
+ * to plain codepoint order here, since Gmail ids are lowercase hex — so
+ * "which message is earliest" can't flip across polls on Gmail API array
+ * order alone (fix round, technical MED: an unordered tiebreak would let a
+ * re-poll swap which customer owns the bare-threadId item — the
+ * wrong-display bug via a new door).
  *
  * direction for the 2+ shape is hardcoded 'inbound', never derived from
  * whether some other message on the thread is outbound. Rationale: an
@@ -362,7 +377,22 @@ export function normalizeGmailThreadTouches(thread: GmailThreadLite, suppressed?
     const direction: NormalizedTouch['direction'] = isAnsweredByOutbound({ lastInboundAt, lastOutboundAt })
       ? 'outbound'
       : 'inbound';
-    return [buildLeadForwardTouch(thread, msg, lead, thread.threadId, direction)];
+    // #288 fix round 3 (HIGH, reopen starvation): lastMessageAt is the
+    // THREAD-WIDE latest inbound time (the same partition() call above, not
+    // a second one), not msg.at. A genuine customer follow-up reply never
+    // re-matches the lead-forward template, so it can never become its own
+    // parsed candidate — parsed.length stays 1, forever pointing at this SAME
+    // msg. Deriving lastMessageAt from msg.at would freeze it at the
+    // forward's own timestamp permanently, so a real reply arriving after an
+    // auto-resolving reaction could never advance it past the stored
+    // last_message_at → decideInboxState's newerInbound check reads false →
+    // the row stays 'handled' → planIngest's noopReingest swallows the write
+    // outright — the reply vanishes with zero signal anywhere. lastInboundAt
+    // can't actually be null here (this branch only runs when at least one
+    // non-fromMe message — the parsed forward itself — exists), but the type
+    // is `Date | null`; the `?? msg.at` fallback is unreachable-but-safe.
+    const lastMessageAt = lastInboundAt ?? msg.at;
+    return [buildLeadForwardTouch(thread, msg, lead, thread.threadId, direction, lastMessageAt)];
   }
 
   const touches: NormalizedTouch[] = [];
@@ -374,7 +404,10 @@ export function normalizeGmailThreadTouches(thread: GmailThreadLite, suppressed?
     // malformed input.
     if (index > 0 && !msg.id) return;
     const externalId = index === 0 ? thread.threadId : `${thread.threadId}:${msg.id}`;
-    touches.push(buildLeadForwardTouch(thread, msg, lead, externalId, 'inbound'));
+    // 2+ shape: each touch IS its own customer's own single message (not a
+    // thread-wide notion of "latest") — msg.at stays correct here, untouched
+    // by the fix round 3 change above.
+    touches.push(buildLeadForwardTouch(thread, msg, lead, externalId, 'inbound', msg.at));
   });
   return touches;
 }

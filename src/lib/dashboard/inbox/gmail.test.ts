@@ -486,10 +486,70 @@ describe('normalizeGmailThreadTouches — per-message split for coalesced GML th
     expect(touches[0].direction).toBe('outbound'); // auto-resolve preserved, matching normalizeGmailThread
     expect(touches[0].identity.displayName).toBe('Alice Anderson');
     expect(touches[0].leadKind).toBe('lead');
+    // #288 fix round 3 (HIGH, reopen-starvation precondition): with no further
+    // real inbound after the reaction, lastMessageAt stays the forward's own
+    // time (the same value partition().lastInboundAt derives here too, since
+    // the forward is still the only non-fromMe message) — this pins the
+    // steady-state noop planIngest relies on so re-polling this exact thread
+    // forever doesn't re-write the same row.
+    expect(touches[0].lastMessageAt.toISOString()).toBe('2026-08-12T14:00:00.000Z');
 
     // Same direction as today's thread-level function on this thread — the
     // hybrid's job is to match it, not diverge from it.
     expect(normalizeGmailThread(t).direction).toBe('outbound');
+  });
+
+  // #288 fix round 3 (HIGH): buildLeadForwardTouch used to derive lastMessageAt
+  // from msg.at — the ORIGINAL forward's own timestamp, FROZEN forever once the
+  // hybrid branch is taken, because a genuine customer follow-up reply never
+  // re-matches the "Here ya go...: ... Areas to light up:" template (parsed
+  // stays length 1, still keyed to the same forward). Consequence: after a
+  // reaction auto-resolves the row to 'handled' (see (e) above), a REAL reply
+  // at T2 could never advance lastMessageAt past the forward's T0, so
+  // decideInboxState's `newerInbound` check (touch.lastMessageAt >
+  // existing.lastMessageAt) was false, the row stayed 'handled', and
+  // planIngest's noopReingest swallowed the write outright — the customer's
+  // reply vanished with zero signal anywhere, permanently. lastMessageAt now
+  // reuses the SAME partition() call the hybrid branch already runs for
+  // direction, taking lastInboundAt (the thread-wide latest NON-fromMe
+  // message) instead of the pinned forward's own timestamp.
+  it('a genuine non-template inbound reply AFTER a reaction reopens the row: direction flips back to inbound and lastMessageAt advances to the reply, while identity/preview/sourceMessageId stay pinned to the original forward', () => {
+    const REACTION_BODY =
+      '🎄 Yule Love Lights Sales reacted via Gmail On Wed, Aug 12, 2026 at 2:46 PM GML Media &lt;no-reply.fake123@zapiermail.com&gt; wrote: ' +
+      ALICE_BODY;
+    const t = gmlThreadLite([
+      gmlMsg({ iso: '2026-08-12T14:00:00Z', id: 'm1', body: ALICE_BODY }),
+      gmlMsg({
+        iso: '2026-08-12T15:00:00Z',
+        id: 'm2',
+        body: REACTION_BODY,
+        fromMe: true,
+        fromEmail: 'sales@yulelovelights.com',
+        fromName: 'Yule Love Lights Sales',
+      }),
+      // The customer's own free-text reply — never matches the lead-forward
+      // template, so it can never become its own parsed candidate.
+      gmlMsg({
+        iso: '2026-08-12T16:00:00Z',
+        id: 'm3',
+        body: 'Thanks! When can you come by to take a look?',
+        fromEmail: 'jane.customer@example.com',
+        fromName: 'Jane Customer',
+      }),
+    ]);
+
+    const touches = normalizeGmailThreadTouches(t);
+    expect(touches).toHaveLength(1); // still exactly one touch — parsed.length is still 1
+    expect(touches[0].externalId).toBe('thr-gml');
+    expect(touches[0].direction).toBe('inbound'); // unanswered again — the reply is newer than the reaction
+    expect(touches[0].lastMessageAt.toISOString()).toBe('2026-08-12T16:00:00.000Z'); // the REPLY's time, not the forward's
+    // Pinned to the original parsed forward — NOT the customer's reply text,
+    // and NOT the forwarder's own identity. This is the whole point of #288;
+    // the reopen fix must not disturb it.
+    expect(touches[0].sourceMessageId).toBe('m1');
+    expect(touches[0].preview).toBe(ALICE_BODY);
+    expect(touches[0].identity.displayName).toBe('Alice Anderson');
+    expect(touches[0].identity.emails).toEqual(['alice@example.com']);
   });
 
   it("the hybrid's actual advantage over a true fallback: identity never regresses to the forwarder even when the THREAD-LATEST message's own snippet fails to parse", () => {
@@ -558,7 +618,7 @@ describe('normalizeGmailThreadTouches — per-message split for coalesced GML th
     expect(touches[0].direction).toBe('inbound');
   });
 
-  it('(fix round, technical MED) a tied `at` timestamp breaks on the lexically-smaller message id, so "earliest" cannot flip across polls on Gmail API array order alone', () => {
+  it('(fix round, technical MED) a tied `at` timestamp breaks on a locale-aware compare of the message id, so "earliest" cannot flip across polls on Gmail API array order alone', () => {
     const TIED_ISO = '2026-08-12T09:00:00Z';
     const aliceFirst = gmlMsg({ iso: TIED_ISO, id: 'm-aaa', body: ALICE_BODY });
     const bobSecond = gmlMsg({ iso: TIED_ISO, id: 'm-zzz', body: BOB_BODY });
@@ -566,8 +626,9 @@ describe('normalizeGmailThreadTouches — per-message split for coalesced GML th
     const orderAliceThenBob = normalizeGmailThreadTouches(gmlThreadLite([aliceFirst, bobSecond]));
     const orderBobThenAlice = normalizeGmailThreadTouches(gmlThreadLite([bobSecond, aliceFirst]));
 
-    // 'm-aaa' < 'm-zzz' lexically — Alice wins the bare threadId key regardless
-    // of which order the Gmail API happened to hand the messages back in.
+    // 'm-aaa'.localeCompare('m-zzz') < 0 (equivalent to codepoint order for
+    // lowercase-hex ids) — Alice wins the bare threadId key regardless of
+    // which order the Gmail API happened to hand the messages back in.
     expect(orderAliceThenBob).toHaveLength(2);
     expect(orderAliceThenBob[0].externalId).toBe('thr-gml');
     expect(orderAliceThenBob[0].identity.displayName).toBe('Alice Anderson');
