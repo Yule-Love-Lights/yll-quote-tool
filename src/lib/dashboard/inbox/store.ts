@@ -1291,13 +1291,32 @@ export async function sweepOrphanedFollowUps(reason: string): Promise<number> {
 
 export type DueFollowUpsResult = { ok: true; items: DueFollowUp[] } | { ok: false; error: string };
 
-/** Pending follow-ups due today or overdue (ET), for the top strip. */
+/**
+ * Pending follow-ups due today or overdue (ET), for the top strip AND (#229)
+ * the morning digest's named "overdue follow-ups" detail.
+ *
+ * #229 FIX 3 (round 3): a round-2 addition here flagged a follow-up as
+ * anchored to a hidden "parked-draft" legacy_rebook quote — REMOVED. That
+ * state is structurally IMPOSSIBLE: isHiddenLegacyRebookQuote requires
+ * deriveStatus === 'draft', which requires quote_sent_at to be NULL, but
+ * quoteFollowUpDecision (quotetool.ts) only ever returns `{ kind: 'create' }`
+ * — the one decision that reaches ensureFollowUp — when quote_sent_at IS SET.
+ * Mutually exclusive by construction, confirmed empirically against prod (28
+ * pending follow-ups, all with quote_sent_at set, zero parked drafts; the 9
+ * that ARE legacy_rebook all evaluate false). The flag was always false, so
+ * the embed + batch lookup below were dead weight on every /inbox load. A
+ * legacy_rebook-anchored follow-up here is for a SENT Neighbor quote (see
+ * TRACKS_OUTBOUND_FIRST_OBSERVATION's #222 doc above) — a real customer
+ * genuinely owed a reply, not a parked draft — so it is NOT filtered here or
+ * by any caller; whether to label/distinguish it by name is a product call,
+ * not a code default.
+ */
 export async function listDueFollowUps(now: Date): Promise<DueFollowUpsResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const { data, error } = await sb
     .from('follow_ups')
-    .select('id, reason, due_at, dashboard_contacts ( display_name )')
+    .select('id, reason, due_at, dashboard_contacts ( display_name, primary_phone, primary_email )')
     .eq('status', 'pending')
     .order('due_at', { ascending: true })
     .limit(100);
@@ -1314,6 +1333,8 @@ export async function listDueFollowUps(now: Date): Promise<DueFollowUpsResult> {
         reason: r.reason as string,
         dueAt: r.due_at as string,
         contactName: (c?.display_name as string | null) ?? null,
+        contactPhone: (c?.primary_phone as string | null) ?? null,
+        contactEmail: (c?.primary_email as string | null) ?? null,
       };
     });
   return { ok: true, items };
