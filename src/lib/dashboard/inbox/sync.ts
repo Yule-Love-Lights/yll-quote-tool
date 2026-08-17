@@ -16,6 +16,7 @@ import {
   getThread,
   isGmailConfigured,
   listInboxThreads,
+  modifyMessage,
   modifyThread,
 } from '@/lib/integrations/gmail';
 import type { HandledTarget } from './store';
@@ -345,11 +346,15 @@ function errMsg(err: unknown): string {
 /**
  * #288: a gmail item's external_id can be a GML-split composite
  * `${threadId}:${msgId}` (see gmail.ts's normalizeGmailThreadTouches) for
- * every customer after a coalesced thread's earliest. modifyThread's URL
- * wants the bare Gmail THREAD id — passing the composite straight through
- * would target a nonexistent thread. Gmail thread/message ids are hex, so a
- * literal ':' can only appear here as this deliberate separator, never
- * inside a real id — safe to split on the first one.
+ * every customer after a coalesced thread's earliest. Only reached by
+ * runHandledWriteback's THREAD-level fallback now (fix round: the primary
+ * path for any row with a sourceMessageId is message-level modifyMessage,
+ * which needs no stripping at all) — this remains a defensive safety net so
+ * a composite value can never reach modifyThread's URL and target a
+ * nonexistent thread, even on a row that somehow has a composite external_id
+ * but no sourceMessageId. Gmail thread/message ids are hex, so a literal ':'
+ * can only appear here as this deliberate separator, never inside a real id
+ * — safe to split on the first one.
  *
  * NOT store.ts's quoteIdPrefix: that helper is quotetool/uuid-specific (its
  * callers additionally filter through isUuid) — this is its Gmail-specific
@@ -406,7 +411,24 @@ export async function runHandledWriteback(target: HandledTarget, operatorLabel: 
     try {
       const token = await getAccessToken();
       const labelId = await getOrCreateLabel(token, 'YLL/Handled');
-      await modifyThread(token, gmailThreadIdFromExternalId(target.externalId), { addLabelIds: [labelId], removeLabelIds: ['UNREAD'] });
+      // #288 fix round (staff HIGH): modifyThread marks EVERY message on the
+      // thread read/labeled — for a GML-split row, that silently stamps
+      // sibling customers' still-unworked forwards Handled too (a staffer
+      // triaging raw Gmail, which the tool's own "Reply in Gmail" affordance
+      // sends them to, would see an already-handled thread and skip it,
+      // reintroducing the buried-lead failure one layer up). Go message-level
+      // whenever the row knows its own message id — every real split touch
+      // (hybrid single-parse or 2+-parse, gmail.ts's
+      // normalizeGmailThreadTouches) carries one; only a legacy/non-split/
+      // non-GML row (sourceMessageId null) falls back to the thread-wide
+      // call. Accepted: for a genuinely single-message thread, the thread's
+      // OTHER messages (e.g. an unread platform receipt) no longer get
+      // marked read either — honest per-message semantics, deliberate.
+      if (target.sourceMessageId) {
+        await modifyMessage(token, target.sourceMessageId, { addLabelIds: [labelId], removeLabelIds: ['UNREAD'] });
+      } else {
+        await modifyThread(token, gmailThreadIdFromExternalId(target.externalId), { addLabelIds: [labelId], removeLabelIds: ['UNREAD'] });
+      }
       sync.gmailLabel = 'ok';
     } catch (err) {
       sync.gmailLabel = 'failed';

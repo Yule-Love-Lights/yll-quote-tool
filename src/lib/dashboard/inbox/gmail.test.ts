@@ -457,7 +457,13 @@ describe('normalizeGmailThreadTouches — per-message split for coalesced GML th
     }
   });
 
-  it('(e) our own fromMe reaction after a forward is never a split candidate, and does not flip the forward to outbound/answered', () => {
+  // #288 fix round (two-lens HIGH): exactly ONE parsed message is the HYBRID
+  // shape — identity/preview from the parsed forward, but direction mirrors
+  // the THREAD-WIDE needs-reply check, so a later fromMe reaction/reply still
+  // auto-resolves the row exactly like it does today via normalizeGmailThread.
+  // An earlier version of this function hardcoded 'inbound' even here, which
+  // would have silently broken that for every single-customer GML thread.
+  it('(e) a single forward + our own fromMe reaction after it → direction follows the THREAD (outbound, auto-resolve preserved); identity stays the customer\'s, not the reaction', () => {
     const REACTION_BODY =
       '🎄 Yule Love Lights Sales reacted via Gmail On Wed, Aug 12, 2026 at 2:46 PM GML Media &lt;no-reply.fake123@zapiermail.com&gt; wrote: ' +
       ALICE_BODY;
@@ -474,18 +480,74 @@ describe('normalizeGmailThreadTouches — per-message split for coalesced GML th
     ]);
 
     const touches = normalizeGmailThreadTouches(t);
-    expect(touches).toHaveLength(1); // the reaction itself is not a touch
+    expect(touches).toHaveLength(1); // the reaction itself is still not a touch
     expect(touches[0].externalId).toBe('thr-gml');
-    expect(touches[0].direction).toBe('inbound'); // NOT auto-resolved by the later fromMe message
+    expect(touches[0].sourceMessageId).toBe('m1'); // the forward's id, not the reaction's
+    expect(touches[0].direction).toBe('outbound'); // auto-resolve preserved, matching normalizeGmailThread
     expect(touches[0].identity.displayName).toBe('Alice Anderson');
+    expect(touches[0].leadKind).toBe('lead');
 
-    // Contrast: today's thread-level function, given this SAME thread, marks it
-    // outbound/answered because the reaction is chronologically the last
-    // message — exactly the bug this split exists to avoid for a real customer.
+    // Same direction as today's thread-level function on this thread — the
+    // hybrid's job is to match it, not diverge from it.
     expect(normalizeGmailThread(t).direction).toBe('outbound');
   });
 
-  it('(f) a platform message that fails the template parse (a receipt) is not a touch, even alongside a real forward on the same thread', () => {
+  it("the hybrid's actual advantage over a true fallback: identity never regresses to the forwarder even when the THREAD-LATEST message's own snippet fails to parse", () => {
+    // A reaction-quote so heavily truncated (no "Areas to light up:" marker
+    // within TEMPLATE_MAX_LEN_WITHOUT_CLOSING_MARKER) that parseLeadForward
+    // fails on ITS OWN snippet — the real Gmail truncation failure mode
+    // leadForward.ts's own comments describe. normalizeGmailThread (which
+    // parses only the thread-LATEST message's snippet) falls back to the
+    // forwarder's own identity here; the hybrid (which parses the ORIGINAL
+    // forward's own untruncated snippet) does not.
+    const TRUNCATED_REACTION_BODY =
+      '🎄 Yule Love Lights Sales reacted via Gmail On Wed, Aug 12, 2026 at 2:46 PM GML Media &lt;no-reply.fake123@zapiermail.com&gt; wrote: Here ya go Naldoven: ' +
+      'x'.repeat(320);
+    const t = gmlThreadLite([
+      gmlMsg({ iso: '2026-08-12T14:00:00Z', id: 'm1', body: ALICE_BODY }),
+      gmlMsg({
+        iso: '2026-08-12T15:00:00Z',
+        id: 'm2',
+        body: TRUNCATED_REACTION_BODY,
+        fromMe: true,
+        fromEmail: 'sales@yulelovelights.com',
+        fromName: 'Yule Love Lights Sales',
+      }),
+    ]);
+
+    const touches = normalizeGmailThreadTouches(t);
+    expect(touches).toHaveLength(1);
+    expect(touches[0].direction).toBe('outbound'); // still thread-wide, still auto-resolves
+    expect(touches[0].identity.displayName).toBe('Alice Anderson');
+    expect(touches[0].identity.emails).toEqual(['alice@example.com']);
+
+    // Contrast: today's thread-level function, parsing only the (truncated,
+    // unparseable) latest snippet, regresses to the FORWARDER's own identity.
+    const oldTouch = normalizeGmailThread(t);
+    expect(oldTouch.identity.displayName).not.toBe('Alice Anderson');
+  });
+
+  it('(d contrast) with 2+ parsed forwards, a later fromMe reaction never flips ANY split touch to outbound — always-inbound stays load-bearing there', () => {
+    const t = gmlThreadLite([
+      gmlMsg({ iso: '2026-08-12T09:00:00Z', id: 'm1', body: ALICE_BODY }),
+      gmlMsg({ iso: '2026-08-13T09:00:00Z', id: 'm2', body: BOB_BODY }),
+      gmlMsg({
+        iso: '2026-08-13T10:00:00Z',
+        id: 'm3',
+        body: 'reacted via Gmail — wrote: ' + BOB_BODY,
+        fromMe: true,
+        fromEmail: 'sales@yulelovelights.com',
+        fromName: 'Yule Love Lights Sales',
+      }),
+    ]);
+
+    const touches = normalizeGmailThreadTouches(t);
+    expect(touches).toHaveLength(2); // the reaction is still not a touch
+    expect(touches[0].direction).toBe('inbound');
+    expect(touches[1].direction).toBe('inbound');
+  });
+
+  it('(f) a platform message that fails the template parse (a receipt) is not a touch, even alongside a real forward on the same thread — direction is unanswered inbound (the receipt is non-fromMe, no fromMe message anywhere on the thread)', () => {
     const t = gmlThreadLite([
       gmlMsg({ iso: '2026-08-12T14:00:00Z', id: 'm1', body: ALICE_BODY }),
       gmlMsg({ iso: '2026-08-12T16:00:00Z', id: 'm2', body: 'Thanks for using GML Media! Your monthly statement is attached.' }),
@@ -493,6 +555,28 @@ describe('normalizeGmailThreadTouches — per-message split for coalesced GML th
     const touches = normalizeGmailThreadTouches(t);
     expect(touches).toHaveLength(1);
     expect(touches[0].identity.displayName).toBe('Alice Anderson');
+    expect(touches[0].direction).toBe('inbound');
+  });
+
+  it('(fix round, technical MED) a tied `at` timestamp breaks on the lexically-smaller message id, so "earliest" cannot flip across polls on Gmail API array order alone', () => {
+    const TIED_ISO = '2026-08-12T09:00:00Z';
+    const aliceFirst = gmlMsg({ iso: TIED_ISO, id: 'm-aaa', body: ALICE_BODY });
+    const bobSecond = gmlMsg({ iso: TIED_ISO, id: 'm-zzz', body: BOB_BODY });
+
+    const orderAliceThenBob = normalizeGmailThreadTouches(gmlThreadLite([aliceFirst, bobSecond]));
+    const orderBobThenAlice = normalizeGmailThreadTouches(gmlThreadLite([bobSecond, aliceFirst]));
+
+    // 'm-aaa' < 'm-zzz' lexically — Alice wins the bare threadId key regardless
+    // of which order the Gmail API happened to hand the messages back in.
+    expect(orderAliceThenBob).toHaveLength(2);
+    expect(orderAliceThenBob[0].externalId).toBe('thr-gml');
+    expect(orderAliceThenBob[0].identity.displayName).toBe('Alice Anderson');
+    expect(orderAliceThenBob[1].externalId).toBe('thr-gml:m-zzz');
+
+    expect(orderBobThenAlice).toHaveLength(2);
+    expect(orderBobThenAlice[0].externalId).toBe('thr-gml');
+    expect(orderBobThenAlice[0].identity.displayName).toBe('Alice Anderson');
+    expect(orderBobThenAlice[1].externalId).toBe('thr-gml:m-zzz');
   });
 
   it('a later (non-earliest) parsed message with no id is skipped defensively rather than minting an unstable key', () => {
