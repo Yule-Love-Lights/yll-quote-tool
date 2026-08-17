@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import {
   formatWaiting,
   escalationEmailSubject,
@@ -71,5 +73,61 @@ describe('eodDigestHtml', () => {
     );
     expect(html).toContain('href="https://quote.yulelovelights.com/inbox"');
     expect(html).not.toContain('href="/inbox"');
+  });
+});
+
+// row 234 / W7-025: a customer's contact name or message preview is
+// attacker-controlled and lands in a team-wide staff email — a crafted value
+// must render as inert text, never as markup, in both email builders.
+describe('escalationEmailHtml — escapes customer-supplied text', () => {
+  it('escapes a crafted <img onerror> name so it cannot execute in a mail client', () => {
+    const html = escalationEmailHtml({
+      level: 2,
+      items: [{ name: '<img src=x onerror=alert(1)>', preview: null, waiting: '4h' }],
+      baseUrl: 'https://quote.yulelovelights.com',
+    });
+    expect(html).not.toContain('<img src=x onerror=alert(1)>');
+    expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
+  });
+
+  it('escapes a crafted <script> preview and stray quotes', () => {
+    const html = escalationEmailHtml({
+      level: 2,
+      items: [{ name: 'Jane Doe', preview: '<script>alert("hi")</script>', waiting: '4h' }],
+      baseUrl: 'https://quote.yulelovelights.com',
+    });
+    expect(html).not.toContain('<script>alert("hi")</script>');
+    expect(html).toContain('&lt;script&gt;alert("hi")&lt;/script&gt;');
+  });
+
+  it('escapes a bare ampersand in a name so it is not read as a broken entity', () => {
+    const html = escalationEmailHtml({
+      level: 1,
+      items: [{ name: 'Smith & Sons', preview: null, waiting: '20m' }],
+      baseUrl: 'https://quote.yulelovelights.com',
+    });
+    expect(html).toContain('Smith &amp; Sons');
+  });
+});
+
+describe('eodDigestHtml — escapes customer-supplied text', () => {
+  it('escapes a crafted name + preview in the end-of-day digest', () => {
+    const html = eodDigestHtml(
+      [{ name: '<b>Evil</b>', preview: '<img src=x onerror=alert(1)>', waiting: '9h' }],
+      'https://quote.yulelovelights.com',
+    );
+    expect(html).not.toContain('<b>Evil</b>');
+    expect(html).not.toContain('<img src=x onerror=alert(1)>');
+    expect(html).toContain('&lt;b&gt;Evil&lt;/b&gt;');
+    expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
+  });
+});
+
+describe('module hygiene', () => {
+  it('has zero imports — notify.ts is env-free and client-safe by design (formatWaiting is imported by client components)', () => {
+    const filePath = fileURLToPath(new URL('./notify.ts', import.meta.url));
+    const source = readFileSync(filePath, 'utf8');
+    const importLines = source.split('\n').filter((l) => /^\s*import\b/.test(l));
+    expect(importLines).toEqual([]);
   });
 });

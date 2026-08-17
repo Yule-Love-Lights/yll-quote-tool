@@ -36,6 +36,11 @@ function contactName(item: OpenInboxItem): string {
 type RowActions = {
   now: number;
   busyId: string | null;
+  // #224 delta-verify fix (staff + customer lenses converged): the response
+  // read act() now does can fail (a status-guard block, or any other non-2xx)
+  // — errorId surfaces that visibly, mirroring InWorksSection.tsx's identical
+  // pattern for this same /api/dashboard/* route family.
+  errorId: string | null;
   claimBusy: string | null;
   composerFor: string | null;
   currentOperatorId: string | null;
@@ -51,13 +56,14 @@ type RowActions = {
 // ContactRow. Occupants enumerated before restructuring (all preserved here):
 // escalation dot, contact name, source label, quote value badge, new/
 // returning badge, filtered marker, subject line, preview line, escalation
-// label + waiting time, claim/release/take-over control, and the four action
-// buttons (Handled / Not a lead / Followed / Mark completed) plus Reply
-// (Gmail gets a static "Reply in Gmail" note instead — or, for a #268
-// lead-forward row, an honest "call/text directly" affordance instead, see
-// the source==='gmail' branch below) with its ReplyComposer.
+// label + waiting time, claim/release/take-over control, a lost-race error
+// note (#224 delta-verify fix), and the four action buttons (Handled / Not a
+// lead / Followed / Mark completed) plus Reply (Gmail gets a static "Reply in
+// Gmail" note instead — or, for a #268 lead-forward row, an honest
+// "call/text directly" affordance instead, see the source==='gmail' branch
+// below) with its ReplyComposer.
 function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }) {
-  const { now, busyId, claimBusy, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent } = actions;
+  const { now, busyId, errorId, claimBusy, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent } = actions;
   const esc = escalation(item.escalationLevel);
   const waiting = item.lastMessageAt ? formatWaiting(now - new Date(item.lastMessageAt).getTime()) : '';
   const cs = claimState(item.assignedTo, currentOperatorId);
@@ -151,6 +157,11 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
                   Claim
                 </button>
               )}
+            </p>
+          )}
+          {errorId === item.id && (
+            <p className="text-xs mt-1" style={{ color: '#dc2626' }}>
+              Something went wrong — try again.
             </p>
           )}
         </div>
@@ -451,6 +462,9 @@ export function InboxList({
 }) {
   const [items, setItems] = useState<OpenInboxItem[]>(initialItems);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // #224 delta-verify fix (staff + customer lenses converged): act() used to
+  // never read the response at all — see act()'s own doc comment below.
+  const [errorId, setErrorId] = useState<string | null>(null);
   const [claimBusy, setClaimBusy] = useState<string | null>(null);
   const [composerFor, setComposerFor] = useState<string | null>(null);
   // `now` is seeded from the server render (stable across hydration) and ticked
@@ -494,21 +508,65 @@ export function InboxList({
     document.title = red > 0 ? `(${red}) Inbox — YLL` : 'Inbox — YLL';
   }, [items]);
 
+  // #224 delta-verify fix (staff + customer lenses converged on this — the
+  // sibling-parity class between act()'s two callers): this used to fire the
+  // POST and never read res.status or the JSON body — only a network throw
+  // was caught. #224's new status guard on markItemCompleted makes ok:false a
+  // DESIGNED outcome (a two-operator/two-tab race the guard exists to catch),
+  // and every other /api/dashboard/* route here CAN 200 with a logical
+  // failure the same way (handled/dismiss already carry their own guards).
+  // Before this fix, that response was silently discarded: the optimistic
+  // removal above had already taken the row off screen, with no toast, no
+  // re-insertion, nothing — a silent no-op on this page (the PRIMARY inbox
+  // surface), while InWorksSection.tsx's identical act() (its own local
+  // copy, not shared) already read the response correctly.
+  //
+  // Fix: read res.ok AND the JSON body's `ok` field. On failure, DON'T
+  // re-insert the optimistically-removed row — after a lost race, the row's
+  // real current state is whatever the OTHER actor set (could be handled,
+  // dismissed, completed, or unchanged), never simply "still open as
+  // before". refresh() pulls that authoritative state immediately, mirroring
+  // claim()'s own `if (!res.ok) await refresh()` pattern a few lines below —
+  // the same file already established this exact reconciliation shape.
+  // errorId also surfaces a visible note (parity with InWorksSection's
+  // errorId/"Something went wrong" pattern) in case the row is still on
+  // screen after refresh() (e.g. a real server error, not a lost race).
+  //
+  // The network-throw catch path is UNCHANGED (still passive, "next poll
+  // re-syncs") — a thrown fetch means the request may never have reached the
+  // server at all, so there's no fresher truth to pull yet; an immediate
+  // refresh() would likely hit the same network failure. That's a different
+  // failure mode than "the server responded and said no", which this fix
+  // targets.
+  //
+  // Not unit-tested: InboxList.test.tsx only exercises
+  // renderToStaticMarkup (no jsdom, no click/fetch simulation, no effects) —
+  // it cannot drive this async click-then-refetch flow. There's no non-
+  // trivial PURE decision here to extract either (the check is a two-field
+  // boolean read); this comment is the trace, matching ContactRow's own
+  // doc-comment-as-proof pattern elsewhere in this file for behavior static
+  // rendering can't observe.
   const act = useCallback(async (id: string, path: string) => {
     setBusyId(id);
+    setErrorId(null);
     setItems((prev) => prev.filter((i) => i.id !== id)); // optimistic removal
     try {
-      await fetch(path, {
+      const res = await fetch(path, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ itemId: id }),
       });
+      const data = (await res.json().catch(() => null)) as { ok?: boolean } | null;
+      if (!res.ok || !data?.ok) {
+        setErrorId(id);
+        await refresh();
+      }
     } catch {
       // The next poll re-syncs the true state if the write failed.
     } finally {
       setBusyId(null);
     }
-  }, []);
+  }, [refresh]);
 
   const claim = useCallback(
     async (contactId: string, action: 'claim' | 'release') => {
@@ -559,7 +617,7 @@ export function InboxList({
   // place; there's no empty group to separately prune.
   const groups = groupInboxItems(visibleItems);
   const rowActions: RowActions = {
-    now, busyId, claimBusy, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent,
+    now, busyId, errorId, claimBusy, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent,
   };
 
   if (items.length === 0) {

@@ -29,6 +29,7 @@ const ingestTouchMock = vi.fn();
 const closeFollowUpMock = vi.fn();
 const ensureFollowUpMock = vi.fn();
 const recordSyncRunMock = vi.fn();
+const recordSuppressedFollowUpMock = vi.fn();
 const sweepOrphanedFollowUpsMock = vi.fn();
 
 vi.mock('./store', () => ({
@@ -45,6 +46,7 @@ vi.mock('./store', () => ({
   // quotetool.ts's suppression logic still runs for real here.
   isHiddenLegacyRebookQuote: isParkedLegacyRebookDraft,
   listEscalatableItems: vi.fn(),
+  recordSuppressedFollowUp: (...args: unknown[]) => recordSuppressedFollowUpMock(...args),
   recordSyncRun: (...args: unknown[]) => recordSyncRunMock(...args),
   setEscalation: vi.fn(),
   setSyncCursor: vi.fn(),
@@ -246,6 +248,7 @@ describe('runQuoteToolReconcile — orphan follow-up sweep wiring (#183 BUG 3)',
     vi.clearAllMocks();
     ensureFollowUpMock.mockResolvedValue(undefined);
     recordSyncRunMock.mockResolvedValue(undefined);
+    recordSuppressedFollowUpMock.mockResolvedValue(undefined);
     getFollowUpDaysMock.mockResolvedValue(3);
     listQuotesForDashboardMock.mockResolvedValue([]);
   });
@@ -336,6 +339,12 @@ describe('runQuoteToolReconcile — orphan follow-up sweep wiring (#183 BUG 3)',
           customerEmail: 'sales@mail.yulelovelights.com',
         }),
       );
+      // #230(a): the same event also lands in dashboard_activity (visible on
+      // /inbox/activity), not just a Vercel console.warn nobody opens.
+      expect(recordSuppressedFollowUpMock).toHaveBeenCalledWith(
+        'item-1',
+        expect.objectContaining({ quoteId: 'q1262', quoteNumber: 1262 }),
+      );
     } finally {
       warnSpy.mockRestore();
     }
@@ -414,6 +423,56 @@ describe('runQuoteToolReconcile — orphan follow-up sweep wiring (#183 BUG 3)',
       expect(closeFollowUpMock).toHaveBeenNthCalledWith(1, 'item-1', 'quote_sent_no_reply');
       expect(closeFollowUpMock).toHaveBeenNthCalledWith(2, 'item-1', 'quote_sent_no_reply');
       expect(ensureFollowUpMock).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('#230(b): does not re-warn/re-close/re-count a steady-state suppressed quote once ingestTouch reports it a no-op', async () => {
+    // Real ingestTouch (unmocked, store.ts's noopReingest) returns
+    // skipped:true once the item's status + last_message_at stop changing —
+    // the every-5-minute steady state for a permanently-unapproved internal
+    // quote. This test's MOCK models that exact steady-state tick: itemId is
+    // still populated (the item exists), but skipped is true and nothing about
+    // the ingest changed (autoResolved/reopened both false, matching a noop).
+    listQuotesForDashboardMock.mockResolvedValue([
+      {
+        id: 'q1262',
+        customer_name: 'Yule Love Lights',
+        customer_email: 'sales@mail.yulelovelights.com',
+        customer_phone: null,
+        total: 348,
+        created_at: '2026-08-06T10:00:00Z',
+        quote_sent_at: '2026-08-06T11:00:00Z',
+        customer_approved_at: null,
+        deposit_paid_at: null,
+        homeworks_sent_at: null,
+        homeworks_signed_at: null,
+        highlevel_contact_id: null,
+        service_type: null,
+        quote_number: 1262,
+      },
+    ]);
+    ingestTouchMock.mockResolvedValue({
+      ok: true,
+      skipped: true,
+      itemId: 'item-1',
+      contactId: 'contact-1',
+      autoResolved: false,
+      reopened: false,
+      ambiguous: false,
+      skipReason: null,
+    });
+    sweepOrphanedFollowUpsMock.mockResolvedValue(0);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const summary = await runQuoteToolReconcile(new Date('2026-08-14T12:00:00Z'));
+
+      expect(summary.followUpsSuppressed).toBe(0);
+      expect(warnSpy).not.toHaveBeenCalled();
+      expect(closeFollowUpMock).not.toHaveBeenCalled();
+      expect(recordSuppressedFollowUpMock).not.toHaveBeenCalled();
     } finally {
       warnSpy.mockRestore();
     }

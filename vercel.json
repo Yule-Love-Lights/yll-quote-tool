@@ -39,6 +39,10 @@
     {
       "path": "/api/jobs/completing-today",
       "schedule": "0 13 * * *"
+    },
+    {
+      "path": "/api/ops/midnight-close",
+      "schedule": "15 5 * * *"
     }
   ]
 }

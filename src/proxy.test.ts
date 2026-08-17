@@ -15,9 +15,17 @@ const { createMiddlewareSupabaseMock } = vi.hoisted(() => ({
   createMiddlewareSupabaseMock: vi.fn(),
 }));
 
-vi.mock('@/lib/auth/supabaseServer', () => ({
-  createMiddlewareSupabase: createMiddlewareSupabaseMock,
-}));
+vi.mock('@/lib/auth/supabaseServer', async () => {
+  const actual =
+    await vi.importActual<typeof import('@/lib/auth/supabaseServer')>('@/lib/auth/supabaseServer');
+  return {
+    createMiddlewareSupabase: createMiddlewareSupabaseMock,
+    // REAL isCrewAccount: it is the security seam the crew tests below exercise,
+    // so stubbing it would make them prove nothing.
+    isCrewAccount: actual.isCrewAccount,
+    CREW_ROLE: actual.CREW_ROLE,
+  };
+});
 
 import { proxy } from './proxy';
 
@@ -112,5 +120,65 @@ describe('proxy — perimeter enforcement (#81 W6-006)', () => {
     const res = await proxy(makeReq('/admin/quotes'));
     expect(res.status).toBe(307);
     expect(res.headers.get('location')).toContain('/login');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Role-aware perimeter (row 279). Naldo's shared-login ruling put crew accounts
+// in the SAME auth store as operators, so "has a session" stopped implying "may
+// see the operator surface" — and that surface holds customer PII.
+// ---------------------------------------------------------------------------
+
+describe('proxy — crew sessions are confined to the crew surface', () => {
+  const crewUser = { id: 'crew-auth-1', app_metadata: { role: 'crew' } };
+  const operatorUser = { id: 'op-1', app_metadata: { role: 'operator' } };
+
+  function withUser(user: unknown) {
+    createMiddlewareSupabaseMock.mockReturnValue({
+      supabase: { auth: { getUser: async () => ({ data: { user } }) } },
+      res: { __res: true } as unknown as NextResponse,
+    });
+  }
+
+  beforeEach(() => {
+    process.env.AUTH_GATE_ENABLED = 'true';
+  });
+
+  it('lets a crew session reach the crew API', async () => {
+    withUser(crewUser);
+    const res = await proxy(makeReq('/api/ops/v1/jobs/abc/arrive', 'POST'));
+    expect((res as unknown as { __res?: boolean }).__res).toBe(true);
+  });
+
+  it('403s a crew session on an operator API — this is the PII boundary', async () => {
+    withUser(crewUser);
+    const res = await proxy(makeReq('/api/customers'));
+    expect(res.status).toBe(403);
+  });
+
+  it('redirects a crew session away from an operator PAGE', async () => {
+    // Pages that lean on the perimeter rather than calling requireOperator
+    // themselves are covered ONLY by this branch.
+    withUser(crewUser);
+    const res = await proxy(makeReq('/customers'));
+    expect(res.status).toBe(307);
+    expect(res.headers.get('location')).toContain('/login');
+    expect(res.headers.get('location')).toContain('crew-account');
+  });
+
+  it('does NOT confine an operator session — it still reaches the operator surface', async () => {
+    withUser(operatorUser);
+    const res = await proxy(makeReq('/api/customers'));
+    expect((res as unknown as { __res?: boolean }).__res).toBe(true);
+  });
+
+  it('does not treat the CRON path as crew-reachable', async () => {
+    // /api/ops/midnight-close is public-allowlisted for the cron, so it short
+    // circuits before any session check. A crew session must not gain anything
+    // from that: the route's own CRON_SECRET check is the real gate.
+    withUser(crewUser);
+    const res = await proxy(makeReq('/api/ops/midnight-close', 'POST'));
+    // Allowlisted → plain next(), not the authed `res` object.
+    expect((res as unknown as { __res?: boolean }).__res).toBeUndefined();
   });
 });

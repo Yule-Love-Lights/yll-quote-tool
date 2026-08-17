@@ -20,6 +20,7 @@ import { CustomLibrary } from '@/components/settings/CustomLibrary';
 import { invalidateAppSettings } from '@/lib/clientSettings';
 import { OperatorShell } from '@/components/OperatorShell';
 import { SettingsSubNav } from '@/components/dashboard/SettingsSubNav';
+import { SettingsPanelSkeleton } from './SettingsPanelSkeleton';
 
 type Status = 'idle' | 'saving' | 'saved' | 'error';
 
@@ -127,7 +128,7 @@ export default function SettingsPage() {
       </div>
 
       {loading ? (
-        <p className="text-sm text-gray-500 py-10 text-center">Loading settings…</p>
+        <SettingsPanelSkeleton />
       ) : tab === 'palette' ? (
         <PaletteTab colors={colors} setColors={setColors} onSave={() => save({ colors })} />
       ) : tab === 'rendering' ? (

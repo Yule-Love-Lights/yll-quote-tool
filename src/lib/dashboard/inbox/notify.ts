@@ -37,14 +37,27 @@ function clip(s: string, n = 140): string {
   return s.length > n ? `${s.slice(0, n)}…` : s;
 }
 
+// row 234 / W7-025: name + preview are customer-supplied (contact display
+// name, message body) and land in a team-wide HTML email — escape before
+// interpolating so a crafted "<img src=x onerror=...>" can't inject markup
+// into staff mail clients. Mirrors the reply route's replace chain
+// (src/app/api/dashboard/reply/route.ts); no attribute context here so &/</>
+// is enough (no quote-escaping needed, unlike leadAlerts.ts's href-attribute
+// use). Kept as a local, unexported copy — this module has zero imports by
+// design (env-free + client-safe, see the header comment), so it can't import
+// the other modules' private escapeHtml either.
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 function itemList(items: EscalationEmailItem[]): string {
   const rows = items
     .map(
       (i) =>
-        `<li style="margin:0 0 10px"><strong>${i.name}</strong> — waiting ${i.waiting}` +
+        `<li style="margin:0 0 10px"><strong>${escapeHtml(i.name)}</strong> — waiting ${i.waiting}` +
         // Clip the preview: enough context to triage, without putting a full
         // customer message body into a team-wide email.
-        (i.preview ? `<br><span style="color:#555">${clip(i.preview)}</span>` : '') +
+        (i.preview ? `<br><span style="color:#555">${escapeHtml(clip(i.preview))}</span>` : '') +
         `</li>`,
     )
     .join('');

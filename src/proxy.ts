@@ -18,8 +18,8 @@
 // verify, then flip AUTH_GATE_ENABLED=true in Vercel (zero-lockout — see #81).
 
 import { NextRequest, NextResponse } from 'next/server';
-import { isPublicPath } from '@/lib/auth/operatorGate';
-import { createMiddlewareSupabase } from '@/lib/auth/supabaseServer';
+import { isCrewPath, isPublicPath } from '@/lib/auth/operatorGate';
+import { createMiddlewareSupabase, isCrewAccount } from '@/lib/auth/supabaseServer';
 
 export async function proxy(req: NextRequest) {
   // DORMANT BY DEFAULT.
@@ -36,7 +36,26 @@ export async function proxy(req: NextRequest) {
     const {
       data: { user },
     } = await supabase.auth.getUser();
-    if (user) return res;
+    if (user) {
+      // ROLE-AWARE, not merely authenticated. Naldo's 2026-08-16 ruling put crew
+      // logins in the SAME auth store as operator logins, so "has a session" no
+      // longer implies "may see the operator surface" — and that surface holds
+      // customer PII. A crew session may reach ONLY the crew API; everywhere
+      // else it is refused. Route handlers enforce this again via requireCrew /
+      // requireOperator (defense in depth), but this is the perimeter half, and
+      // it is the half that covers operator PAGES that lean on the perimeter
+      // rather than calling requireOperator themselves.
+      if (isCrewAccount(user.app_metadata) && !isCrewPath(pathname)) {
+        if (pathname.startsWith('/api/')) {
+          return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+        }
+        const denied = req.nextUrl.clone();
+        denied.pathname = '/login';
+        denied.searchParams.set('error', 'crew-account');
+        return NextResponse.redirect(denied);
+      }
+      return res;
+    }
   }
 
   // Unauthenticated (or Supabase unconfigured → fail closed).

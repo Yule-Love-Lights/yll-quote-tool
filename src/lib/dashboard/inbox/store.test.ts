@@ -313,6 +313,7 @@ import {
   markItemCompleted,
   markItemHandledLocal,
   quoteIdPrefix,
+  recordSuppressedFollowUp,
   sweepOrphanedFollowUps,
 } from './store';
 
@@ -2825,5 +2826,110 @@ describe('markItemHandledLocal / dismissItem / markItemCompleted — handled_by 
     const res = await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
     expect(res.ok).toBe(false);
     expect(res.error).toBe('connection reset');
+  });
+});
+
+// #224 (S35 wrap, staff MED): markItemCompleted had NO status guard at all — a
+// bare .eq('id', itemId) — while its siblings markItemHandledLocal/dismissItem
+// at least guard .neq('status','handled')/.neq('status','dismissed') against
+// re-applying the SAME action. Fix: markItemCompleted now guards against
+// overwriting either terminal state it should never clobber — 'dismissed'
+// (sticky spam, per reducer.ts) and 'completed' (idempotent re-apply, sibling
+// parity). 'unresponded' → completed and 'handled' → completed stay legal
+// (InboxList.tsx's "Mark completed" button fires directly from the open queue,
+// and InWorksSection.tsx's fires from the handled bucket — both real workflows).
+describe('markItemCompleted — status guard (#224)', () => {
+  const ITEM_ID = 'item-42';
+  const OPERATOR_ID = '11111111-2222-3333-4444-555555555555';
+  const NOW = new Date('2026-08-14T12:00:00Z');
+
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  /** Mirrors the #208 describe block's makeSbFor: 1st .from('inbox_items') call
+   *  is priorStateOf's SELECT, 2nd is the update chain under test. */
+  function makeSbFor(itemUpdateResult: { data: unknown; error: null | { message: string } }) {
+    const { builder: priorBuilder } = makeBuilder({ data: null, error: null });
+    const { builder: updateBuilder, calls: updateCalls } = makeBuilder(itemUpdateResult);
+    const { builder: activityBuilder, calls: activityCalls } = makeBuilder({ data: null, error: null });
+    let inboxCallCount = 0;
+    const from = (table: string) => {
+      if (table === 'inbox_items') {
+        inboxCallCount += 1;
+        return inboxCallCount === 1 ? priorBuilder : updateBuilder;
+      }
+      if (table === 'dashboard_activity') return activityBuilder;
+      throw new Error(`unexpected table: ${table}`);
+    };
+    return { from, updateCalls, activityCalls };
+  }
+
+  it('blocks re-completing an item the guard excluded (already dismissed or already completed), and does not log activity', async () => {
+    // maybeSingle() returns null when the guarded UPDATE...WHERE matched zero
+    // rows (status was 'dismissed' or 'completed') — no DB error, just nothing
+    // to update.
+    const { from, activityCalls } = makeSbFor({ data: null, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/dismissed|completed/i);
+    // The logically-wrong-200 the ticket calls out: a blocked guard must not
+    // ALSO write a false activity trail claiming the action happened.
+    expect(activityCalls.some((c) => c.method === 'insert')).toBe(false);
+  });
+
+  it('the update chain is a POSITIVE match on the two legal source statuses (the actual guard, not just the observed outcome)', async () => {
+    // Positive `.in(...)`, not a negative `.neq(...)` pair — see markItemCompleted's
+    // doc comment for the fail-open-vs-fail-closed reasoning (positive-seam-gate
+    // convention, AGENTS.md Pitfalls).
+    const { from, updateCalls } = makeSbFor({ data: { id: ITEM_ID }, error: null });
+    sbRef.current = { from };
+
+    await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
+
+    const inCalls = updateCalls.filter((c) => c.method === 'in').map((c) => c.args);
+    expect(inCalls).toContainEqual(['status', ['unresponded', 'handled']]);
+  });
+
+  it('still allows the normal forward transitions (unresponded/handled → completed)', async () => {
+    const { from, activityCalls } = makeSbFor({ data: { id: ITEM_ID }, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toMatchObject({ actor: OPERATOR_ID, action: 'completed' });
+  });
+});
+
+// #230(a): the previously-console.warn-only #220 suppression trace now also
+// lands in dashboard_activity, so it shows up on the /inbox/activity page.
+describe('recordSuppressedFollowUp (#230a — suppression visibility)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('inserts a followup_suppressed activity row for the item, actor system', async () => {
+    const { builder, calls } = makeBuilder({ data: null, error: null });
+    sbRef.current = { from: () => builder };
+
+    await recordSuppressedFollowUp('item-99', { quoteId: 'q1', quoteNumber: 1262 });
+
+    const insertCall = calls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toMatchObject({
+      actor: 'system',
+      action: 'followup_suppressed',
+      inbox_item_id: 'item-99',
+      detail: { quoteId: 'q1', quoteNumber: 1262 },
+    });
+  });
+
+  it('no-ops (no throw) when the service client is not configured', async () => {
+    sbRef.current = null;
+    await expect(recordSuppressedFollowUp('item-99', {})).resolves.toBeUndefined();
   });
 });

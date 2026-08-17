@@ -713,6 +713,24 @@ describe('closeOpenBreakForShift', () => {
     expect(stateRef.current.updated).toEqual([]);
   });
 
+  it('closes ONLY its own shift, leaving another open break untouched', async () => {
+    // The shift_id filter is the only guard this function has, and nothing
+    // previously would have failed if it were removed (S59 review).
+    stateRef.current.breaks = [
+      { ...OPEN_BREAK, id: 'brk-mine', shift_id: 'shift-open-1' },
+      { ...OPEN_BREAK, id: 'brk-theirs', shift_id: 'shift-other', crew_member_id: 'crew-9' },
+    ];
+
+    await closeOpenBreakForShift('shift-open-1', '2026-08-10T15:30:00.000Z', 'office');
+
+    const theirs = stateRef.current.breaks.find((b) => b.id === 'brk-theirs');
+    expect(stateRef.current.breaks.find((b) => b.id === 'brk-mine')?.ended_at).toBe(
+      '2026-08-10T15:30:00.000Z',
+    );
+    expect(theirs?.ended_at).toBeNull();
+    expect(theirs?.auto_closed).toBe(false);
+  });
+
   it('is a no-op the second time, so a retried clock-out cannot move the end time', async () => {
     await closeOpenBreakForShift('shift-open-1', '2026-08-10T15:30:00.000Z', 'office');
     await expect(
