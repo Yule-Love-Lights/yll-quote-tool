@@ -22,7 +22,7 @@ import type { HandledTarget } from './store';
 import { handledByTag } from './assignment';
 import { listQuotesForDashboard } from '@/lib/dashboard/queries';
 import { normalizeGhlConversation } from './ghl';
-import { mapGmailThread, normalizeGmailThread } from './gmail';
+import { mapGmailThread, normalizeGmailThreadTouches } from './gmail';
 import { normalizeQuoteTouch, quoteFollowUpDecision } from './quotetool';
 import { getFollowUpDays } from './settings';
 import { FOLLOWUP_REASONS } from './followups';
@@ -239,12 +239,16 @@ export type GmailPollSummary = {
 };
 
 /**
- * Poll the Gmail inbox (sales@) and ingest each thread. Read-only. Needs-reply is
- * the thread last-sender check (in normalizeGmailThread): a thread whose latest
+ * Poll the Gmail inbox (sales@) and ingest each thread (as one or more touches
+ * — see normalizeGmailThreadTouches, #288). For an ordinary thread, needs-reply
+ * is the thread last-sender check (in normalizeGmailThread, the single-touch
+ * path normalizeGmailThreadTouches falls back to): a thread whose latest
  * message is from us → outbound → the reducer skips/auto-resolves it. That also
  * neutralizes the self-ingest loop — our own escalation emails (From: sales@) read
- * as "from us". Full inbox scan each run (bounded); history.list incremental is a
- * future optimization.
+ * as "from us". A coalesced GML lead-forward thread's split touches are the
+ * exception: each is always 'inbound' regardless of the thread's last sender
+ * (normalizeGmailThreadTouches's own doc explains why). Full inbox scan each
+ * run (bounded); history.list incremental is a future optimization.
  */
 export async function runGmailPoll(now: Date, opts: { maxResults?: number } = {}): Promise<GmailPollSummary> {
   if (!isGmailConfigured()) {
@@ -295,18 +299,32 @@ export async function runGmailPoll(now: Date, opts: { maxResults?: number } = {}
           skipped++;
           continue;
         }
+        // #288: a coalesced GML lead-forward thread splits into MULTIPLE
+        // touches (one per distinct customer) — everything else still maps to
+        // exactly one, so this loop's shape (and its error isolation) applies
+        // per TOUCH, not per thread. `scanned` (below, threads.length) stays
+        // thread-count; ingested/skipped/etc. accumulate per touch.
+        let touches: ReturnType<typeof normalizeGmailThreadTouches>;
         try {
-          const res = await ingestTouch(normalizeGmailThread(mapGmailThread(f.raw, identity), suppressed), now);
-          if (!res.ok) {
-            errors++;
-            continue;
-          }
-          if (res.skipped) skipped++;
-          else ingested++;
-          if (res.autoResolved) autoResolved++;
-          if (res.ambiguous) ambiguous++;
+          touches = normalizeGmailThreadTouches(mapGmailThread(f.raw, identity), suppressed);
         } catch {
           errors++;
+          continue;
+        }
+        for (const touch of touches) {
+          try {
+            const res = await ingestTouch(touch, now);
+            if (!res.ok) {
+              errors++;
+              continue;
+            }
+            if (res.skipped) skipped++;
+            else ingested++;
+            if (res.autoResolved) autoResolved++;
+            if (res.ambiguous) ambiguous++;
+          } catch {
+            errors++;
+          }
         }
       }
     }
@@ -322,6 +340,24 @@ export async function runGmailPoll(now: Date, opts: { maxResults?: number } = {}
 function errMsg(err: unknown): string {
   // Bound it: keeps a stray verbose API body out of the stored handled_channel_sync.
   return (err instanceof Error ? err.message : String(err)).slice(0, 500);
+}
+
+/**
+ * #288: a gmail item's external_id can be a GML-split composite
+ * `${threadId}:${msgId}` (see gmail.ts's normalizeGmailThreadTouches) for
+ * every customer after a coalesced thread's earliest. modifyThread's URL
+ * wants the bare Gmail THREAD id — passing the composite straight through
+ * would target a nonexistent thread. Gmail thread/message ids are hex, so a
+ * literal ':' can only appear here as this deliberate separator, never
+ * inside a real id — safe to split on the first one.
+ *
+ * NOT store.ts's quoteIdPrefix: that helper is quotetool/uuid-specific (its
+ * callers additionally filter through isUuid) — this is its Gmail-specific
+ * sibling, kept local since nothing outside the Gmail write-back needs it.
+ */
+function gmailThreadIdFromExternalId(externalId: string): string {
+  const i = externalId.indexOf(':');
+  return i === -1 ? externalId : externalId.slice(0, i);
 }
 
 /**
@@ -370,7 +406,7 @@ export async function runHandledWriteback(target: HandledTarget, operatorLabel: 
     try {
       const token = await getAccessToken();
       const labelId = await getOrCreateLabel(token, 'YLL/Handled');
-      await modifyThread(token, target.externalId, { addLabelIds: [labelId], removeLabelIds: ['UNREAD'] });
+      await modifyThread(token, gmailThreadIdFromExternalId(target.externalId), { addLabelIds: [labelId], removeLabelIds: ['UNREAD'] });
       sync.gmailLabel = 'ok';
     } catch (err) {
       sync.gmailLabel = 'failed';

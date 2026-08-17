@@ -12,13 +12,26 @@ import type { NormalizedTouch } from './types';
 import { normalizeEmail, normalizeName } from './normalize';
 import { isAnsweredByOutbound } from './escalation';
 import { classifyMessage, isFromUs } from './classify';
-import { parseLeadForward } from './leadForward';
+import { parseLeadForward, type ParsedLeadForward } from './leadForward';
 
 export type GmailMessageLite = {
   /** Did the YLL workspace account send this message (a SENT message). */
   fromMe: boolean;
   at: Date;
   snippet?: string;
+  /** Gmail's own message id (RawGmailMessage.id). Optional: only
+   *  mapGmailThread-derived messages carry it; hand-built test fixtures may
+   *  omit it. #288: used by normalizeGmailThreadTouches to mint a stable
+   *  composite external_id for a non-earliest customer in a coalesced
+   *  lead-forward thread. */
+  id?: string;
+  /** This message's OWN From address/display name — distinct from
+   *  GmailThreadLite.from, which is the LATEST INBOUND message's From (see
+   *  mapGmailThread below). #288: needed so a per-message lead-forward parse
+   *  can use the sender of THIS message, not whichever message happens to be
+   *  thread-latest. */
+  fromEmail?: string | null;
+  fromName?: string | null;
 };
 
 export type GmailThreadLite = {
@@ -60,8 +73,8 @@ export function gmailNeedsReply(messages: GmailMessageLite[]): boolean {
 
 // ─── Raw Gmail payload → GmailThreadLite (pure mapping) ─────────────────────
 // Minimal subset of the Gmail REST shapes the client returns. The mapper turns
-// them into the source-agnostic GmailThreadLite that normalizeGmailThread + the
-// reducer consume.
+// them into the source-agnostic GmailThreadLite that normalizeGmailThread /
+// normalizeGmailThreadTouches (#288) + the reducer consume.
 
 export type GmailHeader = { name: string; value: string };
 export type RawGmailMessage = {
@@ -119,12 +132,18 @@ export function mapGmailThread(raw: RawGmailThread, identity: GmailIdentity): Gm
   const rawMessages = raw.messages ?? [];
   const messages: GmailMessageLite[] = rawMessages.map((m) => {
     const ms = Number(m.internalDate ?? 0);
+    const fromHeader = getHeader(m, 'From');
     return {
       fromMe: gmailMessageFromMe(m, identity),
       // Guard against a non-numeric internalDate: an Invalid Date would later
       // throw at .toISOString() during the upsert.
       at: new Date(Number.isFinite(ms) ? ms : 0),
       snippet: m.snippet,
+      id: m.id,
+      // #288: this message's OWN From, independent of the thread-level `from`
+      // computed below (which is the LATEST INBOUND message's From).
+      fromEmail: fromHeader ? parseEmailAddress(fromHeader) : null,
+      fromName: fromHeader ? parseDisplayName(fromHeader) : null,
     };
   });
   const subject = rawMessages[0] ? getHeader(rawMessages[0], 'Subject') : undefined;
@@ -217,4 +236,91 @@ export function normalizeGmailThread(thread: GmailThreadLite, suppressed?: Set<s
     raw: thread,
     leadKind,
   };
+}
+
+/**
+ * #288: Zapier's GML Media relay reuses the exact same subject ("New Lead
+ * from GML Media!") for EVERY forwarded lead, so Gmail coalesces DISTINCT
+ * customers' lead-forward emails into ONE thread. normalizeGmailThread
+ * (above) is thread-level — it collapses a multi-customer thread into a
+ * single touch keyed by thread.threadId, so every customer after the first
+ * gets no inbox item and no contact (invisible to every count/filter/
+ * search), and the surviving item's preview/subject drift toward whichever
+ * message is thread-latest while its contact link stays whichever customer
+ * arrived first — staff working the row as displayed call the wrong person.
+ *
+ * This is the per-message-aware sibling: it detects when a thread carries
+ * MULTIPLE distinct parseable lead-forward messages and, only then, emits
+ * one NormalizedTouch PER parsed message instead of one for the whole
+ * thread. A thread with zero or exactly one parseable lead-forward message —
+ * i.e. everything that ISN'T a coalesced multi-customer GML thread, the
+ * overwhelming majority of Gmail traffic — falls straight through to
+ * normalizeGmailThread, byte-for-byte: this function is additive, never a
+ * rewrite of the existing single-touch path.
+ *
+ * Keying: the EARLIEST parsed message keeps the bare thread.threadId, so an
+ * existing prod row (created back when its thread had only one message)
+ * keeps resolving to the SAME item on re-ingest — planIngest's
+ * keep-existing-contact-for-an-existing-item rule then re-aligns that item's
+ * preview/subject/last_message_at back to the FIRST customer's own message,
+ * self-healing a row that currently displays one customer while linked to
+ * another's contact. Every LATER parsed message gets a brand-new
+ * `${threadId}:${msgId}` composite external_id (colon-suffix precedent:
+ * store.ts's quoteIdPrefix for `${quoteId}:color-request` — that helper
+ * itself is quotetool/uuid-specific and not reused here) — never seen
+ * before, so it inserts a fresh item + a fresh contact. UNIQUE(source,
+ * external_id) is a bare text column (migrations/2026-06-28-dashboard-
+ * tables.sql), so a composite string needs no schema change.
+ *
+ * direction is hardcoded 'inbound' for every split touch, never derived from
+ * whether some other message on the thread is outbound. Rationale: an
+ * on-thread reply lands on the platform's no-reply relay
+ * (no-reply.<token>@zapiermail.com) and reaches NO customer, so it must
+ * never be read as "answered" — that would incorrectly auto-resolve/bury one
+ * customer's forward just because a DIFFERENT, later customer's forward (or
+ * our own reaction to one) happened to be the thread's chronologically-last
+ * message. A split touch only resolves by actually contacting that customer
+ * (cross-channel) or a manual dismiss/handle.
+ */
+export function normalizeGmailThreadTouches(thread: GmailThreadLite, suppressed?: Set<string>): NormalizedTouch[] {
+  const parsed = thread.messages
+    .filter((m) => !m.fromMe)
+    .map((m) => ({
+      msg: m,
+      lead: parseLeadForward({ fromAddress: m.fromEmail, displayName: m.fromName, body: m.snippet ?? null }),
+    }))
+    .filter((c): c is { msg: GmailMessageLite; lead: ParsedLeadForward } => c.lead !== null)
+    .sort((a, b) => a.msg.at.getTime() - b.msg.at.getTime());
+
+  if (parsed.length === 0) return [normalizeGmailThread(thread, suppressed)];
+
+  const touches: NormalizedTouch[] = [];
+  parsed.forEach(({ msg, lead }, index) => {
+    // A later (non-earliest) parsed message with no id can't mint a stable
+    // composite key — skip it rather than risk colliding with (or silently
+    // overwriting) the earliest touch's bare-threadId item. Real Gmail
+    // payloads always carry RawGmailMessage.id; this only guards hand-built/
+    // malformed input.
+    if (index > 0 && !msg.id) return;
+    const externalId = index === 0 ? thread.threadId : `${thread.threadId}:${msg.id}`;
+    touches.push({
+      source: 'gmail',
+      externalId,
+      sourceMessageId: msg.id ?? null,
+      direction: 'inbound',
+      channel: 'email',
+      lastMessageAt: msg.at,
+      preview: msg.snippet ?? null,
+      subject: thread.subject ?? null,
+      identity: {
+        ghlContactId: null,
+        emails: lead.email ? [lead.email] : [],
+        phones: lead.phone ? [lead.phone] : [],
+        displayName: lead.name,
+      },
+      raw: thread,
+      leadKind: 'lead',
+    });
+  });
+  return touches;
 }

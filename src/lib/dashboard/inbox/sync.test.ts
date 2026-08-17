@@ -15,6 +15,7 @@ const getThreadMock = vi.fn();
 const listInboxThreadsMock = vi.fn();
 const getAccessTokenMock = vi.fn();
 const isGmailConfiguredMock = vi.fn();
+const modifyThreadMock = vi.fn();
 
 vi.mock('@/lib/integrations/gmail', () => ({
   getAccessToken: (...args: unknown[]) => getAccessTokenMock(...args),
@@ -22,7 +23,7 @@ vi.mock('@/lib/integrations/gmail', () => ({
   getThread: (...args: unknown[]) => getThreadMock(...args),
   isGmailConfigured: (...args: unknown[]) => isGmailConfiguredMock(...args),
   listInboxThreads: (...args: unknown[]) => listInboxThreadsMock(...args),
-  modifyThread: vi.fn(),
+  modifyThread: (...args: unknown[]) => modifyThreadMock(...args),
 }));
 
 const ingestTouchMock = vi.fn();
@@ -67,9 +68,10 @@ vi.mock('./suppression', () => ({
   getSuppressedSenders: vi.fn().mockResolvedValue(new Set()),
 }));
 
+const normalizeGmailThreadTouchesMock = vi.fn();
 vi.mock('./gmail', () => ({
   mapGmailThread: (raw: unknown) => raw,
-  normalizeGmailThread: (mapped: unknown) => mapped,
+  normalizeGmailThreadTouches: (...args: unknown[]) => normalizeGmailThreadTouchesMock(...args),
 }));
 
 const addContactTagsMock = vi.fn();
@@ -116,6 +118,10 @@ describe('runGmailPoll concurrency', () => {
     isGmailConfiguredMock.mockReturnValue(true);
     getAccessTokenMock.mockResolvedValue('token');
     ingestTouchMock.mockResolvedValue(OK_RESULT);
+    // Default: pass-through-wrapped-in-an-array, mirroring normalizeGmailThread's
+    // old 1-touch-per-thread shape so the pre-existing tests below (written
+    // against the singular function) still hold under the plural one (#288).
+    normalizeGmailThreadTouchesMock.mockImplementation((mapped: unknown) => [mapped]);
   });
 
   it('fetches thread bodies with bounded (<=8) concurrency, not serially', async () => {
@@ -180,6 +186,39 @@ describe('runGmailPoll concurrency', () => {
     expect(summary.errors).toBe(1);
     expect(summary.ingested).toBe(THREAD_COUNT - 1);
   });
+
+  // #288: normalizeGmailThreadTouches can return MORE THAN ONE touch for a
+  // single coalesced GML thread (one per distinct customer). `scanned` stays
+  // thread-count, but ingestTouch must run — and be counted — once per touch,
+  // not once per thread.
+  it('ingests and counts every touch a single thread splits into, while `scanned` stays the thread count (#288)', async () => {
+    listInboxThreadsMock.mockResolvedValue(threadRefs(1));
+    getThreadMock.mockResolvedValue({ messages: [{ id: 'm1' }] });
+    normalizeGmailThreadTouchesMock.mockReturnValue([{ id: 'touch-a' }, { id: 'touch-b' }, { id: 'touch-c' }]);
+
+    const summary = await runGmailPoll(new Date(), { maxResults: 1 });
+
+    expect(summary.ok).toBe(true);
+    expect(summary.scanned).toBe(1);
+    expect(ingestTouchMock).toHaveBeenCalledTimes(3);
+    expect(summary.ingested).toBe(3);
+  });
+
+  it('one bad touch (ingestTouch failure) does not stop sibling touches from the SAME split thread from being ingested (#288)', async () => {
+    listInboxThreadsMock.mockResolvedValue(threadRefs(1));
+    getThreadMock.mockResolvedValue({ messages: [{ id: 'm1' }] });
+    normalizeGmailThreadTouchesMock.mockReturnValue([{ id: 'touch-a' }, { id: 'touch-b' }, { id: 'touch-c' }]);
+    ingestTouchMock.mockImplementation(async (touch: { id?: string }) => {
+      if (touch.id === 'touch-b') return { ok: false, error: 'boom' };
+      return OK_RESULT;
+    });
+
+    const summary = await runGmailPoll(new Date(), { maxResults: 1 });
+
+    expect(summary.ok).toBe(true);
+    expect(summary.errors).toBe(1);
+    expect(summary.ingested).toBe(2);
+  });
 });
 
 // WT-49: Mark-Handled must never create a GHL pipeline opportunity. It used to
@@ -235,6 +274,43 @@ describe('runHandledWriteback — WT-49 (no opportunity write)', () => {
     expect(addContactTagsMock).toHaveBeenCalledWith('contact-1', ['dashboard-handled', expect.any(String)]);
     expect(sync.ghlTags).toBe('ok');
     expect(findOrCreateOpportunityForContactMock).not.toHaveBeenCalled();
+  });
+});
+
+// #288: a GML-split gmail item's external_id can be `${threadId}:${msgId}`
+// (gmail.ts's normalizeGmailThreadTouches) for every customer after the
+// thread's earliest. modifyThread's URL wants the bare Gmail THREAD id — a
+// composite value passed straight through would target a nonexistent thread.
+describe('runHandledWriteback — Gmail composite external_id (#288 GML split)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    isGmailConfiguredMock.mockReturnValue(true);
+    getAccessTokenMock.mockResolvedValue('token');
+    modifyThreadMock.mockResolvedValue(undefined);
+  });
+
+  const splitGmailTarget: HandledTarget = {
+    source: 'gmail',
+    externalId: 'thr-abc123:msg-def456',
+    sourceMessageId: 'msg-def456',
+    ghlContactId: null,
+    displayName: 'Later Customer',
+  };
+
+  it('(g) strips the :msgId suffix before calling modifyThread — a composite id would target a nonexistent Gmail thread', async () => {
+    const sync = await runHandledWriteback(splitGmailTarget, 'jason');
+
+    expect(modifyThreadMock).toHaveBeenCalledTimes(1);
+    expect(modifyThreadMock).toHaveBeenCalledWith('token', 'thr-abc123', expect.objectContaining({ removeLabelIds: ['UNREAD'] }));
+    expect(sync.gmailLabel).toBe('ok');
+  });
+
+  it('passes a bare (non-composite) external_id through unchanged — the earliest-customer / non-split case', async () => {
+    const bareGmailTarget: HandledTarget = { ...splitGmailTarget, externalId: 'thr-abc123' };
+
+    await runHandledWriteback(bareGmailTarget, 'jason');
+
+    expect(modifyThreadMock).toHaveBeenCalledWith('token', 'thr-abc123', expect.anything());
   });
 });
 

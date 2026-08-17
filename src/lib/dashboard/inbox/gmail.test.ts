@@ -2,11 +2,12 @@ import { describe, it, expect } from 'vitest';
 import {
   gmailNeedsReply,
   normalizeGmailThread,
+  normalizeGmailThreadTouches,
   parseEmailAddress,
   gmailMessageFromMe,
   mapGmailThread,
 } from './gmail';
-import type { GmailThreadLite, RawGmailThread } from './gmail';
+import type { GmailMessageLite, GmailThreadLite, RawGmailThread } from './gmail';
 
 const msg = (fromMe: boolean, iso: string, snippet?: string) => ({ fromMe, at: new Date(iso), snippet });
 
@@ -310,5 +311,197 @@ describe('normalizeGmailThread — sender-suppression set (layer 3)', () => {
   it('classifies normally when suppressed set is empty', () => {
     const t = normalizeGmailThread(thread({ from: { email: 'spam@vendor.com', name: 'Vendor' } }), new Set());
     expect(t.leadKind).toBe('lead');
+  });
+});
+
+describe('mapGmailThread — per-message id/fromEmail/fromName (#288)', () => {
+  it("carries the raw message id and this message's own From address/display name", () => {
+    const raw: RawGmailThread = {
+      id: 'thr-per-msg',
+      messages: [
+        gm({
+          internalDate: '1782690000000',
+          from: 'A Customer <cust@example.com>',
+          subject: 'Quote?',
+          snippet: 'Can I get a quote?',
+        }),
+      ],
+    };
+    const mapped = mapGmailThread(raw, { ourEmail: OUR });
+    expect(mapped.messages[0].id).toBe('m-1782690000000');
+    expect(mapped.messages[0].fromEmail).toBe('cust@example.com');
+    expect(mapped.messages[0].fromName).toBe('A Customer');
+  });
+
+  it('leaves fromEmail/fromName null when the message has no From header', () => {
+    const raw: RawGmailThread = { id: 'thr-no-from', messages: [{ id: 'm1', internalDate: '1000', payload: { headers: [] } }] };
+    const mapped = mapGmailThread(raw, { ourEmail: OUR });
+    expect(mapped.messages[0].fromEmail).toBeNull();
+    expect(mapped.messages[0].fromName).toBeNull();
+  });
+});
+
+// #288: Zapier's GML Media relay reuses the exact same subject ("New Lead from
+// GML Media!") for EVERY forwarded lead, so Gmail coalesces DISTINCT customers'
+// forwards into ONE thread. normalizeGmailThread (above) is thread-level: it
+// collapses a multi-customer thread into a single touch keyed by threadId, so
+// every customer after the first gets no item/contact, and the surviving item's
+// preview/identity drift toward whichever message is thread-latest.
+// normalizeGmailThreadTouches is the per-message-aware sibling — see its doc
+// comment in gmail.ts for the full design.
+describe('normalizeGmailThreadTouches — per-message split for coalesced GML threads (#288)', () => {
+  // Synthetic fixtures only — never real customer PII (repo precedent, #268).
+  const GML_FROM_EMAIL = 'no-reply.fake123@zapiermail.com';
+  const GML_FROM_NAME = 'GML Media';
+
+  function gmlMsg(over: {
+    iso: string;
+    id?: string;
+    body: string;
+    fromMe?: boolean;
+    fromEmail?: string | null;
+    fromName?: string | null;
+  }): GmailMessageLite {
+    return {
+      fromMe: over.fromMe ?? false,
+      at: new Date(over.iso),
+      snippet: over.body,
+      id: over.id,
+      fromEmail: over.fromEmail === undefined ? GML_FROM_EMAIL : over.fromEmail,
+      fromName: over.fromName === undefined ? GML_FROM_NAME : over.fromName,
+    };
+  }
+
+  function gmlThreadLite(messages: GmailMessageLite[], over: Partial<GmailThreadLite> = {}): GmailThreadLite {
+    return {
+      threadId: 'thr-gml',
+      subject: 'New Lead from GML Media!',
+      from: { email: GML_FROM_EMAIL, name: GML_FROM_NAME },
+      hasListUnsubscribe: false,
+      messages,
+      ...over,
+    };
+  }
+
+  const ALICE_BODY =
+    'Here ya go Naldoven: Alice Anderson +15550001111 Email: alice@example.com Street Address: 1 Test Rd City: Testville Areas to light up: Roofline';
+  const BOB_BODY =
+    'Here ya go Naldoven: Bob Baker +15550002222 Email: bob@example.com Street Address: 2 Test Rd City: Testville Areas to light up: Roofline';
+  const CAROL_BODY =
+    'Here ya go Naldoven: Carol Clark +15550003333 Email: carol@example.com Street Address: 3 Test Rd City: Testville Areas to light up: Roofline';
+
+  it('(b) a non-GML thread returns exactly [normalizeGmailThread(thread)] — unchanged single-touch shape', () => {
+    const t = thread();
+    const touches = normalizeGmailThreadTouches(t);
+    expect(touches).toEqual([normalizeGmailThread(t)]);
+  });
+
+  it('a thread with zero parseable lead-forward messages (no known platform at all) also falls through unchanged', () => {
+    const t = thread({ messages: [msg(false, '2026-08-01T10:00:00Z', 'Just a normal reply, thanks!')] });
+    const touches = normalizeGmailThreadTouches(t);
+    expect(touches).toEqual([normalizeGmailThread(t)]);
+  });
+
+  it("(c) a single GML forward → one touch, bare threadId, identity from the parsed customer (today's single-customer outcome preserved)", () => {
+    const t = gmlThreadLite([gmlMsg({ iso: '2026-08-12T14:00:00Z', id: 'm1', body: ALICE_BODY })]);
+    const touches = normalizeGmailThreadTouches(t);
+    expect(touches).toHaveLength(1);
+    expect(touches[0].source).toBe('gmail');
+    expect(touches[0].externalId).toBe('thr-gml');
+    expect(touches[0].direction).toBe('inbound');
+    expect(touches[0].channel).toBe('email');
+    expect(touches[0].leadKind).toBe('lead');
+    expect(touches[0].subject).toBe('New Lead from GML Media!');
+    expect(touches[0].identity.displayName).toBe('Alice Anderson');
+    expect(touches[0].identity.emails).toEqual(['alice@example.com']);
+    expect(touches[0].identity.phones).toEqual(['+15550001111']);
+  });
+
+  it('(d) three forwards from three distinct customers coalesced onto one thread → three touches, each independently keyed/identified, sorted chronologically regardless of input order', () => {
+    const t = gmlThreadLite([
+      // Deliberately out of chronological order to prove the function sorts
+      // rather than trusting message array order.
+      gmlMsg({ iso: '2026-08-14T09:00:00Z', id: 'm3', body: CAROL_BODY }),
+      gmlMsg({ iso: '2026-08-12T09:00:00Z', id: 'm1', body: ALICE_BODY }),
+      gmlMsg({ iso: '2026-08-13T09:00:00Z', id: 'm2', body: BOB_BODY }),
+    ]);
+    const touches = normalizeGmailThreadTouches(t);
+    expect(touches).toHaveLength(3);
+
+    // Earliest keeps the bare threadId (continuity with any existing prod row).
+    expect(touches[0].externalId).toBe('thr-gml');
+    expect(touches[0].identity.displayName).toBe('Alice Anderson');
+    expect(touches[0].lastMessageAt.toISOString()).toBe('2026-08-12T09:00:00.000Z');
+    expect(touches[0].preview).toBe(ALICE_BODY);
+    expect(touches[0].sourceMessageId).toBe('m1');
+
+    // Later ones get a composite external_id, never seen before → new item + new contact.
+    expect(touches[1].externalId).toBe('thr-gml:m2');
+    expect(touches[1].identity.displayName).toBe('Bob Baker');
+    expect(touches[1].identity.emails).toEqual(['bob@example.com']);
+    expect(touches[1].lastMessageAt.toISOString()).toBe('2026-08-13T09:00:00.000Z');
+    expect(touches[1].preview).toBe(BOB_BODY);
+
+    expect(touches[2].externalId).toBe('thr-gml:m3');
+    expect(touches[2].identity.displayName).toBe('Carol Clark');
+    expect(touches[2].identity.emails).toEqual(['carol@example.com']);
+    expect(touches[2].lastMessageAt.toISOString()).toBe('2026-08-14T09:00:00.000Z');
+    expect(touches[2].preview).toBe(CAROL_BODY);
+
+    for (const touch of touches) {
+      expect(touch.direction).toBe('inbound');
+      expect(touch.leadKind).toBe('lead');
+      expect(touch.channel).toBe('email');
+      expect(touch.subject).toBe('New Lead from GML Media!');
+      expect(touch.source).toBe('gmail');
+    }
+  });
+
+  it('(e) our own fromMe reaction after a forward is never a split candidate, and does not flip the forward to outbound/answered', () => {
+    const REACTION_BODY =
+      '🎄 Yule Love Lights Sales reacted via Gmail On Wed, Aug 12, 2026 at 2:46 PM GML Media &lt;no-reply.fake123@zapiermail.com&gt; wrote: ' +
+      ALICE_BODY;
+    const t = gmlThreadLite([
+      gmlMsg({ iso: '2026-08-12T14:00:00Z', id: 'm1', body: ALICE_BODY }),
+      gmlMsg({
+        iso: '2026-08-12T15:00:00Z',
+        id: 'm2',
+        body: REACTION_BODY,
+        fromMe: true,
+        fromEmail: 'sales@yulelovelights.com',
+        fromName: 'Yule Love Lights Sales',
+      }),
+    ]);
+
+    const touches = normalizeGmailThreadTouches(t);
+    expect(touches).toHaveLength(1); // the reaction itself is not a touch
+    expect(touches[0].externalId).toBe('thr-gml');
+    expect(touches[0].direction).toBe('inbound'); // NOT auto-resolved by the later fromMe message
+    expect(touches[0].identity.displayName).toBe('Alice Anderson');
+
+    // Contrast: today's thread-level function, given this SAME thread, marks it
+    // outbound/answered because the reaction is chronologically the last
+    // message — exactly the bug this split exists to avoid for a real customer.
+    expect(normalizeGmailThread(t).direction).toBe('outbound');
+  });
+
+  it('(f) a platform message that fails the template parse (a receipt) is not a touch, even alongside a real forward on the same thread', () => {
+    const t = gmlThreadLite([
+      gmlMsg({ iso: '2026-08-12T14:00:00Z', id: 'm1', body: ALICE_BODY }),
+      gmlMsg({ iso: '2026-08-12T16:00:00Z', id: 'm2', body: 'Thanks for using GML Media! Your monthly statement is attached.' }),
+    ]);
+    const touches = normalizeGmailThreadTouches(t);
+    expect(touches).toHaveLength(1);
+    expect(touches[0].identity.displayName).toBe('Alice Anderson');
+  });
+
+  it('a later (non-earliest) parsed message with no id is skipped defensively rather than minting an unstable key', () => {
+    const t = gmlThreadLite([
+      gmlMsg({ iso: '2026-08-12T09:00:00Z', id: 'm1', body: ALICE_BODY }),
+      { fromMe: false, at: new Date('2026-08-13T09:00:00Z'), snippet: BOB_BODY, fromEmail: GML_FROM_EMAIL, fromName: GML_FROM_NAME }, // no id
+    ]);
+    const touches = normalizeGmailThreadTouches(t);
+    expect(touches).toHaveLength(1);
+    expect(touches[0].identity.displayName).toBe('Alice Anderson');
   });
 });
