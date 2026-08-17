@@ -305,6 +305,7 @@ import {
   findViewOnlyFollowUpItems,
   getReopenCounts,
   isHiddenLegacyRebookQuote,
+  listDueFollowUps,
   listInWorks,
   listOpenItems,
   listEscalatableItems,
@@ -1350,6 +1351,86 @@ describe('listOpenItems — legacy-rebook exclusion wiring (#157, #183)', () => 
     } finally {
       consoleErrorSpy.mockRestore();
     }
+  });
+});
+
+// ─── listDueFollowUps — contact fallback + due-window (#229) ────────────────
+//
+// #229 FIX 3 (round 3): an earlier round added a legacy-rebook "anchoring"
+// flag + a quotetool->quotes batch lookup here, mirroring listOpenItems. That
+// state is IMPOSSIBLE by construction — isHiddenLegacyRebookQuote requires
+// deriveStatus === 'draft' (quote_sent_at NULL), but a quote_sent_no_reply
+// follow-up (quotetool.ts's quoteFollowUpDecision) only ever gets CREATED
+// when quote_sent_at IS SET. Confirmed empirically against prod: 28 pending
+// follow-ups, all with quote_sent_at set, zero parked drafts. Removed the
+// flag, the inbox_items embed, and the batch lookup entirely — a
+// legacy_rebook-anchored follow-up here is for a SENT Neighbor quote (a real
+// customer genuinely owed a reply), so it is never filtered.
+
+describe('listDueFollowUps — contact fallback + due-window (#229)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  const NOW = new Date('2026-08-06T15:00:00Z'); // Aug 6, 2026, ET morning
+
+  const dueRow = (over: Record<string, unknown>) => ({
+    id: 'fu-1',
+    reason: 'quote_sent_no_reply',
+    due_at: '2026-08-05T10:00:00Z', // yesterday ET — overdue
+    dashboard_contacts: { display_name: 'Jane Doe', primary_phone: '+16315551234', primary_email: 'jane@x.com' },
+    ...over,
+  });
+
+  it('carries contact phone/email alongside the name (nameless-contact fallback support downstream)', async () => {
+    const rows = [
+      dueRow({
+        id: 'fu-nameless',
+        dashboard_contacts: { display_name: null, primary_phone: '+16315559999', primary_email: 'lead@x.com' },
+      }),
+    ];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
+    sbRef.current = { from: () => mainBuilder };
+
+    const result = await listDueFollowUps(NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items[0].contactName).toBeNull();
+    expect(result.items[0].contactPhone).toBe('+16315559999');
+    expect(result.items[0].contactEmail).toBe('lead@x.com');
+  });
+
+  it('excludes a follow-up due strictly in the future (not yet due today)', async () => {
+    const rows = [dueRow({ due_at: '2026-08-08T10:00:00Z' })]; // 2 days ahead
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
+    sbRef.current = { from: () => mainBuilder };
+
+    const result = await listDueFollowUps(NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items).toHaveLength(0);
+  });
+
+  // #229 FIX 3: locks in the corrected behavior — a follow-up anchored to a
+  // SENT legacy_rebook quote is a real, owed reply and must NOT be filtered
+  // (only ONE sb.from() call — no quotetool/quotes lookup exists anymore).
+  it('never filters or special-cases a legacy_rebook-linked follow-up (no anchoring lookup exists)', async () => {
+    const rows = [dueRow({ id: 'fu-neighbor', dashboard_contacts: { display_name: 'YLL Neighbor Lead', primary_phone: null, primary_email: null } })];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
+    let fromCalls = 0;
+    sbRef.current = {
+      from: () => {
+        fromCalls += 1;
+        return mainBuilder;
+      },
+    };
+
+    const result = await listDueFollowUps(NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].contactName).toBe('YLL Neighbor Lead');
+    expect(fromCalls).toBe(1); // no second (quotes) lookup — the anchoring machinery is gone
   });
 });
 

@@ -103,6 +103,13 @@ export type DueFollowUp = {
   reason: string;
   dueAt: string;
   contactName: string | null;
+  /** #229: contact phone/email alongside the name — lets a downstream NAMED
+   *  render (the morning digest) fall back name → phone → email when a
+   *  dashboard_contacts row has no display_name (a real live case: a dropped
+   *  lead whose contact row was created from a bare inbound touch). The strip
+   *  itself doesn't need these; they ride along for that one consumer. */
+  contactPhone: string | null;
+  contactEmail: string | null;
 };
 
 // ─── Follow-ups ─────────────────────────────────────────────────────────────
