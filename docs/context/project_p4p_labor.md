@@ -213,7 +213,21 @@ numbers are trusted.
 
 ### Phase 2: time capture
 
-**Shipped so far:** the `shifts` day-clock ledger (S57) and `shift_breaks`
+**PHASE 2 IS COMPLETE as of S59 (2026-08-16).** Shipped: the `shifts` day clock
+(S57), `shift_breaks` (S58), `job_segments` with arrive/depart plus the
+breaks-pause-job-time math and the missed-tap backstop (S59), the three Flow B
+routes behind crew auth (S59, rows 279/280), and the ET midnight auto-close
+(S59, row 281). `/complete` sets `jobs.status='installed'` through the existing
+`setJobStatus`/`canTransition` machinery per Naldo's ruling — no new vocabulary.
+Travel is DERIVED as the residual (paid day minus job minus break), which makes
+the single-source rule structurally impossible to violate rather than merely
+forbidden. ⚠️ Crew logins share the auth store with operators, so
+`isCrewAccount` + a role-aware `src/proxy.ts` keep crew off the operator surface;
+both halves are tested. STILL UNBUILT in Phase 2: the office review/edit/split
+screen and payroll-export locks (both Phase 3+ concerns), and the
+`open_break`/`open_segment` exception queue (row 278).
+
+**Earlier note, kept for the history:** the `shifts` day-clock ledger (S57) and `shift_breaks`
 (S58, `migrations/2026-08-11-shift-breaks.sql`, applied to prod 2026-08-11).
 Breaks are unpaid, so paid time is the shift envelope minus break time;
 `src/lib/shiftBreaks.ts` owns that arithmetic, merges overlapping breaks so an
