@@ -61,7 +61,16 @@ const eslintConfig = defineConfig([
   // of going around the accessor; it does not make it impossible.
   // ---------------------------------------------------------------------
   {
-    files: ["src/**/*.ts", "src/**/*.tsx"],
+    // `scripts/**` and `tests/**` are in scope too: they are real TypeScript
+    // that can query the jobs table, and leaving them out meant a one-off
+    // backfill script could print placeholder pay figures with nothing
+    // complaining (S59 review, security lens).
+    files: [
+      "src/**/*.ts",
+      "src/**/*.tsx",
+      "scripts/**/*.ts",
+      "tests/**/*.ts",
+    ],
     ignores: [
       "src/lib/laborPlan.ts",
       "src/lib/jobs.ts",

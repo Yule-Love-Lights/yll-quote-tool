@@ -145,6 +145,27 @@ export function roleOf(appMetadata: unknown): OperatorRole {
   return role === 'admin' ? 'admin' : 'operator';
 }
 
+/** The marker on a crew login. Writable only through the service-role admin API. */
+export const CREW_ROLE = 'crew';
+
+/**
+ * True when this account is a CREW login rather than an operator one. PURE.
+ *
+ * Naldo's 2026-08-16 ruling put crew logins in the SAME auth store as operator
+ * logins, so one login serves both the Quote Tool and the Operations Hub. Shared
+ * identity is NOT shared authorization, and this function is that seam.
+ *
+ * ⚠️ WHY THIS HAD TO EXIST BEFORE THE FIRST CREW ACCOUNT DID: `roleOf` above
+ * returns 'operator' for ANYTHING that is not exactly 'admin' — including
+ * 'crew'. So a crew login would have satisfied `requireOperator` and reached
+ * `/customers` and its customer PII. `getOperator` now returns null for these
+ * accounts, closing it at the route layer, and `src/proxy.ts` closes it at the
+ * perimeter (which otherwise admits ANY authenticated user).
+ */
+export function isCrewAccount(appMetadata: unknown): boolean {
+  return (appMetadata as { role?: unknown } | null | undefined)?.role === CREW_ROLE;
+}
+
 /**
  * Derive the operator's display name from app_metadata. PURE. Returns the trimmed
  * name, or null when absent/blank/forged (legacy accounts) — callers fall back to
@@ -187,6 +208,10 @@ export const getOperator = cache(async (): Promise<Operator | null> => {
     error,
   } = await supabase.auth.getUser();
   if (error || !user) return null;
+  // A crew login is NOT an operator. Returning null here is what makes
+  // requireOperator and requireAdmin reject crew accounts; without it `roleOf`
+  // would classify 'crew' as 'operator' and hand them the operator surface.
+  if (isCrewAccount(user.app_metadata)) return null;
   return {
     id: user.id,
     email: user.email ?? null,

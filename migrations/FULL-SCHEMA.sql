@@ -3,7 +3,7 @@
 -- Paste into the Supabase SQL Editor and click Run.
 --
 -- GENERATED (audit #110 wave 2, finding W2-007): this file is produced by
--- reconciling ALL 64 dated migrations/*.sql files IN DATE ORDER (creates,
+-- reconciling ALL 81 dated migrations/*.sql files IN DATE ORDER (creates,
 -- alters, drops, RLS enable/disable applied in sequence) into one canonical
 -- end-state schema. It supersedes running db/schema.sql + the individual
 -- dated migrations separately (CREATE ... IF NOT EXISTS on a fresh DB; the
@@ -11,21 +11,28 @@
 -- one). The dated migrations remain the append-only source of truth for
 -- HOW the schema got here; this file is WHERE it landed.
 --
--- Regenerated: 2026-08-03 @ commit bf2ed0945619cc138f240272760882f646a23279,
--- reconciling every migration through
--- 2026-08-03-dashboard-activity-action-idx.sql (64 files, ledger #188).
--- Previous refresh (2026-07-03 @ commit f4b398d) covered files through
--- 2026-07-02-designs-photo-title.sql; this pass folds in the 21 dated files
--- that landed since (2026-07-06 → 2026-08-03). Three of those 21
--- (2026-07-11-permanent-bistro-service-type.sql, 2026-07-16-legacy-rebook.sql,
--- 2026-07-28-customers-manual-years.sql) had already been hand-folded into
--- this file out of band, one PR at a time, before this regen — see this
--- file's own `git log`; this pass reconciles the remaining 18 and brings the
--- header/roster current for all 21. Previous refresh before that (2026-06-15)
--- covered only 6 of the tables — see the superseded headers this replaces in
--- git history.
+-- Regenerated: 2026-08-16 (ledger row 282), reconciling every dated migration
+-- through 2026-08-16-crew-members-auth-user-id.sql (81 files).
+-- WHY THIS PASS EXISTED: the S59 six-lens review found this file no longer was
+-- what its own header claimed. It said "64 dated migrations" and "30 LIVE"
+-- tables while 81 migrations and 37 live tables existed, and TWO tables
+-- (archive_photos, site_submissions) were absent from the file entirely — so
+-- running it on a fresh project did NOT reproduce prod. Root cause was
+-- incremental hand-patching, one table per PR, which is how a canonical file
+-- drifts while looking maintained. Fixed by re-deriving the roster and the
+-- counts from the migrations themselves rather than patching one more table in.
+-- Verification for the next regen: the roster below is reproducible by scanning
+-- `create table [if not exists] [public.]<name>` across db/schema.sql plus every
+-- dated migration in date order, minus `drop table` tombstones. Note two
+-- creation styles coexist — older tables are unqualified (`create table if not
+-- exists quotes`), newer ones are schema-qualified (`public.jobs`) — so any
+-- audit script must match BOTH or it will silently under-count, as a first pass
+-- at this regen did.
 --
--- Tables (30 LIVE + 2 REMOVED tombstones below; RLS ENABLED on 29 of the 30
+-- Previous refresh: 2026-08-03 @ commit bf2ed09, through
+-- 2026-08-03-dashboard-activity-action-idx.sql (64 files, ledger #188).
+--
+-- Tables (37 LIVE + 2 REMOVED tombstones below; RLS ENABLED on 36 of the 37
 -- live ones — #90 defense in depth). The one exception, inventory_orders,
 -- ships RLS DISABLED — see its own posture bullet below, not silently
 -- "fixed" here. Three RLS postures coexist by design (see
@@ -1843,6 +1850,16 @@ create unique index if not exists crew_members_hub_employee_id_key
 create unique index if not exists crew_members_telegram_user_id_key
   on public.crew_members (telegram_user_id) where telegram_user_id is not null;
 
+-- Shared-auth-store link (2026-08-16, row 279): the SAME login serves the Quote
+-- Tool and the Operations Hub. Crew logins carry app_metadata.role='crew' and are
+-- rejected by getOperator/requireOperator/requireAdmin and by the role-aware
+-- proxy — shared identity is NOT shared authorization.
+alter table public.crew_members
+  add column if not exists auth_user_id uuid;
+
+create unique index if not exists crew_members_auth_user_id_key
+  on public.crew_members (auth_user_id) where auth_user_id is not null;
+
 create unique index if not exists crew_members_display_name_key
   on public.crew_members (lower(trim(display_name)));
 
@@ -1986,3 +2003,297 @@ create index if not exists quote_deliveries_created_at_idx
   on public.quote_deliveries (created_at desc);
 
 alter table public.quote_deliveries enable row level security;
+
+-- ---------------------------------------------------------------------
+-- job_segments (2026-08-12, migrations/2026-08-12-job-segments.sql) - per-job
+-- time on the shift clock (Flow B, Track A Phase 2 slice 2). Arrive opens a
+-- segment, depart closes it, at most one open per shift (partial unique index).
+-- MONEY: job seconds / budgeted_hours is the efficiency the P4P pool pays on.
+-- BREAKS PAUSE JOB TIME, so job seconds are segment spans MINUS overlapping
+-- break spans (src/lib/jobSegments.ts on src/lib/timeSpans.ts). stoppage_reason
+-- ships day one and cannot be backfilled. auto_closed marks a clock-out close,
+-- feeding the open_segment exception queue - a review state, not an error.
+-- RLS ENABLED, ZERO POLICIES - service-role only, fails closed until routes ship.
+-- ---------------------------------------------------------------------
+create table if not exists public.job_segments (
+  id              uuid primary key default gen_random_uuid(),
+  shift_id        uuid not null references public.shifts(id),
+  crew_member_id  uuid not null references public.crew_members(id),
+  job_id          uuid not null references public.jobs(id),
+
+  arrived_at      timestamptz not null default now(),
+  departed_at     timestamptz,
+
+  entry_kind      text not null default 'install'
+                    check (entry_kind in ('install', 'rework', 'non_billable')),
+
+  -- Null while the segment is open; required by the application on close.
+  stoppage_reason text
+                    check (stoppage_reason in ('completed', 'weather', 'no_access', 'materials', 'other')),
+
+  source          text not null check (source in ('pwa', 'telegram', 'office', 'system')),
+  end_source      text check (end_source in ('pwa', 'telegram', 'office', 'system')),
+
+  auto_closed     boolean not null default false,
+
+  -- Only meaningful for entry_kind = 'non_billable'.
+  approved_by     uuid references public.crew_members(id),
+  approved_at     timestamptz,
+
+  device_time     timestamptz,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now(),
+
+  -- A segment cannot end before it began. Guards an office-correction typo
+  -- from minting negative job time, which would understate efficiency.
+  constraint job_segments_ends_after_start
+    check (departed_at is null or departed_at >= arrived_at),
+
+  -- A closed segment must say WHY it closed; an open one must not pretend to.
+  constraint job_segments_reason_matches_state
+    check ((departed_at is null) = (stoppage_reason is null)),
+
+  -- Approval only belongs on a non_billable segment, and both halves travel
+  -- together so "approved by nobody at some time" cannot be recorded.
+  constraint job_segments_approval_shape
+    check (
+      (approved_by is null and approved_at is null)
+      or (entry_kind = 'non_billable' and approved_by is not null and approved_at is not null)
+    )
+);
+
+create unique index if not exists job_segments_one_open_per_shift
+  on public.job_segments (shift_id) where departed_at is null;
+
+create index if not exists job_segments_shift_id_idx
+  on public.job_segments (shift_id);
+
+create index if not exists job_segments_job_id_idx
+  on public.job_segments (job_id);
+
+create index if not exists job_segments_crew_member_id_idx
+  on public.job_segments (crew_member_id);
+
+-- The missed-tap backstop scans for open segments; keep that scan cheap.
+create index if not exists job_segments_open_arrived_at_idx
+  on public.job_segments (arrived_at) where departed_at is null;
+
+alter table public.job_segments enable row level security;
+
+create or replace function public.job_segments_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists job_segments_updated_at on public.job_segments;
+create trigger job_segments_updated_at
+  before update on public.job_segments
+  for each row execute function public.job_segments_set_updated_at();
+
+
+-- ---------------------------------------------------------------------
+-- archive_photos (2026-07-23 + 2026-08-04 imagery + 2026-08-05 slice 3) —
+-- the #167 training-corpus archive: historical job photos awaiting address
+-- identification, promotion into training_houses, or exclusion. FOLDED INTO
+-- THIS FILE 2026-08-16 (row 282) — it had been missing entirely since
+-- 2026-07-23, so a fresh project built from this file alone had no
+-- archive_photos table at all. Reconciled base create + both later
+-- add-column passes, in date order.
+-- ---------------------------------------------------------------------
+create table if not exists public.archive_photos (
+  id                          uuid primary key default gen_random_uuid(),
+  created_at                  timestamptz not null default now(),
+  updated_at                  timestamptz not null default now(),
+
+  -- Provenance (from the Drive archive + the naming manifest).
+  drive_file_id               text not null unique,
+  source_folder               text,
+  original_title              text,
+  content_hash                text,               -- reserved for future pixel-dedup; drive_file_id is today's idempotency key
+
+  classification              text not null default 'install_night',
+
+  -- Human-resolved ground truth (from the photo-naming pass).
+  resolved_address            text,
+  -- Normalized twin of resolved_address, mirroring public.properties.address_key
+  -- and src/lib/customers.ts normalizeAddress() (lowercase, [.,#] -> space,
+  -- collapse whitespace). The review queue groups a property's many photos by
+  -- THIS column, never the raw text: without it "6 BIRCH ROAD ..." and
+  -- "6 birch road ..." split one 4-photo house into two queue cards, and a
+  -- double-traced house gets double weight in few-shot retrieval.
+  resolved_address_key        text generated always as (
+                                nullif(btrim(regexp_replace(
+                                  regexp_replace(lower(resolved_address), '[.,#]', ' ', 'g'),
+                                  '\s+', ' ', 'g')), '')
+                              ) stored,
+  resolved_customer_id        uuid references public.customers(id) on delete set null,
+  -- The 8-char customers.id prefix the naming pass recorded. Kept alongside the
+  -- resolved uuid so a link that fails to resolve at load time is DETECTABLE
+  -- (resolved_customer_ref not null and resolved_customer_id is null) and
+  -- re-linkable later, instead of silently landing as an unflagged null.
+  resolved_customer_ref       text,
+  -- The name the human actually typed for this photo ("deborah sande",
+  -- "Two Marriott Plaza"). It is the only independent cross-check that a
+  -- customer link points at the RIGHT customer, so it lives on the row rather
+  -- than only in the CSV manifest.
+  resolved_name               text,
+  resolved_ghl_id             text,
+  not_in_crm                  boolean not null default false,
+
+  -- Fetched daytime imagery (slice 2; null until then).
+  satellite_ref               text,
+  street_view_ref             text,
+  satellite_feet_per_pixel    numeric,
+
+  extracted_counts            jsonb,               -- OCR'd tree/bush markup counts — P2, null in P1
+
+  status                      text not null default 'pending',
+  reviewer_notes              text,
+  promoted_training_house_id  uuid references public.training_houses(id) on delete set null
+);
+
+-- Grouping (group-by-property review) + queue reads + customer join. The
+-- grouping index is on the NORMALIZED key, since that is what the queue
+-- groups by; the raw address is only ever displayed, never grouped on.
+create index if not exists archive_photos_status_idx
+  on public.archive_photos (status);
+create index if not exists archive_photos_resolved_address_key_idx
+  on public.archive_photos (resolved_address_key);
+create index if not exists archive_photos_customer_id_idx
+  on public.archive_photos (resolved_customer_id);
+
+-- Keep updated_at fresh on every write. Slices 2 and 3 UPDATE these rows
+-- repeatedly (imagery attach, status transitions, reviewer notes), so without
+-- this trigger updated_at would freeze at load time and any "stalled in the
+-- queue" check would silently read the original insert timestamp. Matches the
+-- every-table convention (customers, properties, permanent_training_examples...).
+create or replace function public.archive_photos_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists archive_photos_updated_at_trigger on public.archive_photos;
+create trigger archive_photos_updated_at_trigger
+  before update on public.archive_photos
+  for each row execute function public.archive_photos_set_updated_at();
+
+-- Defense in depth (mirrors self_serve_estimates + website_leads): the
+-- service-role key is the only path that ever reaches this table, so RLS with
+-- ZERO policies denies anon/authenticated entirely while every server path
+-- keeps working unchanged.
+alter table public.archive_photos enable row level security;
+
+alter table public.archive_photos
+  add column if not exists satellite_w        integer,
+  add column if not exists satellite_h        integer,
+  add column if not exists imagery_error      text,
+  add column if not exists imagery_fetched_at timestamptz;
+
+-- The imagery worker claims work with
+--   where status='pending' and satellite_ref is null and resolved_address is not null
+-- and then groups by resolved_address_key. Index shaped to match: the partial
+-- predicate is the cheap always-true-for-work part (satellite_ref is null), and
+-- the leading columns are what the claim filters and groups on. The table is
+-- 211 rows today, so this is about keeping the claim cheap as later manifest
+-- drops land, not about today's performance.
+create index if not exists archive_photos_imagery_pending_idx
+  on public.archive_photos (status, resolved_address_key)
+  where satellite_ref is null;
+
+-- Private bucket for the fetched daytime imagery. Mirrors the 'designs'
+-- bucket: private, service-role only, read back through a signed URL. The
+-- epic spec's storage decision was bucket-first (path-referenced), never
+-- base64 columns — googleMaps.ts hands back base64, so the worker uploads the
+-- bytes here and stores only the path.
+insert into storage.buckets (id, name, public)
+values ('training-archive', 'training-archive', false)
+on conflict (id) do nothing;
+
+alter table public.archive_photos
+  add column if not exists night_photo_ref text;
+
+-- ---------------------------------------------------------------------
+-- site_submissions (2026-08-04) — the #195 non-lead website forms
+-- (newsletter / careers / intern / nomination). FOLDED INTO THIS FILE
+-- 2026-08-16 (row 282); same gap as archive_photos above.
+-- ---------------------------------------------------------------------
+create table if not exists public.site_submissions (
+  id             uuid primary key default gen_random_uuid(),
+  created_at     timestamptz not null default now(),
+
+  -- newsletter | careers | intern | nomination
+  form_type      text not null,
+  -- which placement it came from, e.g. 'footer', 'newsletter-page',
+  -- 'careers-page', 'intern-page', 'hope-page'
+  form_variant   text not null,
+
+  -- Submitter. Only email is guaranteed: the footer newsletter form is a
+  -- single email field, exactly as it was in Gravity Forms.
+  name           text,
+  email          text not null,
+  phone          text,
+
+  -- Everything form-specific: the application questions, and for a nomination
+  -- the whole nominee block (their name, address, contact details, the story).
+  -- Kept as jsonb so a new question does not need a schema change.
+  payload        jsonb not null default '{}'::jsonb,
+
+  -- Object path in the PRIVATE 'applications' storage bucket (created at the
+  -- bottom of this file). Never a public URL: a resume is personal data and is
+  -- served only through a short-lived signed URL minted for a signed-in staff
+  -- user.
+  resume_path    text,
+  -- Set when an applicant DID attach a resume but the upload failed. Without
+  -- this, a failed upload is indistinguishable from "applied without a resume"
+  -- and staff would never know to ask for it.
+  resume_error   text,
+
+  consent        boolean not null default false,
+  landing_url    text,
+  utm            jsonb,
+  ip             text,
+
+  -- GHL contact for the SUBMITTER only, tagged by form type. A nominated third
+  -- party is never created as a contact: they did not consent to anything.
+  ghl_contact_id text,
+  -- pending | synced | skipped | spam | error
+  sync_status    text not null default 'pending',
+  sync_error     text,
+
+  is_test        boolean not null default false
+);
+
+-- Newest-first admin view.
+create index if not exists site_submissions_created_at_idx
+  on public.site_submissions (created_at desc);
+
+-- The rate-limit query (count from this IP in the last hour), mirroring the
+-- website_leads approach: a DB count survives serverless cold starts and
+-- multiple regions in a way an in-memory counter does not.
+create index if not exists site_submissions_ip_created_at_idx
+  on public.site_submissions (ip, created_at);
+
+-- Admin filtering by form type.
+create index if not exists site_submissions_form_type_created_at_idx
+  on public.site_submissions (form_type, created_at desc);
+
+-- Service-role only, same as website_leads: RLS on with no policies, so the
+-- anon key can neither read nor write. Every access goes through the server.
+alter table public.site_submissions enable row level security;
+
+-- The PRIVATE bucket resumes live in. Created here, in the same migration that
+-- introduces the feature, matching every other storage-backed feature in this
+-- repo (training-archive, custom-uploads, designs). Without this the upload
+-- call fails with "bucket not found", which the route only logs — the
+-- application would still be saved but the resume would silently never exist.
+-- public = false is asserted by the migration rather than left to someone
+-- remembering to tick a box in the Supabase dashboard.
+insert into storage.buckets (id, name, public)
+values ('applications', 'applications', false)
+on conflict (id) do nothing;
