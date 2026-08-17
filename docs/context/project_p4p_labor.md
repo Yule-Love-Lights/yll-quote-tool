@@ -52,18 +52,19 @@ hourly while the numbers prove themselves, then the switch flips.
 | Labor revenue on blended prices | Per-category labor % (roofline X%, wreaths Y%, ...). Computed from the pre-tax labor subtotal only. |
 | Labor revenue % to the team | UNKNOWN on purpose. Naldo does not know the business's number yet. Shadow mode measures it; the weekly ritual sets and tunes it. Dial starts at 33%. |
 | Rollout | Shadow mode first. Crew stays hourly, sees the would-be numbers, pay flips only when trusted. |
-| Drive time | Counts toward job hours. ONE authoritative source (see A5 Phase 2), never both the clock and a BH allowance feeding the same pool. |
+| Drive time | Counts toward job hours. ONE authoritative source (see A5 Phase 2), never both the clock and a BH allowance feeding the same pool. **Implemented S59 as the RESIDUAL** (paid day minus job minus break, `travelSecondsForShift`), which makes double-counting structurally impossible rather than merely forbidden. |
+| Weather days | DECIDED 2026-08-16: a rained-out day is a DAY OFF — no work, no shop time, nobody clocks in, so no floor to pay. `stoppage_reason='weather'` still applies to a day that started and got cut short (A6 item 1). |
 | Pay period | Weekly. Hours paid in the current week; performance pay paid the following week, after the 7-day quality window clears. Business timezone America/New_York, pinned explicitly everywhere. |
 | Production rates | Never tracked before. Seed from one estimate session with Jason, then calibrate from shadow-mode actuals. |
 | Quality guardrail | Forfeiture of UNEARNED performance pay, never a deduction from wages. See A3, this is a legal requirement not a preference. |
 | Quality window | 7 days from job completion. Performance pay is provisional until it clears. |
 | Pool membership | Install team only: SonSon, Little James, Big James. Jason is OUT, hourly (he approves instead). |
 | Crew model | One team, assigned per day. Whoever is on the job that day shares its pool by hours. No fixed crew names. |
-| Clock gate | ON. Crew cannot see the day's schedule until clocked in. Server-side check, office/admin exempt by role. Needs a documented override path (open, A6). |
-| Approver | Jason approves time entries and settles grey-area splits. Backup approver still open (A6). |
+| Clock gate | ON. Crew cannot see the day's schedule until clocked in. Server-side check, office/admin exempt by role. Override path DECIDED 2026-08-16: self-claim then Jason approves (A6 item 2). |
+| Approver | Jason approves time entries and settles grey-area splits. Backup approver DECIDED 2026-08-16: none, wait for Jason (A6 item 3). |
 | Language | Per-profile language option covering crew UI AND the earnings/quality-notice text, not just navigation. |
 | Takedown | Paid plain hourly this season, outside the pools. Still clocked per job so the data designs next season's rule. |
-| Season dates | Installs start the last week of September 2026. Takedown season starts about Jan 5 (unconfirmed). Phases 1-2 live before installs start. |
+| Season dates | Installs start the last week of September 2026. Takedown season starts **January 4** (Naldo, 2026-08-16). Phases 1-2 live before installs start. |
 | Copilot retirement | Cancel only after Phases 2 AND 3 are both live and have run clean in the field for two weeks. |
 
 **Base rates** (Naldo confirmed; Copilot profiles verified 2026-08-06):
@@ -328,22 +329,54 @@ route optimization (YLL runs 1-3 jobs a day, not 12-stop mow routes), GHL change
 
 **Needs Naldo (product decisions, none block starting Phase 1):**
 
-1. **Weather and no-work days.** Shop time is protected at base rate; a rained-out
-   day currently has no stated floor. Outdoor work, Sept to Jan, Long Island.
-   Needs a rule before the season.
-2. **Clock-gate override.** The gate makes the bot a hard dependency for starting
-   any job. Dead phone, no signal, phone left in the truck. One documented
-   override path (a foreman override, or Jason clocks them in) before Phase 2.
-3. **Backup approver** when Jason is out. He will be sick or away during the
-   Sept-Dec crunch, and unapproved entries block weekly payroll.
-4. **Off-season (Feb-Aug).** Are pools paused, does permanent-lighting work run
-   under a different rule, does the crew revert to plain hourly automatically?
-5. **Success metrics.** How does anyone know this worked? Nothing in the plan
+1. **DECIDED 2026-08-16 (Naldo): a rained-out day is a DAY OFF. No work, and no
+   shop-time work either.** Nobody clocks in, so there is no floor to pay and no
+   protected shop time on a weather day. This simplifies the engine rather than
+   complicating it: a weather day produces no shift, so it contributes no hours,
+   no pool, and nothing to top up. **Implementation note:** this does NOT remove
+   the need for `stoppage_reason = 'weather'` on a job segment — that covers a
+   day that STARTED and then got rained out partway, which still has real hours
+   on the clock and must stay excluded from the budgeted-hours learning signal.
+   The ruling is about whole days that never begin.
+2. **DECIDED 2026-08-16 (Naldo): SELF-CLAIM, then Jason approves.** A crew
+   member who could not clock in on time clocks in late from their own phone and
+   states the real start time. The entry lands as `needs-review` and does NOT
+   pay until Jason approves it. Chosen over a foreman override and over an
+   office-clocks-you-in path because it has no dependency on anyone else being
+   reachable at 6am.
+   **The tradeoff, stated so it is not a surprise:** this is self-reported time
+   on a money path, and it pays only after approval — and per item 3 there is no
+   backup approver. So if Jason is out during the Sept-Dec crunch, self-claimed
+   time sits unpaid until he is back. Accepted knowingly.
+   **Build requirements:** the claimed start time is separate from the punch
+   time (both stored, both visible), the entry is flagged `needs-review` and
+   excluded from pay until approved, and the approval is append-only with actor
+   and timestamp.
+3. **DECIDED 2026-08-16 (Naldo): Jason only, no backup for now — wait for
+   Jason.** Accepted consequence: unapproved time blocks weekly payroll while he
+   is away, and per item 2 self-claimed clock-ins also wait on him. Revisit if a
+   real payroll run gets blocked; Naldo is the natural backup since he already
+   has owner rights.
+4. **DEFERRED 2026-08-16 (Naldo): figure it out later in development.** Reworded
+   here because the original phrasing was unclear when asked.
+   **The question, plainly:** P4P pays a pool out of labor revenue, but holiday
+   lighting only earns that revenue Sept-Jan. So for Feb-Aug, does (a) the pool
+   PAUSE and everyone revert to plain hourly, or (b) permanent lighting (the
+   year-round service line) run its own P4P rule with its own labor-% dial?
+   **Why it cannot be skipped forever:** with no rule the engine either pays a
+   pool computed on near-zero revenue, or keeps computing against nothing. It
+   does not need answering to build Phase 2, but it does before the pay flip.
+5. **STILL OPEN — the only A6 product item with no ruling as of 2026-08-16.**
+   It was skipped when the rest of this list was answered; not deferred on
+   purpose, just missed. How does anyone know this worked? Nothing in the plan
    defines it. Candidates: efficiency trend, floor-top-up frequency, crew
    retention, hours captured without office correction, payroll time saved.
-6. **Labor % starting dial:** 33% proposed for shadow mode.
-7. **Takedown season start date** (recorded as about Jan 5 from a garbled voice
-   answer).
+6. **HELD 2026-08-16 (Naldo): holding the labor-% dial, not setting it yet.**
+   33% remains the proposal for shadow mode. Shadow mode can run on the proposed
+   number since nothing pays out on it; it must be confirmed before the flip.
+7. **DECIDED 2026-08-16 (Naldo): takedown season starts JANUARY 4.** Supersedes
+   the earlier "about Jan 5", which came from a garbled voice answer and was
+   never a real figure.
 8. **The fast-worker ceiling is a communication item, not a bug.** The pool
    splits by hours, so everyone on a job earns the same effective rate that day.
    A strong installer paired with a trainee cannot out-earn the trainee on that
@@ -351,7 +384,9 @@ route optimization (YLL runs 1-3 jobs a day, not 12-stop mow routes), GHL change
    instead of hearing it up front, it reads as a bait-and-switch. Say it in the
    rollout conversation.
 
-**Needs a professional (before Phase 4 code and before the flip):**
+**Needs a professional — PARKED 2026-08-16 (Naldo): explicit NON-BLOCKERS,
+handled another time. Tracked as ledger rows 284 and 285 so they are not lost;
+do not treat either as gating Phase 2 or Phase 3 work.**
 
 9. **Employment attorney:** review the comp-plan wording that makes performance
    pay conditional (A3 condition 1). One document.
