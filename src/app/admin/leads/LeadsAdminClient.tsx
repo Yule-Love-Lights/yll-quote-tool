@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { OperatorShell } from '@/components/OperatorShell';
 import { leadServiceToQuoteServiceType } from './leadServiceVocab';
+import { LeadsListSkeleton } from './LeadsListSkeleton';
 
 // Operator view of the website lead-capture rows (#leads). Every WordPress form
 // submission is saved to website_leads FIRST (source of truth), then synced to
@@ -192,7 +193,7 @@ export default function LeadsAdminClient({ hlLocationId }: { hlLocationId: strin
           <div className="bg-blue-50 border border-blue-200 rounded-md p-3 text-sm text-blue-700 mb-4">{notice}</div>
         )}
 
-        {loading && <p className="text-sm text-gray-500">Loading…</p>}
+        {loading && <LeadsListSkeleton />}
 
         {!loading && (
           <div className="flex flex-wrap items-center gap-2 mb-3">

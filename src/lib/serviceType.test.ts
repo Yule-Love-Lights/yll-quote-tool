@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   asServiceType,
+  canCustomerRecolor,
   SERVICE_TYPES,
   SERVICE_TYPE_LABELS,
   DEFAULT_SERVICE_TYPE,
@@ -32,5 +33,19 @@ describe('serviceType', () => {
     expect(asServiceType(null)).toBeNull();
     expect(asServiceType(undefined)).toBeNull();
     expect(asServiceType(3)).toBeNull();
+  });
+
+  // #245: single source of truth for the LightColorPicker gate + DesignReprise's
+  // "Click here to change colors" jump-button — the two must never drift apart.
+  it('canCustomerRecolor allows holiday, permanent, event, and null/undefined', () => {
+    expect(canCustomerRecolor('holiday')).toBe(true);
+    expect(canCustomerRecolor('permanent')).toBe(true);
+    expect(canCustomerRecolor('event')).toBe(true);
+    expect(canCustomerRecolor(null)).toBe(true);
+    expect(canCustomerRecolor(undefined)).toBe(true);
+  });
+
+  it('canCustomerRecolor excludes permanent_bistro (warm-white Edison only)', () => {
+    expect(canCustomerRecolor('permanent_bistro')).toBe(false);
   });
 });
