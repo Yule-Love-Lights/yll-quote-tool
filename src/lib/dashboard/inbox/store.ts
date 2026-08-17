@@ -1057,6 +1057,20 @@ export async function closeFollowUp(inboxItemId: string, reason: string): Promis
   return data ? data.length : 0;
 }
 
+/** #230(a): the ONLY human-visible trace of a #220 internal-domain follow-up
+ *  suppression used to be a console.warn in a Vercel log stream nobody opens —
+ *  a real customer misclassified as internal would be silently dropped with no
+ *  way to notice. Logs it to dashboard_activity instead, which the /inbox
+ *  /activity page's ActivityLog already renders (it excludes only 'ingested'/
+ *  'escalated' — see listActivity's own doc). Best-effort, mirrors the other
+ *  system-actor activity writes (e.g. setEscalation's 'escalated' insert) —
+ *  never blocks the reconcile loop on a logging failure. */
+export async function recordSuppressedFollowUp(inboxItemId: string, detail: Record<string, unknown>): Promise<void> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return;
+  await sb.from('dashboard_activity').insert({ actor: 'system', action: 'followup_suppressed', inbox_item_id: inboxItemId, detail });
+}
+
 // ─── View-only toggle-ON inbox cleanup (#187a) ──────────────────────────────
 // queries.ts's dashboard chokepoint (`.eq('view_only', false)`) drops a
 // flipped-view-only quote out of the reconcile feed entirely, so
@@ -1588,7 +1602,22 @@ export async function listInWorks(limit = 200): Promise<InWorksResult> {
 /** Mark an item completed: capture prior state, stamp status + handled fields,
  *  clear followed_up_at, and write a detailed activity log entry. `operatorId`
  *  must be a real auth.users uuid, or null — see markItemHandledLocal's doc
- *  comment; inbox_items.handled_by never accepts a display name/email string. */
+ *  comment; inbox_items.handled_by never accepts a display name/email string.
+ *
+ * #224 (S35 wrap, staff MED): status-guarded like its siblings
+ * markItemHandledLocal/dismissItem — this used to run on `.eq('id', itemId)`
+ * ALONE (no guard at all), so a stale tab could silently re-complete (or
+ * un-dismiss into 'completed') an item another operator had already resolved,
+ * re-attributing handled_by. Only fires FROM the two states completing is a
+ * legal forward transition out of: 'unresponded' (InboxList.tsx fires this
+ * directly from the open queue) and 'handled' (InWorksSection.tsx fires it
+ * from the handled bucket). Positive `.in(...)` match, not a negative
+ * `.neq(...)` pair — the repo's positive-seam-gate convention (AGENTS.md
+ * Pitfalls): INBOX_STATUSES (types.ts) is a closed 4-value enum today so the
+ * two forms are provably identical, but a negative pair fails OPEN on a
+ * future 5th status (silently allowed through) while positive fails CLOSED
+ * (silently blocked, the safe direction — a blocked completion is visible to
+ * the operator via the ok:false path; a wrongly-allowed clobber is not). */
 export async function markItemCompleted(
   itemId: string,
   operatorId: string | null,
@@ -1597,7 +1626,7 @@ export async function markItemCompleted(
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const from = await priorStateOf(sb, itemId);
-  const { error } = await sb
+  const { data, error } = await sb
     .from('inbox_items')
     .update({
       status: 'completed',
@@ -1606,8 +1635,12 @@ export async function markItemCompleted(
       handled_at: now.toISOString(),
       updated_at: now.toISOString(),
     })
-    .eq('id', itemId);
+    .eq('id', itemId)
+    .in('status', ['unresponded', 'handled'])
+    .select('id')
+    .maybeSingle();
   if (error) return { ok: false, error: error.message };
+  if (!data) return { ok: false, error: 'Item not found, already completed, or dismissed' };
   await sb.from('dashboard_activity').insert({
     actor: operatorId,
     action: 'completed',

@@ -32,6 +32,7 @@ import {
   getSyncCursor,
   ingestTouch,
   listEscalatableItems,
+  recordSuppressedFollowUp,
   recordSyncRun,
   setEscalation,
   setSyncCursor,
@@ -180,10 +181,24 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
         // (days)" setting actually controls when this follow-up is due.
         await ensureFollowUp({ inboxItemId: res.itemId, contactId: res.contactId, reason: decision.reason, sentAt: decision.sentAt, afterDays: followUpDays });
         followUpsCreated++;
-      } else if (res.itemId && decision.kind === 'suppress') {
+      } else if (res.itemId && decision.kind === 'suppress' && !res.skipped) {
         // #220: internal recipients never mint a real follow-up row.
-        // Log every suppression so a false positive is visible immediately.
+        // #230(b): gated on !res.skipped — decision.kind is recomputed from
+        // `q` on EVERY tick regardless of ingest state, so without this an
+        // already-suppressed quote re-ran this whole branch every 5 minutes
+        // forever (res.skipped is true once ingestTouch's noopReingest kicks
+        // in — status + last_message_at both steady). Fires once per genuine
+        // transition (first observation, reopen, etc.), not once per tick.
+        // #230(a): log every suppression (both console.warn AND a
+        // dashboard_activity row, visible on /inbox/activity) so a false
+        // positive is noticeable immediately, not buried in Vercel logs.
         console.warn('[inbox] quotetool follow-up suppressed for internal recipient:', {
+          quoteId: q.id,
+          quoteNumber: q.quote_number ?? null,
+          customerEmail: q.customer_email ?? null,
+          suppression: decision.suppression,
+        });
+        await recordSuppressedFollowUp(res.itemId, {
           quoteId: q.id,
           quoteNumber: q.quote_number ?? null,
           customerEmail: q.customer_email ?? null,
