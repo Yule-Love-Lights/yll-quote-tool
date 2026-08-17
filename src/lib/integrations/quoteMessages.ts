@@ -802,7 +802,7 @@ export function referralEarnedEmailHtml(friendFirstName: string, amountUsd: numb
 
 // ─── Referral self-serve link request (naldo/referral-self-serve) ───────────
 // Fired by POST /api/referrals/request-link when a typed email matches an
-// existing GHL contact — mints/fetches that contact's referral code and
+// existing GHL contact: mints/fetches that contact's referral code and
 // emails them the link, mirroring referralEarnedEmailHtml's house style.
 
 export const REFERRAL_LINK_EMAIL_SUBJECT = "Here's your Yule Love Lights referral link";
