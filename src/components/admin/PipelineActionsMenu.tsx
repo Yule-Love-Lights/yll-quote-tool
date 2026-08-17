@@ -68,9 +68,12 @@ async function redeliverAndReport(
   // handleKeyDown, above). A 'typed-yes' gate breaks that chain:
   // window.prompt requires the operator to actually TYPE "YES"
   // (case-insensitive) — a reflexive Enter alone submits '' and aborts. A
-  // 'confirm' gate stays plain for the partial-failure/502 paths, where low
-  // friction is correct and a duplicate is impossible on a channel that
-  // just failed (the customer got nothing from THIS attempt).
+  // 'confirm' gate stays plain for a partial-failure/502 path whose failure
+  // was CONFIRMED (a duplicate really is impossible — the customer got
+  // nothing from THIS attempt). Row 290: a GHL-TIMEOUT partial-failure/502
+  // path is NOT confirmed (GHL may have delivered it anyway) and now gets
+  // 'typed-yes' too — decideSendOutcome (pipelineSendOutcome.ts) is the one
+  // place that tells them apart; this function only reads the gate it picks.
   if (gate === 'typed-yes') {
     const typed = window.prompt(prompt);
     if (typed === null || typed.trim().toUpperCase() !== 'YES') return;

@@ -30,17 +30,32 @@ export type SendResponseBody = {
 
 // Row 270 fix round, FIX 3 (customer MED): which UI gate the caller must use
 // before firing retryPrompt's redeliver. 'confirm' is a plain
-// window.confirm — correct whenever the customer did NOT receive anything
-// on THIS attempt (a partial 200 failure or a 502 delivery-failed), since a
-// duplicate send is structurally impossible on a channel that just failed.
-// 'typed-yes' is reserved for the ONE case where the customer may already
-// have the quote (a fresh send's alreadySent, below) — the caller's alert()
-// immediately precedes the retry offer, and alert()/confirm() both dismiss/
-// accept under the Enter key, so a reflexive Enter-Enter could fire a REAL
-// duplicate SMS/email. 'typed-yes' routes the caller to a window.prompt
-// requiring an exact, case-insensitive "YES" instead — a reflexive Enter
-// alone submits '' and aborts. This keeps the gating decision in this pure,
-// unit-tested helper rather than duplicated/guessed at in the DOM caller.
+// window.confirm — correct whenever the customer did NOT receive anything on
+// THIS attempt (a partial 200 failure or a 502 delivery-failed) AND that
+// non-delivery is a CONFIRMED rejection, since a duplicate send is
+// structurally impossible on a channel that genuinely just failed.
+//
+// Row 290 fix (customer MED): that "impossible" claim is FALSE for a GHL
+// TIMEOUT failure. The send route's deliveryErrorMessage()/
+// timeoutHedgedErrorMessage() (src/app/api/quotes/[id]/send/route.ts) mark a
+// timed-out SMS/email as outcome UNKNOWN, not confirmed-failed — GHL may
+// have already delivered it before our socket gave up waiting (the
+// "timeout — " DELIVERY_TIMEOUT_ERROR_PREFIX lead, src/lib/quoteDeliveries.
+// ts). Redelivering that channel on a plain confirm risks a REAL duplicate
+// SMS/email. So 'typed-yes' actually covers TWO cases sharing the same risk
+// (the customer may already have the quote) and the same mitigation: the
+// fresh-send alreadySent path below, and any partial/502 failure whose error
+// detail carries the timeout-hedge prefix (see isTimeoutHedgedFailure +
+// retryOfferFor below) — the real invariant is "impossible EXCEPT a
+// timeout-hedged outcome", not unconditionally impossible.
+//
+// The caller's alert() immediately precedes the retry offer, and
+// alert()/confirm() both dismiss/accept under the Enter key, so a reflexive
+// Enter-Enter could fire a REAL duplicate SMS/email. 'typed-yes' routes the
+// caller to a window.prompt requiring an exact, case-insensitive "YES"
+// instead — a reflexive Enter alone submits '' and aborts. This keeps the
+// gating decision in this pure, unit-tested helper rather than
+// duplicated/guessed at in the DOM caller.
 export type RetryGate = 'confirm' | 'typed-yes';
 
 export type SendOutcome = {
@@ -83,6 +98,58 @@ function toRetryChannel(failed: ('sms' | 'email')[]): Channel {
 
 function channelLabel(channel: Channel): string {
   return channel === 'both' ? 'email + text' : channel === 'sms' ? 'text' : 'email';
+}
+
+// Row 290: the exact prefix deliveryErrorMessage()/timeoutHedgedErrorMessage()
+// (src/app/api/quotes/[id]/send/route.ts) write onto smsError/emailError when
+// a send TIMES OUT rather than getting a confirmed rejection from HighLevel —
+// GHL may have already delivered it before our socket gave up waiting. This
+// is a duplicated literal, not an import of quoteDeliveries.ts's exported
+// DELIVERY_TIMEOUT_ERROR_PREFIX: that module pulls in the server-only
+// Supabase service client (getSupabaseServiceClient), and this file is
+// imported by PipelineActionsMenu.tsx ('use client') — importing it here
+// would drag that server-only chain into the browser bundle (the #52/S18
+// class of bug). pipelineSendOutcome.test.ts builds its timeout fixtures
+// from the REAL exported constant, so any drift between the two copies fails
+// a test instead of going unnoticed.
+const TIMEOUT_HEDGE_PREFIX = 'timeout — ';
+
+// `.includes`, not `.startsWith`: body.error/body.messageError can be TWO
+// channels' error text joined with '; ' (messageError =
+// [smsError, emailError].filter(Boolean).join('; ') in the route, folded
+// into body.error for the 502 shape — see SendResponseBody's doc comment
+// above) — the prefix lands mid-string whenever only the SECOND channel
+// timed out.
+function isTimeoutHedgedFailure(detail: string | undefined): boolean {
+  return !!detail && detail.includes(TIMEOUT_HEDGE_PREFIX);
+}
+
+// Row 290 fix (customer MED): the one place a partial/502 delivery failure
+// picks its RetryGate — see RetryGate's doc comment for the invariant this
+// implements. A confirmed failure (the normal case) stays low-friction
+// 'confirm'. A timeout-hedged failure routes to the SAME 'typed-yes' gate +
+// prompt shape as the alreadySent path below, because it carries the exact
+// same risk (the customer may already have the quote from GHL's side even
+// though our request errored). `channel` here may be 'both' (toRetryChannel
+// maps 2 failedChannels to 'both') — retrying 'both' would re-touch a
+// channel whose failure was CONFIRMED alongside one that wasn't, so
+// `timeoutHedged` being true for either component gates the WHOLE offer
+// (see isTimeoutHedgedFailure's `.includes` note above).
+function retryOfferFor(
+  channel: Channel,
+  isRetry: boolean,
+  timeoutHedged: boolean,
+): { retryPrompt: string; retryGate: RetryGate } {
+  if (timeoutHedged) {
+    return {
+      retryPrompt: `This delivery attempt included a timeout — GHL may have gone through anyway, so the customer may already have it. Type YES to redeliver ${channelLabel(channel)} ${isRetry ? 'again' : 'now'}:`,
+      retryGate: 'typed-yes',
+    };
+  }
+  return {
+    retryPrompt: `Redeliver ${channelLabel(channel)} ${isRetry ? 'again' : 'now'}?`,
+    retryGate: 'confirm',
+  };
 }
 
 /**
@@ -143,16 +210,17 @@ export function decideSendOutcome(
     if (body.code === 'delivery-failed') {
       const detail = body.error ? ` (${body.error})` : '';
       const channel = failedChannels.length > 0 ? toRetryChannel(failedChannels) : requestedChannel;
+      // Row 290: body.error is where the 502 body folds messageError's text
+      // (see SendResponseBody's doc comment above) — check IT for the
+      // timeout-hedge prefix; a 502-shaped body never sets messageError.
+      const { retryPrompt, retryGate } = retryOfferFor(channel, isRetry, isTimeoutHedgedFailure(body.error));
       return {
         message: isRetry
           ? `Still not delivered.${detail}`
           : `Quote marked sent, but no message was delivered.${detail}`,
         retryChannel: channel,
-        retryPrompt: `Redeliver ${channelLabel(channel)} ${isRetry ? 'again' : 'now'}?`,
-        // The customer got NOTHING on this attempt — a duplicate send on
-        // this channel is structurally impossible, so low-friction confirm
-        // stays correct (see RetryGate's doc comment).
-        retryGate: 'confirm',
+        retryPrompt,
+        retryGate,
       };
     }
     // Any other failure (empty-quote, no-contact, view-only, deposit-paid,
@@ -171,15 +239,16 @@ export function decideSendOutcome(
   // failed is the 502 delivery-failed branch above), which is only
   // reachable from a channel:'both' request — so "the other requested
   // channel was delivered" is always true here (mirrors QuoteBuilder.tsx's
-  // identical copy for this exact response shape, ~line 3078).
+  // identical copy for this exact response shape, ~line 3078). Exactly ONE
+  // channel is ever in failedChannels here (the other one succeeded), so
+  // body.messageError below is always a single channel's error text, never
+  // a joined pair (that only happens in the 502 branch above).
   const channel = toRetryChannel(failedChannels);
+  const { retryPrompt, retryGate } = retryOfferFor(channel, isRetry, isTimeoutHedgedFailure(body.messageError));
   return {
     message: `${failedChannels.map((c) => c.toUpperCase()).join(' and ')} failed. The other requested channel was delivered.${body.messageError ? ` (${body.messageError})` : ''}`,
     retryChannel: channel,
-    retryPrompt: `Redeliver ${channelLabel(channel)} ${isRetry ? 'again' : 'now'}?`,
-    // The other requested channel WAS delivered, but this one wasn't — the
-    // customer has nothing from this specific channel, so confirm stays
-    // correct (see RetryGate's doc comment).
-    retryGate: 'confirm',
+    retryPrompt,
+    retryGate,
   };
 }
