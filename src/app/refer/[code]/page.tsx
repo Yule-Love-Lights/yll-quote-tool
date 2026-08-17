@@ -42,6 +42,7 @@ import { ReferralPageTracker } from './ReferralPageTracker';
 import { ReferralForm } from './ReferralForm';
 import { ReferralHeroImage } from './ReferralHeroImage';
 import { ReferralHeroDesign } from './ReferralHeroDesign';
+import { ReferralHeroBadge } from './ReferralHeroBadge';
 
 // Google Business Profile reviews deep-link (browser-neutral) — same fallback
 // URL the portal uses (src/app/portal/[quoteId]/page.tsx GMB_REVIEWS_URL) when
@@ -204,16 +205,28 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
             <ReferralHeroImage src={hero.url} alt={hero.alt} />
           )}
           <div className="absolute inset-0 bg-gradient-to-t from-[#060B0F] via-[#060B0F]/60 to-[#060B0F]/10" />
+          {/* Non-customers are now the common case for this page (naldo/
+              referral-self-serve): most recipients have no approved design of
+              their own, so the fallback gallery photo is someone ELSE's
+              house. Label it so the hero never reads as if it were the
+              referrer's own home. Photo branch only (the component itself
+              gates on hero.kind), bottom-left, over the gradient's darkest
+              point so the light text keeps contrast. */}
+          <ReferralHeroBadge kind={hero.kind} />
         </div>
         <div className="relative -mt-24 md:-mt-32 max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
           <p className="text-[12px] md:text-[13px] font-semibold tracking-[0.22em] uppercase text-[#FFB744] mb-4">
             You were personally invited
           </p>
           <h1 className="font-display text-[34px] leading-[1.1] md:text-[54px] md:leading-[1.05] font-semibold text-[#F4ECD8] tracking-[-0.02em]">
-            {firstName} thinks your house deserves this.
+            {hero.kind === 'design'
+              ? `${firstName} thinks your house deserves this too.`
+              : `${firstName} thinks your house could look like this.`}
           </h1>
           <p className="mt-5 text-[17px] md:text-[19px] text-[#E0D7C1] leading-[1.6]">
-            See your own house in lights, free, no visit needed.
+            {hero.kind === 'design'
+              ? 'See your own house glowing like theirs. Free, no visit needed.'
+              : 'See your own house in lights, free, no visit needed.'}
           </p>
 
           {/* Compact trust signal, above the fold and above the lead form
