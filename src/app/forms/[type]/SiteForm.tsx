@@ -166,6 +166,9 @@ export default function SiteForm({ formType, formVariant, theme, compact }: Prop
         email: String(data.get('email') ?? ''),
         phone: String(data.get('phone') ?? ''),
         consent: data.get('consent') === 'on',
+        // The nominator confirming the household agreed to hear from us. Kept
+        // separate from their own consent, and only asked on the nomination form.
+        nomineeConsent: data.get('nomineeConsent') === 'on',
         company: String(data.get('company') ?? ''),
         elapsedMs: Date.now() - renderedAt.current,
         landingUrl: typeof document !== 'undefined' ? document.referrer : '',
@@ -445,6 +448,25 @@ export default function SiteForm({ formType, formVariant, theme, compact }: Prop
               <textarea id="story" name="story" style={areaStyle} />
             </div>
           </>
+        )}
+
+        {isNomination && (
+          <label
+            style={{
+              display: 'flex',
+              gap: 10,
+              alignItems: 'flex-start',
+              fontSize: 13,
+              color: muted,
+              lineHeight: 1.45,
+            }}
+          >
+            <input type="checkbox" name="nomineeConsent" style={{ marginTop: 3 }} />
+            <span>
+              I have their permission to share these details, and for Yule Love Lights to
+              contact them about this nomination.
+            </span>
+          </label>
         )}
 
         {needsConsent && (
