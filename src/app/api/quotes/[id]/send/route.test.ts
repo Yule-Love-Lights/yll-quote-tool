@@ -997,6 +997,67 @@ describe('POST /api/quotes/[id]/send — portal and delivery gates', () => {
     expect(updatePayloads.some((p) => 'quote_sent_at' in p)).toBe(true);
   });
 
+  // Row 271: a FRESH send still runs ghlStageChain concurrently with the
+  // (failing) customer delivery — a split failure (bad phone/bounced email,
+  // but the GHL card move succeeds) must be visible on the 502 body, not
+  // just the 200 body, or the operator's "no message was delivered" alert
+  // hides that the CRM card already moved to Bid Sent.
+  it('502 delivery-failed body carries the real GHL stage outcome on a FRESH send', async () => {
+    hl.sendSms.mockRejectedValueOnce(new Error('SMS down'));
+    hl.sendEmail.mockRejectedValueOnce(new Error('Email down'));
+    const { client } = makeSb({ ...FRESH_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ channel: 'both' }), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(502);
+    expect(json.deliveryRetry).toBe(false);
+    // FRESH_QUOTE already carries highlevel_opportunity_id: 'opp_1', and
+    // hl.updateOpportunity's default mock resolves — so the card move
+    // actually succeeded even though every customer channel failed.
+    expect(json.stageUpdated).toBe(true);
+    expect(json.stageError).toBeUndefined();
+    expect(json.opportunityId).toBe('opp_1');
+    expect(json.ghlSynced).toBe(true);
+  });
+
+  // Row 271 retry variant: ghlStageChain returns immediately for
+  // isDeliveryRetry (route.ts, ~line 495) without touching stageUpdated/
+  // stageError/opportunityId — they stay at their pre-chain values. That's
+  // the honest answer for a delivery-only retry: it never attempted the
+  // stage move at all (not "attempted and failed"), so stageUpdated:false /
+  // stageError:undefined here means "not touched this call," matching what
+  // the same retry's 200 body already reports today.
+  it('502 delivery-failed body on a delivery-only RETRY reports the stage as untouched, not failed', async () => {
+    hl.sendSms.mockRejectedValueOnce(new Error('SMS down'));
+    const { client } = makeSb({
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-07-18T12:00:00.000Z',
+      ghl_stage_synced_at: '2026-07-18T12:00:01.000Z',
+      status: 'sent',
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ channel: 'sms' }, true), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(502);
+    expect(json.deliveryRetry).toBe(true);
+    expect(hl.updateOpportunity).not.toHaveBeenCalled();
+    expect(json.stageUpdated).toBe(false);
+    expect(json.stageError).toBeUndefined();
+    // opportunityId is untouched by ghlStageChain on a retry — it still
+    // reflects whatever was already on the row (FRESH_QUOTE's 'opp_1'), not
+    // a fresh resolution from this call.
+    expect(json.opportunityId).toBe('opp_1');
+    // ghlSynced still reflects the row's PERSISTED sync state on a retry
+    // (this fixture's ghl_stage_synced_at is already set from a prior send),
+    // same expression the 200 body uses — stageUpdated:false alone would
+    // otherwise wrongly read as "never synced."
+    expect(json.ghlSynced).toBe(true);
+  });
+
   it('returns success with a channel receipt when at least one requested channel delivers', async () => {
     hl.sendSms.mockRejectedValueOnce(new Error('SMS down'));
     const { client } = makeSb({ ...FRESH_QUOTE });
