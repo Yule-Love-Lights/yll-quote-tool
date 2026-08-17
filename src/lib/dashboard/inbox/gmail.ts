@@ -307,11 +307,14 @@ function buildLeadForwardTouch(
  *     suppressed)] — this IS that one existing call, unchanged.
  *
  *   1 parsed — the common single-customer GML shape. HYBRID: identity /
- *     preview / lastMessageAt / subject come from the PARSED FORWARD (never
- *     the forwarder's own address/name, and never regressed by some LATER
- *     message on the thread that fails to parse — e.g. a truncated
- *     reaction-quote or a receipt), but direction is the THREAD-WIDE
- *     needs-reply check (the same isAnsweredByOutbound derivation
+ *     preview / subject come from the PARSED FORWARD (never the forwarder's
+ *     own address/name, and never regressed by some LATER message on the
+ *     thread that fails to parse — e.g. a truncated reaction-quote or a
+ *     receipt), while lastMessageAt is the thread's latest INBOUND message
+ *     (so a genuine customer reply advances it and can reopen a resolved
+ *     row — see the derivation comment at the call site below), and
+ *     direction is the THREAD-WIDE needs-reply check (the same
+ *     isAnsweredByOutbound derivation
  *     normalizeGmailThread itself uses, over the partition of ALL the
  *     thread's messages) — so staff who resolve a single-forward thread by
  *     reacting/replying in Gmail still get today's auto-resolve. (Fix round,
