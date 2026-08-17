@@ -20,17 +20,20 @@
 --     post-apply (PostgREST's not.in parse tree isn't byte-identical to
 --     the index's), and a residual in-memory sort of the ~760 qualifying
 --     rows remains for its created_at ordering (trivial at that count).
--- Plain CREATE INDEX (not CONCURRENTLY — safe inside a txn-wrapped apply
--- path): the build's full heap scan over 937k rows is bounded by the
--- 11.6s measured predicate scan, so expect up to ~10–15s of SHARE lock —
--- writes (the cron's ~14 rows/min + any operator action-insert) QUEUE for
--- that window, they don't fail. Apply in a quiet-traffic window; if the
--- apply path can't hold the lock, fall back to CREATE INDEX CONCURRENTLY
--- pasted as a single autocommit statement in the Supabase SQL editor.
+-- The statement below is plain CREATE INDEX (not CONCURRENTLY): as written,
+-- the build's full heap scan over 937k rows would be bounded by the
+-- 11.6s measured predicate scan, so a plain apply would expect up to
+-- ~10–15s of SHARE lock — writes (the cron's ~14 rows/min + any operator
+-- action-insert) would QUEUE for that window, not fail.
 -- Idempotent: IF NOT EXISTS, per CONVENTIONS.md §6.
--- Applies out-of-band directly on prod (Supabase MCP apply_migration, on
--- Jason's named go); this file documents it. Additive + code-independent:
--- no read path changes, so migration order is unconstrained.
+-- PROD REALITY (S33, 2026-08-03): both Supabase MCP DDL apply paths
+-- (execute_sql / apply_migration) were classifier-blocked even with
+-- Jason's named consent, so this plain form never ran against prod as-is.
+-- Jason applied CREATE INDEX CONCURRENTLY instead, pasted as a single
+-- autocommit statement directly in his Supabase SQL editor — this file
+-- documents the index shape that's live on prod, not the exact statement
+-- that ran. Additive + code-independent: no read path changes, so
+-- migration order is unconstrained.
 
 CREATE INDEX IF NOT EXISTS dashboard_activity_operator_actions_idx
   ON public.dashboard_activity (action, created_at DESC)
