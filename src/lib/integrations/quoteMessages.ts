@@ -800,6 +800,27 @@ export function referralEarnedEmailHtml(friendFirstName: string, amountUsd: numb
   ].join('\n');
 }
 
+// ─── Referral self-serve link request (naldo/referral-self-serve) ───────────
+// Fired by POST /api/referrals/request-link when a typed email matches an
+// existing GHL contact — mints/fetches that contact's referral code and
+// emails them the link, mirroring referralEarnedEmailHtml's house style.
+
+export const REFERRAL_LINK_EMAIL_SUBJECT = "Here's your Yule Love Lights referral link";
+
+export function referralLinkEmailHtml(input: { firstName?: string | null; referralUrl: string }): string {
+  const name = input.firstName?.trim() ? escapeHtml(input.firstName.trim()) : 'there';
+  const link = escapeHtml(input.referralUrl);
+  return [
+    `<p>Hi ${name},</p>`,
+    `<p>Here's your personal Yule Love Lights referral link:</p>`,
+    `<p><a href="${link}">${link}</a></p>`,
+    `<p>Send it to a friend or neighbor. When they book with us, you get <strong>$125 off your next YLL job</strong>, good for two years. They get <strong>2 free 16" spritzers</strong> with their install.</p>`,
+    `<p>No limit, share it with as many people as you like.</p>`,
+    `<p>Questions? Just reply here or text/call us at (631) 517-0186, we're happy to help!</p>`,
+    `<p>Warm wishes,<br>Yule Love Lights team</p>`,
+  ].join('\n');
+}
+
 // ─── Low-stock alert (#82 stock loop) ────────────────────────────────────────
 // A daily digest emailed to staff/purchasing when SKUs hit their reorder point.
 
