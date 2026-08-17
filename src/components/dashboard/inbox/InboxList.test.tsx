@@ -207,16 +207,16 @@ describe('canToggleGroup (#270 delta-verify fix — suppress toggle during pin)'
       { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
       { ...base, id: 'm2', contactId: 'c1', lastMessageAt: at(2 * 3_600_000) },
     ]);
-    expect(canToggleGroup(group, 'm1')).toBe(false);
-    expect(canToggleGroup(group, 'm2')).toBe(false);
+    expect(canToggleGroup(group, 'm1', null, null)).toBe(false);
+    expect(canToggleGroup(group, 'm2', null, null)).toBe(false);
   });
 
   it('returns true when composerFor is null or points at an item outside this group', () => {
     const group = makeGroup([
       { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
     ]);
-    expect(canToggleGroup(group, null)).toBe(true);
-    expect(canToggleGroup(group, 'someone-elses-item-id')).toBe(true);
+    expect(canToggleGroup(group, null, null, null)).toBe(true);
+    expect(canToggleGroup(group, 'someone-elses-item-id', null, null)).toBe(true);
   });
 
   it('a toggle click during the pin is a no-op, and releasing the pin restores the PRE-PIN expandedMap value (the exact failing sequence this fix closes)', () => {
@@ -234,7 +234,7 @@ describe('canToggleGroup (#270 delta-verify fix — suppress toggle during pin)'
     // onToggleExpanded only mutates expandedMap when canToggleGroup allows
     // it — mirror that guard here rather than mutating unconditionally.
     const clickHeader = () => {
-      if (canToggleGroup(group, composerForDuringReply)) {
+      if (canToggleGroup(group, composerForDuringReply, null, null)) {
         expandedMap = { ...expandedMap, [group.key]: !expandedMap[group.key] };
       }
     };
@@ -245,5 +245,62 @@ describe('canToggleGroup (#270 delta-verify fix — suppress toggle during pin)'
     // through to the raw expandedMap, which still holds its PRE-PIN value
     // (true) instead of a swallowed click's stale flip.
     expect(isGroupExpanded(group, expandedMap, null)).toBe(true);
+  });
+});
+
+// #289 fix (staff MED, cross-wave #769x#776 composition): canToggleGroup
+// predated #776's busyId/errorId state and only ever pinned on composerFor.
+// Collapsing a group unmounts its members <ul> entirely, so collapsing
+// while a member's action is in flight (busyId) or just failed (errorId)
+// hides that row — including its "Something went wrong — try again." note
+// — the instant the group collapses; the row silently reappears collapsed
+// on the next refresh(), never showing the operator what happened. See
+// canToggleGroup's own doc comment in InboxList.tsx for the full trace.
+describe('canToggleGroup (#289 fix — pin group open while a member is busy or errored)', () => {
+  it('returns false while busyId names a member of the group', () => {
+    const group = makeGroup([
+      { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
+      { ...base, id: 'm2', contactId: 'c1', lastMessageAt: at(2 * 3_600_000) },
+    ]);
+    expect(canToggleGroup(group, null, 'm1', null)).toBe(false);
+    expect(canToggleGroup(group, null, 'm2', null)).toBe(false);
+  });
+
+  it('returns false while errorId names a member of the group', () => {
+    const group = makeGroup([
+      { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
+      { ...base, id: 'm2', contactId: 'c1', lastMessageAt: at(2 * 3_600_000) },
+    ]);
+    expect(canToggleGroup(group, null, null, 'm1')).toBe(false);
+    expect(canToggleGroup(group, null, null, 'm2')).toBe(false);
+  });
+
+  it('returns true when busyId/errorId are null or name an item OUTSIDE this group', () => {
+    const group = makeGroup([
+      { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
+    ]);
+    expect(canToggleGroup(group, null, null, null)).toBe(true);
+    // A sibling group's member being busy/errored elsewhere in the inbox
+    // must never pin THIS unrelated group open.
+    expect(canToggleGroup(group, null, 'some-other-groups-item', null)).toBe(true);
+    expect(canToggleGroup(group, null, null, 'some-other-groups-item')).toBe(true);
+  });
+
+  it('composerFor pinning is unchanged now that busyId/errorId are real params (parity with the #270 behavior)', () => {
+    const group = makeGroup([
+      { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
+      { ...base, id: 'm2', contactId: 'c1', lastMessageAt: at(2 * 3_600_000) },
+    ]);
+    expect(canToggleGroup(group, 'm1', null, null)).toBe(false);
+    expect(canToggleGroup(group, null, null, null)).toBe(true);
+  });
+
+  it('any one of composerFor/busyId/errorId alone pins the group, with the other two null', () => {
+    const group = makeGroup([
+      { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
+    ]);
+    expect(canToggleGroup(group, 'm1', null, null)).toBe(false); // composerFor alone
+    expect(canToggleGroup(group, null, 'm1', null)).toBe(false); // busyId alone
+    expect(canToggleGroup(group, null, null, 'm1')).toBe(false); // errorId alone
   });
 });

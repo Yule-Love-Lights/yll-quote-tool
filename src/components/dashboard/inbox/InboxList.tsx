@@ -278,8 +278,28 @@ export function isGroupExpanded(
 // pre-pin state instead of the swallowed click's retroactive one. Pure and
 // exported so both the header's `disabled` state and the toggle-suppression
 // share one decision (and it's unit-testable without rendering).
-export function canToggleGroup(group: InboxGroup, composerFor: string | null): boolean {
-  return !(composerFor !== null && group.members.some((m) => m.id === composerFor));
+//
+// #289 fix (staff MED, cross-wave #769x#776 composition): composerFor was
+// the only pin here, predating #776's busyId/errorId state on this same
+// list. Collapsing a group unmounts its members <ul> entirely (ContactRow's
+// showMembers), so collapsing while a member's action is in flight (busyId)
+// or just failed (errorId, the "Something went wrong — try again." note)
+// hides that row the instant it's collapsed — the optimistic removal in
+// act() already makes the row appear to vanish, and if the group is
+// collapsed before/while the action resolves, the row (and any error note)
+// comes back on the next refresh() INSIDE a collapsed, unrendered members
+// list, visible nowhere. State stays correct (refresh() resyncs); this was
+// a visibility-only bug. busyId/errorId now pin exactly like composerFor: a
+// member mid-action or showing its error keeps the group un-collapsible
+// until that state clears.
+export function canToggleGroup(
+  group: InboxGroup,
+  composerFor: string | null,
+  busyId: string | null,
+  errorId: string | null,
+): boolean {
+  const pinnedBy = (id: string | null): boolean => id !== null && group.members.some((m) => m.id === id);
+  return !(pinnedBy(composerFor) || pinnedBy(busyId) || pinnedBy(errorId));
 }
 
 // A stable-identity row for ONE CONTACT, covering both shapes a contact can
@@ -371,7 +391,7 @@ function ContactRow({
   // #270 delta-verify fix: disabling the button (rather than only guarding
   // the click handler) makes the "you can't collapse this while replying"
   // state VISIBLE, not just structurally safe — see canToggleGroup's doc.
-  const canToggle = canToggleGroup(group, actions.composerFor);
+  const canToggle = canToggleGroup(group, actions.composerFor, actions.busyId, actions.errorId);
 
   const rowChildren: ReactNode[] = [];
   if (isMulti) {
@@ -380,7 +400,7 @@ function ContactRow({
         key="header"
         type="button"
         disabled={!canToggle}
-        title={canToggle ? undefined : 'Finish or cancel the reply to collapse this group'}
+        title={canToggle ? undefined : 'Finish the open reply or pending action on a member here before collapsing this group'}
         aria-expanded={expanded}
         aria-controls={panelId}
         onClick={onToggleExpanded}
@@ -664,11 +684,12 @@ export function InboxList({
             key={group.key}
             group={group}
             expanded={isGroupExpanded(group, expanded, composerFor)}
-            // #270 delta-verify fix: no-op while composerFor pins this group
-            // open — see canToggleGroup's doc comment for why a swallowed
-            // toggle during the pin must not mutate expandedMap.
+            // #270 delta-verify fix, extended #289: no-op while composerFor/
+            // busyId/errorId pins this group open — see canToggleGroup's doc
+            // comment for why a swallowed toggle during the pin must not
+            // mutate expandedMap.
             onToggleExpanded={() => {
-              if (canToggleGroup(group, composerFor)) toggleExpanded(group.key);
+              if (canToggleGroup(group, composerFor, busyId, errorId)) toggleExpanded(group.key);
             }}
             actions={rowActions}
           />
