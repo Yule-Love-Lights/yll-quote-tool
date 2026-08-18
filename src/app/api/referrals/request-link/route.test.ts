@@ -17,6 +17,7 @@ const {
   upsertContactCustomField,
   findOrCreateCustomer,
   ensureReferralCode,
+  hasReferralCode,
   rateLimitedRef,
   emailCooldownSeen,
   afterTasks,
@@ -26,6 +27,10 @@ const {
   upsertContactCustomField: vi.fn(async (_id: string, _field: string, _value: string | string[]) => undefined),
   findOrCreateCustomer: vi.fn(async (_identity: unknown) => ({ id: 'cust-1' }) as { id: string } | null),
   ensureReferralCode: vi.fn(async (_id: string) => 'CODE1234' as string | null),
+  // Review fix 4: defaults false (no existing code = a first enrollment),
+  // matching this same describe block's default findOrCreateCustomer/
+  // ensureReferralCode fixtures, which model a brand-new customer.
+  hasReferralCode: vi.fn(async (_id: string) => false),
   rateLimitedRef: { current: false },
   // Review fix 3: mirrors the REAL checkRateLimitByKey's per-key "limit: 1"
   // semantics (first call for a key is ok, every later one is not) without
@@ -59,7 +64,7 @@ vi.mock('@/lib/rateLimit', () => ({
 }));
 vi.mock('@/lib/integrations/highlevel', () => ({ searchContacts, sendEmail, upsertContactCustomField }));
 vi.mock('@/lib/customers', () => ({ findOrCreateCustomer }));
-vi.mock('@/lib/referrals', () => ({ ensureReferralCode }));
+vi.mock('@/lib/referrals', () => ({ ensureReferralCode, hasReferralCode }));
 vi.mock('@/lib/integrations/telegramNotify', () => ({ appBaseUrl: () => 'https://quote.example.com' }));
 
 import { NextResponse } from 'next/server';
@@ -102,6 +107,7 @@ beforeEach(() => {
   upsertContactCustomField.mockResolvedValue(undefined);
   findOrCreateCustomer.mockResolvedValue({ id: 'cust-1' });
   ensureReferralCode.mockResolvedValue('CODE1234');
+  hasReferralCode.mockResolvedValue(false);
   delete process.env.HIGHLEVEL_CONTACT_FIELD_BRAND_AMBASSADOR_STATUS;
   delete process.env.HIGHLEVEL_CONTACT_FIELD_BRAND_AMBASSADOR_ENROLLMENT_DATE;
 });
@@ -316,6 +322,30 @@ describe('POST /api/referrals/request-link', () => {
 
       expect(sendEmail).toHaveBeenCalledTimes(1);
       expect(upsertContactCustomField).toHaveBeenCalledTimes(2);
+    });
+
+    it('review fix 4: stamps the enrollment date on a genuine first enrollment', async () => {
+      process.env.HIGHLEVEL_CONTACT_FIELD_BRAND_AMBASSADOR_STATUS = 'field-status-id';
+      process.env.HIGHLEVEL_CONTACT_FIELD_BRAND_AMBASSADOR_ENROLLMENT_DATE = 'field-date-id';
+      hasReferralCode.mockResolvedValue(false); // no code yet, this mint is a first enrollment
+      searchContacts.mockResolvedValue([MATCHING_CONTACT]);
+      await POST(req({ email: 'jamie@example.com' }));
+      await drainAfterTasks();
+
+      expect(upsertContactCustomField).toHaveBeenCalledWith('contact-1', 'field-date-id', expect.any(String));
+    });
+
+    it('review fix 4: does NOT restamp the enrollment date on a resubmit, only Active', async () => {
+      process.env.HIGHLEVEL_CONTACT_FIELD_BRAND_AMBASSADOR_STATUS = 'field-status-id';
+      process.env.HIGHLEVEL_CONTACT_FIELD_BRAND_AMBASSADOR_ENROLLMENT_DATE = 'field-date-id';
+      hasReferralCode.mockResolvedValue(true); // already has a code, this is a resubmit, not a first enrollment
+      searchContacts.mockResolvedValue([MATCHING_CONTACT]);
+      await POST(req({ email: 'jamie@example.com' }));
+      await drainAfterTasks();
+
+      expect(upsertContactCustomField).toHaveBeenCalledWith('contact-1', 'field-status-id', 'Active');
+      expect(upsertContactCustomField).not.toHaveBeenCalledWith('contact-1', 'field-date-id', expect.any(String));
+      expect(upsertContactCustomField).toHaveBeenCalledTimes(1); // status only
     });
   });
 });

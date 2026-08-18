@@ -40,6 +40,7 @@ vi.mock('./integrations/telegramNotify', () => ({
 import {
   generateReferralCode,
   ensureReferralCode,
+  hasReferralCode,
   getReferralByCode,
   createPendingReferral,
   accrueOnBooking,
@@ -297,6 +298,37 @@ describe('ensureReferralCode', () => {
     await ensureReferralCode('c1');
     expect(hl.upsertContactCustomField).not.toHaveBeenCalled();
     delete process.env.HIGHLEVEL_CONTACT_FIELD_REFERRAL_LINK;
+  });
+});
+
+describe('hasReferralCode (review fix 4)', () => {
+  it('returns false when Supabase is not configured', async () => {
+    sbRef.current = null;
+    expect(await hasReferralCode('c1')).toBe(false);
+  });
+
+  it('returns false for an unknown customer', async () => {
+    sbRef.current = makeFakeSupabase({ customers: [] });
+    expect(await hasReferralCode('missing')).toBe(false);
+  });
+
+  it('returns false when the customer has no code yet', async () => {
+    sbRef.current = makeFakeSupabase({ customers: [{ id: 'c1', referral_code: null, hl_contact_id: null }] });
+    expect(await hasReferralCode('c1')).toBe(false);
+  });
+
+  it('returns true when the customer already has a code, matching the same column ensureReferralCode checks', async () => {
+    sbRef.current = makeFakeSupabase({
+      customers: [{ id: 'c1', referral_code: 'EXISTING1', hl_contact_id: null }],
+    });
+    expect(await hasReferralCode('c1')).toBe(true);
+  });
+
+  it('flips to true after ensureReferralCode mints a code for the SAME customer', async () => {
+    sbRef.current = makeFakeSupabase({ customers: [{ id: 'c1', referral_code: null, hl_contact_id: null }] });
+    expect(await hasReferralCode('c1')).toBe(false);
+    await ensureReferralCode('c1');
+    expect(await hasReferralCode('c1')).toBe(true);
   });
 });
 

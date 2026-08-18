@@ -94,6 +94,34 @@ const MAX_CODE_GEN_ATTEMPTS = 5;
 // ─── Ensure / lookup ────────────────────────────────────────────────────────
 
 /**
+ * Review fix 4: cheap pre-check for a caller that needs to know, BEFORE
+ * calling ensureReferralCode, whether this would be a first-time mint. Reads
+ * the exact same column ensureReferralCode itself checks at line ~122 below
+ * (`if (existing.referral_code) return existing.referral_code;`), so "false"
+ * here lines up exactly with "ensureReferralCode is about to mint a new
+ * code" there. A separate read rather than widening ensureReferralCode's own
+ * return shape, so its 7+ existing callers (the portal approved page, the
+ * customer dashboard panel, three webhook/job routes) are unaffected.
+ *
+ * Not race-safe against a concurrent mint for the SAME customer (this read
+ * and the later ensureReferralCode call are two separate round-trips): a
+ * genuine simultaneous double-submission could see false from both and both
+ * treat it as "first". Accepted: the bug this exists to prevent is a stale
+ * value from an UNRELATED, later resubmission overwriting a real enrollment
+ * date, not two near-simultaneous first enrollments both stamping "now".
+ */
+export async function hasReferralCode(customerId: string): Promise<boolean> {
+  const sb = svc();
+  if (!sb) return false;
+  const { data } = await sb
+    .from('customers')
+    .select('referral_code')
+    .eq('id', customerId)
+    .maybeSingle<{ referral_code: string | null }>();
+  return !!data?.referral_code;
+}
+
+/**
  * Create-if-missing the customer's referral code, race-safe: two concurrent
  * callers for the same customer converge on the SAME code (a conditional
  * UPDATE ... WHERE referral_code IS NULL wins at most once; the loser re-reads

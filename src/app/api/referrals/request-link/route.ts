@@ -32,7 +32,7 @@ import { NextRequest, NextResponse, after } from 'next/server';
 import { rateLimitResponse, checkRateLimitByKey } from '@/lib/rateLimit';
 import { searchContacts, sendEmail, upsertContactCustomField } from '@/lib/integrations/highlevel';
 import { findOrCreateCustomer } from '@/lib/customers';
-import { ensureReferralCode } from '@/lib/referrals';
+import { ensureReferralCode, hasReferralCode } from '@/lib/referrals';
 import { appBaseUrl } from '@/lib/integrations/telegramNotify';
 import { REFERRAL_LINK_EMAIL_SUBJECT, referralLinkEmailHtml } from '@/lib/integrations/quoteMessages';
 import { isReferralSelfServeEnabled } from '@/lib/referralSelfServeFlag';
@@ -177,6 +177,13 @@ async function findAndSendIfMatch(email: string): Promise<void> {
     });
     if (!customer) return;
 
+    // Review fix 4: read BEFORE minting, so "false" means ensureReferralCode
+    // below is about to create a code that didn't exist a moment ago (a
+    // genuine first enrollment). Used only to gate the enrollment-date stamp
+    // further down, see hasReferralCode's own doc comment for the accepted
+    // race with a truly simultaneous double-submission.
+    const isFirstEnrollment = !(await hasReferralCode(customer.id));
+
     const code = await ensureReferralCode(customer.id);
     if (!code) return;
 
@@ -195,13 +202,19 @@ async function findAndSendIfMatch(email: string): Promise<void> {
     // path would have. Each env var independently gates its own stamp;
     // unset means that stamp is skipped silently. Each stamp keeps its own
     // try/catch so one failing never prevents the other.
-    await stampBrandAmbassador(match.id);
+    await stampBrandAmbassador(match.id, isFirstEnrollment);
   } catch (err) {
     console.error('[api/referrals/request-link] match lookup/send failed:', err);
   }
 }
 
-async function stampBrandAmbassador(contactId: string): Promise<void> {
+// Review fix 4: `isFirstEnrollment` gates the ENROLLMENT DATE only. Status
+// keeps stamping 'Active' unconditionally on every match. That value is
+// idempotent (writing 'Active' again when it's already 'Active' changes
+// nothing), while the date previously meant "last time anyone submitted
+// this email" instead of "when they enrolled": every resubmission silently
+// overwrote it, with no bulk-undo available in the app.
+async function stampBrandAmbassador(contactId: string, isFirstEnrollment: boolean): Promise<void> {
   const statusFieldId = process.env.HIGHLEVEL_CONTACT_FIELD_BRAND_AMBASSADOR_STATUS;
   if (statusFieldId) {
     try {
@@ -211,7 +224,7 @@ async function stampBrandAmbassador(contactId: string): Promise<void> {
     }
   }
   const dateFieldId = process.env.HIGHLEVEL_CONTACT_FIELD_BRAND_AMBASSADOR_ENROLLMENT_DATE;
-  if (dateFieldId) {
+  if (dateFieldId && isFirstEnrollment) {
     try {
       await upsertContactCustomField(contactId, dateFieldId, new Date().toISOString());
     } catch (err) {
