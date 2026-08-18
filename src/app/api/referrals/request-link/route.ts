@@ -36,6 +36,7 @@ import { ensureReferralCode, hasReferralCode } from '@/lib/referrals';
 import { appBaseUrl } from '@/lib/integrations/telegramNotify';
 import { REFERRAL_LINK_EMAIL_SUBJECT, referralLinkEmailHtml } from '@/lib/integrations/quoteMessages';
 import { isReferralSelfServeEnabled } from '@/lib/referralSelfServeFlag';
+import { ingestTouch } from '@/lib/dashboard/inbox/store';
 
 export const runtime = 'nodejs';
 // The after() task below can fire up to five sequential GHL calls
@@ -134,6 +135,11 @@ export async function POST(req: NextRequest) {
       } catch (err) {
         console.error('[api/referrals/request-link] after() task failed:', err);
       }
+      try {
+        await recordRequestForStaff(emailForLookup);
+      } catch (err) {
+        console.error('[api/referrals/request-link] inbox ingest failed:', err);
+      }
     });
   }
 
@@ -215,6 +221,46 @@ async function findAndSendIfMatch(email: string): Promise<void> {
   } catch (err) {
     console.error('[api/referrals/request-link] match lookup/send failed:', err);
   }
+}
+
+// Review fix 6: best-effort inbox touch so staff have a record that a link
+// was requested, mirroring src/app/api/referrals/submit/route.ts's own
+// ingestTouch call. Recorded for EVERY request (match or not, sent or not):
+// a no-match is a normal outcome, not a failure, and must stay invisible for
+// the same enumeration reasons the uniform response exists for, but this is
+// a purely internal, staff-only record that never varies the HTTP response,
+// so recording it can't reintroduce that leak.
+//
+// leadKind: 'automated', verified (not assumed) against store.ts: totalLeads
+// subtracts an 'automated' window count, and listEscalatableItems' own
+// `.or('lead_kind.is.null,lead_kind.neq.automated')` filter excludes
+// 'automated' rows outright. So this can't inflate the staff lead count or
+// fire an amber/red escalation alert the way a genuine new lead would, even
+// if the owner's whole list produces hundreds of these in one blast.
+//
+// externalId is keyed on the normalized email (not per-submission), so a
+// repeat request from the same visitor updates one inbox item instead of
+// piling up a new one per resubmission.
+async function recordRequestForStaff(email: string): Promise<void> {
+  await ingestTouch(
+    {
+      source: 'quotetool',
+      externalId: `referral-link-request:${normalizeEmailForCompare(email)}`,
+      sourceMessageId: null,
+      direction: 'inbound',
+      channel: null,
+      lastMessageAt: new Date(),
+      preview: email,
+      subject: 'Referral link requested',
+      identity: {
+        emails: [email],
+        phones: [],
+        displayName: null,
+      },
+      leadKind: 'automated',
+    },
+    new Date(),
+  );
 }
 
 // Review fix 4: `isFirstEnrollment` gates the ENROLLMENT DATE only. Status

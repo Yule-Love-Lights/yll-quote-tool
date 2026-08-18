@@ -10,6 +10,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 import type { CrmContact } from '@/lib/integrations/types';
+import type { NormalizedTouch } from '@/lib/dashboard/inbox/types';
 
 const {
   searchContacts,
@@ -18,6 +19,7 @@ const {
   findOrCreateCustomer,
   ensureReferralCode,
   hasReferralCode,
+  ingestTouch,
   rateLimitedRef,
   emailCooldownSeen,
   afterTasks,
@@ -31,6 +33,10 @@ const {
   // matching this same describe block's default findOrCreateCustomer/
   // ensureReferralCode fixtures, which model a brand-new customer.
   hasReferralCode: vi.fn(async (_id: string) => false),
+  // Review fix 6: same fixture shape as submit/route.test.ts's own ingestTouch mock.
+  ingestTouch: vi.fn(async (_touch: NormalizedTouch, _now: Date) => ({
+    ok: true, skipped: false, itemId: 'inbox-item-1', contactId: null, autoResolved: false, reopened: false, ambiguous: false, skipReason: null,
+  })),
   rateLimitedRef: { current: false },
   // Review fix 3: mirrors the REAL checkRateLimitByKey's per-key "limit: 1"
   // semantics (first call for a key is ok, every later one is not) without
@@ -66,6 +72,7 @@ vi.mock('@/lib/integrations/highlevel', () => ({ searchContacts, sendEmail, upse
 vi.mock('@/lib/customers', () => ({ findOrCreateCustomer }));
 vi.mock('@/lib/referrals', () => ({ ensureReferralCode, hasReferralCode }));
 vi.mock('@/lib/integrations/telegramNotify', () => ({ appBaseUrl: () => 'https://quote.example.com' }));
+vi.mock('@/lib/dashboard/inbox/store', () => ({ ingestTouch }));
 
 import { NextResponse } from 'next/server';
 import { POST } from './route';
@@ -351,6 +358,57 @@ describe('POST /api/referrals/request-link', () => {
       expect(upsertContactCustomField).toHaveBeenCalledWith('contact-1', 'field-status-id', 'Active');
       expect(upsertContactCustomField).not.toHaveBeenCalledWith('contact-1', 'field-date-id', expect.any(String));
       expect(upsertContactCustomField).toHaveBeenCalledTimes(1); // status only
+    });
+  });
+
+  describe('staff inbox record (review fix 6)', () => {
+    it('records a match as an automated touch, never a lead', async () => {
+      searchContacts.mockResolvedValue([MATCHING_CONTACT]);
+      await POST(req({ email: 'jamie@example.com' }));
+      await drainAfterTasks();
+
+      expect(ingestTouch).toHaveBeenCalledTimes(1);
+      const [touch] = ingestTouch.mock.calls[0]!;
+      expect(touch.source).toBe('quotetool');
+      expect(touch.leadKind).toBe('automated');
+      expect(touch.identity.emails).toEqual(['jamie@example.com']);
+    });
+
+    it('records a no-match too (a no-match is a normal outcome, not a failure)', async () => {
+      searchContacts.mockResolvedValue([]); // no match
+      await POST(req({ email: 'nobody@example.com' }));
+      await drainAfterTasks();
+
+      expect(ingestTouch).toHaveBeenCalledTimes(1);
+      const [touch] = ingestTouch.mock.calls[0]!;
+      expect(touch.leadKind).toBe('automated');
+    });
+
+    it('never records anything when the honeypot is tripped', async () => {
+      await POST(req({ email: 'jamie@example.com', company: 'a bot filled this' }));
+      await drainAfterTasks();
+      expect(ingestTouch).not.toHaveBeenCalled();
+    });
+
+    it('keys externalId on the normalized email, so a resubmission updates one item, not a new one', async () => {
+      searchContacts.mockResolvedValue([MATCHING_CONTACT]);
+      await POST(req({ email: 'jamie@example.com' }));
+      await drainAfterTasks();
+      await POST(req({ email: '  Jamie@Example.com  ' }));
+      await drainAfterTasks();
+
+      const ids = ingestTouch.mock.calls.map((c) => c[0].externalId);
+      expect(ids).toHaveLength(2);
+      expect(ids[0]).toBe(ids[1]);
+    });
+
+    it('a rejected ingestTouch never blocks the response or the match/send branch', async () => {
+      ingestTouch.mockRejectedValueOnce(new Error('inbox table missing'));
+      searchContacts.mockResolvedValue([MATCHING_CONTACT]);
+      const res = await POST(req({ email: 'jamie@example.com' }));
+      expect(res.status).toBe(200);
+      await expect(drainAfterTasks()).resolves.toBeUndefined();
+      expect(sendEmail).toHaveBeenCalledTimes(1);
     });
   });
 });
