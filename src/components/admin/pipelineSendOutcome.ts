@@ -140,6 +140,33 @@ function isTimeoutHedgedFailure(detail: string | undefined): boolean {
   return !!detail && detail.includes(TIMEOUT_HEDGE_PREFIX);
 }
 
+// Row 269: the per-channel counterpart to isTimeoutHedgedFailure above —
+// classifies ONE channel's row from the send route's new channelOutcomes
+// field (POST /api/quotes/[id]/send's alreadySent short-circuit; see that
+// route's response-shape doc comment) into what QuoteBuilder.tsx's
+// already-sent notice should say and whether that channel belongs in a
+// scoped redeliver offer.
+//
+// 'sent' -> 'delivered': a confirmed success, never offered for redeliver.
+// 'failed' with a timeout-hedged error -> 'unknown': same reasoning as
+// isTimeoutHedgedFailure above — GHL may have delivered it anyway before our
+// socket gave up waiting, so this is NOT a confirmed non-delivery.
+// 'failed' otherwise -> 'failed': a confirmed rejection.
+// null/undefined (no delivery row was ever logged for this channel, or the
+// read itself failed and channelOutcomes is missing entirely) -> 'unknown':
+// there is no basis to claim either a confirmed delivery or a confirmed
+// failure, so the caller must treat it the same as a genuine failure for
+// retry-scoping purposes (offer it) while wording the notice honestly.
+export type ChannelDeliveryClassification = 'delivered' | 'failed' | 'unknown';
+
+export function classifyChannelOutcome(
+  entry: { outcome: 'sent' | 'failed'; error: string | null } | null | undefined,
+): ChannelDeliveryClassification {
+  if (!entry) return 'unknown';
+  if (entry.outcome === 'sent') return 'delivered';
+  return isTimeoutHedgedFailure(entry.error ?? undefined) ? 'unknown' : 'failed';
+}
+
 // Row 290 fix (customer MED): the one place a partial/502 delivery failure
 // picks its RetryGate — see RetryGate's doc comment for the invariant this
 // implements. A confirmed failure (the normal case) stays low-friction

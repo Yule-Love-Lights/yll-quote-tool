@@ -3,7 +3,7 @@
 // PipelineActionsMenu's 'send' case — see that file's helper doc comment for
 // why one function classifies both a fresh send and a ?retryDelivery=1 retry.
 import { describe, it, expect } from 'vitest';
-import { decideSendOutcome } from './pipelineSendOutcome';
+import { decideSendOutcome, classifyChannelOutcome } from './pipelineSendOutcome';
 // Row 290: the REAL exported constant the send route writes onto a timed-out
 // smsError/emailError (src/lib/quoteDeliveries.ts, via
 // deliveryErrorMessage()/timeoutHedgedErrorMessage() in
@@ -348,5 +348,42 @@ describe('decideSendOutcome', () => {
     const outcome = decideSendOutcome(true, { failedChannels: ['sms', 'sms'] }, 'both', false);
     expect(outcome.retryChannel).toBe('sms');
     expect(outcome.message).toBe('SMS failed. The other requested channel was delivered.');
+  });
+});
+
+// Row 269: classifyChannelOutcome is the pure per-channel classifier behind
+// QuoteBuilder.tsx's scoped alreadySent redeliver offer — see that route's
+// channelOutcomes field (src/app/api/quotes/[id]/send/route.ts) for the
+// shape this consumes.
+describe('classifyChannelOutcome', () => {
+  it('null (no delivery row was ever logged for this channel) -> unknown', () => {
+    expect(classifyChannelOutcome(null)).toBe('unknown');
+  });
+
+  it('undefined (channelOutcomes missing entirely — the read failed) -> unknown', () => {
+    expect(classifyChannelOutcome(undefined)).toBe('unknown');
+  });
+
+  it('outcome "sent" -> delivered, regardless of error field', () => {
+    expect(classifyChannelOutcome({ outcome: 'sent', error: null })).toBe('delivered');
+  });
+
+  it('outcome "failed" with a CONFIRMED (non-timeout) error -> failed', () => {
+    expect(classifyChannelOutcome({ outcome: 'failed', error: 'rate limited' })).toBe('failed');
+  });
+
+  it('outcome "failed" with no error text at all -> failed (never mistaken for a hedge)', () => {
+    expect(classifyChannelOutcome({ outcome: 'failed', error: null })).toBe('failed');
+  });
+
+  // Builds its fixture from the REAL exported constant (see the file header
+  // comment above) rather than a hand-typed 'timeout — ' guess.
+  it('outcome "failed" with a TIMEOUT-HEDGED error -> unknown, not failed (GHL may have delivered it anyway)', () => {
+    expect(
+      classifyChannelOutcome({
+        outcome: 'failed',
+        error: `${DELIVERY_TIMEOUT_ERROR_PREFIX}delivery outcome unknown (GHL may have still delivered it): socket hang up`,
+      }),
+    ).toBe('unknown');
   });
 });
