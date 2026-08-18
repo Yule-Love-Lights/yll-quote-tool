@@ -106,6 +106,27 @@ describe('planIngest — skip outbound-with-no-existing (avoid noise)', () => {
     expect(plan.item.escalation_level).toBe(0);
     expect(plan.autoResolved).toBe(true);
   });
+  // #252 slice F: GHL's 'call' channel gets the same outbound-first-observation
+  // exception as quotetool above — a placed call (answered or no-answer, see
+  // ghl.ts) is a deliberate reach-out worth a "we reached out" record, unlike a
+  // cold outbound text/email blast. Channel-scoped, not source-scoped: the sms
+  // test above (line 89, default channel 'sms') and the gmail test above prove
+  // the narrow scope holds — only ghl+call is exempted, everything else on ghl
+  // (and every other source) still skips as noise.
+  it('does NOT skip a ghl outbound CALL touch with no existing item, and auto-resolves it handled (#252 slice F)', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: null,
+      touch: touch({ direction: 'outbound', channel: 'call' }),
+      now: at(HOUR),
+    });
+    expect(plan.skip).toBe(false);
+    expect(plan.skipReason).toBeNull();
+    expect(plan.item.status).toBe('handled');
+    expect(plan.item.channel).toBe('call');
+    expect(plan.item.direction).toBe('outbound');
+    expect(plan.autoResolved).toBe(true);
+  });
   it('never skips an inbound touch', () => {
     const plan = planIngest({ candidates: [], existing: null, touch: touch(), now: at(HOUR) });
     expect(plan.skip).toBe(false);
