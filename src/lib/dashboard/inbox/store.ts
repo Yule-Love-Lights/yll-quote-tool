@@ -1383,12 +1383,20 @@ export async function listDueFollowUps(now: Date): Promise<DueFollowUpsResult> {
   return { ok: true, items };
 }
 
-export async function markFollowUpDone(id: string, operatorId: string): Promise<{ ok: boolean; error?: string }> {
+/** `operatorId` must be a real auth.users uuid, or null — mirrors
+ *  markItemHandledLocal's doc comment / the sibling-guard-parity convention:
+ *  the route's fallback is `operator?.id ?? null`, never the literal string
+ *  'system', so this never has to launder a non-uuid sentinel into a
+ *  uuid-typed column if a future change (e.g. coupling this to an
+ *  inbox_items.handled_by write) reuses operatorId that way. dashboard_activity
+ *  .actor stays a free-text column (schema comment: "auth.users id (as text)
+ *  or 'system'"), so a null operator still logs as the literal 'system' there. */
+export async function markFollowUpDone(id: string, operatorId: string | null): Promise<{ ok: boolean; error?: string }> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const { error } = await sb.from('follow_ups').update({ status: 'done' }).eq('id', id);
   if (error) return { ok: false, error: error.message };
-  await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'handled', detail: { followUpId: id } });
+  await sb.from('dashboard_activity').insert({ actor: operatorId ?? 'system', action: 'handled', detail: { followUpId: id } });
   return { ok: true };
 }
 
