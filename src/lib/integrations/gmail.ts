@@ -119,7 +119,10 @@ export async function getOrCreateLabel(accessToken: string, name: string): Promi
   return created.id;
 }
 
-/** ⚠️ WRITE. Add/remove labels on a thread (Handled: + YLL/Handled, − UNREAD). */
+/** ⚠️ WRITE. Add/remove labels on a thread (Handled: + YLL/Handled, − UNREAD).
+ *  Affects EVERY message on the thread — see modifyMessage below for the
+ *  single-message sibling the Handled write-back prefers whenever it knows
+ *  the specific message id (#288 fix round). */
 export async function modifyThread(
   accessToken: string,
   threadId: string,
@@ -127,4 +130,19 @@ export async function modifyThread(
 ): Promise<void> {
   const user = encodeURIComponent(gmailUser());
   await gmailPost<unknown>(`/users/${user}/threads/${encodeURIComponent(threadId)}/modify`, accessToken, body);
+}
+
+/** ⚠️ WRITE. Add/remove labels on a single MESSAGE (not its whole thread).
+ *  #288 fix round (staff HIGH): the Handled write-back uses this instead of
+ *  modifyThread whenever the target row knows its own message id (any
+ *  GML-split touch), so marking one customer's row Handled doesn't also
+ *  stamp sibling customers' still-unworked forwards on the same coalesced
+ *  thread as read/labeled. */
+export async function modifyMessage(
+  accessToken: string,
+  messageId: string,
+  body: { addLabelIds?: string[]; removeLabelIds?: string[] },
+): Promise<void> {
+  const user = encodeURIComponent(gmailUser());
+  await gmailPost<unknown>(`/users/${user}/messages/${encodeURIComponent(messageId)}/modify`, accessToken, body);
 }
