@@ -44,6 +44,33 @@ export type SendResponseBody = {
   channelOutcomes?: { sms: ChannelOutcomeEntry | null; email: ChannelOutcomeEntry | null };
 };
 
+// Row 269 fix round 2 FIX B (sibling-guard parity, MED): QuoteBuilder.tsx's
+// twin of this same untrusted field (parseChannelOutcomeEntry, same file
+// name/shape on purpose) validates each channelOutcomes entry before
+// classifying it. decideSendOutcome below read the identical
+// `body.channelOutcomes?.[ch]` straight into classifyChannelOutcome with NO
+// validation — a truthy non-string `error` (e.g. a stray number) would sail
+// past classifyChannelOutcome's own `!entry` guard and throw inside
+// isTimeoutHedgedFailure's `.includes()` call (that function's own comment
+// already names this exact risk). The blast radius here is WORSE than
+// QuoteBuilder's: decideSendOutcome is called from PipelineActionsMenu.tsx's
+// 'send' case AFTER that case's own try/finally has already released
+// sendInFlight, inside onPick's `try { … } finally { setBusy(false) }` —
+// which has no `catch`. A throw here becomes an unhandled promise rejection
+// AFTER the send has already fired: no alert, no refresh, the operator learns
+// nothing about whether the customer was actually messaged. Not reachable in
+// normal operation today — the route only ever writes the validated shape —
+// this is defense-in-depth + consistency with the QuoteBuilder twin, same
+// reasoning as toChannelArray's Array.isArray guard on failedChannels below.
+function parseChannelOutcomeEntry(raw: unknown): ChannelOutcomeEntry | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (r.outcome !== 'sent' && r.outcome !== 'failed') return null;
+  if (typeof r.error !== 'string' && r.error !== null) return null;
+  if (typeof r.at !== 'string') return null;
+  return { outcome: r.outcome, error: r.error, at: r.at };
+}
+
 // Row 270 fix round, FIX 3 (customer MED): which UI gate the caller must use
 // before firing retryPrompt's redeliver. 'confirm' is a plain
 // window.confirm — correct whenever the customer did NOT receive anything on
@@ -319,9 +346,12 @@ export function decideSendOutcome(
     // that would re-fire a channel GHL already accepted (no idempotency key
     // on GHL's send endpoint — that's a REAL duplicate, not a wasted click).
     const covered: ('sms' | 'email')[] = requestedChannel === 'both' ? ['sms', 'email'] : [requestedChannel];
+    // FIX B: validated via parseChannelOutcomeEntry first — see that
+    // function's own comment for why an unchecked read here is riskier than
+    // its QuoteBuilder.tsx twin.
     const classified = covered.map((ch) => ({
       channel: ch,
-      classification: classifyChannelOutcome(body.channelOutcomes?.[ch]),
+      classification: classifyChannelOutcome(parseChannelOutcomeEntry(body.channelOutcomes?.[ch])),
     }));
     const delivered = classified.filter((c) => c.classification === 'delivered').map((c) => c.channel);
     const offered = classified.filter((c) => c.classification !== 'delivered');

@@ -3,7 +3,13 @@
 // PipelineActionsMenu's 'send' case — see that file's helper doc comment for
 // why one function classifies both a fresh send and a ?retryDelivery=1 retry.
 import { describe, it, expect } from 'vitest';
-import { decideSendOutcome, classifyChannelOutcome, isTimeoutHedgedFailure, retryOfferFor } from './pipelineSendOutcome';
+import {
+  decideSendOutcome,
+  classifyChannelOutcome,
+  isTimeoutHedgedFailure,
+  retryOfferFor,
+  type SendResponseBody,
+} from './pipelineSendOutcome';
 // Row 290: the REAL exported constant the send route writes onto a timed-out
 // smsError/emailError (src/lib/quoteDeliveries.ts, via
 // deliveryErrorMessage()/timeoutHedgedErrorMessage() in
@@ -415,6 +421,58 @@ describe('decideSendOutcome', () => {
         false,
       );
       expect(outcome.retryChannel).toBe('both');
+      expect(outcome.retryGate).toBe('typed-yes');
+    });
+  });
+
+  // Row 269 fix round 2 FIX B (sibling-guard parity, MED): decideSendOutcome
+  // reads body.channelOutcomes[ch] — an untrusted field off an HTTP response
+  // — straight into classifyChannelOutcome. Before this fix a malformed entry
+  // could throw inside isTimeoutHedgedFailure's `.includes()` call (a truthy
+  // non-string `error`) instead of degrading to 'unknown', the same class of
+  // gap QuoteBuilder.tsx's parseChannelOutcomeEntry already closed on its
+  // twin read of this same field. Not reachable via the real route today —
+  // this pins the defensive floor. `channelOutcomes` is built with
+  // `as unknown as SendResponseBody['channelOutcomes']` because every shape
+  // here is deliberately outside the real type — that's the point.
+  describe('Row 269 fix round 2 FIX B: malformed channelOutcomes entries degrade to "unknown" instead of throwing', () => {
+    it('a truthy non-string `error` field does not throw — degrades to unknown (typed-yes offered)', () => {
+      const malformed = {
+        sms: { outcome: 'failed', error: 12345, at: '2026-08-01T00:00:00Z' },
+        email: null,
+      } as unknown as SendResponseBody['channelOutcomes'];
+      const outcome = decideSendOutcome(true, { alreadySent: true, channelOutcomes: malformed }, 'sms', false);
+      expect(outcome.retryChannel).toBe('sms');
+      expect(outcome.retryGate).toBe('typed-yes');
+    });
+
+    it('a non-object entry (e.g. a bare string) does not throw — degrades to unknown', () => {
+      const malformed = { sms: 'bogus', email: null } as unknown as SendResponseBody['channelOutcomes'];
+      const outcome = decideSendOutcome(true, { alreadySent: true, channelOutcomes: malformed }, 'sms', false);
+      expect(outcome.retryChannel).toBe('sms');
+      expect(outcome.retryGate).toBe('typed-yes');
+    });
+
+    it('an invalid `outcome` value (neither "sent" nor "failed") does not throw — degrades to unknown', () => {
+      const malformed = {
+        sms: { outcome: 'pending', error: null, at: '2026-08-01T00:00:00Z' },
+        email: null,
+      } as unknown as SendResponseBody['channelOutcomes'];
+      const outcome = decideSendOutcome(true, { alreadySent: true, channelOutcomes: malformed }, 'sms', false);
+      expect(outcome.retryChannel).toBe('sms');
+      expect(outcome.retryGate).toBe('typed-yes');
+    });
+
+    it('a non-string `at` field does not throw — degrades to unknown', () => {
+      const malformed = {
+        sms: { outcome: 'sent', error: null, at: null },
+        email: null,
+      } as unknown as SendResponseBody['channelOutcomes'];
+      const outcome = decideSendOutcome(true, { alreadySent: true, channelOutcomes: malformed }, 'sms', false);
+      // A malformed 'sent' entry does NOT get to claim 'delivered' — it fails
+      // validation entirely and falls back to 'unknown', same as no row ever
+      // having been logged. Still offered, still typed-yes.
+      expect(outcome.retryChannel).toBe('sms');
       expect(outcome.retryGate).toBe('typed-yes');
     });
   });
