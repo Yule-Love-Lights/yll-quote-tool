@@ -256,21 +256,43 @@ function miniSurfaceLabel(surface: string | null): string {
   return surface && surface in MINI_SURFACE_LABELS ? MINI_SURFACE_LABELS[surface as Surface] : 'group';
 }
 
-// Row 269: renders one channel's classified delivery status for the
-// already-sent notice below — see alreadySentChannels' own state comment for
-// where these classifications come from (classifyChannelOutcome,
-// pipelineSendOutcome.ts).
+// Row 269 fix round FIX 2 (two-lens MED — dishonest null-case copy): renders
+// one channel's classified delivery status for the already-sent notice below
+// — see alreadySentChannels' own state comment for where these
+// classifications come from (classifyChannelOutcome, pipelineSendOutcome.ts).
+//
+// The old 'unknown' wording ("X delivery is unconfirmed") asserted an
+// ATTEMPT was made and merely unverified — false in two very common real
+// cases: (a) a deliberately single-channel send (sendActions() in
+// pipelineActions.ts offers independent "Send email"/"Send text" actions,
+// and the send route returns before logQuoteDelivery for whichever channel
+// wasn't requested, so that channel has zero rows forever); (b) delivery
+// logging only began 2026-08-12 (#250) — a majority of quotes sent before
+// that date have no delivery rows at all despite having gone out. `hadAttempt`
+// (set at the call site below from whether channelOutcomes had a non-null
+// entry for this channel, not a new piece of component state — same
+// alreadySentChannels object, one more field) distinguishes that genuine
+// "nothing on record" case from a timeout-hedged 'failed' row, which really
+// IS "attempted, outcome unknown" (classifyChannelOutcome folds both into
+// the same 'unknown' classification — see that function's own doc comment
+// for why — so classification alone can't tell them apart).
 function channelDeliveryPhrase(
   label: string,
-  info: { classification: ChannelDeliveryClassification; at: string | null } | undefined,
+  info: { classification: ChannelDeliveryClassification; at: string | null; hadAttempt: boolean } | undefined,
 ): string {
-  if (!info) return `${label} status unknown`;
+  if (!info) return `${label} has no delivery on record`;
   if (info.classification === 'delivered') {
     const dateStr = info.at ? new Date(info.at).toLocaleDateString() : null;
-    return `${label} was delivered${dateStr ? ` ${dateStr}` : ''}`;
+    // Row 269 fix round FIX 2: was "was delivered" — outcome:'sent' only
+    // means GHL's API accepted the request without throwing; there is no
+    // delivery RECEIPT anywhere in this codebase. Reworded to claim only
+    // what's actually true.
+    return `${label} went out${dateStr ? ` ${dateStr}` : ''}`;
   }
   if (info.classification === 'failed') return `${label} failed`;
-  return `${label} delivery is unconfirmed`;
+  return info.hadAttempt
+    ? `${label} timed out (outcome unknown — may have gone through anyway)`
+    : `${label} has no delivery on record`;
 }
 
 // Row 269 fix round FIX 4 (technical MED — unchecked `as` cast at the
@@ -671,9 +693,16 @@ export default function QuoteBuilder({
   // already-sent notice's per-channel copy and (below) the scoped redeliver
   // offer replacing the old hardcoded 'both'. Null until an alreadySent
   // response is seen; cleared on any fresh send attempt.
+  // Row 269 fix round FIX 2: `hadAttempt` added (not a new useState — same
+  // object, one more field) so channelDeliveryPhrase can tell "no delivery
+  // row was ever logged for this channel" (entry was null) apart from "a row
+  // exists but it's a timeout-hedged failure" (entry present, classification
+  // still 'unknown') — classifyChannelOutcome collapses both into 'unknown'
+  // on purpose (see its own doc comment), so the raw entry's presence is the
+  // only place left to recover that distinction.
   const [alreadySentChannels, setAlreadySentChannels] = useState<{
-    sms: { classification: ChannelDeliveryClassification; at: string | null };
-    email: { classification: ChannelDeliveryClassification; at: string | null };
+    sms: { classification: ChannelDeliveryClassification; at: string | null; hadAttempt: boolean };
+    email: { classification: ChannelDeliveryClassification; at: string | null; hadAttempt: boolean };
   } | null>(null);
   const [copiedUrl, setCopiedUrl] = useState(false);
   // GHL stage-sync result of the last send: a non-null message means the quote
@@ -3149,9 +3178,13 @@ export default function QuoteBuilder({
         const emailEntry = parseChannelOutcomeEntry(data.channelOutcomes?.email);
         const smsClass = classifyChannelOutcome(smsEntry);
         const emailClass = classifyChannelOutcome(emailEntry);
+        // FIX 2: hadAttempt distinguishes "no delivery row logged" from "a
+        // row exists but it's a timeout-hedged failure" — see
+        // channelDeliveryPhrase's own comment for why classification alone
+        // can't tell the two apart.
         setAlreadySentChannels({
-          sms: { classification: smsClass, at: smsEntry?.at ?? null },
-          email: { classification: emailClass, at: emailEntry?.at ?? null },
+          sms: { classification: smsClass, at: smsEntry?.at ?? null, hadAttempt: smsEntry !== null },
+          email: { classification: emailClass, at: emailEntry?.at ?? null, hadAttempt: emailEntry !== null },
         });
         const notConfirmed: ('sms' | 'email')[] = [];
         if (smsClass !== 'delivered') notConfirmed.push('sms');
@@ -6188,8 +6221,13 @@ export default function QuoteBuilder({
                     {alreadySentChannels
                       ? `${channelDeliveryPhrase('SMS', alreadySentChannels.sms)}; ${channelDeliveryPhrase('email', alreadySentChannels.email)}.`
                       : ''}
+                    {/* Row 269 fix round FIX 2 (two-lens MED): was "Both
+                        channels are confirmed delivered" — outcome:'sent'
+                        only means GHL's API accepted the request without
+                        throwing; there's no delivery RECEIPT anywhere in
+                        this codebase. Reworded to claim only what's true. */}
                     {deliveryRetryChannel === null &&
-                      ' Both channels are confirmed delivered — copy the Customer Portal URL above if the customer needs it again.'}
+                      ' Both channels went out successfully — copy the Customer Portal URL above if the customer needs it again.'}
                   </p>
                 )}
                 {/* No `disabled={sendStatus === 'sending'}` here (and on its
