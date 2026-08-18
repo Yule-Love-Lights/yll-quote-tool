@@ -104,24 +104,27 @@ const MAX_CODE_GEN_ATTEMPTS = 5;
  * return shape, so its 7+ existing callers (the portal approved page, the
  * customer dashboard panel, three webhook/job routes) are unaffected.
  *
- * Not race-safe against a concurrent mint for the SAME customer, since this
- * read and the later ensureReferralCode call are two separate round-trips.
- * The reachable window is narrower than that sounds, though. In the
- * request-link route the per-email cooldown (checkRateLimitByKey) runs
- * BEFORE this read, and its check-and-increment is synchronous with no await
- * inside, so on Node's single thread two requests carrying the SAME
- * submitted email cannot both get past it: the loser returns before reaching
- * here. What remains is two DIFFERENT submitted emails resolving to the same
- * underlying contact, since each gets its own cooldown key.
+ * Not atomic by itself (this read and the later ensureReferralCode call are
+ * two separate round-trips), but for its one current caller (POST
+ * /api/referrals/request-link) the obvious risk, a same-email double
+ * submission, is already closed: a per-normalized-email cooldown
+ * (checkRateLimitByKey) runs synchronously, with no await of its own,
+ * before this is ever reached, so only one request per MATCHED GoHighLevel
+ * contact can ever get past the cooldown. A match requires the submitted
+ * email to equal that contact's own stored email exactly, so two requests
+ * that share a contact always share a cooldown key too, and the loser
+ * returns before reaching here.
  *
- * Accepted, because the worst case there is small: ensureReferralCode's own
- * claim is race-safe (a conditional UPDATE ... WHERE referral_code IS NULL),
- * so both callers converge on the identical code. The only casualties are a
- * duplicate link email and the GHL enrollment-date field being written twice
- * milliseconds apart, last write wins. Nothing in the credit or expiry logic
- * reads that field. The bug this guard exists to prevent is different and
- * still prevented: a stale value from an UNRELATED, much later resubmission
- * overwriting a real enrollment date.
+ * What remains is narrower: two DIFFERENT GoHighLevel contacts (their own
+ * emails, their own cooldown keys) that findOrCreateCustomer resolves onto
+ * the SAME customer row. Even that doesn't collide, because the caller
+ * stamps the enrollment date on each request's own matched contact id, not
+ * on the shared row, so two near-simultaneous "first" reads produce two
+ * independent, correct per-contact stamps rather than one field
+ * overwritten. The one value that IS shared, referral_code itself, is
+ * protected separately by ensureReferralCode's own conditional claim. A
+ * future caller without an equivalent per-identity gate would need to
+ * revisit this.
  */
 export async function hasReferralCode(customerId: string): Promise<boolean> {
   const sb = svc();

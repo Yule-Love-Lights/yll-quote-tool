@@ -232,8 +232,8 @@ async function findAndSendIfMatch(email: string): Promise<void> {
     // Review fix 4: read BEFORE minting, so "false" means ensureReferralCode
     // below is about to create a code that didn't exist a moment ago (a
     // genuine first enrollment). Used only to gate the enrollment-date stamp
-    // further down, see hasReferralCode's own doc comment for the accepted
-    // race with a truly simultaneous double-submission.
+    // further down, see hasReferralCode's own doc comment for why a
+    // same-email race is closed and what narrower window remains.
     const isFirstEnrollment = !(await hasReferralCode(customer.id));
 
     const code = await ensureReferralCode(customer.id);
