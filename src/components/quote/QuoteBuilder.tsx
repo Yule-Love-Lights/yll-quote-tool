@@ -70,6 +70,7 @@ import {
   isTimeoutHedgedFailure,
   retryOfferFor,
   type ChannelDeliveryClassification,
+  type RetryGate,
 } from '@/components/admin/pipelineSendOutcome';
 
 // The Konva design editor touches the DOM/canvas, so load it client-only.
@@ -3351,21 +3352,51 @@ export default function QuoteBuilder({
   // otherwise) so a declined/mistyped gate makes ZERO network requests —
   // handleRetryDelivery's own fetch is the only thing that reaches the wire.
 
-  // The alreadySent-origin button: always typed-YES, unconditionally,
-  // because the ENTIRE reason this button exists is that a click on it may
-  // be re-texting/re-emailing a customer who could already have the quote
-  // from the original send (mirrors decideSendOutcome's alreadySent branch,
-  // pipelineSendOutcome.ts, which gates the identical PipelineActionsMenu
-  // case the same fixed way).
+  // The alreadySent-origin button. Row 269 fix round FIX 3 (MED —
+  // over-gating): used to be always typed-YES, unconditionally, with no
+  // regard for WHY deliveryRetryChannel is being offered. alreadySentChannels
+  // (state, set when the alreadySent response was processed — see its own
+  // comment) carries per-channel classification for the SAME channel(s)
+  // deliveryRetryChannel offers. A channel classified 'failed' there is a
+  // CONFIRMED rejection on the EARLIER send (the customer verifiably got
+  // nothing on that channel), so a duplicate is structurally impossible and
+  // the low-friction plain confirm from RetryGate's doc comment
+  // (pipelineSendOutcome.ts) is correct — over-gating trains operators to
+  // type YES reflexively, eroding the gate where it actually matters. A
+  // channel classified 'unknown' (no delivery row logged, or a
+  // timeout-hedged failure) keeps typed-YES: the customer may already have
+  // it. The strictest classification among the offered channels wins for a
+  // 'both' offer (same reasoning as retryOfferFor's timeoutHedged param,
+  // below, and decideSendOutcome's identical alreadySent-branch rule for
+  // PipelineActionsMenu — row 269 fix round FIX 1).
+  //
+  // retryOfferFor does NOT fit here (tried first, per the fix brief): its
+  // hedged branch is worded "This attempt included a timeout" — correct for
+  // handleScopedRetryClick below, where THIS click's own delivery attempt
+  // just failed, but wrong here, where the ambiguous outcome belongs to an
+  // EARLIER send, not this click. Kept as its own small, local gate
+  // derivation with wording specific to the alreadySent context instead of
+  // reusing a function whose copy would misdescribe what actually happened.
   const handleForceRedeliverClick = async () => {
     if (!deliveryRetryChannel) return;
     const label = deliveryRetryChannel === 'both' ? 'SMS + email' : deliveryRetryChannel.toUpperCase();
-    const typed = window.prompt(
-      `This quote was already sent and the customer may already have it. Type YES to redeliver ${label} now:`,
-    );
-    if (typed === null) return; // Cancel — deliberate, stays silent.
-    if (typed.trim().toUpperCase() !== 'YES') {
-      window.alert('Not redelivered — type YES exactly to confirm.');
+    const offeredClassifications: ChannelDeliveryClassification[] =
+      deliveryRetryChannel === 'both'
+        ? [alreadySentChannels?.sms.classification ?? 'unknown', alreadySentChannels?.email.classification ?? 'unknown']
+        : [alreadySentChannels?.[deliveryRetryChannel].classification ?? 'unknown'];
+    const gate: RetryGate = offeredClassifications.some((c) => c === 'unknown') ? 'typed-yes' : 'confirm';
+    if (gate === 'typed-yes') {
+      const typed = window.prompt(
+        `This quote was already sent and the customer may already have it. Type YES to redeliver ${label} now:`,
+      );
+      if (typed === null) return; // Cancel — deliberate, stays silent.
+      if (typed.trim().toUpperCase() !== 'YES') {
+        window.alert('Not redelivered — type YES exactly to confirm.');
+        return;
+      }
+    } else if (
+      !window.confirm(`This quote was already sent, but ${label} confirmed failed to deliver on that send — redeliver it now?`)
+    ) {
       return;
     }
     await handleRetryDelivery();
