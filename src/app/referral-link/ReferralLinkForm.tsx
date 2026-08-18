@@ -14,6 +14,15 @@ const inputClass =
   'w-full rounded-lg bg-[#060B0F] border border-[#1F2A23] px-3.5 py-2.5 text-[15px] text-[#F4ECD8] placeholder:text-[#5A5648] focus:outline-none focus:ring-2 focus:ring-[#FFB744]';
 const labelClass = 'block text-[11px] font-semibold uppercase tracking-[0.18em] text-[#FFB744] mb-1.5';
 
+// Review fix 1 (naldo/referral-self-serve): this page has no header, nav, or
+// footer, so a phone number on the page itself is the ONLY way a visitor who
+// hits an error can reach a person. Same env-override-with-fallback pattern
+// as src/app/portal/error.tsx and src/components/portal/dark/PersonalContact.tsx.
+const PHONE = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || '(631) 517-0186';
+const TEL_HREF = `tel:${PHONE.replace(/[^\d+]/g, '')}`;
+const phoneLinkClass =
+  'text-[#FFB744] underline underline-offset-2 hover:text-[#FFC565] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0D1519] rounded-sm';
+
 /**
  * The post-submit confirmation, verbatim copy. Pure-render (no hooks) so it
  * can be unit tested with renderToStaticMarkup, same pattern as
@@ -26,23 +35,50 @@ export function ReferralLinkSuccess() {
       <p className="font-display text-[22px] md:text-[26px] font-semibold text-[#F4ECD8]">Check your inbox.</p>
       <p className="mt-3 text-[15px] text-[#A89F87] leading-[1.6]">
         If that email&apos;s in our system, your referral link is on its way, give it a few minutes and peek at
-        spam if it&apos;s not there yet. Still nothing by tonight? Call or text us at (631) 517-0186 and
-        we&apos;ll send it right over.
+        spam if it&apos;s not there yet. Still nothing by tonight? Call or text us at{' '}
+        <a href={TEL_HREF} className={phoneLinkClass}>
+          {PHONE}
+        </a>{' '}
+        and we&apos;ll send it right over.
       </p>
     </div>
+  );
+}
+
+/**
+ * The error state's message content. Extracted (mirrors ReferralLinkSuccess
+ * above) so it can be unit tested with renderToStaticMarkup, no jsdom
+ * needed. `serverError` is a genuine server-supplied message (e.g. a 400
+ * validation error) and renders verbatim, no phone number attached, since
+ * those are already actionable by the visitor. null covers the OTHER two
+ * cases handleSubmit can reach below (a non-ok response with no `error`
+ * field, and the catch-block network-failure case) with the same generic
+ * fallback plus a tappable phone link, since a person hitting either has no
+ * other way to reach us (this page has no header, nav, or footer).
+ */
+export function ReferralLinkErrorMessage({ serverError }: { serverError: string | null }) {
+  if (serverError) return <>{serverError}</>;
+  return (
+    <>
+      Something went wrong. Please call or text us instead at{' '}
+      <a href={TEL_HREF} className={phoneLinkClass}>
+        {PHONE}
+      </a>
+      .
+    </>
   );
 }
 
 export function ReferralLinkForm() {
   const [email, setEmail] = useState('');
   const [status, setStatus] = useState<'idle' | 'submitting' | 'done' | 'error'>('idle');
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [serverError, setServerError] = useState<string | null>(null);
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!email.trim()) return;
     setStatus('submitting');
-    setErrorMsg(null);
+    setServerError(null);
     const data = new FormData(e.currentTarget);
     try {
       const res = await fetch('/api/referrals/request-link', {
@@ -52,13 +88,13 @@ export function ReferralLinkForm() {
       });
       const json = await res.json().catch(() => ({}) as { ok?: boolean; error?: string });
       if (!res.ok || !json.ok) {
-        setErrorMsg(json.error || 'Something went wrong. Please call or text us instead.');
+        setServerError(json.error || null);
         setStatus('error');
         return;
       }
       setStatus('done');
     } catch {
-      setErrorMsg('Something went wrong. Please call or text us instead.');
+      setServerError(null);
       setStatus('error');
     }
   }
@@ -99,9 +135,9 @@ export function ReferralLinkForm() {
           autoComplete="email"
         />
       </div>
-      {errorMsg && (
+      {status === 'error' && (
         <p role="alert" className="text-[13px] text-[#E88]">
-          {errorMsg}
+          <ReferralLinkErrorMessage serverError={serverError} />
         </p>
       )}
       <button
