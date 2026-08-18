@@ -118,7 +118,7 @@ describe('decideSendOutcome', () => {
       expect(outcome.retryChannel).toBe('sms');
       expect(outcome.retryGate).toBe('typed-yes');
       expect(outcome.retryPrompt).toBe(
-        'This attempt included a timeout — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver text now:',
+        "This attempt's outcome is unknown — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver text now:",
       );
     });
 
@@ -147,7 +147,7 @@ describe('decideSendOutcome', () => {
       expect(outcome.retryChannel).toBe('email');
       expect(outcome.retryGate).toBe('typed-yes');
       expect(outcome.retryPrompt).toBe(
-        'This attempt included a timeout — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver email now:',
+        "This attempt's outcome is unknown — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver email now:",
       );
     });
 
@@ -193,7 +193,7 @@ describe('decideSendOutcome', () => {
       expect(outcome.retryChannel).toBe('both');
       expect(outcome.retryGate).toBe('typed-yes');
       expect(outcome.retryPrompt).toBe(
-        'This attempt included a timeout — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver email + text now:',
+        "This attempt's outcome is unknown — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver email + text now:",
       );
     });
 
@@ -207,7 +207,7 @@ describe('decideSendOutcome', () => {
       );
       expect(outcome.retryGate).toBe('typed-yes');
       expect(outcome.retryPrompt).toBe(
-        'This attempt included a timeout — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver email + text now:',
+        "This attempt's outcome is unknown — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver email + text now:",
       );
     });
 
@@ -224,7 +224,7 @@ describe('decideSendOutcome', () => {
       );
       expect(outcome.retryGate).toBe('typed-yes');
       expect(outcome.retryPrompt).toBe(
-        'This attempt included a timeout — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver text again:',
+        "This attempt's outcome is unknown — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver text again:",
       );
     });
   });

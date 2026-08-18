@@ -52,18 +52,30 @@ export type SendResponseBody = {
 // structurally impossible on a channel that genuinely just failed.
 //
 // Row 290 fix (customer MED): that "impossible" claim is FALSE for a GHL
-// TIMEOUT failure. The send route's deliveryErrorMessage()/
-// timeoutHedgedErrorMessage() (src/app/api/quotes/[id]/send/route.ts) mark a
-// timed-out SMS/email as outcome UNKNOWN, not confirmed-failed — GHL may
-// have already delivered it before our socket gave up waiting (the
-// "timeout — " DELIVERY_TIMEOUT_ERROR_PREFIX lead, src/lib/quoteDeliveries.
-// ts). Redelivering that channel on a plain confirm risks a REAL duplicate
-// SMS/email. So 'typed-yes' actually covers TWO cases sharing the same risk
-// (the customer may already have the quote) and the same mitigation: the
-// fresh-send alreadySent path below, and any partial/502 failure whose error
-// detail carries the timeout-hedge prefix (see isTimeoutHedgedFailure +
-// retryOfferFor below) — the real invariant is "impossible EXCEPT a
-// timeout-hedged outcome", not unconditionally impossible.
+// OUTCOME-UNKNOWN failure. The send route's deliveryErrorMessage()/
+// timeoutHedgedErrorMessage() (src/app/api/quotes/[id]/send/route.ts) mark an
+// SMS/email whose true delivery result we never learned as outcome UNKNOWN,
+// not confirmed-failed — GHL may have already delivered it before we lost the
+// ability to confirm that (the "timeout — " DELIVERY_TIMEOUT_ERROR_PREFIX
+// lead, src/lib/quoteDeliveries.ts). Redelivering that channel on a plain
+// confirm risks a REAL duplicate SMS/email. So 'typed-yes' actually covers
+// TWO cases sharing the same risk (the customer may already have the quote)
+// and the same mitigation: the fresh-send alreadySent path below, and any
+// partial/502 failure whose error detail carries the outcome-unknown-hedge
+// prefix (see isTimeoutHedgedFailure + retryOfferFor below) — the real
+// invariant is "impossible EXCEPT an outcome-unknown-hedged failure", not
+// unconditionally impossible.
+//
+// Row 269 fix round 2 (delta-verify HIGH): "outcome-unknown-hedged" is wider
+// than a literal request timeout as of this round — the send route now
+// applies the SAME prefix whenever it never received a definitive HTTP
+// response from GHL (a socket reset, DNS failure, connection refused, or our
+// own timeout all qualify; see timeoutHedgedErrorMessage's comment in the
+// send route for the full reasoning). This file's own logic (a substring
+// check on the prefix) is unchanged — only what upstream writes that prefix
+// FOR has widened, so any comment here saying "timeout" specifically means
+// "whatever the send route currently hedges," not literally request-timeout-
+// only.
 //
 // The caller's alert() immediately precedes the retry offer, and
 // alert()/confirm() both dismiss/accept under the Enter key, so a reflexive
@@ -117,17 +129,22 @@ function channelLabel(channel: Channel): string {
 }
 
 // Row 290: the exact prefix deliveryErrorMessage()/timeoutHedgedErrorMessage()
-// (src/app/api/quotes/[id]/send/route.ts) write onto smsError/emailError when
-// a send TIMES OUT rather than getting a confirmed rejection from HighLevel —
-// GHL may have already delivered it before our socket gave up waiting. This
-// is a duplicated literal, not an import of quoteDeliveries.ts's exported
-// DELIVERY_TIMEOUT_ERROR_PREFIX: that module pulls in the server-only
-// Supabase service client (getSupabaseServiceClient), and this file is
-// imported by PipelineActionsMenu.tsx ('use client') — importing it here
-// would drag that server-only chain into the browser bundle (the #52/S18
-// class of bug). pipelineSendOutcome.test.ts builds its timeout fixtures
-// from the REAL exported constant, so any drift between the two copies fails
-// a test instead of going unnoticed.
+// (src/app/api/quotes/[id]/send/route.ts) write onto smsError/emailError
+// whenever we never got a definitive HTTP response back from HighLevel,
+// rather than a confirmed rejection — GHL may have already delivered it
+// before we lost the ability to confirm that. Row 269 fix round 2
+// (delta-verify HIGH): this is NOT limited to a literal request timeout — a
+// socket reset, DNS failure, connection refused, or any other non-status-
+// bearing failure gets the identical prefix now (see timeoutHedgedErrorMessage
+// 's comment in the send route for why "our own timeout" was too narrow a
+// discriminator). This is a duplicated literal, not an import of
+// quoteDeliveries.ts's exported DELIVERY_TIMEOUT_ERROR_PREFIX: that module
+// pulls in the server-only Supabase service client (getSupabaseServiceClient),
+// and this file is imported by PipelineActionsMenu.tsx ('use client') —
+// importing it here would drag that server-only chain into the browser
+// bundle (the #52/S18 class of bug). pipelineSendOutcome.test.ts builds its
+// timeout fixtures from the REAL exported constant, so any drift between the
+// two copies fails a test instead of going unnoticed.
 const TIMEOUT_HEDGE_PREFIX = 'timeout — ';
 
 // `.includes`, not `.startsWith`: body.error/body.messageError can be TWO
@@ -170,9 +187,11 @@ export function isTimeoutHedgedFailure(detail: string | undefined): boolean {
 // scoped redeliver offer.
 //
 // 'sent' -> 'delivered': a confirmed success, never offered for redeliver.
-// 'failed' with a timeout-hedged error -> 'unknown': same reasoning as
-// isTimeoutHedgedFailure above — GHL may have delivered it anyway before our
-// socket gave up waiting, so this is NOT a confirmed non-delivery.
+// 'failed' with an outcome-unknown-hedged error -> 'unknown': same reasoning
+// as isTimeoutHedgedFailure above — GHL may have delivered it anyway even
+// though we never got a definitive answer back (row 269 fix round 2: not
+// only a literal timeout — see that function's doc comment), so this is NOT
+// a confirmed non-delivery.
 // 'failed' otherwise -> 'failed': a confirmed rejection.
 // null/undefined (no delivery row was ever logged for this channel, or the
 // read itself failed and channelOutcomes is missing entirely) -> 'unknown':
@@ -232,8 +251,18 @@ export function retryOfferFor(
     // doc comment above for why that's the real granularity), so the copy
     // is worded to stay true for BOTH the pure and mixed shapes without
     // naming which specific channel is which.
+    //
+    // Row 269 fix round 2 (delta-verify HIGH, found while widening the
+    // upstream invariant): was "This attempt included a timeout —", which
+    // asserted the SPECIFIC cause was a timeout. It no longer always is — the
+    // send route now hedges the identical way for a socket reset, DNS
+    // failure, or connection refused (any non-definitive GHL response; see
+    // timeoutHedgedErrorMessage's comment in the send route), and this
+    // boolean can't distinguish those from a literal timeout. Reworded to the
+    // true, cause-agnostic claim: the outcome is unknown, not specifically
+    // that it timed out.
     return {
-      retryPrompt: `This attempt included a timeout — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver ${channelLabel(channel)} ${isRetry ? 'again' : 'now'}:`,
+      retryPrompt: `This attempt's outcome is unknown — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver ${channelLabel(channel)} ${isRetry ? 'again' : 'now'}:`,
       retryGate: 'typed-yes',
     };
   }

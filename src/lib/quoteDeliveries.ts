@@ -44,17 +44,27 @@ export type QuoteDeliveryInput = {
 const DELIVERY_LOG_TIMEOUT_MS = 5_000;
 
 // #264 round 2, FIX 8: marks a 'failed' row whose TRUE delivery outcome is
-// UNKNOWN — a timed-out send whose GHL request may have still gone through
-// before our socket gave up waiting — rather than a CONFIRMED rejection (see
-// deliveryErrorMessage() in the send route, the one writer of this prefix).
-// quote_deliveries.outcome has no third "unknown" state (see the migration's
-// CHECK constraint), so this is the only durable signal distinguishing the
-// two cases. A future "failed deliveries" report/query over this table
-// should carve rows starting with this prefix out separately (or at minimum
-// not present them as confirmed failures) rather than treating every
-// outcome='failed' row identically. Exported (not a private route.ts
-// literal) so a report-writer has one canonical string to match on instead
-// of re-deriving/duplicating it.
+// UNKNOWN rather than a CONFIRMED rejection (see deliveryErrorMessage() in
+// the send route, the one writer of this prefix). quote_deliveries.outcome
+// has no third "unknown" state (see the migration's CHECK constraint), so
+// this is the only durable signal distinguishing the two cases. A future
+// "failed deliveries" report/query over this table should carve rows
+// starting with this prefix out separately (or at minimum not present them
+// as confirmed failures) rather than treating every outcome='failed' row
+// identically. Exported (not a private route.ts literal) so a report-writer
+// has one canonical string to match on instead of re-deriving/duplicating it.
+//
+// Row 269 fix round 2 (delta-verify HIGH): the name/lead text still says
+// "timeout" but the invariant it marks is wider than that now — ANY outcome-
+// unknown delivery failure, of which our own request timing out is only ONE
+// case. The others (a socket reset, DNS failure, connection refused, or any
+// other error that isn't a definitive HTTP response from GHL — see
+// timeoutHedgedErrorMessage's comment in the send route for the full
+// reasoning) carry this exact same prefix now. The literal VALUE is left
+// unchanged on purpose — it's a duplicated literal in pipelineSendOutcome.ts
+// with a drift test pinning byte-equality against this export, so changing
+// the string is a separate, coordinated change if it's ever wanted; this
+// comment update only corrects what the prefix means.
 export const DELIVERY_TIMEOUT_ERROR_PREFIX = 'timeout — ';
 
 // Row 269: the alreadySent short-circuit (send route, both the fresh-send

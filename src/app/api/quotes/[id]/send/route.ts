@@ -128,30 +128,59 @@ function hlErrorMessage(err: unknown): string {
 }
 
 // #264 honesty nuance: quote_deliveries.outcome is a binary CHECK constraint
-// ('sent' | 'failed' — see migrations/2026-08-12-quote-deliveries.sql), so a
-// timed-out send still has to log as 'failed' (the conservative choice — it
-// offers a delivery retry rather than silently trusting an unconfirmed send).
-// But a timeout is NOT a confirmed rejection: GHL may have already received
-// and even fully processed the request before our socket gave up waiting on
-// the response, so the error text must say the outcome is unknown rather than
-// reading like a confirmed failure. HighLevelError#timedOut (set only by
-// ghlFetch's own timeout branch) is the discriminator. The "timeout — " lead
-// is DELIVERY_TIMEOUT_ERROR_PREFIX (src/lib/quoteDeliveries.ts) — the one
-// exported constant a future reporting query matches on, not a private
-// literal duplicated here.
+// ('sent' | 'failed' — see migrations/2026-08-12-quote-deliveries.sql), so an
+// outcome-unknown send still has to log as 'failed' (the conservative choice
+// — it offers a delivery retry rather than silently trusting an unconfirmed
+// send). But an outcome-unknown failure is NOT a confirmed rejection: GHL may
+// have already received and even fully processed the request before we lost
+// the ability to read its response, so the error text must say the outcome
+// is unknown rather than reading like a confirmed failure. The "timeout — "
+// lead is DELIVERY_TIMEOUT_ERROR_PREFIX (src/lib/quoteDeliveries.ts) — the
+// one exported constant a future reporting query matches on, not a private
+// literal duplicated here (kept as the literal string despite the name no
+// longer being timeout-exclusive — see that constant's own comment).
 //
-// #264 round 2, FIX 7: the identical ambiguity applies to a timed-out GHL
-// STAGE move (updateOpportunity/createOpportunity/etc. inside ghlStageChain
-// below) — the card may have already advanced before our socket gave up
-// waiting — so stageError gets the same hedge, via this one parameterized
-// helper rather than a near-duplicate third function. stageError's home
-// (quotes.ghl_sync_error) is free text with no CHECK constraint forcing a
-// binary read, unlike quote_deliveries.outcome, but the honesty reasoning —
-// don't let an unconfirmed timeout read like a confirmed rejection — is the
-// same either way.
+// Row 269 fix round 2 (delta-verify HIGH): round 1 keyed this hedge off
+// HighLevelError#timedOut alone — set ONLY by ghlFetch's own abort branch
+// (src/lib/integrations/highlevel.ts), which fires when OUR controller aborts
+// the request after GHL_TIMEOUT_MS. That left a real gap: ghlFetch's outer
+// `catch (err) { if (controller.signal.aborted) throw timeoutError(...); throw
+// err; }` rethrows ANY other connect-phase failure (a socket reset, DNS
+// failure, connection refused — all of these can happen well inside the 10s
+// budget, with no abort involved) as a raw, non-timedOut error. That raw
+// error was being read as a CONFIRMED failure — round 1 downgraded the
+// redeliver dialog to a plain window.confirm for exactly that "confirmed"
+// case, which meant a genuine socket-reset-after-GHL-accepted-the-send could
+// get a low-friction redeliver click and a real duplicate customer message.
+//
+// The fix: the discriminator is now "did we receive a definitive answer from
+// GHL?", not "was this our own timeout?". We only have a definitive answer
+// when GHL actually returned an HTTP response — i.e. a HighLevelError
+// carrying a numeric `status` (set on ghlFetch's `!res.ok` path, and also by
+// the one other status-bearing throw in this codebase, the 409 "active
+// opportunity" conflict in resurrectDuplicateOpportunity — which correctly
+// stays unhedged too: that status is derived from a SUCCESSFUL GHL response
+// to a real GET, not a network ambiguity). Everything else — our own abort,
+// a socket reset, DNS failure, connection refused, or any other error that
+// isn't a status-bearing HighLevelError — never produced a definitive
+// outcome and is hedged. This deliberately over-hedges connection-refused
+// cases that structurally could never have reached GHL at all; that's the
+// correct direction (one extra operator keystroke vs. a real duplicate
+// customer message).
+//
+// #264 round 2, FIX 7: the identical ambiguity applies to a GHL STAGE move
+// whose true outcome is unknown (updateOpportunity/createOpportunity/etc.
+// inside ghlStageChain below) — the card may have already advanced before we
+// lost the ability to confirm it — so stageError gets the same hedge, via
+// this one parameterized helper rather than a near-duplicate third function.
+// stageError's home (quotes.ghl_sync_error) is free text with no CHECK
+// constraint forcing a binary read, unlike quote_deliveries.outcome, but the
+// honesty reasoning — don't let an unconfirmed outcome read like a confirmed
+// rejection — is the same either way.
 function timeoutHedgedErrorMessage(err: unknown, whatsUnknown: string, mayHaveAlready: string): string {
   const message = hlErrorMessage(err);
-  return err instanceof HighLevelError && err.timedOut
+  const definitiveGhlResponse = err instanceof HighLevelError && typeof err.status === 'number';
+  return !definitiveGhlResponse
     ? `${DELIVERY_TIMEOUT_ERROR_PREFIX}${whatsUnknown} outcome unknown (GHL may have ${mayHaveAlready}): ${message}`
     : message;
 }

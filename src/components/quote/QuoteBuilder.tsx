@@ -291,8 +291,16 @@ function channelDeliveryPhrase(
     return `${label} went out${dateStr ? ` ${dateStr}` : ''}`;
   }
   if (info.classification === 'failed') return `${label} failed`;
+  // Row 269 fix round 2 (delta-verify HIGH, found while widening the
+  // upstream invariant): was "timed out (outcome unknown — may have gone
+  // through anyway)", naming a specific cause. The upstream hedge this
+  // classification is built from (isTimeoutHedgedFailure, pipelineSendOutcome
+  // .ts) is no longer timeout-exclusive — a socket reset, DNS failure, or
+  // connection refused all get the identical 'unknown' classification now
+  // (see classifyChannelOutcome's doc comment) — so this string can no longer
+  // claim the cause was specifically a timeout.
   return info.hadAttempt
-    ? `${label} timed out (outcome unknown — may have gone through anyway)`
+    ? `${label} — outcome unknown (may have gone through anyway)`
     : `${label} has no delivery on record`;
 }
 
@@ -3202,14 +3210,18 @@ export default function QuoteBuilder({
         // #264 round 2, FIX 3: data.messageError already carries the
         // backend's own honesty hedge (deliveryErrorMessage in route.ts —
         // "timeout — delivery outcome unknown (GHL may have still delivered
-        // it): …" when the failure was a timeout our socket gave up on, vs.
-        // the real rejection text otherwise). This hardcoded sentence was
-        // silently discarding it, so a channel that actually timed out (the
-        // most likely real-world shape) rendered a confidently wrong
-        // "failed" here even though the backend explicitly did not know
-        // that. Appends it rather than re-deriving a new sentence, mirroring
-        // the existing pattern in src/app/admin/invoices/[id]/page.tsx's
-        // sendBalanceLink (surfaces body.messageError verbatim).
+        // it): …" whenever the failure's true outcome is unknown — a request
+        // timeout, a socket reset, a DNS failure, connection refused, or
+        // anything else short of a definitive HTTP response from GHL (row
+        // 269 fix round 2 widened this beyond literal timeouts — see
+        // timeoutHedgedErrorMessage's comment in the send route), vs. the
+        // real rejection text for a confirmed HTTP-status rejection). This
+        // hardcoded sentence was silently discarding it, so a channel whose
+        // outcome was actually unknown rendered a confidently wrong "failed"
+        // here even though the backend explicitly did not know that. Appends
+        // it rather than re-deriving a new sentence, mirroring the existing
+        // pattern in src/app/admin/invoices/[id]/page.tsx's sendBalanceLink
+        // (surfaces body.messageError verbatim).
         setDeliveryWarning(
           `${failedChannels.map((c: 'sms' | 'email') => c.toUpperCase()).join(' and ')} failed. The other requested channel was delivered.${data.messageError ? ` (${data.messageError})` : ''}`,
         );
@@ -3371,7 +3383,10 @@ export default function QuoteBuilder({
   // PipelineActionsMenu — row 269 fix round FIX 1).
   //
   // retryOfferFor does NOT fit here (tried first, per the fix brief): its
-  // hedged branch is worded "This attempt included a timeout" — correct for
+  // hedged branch is worded "This attempt's outcome is unknown" (row 269 fix
+  // round 2: reworded from the earlier "This attempt included a timeout",
+  // which named the wrong cause once the hedge widened beyond literal
+  // timeouts — see retryOfferFor's own comment) — correct for
   // handleScopedRetryClick below, where THIS click's own delivery attempt
   // just failed, but wrong here, where the ambiguous outcome belongs to an
   // EARLIER send, not this click. Kept as its own small, local gate
