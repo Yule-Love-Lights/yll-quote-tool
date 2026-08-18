@@ -15,7 +15,6 @@ const getThreadMock = vi.fn();
 const listInboxThreadsMock = vi.fn();
 const getAccessTokenMock = vi.fn();
 const isGmailConfiguredMock = vi.fn();
-const modifyThreadMock = vi.fn();
 const modifyMessageMock = vi.fn();
 
 vi.mock('@/lib/integrations/gmail', () => ({
@@ -24,7 +23,6 @@ vi.mock('@/lib/integrations/gmail', () => ({
   getThread: (...args: unknown[]) => getThreadMock(...args),
   isGmailConfigured: (...args: unknown[]) => isGmailConfiguredMock(...args),
   listInboxThreads: (...args: unknown[]) => listInboxThreadsMock(...args),
-  modifyThread: (...args: unknown[]) => modifyThreadMock(...args),
   modifyMessage: (...args: unknown[]) => modifyMessageMock(...args),
 }));
 
@@ -283,45 +281,33 @@ describe('runHandledWriteback — WT-49 (no opportunity write)', () => {
 // (gmail.ts's normalizeGmailThreadTouches) for every customer after the
 // thread's earliest.
 //
-// #288 fix round (staff HIGH): modifyThread is THREAD-wide — Gmail's
-// threads.modify labels/marks-read EVERY message on the thread, so marking
-// one split row Handled would silently stamp sibling customers' still-
-// unworked forwards read/labeled too (a staffer triaging raw Gmail — the
-// tool's own "Reply in Gmail" affordance sends them there — would see an
-// already-handled thread and skip it, reintroducing the buried-lead failure
-// one layer up). The write-back now goes MESSAGE-level (modifyMessage)
-// whenever the row knows its own message id, and only falls back to the
-// thread-wide modifyThread for a genuinely bare, non-composite external_id
-// (a legacy/non-split/non-GML row). modifyThread's URL wants the bare Gmail
-// THREAD id in that fallback — a composite external_id passed straight
-// through would target a nonexistent thread, hence
-// gmailThreadIdFromExternalId's strip (kept as a defensive no-op: today's
-// code never actually reaches it with a composite value — test (iv) below
-// proves the composite+null case skips instead of reaching modifyThread).
-//
-// #288 backfill fix round (staff HIGH, 2nd instance): every real LIVE-FETCH
-// split touch (hybrid or 2+, gmail.ts's normalizeGmailThreadTouches) carries
-// a sourceMessageId — but scripts/backfill-gml-threads.ts's STORED-RAW mode
-// mints composite external_ids (`${threadId}:bf-<epochMs>`) for backfilled
-// rows that predate #787's per-message ids, so sourceMessageId is null on
-// THOSE rows. Falling through to the thread-wide modifyThread for a
-// composite id (as this code used to) re-opens the exact bug above for the
-// backfilled population: marking one buried customer Handled would silently
-// mark every sibling customer's still-unworked forward read/labeled too. Fix:
-// a composite external_id with no sourceMessageId now SKIPS the Gmail
-// write-back entirely — no signal beats a wrong signal, and the write-back is
+// #293 fix round (customer HIGH, 3rd instance of this class): the Gmail
+// write-back is now MESSAGE-level or NOTHING — the old THREAD-wide fallback
+// (modifyThread) is retired entirely. Gmail coalesces multiple different
+// customers' Zapier lead-forwards into one thread whenever they share a
+// subject line, so a thread-wide modify would silently stamp sibling
+// customers' still-unworked forwards read/labeled too (a staffer triaging raw
+// Gmail — the tool's own "Reply in Gmail" affordance sends them there — would
+// see an already-handled thread and skip it, reintroducing the buried-lead
+// failure one layer up). Proven live: 496 gmail rows in prod carry a bare
+// (colon-free) external_id with a NULL source_message_id, and at least 6 of
+// those sit on a thread that also has composite sibling rows — i.e. genuinely
+// on a multi-customer thread. Any row with a null sourceMessageId — whether a
+// composite backfilled id (scripts/backfill-gml-threads.ts mints
+// `${threadId}:bf-<epochMs>`) or a genuinely bare legacy one — now skips the
+// Gmail write-back entirely: no signal beats a wrong signal, and this is
 // best-effort by design (the local handled_at stamp already landed before
-// this runs). See test (iv) below.
-describe('runHandledWriteback — Gmail write-back targeting (#288 GML split + fix round message-level HIGH)', () => {
+// this runs, so skipping loses nothing but the external Gmail label/read-
+// state sync for that one row).
+describe('runHandledWriteback — Gmail write-back targeting (#288 GML split + #293 message-level-or-nothing)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     isGmailConfiguredMock.mockReturnValue(true);
     getAccessTokenMock.mockResolvedValue('token');
-    modifyThreadMock.mockResolvedValue(undefined);
     modifyMessageMock.mockResolvedValue(undefined);
   });
 
-  it('(i) a target with sourceMessageId goes MESSAGE-level: modifyMessage is called with the bare message id, modifyThread is never called', async () => {
+  it('(i) a target with sourceMessageId goes MESSAGE-level: modifyMessage is called with the bare message id', async () => {
     const target: HandledTarget = {
       source: 'gmail',
       externalId: 'thr-abc123:msg-def456',
@@ -334,11 +320,10 @@ describe('runHandledWriteback — Gmail write-back targeting (#288 GML split + f
 
     expect(modifyMessageMock).toHaveBeenCalledTimes(1);
     expect(modifyMessageMock).toHaveBeenCalledWith('token', 'msg-def456', expect.objectContaining({ removeLabelIds: ['UNREAD'] }));
-    expect(modifyThreadMock).not.toHaveBeenCalled();
     expect(sync.gmailLabel).toBe('ok');
   });
 
-  it('(ii) a target with NO sourceMessageId (legacy / non-split row) falls back to THREAD-level modifyThread on the (already-bare) id — existing behavior pinned', async () => {
+  it('(ii) a target with a BARE external_id and NO sourceMessageId (row-293 population: a legacy row predating per-message ids) SKIPS the Gmail write-back entirely — no thread-wide fallback fires', async () => {
     const target: HandledTarget = {
       source: 'gmail',
       externalId: 'thr-abc123',
@@ -349,13 +334,11 @@ describe('runHandledWriteback — Gmail write-back targeting (#288 GML split + f
 
     const sync = await runHandledWriteback(target, 'jason');
 
-    expect(modifyThreadMock).toHaveBeenCalledTimes(1);
-    expect(modifyThreadMock).toHaveBeenCalledWith('token', 'thr-abc123', expect.objectContaining({ removeLabelIds: ['UNREAD'] }));
     expect(modifyMessageMock).not.toHaveBeenCalled();
-    expect(sync.gmailLabel).toBe('ok');
+    expect(sync.gmailLabel).toBe('skipped');
   });
 
-  it('(iv) a composite external_id with NO sourceMessageId (a STORED-RAW backfilled row — scripts/backfill-gml-threads.ts mints `${threadId}:bf-<epochMs>` for these, since stored raw predates #787\'s per-message ids) skips the Gmail write-back entirely: neither modifyMessage nor modifyThread is called, and the outcome is recorded as skipped', async () => {
+  it('(iv) a composite external_id with NO sourceMessageId (a STORED-RAW backfilled row — scripts/backfill-gml-threads.ts mints `${threadId}:bf-<epochMs>` for these, since stored raw predates #787\'s per-message ids) also skips the Gmail write-back entirely, and the outcome is recorded as skipped', async () => {
     const target: HandledTarget = {
       source: 'gmail',
       externalId: 'thr-abc123:bf-1755500000000',
@@ -367,7 +350,6 @@ describe('runHandledWriteback — Gmail write-back targeting (#288 GML split + f
     const sync = await runHandledWriteback(target, 'jason');
 
     expect(modifyMessageMock).not.toHaveBeenCalled();
-    expect(modifyThreadMock).not.toHaveBeenCalled();
     expect(sync.gmailLabel).toBe('skipped');
   });
 
@@ -393,7 +375,6 @@ describe('runHandledWriteback — Gmail write-back targeting (#288 GML split + f
     expect(modifyMessageMock).toHaveBeenCalledTimes(2);
     expect(modifyMessageMock).toHaveBeenNthCalledWith(1, 'token', 'm1', expect.anything());
     expect(modifyMessageMock).toHaveBeenNthCalledWith(2, 'token', 'm2', expect.anything());
-    expect(modifyThreadMock).not.toHaveBeenCalled();
     expect(aliceSync.gmailLabel).toBe('ok');
     expect(bobSync.gmailLabel).toBe('ok');
   });
