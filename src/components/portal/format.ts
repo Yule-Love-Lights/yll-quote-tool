@@ -12,11 +12,13 @@ export function formatUsd(amount: number, opts?: { fraction?: boolean }): string
 }
 
 
-/** Build the What's Included heading without producing "Your The …". */
+// #184 — dropped the "Your " lead entirely: "Your Our Recommendation" / "Your
+// Build Your Own" read as broken English for every package name that isn't a
+// plain adjective (most of them). The active package name alone reads fine on
+// its own ("Our Recommendation — line by line.", "Build Your Own — line by
+// line."), so no lead-word logic is needed anymore.
 export function formatIncludedHeading(activeName: string): string {
-  const name = activeName.trim();
-  const lead = /^the\b/i.test(name) ? name : `Your ${name}`;
-  return `${lead} — line by line.`;
+  return `${activeName.trim()} — line by line.`;
 }
 
 // Sum selected line items against a map for the Build Your Own / Custom path.

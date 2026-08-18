@@ -199,6 +199,24 @@ export function __clearImageryCache(): void {
 // the caller can map it to the right status code even when served from cache.
 export class NoStreetViewError extends Error {}
 
+// zoom=20 is what fetchSatellite's default requests (tight enough to see
+// individual rooflines on a single-family lot).
+const SAT_ZOOM = 20;
+
+// Google Static Maps ground resolution at a given latitude/zoom, in FEET per
+// image pixel: meters_per_pixel = 156543.03392 * cos(lat) / 2^zoom, converted
+// to feet. Extracted so getCachedAddressImagery and getAddressSatelliteImagery
+// (#204) share ONE implementation instead of forking it — a wrong/drifted copy
+// here silently corrupts every footage measurement derived from a satellite
+// trace. (archiveImagery.ts also has its own copy of this exact formula, with
+// a comment explaining why it deliberately doesn't call into this module's
+// imagery bundle — that duplication predates this extraction and is
+// out of scope here.)
+export function computeSatelliteFeetPerPixel(lat: number, zoom: number = SAT_ZOOM): number {
+  const metersPerPixel = (156543.03392 * Math.cos((lat * Math.PI) / 180)) / Math.pow(2, zoom);
+  return metersPerPixel * 3.28084;
+}
+
 export async function getCachedAddressImagery(address: string): Promise<AddressImagery> {
   const key = normalizeAddressKey(address);
   const now = Date.now();
@@ -220,13 +238,42 @@ export async function getCachedAddressImagery(address: string): Promise<AddressI
     fetchSatellite(geo.lat, geo.lng),
   ]);
 
-  // Same feet-per-pixel derivation as before: Google Static Maps at zoom=20 —
-  // meters_per_pixel = 156543.03392 * cos(lat) / 2^zoom, converted to feet.
-  const SAT_ZOOM = 20;
-  const metersPerPixel = (156543.03392 * Math.cos((geo.lat * Math.PI) / 180)) / Math.pow(2, SAT_ZOOM);
-  const satelliteFeetPerPixel = metersPerPixel * 3.28084;
+  const satelliteFeetPerPixel = computeSatelliteFeetPerPixel(geo.lat, SAT_ZOOM);
 
   const value: AddressImagery = { geo, streetView, satellite, satelliteFeetPerPixel, panoLocation };
   imageryCache.set(key, { value, expiresAt: now + __ADDRESS_CACHE_TTL_MS });
   return value;
+}
+
+// #204: satellite-only imagery for the "Pull satellite" builder action AND the
+// analyze-address no-Street-View partial-success fallback — geocode + the
+// satellite image + its real scale, with NO Street View requirement. Unlike
+// getCachedAddressImagery this never throws NoStreetViewError: callers that
+// need the front elevation itself (referralAutoAnalyze.ts, api/estimate) stay
+// on getCachedAddressImagery and keep relying on that throw; this is for
+// callers that only need the top-down measurement view. A pano is still
+// probed best-effort (informational: does Street View exist at all here?) but
+// can never block the satellite — the image itself is always north-up
+// (Static Maps, no rotation param) regardless of pano availability.
+// Deliberately NOT cached (unlike getCachedAddressImagery): a manual,
+// occasional operator action, not the few-per-quote AI analyze path the
+// address cache exists to protect from repeat billing.
+export type SatelliteOnlyImagery = {
+  geo: GeocodeResult;
+  satellite: FetchedImage;
+  satelliteFeetPerPixel: number;
+  /** Whether a Street View panorama resolves near this address — informational only; never gates the satellite fetch above. */
+  streetViewAvailable: boolean;
+};
+
+export async function getAddressSatelliteImagery(address: string): Promise<SatelliteOnlyImagery> {
+  const geo = await geocodeAddress(address);
+  const [satellite, streetViewAvailable] = await Promise.all([
+    fetchSatellite(geo.lat, geo.lng),
+    resolveStreetViewPano(geo.lat, geo.lng)
+      .then((pano) => pano.status === 'OK')
+      .catch(() => false),
+  ]);
+  const satelliteFeetPerPixel = computeSatelliteFeetPerPixel(geo.lat, SAT_ZOOM);
+  return { geo, satellite, satelliteFeetPerPixel, streetViewAvailable };
 }

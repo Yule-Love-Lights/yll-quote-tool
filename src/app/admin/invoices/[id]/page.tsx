@@ -6,6 +6,7 @@ import { useParams } from 'next/navigation';
 import { OperatorShell } from '@/components/OperatorShell';
 import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
+import { NceBadge } from '@/components/admin/NceBadge';
 import { reconcileInvoice } from '@/lib/invoices';
 import type { InvoiceDetail, PaymentPreference } from '@/lib/invoices';
 import type { ChargeSlotState } from '@/lib/integrations/valorBalance';
@@ -42,15 +43,33 @@ export default function InvoiceDetailPage() {
   const [balanceMsg, setBalanceMsg] = useState<{ text: string; tone: 'info' | 'error' | 'critical' } | null>(null);
   // #170(d): a re-consent 409 offers its override on the ACTION that was
   // blocked — 'charge' or 'mark-paid' (#640 review HIGH: the mark-paid leg was
-  // a dead end for cash customers with a pending price increase).
-  const [reconsentBlocked, setReconsentBlocked] = useState<'charge' | 'mark-paid' | null>(null);
+  // a dead end for cash customers with a pending price increase). #199 splits
+  // 'mark-paid' into '-cash'/'-nce' — the retry must call the SAME mark-paid
+  // flow that got blocked (each carries its own body shape/reference), not a
+  // hardcoded one.
+  const [reconsentBlocked, setReconsentBlocked] = useState<'charge' | 'mark-paid-cash' | 'mark-paid-nce' | null>(
+    null,
+  );
   // #640 review HIGH: overrides must ACCUMULATE — a granted cash-preference
   // override survives into the re-consent retry (the two server gates run in
   // sequence; per-call flags ping-ponged forever). Reconsent is deliberately
   // NEVER persisted (a future amendment must re-block).
   const grantedPrefOverrideRef = useRef(false);
+  // #199: same accumulate-across-retries posture as grantedPrefOverrideRef —
+  // an NCE + cash/check invoice can need BOTH overrides granted across two
+  // separate "charge anyway" clicks before the reconsent gate is even reached.
+  const grantedNceOverrideRef = useRef(false);
   const [savingPref, setSavingPref] = useState(false);
   const [markingPaid, setMarkingPaid] = useState(false);
+  // #199 — Mark paid — NCE: an inline panel (not window.prompt) collecting
+  // the required trade reference number before the confirm write.
+  const [nceRefPanelOpen, setNceRefPanelOpen] = useState(false);
+  const [nceRefInput, setNceRefInput] = useState('');
+  const [markingPaidNce, setMarkingPaidNce] = useState(false);
+  // #199 — editing the reference on an ALREADY-paid NCE invoice (a typo fix).
+  const [editingNceRef, setEditingNceRef] = useState(false);
+  const [nceRefEditInput, setNceRefEditInput] = useState('');
+  const [savingNceRef, setSavingNceRef] = useState(false);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -156,11 +175,19 @@ export default function InvoiceDetailPage() {
   // opts (#170d): overrideReconsent re-runs past the WT-18 settlement gate after
   // the operator explicitly accepts it; overridePreference charges despite a
   // cash/check preference (its own harder confirm at the call site).
-  const chargeBalance = async (opts?: { overrideReconsent?: boolean; overridePreference?: boolean }) => {
+  // opts.overrideNce (#199): same shape, charges despite the NCE trade-job
+  // block — accumulates via grantedNceOverrideRef exactly like overridePreference,
+  // so an NCE + cash/check invoice can grant both across two separate clicks.
+  const chargeBalance = async (opts?: {
+    overrideReconsent?: boolean;
+    overridePreference?: boolean;
+    overrideNce?: boolean;
+  }) => {
     const invoice = data?.invoice;
     if (!invoice) return;
     if (!window.confirm(`Charge the saved card ${money(invoice.balance)} for the remaining balance?`)) return;
     if (opts?.overridePreference) grantedPrefOverrideRef.current = true;
+    if (opts?.overrideNce) grantedNceOverrideRef.current = true;
     setCharging(true);
     setBalanceMsg(null);
     setReconsentBlocked(null);
@@ -171,6 +198,7 @@ export default function InvoiceDetailPage() {
         body: JSON.stringify({
           overrideReconsent: opts?.overrideReconsent === true,
           overridePreference: grantedPrefOverrideRef.current,
+          overrideNce: grantedNceOverrideRef.current,
         }),
       });
       if (res.status === 401) {
@@ -182,7 +210,20 @@ export default function InvoiceDetailPage() {
         if (body.reason === 'reconsent-required') setReconsentBlocked('charge');
         setBalanceMsg({
           text: body.error ?? 'The charge did not go through',
-          tone: body.reason === 'double-charge' || body.reason === 'charged-cancelled' ? 'critical' : 'error',
+          // S30 wrap review HIGH: settle-failed and amount-mismatch are ALSO
+          // "real money moved, bookkeeping didn't" — same reconcile-in-Valor-now
+          // class as double-charge; they get the loud box, not the small line.
+          // #173 money-review MED: stale-balance is the same class too — a
+          // mid-amend race that leaves the invoice unsettled with a real
+          // charge on file (under- OR over-collected).
+          tone:
+            body.reason === 'double-charge' ||
+            body.reason === 'charged-cancelled' ||
+            body.reason === 'settle-failed' ||
+            body.reason === 'amount-mismatch' ||
+            body.reason === 'stale-balance'
+              ? 'critical'
+              : 'error',
         });
         await load(); // refresh chargeState — the attempt may have left/cleared the claim
         return;
@@ -243,7 +284,7 @@ export default function InvoiceDetailPage() {
       if (!res.ok || body.ok === false) {
         // #640 review HIGH: the mark-paid leg hits the same re-consent gate —
         // offer the same override instead of a dead-end gray sentence.
-        if (body.code === 'reconsent-required') setReconsentBlocked('mark-paid');
+        if (body.code === 'reconsent-required') setReconsentBlocked('mark-paid-cash');
         setBalanceMsg({ text: body.error ?? 'Could not mark paid', tone: 'error' });
         return;
       }
@@ -253,6 +294,83 @@ export default function InvoiceDetailPage() {
       setBalanceMsg({ text: err instanceof Error ? err.message : 'Could not mark paid', tone: 'error' });
     } finally {
       setMarkingPaid(false);
+    }
+  };
+
+  // #199 — record an NCE trade settlement. Reads nceRefInput directly (not a
+  // param) so the reconsent-retry button below can re-invoke this with the
+  // SAME reference the operator already typed, without threading it through
+  // opts. The panel stays open on any failure (never loses the typed ref);
+  // only a SUCCESS closes + clears it.
+  const markPaidNce = async (opts?: { overrideReconsent?: boolean }) => {
+    const invoice = data?.invoice;
+    if (!invoice) return;
+    const reference = nceRefInput.trim();
+    if (!reference) return; // confirm button is disabled until non-empty anyway
+    setMarkingPaidNce(true);
+    setBalanceMsg(null);
+    setReconsentBlocked(null);
+    try {
+      const res = await fetch(`/api/invoices/${invoice.id}/mark-paid`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          method: 'nce',
+          reference,
+          overrideReconsent: opts?.overrideReconsent === true,
+        }),
+      });
+      if (res.status === 401) {
+        window.location.href = `/login?from=${encodeURIComponent(window.location.pathname)}`;
+        return;
+      }
+      const body = await res.json();
+      if (!res.ok || body.ok === false) {
+        if (body.code === 'reconsent-required') setReconsentBlocked('mark-paid-nce');
+        setBalanceMsg({ text: body.error ?? 'Could not mark paid', tone: 'error' });
+        return;
+      }
+      setBalanceMsg({ text: 'Marked paid — NCE ✓', tone: 'info' });
+      setNceRefPanelOpen(false);
+      setNceRefInput('');
+      await load();
+    } catch (err) {
+      setBalanceMsg({ text: err instanceof Error ? err.message : 'Could not mark paid', tone: 'error' });
+    } finally {
+      setMarkingPaidNce(false);
+    }
+  };
+
+  // #199 — edit the NCE reference on an already-paid NCE invoice (a typo
+  // fix). No settlement, no reconsent gate on the server side.
+  const saveNceRefEdit = async () => {
+    const invoice = data?.invoice;
+    if (!invoice) return;
+    const reference = nceRefEditInput.trim();
+    if (!reference) return;
+    setSavingNceRef(true);
+    setBalanceMsg(null);
+    try {
+      const res = await fetch(`/api/invoices/${invoice.id}/mark-paid`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ updateReferenceOnly: true, reference }),
+      });
+      if (res.status === 401) {
+        window.location.href = `/login?from=${encodeURIComponent(window.location.pathname)}`;
+        return;
+      }
+      const body = await res.json();
+      if (!res.ok || body.ok === false) {
+        setBalanceMsg({ text: body.error ?? 'Could not update the reference', tone: 'error' });
+        return;
+      }
+      setEditingNceRef(false);
+      await load();
+    } catch (err) {
+      setBalanceMsg({ text: err instanceof Error ? err.message : 'Could not update the reference', tone: 'error' });
+    } finally {
+      setSavingNceRef(false);
     }
   };
 
@@ -285,6 +403,8 @@ export default function InvoiceDetailPage() {
                   Test
                 </span>
               )}
+              {/* NCE (#199) — the barter/trade network tag. */}
+              {data.isNce && <NceBadge />}
             </div>
             <p className="text-sm text-gray-500 mb-6">
               Created {fmtDate(inv.created_at)}
@@ -396,10 +516,13 @@ export default function InvoiceDetailPage() {
               </dl>
 
               {(() => {
-                const recon = reconcileInvoice(inv);
+                // #177 fix 4: pass the quote's INTENDED deposit (its own
+                // deposit percent) so short-deposit compares against that,
+                // not a blanket 40%-of-total assumption.
+                const recon = reconcileInvoice(inv, data.intendedDepositUsd);
                 const flagLabels: Record<string, string> = {
                   'overpaid': 'Overpaid — issue a refund in Valor',
-                  'short-deposit': 'Deposit below 40% of total — verify with customer',
+                  'short-deposit': 'Deposit below the intended amount — verify with customer',
                   'balance-outstanding': 'Balance outstanding',
                   'inconsistent': 'Data error: invoice marked paid but balance > 0 — contact support',
                 };
@@ -474,14 +597,19 @@ export default function InvoiceDetailPage() {
                   )}
 
                   <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={sendBalanceLink}
-                      disabled={sendingLink}
-                      className="text-sm font-semibold px-3 py-1.5 rounded-md bg-[#1f6f43] text-white hover:bg-[#195c38] disabled:opacity-60"
-                    >
-                      {sendingLink ? 'Sending…' : 'Text / email balance link'}
-                    </button>
+                    {/* #199: an NCE balance is never collectable by pay-link — no
+                        override (unlike the charge button below), so the send
+                        button is just hidden, with the note underneath. */}
+                    {!data?.isNce && (
+                      <button
+                        type="button"
+                        onClick={sendBalanceLink}
+                        disabled={sendingLink}
+                        className="text-sm font-semibold px-3 py-1.5 rounded-md bg-[#1f6f43] text-white hover:bg-[#195c38] disabled:opacity-60"
+                      >
+                        {sendingLink ? 'Sending…' : 'Text / email balance link'}
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={copyPayLink}
@@ -491,8 +619,9 @@ export default function InvoiceDetailPage() {
                     </button>
                     {/* Gated: only when Valor card-on-file auto-charge is enabled AND the
                         customer hasn't said cash/check (#170d — the cash path gets an
-                        explicit override instead of a one-click charge). */}
-                    {data?.autoChargeEnabled && inv.payment_preference !== 'cash_check' && (
+                        explicit override instead of a one-click charge) AND the quote
+                        isn't NCE (#199 — same override-instead-of-one-click posture). */}
+                    {data?.autoChargeEnabled && inv.payment_preference !== 'cash_check' && !data.isNce && (
                       <button
                         type="button"
                         onClick={() => void chargeBalance()}
@@ -512,7 +641,105 @@ export default function InvoiceDetailPage() {
                         {markingPaid ? 'Saving…' : 'Mark paid (cash/check collected)'}
                       </button>
                     )}
+                    {/* #199 — visible whenever the quote is NCE, regardless of
+                        payment_preference (the cash button's own visibility
+                        rule above is untouched — the two can show together). */}
+                    {data?.isNce && (
+                      <button
+                        type="button"
+                        onClick={() => setNceRefPanelOpen(true)}
+                        disabled={markingPaidNce}
+                        className="text-sm font-semibold px-3 py-1.5 rounded-md border border-gray-400 text-gray-700 hover:bg-gray-50 disabled:opacity-60"
+                      >
+                        Mark paid — NCE
+                      </button>
+                    )}
                   </div>
+
+                  {/* #199 — the NCE reference panel: state-driven, not
+                      window.prompt. Confirm is disabled until non-empty;
+                      cancel closes + clears. */}
+                  {nceRefPanelOpen && (
+                    <div className="mt-2 rounded-md border border-gray-300 bg-gray-50 p-2.5">
+                      <label htmlFor="nce-ref-input" className="block text-xs font-medium text-gray-600 mb-1">
+                        NCE payment reference #
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          id="nce-ref-input"
+                          type="text"
+                          value={nceRefInput}
+                          onChange={e => setNceRefInput(e.target.value)}
+                          maxLength={200}
+                          placeholder="e.g. NCE-4821"
+                          className="flex-1 text-sm border border-gray-300 rounded-md px-2 py-1"
+                        />
+                        <button
+                          type="button"
+                          disabled={markingPaidNce || !nceRefInput.trim()}
+                          onClick={() => void markPaidNce()}
+                          className="text-sm font-semibold px-3 py-1.5 rounded-md bg-[#1f6f43] text-white hover:bg-[#195c38] disabled:opacity-60"
+                        >
+                          {markingPaidNce ? 'Saving…' : 'Confirm'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={markingPaidNce}
+                          onClick={() => {
+                            setNceRefPanelOpen(false);
+                            setNceRefInput('');
+                            // #199 (wrap-review LOW): a prior failed attempt
+                            // may have left the reconsent-override banner
+                            // rendered (reconsentBlocked==='mark-paid-nce') —
+                            // without clearing it here too, it stays visible
+                            // after Cancel, and its retry button silently
+                            // no-ops (markPaidNce reads the now-EMPTY
+                            // nceRefInput and refuses).
+                            setReconsentBlocked(null);
+                          }}
+                          className="text-xs text-gray-500 hover:text-gray-700 disabled:opacity-60"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {data?.isNce && (
+                    <p className="text-xs text-gray-500 mt-1.5">
+                      NCE trade job — the balance is not collectable by pay-link (it settles through NCE instead).
+                    </p>
+                  )}
+
+                  {/* #199 (wrap-review LOW): rendered BEFORE the cash/check note
+                      below to match the SERVER's check order (charge-balance/route.ts
+                      fires the NCE gate before the cash-preference one) — an NCE +
+                      cash/check invoice shows BOTH notes, and both overrides can
+                      combine (chargeBalance merges the accumulated ref flags into
+                      one request body), but the VISUALLY-first button must be the
+                      one that actually clears the FIRST server-side block, or
+                      clicking it just 409s with the other note's reason instead. */}
+                  {data?.autoChargeEnabled && data.isNce && (
+                    <p className="text-xs text-gray-500 mt-1.5">
+                      This is an NCE trade job — the balance settles through NCE, not a card charge.{' '}
+                      <button
+                        type="button"
+                        disabled={charging}
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              'This is an NCE trade job. Charge their saved card anyway?',
+                            )
+                          ) {
+                            void chargeBalance({ overrideNce: true });
+                          }
+                        }}
+                        className="underline text-gray-600 hover:text-gray-800 disabled:opacity-60"
+                      >
+                        Charge the card anyway
+                      </button>
+                    </p>
+                  )}
 
                   {data?.autoChargeEnabled && inv.payment_preference === 'cash_check' && (
                     <p className="text-xs text-gray-500 mt-1.5">
@@ -544,7 +771,7 @@ export default function InvoiceDetailPage() {
                       {reconsentBlocked === 'charge' ? 'the charge' : 'settling'} was blocked.{' '}
                       <button
                         type="button"
-                        disabled={charging || markingPaid}
+                        disabled={charging || markingPaid || markingPaidNce}
                         onClick={() => {
                           const ok = window.confirm(
                             reconsentBlocked === 'charge'
@@ -552,8 +779,13 @@ export default function InvoiceDetailPage() {
                               : 'Settle this invoice WITHOUT the customer re-approving the price increase? Only do this if they agreed another way (phone/text).',
                           );
                           if (!ok) return;
+                          // #199: the retry must call the SAME mark-paid flow
+                          // that got blocked — markPaidNce re-reads nceRefInput
+                          // (still populated; the panel was never cleared on
+                          // this failure) so the reference survives the retry.
                           if (reconsentBlocked === 'charge') void chargeBalance({ overrideReconsent: true });
-                          else void markPaidOutside({ overrideReconsent: true });
+                          else if (reconsentBlocked === 'mark-paid-cash') void markPaidOutside({ overrideReconsent: true });
+                          else void markPaidNce({ overrideReconsent: true });
                         }}
                         className="underline font-medium disabled:opacity-60"
                       >
@@ -581,6 +813,67 @@ export default function InvoiceDetailPage() {
                   {balanceMsg && balanceMsg.tone === 'info' && (
                     <p className="text-xs text-gray-600 mt-1.5">{balanceMsg.text}</p>
                   )}
+                </div>
+              )}
+
+              {/* #199 — how a MANUALLY-settled invoice (mark-paid, not a Valor
+                  charge/pay-link) was actually collected. paid_method is null
+                  for a Valor settle or a legacy pre-#199 manual mark-paid, so
+                  this only renders once there's something real to show. */}
+              {inv.status === 'paid' && inv.paid_method && (
+                <div className="mt-3 border-t border-gray-100 pt-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1.5">
+                    Payment method
+                  </p>
+                  <p className="text-sm text-gray-700">
+                    {inv.paid_method === 'nce' ? 'Paid — NCE trade' : 'Paid — cash/check'}
+                    {inv.paid_method === 'nce' && (
+                      <>
+                        {' · ref '}
+                        {editingNceRef ? (
+                          <>
+                            <input
+                              type="text"
+                              value={nceRefEditInput}
+                              onChange={e => setNceRefEditInput(e.target.value)}
+                              maxLength={200}
+                              className="text-xs border border-gray-300 rounded px-1.5 py-0.5 ml-1 align-middle"
+                            />
+                            <button
+                              type="button"
+                              disabled={savingNceRef || !nceRefEditInput.trim()}
+                              onClick={() => void saveNceRefEdit()}
+                              className="ml-1.5 text-xs underline text-gray-600 hover:text-gray-800 disabled:opacity-60"
+                            >
+                              {savingNceRef ? 'Saving…' : 'Save'}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={savingNceRef}
+                              onClick={() => setEditingNceRef(false)}
+                              className="ml-1.5 text-xs underline text-gray-500 hover:text-gray-700 disabled:opacity-60"
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <span className="font-mono">{inv.payment_reference || '—'}</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setNceRefEditInput(inv.payment_reference ?? '');
+                                setEditingNceRef(true);
+                              }}
+                              className="ml-1.5 text-xs underline text-gray-500 hover:text-gray-700"
+                            >
+                              edit
+                            </button>
+                          </>
+                        )}
+                      </>
+                    )}
+                  </p>
                 </div>
               )}
 

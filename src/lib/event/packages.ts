@@ -23,6 +23,10 @@ import type { LineItem, QuoteResult } from '@/lib/pricing/pricingEngine';
 export function derivePackagesEvent(
   lineItems: PortalLineItem[],
   result: QuoteResult,
+  // #199 F1: threaded straight to chargesFromResult — see its own comment
+  // (derivePackages.ts) for why the live inputs.depositPercent must win over
+  // a possibly-stale result.depositRate.
+  depositPercent?: number,
 ): PortalPackage[] {
   if (lineItems.length === 0) return [];
   // The adapter surfaces BOTH mutually-exclusive roofline options as toggleable
@@ -37,14 +41,15 @@ export function derivePackagesEvent(
   const included = lineItems.filter((li) => li.id !== excludeRooflineId);
   // Events never carry rush/takedown — force both off (same as permanent). Same
   // tax source (chargesFromResult) so the money math stays identical to holiday.
-  const charges = effectiveCharges(chargesFromResult(result), false, false);
+  const charges = effectiveCharges(chargesFromResult(result, depositPercent), false, false);
   const subtotal = included.reduce((sum, li) => sum + li.price, 0);
   const p = priceSelection(subtotal, charges);
   return [
     {
       id: 'D',
-      // #119 — the What's Included heading + hero pill prepend "Your ", so the
-      // name must NOT lead with "Your" (else "Your Your event lighting").
+      // #184 — the What's Included heading no longer prepends "Your " (it
+      // renders the bare name), so this name is free to read naturally either
+      // way; kept plain regardless.
       name: 'Event Lighting',
       tagline: "Everything we'll light for your event.",
       total: p.total,

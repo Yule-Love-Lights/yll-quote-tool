@@ -48,6 +48,7 @@ import { Disclaimer } from '@/components/portal/dark/Disclaimer';
 import { SelectionProvider } from '@/components/portal/SelectionContext';
 import { QuoteViewTracker } from '@/components/portal/QuoteViewTracker';
 import { SectionViewTracker } from '@/components/portal/SectionViewTracker';
+import { BUSINESS_RULES } from '@/lib/pricing/pricingEngine';
 import {
   MOCK_QUOTE,
   galleryItemsFor,
@@ -63,6 +64,7 @@ import { loadPortalQuote, PortalConfigError } from '@/lib/portal/loader';
 import { pickInitialPackageId } from '@/lib/portal/derivePackages';
 import { deriveIsBooked, resolveApprovalSelectionSeed } from '@/lib/portal/adapter';
 import { isPortalActionable } from '@/lib/quoteStatus';
+import { canCustomerRecolor } from '@/lib/serviceType';
 import type { PortalQuote } from '@/components/portal/types';
 import { getAppSettings } from '@/lib/appSettings';
 import { fetchGoogleReviews } from '@/lib/googleReviews';
@@ -189,7 +191,7 @@ export default async function PortalPage({
   });
 
   // Bug fix (#83 B3 UI + audit approved-portal-snapshot): a quote in a terminal
-  // branch (declined/cancelled/lost) or under revision (changes_requested) must
+  // branch (declined/cancelled/abandoned) or under revision (changes_requested) must
   // NOT show the approve+pay flow — the customer could otherwise pay/approve a
   // quote staff already killed or are revising. The server already rejects it
   // (the /approve status gate + /pay's approve-first guard); this is the matching
@@ -293,6 +295,15 @@ export default async function PortalPage({
     quote.approval,
     { initialPackageId: fallbackPackageId, initialSelectedItemIds: fallbackSelectedItemIds },
   );
+  // #177 fix 2 — this quote's actual deposit percent (integer, for copy that
+  // states it). Prefers the FROZEN quote.approval.depositRate (what the
+  // customer approved with — feeds BookedBanner + WhatHappensNext post-booking)
+  // over the live charges.depositRate, which stays the source for a not-yet-
+  // approved quote (quote.approval is undefined then, so this falls through
+  // unchanged). Falls back to 50% for a pre-#177 approval with no frozen rate.
+  const depositPercent = Math.round(
+    (quote.approval?.depositRate ?? quote.charges.depositRate ?? BUSINESS_RULES.depositPercentage) * 100,
+  );
   // SelectionProvider seeds the rush/takedown toggles from these defaultOn flags,
   // so overriding them with the frozen choices restores the customer's approved
   // add-ons (the staff defaults in quote.charges would otherwise contradict the
@@ -314,6 +325,7 @@ export default async function PortalPage({
           quoteId={quoteId}
           approvedAt={quote.approval?.approvedAt}
           depositFlow={checkoutEnabled || !!quote.isTest}
+          depositPercent={depositPercent}
         />
       )}
       {quote.approval?.pendingAmendment && (
@@ -376,12 +388,11 @@ export default async function PortalPage({
             when a design is linked (recolor needs a live scene). Positive list
             (#117): permanent bistro is EXCLUDED — warm-white Edison bulbs only
             (its FAQ says so), and holiday Red & Green schemes would contradict
-            it. A future vertical must opt in here, not inherit the picker. */}
-        {quote.design &&
-          (quote.serviceType == null ||
-            quote.serviceType === 'holiday' ||
-            quote.serviceType === 'permanent' ||
-            quote.serviceType === 'event') && <LightColorPicker />}
+            it. A future vertical must opt in here, not inherit the picker.
+            canCustomerRecolor is the single source of truth for this gate —
+            DesignReprise's "Click here to change colors" jump-button (#245)
+            reads the SAME predicate so the two can never drift apart. */}
+        {quote.design && canCustomerRecolor(quote.serviceType) && <LightColorPicker />}
         {/* 1.5b #88 P6b-4 — permanent effect picker (Solid/Chase/Fade), a separate
             row under the color so any color can play any effect. */}
         {quote.design && quote.serviceType === 'permanent' && <PermanentEffectPicker />}
@@ -437,6 +448,7 @@ export default async function PortalPage({
         <FinancingSection
           prequalUrl={quote.financing?.prequalUrl}
           serviceType={quote.serviceType}
+          viewOnly={quote.viewOnly}
         />
 
         {/* 4. Risk Reversal — permanent gets the lifetime-warranty variant (#88);
@@ -456,7 +468,11 @@ export default async function PortalPage({
 
         {/* 5. What Happens Next — permanent drops takedown for year-round control (#88);
              event/holiday branch their copy inside WhatHappensNext via serviceType (#96) */}
-        {quote.serviceType === 'permanent' ? <WhatHappensNextPermanent /> : <WhatHappensNext serviceType={quote.serviceType} />}
+        {quote.serviceType === 'permanent' ? (
+          <WhatHappensNextPermanent depositPercent={depositPercent} />
+        ) : (
+          <WhatHappensNext serviceType={quote.serviceType} depositPercent={depositPercent} />
+        )}
 
         {/* 6. About Yule Love Lights — company story + credentials */}
         <MeetYourTeam
@@ -521,7 +537,9 @@ export default async function PortalPage({
           booked={isBooked}
           checkoutEnabled={checkoutEnabled}
           approvedDepositUsd={quote.approval?.depositUsd}
+          approvedDepositRate={quote.approval?.depositRate}
           isTest={quote.isTest}
+          viewOnly={quote.viewOnly}
           quoteStatus={quote.quoteStatus}
           serviceType={quote.serviceType}
           // #154 interim — server-threaded Wisetack prequal URL (present only

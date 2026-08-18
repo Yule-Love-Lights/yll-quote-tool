@@ -10,6 +10,7 @@
 // DEFAULT_SERVICE_TYPE (unknown/missing service_type → holiday).
 
 import { asServiceType, DEFAULT_SERVICE_TYPE, type ServiceType } from '@/lib/serviceType';
+import { PERMANENT_SIDE_LABEL, type PermanentSide } from '@/lib/permanent/types';
 
 const QUOTE_READY_EMAIL_SUBJECT: Record<ServiceType, string> = {
   holiday: 'Your Yule Love Lights quote is ready 🎄',
@@ -92,8 +93,15 @@ function usdExact(n: number): string {
 
 export const APPROVAL_EMAIL_SUBJECT = "You're approved! Here's what happens next 🎄";
 
-export function approvalSmsBody(firstName: string, depositUsd: number, phone: string): string {
-  return `Hi ${firstName}! 🎄 Thanks for approving your Yule Love Lights quote. We'll reach out shortly to collect your 50% deposit (about ${usd(depositUsd)}) and lock in your install date — nothing to do right now. Questions? Call or text us at ${phone}.`;
+// #177: depositPercent is the quote's ACTUAL deposit percent (integer, e.g.
+// 50) — the caller derives it from effectiveDepositRate, never a hardcoded 50.
+export function approvalSmsBody(
+  firstName: string,
+  depositUsd: number,
+  phone: string,
+  depositPercent: number,
+): string {
+  return `Hi ${firstName}! 🎄 Thanks for approving your Yule Love Lights quote. We'll reach out shortly to collect your ${depositPercent}% deposit (about ${usd(depositUsd)}) and lock in your install date — nothing to do right now. Questions? Call or text us at ${phone}.`;
 }
 
 export function approvalEmailHtml(
@@ -101,12 +109,13 @@ export function approvalEmailHtml(
   depositUsd: number,
   portalUrl: string,
   phone: string,
+  depositPercent: number,
 ): string {
   const name = escapeHtml(firstName);
   return [
     `<p>Hi ${name},</p>`,
     `<p>Thanks for approving your holiday lighting quote! 🎄</p>`,
-    `<p>Here's what happens next: a member of our team will reach out to you shortly to collect your <strong>50% deposit (about ${usd(depositUsd)})</strong> and lock in your install date.</p>`,
+    `<p>Here's what happens next: a member of our team will reach out to you shortly to collect your <strong>${depositPercent}% deposit (about ${usd(depositUsd)})</strong> and lock in your install date.</p>`,
     `<p>There's nothing you need to do right now — we'll contact you to take care of the deposit and confirm your spot on our schedule.</p>`,
     `<p>You can review your quote anytime here:</p>`,
     `<p><a href="${portalUrl}">View my quote →</a></p>`,
@@ -129,6 +138,9 @@ export function internalApprovalEmailHtml(input: {
   email: string | null;
   totalUsd: number;
   depositUsd: number;
+  // #177: the quote's ACTUAL deposit percent (integer, e.g. 50) — the caller
+  // derives it from effectiveDepositRate, never a hardcoded 50.
+  depositPercent: number;
   packageName: string;
   installTiming: 'none' | 'september' | 'october';
   rushSelected: boolean;
@@ -147,7 +159,7 @@ export function internalApprovalEmailHtml(input: {
         : 'Standard (Nov–Dec)';
   return [
     `<p><strong>${name}</strong> just approved their quote and needs a deposit call.</p>`,
-    `<p><strong>Action:</strong> reach out to collect the 50% deposit (${usdExact(input.depositUsd)}) to lock them in on the schedule.</p>`,
+    `<p><strong>Action:</strong> reach out to collect the ${input.depositPercent}% deposit (${usdExact(input.depositUsd)}) to lock them in on the schedule.</p>`,
     `<table style="border-collapse:collapse;font-size:14px;">`,
     row('Customer', name),
     row('Phone', escapeHtml(input.phone || '—')),
@@ -155,7 +167,7 @@ export function internalApprovalEmailHtml(input: {
     row('Address', escapeHtml(input.address || '—')),
     row('Package', escapeHtml(input.packageName)),
     row('Total', usdExact(input.totalUsd)),
-    row('Deposit (50%)', usdExact(input.depositUsd)),
+    row(`Deposit (${input.depositPercent}%)`, usdExact(input.depositUsd)),
     row('Install', installLabel),
     row('Rush install', input.rushSelected ? 'Yes' : 'No'),
     row('Premium takedown', input.takedownSelected ? 'Yes' : 'No'),
@@ -301,6 +313,11 @@ export function orderEmailHtml(input: {
   // Test Quote (ledger #93) — when true, a loud banner up top so this can never
   // be mistaken for a real order to forward/pull stock against.
   isTest?: boolean;
+  // #192 review fix (parity) — same "Booked scope" note as the crew print
+  // sheet / board modal / admin BOM panel. null/undefined/empty = unscoped
+  // (no note) — a non-permanent job, or a permanent job whose scoping
+  // resolved unscoped.
+  scopedSides?: PermanentSide[] | null;
 }): string {
   const row = (label: string, value: string) =>
     `<tr><td style="padding:2px 14px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
@@ -326,6 +343,16 @@ export function orderEmailHtml(input: {
     row('Address', escapeHtml(input.address || '—')),
     row('Install', escapeHtml(input.installDate || '—')),
     `</table>`,
+    // #192 review fix — a plain one-line note (not a styled table) above the
+    // materials list, so the reader sees the explanation before the narrowed
+    // numbers, mirroring the crew print sheet / board modal placement.
+    ...(input.scopedSides && input.scopedSides.length
+      ? [
+          `<p style="color:#1d4ed8;">Booked scope: ${escapeHtml(
+            input.scopedSides.map((s) => PERMANENT_SIDE_LABEL[s]).join(', '),
+          )} — accessories/gaps remain whole-job.</p>`,
+        ]
+      : []),
   ];
   if (input.materials.length) {
     out.push(
@@ -410,7 +437,8 @@ export function amendmentEmailHtml(input: {
 
 // ── Balance pay-link (ledger #83) ───────────────────────────────────────────
 // Staff-initiated: after a job is complete, the operator sends the customer a
-// link to pay their remaining 50% balance on Valor's hosted page
+// link to pay their remaining balance (100% minus whatever deposit percent this
+// quote used — #177, not always 50%) on Valor's hosted page
 // (/portal/[quoteId]/pay-balance). Distinct from the deposit send — no stage
 // move, no booking; just a reach-out with the balance amount + the pay link.
 export const BALANCE_LINK_EMAIL_SUBJECT = 'Your Yule Love Lights balance is ready to pay';
@@ -502,6 +530,9 @@ export function internalPaidEmailHtml(input: {
   customerName: string | null;
   depositUsd: number;
   totalUsd: number;
+  // #177: the quote's ACTUAL deposit percent (integer, e.g. 50) — the caller
+  // derives it from the frozen result.depositRate, never a hardcoded 50.
+  depositPercent: number;
   txnId: string | null;
   approvalCode: string | null;
   receiptUrl: string | null;
@@ -512,7 +543,7 @@ export function internalPaidEmailHtml(input: {
   const row = (label: string, value: string) =>
     `<tr><td style="padding:2px 14px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
   return [
-    `<p><strong>${name}</strong> just paid their 50% deposit online — they're booked.</p>`,
+    `<p><strong>${name}</strong> just paid their ${input.depositPercent}% deposit online — they're booked.</p>`,
     `<p><strong>Note:</strong> their card is saved in the Valor Vault. Charge the remaining balance (${usdExact(
       balance,
     )}) MANUALLY in the Valor portal after install.</p>`,
@@ -527,6 +558,74 @@ export function internalPaidEmailHtml(input: {
     input.receiptUrl
       ? `<p><a href="${escapeHtml(input.receiptUrl)}">Valor receipt →</a> &nbsp;|&nbsp; <a href="${input.adminUrl}">Open in quote tool →</a></p>`
       : `<p><a href="${input.adminUrl}">Open in quote tool →</a></p>`,
+  ].join('\n');
+}
+
+// ─── Card-declined staff alert (#175) ────────────────────────────────────────
+// A signed Valor webhook for a non-approved (declined) deposit or balance
+// charge previously only console.warned — staff discovered a decline a day
+// later on the Valor dashboard while the quote sat approved-but-unpaid with
+// zero explanation. The webhook route fires this (throttled — see
+// claimDeclineNotifySlot there) so the decline surfaces immediately instead.
+
+const DECLINE_CODE_TEXT: Record<string, string> = {
+  '05': "Do not honor — the customer's bank refused; they should call their bank or use another card",
+  '51': 'Insufficient funds',
+  '14': 'Invalid card number',
+  '54': 'Expired card',
+  '41': 'Lost card',
+  '43': 'Stolen card',
+};
+
+// Pure + exported so the code→human mapping is unit-testable on its own,
+// and so the admin quote page (#175 stretch) can render the same text.
+export function depositDeclineReasonText(code: string | null): string {
+  if (!code) return 'Bank declined (no code given)';
+  return DECLINE_CODE_TEXT[code] ?? `code ${code} — bank declined`;
+}
+
+export function internalDepositDeclinedEmailSubject(input: {
+  customerName: string | null;
+  quoteNumber: number | null;
+  amountUsd: number;
+  // 'balance' for the #83 pay-link leg — defaults to the deposit wording.
+  kind?: 'deposit' | 'balance';
+}): string {
+  const who = input.customerName?.replace(/[\r\n]+/g, ' ').trim() || 'A customer';
+  const quoteLabel = input.quoteNumber != null ? ` quote #${input.quoteNumber}` : '';
+  const label = input.kind === 'balance' ? 'balance' : 'deposit';
+  return `❌ Card DECLINED — ${who}${quoteLabel} ${label} (${usdExact(input.amountUsd)})`;
+}
+
+export function internalDepositDeclinedEmailHtml(input: {
+  customerName: string | null;
+  quoteNumber: number | null;
+  amountUsd: number;
+  declineCode: string | null;
+  adminUrl: string;
+  portalUrl: string;
+  // 'balance' for the #83 pay-link leg — defaults to the deposit wording.
+  kind?: 'deposit' | 'balance';
+}): string {
+  const name = escapeHtml(input.customerName?.trim() || 'Unknown');
+  const label = input.kind === 'balance' ? 'balance' : 'deposit';
+  const quoteLabel = input.quoteNumber != null ? ` (quote #${input.quoteNumber})` : '';
+  const row = (labelText: string, value: string) =>
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">${labelText}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
+  return [
+    `<p><strong>${name}</strong>${quoteLabel}'s card was DECLINED trying to pay their ${label} (${usdExact(
+      input.amountUsd,
+    )}).</p>`,
+    `<table style="border-collapse:collapse;font-size:14px;">`,
+    row('Customer', name),
+    row('Amount', usdExact(input.amountUsd)),
+    row('Decline code', escapeHtml(input.declineCode || '—')),
+    row('What it means', escapeHtml(depositDeclineReasonText(input.declineCode))),
+    `</table>`,
+    `<p>No money moved. The customer's portal still shows ${
+      label === 'balance' ? 'Pay balance' : 'Complete deposit'
+    } — they can retry the same link.</p>`,
+    `<p><a href="${input.adminUrl}">${label === 'balance' ? 'Open invoice →' : 'Open in quote tool →'}</a> &nbsp;|&nbsp; <a href="${input.portalUrl}">Customer portal →</a></p>`,
   ].join('\n');
 }
 
@@ -562,6 +661,76 @@ export function duplicatePaymentEmailHtml(input: {
     row('Amount', usdExact(input.amountUsd)),
     `</table>`,
     `<p><a href="${input.adminUrl}">Open in quote tool →</a></p>`,
+  ].join('\n');
+}
+
+// ─── Stale-balance mismatch alert (ledger #173) ───────────────────────────────
+// An amend re-synced the invoice balance while an operator "Charge remaining
+// balance" charge was in flight — the card captured a STALE amount and the
+// invoice could NOT settle at that number. Money moved, but the bookkeeping
+// didn't. Mirrors the duplicate-payment alert's shape (same recipient/CTA
+// idiom) — this is a different narrative, so it gets its own copy.
+//
+// #173 HIGH-1 (money-review): the balance can move UP (under-collection — we
+// owe more) or DOWN (over-collection — refund the excess) or land back on the
+// charged amount (a double-move landed at no net difference, but the CAS
+// still couldn't settle automatically). direction picks the right copy —
+// treating every case as "grew" silently told staff "$0 still owed" on a
+// genuine over-collection that actually needed a refund.
+
+export type StaleBalanceDirection = 'under' | 'over' | 'even';
+
+export function staleBalanceEmailSubject(customerName: string | null, direction: StaleBalanceDirection): string {
+  const who = customerName?.replace(/[\r\n]+/g, ' ').trim() || 'A customer';
+  const label = direction === 'over' ? 'over-collected' : direction === 'even' ? 'balance mismatch' : 'under-collected';
+  return `⚠️ Balance charge ${label}: ${who}`;
+}
+
+export function staleBalanceEmailHtml(input: {
+  customerName: string | null;
+  chargedUsd: number;
+  newBalanceUsd: number | null;
+  direction: StaleBalanceDirection;
+  txnId: string;
+  adminUrl: string;
+}): string {
+  const name = escapeHtml(input.customerName?.trim() || 'Unknown');
+  const row = (label: string, value: string) =>
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
+  const newBalanceKnown = input.newBalanceUsd != null;
+  const newBalance = newBalanceKnown ? usdExact(input.newBalanceUsd as number) : '—';
+  const absDiffLabel = newBalanceKnown
+    ? usdExact(Math.abs((input.newBalanceUsd as number) - input.chargedUsd))
+    : '—';
+
+  const narrative =
+    input.direction === 'over'
+      ? `The order was amended DOWN while <strong>${name}</strong>'s "Charge remaining balance" charge was in flight — the card captured MORE than the balance now owed.`
+      : input.direction === 'even'
+        ? `The balance changed more than once while <strong>${name}</strong>'s "Charge remaining balance" charge was in flight — the card's captured amount no longer lined up with the balance by the time the invoice tried to settle, even though there's no net difference now.`
+        : `The order was amended UP while <strong>${name}</strong>'s "Charge remaining balance" charge was in flight — the card captured the OLD balance, and the invoice grew before it could settle.`;
+
+  const action =
+    input.direction === 'over'
+      ? `<strong>Action needed:</strong> REFUND ${absDiffLabel} in Valor, then mark the invoice paid once reconciled (the net payment covers the current balance). The invoice was NOT marked paid.`
+      : input.direction === 'even'
+        ? `<strong>Action needed:</strong> verify the invoice balance and reconcile the transaction in Valor by hand. The invoice was NOT marked paid.`
+        : `<strong>Action needed:</strong> collect the difference (amend/pay-link, or mark paid) and reconcile the charge in Valor. The invoice was NOT marked paid.`;
+
+  const diffRowLabel =
+    input.direction === 'over' ? 'Amount to refund' : input.direction === 'even' ? 'Net difference' : 'Difference still owed';
+
+  return [
+    `<p>${narrative}</p>`,
+    `<p>${action}</p>`,
+    `<table style="border-collapse:collapse;font-size:14px;">`,
+    row('Customer', name),
+    row('Charged (this txn)', usdExact(input.chargedUsd)),
+    row('Balance now', newBalance),
+    row(diffRowLabel, absDiffLabel),
+    row('Transaction id', escapeHtml(input.txnId)),
+    `</table>`,
+    `<p><a href="${input.adminUrl}">Open invoice →</a></p>`,
   ].join('\n');
 }
 

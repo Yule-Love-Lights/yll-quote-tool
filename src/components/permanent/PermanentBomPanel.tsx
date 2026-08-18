@@ -19,7 +19,19 @@ const CATEGORY_ORDER: BomCategory[] = ['lights', 'track', 'power', 'data', 'exte
 const money = (n: number) =>
   `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-export function PermanentBomPanel({ bom }: { bom: PermanentBom }) {
+export function PermanentBomPanel({
+  bom,
+  scopedSideLabels,
+}: {
+  bom: PermanentBom;
+  /**
+   * #192 — when the BOM was narrowed to the customer's approved (booked)
+   * sides, the display labels of the included sides in front/left/right/back
+   * order (e.g. ['Front', 'Back']). Undefined/null = unscoped (no note) —
+   * today's behavior for a not-yet-booked quote or a legacy/no-snapshot row.
+   */
+  scopedSideLabels?: string[] | null;
+}) {
   const { lines, totals, flags } = bom;
   const groups = CATEGORY_ORDER.map((cat) => ({
     cat,
@@ -28,6 +40,11 @@ export function PermanentBomPanel({ bom }: { bom: PermanentBom }) {
 
   return (
     <div>
+      {scopedSideLabels && scopedSideLabels.length > 0 && (
+        <p className="text-xs text-blue-700 bg-blue-50 border border-blue-100 rounded-md px-2 py-1.5 mb-3">
+          Booked scope: {scopedSideLabels.join(', ')} — accessories/gaps remain whole-job.
+        </p>
+      )}
       <dl className="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-1 text-sm text-gray-600 mb-3">
         <div className="flex justify-between gap-2">
           <dt>Total footage</dt>

@@ -56,6 +56,11 @@ const ctx = (id = ID) => ({ params: Promise.resolve({ id }) });
 // simulate a concurrent decline landing between the fast-path read and this write).
 // When the filter excludes the live status, the write matches 0 rows regardless of
 // `updateRows`.
+//
+// #176 TOCTOU: the write also carries `.eq('view_only', false)`. The mock
+// evaluates that filter against the row's LIVE view_only (which may differ from
+// the READ view_only, to simulate a concurrent staff toggle landing between the
+// fast-path read and this write) — same shape as the status filter above.
 const APPROVABLE_FROM = new Set(['draft', 'sent', 'viewed']);
 function makeSb(
   quote: Record<string, unknown> | null,
@@ -67,13 +72,19 @@ function makeSb(
   // result (W1-018). Defaults to the initial quote. Pass a row with
   // customer_approved_at set to simulate a concurrent approve winning.
   freshRow?: Record<string, unknown> | null,
+  // The row's view_only AT WRITE TIME (defaults to the read view_only). Set it
+  // to true to simulate a concurrent staff toggle winning the race.
+  liveViewOnly?: boolean,
 ) {
   const updatePayloads: Array<Record<string, unknown>> = [];
   let pendingIsUpdate = false;
   let sawUpdate = false;
   let statusFilterPasses: boolean | null = null;
+  let viewOnlyFilterPasses: boolean | null = null;
   const effectiveStatus =
     liveStatus !== undefined ? liveStatus : quote ? ((quote.status as string | null) ?? null) : null;
+  const effectiveViewOnly =
+    liveViewOnly !== undefined ? liveViewOnly : quote ? Boolean(quote.view_only) : false;
 
   const builder: Record<string, unknown> = {};
   Object.assign(builder, {
@@ -85,7 +96,12 @@ function makeSb(
       updatePayloads.push(payload);
       return builder;
     },
-    eq: () => builder,
+    eq: (col: string, val: unknown) => {
+      if (col === 'view_only') {
+        viewOnlyFilterPasses = effectiveViewOnly === val;
+      }
+      return builder;
+    },
     is: () => builder,
     or: (filter: string) => {
       if (filter.includes('status')) {
@@ -101,8 +117,9 @@ function makeSb(
     then: (resolve: (v: unknown) => void) => {
       const isUpd = pendingIsUpdate;
       pendingIsUpdate = false;
-      const excluded = isUpd && statusFilterPasses === false;
+      const excluded = isUpd && (statusFilterPasses === false || viewOnlyFilterPasses === false);
       statusFilterPasses = null;
+      viewOnlyFilterPasses = null;
       resolve(isUpd ? { data: excluded ? [] : updateRows, error: null } : { data: quote, error: null });
     },
   });
@@ -119,6 +136,7 @@ const BASE_SENT_QUOTE = {
   result: null,
   approval_snapshot: null,
   is_test: false,
+  view_only: false,
 };
 
 beforeEach(() => {
@@ -323,5 +341,42 @@ describe('POST /api/quotes/[id]/staff-approve', () => {
     const snapshot = updatePayloads[0].approval_snapshot as Record<string, unknown>;
     expect(snapshot.staffApproved).toBeTruthy();
     expect(snapshot.permanentWarranty).toBeUndefined();
+  });
+
+  // #176 — a staff-flagged browse-only quote can never be staff-approved either.
+  it('409s (view-only) when the quote is flagged view-only', async () => {
+    const { client, updatePayloads } = makeSb({ ...BASE_SENT_QUOTE, view_only: true });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('view-only');
+    expect(updatePayloads).toHaveLength(0);
+  });
+
+  // #176 TOCTOU: the read sees view_only=false (passes the fast-path check),
+  // but a concurrent staff toggle flips it ON before the guarded write lands.
+  // The `.eq('view_only', false)` re-check in the write must exclude the row —
+  // mirroring the "does NOT overwrite a concurrently-declined quote" test above
+  // for the view-only guard instead of the status guard.
+  it('does NOT approve a quote toggled view-only between read and write (TOCTOU re-check)', async () => {
+    const { client, updatePayloads } = makeSb(
+      BASE_SENT_QUOTE,
+      [{ id: ID }],
+      undefined,
+      undefined,
+      true, // liveViewOnly: concurrent staff toggle turned it ON after the read
+    );
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), ctx());
+    const json = await res.json();
+
+    // The write was attempted but matched 0 rows → conflict, not a false success.
+    expect(updatePayloads).toHaveLength(1);
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('already-moved');
+    expect(json.approved).toBeUndefined();
   });
 });

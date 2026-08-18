@@ -67,7 +67,10 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: 'The base photo cannot be deleted' }, { status: 400 });
   }
 
-  const ok = await removeDesignExtraPhoto(checked.id, checked.photoId);
-  if (!ok) return NextResponse.json({ error: 'Photo not found' }, { status: 404 });
-  return NextResponse.json({ ok: true });
+  const result = await removeDesignExtraPhoto(checked.id, checked.photoId);
+  if (!result.ok) return NextResponse.json({ error: 'Photo not found' }, { status: 404 });
+  // #741 defect 3: report any mini group this delete's server-side prune just
+  // orphaned, so the caller can warn staff (mirrors #255's seed-analysis
+  // route, which already reports the same shape for its own prune).
+  return NextResponse.json({ ok: true, prunedMiniGroups: result.prunedMiniGroups });
 }

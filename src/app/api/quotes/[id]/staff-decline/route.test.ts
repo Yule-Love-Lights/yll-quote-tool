@@ -64,13 +64,24 @@ const ctx = (id = ID) => ({ params: Promise.resolve({ id }) });
 // Chainable Supabase mock.
 //   maybeSingle() → the quote row
 //   .update().eq().or().is().select() terminates via .then() → updateRows
+//
+// #176 TOCTOU: the write also carries `.eq('view_only', false)`. The mock
+// evaluates that filter against the row's LIVE view_only (which may differ
+// from the READ view_only, to simulate a concurrent staff toggle landing
+// between the fast-path read and this write) — mirrors staff-approve's mock.
 function makeSb(
   quote: Record<string, unknown> | null,
   updateRows: Array<{ id: string }> | null = [{ id: ID }],
+  // The row's view_only AT WRITE TIME (defaults to the read view_only). Set it
+  // to true to simulate a concurrent staff toggle winning the race.
+  liveViewOnly?: boolean,
 ) {
   const updatePayloads: Array<Record<string, unknown>> = [];
   const orArgs: string[] = [];
   let pendingIsUpdate = false;
+  let viewOnlyFilterPasses: boolean | null = null;
+  const effectiveViewOnly =
+    liveViewOnly !== undefined ? liveViewOnly : quote ? Boolean(quote.view_only) : false;
 
   const builder: Record<string, unknown> = {};
   Object.assign(builder, {
@@ -81,7 +92,12 @@ function makeSb(
       updatePayloads.push(payload);
       return builder;
     },
-    eq: () => builder,
+    eq: (col: string, val: unknown) => {
+      if (col === 'view_only') {
+        viewOnlyFilterPasses = effectiveViewOnly === val;
+      }
+      return builder;
+    },
     or: (f: string) => {
       orArgs.push(f);
       return builder;
@@ -91,7 +107,9 @@ function makeSb(
     then: (resolve: (v: unknown) => void) => {
       const isUpd = pendingIsUpdate;
       pendingIsUpdate = false;
-      resolve(isUpd ? { data: updateRows, error: null } : { data: quote, error: null });
+      const excluded = isUpd && viewOnlyFilterPasses === false;
+      viewOnlyFilterPasses = null;
+      resolve(isUpd ? { data: excluded ? [] : updateRows, error: null } : { data: quote, error: null });
     },
   });
   return { client: builder, updatePayloads, orArgs };
@@ -105,6 +123,7 @@ const BASE_SENT_QUOTE = {
   customer_approved_at: null,
   deposit_paid_at: null,
   approval_snapshot: null,
+  view_only: false,
 };
 
 beforeEach(() => {
@@ -278,6 +297,40 @@ describe('POST /api/quotes/[id]/staff-decline', () => {
     expect(snap.someOtherField).toBe('value');
     expect(snap.staffDeclined).toBeTruthy();
   });
+
+  // #176 — a staff-flagged browse-only quote can never be staff-declined either.
+  it('409s (view-only) when the quote is flagged view-only', async () => {
+    const { client, updatePayloads } = makeSb({ ...BASE_SENT_QUOTE, view_only: true });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ reason: 'x' }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('view-only');
+    expect(updatePayloads).toHaveLength(0);
+  });
+
+  // #176 TOCTOU: the read sees view_only=false (passes the fast-path check),
+  // but a concurrent staff toggle flips it ON before the guarded write lands.
+  // The `.eq('view_only', false)` re-check in the write must exclude the row —
+  // mirroring staff-approve's equivalent TOCTOU test.
+  it('does NOT decline a quote toggled view-only between read and write (TOCTOU re-check)', async () => {
+    const { client, updatePayloads } = makeSb(
+      BASE_SENT_QUOTE,
+      [{ id: ID }],
+      true, // liveViewOnly: concurrent staff toggle turned it ON after the read
+    );
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ reason: 'x' }), ctx());
+    const json = await res.json();
+
+    // The write was attempted but matched 0 rows → the existing generic
+    // race-loser 409 (this route doesn't disambiguate WHY the write lost).
+    expect(updatePayloads).toHaveLength(1);
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('invalid-status');
+  });
 });
 
 describe('POST /api/quotes/[id]/staff-decline — GHL card move (#GHL pipeline sync)', () => {
@@ -300,7 +353,7 @@ describe('POST /api/quotes/[id]/staff-decline — GHL card move (#GHL pipeline s
     });
   });
 
-  it('a permanent quote moves the card to Abandoned (no real Declined stage in that pipeline)', async () => {
+  it('#235: a permanent quote moves the card to the real Declined stage (repointed off the old Abandoned reuse)', async () => {
     const { client } = makeSb({
       ...BASE_SENT_QUOTE,
       highlevel_opportunity_id: 'opp_perm',
@@ -311,7 +364,7 @@ describe('POST /api/quotes/[id]/staff-decline — GHL card move (#GHL pipeline s
     const res = await POST(makeReq({ reason: 'x' }), ctx());
     expect(res.status).toBe(200);
     expect(hl.updateOpportunity).toHaveBeenCalledWith('opp_perm', {
-      pipelineStageId: '5a5f2e27-6dde-452c-8619-df1871908c8c', // Abandoned
+      pipelineStageId: '2714e48e-b486-457e-9da2-59893196d404', // Declined
     });
   });
 

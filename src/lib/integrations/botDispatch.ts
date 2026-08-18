@@ -32,13 +32,19 @@ import { logBotAction } from './botAudit';
 import {
   runCompleteInstall,
   summarizeCompleteInstall,
+  runCaptureLead,
+  summarizeCaptureLead,
   type CompleteInstallArgs,
+  type CaptureLeadArgs,
 } from './botWriteTools';
 import { listCatalog } from '@/lib/inventory/catalog';
 import { listFulfillmentCards, getJobWorkOrder } from '@/lib/inventory/jobs';
 import { resolveMaterialLines } from '@/lib/inventory/materialResolve';
 import { downloadTelegramFile } from './telegramMedia';
 import { transcribeAudio, isTranscriptionConfigured } from './transcribe';
+import { notifyTelegramAudience } from './telegramRouting';
+import { fieldLeadMessage } from './telegramMessages';
+import { LEAD_SERVICES, SERVICE_FIELD_VALUE } from '@/lib/leads/leadService';
 
 export type BotIncomingMessage = {
   chatId: string;
@@ -59,6 +65,16 @@ const NOTHING_PENDING = 'Nothing is waiting for a yes.';
 // write confirms first, regardless of role — a misread text stays harmless
 // until "yes".
 const CONFIRM_REQUIRED_KEYWORDS = new Set(['prep', 'set']);
+
+// "Christmas, Permanent, Event/Wedding, or Landscape" — the friendly labels
+// the confirm line already uses (SERVICE_FIELD_VALUE), not the raw enum keys
+// (captureLead's missing-service prompt used to show "event-wedding" etc.,
+// which nobody types back verbatim — the interpreter matches natural language
+// on the resend either way, so this is purely for the crew reading it).
+const SERVICE_LABEL_LIST = (() => {
+  const labels = LEAD_SERVICES.map((s) => SERVICE_FIELD_VALUE[s]);
+  return `${labels.slice(0, -1).join(', ')}, or ${labels[labels.length - 1]}`;
+})();
 
 
 /**
@@ -89,7 +105,17 @@ export async function handleBotMessage(msg: BotIncomingMessage): Promise<string 
     // is silently dropped (it's transcribed further down once addressed).
     const hasVoice = !!msg.voiceFileId;
     if (!bare && !hasPhotos && !hasVoice) return null;
-    if (!(await peekPendingAction(msg.chatId, msg.userId))) return null;
+    const pendingForGate = await peekPendingAction(msg.chatId, msg.userId);
+    if (!pendingForGate) return null;
+    // captureLead's "yes" IS the SMS-consent record (task #9, locked) — an
+    // unaddressed bare affirmative in a group (any of the ~11 synonyms, quite
+    // possibly meant for a coworker's unrelated question) must never be able
+    // to consume it and silently become that record. Leave it pending; an
+    // ADDRESSED yes (reply-to-bot or @mention — always true in a 1:1 chat)
+    // still confirms normally further down. Scoped to captureLead only:
+    // cancelling ("no") isn't a consent risk, and every other tool keeps
+    // today's behavior.
+    if (pendingForGate.tool === 'captureLead' && isAffirmative(text)) return null;
   }
 
   // Resolve the sender's role AFTER the addressed gate: it reads the roster from
@@ -124,9 +150,16 @@ export async function handleBotMessage(msg: BotIncomingMessage): Promise<string 
   if (isAffirmative(text)) {
     // A photo sent WITH the "yes" (as its caption) would otherwise be discarded:
     // control reaches here before the captionless-photo branch below. Fold it
-    // into the pending action first so the confirmed run saves it too.
+    // into the pending action first so the confirmed run saves it too — but
+    // ONLY for a tool that actually accepts photos (completeInstall).
+    // captureLead has nowhere to put one; appending it there would just
+    // pollute the pending args with a photoFileIds field runCaptureLead never
+    // reads, and the crew would have no idea the photo went nowhere.
     if (msg.photoFileIds?.length) {
-      await appendPhotosToPendingAction(msg.chatId, msg.userId, msg.photoFileIds);
+      const pendingForPhoto = await peekPendingAction(msg.chatId, msg.userId);
+      if (pendingForPhoto && pendingForPhoto.tool !== 'captureLead') {
+        await appendPhotosToPendingAction(msg.chatId, msg.userId, msg.photoFileIds);
+      }
     }
     const pending = await consumePendingAction(msg.chatId, msg.userId);
     if (!pending) return NOTHING_PENDING;
@@ -135,6 +168,14 @@ export async function handleBotMessage(msg: BotIncomingMessage): Promise<string 
 
   if (!text) {
     if (!msg.photoFileIds?.length) return NOT_UNDERSTOOD;
+    // captureLead has nowhere to put a photo (only completeInstall attaches
+    // them) — appending it to the pending action here would silently discard
+    // it while still claiming it's "ready", so check the pending tool BEFORE
+    // appending anything.
+    const pendingForPhoto = await peekPendingAction(msg.chatId, msg.userId);
+    if (pendingForPhoto?.tool === 'captureLead') {
+      return "Photos aren't saved on a field lead — reply yes to create it, or resend the details.";
+    }
     // Telegram splits an album into separate updates and puts the caption on
     // only one, so these arrive captionless. Attaching them to the pending
     // action stops the rest of the album from vanishing while the final reply
@@ -250,6 +291,33 @@ export async function handleBotMessage(msg: BotIncomingMessage): Promise<string 
         .join(', ');
       return withHeard(`${staged}\nI couldn't match: ${missing}. Reply with the exact product name for those.`);
     }
+    if (interp.tool === 'captureLead') {
+      const { name, phone, address, service, note } = interp.args;
+      if (!name || !phone) {
+        return withHeard('Need at least a name and phone number for a field lead. Resend with both.');
+      }
+      // Naldo's locked decision: the bot ASKS rather than guesses a service —
+      // stateless, so nothing is staged here. The crew just resends the whole
+      // capture with the service included; there's no partial to lose.
+      if (!service) {
+        return withHeard(
+          `Got ${name} · ${phone}${address ? ` · ${address}` : ''} — which service do they want ` +
+            `(${SERVICE_LABEL_LIST})? Resend the whole message including it.`,
+        );
+      }
+
+      const args: CaptureLeadArgs = {
+        name,
+        phone,
+        address: address ?? null,
+        note: note ?? null,
+        service,
+      };
+      const summary = summarizeCaptureLead(args);
+      return withHeard(
+        await stage(msg, role, interp.tool, args as unknown as Record<string, unknown>, summary),
+      );
+    }
     return withHeard(NOT_UNDERSTOOD);
   }
 
@@ -287,6 +355,28 @@ async function executeConfirmed(
     let reply: string;
     if (tool === 'completeInstall') {
       reply = await runCompleteInstall(args as unknown as CompleteInstallArgs, msg.userId);
+    } else if (tool === 'captureLead') {
+      const clArgs = args as unknown as CaptureLeadArgs;
+      const result = await runCaptureLead(clArgs);
+      reply = result.reply;
+      // Only ping staff when the contact is genuinely enrolled — a tag/note
+      // failure (result.synced false) must not tell the office a lead is in
+      // the drip when it isn't.
+      if (result.synced) {
+        await notifyTelegramAudience(
+          'leads',
+          fieldLeadMessage({
+            name: clArgs.name,
+            service: clArgs.service,
+            phone: clArgs.phone,
+            address: clArgs.address ?? null,
+            // Household guard fired — tell staff the SAVED name too, or they'd
+            // search GHL for a contact under the name the crew typed and find
+            // nothing (see fieldLead.ts's savedContactName).
+            savedContactName: result.savedContactName,
+          }),
+        );
+      }
     } else if (tool === 'prep' || tool === 'set') {
       // Round-trips through jsonb as the same parsed shape it was staged from.
       reply = await runWhatsAppCommand(args as unknown as WhatsAppCommand);

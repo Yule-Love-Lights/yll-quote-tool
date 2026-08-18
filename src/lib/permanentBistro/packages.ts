@@ -20,20 +20,24 @@ import type { QuoteResult } from '@/lib/pricing/pricingEngine';
 export function derivePackagesPermanentBistro(
   lineItems: PortalLineItem[],
   result: QuoteResult,
+  // #199 F1: threaded straight to chargesFromResult — see its own comment
+  // (derivePackages.ts) for why the live inputs.depositPercent must win over
+  // a possibly-stale result.depositRate.
+  depositPercent?: number,
 ): PortalPackage[] {
   if (lineItems.length === 0) return [];
   // Permanent bistro never carries rush/takedown — force both off (same as
   // event/permanent). Same tax source (chargesFromResult) so the money math
   // stays identical to holiday.
-  const charges = effectiveCharges(chargesFromResult(result), false, false);
+  const charges = effectiveCharges(chargesFromResult(result, depositPercent), false, false);
   const subtotal = lineItems.reduce((sum, li) => sum + li.price, 0);
   const p = priceSelection(subtotal, charges);
   return [
     {
       id: 'D',
-      // If this ever surfaces under a "What's Included" heading that prepends
-      // "Your " (mirrors event's #119 note), the name must NOT itself lead
-      // with "Your".
+      // #184 — the What's Included heading no longer prepends "Your " (it
+      // renders the bare name), so this name is free to read naturally either
+      // way; kept plain regardless.
       name: 'Bistro Lighting',
       tagline: "Everything we'll light for your space.",
       total: p.total,

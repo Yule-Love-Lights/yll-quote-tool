@@ -11,6 +11,7 @@ import { calculatePermanentQuote } from '@/lib/permanent/pricing';
 import { DEFAULT_PERMANENT_RATES } from '@/lib/permanent/types';
 import { calculatePermanentBistro } from '@/lib/permanentBistro/pricing';
 import { DEFAULT_PERMANENT_BISTRO_RATES } from '@/lib/permanentBistro/types';
+import { calculateEventQuote } from '@/lib/event/pricing';
 import type { ServiceType } from '@/lib/serviceType';
 import type { PortalPhotos } from './photos';
 
@@ -211,8 +212,70 @@ describe('quoteRowToPortalQuote — roofline as mutually-exclusive line items (#
     const legacy = { ...result, rooflineOptions: undefined } as unknown as QuoteResult;
     const portal = portalFrom(legacy)!;
     expect(portal.roofline).toBeUndefined();
-    // The single roofline stays a normal line item, with its footage label intact.
-    expect(portal.lineItems.some((li) => li.kind === 'roofline')).toBe(true);
+    // The single roofline stays a normal line item — footage stripped (#246).
+    const roofline = portal.lineItems.find((li) => li.kind === 'roofline');
+    expect(roofline).toBeDefined();
+    expect(roofline!.label).toBe("Santa's Roofline");
+  });
+
+  // ── #246: legacy pre-#104 quotes leak footage through the LABEL, not just
+  // `detail` — WhatsIncluded never renders `detail`, but it does render
+  // `label`, and a legacy row (no rooflineOptions) keeps its single billed
+  // roofline/ridge line item untouched by buildPortalLineItems. Locks the
+  // render-time strip that catches it regardless of when the quote was made.
+  describe('#246: legacy roofline/ridge label leaks no footage to the customer', () => {
+    it("strips a legacy Santa's Roofline label (hyphen variant — a stored label is a hypothesis, not a guarantee of the engine's exact dash byte)", () => {
+      const fresh = calculateQuote(emptyInputs({ santasFootage: 100, rooflineChoice: 'santas' }));
+      const legacy = {
+        ...fresh,
+        rooflineOptions: undefined,
+        lineItems: [{ label: "Santa's Roofline - 180ft (medium)", amount: 1200 }],
+      } as unknown as QuoteResult;
+      const portal = portalFrom(legacy)!;
+      const roofline = portal.lineItems.find((li) => li.kind === 'roofline')!;
+      expect(roofline.label).toBe("Santa's Roofline");
+      expect(roofline.detail).toBe('');
+      expect(roofline.price).toBe(1200); // price is untouched
+    });
+
+    it('strips a legacy Gingerbread label the same way', () => {
+      const fresh = calculateQuote(emptyInputs({ santasFootage: 100, rooflineChoice: 'santas' }));
+      const legacy = {
+        ...fresh,
+        rooflineOptions: undefined,
+        lineItems: [{ label: 'Gingerbread – 90ft (medium)', amount: 900 }],
+      } as unknown as QuoteResult;
+      const portal = portalFrom(legacy)!;
+      const ginger = portal.lineItems.find((li) => li.kind === 'ridge')!;
+      expect(ginger.label).toBe('Gingerbread');
+      expect(ginger.detail).toBe('');
+      expect(ginger.price).toBe(900);
+    });
+
+    it('NEGATIVE: a non-light custom label that legitimately contains "Nft" text is left completely alone', () => {
+      // Garland sizes are explicitly fine to show (only LIGHT footage/strand
+      // counts are the business rule) — and even if staff typed a custom item
+      // that happens to start with "Gingerbread"/"Roofline", the strip is
+      // anchored to the ENGINE'S exact product-name prefix, so it must survive.
+      const fresh = calculateQuote(emptyInputs({ santasFootage: 100, rooflineChoice: 'santas' }));
+      const legacy = {
+        ...fresh,
+        rooflineOptions: undefined,
+        lineItems: [
+          { label: "Santa's Roofline - 180ft (medium)", amount: 1200 },
+          { label: 'Gingerbread house display – 3ft tall', amount: 250 },
+          { label: '9ft Noble Garland – Full Decor', amount: 180 },
+          { label: 'Extension Cords × 3', amount: 45 },
+        ],
+      } as unknown as QuoteResult;
+      const portal = portalFrom(legacy)!;
+      const custom = portal.lineItems.find((li) => li.price === 250)!;
+      expect(custom.label).toBe('Gingerbread house display – 3ft tall');
+      const garland = portal.lineItems.find((li) => li.price === 180)!;
+      expect(garland.label).toBe('9ft Noble Garland – Full Decor');
+      const cords = portal.lineItems.find((li) => li.price === 45)!;
+      expect(cords.label).toBe('Extension Cords × 3');
+    });
   });
 
   // ── #110 W1-005: drop the billed roofline by IDENTITY, not label ──────────
@@ -526,7 +589,7 @@ describe('quoteRowToPortalQuote — quoteStatus + declineReason (Bug 3)', () => 
     };
     const portal = quoteRowToPortalQuote({ row: rowSent, photos: PHOTOS })!;
     // deriveStatus → 'sent' (timestamp-based), not a terminal/branch state
-    expect(['declined', 'cancelled', 'lost', 'changes_requested']).not.toContain(portal.quoteStatus);
+    expect(['declined', 'cancelled', 'abandoned', 'changes_requested']).not.toContain(portal.quoteStatus);
   });
 });
 
@@ -582,6 +645,27 @@ describe('quoteRowToPortalQuote — legacy_rebook mapping (#155)', () => {
     const D = portal.packages.find((p) => p.id === 'D')!;
     expect(D.name).toBe('Build Your Own');
     expect(D.includedItemIds).toEqual([]);
+  });
+});
+
+describe('quoteRowToPortalQuote — view_only mapping (#176)', () => {
+  const result = calculateQuote(emptyInputs({ santasFootage: 100, rooflineChoice: 'santas' }));
+
+  it('maps view_only: true to viewOnly: true', () => {
+    const row: QuoteRowForPortal = { ...rowWith(result), view_only: true };
+    const portal = quoteRowToPortalQuote({ row, photos: PHOTOS })!;
+    expect(portal.viewOnly).toBe(true);
+  });
+
+  it('maps view_only: false to viewOnly: false', () => {
+    const row: QuoteRowForPortal = { ...rowWith(result), view_only: false };
+    const portal = quoteRowToPortalQuote({ row, photos: PHOTOS })!;
+    expect(portal.viewOnly).toBe(false);
+  });
+
+  it('defaults viewOnly to false when the column is absent (legacy/back-compat row)', () => {
+    const portal = quoteRowToPortalQuote({ row: rowWith(result), photos: PHOTOS })!;
+    expect(portal.viewOnly).toBe(false);
   });
 });
 
@@ -722,6 +806,102 @@ describe('quoteRowToPortalQuote — fallback deposit rounds to CENTS (legacy / s
     expect(portal.approval?.totalUsd).toBe(3389.06);
     expect(portal.approval?.depositUsd).toBe(1694.53);
   });
+
+  // #177 — the same fallback must read the quote's OWN deposit percent
+  // (inputs.depositPercent), not always assume 50%.
+  it('a per-quote depositPercent override is honored by the fallback derivation', () => {
+    const portal = quoteRowToPortalQuote({
+      row: {
+        ...approvedRow({ approvedAt: '2026-07-04T00:00:00Z', customerSelection: { packageId: 'A', currentTotalUsd: 400 } }),
+        inputs: emptyInputs({ depositPercent: 25 }),
+      },
+      photos: PHOTOS,
+    })!;
+    expect(portal.approval?.totalUsd).toBe(400);
+    expect(portal.approval?.depositUsd).toBe(100); // 400 * 0.25, not 400 * 0.5
+  });
+});
+
+// #199 F1 (wrap-review HIGH): the PRE-approval live portal — package tiles +
+// SelectionContext's live total (both sourced from portal.charges /
+// jobCharges = chargesFromResult(row.result, row.inputs?.depositPercent)) —
+// must reflect the quote's CURRENT inputs.depositPercent even when result was
+// priced BEFORE it changed. The admin NCE toggle route and rebook.ts both
+// patch ONLY inputs.depositPercent, never result, so trusting result.depositRate
+// alone left the NCE 40% inert on exactly this path (a customer browsing
+// pre-approval saw 50%, unaffected by staff tagging NCE from the admin page).
+describe('quoteRowToPortalQuote — PRE-approval charges reflect a live depositPercent over a stale result (#199 F1)', () => {
+  it('portal.charges.depositRate follows the live inputs.depositPercent, not the (stale) result.depositRate baked in at calculateQuote time', () => {
+    // A real priced result — computed with NO depositPercent override, so
+    // result.depositRate === 0.5 (BUSINESS_RULES default), exactly like a
+    // quote priced before an NCE tag existed.
+    const result = calculateQuote(emptyInputs({ santasFootage: 100 }));
+    expect(result.depositRate).toBe(0.5);
+
+    // The row's CURRENT inputs say NCE (40%) — simulating the admin toggle
+    // route / rebook having patched inputs.depositPercent after that price.
+    const portal = portalFrom(result, emptyInputs({ santasFootage: 100, depositPercent: 40 }))!;
+    expect(portal.charges.depositRate).toBe(0.4);
+  });
+
+  it('the package tile deposit dollar amounts are priced at the live 40%, not the stale 50%', () => {
+    const result = calculateQuote(emptyInputs({ santasFootage: 100 }));
+    const staleDeposit = portalFrom(result, emptyInputs({ santasFootage: 100 }))!.packages.find(
+      (p) => p.id === 'A',
+    )!.deposit;
+    const liveDeposit = portalFrom(
+      result,
+      emptyInputs({ santasFootage: 100, depositPercent: 40 }),
+    )!.packages.find((p) => p.id === 'A')!.deposit;
+    // 40% of the same total must be LESS than 50% of it, and the ratio must
+    // be exact (not just "different").
+    expect(liveDeposit).toBeCloseTo(staleDeposit * 0.8, 2); // 0.40 / 0.50 = 0.8
+  });
+});
+
+// #177 fix 2 — buildApproval must expose the FROZEN depositRate (what the
+// customer actually approved with), preferring the snapshot's own depositRate
+// over the live inputs.depositPercent, so a later staff edit can't retro-change
+// what a post-approval surface displays.
+describe('quoteRowToPortalQuote — approval.depositRate (#177 fix 2)', () => {
+  const result = calculateQuote(emptyInputs({ santasFootage: 100 }));
+  function approvedRow(snapshot: unknown, inputs: QuoteInputs | null = null): QuoteRowForPortal {
+    return {
+      ...rowWith(result, inputs),
+      customer_approved_at: '2026-07-04T00:00:00Z',
+      approval_snapshot: snapshot as QuoteRowForPortal['approval_snapshot'],
+    };
+  }
+
+  it('prefers the FROZEN snapshot depositRate over a DIFFERENT live inputs.depositPercent', () => {
+    const portal = quoteRowToPortalQuote({
+      row: approvedRow(
+        { approvedAt: '2026-07-04T00:00:00Z', customerSelection: { packageId: 'A', depositRate: 0.25 } },
+        emptyInputs({ depositPercent: 40 }), // staff changed it AFTER approval — must not win
+      ),
+      photos: PHOTOS,
+    })!;
+    expect(portal.approval?.depositRate).toBe(0.25);
+  });
+
+  it('falls back to the live inputs.depositPercent for a pre-#177 snapshot with no frozen rate', () => {
+    const portal = quoteRowToPortalQuote({
+      row: approvedRow(
+        { approvedAt: '2026-07-04T00:00:00Z', customerSelection: { packageId: 'A' } }, // no depositRate field
+        emptyInputs({ depositPercent: 30 }),
+      ),
+      photos: PHOTOS,
+    })!;
+    expect(portal.approval?.depositRate).toBe(0.3);
+  });
+
+  it('falls back to 50% when neither the snapshot nor inputs carry a rate', () => {
+    const portal = quoteRowToPortalQuote({
+      row: approvedRow({ approvedAt: '2026-07-04T00:00:00Z', customerSelection: { packageId: 'A' } }),
+      photos: PHOTOS,
+    })!;
+    expect(portal.approval?.depositRate).toBe(0.5);
+  });
 });
 
 // ── #134: packages under the approval gate are hidden ───────────────────────
@@ -845,6 +1025,172 @@ describe('quoteRowToPortalQuote — hides packages below the approval minimum (#
   });
 });
 
+// ── Same-price tier dedupe: hide a LATER preset tier that price-ties an ─────
+// EARLIER still-visible one (operator screenshot: Tier 2 "Full Festive" and
+// Tier 3 "The Full Yule" both $2,185.88 — two identical-looking cards).
+// Scoped to the A/B/C preset ladder only; package D never hidden.
+describe('quoteRowToPortalQuote — hides a later preset tier that price-ties an earlier one', () => {
+  it('B===C hides C, keeps A/B/D', () => {
+    // Santa's alone clears the $1,000 minimum (100ft × $10 medium), so Tier A
+    // is just the roofline with no spritzers/extras added. With no other line
+    // items on the quote, Tier B (Santa's swapped for Gingerbread) and Tier C
+    // (everything, minus Santa's) both collapse to the SAME single item — the
+    // Gingerbread option — so they price-tie exactly.
+    const result = calculateQuote(
+      emptyInputs({ santasFootage: 100, gingerbreadFootage: 10, rooflineChoice: 'santas' }),
+    );
+    const portal = portalFrom(result)!;
+    const a = portal.packages.find((p) => p.id === 'A')!;
+    const b = portal.packages.find((p) => p.id === 'B')!;
+    // Totals are tax-inclusive (8.75%): A = $1,000 × 1.0875; B = ($1,000 +
+    // ridge/sides 10×$10 = $1,100) × 1.0875.
+    expect(a.total).toBe(1087.5);
+    expect(b.total).toBe(1196.25);
+    expect(a.total).not.toBe(b.total);
+
+    expect(portal.packages.map((p) => p.id)).toEqual(['A', 'B', 'D']); // C hidden
+  });
+
+  it('A===B===C keeps only A (+D)', () => {
+    // Force the Gingerbread option's price to exactly match Santa's (a
+    // same-price roofline swap) so all three preset tiers collapse to one
+    // price — the natural engine can't produce this directly (Gingerbread
+    // always costs strictly more once it exists), so the tie is forced on the
+    // computed result the same way the file's other hand-edited-result tests
+    // do (see the "legacy pre-#104" roofline test above).
+    const base = calculateQuote(
+      emptyInputs({ santasFootage: 100, gingerbreadFootage: 10, rooflineChoice: 'santas' }),
+    );
+    const tied: QuoteResult = {
+      ...base,
+      rooflineOptions: {
+        ...base.rooflineOptions,
+        gingerbread: { ...base.rooflineOptions.gingerbread!, amount: base.rooflineOptions.santas!.amount },
+      },
+    };
+    const portal = portalFrom(tied)!;
+    const a = portal.packages.find((p) => p.id === 'A')!;
+    expect(a.total).toBe(1087.5); // $1,000 × 1.0875 tax-inclusive
+
+    expect(portal.packages.map((p) => p.id)).toEqual(['A', 'D']); // B and C both hidden
+  });
+
+  it('all-distinct prices → nothing hidden', () => {
+    // Santa's alone ($1,000) clears the minimum, so the extra custom item is
+    // never pulled into Tier A/B (only into Tier C, "everything") — keeping
+    // all three preset totals distinct.
+    const inputs = emptyInputs({
+      santasFootage: 100, // Tier A: $1,000
+      gingerbreadFootage: 40, // Tier B: $1,000 + 40×$10 = $1,400
+      rooflineChoice: 'santas',
+      customLineItems: [{ label: 'Extra décor', amount: 500, quantity: 1 }], // only in Tier C
+    });
+    const result = calculateQuote(inputs);
+    const portal = portalFrom(result, inputs)!;
+    const [a, b, c] = (['A', 'B', 'C'] as const).map((id) => portal.packages.find((p) => p.id === id)!);
+    // Tax-inclusive (×1.0875): A = $1,000; B = $1,400 (+ ridge/sides 40×$10);
+    // C = $1,900 (+ the $500 custom item, only in "everything").
+    expect(a.total).toBe(1087.5);
+    expect(b.total).toBe(1522.5);
+    expect(c.total).toBe(2066.25);
+
+    expect(portal.packages.map((p) => p.id)).toEqual(['A', 'B', 'C', 'D']); // nothing hidden
+  });
+
+  it('D equal in price to a kept preset (permanent Whole Home) is still shown — D is never hidden', () => {
+    // Force the front line to $0 so permanent's Whole Home (front + back)
+    // collapses to exactly the Back-of-Home total — proving D survives even
+    // when it price-ties a kept A/B/C tile. waiveMinimum keeps the #134 gate
+    // filter a no-op so only the new dedupe is under test.
+    const permInputs = emptyInputs({
+      waiveMinimum: true,
+      permanent: {
+        frontFootage: 10, leftFootage: 0, rightFootage: 0, backFootage: 20,
+        gaps: [], controllerToFirstLightFt: 0,
+        frontCorners: 0, leftCorners: 0, rightCorners: 0, backCorners: 0,
+        trackStyle: 'single', trackColor: '9003', blackHousing: false, maintenanceAddOn: false,
+      },
+    });
+    const rawResult = calculatePermanentQuote(permInputs);
+    const tied: QuoteResult = {
+      ...rawResult,
+      lineItems: rawResult.lineItems.map((li) => (li.id === 'permanent-front' ? { ...li, amount: 0 } : li)),
+    };
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(tied, permInputs), service_type: 'permanent' },
+      photos: PHOTOS,
+    })!;
+    const c = portal.packages.find((p) => p.id === 'C')!;
+    const d = portal.packages.find((p) => p.id === 'D')!;
+    expect(c.total).toBeGreaterThan(0);
+    expect(c.total).toBe(d.total);
+
+    expect(portal.packages.map((p) => p.id)).toEqual(['A', 'C', 'D']); // D survives despite the tie
+  });
+
+  it('the empty "Build Your Own" (D) placeholder still always survives the dedupe', () => {
+    const result = calculateQuote(
+      emptyInputs({ santasFootage: 100, gingerbreadFootage: 10, rooflineChoice: 'santas' }),
+    );
+    const portal = portalFrom(result)!;
+    const d = portal.packages.find((p) => p.id === 'D')!;
+    expect(d).toBeDefined();
+    expect(d.total).toBe(0);
+    expect(d.includedItemIds).toEqual([]);
+  });
+
+  it('permanent surfaces are NEVER deduped — a symmetric house ties Front and Back legitimately', () => {
+    // Permanent reuses the A/B/C letter ids for mutually-exclusive SURFACES
+    // (A "Front of Home", C "Back of Home"), not a cumulative ladder — front
+    // 35ft × $40 and back 40ft × $35 both bill $1,400, price-tying two
+    // genuinely different products. The dedupe's positive holiday-only gate
+    // must leave both visible.
+    const permInputs = emptyInputs({
+      waiveMinimum: true,
+      permanent: {
+        frontFootage: 35, leftFootage: 0, rightFootage: 0, backFootage: 40,
+        gaps: [], controllerToFirstLightFt: 0,
+        frontCorners: 0, leftCorners: 0, rightCorners: 0, backCorners: 0,
+        trackStyle: 'single', trackColor: '9003', blackHousing: false, maintenanceAddOn: false,
+      },
+    });
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(calculatePermanentQuote(permInputs), permInputs), service_type: 'permanent' },
+      photos: PHOTOS,
+    })!;
+    const a = portal.packages.find((p) => p.id === 'A')!;
+    const c = portal.packages.find((p) => p.id === 'C')!;
+    expect(a.total).toBeGreaterThan(0);
+    expect(a.total).toBe(c.total); // the tie is real…
+    expect(portal.packages.some((p) => p.id === 'A')).toBe(true);
+    expect(portal.packages.some((p) => p.id === 'C')).toBe(true); // …and C still renders
+  });
+
+  it("the customer's APPROVED package is never hidden by the dedupe", () => {
+    // Same B===C tie as the first test, but the customer already approved on C
+    // (frozen in the approval snapshot). Hiding C would strand the approval
+    // seed on a missing package id → the empty-selection $0 portal. C must
+    // survive; the un-approved B stays too (it isn't a duplicate of anything
+    // still eligible for hiding).
+    const result = calculateQuote(
+      emptyInputs({ santasFootage: 100, gingerbreadFootage: 10, rooflineChoice: 'santas' }),
+    );
+    const portal = quoteRowToPortalQuote({
+      row: {
+        ...rowWith(result),
+        customer_approved_at: '2026-07-04T00:00:00Z',
+        approval_snapshot: {
+          approvedAt: '2026-07-04T00:00:00Z',
+          customerSelection: { packageId: 'C' },
+        } as QuoteRowForPortal['approval_snapshot'],
+      },
+      photos: PHOTOS,
+    })!;
+    expect(portal.packages.map((p) => p.id)).toEqual(['A', 'B', 'C', 'D']); // C kept for the approval
+    expect(portal.approval?.packageId).toBe('C');
+  });
+});
+
 // ── #131: permanent per-side recommend flags reach the portal line items ────
 describe('quoteRowToPortalQuote — permanent recommended sides (#131)', () => {
   function permInputsWith(over: Record<string, boolean> = {}): QuoteInputs {
@@ -921,6 +1267,54 @@ describe('quoteRowToPortalQuote — permanent bistro (single package + own gate,
     expect(portal.lineItems.map((li) => li.id)).toEqual(['permanent-bistro-0', 'permanent-bistro-poles']);
   });
 
+  it('#246: strips the run\'s footage suffix — the customer sees just the product name, poles keep its count', () => {
+    const inputs = bistroInputs();
+    const result = calculatePermanentBistro(inputs, { ...DEFAULT_PERMANENT_BISTRO_RATES, minimum: 0 });
+    const engineRun = result.lineItems.find((li) => li.id === 'permanent-bistro-0')!;
+    expect(engineRun.label).toBe('Permanent Bistro Lighting – 40ft'); // sanity on the shape we're stripping
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(result, inputs), service_type: 'permanent_bistro' },
+      photos: PHOTOS,
+    })!;
+    const run = portal.lineItems.find((li) => li.id === 'permanent-bistro-0')!;
+    expect(run.label).toBe('Permanent Bistro Lighting');
+    expect(run.detail).toBe('');
+    expect(run.price).toBe(engineRun.amount); // price untouched
+    // Poles is a QUANTITY, not light footage — the business rule doesn't
+    // apply, and its label carries no footage suffix to strip anyway.
+    const poles = portal.lineItems.find((li) => li.id === 'permanent-bistro-poles')!;
+    expect(poles.label).toBe('Poles (2)');
+  });
+
+  it("#246 HIGH: a SCENE-LINKED run (real prod shape — a UUID scene-item id, never the synthesized permanent-bistro-N fallback) still loses its footage suffix", () => {
+    // Real prod quote 652c88f8-f474-4a4e-87f5-4e6bed5badf7 holds rows shaped
+    // exactly like this: a permanent-bistro run drawn on the design carries
+    // the SCENE item's own uuid (permanentBistro/pricing.ts withIdentity:
+    // `id: item.id ?? fallbackId` — the synthesized id is only a fallback for
+    // a manual run with no scene link). A uuid never matches the id-keyed
+    // 'permanent-bistro' branch above, so this locks the fallthrough
+    // generic-kind path instead of the synthetic-id fixture the rest of this
+    // describe block uses.
+    const sceneId = 'd2bca72e-f474-4a4e-87f5-4e6bed5badf7';
+    const inputs = bistroInputs({
+      permanentBistro: { bistro: [{ footage: 20, id: sceneId }], poles: 0 },
+    });
+    const result = calculatePermanentBistro(inputs, { ...DEFAULT_PERMANENT_BISTRO_RATES, minimum: 0 });
+    const engineRun = result.lineItems.find((li) => li.id === sceneId)!;
+    expect(engineRun.label).toBe('Permanent Bistro Lighting – 20ft'); // sanity: same engine shape as the synthesized-id case
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(result, inputs), service_type: 'permanent_bistro' },
+      photos: PHOTOS,
+    })!;
+    // The generic (non-id-keyed) path assigns its own synthetic portal id
+    // (buildLineItemId) — the engine's uuid survives only as stableId.
+    const run = portal.lineItems.find((li) => li.stableId === sceneId)!;
+    expect(run.kind).toBe('bistro');
+    expect(run.label).toBe('Permanent Bistro Lighting'); // not "Permanent Bistro Lighting – 20ft"
+    expect(run.detail).toBe(''); // not "20 ft" (parseLineItem's extractFootage)
+    expect(run.price).toBe(engineRun.amount); // price untouched
+  });
+
   it('approvalGate is 0 (gate off) when the bistro rate snapshot minimum is 0', () => {
     const inputs = bistroInputs();
     const result = calculatePermanentBistro(inputs, { ...DEFAULT_PERMANENT_BISTRO_RATES, minimum: 0 });
@@ -955,6 +1349,122 @@ describe('quoteRowToPortalQuote — permanent bistro (single package + own gate,
     })!;
     expect(portal.charges.rush.amount).toBe(0);
     expect(portal.charges.takedown.amount).toBe(0);
+  });
+});
+
+// ── #246: event vertical's temporary Bistro Lighting — footage strip ───────
+describe('quoteRowToPortalQuote — #246 event Bistro Lighting label footage strip', () => {
+  it("strips the run's footage suffix — the customer sees just the product name", () => {
+    const inputs = emptyInputs({ event: { bistro: [{ footage: 50 }] } } as Partial<QuoteInputs>);
+    const result = calculateEventQuote(inputs);
+    const engineRun = result.lineItems.find((li) => li.label.startsWith('Bistro Lighting'))!;
+    expect(engineRun.label).toBe('Bistro Lighting – 50ft'); // sanity on the shape we're stripping
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(result, inputs), service_type: 'event' },
+      photos: PHOTOS,
+    })!;
+    const run = portal.lineItems.find((li) => li.kind === 'bistro')!;
+    expect(run.label).toBe('Bistro Lighting');
+    expect(run.detail).toBe('');
+    expect(run.price).toBe(engineRun.amount); // price untouched
+  });
+});
+
+// ── #246: real PROD label audit ─────────────────────────────────────────────
+// Naldo queried every distinct `result.lineItems[].label` on a customer-
+// visible (sent/viewed/approved/booked) non-test quote that contains a
+// footage- or strand-shaped substring. These are the ACTUAL stored bytes —
+// not a re-derivation of the strip regexes — run through the real
+// `quoteRowToPortalQuote` entry point every other test in this file uses.
+// Leak detectors below are DELIBERATELY independent of adapter.ts's own
+// regexes: this test must be able to fail if stripFootageSuffix/
+// MINI_LIGHT_SUFFIX_RE/the permanent regex are themselves wrong, not just
+// echo them back.
+describe('#246: real prod label audit — actual stored strings through the real adapter', () => {
+  const FOOTAGE_LEAK_RE = /\d+(?:\.\d+)?\s*ft\b/i; // "50ft" / "50 ft" / "9.5ft"
+  const STRAND_LEAK_RE = /\d+\s*strings?\b/i;
+  const RATE_LEAK_RE = /\$[\d.,]+\s*\/\s*ft/i; // an exposed per-ft rate is worse than bare footage
+
+  function assertClean(resultLabel: string, originalLabel: string) {
+    expect(resultLabel, `"${originalLabel}" → "${resultLabel}" leaks footage`).not.toMatch(FOOTAGE_LEAK_RE);
+    expect(resultLabel, `"${originalLabel}" → "${resultLabel}" leaks a strand count`).not.toMatch(STRAND_LEAK_RE);
+    expect(resultLabel, `"${originalLabel}" → "${resultLabel}" leaks a per-ft rate`).not.toMatch(RATE_LEAK_RE);
+  }
+
+  it('holiday-family: roofline, ridge, stake, and every mini-light kind (incl. curtain) come out clean', () => {
+    // Representative rows from the real population Naldo queried (footages/
+    // difficulties/strand-counts vary in prod; these span the reported range).
+    const cases: Array<{ label: string; amount: number }> = [
+      { label: "Santa's Roofline – 80ft (easy)", amount: 640 },
+      { label: "Santa's Roofline – 345ft (medium)", amount: 3450 },
+      { label: 'Gingerbread – 240ft (front + ridge + sides)', amount: 2400 },
+      { label: 'Gingerbread – 110ft (front + ridge + sides)', amount: 1100 },
+      { label: 'Stake Lighting – 70ft (easy)', amount: 560 },
+      { label: 'Stake Lighting – 55ft (medium)', amount: 385 },
+      { label: 'Stake Lighting – 30ft (medium)', amount: 210 },
+      { label: 'Bush – canopy wrap, 1 string', amount: 35 },
+      { label: 'Bush – canopy wrap, 3 strings', amount: 105 },
+      { label: 'Bush – canopy wrap, 6 strings', amount: 210 },
+      { label: 'Tree – trunk wrap, 8 strings', amount: 280 },
+      { label: 'Tree – canopy wrap, 11 strings', amount: 385 },
+      { label: 'Railing – 4 strings', amount: 140 },
+      { label: 'Column – 3 strings', amount: 105 },
+      { label: 'Column – 4 strings', amount: 140 },
+      // Curtain's product word ('Curtain Lights') differs from the other mini
+      // kinds — this is the one that would silently leak if `curtain` were
+      // ever dropped from MINI_LIGHT_KINDS. Verified end-to-end, not assumed.
+      { label: 'Curtain Lights – 42 strings', amount: 1470 },
+      { label: 'Curtain Lights – 30 strings', amount: 1050 },
+    ];
+    const fresh = calculateQuote(emptyInputs());
+    const legacy = { ...fresh, rooflineOptions: undefined, lineItems: cases } as unknown as QuoteResult;
+    const portal = portalFrom(legacy)!;
+    expect(portal.lineItems).toHaveLength(cases.length); // no row silently dropped
+    cases.forEach((c, i) => assertClean(portal.lineItems[i].label, c.label));
+
+    // Curtain specifically classified + stripped to the bare product name —
+    // the direct answer to "is curtain in MINI_LIGHT_KINDS", proven by
+    // behavior rather than by reading the Set.
+    const curtains = portal.lineItems.filter((li) => li.kind === 'curtain');
+    expect(curtains).toHaveLength(2);
+    expect(curtains.every((li) => li.label === 'Curtain Lights')).toBe(true);
+  });
+
+  it('decor SIZE labels are customer-facing by design and must survive byte-for-byte', () => {
+    const cases = [
+      { label: "9' of Noble Garland", amount: 220 },
+      { label: '48" Noble Wreath', amount: 175 },
+    ];
+    const fresh = calculateQuote(emptyInputs());
+    const legacy = { ...fresh, rooflineOptions: undefined, lineItems: cases } as unknown as QuoteResult;
+    const portal = portalFrom(legacy)!;
+    expect(portal.lineItems).toHaveLength(2);
+    expect(portal.lineItems[0].label).toBe("9' of Noble Garland");
+    expect(portal.lineItems[1].label).toBe('48" Noble Wreath');
+  });
+
+  it('permanent front/left/right/back: the exact prod shape (hyphen, space before "ft") strips BOTH the footage and the exposed $/ft rate', () => {
+    const cases = [
+      { label: 'Permanent Lighting - Front - 50 ft ($40/ft)', amount: 2000, id: 'permanent-front' },
+      { label: 'Permanent Lighting - Left Side - 30 ft ($35/ft)', amount: 1050, id: 'permanent-left' },
+      { label: 'Permanent Lighting - Right Side - 35 ft ($35/ft)', amount: 1225, id: 'permanent-right' },
+      { label: 'Permanent Lighting - Back - 120 ft ($40/ft)', amount: 4800, id: 'permanent-back' },
+    ];
+    const fresh = calculateQuote(emptyInputs());
+    const legacy = { ...fresh, rooflineOptions: undefined, lineItems: cases } as unknown as QuoteResult;
+    const portal = quoteRowToPortalQuote({
+      row: { ...rowWith(legacy), service_type: 'permanent' },
+      photos: PHOTOS,
+    })!;
+    expect(portal.lineItems).toHaveLength(cases.length);
+    cases.forEach((c, i) => assertClean(portal.lineItems[i].label, c.label));
+    // Exact resulting labels — the surface name only, rate AND footage gone.
+    expect(portal.lineItems.map((li) => li.label)).toEqual([
+      'Permanent Lighting - Front',
+      'Permanent Lighting - Left Side',
+      'Permanent Lighting - Right Side',
+      'Permanent Lighting - Back',
+    ]);
   });
 });
 

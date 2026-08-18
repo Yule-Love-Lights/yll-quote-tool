@@ -22,6 +22,7 @@ import { track } from '@/lib/analytics/posthog';
 import { categorizeApproveError } from '@/lib/analytics/errorCategory';
 import { FinancingCta } from '../FinancingCta';
 import { financedBalanceUsd, isFinancingEligible } from '@/lib/financing/eligibility';
+import { viewOnlyStaleTabError } from '../friendlyError';
 
 // Pure gate for the Approve action (extracted for test coverage — audit
 // W4-031). Mirrors the `disabled` prop on the Approve button AND the early
@@ -109,6 +110,27 @@ export function isAlreadyApprovedCode(code: unknown): boolean {
   return code === 'already-approved';
 }
 
+// View-only portal (#176) — a stale tab: the portal was open before staff
+// flagged this quote view-only, so the in-flight approve POST 409s with this
+// code. Special-cased (mirrors isAlreadyApprovedCode) so the customer sees
+// viewOnlyStaleTabError's copy instead of the generic "please try again",
+// which would wrongly imply retrying could still succeed.
+export function isViewOnlyCode(code: unknown): boolean {
+  return code === 'view-only';
+}
+
+// View-only portal (#176) — the "just browsing" strip copy + tel href, pure
+// so it's testable without the render infra this file already lacks (see
+// StickyBottomBar.test.ts's header note). Mirrors the tel: normalization used
+// elsewhere in the portal (e.g. PersonalContact.tsx).
+export function viewOnlyBrowsingCopy(phone: string): { label: string; phone: string; telHref: string } {
+  return {
+    label: 'Just browsing — text us your favourite look:',
+    phone,
+    telHref: `tel:${phone.replace(/[^0-9+]/g, '')}`,
+  };
+}
+
 export type StickyBottomBarProps = {
   quoteId: string;
   /** #43 — the customer has approved (the snapshot is frozen). When checkout is
@@ -123,10 +145,22 @@ export type StickyBottomBarProps = {
   /** #38 — the frozen deposit amount from the approval snapshot (what /pay will
    *  actually charge). Shown in the "complete your deposit" bar so it matches. */
   approvedDepositUsd?: number;
+  /** #177 fix 2b — the frozen deposit RATE (0-1) from the approval snapshot —
+   *  what the customer actually approved with. Passed to DepositCheckout's
+   *  copy instead of the live SelectionContext depositRate, which a staff edit
+   *  to inputs.depositPercent after approval must not retro-change. Mirrors
+   *  approvedDepositUsd above; undefined falls back to the live rate. */
+  approvedDepositRate?: number;
   /** #93 — this is a TEST quote. The deposit step becomes "Simulate deposit
    *  paid" (→ /simulate-deposit, no Valor) and the deposit flow is available
    *  regardless of whether the real Valor checkout is enabled. */
   isTest?: boolean;
+  /** #176 — a staff-flagged browse-only quote. Overrides every other bar
+   *  state: renders a neutral "just browsing" strip and never mounts the
+   *  approve/pay/decline/request-changes UI (DepositCheckout, SignModal,
+   *  QuoteResponseModal). The server independently 409s the same four
+   *  actions — this is the UI half, never the guard on its own. */
+  viewOnly?: boolean;
   /** Bug fix (audit W4-013) — the quote's live lifecycle status
    *  (deriveStatus), passed down so the "Complete deposit" bar can be
    *  suppressed once staff cancel/decline an approved-but-unpaid quote. The
@@ -151,7 +185,9 @@ export function StickyBottomBar({
   booked = false,
   checkoutEnabled = false,
   approvedDepositUsd,
+  approvedDepositRate,
   isTest = false,
+  viewOnly = false,
   quoteStatus,
   serviceType,
   financingPrequalUrl,
@@ -173,6 +209,7 @@ export function StickyBottomBar({
     permanentEffect,
     installTiming,
     breakdown,
+    depositRate,
   } = useSelection();
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -233,6 +270,30 @@ export function StickyBottomBar({
     }
   };
   useEffect(() => cancelHoverIntent, []);
+
+  // #176 — view-only takes precedence over every other bar state (pending
+  // payment / dead approval / booked / the live approve bar below). A
+  // view-only quote can never reach any of those states server-side (the
+  // /approve, /pay, /decline, /request-changes routes all 409 first), but
+  // this checks it directly rather than relying on that invariant, and it
+  // must never mount DepositCheckout/SignModal/QuoteResponseModal.
+  if (viewOnly) {
+    const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || '(631) 517-0186';
+    const { label, telHref } = viewOnlyBrowsingCopy(phone);
+    return (
+      <div className="portal-snow-sticky" role="region" aria-label="Browsing only">
+        <span className="text-[13px] md:text-[14px] text-[#A89F87]">
+          {label}{' '}
+          <a
+            href={telHref}
+            className="inline-flex min-h-[44px] items-center text-[#FFD07A] font-semibold hover:underline"
+          >
+            {phone}
+          </a>
+        </span>
+      </div>
+    );
+  }
 
   // Real approval: POST the selection to /api/quotes/[id]/approve, which freezes
   // the snapshot. Then, with the checkout flag ON, open the embedded 50% deposit
@@ -295,6 +356,15 @@ export function StickyBottomBar({
           } else {
             router.push(`/portal/${quoteId}/approved`);
           }
+          return;
+        }
+        // View-only portal (#176) — a stale tab: staff flipped this quote to
+        // view-only after the page loaded. This is a dead end (never fixed by
+        // retrying), so show that copy instead of falling through to the
+        // generic "please try again" handling below.
+        if (isViewOnlyCode(body409.code)) {
+          setErrorMsg(viewOnlyStaleTabError());
+          setSubmitting(false);
           return;
         }
         throw new Error(body409.error ?? `Request failed: ${res.status}`);
@@ -375,6 +445,7 @@ export function StickyBottomBar({
             isTest={isTest}
             serviceType={serviceType}
             onClose={closeDepositCheckout}
+            depositPercent={Math.round((approvedDepositRate ?? depositRate) * 100)}
           />
         )}
         <div className="portal-snow-sticky" role="region" aria-label="Complete your deposit">
@@ -520,6 +591,7 @@ export function StickyBottomBar({
           isTest={isTest}
           serviceType={serviceType}
           onClose={closeDepositCheckout}
+          depositPercent={Math.round(depositRate * 100)}
         />
       )}
       {/* #83 Slice B — "Confirm & sign" step. Captures the e-signature, then

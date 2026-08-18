@@ -9,16 +9,26 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 
 // ── Mocks (hoisted so the vi.mock factories can see them) ───────────────────
-const { sbRef, hl } = vi.hoisted(() => ({
+const { sbRef, hl, attachQuoteToCustomerMock } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
   hl: {
     findOrCreate: vi.fn(async () => ({ opportunity: { id: 'opp-1' }, created: false })),
   },
+  // #214 (d): the route re-resolves the customers link after a successful
+  // link write — mocked so these unit tests never touch a customers table.
+  attachQuoteToCustomerMock: vi.fn(async () => null as null | { customerId: string; propertyId: string }),
 }));
 
 vi.mock('@/lib/supabase', () => ({
   isSupabaseServiceConfigured: () => true,
   getSupabaseServiceClient: () => sbRef.current,
+}));
+
+// #214: importOriginal keeps quoteRowToIdentity (pure sentinel translation)
+// REAL — only the DB-touching fn is mocked.
+vi.mock('@/lib/customers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/customers')>()),
+  attachQuoteToCustomer: attachQuoteToCustomerMock,
 }));
 
 vi.mock('@/lib/integrations/highlevel', () => ({
@@ -116,6 +126,38 @@ describe('HighLevel attach — detach (#172)', () => {
   });
 });
 
+// #247: the create-fallback card name must be the customer's name (or the
+// generic "Yule Love Lights quote"), never the old vertical-specific
+// "Holiday Lights quote {id}" literal — this route serves every vertical.
+describe('HighLevel attach — create-fallback card name (#247)', () => {
+  it('uses opportunityName when the caller supplies one', async () => {
+    sbRef.current = makeSb(HOLIDAY_QUOTE, null);
+
+    await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1', opportunityName: 'Jane Smith' }));
+    expect(hl.findOrCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ fallbackName: 'Jane Smith' }),
+    );
+  });
+
+  it('falls back to contactName when opportunityName is absent', async () => {
+    sbRef.current = makeSb(HOLIDAY_QUOTE, null);
+
+    await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1', contactName: 'John Q. Public' }));
+    expect(hl.findOrCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ fallbackName: 'John Q. Public' }),
+    );
+  });
+
+  it('falls back to the generic "Yule Love Lights quote" when neither name is available — never the old vertical-specific literal', async () => {
+    sbRef.current = makeSb(HOLIDAY_QUOTE, null);
+
+    await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+    expect(hl.findOrCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ fallbackName: 'Yule Love Lights quote' }),
+    );
+  });
+});
+
 describe('HighLevel attach — per-service-type pipeline (#GHL pipeline sync)', () => {
   it('a holiday quote still honors the legacy env vars (pipeline + entry stage)', async () => {
     sbRef.current = makeSb(HOLIDAY_QUOTE, null);
@@ -177,6 +219,149 @@ describe('HighLevel attach — per-service-type pipeline (#GHL pipeline sync)', 
     expect(hl.findOrCreate).toHaveBeenCalledWith(
       expect.objectContaining({ pipelineId: 'pipe-1', fallbackStageId: 'stage-created' }),
     );
+  });
+});
+
+// #214 (d): the attach route is where a quote GAINS its hl id after insert —
+// it re-runs the customers resolution so an hl-less linked customers row
+// heals (the #700 heal lives inside attachQuoteToCustomer) and the #213
+// rules finally see the pick. Review fix (3-lens HIGH): the identity comes
+// from the request body's PICKED-CONTACT fields, NEVER the stored quote row
+// — the stored fields describe whoever the quote referenced BEFORE the
+// pick, and that self-inconsistent pairing could adopt + overwrite the
+// wrong customer's row.
+describe('HighLevel attach — post-link customers re-resolution (#214)', () => {
+  const CONTACT_FIELDS = {
+    contactName: 'Jane Doe',
+    contactEmail: 'jane@x.com',
+    contactPhone: '6315550100',
+    contactAddress: '1 A St, Bellmore, NY',
+  };
+
+  it("re-resolves with the PICKED CONTACT's own fields + id after a clean link write", async () => {
+    sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false }, null);
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1', ...CONTACT_FIELDS }));
+    expect(res.status).toBe(200);
+    expect(attachQuoteToCustomerMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: QUOTE_ID,
+        highlevel_contact_id: 'contact-1',
+        customer_name: 'Jane Doe',
+        customer_email: 'jane@x.com',
+        customer_phone: '6315550100',
+        customer_address: '1 A St, Bellmore, NY',
+      }),
+    );
+  });
+
+  it('NEVER derives the identity from the stored quote row (the stale-fields clobber class)', async () => {
+    sbRef.current = makeSb(
+      // Stored row describes a DIFFERENT person than the picked contact.
+      { ...HOLIDAY_QUOTE, is_test: false, customer_name: 'John Smith', customer_email: 'john@x.com' },
+      null,
+    );
+
+    await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1', ...CONTACT_FIELDS }));
+    const identity = (attachQuoteToCustomerMock.mock.calls as unknown as unknown[][])[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    expect(identity.customer_name).toBe('Jane Doe');
+    expect(identity.customer_email).toBe('jane@x.com');
+    expect(JSON.stringify(identity)).not.toContain('John Smith');
+  });
+
+  it('SKIPS re-resolution when the body carries no non-hl contact field (an hl-only identity would fork a bare row)', async () => {
+    sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false }, null);
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+    expect(res.status).toBe(200);
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+  });
+
+  it('a contactAddress alone does NOT count as an identity field (address is never a match key)', async () => {
+    sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false }, null);
+
+    await POST(
+      makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1', contactAddress: '1 A St' }),
+    );
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+  });
+
+  it('warns loudly when the re-resolution REPOINTS the quote off a previously-linked customer', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'cust-new', propertyId: 'p1' });
+    sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false, customer_id: 'cust-old' }, null);
+
+    await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1', ...CONTACT_FIELDS }));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('repoint'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('cust-old'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('cust-new'));
+    warnSpy.mockRestore();
+  });
+
+  it('never re-resolves for a TEST quote (attachQuoteToCustomer must not run with test data)', async () => {
+    sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: true }, null);
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1', ...CONTACT_FIELDS }));
+    expect(res.status).toBe(200);
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+  });
+
+  // Round-3 delta-verify HIGH (sibling-guard parity with updateQuote's
+  // booked-freeze): jobs/invoices/GHL tenure snapshot the customers link at
+  // booking and never resync — a post-booking contact re-pick must update
+  // the GHL card link only, never relink the customers row.
+  it('never re-resolves a BOOKED quote (deposit paid) — the GHL link still updates, the customers link is frozen', async () => {
+    sbRef.current = makeSb(
+      { ...HOLIDAY_QUOTE, is_test: false, deposit_paid_at: '2026-08-01T00:00:00Z', customer_id: 'cust-frozen' },
+      null,
+    );
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1', ...CONTACT_FIELDS }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.linked).toBe(true); // the route's own job still happened
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+  });
+
+  // Round-3 delta-verify MED: the non-hl-field gate runs POST-translation —
+  // a contact literally named 'Anonymous' (no email/phone) must not sneak
+  // an hl-only identity past the guard.
+  it("a contact named literally 'Anonymous' with no email/phone does NOT count as a non-hl field", async () => {
+    sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false }, null);
+
+    await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1', contactName: 'Anonymous' }));
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+  });
+
+  it('skips re-resolution when the link write-back failed (linked:false path)', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false }, { message: 'db down' });
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1', ...CONTACT_FIELDS }));
+    expect(res.status).toBe(200);
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  it('skips re-resolution when the quote row could not be read (fail-open path — no is_test answer)', async () => {
+    sbRef.current = makeSb(null, null);
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1', ...CONTACT_FIELDS }));
+    expect(res.status).toBe(200);
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+  });
+
+  it('the response is unchanged when re-resolution throws (best-effort)', async () => {
+    attachQuoteToCustomerMock.mockRejectedValueOnce(new Error('customers table missing'));
+    sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false }, null);
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1', ...CONTACT_FIELDS }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.linked).toBe(true);
   });
 });
 

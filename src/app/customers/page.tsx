@@ -1,54 +1,13 @@
-import Link from 'next/link';
 import { listQuotesForDashboard } from '@/lib/dashboard/queries';
-import { aggregateCustomers, customerRouteId } from '@/lib/dashboard/customers';
-import type { CustomerSummary } from '@/lib/dashboard/types';
+import { aggregateCustomers } from '@/lib/dashboard/customers';
 import { OperatorShell } from '@/components/OperatorShell';
-import { CustomerStatusBadge } from '@/components/dashboard/CustomerStatusBadge';
 import { getOperator } from '@/lib/auth/supabaseServer';
 import { redirect } from 'next/navigation';
+import { CustomersTable } from './CustomersTable';
+import { listCustomerTagsByIds } from '@/lib/customers';
 
 // Always render fresh — reflects the live quotes table on every load.
 export const dynamic = 'force-dynamic';
-
-function fmtMoney(n: number): string {
-  return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
-}
-
-function fmtDate(iso: string): string {
-  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-}
-
-function CustomerRow({ c }: { c: CustomerSummary }) {
-  const contact = c.email || c.phone || '—';
-  // Link to the detail page whenever we have a stable route id — the HighLevel
-  // contact id when present, else the backfilled customer_id. Only a truly
-  // identity-less walk-in (neither id) stays unclickable. (S22 fix: the link used
-  // to require highlevel_contact_id, so backfilled non-CRM customers were shown
-  // but never clickable.)
-  const routeId = customerRouteId(c);
-  return (
-    <tr className="border-t" style={{ borderColor: 'var(--op-border)' }}>
-      <td className="px-3 py-2.5">
-        {routeId ? (
-          <Link
-            href={`/customers/${encodeURIComponent(routeId)}`}
-            className="font-medium hover:underline"
-            style={{ color: 'var(--op-primary)' }}
-          >
-            {c.name}
-          </Link>
-        ) : (
-          <span className="font-medium" style={{ color: 'var(--op-text)' }}>{c.name}</span>
-        )}
-        <div className="text-xs" style={{ color: 'var(--op-text-dim)' }}>{contact}</div>
-      </td>
-      <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--op-text-2)' }}>{c.quoteCount}</td>
-      <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--op-text)' }}>{fmtMoney(c.bookedSpend)}</td>
-      <td className="px-3 py-2.5"><CustomerStatusBadge status={c.latestStatus} /></td>
-      <td className="px-3 py-2.5 text-xs whitespace-nowrap" style={{ color: 'var(--op-text-dim)' }}>{fmtDate(c.latestQuoteAt)}</td>
-    </tr>
-  );
-}
 
 export default async function CustomersPage() {
   // Defense in depth behind the middleware perimeter — re-check at render so the
@@ -59,6 +18,21 @@ export default async function CustomersPage() {
   }
   const quotes = await listQuotesForDashboard(500);
   const customers = aggregateCustomers(quotes);
+
+  // NCE + YLL Neighbor tags (#198), read-only on this list. aggregateCustomers
+  // (Naldo's src/lib/dashboard/customers.ts) stays untouched — a pure fold
+  // over quotes only, no separate-table read of its own — so the tag lookup
+  // happens here instead: one bulk query keyed by customerId, passed down as
+  // a plain lookup object (not merged into CustomerSummary/aggregateCustomers,
+  // to avoid widening that Naldo-owned pure function's contract for a single
+  // consumer). A customer's tag is the persisted customers-table value, which
+  // can be true even when NONE of their listed quotes are individually
+  // tagged (set directly on the profile, or propagated from an older quote
+  // outside this 500-row window) — reading it from `customers` directly is
+  // the only correct source, not a fold over the quotes on this page.
+  const customerIds = customers.map(c => c.customerId).filter((id): id is string => id != null);
+  const tagsById = await listCustomerTagsByIds(customerIds);
+  const tagsByIdPlain = Object.fromEntries(tagsById);
 
   return (
     <OperatorShell active="customers">
@@ -76,31 +50,7 @@ export default async function CustomersPage() {
           </p>
         </header>
 
-        <div
-          className="rounded-lg border overflow-x-auto"
-          style={{ background: 'var(--op-bg-raised)', borderColor: 'var(--op-border)' }}
-        >
-          {customers.length === 0 ? (
-            <div className="p-8 text-sm text-center" style={{ color: 'var(--op-text-dim)' }}>
-              No customers yet — they appear here once quotes are created.
-            </div>
-          ) : (
-            <table className="w-full text-sm">
-              <thead className="text-xs uppercase" style={{ color: 'var(--op-text-dim)', background: 'var(--op-bg)' }}>
-                <tr>
-                  <th className="text-left px-3 py-2 font-semibold">Customer</th>
-                  <th className="text-right px-3 py-2 font-semibold">Quotes</th>
-                  <th className="text-right px-3 py-2 font-semibold">Booked</th>
-                  <th className="text-left px-3 py-2 font-semibold">Latest</th>
-                  <th className="text-left px-3 py-2 font-semibold">Last activity</th>
-                </tr>
-              </thead>
-              <tbody>
-                {customers.map(c => <CustomerRow key={c.key} c={c} />)}
-              </tbody>
-            </table>
-          )}
-        </div>
+        <CustomersTable customers={customers} tagsById={tagsByIdPlain} />
       </div>
     </OperatorShell>
   );

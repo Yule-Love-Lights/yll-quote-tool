@@ -10,10 +10,13 @@
 // `migrations/2026-06-27-jobs.sql`.
 
 import { getSupabaseServiceClient, getSupabaseClient } from './supabase';
+import { readLaborPlan, type LaborPlan } from './laborPlan';
 import { allocateNumber } from './displayId';
 import { canTransition, type JobStatus } from './jobStatus';
 import { getInvoiceByJob, type InvoiceRow } from './invoices';
+import { estimateLaborForQuote } from './laborEstimate';
 import type { LineItem } from './pricing/pricingEngine';
+import { asServiceType } from './serviceType';
 
 // The job row as the billing side reads/writes it. `fulfillment_stage` is the
 // #82 axis — present in the type for completeness but owned by inventory.
@@ -28,6 +31,9 @@ export type JobRow = {
   status: JobStatus;
   fulfillment_stage: string | null;
   line_items: LineItem[] | null;
+  budgeted_hours: number | null;
+  labor_revenue_cents: number | null;
+  rates_are_placeholder: boolean;
   install_date: string | null;
   completed_at: string | null;
   created_at: string;
@@ -36,7 +42,8 @@ export type JobRow = {
 
 const JOB_SELECT =
   'id, job_number, quote_id, design_id, customer_id, property_id, type, status, ' +
-  'fulfillment_stage, line_items, install_date, completed_at, created_at, updated_at';
+  'fulfillment_stage, line_items, budgeted_hours, labor_revenue_cents, rates_are_placeholder, ' +
+  'install_date, completed_at, created_at, updated_at';
 
 function sb() {
   return getSupabaseServiceClient() ?? getSupabaseClient();
@@ -84,6 +91,54 @@ export async function listJobs(limit = 500): Promise<JobRow[]> {
   return (data ?? []) as unknown as JobRow[];
 }
 
+/**
+ * PURE: merge job lists (e.g. one matched by customer_id, one by quote_id) into a
+ * single de-duplicated, newest-first list. No IO — exported for direct unit tests.
+ */
+export function mergeJobsNewestFirst(...lists: JobRow[][]): JobRow[] {
+  const byId = new Map<string, JobRow>();
+  for (const list of lists) {
+    for (const j of list) byId.set(j.id, j);
+  }
+  return [...byId.values()].sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  );
+}
+
+/**
+ * Jobs belonging to a customer (the customer detail page, #58): matched by EITHER
+ * the job's own customer_id OR its quote_id being one of the customer's known
+ * quotes (the page's Quote history) — the second leg covers legacy jobs whose
+ * customer_id is still null pre-backfill, mirroring matchesCustomerRoute's dual
+ * match. Two queries + merge-dedupe (mergeJobsNewestFirst) rather than a
+ * hand-built PostgREST `.or()` filter. Returns [] when Supabase isn't configured
+ * or neither a customerId nor any quoteIds are given.
+ */
+export async function listJobsForCustomer(
+  customerId: string | null,
+  quoteIds: string[],
+): Promise<JobRow[]> {
+  const db = sb();
+  if (!db) return [];
+  if (!customerId && quoteIds.length === 0) return [];
+
+  let byCustomer: JobRow[] = [];
+  if (customerId) {
+    const { data, error } = await db.from('jobs').select(JOB_SELECT).eq('customer_id', customerId);
+    if (error) console.error('listJobsForCustomer: customer_id query error:', error);
+    else byCustomer = (data ?? []) as unknown as JobRow[];
+  }
+
+  let byQuote: JobRow[] = [];
+  if (quoteIds.length) {
+    const { data, error } = await db.from('jobs').select(JOB_SELECT).in('quote_id', quoteIds);
+    if (error) console.error('listJobsForCustomer: quote_id query error:', error);
+    else byQuote = (data ?? []) as unknown as JobRow[];
+  }
+
+  return mergeJobsNewestFirst(byCustomer, byQuote);
+}
+
 // A billing-board row: the job distilled for the operator /admin/jobs list, with
 // the linked quote's customer identity + is_test joined on (the job's own
 // customer_id stays null until Phase 5). Mirrors the inventory FulfillmentCard
@@ -102,15 +157,24 @@ export type JobAdminCard = {
   customerName: string | null;
   customerAddress: string | null;
   isTest: boolean;
+  // #199: the linked quote's NCE tag — drives the NceBadge on the list row.
+  isNce: boolean;
   createdAt: string;
   itemCount: number;
+  // Customer detail-page route id fields (same precedence as QuoteListItem /
+  // src/lib/dashboard/customers.ts customerRouteId: highlevel_contact_id, else
+  // customer_id) — lets /admin/jobs link a customer name to their profile.
+  // customerId prefers the job's OWN customer_id (Phase 5) over the linked
+  // quote's, since the job row is the more direct source once backfilled.
+  highlevelContactId: string | null;
+  customerId: string | null;
 };
 
 /**
  * The jobs list for the operator billing view (/admin/jobs). Reads every job
- * (newest first) and joins each linked quote's customer name/address + is_test.
- * Test jobs stay VISIBLE here (badged) — only the dashboard metrics exclude them
- * (#93). Returns [] when Supabase isn't configured.
+ * (newest first) and joins each linked quote's customer name/address +
+ * is_test/is_nce. Test jobs stay VISIBLE here (badged) — only the dashboard
+ * metrics exclude them (#93). Returns [] when Supabase isn't configured.
  */
 export async function listJobsForAdmin(limit = 500): Promise<JobAdminCard[]> {
   const db = sb();
@@ -122,23 +186,29 @@ export async function listJobsForAdmin(limit = 500): Promise<JobAdminCard[]> {
   const quoteIds = [...new Set(jobs.map((j) => j.quote_id).filter((x): x is string => !!x))];
   const byQuote = new Map<
     string,
-    { name: string | null; address: string | null; isTest: boolean }
+    { name: string | null; address: string | null; isTest: boolean; isNce: boolean; highlevelContactId: string | null; customerId: string | null }
   >();
   if (quoteIds.length) {
     const { data } = await db
       .from('quotes')
-      .select('id, customer_name, customer_address, is_test')
+      .select('id, customer_name, customer_address, is_test, is_nce, highlevel_contact_id, customer_id')
       .in('id', quoteIds);
     for (const q of (data ?? []) as {
       id: string;
       customer_name: string | null;
       customer_address: string | null;
       is_test: boolean | null;
+      is_nce: boolean | null;
+      highlevel_contact_id: string | null;
+      customer_id: string | null;
     }[]) {
       byQuote.set(q.id, {
         name: q.customer_name ?? null,
         address: q.customer_address ?? null,
         isTest: !!q.is_test,
+        isNce: !!q.is_nce,
+        highlevelContactId: q.highlevel_contact_id ?? null,
+        customerId: q.customer_id ?? null,
       });
     }
   }
@@ -154,14 +224,17 @@ export async function listJobsForAdmin(limit = 500): Promise<JobAdminCard[]> {
       customerName: c?.name ?? null,
       customerAddress: c?.address ?? null,
       isTest: c?.isTest ?? false,
+      isNce: c?.isNce ?? false,
       createdAt: j.created_at,
       itemCount: Array.isArray(j.line_items) ? j.line_items.length : 0,
+      highlevelContactId: c?.highlevelContactId ?? null,
+      customerId: j.customer_id ?? c?.customerId ?? null,
     };
   });
 }
 
 // The full billing detail for one job (/admin/jobs/[id]): the job row, the linked
-// quote's customer identity + is_test, and the linked invoice (if one exists yet).
+// quote's customer identity + is_test/is_nce, and the linked invoice (if one exists yet).
 export type JobDetail = {
   job: JobRow;
   customerName: string | null;
@@ -169,18 +242,33 @@ export type JobDetail = {
   customerPhone: string | null;
   customerAddress: string | null;
   isTest: boolean;
+  // #199: the linked quote's NCE tag — drives the NceBadge on the detail header.
+  isNce: boolean;
   // The linked quote's service_type (#117), for surfaces that need to tell a
   // 'permanent_bistro' one_off job apart from an ordinary holiday/event one_off
   // (the type column alone collapses both to 'one_off' — see createJobFromQuote's
   // comment). null when the job has no linked quote or the column is unset.
   quoteServiceType: string | null;
   invoice: InvoiceRow | null;
+  // #177 fix 4: the linked quote's stamped deposit_amount_usd (the deposit
+  // actually INTENDED at this quote's own deposit percent) — fed into
+  // reconcileInvoice alongside `invoice` so short-deposit compares against
+  // the real intended amount, not a blanket 40%-of-total heuristic.
+  intendedDepositUsd: number | null;
+  // The job's labor numbers in tagged form. `job` above still carries the raw
+  // columns, which is fine for callers inside this repo (the ESLint rule in
+  // eslint.config.mjs stops them being read directly), but this detail object
+  // is serialized wholesale by GET /api/jobs/[id] and read by out-of-repo
+  // consumers that no lint rule can reach. Shipping the tagged form alongside
+  // means such a consumer gets `status: 'placeholder'` in the payload itself,
+  // instead of a bare number that looks measured. See src/lib/laborPlan.ts.
+  laborPlan: LaborPlan;
 };
 
 /**
  * The billing detail for one job — the job row + the linked quote's customer
- * identity + is_test + service_type + the linked invoice (null until the job
- * is completed). Returns null when Supabase isn't configured or the job is missing.
+ * identity + is_test/is_nce + service_type + the linked invoice (null until the
+ * job is completed). Returns null when Supabase isn't configured or the job is missing.
  */
 export async function getJobDetail(id: string): Promise<JobDetail | null> {
   const db = sb();
@@ -194,11 +282,13 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
   let customerPhone: string | null = null;
   let customerAddress: string | null = null;
   let isTest = false;
+  let isNce = false;
   let quoteServiceType: string | null = null;
+  let intendedDepositUsd: number | null = null;
   if (job.quote_id) {
     const { data } = await db
       .from('quotes')
-      .select('customer_name, customer_email, customer_phone, customer_address, is_test, service_type')
+      .select('customer_name, customer_email, customer_phone, customer_address, is_test, is_nce, service_type, deposit_amount_usd')
       .eq('id', job.quote_id)
       .maybeSingle<{
         customer_name: string | null;
@@ -206,7 +296,9 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
         customer_phone: string | null;
         customer_address: string | null;
         is_test: boolean | null;
+        is_nce: boolean | null;
         service_type: string | null;
+        deposit_amount_usd: number | null;
       }>();
     if (data) {
       customerName = data.customer_name ?? null;
@@ -214,18 +306,33 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
       customerPhone = data.customer_phone ?? null;
       customerAddress = data.customer_address ?? null;
       isTest = !!data.is_test;
+      isNce = !!data.is_nce;
       quoteServiceType = data.service_type ?? null;
+      intendedDepositUsd = data.deposit_amount_usd ?? null;
     }
   }
 
   const invoice = await getInvoiceByJob(id);
-  return { job, customerName, customerEmail, customerPhone, customerAddress, isTest, quoteServiceType, invoice };
+  return {
+    job,
+    customerName,
+    customerEmail,
+    customerPhone,
+    customerAddress,
+    isTest,
+    isNce,
+    quoteServiceType,
+    invoice,
+    intendedDepositUsd,
+    laborPlan: readLaborPlan(job),
+  };
 }
 
 // The minimal quote shape createJobFromQuote needs.
 type QuoteForJob = {
   id: string;
   service_type: string | null;
+  inputs: unknown;
   result: { lineItems?: LineItem[] } | null;
 };
 
@@ -252,7 +359,7 @@ export async function createJobFromQuote(quoteId: string): Promise<JobRow | null
   // Load the quote we're snapshotting from.
   const { data: quote, error: qErr } = await db
     .from('quotes')
-    .select('id, service_type, result')
+    .select('id, service_type, inputs, result')
     .eq('id', quoteId)
     .maybeSingle<QuoteForJob>();
   if (qErr) {
@@ -296,6 +403,14 @@ export async function createJobFromQuote(quoteId: string): Promise<JobRow | null
   // jobs feed the APL puck/track BOM + Glow365 ops machinery, none of which
   // applies to café string lights. Revisit if bistro grows its own ops track.
   const type: JobRow['type'] = quote.service_type === 'permanent' ? 'permanent' : 'one_off';
+  const serviceType = asServiceType(quote.service_type);
+  const estimate = serviceType ? estimateLaborForQuote(serviceType, quote.inputs) : null;
+  if (!estimate) {
+    const rawType = quote.service_type ?? 'null';
+    console.warn(
+      `createJobFromQuote: budgeted-hours estimate skipped for quote ${quoteId} (service_type=${rawType}).`,
+    );
+  }
 
   // Sequential display number (Job #1000…). Best-effort, exactly like
   // saveQuote's quote_number: a failed allocation (sequence missing pre-migration)
@@ -319,6 +434,17 @@ export async function createJobFromQuote(quoteId: string): Promise<JobRow | null
       status: 'to_schedule' satisfies JobStatus,
       // fulfillment_stage intentionally omitted (NULL) — owned by #82.
       line_items: quote.result?.lineItems ?? null,
+      budgeted_hours: estimate?.budgetedHours ?? null,
+      labor_revenue_cents: estimate?.laborRevenueCents ?? null,
+      // Only true when an estimate was actually computed WITH placeholder
+      // rates. A job with no estimate at all (missing/malformed geometry —
+      // the console.warn case above) has nothing placeholder about it; it
+      // needs a full re-estimate once the underlying data issue is fixed,
+      // not a rate recompute. Keeping these two "needs attention" reasons
+      // distinguishable is what makes a future `WHERE rates_are_placeholder`
+      // recompute query correct instead of silently skipping (false) or
+      // wrongly including (stuck at true) the no-estimate case.
+      rates_are_placeholder: estimate != null,
       ...(jobNumber != null ? { job_number: jobNumber } : {}),
     })
     .select(JOB_SELECT)

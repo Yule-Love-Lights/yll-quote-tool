@@ -49,6 +49,16 @@ const PUBLIC_QUOTE_SUBROUTES_BY_METHOD: Record<string, string> = {
   'color-change-request': 'POST',
 };
 
+// The embeddable non-lead form pages (#195), listed one by one rather than by
+// prefix so adding a form is a deliberate act. These render an empty form and
+// read no customer record, which is why they are safe to serve signed-out.
+const PUBLIC_FORM_PAGES = new Set([
+  '/forms/newsletter',
+  '/forms/careers',
+  '/forms/intern',
+  '/forms/nomination',
+]);
+
 // Exact public API paths (webhooks + crons + the login surface).
 const PUBLIC_API_EXACT = new Set([
   '/api/login',
@@ -66,6 +76,10 @@ const PUBLIC_API_EXACT = new Set([
   '/api/dashboard/quotetool/reconcile', // Vercel Cron (CRON_SECRET-guarded, #58 quote-lead fold-in)
   '/api/dashboard/gmail/poll', // Vercel Cron (CRON_SECRET-guarded, #58 Gmail inbox ingestion)
   '/api/dashboard/ingest', // Generic source ingest (shared-secret in the route, #58 Homeworks etc.)
+  '/api/ops/digest', // Vercel Cron (CRON_SECRET-guarded, #168 morning ops digest — same Bearer guard as low-stock-alert; a cron request carries no operator session so it must be allowlisted to reach its own CRON_SECRET check)
+  '/api/ops/midnight-close', // Vercel Cron (CRON_SECRET-guarded, row 281 P4P midnight auto-close for forgotten days) — same reason as the digest above: a cron carries no session, so without this entry the perimeter 401s it before its own secret check ever runs. Deliberately NOT under /api/ops/v1, so it stays outside the crew surface.
+  '/api/inventory/prep-digest', // Vercel Cron (CRON_SECRET-guarded, #666 daily prep digest — was silently 401'd by this perimeter from #666's merge until the S47 wrap review caught it)
+  '/api/jobs/completing-today', // Vercel Cron (CRON_SECRET-guarded, #666 completing-today Jobs ping — same gap, same fix)
   '/api/leads/retry', // Vercel Cron (CRON_SECRET-guarded, #leads GHL-outage retry worker) — a cron
   // request carries no operator session, so it must be allowlisted here to reach
   // its own CRON_SECRET check (the /api/leads carve-out below is exact-match +
@@ -89,6 +103,26 @@ const QUOTE_BY_ID_RE = /^\/api\/quotes\/[^/]+$/;
  * capability-token read (#81 W6-005), but DELETE on that same path is an
  * operator-only action and must stay gated.
  */
+/**
+ * The crew-only surface: the Flow B time-capture API.
+ *
+ * These paths are NOT public — they require a crew session — but they are also
+ * the ONLY paths a crew session may reach. The perimeter in `src/proxy.ts` uses
+ * this to 403 a crew login that wanders onto the operator surface, which matters
+ * because that perimeter otherwise admits ANY authenticated user and the
+ * operator surface holds customer PII.
+ *
+ * Prefix-matched deliberately: the whole versioned namespace belongs to crew, so
+ * adding `/api/ops/v1/breaks/start` later needs no change here. Note `/api/ops`
+ * WITHOUT `/v1` is NOT crew — `/api/ops/digest` is a CRON_SECRET-guarded cron and
+ * stays in the public allowlist above.
+ */
+export function isCrewPath(pathname: string): boolean {
+  const path =
+    pathname.length > 1 && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
+  return path === '/api/ops/v1' || path.startsWith('/api/ops/v1/');
+}
+
 export function isPublicPath(pathname: string, method: string = 'GET'): boolean {
   // Normalize a single trailing slash before classifying. Next strips these when
   // trailingSlash is false (the default), but a third-party webhook (Twilio /
@@ -193,6 +227,29 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   // ever moves to application/json — the handler only echoes CORS headers and
   // touches neither the database nor GHL.
   if (path === '/api/leads' || path === '/api/leads/partial') {
+    const m = method.toUpperCase();
+    if (m === 'POST' || m === 'OPTIONS') return true;
+  }
+
+  // The non-lead website forms (#195): the newsletter signup in the footer of
+  // every marketing page, the job and intern applications, and the Light Up For
+  // Hope nomination. Each is an <iframe> on yulelovelights.com, so the visitor
+  // is never signed in here — without this entry the perimeter default-denies
+  // and the "form" a homeowner sees is our login screen. Same trap that
+  // silently 401'd every real partial lead capture (S42) and the morning digest
+  // cron (S47): invisible in testing, because an operator's own session passes.
+  //
+  // EXACT match per form type, never a `/forms/` prefix — a future
+  // `/forms/<something-sensitive>` must be allowlisted deliberately, mirroring
+  // the /estimate reasoning above.
+  if (PUBLIC_FORM_PAGES.has(path)) return true;
+
+  // POST /api/site-forms is those forms' submission endpoint (honeypot +
+  // timing + per-IP rate limit + strict validation in the route itself).
+  // OPTIONS must pass too: the forms POST application/json cross-origin from
+  // yulelovelights.com, which forces a CORS preflight — exactly the /api/leads
+  // case above. All other methods stay operator-gated.
+  if (path === '/api/site-forms') {
     const m = method.toUpperCase();
     if (m === 'POST' || m === 'OPTIONS') return true;
   }

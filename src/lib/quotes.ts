@@ -5,7 +5,7 @@ import { deleteDesign, deleteDesignsForQuote } from './designs';
 import { allocateNumber } from './displayId';
 import type { QuoteStatus } from './quoteStatus';
 import type { AmendmentTrailEntry } from './amend';
-import { attachQuoteToCustomer } from './customers';
+import { attachQuoteToCustomer, propagateQuoteTagsToCustomer, quoteRowToIdentity } from './customers';
 import { createPendingReferral } from './referrals';
 
 export type QuoteListItem = {
@@ -44,6 +44,20 @@ export type QuoteListItem = {
   // Legacy rebook (#155/#158): quote migrated from last year's Jobber data —
   // the admin list shows a "YLL Neighbor" badge (YllNeighborBadge).
   legacy_rebook: boolean;
+  // NCE tag (#198): quote-level "Mark as NCE" flag (the barter/trade network
+  // YLL belongs to) — the admin list shows an "NCE" badge (NceBadge). No
+  // inbox/stats exclusions, unlike legacy_rebook.
+  is_nce: boolean;
+  // View-only portal (#176): staff-flagged browse-only quote — the portal
+  // stays fully viewable but every approve/pay/decline/request-changes path
+  // is blocked. The admin list/detail shows a pill + the ViewOnlyToggle.
+  view_only: boolean;
+  // Customer detail-page route id fields (same precedence as
+  // src/lib/dashboard/customers.ts customerRouteId: highlevel_contact_id, else
+  // customer_id) — lets the admin quotes list link a customer name to their
+  // profile.
+  highlevel_contact_id: string | null;
+  customer_id: string | null;
 };
 
 export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
@@ -55,7 +69,7 @@ export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
   const { data, error } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, total, created_at, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, last_viewed_at, view_count, status, decline_reason, quote_number, is_test, service_type, legacy_rebook',
+      'id, customer_name, customer_address, customer_phone, customer_email, total, created_at, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, last_viewed_at, view_count, status, decline_reason, quote_number, is_test, service_type, legacy_rebook, is_nce, view_only, highlevel_contact_id, customer_id',
     )
     .order('created_at', { ascending: false })
     .limit(limit);
@@ -191,6 +205,22 @@ export async function saveQuote(
   // on a brand-new save (this quote's id becomes the referee_quote_id) — the
   // update path (updateQuote) never touches referrals at all.
   referredByCustomerId: string | null = null,
+  // #leads "Create quote" link: the lead's known HighLevel contact id, carried
+  // through so the quote is linked from birth. Set once here at insert, same
+  // immutable-at-insert posture as is_test/created_by above — updateQuote
+  // never takes this param, so a resave can't clobber a contact the operator
+  // later picks/clears by hand (that's /api/integrations/highlevel/attach's
+  // job). rebook.ts's buildRebookInsert is the other direct-insert write site
+  // for this column (carries the SOURCE quote's link onto a rebooked clone).
+  highlevelContactId: string | null = null,
+  // NCE + YLL Neighbor tags (#198): staff-toggleable chips in the builder,
+  // same insert-time posture as the params above — additive trailing params,
+  // existing param order untouched. Unlike highlevelContactId/isTest these
+  // ARE also settable on the update path (see updateQuote below) because
+  // staff can flip either tag mid-build on a reopened quote, not just at
+  // first save.
+  legacyRebook = false,
+  isNce = false,
 ): Promise<{ id: string } | null> {
   // Service client first so the write bypasses RLS (enabled on quotes, #90); the
   // anon fallback keeps dev (no service key) working.
@@ -227,6 +257,9 @@ export async function saveQuote(
       status: 'draft' satisfies QuoteStatus,
       is_test: isTest,
       created_by: createdBy,
+      highlevel_contact_id: highlevelContactId,
+      legacy_rebook: legacyRebook,
+      is_nce: isNce,
       ...(quoteNumber != null ? { quote_number: quoteNumber } : {}),
     })
     .select('id')
@@ -251,6 +284,15 @@ export async function saveQuote(
     try {
       const attachResult = await attachQuoteToCustomer({
         id: data.id,
+        // #213 (3-lens review fix 4, customer HIGH-leverage): this quote's
+        // own highlevel_contact_id was already stamped into the insert above
+        // (the row this function just created) but was never threaded into
+        // the identity here, so findOrCreateCustomer's hl-agree/hl-conflict
+        // rules NEVER fired on an ordinary save — even when staff picked the
+        // exact right HL contact in the builder. QuoteIdentityRow already
+        // has this field (the mark-sent/send re-attach routes already pass
+        // it); saveQuote was simply the one caller omitting it.
+        highlevel_contact_id: highlevelContactId,
         customer_name: customer.name ?? null,
         customer_email: customer.email ?? null,
         customer_phone: customer.phone ?? null,
@@ -313,6 +355,28 @@ export async function updateQuote(
   // reopened quote that never had a referrer picked on its first save). Was
   // previously ignored entirely on the update path — see the block below.
   referredByCustomerId?: string | null,
+  // NCE + YLL Neighbor tags (#198): only written when provided (undefined =
+  // leave the stored value untouched), same convention as serviceType above —
+  // the builder's chip strip sends the CURRENT chip state on every save, so a
+  // reopened quote's tags persist through a re-price instead of resetting.
+  legacyRebook?: boolean,
+  isNce?: boolean,
+  // #214: the builder session's LIVE HighLevel contact id, tri-state:
+  //   string    — a contact is linked this session (picked, prefill-seeded,
+  //               or reopen-seeded from the saved row)
+  //   null      — the session EXPLICITLY has no contact (cleared, or a
+  //               reopened quote that never had one)
+  //   undefined — the caller doesn't know (legacy callers) → fall back to
+  //               the stored highlevel_contact_id for identity purposes.
+  // Identity-resolution input ONLY: updateQuote never writes the
+  // highlevel_contact_id COLUMN — /api/integrations/highlevel/attach stays
+  // that column's sole post-insert writer. This param exists because the
+  // S34 wrap review found the most common workflow (pick a contact in the
+  // builder, Calculate) resolved the customers row hl-LESS: the pick's id
+  // only ever reached the attach route, never the save identity, so
+  // findOrCreateCustomer's hl-agree/veto rules sat dead on every re-save
+  // and a weak-field reject could fork a silent dup customers row (#214 b).
+  hlContactId?: string | null,
 ): Promise<{ id: string } | null> {
   // Service client first so the write bypasses RLS (enabled on quotes, #90).
   const supabase = getSupabaseServiceClient() ?? getSupabaseClient();
@@ -332,18 +396,40 @@ export async function updateQuote(
   // change) — a same-value re-save or an update that omits serviceType never
   // clears anything. Fail-open: if the pre-read fails, keep the link (clearing
   // on a transient error would drop a valid card link).
+  //
+  // #214: the same pre-read now also feeds the identity-change detection
+  // below, so it additionally fetches the stored identity columns + link ids
+  // and runs whenever ANY identity-bearing input is present (customer /
+  // hlContactId), not just serviceType. An update carrying none of the three
+  // (a bare re-price) still skips it entirely — nothing it guards can change
+  // on such a call.
+  type StoredIdentityRow = {
+    service_type: string | null;
+    customer_name: string | null;
+    customer_email: string | null;
+    customer_phone: string | null;
+    customer_address: string | null;
+    highlevel_contact_id: string | null;
+    customer_id: string | null;
+  };
+  let stored: StoredIdentityRow | null = null;
   let clearGhlLink = false;
-  if (serviceType) {
+  if (serviceType || customer !== undefined || hlContactId !== undefined) {
     const { data: existing, error: readErr } = await supabase
       .from('quotes')
-      .select('service_type')
+      .select(
+        'service_type, customer_name, customer_email, customer_phone, customer_address, highlevel_contact_id, customer_id',
+      )
       .eq('id', id)
-      .maybeSingle<{ service_type: string | null }>();
+      .maybeSingle<StoredIdentityRow>();
     if (readErr) {
       console.warn('updateQuote: service_type pre-read failed (GHL link kept):', readErr.message);
     } else if (existing) {
-      const storedType = asServiceType(existing.service_type) ?? DEFAULT_SERVICE_TYPE;
-      clearGhlLink = storedType !== serviceType;
+      stored = existing;
+      if (serviceType) {
+        const storedType = asServiceType(existing.service_type) ?? DEFAULT_SERVICE_TYPE;
+        clearGhlLink = storedType !== serviceType;
+      }
     }
   }
 
@@ -363,14 +449,151 @@ export async function updateQuote(
             customer_email: blankToNull(customer.email),
           }
         : {}),
+      ...(legacyRebook !== undefined ? { legacy_rebook: legacyRebook } : {}),
+      ...(isNce !== undefined ? { is_nce: isNce } : {}),
     })
     .eq('id', id)
-    .select('id')
-    .single();
+    // Widened past 'id' (#198) so a tag-propagation check below can read the
+    // post-update quote_sent_at/customer_id off THIS response, no 2nd round
+    // trip. is_test ridden along too (review fix, admin MED, S34 #198
+    // review) — updateQuote has no other way to know is_test (it's immutable
+    // and never a param here), and a reopened TEST quote CAN be re-Calculated
+    // through this exact path. deposit_paid_at rides along for the #214
+    // booked-freeze below.
+    .select('id, quote_sent_at, customer_id, is_test, deposit_paid_at')
+    .single<{
+      id: string;
+      quote_sent_at: string | null;
+      customer_id: string | null;
+      is_test: boolean;
+      deposit_paid_at: string | null;
+    }>();
 
   if (error) {
     console.error('Supabase updateQuote error:', error);
     return null;
+  }
+
+  // #214 (a): verify-or-reattach the customers link whenever this update
+  // changed the quote's IDENTITY — the S34 wrap review's worst case was this
+  // exact function: ONE call can rewrite customer name/email/phone AND flip
+  // a tag, then propagate that tag onto the customer row the quote resolved
+  // to BEFORE the edit (quotes.customer_id is a cache of a past
+  // findOrCreateCustomer decision, not a live fact). Re-running
+  // attachQuoteToCustomer (idempotent; #213-gated) re-resolves the LIVE
+  // identity and re-links the quote row, so the propagation below targets
+  // the customer the quote identifies NOW.
+  //
+  // Triggers: an identity column actually changed in this write, the
+  // session's hl link differs from the stored one, or the quote was never
+  // linked at all (same heal chance the send route's lazy attach takes —
+  // cheap here, since an identity-less quote short-circuits inside
+  // findOrCreateCustomer before any query). Skipped for test quotes
+  // (attachQuoteToCustomer must never run with test data) and when the
+  // pre-read failed (can't compare — fall back to the cached link, the
+  // pre-#214 behavior). Best-effort: never fails the save.
+  // #214 review fix (admin HIGH — booked-freeze): once the deposit is PAID,
+  // the customers link is FROZEN. jobs.customer_id and invoices.customer_id
+  // snapshot the quote's link at booking and are never resynced (job
+  // creation is idempotent-by-quote; the invoice inherits the job's copy),
+  // and the GHL tenure push already fired at that id — a post-booking
+  // relink (reachable via the amendReprice path, whose customer fields
+  // carry no lock) would split the job/invoice across two customer
+  // profiles and overstate the old one's tenure with no self-heal. This
+  // restores the pre-#214 immutability-after-booking for the LINK
+  // specifically; tag propagation below still runs against the (frozen)
+  // cached id.
+  const effectiveHl =
+    hlContactId === undefined
+      ? (stored?.highlevel_contact_id ?? null)
+      : (hlContactId?.trim() || null);
+  let reattached: { customerId: string } | null | undefined;
+  if (!data.is_test && !data.deposit_paid_at && stored) {
+    const written = customer
+      ? {
+          customer_name: blankToNull(customer.name) ?? 'Anonymous',
+          customer_address: blankToNull(customer.address) ?? '(no address)',
+          customer_phone: blankToNull(customer.phone),
+          customer_email: blankToNull(customer.email),
+        }
+      : null;
+    const identityChanged =
+      written !== null &&
+      (written.customer_name !== stored.customer_name ||
+        written.customer_email !== stored.customer_email ||
+        written.customer_phone !== stored.customer_phone ||
+        written.customer_address !== stored.customer_address);
+    const hlChanged =
+      hlContactId !== undefined && effectiveHl !== (stored.highlevel_contact_id?.trim() || null);
+    if (identityChanged || hlChanged || stored.customer_id == null) {
+      try {
+        reattached = await attachQuoteToCustomer(
+          // Stored halves go through the sentinel translation
+          // (quoteRowToIdentity); a customer object provided on THIS call
+          // supplies the raw form values instead (norm() inside
+          // findOrCreateCustomer trims/nulls blanks, so no sentinel ever
+          // enters the identity from either side).
+          {
+            ...quoteRowToIdentity({
+              id,
+              highlevel_contact_id: effectiveHl,
+              customer_name: stored.customer_name,
+              customer_email: stored.customer_email,
+              customer_phone: stored.customer_phone,
+              customer_address: stored.customer_address,
+            }),
+            ...(customer
+              ? {
+                  customer_name: customer.name ?? null,
+                  customer_email: customer.email ?? null,
+                  customer_phone: customer.phone ?? null,
+                  customer_address: customer.address ?? null,
+                }
+              : {}),
+          },
+        );
+        // Repoint visibility (#214 review, WT-55 family): a re-resolution
+        // that MOVED the quote off its previously-linked customer row is
+        // loud, never silent — identity-follows-the-quote is the design
+        // (#213 forks on conflicting evidence instead of guessing a merge),
+        // but the move itself must be greppable so staff can reconcile the
+        // rows by hand.
+        if (reattached && stored.customer_id && reattached.customerId !== stored.customer_id) {
+          console.warn(
+            `updateQuote: #214 repoint — quote ${id} customer_id ${stored.customer_id} → ${reattached.customerId} after an identity edit. Review for a manual merge (WT-55).`,
+          );
+        }
+      } catch (err) {
+        console.warn('updateQuote: identity re-attach failed (non-fatal):', err);
+        reattached = null;
+      }
+    }
+  }
+
+  // NCE + YLL Neighbor tag propagation (#198): mirrors the dedicated nce/
+  // legacy-rebook toggle routes' "tagging an already-sent quote propagates
+  // immediately" behavior — the SAME rule applies no matter which UI set the
+  // tag. Only fires when this update actually SET a tag true (never on
+  // false/omitted — forward-only), the quote already has both a sent stamp
+  // and a linked customer, and it's NOT a test quote (defense-in-depth — a
+  // real send/mark-sent can never even reach 'sent' as a test row without
+  // ALSO being caught by their own is_test guard, but this keeps the
+  // invariant self-contained here too). Best-effort: never fails the save.
+  //
+  // #214: the target id prefers the re-attach's FRESH resolution above.
+  // When a re-attach was attempted and failed (returned null), propagation
+  // is SKIPPED rather than falling back to the cached id — the cached row
+  // is exactly the possibly-wrong target the re-attach existed to verify,
+  // and a deferred propagation self-heals at the next become-sent event
+  // (send/mark-sent re-fire it). When no re-attach ran (identity untouched
+  // this call), the cached id is as trustworthy as it was before the call.
+  const propagationCustomerId = reattached === undefined ? data.customer_id : (reattached?.customerId ?? null);
+  if (!data.is_test && (legacyRebook === true || isNce === true) && data.quote_sent_at && propagationCustomerId) {
+    try {
+      await propagateQuoteTagsToCustomer(propagationCustomerId, { isNce, isYllNeighbor: legacyRebook });
+    } catch (err) {
+      console.warn('updateQuote: tag propagation failed (non-fatal):', err);
+    }
   }
 
   // Referral program (#41 adversarial-review fix): honor "Referred by" on the
@@ -435,6 +658,14 @@ export type QuoteRaw = {
   // without a second fetch. Additive — the edit flow ignores them.
   deposit_paid_at: string | null;
   viewed_at: string | null;
+  // #175: a declined deposit/balance card charge, stamped by the Valor
+  // webhook — the admin quote detail page shows a notice while the deposit
+  // is still unpaid. deposit_decline_notified_at isn't rendered on the page
+  // (it's only the webhook's own send-throttle claim column) but is fetched
+  // here alongside its siblings for parity with the DB schema.
+  deposit_declined_at: string | null;
+  deposit_decline_code: string | null;
+  deposit_decline_notified_at: string | null;
   // The stored order total (dollars); may differ from result.total after an
   // amendment. NULL on legacy / uncalculated rows.
   total: number | null;
@@ -465,9 +696,23 @@ export type QuoteRaw = {
   // Legacy rebook (#155): quote migrated from last year's Jobber data — the
   // admin detail page shows a badge + (once approved) the chosen light color.
   legacy_rebook: boolean;
+  // NCE tag (#198): quote-level "Mark as NCE" flag — the admin detail page +
+  // the builder (toggleable there, unlike legacy_rebook's read-only display)
+  // both read this.
+  is_nce: boolean;
   // #172: whether a HighLevel contact is already linked — the builder needs it
   // on reopen so it stops showing "a contact is required" on a linked quote.
   highlevel_contact_id: string | null;
+  // View-only portal (#176): the admin detail page shows a pill + the
+  // ViewOnlyToggle off this value.
+  view_only: boolean;
+  // #171g: the raw payment token (captured via the redirect_url capture
+  // route) and Valor's OWN Vault customer id (#161 "both vaults" decision,
+  // registered by the webhook's best-effort vault hook). The admin detail
+  // page uses these to surface a notice when the token is on file but Vault
+  // registration never completed — see VaultRegistrationNotice.
+  valor_vault_token: string | null;
+  valor_vault_customer_id: string | null;
 };
 
 export async function getQuoteRaw(id: string): Promise<QuoteRaw | null> {
@@ -477,7 +722,7 @@ export async function getQuoteRaw(id: string): Promise<QuoteRaw | null> {
   const { data, error } = await sb
     .from('quotes')
     .select(
-      'id, customer_id, customer_name, customer_address, customer_phone, customer_email, service_type, inputs, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, total, approval_snapshot, status, decline_reason, quote_number, is_test, legacy_rebook, highlevel_contact_id',
+      'id, customer_id, customer_name, customer_address, customer_phone, customer_email, service_type, inputs, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, total, approval_snapshot, status, decline_reason, quote_number, is_test, legacy_rebook, is_nce, highlevel_contact_id, view_only, deposit_declined_at, deposit_decline_code, deposit_decline_notified_at, valor_vault_token, valor_vault_customer_id',
     )
     .eq('id', id)
     .maybeSingle();

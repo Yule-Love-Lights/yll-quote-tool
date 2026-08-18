@@ -22,10 +22,11 @@ const {
   getJobByQuote,
   setJobStatus,
   getInvoiceByJob,
-  notifyTelegram,
+  notifyTelegramAudience,
   getJobWorkOrder,
   accrueOnBooking,
   ensureReferralCode,
+  pushTenureYearsToGhl,
   registerCardInVault,
   vaultEnabled,
 } = vi.hoisted(() => ({
@@ -46,7 +47,7 @@ const {
   createJobFromQuote: vi.fn(async () => ({ id: 'job-1' })),
   // Proactive prep ping (#82 follow-up): the work order feeds the message; the
   // notifier is mocked so we assert it fires once per booking, never on replay.
-  notifyTelegram: vi.fn<(text: string) => Promise<void>>(),
+  notifyTelegramAudience: vi.fn<(audience: string, text: string) => Promise<void>>(),
   getJobWorkOrder: vi.fn(async () => ({
     job: {
       id: 'job-1', jobNumber: 1042, quoteId: 'quote-1', designId: null,
@@ -64,6 +65,9 @@ const {
   accrueOnBooking: vi.fn(async () => ({ accrued: false })),
   // Referral program (#41 PR 2): stamp-at-booking — mocked the same way.
   ensureReferralCode: vi.fn(async () => 'CODE1234'),
+  // GHL tenure mirror (#200): mocked the same way — its OWN behavior is
+  // covered in src/lib/integrations/ghlTenure.test.ts.
+  pushTenureYearsToGhl: vi.fn(async () => ({ pushed: false })),
   // #161 "both vaults" decision: the vault-registration orchestrator + its
   // flag gate. Default OFF (mirrors the real flag being operator-armed) and a
   // default happy-path return, so every PRE-EXISTING test in this file is
@@ -89,8 +93,8 @@ vi.mock('@/lib/invoices', () => ({
   getInvoiceByJob,
 }));
 
-vi.mock('@/lib/integrations/telegramNotify', () => ({
-  notifyTelegram,
+vi.mock('@/lib/integrations/telegramRouting', () => ({
+  notifyTelegramAudience,
 }));
 
 vi.mock('@/lib/inventory/jobs', () => ({
@@ -108,6 +112,10 @@ vi.mock('@/lib/integrations/highlevel', () => ({
 vi.mock('@/lib/referrals', () => ({
   accrueOnBooking,
   ensureReferralCode,
+}));
+
+vi.mock('@/lib/integrations/ghlTenure', () => ({
+  pushTenureYearsToGhl,
 }));
 
 vi.mock('@/lib/integrations/valorVault', () => ({
@@ -275,10 +283,11 @@ describe('Valor webhook — happy path', () => {
 
     // #82 follow-up: a proactive prep ping fires once, listing the job's materials.
     expect(getJobWorkOrder).toHaveBeenCalledWith('job-1');
-    expect(notifyTelegram).toHaveBeenCalledTimes(1);
-    expect(notifyTelegram.mock.calls[0][0]).toContain('New job to prep');
-    expect(notifyTelegram.mock.calls[0][0]).toContain('Jordan Smith');
-    expect(notifyTelegram.mock.calls[0][0]).toContain('C9 Warm White');
+    expect(notifyTelegramAudience).toHaveBeenCalledTimes(1);
+    expect(notifyTelegramAudience.mock.calls[0][0]).toBe('inventory');
+    expect(notifyTelegramAudience.mock.calls[0][1]).toContain('New job to prep');
+    expect(notifyTelegramAudience.mock.calls[0][1]).toContain('Jordan Smith');
+    expect(notifyTelegramAudience.mock.calls[0][1]).toContain('C9 Warm White');
   });
 
   it('#159: books a quote from the REAL Valor E-Invoice shape (ref nested at data.invoice_no)', async () => {
@@ -369,6 +378,37 @@ describe('Valor webhook — happy path', () => {
     expect(json.booked).toBe(true);
   });
 
+  // #200: GHL tenure mirror — pushes on the SAME booking event, same guard.
+  it('pushes the GHL tenure mirror for the quote\'s OWN linked customer on booking', async () => {
+    const { client } = makeSb({ ...QUOTE, customer_id: 'cust-1' }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    expect(res.status).toBe(200);
+    expect(pushTenureYearsToGhl).toHaveBeenCalledWith('cust-1');
+  });
+
+  it('skips the GHL tenure push when the quote has no linked customer', async () => {
+    const { client } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    expect(res.status).toBe(200);
+    expect(pushTenureYearsToGhl).not.toHaveBeenCalled();
+  });
+
+  it('still books even if the GHL tenure push throws (fail-open, #200)', async () => {
+    const { client } = makeSb({ ...QUOTE, customer_id: 'cust-1' }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+    pushTenureYearsToGhl.mockRejectedValueOnce(new Error('GHL down'));
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true);
+  });
+
   it('verifies a signature built with the Stripe-style `${ts}.${body}` fallback base', async () => {
     const { client } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
     sbRef.current = client;
@@ -415,6 +455,48 @@ describe('Valor webhook — deposit amount (records actual charged, flags shortf
   });
 });
 
+// #177 fix 2c: the internal "paid" alert must read the FROZEN deposit percent
+// from the approval snapshot (what the customer actually approved with), not
+// the live result.depositRate, which could have drifted since approval.
+describe('Valor webhook — internal alert reads the FROZEN deposit percent (#177 fix 2c)', () => {
+  it('prefers approval_snapshot.customerSelection.depositRate over a different live result.depositRate', async () => {
+    const quote = {
+      ...QUOTE,
+      result: { ...QUOTE.result, depositRate: 0.5 }, // live rate says 50% — must NOT win
+      approval_snapshot: {
+        customerSelection: { currentTotalUsd: 2700, currentDepositUsd: 675, depositRate: 0.25 },
+      },
+    };
+    const { client } = makeSb({ ...quote }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    await POST(signedReq(APPROVED_PAYLOAD));
+
+    // Only internalPaidEmailHtml's copy mentions a deposit percent (the customer
+    // receipt email doesn't), so matching on the html substring uniquely proves
+    // the internal alert froze the right rate without indexing a specific call.
+    expect(hl.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ html: expect.stringContaining('paid their 25% deposit') }),
+    );
+  });
+
+  it('falls back to the live result.depositRate for a pre-#177 snapshot with no frozen rate', async () => {
+    const quote = {
+      ...QUOTE,
+      result: { ...QUOTE.result, depositRate: 0.3 },
+      approval_snapshot: { customerSelection: { currentTotalUsd: 2700, currentDepositUsd: 810 } }, // no depositRate field
+    };
+    const { client } = makeSb({ ...quote }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    await POST(signedReq(APPROVED_PAYLOAD));
+
+    expect(hl.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ html: expect.stringContaining('paid their 30% deposit') }),
+    );
+  });
+});
+
 describe('Valor webhook — verification probe (Verify and Update)', () => {
   it('GET returns 200 for a reachability check', async () => {
     const res = await GET();
@@ -456,7 +538,7 @@ describe('Valor webhook — idempotency (the fix)', () => {
     expect(hl.sendEmail).not.toHaveBeenCalled();
     // Lost the race → the winning request creates the job; this replay must not.
     expect(createJobFromQuote).not.toHaveBeenCalled();
-    expect(notifyTelegram).not.toHaveBeenCalled(); // and no prep ping on replay
+    expect(notifyTelegramAudience).not.toHaveBeenCalled(); // and no prep ping on replay
   });
 
   it('short-circuits when the quote is already marked paid', async () => {
@@ -469,7 +551,7 @@ describe('Valor webhook — idempotency (the fix)', () => {
     expect(json.alreadyPaid).toBe(true);
     expect(hl.sendSms).not.toHaveBeenCalled();
     expect(createJobFromQuote).not.toHaveBeenCalled(); // no second job on replay
-    expect(notifyTelegram).not.toHaveBeenCalled(); // and no prep ping
+    expect(notifyTelegramAudience).not.toHaveBeenCalled(); // and no prep ping
   });
 });
 
@@ -584,7 +666,7 @@ describe('Valor webhook — dead-quote guard (W1-007)', () => {
     expect(createJobFromQuote).not.toHaveBeenCalled();
     expect(hl.updateOpportunity).not.toHaveBeenCalled();
     expect(hl.sendSms).not.toHaveBeenCalled();
-    expect(notifyTelegram).not.toHaveBeenCalled();
+    expect(notifyTelegramAudience).not.toHaveBeenCalled();
     // Loud error log — real money may have moved, staff must reconcile.
     expect(err).toHaveBeenCalledWith(expect.stringContaining('NOT booking a dead order'));
     err.mockRestore();
@@ -704,7 +786,7 @@ describe('Valor webhook — rejects', () => {
     expect(hl.updateOpportunity).not.toHaveBeenCalled();
   });
 
-  it('acknowledges a declined transaction without booking it', async () => {
+  it('acknowledges a declined transaction without booking it, but stamps the decline + alerts staff (#175)', async () => {
     const { client, updatePayloads } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
     sbRef.current = client;
 
@@ -713,8 +795,16 @@ describe('Valor webhook — rejects', () => {
 
     expect(json.booked).toBe(false);
     expect(json.declined).toBe(true);
-    expect(updatePayloads).toHaveLength(0); // never stamped paid
+    // never stamped paid/booked
+    expect(updatePayloads.every((p) => !('deposit_paid_at' in p) && !('status' in p))).toBe(true);
     expect(hl.sendSms).not.toHaveBeenCalled();
+    // #175: fill-always decline stamp, then the guarded notify claim.
+    expect(updatePayloads[0]).toMatchObject({
+      deposit_declined_at: expect.any(String),
+      deposit_decline_code: '05',
+    });
+    expect(updatePayloads[1]).toMatchObject({ deposit_decline_notified_at: expect.any(String) });
+    expect(hl.sendEmail).toHaveBeenCalledTimes(1);
   });
 
   it('ignores a webhook for a TEST quote (#93) — no booking, no real side effects', async () => {
@@ -1069,7 +1159,7 @@ describe('Valor webhook — vault registration (#161 "both vaults" decision)', (
     expect(registerCardInVault).not.toHaveBeenCalled();
   });
 
-  it('registerCardInVault resolves ok:false → booking still 200 and "vault register failed" is logged', async () => {
+  it('registerCardInVault resolves ok:false → booking still 200, notifications unaffected, and "vault register failed" is logged', async () => {
     vaultEnabled.value = true;
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     registerCardInVault.mockResolvedValueOnce({ ok: false, reason: 'addcustomer failed: 500' });
@@ -1081,6 +1171,10 @@ describe('Valor webhook — vault registration (#161 "both vaults" decision)', (
 
     expect(res.status).toBe(200);
     expect(json.booked).toBe(true);
+    // #171f: a vault failure must never affect the notifications it now runs
+    // AFTER — they already settled by the time the vault hook even starts.
+    expect(json.customerSmsSent).toBe(true);
+    expect(json.customerEmailSent).toBe(true);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('vault register failed'));
     // No vault-column write when registration failed.
     expect(updatePayloads.some((p) => 'valor_vault_customer_id' in p)).toBe(false);
@@ -1100,6 +1194,240 @@ describe('Valor webhook — vault registration (#161 "both vaults" decision)', (
     expect(res.status).toBe(200);
     expect(json.booked).toBe(true);
     expect(err).toHaveBeenCalledWith(expect.stringContaining('vault register failed'));
+    err.mockRestore();
+  });
+
+  // #171f: the vault hook used to run BEFORE the customer receipt SMS/email —
+  // its 2×15s timeout budget (addcustomer + addpaymentprofiletxn, see
+  // valorVault.ts) could delay the customer's booking confirmation by up to
+  // ~30s whenever Valor's Vault API was slow. It's now reordered to run AFTER
+  // the notification batch settles (still awaited, not fire-and-forget).
+  it('runs AFTER the customer notifications settle, not before or concurrently', async () => {
+    vaultEnabled.value = true;
+    const order: string[] = [];
+    const delayedPush = (label: string) => async () => {
+      await new Promise((r) => setTimeout(r, 10));
+      order.push(label);
+      return {};
+    };
+    hl.sendSms.mockImplementationOnce(delayedPush('sms'));
+    hl.sendEmail.mockImplementationOnce(delayedPush('email:customer'));
+    hl.sendEmail.mockImplementationOnce(delayedPush('email:internal'));
+    registerCardInVault.mockImplementationOnce(async () => {
+      order.push('vault');
+      return { ok: true, vaultCustomerId: 'vc-1' };
+    });
+
+    const { client } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(APPROVED_PAYLOAD));
+    expect(res.status).toBe(200);
+
+    // Vault ran dead last — i.e. only after EVERY notification had fully
+    // settled (not merely started), proving it's a sequential await after the
+    // Promise.allSettled batch rather than folded into it.
+    expect(order[order.length - 1]).toBe('vault');
+    expect(order.slice(0, -1).sort()).toEqual(['email:customer', 'email:internal', 'sms']);
+  });
+});
+
+describe('Valor webhook — declined deposit staff alert (#175)', () => {
+  it('throttles a second decline within the hour: the stamp still updates but NO second email fires', async () => {
+    // Shared reference so we can flip the mock's "claim result" mid-test —
+    // the FIRST decline wins the notify claim (email fires); the SECOND
+    // simulates the guarded update losing the race (still inside the
+    // throttle window, or a concurrent delivery already claimed it).
+    const claimRows = [{ id: 'quote-1' }];
+    const { client, updatePayloads } = makeSb({ ...QUOTE }, claimRows);
+    sbRef.current = client;
+
+    const res1 = await POST(signedReq({ ...APPROVED_PAYLOAD, response_code: '05' }));
+    expect((await res1.json()).declined).toBe(true);
+    expect(hl.sendEmail).toHaveBeenCalledTimes(1);
+
+    claimRows.length = 0; // the notify claim now matches 0 rows
+    const res2 = await POST(signedReq({ ...APPROVED_PAYLOAD, response_code: '05' }));
+    expect((await res2.json()).declined).toBe(true);
+
+    // Both deliveries still stamped the decline (fill-always)...
+    const stampUpdates = updatePayloads.filter((p) => 'deposit_declined_at' in p);
+    expect(stampUpdates).toHaveLength(2);
+    // ...but only the first delivery's alert actually sent.
+    expect(hl.sendEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it('an already-paid quote receiving a declined webhook is never stamped or alerted (the existing alreadyPaid guard fires first)', async () => {
+    const { client, updatePayloads } = makeSb(
+      { ...QUOTE, deposit_paid_at: '2026-07-01T00:00:00Z' },
+      [{ id: 'quote-1' }],
+    );
+    sbRef.current = client;
+
+    const res = await POST(signedReq({ ...APPROVED_PAYLOAD, response_code: '05' }));
+    const json = await res.json();
+
+    expect(json).toMatchObject({ booked: true, alreadyPaid: true });
+    expect(updatePayloads).toHaveLength(0);
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('no HighLevel internal contact configured → still stamps the decline but never calls sendEmail', async () => {
+    delete process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
+    const { client, updatePayloads } = makeSb({ ...QUOTE }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq({ ...APPROVED_PAYLOAD, response_code: '05' }));
+    expect((await res.json()).declined).toBe(true);
+    expect(updatePayloads.some((p) => 'deposit_declined_at' in p)).toBe(true);
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('the alert subject/body carry the customer, quote number, amount, and a human decline-code translation', async () => {
+    const { client } = makeSb({ ...QUOTE, quote_number: 4242 }, [{ id: 'quote-1' }]);
+    sbRef.current = client;
+
+    await POST(signedReq({ ...APPROVED_PAYLOAD, response_code: '51' }));
+
+    expect(hl.sendEmail).toHaveBeenCalledTimes(1);
+    expect(hl.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ subject: expect.stringContaining('DECLINED') }),
+    );
+    expect(hl.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ subject: expect.stringContaining('quote #4242') }),
+    );
+    // code 51's human translation
+    expect(hl.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ html: expect.stringContaining('Insufficient funds') }),
+    );
+    expect(hl.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ html: expect.stringContaining('/admin/quotes/quote-1') }),
+    );
+    expect(hl.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ html: expect.stringContaining('/portal/quote-1') }),
+    );
+  });
+});
+
+describe('Valor webhook — declined BALANCE staff alert (#175)', () => {
+  const BAL_ID = '8f14e45f-ceea-467a-9f3a-1b2c3d4e5f60';
+  const DECLINED_BAL_PAYLOAD = { ...APPROVED_PAYLOAD, response_code: '05', order_id: `bal_${BAL_ID}` };
+
+  it('stamps the SAME quote columns + alerts staff (anchored on the quote, not the invoice), without touching the invoice/job', async () => {
+    const { client, updatePayloads } = makeSb(
+      { id: BAL_ID, customer_name: 'Jordan Smith', is_test: false, quote_number: 99, approval_snapshot: {} },
+      [{ id: BAL_ID }],
+    );
+    sbRef.current = client;
+    getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+    getInvoiceByJob.mockResolvedValue({ id: 'inv-1', status: 'awaiting_payment', balance: 1350 });
+
+    const res = await POST(signedReq(DECLINED_BAL_PAYLOAD));
+    const json = await res.json();
+
+    expect(json).toMatchObject({ balance: true, declined: true });
+    expect(updatePayloads[0]).toMatchObject({
+      deposit_declined_at: expect.any(String),
+      deposit_decline_code: '05',
+    });
+    expect(updatePayloads[1]).toMatchObject({ deposit_decline_notified_at: expect.any(String) });
+    expect(setJobStatus).not.toHaveBeenCalled(); // a decline changes nothing about what's owed
+    expect(hl.sendEmail).toHaveBeenCalledTimes(1);
+    expect(hl.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ subject: expect.stringContaining('balance') }),
+    );
+    // links to the invoice, not the quote page
+    expect(hl.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ html: expect.stringContaining('/admin/invoices/inv-1') }),
+    );
+  });
+
+  it('falls back to the admin quote page link when there is no linked invoice', async () => {
+    const { client } = makeSb(
+      { id: BAL_ID, customer_name: 'Jordan Smith', is_test: false, approval_snapshot: {} },
+      [{ id: BAL_ID }],
+    );
+    sbRef.current = client;
+    getJobByQuote.mockResolvedValue(null);
+
+    await POST(signedReq(DECLINED_BAL_PAYLOAD));
+
+    expect(hl.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ html: expect.stringContaining(`/admin/quotes/${BAL_ID}`) }),
+    );
+  });
+
+  it('ignores a TEST quote — no stamp, no alert', async () => {
+    const { client, updatePayloads } = makeSb({ id: BAL_ID, is_test: true }, [{ id: BAL_ID }]);
+    sbRef.current = client;
+
+    const res = await POST(signedReq(DECLINED_BAL_PAYLOAD));
+    expect((await res.json()).declined).toBe(true);
+    expect(updatePayloads).toHaveLength(0);
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+  });
+
+  // #175 review MED: Valor's decline + success webhooks are separate
+  // deliveries with no ordering guarantee — a decline that arrives AFTER the
+  // invoice already settled (or was cancelled) must not stamp/alert, since
+  // "No money moved… retry the link" would be flat wrong by then.
+  it('an already-PAID balance invoice is not stamped or alerted — the decline arrived after the money already moved', async () => {
+    const { client, updatePayloads } = makeSb(
+      { id: BAL_ID, customer_name: 'Jordan Smith', is_test: false, approval_snapshot: {} },
+      [{ id: BAL_ID }],
+    );
+    sbRef.current = client;
+    getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'done' });
+    getInvoiceByJob.mockResolvedValue({ id: 'inv-1', status: 'paid', balance: 0 });
+
+    const res = await POST(signedReq(DECLINED_BAL_PAYLOAD));
+    const json = await res.json();
+
+    expect(json).toMatchObject({ ok: true, balance: true, declined: true }); // ack unchanged
+    expect(updatePayloads).toHaveLength(0);
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('a CANCELLED balance invoice is also not stamped or alerted — nothing left to retry', async () => {
+    const { client, updatePayloads } = makeSb(
+      { id: BAL_ID, customer_name: 'Jordan Smith', is_test: false, approval_snapshot: {} },
+      [{ id: BAL_ID }],
+    );
+    sbRef.current = client;
+    getJobByQuote.mockResolvedValue({ id: 'job-1', status: 'cancelled' });
+    getInvoiceByJob.mockResolvedValue({ id: 'inv-1', status: 'cancelled', balance: 1350 });
+
+    const res = await POST(signedReq(DECLINED_BAL_PAYLOAD));
+    const json = await res.json();
+
+    expect(json).toMatchObject({ ok: true, balance: true, declined: true });
+    expect(updatePayloads).toHaveLength(0);
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('an invoice lookup failure is ambiguous — warns, skips the email, but still stamps the decline (fail-open toward silence, not a false alert)', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { client, updatePayloads } = makeSb(
+      { id: BAL_ID, customer_name: 'Jordan Smith', is_test: false, approval_snapshot: {} },
+      [{ id: BAL_ID }],
+    );
+    sbRef.current = client;
+    getJobByQuote.mockRejectedValueOnce(new Error('supabase timeout'));
+
+    const res = await POST(signedReq(DECLINED_BAL_PAYLOAD));
+    const json = await res.json();
+
+    expect(json).toMatchObject({ ok: true, balance: true, declined: true });
+    expect(updatePayloads).toHaveLength(1);
+    expect(updatePayloads[0]).toMatchObject({
+      deposit_declined_at: expect.any(String),
+      deposit_decline_code: '05',
+    });
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+    expect(err).toHaveBeenCalledWith(
+      expect.stringContaining('balance decline invoice lookup failed'),
+      expect.anything(),
+    );
     err.mockRestore();
   });
 });

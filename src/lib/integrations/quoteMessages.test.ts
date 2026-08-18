@@ -17,6 +17,9 @@ import {
   quoteEmailSubject,
   quoteSmsBody,
   quoteEmailHtml,
+  depositDeclineReasonText,
+  internalDepositDeclinedEmailSubject,
+  internalDepositDeclinedEmailHtml,
 } from './quoteMessages';
 
 describe('quote-ready notifications, per service type (S26)', () => {
@@ -158,6 +161,37 @@ describe('inventory order email (#82 Slice 3)', () => {
     const html = orderEmailHtml({ jobNumber: 1, customerName: null, address: null, installDate: null, materials: [], unbound: [] });
     expect(html).toContain('No bound materials projected');
   });
+
+  // #192 review fix (parity) — the purchasing email gets the same "Booked
+  // scope" note as the crew print sheet / board modal / admin BOM panel.
+  it('#192 — renders a "Booked scope" note ABOVE the materials table when scopedSides is set', () => {
+    const html = orderEmailHtml({
+      jobNumber: 1042,
+      customerName: 'Jane Doe',
+      address: '1 Main St',
+      installDate: 'Dec 1, 2026',
+      materials: [{ sku: 'APL11012-5', name: 'RGBW set of 5', qty: 3, onHand: 10, short: false }],
+      unbound: [],
+      scopedSides: ['front', 'back'],
+    });
+    expect(html).toContain('Booked scope: Front, Back — accessories/gaps remain whole-job.');
+    // Above the materials table, not after it.
+    expect(html.indexOf('Booked scope')).toBeLessThan(html.indexOf('APL11012-5'));
+  });
+
+  it('#192 — no scopedSides (undefined/null/empty) renders no note', () => {
+    const base = {
+      jobNumber: 1,
+      customerName: null,
+      address: null,
+      installDate: null,
+      materials: [],
+      unbound: [],
+    };
+    expect(orderEmailHtml(base)).not.toContain('Booked scope');
+    expect(orderEmailHtml({ ...base, scopedSides: null })).not.toContain('Booked scope');
+    expect(orderEmailHtml({ ...base, scopedSides: [] })).not.toContain('Booked scope');
+  });
 });
 
 describe('low-stock alert email (#82)', () => {
@@ -179,8 +213,8 @@ describe('low-stock alert email (#82)', () => {
 
 describe('approval notifications (pre-Valor deposit flow)', () => {
   describe('approvalSmsBody', () => {
-    it('greets by first name, names the 50% deposit + amount, and gives the phone', () => {
-      const sms = approvalSmsBody('Jordan', 2700, '(631) 517-0186');
+    it('greets by first name, names the deposit percent + amount, and gives the phone', () => {
+      const sms = approvalSmsBody('Jordan', 2700, '(631) 517-0186', 50);
       expect(sms).toContain('Jordan');
       expect(sms).toContain('50% deposit');
       expect(sms).toContain('$2,700'); // whole-dollar, comma-grouped
@@ -190,15 +224,23 @@ describe('approval notifications (pre-Valor deposit flow)', () => {
     });
 
     it('rounds the deposit to whole dollars in customer copy', () => {
-      const sms = approvalSmsBody('Sam', 2700.5, '(631) 517-0186');
+      const sms = approvalSmsBody('Sam', 2700.5, '(631) 517-0186', 50);
       expect(sms).toContain('$2,701');
       expect(sms).not.toContain('.50');
+    });
+
+    // #177 — a staff-set per-quote deposit override renders its OWN percent,
+    // not a hardcoded 50%.
+    it('renders a per-quote deposit percent override', () => {
+      const sms = approvalSmsBody('Jordan', 675, '(631) 517-0186', 25);
+      expect(sms).toContain('25% deposit');
+      expect(sms).not.toContain('50%');
     });
   });
 
   describe('approvalEmailHtml', () => {
     it('includes the name, deposit amount, portal link, and phone', () => {
-      const html = approvalEmailHtml('Jordan', 2700, 'https://quote.yulelovelights.com/portal/abc', '(631) 517-0186');
+      const html = approvalEmailHtml('Jordan', 2700, 'https://quote.yulelovelights.com/portal/abc', '(631) 517-0186', 50);
       expect(html).toContain('Jordan');
       expect(html).toContain('$2,700');
       expect(html).toContain('href="https://quote.yulelovelights.com/portal/abc"');
@@ -207,9 +249,15 @@ describe('approval notifications (pre-Valor deposit flow)', () => {
     });
 
     it('escapes HTML in the first name', () => {
-      const html = approvalEmailHtml('<script>', 100, 'https://x/portal/1', '(631) 517-0186');
+      const html = approvalEmailHtml('<script>', 100, 'https://x/portal/1', '(631) 517-0186', 50);
       expect(html).not.toContain('<script>');
       expect(html).toContain('&lt;script&gt;');
+    });
+
+    it('renders a per-quote deposit percent override', () => {
+      const html = approvalEmailHtml('Jordan', 675, 'https://x/portal/1', '(631) 517-0186', 25);
+      expect(html).toContain('25% deposit');
+      expect(html).not.toContain('50%');
     });
   });
 
@@ -228,6 +276,7 @@ describe('approval notifications (pre-Valor deposit flow)', () => {
         email: 'jordan@example.com',
         totalUsd: 5400,
         depositUsd: 2700,
+        depositPercent: 50,
         packageName: 'Build Your Own',
         installTiming: 'september',
         rushSelected: false,
@@ -258,6 +307,7 @@ describe('approval notifications (pre-Valor deposit flow)', () => {
         email: null,
         totalUsd: 1000,
         depositUsd: 500,
+        depositPercent: 50,
         packageName: 'Package C',
         installTiming: 'none',
         rushSelected: true,
@@ -267,6 +317,29 @@ describe('approval notifications (pre-Valor deposit flow)', () => {
       });
       expect(html).toContain('Unknown'); // customer name fallback
       expect(html).toContain('Standard (Nov–Dec)'); // install timing 'none'
+    });
+
+    // #177 — a staff-set per-quote deposit override renders its OWN percent in
+    // both the action line and the table row label.
+    it('renders a per-quote deposit percent override', () => {
+      const html = internalApprovalEmailHtml({
+        customerName: 'Jordan Smith',
+        address: null,
+        phone: null,
+        email: null,
+        totalUsd: 2700,
+        depositUsd: 675,
+        depositPercent: 25,
+        packageName: 'Package C',
+        installTiming: 'none',
+        rushSelected: false,
+        takedownSelected: false,
+        portalUrl: 'https://x/portal/1',
+        adminUrl: 'https://x/quote/1',
+      });
+      expect(html).toContain('collect the 25% deposit');
+      expect(html).toContain('Deposit (25%)');
+      expect(html).not.toContain('50%');
     });
   });
 
@@ -314,5 +387,121 @@ describe('balance pay-link notifications (#83)', () => {
 
   it('subject is stable copy about the balance', () => {
     expect(BALANCE_LINK_EMAIL_SUBJECT).toMatch(/balance/i);
+  });
+});
+
+describe('declined deposit/balance staff alert (#175)', () => {
+  describe('depositDeclineReasonText', () => {
+    it('translates the common decline codes', () => {
+      expect(depositDeclineReasonText('05')).toMatch(/do not honor/i);
+      expect(depositDeclineReasonText('51')).toMatch(/insufficient funds/i);
+      expect(depositDeclineReasonText('14')).toMatch(/invalid card number/i);
+      expect(depositDeclineReasonText('54')).toMatch(/expired card/i);
+      expect(depositDeclineReasonText('41')).toMatch(/lost card/i);
+      expect(depositDeclineReasonText('43')).toMatch(/stolen card/i);
+    });
+
+    it('falls back to a generic "code N" message for an unrecognized code', () => {
+      expect(depositDeclineReasonText('99')).toBe('code 99 — bank declined');
+    });
+
+    it('handles a missing code', () => {
+      expect(depositDeclineReasonText(null)).toMatch(/no code given/i);
+    });
+  });
+
+  describe('internalDepositDeclinedEmailSubject', () => {
+    it('names the customer, with a fallback', () => {
+      expect(internalDepositDeclinedEmailSubject({ customerName: 'Jordan Smith', quoteNumber: 12, amountUsd: 1350 })).toContain(
+        'Jordan Smith',
+      );
+      expect(internalDepositDeclinedEmailSubject({ customerName: null, quoteNumber: null, amountUsd: 1350 })).toContain(
+        'A customer',
+      );
+    });
+
+    it('includes the quote number when present, omits it when absent', () => {
+      expect(
+        internalDepositDeclinedEmailSubject({ customerName: 'Jordan', quoteNumber: 42, amountUsd: 100 }),
+      ).toContain('quote #42');
+      expect(
+        internalDepositDeclinedEmailSubject({ customerName: 'Jordan', quoteNumber: null, amountUsd: 100 }),
+      ).not.toContain('quote #');
+    });
+
+    it('says "deposit" by default and "balance" for the #83 pay-link leg', () => {
+      const deposit = internalDepositDeclinedEmailSubject({ customerName: 'Jordan', quoteNumber: null, amountUsd: 100 });
+      const balance = internalDepositDeclinedEmailSubject({
+        customerName: 'Jordan',
+        quoteNumber: null,
+        amountUsd: 100,
+        kind: 'balance',
+      });
+      expect(deposit).toContain('deposit');
+      expect(balance).toContain('balance');
+    });
+  });
+
+  describe('internalDepositDeclinedEmailHtml', () => {
+    it('carries the customer, amount, decline code + human translation, and both links', () => {
+      const html = internalDepositDeclinedEmailHtml({
+        customerName: 'Jordan Smith',
+        quoteNumber: 42,
+        amountUsd: 1350,
+        declineCode: '05',
+        adminUrl: 'https://quote.yulelovelights.com/admin/quotes/abc',
+        portalUrl: 'https://quote.yulelovelights.com/portal/abc',
+      });
+      expect(html).toContain('Jordan Smith');
+      expect(html).toContain('quote #42');
+      expect(html).toContain('$1,350.00');
+      expect(html).toContain('05');
+      expect(html).toMatch(/do not honor/i);
+      expect(html).toContain('No money moved');
+      expect(html).toContain('Complete deposit');
+      expect(html).toContain('href="https://quote.yulelovelights.com/admin/quotes/abc"');
+      expect(html).toContain('href="https://quote.yulelovelights.com/portal/abc"');
+    });
+
+    it('shows "Unknown" and an em-dash for a missing name/code', () => {
+      const html = internalDepositDeclinedEmailHtml({
+        customerName: null,
+        quoteNumber: null,
+        amountUsd: 500,
+        declineCode: null,
+        adminUrl: 'https://x/admin/quotes/1',
+        portalUrl: 'https://x/portal/1',
+      });
+      expect(html).toContain('Unknown');
+      expect(html).toContain('—');
+    });
+
+    it('swaps to balance copy + "Open invoice" for kind: balance', () => {
+      const html = internalDepositDeclinedEmailHtml({
+        customerName: 'Jordan',
+        quoteNumber: null,
+        amountUsd: 500,
+        declineCode: '51',
+        adminUrl: 'https://x/admin/invoices/1',
+        portalUrl: 'https://x/portal/1',
+        kind: 'balance',
+      });
+      expect(html).toContain('Pay balance');
+      expect(html).not.toContain('Complete deposit');
+      expect(html).toContain('Open invoice');
+    });
+
+    it('escapes HTML in the customer name', () => {
+      const html = internalDepositDeclinedEmailHtml({
+        customerName: '<script>',
+        quoteNumber: null,
+        amountUsd: 100,
+        declineCode: '05',
+        adminUrl: 'https://x/admin/quotes/1',
+        portalUrl: 'https://x/portal/1',
+      });
+      expect(html).not.toContain('<script>');
+      expect(html).toContain('&lt;script&gt;');
+    });
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calculateQuote, BUSINESS_RULES, type QuoteInputs } from './pricingEngine';
+import { calculateQuote, effectiveDepositRate, BUSINESS_RULES, type QuoteInputs } from './pricingEngine';
 import { priceSelection } from '@/lib/portal/derivePackages';
 
 // A fully-zeroed quote. Each test overrides only the fields it exercises, so
@@ -33,6 +33,21 @@ describe('BUSINESS_RULES — config guard', () => {
     expect(BUSINESS_RULES.rushFeeAmount).toBe(150);
     expect(BUSINESS_RULES.premiumTakedownFee).toBe(150);
   });
+});
+
+describe('effectiveDepositRate (#177)', () => {
+  it('converts a valid integer percent to a decimal rate', () => {
+    expect(effectiveDepositRate(25)).toBe(0.25);
+    expect(effectiveDepositRate(1)).toBe(0.01);
+    expect(effectiveDepositRate(100)).toBe(1);
+  });
+
+  it.each([undefined, 0, 101, 12.5, NaN, -5])(
+    'falls back to BUSINESS_RULES.depositPercentage for an invalid input (%s)',
+    (bad) => {
+      expect(effectiveDepositRate(bad as number | undefined)).toBe(BUSINESS_RULES.depositPercentage);
+    },
+  );
 });
 
 describe('calculateQuote — empty quote', () => {
@@ -535,6 +550,42 @@ describe('calculateQuote — minimum, fees, tax, deposit', () => {
     expect(r.total).toBe(2546.93);
     expect(r.depositAmount).toBe(1273.47);
     expect(r.balanceDue).toBe(1273.46);
+  });
+});
+
+describe('calculateQuote — per-quote deposit override (#177)', () => {
+  // Same $92.44 total as the "does NOT auto-apply the $1000 minimum" test above
+  // (spritzer subtotal 85 -> tax 7.44 -> total 92.44), so the default-vs-override
+  // comparison is apples-to-apples.
+  function total9244(depositPercent?: number) {
+    return calculateQuote(emptyInputs({
+      spritzers: [{ size: '16', quantity: 1 }],
+      ...(depositPercent !== undefined ? { depositPercent } : {}),
+    }));
+  }
+
+  it('applies a staff-set integer percent via the SAME moneyTimesRate convention as the 50% default', () => {
+    const r = total9244(25);
+    expect(r.total).toBe(92.44);
+    expect(r.depositAmount).toBe(23.11); // 92.44 * 0.25, exact to the cent
+    expect(r.balanceDue).toBe(69.33);
+    expect(r.depositRate).toBe(0.25);
+    expect(r.depositAmount + r.balanceDue).toBeCloseTo(r.total, 2);
+  });
+
+  it('defaults to 50% when depositPercent is absent — byte-identical to pre-#177 behavior', () => {
+    const r = total9244(undefined);
+    expect(r.depositAmount).toBe(46.22);
+    expect(r.depositRate).toBe(BUSINESS_RULES.depositPercentage);
+  });
+
+  // Invalid values (0, >100, non-integer, NaN) all degrade to the default 50%
+  // instead of NaN-ing the deposit — the engine clamps defensively even though
+  // the write-path route also 400s these before they ever reach here.
+  it.each([0, 101, 12.5, NaN])('falls back to 50%% for an invalid depositPercent (%s)', (bad) => {
+    const r = total9244(bad);
+    expect(r.depositAmount).toBe(46.22);
+    expect(r.depositRate).toBe(0.5);
   });
 });
 

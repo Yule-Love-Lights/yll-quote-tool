@@ -19,6 +19,7 @@ const {
   sbRef,
   accrueOnBooking,
   ensureReferralCode,
+  pushTenureYearsToGhl,
   hl,
   resolvePipelineStagesMock,
 } = vi.hoisted(() => ({
@@ -27,6 +28,7 @@ const {
   sbRef: { current: null as unknown },
   accrueOnBooking: vi.fn(async () => ({ accrued: false })),
   ensureReferralCode: vi.fn(async () => 'CODE1234'),
+  pushTenureYearsToGhl: vi.fn(async () => ({ pushed: false })),
   // GHL pipeline sync (booking bug batch 2026-07-17) — mirrors how the Valor
   // webhook's own test mocks updateOpportunity / isHighLevelConfigured.
   hl: {
@@ -54,6 +56,7 @@ vi.mock('@/lib/supabase', () => ({
 vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: requireOperatorMock }));
 vi.mock('@/lib/jobs', () => ({ createJobFromQuote }));
 vi.mock('@/lib/referrals', () => ({ accrueOnBooking, ensureReferralCode }));
+vi.mock('@/lib/integrations/ghlTenure', () => ({ pushTenureYearsToGhl }));
 vi.mock('@/lib/integrations/highlevel', () => ({
   updateOpportunity: hl.updateOpportunity,
   isHighLevelConfigured: () => hl.configured.value,
@@ -317,6 +320,37 @@ describe('POST /api/quotes/[id]/convert-to-job', () => {
     const res = await POST(makeReq({ depositUsd: 250 }), ctx());
     expect(res.status).toBe(200);
     expect(ensureReferralCode).not.toHaveBeenCalled();
+  });
+
+  // #200: GHL tenure mirror — same "third deposit-paid write site" reconcile
+  // as the referral accrual above.
+  it('pushes the GHL tenure mirror for the quote\'s OWN linked customer on booking', async () => {
+    const { client } = makeSb({ ...BASE_QUOTE, customer_id: 'cust-1' });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ depositUsd: 250 }), ctx());
+    expect(res.status).toBe(200);
+    expect(pushTenureYearsToGhl).toHaveBeenCalledWith('cust-1');
+  });
+
+  it('skips the GHL tenure push when the quote has no linked customer', async () => {
+    const { client } = makeSb(BASE_QUOTE);
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ depositUsd: 250 }), ctx());
+    expect(res.status).toBe(200);
+    expect(pushTenureYearsToGhl).not.toHaveBeenCalled();
+  });
+
+  it('still books even if the GHL tenure push throws (fail-open, #200)', async () => {
+    const { client } = makeSb({ ...BASE_QUOTE, customer_id: 'cust-1' });
+    sbRef.current = client;
+    pushTenureYearsToGhl.mockRejectedValueOnce(new Error('GHL down'));
+
+    const res = await POST(makeReq({ depositUsd: 250 }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.booked).toBe(true);
   });
 
   it('still books even if the referral code stamp throws (fail-open, #41 PR 2)', async () => {

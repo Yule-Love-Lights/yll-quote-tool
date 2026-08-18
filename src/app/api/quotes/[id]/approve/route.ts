@@ -65,7 +65,7 @@ import { isPermanentEffect, DEFAULT_PERMANENT_EFFECT, type SceneEffect } from '@
 import { getAppSettings } from '@/lib/appSettings';
 import { resolveColorChoice } from '@/lib/inventory/resolveInstalls';
 import { isValorCheckoutEnabled } from '@/lib/integrations/valorCheckout';
-import type { QuoteInputs, QuoteResult } from '@/lib/pricing/pricingEngine';
+import { effectiveDepositRate, type QuoteInputs, type QuoteResult } from '@/lib/pricing/pricingEngine';
 import type { PermanentWarranty } from '@/lib/permanent/types';
 // Audit fix (g1-route): server-side recompute of the approved selection mirrors
 // exactly what the portal's SelectionContext displays, so we never freeze a
@@ -110,7 +110,7 @@ type QuoteRow = {
   highlevel_contact_id: string | null;
   customer_approved_at: string | null;
   // Bug fix (B2): needed for the status gate — we must derive the current
-  // status and reject illegal transitions (declined/cancelled/lost can't
+  // status and reject illegal transitions (declined/cancelled/abandoned can't
   // be re-approved).
   status: QuoteStatus | null;
   deposit_paid_at: string | null;
@@ -125,6 +125,9 @@ type QuoteRow = {
   // #88 Permanent Lighting: 'permanent' forces holiday fees off in the server
   // recompute + gates on the frozen rate-snapshot minimum instead of $1,000.
   service_type: string | null;
+  // View-only portal (#176): a staff-flagged browse-only quote can never be
+  // approved — see the check right after the status-machine gate below.
+  view_only: boolean;
 };
 
 type ApproveBody = {
@@ -221,6 +224,12 @@ type ApprovalSnapshot = {
     permanentEffect: SceneEffect | null; // #88 P6b-4 — the permanent animation effect (Solid/Chase/Fade); null for holiday/event
     installTiming: 'none' | 'september' | 'october'; // #40 — early-install choice
     installDiscountUsd: number; // #40 — dollars discounted by the early-install choice
+    // #177: the EFFECTIVE deposit rate (0-1) at approval time — the staff
+    // override when inputs.depositPercent was set, else BUSINESS_RULES.depositPercentage
+    // (50%). Frozen so a later Settings/inputs change can never retro-change what
+    // percent this customer actually approved. Absent on pre-#177 snapshots —
+    // readers fall back to the live rate, then 50%.
+    depositRate: number;
   };
   // Audit fix (g1-route): set when the server could NOT recompute the selection
   // (quote.result was null) and fell back to the client-supplied figures. The
@@ -325,7 +334,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, total, result, inputs, highlevel_contact_id, customer_approved_at, status, deposit_paid_at, viewed_at, quote_sent_at, is_test, service_type',
+      'id, customer_name, customer_address, customer_phone, customer_email, total, result, inputs, highlevel_contact_id, customer_approved_at, status, deposit_paid_at, viewed_at, quote_sent_at, is_test, service_type, view_only',
     )
     .eq('id', id)
     .single<QuoteRow>();
@@ -355,7 +364,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // guard. Derive the current status (explicit persisted status wins for branch/
   // terminal states; timestamps are the fallback for legacy rows). Then reject
   // when the transition to 'approved' is not legal. This closes the window where
-  // a declined/cancelled/lost quote (customer_approved_at IS NULL, no guard) could
+  // a declined/cancelled/abandoned quote (customer_approved_at IS NULL, no guard) could
   // be re-approved + re-booked with a real deposit charge.
   const currentStatus = deriveStatus({
     quote_sent_at: quote.quote_sent_at,
@@ -371,6 +380,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         code: 'illegal-transition',
         currentStatus,
       },
+      { status: 409 },
+    );
+  }
+
+  // View-only portal (#176): a staff-flagged browse-only quote (usually a
+  // second quote spun up just so the customer can play with the colour
+  // picker) must never be approvable — this is the server hard-guard; the
+  // portal UI's matching gate is StickyBottomBar's viewOnly branch.
+  if (quote.view_only) {
+    return NextResponse.json(
+      { error: 'This quote is view-only', code: 'view-only' },
       { status: 409 },
     );
   }
@@ -449,6 +469,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   let snapshotTotalUsd = currentTotal;
   let snapshotDepositUsd = currentDeposit;
   let snapshotInstallDiscountUsd = installDiscountUsd;
+  // #199 F1 fix: ONE resolved deposit rate for this whole approval — used for
+  // BOTH snapshotDepositUsd (via chargesFromResult below, when quote.result
+  // exists) AND the frozen customerSelection.depositRate field, so the two
+  // can never disagree within one frozen record (previously: currentDepositUsd
+  // derived from the possibly-STALE result.depositRate via chargesFromResult,
+  // while depositRate was a SEPARATE live effectiveDepositRate(...) call —
+  // an NCE tag set without a recompute made the snapshot self-contradict: it
+  // said "40%" but charged 50%'s worth of dollars). Starts as the live rate
+  // (matches the no-result fallback path below, which has no `config` to
+  // unify with); overwritten from `config.depositRate` once a result exists.
+  let snapshotDepositRate = effectiveDepositRate(quote.inputs?.depositPercent);
 
   if (quote.result) {
     const { lineItems, roofline } = buildPortalLineItems(quote.result, quote.inputs);
@@ -483,7 +514,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         ? 0
         : round2(serverSubtotal * installDiscountRate(installTiming));
 
-    const config = chargesFromResult(quote.result);
+    // #199 F1: thread the live inputs.depositPercent through so an NCE tag
+    // (or any depositPercent change) lands even without a recompute — see
+    // chargesFromResult's own comment.
+    const config = chargesFromResult(quote.result, quote.inputs?.depositPercent);
     const breakdown = priceSelection(
       serverSubtotal,
       effectiveCharges(config, rushSelected, takedownSelected, discountRate, discountFlat),
@@ -556,6 +590,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     snapshotSelectedItemIds = validIds;
     snapshotTotalUsd = breakdown.total;
     snapshotDepositUsd = breakdown.deposit;
+    // #199 F1: the SAME resolved rate that priced breakdown.deposit above —
+    // not a second independent effectiveDepositRate(...) call — so this and
+    // snapshotDepositUsd cannot disagree by construction. PortalCharges types
+    // depositRate optional even though chargesFromResult always populates it;
+    // the `??` fallback here is type-satisfying only, never actually hit.
+    snapshotDepositRate = config.depositRate ?? effectiveDepositRate(quote.inputs?.depositPercent);
   }
 
   // Freeze the approval snapshot FIRST, before any messaging. This preserves
@@ -574,6 +614,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       selectedItemIds: snapshotSelectedItemIds,
       currentTotalUsd: snapshotTotalUsd,
       currentDepositUsd: snapshotDepositUsd,
+      // #177 / #199 F1 — freeze the effective rate at THIS approval. The SAME
+      // resolved value that produced currentDepositUsd above (see
+      // snapshotDepositRate's own comment) — never a second independent call,
+      // so this field and currentDepositUsd cannot disagree.
+      depositRate: snapshotDepositRate,
       rushSelected,
       takedownSelected,
       colorSchemeId,
@@ -610,7 +655,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // Bug fix (B2): also exclude terminal states in the atomic write so a
   // concurrent decline/cancel that fires between our SELECT and this UPDATE
   // can't be raced past. A row whose status just moved to 'declined',
-  // 'cancelled', or 'lost' will no longer match and we get 0 updated rows →
+  // 'cancelled', or 'abandoned' will no longer match and we get 0 updated rows →
   // safe 409 for the concurrent caller.
   //
   // Bug fix (W1-014): use the OR-with-null idiom instead of a bare `.not('status',
@@ -621,6 +666,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // `.or('status.not.in.(…),status.is.null')` explicitly admits the NULL-status
   // row while still excluding the terminal states — the same idiom the decline
   // route uses (decline/route.ts) to guard its own NULL-status rows.
+  //
+  // View-only portal (#176 TOCTOU): the early view_only check above is a
+  // fast-path 409, but staff could flip view_only ON between that read and
+  // this write. `.eq('view_only', false)` makes the write itself lose that
+  // race (view_only is NOT NULL, so a plain `.eq` is safe — no W1-014 NULL
+  // trap here).
   const { data: updatedRows, error: snapshotErr } = await sb
     .from('quotes')
     .update({
@@ -632,8 +683,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       status: 'approved',
     })
     .eq('id', id)
+    .eq('view_only', false)
     .is('customer_approved_at', null)
-    .or('status.not.in.("declined","cancelled","lost"),status.is.null')
+    .or('status.not.in.("declined","cancelled","abandoned"),status.is.null')
     .select('id');
 
   if (snapshotErr) {
@@ -678,6 +730,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // the deposit" email must quote that same number, not a divergent one.
     const depositUsd = snapshotDepositUsd;
     const totalUsd = snapshotTotalUsd;
+    // #177 / #226 fix: the quote's ACTUAL deposit percent (integer, for the
+    // copy below) — derived from `snapshotDepositRate`, the SAME already-
+    // resolved rate that produced depositUsd/snapshotDepositUsd above (and
+    // was frozen into the snapshot's own depositRate field), never a SECOND
+    // independent effectiveDepositRate(...) call. Two separate calls could
+    // disagree if inputs.depositPercent were read differently by each (e.g.
+    // a future refactor), which would put a dollar figure and a percent
+    // figure from different resolutions into the SAME customer message.
+    const depositPercent = Math.round(snapshotDepositRate * 100);
 
     // 1. Customer — confirm approval + that we'll reach out for the deposit.
     //    SMS needs the contact to have a phone (real customers do); a 422 there
@@ -690,7 +751,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       try {
         await sendSms({
           contactId: quote.highlevel_contact_id,
-          message: approvalSmsBody(firstName, depositUsd, phone),
+          message: approvalSmsBody(firstName, depositUsd, phone, depositPercent),
           fromNumber,
         });
         customerSmsSent = true;
@@ -702,7 +763,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         await sendEmail({
           contactId: quote.highlevel_contact_id,
           subject: APPROVAL_EMAIL_SUBJECT,
-          html: approvalEmailHtml(firstName, depositUsd, portalUrl, phone),
+          html: approvalEmailHtml(firstName, depositUsd, portalUrl, phone, depositPercent),
           emailFrom,
         });
         customerEmailSent = true;
@@ -732,6 +793,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
             email: quote.customer_email,
             totalUsd,
             depositUsd,
+            depositPercent,
             packageName: activeName || `Package ${packageId}`,
             installTiming,
             rushSelected,

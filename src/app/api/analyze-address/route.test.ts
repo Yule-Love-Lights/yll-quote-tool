@@ -4,8 +4,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-const { getCachedAddressImagery, NoStreetViewError } = vi.hoisted(() => ({
+const { getCachedAddressImagery, getAddressSatelliteImagery, NoStreetViewError } = vi.hoisted(() => ({
   getCachedAddressImagery: vi.fn(),
+  getAddressSatelliteImagery: vi.fn(),
   NoStreetViewError: class NoStreetViewError extends Error {},
 }));
 
@@ -19,6 +20,7 @@ vi.mock('@/lib/rateLimit', () => ({ rateLimitResponse: () => null }));
 vi.mock('@/lib/googleMaps', () => ({
   isGoogleMapsConfigured: () => true,
   getCachedAddressImagery,
+  getAddressSatelliteImagery,
   NoStreetViewError,
 }));
 
@@ -44,15 +46,69 @@ describe('POST /api/analyze-address — upstream error handling', () => {
     expect(body.error).toBe('Failed to fetch imagery for this address');
     expect(JSON.stringify(body)).not.toMatch(/REQUEST_DENIED|AIzaSecret|key=/);
   });
+});
 
-  it('returns a 404 with the formatted address when no Street View coverage exists', async () => {
+// #204: no Street View coverage no longer kills the whole lookup — the
+// satellite leg doesn't need a pano, so the route falls back to a
+// satellite-only PARTIAL SUCCESS instead of a flat 404. (This replaces the
+// old all-or-nothing 404 test that used to live here — that behavior is gone.)
+describe('POST /api/analyze-address — no Street View partial success (#204)', () => {
+  it('falls back to satellite-only success (200) instead of 404ing the whole request', async () => {
     getCachedAddressImagery.mockRejectedValueOnce(
       new NoStreetViewError('No Street View imagery available at 123 Main St, Town, ST'),
     );
+    getAddressSatelliteImagery.mockResolvedValueOnce({
+      geo: { lat: 40.1, lng: -74.1, formattedAddress: '123 Main St, Town, ST' },
+      satellite: { base64: 'sat-b64', mediaType: 'image/png' },
+      satelliteFeetPerPixel: 0.0521,
+      streetViewAvailable: false,
+    });
     const res = await POST(makeReq({ address: '123 Main St' }));
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.error).toMatch(/No Street View imagery/);
+    expect(body.streetViewUnavailable).toBe(true);
+    expect(body.result).toBeNull();
+    expect(body.satelliteBase64).toBe('sat-b64');
+    expect(body.satelliteMediaType).toBe('image/png');
+    expect(body.satelliteFeetPerPixel).toBe(0.0521);
+    expect(body.formattedAddress).toBe('123 Main St, Town, ST');
+    expect(body.lat).toBe(40.1);
+    expect(body.lng).toBe(-74.1);
+    // No analyzer ran — no street photo for it to look at.
+    expect(body.photoBase64).toBeUndefined();
+    expect(body.fewShotCount).toBeUndefined();
+  });
+
+  it('works the same way for every serviceType (permanent included) — the fallback runs before the serviceType branches', async () => {
+    getCachedAddressImagery.mockRejectedValueOnce(
+      new NoStreetViewError('No Street View imagery available at 9 Rural Rd, Town, ST'),
+    );
+    getAddressSatelliteImagery.mockResolvedValueOnce({
+      geo: { lat: 41.2, lng: -75.2, formattedAddress: '9 Rural Rd, Town, ST' },
+      satellite: { base64: 'sat-b64-2', mediaType: 'image/png' },
+      satelliteFeetPerPixel: 0.049,
+      streetViewAvailable: false,
+    });
+    const res = await POST(makeReq({ address: '9 Rural Rd', serviceType: 'permanent' }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.streetViewUnavailable).toBe(true);
+    expect(body.satelliteFeetPerPixel).toBe(0.049);
+    // Neither analyzer ran.
+    expect(body.permanentSatellite).toBeUndefined();
+    expect(body.permanentImageryOnly).toBeUndefined();
+  });
+
+  it('returns a generic 502 when BOTH Street View AND the satellite-only fallback fail', async () => {
+    getCachedAddressImagery.mockRejectedValueOnce(
+      new NoStreetViewError('No Street View imagery available at 123 Main St, Town, ST'),
+    );
+    getAddressSatelliteImagery.mockRejectedValueOnce(new Error('Static Maps outage (key=AIzaSecret)'));
+    const res = await POST(makeReq({ address: '123 Main St' }));
+    expect(res.status).toBe(502);
+    const body = await res.json();
+    expect(body.error).toBe('Failed to fetch imagery for this address');
+    expect(JSON.stringify(body)).not.toMatch(/AIzaSecret|key=/);
   });
 });
 

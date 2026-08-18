@@ -11,6 +11,9 @@ const ACTION_LABEL: Record<string, string> = {
   reopened: 'Reopened',
   reversed: 'Reversed',
   ingested: 'New message',
+  // #230(a): a #220 internal-domain follow-up suppression — see
+  // recordSuppressedFollowUp's doc (store.ts).
+  followup_suppressed: 'Follow-up suppressed (internal)',
 };
 
 function friendlyAction(action: string): string {

@@ -12,86 +12,108 @@ type Step = {
   tag?: string;
 };
 
-const STEPS: Step[] = [
-  {
-    icon: CheckCircle2,
-    title: 'Approve your quote',
-    body: 'We reach out to collect your 50% deposit and lock in your slot.',
-  },
-  {
-    icon: MessageSquare,
-    title: 'Confirm your install date',
-    body: 'We text you a 2-hour arrival window the day before.',
-  },
-  {
-    icon: Truck,
-    title: 'Our team installs',
-    body: '2-4 hours on-site. No mess, no damage, no disruption.',
-  },
-  {
-    icon: PackageOpen,
-    title: 'We take everything down',
-    body: 'Takedown runs Jan 9 – Feb 3. You don\u2019t lift a finger.',
-  },
-];
+// #177: steps are now a FUNCTION of the quote's actual deposit percent
+// (default 50) instead of a hardcoded '50%' literal, so a per-quote override
+// renders here too.
+function steps(depositPercent: number): Step[] {
+  return [
+    {
+      icon: CheckCircle2,
+      title: 'Approve your quote',
+      body: `We reach out to collect your ${depositPercent}% deposit and lock in your slot.`,
+    },
+    {
+      icon: MessageSquare,
+      title: 'Confirm your install date',
+      body: 'We text you a 2-hour arrival window the day before.',
+    },
+    {
+      icon: Truck,
+      title: 'Our team installs',
+      body: '2-4 hours on-site. No mess, no damage, no disruption.',
+    },
+    {
+      icon: PackageOpen,
+      title: 'We take everything down',
+      body: 'Takedown runs Jan 9 – Feb 3. You don’t lift a finger.',
+    },
+  ];
+}
 
-const EVENT_STEPS: Step[] = [
-  {
-    icon: CheckCircle2,
-    title: 'Reserve your date',
-    body: 'Lock in your design with a 50% deposit.',
-  },
-  {
-    icon: MessageSquare,
-    title: 'Confirm the details',
-    body: 'We confirm your install, event, and takedown dates and walk your venue if it helps.',
-  },
-  {
-    icon: Truck,
-    title: 'We install',
-    body: 'Our team sets everything up before your event and tests every light.',
-  },
-  {
-    icon: PackageOpen,
-    title: 'Your event shines',
-    body: 'We’re on standby, then take everything down after — clean and complete.',
-  },
-];
+function eventSteps(depositPercent: number): Step[] {
+  return [
+    {
+      icon: CheckCircle2,
+      title: 'Reserve your date',
+      body: `Lock in your design with a ${depositPercent}% deposit.`,
+    },
+    {
+      icon: MessageSquare,
+      title: 'Confirm the details',
+      body: 'We confirm your install, event, and takedown dates and walk your venue if it helps.',
+    },
+    {
+      icon: Truck,
+      title: 'We install',
+      body: 'Our team sets everything up before your event and tests every light.',
+    },
+    {
+      icon: PackageOpen,
+      title: 'Your event shines',
+      body: 'We’re on standby, then take everything down after — clean and complete.',
+    },
+  ];
+}
 
 // PERMANENT BISTRO service line: approve online, then a professional install
 // on the poles/supports we set, and the lights stay up year-round (no
-// takedown) — mirrors the structure of STEPS/EVENT_STEPS above.
-const BISTRO_STEPS: Step[] = [
-  {
-    icon: CheckCircle2,
-    title: 'Approve your quote',
-    body: 'Approve online, then we collect your 50% deposit and get your install on the schedule.',
-  },
-  {
-    icon: MessageSquare,
-    title: 'We schedule your install',
-    body: 'We text you a 2-hour arrival window the day before.',
-  },
-  {
-    icon: Truck,
-    title: 'Professional install',
-    body: 'Our team sets your poles and supports, then strings your lights. No mess, no disruption.',
-  },
-  {
-    icon: Lightbulb,
-    title: 'Your lights stay up year-round',
-    body: 'No takedown. Your bistro lights stay strung and ready every night.',
-  },
-];
+// takedown) — mirrors the structure of steps()/eventSteps() above.
+function bistroSteps(depositPercent: number): Step[] {
+  return [
+    {
+      icon: CheckCircle2,
+      title: 'Approve your quote',
+      body: `Approve online, then we collect your ${depositPercent}% deposit and get your install on the schedule.`,
+    },
+    {
+      icon: MessageSquare,
+      title: 'We schedule your install',
+      body: 'We text you a 2-hour arrival window the day before.',
+    },
+    {
+      icon: Truck,
+      title: 'Professional install',
+      body: 'Our team sets your poles and supports, then strings your lights. No mess, no disruption.',
+    },
+    {
+      icon: Lightbulb,
+      title: 'Your lights stay up year-round',
+      body: 'No takedown. Your bistro lights stay strung and ready every night.',
+    },
+  ];
+}
 
 const HOLIDAY_HEADING = 'Four steps from quote to Christmas cheer.';
 const EVENT_HEADING = 'From approval to your big night';
 const BISTRO_HEADING = 'From approval to lights that stay up for good.';
 
-export function WhatHappensNext({ serviceType }: { serviceType?: ServiceType }) {
+export function WhatHappensNext({
+  serviceType,
+  // #177: this quote's actual deposit percent — defaults to 50 (today's
+  // behavior) for any caller that hasn't been updated to pass it (e.g. the
+  // generic /refer marketing page, which isn't tied to a specific quote).
+  depositPercent = 50,
+}: {
+  serviceType?: ServiceType;
+  depositPercent?: number;
+}) {
   const isEvent = serviceType === 'event';
   const isPermanentBistro = serviceType === 'permanent_bistro';
-  const steps = isEvent ? EVENT_STEPS : isPermanentBistro ? BISTRO_STEPS : STEPS;
+  const stepList = isEvent
+    ? eventSteps(depositPercent)
+    : isPermanentBistro
+      ? bistroSteps(depositPercent)
+      : steps(depositPercent);
   const heading = isEvent ? EVENT_HEADING : isPermanentBistro ? BISTRO_HEADING : HOLIDAY_HEADING;
 
   return (
@@ -120,7 +142,7 @@ export function WhatHappensNext({ serviceType }: { serviceType?: ServiceType }) 
           />
 
           <ol className="grid grid-cols-1 md:grid-cols-4 gap-10 md:gap-6 relative">
-            {steps.map((step, idx) => (
+            {stepList.map((step, idx) => (
               <li
                 key={step.title}
                 className="flex md:flex-col items-start md:items-center text-left md:text-center gap-4 md:gap-0"

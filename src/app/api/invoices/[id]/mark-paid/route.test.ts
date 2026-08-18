@@ -6,13 +6,15 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
 
-const { markInvoicePaidManually, getInvoice, getJob, setJobStatus, requireOperatorMock, sbRef } =
+const { markInvoicePaidManually, updateInvoicePaymentReference, getInvoice, getJob, setJobStatus, requireOperatorMock, getOperatorMock, sbRef } =
   vi.hoisted(() => ({
     markInvoicePaidManually: vi.fn(),
+    updateInvoicePaymentReference: vi.fn(),
     getInvoice: vi.fn(),
     getJob: vi.fn(),
     setJobStatus: vi.fn(),
     requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
+    getOperatorMock: vi.fn(async (): Promise<unknown> => null),
     sbRef: { current: null as unknown },
   }));
 
@@ -20,15 +22,26 @@ vi.mock('@/lib/supabase', () => ({
   isSupabaseServiceConfigured: () => true,
   getSupabaseServiceClient: () => sbRef.current,
 }));
-vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: requireOperatorMock }));
-vi.mock('@/lib/invoices', () => ({ markInvoicePaidManually, getInvoice }));
+vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: requireOperatorMock, getOperator: getOperatorMock }));
+// #199 F2: importOriginal keeps InvoiceSettleError (the real class, needed for
+// the route's `instanceof` check) — only the DB-touching fns are mocked.
+vi.mock('@/lib/invoices', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/invoices')>()),
+  markInvoicePaidManually,
+  updateInvoicePaymentReference,
+  getInvoice,
+}));
 vi.mock('@/lib/jobs', () => ({ getJob, setJobStatus }));
 
 import { POST } from './route';
+import { InvoiceSettleError } from '@/lib/invoices';
 
 const ID = '22222222-2222-2222-2222-222222222222';
 const JOB_ID = '33333333-3333-3333-3333-333333333333';
 const QUOTE_ID = '55555555-5555-5555-5555-555555555555';
+// #225: the operator whose uuid should flow through as markInvoicePaidManually's
+// settledBy arg.
+const OPERATOR_ID = '77777777-7777-7777-7777-777777777777';
 const denied401 = () => NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 // A callable request builder: default (no body / no query) mirrors the real UI
 // call site (`fetch(url, { method: 'POST' })` — no body at all), which is why
@@ -67,8 +80,10 @@ function makeSb(quote: Record<string, unknown> | null) {
 beforeEach(() => {
   vi.clearAllMocks();
   requireOperatorMock.mockResolvedValue(null);
+  getOperatorMock.mockResolvedValue({ id: OPERATOR_ID, email: 'op@yulelovelights.com', role: 'operator', name: null });
   getInvoice.mockResolvedValue({ ...PAID_INVOICE });
   markInvoicePaidManually.mockResolvedValue(PAID_INVOICE);
+  updateInvoicePaymentReference.mockResolvedValue(PAID_INVOICE);
   getJob.mockResolvedValue({ id: JOB_ID, status: 'requires_invoicing' });
   setJobStatus.mockResolvedValue({ id: JOB_ID, status: 'done' });
   sbRef.current = null;
@@ -105,6 +120,39 @@ describe('POST /api/invoices/[id]/mark-paid', () => {
     expect(json.code).toBe('cancelled');
   });
 
+  // #199 F2 (wrap-review HIGH): the mark-paid data layer refuses a cash_check/
+  // omitted-method settle on an NCE-linked invoice (a single gate covering
+  // both this route's back-compat default AND PipelineActionsMenu's
+  // "collect-payment" empty-body POST) — the route must surface THAT specific
+  // reason, not fall through to the generic 'cancelled' message.
+  it('409s (nce-mismatch) with an actionable message when the helper refuses an NCE cash-settle', async () => {
+    markInvoicePaidManually.mockRejectedValueOnce(
+      new InvoiceSettleError('nce-mismatch', "invoice i1's quote is NCE — refusing a cash_check settle"),
+    );
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(409);
+    const json = await res.json();
+    expect(json.code).toBe('nce-mismatch');
+    expect(json.error).toMatch(/Mark paid . NCE/);
+  });
+
+  // #199 delta-verify (MED): the NCE check itself can fail (transient read
+  // error) — distinct from nce-mismatch. Nothing was settled; the route must
+  // say "retry", not accuse a normal cash job of being NCE.
+  it('503s (nce-check-failed) with a retryable message when the helper could not verify is_nce', async () => {
+    markInvoicePaidManually.mockRejectedValueOnce(
+      new InvoiceSettleError(
+        'nce-check-failed',
+        'markInvoicePaidManually: is_nce check failed for invoice i1 — refusing a cash_check settle',
+      ),
+    );
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(503);
+    const json = await res.json();
+    expect(json.code).toBe('nce-check-failed');
+    expect(json.error).toMatch(/Couldn't verify/);
+  });
+
   it('200s with ok+paid+invoice shape on success', async () => {
     const res = await POST(req(), ctx());
     expect(res.status).toBe(200);
@@ -114,7 +162,9 @@ describe('POST /api/invoices/[id]/mark-paid', () => {
       paid: true,
       invoice: { id: ID, status: 'paid', balance: 0 },
     });
-    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID);
+    // #199: back-compat default — a body-less request keeps writing exactly
+    // what it always wrote (now just also labelled 'cash_check'/null).
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID, 'cash_check', null, OPERATOR_ID);
   });
 
   it('advances the linked job to done when it is at requires_invoicing (mirrors the balance webhook)', async () => {
@@ -183,21 +233,21 @@ describe('POST /api/invoices/[id]/mark-paid — WT-18 re-consent settlement gate
     sbRef.current = makeSb({ approval_snapshot: { amendments: [{ delta: 500, new_total: 6000 }] }, status: 'booked' });
     const res = await POST(req({ overrideReconsent: true }), ctx());
     expect(res.status).toBe(200);
-    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID, 'cash_check', null, OPERATOR_ID);
   });
 
   it('succeeds with an operator override via the ?override=true query param', async () => {
     sbRef.current = makeSb({ approval_snapshot: { amendments: [{ delta: 500, new_total: 6000 }] }, status: 'booked' });
     const res = await POST(req(undefined, 'override=true'), ctx());
     expect(res.status).toBe(200);
-    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID, 'cash_check', null, OPERATOR_ID);
   });
 
   it('does NOT block a non-increasing (price-DECREASING) amendment', async () => {
     sbRef.current = makeSb({ approval_snapshot: { amendments: [{ delta: -500, new_total: 4500 }] }, status: 'booked' });
     const res = await POST(req(), ctx());
     expect(res.status).toBe(200);
-    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID, 'cash_check', null, OPERATOR_ID);
   });
 
   it('does NOT block a zero-delta (cosmetic) amendment', async () => {
@@ -215,6 +265,143 @@ describe('POST /api/invoices/[id]/mark-paid — WT-18 re-consent settlement gate
   it('skips the gate entirely when the invoice has no linked quote', async () => {
     getInvoice.mockResolvedValueOnce({ ...PAID_INVOICE, quote_id: null });
     const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+  });
+});
+
+describe('POST /api/invoices/[id]/mark-paid — NCE method/reference (#199)', () => {
+  it('400s (reference-required) when method is nce with no reference', async () => {
+    const res = await POST(req({ method: 'nce' }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(400);
+    expect(json.code).toBe('reference-required');
+    expect(markInvoicePaidManually).not.toHaveBeenCalled();
+  });
+
+  it('400s (reference-required) when the reference is whitespace-only', async () => {
+    const res = await POST(req({ method: 'nce', reference: '   ' }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(400);
+    expect(json.code).toBe('reference-required');
+    expect(markInvoicePaidManually).not.toHaveBeenCalled();
+  });
+
+  it('400s (reference-too-long) when the reference exceeds 200 characters', async () => {
+    const res = await POST(req({ method: 'nce', reference: 'x'.repeat(201) }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(400);
+    expect(json.code).toBe('reference-too-long');
+    expect(markInvoicePaidManually).not.toHaveBeenCalled();
+  });
+
+  it('marks paid with method nce + a trimmed reference', async () => {
+    const res = await POST(req({ method: 'nce', reference: '  NCE-4821  ' }), ctx());
+    expect(res.status).toBe(200);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID, 'nce', 'NCE-4821', OPERATOR_ID);
+  });
+
+  it('defaults to cash_check with a null reference when method is omitted (back-compat)', async () => {
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID, 'cash_check', null, OPERATOR_ID);
+  });
+
+  it('treats an unrecognized method value as cash_check (back-compat)', async () => {
+    const res = await POST(req({ method: 'bogus' }), ctx());
+    expect(res.status).toBe(200);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID, 'cash_check', null, OPERATOR_ID);
+  });
+});
+
+describe('POST /api/invoices/[id]/mark-paid — settled_by operator attribution (#225)', () => {
+  it('passes the resolved operator uuid through as the 4th (settledBy) arg', async () => {
+    getOperatorMock.mockResolvedValueOnce({ id: OPERATOR_ID, email: 'op@yulelovelights.com', role: 'operator', name: null });
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID, 'cash_check', null, OPERATOR_ID);
+  });
+
+  it('still settles (passing null) when the operator identity is unknown — no crash', async () => {
+    getOperatorMock.mockResolvedValueOnce(null);
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.ok).toBe(true);
+    expect(markInvoicePaidManually).toHaveBeenCalledWith(ID, 'cash_check', null, null);
+  });
+});
+
+describe('POST /api/invoices/[id]/mark-paid — updateReferenceOnly (#199)', () => {
+  it('409s (not-nce-paid) when the invoice is not yet paid', async () => {
+    getInvoice.mockResolvedValueOnce({ ...PAID_INVOICE, status: 'awaiting_payment', paid_method: 'nce' });
+    const res = await POST(req({ updateReferenceOnly: true, reference: 'NCE-1' }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('not-nce-paid');
+    expect(updateInvoicePaymentReference).not.toHaveBeenCalled();
+  });
+
+  it('409s (not-nce-paid) when the invoice was paid via cash/check, not NCE', async () => {
+    getInvoice.mockResolvedValueOnce({ ...PAID_INVOICE, status: 'paid', paid_method: 'cash_check' });
+    const res = await POST(req({ updateReferenceOnly: true, reference: 'NCE-1' }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('not-nce-paid');
+    expect(updateInvoicePaymentReference).not.toHaveBeenCalled();
+  });
+
+  it('400s (reference-required) with an empty reference', async () => {
+    getInvoice.mockResolvedValueOnce({ ...PAID_INVOICE, status: 'paid', paid_method: 'nce' });
+    const res = await POST(req({ updateReferenceOnly: true, reference: '' }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(400);
+    expect(json.code).toBe('reference-required');
+  });
+
+  it('400s (reference-too-long) with a reference over 200 characters', async () => {
+    getInvoice.mockResolvedValueOnce({ ...PAID_INVOICE, status: 'paid', paid_method: 'nce' });
+    const res = await POST(req({ updateReferenceOnly: true, reference: 'x'.repeat(201) }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(400);
+    expect(json.code).toBe('reference-too-long');
+  });
+
+  it('updates the reference on a paid NCE invoice, trimmed', async () => {
+    getInvoice.mockResolvedValueOnce({ ...PAID_INVOICE, status: 'paid', paid_method: 'nce' });
+    updateInvoicePaymentReference.mockResolvedValueOnce({ ...PAID_INVOICE, status: 'paid', payment_reference: 'NCE-99' });
+    const res = await POST(req({ updateReferenceOnly: true, reference: '  NCE-99  ' }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(updateInvoicePaymentReference).toHaveBeenCalledWith(ID, 'NCE-99');
+  });
+
+  it('never calls markInvoicePaidManually on the reference-only path (no settlement)', async () => {
+    getInvoice.mockResolvedValueOnce({ ...PAID_INVOICE, status: 'paid', paid_method: 'nce' });
+    await POST(req({ updateReferenceOnly: true, reference: 'NCE-1' }), ctx());
+    expect(markInvoicePaidManually).not.toHaveBeenCalled();
+  });
+
+  it('500s (update-failed) when the data-layer write fails', async () => {
+    getInvoice.mockResolvedValueOnce({ ...PAID_INVOICE, status: 'paid', paid_method: 'nce' });
+    updateInvoicePaymentReference.mockResolvedValueOnce(null);
+    const res = await POST(req({ updateReferenceOnly: true, reference: 'NCE-1' }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(500);
+    expect(json.code).toBe('update-failed');
+  });
+
+  it('skips the WT-18 reconsent gate entirely (no settlement, nothing to re-consent to)', async () => {
+    getInvoice.mockResolvedValueOnce({
+      ...PAID_INVOICE,
+      status: 'paid',
+      paid_method: 'nce',
+      quote_id: QUOTE_ID,
+    });
+    // A pending price-increase amendment would 409 the SETTLEMENT path (see
+    // the WT-18 describe block above) — the reference-only path must ignore it.
+    sbRef.current = makeSb({ approval_snapshot: { amendments: [{ delta: 500, new_total: 6000 }] }, status: 'booked' });
+    const res = await POST(req({ updateReferenceOnly: true, reference: 'NCE-1' }), ctx());
     expect(res.status).toBe(200);
   });
 });

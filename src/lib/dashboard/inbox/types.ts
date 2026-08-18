@@ -62,6 +62,11 @@ export type NormalizedTouch = {
   raw?: unknown;
   leadKind?: 'lead' | 'automated' | null;
   quoteValue?: number | null;
+  /** #252: true when this touch is pure GHL system/CRM activity (e.g.
+   *  "Opportunity created"), not a customer message. Resolved by the adapter;
+   *  consumed only by store.ts's planIngest, which is the one place that knows
+   *  whether a row already exists for this conversation — see its `skip` doc. */
+  isActivityNoise?: boolean | null;
 };
 
 /** A single open inbox item shaped for the /inbox UI (server-fetch → client prop).
@@ -98,6 +103,13 @@ export type DueFollowUp = {
   reason: string;
   dueAt: string;
   contactName: string | null;
+  /** #229: contact phone/email alongside the name — lets a downstream NAMED
+   *  render (the morning digest) fall back name → phone → email when a
+   *  dashboard_contacts row has no display_name (a real live case: a dropped
+   *  lead whose contact row was created from a bare inbound touch). The strip
+   *  itself doesn't need these; they ride along for that one consumer. */
+  contactPhone: string | null;
+  contactEmail: string | null;
 };
 
 // ─── Follow-ups ─────────────────────────────────────────────────────────────

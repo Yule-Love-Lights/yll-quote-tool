@@ -116,6 +116,15 @@ const BISTRO_RESULT = {
   permanentBistroRatesSnapshot: { perFt: 30, perPole: 100, minimum: 500 },
 };
 
+// An EVENT QuoteResult (#96 / #212): reuses RESULT's exact roofline + spritzer
+// shape (event pricing generates the same portal line-item ids as holiday —
+// only the fee zeroing in chargesFromResult differs, keyed off
+// eventRatesSnapshot's presence) with the snapshot marker attached.
+const EVENT_RESULT = {
+  ...RESULT,
+  eventRatesSnapshot: { roofline: { easy: 10, medium: 12, hard: 15 } },
+};
+
 const ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 
 function baseQuote(overrides: Record<string, unknown> = {}) {
@@ -134,6 +143,7 @@ function baseQuote(overrides: Record<string, unknown> = {}) {
     deposit_paid_at: null,
     viewed_at: null,
     quote_sent_at: '2026-06-25T00:00:00Z',
+    view_only: false,
     ...overrides,
   };
 }
@@ -150,7 +160,7 @@ function baseQuote(overrides: Record<string, unknown> = {}) {
 // not-matched), whereas the fixed `.or('status.not.in.(…),status.is.null')`
 // admits it. When the filter excludes the row, the guarded update matches 0 rows
 // regardless of `updateRows`.
-const TERMINAL_SET = new Set(['declined', 'cancelled', 'lost']);
+const TERMINAL_SET = new Set(['declined', 'cancelled', 'abandoned']);
 function makeSb(quote: Record<string, unknown> | null, updateRows: Array<{ id: string }> | null = [{ id: ID }]) {
   const updatePayloads: Array<Record<string, unknown>> = [];
   const builder: Record<string, unknown> = {};
@@ -168,7 +178,7 @@ function makeSb(quote: Record<string, unknown> | null, updateRows: Array<{ id: s
     },
     eq: () => builder,
     is: () => builder,
-    // Buggy form: `.not('status','in','("declined","cancelled","lost")')`.
+    // Buggy form: `.not('status','in','("declined","cancelled","abandoned")')`.
     // Postgres: NOT (status IN (…)) is NULL (→ excluded) when status IS NULL.
     not: (col: string, op: string) => {
       if (col === 'status' && op === 'in') {
@@ -246,6 +256,99 @@ describe('POST /api/quotes/[id]/approve — server recompute', () => {
     expect(snap.customerSelection.currentTotalUsd).toBeCloseTo(1631.25, 2);
     expect(snap.customerSelection.currentDepositUsd).toBeCloseTo(815.63, 2);
     expect(snap.customerSelection.installDiscountUsd).toBe(0);
+  });
+
+  // #177 fix 2 — the snapshot must freeze the EFFECTIVE deposit rate at
+  // approval time so post-approval surfaces (the approved page, the sticky
+  // bar's pending-payment state, the valor webhook's internal alert) can read
+  // the FROZEN percent instead of a live one that could drift later.
+  it('freezes the effective deposit rate (a staff override) into the snapshot', async () => {
+    const { client, updatePayloads } = makeSb(baseQuote({ inputs: { depositPercent: 25 } }));
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      customerSelection: { depositRate: number };
+    };
+    expect(snap.customerSelection.depositRate).toBe(0.25);
+  });
+
+  it('freezes the default 50% deposit rate when inputs.depositPercent is absent', async () => {
+    const { client, updatePayloads } = makeSb(baseQuote());
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      customerSelection: { depositRate: number };
+    };
+    expect(snap.customerSelection.depositRate).toBe(0.5);
+  });
+
+  // #199 F1 (wrap-review HIGH): inputs.depositPercent and result.depositRate
+  // are independently-writable — a tag write (the NCE admin toggle) or a
+  // rebook clone patches ONLY inputs.depositPercent, never result. Before this
+  // fix, currentDepositUsd derived from chargesFromResult(quote.result) alone
+  // (the STALE result.depositRate), while the snapshot's OWN depositRate field
+  // was a separate live effectiveDepositRate(inputs.depositPercent) call — the
+  // frozen record said "40%" but charged 50%'s worth of dollars. Proves both
+  // fields now agree, sourced from the SAME resolved rate, even with a result
+  // that was priced BEFORE the tag/percent changed.
+  it('freezes a 40%-CONSISTENT rate + dollar amount when inputs.depositPercent disagrees with a STALE result.depositRate (#199 F1)', async () => {
+    const { client, updatePayloads } = makeSb(
+      baseQuote({
+        inputs: { depositPercent: 40 },
+        // Simulates a quote priced BEFORE the NCE tag/depositPercent write —
+        // the admin NCE toggle route and rebook.ts patch ONLY inputs, never
+        // result, so this stays stuck at the OLD 50% forever without this fix.
+        result: { ...RESULT, depositRate: 0.5 },
+      }),
+    );
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      customerSelection: { currentTotalUsd: number; currentDepositUsd: number; depositRate: number };
+    };
+    // Santa's $1200 + spritzer-1 $300 = $1500 subtotal, +8.75% tax = $1631.25.
+    expect(snap.customerSelection.currentTotalUsd).toBeCloseTo(1631.25, 2);
+    expect(snap.customerSelection.depositRate).toBe(0.4);
+    // 1631.25 * 0.40 = 652.50 — NOT the stale-rate 815.63 (50%).
+    expect(snap.customerSelection.currentDepositUsd).toBeCloseTo(652.5, 2);
+  });
+
+  // #226 fix: the internal "go collect the deposit" SMS's `${depositPercent}%`
+  // copy used to be a SECOND, independent effectiveDepositRate(...) call
+  // instead of deriving from the SAME resolved rate as the dollar figure
+  // above it — two computations of one number that could disagree. Proven
+  // with the exact same "stale result.depositRate" shape as the #199 F1 test
+  // above, but with inputs.depositPercent ABSENT (not merely disagreeing):
+  // chargesFromResult falls through to the stale result.depositRate (0.4)
+  // for the dollar figures, while the pre-fix message calc — effective
+  // DepositRate(undefined) — resolved the LIVE default (0.5) instead. Before
+  // this fix the SMS said "50% deposit (about $815.63 worth of 40%'s
+  // dollars)"; after, both read 40%.
+  it("derives the confirmation SMS's deposit percent from the SAME resolved rate as the dollar figure, not a second call (#226)", async () => {
+    hl.configured.value = true;
+    const { client } = makeSb(
+      baseQuote({
+        highlevel_contact_id: 'c1',
+        inputs: {}, // no depositPercent override — the divergence trigger
+        result: { ...RESULT, depositRate: 0.4 }, // stale snapshot from an earlier 40%-rate Calculate
+      }),
+    );
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+    expect(res.status).toBe(200);
+    expect(hl.sendSms).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('40% deposit') }),
+    );
+    expect(hl.sendSms).not.toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('50% deposit') }),
+    );
   });
 
   it('drops unknown selectedItemIds the client sends', async () => {
@@ -586,6 +689,28 @@ describe('POST /api/quotes/[id]/approve — e-signature capture (#83 Slice B)', 
   });
 });
 
+describe('POST /api/quotes/[id]/approve — view-only portal (#176)', () => {
+  it('409s a view-only quote (no write, no booking)', async () => {
+    const { client, updatePayloads } = makeSb(baseQuote({ view_only: true }));
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('view-only');
+    expect(updatePayloads.some((p) => 'customer_approved_at' in p)).toBe(false);
+  });
+
+  it('allows a normal (non-view-only) quote to approve — unaffected', async () => {
+    const { client } = makeSb(baseQuote({ view_only: false }));
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+    expect(res.status).toBe(200);
+  });
+});
+
 describe('POST /api/quotes/[id]/approve — status gate (Bug 2)', () => {
   it('rejects a declined quote with 409 (no write, no booking)', async () => {
     // declined: customer_approved_at NULL (decline leaves it null), status='declined'
@@ -617,9 +742,9 @@ describe('POST /api/quotes/[id]/approve — status gate (Bug 2)', () => {
     expect(updatePayloads.some((p) => 'customer_approved_at' in p)).toBe(false);
   });
 
-  it('rejects a lost quote with 409', async () => {
+  it('rejects an abandoned quote with 409', async () => {
     const { client, updatePayloads } = makeSb(
-      baseQuote({ status: 'lost', deposit_paid_at: null }),
+      baseQuote({ status: 'abandoned', deposit_paid_at: null }),
     );
     sbRef.current = client;
 
@@ -672,7 +797,7 @@ describe('POST /api/quotes/[id]/approve — status gate (Bug 2)', () => {
     const res = await POST(makeReq(validBody), { params });
     // changes_requested → approved is NOT in the transition table, so this is 409
     // (customer should wait for the resend; they can't self-approve a quote under revision)
-    // Actually check the transition table: changes_requested → ['sent','declined','cancelled','lost']
+    // Actually check the transition table: changes_requested → ['sent','declined','cancelled','abandoned']
     // 'approved' is NOT in that list, so this should be rejected too.
     expect(res.status).toBe(409);
     expect((await res.json()).code).toBe('illegal-transition');
@@ -760,6 +885,31 @@ describe('POST /api/quotes/[id]/approve — permanent (#88 P6)', () => {
       { params },
     );
     expect(res.status).toBe(200);
+  });
+
+  // #212: a staff manual discount on a permanent quote survives into the
+  // frozen snapshot exactly like holiday's (the recompute reads
+  // quote.inputs?.discount unconditionally — never gated on service_type).
+  it('a manual discount reaches the recomputed total on a permanent selection', async () => {
+    const { client, updatePayloads } = makeSb(
+      baseQuote({
+        result: PERM_RESULT,
+        service_type: 'permanent',
+        inputs: { discount: { type: 'percentage', amount: 0.1 } },
+      }),
+    );
+    sbRef.current = client;
+    const res = await POST(
+      makeReq({ ...validBody, selectedItemIds: ['permanent-front'] }), // $4000
+      { params },
+    );
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      customerSelection: { currentTotalUsd: number; currentDepositUsd: number };
+    };
+    // $4000 - 10% ($400) = $3600 taxable, +8.75% tax ($315) = $3915, deposit $1957.50.
+    expect(snap.customerSelection.currentTotalUsd).toBeCloseTo(3915, 2);
+    expect(snap.customerSelection.currentDepositUsd).toBeCloseTo(1957.5, 2);
   });
 
   // GAP 1 (P6b-2 review) — a permanent quote's color choice is validated + frozen
@@ -944,5 +1094,69 @@ describe('POST /api/quotes/[id]/approve — permanent bistro', () => {
       { params },
     );
     expect(res.status).toBe(200);
+  });
+
+  // #212: a staff manual discount on a permanent bistro quote survives into
+  // the frozen snapshot exactly like holiday's (same unconditional
+  // quote.inputs?.discount read as the permanent test above).
+  it('a manual discount reaches the recomputed total on a permanent bistro selection', async () => {
+    const { client, updatePayloads } = makeSb(
+      baseQuote({
+        result: BISTRO_RESULT,
+        service_type: 'permanent_bistro',
+        inputs: { discount: { type: 'flat', amount: 100 } },
+      }),
+    );
+    sbRef.current = client;
+    const res = await POST(
+      makeReq({ ...validBody, selectedItemIds: ['permanent-bistro-0'] }), // $700
+      { params },
+    );
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      customerSelection: { currentTotalUsd: number; currentDepositUsd: number };
+    };
+    // $700 - $100 flat = $600 taxable, +8.75% tax ($52.50) = $652.50, deposit $326.25.
+    expect(snap.customerSelection.currentTotalUsd).toBeCloseTo(652.5, 2);
+    expect(snap.customerSelection.currentDepositUsd).toBeCloseTo(326.25, 2);
+  });
+});
+
+// #212: event gets the same manual-discount builder UI as permanent/bistro,
+// still minus early-install (a holiday-seasonal promo).
+describe('POST /api/quotes/[id]/approve — event discount (#212)', () => {
+  it('a manual discount reaches the recomputed total on an event quote', async () => {
+    const { client, updatePayloads } = makeSb(
+      baseQuote({
+        result: EVENT_RESULT,
+        service_type: 'event',
+        inputs: { discount: { type: 'percentage', amount: 0.2 } },
+      }),
+    );
+    sbRef.current = client;
+    // validBody selects roofline-santas ($1200) + spritzer-1 ($300) = $1500,
+    // the same subtotal the generic "manual PERCENTAGE discount" test above
+    // prices on a holiday quote — same numbers prove the pipeline doesn't
+    // branch on service_type.
+    const res = await POST(makeReq(validBody), { params });
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      customerSelection: { currentTotalUsd: number; currentDepositUsd: number };
+    };
+    expect(snap.customerSelection.currentTotalUsd).toBeCloseTo(1305, 2);
+    expect(snap.customerSelection.currentDepositUsd).toBeCloseTo(652.5, 2);
+  });
+
+  it('never applies an early-install discount on an event quote, even if installTiming is forged', async () => {
+    const { client, updatePayloads } = makeSb(baseQuote({ result: EVENT_RESULT, service_type: 'event' }));
+    sbRef.current = client;
+    const res = await POST(makeReq({ ...validBody, installTiming: 'september' }), { params });
+    expect(res.status).toBe(200);
+    const snap = updatePayloads[0].approval_snapshot as {
+      customerSelection: { installTiming: string; installDiscountUsd: number; currentTotalUsd: number };
+    };
+    expect(snap.customerSelection.installTiming).toBe('none');
+    expect(snap.customerSelection.installDiscountUsd).toBe(0);
+    expect(snap.customerSelection.currentTotalUsd).toBeCloseTo(1631.25, 2);
   });
 });

@@ -24,7 +24,7 @@
 // floor — the minimum is a customer-side approval gate, not a silent bump; see
 // minimumOrderSubtotal).
 
-import { BUSINESS_RULES } from '@/lib/pricing/pricingEngine';
+import { BUSINESS_RULES, effectiveDepositRate } from '@/lib/pricing/pricingEngine';
 import type { QuoteResult } from '@/lib/pricing/pricingEngine';
 // #110 W1-064: shared plain round-to-cents (was copy-pasted here / approve route).
 // Aliased to `round2` so call sites are byte-identical.
@@ -86,7 +86,20 @@ function effectiveTaxRate(_result: QuoteResult): number {
 // amounts too. This used to be missed here (only isEvent/isPermanentBistro
 // were checked), so a regressed isHoliday UI gate could have shown a phantom
 // $150 rush/takedown fee on a permanent portal the server never charges.
-export function chargesFromResult(result: QuoteResult): PortalCharges {
+// #199 F1 fix: `depositPercent` is the quote's LIVE `inputs.depositPercent` —
+// pass it whenever the caller has one. `result.depositRate` is a SNAPSHOT
+// only a full pricing-engine recompute writes (Calculate / POST /api/quote —
+// grep "depositRate:" in pricingEngine.ts/permanent/event/permanentBistro's
+// pricing.ts, the only 4 writers). A writer that patches ONLY
+// inputs.depositPercent without recomputing (the NCE admin toggle, a rebooked
+// clone) would otherwise leave `result.depositRate` silently stale — the
+// portal/approve-route bug this fixes. Precedence: the live input wins when
+// present (regardless of value — including a deliberate blank, which
+// correctly resolves to the BUSINESS_RULES default via effectiveDepositRate);
+// only a caller with NO live value to offer (an old test fixture, or a result
+// with no matching inputs) falls back to whatever was last actually priced
+// into the result, then the BUSINESS_RULES default.
+export function chargesFromResult(result: QuoteResult, depositPercent?: number): PortalCharges {
   const isEvent = !!result.eventRatesSnapshot;
   const isPermanent = !!result.permanentRatesSnapshot;
   const isPermanentBistro = !!result.permanentBistroRatesSnapshot;
@@ -101,6 +114,10 @@ export function chargesFromResult(result: QuoteResult): PortalCharges {
       amount: noHolidayFees ? 0 : BUSINESS_RULES.premiumTakedownFee,
       defaultOn: (typeof result.takedownAmount === 'number' ? result.takedownAmount : 0) > 0,
     },
+    depositRate:
+      typeof depositPercent === 'number'
+        ? effectiveDepositRate(depositPercent)
+        : (result.depositRate ?? BUSINESS_RULES.depositPercentage),
   };
 }
 
@@ -120,6 +137,9 @@ export function effectiveCharges(
     taxRate: charges.taxRate,
     discountRate,
     discountFlat,
+    // #177: pass the per-quote deposit rate through unchanged (not toggle-gated
+    // — every selection on this quote shares the same rate).
+    depositRate: charges.depositRate,
   };
 }
 
@@ -147,7 +167,8 @@ export function priceSelection(
   const taxable = subtotal - discount + charges.rushFee + charges.takedown;
   const tax = moneyTimesRate(taxable, charges.taxRate);
   const total = round2(taxable + tax);
-  const deposit = moneyTimesRate(total, BUSINESS_RULES.depositPercentage);
+  // #177: the quote's own deposit rate when set, else the BUSINESS_RULES default.
+  const deposit = moneyTimesRate(total, charges.depositRate ?? BUSINESS_RULES.depositPercentage);
   return {
     subtotal,
     discount,
@@ -279,6 +300,8 @@ export function derivePackages(
   lineItems: PortalLineItem[],
   result: QuoteResult,
   roofline?: PortalRoofline,
+  // #199 F1: threaded straight to chargesFromResult — see its own comment.
+  depositPercent?: number,
 ): PortalPackage[] {
   const { santasId, gingerId } = resolveRooflineIds(lineItems, roofline);
   const isRooflineOption = (id: string) => id === santasId || id === gingerId;
@@ -306,7 +329,7 @@ export function derivePackages(
   // Package cards reflect the STAFF quote, so price them with the staff-default
   // rush/takedown toggle state. The live portal total (SelectionContext)
   // re-prices with the customer's toggles.
-  const config = chargesFromResult(result);
+  const config = chargesFromResult(result, depositPercent);
   const charges = effectiveCharges(config, config.rush.defaultOn, config.takedown.defaultOn);
   const a = totalsFor(idsForTierA, lineItems, charges);
   const b = totalsFor(idsForTierB, lineItems, charges);
@@ -378,6 +401,8 @@ export function derivePackages(
 export function derivePackagesLegacyRebook(
   lineItems: PortalLineItem[],
   result: QuoteResult,
+  // #199 F1: threaded straight to chargesFromResult — see its own comment.
+  depositPercent?: number,
 ): PortalPackage[] {
   if (lineItems.length === 0) return [];
   const excludeRooflineId = lineItems.some((li) => li.id === GINGERBREAD_ID)
@@ -386,14 +411,15 @@ export function derivePackagesLegacyRebook(
   const includedIds = lineItems
     .filter((li) => li.id !== excludeRooflineId)
     .map((li) => li.id);
-  const config = chargesFromResult(result);
+  const config = chargesFromResult(result, depositPercent);
   const charges = effectiveCharges(config, config.rush.defaultOn, config.takedown.defaultOn);
   const { total, deposit } = totalsFor(includedIds, lineItems, charges);
   return [
     {
       id: 'D',
-      // #119 — the What's Included heading + hero pill prepend "Your ", so the
-      // name must NOT lead with "Your" (else "Your Your ...").
+      // #184 — the What's Included heading no longer prepends "Your " (it
+      // renders the bare name), so this name is free to read naturally either
+      // way; kept plain regardless.
       name: "Last Year's Design",
       tagline: 'Everything from last year.',
       total,
@@ -475,4 +501,16 @@ export function pickInitialPackageId(
   const clearing = candidates.find((p) => subtotalOf(p) >= minimumSubtotal);
   if (clearing) return clearing.id;
   return candidates.reduce((best, p) => (subtotalOf(p) > subtotalOf(best) ? p : best)).id;
+}
+
+// #238 (review fix): whether a package tile is the genuinely-EMPTY "Build
+// Your Own" slot the customer still needs to fill — true only for a package
+// D with no bundled items yet. Package D means something else in every other
+// derive path: a legacy rebook's single PRE-FILLED tile (derivePackagesLegacyRebook,
+// already selected on load), permanent's populated "Whole Home" bundle
+// (derivePackagesPermanent), or event/bistro's single populated package. This
+// checks real emptiness (includedItemIds) instead of proxying off the id, so
+// it doesn't need updating when a new vertical adds its own D meaning.
+export function isEmptyCustomSlot(p: PortalPackage): boolean {
+  return p.id === 'D' && p.includedItemIds.length === 0;
 }

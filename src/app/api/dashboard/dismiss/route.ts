@@ -28,7 +28,9 @@ export async function POST(req: NextRequest) {
   }
 
   const operator = await getOperator();
-  const res = await dismissItem(itemId, operator?.id ?? 'system', new Date());
+  // handled_by is a uuid FK (auth.users) — NULL, never the string 'system', on
+  // the narrow path where the auth gate is dormant and no operator resolved.
+  const res = await dismissItem(itemId, operator?.id ?? null, new Date());
   if (!res.ok) return NextResponse.json({ error: res.error }, { status: 503 });
   return NextResponse.json({ ok: true });
 }

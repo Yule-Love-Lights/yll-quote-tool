@@ -16,10 +16,16 @@
 //     service-type pipeline (src/lib/integrations/ghlPipelineMap.ts)
 // The flag only changes FUTURE renders/syncs — flipping it never retroactively
 // moves an existing GHL card (the admin confirm dialog says so explicitly).
+//
+// Tag propagation (#198): when this quote is ALREADY SENT and linked to a
+// customers row, turning the flag ON propagates "YLL Neighbor" onto that
+// customer immediately — see src/app/api/quotes/[id]/nce/route.ts's sibling
+// doc comment for the full rationale (same pattern, added alongside NCE).
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
+import { attachQuoteToCustomer, propagateQuoteTagsToCustomer, quoteRowToIdentity } from '@/lib/customers';
 
 export const runtime = 'nodejs';
 
@@ -57,8 +63,27 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     .from('quotes')
     .update({ legacy_rebook: legacyRebook })
     .eq('id', id)
-    .select('id, legacy_rebook')
-    .maybeSingle<{ id: string; legacy_rebook: boolean }>();
+    // quote_sent_at + customer_id ridden along so the propagation check below
+    // needs no second round trip (#198). is_test ridden along too (review
+    // fix, admin MED, S34 #198 review) — defense-in-depth, see the sibling
+    // /nce route's comment for the full rationale. #214: the identity
+    // columns ride along too, feeding the verify-or-reattach below.
+    .select(
+      'id, legacy_rebook, quote_sent_at, customer_id, is_test, deposit_paid_at, highlevel_contact_id, customer_name, customer_email, customer_phone, customer_address',
+    )
+    .maybeSingle<{
+      id: string;
+      legacy_rebook: boolean;
+      quote_sent_at: string | null;
+      customer_id: string | null;
+      is_test: boolean;
+      deposit_paid_at: string | null;
+      highlevel_contact_id: string | null;
+      customer_name: string | null;
+      customer_email: string | null;
+      customer_phone: string | null;
+      customer_address: string | null;
+    }>();
 
   if (error) {
     console.error('[api/quotes/:id/legacy-rebook] update failed:', error);
@@ -66,6 +91,29 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
   if (!data) {
     return NextResponse.json({ error: 'Quote not found' }, { status: 404 });
+  }
+
+  // #214: cached-id first, re-attach ONLY when never linked — see the
+  // sibling /nce route's comment for the full rationale (identical block,
+  // sibling-guard parity; deliberately NOT attach-first — retroactive
+  // tagging of OLD quotes is this flag's core workflow, and an
+  // unconditional re-resolution would newest-win stale stored fields onto
+  // a customer row later quotes kept current).
+  if (!data.is_test && legacyRebook && data.quote_sent_at) {
+    try {
+      // Booked-freeze parity (round-3 delta-verify) — see the sibling /nce
+      // route's comment.
+      const linkedCustomerId =
+        data.customer_id ??
+        (data.deposit_paid_at
+          ? null
+          : ((await attachQuoteToCustomer(quoteRowToIdentity(data)))?.customerId ?? null));
+      if (linkedCustomerId) {
+        await propagateQuoteTagsToCustomer(linkedCustomerId, { isYllNeighbor: true });
+      }
+    } catch (err) {
+      console.warn('[api/quotes/:id/legacy-rebook] tag propagation failed (non-fatal):', err);
+    }
   }
 
   return NextResponse.json({ ok: true, legacyRebook: data.legacy_rebook });

@@ -23,8 +23,13 @@ import {
   getJobDetail,
   listJobs,
   listJobsForAdmin,
+  listJobsForCustomer,
+  mergeJobsNewestFirst,
   setJobStatus,
+  type JobRow,
 } from './jobs';
+import { buildQuoteInputs, initialFormData } from './quoteForm';
+import { makeDefaultPermanentFields } from './permanent/types';
 
 // ── A tiny per-table fake Supabase ──────────────────────────────────────────
 // Records every insert/update payload and serves canned reads per table. Each
@@ -80,6 +85,11 @@ function makeSb(tables: Record<string, TableData>) {
 const QUOTE = {
   id: 'quote-1',
   service_type: 'holiday',
+  inputs: buildQuoteInputs({
+    ...initialFormData,
+    santasFootage: 1,
+    santasDifficulty: 'easy',
+  }),
   result: { lineItems: [{ label: 'Roofline', amount: 1200 }], total: 2700 },
 };
 
@@ -109,6 +119,9 @@ describe('createJobFromQuote', () => {
       status: 'to_schedule',
       job_number: 1000,
       line_items: [{ label: 'Roofline', amount: 1200 }],
+      budgeted_hours: 0.1,
+      labor_revenue_cents: 264,
+      rates_are_placeholder: true,
     });
     // fulfillment_stage is the #82 axis — left unset (NULL) by the billing creator.
     expect(payload.fulfillment_stage ?? null).toBeNull();
@@ -134,13 +147,61 @@ describe('createJobFromQuote', () => {
   it('maps a permanent service_type to a permanent job type', async () => {
     const { client, inserts } = makeSb({
       jobs: { read: null },
-      quotes: { read: { ...QUOTE, service_type: 'permanent' } },
+      quotes: {
+        read: {
+          ...QUOTE,
+          service_type: 'permanent',
+          inputs: buildQuoteInputs({
+            ...initialFormData,
+            serviceType: 'permanent',
+            permanent: { ...makeDefaultPermanentFields(), frontFootage: 70 },
+          }),
+        },
+      },
       designs: { read: null },
     });
     sbRef.current = client;
 
     await createJobFromQuote('quote-1');
     expect(inserts.jobs[0]).toMatchObject({ type: 'permanent', design_id: null });
+  });
+
+  it('logs a warning and still creates the job when the saved geometry block is missing for the service type', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { client, inserts } = makeSb({
+      jobs: { read: null },
+      quotes: {
+        read: {
+          ...QUOTE,
+          service_type: 'permanent',
+          inputs: buildQuoteInputs(initialFormData),
+        },
+      },
+      designs: { read: null },
+    });
+    sbRef.current = client;
+
+    try {
+      const job = await createJobFromQuote('quote-1');
+
+      expect(job).not.toBeNull();
+      expect(inserts.jobs[0]).toMatchObject({
+        budgeted_hours: null,
+        labor_revenue_cents: null,
+        // No estimate was computed at all (missing geometry), so nothing here
+        // is a "placeholder rate" needing a future recompute — it needs a
+        // full re-estimate instead. S57 fix: this used to hard-code `true`
+        // regardless, which would have wrongly swept this job into any future
+        // rate-recompute query alongside jobs that genuinely used placeholder
+        // rates.
+        rates_are_placeholder: false,
+      });
+      expect(warn).toHaveBeenCalledWith(
+        'createJobFromQuote: budgeted-hours estimate skipped for quote quote-1 (service_type=permanent).',
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('carries the quote customer_id/property_id onto the job (Phase 5 linkage)', async () => {
@@ -432,6 +493,63 @@ describe('listJobsForAdmin', () => {
     sbRef.current = null;
     expect(await listJobsForAdmin()).toEqual([]);
   });
+
+  it('computes the customer-detail route id fields (highlevel_contact_id first, then the job\'s own customer_id over the quote\'s)', async () => {
+    const { client } = makeSb({
+      jobs: {
+        list: [
+          { id: 'j1', job_number: 1001, quote_id: 'q1', customer_id: null, status: 'to_schedule', type: 'one_off', install_date: null, created_at: '2026-06-01', line_items: [] },
+          { id: 'j2', job_number: 1002, quote_id: 'q2', customer_id: 'job-cust-2', status: 'to_schedule', type: 'one_off', install_date: null, created_at: '2026-06-02', line_items: [] },
+        ],
+      },
+      quotes: {
+        list: [
+          { id: 'q1', customer_name: 'Alice', customer_address: '1 Main St', is_test: false, highlevel_contact_id: 'hl-1', customer_id: 'quote-cust-1' },
+          { id: 'q2', customer_name: 'Bob', customer_address: '2 Oak', is_test: false, highlevel_contact_id: null, customer_id: 'quote-cust-2' },
+        ],
+      },
+    });
+    sbRef.current = client;
+
+    const cards = await listJobsForAdmin();
+    // j1: no job.customer_id, but the quote has a highlevel_contact_id — wins.
+    expect(cards[0]).toMatchObject({ id: 'j1', highlevelContactId: 'hl-1', customerId: 'quote-cust-1' });
+    // j2: no highlevel_contact_id on the quote — the job's OWN customer_id
+    // ('job-cust-2') is preferred over the quote's ('quote-cust-2').
+    expect(cards[1]).toMatchObject({ id: 'j2', highlevelContactId: null, customerId: 'job-cust-2' });
+  });
+
+  // #199: is_nce joins the same way is_test does above — feeds the NceBadge.
+  it('joins is_nce from the linked quote', async () => {
+    const { client } = makeSb({
+      jobs: {
+        list: [
+          { id: 'j1', job_number: 1001, quote_id: 'q1', status: 'to_schedule', type: 'one_off', install_date: null, created_at: '2026-06-01', line_items: [] },
+          { id: 'j2', job_number: 1002, quote_id: 'q2', status: 'to_schedule', type: 'one_off', install_date: null, created_at: '2026-06-02', line_items: [] },
+        ],
+      },
+      quotes: {
+        list: [
+          { id: 'q1', customer_name: 'Alice', is_test: false, is_nce: true },
+          { id: 'q2', customer_name: 'Bob', is_test: false, is_nce: false },
+        ],
+      },
+    });
+    sbRef.current = client;
+
+    const cards = await listJobsForAdmin();
+    expect(cards[0]).toMatchObject({ id: 'j1', isNce: true });
+    expect(cards[1]).toMatchObject({ id: 'j2', isNce: false });
+  });
+
+  it('defaults isNce to false when a job has no linked quote', async () => {
+    const { client } = makeSb({
+      jobs: { list: [{ id: 'j1', job_number: null, quote_id: null, status: 'to_schedule', type: 'one_off', install_date: null, created_at: '2026-06-01', line_items: null }] },
+    });
+    sbRef.current = client;
+    const cards = await listJobsForAdmin();
+    expect(cards[0].isNce).toBe(false);
+  });
 });
 
 describe('getJobDetail', () => {
@@ -462,6 +580,58 @@ describe('getJobDetail', () => {
     });
   });
 
+  it('carries the labor numbers in tagged form, flagged when the rates are placeholder', async () => {
+    // GET /api/jobs/[id] serializes this object wholesale to consumers outside
+    // this repo, where the lint guardrail cannot reach. The tagged plan is what
+    // stops a placeholder figure arriving there looking measured.
+    const { client } = makeSb({
+      jobs: {
+        read: {
+          id: 'j1',
+          quote_id: 'q1',
+          status: 'to_schedule',
+          budgeted_hours: 12.5,
+          labor_revenue_cents: 26400,
+          rates_are_placeholder: true,
+        },
+      },
+      quotes: { read: { customer_name: 'Dana' } },
+      invoices: { read: null },
+    });
+    sbRef.current = client;
+
+    const detail = await getJobDetail('j1');
+    expect(detail?.laborPlan).toMatchObject({
+      status: 'placeholder',
+      budgetedHours: 12.5,
+      laborRevenueCents: 26400,
+    });
+  });
+
+  it('tags the labor plan as real once the placeholder flag is cleared', async () => {
+    const { client } = makeSb({
+      jobs: {
+        read: {
+          id: 'j1',
+          quote_id: 'q1',
+          status: 'to_schedule',
+          budgeted_hours: 8,
+          labor_revenue_cents: 10000,
+          rates_are_placeholder: false,
+        },
+      },
+      quotes: { read: { customer_name: 'Dana' } },
+      invoices: { read: null },
+    });
+    sbRef.current = client;
+
+    expect((await getJobDetail('j1'))?.laborPlan).toEqual({
+      status: 'real',
+      budgetedHours: 8,
+      laborRevenueCents: 10000,
+    });
+  });
+
   it('returns a null invoice (and carries is_test) when no invoice exists yet', async () => {
     const { client } = makeSb({
       jobs: { read: { id: 'j1', quote_id: 'q1', status: 'to_schedule' } },
@@ -487,6 +657,45 @@ describe('getJobDetail', () => {
     expect(detail?.quoteServiceType).toBe('permanent_bistro');
   });
 
+  // #177 fix 4: the linked quote's stamped deposit_amount_usd, so the jobs detail
+  // page can pass it to reconcileInvoice as the intended deposit.
+  it('carries the linked quote\'s deposit_amount_usd as intendedDepositUsd', async () => {
+    const { client } = makeSb({
+      jobs: { read: { id: 'j1', quote_id: 'q1', status: 'to_schedule' } },
+      quotes: { read: { customer_name: 'Dana', deposit_amount_usd: 800 } },
+      invoices: { read: null },
+    });
+    sbRef.current = client;
+
+    const detail = await getJobDetail('j1');
+    expect(detail?.intendedDepositUsd).toBe(800);
+  });
+
+  // #199: is_nce joins the same way is_test does — drives the NceBadge on
+  // the job detail header.
+  it('surfaces the linked quote\'s is_nce', async () => {
+    const { client } = makeSb({
+      jobs: { read: { id: 'j1', quote_id: 'q1', status: 'to_schedule' } },
+      quotes: { read: { customer_name: 'Erin', is_nce: true } },
+      invoices: { read: null },
+    });
+    sbRef.current = client;
+
+    const detail = await getJobDetail('j1');
+    expect(detail?.isNce).toBe(true);
+  });
+
+  it('defaults isNce to false when the job has no linked quote', async () => {
+    const { client } = makeSb({
+      jobs: { read: { id: 'j1', quote_id: null, status: 'to_schedule' } },
+      invoices: { read: null },
+    });
+    sbRef.current = client;
+
+    const detail = await getJobDetail('j1');
+    expect(detail?.isNce).toBe(false);
+  });
+
   it('returns null when the job does not exist', async () => {
     const { client } = makeSb({ jobs: { read: null } });
     sbRef.current = client;
@@ -496,5 +705,84 @@ describe('getJobDetail', () => {
   it('returns null when Supabase is not configured', async () => {
     sbRef.current = null;
     expect(await getJobDetail('j1')).toBeNull();
+  });
+});
+
+// ─── mergeJobsNewestFirst (PURE — customer detail page match, #58) ─────────
+
+describe('mergeJobsNewestFirst', () => {
+  const job = (id: string, created_at: string, extra: Record<string, unknown> = {}): JobRow =>
+    ({ id, created_at, ...extra }) as unknown as JobRow;
+
+  it('de-duplicates rows that appear in more than one input list, newest-first', () => {
+    const a = job('j1', '2026-06-01');
+    const b = job('j2', '2026-06-05');
+    const aAgain = job('j1', '2026-06-01'); // e.g. matched by BOTH customer_id and quote_id
+    const merged = mergeJobsNewestFirst([a, b], [aAgain, b]);
+    expect(merged.map((j) => j.id)).toEqual(['j2', 'j1']);
+    expect(merged).toHaveLength(2);
+  });
+
+  it('returns [] for no lists or all-empty lists', () => {
+    expect(mergeJobsNewestFirst()).toEqual([]);
+    expect(mergeJobsNewestFirst([], [])).toEqual([]);
+  });
+
+  it('a later list wins on a same-id collision (last-write-wins)', () => {
+    const stale = job('j1', '2026-06-01', { status: 'to_schedule' });
+    const fresh = job('j1', '2026-06-01', { status: 'done' });
+    const merged = mergeJobsNewestFirst([stale], [fresh]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({ id: 'j1', status: 'done' });
+  });
+});
+
+describe('listJobsForCustomer', () => {
+  // Purpose-built fake with REAL .eq()/.in() column filtering (the shared makeSb
+  // fake ignores filters, which can't prove customer scoping — mirrors the
+  // filtering fake invoices.test.ts uses for its listInvoicesForCustomer test).
+  function makeFilteringJobsDb(rows: Record<string, unknown>[]) {
+    return {
+      from: (table: string) => {
+        if (table !== 'jobs') throw new Error('unexpected table ' + table);
+        return {
+          select: () => ({
+            eq: async (col: string, val: unknown) => ({
+              data: rows.filter((r) => r[col] === val),
+              error: null,
+            }),
+            in: async (col: string, vals: unknown[]) => ({
+              data: rows.filter((r) => vals.includes(r[col])),
+              error: null,
+            }),
+          }),
+        };
+      },
+    };
+  }
+
+  it('merges the customer_id match and the quote_id match, de-duplicated newest-first, excluding other customers', async () => {
+    sbRef.current = makeFilteringJobsDb([
+      { id: 'j1', quote_id: 'q1', customer_id: 'cust-1', created_at: '2026-06-01' },
+      { id: 'j2', quote_id: 'q2', customer_id: null, created_at: '2026-06-05' },
+      // Another customer's job — matches NEITHER cust-1 nor the quote-id set;
+      // must never leak into this customer's list.
+      { id: 'j3', quote_id: 'q-other', customer_id: 'cust-2', created_at: '2026-06-09' },
+    ]);
+
+    const jobs = await listJobsForCustomer('cust-1', ['q1', 'q2']);
+    expect(jobs.map((j) => j.id)).toEqual(['j2', 'j1']);
+    expect(jobs.some((j) => j.id === 'j3')).toBe(false);
+  });
+
+  it('returns [] when neither a customerId nor any quoteIds are given', async () => {
+    const { client } = makeSb({ jobs: { list: [] } });
+    sbRef.current = client;
+    expect(await listJobsForCustomer(null, [])).toEqual([]);
+  });
+
+  it('returns [] when Supabase is not configured', async () => {
+    sbRef.current = null;
+    expect(await listJobsForCustomer('cust-1', ['q1'])).toEqual([]);
   });
 });

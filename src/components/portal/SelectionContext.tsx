@@ -49,7 +49,7 @@ type SelectionContextValue = {
   currentSubtotal: number;
   /** dollars — tax-inclusive total the customer pays */
   currentTotal: number;
-  /** dollars — 50% of currentTotal, due today */
+  /** dollars — this quote's deposit rate (see depositRate) of currentTotal, due today */
   currentDeposit: number;
   /** full breakdown (subtotal · fees · tax · total · deposit) for tie-out display */
   breakdown: SelectionPrice;
@@ -67,6 +67,9 @@ type SelectionContextValue = {
   rushAmount: number;
   /** canonical premium-takedown amount ($) for the toggle label */
   takedownAmount: number;
+  /** #177 — this quote's deposit rate (0-1, e.g. 0.5) for copy that states the
+   *  percent (falls back to BUSINESS_RULES.depositPercentage when unset) */
+  depositRate: number;
   toggleRush: () => void;
   toggleTakedown: () => void;
   /** the customer's early-install timing choice (#40); mutually exclusive with rush */
@@ -190,22 +193,29 @@ export function computeInitialSelection(
 // never both be selected (the single most money-sensitive selection rule — a
 // double roofline would double-count in the subtotal/approve total).
 //
-// `onlyOnePackage` (#125 permanent tier-selector fix): when the portal only
-// offers ONE package (e.g. a single-surface permanent quote — just "Front of
-// Home"), there is no other tier to fall back to, so unchecking the last
-// remaining item would leave the customer at a zero-package/zero-total state
-// with nothing to re-select from. Deselecting the last item is a no-op in
-// that case; with 2+ packages available the normal toggle-to-empty behavior
-// is unchanged.
+// `onlyOneItem` (#184 — supersedes #125's package-count signal): the
+// last-item-deselect refusal used to key on the quote deriving exactly ONE
+// package (e.g. a single-surface permanent quote — just "Front of Home"),
+// which also covered every Neighbor/event/bistro quote since those always
+// derive a single bundled package regardless of how many line items they
+// carry. The dev's #184 call: a quote with 2+ line items may be deselected
+// all the way to zero (e.g. toggling items one at a time to compare) — the
+// portal's approve minimum gate already refuses a $0/below-minimum approval,
+// which is the accepted backstop. So the refusal now keys on the quote's
+// TOTAL LINE ITEM COUNT instead: only a quote with exactly ONE line item ever
+// refuses. That single-item case is already fully frozen by
+// frozenMutatorGroups (#180 — toggleItem itself is swapped for a no-op), so
+// this guard is defense-in-depth for that already-unreachable case, not an
+// active gate on any reachable 2+-item quote.
 export function nextSelectedItemIds(
   prev: Set<string>,
   itemId: string,
   rooflineGroup: Set<string>,
-  onlyOnePackage = false,
+  onlyOneItem = false,
 ): Set<string> {
   const next = new Set(prev);
   if (next.has(itemId)) {
-    if (onlyOnePackage && next.size === 1) return prev;
+    if (onlyOneItem && next.size === 1) return prev;
     next.delete(itemId);
   } else {
     if (rooflineGroup.has(itemId)) {
@@ -244,15 +254,30 @@ export function nextPackageSelectedItemIds(
 //                customer's light color/pattern/effect choice (view-side only,
 //                frozen into the approval snapshot at approve time).
 // #43 locked (booked/approved) freezes ALL THREE groups — the whole portal is
-// read-only (byte-equivalent to the pre-#155 all-noop behavior). #155
-// legacyRebook freezes ONLY the items group: a legacy rebook keeps last
-// year's item list fixed, but rush/takedown/early-install stay live (they're
-// real upsells this season) and the customer still picks their light color
-// ("Want to change up your lights this year?"). Positive gate on
-// legacyRebook === true; a normal quote is unaffected.
+// read-only (byte-equivalent to the pre-#155 all-noop behavior).
+//
+// items also freezes below an item COUNT of 2, for two reasons that both land
+// on the same test (#179/#180 — real incidents on YLL Neighbor quotes with a
+// staff-added comparison line):
+//   #179 — a legacy rebook keeps last year's item list fixed ONLY while it's a
+//          single bundled line; at 2+ items it becomes toggleable exactly like
+//          a normal quote (rush/takedown/early-install/color already stayed
+//          live regardless — unaffected by this).
+//   #180 — ANY quote (legacy or not) whose portal shows exactly one line item
+//          can never toggle it off — an empty selection is a dead end, and
+//          combined with a waived $1,000 minimum it could otherwise reach an
+//          "approvable" $0 selection. 2+-item quotes keep today's rules.
+// Both collapse to the same `itemCount < 2` test, so legacyRebook no longer
+// changes the outcome once itemCount is known — it stays a parameter here for
+// the call sites' clarity and so the matrix below documents both rules
+// independently (a normal 1-item quote freezes for #180's reason even though
+// legacyRebook is false).
 export function frozenMutatorGroups(state: {
   locked: boolean;
   legacyRebook: boolean;
+  // #179/#180 — total line items the portal shows (WhatsIncluded's `items`
+  // prop / SelectionProvider's `lineItems` — the same array both read).
+  itemCount: number;
   // #163: a booked customer may still recolor the LIVE preview (appearance
   // unfrozen) while items/fees stay locked. The change is never persisted to the
   // frozen order — a separate "Request colour change" action notifies staff, who
@@ -261,10 +286,29 @@ export function frozenMutatorGroups(state: {
   colorPreviewWhenLocked?: boolean;
 }): { items: boolean; fees: boolean; appearance: boolean } {
   return {
-    items: state.locked || state.legacyRebook === true,
+    items: state.locked || state.itemCount < 2,
     fees: state.locked,
     appearance: state.locked && state.colorPreviewWhenLocked !== true,
   };
+}
+
+// #184 — pin the active package NAME at the SOURCE, so every consumer of
+// SelectionContext's `activeName` agrees automatically: the What's Included
+// heading, the hero package tab (InteractiveHero), the approve payload
+// (buildApprovePayload → the frozen approval snapshot's packageName), the
+// customer PDF (docModels.ts reads approval.packageName), and the staff
+// internal-approval email (built from the same frozen packageName) — all read
+// this ONE value, so a single pin here keeps them from disagreeing. A legacy
+// rebook quote with 2+ items can no longer honestly be called "last year's
+// design" once it's toggleable (#179) — the list diverges from what was
+// actually last year's design the moment staff add a comparison item — so it
+// always reads "Build Your Own" here, regardless of whether the live
+// selection still happens to match the migrated bundle. A 1-item (frozen)
+// Neighbor quote is unaffected (itemCount < 2 leaves `name` untouched).
+// Already-frozen approvals keep whatever name they froze; only a NEW
+// approval (made after this ships) freezes the corrected name.
+export function resolveActiveName(name: string, legacyRebook: boolean, itemCount: number): string {
+  return legacyRebook && itemCount >= 2 ? 'Build Your Own' : name;
 }
 
 export function useSelection(): SelectionContextValue {
@@ -498,20 +542,23 @@ export function SelectionProvider({
     [packagesById],
   );
 
-  // #125 — with only one package on offer, there's no other tier to land on,
-  // so the last remaining item can never be unchecked down to zero.
-  const onlyOnePackage = packages.length === 1;
+  // #184 — see nextSelectedItemIds' doc above: keyed on total line item count
+  // (not derived package count) so a 2+-item single-package quote (Neighbor/
+  // event/bistro/single-surface-permanent) can be deselected all the way to
+  // zero; only an actual 1-item quote refuses.
+  const onlyOneItem = lineItems.length === 1;
 
   const toggleItem = useCallback((itemId: string) => {
-    // Single-package quote: unchecking the last remaining item would strand the
-    // customer at a zero-package/$0 selection with no tier to fall back to. Make
-    // it a FULL no-op — no selection change AND no flip to Custom — so the tier
-    // label/highlight stays put on the dead click.
-    if (onlyOnePackage && selectedItemIds.size === 1 && selectedItemIds.has(itemId)) return;
-    setSelectedItemIds((prev) => nextSelectedItemIds(prev, itemId, rooflineGroup, onlyOnePackage));
+    // Defense-in-depth only (see nextSelectedItemIds' doc): a 1-item quote is
+    // already fully frozen by frozenMutatorGroups (#180), which swaps this
+    // whole callback for a no-op below, so this branch is unreachable in
+    // production — kept so nextSelectedItemIds' own contract holds if
+    // toggleItem is ever called directly.
+    if (onlyOneItem && selectedItemIds.size === 1 && selectedItemIds.has(itemId)) return;
+    setSelectedItemIds((prev) => nextSelectedItemIds(prev, itemId, rooflineGroup, onlyOneItem));
     // Any manual item toggle flips selection to Custom.
     setPackageId('D');
-  }, [rooflineGroup, onlyOnePackage, selectedItemIds]);
+  }, [rooflineGroup, onlyOneItem, selectedItemIds]);
 
   const isItemSelected = useCallback(
     (itemId: string) => selectedItemIds.has(itemId),
@@ -581,26 +628,32 @@ export function SelectionProvider({
   // customer diverges (or there was no recommendation) it reads "Build Your Own".
   const activeName = useMemo(() => {
     const pkg = packagesById.get(packageId);
+    let name: string;
     if (packageId === 'D') {
       const recIds = pkg?.includedItemIds ?? [];
       const matchesRec =
         recIds.length > 0 &&
         recIds.length === selectedItemIds.size &&
         recIds.every((id) => selectedItemIds.has(id));
-      return matchesRec ? pkg?.name ?? 'Our Recommendation' : 'Build Your Own';
+      name = matchesRec ? pkg?.name ?? 'Our Recommendation' : 'Build Your Own';
+    } else {
+      name = pkg?.name ?? '';
     }
-    return pkg?.name ?? '';
-  }, [packageId, packagesById, selectedItemIds]);
+    // #184 — see resolveActiveName above.
+    return resolveActiveName(name, legacyRebook, lineItems.length);
+  }, [packageId, packagesById, selectedItemIds, legacyRebook, lineItems.length]);
 
   // #43 — when the quote is approved the portal is read-only: every selection
   // setter is swapped for this no-op so nothing can change, regardless of any
   // stray clickable control. (Belt-and-suspenders with the disabled controls.)
   const noop = useCallback(() => {}, []);
 
-  // #155 — which setter groups no-op for this quote (pure, unit-tested seam).
-  // locked freezes all three groups (unchanged #43 behavior); a legacy rebook
-  // freezes only the item/package setters — fees and colors stay interactive.
-  const frozen = frozenMutatorGroups({ locked, legacyRebook, colorPreviewWhenLocked });
+  // #155/#179/#180 — which setter groups no-op for this quote (pure,
+  // unit-tested seam). locked freezes all three groups (unchanged #43
+  // behavior); the item/package setters additionally freeze below 2 line
+  // items (a legacy rebook at exactly 1 item, or ANY quote at exactly 1 item)
+  // — fees and colors stay interactive either way.
+  const frozen = frozenMutatorGroups({ locked, legacyRebook, itemCount: lineItems.length, colorPreviewWhenLocked });
 
   const value: SelectionContextValue = {
     packageId,
@@ -616,6 +669,7 @@ export function SelectionProvider({
     takedownSelected,
     rushAmount: charges.rush.amount,
     takedownAmount: charges.takedown.amount,
+    depositRate: charges.depositRate ?? BUSINESS_RULES.depositPercentage,
     // Fee toggles are deliberately NOT gated on legacyRebook — rush/takedown/
     // early-install are live upsells on a legacy rebook (#155 r2).
     toggleRush: frozen.fees ? noop : toggleRush,

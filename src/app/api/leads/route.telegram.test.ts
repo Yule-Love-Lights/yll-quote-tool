@@ -1,14 +1,16 @@
-// Focused tests for the Phase-1 new-lead Telegram ping in POST /api/leads
-// (2026-07-19 text-ops plan). Kept separate from route.test.ts: that file
-// exercises validation/spam/rate-limit/GHL with the notifyTelegram import
-// running real-but-dormant; here the ping seam itself is mocked and asserted.
-// newLeadMessage runs REAL so the message content is genuinely exercised.
+// Focused tests for the Phase-1 new-lead Telegram ping + staff email alert in
+// POST /api/leads (2026-07-19 text-ops plan; email alert added on top of it).
+// Kept separate from route.test.ts: that file exercises validation/spam/
+// rate-limit/GHL with these two notification seams running real-but-dormant;
+// here both seams are mocked and asserted. newLeadMessage runs REAL so the
+// Telegram message content is genuinely exercised.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-const { notifyTelegram, syncLeadToGhl } = vi.hoisted(() => ({
-  notifyTelegram: vi.fn<(text: string) => Promise<void>>(async () => {}),
+const { notifyTelegramAudience, sendLeadAlertEmail, syncLeadToGhl } = vi.hoisted(() => ({
+  notifyTelegramAudience: vi.fn<(audience: string, text: string) => Promise<void>>(async () => {}),
+  sendLeadAlertEmail: vi.fn<(lead: unknown, opts: unknown) => Promise<'sent' | 'skipped'>>(async () => 'sent'),
   syncLeadToGhl: vi.fn(async () => ({
     status: 'synced' as const,
     ghlContactId: 'c1',
@@ -17,9 +19,10 @@ const { notifyTelegram, syncLeadToGhl } = vi.hoisted(() => ({
 }));
 
 vi.mock('@/lib/integrations/telegramNotify', () => ({
-  notifyTelegram,
   appBaseUrl: () => 'https://quote.yulelovelights.com',
 }));
+vi.mock('@/lib/integrations/telegramRouting', () => ({ notifyTelegramAudience }));
+vi.mock('@/lib/leads/leadAlerts', () => ({ sendLeadAlertEmail }));
 vi.mock('@/lib/leads/leadService', () => ({
   LEAD_SERVICES: ['christmas'],
   asLeadService: (v: unknown) => (v === 'christmas' ? 'christmas' : null),
@@ -94,11 +97,12 @@ beforeEach(() => {
 });
 
 describe('POST /api/leads — new-lead Telegram ping', () => {
-  it('pings once for a real lead, with name + service + admin link', async () => {
+  it('pings once for a real lead, with name + service + admin link, routed to the leads audience', async () => {
     const res = await POST(makeReq(validLead));
     expect(res.status).toBe(200);
-    expect(notifyTelegram).toHaveBeenCalledTimes(1);
-    const msg = notifyTelegram.mock.calls[0][0];
+    expect(notifyTelegramAudience).toHaveBeenCalledTimes(1);
+    const [audience, msg] = notifyTelegramAudience.mock.calls[0]!;
+    expect(audience).toBe('leads');
     expect(msg).toContain('🟢 New website lead — Jordan Lead (christmas)');
     expect(msg).toContain('📞 +16315551234');
     expect(msg).toContain('📍 12 Candy Cane Ln');
@@ -108,7 +112,7 @@ describe('POST /api/leads — new-lead Telegram ping', () => {
   it('stays silent for a test lead', async () => {
     const res = await POST(makeReq({ ...validLead, isTest: true }));
     expect(res.status).toBe(200);
-    expect(notifyTelegram).not.toHaveBeenCalled();
+    expect(notifyTelegramAudience).not.toHaveBeenCalled();
   });
 
   it('stays silent for a honeypot (spam) submission', async () => {
@@ -116,7 +120,52 @@ describe('POST /api/leads — new-lead Telegram ping', () => {
     sbRef.current = builder;
     const res = await POST(makeReq({ ...validLead, company: 'definitely a bot' }));
     expect(res.status).toBe(200);
-    expect(notifyTelegram).not.toHaveBeenCalled();
+    expect(notifyTelegramAudience).not.toHaveBeenCalled();
     expect(inserted[0]?.sync_status).toBe('spam');
+  });
+});
+
+describe('POST /api/leads — new-lead staff email alert', () => {
+  it('sends the alert email once for a real lead, non-partial, with the full lead payload', async () => {
+    const res = await POST(makeReq(validLead));
+    expect(res.status).toBe(200);
+    expect(sendLeadAlertEmail).toHaveBeenCalledTimes(1);
+    const [lead, opts] = sendLeadAlertEmail.mock.calls[0]!;
+    expect(opts).toEqual({ partial: false });
+    expect(lead).toMatchObject({
+      name: 'Jordan Lead',
+      email: 'jordan@example.com',
+      phone: '+16315551234',
+      address: '12 Candy Cane Ln',
+      service: 'christmas',
+      formVariant: 'bar',
+    });
+  });
+
+  it('stays silent for a test lead (same gating as the Telegram ping)', async () => {
+    const res = await POST(makeReq({ ...validLead, isTest: true }));
+    expect(res.status).toBe(200);
+    expect(sendLeadAlertEmail).not.toHaveBeenCalled();
+  });
+
+  it('stays silent for a honeypot (spam) submission (same gating as the Telegram ping)', async () => {
+    const { builder } = makeSb();
+    sbRef.current = builder;
+    const res = await POST(makeReq({ ...validLead, company: 'definitely a bot' }));
+    expect(res.status).toBe(200);
+    expect(sendLeadAlertEmail).not.toHaveBeenCalled();
+  });
+
+  it('a slow email send does not hang the request past the 2s best-effort cap', async () => {
+    vi.useFakeTimers();
+    try {
+      sendLeadAlertEmail.mockImplementationOnce(() => new Promise(() => {})); // never resolves
+      const promise = POST(makeReq(validLead));
+      await vi.advanceTimersByTimeAsync(2000);
+      const res = await promise;
+      expect(res.status).toBe(200);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

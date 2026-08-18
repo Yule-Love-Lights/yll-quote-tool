@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { planIngest } from './store';
+import { ingestTouch, planIngest } from './store';
 import type { ExistingItem } from './store';
 import type { NormalizedTouch, StoredContact } from './types';
+import { quoteFollowUpDecision } from './quotetool';
+import type { DashboardQuote } from '@/lib/dashboard/types';
+import { buildInboxSummary } from './summary';
 
 const T = new Date('2026-06-28T15:00:00Z');
 const at = (ms: number) => new Date(T.getTime() + ms);
@@ -87,9 +90,87 @@ describe('planIngest — skip outbound-with-no-existing (avoid noise)', () => {
     const plan = planIngest({ candidates: [], existing: null, touch: touch({ direction: 'outbound' }), now: at(HOUR) });
     expect(plan.skip).toBe(true);
   });
+  it('still skips a gmail outbound touch that has no existing item', () => {
+    const plan = planIngest({ candidates: [], existing: null, touch: touch({ source: 'gmail', externalId: 'thread-1', direction: 'outbound' }), now: at(HOUR) });
+    expect(plan.skip).toBe(true);
+  });
+  it('does NOT skip a quotetool outbound-first touch, and auto-resolves it handled', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: null,
+      touch: touch({ source: 'quotetool', externalId: 'quote-1', direction: 'outbound', channel: 'app' }),
+      now: at(HOUR),
+    });
+    expect(plan.skip).toBe(false);
+    expect(plan.item.status).toBe('handled');
+    expect(plan.item.escalation_level).toBe(0);
+    expect(plan.autoResolved).toBe(true);
+  });
   it('never skips an inbound touch', () => {
     const plan = planIngest({ candidates: [], existing: null, touch: touch(), now: at(HOUR) });
     expect(plan.skip).toBe(false);
+  });
+});
+
+// #252: the opposite-polarity twin of the block above. An activity-noise
+// touch (isActivityNoise) must NEVER be skipped when there is no existing
+// item (a conversation's first-ever touch must always be observable, even
+// when GHL's rolled-up latest-event snapshot is pure CRM activity) — but MUST
+// be skipped when an item already exists, so noise can't bump/reopen it.
+describe('planIngest — GHL activity-noise touch skip (#252, opposite polarity)', () => {
+  it('does NOT skip an activity-noise touch with no existing item (must never swallow a first touch)', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: null,
+      touch: touch({ isActivityNoise: true, direction: null, channel: null, preview: null }),
+      now: at(HOUR),
+    });
+    expect(plan.skip).toBe(false);
+    expect(plan.skipReason).toBeNull();
+    expect(plan.contactOp.kind).toBe('insert'); // the conversation actually gets ingested
+  });
+
+  it('skips an activity-noise touch that HAS an existing item (never lets noise bump a real conversation), labeled skipReason "activity-noise-existing"', () => {
+    const existing: ExistingItem = { id: 'i1', contactId: 'A', status: 'unresponded', notifiedLevels: [], lastMessageAt: T };
+    const plan = planIngest({
+      candidates: [],
+      existing,
+      touch: touch({ isActivityNoise: true, lastMessageAt: at(HOUR) }),
+      now: at(2 * HOUR),
+    });
+    expect(plan.skip).toBe(true);
+    expect(plan.skipReason).toBe('activity-noise-existing');
+  });
+
+  // Only sound PAIRED with the test above (proves reason 2 exists at all) —
+  // this one alone would also pass an implementation that omits reason 2
+  // entirely, since it never exercises the noise+existing combination.
+  it('does not skip a normal (non-noise) inbound touch on an existing item, even though existing is truthy', () => {
+    const existing: ExistingItem = { id: 'i1', contactId: 'A', status: 'unresponded', notifiedLevels: [], lastMessageAt: T };
+    const plan = planIngest({
+      candidates: [],
+      existing,
+      touch: touch({ isActivityNoise: false, lastMessageAt: at(HOUR) }),
+      now: at(2 * HOUR),
+    });
+    expect(plan.skip).toBe(false);
+    expect(plan.skipReason).toBeNull();
+  });
+
+  // #252 delta-verify MEDIUM: a touch can be BOTH activity-noise AND
+  // cold-outbound-with-no-existing-item at once (live GHL data shows
+  // direction varies independently of message type). That must resolve to
+  // reason 1 (cold-outbound skip), never reason 2 — touch.isActivityNoise
+  // being true is NOT sufficient on its own to imply the #252 reason fired.
+  it('labels a cold-outbound activity-noise touch (no existing item) skipReason "cold-outbound", not "activity-noise-existing"', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: null,
+      touch: touch({ isActivityNoise: true, direction: 'outbound' }),
+      now: at(HOUR),
+    });
+    expect(plan.skip).toBe(true); // reason 1 still applies
+    expect(plan.skipReason).toBe('cold-outbound');
   });
 });
 
@@ -215,12 +296,25 @@ vi.mock('@/lib/supabase', () => ({
 }));
 
 import {
+  closeQuoteInboxNoise,
+  dismissItem,
   ensureFollowUp,
   EXCLUDE_LEGACY_REBOOK_FROM_INBOX,
   excludeLegacyRebookItems,
+  findOrphanedFollowUpItems,
+  findViewOnlyFollowUpItems,
+  getReopenCounts,
+  isHiddenLegacyRebookQuote,
+  listDueFollowUps,
+  listInWorks,
   listOpenItems,
   listEscalatableItems,
   markFollowUpDone,
+  markItemCompleted,
+  markItemHandledLocal,
+  quoteIdPrefix,
+  recordSuppressedFollowUp,
+  sweepOrphanedFollowUps,
 } from './store';
 
 /** Build a Supabase chain stub where the terminal await returns `result`.
@@ -229,7 +323,12 @@ import {
 function makeBuilder(result: { data: unknown; error: null | { message: string }; count?: number | null }) {
   const calls: { method: string; args: unknown[] }[] = [];
   const self: Record<string, unknown> = {};
-  for (const m of ['select', 'eq', 'order', 'limit', 'in', 'or', 'is']) {
+  // #185: 'not' and 'gte' added for getReopenCounts (dashboard_activity's
+  // .not('inbox_item_id','is',null) + .gte('created_at', sinceIso)) and
+  // listInWorks (.not('followed_up_at','is',null) / .not('status','in',...)).
+  // #208: 'neq' added for markItemHandledLocal/dismissItem's double-apply guard
+  // (.neq('status','handled'|'dismissed')).
+  for (const m of ['select', 'eq', 'neq', 'order', 'limit', 'in', 'or', 'is', 'update', 'not', 'gte', 'insert']) {
     self[m] = (...args: unknown[]) => {
       calls.push({ method: m, args });
       return self;
@@ -237,6 +336,10 @@ function makeBuilder(result: { data: unknown; error: null | { message: string };
   }
   // Terminal await — vitest resolves a thenable.
   self.then = (resolve: (v: unknown) => void) => resolve(result);
+  // #208: explicit terminal .maybeSingle() (markItemHandledLocal/dismissItem's
+  // priorStateOf + update...select...maybeSingle chains call this directly
+  // rather than awaiting the builder itself).
+  self.maybeSingle = async () => result;
   return { builder: self, calls };
 }
 
@@ -286,6 +389,179 @@ describe('excludeLegacyRebookItems (#157 — YLL Neighbors inbox exclusion)', ()
     ];
     const result = excludeLegacyRebookItems(items, new Set(['quote-legacy']));
     expect(result.map((i) => i.external_id)).toEqual(['quote-normal', 'ghl-msg-1']);
+  });
+
+  // #183 BUG 1: a :color-request-suffixed item belonging to a legacy quote must
+  // ALSO be excluded, not just its bare-id sibling.
+  it('drops a :color-request-suffixed item whose PREFIX is a legacy_rebook quote', () => {
+    const items = [{ source: 'quotetool', external_id: 'quote-legacy:color-request' }];
+    const result = excludeLegacyRebookItems(items, new Set(['quote-legacy']));
+    expect(result).toHaveLength(0);
+  });
+
+  it('keeps a :color-request-suffixed item whose prefix is NOT a legacy quote', () => {
+    const items = [{ source: 'quotetool', external_id: 'quote-normal:color-request' }];
+    const result = excludeLegacyRebookItems(items, new Set(['quote-legacy']));
+    expect(result).toEqual(items);
+  });
+
+  it('drops both the plain legacy row AND its suffixed sibling from the same batch', () => {
+    const items = [
+      { source: 'quotetool', external_id: 'quote-legacy' },
+      { source: 'quotetool', external_id: 'quote-legacy:color-request' },
+      { source: 'quotetool', external_id: 'quote-normal' },
+    ];
+    const result = excludeLegacyRebookItems(items, new Set(['quote-legacy']));
+    expect(result.map((i) => i.external_id)).toEqual(['quote-normal']);
+  });
+});
+
+// ─── isHiddenLegacyRebookQuote — #252 slice G (pure) ─────────────────────────
+
+describe('isHiddenLegacyRebookQuote (#252 slice G — narrowed to genuine unsent drafts; #263 re-export of the shared isParkedLegacyRebookDraft predicate)', () => {
+  it('hides an unsent, still-DRAFT legacy_rebook quote', () => {
+    expect(
+      isHiddenLegacyRebookQuote({
+        legacy_rebook: true,
+        status: 'draft',
+        quote_sent_at: null,
+        customer_approved_at: null,
+        deposit_paid_at: null,
+      }),
+    ).toBe(true);
+  });
+
+  it('does NOT hide a SENT legacy_rebook quote', () => {
+    expect(
+      isHiddenLegacyRebookQuote({
+        legacy_rebook: true,
+        status: 'sent',
+        quote_sent_at: '2026-07-01T00:00:00Z',
+        customer_approved_at: null,
+        deposit_paid_at: null,
+      }),
+    ).toBe(false);
+  });
+
+  it('does NOT hide an APPROVED legacy_rebook quote', () => {
+    expect(
+      isHiddenLegacyRebookQuote({
+        legacy_rebook: true,
+        status: 'approved',
+        quote_sent_at: '2026-07-01T00:00:00Z',
+        customer_approved_at: '2026-07-02T00:00:00Z',
+        deposit_paid_at: null,
+      }),
+    ).toBe(false);
+  });
+
+  // #252 refinement: 3 prod rows are booked with quote_sent_at IS NULL — a
+  // naive "unsent = hidden" predicate would wrongly hide these. #263: what
+  // actually keeps a booked row visible now is deposit_paid_at (what
+  // deriveStatus reads for 'booked'), not the persisted status string itself
+  // — verified every real prod row with status='booked' also carries
+  // deposit_paid_at (2026-08-13, all 14 rows), so this fixture now carries
+  // the timestamp that genuinely backs a booked row rather than only the label.
+  it('does NOT hide a BOOKED legacy_rebook quote even though quote_sent_at is null', () => {
+    expect(
+      isHiddenLegacyRebookQuote({
+        legacy_rebook: true,
+        status: 'booked',
+        quote_sent_at: null,
+        customer_approved_at: null,
+        deposit_paid_at: '2026-07-01T00:00:00Z',
+      }),
+    ).toBe(false);
+  });
+
+  // #263 BEHAVIOR CHANGE from the old raw-status check: deriveStatus does not
+  // trust a persisted 'booked' status string over the timestamps (see its own
+  // doc comment), so a status='booked' row with NOTHING backing it (no
+  // deposit_paid_at/customer_approved_at/viewed_at/quote_sent_at) now derives
+  // 'draft' and IS hidden. 0 real prod rows have this shape today (every
+  // status='booked' legacy_rebook row carries deposit_paid_at) — this pins the
+  // new, intentional behavior rather than leaving it undocumented.
+  it('DOES hide a legacy_rebook quote whose persisted status says booked but nothing backs it (unreached in prod today)', () => {
+    expect(
+      isHiddenLegacyRebookQuote({
+        legacy_rebook: true,
+        status: 'booked',
+        quote_sent_at: null,
+        customer_approved_at: null,
+        deposit_paid_at: null,
+      }),
+    ).toBe(true);
+  });
+
+  it('does NOT hide a non-legacy_rebook draft, even if unsent', () => {
+    expect(
+      isHiddenLegacyRebookQuote({
+        legacy_rebook: false,
+        status: 'draft',
+        quote_sent_at: null,
+        customer_approved_at: null,
+        deposit_paid_at: null,
+      }),
+    ).toBe(false);
+  });
+
+  it('does NOT hide a legacy_rebook quote with a null legacy_rebook read (defensive)', () => {
+    expect(
+      isHiddenLegacyRebookQuote({
+        legacy_rebook: null,
+        status: 'draft',
+        quote_sent_at: null,
+        customer_approved_at: null,
+        deposit_paid_at: null,
+      }),
+    ).toBe(false);
+  });
+
+  // Null-status edge (#263): a legacy row with no persisted status at all
+  // (0 rows today, but deriveStatus's own fallback path) still derives
+  // 'draft' when nothing else is set, so it's correctly hidden.
+  it('hides a legacy_rebook quote with a null persisted status and no timestamps (deriveStatus falls back to draft)', () => {
+    expect(
+      isHiddenLegacyRebookQuote({
+        legacy_rebook: true,
+        status: null,
+        quote_sent_at: null,
+        customer_approved_at: null,
+        deposit_paid_at: null,
+      }),
+    ).toBe(true);
+  });
+
+  // #267(b): a legacy_rebook row that's actually been PAID must never be
+  // hidden, even if its persisted status column never advanced off 'draft' —
+  // the exact live-money shape #267(b) named (0 prod rows today; structural
+  // fix, not an active incident).
+  it('does NOT hide a paid legacy_rebook quote even though its persisted status is still draft (#267b)', () => {
+    expect(
+      isHiddenLegacyRebookQuote({
+        legacy_rebook: true,
+        status: 'draft',
+        quote_sent_at: null,
+        customer_approved_at: null,
+        deposit_paid_at: '2026-08-01T00:00:00Z',
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('quoteIdPrefix (#183 BUG 1)', () => {
+  it('returns the id unchanged when there is no colon suffix', () => {
+    expect(quoteIdPrefix('quote-1')).toBe('quote-1');
+  });
+
+  it('strips a :color-request suffix', () => {
+    expect(quoteIdPrefix('quote-1:color-request')).toBe('quote-1');
+  });
+
+  it('strips a real-uuid-shaped id the same way', () => {
+    expect(quoteIdPrefix('123e4567-e89b-12d3-a456-426614174000:color-request')).toBe(
+      '123e4567-e89b-12d3-a456-426614174000',
+    );
   });
 });
 
@@ -403,6 +679,186 @@ describe('listOpenItems — select string, sort order, and field mapping', () =>
     expect(isCall!.args[0]).toBe('followed_up_at');
     expect(isCall!.args[1]).toBeNull();
   });
+
+  // #185: the returning-customer contact-count query was UNBOUNDED (every
+  // historical inbox_items row for the page's contacts, any status/time).
+  // Assert the bound is actually wired, not just documented.
+  it('bounds the returning-customer contact-count query with a limit (#185 — was unbounded)', async () => {
+    const row = {
+      id: 'item-1',
+      source: 'ghl',
+      channel: 'sms',
+      direction: 'inbound',
+      last_message_at: '2026-06-28T15:00:00Z',
+      preview: 'test preview',
+      subject: null,
+      escalation_level: 1,
+      contact_id: 'c-42',
+      lead_kind: 'lead',
+      quote_value: null,
+      dashboard_contacts: null,
+    };
+    const { builder: mainBuilder } = makeBuilder({ data: [row], error: null });
+    const { builder: countBuilder, calls: countCalls } = makeBuilder({ data: [{ contact_id: 'c-42' }], error: null });
+
+    let callCount = 0;
+    sbRef.current = {
+      from: (_table: string) => {
+        callCount += 1;
+        return callCount === 1 ? mainBuilder : countBuilder;
+      },
+    };
+
+    await listOpenItems(100);
+
+    const limitCall = countCalls.find((c) => c.method === 'limit');
+    expect(limitCall).toBeDefined();
+    expect(limitCall!.args[0]).toBe(5000);
+  });
+});
+
+// ─── getReopenCounts — window pairs run concurrently (#185) ─────────────────
+//
+// Was a strictly-sequential for-loop (3 windows x 2 actions = 6 round-trips,
+// one at a time). Now all 6 distinct() calls fire via nested Promise.all.
+// Call order stays deterministic (keys.map + the array-literal argument order
+// to Promise.all both evaluate left-to-right): for [all, 90, 30], each window
+// is [handled, reopened] — so a call-index-keyed dataset still lets us assert
+// correctness without needing to inspect real concurrency timing.
+
+describe('getReopenCounts — window pairs run concurrently (#185)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('returns Supabase-not-configured zeros for all three windows when unconfigured', async () => {
+    const result = await getReopenCounts(new Date('2026-07-30T00:00:00Z'));
+    expect(result).toEqual({
+      all: { handled: 0, reopened: 0 },
+      '90': { handled: 0, reopened: 0 },
+      '30': { handled: 0, reopened: 0 },
+    });
+  });
+
+  it('assembles correct DISTINCT handled/reopened counts per window from the 6 parallel calls', async () => {
+    // Call order: all-handled, all-reopened, 90-handled, 90-reopened, 30-handled, 30-reopened.
+    const datasets = [
+      [{ inbox_item_id: 'a1' }, { inbox_item_id: 'a2' }], // all: handled -> 2 distinct
+      [{ inbox_item_id: 'b1' }], // all: reopened -> 1 distinct
+      [{ inbox_item_id: 'c1' }, { inbox_item_id: 'c1' }], // 90: handled -> 1 distinct (duplicate id)
+      [], // 90: reopened -> 0
+      [{ inbox_item_id: 'd1' }, { inbox_item_id: 'd2' }, { inbox_item_id: 'd3' }], // 30: handled -> 3
+      [{ inbox_item_id: 'e1' }], // 30: reopened -> 1
+    ];
+    let callIndex = 0;
+    const fromCalls: string[] = [];
+    sbRef.current = {
+      from: (table: string) => {
+        fromCalls.push(table);
+        const idx = callIndex;
+        callIndex += 1;
+        return makeBuilder({ data: datasets[idx] ?? [], error: null }).builder;
+      },
+    };
+
+    const result = await getReopenCounts(new Date('2026-07-30T00:00:00Z'));
+
+    expect(result.all).toEqual({ handled: 2, reopened: 1 });
+    expect(result['90']).toEqual({ handled: 1, reopened: 0 });
+    expect(result['30']).toEqual({ handled: 3, reopened: 1 });
+    expect(callIndex).toBe(6);
+    expect(fromCalls.every((t) => t === 'dashboard_activity')).toBe(true);
+  });
+});
+
+// ─── listInWorks — parallel fetch (#185) ────────────────────────────────────
+//
+// Was two sequential `await`s (awaiting -> handled). Now both fire together
+// via Promise.all; the array-literal argument order keeps [awaiting, handled]
+// deterministic, so a call-index-keyed mock still lets us assert correctness.
+
+describe('listInWorks — parallel fetch (#185)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('maps the awaiting + handled buckets from the two parallel queries', async () => {
+    const awaitingRow = {
+      id: 'i-aw',
+      source: 'ghl',
+      channel: 'sms',
+      preview: 'following up',
+      followed_up_at: '2026-07-20T10:00:00Z',
+      handled_at: null,
+      status: 'unresponded',
+      dashboard_contacts: { display_name: 'Awaiting Amy' },
+    };
+    const handledRow = {
+      id: 'i-hd',
+      source: 'gmail',
+      channel: 'email',
+      preview: 'handled it',
+      followed_up_at: null,
+      handled_at: '2026-07-21T09:00:00Z',
+      status: 'handled',
+      dashboard_contacts: { display_name: 'Handled Hank' },
+    };
+    let callIndex = 0;
+    sbRef.current = {
+      from: (_table: string) => {
+        const idx = callIndex;
+        callIndex += 1;
+        const data = idx === 0 ? [awaitingRow] : [handledRow];
+        return makeBuilder({ data, error: null }).builder;
+      },
+    };
+
+    const result = await listInWorks(200);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.awaiting).toEqual([
+      { id: 'i-aw', source: 'ghl', channel: 'sms', preview: 'following up', customerName: 'Awaiting Amy', lastActivityAt: '2026-07-20T10:00:00Z' },
+    ]);
+    expect(result.handled).toEqual([
+      { id: 'i-hd', source: 'gmail', channel: 'email', preview: 'handled it', customerName: 'Handled Hank', lastActivityAt: '2026-07-21T09:00:00Z' },
+    ]);
+    expect(callIndex).toBe(2);
+  });
+
+  it('surfaces the AWAITING query error even though both queries were fired', async () => {
+    let callIndex = 0;
+    sbRef.current = {
+      from: (_table: string) => {
+        const idx = callIndex;
+        callIndex += 1;
+        return idx === 0
+          ? makeBuilder({ data: null, error: { message: 'awaiting query failed' } }).builder
+          : makeBuilder({ data: [], error: null }).builder;
+      },
+    };
+
+    const result = await listInWorks(200);
+    expect(result).toEqual({ ok: false, error: 'awaiting query failed' });
+    // Both queries fired (parallel) even though the first one errored.
+    expect(callIndex).toBe(2);
+  });
+
+  it('surfaces the HANDLED query error when only it fails', async () => {
+    let callIndex = 0;
+    sbRef.current = {
+      from: (_table: string) => {
+        const idx = callIndex;
+        callIndex += 1;
+        return idx === 0
+          ? makeBuilder({ data: [], error: null }).builder
+          : makeBuilder({ data: null, error: { message: 'handled query failed' } }).builder;
+      },
+    };
+
+    const result = await listInWorks(200);
+    expect(result).toEqual({ ok: false, error: 'handled query failed' });
+  });
 });
 
 // ─── listOpenItems — truncation signal (WT-41) ───────────────────────────────
@@ -468,6 +924,175 @@ describe('listOpenItems — truncation signal (WT-41)', () => {
   });
 });
 
+// ─── listOpenItems — totalLeads excludes automated lead_kind (#265) ─────────
+//
+// listOpenItems' sibling listEscalatableItems filters lead_kind='automated'
+// rows out at the QUERY level (.or('lead_kind.is.null,lead_kind.neq.automated')).
+// listOpenItems deliberately does NOT — its `items`/`totalOpen` stay the raw,
+// unfiltered population because InboxList.tsx's "Show N filtered" toggle needs
+// automated rows to still be fetched so staff can view them on demand. Instead
+// `totalLeads` is a SEPARATE number, excluding automated noise, for consumers
+// (the morning digest) that want "how many actually need a reply" — matching
+// what /inbox's own "Open leads" tile (buildInboxSummary) already shows.
+
+describe('listOpenItems — totalLeads excludes automated lead_kind (#265)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  const row = (id: string, leadKind: string | null, source = 'gmail', externalId = `ext-${id}`) => ({
+    id,
+    source,
+    external_id: externalId,
+    channel: 'email',
+    direction: 'inbound',
+    last_message_at: '2026-08-01T10:00:00Z',
+    preview: null,
+    subject: null,
+    escalation_level: 0,
+    contact_id: null,
+    lead_kind: leadKind,
+    quote_value: null,
+    dashboard_contacts: null,
+  });
+
+  it('totalLeads excludes automated rows while items/totalOpen keep them (the "Show filtered" toggle still needs them fetched)', async () => {
+    const rows = [row('a', 'lead'), row('b', 'automated'), row('c', 'automated'), row('d', null)];
+    const { builder } = makeBuilder({ data: rows, error: null, count: 4 });
+    sbRef.current = { from: () => builder };
+
+    const result = await listOpenItems(100);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // items keeps ALL 4 rows (2 automated included) — the toggle depends on this.
+    expect(result.items).toHaveLength(4);
+    expect(result.items.map((i) => i.leadKind).sort()).toEqual(['automated', 'automated', 'lead', 'lead']);
+    // totalOpen is the raw mixed count, unaffected by lead_kind (unchanged behavior).
+    expect(result.totalOpen).toBe(4);
+    // totalLeads excludes the 2 automated rows — null (row d) counts as a lead,
+    // same as the sibling's .or('lead_kind.is.null,...') treats NULL.
+    expect(result.totalLeads).toBe(2);
+  });
+
+  it('totalLeads equals totalOpen when there is no automated noise (no behavior change for the common case)', async () => {
+    const rows = [row('a', 'lead'), row('b', null)];
+    const { builder } = makeBuilder({ data: rows, error: null, count: 2 });
+    sbRef.current = { from: () => builder };
+
+    const result = await listOpenItems(100);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.totalOpen).toBe(2);
+    expect(result.totalLeads).toBe(2);
+  });
+
+  it("totalLeads reflects Postgrest's exact count beyond the fetched page, same as totalOpen does (WT-41 parity)", async () => {
+    // Only 2 rows fetched (page cap), but the exact count says 10 rows exist
+    // total; of the 2 actually fetched, 1 is automated noise.
+    const rows = [row('a', 'lead'), row('b', 'automated')];
+    const { builder } = makeBuilder({ data: rows, error: null, count: 10 });
+    sbRef.current = { from: () => builder };
+
+    const result = await listOpenItems(2);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.totalOpen).toBe(10);
+    // totalOpen(10) - automatedInWindow(1, from the 2 fetched rows) = 9.
+    expect(result.totalLeads).toBe(9);
+  });
+
+  it('matches buildInboxSummary(items).openLeads when the page is not truncated — the /inbox tile and the digest agree (#265)', async () => {
+    const rows = [
+      row('a', 'lead'),
+      row('b', 'automated'),
+      row('c', 'lead'),
+      row('d', 'automated'),
+      row('e', 'automated'),
+    ];
+    const { builder } = makeBuilder({ data: rows, error: null, count: 5 });
+    sbRef.current = { from: () => builder };
+
+    const result = await listOpenItems(100);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.truncated).toBe(false); // sanity: this equivalence only holds un-truncated
+    const summary = buildInboxSummary(result.items, Date.now());
+    expect(result.totalLeads).toBe(summary.openLeads);
+    expect(result.totalLeads).toBe(2);
+  });
+
+  it('totalLeads is computed from the WINDOW (rows, pre-page-slice), not the page — automated rows beyond the page cap still get subtracted', async () => {
+    // 6 rows come back inside the query window, but limit=2 caps the
+    // returned PAGE to the oldest 2 (both leads). All 4 automated rows sit
+    // at positions 3-6 — entirely beyond the page. If automatedInWindow were
+    // computed from the page (trimmed/items) instead of the full window
+    // (rows), it would see ZERO automated rows and totalLeads would wrongly
+    // collapse to totalOpen (6) via the floor, instead of the true 2. This
+    // is the scenario the digest actually depends on — the whole point of
+    // totalLeads (like totalOpen before it) is to see past the page cap.
+    const rows = [
+      row('a', 'lead'),
+      row('b', 'lead'),
+      row('c', 'automated'),
+      row('d', 'automated'),
+      row('e', 'automated'),
+      row('f', 'automated'),
+    ];
+    const { builder } = makeBuilder({ data: rows, error: null, count: 6 });
+    sbRef.current = { from: () => builder };
+
+    const result = await listOpenItems(2);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Sanity: the returned PAGE carries no automated-row signal at all —
+    // confirms this is a genuine window-vs-page scenario, not accidentally
+    // page-visible.
+    expect(result.items).toHaveLength(2);
+    expect(result.items.every((i) => i.leadKind === 'lead')).toBe(true);
+    expect(result.truncated).toBe(true);
+
+    expect(result.totalOpen).toBe(6);
+    // All 4 automated rows (beyond the page) are subtracted — not 0.
+    expect(result.totalLeads).toBe(2);
+  });
+
+  it('combines correctly with the #157 legacy-rebook exclusion — a hidden Neighbor draft (always lead_kind=lead) never interacts with the automated count', async () => {
+    const LEGACY_ID = '11111111-1111-1111-1111-111111111111';
+    const rows = [
+      row('i-legacy', 'lead', 'quotetool', LEGACY_ID),
+      row('i-ghl-auto', 'automated', 'ghl'),
+      row('i-ghl-lead', 'lead', 'ghl'),
+    ];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null, count: 3 });
+    const { builder: quotesBuilder } = makeBuilder({
+      data: [{ id: LEGACY_ID, legacy_rebook: true, status: 'draft', quote_sent_at: null }],
+      error: null,
+    });
+
+    let callCount = 0;
+    sbRef.current = {
+      from: () => {
+        callCount += 1;
+        return callCount === 1 ? mainBuilder : quotesBuilder;
+      },
+    };
+
+    const result = await listOpenItems(100);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // The legacy quotetool row is hidden entirely (not in items, not in either count).
+    expect(result.items.map((i) => i.id)).toEqual(['i-ghl-auto', 'i-ghl-lead']);
+    expect(result.totalOpen).toBe(2); // 3 raw − 1 legacy-hidden
+    expect(result.totalLeads).toBe(1); // 2 open − 1 automated (i-ghl-auto)
+  });
+});
+
 // ─── listOpenItems — legacy-rebook exclusion wiring (#157) ──────────────────
 //
 // listOpenItems makes a THIRD sb.from('quotes') call ONLY when the fetched page
@@ -476,10 +1101,15 @@ describe('listOpenItems — truncation signal (WT-41)', () => {
 // nav badge via buildInboxSummary, /api/inbox) inherits it automatically since
 // they all read through this one function.
 
-describe('listOpenItems — legacy-rebook exclusion wiring (#157)', () => {
+describe('listOpenItems — legacy-rebook exclusion wiring (#157, #183)', () => {
   beforeEach(() => {
     sbRef.current = null;
   });
+
+  // Real uuid-shaped ids (#183 BUG 1's isUuid filter drops anything else from
+  // the .in() lookup, so these fixtures must actually parse as uuids).
+  const LEGACY_ID = '11111111-1111-1111-1111-111111111111';
+  const NORMAL_ID = '22222222-2222-2222-2222-222222222222';
 
   const row = (id: string, source: string, externalId: string) => ({
     id,
@@ -497,17 +1127,17 @@ describe('listOpenItems — legacy-rebook exclusion wiring (#157)', () => {
     dashboard_contacts: null,
   });
 
-  it('excludes a quotetool item whose quote is legacy_rebook=true, keeps normal quotetool + other sources', async () => {
+  it('excludes an unsent DRAFT legacy_rebook quotetool item, keeps normal quotetool + other sources', async () => {
     const rows = [
-      row('i-legacy', 'quotetool', 'quote-legacy'),
-      row('i-normal', 'quotetool', 'quote-normal'),
+      row('i-legacy', 'quotetool', LEGACY_ID),
+      row('i-normal', 'quotetool', NORMAL_ID),
       row('i-ghl', 'ghl', 'ghl-msg-1'),
     ];
     const { builder: mainBuilder } = makeBuilder({ data: rows, error: null, count: 3 });
     const { builder: quotesBuilder, calls: quotesCalls } = makeBuilder({
       data: [
-        { id: 'quote-legacy', legacy_rebook: true },
-        { id: 'quote-normal', legacy_rebook: false },
+        { id: LEGACY_ID, legacy_rebook: true, status: 'draft', quote_sent_at: null },
+        { id: NORMAL_ID, legacy_rebook: false, status: 'draft', quote_sent_at: null },
       ],
       error: null,
     });
@@ -532,7 +1162,7 @@ describe('listOpenItems — legacy-rebook exclusion wiring (#157)', () => {
     // ones) — never the ghl item's external_id.
     const inCall = quotesCalls.find((c) => c.method === 'in');
     expect(inCall).toBeDefined();
-    expect(inCall!.args[1]).toEqual(expect.arrayContaining(['quote-legacy', 'quote-normal']));
+    expect(inCall!.args[1]).toEqual(expect.arrayContaining([LEGACY_ID, NORMAL_ID]));
     expect(inCall!.args[1]).toHaveLength(2);
   });
 
@@ -555,6 +1185,253 @@ describe('listOpenItems — legacy-rebook exclusion wiring (#157)', () => {
     expect(result.items).toHaveLength(1);
     // No contact_id → no returning-proxy call; no quotetool ids → no quotes call.
     expect(fromCalls).toBe(1);
+  });
+
+  // #183 BUG 1: a :color-request-suffixed external_id used to poison the WHOLE
+  // .in() lookup (not a valid uuid → Postgres 22P02 on the entire query),
+  // silently emptying legacyQuoteIds so EVERY legacy row on the page — not
+  // just the suffixed one — rendered on the open-items list.
+  it('a :color-request-suffixed id alongside a plain one: BOTH resolve + exclude correctly, and the .in() call carries only the stripped prefix', async () => {
+    const rows = [
+      row('i-legacy', 'quotetool', LEGACY_ID),
+      row('i-legacy-color', 'quotetool', `${LEGACY_ID}:color-request`),
+      row('i-normal', 'quotetool', NORMAL_ID),
+      row('i-ghl', 'ghl', 'ghl-msg-1'),
+    ];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null, count: 4 });
+    const { builder: quotesBuilder, calls: quotesCalls } = makeBuilder({
+      data: [
+        { id: LEGACY_ID, legacy_rebook: true, status: 'draft', quote_sent_at: null },
+        { id: NORMAL_ID, legacy_rebook: false, status: 'draft', quote_sent_at: null },
+      ],
+      error: null,
+    });
+
+    let callCount = 0;
+    sbRef.current = {
+      from: (_table: string) => {
+        callCount += 1;
+        return callCount === 1 ? mainBuilder : quotesBuilder;
+      },
+    };
+
+    const result = await listOpenItems(100);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Both the bare legacy row AND its suffixed sibling are excluded.
+    expect(result.items.map((i) => i.id)).toEqual(['i-normal', 'i-ghl']);
+
+    // The .in() call carries the DE-DUPED, STRIPPED prefix — never the raw
+    // suffixed string (which would have poisoned the whole Postgres query).
+    const inCall = quotesCalls.find((c) => c.method === 'in');
+    expect(inCall!.args[1]).toEqual(expect.arrayContaining([LEGACY_ID, NORMAL_ID]));
+    expect(inCall!.args[1]).toHaveLength(2);
+  });
+
+  it('drops a malformed (non-uuid) quotetool external_id from the lookup instead of poisoning the whole query', async () => {
+    const rows = [row('i-bad', 'quotetool', 'not-a-uuid'), row('i-normal', 'quotetool', NORMAL_ID)];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null, count: 2 });
+    const { builder: quotesBuilder, calls: quotesCalls } = makeBuilder({
+      data: [{ id: NORMAL_ID, legacy_rebook: false }],
+      error: null,
+    });
+
+    let callCount = 0;
+    sbRef.current = {
+      from: (_table: string) => {
+        callCount += 1;
+        return callCount === 1 ? mainBuilder : quotesBuilder;
+      },
+    };
+
+    const result = await listOpenItems(100);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Neither row is silently dropped from the RESULT (only the lookup input
+    // is filtered) — the malformed one just can't be confirmed legacy, so it
+    // stays (fail-open for that one row, same spirit as the error path below).
+    expect(result.items.map((i) => i.id)).toEqual(['i-bad', 'i-normal']);
+
+    const inCall = quotesCalls.find((c) => c.method === 'in');
+    expect(inCall!.args[1]).toEqual([NORMAL_ID]);
+  });
+
+  // #252 slice G: narrowed from "every legacy_rebook item" to "only a genuine
+  // unsent DRAFT" — a SENT/APPROVED/BOOKED Neighbor quote's item now behaves
+  // like a normal quotetool item on the open-items list (this is the row #252
+  // set out to fix: quote #1129, BOOKED, sat invisible for 14 days under the
+  // old blanket rule).
+  it('does NOT exclude a SENT legacy_rebook quotetool item', async () => {
+    const rows = [row('i-sent-legacy', 'quotetool', LEGACY_ID), row('i-ghl', 'ghl', 'ghl-msg-1')];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null, count: 2 });
+    const { builder: quotesBuilder } = makeBuilder({
+      data: [{ id: LEGACY_ID, legacy_rebook: true, status: 'sent', quote_sent_at: '2026-07-20T10:00:00Z' }],
+      error: null,
+    });
+
+    let callCount = 0;
+    sbRef.current = {
+      from: () => {
+        callCount += 1;
+        return callCount === 1 ? mainBuilder : quotesBuilder;
+      },
+    };
+
+    const result = await listOpenItems(100);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items.map((i) => i.id)).toEqual(['i-sent-legacy', 'i-ghl']);
+  });
+
+  // #252 refinement: 3 prod rows are BOOKED with quote_sent_at IS NULL — a
+  // naive "unsent = hidden" implementation would still wrongly hide this one,
+  // since it never checks status. Pin it explicitly. #263: deposit_paid_at is
+  // what actually backs a booked row post-deriveStatus-switch (every real
+  // prod row with status='booked' also carries it, verified 2026-08-13).
+  it('does NOT exclude a BOOKED legacy_rebook quotetool item even though quote_sent_at is null', async () => {
+    const rows = [row('i-booked-legacy', 'quotetool', LEGACY_ID)];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null, count: 1 });
+    const { builder: quotesBuilder } = makeBuilder({
+      data: [
+        {
+          id: LEGACY_ID,
+          legacy_rebook: true,
+          status: 'booked',
+          quote_sent_at: null,
+          customer_approved_at: '2026-07-01T09:00:00Z',
+          deposit_paid_at: '2026-07-01T10:00:00Z',
+          viewed_at: null,
+        },
+      ],
+      error: null,
+    });
+
+    let callCount = 0;
+    sbRef.current = {
+      from: () => {
+        callCount += 1;
+        return callCount === 1 ? mainBuilder : quotesBuilder;
+      },
+    };
+
+    const result = await listOpenItems(100);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items.map((i) => i.id)).toEqual(['i-booked-legacy']);
+  });
+
+  // #183 BUG 1 (c): the lookup error must be visible, and the fail-open must
+  // proceed unexcluded rather than crash or silently no-op.
+  it('logs and proceeds unexcluded when the quotes lookup itself errors', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const rows = [row('i-legacy', 'quotetool', LEGACY_ID), row('i-ghl', 'ghl', 'ghl-msg-1')];
+      const { builder: mainBuilder } = makeBuilder({ data: rows, error: null, count: 2 });
+      const { builder: quotesBuilder } = makeBuilder({ data: null, error: { message: 'connection reset' } });
+
+      let callCount = 0;
+      sbRef.current = {
+        from: (_table: string) => {
+          callCount += 1;
+          return callCount === 1 ? mainBuilder : quotesBuilder;
+        },
+      };
+
+      const result = await listOpenItems(100);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      // Fail-open: nothing excluded, both rows still present.
+      expect(result.items.map((i) => i.id)).toEqual(['i-legacy', 'i-ghl']);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        '[inbox] legacy-rebook exclusion lookup failed:',
+        'connection reset',
+      );
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+});
+
+// ─── listDueFollowUps — contact fallback + due-window (#229) ────────────────
+//
+// #229 FIX 3 (round 3): an earlier round added a legacy-rebook "anchoring"
+// flag + a quotetool->quotes batch lookup here, mirroring listOpenItems. That
+// state is IMPOSSIBLE by construction — isHiddenLegacyRebookQuote requires
+// deriveStatus === 'draft' (quote_sent_at NULL), but a quote_sent_no_reply
+// follow-up (quotetool.ts's quoteFollowUpDecision) only ever gets CREATED
+// when quote_sent_at IS SET. Confirmed empirically against prod: 28 pending
+// follow-ups, all with quote_sent_at set, zero parked drafts. Removed the
+// flag, the inbox_items embed, and the batch lookup entirely — a
+// legacy_rebook-anchored follow-up here is for a SENT Neighbor quote (a real
+// customer genuinely owed a reply), so it is never filtered.
+
+describe('listDueFollowUps — contact fallback + due-window (#229)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  const NOW = new Date('2026-08-06T15:00:00Z'); // Aug 6, 2026, ET morning
+
+  const dueRow = (over: Record<string, unknown>) => ({
+    id: 'fu-1',
+    reason: 'quote_sent_no_reply',
+    due_at: '2026-08-05T10:00:00Z', // yesterday ET — overdue
+    dashboard_contacts: { display_name: 'Jane Doe', primary_phone: '+16315551234', primary_email: 'jane@x.com' },
+    ...over,
+  });
+
+  it('carries contact phone/email alongside the name (nameless-contact fallback support downstream)', async () => {
+    const rows = [
+      dueRow({
+        id: 'fu-nameless',
+        dashboard_contacts: { display_name: null, primary_phone: '+16315559999', primary_email: 'lead@x.com' },
+      }),
+    ];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
+    sbRef.current = { from: () => mainBuilder };
+
+    const result = await listDueFollowUps(NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items[0].contactName).toBeNull();
+    expect(result.items[0].contactPhone).toBe('+16315559999');
+    expect(result.items[0].contactEmail).toBe('lead@x.com');
+  });
+
+  it('excludes a follow-up due strictly in the future (not yet due today)', async () => {
+    const rows = [dueRow({ due_at: '2026-08-08T10:00:00Z' })]; // 2 days ahead
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
+    sbRef.current = { from: () => mainBuilder };
+
+    const result = await listDueFollowUps(NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items).toHaveLength(0);
+  });
+
+  // #229 FIX 3: locks in the corrected behavior — a follow-up anchored to a
+  // SENT legacy_rebook quote is a real, owed reply and must NOT be filtered
+  // (only ONE sb.from() call — no quotetool/quotes lookup exists anymore).
+  it('never filters or special-cases a legacy_rebook-linked follow-up (no anchoring lookup exists)', async () => {
+    const rows = [dueRow({ id: 'fu-neighbor', dashboard_contacts: { display_name: 'YLL Neighbor Lead', primary_phone: null, primary_email: null } })];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
+    let fromCalls = 0;
+    sbRef.current = {
+      from: () => {
+        fromCalls += 1;
+        return mainBuilder;
+      },
+    };
+
+    const result = await listDueFollowUps(NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].contactName).toBe('YLL Neighbor Lead');
+    expect(fromCalls).toBe(1); // no second (quotes) lookup — the anchoring machinery is gone
   });
 });
 
@@ -703,6 +1580,238 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
 
 // ─── planIngest — clearFollowedUp ────────────────────────────────────────────
 
+describe('quotetool fast-sent quote lifecycle (#222)', () => {
+  type ContactRow = {
+    id: string;
+    ghl_contact_id: string | null;
+    emails: string[];
+    phones: string[];
+    display_name: string | null;
+    primary_email: string | null;
+    primary_phone: string | null;
+  };
+  type InboxItemRow = Record<string, unknown> & {
+    id: string;
+    source: string;
+    external_id: string;
+  };
+  type FollowUpRow = Record<string, unknown> & {
+    id: string;
+    inbox_item_id: string;
+    reason: string;
+    status: string;
+  };
+
+  function makeQuoteInboxFake() {
+    const contacts: ContactRow[] = [];
+    const inboxItems: InboxItemRow[] = [];
+    const followUps: FollowUpRow[] = [];
+    const activity: Record<string, unknown>[] = [];
+    let nextContactId = 1;
+    let nextItemId = 1;
+    let nextFollowUpId = 1;
+
+    function builderFor(table: string) {
+      const filters: Record<string, unknown> = {};
+      let mode: 'select' | 'insert' | 'update' | 'upsert' | null = null;
+      let insertRow: Record<string, unknown> | undefined;
+      let orClause: string | undefined;
+      const self: Record<string, unknown> = {};
+      self.select = () => {
+        if (mode === null) mode = 'select';
+        return self;
+      };
+      self.eq = (col: string, val: unknown) => {
+        filters[col] = val;
+        return self;
+      };
+      self.or = (clause: string) => {
+        orClause = clause;
+        return self;
+      };
+      self.limit = () => self;
+      self.insert = (row: Record<string, unknown>) => {
+        mode = 'insert';
+        insertRow = row;
+        return self;
+      };
+      self.update = () => self;
+      self.upsert = (row: Record<string, unknown>) => {
+        mode = 'upsert';
+        insertRow = row;
+        return self;
+      };
+      self.single = async () => {
+        if (table === 'dashboard_contacts' && mode === 'insert') {
+          const row: ContactRow = {
+            id: `contact-${nextContactId++}`,
+            ghl_contact_id: (insertRow?.ghl_contact_id as string | null) ?? null,
+            emails: (insertRow?.emails as string[] | null) ?? [],
+            phones: (insertRow?.phones as string[] | null) ?? [],
+            display_name: (insertRow?.display_name as string | null) ?? null,
+            primary_email: (insertRow?.primary_email as string | null) ?? null,
+            primary_phone: (insertRow?.primary_phone as string | null) ?? null,
+          };
+          contacts.push(row);
+          return { data: { id: row.id }, error: null };
+        }
+        if (table === 'inbox_items' && mode === 'upsert') {
+          const keySource = String(insertRow?.source);
+          const keyExternalId = String(insertRow?.external_id);
+          let row = inboxItems.find((item) => item.source === keySource && item.external_id === keyExternalId);
+          if (!row) {
+            row = { id: `item-${nextItemId++}`, ...insertRow, source: keySource, external_id: keyExternalId } as InboxItemRow;
+            inboxItems.push(row);
+          } else {
+            Object.assign(row, insertRow);
+          }
+          return { data: { id: row.id }, error: null };
+        }
+        return { data: null, error: { message: `unexpected single() on ${table}` } };
+      };
+      self.maybeSingle = async () => {
+        if (table === 'inbox_items') {
+          const row = inboxItems.find(
+            (item) => item.source === filters.source && item.external_id === filters.external_id,
+          );
+          if (!row) return { data: null, error: null };
+          return {
+            data: {
+              id: row.id,
+              contact_id: row.contact_id ?? null,
+              status: row.status,
+              notified_levels: row.notified_levels ?? [],
+              last_message_at: row.last_message_at ?? null,
+            },
+            error: null,
+          };
+        }
+        return { data: null, error: null };
+      };
+      self.then = (resolve: (v: unknown) => void) => {
+        if (table === 'dashboard_contacts' && mode === 'select' && orClause) {
+          resolve({ data: [], error: null });
+          return;
+        }
+        if (table === 'dashboard_activity' && mode === 'insert') {
+          activity.push(insertRow ?? {});
+          resolve({ data: null, error: null });
+          return;
+        }
+        if (table === 'follow_ups' && mode === 'select') {
+          const matched = followUps.filter((row) =>
+            Object.entries(filters).every(([k, v]) => row[k] === v),
+          );
+          resolve({ data: matched.map((row) => ({ id: row.id })), error: null });
+          return;
+        }
+        if (table === 'follow_ups' && mode === 'upsert') {
+          const existing = followUps.find(
+            (row) => row.inbox_item_id === insertRow?.inbox_item_id && row.reason === insertRow?.reason,
+          );
+          if (existing) {
+            Object.assign(existing, insertRow);
+            resolve({ data: [existing], error: null });
+            return;
+          }
+          const row: FollowUpRow = {
+            id: `fu-${nextFollowUpId++}`,
+            inbox_item_id: String(insertRow?.inbox_item_id),
+            reason: String(insertRow?.reason),
+            status: String(insertRow?.status),
+            ...insertRow,
+          };
+          followUps.push(row);
+          resolve({ data: [row], error: null });
+          return;
+        }
+        resolve({ data: [], error: null });
+      };
+      return self;
+    }
+
+    return {
+      contacts,
+      inboxItems,
+      followUps,
+      activity,
+      from: (table: string) => builderFor(table),
+    };
+  }
+
+  function fastSentQuote(over: Partial<DashboardQuote> = {}): DashboardQuote {
+    return {
+      id: 'quote-1263',
+      customer_name: 'Fast Send',
+      customer_email: 'fastsend@example.com',
+      customer_phone: '(631) 555-0000',
+      total: 1500,
+      created_at: '2026-08-10T16:32:54.950Z',
+      quote_sent_at: '2026-08-10T16:33:02.700Z',
+      customer_approved_at: null,
+      deposit_paid_at: null,
+      homeworks_sent_at: null,
+      homeworks_signed_at: null,
+      highlevel_contact_id: null,
+      service_type: null,
+      ...over,
+    };
+  }
+
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('creates one handled inbox item and one quote_sent_no_reply follow-up across two reconcile-like passes', async () => {
+    const fake = makeQuoteInboxFake();
+    sbRef.current = fake;
+    const quote = fastSentQuote({ legacy_rebook: true });
+    const decision = quoteFollowUpDecision(quote);
+    expect(decision.kind).toBe('create');
+    if (decision.kind !== 'create') throw new Error('expected create decision');
+
+    const touch: NormalizedTouch = {
+      source: 'quotetool',
+      externalId: quote.id,
+      direction: 'outbound',
+      channel: 'app',
+      lastMessageAt: new Date(quote.quote_sent_at!),
+      preview: `Quote — $${quote.total}`,
+      subject: null,
+      identity: {
+        ghlContactId: null,
+        emails: ['fastsend@example.com'],
+        phones: ['+16315550000'],
+        displayName: 'Fast Send',
+      },
+      raw: quote,
+      leadKind: 'lead',
+      quoteValue: quote.total,
+    };
+
+    for (const now of [new Date('2026-08-10T16:35:00Z'), new Date('2026-08-10T16:40:00Z')]) {
+      const ingest = await ingestTouch(touch, now);
+      expect(ingest.ok).toBe(true);
+      if (!ingest.ok) throw new Error(ingest.error);
+      expect(ingest.itemId).not.toBeNull();
+      if (ingest.itemId) {
+        await ensureFollowUp({
+          inboxItemId: ingest.itemId,
+          contactId: ingest.contactId,
+          reason: decision.reason,
+          sentAt: decision.sentAt,
+        });
+      }
+    }
+
+    expect(fake.inboxItems).toHaveLength(1);
+    expect(fake.followUps).toHaveLength(1);
+    expect(fake.inboxItems[0].status).toBe('handled');
+    expect(fake.followUps[0].inbox_item_id).toBe(fake.inboxItems[0].id);
+    expect(fake.followUps[0].reason).toBe('quote_sent_no_reply');
+  });
+});
+
 describe('planIngest — clearFollowedUp', () => {
   it('sets clearFollowedUp=true when touch.lastMessageAt is genuinely newer than existing.lastMessageAt', () => {
     const existing: ExistingItem = {
@@ -797,5 +1906,1030 @@ describe('listEscalatableItems — .or filter excludes automated but keeps NULL'
     expect(isCall).toBeDefined();
     expect(isCall!.args[0]).toBe('followed_up_at');
     expect(isCall!.args[1]).toBeNull();
+  });
+});
+
+// ─── listEscalatableItems — legacy-rebook exclusion wiring (#181 / #157 / #252) ─
+//
+// Same #157 exclusion listOpenItems already applies to the /inbox display,
+// extended (#181) to escalation: a YLL Neighbor item must never trip an
+// amber/red alert or land in the EOD digest either. Mirrors the listOpenItems
+// legacy-rebook wiring tests above, including the #252 slice-G narrowing.
+
+describe('listEscalatableItems — legacy-rebook exclusion wiring (#181, #183, #252)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  // Real uuid-shaped ids (#183 BUG 1's isUuid filter drops anything else from
+  // the .in() lookup, so these fixtures must actually parse as uuids).
+  const LEGACY_ID = '33333333-3333-3333-3333-333333333333';
+  const NORMAL_ID = '44444444-4444-4444-4444-444444444444';
+
+  const row = (id: string, source: string, externalId: string) => ({
+    id,
+    source,
+    external_id: externalId,
+    last_message_at: '2026-07-16T10:00:00Z',
+    notified_levels: [],
+    escalation_level: 0,
+    preview: null,
+    dashboard_contacts: null,
+  });
+
+  it('excludes an unsent DRAFT legacy_rebook quotetool item, keeps normal quotetool + other sources', async () => {
+    const rows = [
+      row('i-legacy', 'quotetool', LEGACY_ID),
+      row('i-normal', 'quotetool', NORMAL_ID),
+      row('i-ghl', 'ghl', 'ghl-msg-1'),
+    ];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
+    const { builder: quotesBuilder, calls: quotesCalls } = makeBuilder({
+      data: [
+        { id: LEGACY_ID, legacy_rebook: true, status: 'draft', quote_sent_at: null },
+        { id: NORMAL_ID, legacy_rebook: false, status: 'draft', quote_sent_at: null },
+      ],
+      error: null,
+    });
+
+    let callCount = 0;
+    sbRef.current = {
+      from: (_table: string) => {
+        callCount += 1;
+        return callCount === 1 ? mainBuilder : quotesBuilder;
+      },
+    };
+
+    const result = await listEscalatableItems();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.items.map((i) => i.id)).toEqual(['i-normal', 'i-ghl']);
+
+    // Same predicate call shape as listOpenItems: batch-fetch only the
+    // quotetool ids seen on this read.
+    const inCall = quotesCalls.find((c) => c.method === 'in');
+    expect(inCall).toBeDefined();
+    expect(inCall!.args[1]).toEqual(expect.arrayContaining([LEGACY_ID, NORMAL_ID]));
+    expect(inCall!.args[1]).toHaveLength(2);
+  });
+
+  // #252 slice G: narrowed from "every legacy_rebook item, regardless of
+  // quote_sent_at" (the old behavior this test used to pin) to "only a
+  // genuine unsent DRAFT" — a SENT Neighbor quote now behaves like a normal
+  // quote here too, matching quotetool.ts's ingest-time guard rather than
+  // fighting it.
+  it('does NOT exclude a SENT legacy_rebook quote here either', async () => {
+    const rows = [row('i-sent-legacy', 'quotetool', LEGACY_ID)];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
+    const { builder: quotesBuilder } = makeBuilder({
+      data: [{ id: LEGACY_ID, legacy_rebook: true, status: 'sent', quote_sent_at: '2026-07-20T10:00:00Z' }],
+      error: null,
+    });
+
+    let callCount = 0;
+    sbRef.current = {
+      from: () => {
+        callCount += 1;
+        return callCount === 1 ? mainBuilder : quotesBuilder;
+      },
+    };
+
+    const result = await listEscalatableItems();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items.map((i) => i.id)).toEqual(['i-sent-legacy']);
+  });
+
+  // #252 the row this fix ships for: quote #1129 is a BOOKED, legacy_rebook
+  // quote whose colour-change-request item sat invisible in escalation (never
+  // triggered an amber/red alert or the EOD digest) for 14 days under the old
+  // blanket rule.
+  it('does NOT exclude a BOOKED legacy_rebook quote', async () => {
+    const rows = [row('i-booked-legacy', 'quotetool', LEGACY_ID)];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
+    const { builder: quotesBuilder } = makeBuilder({
+      data: [{ id: LEGACY_ID, legacy_rebook: true, status: 'booked', quote_sent_at: '2026-07-01T10:00:00Z' }],
+      error: null,
+    });
+
+    let callCount = 0;
+    sbRef.current = {
+      from: () => {
+        callCount += 1;
+        return callCount === 1 ? mainBuilder : quotesBuilder;
+      },
+    };
+
+    const result = await listEscalatableItems();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items.map((i) => i.id)).toEqual(['i-booked-legacy']);
+  });
+
+  // #252 refinement: 3 prod rows are BOOKED with quote_sent_at IS NULL — pin
+  // this explicitly since a naive "unsent = hidden" predicate would still
+  // wrongly hide it (it never checks status). #263: deposit_paid_at is what
+  // actually backs a booked row post-deriveStatus-switch (every real prod row
+  // with status='booked' also carries it, verified 2026-08-13).
+  it('does NOT exclude a BOOKED legacy_rebook quote even when quote_sent_at is null', async () => {
+    const rows = [row('i-booked-unsent-legacy', 'quotetool', LEGACY_ID)];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
+    const { builder: quotesBuilder } = makeBuilder({
+      data: [
+        {
+          id: LEGACY_ID,
+          legacy_rebook: true,
+          status: 'booked',
+          quote_sent_at: null,
+          customer_approved_at: '2026-06-30T09:00:00Z',
+          deposit_paid_at: '2026-07-01T10:00:00Z',
+          viewed_at: null,
+        },
+      ],
+      error: null,
+    });
+
+    let callCount = 0;
+    sbRef.current = {
+      from: () => {
+        callCount += 1;
+        return callCount === 1 ? mainBuilder : quotesBuilder;
+      },
+    };
+
+    const result = await listEscalatableItems();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items.map((i) => i.id)).toEqual(['i-booked-unsent-legacy']);
+  });
+
+  it('skips the quotes lookup entirely when the page has no quotetool items', async () => {
+    const rows = [row('i-ghl', 'ghl', 'ghl-msg-1')];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
+
+    let fromCalls = 0;
+    sbRef.current = {
+      from: (_table: string) => {
+        fromCalls += 1;
+        return mainBuilder;
+      },
+    };
+
+    const result = await listEscalatableItems();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.items).toHaveLength(1);
+    expect(fromCalls).toBe(1);
+  });
+
+  // #183 BUG 1: a color-request item belonging to a legacy quote must also be
+  // excluded from escalation (amber/red alerts + the EOD digest), not just the
+  // bare-id sibling — and the poisoned .in() list must not empty the whole
+  // lookup the way the raw suffixed string used to.
+  it('excludes a :color-request-suffixed item whose prefix is a legacy_rebook quote too', async () => {
+    const rows = [
+      row('i-legacy', 'quotetool', LEGACY_ID),
+      row('i-legacy-color', 'quotetool', `${LEGACY_ID}:color-request`),
+      row('i-ghl', 'ghl', 'ghl-msg-1'),
+    ];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
+    const { builder: quotesBuilder, calls: quotesCalls } = makeBuilder({
+      data: [{ id: LEGACY_ID, legacy_rebook: true, status: 'draft', quote_sent_at: null }],
+      error: null,
+    });
+
+    let callCount = 0;
+    sbRef.current = {
+      from: (_table: string) => {
+        callCount += 1;
+        return callCount === 1 ? mainBuilder : quotesBuilder;
+      },
+    };
+
+    const result = await listEscalatableItems();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.items.map((i) => i.id)).toEqual(['i-ghl']);
+    const inCall = quotesCalls.find((c) => c.method === 'in');
+    expect(inCall!.args[1]).toEqual([LEGACY_ID]); // stripped + de-duped, never the raw suffixed string
+  });
+
+  it('logs and proceeds unexcluded when the quotes lookup itself errors', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const rows = [row('i-legacy', 'quotetool', LEGACY_ID), row('i-ghl', 'ghl', 'ghl-msg-1')];
+      const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
+      const { builder: quotesBuilder } = makeBuilder({ data: null, error: { message: 'timeout' } });
+
+      let callCount = 0;
+      sbRef.current = {
+        from: (_table: string) => {
+          callCount += 1;
+          return callCount === 1 ? mainBuilder : quotesBuilder;
+        },
+      };
+
+      const result = await listEscalatableItems();
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.items.map((i) => i.id)).toEqual(['i-legacy', 'i-ghl']);
+      expect(consoleErrorSpy).toHaveBeenCalledWith('[inbox] legacy-rebook exclusion lookup failed:', 'timeout');
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+});
+
+// ─── findOrphanedFollowUpItems (#183 BUG 3, pure) ───────────────────────────
+//
+// runQuoteToolReconcile's main loop only ever visits quotes still returned by
+// listQuotesForDashboard, so a pending quote_sent_no_reply follow-up anchored
+// to a DELETED quote row can never be closed there — it sits overdue-pending
+// forever. This pure predicate is the sweep's decision: given the pending
+// follow-ups (mapped to their inbox item id), the inbox items' external_ids
+// (batch-fetched), and the set of quote ids that DO still exist, which inbox
+// item ids are orphaned (their quote is gone)?
+
+describe('findOrphanedFollowUpItems (#183 BUG 3)', () => {
+  const ALIVE_ID = '55555555-5555-5555-5555-555555555555';
+  const DEAD_ID = '66666666-6666-6666-6666-666666666666';
+
+  it('flags a follow-up whose quote id is absent from existingQuoteIds', () => {
+    const result = findOrphanedFollowUpItems(
+      [{ inboxItemId: 'item-dead' }],
+      [{ id: 'item-dead', externalId: DEAD_ID }],
+      new Set([ALIVE_ID]),
+    );
+    expect(result).toEqual(['item-dead']);
+  });
+
+  it('does not flag a follow-up whose quote id IS present in existingQuoteIds', () => {
+    const result = findOrphanedFollowUpItems(
+      [{ inboxItemId: 'item-alive' }],
+      [{ id: 'item-alive', externalId: ALIVE_ID }],
+      new Set([ALIVE_ID]),
+    );
+    expect(result).toEqual([]);
+  });
+
+  it('resolves a :color-request-suffixed external_id to the same quote id (shares BUG 1s derivation)', () => {
+    const result = findOrphanedFollowUpItems(
+      [{ inboxItemId: 'item-color' }],
+      [{ id: 'item-color', externalId: `${ALIVE_ID}:color-request` }],
+      new Set([ALIVE_ID]),
+    );
+    expect(result).toEqual([]); // the underlying quote exists, so NOT orphaned
+  });
+
+  it('skips a follow-up with a null inboxItemId', () => {
+    const result = findOrphanedFollowUpItems([{ inboxItemId: null }], [], new Set());
+    expect(result).toEqual([]);
+  });
+
+  it('skips a follow-up whose inbox item could not be resolved at all (nothing to confirm dead)', () => {
+    const result = findOrphanedFollowUpItems([{ inboxItemId: 'item-unknown' }], [], new Set([ALIVE_ID]));
+    expect(result).toEqual([]);
+  });
+
+  it('de-dupes when two follow-ups point at the same orphaned inbox item', () => {
+    const result = findOrphanedFollowUpItems(
+      [{ inboxItemId: 'item-dead' }, { inboxItemId: 'item-dead' }],
+      [{ id: 'item-dead', externalId: DEAD_ID }],
+      new Set([ALIVE_ID]),
+    );
+    expect(result).toEqual(['item-dead']);
+  });
+
+  it('mixed batch: only the orphaned one comes back', () => {
+    const result = findOrphanedFollowUpItems(
+      [{ inboxItemId: 'item-alive' }, { inboxItemId: 'item-dead' }],
+      [
+        { id: 'item-alive', externalId: ALIVE_ID },
+        { id: 'item-dead', externalId: DEAD_ID },
+      ],
+      new Set([ALIVE_ID]),
+    );
+    expect(result).toEqual(['item-dead']);
+  });
+});
+
+describe('findViewOnlyFollowUpItems (#187 review FIX 2, #660)', () => {
+  const NORMAL_ID = '77777777-0000-0000-0000-000000000001';
+  const VIEW_ONLY_ID = '77777777-0000-0000-0000-000000000002';
+
+  it('flags a follow-up whose quote id IS in viewOnlyQuoteIds', () => {
+    const result = findViewOnlyFollowUpItems(
+      [{ inboxItemId: 'item-frozen' }],
+      [{ id: 'item-frozen', externalId: VIEW_ONLY_ID }],
+      new Set([VIEW_ONLY_ID]),
+    );
+    expect(result).toEqual(['item-frozen']);
+  });
+
+  it('does not flag a follow-up whose quote id is NOT in viewOnlyQuoteIds', () => {
+    const result = findViewOnlyFollowUpItems(
+      [{ inboxItemId: 'item-normal' }],
+      [{ id: 'item-normal', externalId: NORMAL_ID }],
+      new Set([VIEW_ONLY_ID]),
+    );
+    expect(result).toEqual([]);
+  });
+
+  it('skips a follow-up with a null inboxItemId', () => {
+    const result = findViewOnlyFollowUpItems([{ inboxItemId: null }], [], new Set([VIEW_ONLY_ID]));
+    expect(result).toEqual([]);
+  });
+
+  it('skips a follow-up whose inbox item could not be resolved at all', () => {
+    const result = findViewOnlyFollowUpItems([{ inboxItemId: 'item-unknown' }], [], new Set([VIEW_ONLY_ID]));
+    expect(result).toEqual([]);
+  });
+
+  it('mixed batch: only the view_only one comes back', () => {
+    const result = findViewOnlyFollowUpItems(
+      [{ inboxItemId: 'item-normal' }, { inboxItemId: 'item-frozen' }],
+      [
+        { id: 'item-normal', externalId: NORMAL_ID },
+        { id: 'item-frozen', externalId: VIEW_ONLY_ID },
+      ],
+      new Set([VIEW_ONLY_ID]),
+    );
+    expect(result).toEqual(['item-frozen']);
+  });
+});
+
+// ─── sweepOrphanedFollowUps — I/O wiring (#183 BUG 3) ───────────────────────
+//
+// Three sequential batched queries (follow_ups -> inbox_items -> quotes), then
+// closeFollowUp per orphan (itself a follow_ups update+select). Dispatches by
+// TABLE NAME since 'follow_ups' is hit twice (the pending select, then each
+// close's update) with different shapes.
+
+describe('sweepOrphanedFollowUps — I/O wiring (#183 BUG 3)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  const ALIVE_ID = '77777777-7777-7777-7777-777777777777';
+  const DEAD_ID = '88888888-8888-8888-8888-888888888888';
+  const REASON = 'quote_sent_no_reply';
+
+  it('closes only the follow-up whose quote no longer exists', async () => {
+    const { builder: pendingBuilder } = makeBuilder({
+      data: [
+        { id: 'fu-alive', inbox_item_id: 'item-alive' },
+        { id: 'fu-dead', inbox_item_id: 'item-dead' },
+      ],
+      error: null,
+    });
+    const { builder: itemsBuilder, calls: itemsCalls } = makeBuilder({
+      data: [
+        { id: 'item-alive', external_id: ALIVE_ID, source: 'quotetool' },
+        { id: 'item-dead', external_id: DEAD_ID, source: 'quotetool' },
+      ],
+      error: null,
+    });
+    const { builder: quotesBuilder, calls: quotesCalls } = makeBuilder({
+      data: [{ id: ALIVE_ID }], // only the alive quote still exists
+      error: null,
+    });
+    const { builder: closeBuilder, calls: closeCalls } = makeBuilder({
+      data: [{ id: 'fu-dead' }], // one row flipped to done
+      error: null,
+    });
+
+    let followUpsCallCount = 0;
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'follow_ups') {
+          followUpsCallCount += 1;
+          return followUpsCallCount === 1 ? pendingBuilder : closeBuilder;
+        }
+        if (table === 'inbox_items') return itemsBuilder;
+        if (table === 'quotes') return quotesBuilder;
+        throw new Error(`unexpected table: ${table}`);
+      },
+    };
+
+    const closed = await sweepOrphanedFollowUps(REASON);
+
+    expect(closed).toBe(1);
+    // Only the two referenced item ids were looked up.
+    const itemsInCall = itemsCalls.find((c) => c.method === 'in');
+    expect(itemsInCall!.args[1]).toEqual(expect.arrayContaining(['item-alive', 'item-dead']));
+    const quotesInCall = quotesCalls.find((c) => c.method === 'in');
+    expect(quotesInCall!.args[1]).toEqual(expect.arrayContaining([ALIVE_ID, DEAD_ID]));
+    // closeFollowUp was called for the DEAD item only.
+    const closeEqCalls = closeCalls.filter((c) => c.method === 'eq');
+    expect(closeEqCalls.some((c) => c.args[0] === 'inbox_item_id' && c.args[1] === 'item-dead')).toBe(true);
+    expect(closeEqCalls.some((c) => c.args[0] === 'inbox_item_id' && c.args[1] === 'item-alive')).toBe(false);
+  });
+
+  // #187 review FIX 2 (#660): the reconcile-race backstop — a pending
+  // follow-up whose quote is now view_only=true gets closed too, even though
+  // the quote row still exists (it's just excluded from future reconciles).
+  it('closes a pending follow-up whose quote is now view_only=true; a non-view-only quote is left alone', async () => {
+    const VIEW_ONLY_QUOTE_ID = '99999999-1111-1111-1111-111111111111';
+    const { builder: pendingBuilder } = makeBuilder({
+      data: [
+        { id: 'fu-normal', inbox_item_id: 'item-normal' },
+        { id: 'fu-frozen', inbox_item_id: 'item-frozen' },
+      ],
+      error: null,
+    });
+    const { builder: itemsBuilder } = makeBuilder({
+      data: [
+        { id: 'item-normal', external_id: ALIVE_ID, source: 'quotetool' },
+        { id: 'item-frozen', external_id: VIEW_ONLY_QUOTE_ID, source: 'quotetool' },
+      ],
+      error: null,
+    });
+    const { builder: quotesBuilder, calls: quotesCalls } = makeBuilder({
+      data: [
+        { id: ALIVE_ID, view_only: false },
+        { id: VIEW_ONLY_QUOTE_ID, view_only: true },
+      ],
+      error: null,
+    });
+    const { builder: closeBuilder, calls: closeCalls } = makeBuilder({
+      data: [{ id: 'fu-frozen' }],
+      error: null,
+    });
+
+    let followUpsCallCount = 0;
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'follow_ups') {
+          followUpsCallCount += 1;
+          return followUpsCallCount === 1 ? pendingBuilder : closeBuilder;
+        }
+        if (table === 'inbox_items') return itemsBuilder;
+        if (table === 'quotes') return quotesBuilder;
+        throw new Error(`unexpected table: ${table}`);
+      },
+    };
+
+    const closed = await sweepOrphanedFollowUps(REASON);
+
+    expect(closed).toBe(1);
+    // The quotes lookup selected view_only alongside id.
+    const selectCall = quotesCalls.find((c) => c.method === 'select');
+    expect(selectCall!.args[0]).toContain('view_only');
+    // closeFollowUp was called for the FROZEN (view_only) item only.
+    const closeEqCalls = closeCalls.filter((c) => c.method === 'eq');
+    expect(closeEqCalls.some((c) => c.args[0] === 'inbox_item_id' && c.args[1] === 'item-frozen')).toBe(true);
+    expect(closeEqCalls.some((c) => c.args[0] === 'inbox_item_id' && c.args[1] === 'item-normal')).toBe(false);
+  });
+
+  it('returns 0 without querying further when there are no pending follow-ups', async () => {
+    const { builder: pendingBuilder } = makeBuilder({ data: [], error: null });
+    let fromCalls = 0;
+    sbRef.current = {
+      from: (_table: string) => {
+        fromCalls += 1;
+        return pendingBuilder;
+      },
+    };
+
+    const closed = await sweepOrphanedFollowUps(REASON);
+    expect(closed).toBe(0);
+    expect(fromCalls).toBe(1); // only the pending-follow_ups query fired
+  });
+
+  it('fails open (closes nothing) and logs when the pending-follow_ups lookup errors', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { builder: pendingBuilder } = makeBuilder({ data: null, error: { message: 'db down' } });
+      sbRef.current = { from: (_table: string) => pendingBuilder };
+
+      const closed = await sweepOrphanedFollowUps(REASON);
+      expect(closed).toBe(0);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        '[inbox] orphan follow-up sweep: pending lookup failed:',
+        'db down',
+      );
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  // Review hardening (#183): the other two lookup legs share the same
+  // fail-open contract — a transient error must close NOTHING (the one
+  // catastrophic failure mode here is a flaky read mass-closing live nudges).
+  it('fails open (closes nothing) and logs when the inbox_items lookup errors', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { builder: pendingBuilder } = makeBuilder({
+        data: [{ id: 'fu-dead', inbox_item_id: 'item-dead' }],
+        error: null,
+      });
+      const { builder: itemsBuilder } = makeBuilder({ data: null, error: { message: 'items down' } });
+      sbRef.current = {
+        from: (table: string) => {
+          if (table === 'follow_ups') return pendingBuilder;
+          if (table === 'inbox_items') return itemsBuilder;
+          throw new Error(`unexpected table: ${table}`);
+        },
+      };
+
+      const closed = await sweepOrphanedFollowUps(REASON);
+      expect(closed).toBe(0);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        '[inbox] orphan follow-up sweep: inbox_items lookup failed:',
+        'items down',
+      );
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  it('fails open (closes nothing) and logs when the quotes lookup errors', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { builder: pendingBuilder } = makeBuilder({
+        data: [{ id: 'fu-dead', inbox_item_id: 'item-dead' }],
+        error: null,
+      });
+      const { builder: itemsBuilder } = makeBuilder({
+        data: [{ id: 'item-dead', external_id: DEAD_ID, source: 'quotetool' }],
+        error: null,
+      });
+      const { builder: quotesBuilder } = makeBuilder({ data: null, error: { message: 'quotes down' } });
+      sbRef.current = {
+        from: (table: string) => {
+          if (table === 'follow_ups') return pendingBuilder;
+          if (table === 'inbox_items') return itemsBuilder;
+          if (table === 'quotes') return quotesBuilder;
+          throw new Error(`unexpected table: ${table}`);
+        },
+      };
+
+      const closed = await sweepOrphanedFollowUps(REASON);
+      expect(closed).toBe(0);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        '[inbox] orphan follow-up sweep: quotes lookup failed:',
+        'quotes down',
+      );
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
+  });
+
+  // Review hardening (#183): a follow-up anchored on a NON-quotetool item is
+  // never treated as an orphan candidate — the sweep can't derive a quote id
+  // from another source's external_id shape.
+  it('ignores follow-ups anchored on non-quotetool inbox items', async () => {
+    const { builder: pendingBuilder } = makeBuilder({
+      data: [{ id: 'fu-ghl', inbox_item_id: 'item-ghl' }],
+      error: null,
+    });
+    const { builder: itemsBuilder } = makeBuilder({
+      data: [{ id: 'item-ghl', external_id: 'conv-123', source: 'ghl' }],
+      error: null,
+    });
+    let quotesQueried = false;
+    const { builder: quotesBuilder } = makeBuilder({ data: [], error: null });
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'follow_ups') return pendingBuilder;
+        if (table === 'inbox_items') return itemsBuilder;
+        if (table === 'quotes') {
+          quotesQueried = true;
+          return quotesBuilder;
+        }
+        throw new Error(`unexpected table: ${table}`);
+      },
+    };
+
+    const closed = await sweepOrphanedFollowUps(REASON);
+    expect(closed).toBe(0);
+    expect(quotesQueried).toBe(false); // no quotetool candidates → no quotes lookup at all
+  });
+});
+
+describe('closeQuoteInboxNoise — I/O wiring (#187a)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  const QUOTE_ID = '99999999-9999-9999-9999-999999999999';
+  const OPERATOR_ID = '11111111-2222-3333-4444-555555555555';
+
+  /** Dispatch `from()` by table, returning the SELECT builder on the first
+   *  `inbox_items` call and the UPDATE builder on the second. */
+  function makeSbForCleanup(opts: {
+    itemsSelect: { data: unknown; error: null | { message: string } };
+    followUpsUpdate?: { data: unknown; error: null | { message: string } };
+    itemsUpdate?: { data: unknown; error: null | { message: string } };
+    activityInsert?: { data: unknown; error: null | { message: string } };
+  }) {
+    const { builder: itemsSelectBuilder, calls: itemsSelectCalls } = makeBuilder(opts.itemsSelect);
+    const { builder: fuBuilder, calls: fuCalls } = makeBuilder(opts.followUpsUpdate ?? { data: [], error: null });
+    const { builder: itemsUpdateBuilder, calls: itemsUpdateCalls } = makeBuilder(
+      opts.itemsUpdate ?? { data: [], error: null },
+    );
+    const { builder: activityBuilder, calls: activityCalls } = makeBuilder(
+      opts.activityInsert ?? { data: null, error: null },
+    );
+    let inboxItemsCallCount = 0;
+    const from = (table: string) => {
+      if (table === 'inbox_items') {
+        inboxItemsCallCount += 1;
+        return inboxItemsCallCount === 1 ? itemsSelectBuilder : itemsUpdateBuilder;
+      }
+      if (table === 'follow_ups') return fuBuilder;
+      if (table === 'dashboard_activity') return activityBuilder;
+      throw new Error(`unexpected table: ${table}`);
+    };
+    return { from, itemsSelectCalls, fuCalls, itemsUpdateCalls, activityCalls };
+  }
+
+  // #187 review FIX 1 (#660): the lookup is scoped to the EXACT bare-uuid
+  // external_id — never `.in([bare, suffixed])` — so a sibling
+  // `${quoteId}:color-request` item (a still-live customer ask; the
+  // colour-request flow is deliberately ungated on view_only) can never be
+  // matched by this query, structurally, regardless of what other quotetool
+  // items exist for the same quote.
+  it('looks up ONLY the bare-uuid external_id — never the :color-request one', async () => {
+    const { from, itemsSelectCalls } = makeSbForCleanup({ itemsSelect: { data: [], error: null } });
+    sbRef.current = { from };
+
+    await closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID);
+
+    const sourceEqCall = itemsSelectCalls.find((c) => c.method === 'eq' && c.args[0] === 'source');
+    expect(sourceEqCall!.args).toEqual(['source', 'quotetool']);
+    const idEqCall = itemsSelectCalls.find((c) => c.method === 'eq' && c.args[0] === 'external_id');
+    expect(idEqCall!.args).toEqual(['external_id', QUOTE_ID]);
+    // No `.in()` on the select at all — the old both-shapes lookup is gone.
+    expect(itemsSelectCalls.some((c) => c.method === 'in')).toBe(false);
+  });
+
+  it('closes the pending follow-up and resolves the open item for the bare-uuid external_id', async () => {
+    const { from, fuCalls, itemsUpdateCalls, activityCalls } = makeSbForCleanup({
+      itemsSelect: { data: [{ id: 'item-bare', status: 'unresponded', followed_up_at: null }], error: null },
+    });
+    sbRef.current = { from };
+
+    await closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID);
+
+    const fuInCall = fuCalls.find((c) => c.method === 'in');
+    expect(fuInCall!.args).toEqual(['inbox_item_id', ['item-bare']]);
+    const fuUpdateCall = fuCalls.find((c) => c.method === 'update');
+    expect(fuUpdateCall!.args[0]).toEqual({ status: 'done' });
+    const fuReasonEq = fuCalls.find((c) => c.method === 'eq' && c.args[0] === 'reason');
+    expect(fuReasonEq!.args[1]).toBe('quote_sent_no_reply');
+
+    const itemInCall = itemsUpdateCalls.find((c) => c.method === 'in');
+    expect(itemInCall!.args).toEqual(['id', ['item-bare']]);
+    const itemUpdateCall = itemsUpdateCalls.find((c) => c.method === 'update');
+    expect(itemUpdateCall!.args[0]).toMatchObject({ status: 'completed', handled_by: OPERATOR_ID });
+
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toEqual([
+      expect.objectContaining({ actor: OPERATOR_ID, action: 'completed', inbox_item_id: 'item-bare' }),
+    ]);
+  });
+
+  // #187 review FIX 4 (#660): detail.from must carry the item's PRIOR
+  // status/follow state — inverseOf('completed', detail.from) (lifecycle.ts)
+  // reads detail.from.status specifically and silently falls back to
+  // 'handled' when it's missing or the wrong shape (e.g. a bare string).
+  it('carries the item prior status + follow flag into detail.from (so Reverse restores the right bucket)', async () => {
+    const { from, activityCalls } = makeSbForCleanup({
+      itemsSelect: { data: [{ id: 'item-bare', status: 'handled', followed_up_at: '2026-07-01T00:00:00Z' }], error: null },
+    });
+    sbRef.current = { from };
+
+    await closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID);
+
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toEqual([
+      expect.objectContaining({
+        detail: { note: 'Quote marked view-only', from: { status: 'handled', wasFollowed: true } },
+      }),
+    ]);
+  });
+
+  it('never re-stamps an already-completed/dismissed item, but still tries to close its follow-up', async () => {
+    const { from, fuCalls, itemsUpdateCalls, activityCalls } = makeSbForCleanup({
+      itemsSelect: {
+        data: [{ id: 'item-done', status: 'completed', followed_up_at: null }],
+        error: null,
+      },
+    });
+    sbRef.current = { from };
+
+    await closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID);
+
+    // Follow-up close is still attempted (independent record).
+    const fuInCall = fuCalls.find((c) => c.method === 'in');
+    expect(fuInCall!.args).toEqual(['inbox_item_id', ['item-done']]);
+
+    // But the already-resolved item is never re-stamped or logged.
+    expect(itemsUpdateCalls.some((c) => c.method === 'update')).toBe(false);
+    expect(activityCalls.some((c) => c.method === 'insert')).toBe(false);
+  });
+
+  it('does nothing further when no inbox item matches the bare-uuid external_id', async () => {
+    let fromCalls = 0;
+    const { builder } = makeBuilder({ data: [], error: null });
+    sbRef.current = {
+      from: (_table: string) => {
+        fromCalls += 1;
+        return builder;
+      },
+    };
+
+    await closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID);
+    expect(fromCalls).toBe(1); // only the inbox_items lookup fired
+  });
+
+  it('is non-fatal (fails open, warns) when the inbox_items lookup errors', async () => {
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { builder } = makeBuilder({ data: null, error: { message: 'db down' } });
+      sbRef.current = { from: (_table: string) => builder };
+
+      await expect(closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID)).resolves.toBeUndefined();
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        '[inbox] view-only cleanup: item lookup failed (non-fatal):',
+        'db down',
+      );
+    } finally {
+      consoleWarnSpy.mockRestore();
+    }
+  });
+
+  it('is non-fatal (warns) when the inbox write fails — the toggle response is never blocked', async () => {
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { from, fuCalls } = makeSbForCleanup({
+        itemsSelect: { data: [{ id: 'item-open', status: 'unresponded' }], error: null },
+        itemsUpdate: { data: null, error: { message: 'write failed' } },
+      });
+      sbRef.current = { from };
+
+      await expect(closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID)).resolves.toBeUndefined();
+      // The independent follow-up close was still attempted despite the item
+      // write failing.
+      expect(fuCalls.some((c) => c.method === 'update')).toBe(true);
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        '[inbox] view-only cleanup: item resolve failed (non-fatal):',
+        'write failed',
+      );
+    } finally {
+      consoleWarnSpy.mockRestore();
+    }
+  });
+
+  it('no-ops (no throw) when the service client is not configured', async () => {
+    sbRef.current = null;
+    await expect(closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID)).resolves.toBeUndefined();
+  });
+});
+
+// #208: inbox_items.handled_by is a `uuid references auth.users(id)` column.
+// The route callers used to fall back to the literal string 'system' when no
+// operator resolved (operator?.id ?? 'system') — a non-uuid string a uuid
+// column rejects outright. The fix widened operatorId to `string | null` and
+// the callers now pass `?? null`. These functions' own write logic was
+// already a straight passthrough (never the bug); these tests lock in that
+// both a real uuid AND null now flow through to handled_by correctly.
+describe('markItemHandledLocal / dismissItem / markItemCompleted — handled_by uuid-or-null (#208)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  const ITEM_ID = 'item-42';
+  const OPERATOR_ID = '11111111-2222-3333-4444-555555555555';
+  const NOW = new Date('2026-08-07T12:00:00Z');
+
+  /** Dispatch .from('inbox_items') by call order: 1st = priorStateOf's plain
+   *  SELECT, 2nd = the function's own UPDATE (...) chain. .from('dashboard_activity')
+   *  gets its own builder, mirroring makeSbForCleanup above. */
+  function makeSbFor(itemUpdateResult: { data: unknown; error: null | { message: string } }) {
+    const { builder: priorBuilder } = makeBuilder({ data: null, error: null });
+    const { builder: updateBuilder, calls: updateCalls } = makeBuilder(itemUpdateResult);
+    const { builder: activityBuilder, calls: activityCalls } = makeBuilder({ data: null, error: null });
+    let inboxCallCount = 0;
+    const from = (table: string) => {
+      if (table === 'inbox_items') {
+        inboxCallCount += 1;
+        return inboxCallCount === 1 ? priorBuilder : updateBuilder;
+      }
+      if (table === 'dashboard_activity') return activityBuilder;
+      throw new Error(`unexpected table: ${table}`);
+    };
+    return { from, updateCalls, activityCalls };
+  }
+
+  it('markItemHandledLocal writes the real operator uuid to handled_by on the normal path', async () => {
+    const { from, updateCalls, activityCalls } = makeSbFor({
+      data: { source: 'ghl', external_id: 'ext-1', source_message_id: null, dashboard_contacts: null },
+      error: null,
+    });
+    sbRef.current = { from };
+
+    const res = await markItemHandledLocal(ITEM_ID, OPERATOR_ID, NOW);
+    expect(res.ok).toBe(true);
+
+    const updateCall = updateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ status: 'handled', handled_by: OPERATOR_ID });
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toMatchObject({ actor: OPERATOR_ID, action: 'handled' });
+  });
+
+  it('markItemHandledLocal writes NULL (never a sentinel string) to handled_by when no operator resolved', async () => {
+    const { from, updateCalls } = makeSbFor({
+      data: { source: 'ghl', external_id: 'ext-1', source_message_id: null, dashboard_contacts: null },
+      error: null,
+    });
+    sbRef.current = { from };
+
+    const res = await markItemHandledLocal(ITEM_ID, null, NOW);
+    expect(res.ok).toBe(true);
+
+    const updateCall = updateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ handled_by: null });
+    expect(updateCall!.args[0]).not.toMatchObject({ handled_by: 'system' });
+  });
+
+  it('markItemHandledLocal still surfaces a real DB error (never silently swallowed)', async () => {
+    const { from } = makeSbFor({ data: null, error: { message: 'connection reset' } });
+    sbRef.current = { from };
+
+    const res = await markItemHandledLocal(ITEM_ID, OPERATOR_ID, NOW);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toBe('connection reset');
+  });
+
+  it('dismissItem writes the real operator uuid to handled_by on the normal path', async () => {
+    const { from, updateCalls, activityCalls } = makeSbFor({
+      data: { dashboard_contacts: null },
+      error: null,
+    });
+    sbRef.current = { from };
+
+    const res = await dismissItem(ITEM_ID, OPERATOR_ID, NOW);
+    expect(res.ok).toBe(true);
+
+    const updateCall = updateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ status: 'dismissed', handled_by: OPERATOR_ID });
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toMatchObject({ actor: OPERATOR_ID, action: 'dismissed' });
+  });
+
+  it('dismissItem writes NULL (never a sentinel string) to handled_by when no operator resolved', async () => {
+    const { from, updateCalls } = makeSbFor({ data: { dashboard_contacts: null }, error: null });
+    sbRef.current = { from };
+
+    const res = await dismissItem(ITEM_ID, null, NOW);
+    expect(res.ok).toBe(true);
+
+    const updateCall = updateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ handled_by: null });
+  });
+
+  it('markItemCompleted writes the real operator uuid to handled_by on the normal path', async () => {
+    const { from, updateCalls, activityCalls } = makeSbFor({ data: [{ id: ITEM_ID }], error: null });
+    sbRef.current = { from };
+
+    const res = await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
+    expect(res.ok).toBe(true);
+
+    const updateCall = updateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ status: 'completed', handled_by: OPERATOR_ID });
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toMatchObject({ actor: OPERATOR_ID, action: 'completed' });
+  });
+
+  it('markItemCompleted writes NULL (never a sentinel string) to handled_by when no operator resolved', async () => {
+    const { from, updateCalls } = makeSbFor({ data: [{ id: ITEM_ID }], error: null });
+    sbRef.current = { from };
+
+    const res = await markItemCompleted(ITEM_ID, null, NOW);
+    expect(res.ok).toBe(true);
+
+    const updateCall = updateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ handled_by: null });
+    expect(updateCall!.args[0]).not.toMatchObject({ handled_by: 'system' });
+  });
+
+  it('markItemCompleted still surfaces a real DB error (never silently swallowed)', async () => {
+    const { from } = makeSbFor({ data: null, error: { message: 'connection reset' } });
+    sbRef.current = { from };
+
+    const res = await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe('connection reset');
+  });
+});
+
+// #224 (S35 wrap, staff MED): markItemCompleted had NO status guard at all — a
+// bare .eq('id', itemId) — while its siblings markItemHandledLocal/dismissItem
+// at least guard .neq('status','handled')/.neq('status','dismissed') against
+// re-applying the SAME action. Fix: markItemCompleted now guards against
+// overwriting either terminal state it should never clobber — 'dismissed'
+// (sticky spam, per reducer.ts) and 'completed' (idempotent re-apply, sibling
+// parity). 'unresponded' → completed and 'handled' → completed stay legal
+// (InboxList.tsx's "Mark completed" button fires directly from the open queue,
+// and InWorksSection.tsx's fires from the handled bucket — both real workflows).
+describe('markItemCompleted — status guard (#224)', () => {
+  const ITEM_ID = 'item-42';
+  const OPERATOR_ID = '11111111-2222-3333-4444-555555555555';
+  const NOW = new Date('2026-08-14T12:00:00Z');
+
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  /** Mirrors the #208 describe block's makeSbFor: 1st .from('inbox_items') call
+   *  is priorStateOf's SELECT, 2nd is the update chain under test. */
+  function makeSbFor(itemUpdateResult: { data: unknown; error: null | { message: string } }) {
+    const { builder: priorBuilder } = makeBuilder({ data: null, error: null });
+    const { builder: updateBuilder, calls: updateCalls } = makeBuilder(itemUpdateResult);
+    const { builder: activityBuilder, calls: activityCalls } = makeBuilder({ data: null, error: null });
+    let inboxCallCount = 0;
+    const from = (table: string) => {
+      if (table === 'inbox_items') {
+        inboxCallCount += 1;
+        return inboxCallCount === 1 ? priorBuilder : updateBuilder;
+      }
+      if (table === 'dashboard_activity') return activityBuilder;
+      throw new Error(`unexpected table: ${table}`);
+    };
+    return { from, updateCalls, activityCalls };
+  }
+
+  it('blocks re-completing an item the guard excluded (already dismissed or already completed), and does not log activity', async () => {
+    // maybeSingle() returns null when the guarded UPDATE...WHERE matched zero
+    // rows (status was 'dismissed' or 'completed') — no DB error, just nothing
+    // to update.
+    const { from, activityCalls } = makeSbFor({ data: null, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/dismissed|completed/i);
+    // The logically-wrong-200 the ticket calls out: a blocked guard must not
+    // ALSO write a false activity trail claiming the action happened.
+    expect(activityCalls.some((c) => c.method === 'insert')).toBe(false);
+  });
+
+  it('the update chain is a POSITIVE match on the two legal source statuses (the actual guard, not just the observed outcome)', async () => {
+    // Positive `.in(...)`, not a negative `.neq(...)` pair — see markItemCompleted's
+    // doc comment for the fail-open-vs-fail-closed reasoning (positive-seam-gate
+    // convention, AGENTS.md Pitfalls).
+    const { from, updateCalls } = makeSbFor({ data: { id: ITEM_ID }, error: null });
+    sbRef.current = { from };
+
+    await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
+
+    const inCalls = updateCalls.filter((c) => c.method === 'in').map((c) => c.args);
+    expect(inCalls).toContainEqual(['status', ['unresponded', 'handled']]);
+  });
+
+  it('still allows the normal forward transitions (unresponded/handled → completed)', async () => {
+    const { from, activityCalls } = makeSbFor({ data: { id: ITEM_ID }, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toMatchObject({ actor: OPERATOR_ID, action: 'completed' });
+  });
+});
+
+// #230(a): the previously-console.warn-only #220 suppression trace now also
+// lands in dashboard_activity, so it shows up on the /inbox/activity page.
+describe('recordSuppressedFollowUp (#230a — suppression visibility)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('inserts a followup_suppressed activity row for the item, actor system', async () => {
+    const { builder, calls } = makeBuilder({ data: null, error: null });
+    sbRef.current = { from: () => builder };
+
+    await recordSuppressedFollowUp('item-99', { quoteId: 'q1', quoteNumber: 1262 });
+
+    const insertCall = calls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toMatchObject({
+      actor: 'system',
+      action: 'followup_suppressed',
+      inbox_item_id: 'item-99',
+      detail: { quoteId: 'q1', quoteNumber: 1262 },
+    });
+  });
+
+  it('no-ops (no throw) when the service client is not configured', async () => {
+    sbRef.current = null;
+    await expect(recordSuppressedFollowUp('item-99', {})).resolves.toBeUndefined();
   });
 });

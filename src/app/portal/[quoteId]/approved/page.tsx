@@ -26,6 +26,7 @@ import { appBaseUrl } from '@/lib/integrations/telegramNotify';
 import { getInvoiceByQuote } from '@/lib/invoices';
 import { FinancingCta } from '@/components/portal/FinancingCta';
 import { isFinancingEligible } from '@/lib/financing/eligibility';
+import { BUSINESS_RULES } from '@/lib/pricing/pricingEngine';
 
 type Params = { quoteId: string };
 
@@ -120,6 +121,14 @@ export default async function PortalApprovedPage({
   // Deposit amount from the approval snapshot (shown when we have it).
   const depositUsd = quote.approval?.depositUsd ?? 0;
   const depositPhrase = depositUsd > 0 ? ` (about ${formatUsd(depositUsd)})` : '';
+  // #177 fix 2a — this quote's actual deposit percent (integer, for copy that
+  // states it), from the FROZEN quote.approval.depositRate (what the customer
+  // actually approved), not the live charges.depositRate — a staff edit to
+  // inputs.depositPercent after approval must not retro-change this page's
+  // copy. Falls back to the live rate then 50% for a pre-#177 approval.
+  const depositPercent = Math.round(
+    (quote.approval?.depositRate ?? quote.charges.depositRate ?? BUSINESS_RULES.depositPercentage) * 100,
+  );
   // #38 — once the deposit webhook confirms payment this becomes the "you're
   // BOOKED" page (deposit received) instead of the placeholder "we'll reach out
   // to collect it". Drives the headline, intro line, and step 1 below.
@@ -157,12 +166,12 @@ export default async function PortalApprovedPage({
           title: balancePaid ? 'Balance paid in full' : 'Deposit received',
           body: balancePaid
             ? `We've got your final balance payment. You're paid in full, thanks for choosing Yule Love Lights.`
-            : `We've got your 50% deposit${depositPhrase} — your spot is locked in. The remaining balance is collected after your install is complete.`,
+            : `We've got your ${depositPercent}% deposit${depositPhrase} — your spot is locked in. The remaining balance is collected after your install is complete.`,
         }
       : {
           icon: CreditCard,
           title: 'We reach out to collect your deposit',
-          body: `A quick call or text to take your 50% deposit${depositPhrase} and confirm your install date — that locks in your spot.`,
+          body: `A quick call or text to take your ${depositPercent}% deposit${depositPhrase} and confirm your install date — that locks in your spot.`,
         },
     // Booking bug batch 2026-07-17: new step 2 — tells the customer we give
     // them their install date ahead of time. Type-neutral copy: every
@@ -245,7 +254,7 @@ export default async function PortalApprovedPage({
             <p className="mt-6 text-[16px] md:text-[17px] text-[#A89F87] max-w-xl mx-auto leading-[1.65]">
               Thanks,{' '}
               <span className="font-semibold text-[#E0D7C1]">{quote.customer.firstName}</span>. We&apos;ve
-              got your approval — we&apos;ll reach out shortly to collect your 50% deposit{depositPhrase} and
+              got your approval — we&apos;ll reach out shortly to collect your {depositPercent}% deposit{depositPhrase} and
               lock in your install date.
             </p>
           )}

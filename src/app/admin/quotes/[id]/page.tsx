@@ -6,21 +6,29 @@ import { JobStatusBadge } from '@/components/admin/JobStatusBadge';
 import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
 import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
 import { LegacyRebookToggle } from '@/components/admin/LegacyRebookToggle';
+import { NceBadge } from '@/components/admin/NceBadge';
+import { NceToggle } from '@/components/admin/NceToggle';
+import { ViewOnlyToggle } from '@/components/admin/ViewOnlyToggle';
+import { MarkAsSentButton } from '@/components/admin/MarkAsSentButton';
 import { FreeItemsPanel } from '@/components/admin/FreeItemsPanel';
 import { ColorRequestPanel } from '@/components/admin/ColorRequestPanel';
 import { buildPortalLineItems } from '@/lib/portal/adapter';
-import type { QuoteInputs } from '@/lib/pricing/pricingEngine';
+import { BUSINESS_RULES, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { getQuoteRaw } from '@/lib/quotes';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { getJobByQuote } from '@/lib/jobs';
 import { getInvoiceByJob } from '@/lib/invoices';
 import { getDesignByQuote } from '@/lib/designs';
-import { permanentBomFromQuote } from '@/lib/permanent/bomFromQuote';
+import { permanentBomFromQuote, includedPermanentSidesFromSnapshot } from '@/lib/permanent/bomFromQuote';
+import type { PermanentSide } from '@/lib/permanent/types';
 import { catalogCostOverrides, listCatalog } from '@/lib/inventory/catalog';
 import { PermanentBomPanel } from '@/components/permanent/PermanentBomPanel';
 import { bistroBomFromQuote } from '@/lib/permanentBistro/bomFromQuote';
 import { costOverridesFromBistroCatalog } from '@/lib/inventory/bistroCatalog';
 import { getColorScheme, CUSTOM_SCHEME_ID } from '@/lib/design/colorSchemes';
+import { depositDeclineReasonText } from '@/lib/integrations/quoteMessages';
+import { VaultRegistrationNotice } from '@/components/admin/VaultRegistrationNotice';
+import { isVaultRegisterEnabled } from '@/lib/integrations/valorVault';
 
 // Read-only operator detail for a single quote (PR1 of #83 ops console).
 // No action buttons here — those land in PR2's PipelineActionsMenu.
@@ -34,7 +42,7 @@ const STATUS_LABELS: Record<QuoteStatus, string> = {
   changes_requested: 'Changes requested',
   declined: 'Declined',
   cancelled: 'Cancelled',
-  lost: 'Lost',
+  abandoned: 'Abandoned',
 };
 
 const STATUS_STYLES: Record<QuoteStatus, string> = {
@@ -46,7 +54,7 @@ const STATUS_STYLES: Record<QuoteStatus, string> = {
   changes_requested: 'bg-orange-100 text-orange-700',
   declined: 'bg-red-100 text-red-700',
   cancelled: 'bg-gray-200 text-gray-600',
-  lost: 'bg-gray-200 text-gray-600',
+  abandoned: 'bg-gray-200 text-gray-600',
 };
 
 const money = (n: number | null | undefined) =>
@@ -58,6 +66,19 @@ const fmtDate = (iso: string | null | undefined) =>
   iso
     ? new Date(iso).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
     : '—';
+
+// #175: "Card declined 2 hours ago" reads better on the decline notice below
+// than an absolute timestamp — a simple minutes/hours/days ladder is plenty
+// for a server-rendered admin page (no live-updating countdown needed).
+function relativeTimeFromNow(iso: string): string {
+  const minutes = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60_000));
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+}
 
 // #155 — the light color/pattern a legacy-rebook customer approved with, for
 // the admin detail card. null when the quote hasn't been approved yet (no
@@ -132,10 +153,30 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
   // when a SKU's been re-priced in Settings; a catalog read failure swallows to
   // [] → an empty override map → every SKU quietly falls back. Only fetched for
   // permanent quotes — no reason to hit the catalog for a holiday/event quote.
+  //
+  // #192 — approved-sides scoping cuts over at BOOKED (deposit paid), not
+  // approved: an approved-but-unpaid quote still shows every measured side
+  // (Jason's call — nothing is final until the deposit lands). fails open to
+  // null (unscoped) on any missing/unparseable/no-match snapshot.
+  const includedPermanentSides =
+    quote.service_type === 'permanent' && status === 'booked'
+      ? includedPermanentSidesFromSnapshot(quote.approval_snapshot)
+      : null;
   const bom =
     quote.service_type === 'permanent'
-      ? permanentBomFromQuote(quote.inputs, await catalogCostOverrides())
+      ? permanentBomFromQuote(quote.inputs, await catalogCostOverrides(), includedPermanentSides)
       : null;
+  const PERMANENT_SIDE_LABEL: Record<PermanentSide, string> = {
+    front: 'Front',
+    left: 'Left side',
+    right: 'Right side',
+    back: 'Back',
+  };
+  const scopedSideLabels = includedPermanentSides
+    ? (['front', 'left', 'right', 'back'] as const)
+        .filter((s) => includedPermanentSides.has(s))
+        .map((s) => PERMANENT_SIDE_LABEL[s])
+    : null;
 
   // Permanent Bistro (#117): the same ordering-only BOM pattern, a separate
   // engine (Thunder/Home Depot/Amazon, no wholesale-cost totals shown here —
@@ -171,10 +212,31 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
           )}
           {/* YLL Neighbor (#158) — shared pill, replaces the old inline "Legacy rebook" span. */}
           {quote.legacy_rebook && <YllNeighborBadge />}
+          {/* NCE (#198) — the barter/trade network tag. Tags coexist: a quote
+              can be both Neighbor and NCE. */}
+          {quote.is_nce && <NceBadge />}
+          {/* View-only portal (#176) — mirrors the Test pill above. */}
+          {quote.view_only && (
+            <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-100 text-sky-700">
+              View-only
+            </span>
+          )}
           {/* Staff-only toggle (detail page only, not the /admin/quotes list) —
               lets staff set/unset the flag for a hand-built quote that missed
               the migration (e.g. #1191). */}
           <LegacyRebookToggle quoteId={id} legacyRebook={quote.legacy_rebook} status={status} />
+          {/* Staff-only toggle (#198) — beside the Neighbor toggle, same
+              placement precedent. */}
+          <NceToggle quoteId={id} isNce={quote.is_nce} />
+          {/* Staff-only toggle (#176) — lets staff flag a quote as browse-only
+              (a second quote spun up just for the colour picker). */}
+          <ViewOnlyToggle quoteId={id} viewOnly={quote.view_only} status={status} />
+          {/* Staff-only one-way action (#182) — a quote delivered outside the
+              tool (hand-texted the link, walked through it on a call) never
+              hits the real /send route and sits 'draft' forever. Only shown
+              while still markable (draft/unsent); the route itself refuses
+              any other status. */}
+          {status === 'draft' && !quote.view_only && <MarkAsSentButton quoteId={id} />}
           <div className="ml-auto flex items-center gap-3">
             {/* #87(a) fix-batch HIGH #1 — the Quote PDF is approved-only (an
                 unapproved quote has no persisted "current" selection to
@@ -255,6 +317,52 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
           </dl>
         </div>
 
+        {/* #175: a declined deposit charge otherwise only shows up in a
+            webhook log — surface it here so staff notice before the
+            customer's install slot slips. Gated on the deposit still being
+            unpaid: once it clears, this stops rendering even though the
+            stamp itself is left in place (harmless — nothing reads it once
+            paid). A declined BALANCE charge stamps the same columns (#175)
+            but isn't shown here since the deposit is already paid by then —
+            that alert links straight to the invoice instead. */}
+        {quote.deposit_declined_at && !quote.deposit_paid_at && (
+          <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+            Card declined {relativeTimeFromNow(quote.deposit_declined_at)}
+            {quote.deposit_decline_code && (
+              <>
+                {' '}
+                (code {quote.deposit_decline_code} — {depositDeclineReasonText(quote.deposit_decline_code)})
+              </>
+            )}
+            {quote.view_only ? (
+              <>
+                {' '}
+                — the portal is view-only right now; turn that off before they can retry.
+              </>
+            ) : (
+              <> — customer can retry from their portal link.</>
+            )}
+          </div>
+        )}
+
+        {/* #171g: a Vault registration failure was previously console.warn-only —
+            surface it here so staff know the deposit token still works even
+            though the card never landed in Valor's own Vault product.
+            #663 review, two caveats baked in: (1) gated on isVaultRegisterEnabled()
+            so a quote gets NO notice when the integration was never armed — without
+            this, every deposit-paid quote (token set, customer_id always null since
+            the webhook never attempts registration) would show a false failure.
+            (2) the #171f reorder moved the vault hook to run AFTER job creation +
+            notifications, widening the window where it's still in flight — the
+            component's copy is deliberately honest about "hasn't completed (yet)"
+            rather than asserting a hard failure. */}
+        <VaultRegistrationNotice
+          vaultRegisterEnabled={isVaultRegisterEnabled()}
+          depositPaidAt={quote.deposit_paid_at}
+          valorVaultToken={quote.valor_vault_token}
+          valorVaultCustomerId={quote.valor_vault_customer_id}
+        />
+
         {/* Line items */}
         <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
           <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Line items</h2>
@@ -290,7 +398,14 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
                   <dd>{money(quote.total ?? quote.result.total)}</dd>
                 </div>
                 <div className="flex justify-between">
-                  <dt>Deposit</dt>
+                  <dt>
+                    Deposit
+                    {/* #177 fix 5: surface the percent when it's not the 50% default —
+                        cheaply derivable from the same result.depositRate. */}
+                    {Math.round((quote.result.depositRate ?? BUSINESS_RULES.depositPercentage) * 100) !== 50 && (
+                      <> ({Math.round((quote.result.depositRate ?? BUSINESS_RULES.depositPercentage) * 100)}%)</>
+                    )}
+                  </dt>
                   <dd>{money(quote.result.depositAmount)}</dd>
                 </div>
                 <div className="flex justify-between">
@@ -329,7 +444,7 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
             <p className="text-xs text-gray-400 mb-3">
               Ascend/Dauer APL list — ordering + margin only. Materials never affect the customer price.
             </p>
-            <PermanentBomPanel bom={bom} />
+            <PermanentBomPanel bom={bom} scopedSideLabels={scopedSideLabels} />
           </div>
         )}
 

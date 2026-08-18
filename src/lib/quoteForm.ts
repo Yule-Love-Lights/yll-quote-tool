@@ -11,7 +11,7 @@ import type {
   Takedown,
   EarlyInstallTiming,
 } from './pricing/pricingEngine';
-import { ServiceType, DEFAULT_SERVICE_TYPE } from './serviceType';
+import { ServiceType, DEFAULT_SERVICE_TYPE, asServiceType } from './serviceType';
 import type { EventInputFields } from './event/types';
 import { type PermanentQuoteFields, makeDefaultPermanentFields } from './permanent/types';
 import type { PermanentBistroInputFields } from './permanentBistro/types';
@@ -69,6 +69,10 @@ export type QuoteFormData = {
   // Staff override (#59): waive the $1,000 portal approval gate for this quote
   // (lets the customer approve a selection under $1,000). Rides the inputs jsonb.
   waiveMinimum: boolean;
+  // Per-quote deposit override (#177): staff-set integer percent (1-100) of the
+  // total, due at approval. 0 = blank/unset (the input's placeholder shows 50);
+  // only sent to the engine when > 0 (see buildQuoteInputs). Rides inputs jsonb.
+  depositPercent: number;
   // Early-install promo (#40) staff pick: 'none' | 'september' (15%) | 'october'
   // (10%). Drives the engine discount + seeds the customer's portal timing.
   installTiming: EarlyInstallTiming;
@@ -110,6 +114,16 @@ export type QuoteFormData = {
   // on its billed line item id survives a mid-list run delete (a run's id must
   // not re-index like the old positional permanent-bistro-<index> fallback).
   permanentBistro: { poles: number; bistro: { footage: number; id?: string }[] };
+  // HighLevel contact carried from the #leads "Create quote" link (operator
+  // feedback: the created quote should link to the lead's KNOWN contact from
+  // birth). Seeded ONLY by applyPrefill on the blank-slate builder's initial
+  // state; null on every other quote. Sent on save (see buildQuoteInputs'
+  // sibling, the /api/quote payload in QuoteBuilder) so saveQuote can set
+  // quotes.highlevel_contact_id on the FIRST insert only — mirrors the
+  // rebook flow's buildRebookInsert, which carries this same column forward
+  // on a direct insert (no live HighLevel opportunity call at save time; the
+  // "attach" flow / send flow reconcile the opportunity id later).
+  highlevelContactId: string | null;
 };
 
 export const initialFormData: QuoteFormData = {
@@ -139,6 +153,7 @@ export const initialFormData: QuoteFormData = {
   discountType: 'percentage',
   discountAmount: 0,
   waiveMinimum: false,
+  depositPercent: 0,
   installTiming: 'none',
   lineItemPriceOverrides: {},
   winterWonderlandRecommended: false,
@@ -147,7 +162,368 @@ export const initialFormData: QuoteFormData = {
   permanent: makeDefaultPermanentFields(),
   referralCredit: null,
   permanentBistro: { poles: 0, bistro: [] },
+  highlevelContactId: null,
 };
+
+// Quote-builder prefill (#leads "Create quote" link, src/app/admin/leads). Raw
+// strings read straight off the /quote/new URL query params — untyped and
+// unvalidated by the caller (src/app/quote/new/page.tsx just forwards them).
+export type QuoteBuilderPrefill = {
+  name?: string;
+  email?: string;
+  phone?: string;
+  address?: string;
+  serviceType?: string;
+  // The lead's HighLevel contact id (src/app/admin/leads' quoteNewHref), when
+  // known. Raw/untyped here too — validated at the /api/quote boundary.
+  ghlContactId?: string;
+  // NCE + YLL Neighbor tag inheritance (#198): UNLIKE the raw string fields
+  // above, these are resolved SERVER-SIDE (src/app/quote/new/page.tsx looks
+  // up ghlContactId's customers row before rendering) — real booleans, not
+  // URL strings. QuoteBuilder reads them directly (not through
+  // applyPrefill/QuoteFormData — tags are quote-row metadata, not pricing
+  // inputs, same posture as isTest/highlevelContactId).
+  isNce?: boolean;
+  legacyRebook?: boolean;
+};
+
+/**
+ * NCE + YLL Neighbor tag chips (#198 review fix — staff HIGH + tech MED;
+ * INSERT/UPDATE split — S34 #198 review round 2, coordinator correction):
+ * resolves what the /api/quote body should send for each tag. Pure + shared
+ * by BOTH /api/quote call sites in QuoteBuilder (the main Calculate/Save and
+ * the roofline-recommend re-price), so a toggle followed by either still
+ * persists identically.
+ *
+ * mode is derived by the CALLER from whether a quoteId exists YET at the
+ * moment of that specific call (both call sites re-derive it fresh — a
+ * brand-new quote's savedQuoteId flips from null to a real id after its
+ * first successful save, so the SAME function call site is 'insert' once
+ * and 'update' on every call after):
+ *
+ * - 'insert' (no existing DB row — this save WILL create one): sends the
+ *   chip's CURRENT DISPLAYED value for both tags, regardless of touched.
+ *   There is nothing to clobber yet, and the displayed value (which may be
+ *   an inherited tag from a lead prefill or an in-builder HL-contact pick
+ *   the staff never manually clicked) IS the intended state — inheriting
+ *   the tag by default, with no click required, is the actual feature this
+ *   ticket asked for. (Round-1 fix wrongly applied touched-gating here too,
+ *   silently dropping an untouched inherited tag back to false at the exact
+ *   moment it needed to land — see git history; this corrects it.)
+ * - 'update' (a quoteId already exists — this save updates that row): a
+ *   TOUCHED chip (staff explicitly clicked it this session) sends its
+ *   current value; an UNTOUCHED chip sends `undefined`, which updateQuote
+ *   treats as "leave the stored value alone" — so a Calculate on a tab left
+ *   open can never silently revert a tag an admin toggled concurrently on
+ *   the quote detail page.
+ */
+export function resolveTagPayload(
+  legacyRebook: boolean,
+  legacyRebookTouched: boolean,
+  isNce: boolean,
+  isNceTouched: boolean,
+  mode: 'insert' | 'update',
+): { legacyRebook: boolean | undefined; isNce: boolean | undefined } {
+  if (mode === 'insert') {
+    return { legacyRebook, isNce };
+  }
+  return {
+    legacyRebook: legacyRebookTouched ? legacyRebook : undefined,
+    isNce: isNceTouched ? isNce : undefined,
+  };
+}
+
+/**
+ * NCE 40% deposit default (#199): the depositPercent a quote's Deposit %
+ * field should carry when the NCE chip flips, given the CURRENT depositPercent
+ * and whether the quote is locked post-approval (the #177 freeze). Pure so
+ * every place the builder flips isNce (the chip click, contact-pick tag
+ * inheritance) funnels through identical logic — and it's unit-testable
+ * without a React render harness (QuoteBuilder has none; see resolveTagPayload
+ * above for the same convention).
+ *
+ * - locked: never changes here — the #177 freeze (server 409 on a changed
+ *   depositPercent post-approval) owns an approved/booked quote's deposit.
+ * - turning ON: 40 (NCE's contractual deposit rate vs the 50% default).
+ * - turning OFF: reverts to 0 (blank = 50%) ONLY when BOTH `current === 40`
+ *   AND `wasRuleSet` — i.e. THIS rule's own prior turn-ON is what put the 40
+ *   there. A bare `current === 40` can't tell that apart from a value staff
+ *   hand-typed for an unrelated reason (a coincidentally-40% negotiated
+ *   deposit) — wrap-review F4: without `wasRuleSet`, turning the chip OFF (or
+ *   even a same-tick contact-pick re-confirmation that never actually
+ *   changes isNce — see the caller's own no-op-flip guard) would silently
+ *   wipe a hand-typed 40 the chip never touched. Any other value is always
+ *   left alone regardless of `wasRuleSet`.
+ *
+ * Returns `current` unchanged when no rule applies (including the locked
+ * case), so callers can always assign the result unconditionally. Callers
+ * are expected to skip calling this entirely when nextIsNce hasn't actually
+ * changed from the current isNce (this function has no way to know that on
+ * its own — it only sees the NEXT value).
+ */
+export function resolveNceDepositPercent(
+  current: number,
+  nextIsNce: boolean,
+  locked: boolean,
+  wasRuleSet: boolean,
+): number {
+  if (locked) return current;
+  if (nextIsNce) return 40;
+  return wasRuleSet && current === 40 ? 0 : current;
+}
+
+/**
+ * #212 fix round (finding 1): what to clear on the form when staff switch the
+ * service type away from holiday. installTiming (Sep/Oct early-install) is
+ * holiday-only — none of the other engines read it, so the builder's own
+ * switch handler already clears it back to 'none'. But that clear alone left
+ * an INCOHERENT rest-state reachable today: pick September (installTiming
+ * set, discountEnabled true, discountAmount untouched/blank because the
+ * amount input is hidden while an early-install month is picked), then
+ * switch to event/permanent/bistro — the new Discount section rendered with
+ * "Apply discount" still checked and an empty amount, with nothing telling
+ * the staffer their September pick had vanished.
+ *
+ * Resting position chosen: clear discountEnabled/discountAmount too, but
+ * ONLY when installTiming was actually driving them (i.e. it wasn't already
+ * 'none'). A genuine manual discount is entered with installTiming left at
+ * 'none' (the Percentage/Flat radios each force it back to 'none' — see the
+ * JSX) — so whenever installTiming is already 'none', this is a no-op and a
+ * hand-typed discount survives the switch untouched. Whenever installTiming
+ * is NOT 'none', discountAmount/discountEnabled were only ever in that state
+ * BECAUSE of the early-install pick (the amount field was hidden the whole
+ * time an install month was selected, so nothing typed there could be a
+ * deliberate value the staffer means to keep) — discarding the whole block
+ * gives a clean, coherent unchecked "Apply discount" on the new vertical,
+ * matching what a staffer switching type would expect to see.
+ *
+ * Pure so the reset is unit-testable without a React render harness
+ * (QuoteBuilder has none — see resolveNceDepositPercent above for the same
+ * convention). No-op (returns {}) when switching INTO holiday, or when
+ * installTiming was already 'none' — callers can always spread the result.
+ */
+export function clearHolidayOnlyDiscountState(
+  newServiceType: ServiceType,
+  form: Pick<QuoteFormData, 'installTiming' | 'discountEnabled' | 'discountAmount'>,
+): Partial<QuoteFormData> {
+  if (newServiceType === 'holiday' || form.installTiming === 'none') return {};
+  return { installTiming: 'none', discountEnabled: false, discountAmount: 0 };
+}
+
+/**
+ * Builder tag-chip confirm gate (#215): whether a MANUAL click on the YLL
+ * Neighbor chip should window.confirm before the tag flips, and what it says
+ * if so. Full consequence parity with LegacyRebookToggle's (the admin
+ * quote-detail sibling) confirm text — same bullets, same voice, same
+ * "already left draft" caveats — the builder chip flipped silently before
+ * this, the asymmetry this ticket closes. The ON-path consequences are real
+ * regardless of which UI set the flag: the portal render
+ * (src/lib/portal/adapter.ts + derivePackages.ts), the operator-inbox
+ * exclusion (EXCLUDE_LEGACY_REBOOK_FROM_INBOX,
+ * src/lib/dashboard/inbox/store.ts), and the GHL pipeline routing
+ * (resolvePipelineStages, ghlPipelineMap.ts) all read quotes.legacy_rebook
+ * directly, not "which control toggled it" — and turning OFF reverses every
+ * one of them, which is exactly as real a set of consequences, so #215 fix
+ * round F2 gives OFF the same disclosure (pre-F2 it silently returned null
+ * unconditionally). Pure so the "should this click prompt, and with what
+ * copy" decision is unit-testable without a React render harness
+ * (QuoteBuilder has none — see resolveTagPayload/resolveNceDepositPercent
+ * above for the same convention). Only the chip's own onClick calls this —
+ * automatic paths (contact-pick tag inheritance, mount hydration) call
+ * applyLegacyRebook directly and must never prompt.
+ *
+ * Fix round F5: resolvePipelineStages does NOT "only fire at /send" (an
+ * earlier version of this comment overstated that) — it's also called from
+ * decline/route.ts, staff-decline/route.ts, convert-to-job/route.ts, the
+ * highlevel/attach route's contact-pick auto-attach (reachable BEFORE
+ * /send), the Valor webhook, and ghlQuoteCard.ts — see ghlPipelineMap.ts's
+ * own callers for the current list. The user-facing copy below never
+ * claimed a timing, so only this internal comment needed correcting.
+ *
+ * alreadyLeftDraft mirrors the admin control's own `status !== 'draft'`
+ * check exactly (both ultimately read deriveStatus's output) — true once the
+ * quote has been sent/viewed/approved/etc.:
+ *   - ON: gates the "won't move any existing GHL card" caveat — a
+ *     still-draft quote has nothing synced yet either way, so the caveat
+ *     would be noise there.
+ *   - OFF (fix round F2): gates the one-way-propagation caveat —
+ *     propagateQuoteTagsToCustomer (send/route.ts's tagPropagation) only
+ *     ever runs off a FRESH /send stamp, so a still-draft quote has never
+ *     propagated anything to a customer profile to un-tag either.
+ *     LegacyRebookToggle's own OFF copy states this caveat unconditionally
+ *     (no code-level gate) — this function is intentionally tighter and
+ *     only shows it when it can actually be true.
+ */
+export function legacyRebookConfirmMessage(
+  turningOn: boolean,
+  alreadyLeftDraft: boolean,
+): string | null {
+  if (turningOn) {
+    const lines = [
+      'Mark this quote as a YLL Neighbor?',
+      '',
+      '- The customer portal will show the "Last Year\'s Design" rebook variant (rebook copy; the item list is read-only while the quote has a single bundled line, toggleable with 2+ lines).',
+      '- The quote will be hidden from the operator inbox.',
+      '- Any GHL sync will route to the Yule Love Lights Neighbors pipeline instead of Christmas Lights.',
+    ];
+    if (alreadyLeftDraft) {
+      lines.push('', 'This only affects future renders and syncs — it will NOT move any existing GHL card.');
+    }
+    return lines.join('\n');
+  }
+  const lines = [
+    'Remove YLL Neighbor from this quote?',
+    '',
+    '- The customer portal will go back to the normal quote view.',
+    '- The quote will show up in the operator inbox again.',
+    '- Any GHL sync will route to the normal service-type pipeline instead of Neighbors.',
+  ];
+  if (alreadyLeftDraft) {
+    lines.push(
+      '',
+      "- If this already propagated to the customer's profile (the quote was sent while tagged), the customer stays tagged YLL Neighbor — propagation is one-way. Remove it on the customer's profile directly if that's also wrong.",
+    );
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Same gate as legacyRebookConfirmMessage, for the NCE chip (#199 money
+ * behaviors; #215 fix round F3/F4 brought it to full consequence parity with
+ * NceToggle). BOTH directions can warrant a prompt, for two independent
+ * reasons layered on top of each other:
+ * - The deposit-percent side effect (money): ON always force-sets it to 40%
+ *   unless it's already there; OFF reverts an untouched 40 back to blank,
+ *   but only when THIS rule (not a staff hand-edit) set it — see
+ *   resolveNceDepositPercent's own doc for the provenance rule.
+ * - The one-way-propagation caveat (fix round F3): once a tagged quote has
+ *   been sent, propagateQuoteTagsToCustomer (send/route.ts) has already
+ *   stamped the customer's profile — flipping the CHIP here can't undo that
+ *   stamp. NceToggle's own OFF copy states this unconditionally; this
+ *   function gates it on alreadyLeftDraft, same signal/reasoning as
+ *   legacyRebookConfirmMessage (a still-draft quote has never propagated
+ *   anything).
+ *
+ * So: ON always prompts (the balance-collection block is unconditional —
+ * there's always something to disclose). OFF now prompts when EITHER the
+ * deposit will actually revert OR the propagation caveat applies (fix round
+ * F3) — pre-F3, OFF stayed silent whenever the deposit wasn't reverting,
+ * even on a sent+tagged quote whose customer profile had already been
+ * stamped (a sent+tagged quote with a staff hand-typed, non-reverting
+ * deposit is exactly that case).
+ *
+ * depositPercent/locked/wasRuleSet are the same inputs applyIsNce's caller
+ * already has (form.depositPercent, the #177 approved/booked freeze, and
+ * nceDepositSetByRuleRef — #199's provenance flag, true only while the
+ * current 40 is one THIS rule wrote). This calls resolveNceDepositPercent
+ * itself rather than taking a precomputed "will it change" boolean, so the
+ * copy can never drift from what applyIsNce actually does — including
+ * staying silent about the deposit once locked (resolveNceDepositPercent is
+ * a no-op there too), and, post-#199, staying silent about an OFF-revert
+ * that will NOT happen because the 40 was hand-typed by staff rather than
+ * set by this rule. Without threading provenance through, the OFF prompt
+ * would promise "reverts your deposit to blank" and then correctly leave a
+ * staff-typed 40 alone — warning about a change that never comes.
+ *
+ * The ON path's booked-lock bullet (fix round F4): NceToggle warns that an
+ * already-BOOKED quote's "Charge saved card" button locks immediately too
+ * (the invoice page hides that button behind `!isNce` — see
+ * admin/invoices/[id]/page.tsx). Reachable here too — neither builder chip
+ * is disabled once the quote is locked/booked. Gated on the SAME `locked`
+ * signal the deposit line above already uses (savedStatus 'approved' OR
+ * 'booked'), not a booked-only re-check, so it can't drift from the deposit
+ * freeze's own definition of "locked."
+ */
+export function nceConfirmMessage(
+  turningOn: boolean,
+  depositPercent: number,
+  locked: boolean,
+  wasRuleSet: boolean,
+  alreadyLeftDraft: boolean,
+): string | null {
+  const nextDepositPercent = resolveNceDepositPercent(depositPercent, turningOn, locked, wasRuleSet);
+  const depositChanges = nextDepositPercent !== depositPercent;
+
+  if (turningOn) {
+    return [
+      'Mark this quote as NCE?',
+      '',
+      'NCE = the barter/trade network YLL belongs to.',
+      ...(depositChanges ? [`- Sets this quote's deposit to ${nextDepositPercent}%.`] : []),
+      "- The balance won't be collectable by card or pay-link — it settles through NCE instead.",
+      ...(locked
+        ? ['- The "Charge saved card" button on this quote locks immediately too (an explicit staff override remains available).']
+        : []),
+    ].join('\n');
+  }
+
+  if (!depositChanges && !alreadyLeftDraft) return null;
+  return [
+    'Remove the NCE tag from this quote?',
+    '',
+    ...(depositChanges ? [`- Reverts this quote's deposit from ${depositPercent}% back to blank (defaults to 50%).`] : []),
+    ...(alreadyLeftDraft
+      ? ["- If this already propagated to the customer's profile, the customer stays tagged NCE — propagation is one-way. Remove it on the customer's profile directly if that's also wrong."]
+      : []),
+  ].join('\n');
+}
+
+/**
+ * #199 delta-verify (MED): seeds nceDepositSetByRuleRef's value on MOUNT —
+ * whether QuoteBuilder's CURRENT depositPercent is a value the NCE rule
+ * itself would have written, so a chip turn-OFF later knows whether it's
+ * allowed to revert it. Pure + exported so it's unit-testable without a
+ * render harness (QuoteBuilder has none — mirrors resolveTagPayload's own
+ * convention above, and sits next to resolveNceDepositPercent, the live-flip
+ * rule it seeds the provenance ref FOR).
+ *
+ * Reopened quote (`initial` non-null): rule-owned only when the saved row is
+ * BOTH tagged is_nce AND sitting at EXACTLY 40 — every path that can produce
+ * that combination (the builder chip, the admin "Mark as NCE" toggle route,
+ * the rebook clone) writes it via this same 40%-on-turn-on rule. The
+ * residual is deliberate: staff who hand-typed exactly 40 on an NCE quote,
+ * closed it, and reopened it will see a later chip OFF revert that 40 to
+ * blank — recoverable in one keystroke, versus the bug this replaces
+ * (silently billing an untagged customer at the NCE rate).
+ *
+ * Brand-new quote (`initial` null): rule-owned exactly when prefilled from
+ * an already-NCE-tagged lead (mirrors the mount seed that force-writes 40 in
+ * that case — see QuoteBuilder's form initializer, the `prefill?.isNce`
+ * branch).
+ */
+export function initialNceDepositProvenance(
+  initial: { isNce?: boolean; depositPercent?: number } | null,
+  prefillIsNce?: boolean,
+): boolean {
+  return initial ? initial.isNce === true && initial.depositPercent === 40 : prefillIsNce === true;
+}
+
+/**
+ * Merge a lead's prefill values onto a blank QuoteFormData. Applied ONLY as
+ * the blank-slate builder's INITIAL state (QuoteBuilder's lazy useState
+ * initializer) — never re-applied after mount, so a reopened quote
+ * (/quote/[id], initialQuote present) never calls this. Blank/whitespace-only
+ * strings and an unrecognized serviceType are ignored (base value kept).
+ */
+export function applyPrefill(base: QuoteFormData, prefill?: QuoteBuilderPrefill): QuoteFormData {
+  if (!prefill) return base;
+  const pick = (v: string | undefined, fallback: string) => {
+    const trimmed = v?.trim();
+    return trimmed ? trimmed : fallback;
+  };
+  const ghlContactId = prefill.ghlContactId?.trim();
+  return {
+    ...base,
+    customer: {
+      name: pick(prefill.name, base.customer.name),
+      email: pick(prefill.email, base.customer.email),
+      phone: pick(prefill.phone, base.customer.phone),
+      address: pick(prefill.address, base.customer.address),
+    },
+    serviceType: asServiceType(prefill.serviceType) ?? base.serviceType,
+    highlevelContactId: ghlContactId ? ghlContactId : base.highlevelContactId,
+  };
+}
 
 // #102: translate a difficulty dropdown choice into the wire shape. A 'custom'
 // choice sends a placeholder valid difficulty (the engine ignores it once a
@@ -241,6 +617,9 @@ export function buildQuoteInputs(
     rushFee: form.rushFee,
     // Only stored when set (#59) — absent in the inputs jsonb means not waived.
     ...(form.waiveMinimum ? { waiveMinimum: true } : {}),
+    // #177: only sent when set (blank/0 = use the BUSINESS_RULES default);
+    // full 1-100-integer enforcement happens server-side (never trust the client).
+    ...(form.depositPercent > 0 ? { depositPercent: form.depositPercent } : {}),
     // Early-install promo (#40) — only sent when staff picked a month.
     ...(form.installTiming !== 'none' ? { installTiming: form.installTiming } : {}),
     // #104: per-quote line-item overrides — only sent when at least one is set,
@@ -315,6 +694,19 @@ export function inputsToFormData(
 ): QuoteFormData {
   const i = inputs ?? {};
   const d = i.discount;
+  const resolvedServiceType = serviceType ?? DEFAULT_SERVICE_TYPE;
+  // #212 fix round (finding 2, defensive): installTiming is holiday-only —
+  // the builder's own switch handler (clearHolidayOnlyDiscountState above)
+  // now prevents a non-holiday quote from ever SAVING a non-'none' value
+  // going forward, but hydrate had no equivalent guard of its own. A row
+  // that predates that fix (or reaches this shape via any future path) would
+  // otherwise rehydrate discountEnabled=true off a stale installTiming while
+  // buildQuoteInputs's `discount` gate (installTiming === 'none') stays shut
+  // — a manual discount the staffer then types would silently never reach
+  // the save payload. Normalizing here, at the one place ALL hydration flows
+  // through, closes that regardless of how the stale value got there.
+  // Verified against prod: zero rows currently match this precondition.
+  const effectiveInstallTiming = resolvedServiceType === 'holiday' ? (i.installTiming ?? 'none') : 'none';
   return {
     customer: {
       name: customerField(customer?.name, NAME_SENTINEL),
@@ -322,7 +714,7 @@ export function inputsToFormData(
       phone: customerField(customer?.phone),
       email: customerField(customer?.email),
     },
-    serviceType: serviceType ?? DEFAULT_SERVICE_TYPE,
+    serviceType: resolvedServiceType,
     santasFootage: i.santasFootage ?? 0,
     // #102: a stored positive custom rate rehydrates the dropdown to 'custom'
     // and seeds the numeric field; otherwise the stored preset difficulty.
@@ -351,13 +743,16 @@ export function inputsToFormData(
     takedown: i.takedown ?? 'included',
     rushFee: i.rushFee ?? false,
     // "Apply discount" is open when there's a manual discount OR an early-install
-    // promo (#40) — both live under that one toggle now.
-    discountEnabled: d != null || (i.installTiming ?? 'none') !== 'none',
+    // promo (#40) — both live under that one toggle now. effectiveInstallTiming
+    // (not the raw stored value) so a stale non-holiday installTiming can't
+    // open this on its own (#212 finding 2).
+    discountEnabled: d != null || effectiveInstallTiming !== 'none',
     discountType: d?.type ?? 'percentage',
     discountAmount:
       d == null ? 0 : d.type === 'percentage' ? fractionToWholePercent(d.amount) : d.amount,
     waiveMinimum: i.waiveMinimum ?? false,
-    installTiming: i.installTiming ?? 'none',
+    depositPercent: i.depositPercent ?? 0,
+    installTiming: effectiveInstallTiming,
     // #104: hydrate the per-quote overrides map (legacy quotes → {}).
     lineItemPriceOverrides: i.lineItemPriceOverrides ?? {},
     winterWonderlandRecommended: i.winterWonderlandRecommended ?? false,
@@ -390,5 +785,8 @@ export function inputsToFormData(
         ...(b.id ? { id: b.id } : {}),
       })),
     },
+    // #leads prefill-only field — a hydrated/reopened quote never carries it
+    // (applyPrefill never runs on the edit flavor; see its own doc comment).
+    highlevelContactId: null,
   };
 }

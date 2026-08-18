@@ -70,6 +70,9 @@ type QuoteRow = {
   is_test: boolean;
   // #88 P6b-2 — needed to freeze the warranty version on a permanent staff approval.
   service_type: string | null;
+  // View-only portal (#176): a staff-flagged browse-only quote can never be
+  // staff-approved either — see the check right after the status gate below.
+  view_only: boolean;
 };
 
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -89,7 +92,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   const { data: quote } = await sb
     .from('quotes')
     .select(
-      'id, status, quote_sent_at, viewed_at, customer_approved_at, deposit_paid_at, result, approval_snapshot, is_test, service_type',
+      'id, status, quote_sent_at, viewed_at, customer_approved_at, deposit_paid_at, result, approval_snapshot, is_test, service_type, view_only',
     )
     .eq('id', id)
     .maybeSingle<QuoteRow>();
@@ -110,6 +113,16 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   if (!canTransition(from, 'approved')) {
     return NextResponse.json(
       { error: `Cannot staff-approve from ${from}`, code: 'illegal-transition' },
+      { status: 409 },
+    );
+  }
+
+  // View-only portal (#176): a staff-flagged browse-only quote can never be
+  // approved, verbal/phone included — the server hard-guard, mirroring the
+  // customer /approve route's check.
+  if (quote.view_only) {
+    return NextResponse.json(
+      { error: 'This quote is view-only', code: 'view-only' },
       { status: 409 },
     );
   }
@@ -170,8 +183,15 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   // untouched — was silently overwritten to 'approved', resurrecting a terminal
   // quote. Add the approvable-from status guard (the exact set canTransition allows
   // to 'approved' pre-booking: draft/sent/viewed, plus NULL for legacy rows) so a
-  // row that just moved to declined/cancelled/lost/changes_requested no longer
+  // row that just moved to declined/cancelled/abandoned/changes_requested no longer
   // matches. The OR-with-null idiom mirrors the decline + approve routes.
+  //
+  // View-only portal (#176 TOCTOU): the early view_only check above is a
+  // fast-path 409, but staff could flip view_only ON between that read and
+  // this write. `.eq('view_only', false)` makes the write itself lose that
+  // race (view_only is NOT NULL, so a plain `.eq` is safe — no W1-014 NULL
+  // trap here), mirroring the same re-check on the approve/decline/pay/
+  // request-changes/mark-sent routes.
   const { data: claimed, error } = await sb
     .from('quotes')
     .update({
@@ -180,6 +200,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       approval_snapshot: snapshot,
     })
     .eq('id', id)
+    .eq('view_only', false)
     .is('customer_approved_at', null)
     .or('status.in.(draft,sent,viewed),status.is.null')
     .select('id');

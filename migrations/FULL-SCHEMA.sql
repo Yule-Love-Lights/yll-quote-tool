@@ -3,7 +3,7 @@
 -- Paste into the Supabase SQL Editor and click Run.
 --
 -- GENERATED (audit #110 wave 2, finding W2-007): this file is produced by
--- reconciling ALL 45 dated migrations/*.sql files IN DATE ORDER (creates,
+-- reconciling ALL 81 dated migrations/*.sql files IN DATE ORDER (creates,
 -- alters, drops, RLS enable/disable applied in sequence) into one canonical
 -- end-state schema. It supersedes running db/schema.sql + the individual
 -- dated migrations separately (CREATE ... IF NOT EXISTS on a fresh DB; the
@@ -11,26 +11,58 @@
 -- one). The dated migrations remain the append-only source of truth for
 -- HOW the schema got here; this file is WHERE it landed.
 --
--- Regenerated: 2026-07-03 @ commit f4b398d, reconciling every migration
--- through 2026-07-02-designs-photo-title.sql (45 files). Previous refresh
--- (2026-06-15) covered only 6 of the now-20 tables — see the superseded
--- header this replaces in git history.
+-- Regenerated: 2026-08-16 (ledger row 282), reconciling every dated migration
+-- through 2026-08-16-crew-members-auth-user-id.sql (81 files).
+-- WHY THIS PASS EXISTED: the S59 six-lens review found this file no longer was
+-- what its own header claimed. It said "64 dated migrations" and "30 LIVE"
+-- tables while 81 migrations and 37 live tables existed, and TWO tables
+-- (archive_photos, site_submissions) were absent from the file entirely — so
+-- running it on a fresh project did NOT reproduce prod. Root cause was
+-- incremental hand-patching, one table per PR, which is how a canonical file
+-- drifts while looking maintained. Fixed by re-deriving the roster and the
+-- counts from the migrations themselves rather than patching one more table in.
+-- Verification for the next regen: the roster below is reproducible by scanning
+-- `create table [if not exists] [public.]<name>` across db/schema.sql plus every
+-- dated migration in date order, minus `drop table` tombstones. Note two
+-- creation styles coexist — older tables are unqualified (`create table if not
+-- exists quotes`), newer ones are schema-qualified (`public.jobs`) — so any
+-- audit script must match BOTH or it will silently under-count, as a first pass
+-- at this regen did.
 --
--- Tables (20 LIVE + 2 REMOVED tombstones below; RLS ENABLED on all 20 live
--- ones — #90 defense in depth). Two RLS postures coexist by design (see
+-- Previous refresh: 2026-08-03 @ commit bf2ed09, through
+-- 2026-08-03-dashboard-activity-action-idx.sql (64 files, ledger #188).
+--
+-- Tables (37 LIVE + 2 REMOVED tombstones below; RLS ENABLED on 36 of the 37
+-- live ones — #90 defense in depth). The one exception, inventory_orders,
+-- ships RLS DISABLED — see its own posture bullet below, not silently
+-- "fixed" here. Three RLS postures coexist by design (see
 -- migrations/2026-06-28-dashboard-tables.sql header + the W2-006 note in
 -- 2026-06-28-enable-rls-all-tables.sql):
---   * "classic" PII tables (quotes, designs, training_houses, reference_assets,
---     training_examples, app_settings, custom_uploads, inventory_catalog,
---     inventory_on_hand, customers, properties, jobs, invoices,
---     quote_view_events): RLS enabled with NO policies. Every path uses the
---     service-role client, which bypasses RLS — anon/authenticated get nothing.
+--   * "classic" PII/service-role-only tables (quotes, designs, training_houses,
+--     reference_assets, training_examples, app_settings, custom_uploads,
+--     inventory_catalog, inventory_on_hand, customers, properties, jobs,
+--     invoices, quote_view_events, permanent_training_examples, referrals,
+--     website_leads, self_serve_estimates, self_serve_analyzer_budget,
+--     job_material_actuals, bot_pending_actions, bot_audit_log, bot_users):
+--     RLS enabled with NO policies. Every path uses the service-role client,
+--     which bypasses RLS — anon/authenticated get nothing.
 --   * dashboard tables (dashboard_contacts, inbox_items, follow_ups,
 --     dashboard_activity, integration_tokens, sync_cursors): RLS enabled WITH
 --     explicit policies — authenticated operators get SELECT (+UPDATE on the
 --     three operator tables); integration_tokens/sync_cursors are deny-all to
 --     authenticated; service_role gets ALL on every table (bypasses RLS
 --     anyway; policy exists for documentation/intent).
+--   * inventory_orders (added 2026-07-06-inventory-orders.sql, table #21
+--     below): RLS DISABLED entirely — NOT "enabled with no policies" like its
+--     inventory_catalog / inventory_on_hand siblings, despite that migration's
+--     own header comment claiming it "matches" them. That claim is stale:
+--     inventory_catalog and inventory_on_hand were both swept to RLS-ENABLED
+--     by 2026-06-28-enable-rls-all-tables.sql, which predates
+--     inventory_orders' creation by over a week and so never touched it. This
+--     file mirrors what the real dated migrations actually did — flagged as a
+--     live discrepancy (2026-08-03 regen, ledger #188), not corrected;
+--     correcting it needs its own dated migration + a product call, not a
+--     silent edit here.
 --
 --    1. quotes              — one per quote
 --    2. quote_view_events   — per-view read-receipt log (2026-06-25)
@@ -55,6 +87,26 @@
 --   19. integration_tokens  — Gmail OAuth, server-only (#58; not yet read/
 --       written anywhere in src/ as of this regen — table exists, wiring doesn't)
 --   20. sync_cursors        — per-source sync state/health, server-only (#58)
+--   21. inventory_orders    — on-order ledger for the supplier auto PO (P8/
+--       #110 W7-002; 2026-07-06). RLS DISABLED — see the posture note above.
+--   22. permanent_training_examples — the PERMANENT-lighting AI training
+--       loop, satellite-primary embedding + retrieval (#141; 2026-07-08)
+--   23. referrals           — referral program ledger: link/mention
+--       attribution, redemption columns (2026-07-11), 2yr credit expiry
+--       (2026-07-11) (ledger #41; 2026-07-10)
+--   24. website_leads       — WordPress quote-request form intake + GHL sync
+--       retry queue/bookkeeping (2026-07-11, retry cols 2026-07-12)
+--   25. self_serve_estimates — accuracy telemetry for the public self-serve
+--       estimator (2026-07-19)
+--   26. self_serve_analyzer_budget — daily aggregate spend cap (all-IPs) for
+--       the self-serve estimator (2026-07-20)
+--   27. job_material_actuals — field-reported actual material usage per job,
+--       text-ops bot Phase 2 (#168; 2026-07-22)
+--   28. bot_pending_actions — text-ops bot confirm-yes gate memory (#168;
+--       2026-07-22)
+--   29. bot_audit_log       — text-ops bot write audit trail (#168; 2026-07-22)
+--   30. bot_users           — text-ops bot roster/roles, managed from
+--       Settings → Bot team (#168; 2026-07-23)
 --
 -- Sequences: quote_number_seq, job_number_seq, invoice_number_seq (all
 -- START WITH 1000) + the shared allocate_display_number(seq_name) RPC.
@@ -83,8 +135,13 @@
 -- AFTER that migration (jobs, invoices, customers, properties, inventory_*
 -- were all created earlier the same day but are also listed in the enable-rls
 -- statement; the 6 dashboard tables created later that day ship RLS-enabled
--- from their own CREATE). So a fresh in-order rebuild is safe: no table is
--- left RLS-disabled at the end. The FOOTGUN W2-006 actually flags is
+-- from their own CREATE). So a fresh in-order rebuild THROUGH 2026-06-28 is
+-- safe: no table live as of that date is left RLS-disabled at the end. (This
+-- no longer holds for the file as a WHOLE as of the 2026-08-03 regen —
+-- inventory_orders, created 2026-07-06, ships RLS-disabled; see its own
+-- posture bullet near the top of this file. Not a W2-006-shaped footgun
+-- (no later blanket-enable migration exists to have "already covered" it) —
+-- a distinct, newer gap.) The FOOTGUN W2-006 actually flags is
 -- different — re-running any ONE of the older create-table files by itself
 -- (e.g. re-importing the Thunder catalog per inventory-catalog.sql's own
 -- instructions) still re-disables RLS on that single table, because each
@@ -170,7 +227,26 @@ alter table quotes
   add column if not exists is_test boolean not null default false,
   -- 2026-07-16 Legacy rebook flag (#155) — quotes migrated from last year's
   -- Jobber data get a slightly different portal + an admin detail line.
-  add column if not exists legacy_rebook boolean not null default false;
+  add column if not exists legacy_rebook boolean not null default false,
+  -- 2026-07-22 Valor Vault's own customer id (#161 "both vaults" decision),
+  -- distinct from valor_vault_token (the raw payment token captured via the
+  -- redirect_url path).
+  add column if not exists valor_vault_customer_id text,
+  -- 2026-07-28 View-only quotes (#176) — a quote staff created purely so a
+  -- customer can browse a designed scene (colors, prices) WITHOUT being able
+  -- to approve or pay a real deposit. Every approve/pay/decline/request-
+  -- changes surface must gate on this as a POSITIVE match (view_only = true),
+  -- never negative, so a normal quote is unaffected (AGENTS.md seam-gate
+  -- rule). Applied out-of-band directly on prod; this file documents it.
+  add column if not exists view_only boolean not null default false,
+  -- 2026-07-29 Deposit/balance card-decline notification (#175) — the webhook
+  -- route stamps these so a declined charge no longer vanishes into a
+  -- console.warn; deposit_decline_notified_at is the once-per-hour staff-
+  -- alert throttle claim. Applied out-of-band directly on prod; this file
+  -- documents it.
+  add column if not exists deposit_declined_at timestamptz,
+  add column if not exists deposit_decline_code text,
+  add column if not exists deposit_decline_notified_at timestamptz;
 
 alter table quotes drop constraint if exists quotes_video_kind_check;
 alter table quotes add constraint quotes_video_kind_check
@@ -638,6 +714,10 @@ create trigger inventory_on_hand_updated_at_trigger
 --     (hl:<id> | email:<lower> | phone:<digits> | name:<lower>) — UNIQUE so
 --     find-or-create is race-safe. Reached only via the service-role client;
 --     RLS enabled with no policies (#90).
+--     #213: a candidate that doesn't clear the identity-agreement adoption
+--     bar (src/lib/customers.ts classifyCandidate) creates a NEW row keyed
+--     `dup:[["label","value"],...]` (JSON-encoded field pairs) instead of
+--     one of the four shapes above — still UNIQUE, still race-safe.
 -- ---------------------------------------------------------------------
 create table if not exists public.customers (
   id            uuid primary key default gen_random_uuid(),
@@ -670,6 +750,26 @@ create trigger customers_updated_at_trigger
   before update on public.customers
   for each row execute function public.customers_set_updated_at();
 
+-- 2026-07-10 Customer-facing referral identity (ledger #41 referral program).
+-- referral_code: the short URL-safe code behind /refer/<code> (ensureReferralCode
+-- create-if-missing, race-safe via the UNIQUE constraint). Null until a
+-- customer's code is first ensured (the booked-page referral section, or the
+-- GHL stamp).
+-- referral_photo_optout: when true, the /refer/<code> landing page skips
+-- using this customer's own house photo as the hero (falls back to a generic
+-- completed-work gallery photo instead). Defaults false (opt-out, not
+-- opt-in).
+alter table public.customers
+  add column if not exists referral_code text unique;
+alter table public.customers
+  add column if not exists referral_photo_optout boolean not null default false;
+
+-- 2026-07-28 Customer tenure (#178) staff-editable manual override years,
+-- unioned with the auto-derived set (deposit-paid + legacy-rebook years) in
+-- src/lib/customerTenure.ts.
+alter table public.customers
+  add column if not exists manual_years jsonb not null default '[]';
+
 
 -- ---------------------------------------------------------------------
 -- 13. properties  (#83 Phase 5)
@@ -699,6 +799,19 @@ drop trigger if exists properties_updated_at_trigger on public.properties;
 create trigger properties_updated_at_trigger
   before update on public.properties
   for each row execute function public.customers_set_updated_at();
+
+-- 2026-08-07 Properties nickname + archive (#205) -- customer-profile
+-- Properties tab full manage. nickname: staff-only display label, purely
+-- cosmetic (never used for matching/dedup -- that stays on address_key).
+-- archived_at: hides a property from the default list WITHOUT deleting it
+-- (quotes/jobs/invoices reference properties by id) -- auto-clears the
+-- moment new quote activity lands on it again (see findOrCreateProperty's
+-- #205 comment in src/lib/customers.ts). Both nullable, no default beyond
+-- NULL. See migrations/2026-08-07-properties-nickname-and-archive.sql.
+alter table public.properties
+  add column if not exists nickname text;
+alter table public.properties
+  add column if not exists archived_at timestamptz;
 
 -- ── Quote ⇄ customer/property linkage (#83 Phase 5) ─────────────────────────
 -- Quotes reference the stable customer + property. Nullable: a quote with no
@@ -764,6 +877,15 @@ create table if not exists public.jobs (
   -- is a snapshot, not a live view of the quote.
   line_items    jsonb,
 
+  -- P4P Phase 1 planning estimate (2026-08-07): budgeted install hours and the
+  -- labor-revenue figure shadow-mode reporting builds from. Placeholder-rate
+  -- marker stays true until Jason's real production-rate session lands.
+  budgeted_hours numeric,
+  labor_revenue_cents integer,
+  rates_are_placeholder boolean not null default true,
+  budgeted_hours_overridden_at timestamptz,
+  budgeted_hours_overridden_by text,
+
   -- Install date — synced from home.works later (#84).
   install_date  date,
 
@@ -803,6 +925,13 @@ drop trigger if exists jobs_updated_at_trigger on public.jobs;
 create trigger jobs_updated_at_trigger
   before update on public.jobs
   for each row execute function public.jobs_set_updated_at();
+
+-- 2026-07-22 Stock true-up idempotency claim (text-ops bot Phase 2, #168):
+-- the same guard idiom as stock_decremented_at above. NULL = actuals never
+-- recorded; set once the crew's reported usage has trued up on-hand stock, so
+-- a retry/double-tap/two-crew-members submission can never true up twice.
+alter table public.jobs
+  add column if not exists materials_actualized_at timestamptz;
 
 -- allocate_display_number RPC — SECURITY DEFINER, locked to the known
 -- sequence allowlist (quote/job/invoice) so it can't bump an arbitrary
@@ -900,6 +1029,48 @@ drop trigger if exists invoices_updated_at_trigger on public.invoices;
 create trigger invoices_updated_at_trigger
   before update on public.invoices
   for each row execute function public.invoices_set_updated_at();
+
+-- 2026-07-24 Auto-charge arming checklist (#170):
+--   valor_txn_log — jsonb array of retired charge records. When an amend
+--     reopens a PAID invoice (new balance due), the live
+--     valor_balance_txn_id/valor_receipt_url move here so the new charge
+--     cycle starts clean, while the old txn stays reconcilable.
+--   payment_preference — how this customer pays the balance:
+--     'card_on_file' | 'cash_check' | null (unset). 'cash_check' replaces the
+--     one-click charge button with an explicit override so nobody charges a
+--     card the customer said they'd settle in cash.
+alter table public.invoices add column if not exists valor_txn_log jsonb;
+alter table public.invoices add column if not exists payment_preference text;
+alter table public.invoices drop constraint if exists invoices_payment_preference_check;
+alter table public.invoices add constraint invoices_payment_preference_check
+  check (payment_preference is null or payment_preference in ('card_on_file', 'cash_check'));
+
+-- 2026-08-07 Manual payment method + NCE reference (#199):
+--   paid_method — how a MANUALLY-settled invoice (mark-paid, not a Valor
+--     charge) was actually collected: 'cash_check' | 'nce' | null. null covers
+--     BOTH a legacy manual mark-paid (predates this column) and a
+--     Valor-settled invoice (the balance webhook / charge-balance route settle
+--     via valor_balance_txn_id, never write this column) — the two null cases
+--     are told apart by whether valor_balance_txn_id is set.
+--   payment_reference — the NCE trade-system payment reference number.
+--     Required at NCE mark-paid time (enforced in the app, not a DB
+--     constraint — an empty ref means the trade payment hasn't happened yet);
+--     editable afterward for a typo fix.
+-- These MUST be here: INVOICE_SELECT (src/lib/invoices.ts) is a literal column
+-- list, so a DB built from this file without them fails EVERY invoice read and
+-- every job-completion invoice creation (PostgREST 42703), not just NCE ones.
+-- See migrations/2026-08-07-invoices-manual-payment-method.sql.
+alter table public.invoices add column if not exists paid_method text;
+alter table public.invoices add column if not exists payment_reference text;
+alter table public.invoices drop constraint if exists invoices_paid_method_check;
+alter table public.invoices add constraint invoices_paid_method_check
+  check (paid_method is null or paid_method in ('cash_check', 'nce'));
+
+-- 2026-08-11 settled_by (#225): the operator who manually settled the
+-- invoice. Mirrors inbox_items.handled_by — nullable uuid FK to auth.users,
+-- ON DELETE SET NULL. See migrations/2026-08-11-invoices-settled-by.sql.
+alter table public.invoices
+  add column if not exists settled_by uuid references auth.users(id) on delete set null;
 
 
 -- =====================================================================
@@ -1002,6 +1173,21 @@ alter table public.inbox_items drop constraint if exists inbox_items_status_chec
 alter table public.inbox_items add constraint inbox_items_status_check
   check (status in ('unresponded','handled','dismissed','completed'));
 
+-- 2026-07-06 CUSTOMER inbound-touch time (#110 W7-003), tracked separately
+-- from last_message_at (which gets overwritten by our own outbound reply on
+-- every reconcile). Response-time metrics read handled_at − last_inbound_at,
+-- falling back to last_message_at for historical rows whose true inbound
+-- time the old bug already overwrote. Nullable, no backfill, no index (read
+-- in bulk, computed in JS).
+alter table public.inbox_items add column if not exists last_inbound_at timestamptz;
+
+-- 2026-07-07 Reply double-submit guard: POST /api/dashboard/reply atomically
+-- claims this column BEFORE firing the real GHL SMS/email send, so a network
+-- retry or a stale second operator tab can't double-send. Released back to
+-- null on a genuine send failure. Nullable, no backfill, no index (read/
+-- written only by id).
+alter table public.inbox_items add column if not exists reply_claimed_at timestamptz;
+
 -- The /inbox list (open items, newest first) + the escalation cron scan.
 create index if not exists inbox_items_status_last_message_idx
   on public.inbox_items (status, last_message_at desc);
@@ -1079,6 +1265,15 @@ create table if not exists public.dashboard_activity (
 
 create index if not exists dashboard_activity_inbox_item_idx on public.dashboard_activity (inbox_item_id);
 create index if not exists dashboard_activity_created_at_idx on public.dashboard_activity (created_at desc);
+-- 2026-08-03 (#189): partial index over the non-firehose actions only
+-- ('ingested'/'escalated' excluded — 99.86% of the table's ~937k rows). Serves
+-- getReopenCounts()'s `action = 'handled' | 'reopened'` scans (11.6s full seq
+-- scan measured on prod pre-index → the dominant cost of the #185
+-- [inbox-timing] page-load figure) and listActivity's NOT action IN
+-- ('ingested','escalated') filter.
+create index if not exists dashboard_activity_operator_actions_idx
+  on public.dashboard_activity (action, created_at desc)
+  where action not in ('ingested', 'escalated');
 
 alter table public.dashboard_activity enable row level security;
 drop policy if exists dashboard_activity_select_auth on public.dashboard_activity;
@@ -1157,3 +1352,948 @@ create trigger integration_tokens_updated_at before update on public.integration
 drop trigger if exists sync_cursors_updated_at on public.sync_cursors;
 create trigger sync_cursors_updated_at before update on public.sync_cursors
   for each row execute function public.dashboard_set_updated_at();
+
+
+-- =====================================================================
+-- Tables 22-31 — everything that landed after the 2026-07-03 regen
+-- (2026-08-03 regen, ledger #188). Back to the "classic" service-role-only
+-- posture (RLS enabled, no policies) except inventory_orders — see its own
+-- note. Not part of the #58 dashboard-tables banner above; sequenced here
+-- purely by migration date.
+-- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- 22. inventory_orders  (P8, #110 W7-002 — supplier auto purchase order)
+--     On-order ledger. One row per SENT purchase order. Recording an order
+--     BEFORE the future demand calc subtracts it (buildSupplierPurchaseOrder)
+--     means a re-send lists only the NEW shortfall, not the full cumulative
+--     one. `lines` = [{sku, name, qty}] as ordered; `received_lines` =
+--     [{sku, qty}] set at receive time (may differ from `lines` on a short
+--     shipment).
+--
+--     RLS DISABLED (not "enabled, no policies") — see the posture note at
+--     the top of this file. A real discrepancy with its inventory_catalog /
+--     inventory_on_hand siblings, faithfully carried over from
+--     2026-07-06-inventory-orders.sql, not corrected here.
+-- ---------------------------------------------------------------------
+create table if not exists inventory_orders (
+  id              uuid primary key default gen_random_uuid(),
+  created_at      timestamptz not null default now(),
+  sent_at         timestamptz,
+  channel         text not null check (channel in ('manual', 'auto-cron', 'auto-webhook')),
+  status          text not null default 'open' check (status in ('open', 'received', 'cancelled')),
+  received_at     timestamptz,
+  lines           jsonb not null,
+  received_lines  jsonb,
+  job_count       int not null default 0
+);
+
+alter table inventory_orders disable row level security;
+
+create index if not exists inventory_orders_status_open_idx
+  on inventory_orders (status)
+  where status = 'open';
+
+
+-- ---------------------------------------------------------------------
+-- 23. permanent_training_examples  (#141 — the PERMANENT-lighting AI
+--     training loop; mirrors #8 Stage A/B for holiday, but SEPARATE storage +
+--     retrieval — the two verticals teach two different analyzers with
+--     different ground-truth shapes.)
+--     One row = one operator-confirmed "the AI traced X, staff confirmed Y"
+--     snapshot: the FOUR satellite side channels (front/left/right/back) as
+--     ground truth, plus confirmed street runs + the AI's original pass for
+--     provenance. Soft links (quote_id/design_id) so deleting the quote/
+--     design must NOT delete the example. SATELLITE-PRIMARY: the embedding
+--     is the satellite image (the analyzer's primary input), so
+--     satellite_photo_base64 is NOT NULL; street is optional. Reached only
+--     via the service-role client; RLS enabled with no policies (#90).
+-- ---------------------------------------------------------------------
+create table if not exists permanent_training_examples (
+  id            uuid primary key default gen_random_uuid(),
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now(),
+  quote_id      uuid references quotes(id) on delete set null,
+  design_id     uuid references designs(id) on delete set null,
+  source        text not null default 'manual',     -- 'auto-send' | 'manual'
+  excluded      boolean not null default false,     -- park an oddball out of the few-shot
+  notes         text,
+  address       text,
+  street_photo_base64    text,
+  street_media_type      text,
+  satellite_photo_base64 text not null,
+  satellite_media_type   text not null,
+  satellite_feet_per_pixel numeric,
+  original_analysis      jsonb,    -- raw PermanentSatelliteAnalysis; NULL = manual design, no AI run
+  final_satellite_lines   jsonb not null,            -- PermanentSatelliteLines shape — the ground truth
+  final_street_runs       jsonb,                     -- PermanentStreetRun[], when present
+  final_inputs            jsonb,   -- per-side footage/corners/accessories context (not re-taught directly)
+  embedding               vector(1024)
+);
+
+alter table permanent_training_examples drop constraint if exists permanent_training_examples_source_check;
+alter table permanent_training_examples add constraint permanent_training_examples_source_check
+  check (source in ('auto-send', 'manual'));
+
+alter table permanent_training_examples enable row level security;
+
+create index if not exists permanent_training_examples_created_at_idx
+  on permanent_training_examples (created_at desc);
+
+-- Upsert semantics: a quote keeps at most ONE example per source (mirrors
+-- training_examples_quote_source_uniq exactly; NOT partial — PostgREST's ON
+-- CONFLICT can't infer a partial unique index; NULL quote_ids are distinct
+-- under Postgres unique semantics anyway).
+create unique index if not exists permanent_training_examples_quote_source_uniq
+  on permanent_training_examples (quote_id, source);
+
+create or replace function public.permanent_training_examples_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists permanent_training_examples_updated_at_trigger on public.permanent_training_examples;
+create trigger permanent_training_examples_updated_at_trigger
+  before update on public.permanent_training_examples
+  for each row execute function public.permanent_training_examples_set_updated_at();
+
+-- Cosine-similarity retrieval on the SATELLITE embedding — twin of
+-- match_training_examples, same shape, own table.
+create or replace function match_permanent_training_examples(
+  query_embedding vector(1024),
+  match_count int
+)
+returns setof permanent_training_examples
+language sql
+stable
+as $$
+  select *
+  from permanent_training_examples
+  where excluded = false
+    and embedding is not null
+  order by embedding <=> query_embedding
+  limit match_count;
+$$;
+
+
+-- ---------------------------------------------------------------------
+-- 24. referrals  (ledger #41 — referral program)
+--     Locked product (Naldo, S30): the referrer earns $125 next-season
+--     credit per booked friend, stackable (one row per friend, no cap). The
+--     friend gets two free 16" spritzers on their first booked install
+--     (redemption UI, separate). Attribution is BOTH ways: 'link' (the
+--     referrer's personal /refer/<code> link; referee_quote_id NULL at
+--     creation — a lead capture before any quote exists) or 'mention' (staff
+--     picks an existing customer as "Referred by" while building a new
+--     quote; referee_quote_id known immediately). accrueOnBooking
+--     (src/lib/referrals.ts) flips pending → booked when the referee_quote_id's
+--     deposit is paid — matches ONLY on referee_quote_id, so a 'link' row
+--     never auto-accrues on its own. UNIQUE(referee_quote_id) is the
+--     once-per-referee idempotency backstop. Reached only via the
+--     service-role client; RLS enabled with no policies (#90).
+-- ---------------------------------------------------------------------
+create table if not exists public.referrals (
+  id                    uuid primary key default gen_random_uuid(),
+  referrer_customer_id  uuid references public.customers(id) on delete set null,
+  referee_quote_id      uuid references public.quotes(id) on delete set null,
+  referee_contact_name  text,
+  referee_contact_email text,
+  referee_contact_phone text,
+  source                text not null,
+  status                text not null default 'pending',
+  amount_usd            numeric not null default 125,
+  booked_at             timestamptz,
+  created_at            timestamptz not null default now(),
+  updated_at            timestamptz not null default now()
+);
+
+alter table public.referrals drop constraint if exists referrals_source_check;
+alter table public.referrals add constraint referrals_source_check
+  check (source in ('link', 'mention'));
+
+alter table public.referrals drop constraint if exists referrals_status_check;
+alter table public.referrals add constraint referrals_status_check
+  check (status in ('pending', 'booked', 'credited'));
+
+-- The once-per-referee idempotency backstop (see header above).
+alter table public.referrals drop constraint if exists referrals_referee_quote_id_key;
+alter table public.referrals add constraint referrals_referee_quote_id_key unique (referee_quote_id);
+
+create index if not exists referrals_referrer_customer_id_idx
+  on public.referrals (referrer_customer_id);
+
+alter table public.referrals enable row level security;
+
+create or replace function public.referrals_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists referrals_updated_at_trigger on public.referrals;
+create trigger referrals_updated_at_trigger
+  before update on public.referrals
+  for each row execute function public.referrals_set_updated_at();
+
+-- 2026-07-11 Redemption columns (ledger #41 PR 2) — consumeCredits
+-- (src/lib/referrals.ts) stamps these when a referrer's balance is SPENT as a
+-- discount on a quote. credited_quote_id is the REFERRER's own later quote
+-- the credit was applied to — NOT the friend's referee_quote_id that earned
+-- it; the two can be different quotes, different customers even.
+alter table public.referrals
+  add column if not exists credited_at timestamptz;
+alter table public.referrals
+  add column if not exists credited_quote_id uuid references public.quotes(id) on delete set null;
+
+create index if not exists referrals_credited_quote_id_idx
+  on public.referrals (credited_quote_id);
+
+-- 2026-07-11 Credit expiry (ledger #41 follow-up) — a referral credit expires
+-- 2 years after it's EARNED (booked_at + 2 years, stamped by accrueOnBooking
+-- in the same update that flips pending → booked). NULL = non-expiring
+-- (grandfathered — existing 'booked' rows predating this column). A 'booked'
+-- row whose expires_at has passed stays status='booked' forever; it's just
+-- excluded from the spendable balance by creditBalanceFor's check.
+alter table public.referrals
+  add column if not exists expires_at timestamptz;
+
+
+-- ---------------------------------------------------------------------
+-- 25. website_leads  (lead-capture for the WordPress custom quote-request
+--     forms; yulelovelights.com → POST /api/leads)
+--     Replaces the old plugin that routed EVERY lead into the Christmas
+--     pipeline regardless of the service the visitor actually asked about —
+--     this table is the source of truth / retry queue, written FIRST on
+--     every submission; the route then syncs each row to the correct
+--     per-service HighLevel pipeline (src/lib/leads/leadService.ts).
+--     sync_status: 'pending' (saved, sync not yet attempted or it failed —
+--     retry queue) | 'synced' | 'spam' (honeypot/too-fast — kept for
+--     visibility, GHL skipped) | 'deferred' (service resolved but its GHL
+--     pipeline env vars aren't set yet) | 'rate_limited' (deliberate
+--     throttle) | 'failed' (2026-07-12 — retry attempts exhausted, parked for
+--     a manual re-drive). No DB CHECK constraint on sync_status/service —
+--     validated in application code.
+--     RLS ENABLED, ZERO POLICIES — service-role only (POST /api/leads runs
+--     server-side only), matching the #90 all-tables hardening pattern.
+-- ---------------------------------------------------------------------
+create table if not exists public.website_leads (
+  id                  uuid primary key default gen_random_uuid(),
+  created_at          timestamptz not null default now(),
+  form_variant        text not null,               -- which embedded form (e.g. 'hero', 'sticky', 'footer')
+  service             text not null,                -- christmas | permanent | event-wedding | landscape
+  name                text not null,
+  email               text not null,
+  phone               text not null,
+  address             text,
+  notes               text,
+  consent             boolean not null default false,
+  utm                 jsonb,
+  landing_url         text,
+  ip                  text,
+  ghl_contact_id      text,
+  ghl_opportunity_id  text,
+  sync_status         text not null default 'pending',
+  sync_error          text,
+  is_test             boolean not null default false
+);
+
+-- Newest-first admin views / cleanup.
+create index if not exists website_leads_created_at_idx
+  on public.website_leads (created_at);
+
+-- The rate-limit query (count from this IP in the last hour).
+create index if not exists website_leads_ip_created_at_idx
+  on public.website_leads (ip, created_at);
+
+alter table public.website_leads enable row level security;
+
+-- 2026-07-12 Retry bookkeeping (src/lib/leads/leadRetry.ts) — bounds
+-- automatic retries and surfaces stuck rows on /admin/leads. MIGRATION
+-- ORDER: additive + nullable/defaulted, ships migration-first. Old rows get
+-- retry_count = 0, last_retried_at = NULL — exactly what the worker treats as
+-- "never retried, most urgent" (nulls-first ordering).
+alter table public.website_leads
+  add column if not exists retry_count integer not null default 0;
+alter table public.website_leads
+  add column if not exists last_retried_at timestamptz;
+
+-- The retry worker's scan: still-stuck rows, oldest attempt first. Partial
+-- (only pending/deferred rows are ever selected) keeps it tiny.
+create index if not exists website_leads_retry_idx
+  on public.website_leads (last_retried_at)
+  where sync_status in ('pending', 'deferred');
+
+
+-- ---------------------------------------------------------------------
+-- 26. self_serve_estimates  (accuracy telemetry for the customer self-serve
+--     estimator)
+--     One row per self-serve quote at the moment /api/estimate priced it:
+--     the RANGE the customer was shown (estimate_low..estimate_high) + the
+--     analyzer's confidence + the raw engine total (estimate_total) the
+--     range was built from. Written at creation, never updated — the
+--     "verified final" price is read live from the linked quotes.total, so
+--     the dashboard can compare "what we quoted instantly" vs "what staff
+--     confirmed." quote_id FK ON DELETE CASCADE: deleting a quote drops its
+--     estimate row too. RLS ENABLED, ZERO POLICIES — service-role only
+--     (POST /api/estimate + the dashboard loader run server-side only).
+-- ---------------------------------------------------------------------
+create table if not exists public.self_serve_estimates (
+  id             uuid primary key default gen_random_uuid(),
+  created_at     timestamptz not null default now(),
+  quote_id       uuid not null references public.quotes(id) on delete cascade,
+  estimate_low   numeric(10,2) not null,
+  estimate_high  numeric(10,2) not null,
+  estimate_total numeric(10,2),
+  confidence     text
+);
+
+create index if not exists self_serve_estimates_quote_id_idx
+  on public.self_serve_estimates (quote_id);
+create index if not exists self_serve_estimates_created_at_idx
+  on public.self_serve_estimates (created_at);
+
+alter table public.self_serve_estimates enable row level security;
+
+
+-- ---------------------------------------------------------------------
+-- 27. self_serve_analyzer_budget  (self-serve estimator's aggregate daily
+--     SPEND guard)
+--     /api/estimate spends money per accepted request (Claude analyzer +
+--     Google Maps). Per-IP rate limiting caps one attacker's rate; this caps
+--     the TOTAL across all IPs so a distributed bot can't run up the bill.
+--     One row per UTC day holding the count of paid analyzer runs; the route
+--     stops once the day's count passes SELF_SERVE_DAILY_ANALYZER_CAP (env;
+--     default 300). RLS ENABLED, ZERO POLICIES — service-role only.
+-- ---------------------------------------------------------------------
+create table if not exists public.self_serve_analyzer_budget (
+  day   date primary key default (now() at time zone 'utc')::date,
+  count integer not null default 0
+);
+
+alter table public.self_serve_analyzer_budget enable row level security;
+
+-- Atomic consume-one-unit: upsert today's row incrementing the count, and
+-- return the NEW count — one statement, so concurrent lambdas across regions
+-- can't race. Runs under the service-role (BYPASSRLS) the server uses, so no
+-- SECURITY DEFINER is needed.
+create or replace function public.bump_self_serve_analyzer_budget()
+returns integer
+language sql
+as $$
+  insert into public.self_serve_analyzer_budget (day, count)
+  values ((now() at time zone 'utc')::date, 1)
+  on conflict (day)
+    do update set count = self_serve_analyzer_budget.count + 1
+  returning count;
+$$;
+
+
+-- ---------------------------------------------------------------------
+-- 28. job_material_actuals  (#168 text-ops bot Phase 2 — what a job REALLY
+--     used, captured from the field)
+--     prepareJobMaterials deducts the ESTIMATED BOM at prep time; this table
+--     closes the loop with what the crew actually consumed. One row per
+--     (job, sku) submission — the bot writes these when a crew member texts
+--     "job 142 done — 2 boxes C9, 30 clips"; the stock true-up then adjusts
+--     on-hand by the DIFFERENCE between estimate and actual
+--     (materialActuals.ts). jobs.materials_actualized_at (added in the jobs
+--     section above) is the idempotency claim — a retry/double-tap/two-crew
+--     submission finds the stamp already set and applies nothing. RLS
+--     ENABLED, ZERO POLICIES — service-role only (the bot runs server-side).
+-- ---------------------------------------------------------------------
+create table if not exists public.job_material_actuals (
+  id          uuid primary key default gen_random_uuid(),
+  job_id      uuid not null references public.jobs(id) on delete cascade,
+  sku         text not null,
+  qty         integer not null default 0 check (qty >= 0),
+  -- The estimate this submission was compared against when the true-up ran
+  -- (prepareJobMaterials doesn't persist what it deducted, so the baseline is
+  -- otherwise unreconstructable once the design has changed again).
+  estimated_qty integer not null default 0 check (estimated_qty >= 0),
+  raw_text    text,        -- what the crew typed, verbatim, for dispute/debug
+  recorded_by text,        -- Telegram chat id (or 'staff:<label>') — the audit trail
+  created_at  timestamptz not null default now()
+);
+
+create index if not exists job_material_actuals_job_id_idx
+  on public.job_material_actuals (job_id);
+
+alter table public.job_material_actuals enable row level security;
+
+
+-- ---------------------------------------------------------------------
+-- 29. bot_pending_actions  (#168 text-ops bot — the confirm-yes gate's memory)
+--     Every sensitive bot write echoes a one-line summary and waits for
+--     "yes" before it runs, so a misread text is harmless until confirmed.
+--     Lambdas are stateless, so the pending action lives here between the
+--     two messages. Rows are consumed ATOMICALLY (set consumed_at WHERE
+--     consumed_at is null) so a double "yes" can only execute once. RLS
+--     ENABLED, ZERO POLICIES — service-role only.
+-- ---------------------------------------------------------------------
+create table if not exists public.bot_pending_actions (
+  id          uuid primary key default gen_random_uuid(),
+  chat_id     text not null,
+  -- The SENDER, not the room: in a group chat each person confirms their own
+  -- pending action, and roles are keyed to the user too.
+  user_id     text not null,
+  tool        text not null,
+  args        jsonb not null default '{}'::jsonb,
+  summary     text not null,      -- the exact confirm line shown, replayed in the audit entry
+  created_at  timestamptz not null default now(),
+  expires_at  timestamptz not null,
+  consumed_at timestamptz
+);
+
+create index if not exists bot_pending_actions_open_idx
+  on public.bot_pending_actions (chat_id, user_id, created_at desc)
+  where consumed_at is null;
+
+alter table public.bot_pending_actions enable row level security;
+
+
+-- ---------------------------------------------------------------------
+-- 30. bot_audit_log  (#168 text-ops bot — who asked the bot to do what, and
+--     what happened)
+--     Every write the bot performs lands here, including denied attempts, so
+--     an unexpected stock or CRM change is always traceable back to a person
+--     and a message. RLS ENABLED, ZERO POLICIES — service-role only.
+-- ---------------------------------------------------------------------
+create table if not exists public.bot_audit_log (
+  id         uuid primary key default gen_random_uuid(),
+  chat_id    text,
+  user_id    text,
+  role       text,
+  tool       text not null,
+  args       jsonb not null default '{}'::jsonb,
+  outcome    text not null,
+  detail     text,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists bot_audit_log_created_at_idx
+  on public.bot_audit_log (created_at desc);
+
+alter table public.bot_audit_log enable row level security;
+
+
+-- ---------------------------------------------------------------------
+-- 31. bot_users  (#168 text-ops bot roster, managed from Settings → Bot team)
+--     Moves crew/staff/admin role management OFF the TELEGRAM_ADMIN/STAFF/
+--     CREW_USERS env vars (which needed a Vercel redeploy on every roster
+--     change) into a DB table an admin edits in the app. One row per
+--     Telegram USER id (message.from.id), NOT per chat — roles are keyed to
+--     the person, so the same user carries their role into any allowlisted
+--     room (the room allowlist itself stays in TELEGRAM_ALLOWED_CHATS). The
+--     env vars remain a LOCKOUT-PROOF FLOOR: resolveSenderRole takes the
+--     higher of the DB role and the env role, so bootstrap admins can never
+--     be demoted out of access by a bad DB edit. RLS ENABLED, ZERO POLICIES
+--     — service-role only (admin API routes run server-side behind
+--     requireAdmin).
+-- ---------------------------------------------------------------------
+create table if not exists public.bot_users (
+  telegram_user_id text primary key,
+  display_name     text,
+  role             text not null check (role in ('crew', 'staff', 'admin')),
+  added_by         text,       -- who added/last-changed this row (an operator email or 'seed')
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now()
+);
+
+alter table public.bot_users enable row level security;
+
+create or replace function public.bot_users_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists bot_users_updated_at on public.bot_users;
+create trigger bot_users_updated_at
+  before update on public.bot_users
+  for each row execute function public.bot_users_set_updated_at();
+
+-- ---------------------------------------------------------------------
+-- crew_members (2026-08-07, migrations/2026-08-07-crew-members.sql +
+-- migrations/2026-08-07-crew-members-name-unique.sql) — the P4P / Operations
+-- Hub identity + pay-config cache. `hub_employee_id` stays nullable until the
+-- Hub's OTP auth ships and backfills it. `telegram_user_id` links to
+-- bot_users when known. RLS ENABLED, ZERO POLICIES — service-role only.
+-- Folded into this canonical file at the S57 wrap review (was missing here
+-- even though both migrations were already applied to prod — a fresh
+-- onboarding DB built from this file alone would have had no crew_members
+-- table at all).
+-- ---------------------------------------------------------------------
+create table if not exists public.crew_members (
+  id               uuid primary key default gen_random_uuid(),
+  hub_employee_id  uuid,
+  telegram_user_id text,
+  display_name     text not null,
+  base_rate_cents  integer not null,
+  in_p4p_pool      boolean not null default false,
+  pay_mode         text not null default 'hourly' check (pay_mode in ('hourly', 'shadow', 'p4p')),
+  language         text not null default 'en',
+  active           boolean not null default true,
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now()
+);
+
+create unique index if not exists crew_members_hub_employee_id_key
+  on public.crew_members (hub_employee_id) where hub_employee_id is not null;
+
+create unique index if not exists crew_members_telegram_user_id_key
+  on public.crew_members (telegram_user_id) where telegram_user_id is not null;
+
+-- Shared-auth-store link (2026-08-16, row 279): the SAME login serves the Quote
+-- Tool and the Operations Hub. Crew logins carry app_metadata.role='crew' and are
+-- rejected by getOperator/requireOperator/requireAdmin and by the role-aware
+-- proxy — shared identity is NOT shared authorization.
+alter table public.crew_members
+  add column if not exists auth_user_id uuid;
+
+create unique index if not exists crew_members_auth_user_id_key
+  on public.crew_members (auth_user_id) where auth_user_id is not null;
+
+create unique index if not exists crew_members_display_name_key
+  on public.crew_members (lower(trim(display_name)));
+
+alter table public.crew_members enable row level security;
+
+create or replace function public.crew_members_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists crew_members_updated_at on public.crew_members;
+create trigger crew_members_updated_at
+  before update on public.crew_members
+  for each row execute function public.crew_members_set_updated_at();
+
+-- ---------------------------------------------------------------------
+-- shifts (2026-08-07, migrations/2026-08-07-shifts.sql) — the canonical
+-- day-level clock ledger for Operations Hub Flow B. `source` records how the
+-- shift was opened; `close_source` how it was closed (nullable — null while
+-- open); they can differ (opened via the Telegram bot, closed by an office
+-- correction, say). The partial unique index is the real idempotency
+-- guarantee — at most one open shift per person, enforced by the DB, not an
+-- application check. RLS ENABLED, ZERO POLICIES — service-role only, fails
+-- closed until the Flow B routes and policies ship. Folded into this
+-- canonical file at the S57 wrap review (see the crew_members note above —
+-- same gap, same fix).
+-- ---------------------------------------------------------------------
+create table if not exists public.shifts (
+  id              uuid primary key default gen_random_uuid(),
+  crew_member_id  uuid not null references public.crew_members(id),
+  clock_in_at     timestamptz not null default now(),
+  clock_out_at    timestamptz,
+  source          text not null check (source in ('pwa', 'telegram', 'office', 'system')),
+  close_source    text check (close_source in ('pwa', 'telegram', 'office', 'system')),
+  device_time     timestamptz,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
+);
+
+create unique index if not exists shifts_one_open_per_person
+  on public.shifts (crew_member_id) where clock_out_at is null;
+
+create index if not exists shifts_crew_member_id_idx
+  on public.shifts (crew_member_id);
+
+alter table public.shifts enable row level security;
+
+create or replace function public.shifts_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists shifts_updated_at on public.shifts;
+create trigger shifts_updated_at
+  before update on public.shifts
+  for each row execute function public.shifts_set_updated_at();
+
+-- ---------------------------------------------------------------------
+-- shift_breaks (2026-08-11, migrations/2026-08-11-shift-breaks.sql) — unpaid
+-- break tracking on the shifts ledger. Breaks are UNPAID, so paid time for a
+-- shift is the clock envelope MINUS break time (the arithmetic lives in
+-- src/lib/shiftBreaks.ts, with its own tests, because it feeds P4P payout
+-- math). The partial unique index is the idempotency guarantee — at most one
+-- open break per shift, enforced by the DB. `auto_closed` marks a break that a
+-- clock-out ended rather than the crew member, which is what feeds the
+-- `open_break` time exception queue; it is a review state, not an error.
+-- `crew_member_id` is denormalized from the parent shift so the write path can
+-- authorize without a join. RLS ENABLED, ZERO POLICIES — service-role only,
+-- fails closed until the Flow B routes and policies ship.
+-- ---------------------------------------------------------------------
+create table if not exists public.shift_breaks (
+  id              uuid primary key default gen_random_uuid(),
+  shift_id        uuid not null references public.shifts(id),
+  crew_member_id  uuid not null references public.crew_members(id),
+  started_at      timestamptz not null default now(),
+  ended_at        timestamptz,
+  source          text not null check (source in ('pwa', 'telegram', 'office', 'system')),
+  end_source      text check (end_source in ('pwa', 'telegram', 'office', 'system')),
+  auto_closed     boolean not null default false,
+  device_time     timestamptz,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now(),
+  constraint shift_breaks_ends_after_start check (ended_at is null or ended_at >= started_at)
+);
+
+create unique index if not exists shift_breaks_one_open_per_shift
+  on public.shift_breaks (shift_id) where ended_at is null;
+
+create index if not exists shift_breaks_shift_id_idx
+  on public.shift_breaks (shift_id);
+
+create index if not exists shift_breaks_crew_member_id_idx
+  on public.shift_breaks (crew_member_id);
+
+alter table public.shift_breaks enable row level security;
+
+create or replace function public.shift_breaks_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists shift_breaks_updated_at on public.shift_breaks;
+create trigger shift_breaks_updated_at
+  before update on public.shift_breaks
+  for each row execute function public.shift_breaks_set_updated_at();
+
+-- ---------------------------------------------------------------------
+-- quote_deliveries (2026-08-12, migrations/2026-08-12-quote-deliveries.sql) —
+-- durable record of every attempt to deliver a quote (SMS/email via GHL) to a
+-- CUSTOMER (#250). One row per attempt (send + each ?retryDelivery=1
+-- redelivery), not one row per quote — see the migration file's own header
+-- for the table-vs-columns rationale and the exact call-site scope (only the
+-- POST /api/quotes/[id]/send customer messages; every other sendSms/sendEmail
+-- caller sends a different customer message and is out of scope). RLS
+-- ENABLED, ZERO POLICIES — service-role only, matches quote_view_events /
+-- self_serve_estimates.
+-- ---------------------------------------------------------------------
+create table if not exists public.quote_deliveries (
+  id                  uuid primary key default gen_random_uuid(),
+  created_at          timestamptz not null default now(),
+  quote_id            uuid not null references public.quotes(id) on delete cascade,
+  channel             text not null check (channel in ('sms', 'email')),
+  outcome             text not null check (outcome in ('sent', 'failed')),
+  provider_message_id text,
+  error               text
+);
+
+create index if not exists quote_deliveries_quote_id_idx
+  on public.quote_deliveries (quote_id, created_at desc);
+
+create index if not exists quote_deliveries_created_at_idx
+  on public.quote_deliveries (created_at desc);
+
+alter table public.quote_deliveries enable row level security;
+
+-- ---------------------------------------------------------------------
+-- job_segments (2026-08-12, migrations/2026-08-12-job-segments.sql) - per-job
+-- time on the shift clock (Flow B, Track A Phase 2 slice 2). Arrive opens a
+-- segment, depart closes it, at most one open per shift (partial unique index).
+-- MONEY: job seconds / budgeted_hours is the efficiency the P4P pool pays on.
+-- BREAKS PAUSE JOB TIME, so job seconds are segment spans MINUS overlapping
+-- break spans (src/lib/jobSegments.ts on src/lib/timeSpans.ts). stoppage_reason
+-- ships day one and cannot be backfilled. auto_closed marks a clock-out close,
+-- feeding the open_segment exception queue - a review state, not an error.
+-- RLS ENABLED, ZERO POLICIES - service-role only, fails closed until routes ship.
+-- ---------------------------------------------------------------------
+create table if not exists public.job_segments (
+  id              uuid primary key default gen_random_uuid(),
+  shift_id        uuid not null references public.shifts(id),
+  crew_member_id  uuid not null references public.crew_members(id),
+  job_id          uuid not null references public.jobs(id),
+
+  arrived_at      timestamptz not null default now(),
+  departed_at     timestamptz,
+
+  entry_kind      text not null default 'install'
+                    check (entry_kind in ('install', 'rework', 'non_billable')),
+
+  -- Null while the segment is open; required by the application on close.
+  stoppage_reason text
+                    check (stoppage_reason in ('completed', 'weather', 'no_access', 'materials', 'other')),
+
+  source          text not null check (source in ('pwa', 'telegram', 'office', 'system')),
+  end_source      text check (end_source in ('pwa', 'telegram', 'office', 'system')),
+
+  auto_closed     boolean not null default false,
+
+  -- Only meaningful for entry_kind = 'non_billable'.
+  approved_by     uuid references public.crew_members(id),
+  approved_at     timestamptz,
+
+  device_time     timestamptz,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now(),
+
+  -- A segment cannot end before it began. Guards an office-correction typo
+  -- from minting negative job time, which would understate efficiency.
+  constraint job_segments_ends_after_start
+    check (departed_at is null or departed_at >= arrived_at),
+
+  -- A closed segment must say WHY it closed; an open one must not pretend to.
+  constraint job_segments_reason_matches_state
+    check ((departed_at is null) = (stoppage_reason is null)),
+
+  -- Approval only belongs on a non_billable segment, and both halves travel
+  -- together so "approved by nobody at some time" cannot be recorded.
+  constraint job_segments_approval_shape
+    check (
+      (approved_by is null and approved_at is null)
+      or (entry_kind = 'non_billable' and approved_by is not null and approved_at is not null)
+    )
+);
+
+create unique index if not exists job_segments_one_open_per_shift
+  on public.job_segments (shift_id) where departed_at is null;
+
+create index if not exists job_segments_shift_id_idx
+  on public.job_segments (shift_id);
+
+create index if not exists job_segments_job_id_idx
+  on public.job_segments (job_id);
+
+create index if not exists job_segments_crew_member_id_idx
+  on public.job_segments (crew_member_id);
+
+-- The missed-tap backstop scans for open segments; keep that scan cheap.
+create index if not exists job_segments_open_arrived_at_idx
+  on public.job_segments (arrived_at) where departed_at is null;
+
+alter table public.job_segments enable row level security;
+
+create or replace function public.job_segments_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists job_segments_updated_at on public.job_segments;
+create trigger job_segments_updated_at
+  before update on public.job_segments
+  for each row execute function public.job_segments_set_updated_at();
+
+
+-- ---------------------------------------------------------------------
+-- archive_photos (2026-07-23 + 2026-08-04 imagery + 2026-08-05 slice 3) —
+-- the #167 training-corpus archive: historical job photos awaiting address
+-- identification, promotion into training_houses, or exclusion. FOLDED INTO
+-- THIS FILE 2026-08-16 (row 282) — it had been missing entirely since
+-- 2026-07-23, so a fresh project built from this file alone had no
+-- archive_photos table at all. Reconciled base create + both later
+-- add-column passes, in date order.
+-- ---------------------------------------------------------------------
+create table if not exists public.archive_photos (
+  id                          uuid primary key default gen_random_uuid(),
+  created_at                  timestamptz not null default now(),
+  updated_at                  timestamptz not null default now(),
+
+  -- Provenance (from the Drive archive + the naming manifest).
+  drive_file_id               text not null unique,
+  source_folder               text,
+  original_title              text,
+  content_hash                text,               -- reserved for future pixel-dedup; drive_file_id is today's idempotency key
+
+  classification              text not null default 'install_night',
+
+  -- Human-resolved ground truth (from the photo-naming pass).
+  resolved_address            text,
+  -- Normalized twin of resolved_address, mirroring public.properties.address_key
+  -- and src/lib/customers.ts normalizeAddress() (lowercase, [.,#] -> space,
+  -- collapse whitespace). The review queue groups a property's many photos by
+  -- THIS column, never the raw text: without it "6 BIRCH ROAD ..." and
+  -- "6 birch road ..." split one 4-photo house into two queue cards, and a
+  -- double-traced house gets double weight in few-shot retrieval.
+  resolved_address_key        text generated always as (
+                                nullif(btrim(regexp_replace(
+                                  regexp_replace(lower(resolved_address), '[.,#]', ' ', 'g'),
+                                  '\s+', ' ', 'g')), '')
+                              ) stored,
+  resolved_customer_id        uuid references public.customers(id) on delete set null,
+  -- The 8-char customers.id prefix the naming pass recorded. Kept alongside the
+  -- resolved uuid so a link that fails to resolve at load time is DETECTABLE
+  -- (resolved_customer_ref not null and resolved_customer_id is null) and
+  -- re-linkable later, instead of silently landing as an unflagged null.
+  resolved_customer_ref       text,
+  -- The name the human actually typed for this photo ("deborah sande",
+  -- "Two Marriott Plaza"). It is the only independent cross-check that a
+  -- customer link points at the RIGHT customer, so it lives on the row rather
+  -- than only in the CSV manifest.
+  resolved_name               text,
+  resolved_ghl_id             text,
+  not_in_crm                  boolean not null default false,
+
+  -- Fetched daytime imagery (slice 2; null until then).
+  satellite_ref               text,
+  street_view_ref             text,
+  satellite_feet_per_pixel    numeric,
+
+  extracted_counts            jsonb,               -- OCR'd tree/bush markup counts — P2, null in P1
+
+  status                      text not null default 'pending',
+  reviewer_notes              text,
+  promoted_training_house_id  uuid references public.training_houses(id) on delete set null
+);
+
+-- Grouping (group-by-property review) + queue reads + customer join. The
+-- grouping index is on the NORMALIZED key, since that is what the queue
+-- groups by; the raw address is only ever displayed, never grouped on.
+create index if not exists archive_photos_status_idx
+  on public.archive_photos (status);
+create index if not exists archive_photos_resolved_address_key_idx
+  on public.archive_photos (resolved_address_key);
+create index if not exists archive_photos_customer_id_idx
+  on public.archive_photos (resolved_customer_id);
+
+-- Keep updated_at fresh on every write. Slices 2 and 3 UPDATE these rows
+-- repeatedly (imagery attach, status transitions, reviewer notes), so without
+-- this trigger updated_at would freeze at load time and any "stalled in the
+-- queue" check would silently read the original insert timestamp. Matches the
+-- every-table convention (customers, properties, permanent_training_examples...).
+create or replace function public.archive_photos_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists archive_photos_updated_at_trigger on public.archive_photos;
+create trigger archive_photos_updated_at_trigger
+  before update on public.archive_photos
+  for each row execute function public.archive_photos_set_updated_at();
+
+-- Defense in depth (mirrors self_serve_estimates + website_leads): the
+-- service-role key is the only path that ever reaches this table, so RLS with
+-- ZERO policies denies anon/authenticated entirely while every server path
+-- keeps working unchanged.
+alter table public.archive_photos enable row level security;
+
+alter table public.archive_photos
+  add column if not exists satellite_w        integer,
+  add column if not exists satellite_h        integer,
+  add column if not exists imagery_error      text,
+  add column if not exists imagery_fetched_at timestamptz;
+
+-- The imagery worker claims work with
+--   where status='pending' and satellite_ref is null and resolved_address is not null
+-- and then groups by resolved_address_key. Index shaped to match: the partial
+-- predicate is the cheap always-true-for-work part (satellite_ref is null), and
+-- the leading columns are what the claim filters and groups on. The table is
+-- 211 rows today, so this is about keeping the claim cheap as later manifest
+-- drops land, not about today's performance.
+create index if not exists archive_photos_imagery_pending_idx
+  on public.archive_photos (status, resolved_address_key)
+  where satellite_ref is null;
+
+-- Private bucket for the fetched daytime imagery. Mirrors the 'designs'
+-- bucket: private, service-role only, read back through a signed URL. The
+-- epic spec's storage decision was bucket-first (path-referenced), never
+-- base64 columns — googleMaps.ts hands back base64, so the worker uploads the
+-- bytes here and stores only the path.
+insert into storage.buckets (id, name, public)
+values ('training-archive', 'training-archive', false)
+on conflict (id) do nothing;
+
+alter table public.archive_photos
+  add column if not exists night_photo_ref text;
+
+-- ---------------------------------------------------------------------
+-- site_submissions (2026-08-04) — the #195 non-lead website forms
+-- (newsletter / careers / intern / nomination). FOLDED INTO THIS FILE
+-- 2026-08-16 (row 282); same gap as archive_photos above.
+-- ---------------------------------------------------------------------
+create table if not exists public.site_submissions (
+  id             uuid primary key default gen_random_uuid(),
+  created_at     timestamptz not null default now(),
+
+  -- newsletter | careers | intern | nomination
+  form_type      text not null,
+  -- which placement it came from, e.g. 'footer', 'newsletter-page',
+  -- 'careers-page', 'intern-page', 'hope-page'
+  form_variant   text not null,
+
+  -- Submitter. Only email is guaranteed: the footer newsletter form is a
+  -- single email field, exactly as it was in Gravity Forms.
+  name           text,
+  email          text not null,
+  phone          text,
+
+  -- Everything form-specific: the application questions, and for a nomination
+  -- the whole nominee block (their name, address, contact details, the story).
+  -- Kept as jsonb so a new question does not need a schema change.
+  payload        jsonb not null default '{}'::jsonb,
+
+  -- Object path in the PRIVATE 'applications' storage bucket (created at the
+  -- bottom of this file). Never a public URL: a resume is personal data and is
+  -- served only through a short-lived signed URL minted for a signed-in staff
+  -- user.
+  resume_path    text,
+  -- Set when an applicant DID attach a resume but the upload failed. Without
+  -- this, a failed upload is indistinguishable from "applied without a resume"
+  -- and staff would never know to ask for it.
+  resume_error   text,
+
+  consent        boolean not null default false,
+  landing_url    text,
+  utm            jsonb,
+  ip             text,
+
+  -- GHL contact for the SUBMITTER only, tagged by form type. A nominated third
+  -- party is never created as a contact: they did not consent to anything.
+  ghl_contact_id text,
+  -- pending | synced | skipped | spam | error
+  sync_status    text not null default 'pending',
+  sync_error     text,
+
+  is_test        boolean not null default false
+);
+
+-- Newest-first admin view.
+create index if not exists site_submissions_created_at_idx
+  on public.site_submissions (created_at desc);
+
+-- The rate-limit query (count from this IP in the last hour), mirroring the
+-- website_leads approach: a DB count survives serverless cold starts and
+-- multiple regions in a way an in-memory counter does not.
+create index if not exists site_submissions_ip_created_at_idx
+  on public.site_submissions (ip, created_at);
+
+-- Admin filtering by form type.
+create index if not exists site_submissions_form_type_created_at_idx
+  on public.site_submissions (form_type, created_at desc);
+
+-- Service-role only, same as website_leads: RLS on with no policies, so the
+-- anon key can neither read nor write. Every access goes through the server.
+alter table public.site_submissions enable row level security;
+
+-- The PRIVATE bucket resumes live in. Created here, in the same migration that
+-- introduces the feature, matching every other storage-backed feature in this
+-- repo (training-archive, custom-uploads, designs). Without this the upload
+-- call fails with "bucket not found", which the route only logs — the
+-- application would still be saved but the resume would silently never exist.
+-- public = false is asserted by the migration rather than left to someone
+-- remembering to tick a box in the Supabase dashboard.
+insert into storage.buckets (id, name, public)
+values ('applications', 'applications', false)
+on conflict (id) do nothing;

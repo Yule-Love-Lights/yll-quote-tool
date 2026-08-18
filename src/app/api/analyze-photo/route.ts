@@ -71,8 +71,20 @@ export async function POST(req: NextRequest) {
   const { result, analysisUnavailable, analysisError, fewShotCount, fewShotBreakdown } =
     await runAnalyzeWithFewShot(base64, mediaType, houseStyleHint, { mode }, '[api/analyze-photo]');
 
+  // #190: this route only ever shows the model a STREET photo — no satellite
+  // image is passed to analyzePhoto (see the `{ mode }` options above, vs.
+  // analyze-address's `satellite: {...}`) — yet the model's output schema
+  // always asks for satelliteSantasLines/satelliteGingerbreadLines and can
+  // hallucinate coordinates for a satellite it never saw. Strip them here as
+  // a server-side belt to the client-side guard in QuoteBuilder's
+  // applyAnalysisResult (analysisSatellitePayload.ts): a street-only result
+  // must never carry satellite lines, hallucinated or otherwise.
+  const sanitizedResult = result
+    ? { ...result, satelliteSantasLines: [], satelliteGingerbreadLines: [] }
+    : result;
+
   return NextResponse.json({
-    result,
+    result: sanitizedResult,
     analysisUnavailable,
     analysisError,
     photoBase64: base64,

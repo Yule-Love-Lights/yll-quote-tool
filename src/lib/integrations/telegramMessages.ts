@@ -88,3 +88,28 @@ export function newLeadMessage(args: {
   lines.push(`Leads → ${args.baseUrl}/admin/leads`);
   return lines.join('\n');
 }
+
+// Phase 3 of the 2026-07-19 text-ops plan: instant staff ping when a crew
+// member captures a field lead via the Telegram bot (captureLead). Same shape
+// as newLeadMessage but worded distinctly ("field lead", not "website lead")
+// so staff can tell at a glance where the contact came from — and no admin
+// link, since captureLead only tags a GHL contact and never writes a
+// website_leads row, so there's no matching /admin/leads entry to point at.
+export function fieldLeadMessage(args: {
+  name: string;
+  service: string;
+  phone: string;
+  address: string | null;
+  /**
+   * Set ONLY on a household-name mismatch (the existing contact's REAL name —
+   * see fieldLead.ts's savedContactName). Staff need to know the typed name
+   * did NOT get saved, or they'd search GHL for a contact that doesn't exist.
+   */
+  savedContactName?: string;
+}): string {
+  const lines = [`🟢 New field lead — ${args.name} (${args.service})`, `📞 ${args.phone}`];
+  if (args.address) lines.push(`📍 ${args.address}`);
+  if (args.savedContactName) lines.push(`(kept existing contact name ${args.savedContactName})`);
+  lines.push('Captured via text-ops bot — enrolled in the SMS drip.');
+  return lines.join('\n');
+}

@@ -8,8 +8,8 @@ import {
   makeDefaultYardstick,
   AnalysisSeed,
 } from './seedFromAnalysis';
-import type { Scene, StrandItem, MiniAreaItem, WreathItem, SpritzerItem, GarlandItem } from './sceneTypes';
-import { isStrand, isWreath, isSpritzer, isGarland, isMiniArea } from './sceneTypes';
+import type { Scene, StrandItem, MiniAreaItem, WreathItem, SpritzerItem, GarlandItem, MiniGroupItem } from './sceneTypes';
+import { isStrand, isWreath, isSpritzer, isGarland, isMiniArea, isMiniGroup } from './sceneTypes';
 
 const W = 1000;
 const H = 500;
@@ -135,6 +135,99 @@ describe('seedSceneFromAnalysis — replacement rules', () => {
     const populated = seedSceneFromAnalysis(emptyScene(), FULL_SEED, W, H);
     expect(seedSceneFromAnalysis(populated, {}, W, H)).toBe(populated);
     expect(seedSceneFromAnalysis(populated, FULL_SEED, 0, H)).toBe(populated);
+  });
+
+  // #227: a re-analyze on an EXISTING design (the seed-analysis route) is a
+  // sixth strand-removal site the original reconciliation missed — staff can
+  // group AI-seeded seed-mini-N strands into a MiniGroupItem (its own id is
+  // NOT seed-prefixed, so it always survives the per-unit replace above), and
+  // a re-analyze that drops those member ids without a matching re-detection
+  // must prune the now-orphaned group instead of leaving it dangling but still
+  // billed forever.
+  it('prunes a miniGroup whose seed-mini-N members are dropped by a re-analyze (#227)', () => {
+    const seeded = seedSceneFromAnalysis(emptyScene(), {
+      detections: { miniLights: [
+        { type: 'railing', wrapStyle: 'canopy', stringCount: 2, box: [0.1, 0.4, 0.3, 0.02] },
+        { type: 'column', wrapStyle: 'canopy', stringCount: 1, box: [0.5, 0.5, 0.04, 0.3] },
+      ] },
+    }, W, H);
+    const memberIds = seeded.items.filter(isStrand).map((s) => s.id);
+    expect(memberIds).toEqual(['seed-mini-1', 'seed-mini-2']); // pin the id shape the guard relies on
+    const grp: MiniGroupItem = {
+      id: 'staff-group-1', // NOT seed-prefixed — a staff action, survives the replace filter
+      kind: 'miniGroup',
+      memberIds,
+      yardstickId: null,
+      surface: 'railing',
+      wrapStyle: 'canopy',
+      stringCount: 2,
+      included: true,
+    };
+    const grouped: Scene = {
+      ...seeded,
+      items: [
+        ...seeded.items.map((i) => (memberIds.includes(i.id) ? { ...(i as StrandItem), groupId: grp.id } : i)),
+        grp,
+      ],
+    };
+
+    // Re-analyze with NO miniLights detections at all — both members are
+    // dropped by the seed-* replace filter and never come back.
+    const out = seedSceneFromAnalysis(grouped, {
+      detections: { wreaths: [{ size: '24noble', tier: 'bow', box: [0.5, 0.5, 0.1, 0.1] }] },
+    }, W, H);
+
+    expect(out.items.some(isMiniGroup)).toBe(false); // orphaned group pruned
+    expect(out.items.some((i) => memberIds.includes(i.id))).toBe(false); // dropped members gone too
+  });
+
+  // #227 double-bill variant: a re-analyze that DOES redetect the same
+  // feature regenerates a strand with the SAME seed-mini-N id (ids are
+  // assigned by index within the fresh detections array) but as a brand-new
+  // object with no groupId — so naive pruning would see the id as "still
+  // live" and leave the group billing WHILE the fresh, now-ungrouped strand
+  // also bills on its own. The fix carries the dropped member's groupId
+  // forward onto the same-id replacement.
+  it('reattaches groupId when a re-analyze redetects the same seed-mini-N id, instead of double-billing (#227)', () => {
+    const seeded = seedSceneFromAnalysis(emptyScene(), {
+      detections: { miniLights: [
+        { type: 'railing', wrapStyle: 'canopy', stringCount: 2, box: [0.1, 0.4, 0.3, 0.02] },
+      ] },
+    }, W, H);
+    const memberId = (seeded.items.find(isStrand) as StrandItem).id;
+    expect(memberId).toBe('seed-mini-1');
+    const grp: MiniGroupItem = {
+      id: 'staff-group-1',
+      kind: 'miniGroup',
+      memberIds: [memberId],
+      yardstickId: null,
+      surface: 'railing',
+      wrapStyle: 'canopy',
+      stringCount: 2,
+      included: true,
+    };
+    const grouped: Scene = {
+      ...seeded,
+      items: [
+        ...seeded.items.map((i) => (i.id === memberId ? { ...(i as StrandItem), groupId: grp.id } : i)),
+        grp,
+      ],
+    };
+
+    // Re-analyze redetects the SAME railing at the SAME index → the fresh
+    // strand gets the SAME id (seed-mini-1) as the grouped member.
+    const out = seedSceneFromAnalysis(grouped, {
+      detections: { miniLights: [
+        { type: 'railing', wrapStyle: 'canopy', stringCount: 2, box: [0.1, 0.4, 0.3, 0.02] },
+      ] },
+    }, W, H);
+
+    const group = out.items.find(isMiniGroup) as MiniGroupItem;
+    expect(group).toBeTruthy(); // not orphaned — the id is present
+    const member = out.items.find((i) => i.id === memberId) as StrandItem;
+    expect(member.groupId).toBe(grp.id); // reattached, not dangling — projectScene's per-strand skip fires
+    // Exactly one strand with this id — no accidental duplicate.
+    expect(out.items.filter((i) => i.id === memberId)).toHaveLength(1);
   });
 });
 

@@ -26,7 +26,7 @@ const DASHBOARD_QUOTES_SELECT =
   'homeworks_sent_at, homeworks_signed_at, highlevel_contact_id, ' +
   'service_type, ' +
   // B7 fix: status + viewed_at are required so deriveStatus can identify
-  // terminal states (cancelled/declined/lost) that timestamps alone can't
+  // terminal states (cancelled/declined/abandoned) that timestamps alone can't
   // express. Without status, a cancelled-but-deposited order falls through
   // deposit_paid_at→'booked' and inflates revenue and the board.
   'status, viewed_at, ' +
@@ -36,7 +36,11 @@ const DASHBOARD_QUOTES_SELECT =
   'customer_id, ' +
   // BUG-2 (S22): the sequential display number (#83) so the customer detail
   // history + activity feed show `#1010` instead of the raw UUID prefix.
-  'quote_number';
+  'quote_number, ' +
+  // #181: YLL Neighbor migrated-rebook flag, additive only — the inbox adapter
+  // (quotetool.ts) reads it to suppress unsent Neighbor drafts as inbox noise.
+  // NOT filtered here: KPIs/insights/etc. deliberately still count these quotes.
+  'legacy_rebook';
 
 /**
  * Fetch quotes for the dashboard, returning a discriminated result so callers
@@ -57,6 +61,9 @@ export async function listQuotesForDashboardResult(limit = 500): Promise<Dashboa
     // serviceMetrics — composes from these rows, so excluding is_test here keeps
     // simulated test data out of every metric in one place.
     .eq('is_test', false)
+    // View-only isolation (#176): a browse-only second quote is never real
+    // operational data — exclude it at the same chokepoint as is_test above.
+    .eq('view_only', false)
     .order('created_at', { ascending: false })
     .limit(limit);
   if (error) {

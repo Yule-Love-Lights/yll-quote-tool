@@ -41,18 +41,36 @@ const req = () => ({ nextUrl: { origin: 'https://portal.test' } }) as unknown as
 const ctx = (id = ID) => ({ params: Promise.resolve({ id }) });
 
 type Row = Record<string, unknown>;
-function makeSb(quote: Row | null) {
+// #187c: a second read (`.select('view_only, is_nce').eq('id', id).maybeSingle()`)
+// fires right before the Valor call as a TOCTOU re-check. `single()` stays
+// the FIRST fetch's terminal (unchanged); `maybeSingle()` is the re-check's
+// terminal — defaults to mirroring the same row's view_only/is_nce, unless
+// `opts.recheckViewOnly`/`opts.recheckIsNce` override it to simulate a flip
+// mid-request, or `opts.recheckDeleted` (#187 review FIX 3, #660) forces
+// `data: null` to simulate the row being deleted BETWEEN the first fetch and
+// the re-check (the first fetch still succeeds normally with `quote`).
+function makeSb(
+  quote: Row | null,
+  opts: { recheckViewOnly?: boolean; recheckIsNce?: boolean; recheckDeleted?: boolean } = {},
+) {
   const b: Record<string, unknown> = {};
   Object.assign(b, {
     from: () => b,
     select: () => b,
     eq: () => b,
     single: async () => ({ data: quote, error: quote ? null : { message: 'no rows' } }),
+    maybeSingle: async () => ({
+      data:
+        quote && !opts.recheckDeleted
+          ? { view_only: opts.recheckViewOnly ?? quote.view_only, is_nce: opts.recheckIsNce ?? quote.is_nce ?? false }
+          : null,
+      error: null,
+    }),
   });
   return b;
 }
 
-const QUOTE = { id: ID, customer_name: 'Alice', customer_email: 'a@x.com', is_test: false };
+const QUOTE = { id: ID, customer_name: 'Alice', customer_email: 'a@x.com', is_test: false, view_only: false, is_nce: false };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -87,6 +105,64 @@ describe('POST /api/quotes/[id]/pay-balance', () => {
     const json = await res.json();
     expect(res.status).toBe(400);
     expect(json.code).toBe('test-quote');
+    expect(createHostedPageSaleMock).not.toHaveBeenCalled();
+  });
+
+  // #176 — a staff-flagged browse-only quote must never mint a real hosted
+  // page, checked before any invoice lookup or Valor call.
+  it('409s (view-only) when the quote is flagged view-only', async () => {
+    sbRef.current = makeSb({ ...QUOTE, view_only: true });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('view-only');
+    expect(getInvoiceByJobMock).not.toHaveBeenCalled();
+    expect(createHostedPageSaleMock).not.toHaveBeenCalled();
+  });
+
+  // #187c belt-and-suspenders — a cheap re-read right before the Valor call
+  // catches a flip that lands after the fast-path check but before checkout.
+  it('409s (view-only) when the flag flips ON between the fast-path check and the Valor call', async () => {
+    sbRef.current = makeSb({ ...QUOTE, view_only: false }, { recheckViewOnly: true });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('view-only');
+    expect(createHostedPageSaleMock).not.toHaveBeenCalled();
+  });
+
+  // #199 — an NCE trade job's balance is never collectable here (it settles
+  // through NCE), checked before any invoice lookup or Valor call.
+  it('409s (nce) when the quote is NCE-tagged', async () => {
+    sbRef.current = makeSb({ ...QUOTE, is_nce: true });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('nce');
+    expect(getInvoiceByJobMock).not.toHaveBeenCalled();
+    expect(createHostedPageSaleMock).not.toHaveBeenCalled();
+  });
+
+  // #187c parity for #199 — the same pre-Valor re-check catches an NCE flip too.
+  it('409s (nce) when the flag flips ON between the fast-path check and the Valor call', async () => {
+    sbRef.current = makeSb({ ...QUOTE, is_nce: false }, { recheckIsNce: true });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('nce');
+    expect(createHostedPageSaleMock).not.toHaveBeenCalled();
+  });
+
+  // #187 review FIX 3 (#660): the re-check must fail CLOSED, not open, when
+  // the quote row is gone by the time of the re-check — `recheck?.view_only`
+  // is equally falsy for "row exists, unflagged" and "row doesn't exist",
+  // so a deleted quote must 404 rather than silently proceed to Valor.
+  it('404s when the quote row is gone by the time of the pre-Valor re-check', async () => {
+    sbRef.current = makeSb({ ...QUOTE }, { recheckDeleted: true });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(404);
+    expect(json.error).toMatch(/not found/i);
     expect(createHostedPageSaleMock).not.toHaveBeenCalled();
   });
 

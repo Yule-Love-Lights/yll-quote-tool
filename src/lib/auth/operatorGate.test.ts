@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isPublicPath } from './operatorGate';
+import { isCrewPath, isPublicPath } from './operatorGate';
 
 describe('isPublicPath — customer-facing allowlist', () => {
   it('treats the customer portal + its assets as public', () => {
@@ -42,6 +42,9 @@ describe('isPublicPath — customer-facing allowlist', () => {
       '/api/dashboard/gmail/poll', // Vercel Cron (CRON_SECRET-guarded, #58)
       '/api/dashboard/ingest', // Generic ingest (shared-secret in the route, #58)
       '/api/leads/retry', // Vercel Cron (CRON_SECRET-guarded, #leads retry worker)
+      '/api/ops/digest', // Vercel Cron (CRON_SECRET-guarded, #168 morning ops digest)
+      '/api/inventory/prep-digest', // Vercel Cron (CRON_SECRET-guarded, #666 daily prep digest)
+      '/api/jobs/completing-today', // Vercel Cron (CRON_SECRET-guarded, #666 completing-today Jobs ping)
     ]) {
       expect(isPublicPath(p), p).toBe(true);
     }
@@ -241,5 +244,89 @@ describe('isPublicPath — customer-facing allowlist', () => {
     expect(isPublicPath(p)).toBe(true); // method defaults to GET
     expect(isPublicPath(p, 'POST')).toBe(false);
     expect(isPublicPath(`${p}/`, 'GET')).toBe(true); // tolerates a single trailing slash
+  });
+
+  // #195 — the non-lead website forms are iframed on yulelovelights.com, so the
+  // visitor is never signed in. Without these entries the perimeter
+  // default-denies and a homeowner sees our login screen instead of the form.
+  // Caught on PROD after merge, by neither review lens (S50).
+  it('treats each non-lead form page as public — EXACT match only (#195)', () => {
+    for (const p of ['/forms/newsletter', '/forms/careers', '/forms/intern', '/forms/nomination']) {
+      expect(isPublicPath(p), p).toBe(true);
+      expect(isPublicPath(`${p}/`), p).toBe(true); // single trailing slash is normalized
+    }
+    // Never public by prefix: a future /forms/<something> is a deliberate act.
+    expect(isPublicPath('/forms')).toBe(false);
+    expect(isPublicPath('/forms/anything-else')).toBe(false);
+    expect(isPublicPath('/forms/newsletter/extra')).toBe(false);
+  });
+
+  it('allows POST + OPTIONS on /api/site-forms and nothing else (#195)', () => {
+    expect(isPublicPath('/api/site-forms', 'POST')).toBe(true);
+    expect(isPublicPath('/api/site-forms', 'OPTIONS')).toBe(true); // cross-origin JSON preflight
+    expect(isPublicPath('/api/site-forms/', 'POST')).toBe(true);
+    expect(isPublicPath('/api/site-forms', 'GET')).toBe(false);
+    expect(isPublicPath('/api/site-forms', 'DELETE')).toBe(false);
+    expect(isPublicPath('/api/site-forms')).toBe(false); // defaults to GET
+    // The ADMIN read of the same data stays operator-only.
+    expect(isPublicPath('/api/admin/site-forms', 'GET')).toBe(false);
+    expect(isPublicPath('/admin/site-forms')).toBe(false);
+  });
+});
+
+describe('isCrewPath — the crew-only surface (row 279)', () => {
+  it('claims the whole /api/ops/v1 namespace', () => {
+    expect(isCrewPath('/api/ops/v1')).toBe(true);
+    expect(isCrewPath('/api/ops/v1/jobs/abc/arrive')).toBe(true);
+    expect(isCrewPath('/api/ops/v1/jobs/abc/depart')).toBe(true);
+    expect(isCrewPath('/api/ops/v1/jobs/abc/complete')).toBe(true);
+    // Not yet built, but the prefix must already cover it so adding it needs no
+    // change here.
+    expect(isCrewPath('/api/ops/v1/breaks/start')).toBe(true);
+  });
+
+  it('tolerates a trailing slash', () => {
+    expect(isCrewPath('/api/ops/v1/')).toBe(true);
+  });
+
+  it('does NOT claim /api/ops paths outside v1 — the crons are not crew', () => {
+    expect(isCrewPath('/api/ops/digest')).toBe(false);
+    expect(isCrewPath('/api/ops/midnight-close')).toBe(false);
+    expect(isCrewPath('/api/ops')).toBe(false);
+  });
+
+  it('does not claim the operator surface, which is the whole point', () => {
+    // A crew session reaching any of these would be reaching customer PII.
+    expect(isCrewPath('/customers')).toBe(false);
+    expect(isCrewPath('/api/customers')).toBe(false);
+    expect(isCrewPath('/admin/jobs')).toBe(false);
+    expect(isCrewPath('/api/jobs')).toBe(false);
+    expect(isCrewPath('/')).toBe(false);
+  });
+
+  it('is not fooled by a lookalike prefix', () => {
+    expect(isCrewPath('/api/ops/v1x/jobs')).toBe(false);
+    expect(isCrewPath('/api/ops/v10/jobs')).toBe(false);
+  });
+});
+
+describe('the crew API is NOT public — it needs a session, just a crew one', () => {
+  it('keeps every crew path out of the public allowlist', () => {
+    for (const p of [
+      '/api/ops/v1',
+      '/api/ops/v1/jobs/abc/arrive',
+      '/api/ops/v1/jobs/abc/depart',
+      '/api/ops/v1/jobs/abc/complete',
+    ]) {
+      expect(isPublicPath(p, 'POST')).toBe(false);
+      expect(isPublicPath(p, 'GET')).toBe(false);
+    }
+  });
+
+  it('DOES allowlist the midnight-close cron, which carries no session at all', () => {
+    // Without this the perimeter 401s the cron before its own CRON_SECRET check
+    // runs — the exact gap that silently broke prep-digest and the morning digest.
+    expect(isPublicPath('/api/ops/midnight-close', 'POST')).toBe(true);
+    expect(isPublicPath('/api/ops/midnight-close', 'GET')).toBe(true);
   });
 });

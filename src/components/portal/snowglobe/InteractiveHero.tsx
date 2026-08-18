@@ -34,7 +34,7 @@ import type { RenderSettings } from '@/components/design/editor-core/renderSetti
 import type { ServiceType } from '@/lib/serviceType';
 import { portalPhotos } from '@/lib/portal/photos';
 import { effectSpeedMs } from '@/lib/design/permanentScenes';
-import { colorOf } from '@/components/design/editor-core/colors';
+import { isEmptyCustomSlot } from '@/lib/portal/derivePackages';
 // The live design render uses Konva — load it client-side only (no SSR).
 const DesignCanvas = dynamic(() => import('../../design/DesignCanvas'), { ssr: false });
 
@@ -93,18 +93,6 @@ export function InteractiveHero({
       ? { effect: permanentEffect, speedMs: effectSpeedMs(permanentEffect) }
       : null;
   }, [serviceType, permanentEffect]);
-  // #88 P6b-3/4 — the facade glow gradient for the active permanent color. Built from
-  // the live palette (colorOverride), tinted via the configured palette hex. null (no
-  // wash) for non-permanent quotes and for "as designed" (colorOverride null) — the
-  // glow only shows for an explicit color. A motion effect sweeps it.
-  const permGlow = useMemo(() => {
-    if (serviceType !== 'permanent' || !design || !colorOverride || colorOverride.length === 0) return null;
-    const hexOf = (id: string) => palette?.find((c) => c.id === id)?.hex ?? colorOf(id).hex;
-    const hexes = colorOverride.map(hexOf);
-    // Repeat the first color at the end so the 200%-wide sweep loops seamlessly.
-    const stops = hexes.length === 1 ? `${hexes[0]}, ${hexes[0]}` : [...hexes, hexes[0]].join(', ');
-    return { gradient: `linear-gradient(90deg, ${stops})`, motion: !!heroAnimation };
-  }, [serviceType, design, colorOverride, palette, heroAnimation]);
   const [ready, setReady] = useState(false);
   const [flashKey, setFlashKey] = useState(0);
   // #13 multi-image: which photo the hero shows (null = the base photo). The
@@ -127,42 +115,6 @@ export function InteractiveHero({
         : null,
     [design, activePhotoId],
   );
-  // #88 P6b — the normalized [0..1] bounding box of the lit items on the ACTIVE
-  // photo, so the facade glow sits over the roofline (where the lights actually
-  // are) instead of washing the entire photo. Coords are photo-space normalized
-  // by the photo size; the soft elliptical mask (portal-snowglobe.css) forgives
-  // the small object-cover crop on desktop, and mobile is aspect-locked = exact.
-  // null (no scene/geometry) → the CSS falls back to a centered default.
-  const permGlowBox = useMemo(() => {
-    const pw = activeW ?? design?.photoW ?? 0;
-    const ph = activeH ?? design?.photoH ?? 0;
-    const items = activeScene?.items;
-    if (serviceType !== 'permanent' || !pw || !ph || !items?.length) return null;
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, any = false;
-    for (const it of items) {
-      const pts = (it as { points?: number[] }).points;
-      if (!Array.isArray(pts)) continue;
-      for (let i = 0; i + 1 < pts.length; i += 2) {
-        const x = pts[i], y = pts[i + 1];
-        if (typeof x !== 'number' || typeof y !== 'number') continue;
-        any = true;
-        if (x < minX) minX = x;
-        if (x > maxX) maxX = x;
-        if (y < minY) minY = y;
-        if (y > maxY) maxY = y;
-      }
-    }
-    if (!any) return null;
-    // Horizontal span of the lights (where the strand runs) and the y of the
-    // light LINE. The glow spills DOWNWARD from the lights onto the facade —
-    // like a real install throwing light on the wall below — so it starts at the
-    // light line (never above it) and fades out further down the wall.
-    const x0 = minX / pw;
-    const x1 = maxX / pw;
-    const yTop = maxY / ph;                      // bottom edge of the light geometry
-    const yBot = Math.min(0.96, yTop + 0.24);    // fade out ~24% of the height below
-    return { x0, x1, yTop, yBot };
-  }, [serviceType, activeScene, activeW, activeH, design]);
   // A broken hero image (e.g. an expired signed URL) must never show the
   // browser's broken-image icon. When the daytime <img> or the static
   // next/image errors, fall back to a neutral night-sky poster instead.
@@ -199,6 +151,26 @@ export function InteractiveHero({
   // cover-fits the photo, so an exact aspect = no crop in ANY direction for any
   // uploaded photo, not just the 8/5 Street View. Fallback to 8/5 when unknown.
   const mediaAspect = activeW && activeH ? `${activeW} / ${activeH}` : undefined;
+
+  // #238 — "Build your own" (package D) selects into an EMPTY state: the
+  // customer needs to scroll down to WhatsIncluded to actually pick items,
+  // but selecting alone leaves them looking at the tabs with no cue that
+  // anything happened below the fold. Same jump-and-focus shape as
+  // DesignReprise's goToColors (#10/#48): scrollIntoView then a
+  // preventScroll focus so keyboard/SR users land there too. Scrolls to the
+  // WhatsIncluded heading itself (portal-dark-included-heading) rather than
+  // adding a new id to its section — the heading is already the natural
+  // landing point (it's what aria-labelledby points screen readers at) and
+  // this avoids touching that component for a second id. No reduced-motion
+  // gate: the pattern being copied doesn't have one either (only CSS
+  // animations are gated elsewhere in this codebase), so this doesn't
+  // invent a new convention.
+  const goToIncluded = () => {
+    const el = document.getElementById('portal-dark-included-heading');
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    el.focus({ preventScroll: true });
+  };
 
   return (
     <section
@@ -288,26 +260,6 @@ export function InteractiveHero({
         className="portal-snow-stage-bloom"
         data-level={packageId}
       />
-
-      {/* #88 P6b-3 — permanent scene facade glow (over the photo/bloom, screen-blend).
-          Only when a scene color is active; sweeps for a motion scene. */}
-      {permGlow && !showDaylight && (
-        <div
-          aria-hidden
-          className="portal-perm-glow"
-          data-motion={permGlow.motion ? 'true' : 'false'}
-          style={{
-            ['--perm-glow' as string]: permGlow.gradient,
-            // The glow spills DOWN from the light line onto the facade (#88): the
-            // mask is a horizontal window (light x-span) intersected with a
-            // downward fade that starts at the lights — never above them.
-            ['--pg-x0' as string]: `${((permGlowBox?.x0 ?? 0.2) * 100).toFixed(2)}%`,
-            ['--pg-x1' as string]: `${((permGlowBox?.x1 ?? 0.8) * 100).toFixed(2)}%`,
-            ['--pg-ytop' as string]: `${((permGlowBox?.yTop ?? 0.4) * 100).toFixed(2)}%`,
-            ['--pg-ybot' as string]: `${((permGlowBox?.yBot ?? 0.64) * 100).toFixed(2)}%`,
-          } as React.CSSProperties}
-        />
-      )}
 
       {/* Brand watermark (#45) — sits over the photo, outside the brightness-
           filtered photo element so it stays consistent across packages. */}
@@ -444,6 +396,16 @@ export function InteractiveHero({
                     onClick={() => {
                       selectPackage(p.id);
                       track('package_selected', { quote_id: quoteId, package: p.id });
+                      // #238 (review fix): 'D' is overloaded across verticals
+                      // (a legacy rebook's single PRE-FILLED tile, permanent's
+                      // populated "Whole Home" bundle, and event/bistro's
+                      // single populated package all use id 'D' too) — only
+                      // isEmptyCustomSlot's real-emptiness check (see its doc
+                      // comment in derivePackages.ts) means "this tile still
+                      // needs the customer to pick items". Whole Home is
+                      // deliberately NOT scrolled here — an open product call
+                      // for Jason, not decided silently.
+                      if (isEmptyCustomSlot(p)) goToIncluded();
                     }}
                     data-active={packageId === p.id}
                     className="portal-snow-pack-tab focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F]"

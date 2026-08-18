@@ -7,6 +7,7 @@ import { OperatorShell } from '@/components/OperatorShell';
 import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { JobStatusBadge } from '@/components/admin/JobStatusBadge';
 import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
+import { NceBadge } from '@/components/admin/NceBadge';
 import { reconcileInvoice } from '@/lib/invoices';
 import type { JobDetail } from '@/lib/jobs';
 
@@ -187,6 +188,8 @@ export default function JobDetailPage() {
                   Test
                 </span>
               )}
+              {/* NCE (#199) — the barter/trade network tag. */}
+              {data.isNce && <NceBadge />}
             </div>
             <p className="text-sm text-gray-500 mb-6">
               {data.job.type === 'permanent'
@@ -249,10 +252,22 @@ export default function JobDetailPage() {
               {data.invoice ? (
                 <>
                   <div className="flex items-center gap-2 mb-2">
-                    <span className="text-gray-800 font-medium">
+                    {/* S30 wrap review: the balance-collection UI (charge saved card /
+                        pay-link / mark-paid-cash) lives on the invoice detail — link
+                        there instead of dead-ending staff at a read-only summary. */}
+                    <Link
+                      href={`/admin/invoices/${data.invoice.id}`}
+                      className="text-blue-600 font-medium hover:underline"
+                    >
                       {data.invoice.invoice_number != null ? `Invoice #${data.invoice.invoice_number}` : 'Invoice'}
-                    </span>
+                    </Link>
                     <InvoiceStatusBadge status={data.invoice.status} />
+                    <Link
+                      href={`/admin/invoices/${data.invoice.id}`}
+                      className="ml-auto text-xs text-blue-600 hover:underline"
+                    >
+                      Collect / manage →
+                    </Link>
                   </div>
                   <dl className="text-sm text-gray-600 space-y-0.5">
                     <div className="flex justify-between">
@@ -275,10 +290,13 @@ export default function JobDetailPage() {
                     )}
                   </dl>
                   {(() => {
-                    const recon = reconcileInvoice(data.invoice);
+                    // #177 fix 4: pass the quote's INTENDED deposit (its own
+                    // deposit percent) so short-deposit compares against that,
+                    // not a blanket 40%-of-total assumption.
+                    const recon = reconcileInvoice(data.invoice, data.intendedDepositUsd);
                     const flagLabels: Record<string, string> = {
                       'overpaid': 'Overpaid — issue a refund in Valor',
-                      'short-deposit': 'Deposit below 40% of total — verify with customer',
+                      'short-deposit': 'Deposit below the intended amount — verify with customer',
                       'balance-outstanding': 'Balance outstanding',
                       'inconsistent': 'Data error: invoice marked paid but balance > 0 — contact support',
                     };

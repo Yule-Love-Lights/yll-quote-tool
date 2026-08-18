@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { calculateQuote, QuoteInputs, MINI_LIGHT_TYPES } from '@/lib/pricing/pricingEngine';
+import { calculateQuote, QuoteInputs, MINI_LIGHT_TYPES, normalizedDepositOverride } from '@/lib/pricing/pricingEngine';
 import { saveQuote, updateQuote, getQuoteRaw, Customer } from '@/lib/quotes';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { getDesign, isValidDesignId } from '@/lib/designs';
@@ -40,6 +40,11 @@ const MAX_CUSTOM_RATE = 1000;
 const MAX_OVERRIDE_AMOUNT = 1_000_000;
 const MAX_OVERRIDE_REASON_LEN = 500;
 
+// #leads "Create quote" link: a HighLevel contact id is an opaque short
+// string (GHL's own ids run well under this) — cap it generously so a clean
+// 400 beats persisting an oversized/garbage value into highlevel_contact_id.
+const MAX_HL_CONTACT_ID_LEN = 100;
+
 // Audit fix (quote-route-validation): allowed enum sets for the typed per-unit
 // arrays, mirroring the pricingEngine types. A malformed element is a clean 400
 // instead of an opaque downstream 500.
@@ -66,7 +71,7 @@ const REPRICE_LOCKED_STATUSES: ReadonlySet<QuoteStatus> = new Set<QuoteStatus>([
   'booked',
   'declined',
   'cancelled',
-  'lost',
+  'abandoned',
 ]);
 
 function isNonNegNumber(v: unknown): v is number {
@@ -100,6 +105,9 @@ export async function POST(req: NextRequest) {
     isTest: rawIsTest,
     amendReprice: rawAmendReprice,
     referredByCustomerId: rawReferredByCustomerId,
+    highlevelContactId: rawHighlevelContactId,
+    legacyRebook: rawLegacyRebook,
+    isNce: rawIsNce,
   } = body as Record<string, unknown>;
 
   // Amend deadlock fix: an explicit, operator-only re-price mode for a BOOKED order.
@@ -137,6 +145,52 @@ export async function POST(req: NextRequest) {
   }
   const referredByCustomerId = typeof rawReferredByCustomerId === 'string' ? rawReferredByCustomerId : null;
 
+  // #leads "Create quote" link + #214 live-session link: the builder
+  // session's HighLevel contact id. Opaque untrusted string — type + length
+  // only (no format assumed, unlike the UUID-shaped referredByCustomerId
+  // above). On a NEW save it lands in the insert (saveQuote). On an UPDATE
+  // it is (since #214) threaded to updateQuote as IDENTITY input only —
+  // updateQuote still never writes the highlevel_contact_id column (the
+  // operator's HL-autocomplete pick/clear, via /api/integrations/highlevel/
+  // attach, stays that column's only post-insert writer). Tri-state: string
+  // = linked this session · explicit null = the session has NO contact
+  // (cleared / never linked — do NOT fall back to the stored id) ·
+  // absent/undefined = caller doesn't know (legacy) → updateQuote falls
+  // back to the stored id.
+  if (
+    rawHighlevelContactId !== undefined &&
+    rawHighlevelContactId !== null &&
+    typeof rawHighlevelContactId !== 'string'
+  ) {
+    return NextResponse.json({ error: 'highlevelContactId must be a string or null if provided' }, { status: 400 });
+  }
+  if (typeof rawHighlevelContactId === 'string' && rawHighlevelContactId.length > MAX_HL_CONTACT_ID_LEN) {
+    return NextResponse.json(
+      { error: `highlevelContactId exceeds the ${MAX_HL_CONTACT_ID_LEN}-character limit` },
+      { status: 400 },
+    );
+  }
+  const highlevelContactIdTrimmed =
+    typeof rawHighlevelContactId === 'string' ? rawHighlevelContactId.trim() : '';
+  const highlevelContactId = highlevelContactIdTrimmed ? highlevelContactIdTrimmed : null;
+  // The tri-state form updateQuote takes (undefined preserved; blank → null).
+  const hlContactIdForUpdate: string | null | undefined =
+    rawHighlevelContactId === undefined ? undefined : highlevelContactId;
+
+  // NCE + YLL Neighbor tags (#198): the builder's chip strip sends the CURRENT
+  // chip state on every save (both new + edit mode) — optional booleans, same
+  // shape as isTest above. Unlike isTest, BOTH are honored on the update path
+  // too (see saveQuote/updateQuote's own param docs) so a reopened quote's
+  // toggled chip actually persists.
+  if (rawLegacyRebook !== undefined && typeof rawLegacyRebook !== 'boolean') {
+    return NextResponse.json({ error: 'legacyRebook must be a boolean if provided' }, { status: 400 });
+  }
+  const legacyRebook = typeof rawLegacyRebook === 'boolean' ? rawLegacyRebook : undefined;
+  if (rawIsNce !== undefined && typeof rawIsNce !== 'boolean') {
+    return NextResponse.json({ error: 'isNce must be a boolean if provided' }, { status: 400 });
+  }
+  const isNce = typeof rawIsNce === 'boolean' ? rawIsNce : undefined;
+
   // Testing mode: customer fields (name, address, phone, email) are all
   // optional. We still accept the customer object so future fields can be
   // added without a breaking change, but we don't require any value.
@@ -169,6 +223,18 @@ export async function POST(req: NextRequest) {
     if (v !== undefined && !(typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= MAX_CUSTOM_RATE)) {
       return NextResponse.json(
         { error: `${f} must be a number between 0 and ${MAX_CUSTOM_RATE} if provided` },
+        { status: 400 },
+      );
+    }
+  }
+  // #177: optional per-quote deposit percent override. When present, must be
+  // an integer 1-100; a clean 400 beats a silently-defaulted bad value (the
+  // engine's effectiveDepositRate also clamps defensively, for a legacy row).
+  if (q.depositPercent !== undefined) {
+    const v = q.depositPercent;
+    if (!(typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= 100)) {
+      return NextResponse.json(
+        { error: 'depositPercent must be an integer between 1 and 100 if provided' },
         { status: 400 },
       );
     }
@@ -289,6 +355,23 @@ export async function POST(req: NextRequest) {
     }
     if (!PERM_TRACK_COLORS.has(pf.trackColor as string)) {
       return NextResponse.json({ error: 'Invalid permanent.trackColor' }, { status: 400 });
+    }
+    // #192 — per-side track style override (optional). An unknown key is
+    // silently ignored (mirrors sideSource's leniency); a PRESENT recognized
+    // side key must carry a valid TrackStyle value.
+    if (pf.trackStyleBySide !== undefined) {
+      if (!isObj(pf.trackStyleBySide) || Array.isArray(pf.trackStyleBySide)) {
+        return NextResponse.json({ error: 'permanent.trackStyleBySide must be an object if provided' }, { status: 400 });
+      }
+      for (const side of ['front', 'left', 'right', 'back'] as const) {
+        const v = (pf.trackStyleBySide as Record<string, unknown>)[side];
+        if (v !== undefined && !PERM_TRACK_STYLES.has(v as string)) {
+          return NextResponse.json(
+            { error: `permanent.trackStyleBySide.${side} must be 'single' or 'parapet' if provided` },
+            { status: 400 },
+          );
+        }
+      }
     }
     if (typeof pf.blackHousing !== 'boolean' || typeof pf.maintenanceAddOn !== 'boolean') {
       return NextResponse.json({ error: 'permanent.blackHousing and permanent.maintenanceAddOn must be booleans' }, { status: 400 });
@@ -475,7 +558,7 @@ export async function POST(req: NextRequest) {
     // it updates result/inputs in place (updateQuote writes only inputs/result/total/
     // service_type — never deposit_paid_at or status, so the lifecycle stays booked),
     // which the operator immediately follows with the amend record. Terminal statuses
-    // (declined/cancelled/lost) stay hard-locked — a dead order is never re-priced.
+    // (declined/cancelled/abandoned) stay hard-locked — a dead order is never re-priced.
     if (isUpdate && existing) {
       const currentStatus = deriveStatus(existing);
       const amendRepriceAllowed = amendReprice && currentStatus === 'booked';
@@ -485,6 +568,40 @@ export async function POST(req: NextRequest) {
             error:
               'This order is booked or closed and cannot be re-priced here. Use the amend flow (/api/quotes/[id]/amend) to change a booked order.',
             code: 'quote-locked',
+          },
+          { status: 409 },
+        );
+      }
+    }
+
+    // #177 fix 3b: the deposit percent is FROZEN into the approval snapshot the
+    // moment a customer approves — a later edit here must not silently drift
+    // what was already signed. Scoped ONLY to depositPercent changing: unlike
+    // the REPRICE_LOCKED_STATUSES block above, an approved-but-not-yet-booked
+    // quote can still be re-priced through this route for every OTHER field
+    // (existing intended behavior — approved isn't in REPRICE_LOCKED_STATUSES).
+    if (isUpdate && existing?.customer_approved_at) {
+      // #226 fix: normalize BOTH sides through the same "actual override"
+      // predicate effectiveDepositRate uses, instead of a bare `typeof ===
+      // 'number'` check. A stored explicit 0 (written by the NCE-off reset)
+      // and an incoming `undefined` (the real client can never emit an
+      // explicit 0 — see quoteForm.ts's buildQuoteInputs) both mean "no
+      // override, use the 50% default" and must compare EQUAL here so an
+      // unrelated field edit on an approved-but-unbooked quote doesn't 409.
+      // A genuine change (e.g. 40 → 25, or 40 → blank) still normalizes to
+      // two DIFFERENT values and still 409s — the #177 freeze is unweakened.
+      const incomingDepositPercent = normalizedDepositOverride(
+        typeof q.depositPercent === 'number' ? q.depositPercent : undefined,
+      );
+      const storedDepositPercent = normalizedDepositOverride(
+        typeof existing.inputs?.depositPercent === 'number' ? existing.inputs.depositPercent : undefined,
+      );
+      if (incomingDepositPercent !== storedDepositPercent) {
+        return NextResponse.json(
+          {
+            error:
+              'This quote has already been approved — the deposit percent is locked and cannot be changed here. Use the amend flow to change it.',
+            code: 'deposit-percent-locked',
           },
           { status: 409 },
         );
@@ -574,6 +691,15 @@ export async function POST(req: NextRequest) {
           // honors this too (create-once, idempotent) — see its own doc
           // comment for why an update needs a fresh pre-read of its own.
           referredByCustomerId,
+          // NCE + YLL Neighbor tags (#198): these ARE honored on the update
+          // path — undefined (not sent / chip strip not touched) leaves the
+          // stored value untouched.
+          legacyRebook,
+          isNce,
+          // #214: the session's live HL link, tri-state (see the validation
+          // block above) — identity-resolution input only; updateQuote never
+          // writes the highlevel_contact_id column.
+          hlContactIdForUpdate,
         )
       : await saveQuote(
           safeCustomer,
@@ -583,6 +709,16 @@ export async function POST(req: NextRequest) {
           isTest,
           operator?.id ?? null,
           referredByCustomerId,
+          // #leads "Create quote" link: written into the insert here. (Since
+          // #214 the update path ALSO receives it — as identity input only,
+          // never a column write, so an existing quote's linked contact
+          // still can't be clobbered by a resave.)
+          highlevelContactId,
+          // NCE + YLL Neighbor tags (#198): the builder's chip strip's
+          // current state at first save; undefined → saveQuote's own
+          // default (false).
+          legacyRebook,
+          isNce,
         );
     return NextResponse.json({
       customer: safeCustomer,

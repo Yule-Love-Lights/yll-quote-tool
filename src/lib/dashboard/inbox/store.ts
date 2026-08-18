@@ -23,14 +23,16 @@ import type {
   StoredContact,
 } from './types';
 import { normalizeEmail, normalizePhone } from './normalize';
+import { isUuid } from './validate';
 import { appendIdentifiers, findDuplicatePairs, mergeContacts, resolveIdentity } from './identity';
 import { decideInboxState } from './reducer';
 import { isAnsweredByDirection } from './escalation';
-import { isDueToday, quoteSentNoReplyFollowUp } from './followups';
+import { FOLLOWUP_REASONS, isDueToday, quoteSentNoReplyFollowUp } from './followups';
 import type { MetricItem, WindowKey, ReopenCounts } from './responseMetrics';
 import { addSuppressedSenders, removeSuppressedSenders } from './suppression';
 import { inverseOf, type ReverseAction } from './lifecycle';
 import { listOperatorAccounts } from '@/lib/auth/adminUsers';
+import { isParkedLegacyRebookDraft, type QuoteStatus } from '@/lib/quoteStatus';
 
 // ─── Pure ingest planner ────────────────────────────────────────────────────
 
@@ -65,10 +67,29 @@ export type ItemRow = {
 };
 
 export type IngestPlan = {
-  /** When true, do nothing: an outbound touch with no existing item is us
-   *  cold-contacting — there's no unresponded lead to track (avoids noise). A
-   *  conversation we REPLIED to keeps its existing item and still auto-resolves. */
+  /** When true, do nothing. Two independent reasons feed this:
+   *   1. An outbound touch with no existing item is usually us cold-contacting
+   *      — there's no unresponded lead to track (avoids noise). Some sources
+   *      deliberately track outbound-only first observations (positive
+   *      allowlist below); a conversation we REPLIED to keeps its existing
+   *      item and still auto-resolves.
+   *   2. #252: a GHL activity-noise touch (touch.isActivityNoise) that has an
+   *      EXISTING item — skip so pure CRM activity can never bump/reopen a
+   *      real conversation. The opposite-polarity twin of reason 1: that rule
+   *      skips on `!existing`, this one skips on `existing`. An activity-noise
+   *      touch with NO existing item is deliberately never skipped here — a
+   *      conversation's first-ever touch must always be observable, even when
+   *      the only snapshot GHL ever hands the poller is an activity row (see
+   *      ghl.ts's ACTIVITY_NOISE_TYPES comment for the full swallow scenario). */
   skip: boolean;
+  /** WHY `skip` is true (null when it's false). Exists so a caller (sync.ts's
+   *  activityNoiseSkipped counter) can tell the two skip reasons apart —
+   *  `touch.isActivityNoise` alone is NOT enough, because it says nothing about
+   *  whether `existing` was present: a brand-new (no existing item) GHL
+   *  conversation whose latest event is BOTH activity noise AND outbound is a
+   *  reason-1 cold-outbound skip, not a #252 reason-2 skip, even though
+   *  isActivityNoise is true on that touch. */
+  skipReason: 'cold-outbound' | 'activity-noise-existing' | null;
   /** When true, a resolved item (handled/completed/dismissed) is being re-ingested
    *  with NOTHING to persist — same status, same last_message_at, no reopen /
    *  auto-resolve / snooze-clear. The reconcile cron re-reads these every minute,
@@ -82,6 +103,28 @@ export type IngestPlan = {
   ambiguous: boolean;
   clearFollowedUp: boolean;
 };
+
+// #222: sources listed here need an inbox item even when FIRST seen as outbound,
+// because downstream work (the quote_sent_no_reply follow-up) anchors on that
+// item. A quote created and sent between two 5-minute cron ticks is only ever
+// observed as outbound, so without this it got no item and therefore no
+// follow-up — a real customer silently owed one (live case: quote #1263, a
+// 7.75-second draft window). Positive allowlist, never a negative test, per
+// AGENTS.md Pitfalls: every other source's outbound-only first observation
+// stays skipped as noise (a cold outbound Gmail/GHL touch is not a lead we owe
+// a reply to). The item auto-resolves to 'handled', so it anchors the follow-up
+// without entering the operator's open inbox list.
+//
+// ACCEPTED TRADEOFF (#222 pre-merge review): this also covers SENT legacy_rebook
+// ("YLL Neighbor") quotes. Today that is 2 rows. But the Neighbor pool is ~114-124
+// quotes designed to go out as a deliberate send WAVE (#155/#157) — if a scripted
+// wave ever sends them faster than the 5-minute cron can observe any of them as a
+// draft, each one mints a follow-up in a single tick and lands in the due-today
+// strip at once. Accepted rather than special-cased here: a quote we actually sent
+// genuinely is owed a follow-up, and the alternative (teaching this pure,
+// source-generic reducer about a quote-specific flag) is worse. If that wave is
+// ever scripted, stagger the sends or cap follow-up creation per reconcile run.
+const TRACKS_OUTBOUND_FIRST_OBSERVATION: ReadonlySet<InboxSource> = new Set<InboxSource>(['quotetool']);
 
 /**
  * Decide what an inbound/outbound touch should do, given the matching contact
@@ -172,8 +215,22 @@ export function planIngest(input: {
     quote_value: touch.quoteValue ?? null,
   };
 
+  // #252: reason 1 (outbound, no existing item) OR reason 2 (activity noise,
+  // existing item) — see the `skip`/`skipReason` field docs above. Mutually
+  // exclusive by construction (reason 1 requires `!existing`, reason 2
+  // requires `existing`), so evaluation order doesn't matter.
+  const coldOutboundSkip =
+    !existing && touch.direction === 'outbound' && !TRACKS_OUTBOUND_FIRST_OBSERVATION.has(touch.source);
+  const activityNoiseExistingSkip = !!existing && !!touch.isActivityNoise;
+  const skipReason: IngestPlan['skipReason'] = activityNoiseExistingSkip
+    ? 'activity-noise-existing'
+    : coldOutboundSkip
+      ? 'cold-outbound'
+      : null;
+
   return {
-    skip: !existing && touch.direction === 'outbound',
+    skip: coldOutboundSkip || activityNoiseExistingSkip,
+    skipReason,
     noopReingest,
     contactOp,
     item,
@@ -258,7 +315,19 @@ function contactInsertRow(identity: ContactIdentity) {
 }
 
 export type IngestOutcome =
-  | { ok: true; skipped: boolean; itemId: string | null; contactId: string | null; autoResolved: boolean; reopened: boolean; ambiguous: boolean }
+  | {
+      ok: true;
+      skipped: boolean;
+      itemId: string | null;
+      contactId: string | null;
+      autoResolved: boolean;
+      reopened: boolean;
+      ambiguous: boolean;
+      /** #252: WHY a skip happened (null when not skipped, or skipped for a
+       *  reason other than planIngest's `skip` — e.g. #110 W7-004's
+       *  noopReingest). Mirrors IngestPlan.skipReason; see its doc. */
+      skipReason: 'cold-outbound' | 'activity-noise-existing' | null;
+    }
   | { ok: false; error: string };
 
 /**
@@ -276,15 +345,15 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
 
   // Outbound with no existing item → nothing to track. Do not write.
   if (plan.skip) {
-    return { ok: true, skipped: true, itemId: null, contactId: null, autoResolved: false, reopened: false, ambiguous: false };
+    return { ok: true, skipped: true, itemId: null, contactId: null, autoResolved: false, reopened: false, ambiguous: false, skipReason: plan.skipReason };
   }
 
   // #110 W7-004: a resolved item re-ingested with nothing to persist — skip the
   // item upsert AND the 'ingested' activity insert so the every-minute reconcile
   // cron stops flooding both tables with no-change writes. `existing` is non-null
-  // whenever noopReingest is true.
+  // whenever noopReingest is true. Not a plan.skip reason, so skipReason is null.
   if (plan.noopReingest) {
-    return { ok: true, skipped: true, itemId: existing?.id ?? null, contactId: existing?.contactId ?? null, autoResolved: false, reopened: false, ambiguous: false };
+    return { ok: true, skipped: true, itemId: existing?.id ?? null, contactId: existing?.contactId ?? null, autoResolved: false, reopened: false, ambiguous: false, skipReason: null };
   }
 
   // 1. Resolve the contact id.
@@ -363,6 +432,7 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
     autoResolved: plan.autoResolved,
     reopened: plan.reopened,
     ambiguous: plan.ambiguous,
+    skipReason: null,
   };
 }
 
@@ -373,22 +443,39 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
 // but `totalOpen` is the REAL count of open items (via Postgrest's exact count,
 // unaffected by .limit()), so the UI can say "N more not shown" instead of
 // silently under-reporting once open items exceed the cap.
+//
+// #265: `totalOpen` (and `items`) deliberately stay UNFILTERED by lead_kind —
+// they describe the same raw "every open item" population the /inbox page's
+// "Show N filtered" toggle (InboxList.tsx) needs to fetch automated rows to
+// display on demand. `totalLeads` is the sibling number: the same population
+// minus lead_kind='automated' noise (mirrors listEscalatableItems' own
+// `.or('lead_kind.is.null,lead_kind.neq.automated')` filter), for consumers
+// that want "how many actually need a reply" — currently only the morning
+// digest. Never repurpose `totalOpen` itself for this: it must stay the same
+// population as `items`/`items.length`, or the WT-41 truncation math above
+// (`totalOpen - items.length`) can go negative/silently stop firing.
 export type OpenItemsResult =
-  | { ok: true; items: OpenInboxItem[]; totalOpen: number; truncated: boolean }
+  | { ok: true; items: OpenInboxItem[]; totalOpen: number; totalLeads: number; truncated: boolean }
   | { ok: false; error: string };
 
-// ─── Legacy-rebook inbox exclusion (#157) ───────────────────────────────────
+// ─── Legacy-rebook inbox exclusion (#157, escalation coverage + ingest-time
+// gating added #181) ───
 // "YLL Neighbors": quotes migrated from last year's Jobber data
 // (legacy_rebook = true, migrations/2026-07-16-legacy-rebook.sql). They're real
 // drafts, so runQuoteToolReconcile folds each into an unresponded touch same as
 // any other draft quote — flooding the operator inbox with 100+ items nobody
-// needs to action yet. This hides them from the INBOX ONLY: every dashboard/
-// stats consumer (metrics.ts, insights.ts, serviceMetrics.ts, referralMetrics.ts,
-// needsAction.ts, workflowBoard.ts) reads quotes directly and is untouched by
-// this flag — legacy quotes keep counting everywhere except the inbox surfaces.
+// needs to action yet. This hides them from the INBOX SURFACES ONLY (the /inbox
+// open-items list AND escalation — amber/red alert emails + the EOD digest, both
+// read via listEscalatableItems below), AND from ever being ingested as an
+// unsent draft touch in the first place (quotetool.ts's normalizeQuoteTouch
+// imports this same constant): every dashboard/stats consumer (metrics.ts,
+// insights.ts, serviceMetrics.ts, referralMetrics.ts, needsAction.ts,
+// workflowBoard.ts) reads quotes directly and is untouched by this flag — legacy
+// quotes keep counting everywhere except the inbox + escalation surfaces.
 //
 // Flip to false once the dedicated "YLL Neighbors" rebook flow ships (task
-// #157) and these should resurface as normal inbox leads again.
+// #157) and these should resurface as normal inbox leads again — one switch,
+// covers both the display-side filter here and the quotetool.ts ingest guard.
 export const EXCLUDE_LEGACY_REBOOK_FROM_INBOX = true;
 
 // A generous ceiling above the caller's `limit` to over-fetch by whenever the
@@ -401,18 +488,106 @@ export const EXCLUDE_LEGACY_REBOOK_FROM_INBOX = true;
 const LEGACY_REBOOK_FETCH_BUFFER = 200;
 
 /**
- * #157: drop items backed by a legacy_rebook=true ("YLL Neighbor") quote. Only
- * a 'quotetool' item can match — its external_id IS the quote id (see
- * quotetool.ts normalizeQuoteTouch) — so every other source is untouched by
- * construction, even if an id happened to collide. Pure — no I/O — hence
- * unit-testable on its own (store.test.ts).
+ * #183 BUG 1: a quotetool item's external_id is USUALLY the bare quote id, but
+ * the color-change-request route (apply-color-request/route.ts) suffixes it
+ * `${quoteId}:color-request` so its notification never collides with the
+ * quote-sent reconcile item. Strip that suffix (if present) to recover the
+ * underlying quote id — used both to build the `.in('id', …)` lookup list
+ * below (a suffixed value there is NOT a valid uuid and Postgres rejects the
+ * WHOLE `.in()` with 22P02, silently poisoning the exclusion for every item on
+ * the page) and by excludeLegacyRebookItems' own match (so a legacy quote's
+ * color-request item is excluded too, not just its bare-id sibling).
+ */
+export function quoteIdPrefix(externalId: string): string {
+  const i = externalId.indexOf(':');
+  return i === -1 ? externalId : externalId.slice(0, i);
+}
+
+/**
+ * #157: drop items whose backing quote id is in `hiddenQuoteIds`. Only a
+ * 'quotetool' item can match — its external_id is the quote id, optionally
+ * suffixed `:color-request` (quoteIdPrefix strips it, #183 BUG 1) — so every
+ * other source is untouched by construction, even if an id happened to
+ * collide. Pure — no I/O — hence unit-testable on its own (store.test.ts).
+ * `hiddenQuoteIds` is produced by fetchHiddenLegacyRebookQuoteIds below (the
+ * #252 slice-G predicate, not a raw legacy_rebook flag) — see that function's
+ * doc comment for what "hidden" means.
  */
 export function excludeLegacyRebookItems<T extends { source: unknown; external_id: unknown }>(
   items: T[],
-  legacyQuoteIds: ReadonlySet<string>,
+  hiddenQuoteIds: ReadonlySet<string>,
 ): T[] {
-  if (legacyQuoteIds.size === 0) return items;
-  return items.filter((item) => !(item.source === 'quotetool' && legacyQuoteIds.has(String(item.external_id))));
+  if (hiddenQuoteIds.size === 0) return items;
+  return items.filter(
+    (item) => !(item.source === 'quotetool' && hiddenQuoteIds.has(quoteIdPrefix(String(item.external_id)))),
+  );
+}
+
+/**
+ * #252 slice G: a legacy_rebook ("YLL Neighbor") quote is hidden from the
+ * inbox/escalation surfaces ONLY when it's a genuine parked draft nobody has
+ * sent. #157/#181 originally hid every legacy_rebook quote regardless of
+ * status or quote_sent_at — that blanket rule swallowed a real customer's
+ * live BOOKED colour-change ask (quote #1129) for 14 days.
+ *
+ * #263: this is now a thin re-export of the ONE shared predicate
+ * (isParkedLegacyRebookDraft, @/lib/quoteStatus) instead of its own
+ * raw-`status`-column check — store.ts, quotetool.ts's ingest guard, the
+ * text-ops bot, and the morning digest all used to define "hidden draft"
+ * independently and could silently drift apart (they had: this function once
+ * trusted the persisted `status` string directly). Deriving off deriveStatus
+ * instead of the raw column also closes #267(b): a legacy_rebook row that's
+ * actually been PAID (deposit_paid_at set) is never hidden here even if its
+ * persisted status column lagged behind at 'draft'. See the predicate's own
+ * doc comment for the full reasoning. Pure — no I/O.
+ */
+export const isHiddenLegacyRebookQuote = isParkedLegacyRebookDraft;
+
+/**
+ * #252 slice G: the ONE seam listOpenItems and listEscalatableItems both call
+ * to decide which of the quotetool ids on their current page back a hidden
+ * (parked-draft) legacy_rebook quote — so the two surfaces can't drift onto
+ * different predicates again (they had: listEscalatableItems' own comment used
+ * to document hiding "regardless of quote_sent_at" as an accepted, narrower-
+ * than-ingest tradeoff). Batch-fetches only the ids passed in; empty input
+ * skips the query entirely (the common case for ghl/gmail/homeworks-only
+ * pages). Fails OPEN + VISIBLY on a lookup error (#183 BUG 1) — returns an
+ * empty set (nothing hidden) rather than swallow the error or throw. Hiding a
+ * real customer on a transient query failure is the worse outcome; #252 exists
+ * because a hidden customer went unnoticed for 14 days.
+ */
+async function fetchHiddenLegacyRebookQuoteIds(
+  sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  quotetoolIds: readonly string[],
+): Promise<Set<string>> {
+  if (quotetoolIds.length === 0) return new Set();
+  // #263: the predicate moved from a raw `status` read to deriveStatus, which
+  // also needs deposit_paid_at/customer_approved_at/viewed_at — the original
+  // #252 SELECT only fetched `status`/`quote_sent_at` and would have silently
+  // under-derived every row to 'draft' on the missing columns.
+  const { data: quoteRows, error } = await sb
+    .from('quotes')
+    .select('id, legacy_rebook, status, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at')
+    .in('id', quotetoolIds);
+  if (error) {
+    console.error('[inbox] legacy-rebook exclusion lookup failed:', error.message);
+    return new Set();
+  }
+  return new Set(
+    (
+      (quoteRows ?? []) as {
+        id: string;
+        legacy_rebook: boolean | null;
+        status: QuoteStatus | null;
+        quote_sent_at: string | null;
+        customer_approved_at: string | null;
+        deposit_paid_at: string | null;
+        viewed_at: string | null;
+      }[]
+    )
+      .filter(isHiddenLegacyRebookQuote)
+      .map((q) => String(q.id)),
+  );
 }
 
 export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
@@ -439,23 +614,51 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
   let rows = (data ?? []) as unknown as Record<string, unknown>[];
   let legacyExcluded = 0;
 
-  // #157: batch-fetch the quotetool ids present on THIS page and drop any that
-  // are a legacy_rebook quote. Skips the extra query entirely when the page has
-  // no quotetool items (the common case for ghl/gmail/homeworks-only pages).
+  // #157/#252: batch-fetch the quotetool ids present on THIS page and drop any
+  // that back a hidden (parked-draft) legacy_rebook quote — see
+  // isHiddenLegacyRebookQuote for the exact predicate. Skips the extra query
+  // entirely when the page has no quotetool items (the common case for
+  // ghl/gmail/homeworks-only pages).
+  // #183 BUG 1: derive+filter through quoteIdPrefix/isUuid — a suffixed
+  // `:color-request` id (or any other malformed value) is NOT a valid uuid, and
+  // Postgres's `.in()` rejects the ENTIRE query (22P02) if even one entry in the
+  // list doesn't parse as one, which used to silently empty legacyQuoteIds for
+  // every item on the page.
   if (EXCLUDE_LEGACY_REBOOK_FROM_INBOX) {
-    const quotetoolIds = [...new Set(rows.filter((r) => r.source === 'quotetool').map((r) => String(r.external_id)))];
+    const quotetoolIds = [
+      ...new Set(
+        rows
+          .filter((r) => r.source === 'quotetool')
+          .map((r) => quoteIdPrefix(String(r.external_id)))
+          .filter(isUuid),
+      ),
+    ];
     if (quotetoolIds.length) {
-      const { data: quoteRows } = await sb.from('quotes').select('id, legacy_rebook').in('id', quotetoolIds);
-      const legacyQuoteIds = new Set(
-        ((quoteRows ?? []) as { id: string; legacy_rebook: boolean | null }[])
-          .filter((q) => q.legacy_rebook === true)
-          .map((q) => String(q.id)),
-      );
+      const hiddenQuoteIds = await fetchHiddenLegacyRebookQuoteIds(sb, quotetoolIds);
       const before = rows.length;
-      rows = excludeLegacyRebookItems(rows as { source: unknown; external_id: unknown }[], legacyQuoteIds);
+      rows = excludeLegacyRebookItems(rows as { source: unknown; external_id: unknown }[], hiddenQuoteIds);
       legacyExcluded = before - rows.length;
     }
   }
+
+  // #265: automated-noise count within the SAME fetch window `legacyExcluded`
+  // above already used (post-legacy-exclusion `rows`, before the page slice) —
+  // feeds totalLeads below. Computed here (not via a query-level `.or(...)`
+  // filter like listEscalatableItems' sibling filter) because this query's
+  // `rows`/`items` must keep INCLUDING automated rows — InboxList.tsx's
+  // "Show N filtered" toggle depends on them still being fetched so staff can
+  // view automated notices (e.g. a TYPE_NO_SHOW touch) on demand. Filtering
+  // the query itself would silently break that toggle for every consumer.
+  // Structurally safe to subtract straight from totalOpen below: a quotetool
+  // item is NEVER lead_kind='automated' (quotetool.ts's normalizeQuoteTouch
+  // hardcodes leadKind: 'lead'), so this set and the legacy-rebook-hidden set
+  // (quotetool-only, per excludeLegacyRebookItems) never overlap.
+  // Same truncation-safety direction as totalOpen's own count below: if raw
+  // unresponded volume ever exceeds fetchLimit, this only sees automated rows
+  // INSIDE the window, so it under-counts automated noise — which means
+  // totalLeads (totalOpen − this) errs toward OVER-, never under-, reporting.
+  // A true lead can never silently vanish from the digest's count this way.
+  const automatedInWindow = rows.filter((r) => r.lead_kind === 'automated').length;
 
   const trimmed = rows.slice(0, limit);
 
@@ -466,10 +669,24 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
   const contactIds = [...new Set(trimmed.map((r) => (r as unknown as { contact_id: string | null }).contact_id).filter((c): c is string => !!c))];
   const returning = new Set<string>();
   if (contactIds.length) {
+    // #185: this was UNBOUNDED — every historical inbox_items row (any status,
+    // any channel, all time) for up to `contactIds.length` (<=100) contacts. It
+    // only needs to know whether each contact has >1 row (a Set-membership
+    // check), so a generous cap is a no-op for realistic per-contact history
+    // and just bounds the pathological case (mirrors the 5000 cap already used
+    // a few lines below in getReopenCounts' distinct() for the same reason —
+    // an unbounded historical read on this table). NOT a per-contact limit —
+    // that would risk truncating one contact's rows before its second one is
+    // seen and silently flipping it back to "not returning".
     const { data: counts } = await sb
       .from('inbox_items')
       .select('contact_id')
-      .in('contact_id', contactIds);
+      .in('contact_id', contactIds)
+      // Ordered so the capped subset is DETERMINISTIC — without an order, a
+      // page whose contacts exceed the cap could nondeterministically flip a
+      // contact's "returning" badge between loads (review LOW, #185).
+      .order('contact_id', { ascending: true })
+      .limit(5000);
     const tally = new Map<string, number>();
     for (const row of counts ?? []) {
       const cid = (row as { contact_id: string }).contact_id;
@@ -511,7 +728,14 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
   // given the buffer above) — errs toward over-, never under-, reporting,
   // matching the pre-#157 behavior this WT-41 signal already relies on.
   const totalOpen = Math.max((count ?? rows.length) - legacyExcluded, items.length);
-  return { ok: true, items, totalOpen, truncated: totalOpen > items.length };
+  // #265: totalOpen minus the SAME window's automated count (see
+  // automatedInWindow above) — the sibling-parity fix for the digest/inbox
+  // count disagreement. Floored against the page's own lead-only tally
+  // (never report fewer leads than are literally sitting in `items`),
+  // mirroring totalOpen's own floor against items.length one line up.
+  const leadItemsInPage = items.filter((i) => i.leadKind !== 'automated').length;
+  const totalLeads = Math.max(totalOpen - automatedInWindow, leadItemsInPage);
+  return { ok: true, items, totalOpen, totalLeads, truncated: totalOpen > items.length };
 }
 
 // ─── Claim / assign (shared-queue "I've got this", Phase 1.5) ───────────────
@@ -569,9 +793,12 @@ export type MarkHandledResult = { ok: true; target: HandledTarget } | { ok: fals
 /**
  * Stamp an item handled locally FIRST (attribution never depends on the external
  * write-back), and return the coordinates the route needs to mark the source
- * read. Uses a status guard so two operators can't double-apply.
+ * read. Uses a status guard so two operators can't double-apply. `operatorId`
+ * must be a real auth.users uuid, or null — inbox_items.handled_by is a
+ * nullable `uuid` column ("NULL when system auto-resolved" per its schema
+ * comment); never pass a display name/email string here.
  */
-export async function markItemHandledLocal(itemId: string, operatorId: string, now: Date): Promise<MarkHandledResult> {
+export async function markItemHandledLocal(itemId: string, operatorId: string | null, now: Date): Promise<MarkHandledResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const from = await priorStateOf(sb, itemId);
@@ -599,7 +826,9 @@ export async function markItemHandledLocal(itemId: string, operatorId: string, n
   };
 }
 
-export async function dismissItem(itemId: string, operatorId: string, now: Date): Promise<{ ok: boolean; error?: string }> {
+/** `operatorId` must be a real auth.users uuid, or null — see markItemHandledLocal's
+ *  doc comment; inbox_items.handled_by never accepts a display name/email string. */
+export async function dismissItem(itemId: string, operatorId: string | null, now: Date): Promise<{ ok: boolean; error?: string }> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const from = await priorStateOf(sb, itemId);
@@ -660,7 +889,9 @@ export async function listEscalatableItems(): Promise<EscalatableResult> {
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const { data, error } = await sb
     .from('inbox_items')
-    .select('id, last_message_at, notified_levels, escalation_level, preview, dashboard_contacts ( display_name )')
+    .select(
+      'id, source, external_id, last_message_at, notified_levels, escalation_level, preview, dashboard_contacts ( display_name )',
+    )
     .eq('status', 'unresponded')
     // #110 W7-005: a manually-Followed item (followed_up_at stamped, status still
     // 'unresponded') must NOT keep firing amber/red alerts + EOD digests — it's
@@ -669,7 +900,41 @@ export async function listEscalatableItems(): Promise<EscalatableResult> {
     .is('followed_up_at', null)
     .or('lead_kind.is.null,lead_kind.neq.automated');
   if (error) return { ok: false, error: error.message };
-  const items = ((data ?? []) as unknown as Record<string, unknown>[]).map((row): EscalatableItem => {
+
+  let rows = (data ?? []) as unknown as Record<string, unknown>[];
+
+  // #181/#252: the same #157 exclusion listOpenItems applies to the /inbox
+  // display — a YLL Neighbor item must never fire an amber/red alert or land
+  // in the EOD digest either, so it stays invisible on every escalation
+  // surface, not just the open-items list. Reuses excludeLegacyRebookItems +
+  // fetchHiddenLegacyRebookQuoteIds (the exact same predicate, fed the same
+  // way: batch-fetch quotes for the quotetool ids on this read) so the two
+  // surfaces can never disagree.
+  // #252 slice G: narrowed from "every legacy_rebook item, regardless of
+  // status/quote_sent_at" to "only a genuine unsent DRAFT" (see
+  // isHiddenLegacyRebookQuote) — a sent/viewed/approved/booked Neighbor quote
+  // now behaves like a normal quote here too, matching quotetool.ts's ingest-
+  // time guard rather than the old, broader hide-everything rule.
+  // #183 BUG 1: same fix as listOpenItems — derive+filter through
+  // quoteIdPrefix/isUuid so a suffixed `:color-request` id can't poison the
+  // `.in()` lookup (Postgres 22P02 on a malformed uuid), and check the lookup
+  // error instead of silently swallowing it.
+  if (EXCLUDE_LEGACY_REBOOK_FROM_INBOX) {
+    const quotetoolIds = [
+      ...new Set(
+        rows
+          .filter((r) => r.source === 'quotetool')
+          .map((r) => quoteIdPrefix(String(r.external_id)))
+          .filter(isUuid),
+      ),
+    ];
+    if (quotetoolIds.length) {
+      const hiddenQuoteIds = await fetchHiddenLegacyRebookQuoteIds(sb, quotetoolIds);
+      rows = excludeLegacyRebookItems(rows as { source: unknown; external_id: unknown }[], hiddenQuoteIds);
+    }
+  }
+
+  const items = (rows as unknown as Record<string, unknown>[]).map((row): EscalatableItem => {
     const c = (row.dashboard_contacts as Record<string, unknown> | null) ?? null;
     return {
       id: String(row.id),
@@ -792,15 +1057,280 @@ export async function closeFollowUp(inboxItemId: string, reason: string): Promis
   return data ? data.length : 0;
 }
 
+/** #230(a): the ONLY human-visible trace of a #220 internal-domain follow-up
+ *  suppression used to be a console.warn in a Vercel log stream nobody opens —
+ *  a real customer misclassified as internal would be silently dropped with no
+ *  way to notice. Logs it to dashboard_activity instead, which the /inbox
+ *  /activity page's ActivityLog already renders (it excludes only 'ingested'/
+ *  'escalated' — see listActivity's own doc). Best-effort, mirrors the other
+ *  system-actor activity writes (e.g. setEscalation's 'escalated' insert) —
+ *  never blocks the reconcile loop on a logging failure. */
+export async function recordSuppressedFollowUp(inboxItemId: string, detail: Record<string, unknown>): Promise<void> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return;
+  await sb.from('dashboard_activity').insert({ actor: 'system', action: 'followup_suppressed', inbox_item_id: inboxItemId, detail });
+}
+
+// ─── View-only toggle-ON inbox cleanup (#187a) ──────────────────────────────
+// queries.ts's dashboard chokepoint (`.eq('view_only', false)`) drops a
+// flipped-view-only quote out of the reconcile feed entirely, so
+// runQuoteToolReconcile (sync.ts) never visits it again — a PENDING
+// quote_sent_no_reply follow-up on it would sit due-forever. Close it up
+// front instead, at the moment staff flips the flag ON.
+
+/**
+ * Close the PENDING "sent, no reply" follow-up + resolve the un-resolved
+ * quotetool inbox item for `quoteId` (its bare-uuid external_id — the "quote
+ * sent" touch), called right after a view-only toggle-ON write succeeds.
+ *
+ * Deliberately does NOT touch a `${quoteId}:color-request` item (#187 review
+ * #660 FIX 1): the colour-change-request flow is INTENTIONALLY live on a
+ * view-only portal — color-change-request/route.ts is public and ungated on
+ * view_only, and ColorRequestPanel (admin quote detail) renders on any
+ * pending request regardless of view_only. Completing that item would hide a
+ * still-actionable customer ask under a "Quote marked view-only" note that
+ * falsely implies staff already handled it.
+ *
+ * Best-effort — never throws (the toggle write already succeeded; this is
+ * cleanup, mirroring apply-color-request's resolveInboxRequest). `operatorId`
+ * must be a real auth.users uuid, or null — inbox_items.handled_by is a
+ * nullable `uuid` column ("NULL when system auto-resolved" per its schema
+ * comment); never pass a display name/email string here.
+ */
+export async function closeQuoteInboxNoise(quoteId: string, operatorId: string | null): Promise<void> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return;
+  try {
+    const { data: items, error: itemsErr } = await sb
+      .from('inbox_items')
+      .select('id, status, followed_up_at')
+      .eq('source', 'quotetool')
+      .eq('external_id', quoteId);
+    if (itemsErr) {
+      console.warn('[inbox] view-only cleanup: item lookup failed (non-fatal):', itemsErr.message);
+      return;
+    }
+    const rows = (items ?? []) as { id: string; status: string; followed_up_at: string | null }[];
+    if (!rows.length) return;
+    const itemIds = rows.map((r) => r.id);
+
+    // quote_sent_no_reply follow-ups only ever anchor on this bare-uuid item
+    // (ensureFollowUp is always called with the "quote touch" item's id, never
+    // a color-request notification's), so nothing further to filter here.
+    const { error: fuErr } = await sb
+      .from('follow_ups')
+      .update({ status: 'done' })
+      .in('inbox_item_id', itemIds)
+      .eq('reason', FOLLOWUP_REASONS.quoteSentNoReply)
+      .eq('status', 'pending');
+    if (fuErr) {
+      console.warn('[inbox] view-only cleanup: follow-up close failed (non-fatal):', fuErr.message);
+    }
+
+    // Only resolve items that aren't already resolved — never re-stamp a
+    // dismissed/completed item's handled_at/handled_by.
+    const openRows = rows.filter((r) => r.status !== 'completed' && r.status !== 'dismissed');
+    if (!openRows.length) return;
+    const openIds = openRows.map((r) => r.id);
+    const now = new Date().toISOString();
+    const { error: itemUpdateErr } = await sb
+      .from('inbox_items')
+      .update({ status: 'completed', handled_by: operatorId, handled_at: now })
+      .in('id', openIds);
+    if (itemUpdateErr) {
+      console.warn('[inbox] view-only cleanup: item resolve failed (non-fatal):', itemUpdateErr.message);
+      return;
+    }
+    // #187 review FIX 4 (#660): carry each item's PRIOR status/follow state
+    // into detail.from, mirroring markItemCompleted's priorStateOf capture —
+    // a later Reverse calls inverseOf('completed', detail.from) (see
+    // lifecycle.ts + this file's applyReverse below), which reads
+    // detail.from.status specifically and falls back to 'handled' when it's
+    // missing or shaped wrong (a bare string has no `.status`). Without this,
+    // Reverse always restored to 'handled' regardless of the item's real
+    // prior bucket.
+    await sb.from('dashboard_activity').insert(
+      openRows.map((r) => ({
+        actor: operatorId,
+        action: 'completed',
+        inbox_item_id: r.id,
+        detail: { note: 'Quote marked view-only', from: { status: r.status, wasFollowed: !!r.followed_up_at } },
+      })),
+    );
+  } catch (e) {
+    console.warn('[inbox] view-only cleanup failed (non-fatal):', e);
+  }
+}
+
+// ─── Orphaned + view-only follow-up sweep (#183 BUG 3, #187 review FIX 2) ───
+// runQuoteToolReconcile's main loop (sync.ts) only walks quotes returned by
+// listQuotesForDashboard — a quote row that's been DELETED entirely is never
+// visited there, so a pending quote_sent_no_reply follow-up anchored to it can
+// never be closed by the main loop and sits overdue-pending forever, showing
+// in the "due today" strip every day. This sweep finds and closes those.
+//
+// #187 review FIX 2 (#660): the SAME class of problem hits a quote that's
+// merely flagged view_only (not deleted). closeQuoteInboxNoise closes the
+// follow-up instantly on the toggle-ON write, but runQuoteToolReconcile
+// snapshots ALL quotes ONCE up front (listQuotesForDashboard(500)) and then
+// loops over that snapshot for seconds — if the toggle lands mid-pass, the
+// loop is still holding the quote's PRE-toggle row, so quoteFollowUpDecision
+// still reads it as sent-but-unapproved and ensureFollowUp's WT-43 upsert
+// flips our just-closed 'done' row straight back to 'pending'. Because the
+// quote is now view_only, it's excluded from every FUTURE reconcile's
+// snapshot too (queries.ts's chokepoint) — nothing else would ever revisit
+// it, so the resurrected follow-up would sit pending forever. This sweep
+// closes those too, self-healing the race within one reconcile pass.
+
+/** Pure decision: which of the given inbox-item ids (from pending
+ *  quote_sent_no_reply follow-ups) are orphaned — their underlying quote no
+ *  longer exists. `inboxItems` maps an inbox item id to its external_id (the
+ *  quote id, optionally `:color-request`-suffixed — quoteIdPrefix strips it,
+ *  same derivation as BUG 1); `existingQuoteIds` is the set of quote ids that
+ *  DO still exist. A follow-up whose inbox item can't be resolved at all is
+ *  left alone (not this sweep's job — it has nothing to confirm dead). No
+ *  I/O — unit-testable on its own (store.test.ts). */
+export function findOrphanedFollowUpItems(
+  followUps: readonly { inboxItemId: string | null }[],
+  inboxItems: readonly { id: string; externalId: string }[],
+  existingQuoteIds: ReadonlySet<string>,
+): string[] {
+  const externalIdByItemId = new Map(inboxItems.map((i) => [i.id, i.externalId]));
+  const orphaned = new Set<string>();
+  for (const fu of followUps) {
+    if (!fu.inboxItemId) continue;
+    const externalId = externalIdByItemId.get(fu.inboxItemId);
+    if (externalId == null) continue;
+    if (!existingQuoteIds.has(quoteIdPrefix(externalId))) orphaned.add(fu.inboxItemId);
+  }
+  return [...orphaned];
+}
+
+/** Pure decision: which of the given inbox-item ids (from pending
+ *  quote_sent_no_reply follow-ups) anchor a quote that's now flagged
+ *  view_only=true (#187 review FIX 2, #660) — the reconcile-race backstop
+ *  described in the section header above. `viewOnlyQuoteIds` is the set of
+ *  quote ids (among the follow-ups' candidate quotes) that currently have
+ *  view_only=true. Mirrors findOrphanedFollowUpItems's shape exactly (same
+ *  externalId→item map, same quoteIdPrefix derivation), just testing set
+ *  MEMBERSHIP instead of set ABSENCE. No I/O — unit-testable on its own. */
+export function findViewOnlyFollowUpItems(
+  followUps: readonly { inboxItemId: string | null }[],
+  inboxItems: readonly { id: string; externalId: string }[],
+  viewOnlyQuoteIds: ReadonlySet<string>,
+): string[] {
+  const externalIdByItemId = new Map(inboxItems.map((i) => [i.id, i.externalId]));
+  const frozen = new Set<string>();
+  for (const fu of followUps) {
+    if (!fu.inboxItemId) continue;
+    const externalId = externalIdByItemId.get(fu.inboxItemId);
+    if (externalId == null) continue;
+    if (viewOnlyQuoteIds.has(quoteIdPrefix(externalId))) frozen.add(fu.inboxItemId);
+  }
+  return [...frozen];
+}
+
+/**
+ * Close pending follow-ups (of `reason`) whose quotetool inbox item's
+ * underlying quote row EITHER no longer exists OR is now flagged
+ * view_only=true (#187 review FIX 2, #660 — the reconcile-race backstop). One
+ * batched query each way (mirrors the #157/#183-BUG-1 lookup-batching style):
+ * follow_ups → inbox_items → quotes existence+view_only →
+ * findOrphanedFollowUpItems + findViewOnlyFollowUpItems → closeFollowUp per
+ * match. Fails open (closes nothing) on a lookup error rather than guessing.
+ * Returns how many follow-ups were closed.
+ */
+export async function sweepOrphanedFollowUps(reason: string): Promise<number> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return 0;
+
+  const { data: pending, error: pendingErr } = await sb
+    .from('follow_ups')
+    .select('id, inbox_item_id')
+    .eq('reason', reason)
+    .eq('status', 'pending');
+  if (pendingErr) {
+    console.error('[inbox] orphan follow-up sweep: pending lookup failed:', pendingErr.message);
+    return 0;
+  }
+  const followUpRows = (pending ?? []) as { id: string; inbox_item_id: string | null }[];
+  const itemIds = [...new Set(followUpRows.map((r) => r.inbox_item_id).filter((id): id is string => !!id))];
+  if (!itemIds.length) return 0;
+
+  const { data: items, error: itemsErr } = await sb.from('inbox_items').select('id, external_id, source').in('id', itemIds);
+  if (itemsErr) {
+    console.error('[inbox] orphan follow-up sweep: inbox_items lookup failed:', itemsErr.message);
+    return 0;
+  }
+  // Same source==='quotetool' guard as the two exclusion call sites above:
+  // quote_sent_no_reply rows only ever anchor on quotetool items today, but
+  // that's an implicit invariant — enforce it here so a future reason reuse or
+  // hand-inserted row can never mis-derive a quote id from another source's
+  // external_id shape (review hardening, #183).
+  const itemRows = ((items ?? []) as { id: string; external_id: string; source: string }[])
+    .filter((r) => r.source === 'quotetool')
+    .map((r) => ({
+      id: r.id,
+      externalId: r.external_id,
+    }));
+
+  const candidateQuoteIds = [...new Set(itemRows.map((r) => quoteIdPrefix(r.externalId)).filter(isUuid))];
+  let existingQuoteIds = new Set<string>();
+  let viewOnlyQuoteIds = new Set<string>();
+  if (candidateQuoteIds.length) {
+    const { data: quoteRows, error: quoteErr } = await sb
+      .from('quotes')
+      .select('id, view_only')
+      .in('id', candidateQuoteIds);
+    if (quoteErr) {
+      console.error('[inbox] orphan follow-up sweep: quotes lookup failed:', quoteErr.message);
+      return 0;
+    }
+    const rows = (quoteRows ?? []) as { id: string; view_only: boolean | null }[];
+    existingQuoteIds = new Set(rows.map((q) => String(q.id)));
+    viewOnlyQuoteIds = new Set(rows.filter((q) => q.view_only === true).map((q) => String(q.id)));
+  }
+
+  const followUpKeys = followUpRows.map((r) => ({ inboxItemId: r.inbox_item_id }));
+  const orphanedItemIds = findOrphanedFollowUpItems(followUpKeys, itemRows, existingQuoteIds);
+  const viewOnlyItemIds = findViewOnlyFollowUpItems(followUpKeys, itemRows, viewOnlyQuoteIds);
+  const itemIdsToClose = new Set([...orphanedItemIds, ...viewOnlyItemIds]);
+
+  let closed = 0;
+  for (const itemId of itemIdsToClose) {
+    closed += await closeFollowUp(itemId, reason);
+  }
+  return closed;
+}
+
 export type DueFollowUpsResult = { ok: true; items: DueFollowUp[] } | { ok: false; error: string };
 
-/** Pending follow-ups due today or overdue (ET), for the top strip. */
+/**
+ * Pending follow-ups due today or overdue (ET), for the top strip AND (#229)
+ * the morning digest's named "overdue follow-ups" detail.
+ *
+ * #229 FIX 3 (round 3): a round-2 addition here flagged a follow-up as
+ * anchored to a hidden "parked-draft" legacy_rebook quote — REMOVED. That
+ * state is structurally IMPOSSIBLE: isHiddenLegacyRebookQuote requires
+ * deriveStatus === 'draft', which requires quote_sent_at to be NULL, but
+ * quoteFollowUpDecision (quotetool.ts) only ever returns `{ kind: 'create' }`
+ * — the one decision that reaches ensureFollowUp — when quote_sent_at IS SET.
+ * Mutually exclusive by construction, confirmed empirically against prod (28
+ * pending follow-ups, all with quote_sent_at set, zero parked drafts; the 9
+ * that ARE legacy_rebook all evaluate false). The flag was always false, so
+ * the embed + batch lookup below were dead weight on every /inbox load. A
+ * legacy_rebook-anchored follow-up here is for a SENT Neighbor quote (see
+ * TRACKS_OUTBOUND_FIRST_OBSERVATION's #222 doc above) — a real customer
+ * genuinely owed a reply, not a parked draft — so it is NOT filtered here or
+ * by any caller; whether to label/distinguish it by name is a product call,
+ * not a code default.
+ */
 export async function listDueFollowUps(now: Date): Promise<DueFollowUpsResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const { data, error } = await sb
     .from('follow_ups')
-    .select('id, reason, due_at, dashboard_contacts ( display_name )')
+    .select('id, reason, due_at, dashboard_contacts ( display_name, primary_phone, primary_email )')
     .eq('status', 'pending')
     .order('due_at', { ascending: true })
     .limit(100);
@@ -817,6 +1347,8 @@ export async function listDueFollowUps(now: Date): Promise<DueFollowUpsResult> {
         reason: r.reason as string,
         dueAt: r.due_at as string,
         contactName: (c?.display_name as string | null) ?? null,
+        contactPhone: (c?.primary_phone as string | null) ?? null,
+        contactEmail: (c?.primary_email as string | null) ?? null,
       };
     });
   return { ok: true, items };
@@ -898,12 +1430,22 @@ export async function getReopenCounts(now: Date): Promise<ReopenCounts> {
     const { data } = await q.limit(5000);
     return new Set((data ?? []).map((r) => (r as { inbox_item_id: string }).inbox_item_id)).size;
   };
+  // #185: the 3 windows x 2 actions were 6 STRICTLY SEQUENTIAL round-trips
+  // (one at a time in the for-loop below). Run every window's pair — and every
+  // window against every other — concurrently instead; each distinct() call is
+  // independent (a plain SELECT + client-side count), so there's nothing to
+  // serialize for.
   const out = fresh();
-  for (const k of ['all', '90', '30'] as WindowKey[]) {
-    const days = windowDays[k];
-    const sinceIso = days == null ? null : new Date(now.getTime() - days * 86_400_000).toISOString();
-    out[k] = { handled: await distinct('handled', sinceIso), reopened: await distinct('reopened', sinceIso) };
-  }
+  const keys = ['all', '90', '30'] as WindowKey[];
+  const results = await Promise.all(
+    keys.map(async (k) => {
+      const days = windowDays[k];
+      const sinceIso = days == null ? null : new Date(now.getTime() - days * 86_400_000).toISOString();
+      const [handled, reopened] = await Promise.all([distinct('handled', sinceIso), distinct('reopened', sinceIso)]);
+      return [k, { handled, reopened }] as const;
+    }),
+  );
+  for (const [k, v] of results) out[k] = v;
   return out;
 }
 
@@ -1029,20 +1571,25 @@ function mapInWorksRow(rows: unknown[], tsKey: 'followed_up_at' | 'handled_at'):
 export async function listInWorks(limit = 200): Promise<InWorksResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
-  const aw = await sb
-    .from('inbox_items')
-    .select(IN_WORKS_SELECT)
-    .not('followed_up_at', 'is', null)
-    .not('status', 'in', '(completed,dismissed)')
-    .order('followed_up_at', { ascending: true })
-    .limit(limit);
-  const hd = await sb
-    .from('inbox_items')
-    .select(IN_WORKS_SELECT)
-    .eq('status', 'handled')
-    .is('followed_up_at', null)
-    .order('handled_at', { ascending: true })
-    .limit(limit);
+  // #185: the two list fetches are independent (different status/followed_up_at
+  // predicates on the same table) — no reason for the second to wait on the
+  // first's round-trip.
+  const [aw, hd] = await Promise.all([
+    sb
+      .from('inbox_items')
+      .select(IN_WORKS_SELECT)
+      .not('followed_up_at', 'is', null)
+      .not('status', 'in', '(completed,dismissed)')
+      .order('followed_up_at', { ascending: true })
+      .limit(limit),
+    sb
+      .from('inbox_items')
+      .select(IN_WORKS_SELECT)
+      .eq('status', 'handled')
+      .is('followed_up_at', null)
+      .order('handled_at', { ascending: true })
+      .limit(limit),
+  ]);
   if (aw.error) return { ok: false, error: aw.error.message };
   if (hd.error) return { ok: false, error: hd.error.message };
   return {
@@ -1053,16 +1600,33 @@ export async function listInWorks(limit = 200): Promise<InWorksResult> {
 }
 
 /** Mark an item completed: capture prior state, stamp status + handled fields,
- *  clear followed_up_at, and write a detailed activity log entry. */
+ *  clear followed_up_at, and write a detailed activity log entry. `operatorId`
+ *  must be a real auth.users uuid, or null — see markItemHandledLocal's doc
+ *  comment; inbox_items.handled_by never accepts a display name/email string.
+ *
+ * #224 (S35 wrap, staff MED): status-guarded like its siblings
+ * markItemHandledLocal/dismissItem — this used to run on `.eq('id', itemId)`
+ * ALONE (no guard at all), so a stale tab could silently re-complete (or
+ * un-dismiss into 'completed') an item another operator had already resolved,
+ * re-attributing handled_by. Only fires FROM the two states completing is a
+ * legal forward transition out of: 'unresponded' (InboxList.tsx fires this
+ * directly from the open queue) and 'handled' (InWorksSection.tsx fires it
+ * from the handled bucket). Positive `.in(...)` match, not a negative
+ * `.neq(...)` pair — the repo's positive-seam-gate convention (AGENTS.md
+ * Pitfalls): INBOX_STATUSES (types.ts) is a closed 4-value enum today so the
+ * two forms are provably identical, but a negative pair fails OPEN on a
+ * future 5th status (silently allowed through) while positive fails CLOSED
+ * (silently blocked, the safe direction — a blocked completion is visible to
+ * the operator via the ok:false path; a wrongly-allowed clobber is not). */
 export async function markItemCompleted(
   itemId: string,
-  operatorId: string,
+  operatorId: string | null,
   now: Date,
 ): Promise<{ ok: boolean; error?: string }> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const from = await priorStateOf(sb, itemId);
-  const { error } = await sb
+  const { data, error } = await sb
     .from('inbox_items')
     .update({
       status: 'completed',
@@ -1071,8 +1635,12 @@ export async function markItemCompleted(
       handled_at: now.toISOString(),
       updated_at: now.toISOString(),
     })
-    .eq('id', itemId);
+    .eq('id', itemId)
+    .in('status', ['unresponded', 'handled'])
+    .select('id')
+    .maybeSingle();
   if (error) return { ok: false, error: error.message };
+  if (!data) return { ok: false, error: 'Item not found, already completed, or dismissed' };
   await sb.from('dashboard_activity').insert({
     actor: operatorId,
     action: 'completed',

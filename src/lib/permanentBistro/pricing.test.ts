@@ -220,6 +220,20 @@ describe('calculatePermanentBistro — totals math (no rush/takedown/early-insta
     expect(r.total).toBeCloseTo(3262.5, 2);
     expect(r.depositAmount).toBeCloseTo(1631.25, 2);
     expect(r.balanceDue).toBeCloseTo(1631.25, 2);
+    expect(r.depositRate).toBe(0.5); // default, absent depositPercent
+  });
+
+  // #177 — permanent bistro honors the same per-quote deposit override as
+  // holiday/permanent/event.
+  it('honors a per-quote depositPercent override (#177)', () => {
+    const r = calculatePermanentBistro(
+      baseInputs({ permanentBistro: { bistro: [{ footage: 100 }] }, depositPercent: 25 }),
+      R,
+    );
+    expect(r.total).toBeCloseTo(3262.5, 2);
+    expect(r.depositAmount).toBeCloseTo(815.63, 2);
+    expect(r.balanceDue).toBeCloseTo(2446.87, 2);
+    expect(r.depositRate).toBe(0.25);
   });
 
   it('percentage discount comes off the subtotal before tax', () => {
@@ -233,6 +247,20 @@ describe('calculatePermanentBistro — totals math (no rush/takedown/early-insta
     expect(r.discountAmount).toBe(300); // 10% of 3000
     expect(r.subtotalAfterDiscount).toBe(2700);
     expect(r.taxAmount).toBeCloseTo(236.25, 2);
+  });
+
+  // #212: early-install is a holiday-seasonal promo, not a general discount —
+  // permanent bistro never carries it. This engine never even reads
+  // inputs.installTiming (mirrors calculateEventQuote), so a forged/stale
+  // 'september' pick can't sneak a discount in, same guarantee
+  // lib/permanent/pricing.ts asserts explicitly for rush/takedown/early-install.
+  it('never applies an early-install discount, even if installTiming is set', () => {
+    const r = calculatePermanentBistro(
+      baseInputs({ permanentBistro: { bistro: [{ footage: 100 }] }, installTiming: 'september' }),
+      R,
+    );
+    expect(r.earlyInstallDiscountAmount).toBe(0);
+    expect(r.total).toBeCloseTo(3262.5, 2); // same as the plain $3000-subtotal case above
   });
 });
 

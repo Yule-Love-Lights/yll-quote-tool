@@ -23,3 +23,30 @@ export function portalPhone(): string {
 export function friendlyPortalError(action: string, phone: string = portalPhone()): string {
   return `We couldn't ${action} just now — please try again, or text us at ${phone}.`;
 }
+
+/**
+ * View-only portal (#176) — a stale tab: the portal was open before staff
+ * flagged this quote view-only, so an in-flight approve/pay/decline/
+ * request-changes call 409s with code 'view-only'. Deliberately NOT
+ * `friendlyPortalError` — "please try again" is misleading here (retrying can
+ * never succeed while the quote stays view-only), so this names the real
+ * state instead.
+ *   viewOnlyStaleTabError()
+ *   → "This quote is now browse-only — nothing can be approved or paid here. Text us at … if that doesn't seem right."
+ */
+export function viewOnlyStaleTabError(phone: string = portalPhone()): string {
+  return `This quote is now browse-only — nothing can be approved or paid here. Text us at ${phone} if that doesn't seem right.`;
+}
+
+/**
+ * NCE trade-account balance (#199) — an NCE-tagged quote's remaining balance
+ * settles through the NCE trade system, never a card/pay-link. Same "name
+ * the real state, don't say retry" posture as viewOnlyStaleTabError — retrying
+ * pay-balance can never succeed here. This is the ONE deliberate NCE-facing
+ * message on the customer portal.
+ *   nceBalanceBlockedError()
+ *   → "This balance is handled through your NCE trade account — nothing is due here. Text us at … with any questions."
+ */
+export function nceBalanceBlockedError(phone: string = portalPhone()): string {
+  return `This balance is handled through your NCE trade account — nothing is due here. Text us at ${phone} with any questions.`;
+}

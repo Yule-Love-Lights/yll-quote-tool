@@ -19,12 +19,14 @@
 // never throws into the webhook.
 
 import { getClaudeClient } from '@/lib/claude';
+import { LEAD_SERVICES, asLeadService, type LeadService } from '@/lib/leads/leadService';
 
 export const BOT_READ_TOOLS = ['status', 'schedule', 'stock', 'low', 'jobs', 'help'] as const;
 export type BotReadTool = (typeof BOT_READ_TOOLS)[number];
 
-// Field-capture writes (Phase 2). Confirm-gated and audit-logged by the caller.
-export const BOT_WRITE_TOOLS = ['completeInstall'] as const;
+// Field-capture writes (Phase 2 completeInstall, Phase 3 captureLead).
+// Confirm-gated and audit-logged by the caller.
+export const BOT_WRITE_TOOLS = ['completeInstall', 'captureLead'] as const;
 export type BotWriteTool = (typeof BOT_WRITE_TOOLS)[number];
 
 export type BotTool = BotReadTool | BotWriteTool;
@@ -45,6 +47,11 @@ export type BotInterpretation = {
     jobNumber?: number;
     materials?: BotMaterialLine[];
     note?: string;
+    // captureLead
+    name?: string;
+    phone?: string;
+    address?: string;
+    service?: LeadService;
   };
   confidence: number;
 };
@@ -99,9 +106,18 @@ function systemPrompt(allowWrites: boolean): string {
       '  Anything else they said goes in note.',
       '  Example: "job 142 done, used 2 boxes of C9 and 30 clips" → completeInstall,',
       '  jobNumber 142, materials [{item: "C9", qty: 2}, {item: "clips", qty: 30}].',
+      '- captureLead: a crew member reporting a NEW lead they just met in the field —',
+      '  someone who is NOT an existing customer/job. Put the name in name, the phone',
+      '  number in phone, the street address in address if given, and which service',
+      '  they asked about in service (christmas, permanent, event-wedding, or',
+      '  landscape) ONLY if the sender actually said it — do not guess a service.',
+      '  Anything else they said goes in note.',
+      '  Example: "new lead, John Smith 631-555-0100, 12 Oak St, wants permanent',
+      '  lighting" → captureLead, name "John Smith", phone "631-555-0100", address',
+      '  "12 Oak St", service "permanent".',
       'For any OTHER change (moving a job stage, setting stock, editing or sending a',
-      'quote, prices, contacts) answer help with confidence 0 — those are not',
-      'available here.',
+      'quote, prices, editing an EXISTING contact) answer help with confidence 0 —',
+      'those are not available here.',
     );
   } else {
     lines.push(
@@ -142,6 +158,14 @@ function routeTool(allowWrites: boolean) {
       },
     };
     properties.note = { type: 'string', description: 'anything else the sender said' };
+    properties.name = { type: 'string', description: 'new lead\'s name (captureLead)' };
+    properties.phone = { type: 'string', description: 'new lead\'s phone number (captureLead)' };
+    properties.address = { type: 'string', description: 'new lead\'s street address (captureLead)' };
+    properties.service = {
+      type: 'string',
+      enum: [...LEAD_SERVICES],
+      description: 'which service the new lead asked about (captureLead) — omit if not said',
+    };
   }
 
   return {
@@ -220,6 +244,11 @@ export async function interpretBotText(
       const materials = parseMaterials(input.materials);
       if (materials.length) args.materials = materials;
       if (typeof input.note === 'string' && input.note.trim()) args.note = input.note.trim();
+      if (typeof input.name === 'string' && input.name.trim()) args.name = input.name.trim();
+      if (typeof input.phone === 'string' && input.phone.trim()) args.phone = input.phone.trim();
+      if (typeof input.address === 'string' && input.address.trim()) args.address = input.address.trim();
+      const service = asLeadService(input.service);
+      if (service) args.service = service;
     }
 
     return { tool: tool as BotTool, args, confidence };

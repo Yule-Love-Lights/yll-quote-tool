@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useState, useRef, useEffect } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { OperatorShell } from '@/components/OperatorShell';
 import type {
@@ -16,6 +16,7 @@ import type {
 import type { PhotoTag, TrainingPhoto } from '@/lib/training';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
 import type { LineSegment } from '@/lib/photoAnalysis';
+import { downscaleForUpload, totalBase64Bytes, exceedsSubmitBudget, SUBMIT_BYTE_BUDGET, readUploadErrorMessage } from '@/lib/clientImage';
 
 // ─── Shared types — mirror quote/new/page.tsx ───────────────────────────────
 type MiniLightDetection = {
@@ -66,14 +67,6 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-async function fileToBase64(file: File): Promise<{ base64: string; mediaType: string }> {
-  const arrayBuffer = await file.arrayBuffer();
-  let binary = '';
-  const bytes = new Uint8Array(arrayBuffer);
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-  return { base64: btoa(binary), mediaType: file.type };
-}
-
 const PHOTO_TAG_LABELS: Record<PhotoTag, string> = {
   front_install: 'Front — Installed',
   tree_bush: 'Tree/Bush',
@@ -102,7 +95,17 @@ function polylineLength(lines: LineSegment[], aspect: number): number {
   return total;
 }
 
+// useSearchParams needs a Suspense boundary in the App Router — same shape as
+// /login. The page body is unchanged below; this is only the wrapper.
 export default function NewTrainingHousePage() {
+  return (
+    <Suspense fallback={null}>
+      <NewTrainingHousePageInner />
+    </Suspense>
+  );
+}
+
+function NewTrainingHousePageInner() {
   const router = useRouter();
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -214,11 +217,73 @@ export default function NewTrainingHousePage() {
 
   useEffect(() => { feetPerUnitRef.current = feetPerUnit; }, [feetPerUnit]);
 
+  // ── #167 slice 3: seed this page from an archive property ──────────────────
+  // Arrives as /training/new?archive=<resolved_address_key> from the queue.
+  // Unlike the quote pre-fill above, there is no design to project: we load the
+  // daytime satellite to trace on, the address, and the SCALE.
+  //
+  // Seeding feetPerUnit is what makes this work at all. The calibration effect
+  // below normally derives scale from typed footage; here it runs backwards —
+  // scale is known from the satellite's zoom math, so the polyline effect
+  // computes footage from the lines the operator draws. That effect keys on
+  // normalized image WIDTH, hence feetPerPixel * satelliteW, computed server-side.
+  //
+  // Safe against the calibration effect: it only overwrites feetPerUnit when a
+  // footage AND a line length are both non-zero, and a freshly-seeded archive
+  // trace has neither, so its `scale` stays null when imgAspect settles.
+  const searchParams = useSearchParams();
+  const archiveKey = searchParams.get('archive');
+  const [archiveNightPhotos, setArchiveNightPhotos] = useState<string[]>([]);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
+  const archiveSeededRef = useRef(false);
+  // Set once the satellite scale lands. Everything that would otherwise
+  // re-derive feetPerUnit checks this: the calibration effect below, and
+  // Auto-Analyze. A ref rather than state because those readers run inside
+  // effects/handlers that must see the current value without re-subscribing.
+  const archiveScaleLockedRef = useRef(false);
+
+  useEffect(() => {
+    if (!archiveKey || archiveSeededRef.current) return;
+    archiveSeededRef.current = true; // one-shot: never clobber operator edits on a re-render
+
+    (async () => {
+      try {
+        const res = await fetch(`/api/training/archive/prefill?addressKey=${encodeURIComponent(archiveKey)}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? 'Could not load that archive property');
+
+        // photos and photoMarkup are parallel arrays — seed both, exactly as the
+        // upload path does, or the markup index desyncs from the photo index.
+        setPhotos([{ tag: 'other', base64: data.satellite.base64, mediaType: data.satellite.mediaType, caption: 'Daytime satellite' }]);
+        setPhotoMarkup([emptyMarkup()]);
+        // The seed REPLACES the arrays, so anything uploaded during the fetch is
+        // discarded — reset the index too, or it can point past the new
+        // 1-element array and activePhoto goes undefined, blanking the whole
+        // markup section with no explanation.
+        setActivePhotoIdx(0);
+        setAddress(a => a || data.address);
+        setFeetPerUnit(data.feetPerUnit);
+        archiveScaleLockedRef.current = true;
+        setArchiveNightPhotos(data.nightPhotoUrls ?? []);
+      } catch (err) {
+        setArchiveError(err instanceof Error ? err.message : 'Could not load that archive property');
+      }
+    })();
+  }, [archiveKey]);
+
   // Feet-per-unit calibration (gutter preferred, ridge fallback).
   // Depends on footage inputs only — line edits recompute footage via the
   // effect below, which sets skipCalibRef to keep this one from re-firing.
   useEffect(() => {
     if (skipCalibRef.current) { skipCalibRef.current = false; return; }
+    // #167 slice 3: an archive trace's scale comes from the satellite's zoom
+    // math (geodata), not from anything typed. Re-deriving it from a footage
+    // input would replace a measured constant with an estimate — and the
+    // "Override if the drawn lines don't capture reality" field invites exactly
+    // that edit, which would silently rescale every OTHER measurement on the
+    // house. Locking here rather than in the seed effect because the seed only
+    // guarantees the FIRST tick; this fires on every later footage edit.
+    if (archiveScaleLockedRef.current) return;
     const santasLen = polylineLength(santasLines, imgAspect);
     const ridgeLen = polylineLength(gingerbreadLines, imgAspect);
     const sFt = typeof santasFootage === 'number' ? santasFootage : 0;
@@ -314,7 +379,12 @@ export default function NewTrainingHousePage() {
         alert(`${file.name} is larger than 10MB — skipping`);
         continue;
       }
-      const { base64, mediaType } = await fileToBase64(file);
+      // #186: downscale before base64-encoding — POST /api/training below sends
+      // every photo's base64 in one JSON body, so multiple full-res photos add
+      // up fast against Vercel's 4.5MB request-body cap. See clientImage.ts.
+      const { dataUrl, mediaType } = await downscaleForUpload(file);
+      const comma = dataUrl.indexOf(',');
+      const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
       newPhotos.push({ tag, base64, mediaType });
     }
     setPhotos(p => [...p, ...newPhotos]);
@@ -490,7 +560,7 @@ export default function NewTrainingHousePage() {
     }
     const newLine: LineSegment = {
       points: pendingPoints,
-      label: addMode === 'santas' ? 'new gutterline' : addMode === 'gingerbread' ? 'new ridgeline' : 'new c9 run',
+      label: addMode === 'santas' ? 'new gutterline' : addMode === 'gingerbread' ? 'new ridgeline' : addMode === 'stake' ? 'new stake run' : 'new c9 run',
     };
     const setter = getSetter(addMode);
     setter(lines => [...lines, newLine]);
@@ -553,8 +623,8 @@ export default function NewTrainingHousePage() {
       // is actually installed & lit), not the quoting "suggest placements" pass.
       fd.append('mode', 'completed');
       const res = await fetch('/api/analyze-photo', { method: 'POST', body: fd });
+      if (!res.ok) throw new Error(await readUploadErrorMessage(res, 'Analysis failed'));
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Analysis failed');
       // Fail-safe (analyzer outage): the API returns 200 with result:null + a
       // friendly analysisError rather than an HTTP error — mirrors QuoteBuilder's
       // applyAnalysisResult handling. Without this guard, reading r.santasLines
@@ -582,44 +652,77 @@ export default function NewTrainingHousePage() {
       const newGingerLines = r.gingerbreadLines ?? [];
       const detections = r.miniLightDetections ?? [];
 
-      setSantasLines(newSantasLines);
-      setGingerbreadLines(newGingerLines);
-      setSantasFootage(r.santasFootage);
-      setSantasDifficulty(r.santasDifficulty);
-      setGingerbreadFootage(r.gingerbreadFootage);
-      setGingerbreadDifficulty(r.gingerbreadDifficulty);
-      setWreathDetections(r.wreathDetections ?? []);
-      setSpritzerDetections(r.spritzerDetections ?? []);
-      setGarlandDetections(r.garlandDetections ?? []);
+      // Same hazard as the scale guard below, one photo type earlier: on an
+      // archive trace the ONLY photo Auto-Analyze has to look at is the
+      // daytime satellite (the night photos are reference-only, never the
+      // active markup target), so the analyzer is guessing a ground-level
+      // roofline off an overhead shot it was never built for. Applying that
+      // guess would silently discard the operator's traced/typed gutterline
+      // and ridge — including an explicit "Override" entry — with no
+      // confirmation. Device-checked live: without this guard, a drawn
+      // 80ft gutterline + an "Override" of 999ft both reset to 0ft/no
+      // segments on a single Auto-Analyze click, and nothing server-side
+      // rejects a zero-footage save, so a wiped trace can land in the
+      // corpus as "confirmed" ground truth.
+      //
+      // Detections (wreaths/spritzers/garland/mini-lights) get the SAME
+      // guard, for the SAME reason: pre-merge review (staff + technical
+      // lens, independently) caught that the archive flow's only photo is
+      // the satellite — a top-down shot has no legible wreath-on-a-door or
+      // spritzer-on-a-railing to detect, so an unguarded apply here would
+      // overwrite hand-placed boxes (working from the night reference
+      // photos, which is the intended archive workflow) with a satellite
+      // guess that's structurally unable to be right. recalcStrings below
+      // would compound it: it derives its scale from r.santasFootage /
+      // newSantasLines, i.e. the exact satellite-hallucinated numbers this
+      // guard already refuses to trust for feetPerUnit — so even a
+      // "successful" detection would carry a wrong string count computed
+      // off an untrustworthy scale, not just a missing one.
+      if (!archiveScaleLockedRef.current) {
+        setSantasLines(newSantasLines);
+        setGingerbreadLines(newGingerLines);
+        setSantasFootage(r.santasFootage);
+        setSantasDifficulty(r.santasDifficulty);
+        setGingerbreadFootage(r.gingerbreadFootage);
+        setGingerbreadDifficulty(r.gingerbreadDifficulty);
+        setWreathDetections(r.wreathDetections ?? []);
+        setSpritzerDetections(r.spritzerDetections ?? []);
+        setGarlandDetections(r.garlandDetections ?? []);
 
-      const santasLen = polylineLength(newSantasLines, imgAspect);
-      const ridgeLen = polylineLength(newGingerLines, imgAspect);
-      let scale: number | null = null;
-      if (santasLen > 0 && r.santasFootage > 0) scale = r.santasFootage / santasLen;
-      else if (ridgeLen > 0 && r.gingerbreadFootage > 0) scale = r.gingerbreadFootage / ridgeLen;
+        const santasLen = polylineLength(newSantasLines, imgAspect);
+        const ridgeLen = polylineLength(newGingerLines, imgAspect);
+        let scale: number | null = null;
+        if (santasLen > 0 && r.santasFootage > 0) scale = r.santasFootage / santasLen;
+        else if (ridgeLen > 0 && r.gingerbreadFootage > 0) scale = r.gingerbreadFootage / ridgeLen;
 
-      // Seed calibration so garland/column length readouts and any subsequent
-      // polyline edits use feet, not raw normalized units.
-      if (scale) setFeetPerUnit(scale);
+        // Seed calibration so garland/column length readouts and any
+        // subsequent polyline edits use feet, not raw normalized units.
+        if (scale) setFeetPerUnit(scale);
 
-      if (scale && detections.length > 0) {
-        const PERSPECTIVE = 0.4;
-        const recalcStrings = (box: [number, number, number, number]): number => {
-          const widthFt = box[2] * scale! * PERSPECTIVE;
-          const heightFt = (box[3] / imgAspect) * scale! * PERSPECTIVE;
-          const circumIn = Math.PI * widthFt * 12;
-          const wraps = (heightFt * 12) / 6;
-          const footageFt = (wraps * circumIn) / 12;
-          return Math.max(1, Math.round(footageFt / 25));
-        };
-        // Railings are a LINEAR top-rail run, not a cylindrical wrap — the AI's
-        // ~1-string-per-25ft count is already right; don't re-apply the wrap math.
-        setMiniLightDetections(detections.map(d => ({ ...d, stringCount: d.type === 'railing' ? d.stringCount : recalcStrings(d.box) })));
-      } else {
-        setMiniLightDetections(detections);
+        if (scale && detections.length > 0) {
+          const PERSPECTIVE = 0.4;
+          const recalcStrings = (box: [number, number, number, number]): number => {
+            const widthFt = box[2] * scale! * PERSPECTIVE;
+            const heightFt = (box[3] / imgAspect) * scale! * PERSPECTIVE;
+            const circumIn = Math.PI * widthFt * 12;
+            const wraps = (heightFt * 12) / 6;
+            const footageFt = (wraps * circumIn) / 12;
+            return Math.max(1, Math.round(footageFt / 25));
+          };
+          // Railings are a LINEAR top-rail run, not a cylindrical wrap — the
+          // AI's ~1-string-per-25ft count is already right; don't re-apply
+          // the wrap math.
+          setMiniLightDetections(detections.map(d => ({ ...d, stringCount: d.type === 'railing' ? d.stringCount : recalcStrings(d.box) })));
+        } else {
+          setMiniLightDetections(detections);
+        }
       }
 
-      setAnalysisNotes(`${r.notes} (confidence: ${r.confidence})`);
+      setAnalysisNotes(
+        archiveScaleLockedRef.current
+          ? `${r.notes} (confidence: ${r.confidence}) — archive trace: satellite-derived geometry and detections were NOT applied, trace the roofline and place decorations by hand from the night reference photos.`
+          : `${r.notes} (confidence: ${r.confidence})`,
+      );
     } catch (err) {
       setAnalysisError(err instanceof Error ? err.message : 'Analysis failed');
     } finally {
@@ -694,6 +797,21 @@ export default function NewTrainingHousePage() {
       setSaveError('Upload at least one photo before saving.');
       return;
     }
+    // #186 review: POST /api/training sends every photo's base64 in ONE JSON
+    // body (saveTrainingHouse does a single atomic insert — there's no
+    // incremental append surface to chunk this into, and the per-photo markup
+    // below is only flattened at this final save, so splitting the photo
+    // upload from the submit wouldn't shrink this request anyway). Precheck
+    // the total instead of letting a normal multi-photo session 413.
+    const photoBytes = photos.map((p) => p.base64);
+    if (exceedsSubmitBudget(photoBytes)) {
+      const totalMb = (totalBase64Bytes(photoBytes) / (1024 * 1024)).toFixed(1);
+      const budgetMb = (SUBMIT_BYTE_BUDGET / (1024 * 1024)).toFixed(0);
+      setSaveError(
+        `These photos total ${totalMb}MB — the server accepts ~${budgetMb}MB per save. Remove a photo or re-add fewer at once.`,
+      );
+      return;
+    }
     setSaving(true);
     setSaveError(null);
     try {
@@ -742,6 +860,13 @@ export default function NewTrainingHousePage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          // Present only for an archive trace WHOSE SEED ACTUALLY LANDED —
+          // gated on the scale lock, which is set only when the satellite and
+          // its scale arrived. Without the gate, a failed prefill left ?archive=
+          // in the URL above a fully-functional blank form, and a manual save
+          // would have claimed the property with a non-satellite trace and no
+          // locked scale (S51 wrap review, staff lens).
+          archiveAddressKey: archiveKey && archiveScaleLockedRef.current ? archiveKey : undefined,
           address: address || undefined,
           yearCompleted: yearCompleted || undefined,
           notes: notes || undefined,
@@ -773,7 +898,30 @@ export default function NewTrainingHousePage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Save failed');
-      router.push('/training');
+      if (data.archiveClaimFailed) {
+        // Someone else changed this property while it was open here. The trace
+        // IS saved — it just isn't linked to the queue card. Say which of the
+        // two things happened, because the right next step differs: a competing
+        // trace needs reconciling, an exclusion means this house was judged not
+        // to be a real install at all and the example is probably worth deleting.
+        setSaveError(
+          data.archiveClaimFailed === 'traced'
+            ? 'Saved, but someone else traced this house while you were working. Your version was kept as a '
+              + 'separate training example and is not linked to the archive queue — check /training to compare '
+              + 'them and delete whichever you do not want.'
+            : data.archiveClaimFailed === 'excluded'
+              ? 'Saved, but someone else marked this property "not an install" while you were working. Your '
+                + 'trace was kept in /training and is not linked to the archive queue — it is probably worth '
+                + 'deleting unless you disagree with that call.'
+              : 'Saved to /training, but linking it back to the archive queue failed. The property may still '
+                + 'show as untraced in the queue — check /training/archive before re-tracing it.',
+        );
+        return;
+      }
+      // Back to wherever the work came from: an archive trace is one of ~80 in
+      // a sitting, so dropping the operator on the general list means
+      // re-navigating to the queue after every single save.
+      router.push(archiveKey ? '/training/archive' : '/training');
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : 'Save failed');
     } finally {
@@ -791,6 +939,55 @@ export default function NewTrainingHousePage() {
             Enter a historical job with confirmed measurements. The AI will use this to improve future quotes.
           </p>
         </div>
+
+        {/* #167 slice 3 — archive trace context. The night photos are what was
+            actually installed; the satellite loaded into the canvas is what you
+            measure on. Shown side by side because the whole job is reading one
+            and drawing the other. */}
+        {archiveKey && (
+          <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
+            {archiveError ? (
+              <div>
+                <p className="text-sm text-red-700">{archiveError}</p>
+                <p className="text-xs text-gray-500 mt-1">
+                  Nothing was loaded, so saving this form would create an ordinary training
+                  example — it will NOT count as tracing the archive property.
+                </p>
+                <Link
+                  href="/training/archive"
+                  className="inline-block mt-2 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium text-sm px-3 py-2 rounded-md"
+                >
+                  ← Back to Archive Queue
+                </Link>
+              </div>
+            ) : (
+              <>
+                <div className="text-sm font-medium text-gray-900">Tracing an archive property</div>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  The satellite is loaded with its scale already set — draw the roofline and the footage fills
+                  in. The night photos below are reference for what was installed, not something to measure on.
+                </p>
+                {archiveNightPhotos.length > 0 ? (
+                  <div className="flex gap-2 mt-3 overflow-x-auto">
+                    {archiveNightPhotos.map((url, i) => (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        key={url}
+                        src={url}
+                        alt={`Archive install photo ${i + 1}`}
+                        className="h-24 w-24 object-cover rounded border border-gray-200 shrink-0"
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-gray-500 mt-2">
+                    No archive photos copied from Drive yet — trace from the satellite.
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+        )}
 
         {/* House info */}
         <Section title="House Info">

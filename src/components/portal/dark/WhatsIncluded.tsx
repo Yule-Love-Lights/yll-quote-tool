@@ -229,17 +229,26 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
     earlyInstallHidden,
     locked,
     legacyRebook,
+    depositRate,
   } = useSelection();
-  // #155 — a legacy rebook quote shows the ITEM LIST read-only (the same
-  // pointer-events-none treatment as a booked/locked quote), even before the
-  // quote is actually approved. The add-on/early-install sections below are
-  // deliberately NOT included (r2): rush/takedown/early-install are live
-  // upsells on a legacy rebook, so they keep their locked-only grey-out.
-  // Derived from the SAME pure seam that no-ops the context setters
-  // (frozenMutatorGroups), so the styling and the behavior can never drift
-  // apart. Positive gate on legacyRebook === true only; a normal quote's
-  // `locked` behavior is completely unchanged.
-  const itemsReadOnly = frozenMutatorGroups({ locked, legacyRebook }).items;
+  // #155/#179/#180 — the item list renders read-only (the same
+  // pointer-events-none treatment as a booked/locked quote) below 2 line
+  // items: a legacy rebook quote at exactly 1 item (#179 — 2+ items are
+  // toggleable exactly like a normal quote, live price/deposit recompute and
+  // all), or ANY quote at exactly 1 item (#180 — a lone item can never be
+  // toggled off, so the customer can't reach an empty/dead-end selection).
+  // The add-on/early-install sections below are deliberately NOT included
+  // (r2): rush/takedown/early-install are live upsells even on a frozen
+  // legacy rebook, so they keep their locked-only grey-out. Derived from the
+  // SAME pure seam that no-ops the context setters (frozenMutatorGroups), so
+  // the styling and the behavior can never drift apart.
+  const itemsReadOnly = frozenMutatorGroups({ locked, legacyRebook, itemCount: items.length }).items;
+  // #179 — once a legacy rebook unfreezes (2+ items), its subtitle must read
+  // like a normal quote's, not "same as last year" — only show the legacy
+  // copy while the items are ACTUALLY frozen for the legacy reason (exactly 1
+  // item). A non-legacy 1-item freeze (#180) gets its own "nothing to toggle"
+  // line so the inert card doesn't read as a dead button (review finding).
+  const legacyItemsReadOnly = legacyRebook === true && itemsReadOnly;
 
   return (
     <section
@@ -253,17 +262,26 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
           </p>
           <h2
             id="portal-dark-included-heading"
-            className="font-display text-[30px] md:text-[46px] leading-[1.1] font-semibold text-[#F4ECD8] tracking-[-0.01em]"
+            // #238: tabIndex=-1 lets the "Build your own" scroll-jump
+            // (InteractiveHero's goToIncluded, same shape as DesignReprise's
+            // goToColors) move keyboard/SR focus HERE without adding the
+            // heading to the normal tab order; focus:outline-none suppresses
+            // the default ring since this isn't a real interactive control
+            // (mirrors LightColorPicker's id="light-color" section).
+            tabIndex={-1}
+            className="font-display text-[30px] md:text-[46px] leading-[1.1] font-semibold text-[#F4ECD8] tracking-[-0.01em] scroll-mt-6 focus:outline-none"
           >
             {formatIncludedHeading(activeName)}
           </h2>
-          {(locked || legacyRebook === true || items.length > 1) && (
+          {(locked || legacyItemsReadOnly || items.length >= 1) && (
             <p className="mt-4 text-[16px] md:text-[17px] text-[#E0D7C1]/85 leading-[1.65]">
               {locked
                 ? "This is your booked quote — here's everything included, line by line."
-                : legacyRebook === true
+                : legacyItemsReadOnly
                   ? "Here's everything included — same as last year."
-                  : "Toggle anything off to remove it and we'll update your total automatically."}
+                  : items.length === 1
+                    ? "Here's what your quote includes — it's all one package, so there's nothing to toggle."
+                    : "Toggle anything off to remove it and we'll update your total automatically."}
             </p>
           )}
           <p className="mt-3 text-[13px] text-[#A89F87]">Prices shown are before tax.</p>
@@ -358,12 +376,12 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
                   regardless of the surrounding column. justify-center then centers
                   the two cards within. */}
               <div className="mx-auto flex flex-col gap-8 lg:max-w-[1500px] lg:flex-row lg:items-start lg:justify-center lg:gap-10 lg:px-8">
-                <DesignReprise design={design} palette={palette} renderSettings={renderSettings} className="" inRow />
+                <DesignReprise design={design} palette={palette} renderSettings={renderSettings} serviceType={serviceType ?? null} className="" inRow />
                 <SatelliteRoofView design={design} className="" inRow allowedSatelliteKeys={allowedSatelliteKeys} labelOverrides={satelliteLabelOverrides} />
               </div>
             </div>
           ) : (
-            <DesignReprise design={design} palette={palette} renderSettings={renderSettings} />
+            <DesignReprise design={design} palette={palette} renderSettings={renderSettings} serviceType={serviceType ?? null} />
           ))}
 
         {/* Optional add-ons — customer-toggleable rush + premium takedown (#4).
@@ -473,9 +491,10 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
         )}
 
         {/* Totals — ties the line items above out to the all-in price:
-         * Subtotal (+ any per-job fees) + tax = Total, with the 50% deposit
-         * due today. No silent $1,000 floor; the minimum is a gate enforced
-         * on the Approve button (status line below). */}
+         * Subtotal (+ any per-job fees) + tax = Total, with the deposit
+         * (this quote's rate, default 50%) due today. No silent $1,000 floor;
+         * the minimum is a gate enforced on the Approve button (status line
+         * below). */}
         <div className="mt-8 md:mt-10 ml-auto w-full max-w-sm rounded-2xl bg-[#18221C] border border-[#243029] p-5 md:p-6">
           <dl className="space-y-2.5 text-[14px] md:text-[15px]">
             <div className="flex justify-between text-[#A89F87]">
@@ -513,7 +532,7 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
               <dd className="font-display font-semibold tabular-nums text-[#F4ECD8]">{formatUsd(breakdown.total)}</dd>
             </div>
             <div className="flex justify-between text-[13px]">
-              <dt className="text-[#A89F87]">Deposit (50%)</dt>
+              <dt className="text-[#A89F87]">Deposit ({Math.round(depositRate * 100)}%)</dt>
               <dd className="tabular-nums text-[#E8B862]">{formatUsd(breakdown.deposit)}</dd>
             </div>
           </dl>

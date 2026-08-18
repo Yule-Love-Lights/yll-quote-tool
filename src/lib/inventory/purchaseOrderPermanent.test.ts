@@ -101,6 +101,78 @@ beforeEach(() => {
   currentDb = makeDb();
 });
 
+describe('#192 — buildSupplierPurchaseOrder scopes permanent jobs to the approved sides', () => {
+  const SCOPED_INPUTS = {
+    permanent: {
+      frontFootage: 60,
+      leftFootage: 0,
+      rightFootage: 0,
+      backFootage: 40,
+      gaps: [],
+      controllerToFirstLightFt: 0,
+      frontCorners: 0,
+      leftCorners: 0,
+      rightCorners: 0,
+      backCorners: 0,
+      trackStyle: 'single',
+      trackColor: '9003',
+      blackHousing: false,
+      maintenanceAddOn: false,
+    },
+  };
+
+  function makeScopedDb(approvalSnapshot: unknown) {
+    return {
+      from(table: string) {
+        const b = {
+          select: () => b,
+          is: () => b,
+          eq: () => b,
+          in: () => b,
+          then: (resolve: (v: unknown) => void) => {
+            if (table === 'jobs') {
+              return resolve({
+                data: [{ quote_id: 'P3', status: 'to_schedule', stock_decremented_at: null }],
+                error: null,
+              });
+            }
+            if (table === 'quotes') {
+              return resolve({
+                data: [
+                  {
+                    id: 'P3',
+                    is_test: false,
+                    approval_snapshot: approvalSnapshot,
+                    service_type: 'permanent',
+                    inputs: SCOPED_INPUTS,
+                  },
+                ],
+                error: null,
+              });
+            }
+            return resolve({ data: [], error: null });
+          },
+        };
+        return b;
+      },
+    };
+  }
+
+  it('a front-only approved snapshot excludes the back side from the pooled PO need', async () => {
+    currentDb = makeScopedDb({ customerSelection: { selectedItemIds: ['permanent-front'] } });
+    const scopedPo = await buildSupplierPurchaseOrder();
+    const scopedLights = scopedPo.lines.find((l) => l.sku === 'APL11012-5');
+
+    currentDb = makeScopedDb(null); // no snapshot → fails open, unscoped (today's full-BOM behavior)
+    const fullPo = await buildSupplierPurchaseOrder();
+    const fullLights = fullPo.lines.find((l) => l.sku === 'APL11012-5');
+
+    expect(scopedLights).toBeTruthy();
+    expect(fullLights).toBeTruthy();
+    expect(scopedLights!.needed).toBeLessThan(fullLights!.needed);
+  });
+});
+
 describe('buildSupplierPurchaseOrder — permanent + holiday jobs together (P8 PR-2)', () => {
   it('accumulates BOM SKUs from the permanent job and projection SKUs from the holiday job', async () => {
     const po = await buildSupplierPurchaseOrder();

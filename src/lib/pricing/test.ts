@@ -24,7 +24,10 @@ function printQuote(label: string, result: QuoteResult) {
     console.log(`  Premium takedown                      $${result.takedownAmount.toLocaleString()}`);
   console.log(`  Tax (${TAX_PCT}% on $${result.taxableAmount.toLocaleString()})`.padEnd(42) + ` $${result.taxAmount.toFixed(2)}`);
   console.log(`  TOTAL                                 $${result.total.toFixed(2)}`);
-  console.log(`  Deposit due now (50%)                 $${result.depositAmount.toFixed(2)}`);
+  // #177: label the ACTUAL deposit rate this result was priced with, not a
+  // hardcoded 50% (mirrors the TAX_PCT derivation above).
+  const depositPct = ((result.depositRate ?? BUSINESS_RULES.depositPercentage) * 100).toFixed(0);
+  console.log(`  Deposit due now (${depositPct}%)                 $${result.depositAmount.toFixed(2)}`);
   console.log(`  Balance at install                    $${result.balanceDue.toFixed(2)}`);
 }
 

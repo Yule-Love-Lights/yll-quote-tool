@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { priceSelection, chargesFromResult, minimumOrderSubtotal, orderMinimumStatus, installDiscountRate, effectiveCharges, pickInitialPackageId, derivePackages, derivePackagesLegacyRebook, applyOurRecommendation } from './derivePackages';
+import { priceSelection, chargesFromResult, minimumOrderSubtotal, orderMinimumStatus, installDiscountRate, effectiveCharges, pickInitialPackageId, derivePackages, derivePackagesLegacyRebook, applyOurRecommendation, isEmptyCustomSlot } from './derivePackages';
 import { BUSINESS_RULES, type QuoteResult } from '@/lib/pricing/pricingEngine';
 import type { PortalCharges, SelectionCharges, PortalLineItem, PortalLineItemKind, PortalPackage, PortalRoofline } from '@/components/portal/types';
 
@@ -75,6 +75,29 @@ describe('pickInitialPackageId — fallback default clears the $1,000 minimum (#
 
   it('picks the largest tier when nothing clears (defensive)', () => {
     expect(pickInitialPackageId(packages, lineItems, 99999)).toBe('C');
+  });
+});
+
+// #238 (review fix): 'D' is overloaded — the portal hero's scroll-to-included
+// nudge must fire only for the genuinely EMPTY custom slot, never a
+// pre-filled D from a different vertical (legacy rebook's single tile,
+// permanent's "Whole Home" bundle, event/bistro's single populated package).
+describe('isEmptyCustomSlot (#238)', () => {
+  it('is true for a non-legacy holiday D with nothing bundled yet', () => {
+    expect(isEmptyCustomSlot(pkg('D', [], 0))).toBe(true);
+  });
+
+  it('is false for a legacy rebook D — it is the single PRE-FILLED tile, not an empty slot', () => {
+    expect(isEmptyCustomSlot(pkg('D', ['roofline-santas', 'bush-0'], 500))).toBe(false);
+  });
+
+  it('is false for permanent\'s populated "Whole Home" D bundle', () => {
+    expect(isEmptyCustomSlot(pkg('D', ['perm-zone-1', 'perm-zone-2'], 2400))).toBe(false);
+  });
+
+  it('is false for a non-D package regardless of its included items', () => {
+    expect(isEmptyCustomSlot(pkg('A', [], 0))).toBe(false);
+    expect(isEmptyCustomSlot(pkg('C', ['roofline-santas'], 320))).toBe(false);
   });
 });
 
@@ -289,6 +312,13 @@ describe('priceSelection — real price, no $1,000 floor (#18)', () => {
     expect(p.taxable + p.tax).toBeCloseTo(p.total, 2);
     expect(p.deposit).toBeCloseTo(p.total * BUSINESS_RULES.depositPercentage, 2);
   });
+
+  // #177 — a per-quote deposit rate overrides the BUSINESS_RULES default.
+  it('honors a per-quote deposit rate override', () => {
+    const p = priceSelection(2000, { ...PLAIN, depositRate: 0.25 });
+    expect(p.total).toBe(2172.5);
+    expect(p.deposit).toBe(543.13); // 2172.5 * 0.25
+  });
 });
 
 describe('priceSelection — early-install discount (#40)', () => {
@@ -446,6 +476,59 @@ describe('chargesFromResult — per-quote fee config (#4)', () => {
     expect(charges.taxRate).toBe(BUSINESS_RULES.taxRate);
   });
 
+  // #177 — the per-quote deposit rate frozen on the result flows through
+  // chargesFromResult, falling back to the BUSINESS_RULES default for a
+  // legacy result priced before this field existed.
+  it('exposes the per-quote deposit rate, defaulting when absent (#177)', () => {
+    expect(chargesFromResult(resultWith({ depositRate: 0.25 })).depositRate).toBe(0.25);
+    expect(chargesFromResult(resultWith({})).depositRate).toBe(BUSINESS_RULES.depositPercentage);
+  });
+
+  // #199 F1 (wrap-review HIGH): a caller with a LIVE inputs.depositPercent to
+  // offer (the 2nd param) must win over a possibly-STALE result.depositRate —
+  // a tag/rebook write patches ONLY inputs.depositPercent, never result, so
+  // trusting result.depositRate alone leaves the NCE 40% (or any depositPercent
+  // change) inert pre-approval.
+  describe('live depositPercent precedence (#199 F1)', () => {
+    it('prefers the live depositPercent over a stale result.depositRate', () => {
+      expect(chargesFromResult(resultWith({ depositRate: 0.5 }), 40).depositRate).toBe(0.4);
+    });
+
+    it('a blank/0 live depositPercent still resolves to the BUSINESS_RULES default — not a fall-through to a stale result.depositRate', () => {
+      expect(chargesFromResult(resultWith({ depositRate: 0.25 }), 0).depositRate).toBe(
+        BUSINESS_RULES.depositPercentage,
+      );
+    });
+
+    it('falls back to result.depositRate when the caller offers no live value at all (back-compat, no param passed)', () => {
+      expect(chargesFromResult(resultWith({ depositRate: 0.25 })).depositRate).toBe(0.25);
+    });
+
+    // #226 (adversarial-review HIGH, live-prod bug): the exact trap that
+    // shipped — a caller with an ABSENT depositPercent (e.g. the old NCE-OFF
+    // route that deleted the key instead of writing 0) falls through to a
+    // STALE result.depositRate frozen at 0.4 from the last Calculate run
+    // while NCE was ON. No existing test named this specific shape before
+    // #226; this one documents the trap so it can't silently regress. The
+    // fix is at the CALLER (writing an explicit 0) — this function's
+    // back-compat fallback above is intentional and unchanged.
+    it('documents the #226 trap: absent depositPercent + a stale 0.4 result.depositRate yields 0.4, not the default', () => {
+      expect(chargesFromResult(resultWith({ depositRate: 0.4 })).depositRate).toBe(0.4);
+    });
+
+    it('an explicit 0 depositPercent correctly overrides a stale 0.4 result.depositRate to the BUSINESS_RULES default (#226)', () => {
+      expect(chargesFromResult(resultWith({ depositRate: 0.4 }), 0).depositRate).toBe(
+        BUSINESS_RULES.depositPercentage,
+      );
+    });
+
+    it('an out-of-range live depositPercent resolves to the BUSINESS_RULES default (mirrors effectiveDepositRate)', () => {
+      expect(chargesFromResult(resultWith({ depositRate: 0.25 }), 150).depositRate).toBe(
+        BUSINESS_RULES.depositPercentage,
+      );
+    });
+  });
+
   // Audit fix (g18): on a near-zero taxable base the rounded taxAmount used to
   // back-derive an inflated rate (e.g. 0.01 / 0.10 = 0.10 ≠ 0.0875) that then
   // got applied to every package/selection total. The canonical rate is used
@@ -481,6 +564,7 @@ describe('chargesFromResult — per-quote fee config (#4)', () => {
       taxRate: charges.taxRate,
       discountRate: 0,
       discountFlat: 0,
+      depositRate: BUSINESS_RULES.depositPercentage, // #177 — chargesFromResult always resolves a concrete rate
     });
   });
 
@@ -515,6 +599,7 @@ describe('chargesFromResult — per-quote fee config (#4)', () => {
       taxRate: charges.taxRate,
       discountRate: 0,
       discountFlat: 0,
+      depositRate: BUSINESS_RULES.depositPercentage, // #177 — chargesFromResult always resolves a concrete rate
     });
   });
 });
@@ -536,6 +621,12 @@ describe('effectiveCharges — toggle state → priceSelection input (#4)', () =
   it('passes through a discount rate and a flat discount', () => {
     expect(effectiveCharges(config, false, false, 0.15)).toEqual({ rushFee: 0, takedown: 0, taxRate: 0.08625, discountRate: 0.15, discountFlat: 0 });
     expect(effectiveCharges(config, false, false, 0, 100)).toEqual({ rushFee: 0, takedown: 0, taxRate: 0.08625, discountRate: 0, discountFlat: 100 });
+  });
+
+  // #177 — the per-quote deposit rate passes through unchanged (not toggle-gated).
+  it('passes through the per-quote deposit rate', () => {
+    const withRate: PortalCharges = { ...config, depositRate: 0.25 };
+    expect(effectiveCharges(withRate, true, false).depositRate).toBe(0.25);
   });
 });
 

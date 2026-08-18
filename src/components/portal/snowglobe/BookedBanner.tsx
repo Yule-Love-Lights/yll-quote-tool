@@ -19,9 +19,11 @@ export type BookedBannerProps = {
    *  not just approved. Defaults to false (the pre-Valor "we'll reach out"
    *  copy) so a caller that hasn't been updated yet keeps today's behavior. */
   depositFlow?: boolean;
+  /** #177 — this quote's actual deposit percent; defaults to 50 (today's behavior). */
+  depositPercent?: number;
 };
 
-export function BookedBanner({ quoteId, approvedAt, depositFlow = false }: BookedBannerProps) {
+export function BookedBanner({ quoteId, approvedAt, depositFlow = false, depositPercent = 50 }: BookedBannerProps) {
   const dateLabel = approvedAt
     ? new Date(approvedAt).toLocaleDateString('en-US', {
         month: 'long',
@@ -38,7 +40,7 @@ export function BookedBanner({ quoteId, approvedAt, depositFlow = false }: Booke
           You&apos;re booked{dateLabel ? ` — approved ${dateLabel}` : ''}.{' '}
           {depositFlow
             ? 'Your deposit is in.'
-            : "We'll reach out to collect your 50% deposit."}
+            : `We'll reach out to collect your ${depositPercent}% deposit.`}
         </p>
         <Link
           href={`/portal/${quoteId}/approved`}

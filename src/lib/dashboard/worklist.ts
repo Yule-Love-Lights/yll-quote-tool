@@ -5,14 +5,14 @@ import type { DashboardQuote, WorklistItem } from './types';
 const MS_PER_DAY = 86_400_000;
 
 // B7 fix (#110 W7-007): terminal / under-revision quotes must never nag in the
-// worklist — a declined/cancelled/lost quote still carries quote_sent_at, so
+// worklist — a declined/cancelled/abandoned quote still carries quote_sent_at, so
 // without this guard it renders as "sent … — no reply" forever, and a cancelled
 // never-sent draft nags as draft-stale. Mirrors needsAction.ts / workflowBoard.ts
 // (changes_requested included — it's not an unanswered-customer situation).
 const TERMINAL_STATUSES: ReadonlySet<QuoteStatus> = new Set<QuoteStatus>([
   'declined',
   'cancelled',
-  'lost',
+  'abandoned',
   'changes_requested',
 ]);
 

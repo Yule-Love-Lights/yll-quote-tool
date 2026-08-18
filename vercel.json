@@ -31,6 +31,18 @@
     {
       "path": "/api/leads/retry",
       "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/inventory/prep-digest",
+      "schedule": "0 13 * * *"
+    },
+    {
+      "path": "/api/jobs/completing-today",
+      "schedule": "0 13 * * *"
+    },
+    {
+      "path": "/api/ops/midnight-close",
+      "schedule": "15 5 * * *"
     }
   ]
 }

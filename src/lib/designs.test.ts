@@ -382,7 +382,7 @@ describe('extra street photos (#13)', () => {
     });
     sbRef.current = client;
 
-    expect(await removeDesignExtraPhoto(ID, PHOTO_A)).toBe(true);
+    expect((await removeDesignExtraPhoto(ID, PHOTO_A)).ok).toBe(true);
 
     expect(state.removedPaths).toEqual([[`${ID}/extra-${PHOTO_A}.jpg`]]);
     expect((state.row.extra_photos as DesignExtraPhoto[]).map(p => p.id)).toEqual([PHOTO_B]);
@@ -404,9 +404,62 @@ describe('extra street photos (#13)', () => {
     });
     sbRef.current = client;
 
-    expect(await removeDesignExtraPhoto(ID, PHOTO_A)).toBe(true);
+    expect((await removeDesignExtraPhoto(ID, PHOTO_A)).ok).toBe(true);
     const items = (state.row.scene as { items: Array<{ id: string }> }).items;
     expect(items.map(i => i.id)).toEqual(['unrelated']);
+  });
+
+  // #227: deleting a photo removes every strand drawn on it. If that leaves a
+  // miniGroup with zero surviving members, the group must be pruned too — it
+  // would otherwise render nothing, be unselectable in the editor, and keep
+  // billing its stringCount on every Calculate forever.
+  it('removeDesignExtraPhoto prunes a miniGroup left with zero surviving members (#227) and reports it (#741 defect 3)', async () => {
+    const { client, state } = makeExtrasSb({
+      extra_photos: [{ id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 10, h: 10, title: null }],
+      scene: {
+        yardsticks: [],
+        items: [
+          { id: 's1', kind: 'strand', photoId: PHOTO_A, groupId: 'g1' },
+          { id: 's2', kind: 'strand', photoId: PHOTO_A, groupId: 'g1' },
+          { id: 'g1', kind: 'miniGroup', memberIds: ['s1', 's2'], surface: 'railing', stringCount: 8 },
+          { id: 'unrelated', kind: 'wreath' },
+        ],
+      },
+    });
+    sbRef.current = client;
+
+    const result = await removeDesignExtraPhoto(ID, PHOTO_A);
+    expect(result.ok).toBe(true);
+    // #741 defect 3: the caller (route → DesignEditor → QuoteBuilder) needs
+    // to know a group was orphaned by this delete — previously silent.
+    expect(result.prunedMiniGroups).toEqual([{ surface: 'railing', stringCount: 8 }]);
+    const items = (state.row.scene as { items: Array<{ id: string }> }).items;
+    // s1/s2 pruned (drawn on the removed photo); g1 now has zero surviving
+    // members and must be pruned too, not left dangling and still billed.
+    expect(items.map(i => i.id)).toEqual(['unrelated']);
+  });
+
+  it('removeDesignExtraPhoto keeps a miniGroup with a surviving member elsewhere (partial orphan bills normally) (#227)', async () => {
+    const { client, state } = makeExtrasSb({
+      extra_photos: [{ id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 10, h: 10, title: null }],
+      scene: {
+        yardsticks: [],
+        items: [
+          { id: 's1', kind: 'strand', photoId: PHOTO_A, groupId: 'g1' }, // dies with the photo
+          { id: 's2', kind: 'strand', groupId: 'g1' }, // on the base photo — survives
+          { id: 'g1', kind: 'miniGroup', memberIds: ['s1', 's2'], surface: 'railing', stringCount: 8 },
+        ],
+      },
+    });
+    sbRef.current = client;
+
+    const result = await removeDesignExtraPhoto(ID, PHOTO_A);
+    expect(result.ok).toBe(true);
+    // #741 defect 3: a group that SURVIVES (still has a member) must not be
+    // reported as pruned — no false-positive staff warning.
+    expect(result.prunedMiniGroups).toEqual([]);
+    const items = (state.row.scene as { items: Array<{ id: string }> }).items;
+    expect(items.map(i => i.id).sort()).toEqual(['g1', 's2']);
   });
 
   // W2-016: a CONCURRENT scene autosave landing between the prune's read and
@@ -438,7 +491,7 @@ describe('extra street photos (#13)', () => {
     });
     sbRef.current = client;
 
-    expect(await removeDesignExtraPhoto(ID, PHOTO_A)).toBe(true);
+    expect((await removeDesignExtraPhoto(ID, PHOTO_A)).ok).toBe(true);
 
     const items = (state.row.scene as { items: Array<{ id: string }> }).items;
     // i1 pruned (drawn on the removed photo); i2 kept; the concurrent
@@ -449,7 +502,7 @@ describe('extra street photos (#13)', () => {
   it('removeDesignExtraPhoto returns false for an unknown photo id', async () => {
     const { client, state } = makeExtrasSb({ extra_photos: [] });
     sbRef.current = client;
-    expect(await removeDesignExtraPhoto(ID, PHOTO_A)).toBe(false);
+    expect((await removeDesignExtraPhoto(ID, PHOTO_A)).ok).toBe(false);
     expect(state.removedPaths).toHaveLength(0);
   });
 
@@ -476,7 +529,7 @@ describe('extra street photos (#13)', () => {
     });
     sbRef.current = client;
 
-    expect(await removeDesignExtraPhoto(ID, PHOTO_A)).toBe(true);
+    expect((await removeDesignExtraPhoto(ID, PHOTO_A)).ok).toBe(true);
 
     // PHOTO_A removed; the concurrently-added PHOTO_B must survive, not be
     // clobbered by a write computed off the stale initial snapshot.

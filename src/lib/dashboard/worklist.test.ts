@@ -131,9 +131,9 @@ describe('computeWorklist — terminal statuses never nag (#110 W7-007, B7 class
     expect(out).toEqual([]);
   });
 
-  it('a lost quote does NOT nag', () => {
+  it('an abandoned quote does NOT nag', () => {
     const out = computeWorklist(
-      [makeQuote({ created_at: '2026-06-01T00:00:00Z', quote_sent_at: oldSent, status: 'lost' })],
+      [makeQuote({ created_at: '2026-06-01T00:00:00Z', quote_sent_at: oldSent, status: 'abandoned' })],
       NOW,
     );
     expect(out).toEqual([]);

@@ -37,10 +37,13 @@ type QuoteRow = {
   valor_order_ref: string | null;
   approval_snapshot: { customerSelection?: { currentDepositUsd?: number } } | null;
   // Explicit lifecycle status (ledger #83) — used to refuse a dead (cancelled /
-  // declined / lost) quote before it can mint a hosted page (W1-007).
+  // declined / abandoned) quote before it can mint a hosted page (W1-007).
   status: import('@/lib/quoteStatus').QuoteStatus | null;
   // Test Quote (ledger #93): a simulated quote must never reach real Valor.
   is_test: boolean;
+  // View-only portal (#176): a staff-flagged browse-only quote can never
+  // start a real checkout — see the check right after the fetch below.
+  view_only: boolean;
 };
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -69,7 +72,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_email, customer_approved_at, deposit_paid_at, valor_order_ref, approval_snapshot, status, is_test',
+      'id, customer_name, customer_email, customer_approved_at, deposit_paid_at, valor_order_ref, approval_snapshot, status, is_test, view_only',
     )
     .eq('id', id)
     .single<QuoteRow>();
@@ -78,6 +81,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json(
       { error: `Quote not found: ${fetchErr?.message ?? 'no row'}` },
       { status: 404 },
+    );
+  }
+
+  // View-only portal (#176): a staff-flagged browse-only quote must never
+  // reach real Valor (or the simulate-deposit flow, but that route is
+  // unaffected by this task) — server hard-guard, checked before any write
+  // or Valor call. The portal UI's matching gate is StickyBottomBar's
+  // viewOnly branch (DepositCheckout is never mounted).
+  if (quote.view_only) {
+    return NextResponse.json(
+      { error: 'This quote is view-only', code: 'view-only' },
+      { status: 409 },
     );
   }
 
@@ -99,7 +114,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
-  // W1-007: a dead quote (cancelled / declined / lost) must not be able to mint a
+  // W1-007: a dead quote (cancelled / declined / abandoned) must not be able to mint a
   // hosted page — otherwise a customer holding a live pay link could pay against a
   // cancelled order and the webhook would resurrect it to 'booked'. Gate here so a
   // terminal quote can't even start checkout (the webhook adds the matching guard
@@ -111,7 +126,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     deposit_paid_at: quote.deposit_paid_at,
     status: quote.status,
   });
-  if (lifecycleStatus === 'cancelled' || lifecycleStatus === 'declined' || lifecycleStatus === 'lost') {
+  if (lifecycleStatus === 'cancelled' || lifecycleStatus === 'declined' || lifecycleStatus === 'abandoned') {
     return NextResponse.json(
       { error: `This quote is ${lifecycleStatus} and can no longer be paid`, code: 'not-payable' },
       { status: 409 },
@@ -142,10 +157,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // ref + intended amount ONLY when the ref is still null AND unpaid; if the row
   // already carries a ref we reuse it untouched (no re-stamp).
   if (!quote.valor_order_ref) {
+    // View-only portal (#176 TOCTOU): the early view_only check above is a
+    // fast-path 409; `.eq('view_only', false)` re-checks it in the write
+    // itself so a concurrent staff toggle can't be raced past (view_only is
+    // NOT NULL, so a plain `.eq` is safe — no W1-014 NULL trap here).
     const { data: claimed, error: stampErr } = await sb
       .from('quotes')
       .update({ valor_order_ref: orderRef, deposit_amount_usd: depositUsd })
       .eq('id', id)
+      .eq('view_only', false)
       .is('valor_order_ref', null)
       .is('deposit_paid_at', null)
       .select('id');

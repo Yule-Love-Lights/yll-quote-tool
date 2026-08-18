@@ -20,18 +20,19 @@ function nationalDigits(v: string): string | null {
 }
 
 /** Stable customer key: HL contact id wins; otherwise email, phone, then name.
- *  Shared with the Customers aggregation (lib/dashboard/customers.ts). Email is
- *  lowercased + trimmed and phone is normalized to its national number, so the
- *  same person counts once regardless of email case or phone format (matching
- *  customerMatchKey in lib/customers.ts). It's a grouping key only, never
- *  displayed. */
+ *  Shared with the Customers aggregation (lib/dashboard/customers.ts). Email,
+ *  phone, and name are all normalized the same way customerMatchKey does (email
+ *  lowercased + trimmed, phone to its national number, name lowercased +
+ *  trimmed), so the same person counts once regardless of case or format. It's a
+ *  grouping key only, never displayed. */
 export function customerKey(q: DashboardQuote): string {
   if (q.highlevel_contact_id) return q.highlevel_contact_id;
   const email = q.customer_email?.trim();
   if (email) return email.toLowerCase();
   const phone = q.customer_phone ? nationalDigits(q.customer_phone) : null;
   if (phone) return phone;
-  return q.customer_name ?? `__unknown_${q.id}`;
+  const name = q.customer_name?.trim();
+  return name ? name.toLowerCase() : `__unknown_${q.id}`;
 }
 
 /**
@@ -44,7 +45,7 @@ export function customerKey(q: DashboardQuote): string {
  * "reached" on one surface and not the other.
  *
  * A quote reached the customer if it was sent, OR it was approved while not
- * in a terminal state (cancelled/declined/lost). Approval implies it reached
+ * in a terminal state (cancelled/declined/abandoned). Approval implies it reached
  * them even when quote_sent_at was never stamped (in-person / imported /
  * offline close). A terminal quote that was never sent has NOT reached anyone.
  */
@@ -71,7 +72,7 @@ export function computeKpis(quotes: DashboardQuote[], now: Date): Kpis {
     const sentAt = q.quote_sent_at;
     const total = q.total ?? 0;
 
-    // B7 fix: exclude terminal-state orders (cancelled/declined/lost) from
+    // B7 fix: exclude terminal-state orders (cancelled/declined/abandoned) from
     // booked revenue even when customer_approved_at or deposit_paid_at is set.
     // isTerminalStatus requires `status` to be selected by DASHBOARD_QUOTES_SELECT.
     const isTerminal = isTerminalStatus(q);

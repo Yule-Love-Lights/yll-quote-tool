@@ -20,6 +20,13 @@ import type {
 } from '@/lib/design/sceneTypes';
 import { DEFAULT_COLORS } from './colors';
 import { fetchAppSettings } from '@/lib/clientSettings';
+import {
+  downscaleForUpload,
+  exceedsMultipartSizeLimit,
+  oversizeMessage,
+  readUploadErrorMessage,
+  MULTIPART_SIZE_LIMIT_BYTES,
+} from '@/lib/clientImage';
 
 type DesignPatch = Partial<{
   name: string;
@@ -40,15 +47,6 @@ export type EditorApi = {
   createUpload(file: File): Promise<CustomUpload>;
   deleteUpload(id: string): Promise<{ ok: true }>;
 };
-
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error('Failed to read file'));
-    reader.readAsDataURL(file);
-  });
-}
 
 const EMPTY_SCENE: Scene = { yardsticks: [], items: [] };
 
@@ -107,11 +105,12 @@ export function createEditorApi(designId: string): EditorApi {
     },
 
     async uploadPhoto(file) {
-      const base64 = await readFileAsDataUrl(file);
+      // #186: downscale before base64-encoding — see clientImage.ts.
+      const { dataUrl, mediaType } = await downscaleForUpload(file);
       const res = await fetch(`/api/designs/${designId}/photo`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ photoBase64: base64, photoMediaType: file.type || 'image/jpeg' }),
+        body: JSON.stringify({ photoBase64: dataUrl, photoMediaType: mediaType }),
       });
       if (!res.ok) throw new Error(`upload photo failed: ${res.status}`);
       const { photoUrl } = await res.json();
@@ -139,12 +138,20 @@ export function createEditorApi(designId: string): EditorApi {
       return res.json();
     },
     async createUpload(file) {
+      // #186 phase 2: precheck client-side rather than let an oversized
+      // graphic 413 at Vercel's raw-body cap — /api/uploads is NOT downscaled
+      // (these are decorative PNGs; JPEG flattening would destroy their
+      // transparency).
+      if (exceedsMultipartSizeLimit(file.size)) {
+        throw new Error(oversizeMessage(file.size, MULTIPART_SIZE_LIMIT_BYTES, 'graphic'));
+      }
       const fd = new FormData();
       fd.append('file', file);
       const res = await fetch('/api/uploads', { method: 'POST', body: fd });
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `upload failed: ${res.status}`);
+        throw new Error(
+          await readUploadErrorMessage(res, `upload failed: ${res.status}`, 'This graphic is too large for the server — try a smaller graphic.'),
+        );
       }
       return res.json();
     },

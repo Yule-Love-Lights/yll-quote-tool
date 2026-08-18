@@ -126,6 +126,21 @@ function sanitizePermanentInputs(p: Partial<PermanentQuoteFields>): PermanentTra
 // (the confirmed street-visible runs). Pure — exported for tests. Points are
 // stored in photo-PIXEL space on the strand item; normalized back to 0-1
 // (the PermanentStreetRun contract) using the design's own photo dims.
+//
+// #249 review fix (provenance gate): `sideOfHouse` can be baked on by the
+// editor's sticky pre-draw quick-tag (sideOfHouseAuto === true) rather than a
+// deliberate per-strand choice — an operator can tag "Left", draw left runs,
+// then keep drawing the front roofline on the SAME photo without switching
+// bulb type/photo (the resets that clear the sticky default), silently
+// mislabeling the front as left. This function's output feeds
+// buildPermanentFewShotMessages (fewShot.ts) as "Operator-confirmed …
+// ground-truth" with NO human review gate — captured automatically on every
+// permanent-quote send — and the example pool is small enough that one wrong
+// tag teaches ~every future analyze call. So: skip auto tags here: training
+// ground truth only learns tags a human explicitly set or confirmed via the
+// post-hoc #sel-side-of-house dropdown. The strand keeps its side for
+// billing/display/the portal per-side toggle (sceneLinks.ts) either way —
+// this filter is capture-only.
 export function extractFinalStreetRuns(
   scene: Scene | null | undefined,
   photoW: number | null | undefined,
@@ -137,6 +152,7 @@ export function extractFinalStreetRuns(
   for (const item of items) {
     if (!isStrand(item) || item.bulbType !== 'permanent') continue;
     if (item.linkedToId) continue; // render-only twin — not a new run
+    if (item.sideOfHouseAuto === true) continue; // unconfirmed sticky pre-draw tag — not ground truth
     const side = item.sideOfHouse;
     if (!side || !STREET_SIDES.has(side)) continue; // back never shows from the street
     const pts = item.points ?? [];
