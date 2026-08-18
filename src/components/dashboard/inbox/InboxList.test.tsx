@@ -439,21 +439,21 @@ describe('withRowFlagSet / withRowFlagCleared (row 291 — per-item busy/error m
     expect(errorIds).toEqual({ rowA: true, rowB: true });
   });
 
-  it('acting on row B (clearing its error on the way into a fresh act() call) does NOT clear row A\'s still-true error', () => {
+  it('helper: the clear act() runs for row B on entry leaves row A\'s entry untouched', () => {
     const bothErrored: Record<string, boolean> = { rowA: true, rowB: true };
     // This is exactly what act(id='rowB', ...) does at its own start.
     const afterActingOnRowB = withRowFlagCleared(bothErrored, 'rowB');
     expect(afterActingOnRowB).toEqual({ rowA: true }); // rowA survives untouched
   });
 
-  it('dismissing row A\'s error leaves row B\'s error intact', () => {
+  it('helper: the clear dismissError runs for row A leaves row B\'s entry intact', () => {
     const bothErrored: Record<string, boolean> = { rowA: true, rowB: true };
     // This is exactly what dismissError('rowA') does.
     const afterDismissingRowA = withRowFlagCleared(bothErrored, 'rowA');
     expect(afterDismissingRowA).toEqual({ rowB: true }); // rowB survives untouched
   });
 
-  it('the same set/clear primitives used for busyIds keep one row\'s busy state from touching an unrelated row\'s — a row going busy or finishing does not disable or spin a sibling row', () => {
+  it('helper: set/clear on one busy id never adds or removes another id\'s entry', () => {
     let busyIds: Record<string, boolean> = {};
     busyIds = withRowFlagSet(busyIds, 'rowA'); // rowA starts an action
     busyIds = withRowFlagSet(busyIds, 'rowB'); // rowB starts a different action
