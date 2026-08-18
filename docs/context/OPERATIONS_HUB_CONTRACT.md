@@ -8,7 +8,7 @@
 > This file is the complete normative contract. Historical Hub plans,
 > proposals, and decision logs are provenance only. Implementations may
 > additionally consume only the OpenAPI and JSON Schema artifacts explicitly
-> generated from this file. The draft becomes `v1.3.0` only through the paired
+> generated from this file. The draft becomes `v1.4.0` only through the paired
 > review and human-approval process in section 10; it is never renumbered
 > downward to `v1.0.0`.
 
@@ -109,6 +109,9 @@ entity_version                non-negative integer
 review_flag                   none | needs_review | quarantined
 error_code                    error_code | null
 duplicate_of_command_id       UUID | null
+contract_version              string
+schema_version                string
+client_version                string; echoed from the request
 correlation_id                UUID
 ```
 
@@ -148,12 +151,84 @@ pay_period_locked
 `GET /api/ops/v1/commands/{command_id}` returns this same response shape so a
 caller can resolve a timeout, offline retry, or Telegram interim reply.
 
+### 1.3 Canonical event envelope
+
+Every cross-repository event carries this complete envelope in addition to its
+event-specific payload. `aggregate_id` is an opaque non-empty string because
+some aggregates use internal UUIDs while others preserve an external system's
+stable identifier. Consumers must not infer its type from the event name.
+
+```text
+event_id                      UUID
+event_type                    non-empty string
+aggregate_id                  non-empty string
+entity_version                non-negative integer
+occurred_at                   RFC3339 timestamp
+effective_at                  RFC3339 timestamp
+accepted_at                   RFC3339 server timestamp
+actor_employee_id             UUID | null
+source                        hub_pwa | telegram | office | admin | system
+contract_version              string
+schema_version                string
+client_version                string
+correlation_id                UUID
+causation_id                  UUID | null
+idempotency_key               non-empty string
+```
+
+`actor_employee_id` may be `null` only when `source = system`; every other
+source requires the employee UUID. A system-produced event may retain a
+non-null employee actor when the event was caused on that employee's behalf.
+For a system-produced event, `client_version` is the emitting service's build
+identifier. `causation_id` is the preceding command or event id when one exists,
+otherwise it is explicitly `null`.
+
+### 1.4 Machine request authentication
+
+Every server-to-server request uses a direction- and environment-specific key.
+The sender includes:
+
+```text
+X-YLL-Key-Id                  active rotation identifier
+X-YLL-Timestamp               Unix epoch seconds
+X-YLL-Nonce                   unpadded base64url, at least 128 random bits
+X-YLL-Signature               v1=<lowercase HMAC-SHA256 hex>
+```
+
+The HMAC input is UTF-8 bytes of this canonical string, with exactly one line
+feed between fields and no trailing line feed:
+
+```text
+v1
+<UPPERCASE HTTP METHOD>
+<canonical path and query>
+<X-YLL-Timestamp>
+<X-YLL-Nonce>
+<lowercase SHA-256 hex of the exact request-body bytes>
+```
+
+The canonical path is RFC 3986 encoded. Query key/value pairs are RFC 3986
+encoded, sorted by encoded key and then encoded value, preserve duplicate
+pairs, and are joined with `&`; the `?` and query are omitted when no pairs
+exist. A request with no body uses the SHA-256 digest of zero bytes.
+
+The receiver resolves `X-YLL-Key-Id` only inside the request's environment and
+direction, compares the signature in constant time, accepts timestamps within
+plus or minus five minutes, and atomically rejects a reused nonce. Nonces are
+scoped to environment, direction, and key id and retained for at least ten
+minutes. Rotation may overlap active and previous key ids, but a key is never
+shared across environments or directions. Missing, malformed, stale, unknown-
+key, replayed, or invalid requests fail before business handlers run and return
+only a generic authentication error.
+
 - **One shared schema artifact.** The envelope, enums, and event shapes are
   published as a versioned JSON Schema (generated from the OpenAPI
   fragments); BOTH repos validate requests and responses against the same
   schema file in their own CI. Neither side hand-implements the envelope
   twice. A CI check in each repo fails on any byte diff between the
   canonical contract and the mirror, version string included.
+  The initial independent `schema_version` is `1.0.0-draft`; it does not inherit
+  or mirror the contract version.
 - **Deploy skew guard:** each side's deploy runs a staging smoke against
   every `/api/ops/v1` endpoint and fails on `contract_version` disagreement.
   The two repos auto-deploy independently; this is the only gate.
@@ -443,10 +518,10 @@ home wins.
 
 ### Events
 
-Three event types. Each carries the FULL §1 envelope: `idempotency_key`,
-`source`, `entity_version`, `correlation_id` + `causation_id`, accepted server
-time, and `contract_version`. A bare contact-keyed stream is explicitly NOT the
-shape.
+Three event types. Each carries the full section 1.3 envelope, including
+`idempotency_key`, `source`, `entity_version`, `correlation_id`, `causation_id`,
+`accepted_at`, and all three version fields. A bare contact-keyed stream is
+explicitly NOT the shape.
 
 | Event | Emitted when | Carries |
 |---|---|---|
@@ -673,13 +748,11 @@ differ, this section wins; semantics merge and never weaken.
   `dead_letter_commands[]`, and `identity_links[]`. Retained final-pay and
   audit records are never deleted.
 - **P10 placement events:** event types are `PlacementAccepted`,
-  `PlacementReversed`, and `PlacementAcceptanceCorrected`. Every event carries:
+  `PlacementReversed`, and `PlacementAcceptanceCorrected`. Every event carries
+  the full section 1.3 envelope plus:
 
   ```text
-  event_id
-  event_type
   placement_id
-  placement_entity_version
   employee_id
   identity_link_version
   membership_version_at_capture
@@ -688,16 +761,15 @@ differ, this section wins; semantics merge and never weaken.
   campaign_id
   unit_type
   business_date
-  effective_at
   captured_at
   hub_received_at
   reviewer_employee_id | null
   reason_code | null
   inventory_event_id | null
-  contract_version
-  schema_version
-  correlation_id
   ```
+
+  The envelope uses `aggregate_id = placement_id` and its `entity_version` is
+  the placement entity version.
 
   `PlacementReversed` carries `reverses_event_id` referencing the original
   accepted event. `PlacementAcceptanceCorrected` carries `corrects_event_id`,
@@ -728,15 +800,13 @@ differ, this section wins; semantics merge and never weaken.
   `submitted_for_reconciliation` -> `ready_to_close` -> `closed` ->
   `adjusted`. Close blocks on `placement_events_unacknowledged`,
   `identity_link_unresolved`, or `inventory_reconciliation_incomplete`.
-  `AdvertisingWeekClosed` carries:
+  `AdvertisingWeekClosed` carries the full section 1.3 envelope plus:
 
   ```text
-  event_id
   employee_id
   week_start
   week_end
   timezone
-  entity_version
   closed_by_employee_id
   closed_at
   approved_by_employee_id
@@ -756,10 +826,10 @@ differ, this section wins; semantics merge and never weaken.
   variance
   source_event_high_water_marks[]
   reconciliation_status
-  contract_version
-  schema_version
-  correlation_id
   ```
+
+  The envelope `aggregate_id` is the advertising-week id and its
+  `entity_version` is the advertising-week entity version.
 
   Each campaign/unit item carries `campaign_id`, `unit_type`, accepted count,
   reversed count, and net pay count. Those aggregate counts are reconciliation
@@ -890,10 +960,11 @@ These values are intentionally absent and disable only their named behavior:
 An unresolved configuration disables only its affected behavior. Clients must
 not infer a value, silently choose a default, or weaken a safety gate.
 
-**Shared schema artifact path (planned, Phase 0):**
+**Shared schema artifact path (Phase 0):**
 `yll-quote-tool/docs/context/ops-contract-schema/` (generated from the
-OpenAPI fragments; `schema_version` lives in its manifest; both CIs validate
-against it and the Hub vendors the same files byte-identically).
+OpenAPI fragments; the manifest starts at independent
+`schema_version = 1.0.0-draft`; both CIs validate against it and the Hub vendors
+the same files byte-identically).
 
 ## 10. Change process
 

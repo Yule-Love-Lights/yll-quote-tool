@@ -1,0 +1,522 @@
+{
+  "openapi": "3.1.0",
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "info": {
+    "title": "Yule Love Lights Operations Hub shared contract components",
+    "version": "1.0.0-draft"
+  },
+  "paths": {},
+  "components": {
+    "securitySchemes": {
+      "YllHmac": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-YLL-Signature",
+        "description": "HMAC-SHA256 machine authentication defined by contract section 1.4.",
+        "x-yll-algorithm": "HMAC-SHA256",
+        "x-yll-signature-format": "v1=<lowercase hex>",
+        "x-yll-canonical-fields": [
+          "v1",
+          "uppercase_http_method",
+          "canonical_path_and_query",
+          "unix_timestamp_seconds",
+          "nonce",
+          "lowercase_sha256_hex_of_exact_body"
+        ],
+        "x-yll-key-scope": [
+          "environment",
+          "direction",
+          "key_id"
+        ],
+        "x-yll-required-headers": [
+          "X-YLL-Key-Id",
+          "X-YLL-Timestamp",
+          "X-YLL-Nonce",
+          "X-YLL-Signature"
+        ],
+        "x-yll-freshness-seconds": 300,
+        "x-yll-nonce-retention-seconds": 600
+      }
+    },
+    "parameters": {
+      "YllKeyId": {
+        "name": "X-YLL-Key-Id",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/MachineKeyId"
+        }
+      },
+      "YllTimestamp": {
+        "name": "X-YLL-Timestamp",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/UnixTimestamp"
+        }
+      },
+      "YllNonce": {
+        "name": "X-YLL-Nonce",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/MachineNonce"
+        }
+      },
+      "YllSignature": {
+        "name": "X-YLL-Signature",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/MachineSignature"
+        }
+      }
+    },
+    "schemas": {
+      "ContractVersion": {
+        "type": "string",
+        "const": "1.4.0-draft"
+      },
+      "SchemaVersion": {
+        "type": "string",
+        "const": "1.0.0-draft"
+      },
+      "ClientVersion": {
+        "type": "string",
+        "minLength": 1
+      },
+      "Uuid": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "NullableUuid": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "Source": {
+        "type": "string",
+        "enum": [
+          "hub_pwa",
+          "telegram",
+          "office",
+          "admin",
+          "system"
+        ]
+      },
+      "CommandStatus": {
+        "type": "string",
+        "enum": [
+          "accepted",
+          "accepted_with_review",
+          "pending",
+          "rejected",
+          "superseded"
+        ]
+      },
+      "ReviewFlag": {
+        "type": "string",
+        "enum": [
+          "none",
+          "needs_review",
+          "quarantined"
+        ]
+      },
+      "ErrorCode": {
+        "type": "string",
+        "enum": [
+          "unauthorized",
+          "forbidden",
+          "not_found",
+          "conflict_stale_version",
+          "conflict_idempotency",
+          "validation_failed",
+          "gate_locked",
+          "kill_switched",
+          "rate_limited",
+          "internal",
+          "contract_version_unsupported",
+          "schema_version_unsupported",
+          "entity_version_conflict",
+          "identity_not_linked",
+          "membership_stale",
+          "active_department_required",
+          "clock_required",
+          "offline_packet_expired",
+          "offline_packet_scope_denied",
+          "effective_time_review_required",
+          "placement_ack_pending",
+          "inventory_reconciliation_required",
+          "pay_period_locked"
+        ]
+      },
+      "NullableErrorCode": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "GpsEvidence": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "latitude",
+          "longitude",
+          "accuracy_meters",
+          "captured_at",
+          "source"
+        ],
+        "properties": {
+          "latitude": {
+            "type": "number",
+            "minimum": -90,
+            "maximum": 90
+          },
+          "longitude": {
+            "type": "number",
+            "minimum": -180,
+            "maximum": 180
+          },
+          "accuracy_meters": {
+            "type": "number",
+            "minimum": 0
+          },
+          "captured_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "CommandRequest": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "command_id",
+          "idempotency_key",
+          "semantic_operation",
+          "actor_employee_id",
+          "impersonating_actor_id",
+          "source",
+          "contract_version",
+          "schema_version",
+          "client_version",
+          "expected_entity_version",
+          "device_occurred_at",
+          "device_timezone",
+          "client_sequence",
+          "effective_at_requested",
+          "offline_packet_id",
+          "active_department_id",
+          "membership_version",
+          "gps_evidence",
+          "reason",
+          "evidence_refs",
+          "correlation_id"
+        ],
+        "properties": {
+          "command_id": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "semantic_operation": {
+            "type": "string",
+            "minLength": 1
+          },
+          "actor_employee_id": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "impersonating_actor_id": {
+            "$ref": "#/components/schemas/NullableUuid"
+          },
+          "source": {
+            "$ref": "#/components/schemas/Source"
+          },
+          "contract_version": {
+            "$ref": "#/components/schemas/ContractVersion"
+          },
+          "schema_version": {
+            "$ref": "#/components/schemas/SchemaVersion"
+          },
+          "client_version": {
+            "$ref": "#/components/schemas/ClientVersion"
+          },
+          "expected_entity_version": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "device_occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "device_timezone": {
+            "type": "string",
+            "minLength": 1
+          },
+          "client_sequence": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "effective_at_requested": {
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "offline_packet_id": {
+            "$ref": "#/components/schemas/NullableUuid"
+          },
+          "active_department_id": {
+            "$ref": "#/components/schemas/NullableUuid"
+          },
+          "membership_version": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "gps_evidence": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GpsEvidence"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "correlation_id": {
+            "$ref": "#/components/schemas/Uuid"
+          }
+        }
+      },
+      "CommandResponse": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "command_id",
+          "canonical_operation_id",
+          "command_status",
+          "received_at",
+          "effective_at",
+          "entity_version",
+          "review_flag",
+          "error_code",
+          "duplicate_of_command_id",
+          "contract_version",
+          "schema_version",
+          "client_version",
+          "correlation_id"
+        ],
+        "properties": {
+          "command_id": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "canonical_operation_id": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "command_status": {
+            "$ref": "#/components/schemas/CommandStatus"
+          },
+          "received_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "effective_at": {
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "entity_version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "review_flag": {
+            "$ref": "#/components/schemas/ReviewFlag"
+          },
+          "error_code": {
+            "$ref": "#/components/schemas/NullableErrorCode"
+          },
+          "duplicate_of_command_id": {
+            "$ref": "#/components/schemas/NullableUuid"
+          },
+          "contract_version": {
+            "$ref": "#/components/schemas/ContractVersion"
+          },
+          "schema_version": {
+            "$ref": "#/components/schemas/SchemaVersion"
+          },
+          "client_version": {
+            "$ref": "#/components/schemas/ClientVersion"
+          },
+          "correlation_id": {
+            "$ref": "#/components/schemas/Uuid"
+          }
+        }
+      },
+      "EventEnvelope": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "event_id",
+          "event_type",
+          "aggregate_id",
+          "entity_version",
+          "occurred_at",
+          "effective_at",
+          "accepted_at",
+          "actor_employee_id",
+          "source",
+          "contract_version",
+          "schema_version",
+          "client_version",
+          "correlation_id",
+          "causation_id",
+          "idempotency_key"
+        ],
+        "properties": {
+          "event_id": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "event_type": {
+            "type": "string",
+            "minLength": 1
+          },
+          "aggregate_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "entity_version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "effective_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "accepted_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "actor_employee_id": {
+            "$ref": "#/components/schemas/NullableUuid"
+          },
+          "source": {
+            "$ref": "#/components/schemas/Source"
+          },
+          "contract_version": {
+            "$ref": "#/components/schemas/ContractVersion"
+          },
+          "schema_version": {
+            "$ref": "#/components/schemas/SchemaVersion"
+          },
+          "client_version": {
+            "$ref": "#/components/schemas/ClientVersion"
+          },
+          "correlation_id": {
+            "$ref": "#/components/schemas/Uuid"
+          },
+          "causation_id": {
+            "$ref": "#/components/schemas/NullableUuid"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "source": {
+                  "const": "system"
+                }
+              },
+              "required": [
+                "source"
+              ]
+            },
+            "then": {},
+            "else": {
+              "properties": {
+                "actor_employee_id": {
+                  "$ref": "#/components/schemas/Uuid"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "MachineKeyId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "UnixTimestamp": {
+        "type": "string",
+        "pattern": "^[0-9]{10,}$"
+      },
+      "MachineNonce": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{22,}$"
+      },
+      "MachineSignature": {
+        "type": "string",
+        "pattern": "^v1=[0-9a-f]{64}$"
+      }
+    }
+  }
+}
