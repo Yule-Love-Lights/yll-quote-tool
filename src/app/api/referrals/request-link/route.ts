@@ -169,12 +169,21 @@ async function findAndSendIfMatch(email: string): Promise<void> {
 
     const name =
       match.fullName?.trim() || [match.firstName, match.lastName].filter(Boolean).join(' ').trim() || null;
-    const customer = await findOrCreateCustomer({
-      hl_contact_id: match.id,
-      email: match.email ?? email,
-      name,
-      phone: match.phone ?? null,
-    });
+    // Review fix 5: skipIdentityRefresh true. This is the first ANONYMOUS,
+    // unauthenticated caller of findOrCreateCustomer (every other caller is
+    // a staff-driven quote flow). Without it, anyone who knows an email
+    // could force a stale GHL field to overwrite a more recently corrected
+    // stored record, on demand, by resubmitting that email. Creating a new
+    // row when none exists is unaffected.
+    const customer = await findOrCreateCustomer(
+      {
+        hl_contact_id: match.id,
+        email: match.email ?? email,
+        name,
+        phone: match.phone ?? null,
+      },
+      { skipIdentityRefresh: true },
+    );
     if (!customer) return;
 
     // Review fix 4: read BEFORE minting, so "false" means ensureReferralCode

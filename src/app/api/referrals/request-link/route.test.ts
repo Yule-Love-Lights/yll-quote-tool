@@ -218,12 +218,17 @@ describe('POST /api/referrals/request-link', () => {
     await POST(req({ email: '  Jamie@Example.com  ' }));
     await drainAfterTasks();
 
-    expect(findOrCreateCustomer).toHaveBeenCalledWith({
-      hl_contact_id: 'contact-1',
-      email: 'jamie@example.com',
-      name: 'Jamie Rivera',
-      phone: '6315550100',
-    });
+    expect(findOrCreateCustomer).toHaveBeenCalledWith(
+      {
+        hl_contact_id: 'contact-1',
+        email: 'jamie@example.com',
+        name: 'Jamie Rivera',
+        phone: '6315550100',
+      },
+      // Review fix 5: this anonymous route must never refresh an existing
+      // customer's stored identity fields.
+      { skipIdentityRefresh: true },
+    );
     expect(ensureReferralCode).toHaveBeenCalledWith('cust-1');
     expect(sendEmail).toHaveBeenCalledTimes(1);
     const sendArgs = sendEmail.mock.calls[0]![0] as { contactId: string; subject: string; html: string };

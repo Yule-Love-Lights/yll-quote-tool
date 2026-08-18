@@ -430,9 +430,31 @@ function svc() {
 // adopt) and logs a candidate-merge pair for staff to reconcile by hand —
 // see WT-55 (a future customer-merge UI; no such UI exists yet, so this is
 // currently a loud log line, not a queue).
+export type FindOrCreateCustomerOptions = {
+  /**
+   * Review fix 5: when true, an existing customer match is returned AS-IS,
+   * its stored name/email/phone/hl_contact_id are never refreshed from
+   * `identity`, even when `identity` carries different-looking values.
+   * Creating a brand-new row (no existing match at all) is unaffected
+   * either way. The match_key upgrade inside adopt() is also unaffected:
+   * it's an internal linkage improvement, never a customer-visible field.
+   *
+   * Defaults to false, the historical newest-win behavior (W2-026) every
+   * existing caller already relies on. Added for POST
+   * /api/referrals/request-link (naldo/referral-self-serve), the first
+   * ANONYMOUS, unauthenticated caller of this function: without it, anyone
+   * who knows a customer's email could force a stale GHL field to silently
+   * overwrite a more recently corrected stored record, on demand, by
+   * resubmitting that email.
+   */
+  skipIdentityRefresh?: boolean;
+};
+
 export async function findOrCreateCustomer(
   identity: CustomerIdentity,
+  options: FindOrCreateCustomerOptions = {},
 ): Promise<{ id: string } | null> {
+  const { skipIdentityRefresh = false } = options;
   const key = customerMatchKey(identity);
   if (!key) return null;
   const sb = svc();
@@ -469,15 +491,26 @@ export async function findOrCreateCustomer(
     const rowKeyRank = keyPrecedenceRank(row.match_key);
     const ourKeyRank = keyPrecedenceRank(key);
     const nextMatchKey = ourKeyRank < rowKeyRank ? key : row.match_key;
+    // sb is narrowed non-null above, but that narrowing doesn't cross into a
+    // nested function's body: `adopt` only ever runs synchronously within
+    // this same call, after the same guard, so the assertion is sound here.
+    //
+    // Review fix 5: skipIdentityRefresh still allows the match_key upgrade
+    // (a linkage improvement, not a customer-visible field) but never
+    // touches the contact columns. See FindOrCreateCustomerOptions' doc.
+    if (skipIdentityRefresh) {
+      if (nextMatchKey !== row.match_key) {
+        const { error: updErr } = await sb!.from('customers').update({ match_key: nextMatchKey }).eq('id', row.id);
+        if (updErr) console.error('findOrCreateCustomer merge-upgrade error (skipIdentityRefresh):', updErr);
+      }
+      return { id: row.id };
+    }
     const contactFields = {
       hl_contact_id: norm(identity.hl_contact_id) ?? row.hl_contact_id,
       name: norm(identity.name) ?? row.name,
       email: norm(identity.email) ?? row.email,
       phone: norm(identity.phone) ?? row.phone,
     };
-    // sb is narrowed non-null above, but that narrowing doesn't cross into a
-    // nested function's body — `adopt` only ever runs synchronously within
-    // this same call, after the same guard, so the assertion is sound here.
     const { error: updErr } = await sb!
       .from('customers')
       .update({ match_key: nextMatchKey, ...contactFields })
@@ -489,7 +522,7 @@ export async function findOrCreateCustomer(
           console.error('findOrCreateCustomer merge-upgrade error (contact-field retry):', retryErr);
         } else {
           console.info(
-            `findOrCreateCustomer: customer ${row.id} stays on its existing key — ${key} is already owned by a previously-rejected candidate (expected).`,
+            `findOrCreateCustomer: customer ${row.id} stays on its existing key, ${key} is already owned by a previously-rejected candidate (expected).`,
           );
         }
       } else {
@@ -513,25 +546,30 @@ export async function findOrCreateCustomer(
     // other candidate below.
     const decision = classifyCandidate(identity, row);
     if (decision.adopt) {
-      // W2-026 (Jason 2026-07-06: NEWEST-WIN) — a repeat quote for an existing
+      // W2-026 (Jason 2026-07-06, NEWEST-WIN): a repeat quote for an existing
       // customer refreshes the stored contact fields to this newer quote's values
       // (when present), so name/email/phone don't go stale. match_key is unchanged
       // on this exact-match path, so only the display/contact columns move. Only
       // write when something actually changed (no needless write per quote).
-      const next = {
-        name: norm(identity.name) ?? row.name,
-        email: norm(identity.email) ?? row.email,
-        phone: norm(identity.phone) ?? row.phone,
-        hl_contact_id: norm(identity.hl_contact_id) ?? row.hl_contact_id,
-      };
-      if (
-        next.name !== row.name ||
-        next.email !== row.email ||
-        next.phone !== row.phone ||
-        next.hl_contact_id !== row.hl_contact_id
-      ) {
-        const { error: updErr } = await sb.from('customers').update(next).eq('id', row.id);
-        if (updErr) console.error('findOrCreateCustomer newest-win update error:', updErr);
+      //
+      // Review fix 5: skipIdentityRefresh skips this write entirely. See
+      // FindOrCreateCustomerOptions' doc comment for why.
+      if (!skipIdentityRefresh) {
+        const next = {
+          name: norm(identity.name) ?? row.name,
+          email: norm(identity.email) ?? row.email,
+          phone: norm(identity.phone) ?? row.phone,
+          hl_contact_id: norm(identity.hl_contact_id) ?? row.hl_contact_id,
+        };
+        if (
+          next.name !== row.name ||
+          next.email !== row.email ||
+          next.phone !== row.phone ||
+          next.hl_contact_id !== row.hl_contact_id
+        ) {
+          const { error: updErr } = await sb.from('customers').update(next).eq('id', row.id);
+          if (updErr) console.error('findOrCreateCustomer newest-win update error:', updErr);
+        }
       }
       return { id: row.id as string };
     }
