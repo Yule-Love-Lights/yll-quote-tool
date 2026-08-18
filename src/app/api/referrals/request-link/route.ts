@@ -29,7 +29,7 @@
 // anything is minted or sent.
 
 import { NextRequest, NextResponse, after } from 'next/server';
-import { rateLimitResponse, checkRateLimitByKey } from '@/lib/rateLimit';
+import { rateLimitResponse, checkRateLimitByKey, checkRateLimit } from '@/lib/rateLimit';
 import { searchContacts, sendEmail, upsertContactCustomField } from '@/lib/integrations/highlevel';
 import { findOrCreateCustomer } from '@/lib/customers';
 import { ensureReferralCode, hasReferralCode } from '@/lib/referrals';
@@ -83,6 +83,12 @@ const EMAIL_SEND_COOLDOWN_MS = 60 * 60 * 1000;
 // paths.
 const UNIFORM_RESPONSE = { ok: true } as const;
 
+// Delta-verify fix A: per-IP ceiling on the staff-record path. See the
+// comment at its use site in POST for why this exists and why 20 is the
+// number.
+const INGEST_CAP_PER_IP_PER_HOUR = 20;
+const INGEST_CAP_WINDOW_MS = 60 * 60 * 1000;
+
 // Mirrors the un-exported normalizeEmailForCompare duplicated in
 // src/lib/leads/leadService.ts and src/lib/leads/partialLead.ts: same
 // normalization, kept local rather than importing either (neither exports
@@ -124,6 +130,28 @@ export async function POST(req: NextRequest) {
   // scheduled at all.
   const honeypotTripped = typeof company === 'string' && company.trim() !== '';
 
+  // Delta-verify fix A: cap the staff-record path per client IP.
+  //
+  // recordRequestForStaff below runs for EVERY request, matched or not, and
+  // that symmetry is deliberate (see its own comment): a write that happened
+  // only on a match would hand anyone with dashboard access a match oracle.
+  // But ingestTouch INSERTs a dashboard_contacts row whenever the submitted
+  // email matches no existing contact, so distinct garbage emails each mint
+  // a permanent row. The outer 5-per-60s limit allows roughly 300 rows an
+  // hour per IP, which is not a cap in any useful sense.
+  //
+  // Computed here, before the response, so the boolean can be closed over
+  // rather than re-deriving it from `req` inside after(). A silent skip: it
+  // never touches the response, so it cannot reintroduce the enumeration
+  // leak. 20 an hour is far above real use (one request per person, and a
+  // household or small office shares one IP) while cutting the worst case by
+  // roughly 15x.
+  const mayRecord = checkRateLimit(req, {
+    bucket: 'referral-link-ingest',
+    limit: INGEST_CAP_PER_IP_PER_HOUR,
+    windowMs: INGEST_CAP_WINDOW_MS,
+  }).ok;
+
   // Read into a plain local before the response returns and close over that,
   // not `req` itself, inside after() below. Route Handlers may call
   // request-time APIs from inside after() (Next.js docs), so this is a style
@@ -137,10 +165,12 @@ export async function POST(req: NextRequest) {
       } catch (err) {
         console.error('[api/referrals/request-link] after() task failed:', err);
       }
-      try {
-        await recordRequestForStaff(emailForLookup);
-      } catch (err) {
-        console.error('[api/referrals/request-link] inbox ingest failed:', err);
+      if (mayRecord) {
+        try {
+          await recordRequestForStaff(emailForLookup);
+        } catch (err) {
+          console.error('[api/referrals/request-link] inbox ingest failed:', err);
+        }
       }
     });
   }

@@ -21,6 +21,7 @@ const {
   hasReferralCode,
   ingestTouch,
   rateLimitedRef,
+  ingestCapExhausted,
   emailCooldownSeen,
   afterTasks,
 } = vi.hoisted(() => ({
@@ -38,6 +39,11 @@ const {
     ok: true, skipped: false, itemId: 'inbox-item-1', contactId: null, autoResolved: false, reopened: false, ambiguous: false, skipReason: null,
   })),
   rateLimitedRef: { current: false },
+  // Delta-verify fix A: the per-IP ceiling on the staff-record path, which is
+  // a SEPARATE check from rateLimitedRef (the outer 429) and from the
+  // per-email cooldown below. Exhausting it must silently skip the inbox
+  // write and change nothing about the response.
+  ingestCapExhausted: { current: false },
   // Review fix 3: mirrors the REAL checkRateLimitByKey's per-key "limit: 1"
   // semantics (first call for a key is ok, every later one is not) without
   // depending on wall-clock timing, decoupled from the outer per-IP mock
@@ -67,6 +73,11 @@ vi.mock('@/lib/rateLimit', () => ({
     emailCooldownSeen.add(key);
     return { ok: true, remaining: 0, resetMs: 3_600_000 };
   },
+  // Delta-verify fix A: the per-IP ingest ceiling.
+  checkRateLimit: (_req: unknown, _opts: unknown) =>
+    ingestCapExhausted.current
+      ? { ok: false, remaining: 0, resetMs: 3_600_000 }
+      : { ok: true, remaining: 19, resetMs: 3_600_000 },
 }));
 vi.mock('@/lib/integrations/highlevel', () => ({ searchContacts, sendEmail, upsertContactCustomField }));
 vi.mock('@/lib/customers', () => ({ findOrCreateCustomer }));
@@ -103,6 +114,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   afterTasks.length = 0;
   rateLimitedRef.current = false;
+  ingestCapExhausted.current = false;
   emailCooldownSeen.clear();
   // Review fix 2: the route 404s when this is unset, so every existing test
   // below (written before the flag existed) needs it on by default. The
@@ -390,7 +402,11 @@ describe('POST /api/referrals/request-link', () => {
       expect(ingestTouch).not.toHaveBeenCalled();
     });
 
-    it('keys externalId on the normalized email, so a resubmission updates one item, not a new one', async () => {
+    // Named for what it actually asserts. ingestTouch is mocked here, so this
+    // proves only that both submissions hand it the SAME externalId string.
+    // Whether one row results rather than two is store.ts's upsert
+    // (onConflict: 'source,external_id'), which this test never exercises.
+    it('passes the same normalized-email externalId for a resubmission', async () => {
       searchContacts.mockResolvedValue([MATCHING_CONTACT]);
       await POST(req({ email: 'jamie@example.com' }));
       await drainAfterTasks();
@@ -400,6 +416,37 @@ describe('POST /api/referrals/request-link', () => {
       const ids = ingestTouch.mock.calls.map((c) => c[0].externalId);
       expect(ids).toHaveLength(2);
       expect(ids[0]).toBe(ids[1]);
+    });
+
+    // Delta-verify fix A. The staff record is written for every request,
+    // matched or not, on purpose: a write that happened only on a match would
+    // be a match oracle for anyone with dashboard access. The cost is that a
+    // no-match email INSERTs a dashboard_contacts row, so distinct garbage
+    // emails could mint rows indefinitely. These two assert the per-IP
+    // ceiling stops that WITHOUT the response changing, because a response
+    // that changed would trade one leak for another.
+    it('skips the staff record once the per-IP ingest cap is exhausted', async () => {
+      searchContacts.mockResolvedValue([MATCHING_CONTACT]);
+      ingestCapExhausted.current = true;
+
+      await POST(req({ email: 'jamie@example.com' }));
+      await drainAfterTasks();
+
+      expect(ingestTouch).not.toHaveBeenCalled();
+      // The match branch is a separate concern and must still run: the cap is
+      // about row volume, not about withholding someone's referral link.
+      expect(sendEmail).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns the identical status and body whether or not the ingest cap is exhausted', async () => {
+      searchContacts.mockResolvedValue([MATCHING_CONTACT]);
+
+      const under = await POST(req({ email: 'under@example.com' }));
+      ingestCapExhausted.current = true;
+      const over = await POST(req({ email: 'over@example.com' }));
+
+      expect(over.status).toBe(under.status);
+      expect(await over.json()).toEqual(await under.json());
     });
 
     it('a rejected ingestTouch never blocks the response or the match/send branch', async () => {

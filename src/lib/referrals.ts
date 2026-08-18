@@ -104,12 +104,24 @@ const MAX_CODE_GEN_ATTEMPTS = 5;
  * return shape, so its 7+ existing callers (the portal approved page, the
  * customer dashboard panel, three webhook/job routes) are unaffected.
  *
- * Not race-safe against a concurrent mint for the SAME customer (this read
- * and the later ensureReferralCode call are two separate round-trips): a
- * genuine simultaneous double-submission could see false from both and both
- * treat it as "first". Accepted: the bug this exists to prevent is a stale
- * value from an UNRELATED, later resubmission overwriting a real enrollment
- * date, not two near-simultaneous first enrollments both stamping "now".
+ * Not race-safe against a concurrent mint for the SAME customer, since this
+ * read and the later ensureReferralCode call are two separate round-trips.
+ * The reachable window is narrower than that sounds, though. In the
+ * request-link route the per-email cooldown (checkRateLimitByKey) runs
+ * BEFORE this read, and its check-and-increment is synchronous with no await
+ * inside, so on Node's single thread two requests carrying the SAME
+ * submitted email cannot both get past it: the loser returns before reaching
+ * here. What remains is two DIFFERENT submitted emails resolving to the same
+ * underlying contact, since each gets its own cooldown key.
+ *
+ * Accepted, because the worst case there is small: ensureReferralCode's own
+ * claim is race-safe (a conditional UPDATE ... WHERE referral_code IS NULL),
+ * so both callers converge on the identical code. The only casualties are a
+ * duplicate link email and the GHL enrollment-date field being written twice
+ * milliseconds apart, last write wins. Nothing in the credit or expiry logic
+ * reads that field. The bug this guard exists to prevent is different and
+ * still prevented: a stale value from an UNRELATED, much later resubmission
+ * overwriting a real enrollment date.
  */
 export async function hasReferralCode(customerId: string): Promise<boolean> {
   const sb = svc();
