@@ -175,6 +175,32 @@ describe('fetchLatestDeliveryOutcomes (row 269) — best-effort, never throws', 
     });
   });
 
+  // Row 269 fix round FIX 6 (technical LOW): two previously-untested
+  // branches.
+  it('postgrest-shape anomaly: data is null AND error is null — returns null, does not throw', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    sbRef.current = fakeSelect({ data: null, error: null });
+    await expect(fetchLatestDeliveryOutcomes('q1')).resolves.toBeNull();
+    // error is falsy here, so the `if (error) console.warn(...)` branch
+    // inside the null/non-array guard must NOT fire — only the malformed
+    // {error} case above warns.
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('a row with an unexpected channel value is ignored — not crashed on, not mis-bucketed into sms/email', async () => {
+    sbRef.current = fakeSelect({
+      data: [
+        { channel: 'fax', outcome: 'sent', error: null, created_at: '2026-08-14T00:00:01Z' },
+        { channel: 'sms', outcome: 'sent', error: null, created_at: '2026-08-14T00:00:00Z' },
+      ],
+      error: null,
+    });
+    await expect(fetchLatestDeliveryOutcomes('q1')).resolves.toEqual({
+      sms: { outcome: 'sent', error: null, at: '2026-08-14T00:00:00Z' },
+      email: null,
+    });
+  });
+
   it('the query is bounded by a 5s deadline — a hung connection resolves null, never hangs', async () => {
     vi.useFakeTimers();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
