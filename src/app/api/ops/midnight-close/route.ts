@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { closeForgottenDays } from '@/lib/opsMidnightClose';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
+import { cronDenial } from '@/lib/auth/cronAuth';
 
 export const runtime = 'nodejs';
 
@@ -26,10 +27,10 @@ function safeEqual(a: string | undefined, b: string): boolean {
  * double-fire or a retry is harmless.
  */
 export async function POST(req: NextRequest) {
-  const secret = process.env.CRON_SECRET;
-  if (!secret || !safeEqual(req.headers.get('authorization') ?? undefined, `Bearer ${secret}`)) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  // Shared guard: 503 (naming the variable) when CRON_SECRET is unset, 401 when
+  // the token is merely wrong. See src/lib/auth/cronAuth.ts for why.
+  const denied = cronDenial(req.headers.get('authorization'));
+  if (denied) return denied;
   if (!isSupabaseServiceConfigured()) {
     return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
   }

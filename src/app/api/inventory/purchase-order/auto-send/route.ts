@@ -22,6 +22,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { safeEqual } from '@/lib/security';
+import { cronDenial } from '@/lib/auth/cronAuth';
 import {
   buildSupplierPurchaseOrder,
   emailSupplierPurchaseOrder,
@@ -33,10 +34,10 @@ import {
 export const runtime = 'nodejs';
 
 export async function GET(req: NextRequest) {
-  const secret = process.env.CRON_SECRET;
-  if (!secret || !safeEqual(req.headers.get('authorization') ?? undefined, `Bearer ${secret}`)) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  // Shared guard: 503 (naming the variable) when CRON_SECRET is unset, 401 when
+  // the token is merely wrong. See src/lib/auth/cronAuth.ts for why.
+  const denied = cronDenial(req.headers.get('authorization'));
+  if (denied) return denied;
   if (process.env.PO_AUTO_SEND_ENABLED !== 'true') {
     return NextResponse.json({ ok: true, enabled: false });
   }
