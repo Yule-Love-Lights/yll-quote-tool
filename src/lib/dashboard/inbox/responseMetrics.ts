@@ -22,6 +22,15 @@ export type MetricItem = {
   handledBy: string | null;
   source: string;
   createdAt: Date | null;
+  /** #252 slice F fix round (HIGH, admin lens): the touch's direction
+   *  ('inbound' | 'outbound'), when known. Used only by hadNoInboundLeg below
+   *  to tell an outbound-BORN item (never had a real customer inbound leg —
+   *  a cold-outbound GHL call, #252 slice F, or a #222 fast-sent quote) apart
+   *  from a genuine legacy row whose real inbound predates the
+   *  last_inbound_at column. Optional so every pre-existing MetricItem
+   *  literal (this file's own tests, any future caller) keeps compiling — an
+   *  item with no direction is never treated as outbound-born. */
+  direction?: string | null;
 };
 
 // ─── Bucket definitions ───────────────────────────────────────────────────────
@@ -82,6 +91,31 @@ function median(values: number[]): number | null {
   return s.length % 2 === 0 ? (s[mid - 1] + s[mid]) / 2 : s[mid];
 }
 
+// #252 slice F fix round (HIGH, admin lens): an item CREATED directly by an
+// outbound touch (planIngest's tracksOutboundFirstObservation exception —
+// #222 quotetool fast-sends, slice F's GHL cold-outbound calls) never had a
+// real customer inbound leg, so last_inbound_at was never written (stays
+// NULL, its column default). inboundOf's `lastInboundAt ?? lastMessageAt`
+// fallback below exists for a DIFFERENT case — a legacy row whose real
+// inbound predates the last_inbound_at column
+// (2026-07-06-inbox-last-inbound-at.sql, no backfill) — and without this
+// check it mistakes the first case for the second, handing a cold-outbound-
+// born item a fabricated near-zero response time (handledAt lands seconds
+// after lastMessageAt, since auto-resolve fires at ingest). direction is the
+// discriminator: reaching status='handled' at all requires an outbound touch
+// (reducer.ts's isAnsweredByDirection), so every row that is EVER 'handled'
+// has direction='outbound' by construction — verified exact against prod
+// (2026-08-18): the entire population of handled items with lastInboundAt
+// null is 100% outbound-born (11/11, all #222 quotetool cold-sends; zero are
+// a misclassified legacy row). The direction half of the check matters most
+// for computeTrend's WIDER population below (completed/dismissed items too),
+// where a genuine legacy row can legitimately carry direction='inbound' (an
+// operator closed it out without ever replying) — those must stay included,
+// not get caught by an outbound-only exclusion.
+function hadNoInboundLeg(i: MetricItem): boolean {
+  return i.direction === 'outbound' && i.lastInboundAt == null;
+}
+
 export function filterByWindow(items: MetricItem[], days: number | null, now: Date): MetricItem[] {
   if (days == null) return items;
   const cutoff = now.getTime() - days * 86_400_000;
@@ -97,7 +131,11 @@ export function computeResponseMetrics(items: MetricItem[], now: Date): Response
   // #110 W7-003: measure from the customer's last INBOUND (falls back to
   // last_message_at on legacy rows that predate the last_inbound_at column).
   const inboundOf = (i: MetricItem) => i.lastInboundAt ?? i.lastMessageAt;
-  const handledItems = items.filter((i) => i.status === 'handled' && inboundOf(i) && i.handledAt);
+  // #252 slice F fix round: exclude an outbound-born item (never had a real
+  // inbound leg) — see hadNoInboundLeg's doc above.
+  const handledItems = items.filter(
+    (i) => i.status === 'handled' && !hadNoInboundLeg(i) && inboundOf(i) && i.handledAt,
+  );
   const openItems = items.filter((i) => i.status === 'unresponded');
 
   // Clamp to 0: an outbound that predates the last inbound shouldn't read negative.
@@ -165,11 +203,17 @@ function medianResponseIn(items: MetricItem[], startMs: number, endMs: number): 
   // #WT-42: same last_inbound_at fallback as computeResponseMetrics — otherwise
   // the trend arrow can flip based on replies sent outside the inbox UI, which
   // overwrite last_message_at and contradict the headline median right next to it.
+  // #252 slice F fix round: same hadNoInboundLeg exclusion as
+  // computeResponseMetrics — this population is WIDER (completed/dismissed
+  // too, not just handled), which is exactly where a genuine legacy row can
+  // carry direction='inbound' and must stay included; see hadNoInboundLeg's
+  // doc above.
   const inboundOf = (i: MetricItem) => i.lastInboundAt ?? i.lastMessageAt;
   const rs = items
     .filter(
       (i) =>
         i.status !== 'unresponded' &&
+        !hadNoInboundLeg(i) &&
         inboundOf(i) &&
         i.handledAt &&
         (i.handledAt as Date).getTime() >= startMs &&

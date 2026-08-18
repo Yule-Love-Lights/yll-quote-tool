@@ -69,10 +69,11 @@ export type ItemRow = {
 export type IngestPlan = {
   /** When true, do nothing. Two independent reasons feed this:
    *   1. An outbound touch with no existing item is usually us cold-contacting
-   *      — there's no unresponded lead to track (avoids noise). Some sources
-   *      deliberately track outbound-only first observations (positive
-   *      allowlist below); a conversation we REPLIED to keeps its existing
-   *      item and still auto-resolves.
+   *      — there's no unresponded lead to track (avoids noise). Some sources,
+   *      and GHL's 'call' channel specifically (#252 slice F — a placed call
+   *      is a deliberate reach-out), deliberately track outbound-only first
+   *      observations (positive allowlist below); a conversation we REPLIED
+   *      to keeps its existing item and still auto-resolves.
    *   2. #252: a GHL activity-noise touch (touch.isActivityNoise) that has an
    *      EXISTING item — skip so pure CRM activity can never bump/reopen a
    *      real conversation. The opposite-polarity twin of reason 1: that rule
@@ -111,9 +112,11 @@ export type IngestPlan = {
 // follow-up — a real customer silently owed one (live case: quote #1263, a
 // 7.75-second draft window). Positive allowlist, never a negative test, per
 // AGENTS.md Pitfalls: every other source's outbound-only first observation
-// stays skipped as noise (a cold outbound Gmail/GHL touch is not a lead we owe
-// a reply to). The item auto-resolves to 'handled', so it anchors the follow-up
-// without entering the operator's open inbox list.
+// stays skipped as noise (a cold outbound Gmail touch, or a cold outbound GHL
+// text/email touch, is not a lead we owe a reply to) — EXCEPT GHL's 'call'
+// channel, a #252 slice F exception documented below. The item auto-resolves
+// to 'handled', so it anchors the follow-up without entering the operator's
+// open inbox list.
 //
 // ACCEPTED TRADEOFF (#222 pre-merge review): this also covers SENT legacy_rebook
 // ("YLL Neighbor") quotes. Today that is 2 rows. But the Neighbor pool is ~114-124
@@ -125,6 +128,32 @@ export type IngestPlan = {
 // source-generic reducer about a quote-specific flag) is worse. If that wave is
 // ever scripted, stagger the sends or cap follow-up creation per reconcile run.
 const TRACKS_OUTBOUND_FIRST_OBSERVATION: ReadonlySet<InboxSource> = new Set<InboxSource>(['quotetool']);
+
+// #252 slice F: a channel-aware EXCEPTION layered on top of the source
+// allowlist above — GHL's 'call' channel also tracks outbound-first-
+// observation; no other GHL channel does (a cold outbound GHL SMS/email still
+// skips as noise, unchanged). Slice A's live probe (row 252, "PROBE DONE"
+// section) settled two facts that motivate this: (1) calls are real and
+// common, not dead code — an answered outbound call arrives as GHL's
+// TYPE_CALL/outbound, which ghl.ts's CHANNEL_BY_TYPE already maps to channel
+// 'call' (11 of the 40 newest conversations in the probe were calls); (2) a
+// PLACED call — answered or no-answer — is a deliberate reach-out worth a
+// record, unlike a cold outbound text/email blast. Without this exception a
+// staff member who calls a never-before-ingested lead leaves NO trace
+// anywhere in the inbox: no item, no contact, no dashboard_activity row.
+// no-answer flows through identically to answered here, verified against the
+// adapter: GHL's per-message `status` (completed/no-answer) lives only on
+// getConversationMessages(), never on the /conversations/search summary this
+// adapter reads — HighLevelConversation (src/lib/integrations/types.ts)
+// carries no status field at all, so channel/direction (the only two things
+// this check reads) are identical for both outcomes; ghl.ts's channelOf/
+// directionOf can't tell them apart, and neither does this function. Positive
+// match, per AGENTS.md Pitfalls: checks touch.channel === 'call' (never a
+// negative !== test), so a GHL channel this repo doesn't recognize yet
+// defaults to staying skipped, not silently tracked.
+function tracksOutboundFirstObservation(source: InboxSource, channel: NormalizedTouch['channel']): boolean {
+  return TRACKS_OUTBOUND_FIRST_OBSERVATION.has(source) || (source === 'ghl' && channel === 'call');
+}
 
 /**
  * Decide what an inbound/outbound touch should do, given the matching contact
@@ -220,7 +249,7 @@ export function planIngest(input: {
   // exclusive by construction (reason 1 requires `!existing`, reason 2
   // requires `existing`), so evaluation order doesn't matter.
   const coldOutboundSkip =
-    !existing && touch.direction === 'outbound' && !TRACKS_OUTBOUND_FIRST_OBSERVATION.has(touch.source);
+    !existing && touch.direction === 'outbound' && !tracksOutboundFirstObservation(touch.source, touch.channel);
   const activityNoiseExistingSkip = !!existing && !!touch.isActivityNoise;
   const skipReason: IngestPlan['skipReason'] = activityNoiseExistingSkip
     ? 'activity-noise-existing'
@@ -1379,7 +1408,7 @@ export async function listItemsForMetrics(): Promise<MetricsResult> {
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const { data, error } = await sb
     .from('inbox_items')
-    .select('status, last_message_at, last_inbound_at, handled_at, handled_by, source, created_at')
+    .select('status, last_message_at, last_inbound_at, handled_at, handled_by, source, created_at, direction')
     .order('last_message_at', { ascending: false })
     .limit(METRICS_ROW_CAP);
   if (error) return { ok: false, error: error.message };
@@ -1391,6 +1420,9 @@ export async function listItemsForMetrics(): Promise<MetricsResult> {
     handledBy: (r.handled_by as string | null) ?? null,
     source: r.source as string,
     createdAt: r.created_at ? new Date(r.created_at as string) : null,
+    // #252 slice F fix round: needed by responseMetrics.ts's hadNoInboundLeg
+    // to distinguish an outbound-born item from a genuine legacy row.
+    direction: (r.direction as string | null) ?? null,
   }));
   return { ok: true, items, truncated: items.length >= METRICS_ROW_CAP };
 }
