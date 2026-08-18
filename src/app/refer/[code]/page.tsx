@@ -210,8 +210,11 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
               their own, so the fallback gallery photo is someone ELSE's
               house. Label it so the hero never reads as if it were the
               referrer's own home. Photo branch only (the component itself
-              gates on hero.kind), bottom-left, over the gradient's darkest
-              point so the light text keeps contrast. */}
+              gates on hero.kind). Review fix 7: top-left, not bottom-left,
+              since the headline block below is pulled up over the bottom of
+              the hero with a negative margin and can collide with a bottom
+              badge at narrow widths. The badge's own pill background (not
+              the gradient, which is weakest up here) carries its contrast. */}
           <ReferralHeroBadge kind={hero.kind} />
         </div>
         <div className="relative -mt-24 md:-mt-32 max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
