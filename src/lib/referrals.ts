@@ -97,7 +97,7 @@ const MAX_CODE_GEN_ATTEMPTS = 5;
 /**
  * Review fix 4: cheap pre-check for a caller that needs to know, BEFORE
  * calling ensureReferralCode, whether this would be a first-time mint. Reads
- * the exact same column ensureReferralCode itself checks at line ~122 below
+ * the exact same column ensureReferralCode itself checks below
  * (`if (existing.referral_code) return existing.referral_code;`), so "false"
  * here lines up exactly with "ensureReferralCode is about to mint a new
  * code" there. A separate read rather than widening ensureReferralCode's own
