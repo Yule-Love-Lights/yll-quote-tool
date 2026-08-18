@@ -252,17 +252,44 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
   );
 }
 
+// Shared by isGroupExpanded and canToggleGroup below: does `id` name one of
+// this group's CURRENT members? Both functions pin on exactly this test,
+// just for different ids (composerFor, errorId).
+function memberMatches(group: InboxGroup, id: string | null): boolean {
+  return id !== null && group.members.some((m) => m.id === id);
+}
+
 // #270 fix (staff HIGH — see the finding this comment is attached to): a
 // group whose members include the item currently being composed to must
 // never render collapsed, or the operator's live ReplyComposer gets hidden
 // behind a collapsed header the instant a poll adds a sibling conversation.
-// Pure and exported so this decision is unit-testable without rendering.
+//
+// #289 fix round 2 (HIGH, delta-verify on round 1's own MED fix — three
+// review lenses independently converged on this): round 1 taught
+// canToggleGroup (below) to BLOCK collapsing while errorId names a member,
+// but never taught this function to FORCE the group open — so a group that
+// was already collapsed when its busy member's action failed (operator
+// collapses while busy, since busyId pins nothing — see canToggleGroup's
+// doc comment for why; action then fails; errorId is set and refresh()
+// restores the member) stayed collapsed with its "Something went wrong —
+// try again." note unrendered, AND its header was now DISABLED by
+// canToggleGroup's own errorId guard — no render path showed the error, and
+// the one control that could have re-opened it was locked. Same failure
+// mode reaches a group that turns multi for the very FIRST time while a
+// member is already errored (e.g. a poll adds a sibling under an error
+// note): expandedMap has no entry for a group key it's never seen, which
+// defaults to collapsed. errorId now forces this open exactly like
+// composerFor, closing both paths — see canToggleGroup's doc comment for
+// why that also makes ITS errorId-driven disable safe rather than a
+// lockout. Pure and exported so this decision is unit-testable without
+// rendering.
 export function isGroupExpanded(
   group: InboxGroup,
   expandedMap: Record<string, boolean>,
   composerFor: string | null,
+  errorId: string | null,
 ): boolean {
-  if (composerFor !== null && group.members.some((m) => m.id === composerFor)) return true;
+  if (memberMatches(group, composerFor) || memberMatches(group, errorId)) return true;
   return !!expandedMap[group.key];
 }
 
@@ -278,8 +305,34 @@ export function isGroupExpanded(
 // pre-pin state instead of the swallowed click's retroactive one. Pure and
 // exported so both the header's `disabled` state and the toggle-suppression
 // share one decision (and it's unit-testable without rendering).
-export function canToggleGroup(group: InboxGroup, composerFor: string | null): boolean {
-  return !(composerFor !== null && group.members.some((m) => m.id === composerFor));
+//
+// #289 fix, corrected in round 2 (staff MED, cross-wave #769x#776
+// composition): composerFor was the only pin here, predating #776's
+// errorId/busyId state on this same list. Round 1 ALSO gated on busyId —
+// REVERTED: act() (below, in InboxList) calls setBusyId(id) and
+// optimistically filters that same id out of `items` in the same
+// synchronous batch (React's automatic batching — both setState calls
+// apply in one render), and `groups` is derived fresh from `items` on every
+// render, so a member whose id equals the CURRENT busyId can never actually
+// be present in that render's group.members — a busyId check here was
+// provably always false in every reachable render (traced and confirmed by
+// three independent review lenses). The busy window needs no pin: the busy
+// item is already absent from what's rendered, so there's nothing there to
+// hide. errorId is the real signal — on failure, refresh() restores the
+// item WITH errorId set, and collapsing the group at that point would hide
+// its error note. Keeping errorId's pin here is safe BECAUSE isGroupExpanded
+// (see its own doc comment) forces this same group open whenever errorId
+// names a member — this disable can therefore only ever block a collapse
+// that would re-hide a group already guaranteed to render expanded; it can
+// no longer strand the group collapsed-with-no-way-out the way round 1 did.
+//
+// Known limitation, NOT fixed here (pre-existing #224-family behavior,
+// tracked separately — ledger row 291): errorId is a single global slot on
+// InboxList, not per-item — any unrelated act() call elsewhere in the inbox
+// clears it (and with it, this note), regardless of whether THIS group's
+// error was ever seen or resolved.
+export function canToggleGroup(group: InboxGroup, composerFor: string | null, errorId: string | null): boolean {
+  return !(memberMatches(group, composerFor) || memberMatches(group, errorId));
 }
 
 // A stable-identity row for ONE CONTACT, covering both shapes a contact can
@@ -371,7 +424,7 @@ function ContactRow({
   // #270 delta-verify fix: disabling the button (rather than only guarding
   // the click handler) makes the "you can't collapse this while replying"
   // state VISIBLE, not just structurally safe — see canToggleGroup's doc.
-  const canToggle = canToggleGroup(group, actions.composerFor);
+  const canToggle = canToggleGroup(group, actions.composerFor, actions.errorId);
 
   const rowChildren: ReactNode[] = [];
   if (isMulti) {
@@ -380,7 +433,7 @@ function ContactRow({
         key="header"
         type="button"
         disabled={!canToggle}
-        title={canToggle ? undefined : 'Finish or cancel the reply to collapse this group'}
+        title={canToggle ? undefined : 'Resolve the open reply or the failed action on a member here before collapsing this group'}
         aria-expanded={expanded}
         aria-controls={panelId}
         onClick={onToggleExpanded}
@@ -663,12 +716,13 @@ export function InboxList({
           <ContactRow
             key={group.key}
             group={group}
-            expanded={isGroupExpanded(group, expanded, composerFor)}
-            // #270 delta-verify fix: no-op while composerFor pins this group
-            // open — see canToggleGroup's doc comment for why a swallowed
-            // toggle during the pin must not mutate expandedMap.
+            expanded={isGroupExpanded(group, expanded, composerFor, errorId)}
+            // #270 delta-verify fix, extended #289 round 2: no-op while
+            // composerFor/errorId pins this group open — see
+            // canToggleGroup's doc comment for why a swallowed toggle during
+            // the pin must not mutate expandedMap.
             onToggleExpanded={() => {
-              if (canToggleGroup(group, composerFor)) toggleExpanded(group.key);
+              if (canToggleGroup(group, composerFor, errorId)) toggleExpanded(group.key);
             }}
             actions={rowActions}
           />
