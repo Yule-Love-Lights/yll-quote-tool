@@ -15,17 +15,33 @@
 
 export type Channel = 'sms' | 'email' | 'both';
 
+// Row 269 fix round FIX 1 (three-lens HIGH — sibling-guard parity with
+// QuoteBuilder.tsx, which already reads the route's channelOutcomes field):
+// one channel's classified delivery outcome from the send route's
+// alreadySent short-circuit (route.ts's channelOutcomes field — see that
+// route's response-shape doc comment). Structurally matches
+// QuoteDeliveryChannelOutcome (src/lib/quoteDeliveries.ts) but is NOT
+// imported from there — same client/server-boundary reasoning as
+// TIMEOUT_HEDGE_PREFIX below: this file has ZERO imports on purpose, and
+// PipelineActionsMenu.tsx ('use client') imports it, so pulling in
+// quoteDeliveries.ts would drag its server-only Supabase service client into
+// the browser bundle (the #52/S18 class of bug).
+export type ChannelOutcomeEntry = { outcome: 'sent' | 'failed'; error: string | null; at: string };
+
 // The subset of the route's JSON body this menu reads. Some fields only
 // exist on some response shapes — `messageError` is 200-only (the 502
 // delivery-failed body folds the identical text into `error` instead, since
 // that response has no separate messageError field — see route.ts's two
-// return statements) — so everything here is optional.
+// return statements) — so everything here is optional. `channelOutcomes` is
+// set ONLY on the alreadySent short-circuit, and only when the route's own
+// best-effort read succeeded (see route.ts's own doc comment on the field).
 export type SendResponseBody = {
   alreadySent?: boolean;
   code?: string;
   error?: string;
   messageError?: string;
   failedChannels?: unknown;
+  channelOutcomes?: { sms: ChannelOutcomeEntry | null; email: ChannelOutcomeEntry | null };
 };
 
 // Row 270 fix round, FIX 3 (customer MED): which UI gate the caller must use
@@ -262,20 +278,73 @@ export function decideSendOutcome(
         retryGate: null,
       };
     }
+    // Row 269 fix round FIX 1 (three-lens HIGH — sibling-guard parity):
+    // this branch used to offer `requestedChannel` unconditionally, with no
+    // regard for whether the ORIGINAL send already confirm-delivered it —
+    // QuoteBuilder.tsx's identical alreadySent handling already scopes its
+    // offer to classifyChannelOutcome(body.channelOutcomes); this is the
+    // same scoping for PipelineActionsMenu. `covered` is which channel(s)
+    // requestedChannel actually asks about; `offered` drops any already
+    // 'delivered' — an operator clicking "Send (email + text)" on a quote
+    // whose SMS already confirmed no longer gets an unscoped 'both' offer
+    // that would re-fire a channel GHL already accepted (no idempotency key
+    // on GHL's send endpoint — that's a REAL duplicate, not a wasted click).
+    const covered: ('sms' | 'email')[] = requestedChannel === 'both' ? ['sms', 'email'] : [requestedChannel];
+    const classified = covered.map((ch) => ({
+      channel: ch,
+      classification: classifyChannelOutcome(body.channelOutcomes?.[ch]),
+    }));
+    const delivered = classified.filter((c) => c.classification === 'delivered').map((c) => c.channel);
+    const offered = classified.filter((c) => c.classification !== 'delivered');
+
+    // CRITICAL COMPATIBILITY case: body.channelOutcomes absent (older
+    // response, or the route's own best-effort read failed) —
+    // classifyChannelOutcome(undefined) returns 'unknown' for every covered
+    // channel, so `offered` reduces to exactly `covered` (nothing gets
+    // filtered as 'delivered') and `offerChannel` below reduces to exactly
+    // `requestedChannel` — today's behavior, byte-identical prompts.
+    if (offered.length === 0) {
+      // Every channel this click asked for already confirmed-delivered on
+      // the earlier send — offering a redeliver here would be a GUARANTEED
+      // real duplicate, not just a risk, so there is nothing to offer.
+      return {
+        message: `${channelLabel(requestedChannel)} already delivered for this quote — nothing to redeliver. Share the portal URL with the customer directly if they need it again.`,
+        retryChannel: null,
+        retryPrompt: null,
+        retryGate: null,
+      };
+    }
+
+    const offerChannel: Channel = offered.length === 2 ? 'both' : offered[0].channel;
+    // FIX 3's rule, applied here too so the two surfaces don't drift (brief
+    // requirement): an offered channel classified 'unknown' means a
+    // duplicate is still POSSIBLE (no delivery row logged, or a
+    // timeout-hedged failure on the earlier send — same ambiguity as
+    // RetryGate's doc comment above) -> typed-yes. An offered channel
+    // classified 'failed' is a CONFIRMED rejection on the earlier send -> a
+    // duplicate on THAT channel is impossible. The strictest classification
+    // among the offered channels wins for a 'both' offer (mirrors
+    // retryOfferFor's `timeoutHedged` gates-the-whole-offer reasoning).
+    const gate: RetryGate = offered.some((c) => c.classification === 'unknown') ? 'typed-yes' : 'confirm';
+    const alreadyNote = delivered.length > 0 ? `${channelLabel(delivered[0])} already delivered. ` : '';
+    const retryPrompt =
+      gate === 'typed-yes'
+        ? // Row 270 fix round, FIX 3 + FIX 4: was `No new message was sent —
+          // deliver ${channelLabel} again now?`, paired with a plain
+          // window.confirm — see RetryGate's doc comment for why that
+          // chained an alert()-then-confirm() reflex-Enter risk for a
+          // customer who may already have the quote. Reworded
+          // channel-history-neutral too (dropped "again"): quote_sent_at is
+          // channel-agnostic, so the clicked channel may never have been
+          // attempted even once (e.g. the original send was email-only and
+          // the operator just clicked "Send text").
+          `${alreadyNote}This quote was already sent earlier and the customer may already have it. Type YES to send ${channelLabel(offerChannel)} for this quote now:`
+        : `${alreadyNote}This quote was already sent earlier, but ${channelLabel(offerChannel)} confirmed failed to deliver — send it now?`;
     return {
       message: '',
-      retryChannel: requestedChannel,
-      // Row 270 fix round, FIX 3 + FIX 4: was `No new message was sent —
-      // deliver ${channelLabel} again now?`, paired with a plain
-      // window.confirm — see RetryGate's doc comment for why that chained
-      // an alert()-then-confirm() reflex-Enter risk for a customer who may
-      // already have the quote. Reworded channel-history-neutral too
-      // (dropped "again"): quote_sent_at is channel-agnostic, so the
-      // clicked channel may never have been attempted even once (e.g. the
-      // original send was email-only and the operator just clicked "Send
-      // text").
-      retryPrompt: `This quote was already sent earlier and the customer may already have it. Type YES to send ${channelLabel(requestedChannel)} for this quote now:`,
-      retryGate: 'typed-yes',
+      retryChannel: offerChannel,
+      retryPrompt,
+      retryGate: gate,
     };
   }
 

@@ -296,6 +296,129 @@ describe('decideSendOutcome', () => {
     expect(outcome.retryGate).toBe('typed-yes');
   });
 
+  // Row 269 fix round FIX 1 (three-lens HIGH — sibling-guard parity):
+  // PipelineActionsMenu never consumed channelOutcomes before this fix, so
+  // an operator clicking "Send (email + text)" on a quote whose SMS already
+  // confirmed delivered got an unscoped 'both' offer — this describe block
+  // pins the new scoping. The two tests above (no channelOutcomes in the
+  // body at all) already pin the CRITICAL COMPATIBILITY case byte-identical.
+  describe('Row 269 fix round FIX 1: alreadySent fresh-send scoped by channelOutcomes', () => {
+    it('one channel already confirmed delivered ("sent"), the other never attempted (null) — offers ONLY the undelivered channel, notes what already went out, still typed-yes (null = unknown = duplicate still possible)', () => {
+      const outcome = decideSendOutcome(
+        true,
+        {
+          alreadySent: true,
+          channelOutcomes: { sms: { outcome: 'sent', error: null, at: '2026-08-01T00:00:00Z' }, email: null },
+        },
+        'both',
+        false,
+      );
+      expect(outcome.retryChannel).toBe('email');
+      expect(outcome.retryGate).toBe('typed-yes');
+      expect(outcome.retryPrompt).toBe(
+        'text already delivered. This quote was already sent earlier and the customer may already have it. Type YES to send email for this quote now:',
+      );
+    });
+
+    it('both channels already confirmed delivered — no offer at all, honest message, no gate', () => {
+      const outcome = decideSendOutcome(
+        true,
+        {
+          alreadySent: true,
+          channelOutcomes: {
+            sms: { outcome: 'sent', error: null, at: '2026-08-01T00:00:00Z' },
+            email: { outcome: 'sent', error: null, at: '2026-08-01T00:00:01Z' },
+          },
+        },
+        'both',
+        false,
+      );
+      expect(outcome.retryChannel).toBeNull();
+      expect(outcome.retryPrompt).toBeNull();
+      expect(outcome.retryGate).toBeNull();
+      expect(outcome.message).toBe(
+        'email + text already delivered for this quote — nothing to redeliver. Share the portal URL with the customer directly if they need it again.',
+      );
+    });
+
+    it('single-channel click on an already-confirmed-delivered channel — no offer, message names just that channel', () => {
+      const outcome = decideSendOutcome(
+        true,
+        {
+          alreadySent: true,
+          channelOutcomes: { sms: { outcome: 'sent', error: null, at: '2026-08-01T00:00:00Z' }, email: null },
+        },
+        'sms',
+        false,
+      );
+      expect(outcome.retryChannel).toBeNull();
+      expect(outcome.message).toBe(
+        'text already delivered for this quote — nothing to redeliver. Share the portal URL with the customer directly if they need it again.',
+      );
+    });
+
+    it('both channels CONFIRMED failed (non-timeout) on the earlier send — offers both, but a duplicate is impossible so the gate steps DOWN to plain confirm', () => {
+      const outcome = decideSendOutcome(
+        true,
+        {
+          alreadySent: true,
+          channelOutcomes: {
+            sms: { outcome: 'failed', error: 'invalid phone number', at: '2026-08-01T00:00:00Z' },
+            email: { outcome: 'failed', error: 'mailbox rejected', at: '2026-08-01T00:00:01Z' },
+          },
+        },
+        'both',
+        false,
+      );
+      expect(outcome.retryChannel).toBe('both');
+      expect(outcome.retryGate).toBe('confirm');
+      expect(outcome.retryPrompt).toBe(
+        'This quote was already sent earlier, but email + text confirmed failed to deliver — send it now?',
+      );
+    });
+
+    it('one delivered, the other CONFIRMED failed — offers only the failed one, plain confirm (delivered one correctly excluded from the offer)', () => {
+      const outcome = decideSendOutcome(
+        true,
+        {
+          alreadySent: true,
+          channelOutcomes: {
+            sms: { outcome: 'sent', error: null, at: '2026-08-01T00:00:00Z' },
+            email: { outcome: 'failed', error: 'mailbox rejected', at: '2026-08-01T00:00:01Z' },
+          },
+        },
+        'both',
+        false,
+      );
+      expect(outcome.retryChannel).toBe('email');
+      expect(outcome.retryGate).toBe('confirm');
+      expect(outcome.retryPrompt).toBe(
+        'text already delivered. This quote was already sent earlier, but email confirmed failed to deliver — send it now?',
+      );
+    });
+
+    it('one CONFIRMED failed, the other TIMEOUT-hedged — mixed offered set: the unknown (timeout) channel forces typed-yes for the WHOLE offer, not confirm', () => {
+      const outcome = decideSendOutcome(
+        true,
+        {
+          alreadySent: true,
+          channelOutcomes: {
+            sms: { outcome: 'failed', error: 'invalid phone number', at: '2026-08-01T00:00:00Z' },
+            email: {
+              outcome: 'failed',
+              error: `${DELIVERY_TIMEOUT_ERROR_PREFIX}delivery outcome unknown (GHL may have still delivered it): socket hang up`,
+              at: '2026-08-01T00:00:01Z',
+            },
+          },
+        },
+        'both',
+        false,
+      );
+      expect(outcome.retryChannel).toBe('both');
+      expect(outcome.retryGate).toBe('typed-yes');
+    });
+  });
+
   it('retry-answers-alreadySent — the quote moved on since the original send; says so plainly and drops the retry offer (#241 defect 2 idiom)', () => {
     const outcome = decideSendOutcome(true, { alreadySent: true }, 'both', true);
     expect(outcome.retryChannel).toBeNull();
