@@ -1,4 +1,4 @@
-// Referral landing page (ledger #41). Public — no operator auth, gated only by
+// Referral landing page (ledger #41). Public: no operator auth, gated only by
 // the referral code in the URL (allowlisted in src/lib/auth/operatorGate.ts).
 // Personal-link attribution half of the referral program; the "mention"
 // half is a picker in the quote builder (src/components/quote/QuoteBuilder.tsx).
@@ -8,7 +8,7 @@
 // else a completed-work gallery photo for their service type), then hands
 // static props to small client islands (the view-tracker, the lead form, the
 // hero's onError fallback) plus the below-the-fold sections shared with the
-// portal (reviews / gallery / steps / protection / FAQ / about / contact —
+// portal (reviews / gallery / steps / protection / FAQ / about / contact,
 // referral page bug batch 2026-07-17, fix 3).
 
 import { notFound } from 'next/navigation';
@@ -44,14 +44,14 @@ import { ReferralHeroImage } from './ReferralHeroImage';
 import { ReferralHeroDesign } from './ReferralHeroDesign';
 import { ReferralHeroBadge } from './ReferralHeroBadge';
 
-// Google Business Profile reviews deep-link (browser-neutral) — same fallback
+// Google Business Profile reviews deep-link (browser-neutral): same fallback
 // URL the portal uses (src/app/portal/[quoteId]/page.tsx GMB_REVIEWS_URL) when
 // live reviews aren't configured.
 const GMB_REVIEWS_URL =
   'https://www.google.com/search?q=Yule+Love+Lights#mpd=~18273026046139841384/customers/reviews';
 
 // #41 adversarial-review LOW fix: this page is personalized per referral code
-// (a different customer's hero photo + gallery fallback each time) — force
+// (a different customer's hero photo + gallery fallback each time). Force
 // dynamic rendering so it's never statically cached/served cross-referrer.
 export const dynamic = 'force-dynamic';
 
@@ -63,12 +63,12 @@ function firstNameOf(name: string | null): string {
   return first || 'A neighbor';
 }
 
-// The referrer's most recently APPROVED quote (customer_approved_at set) —
+// The referrer's most recently APPROVED quote (customer_approved_at set):
 // the source for both the hero photo (their own house) and the fallback
 // gallery's service type when they have no design photo to show. Loosened
 // from "booked" (deposit paid) to "approved" (#41 adversarial-review MED fix,
-// Naldo: show the hero as soon as the customer has approved their design —
-// don't make the referral ask wait on a deposit that may be weeks out).
+// Naldo: show the hero as soon as the customer has approved their design.
+// Don't make the referral ask wait on a deposit that may be weeks out).
 async function latestApprovedQuote(customerId: string): Promise<{ id: string; serviceType: ServiceType | null } | null> {
   const sb = getSupabaseServiceClient();
   if (!sb) return null;
@@ -85,7 +85,7 @@ async function latestApprovedQuote(customerId: string): Promise<{ id: string; se
 }
 
 // Referral page bug batch 2026-07-17 (ledger #41) fix 1: the hero used to
-// show the referrer's RAW base house photo (`design.photoUrl` — no lights;
+// show the referrer's RAW base house photo (`design.photoUrl`, no lights;
 // the lights only exist as scene data drawn over the photo). Owner-approved
 // fix: render the SAME live lit-design the portal shows, via the
 // ReferralHeroDesign client island. The 'design' branch below carries
@@ -135,10 +135,10 @@ async function resolveHero(
   return { kind: 'photo', url: fallback.src, alt: fallback.alt };
 }
 
-// Team metadata — mirrors src/app/portal/[quoteId]/page.tsx resolveTeam()
+// Team metadata: mirrors src/app/portal/[quoteId]/page.tsx resolveTeam()
 // exactly (env-driven, MOCK_TEAM fallback). Duplicated rather than shared so
 // this fix stays scoped to the refer route only (portal/[quoteId]/page.tsx is
-// Jason's area — see AGENTS.md area ownership).
+// Jason's area: see AGENTS.md area ownership).
 function resolveTeam() {
   const leaderName =
     process.env.NEXT_PUBLIC_PORTAL_LEADER_NAME?.trim() || MOCK_TEAM.leaderName;
@@ -158,7 +158,7 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
   if (!referrer) notFound();
 
   // Independent loads (mirrors the portal page's own parallel-fetch pattern,
-  // audit W4-005) — reviews/settings don't depend on the referrer's latest
+  // audit W4-005). Reviews/settings don't depend on the referrer's latest
   // quote, and the quote lookup itself is shared by the hero AND the new
   // per-service-type sections below (fix 3), so it's resolved once here
   // instead of once per section.
@@ -172,7 +172,7 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
   const bookedThrough = process.env.NEXT_PUBLIC_PORTAL_BOOKED_THROUGH_DATE?.trim();
   const team = resolveTeam();
   // Fix 3 sections branch on the referrer's latest service type, same as the
-  // portal (undefined/unknown reads as holiday — each component's own default).
+  // portal (undefined/unknown reads as holiday: each component's own default).
   const referSvcType = latest?.serviceType ?? undefined;
   const faqItems =
     referSvcType === 'event'
@@ -227,9 +227,7 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
               : `${firstName} thinks your house could look like this.`}
           </h1>
           <p className="mt-5 text-[17px] md:text-[19px] text-[#E0D7C1] leading-[1.6]">
-            {hero.kind === 'design'
-              ? 'See your own house glowing like theirs. Free, no visit needed.'
-              : 'See your own house in lights, free, no visit needed.'}
+            Give us your address. We will follow up with a free quote, no visit needed.
           </p>
 
           {/* Compact trust signal, above the fold and above the lead form
@@ -268,7 +266,7 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
                 {REFERRAL_FRIEND_SPRITZERS.count} free {REFERRAL_FRIEND_SPRITZERS.sizeInches}&quot; spritzers
               </p>
               <p className="mt-2 text-[14px] text-[#A89F87] leading-[1.6]">
-                On your first booked install. No purchase needed to get your free light preview.
+                On your first booked install. No purchase needed to get your free quote.
               </p>
             </div>
             <div className="rounded-2xl bg-[#0D1519] border border-[#1F2A23] p-6">
@@ -299,7 +297,7 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
         </div>
       </section>
 
-      {/* ── Contact info — directly under the form (owner call 2026-07-18):
+      {/* ── Contact info: directly under the form (owner call 2026-07-18):
           a visitor who won't fill the form gets the phone number before the
           long scroll starts. ── */}
       <PersonalContact leaderName={team.leaderName} photo={team.photo} phone={team.phone} />
@@ -308,15 +306,15 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
       <TrustSection />
 
       {/* Referral page bug batch 2026-07-17 (ledger #41) fix 3: the sections
-          below the form were missing entirely — this page stopped at Trust.
+          below the form were missing entirely. This page stopped at Trust.
           Owner-approved order: reviews, install photos, steps, protection,
           FAQ, about us (contact info moved above Trust, owner call
           2026-07-18). Every prop below is sourced exactly
           like src/app/portal/[quoteId]/page.tsx (same components, same
-          fallbacks); no quote-specific customer data is read anywhere here —
+          fallbacks); no quote-specific customer data is read anywhere here:
           only generic/curated content plus the referrer's own hero above. */}
 
-      {/* ── Google Reviews — live when configured, mock block otherwise
+      {/* ── Google Reviews: live when configured, mock block otherwise
           (all-or-nothing, same as the portal: never live rating + mock
           quotes together). ── */}
       <GoogleReviews
@@ -326,7 +324,7 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
         reviewsUrl={liveReviews?.reviewsUrl ?? GMB_REVIEWS_URL}
       />
 
-      {/* ── Install photos — the curated completed-work gallery (never the
+      {/* ── Install photos: the curated completed-work gallery (never the
           customer's own PhotoGallery/design; that needs SelectionContext,
           which this page doesn't have). ── */}
       <Gallery items={galleryItemsFor(referSvcType)} crossSell={crossSellFor(referSvcType)} />
@@ -334,7 +332,7 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
       {/* ── Steps ── */}
       <WhatHappensNext serviceType={referSvcType} />
 
-      {/* ── Protection — the standard variant only; a referral visitor has
+      {/* ── Protection: the standard variant only; a referral visitor has
           no approval to show the permanent-snapshot variant against. ── */}
       <RiskReversal serviceType={referSvcType} />
 
