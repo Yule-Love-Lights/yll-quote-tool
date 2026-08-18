@@ -394,14 +394,20 @@ export async function runHandledWriteback(target: HandledTarget, operatorLabel: 
       // Handled too (a staffer triaging raw Gmail — the tool's own "Reply in
       // Gmail" affordance sends them there — would see an already-handled
       // thread and skip it, reintroducing the buried-lead failure one layer
-      // up). Only run the write-back when the row knows its own message id;
-      // every real LIVE-FETCH split touch (gmail.ts's
-      // normalizeGmailThreadTouches) carries one. A null sourceMessageId —
-      // whether a composite backfilled id or a genuinely bare legacy one —
-      // skips entirely: no signal beats a wrong signal. Best-effort by
-      // design: the local handled_at stamp already landed before this runs,
-      // so skipping loses nothing but the external Gmail label/read-state
-      // sync for this one row.
+      // up). Only run the write-back when the row knows its own message id.
+      // A null sourceMessageId is the ORDINARY shape, not a legacy one:
+      // normalizeGmailThread (gmail.ts) sets it unconditionally for every
+      // non-lead-forward thread — the overwhelming majority of Gmail traffic
+      // — and only the parsed-lead-forward shapes (normalizeGmailThreadTouches'
+      // 1-parsed and 2+-parsed branches) carry a real message id. Skipping
+      // here makes zero Gmail API calls (getAccessToken/getOrCreateLabel both
+      // sit inside the sourceMessageId branch below — see sync.test.ts).
+      // Best-effort by design: the local handled_at stamp already landed
+      // before this runs, and the retired thread-wide call only ever fired on
+      // an explicit Handled action (most gmail rows resolve by dismiss or
+      // complete, which never reach this code), so the accepted cost is on
+      // the order of a couple of unlabeled Gmail threads a month — not a
+      // broad loss of write-back coverage.
       if (target.sourceMessageId) {
         const token = await getAccessToken();
         const labelId = await getOrCreateLabel(token, 'YLL/Handled');

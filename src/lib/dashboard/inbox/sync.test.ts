@@ -14,12 +14,13 @@ import { isParkedLegacyRebookDraft } from '@/lib/quoteStatus';
 const getThreadMock = vi.fn();
 const listInboxThreadsMock = vi.fn();
 const getAccessTokenMock = vi.fn();
+const getOrCreateLabelMock = vi.fn();
 const isGmailConfiguredMock = vi.fn();
 const modifyMessageMock = vi.fn();
 
 vi.mock('@/lib/integrations/gmail', () => ({
   getAccessToken: (...args: unknown[]) => getAccessTokenMock(...args),
-  getOrCreateLabel: vi.fn(),
+  getOrCreateLabel: (...args: unknown[]) => getOrCreateLabelMock(...args),
   getThread: (...args: unknown[]) => getThreadMock(...args),
   isGmailConfigured: (...args: unknown[]) => isGmailConfiguredMock(...args),
   listInboxThreads: (...args: unknown[]) => listInboxThreadsMock(...args),
@@ -294,7 +295,10 @@ describe('runHandledWriteback — WT-49 (no opportunity write)', () => {
 // those sit on a thread that also has composite sibling rows — i.e. genuinely
 // on a multi-customer thread. Any row with a null sourceMessageId — whether a
 // composite backfilled id (scripts/backfill-gml-threads.ts mints
-// `${threadId}:bf-<epochMs>`) or a genuinely bare legacy one — now skips the
+// `${threadId}:bf-<epochMs>`) or the ordinary bare thread-level shape that
+// EVERY non-lead-forward Gmail thread gets (normalizeGmailThread sets
+// sourceMessageId: null unconditionally — not a legacy artifact, the current
+// default for the overwhelming majority of Gmail traffic) — now skips the
 // Gmail write-back entirely: no signal beats a wrong signal, and this is
 // best-effort by design (the local handled_at stamp already landed before
 // this runs, so skipping loses nothing but the external Gmail label/read-
@@ -323,18 +327,20 @@ describe('runHandledWriteback — Gmail write-back targeting (#288 GML split + #
     expect(sync.gmailLabel).toBe('ok');
   });
 
-  it('(ii) a target with a BARE external_id and NO sourceMessageId (row-293 population: a legacy row predating per-message ids) SKIPS the Gmail write-back entirely — no thread-wide fallback fires', async () => {
+  it('(ii) a target with a BARE external_id and NO sourceMessageId (the ORDINARY shape for a non-lead-forward Gmail thread — normalizeGmailThread always sets sourceMessageId: null, not a legacy artifact) SKIPS the Gmail write-back entirely — no thread-wide fallback fires, and zero Gmail API calls are made', async () => {
     const target: HandledTarget = {
       source: 'gmail',
       externalId: 'thr-abc123',
       sourceMessageId: null,
       ghlContactId: null,
-      displayName: 'Legacy Row',
+      displayName: 'Direct Customer Email',
     };
 
     const sync = await runHandledWriteback(target, 'jason');
 
     expect(modifyMessageMock).not.toHaveBeenCalled();
+    expect(getAccessTokenMock).not.toHaveBeenCalled();
+    expect(getOrCreateLabelMock).not.toHaveBeenCalled();
     expect(sync.gmailLabel).toBe('skipped');
   });
 
@@ -350,6 +356,8 @@ describe('runHandledWriteback — Gmail write-back targeting (#288 GML split + #
     const sync = await runHandledWriteback(target, 'jason');
 
     expect(modifyMessageMock).not.toHaveBeenCalled();
+    expect(getAccessTokenMock).not.toHaveBeenCalled();
+    expect(getOrCreateLabelMock).not.toHaveBeenCalled();
     expect(sync.gmailLabel).toBe('skipped');
   });
 
