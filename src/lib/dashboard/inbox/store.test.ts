@@ -303,6 +303,7 @@ import {
   excludeLegacyRebookItems,
   findOrphanedFollowUpItems,
   findViewOnlyFollowUpItems,
+  getItemStatus,
   getReopenCounts,
   isHiddenLegacyRebookQuote,
   listDueFollowUps,
@@ -314,6 +315,7 @@ import {
   markItemHandledLocal,
   quoteIdPrefix,
   recordSuppressedFollowUp,
+  shouldResolveAnchoredItem,
   sweepOrphanedFollowUps,
 } from './store';
 
@@ -1465,9 +1467,16 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
       let insertRow: Record<string, unknown> | undefined;
       let updateFields: Record<string, unknown> | undefined;
       let upsertConflict: string | undefined;
+      // Tracks a `.select(...)` chained AFTER `.update(...)` (markFollowUpDone's
+      // `.update({status:'done'}).eq('id',id).select('inbox_item_id')` shape) —
+      // real Supabase returns the updated row(s) back in that case instead of
+      // `data: null`. Must NOT clobber `mode`, or the .then() handler below
+      // would take the generic select branch and never apply the update.
+      let selectRequested = false;
       const self: Record<string, unknown> = {};
       self.select = () => {
-        mode = 'select';
+        selectRequested = true;
+        if (mode !== 'update' && mode !== 'upsert') mode = 'select';
         return self;
       };
       self.eq = (col: string, val: unknown) => {
@@ -1493,16 +1502,25 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
         upsertConflict = opts?.onConflict;
         return self;
       };
+      // Mirrors real supabase-js: resolves the single matching row (or null),
+      // not an array. Terminal call — built on top of .then() below.
+      self.maybeSingle = () =>
+        new Promise((resolve) => {
+          (self.then as (r: (v: unknown) => void) => void)((result) => {
+            const { data, error } = result as { data: unknown; error: unknown };
+            const single = Array.isArray(data) ? (data[0] ?? null) : data;
+            resolve({ data: single, error });
+          });
+        });
       self.then = (resolve: (v: unknown) => void) => {
         if (mode === 'insert') {
           const row = { id: String(nextId++), ...insertRow } as FollowUpRow;
           rows.push(row);
           resolve({ data: [row], error: null });
         } else if (mode === 'update') {
-          for (const r of rows) {
-            if (Object.entries(filters).every(([k, v]) => r[k] === v)) Object.assign(r, updateFields);
-          }
-          resolve({ data: null, error: null });
+          const matched = rows.filter((r) => Object.entries(filters).every(([k, v]) => r[k] === v));
+          for (const r of matched) Object.assign(r, updateFields);
+          resolve({ data: selectRequested ? matched : null, error: null });
         } else if (mode === 'upsert') {
           const cols = (upsertConflict ?? '').split(',').map((c) => c.trim()).filter(Boolean);
           const existing = cols.length
@@ -1575,6 +1593,127 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
     expect(fake.rows[0].status).toBe('pending');
     expect(fake.rows[0].inbox_item_id).toBe('item-1');
     expect(fake.rows[0].reason).toBe('quote_sent_no_reply');
+  });
+
+  // #252 slice E: markFollowUpDone now hands back the follow-up's anchored
+  // inbox_item_id so a caller (the /api/dashboard/followup route) can decide
+  // whether to also resolve that item — see the route.test.ts coupling tests.
+  it('returns the anchored inbox_item_id on success', async () => {
+    const fake = makeFollowUpsFake([
+      { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'pending' },
+    ]);
+    sbRef.current = { from: (table: string) => (table === 'follow_ups' ? fake.table() : genericTable()) };
+
+    const done = await markFollowUpDone('fu-1', 'operator-1');
+    expect(done.ok).toBe(true);
+    if (!done.ok) return;
+    expect(done.inboxItemId).toBe('item-1');
+    expect(fake.rows[0].status).toBe('done');
+  });
+
+  it('returns a null inboxItemId for a manual follow-up with no anchor (today\'s behavior preserved)', async () => {
+    const fake = makeFollowUpsFake([
+      { id: 'fu-1', inbox_item_id: null as unknown as string, reason: 'manual', status: 'pending' },
+    ]);
+    sbRef.current = { from: (table: string) => (table === 'follow_ups' ? fake.table() : genericTable()) };
+
+    const done = await markFollowUpDone('fu-1', 'operator-1');
+    expect(done.ok).toBe(true);
+    if (!done.ok) return;
+    expect(done.inboxItemId).toBeNull();
+  });
+
+  it('accepts a null operatorId (auth gate dormant) and logs the activity as system', async () => {
+    const fake = makeFollowUpsFake([
+      { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'pending' },
+    ]);
+    const activityInserts: Record<string, unknown>[] = [];
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'follow_ups') return fake.table();
+        if (table === 'dashboard_activity') {
+          return {
+            insert: (row: Record<string, unknown>) => {
+              activityInserts.push(row);
+              return Promise.resolve({ data: null, error: null });
+            },
+          };
+        }
+        return genericTable();
+      },
+    };
+
+    const done = await markFollowUpDone('fu-1', null);
+    expect(done.ok).toBe(true);
+    expect(activityInserts).toHaveLength(1);
+    expect(activityInserts[0].actor).toBe('system');
+  });
+});
+
+// ─── #252 slice E — anchored-item resolution gate ───────────────────────────
+//
+// "Clicking Done on a follow-up currently does NOT touch the inbox item, so
+// the strip clears while the conversation stays open elsewhere" (ledger row
+// 252). shouldResolveAnchoredItem is the single decision point the
+// /api/dashboard/followup route consults before reusing the Handled route's
+// machinery (markItemHandledLocal + runHandledWriteback + recordWriteback) —
+// see route.test.ts for the full wiring. Tested as a pure function here so
+// every input combination (including a 'dismissed' follow-up, which has no
+// live UI caller today but IS a real value under follow_ups' own
+// `status in ('pending','done','dismissed')` CHECK constraint) is covered
+// directly, without needing a live dismiss code path to exist.
+describe('shouldResolveAnchoredItem (#252 slice E)', () => {
+  it('true: a done follow-up anchored to a still-unresponded item', () => {
+    expect(shouldResolveAnchoredItem('done', 'unresponded')).toBe(true);
+  });
+
+  it('false: an already-handled item is left untouched (no double-stamp)', () => {
+    expect(shouldResolveAnchoredItem('done', 'handled')).toBe(false);
+  });
+
+  it('false: an already-completed item is left untouched', () => {
+    expect(shouldResolveAnchoredItem('done', 'completed')).toBe(false);
+  });
+
+  it('false: an already-dismissed item is left untouched', () => {
+    expect(shouldResolveAnchoredItem('done', 'dismissed')).toBe(false);
+  });
+
+  it('false: no anchored item (null status — e.g. item not found)', () => {
+    expect(shouldResolveAnchoredItem('done', null)).toBe(false);
+  });
+
+  it('false: a DISMISSED follow-up never resolves the item, regardless of item status', () => {
+    expect(shouldResolveAnchoredItem('dismissed', 'unresponded')).toBe(false);
+    expect(shouldResolveAnchoredItem('dismissed', 'handled')).toBe(false);
+  });
+
+  it('false: a PENDING follow-up (not yet acted on) never resolves the item', () => {
+    expect(shouldResolveAnchoredItem('pending', 'unresponded')).toBe(false);
+  });
+});
+
+describe('getItemStatus (#252 slice E)', () => {
+  /** Minimal single-table stub: select('status').eq('id', itemId).maybeSingle(). */
+  function makeInboxItemsFake(row: { id: string; status: string } | null) {
+    return {
+      select: () => ({
+        eq: (_col: string, val: string) => ({
+          maybeSingle: async () => ({ data: row && row.id === val ? { status: row.status } : null, error: null }),
+        }),
+      }),
+    };
+  }
+
+  it('returns the item\'s current status', async () => {
+    // getItemStatus only ever queries inbox_items — no generic-table fallback needed.
+    sbRef.current = { from: () => makeInboxItemsFake({ id: 'item-1', status: 'unresponded' }) };
+    expect(await getItemStatus('item-1')).toBe('unresponded');
+  });
+
+  it('returns null when the item does not exist', async () => {
+    sbRef.current = { from: () => makeInboxItemsFake(null) };
+    expect(await getItemStatus('missing-item')).toBeNull();
   });
 });
 

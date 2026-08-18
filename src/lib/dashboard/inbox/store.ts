@@ -1354,13 +1354,63 @@ export async function listDueFollowUps(now: Date): Promise<DueFollowUpsResult> {
   return { ok: true, items };
 }
 
-export async function markFollowUpDone(id: string, operatorId: string): Promise<{ ok: boolean; error?: string }> {
+export type MarkFollowUpDoneResult =
+  | { ok: true; inboxItemId: string | null }
+  | { ok: false; error: string };
+
+/** `operatorId` may be null (mirrors markItemHandledLocal — the auth gate can be
+ *  dormant with no operator resolved); the activity row still shows 'system' in
+ *  that case, matching prior behavior. Returns the follow-up's anchored
+ *  `inbox_item_id` (or null for a manual follow-up with no anchor) so a caller
+ *  can decide whether to ALSO resolve that item — see shouldResolveAnchoredItem
+ *  and #252 slice E (the followup route is today's only caller of that
+ *  coupling). */
+export async function markFollowUpDone(id: string, operatorId: string | null): Promise<MarkFollowUpDoneResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
-  const { error } = await sb.from('follow_ups').update({ status: 'done' }).eq('id', id);
+  const { data, error } = await sb
+    .from('follow_ups')
+    .update({ status: 'done' })
+    .eq('id', id)
+    .select('inbox_item_id')
+    .maybeSingle();
   if (error) return { ok: false, error: error.message };
-  await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'handled', detail: { followUpId: id } });
-  return { ok: true };
+  await sb.from('dashboard_activity').insert({ actor: operatorId ?? 'system', action: 'handled', detail: { followUpId: id } });
+  const row = data as { inbox_item_id: string | null } | null;
+  return { ok: true, inboxItemId: row?.inbox_item_id ?? null };
+}
+
+/** Read an inbox item's current status. Used by a caller deciding whether a
+ *  coupled action (e.g. #252 slice E's follow-up-done -> item-handled) is
+ *  still eligible. Returns null when the item doesn't exist or the client is
+ *  unavailable — the caller's gate (shouldResolveAnchoredItem) treats that as
+ *  "not eligible", never as license to act. */
+export async function getItemStatus(itemId: string): Promise<string | null> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return null;
+  const { data } = await sb.from('inbox_items').select('status').eq('id', itemId).maybeSingle();
+  return (data as { status: string } | null)?.status ?? null;
+}
+
+/**
+ * Whether marking a follow-up should ALSO resolve its anchored inbox item.
+ * #252 slice E: an operator clicking Done on a follow-up asserts the
+ * underlying conversation was dealt with — leaving the item open elsewhere
+ * (still 'unresponded') while the strip clears is the incoherence this slice
+ * exists to fix (Jason's ruling, ledger row 252: HANDLED MEANS DONE).
+ *
+ * Scoped narrowly on purpose: (1) only a follow-up actually marked 'done' —
+ * never a 'dismissed' one (follow_ups.status supports 'dismissed' per its
+ * CHECK constraint, though no code path sets it today; this keeps that
+ * future-safe without building it). (2) only an item still 'unresponded' — an
+ * item already handled/completed/dismissed is left untouched. This is a
+ * POSITIVE check, not reliance on markItemHandledLocal's own narrower
+ * `.neq('status','handled')` guard: that guard alone would let a
+ * completed/dismissed item get resurrected to 'handled', which this function
+ * exists to prevent.
+ */
+export function shouldResolveAnchoredItem(followUpStatus: string, itemStatus: string | null): boolean {
+  return followUpStatus === 'done' && itemStatus === 'unresponded';
 }
 
 // ─── Response-time / SLA analytics ──────────────────────────────────────────
