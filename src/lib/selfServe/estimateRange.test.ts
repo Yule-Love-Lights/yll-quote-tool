@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeEstimateRange, analysisToHolidayInputs, isMeasurable } from './estimateRange';
+import { computeEstimateRange, customerEstimateRange, analysisToHolidayInputs, isMeasurable } from './estimateRange';
 import type { PhotoAnalysisResult } from '@/lib/photoAnalysis';
 
 // The self-serve estimate shows the customer a RANGE, never a single binding
@@ -36,6 +36,44 @@ describe('computeEstimateRange', () => {
     expect(() => computeEstimateRange(-500)).toThrow();
     expect(() => computeEstimateRange(Number.NaN)).toThrow();
     expect(() => computeEstimateRange(Number.POSITIVE_INFINITY)).toThrow();
+  });
+});
+
+// customerEstimateRange is what the customer actually sees: the margin bracket
+// composed with the $1,000 job minimum. The S47 LOW: computeEstimateRange's -10%
+// margin dropped a min-floored total ($1,000) to a $900 low the customer can
+// never be charged. These lock in that the shown low never dips below the minimum.
+describe('customerEstimateRange', () => {
+  const MIN = 1000;
+
+  it('never shows a low below the job minimum, even for a home priced under it', () => {
+    // Raw margin on a $1,000 total would be 900–1100; the shown low must be $1,000.
+    const { low, high } = customerEstimateRange(700, MIN);
+    expect(low).toBe(1000);
+    expect(high).toBe(1100);
+    expect(low).toBeLessThan(high);
+    expect(low).toBeGreaterThanOrEqual(MIN);
+  });
+
+  it('floors the low at the minimum for a total exactly at the minimum (the S47 LOW)', () => {
+    const { low, high } = customerEstimateRange(1000, MIN);
+    expect(low).toBe(1000); // was 900 before the fix
+    expect(high).toBe(1100);
+  });
+
+  it('leaves a comfortably-above-minimum total unchanged (no over-clamping)', () => {
+    // total 2480 → 2200–2750, both clear of the minimum → identical to raw.
+    const { low, high } = customerEstimateRange(2480, MIN);
+    expect(low).toBe(2200);
+    expect(high).toBe(2750);
+  });
+
+  it('keeps low strictly below high across the boundary', () => {
+    for (const total of [500, 900, 1000, 1050, 1200, 5000]) {
+      const { low, high } = customerEstimateRange(total, MIN);
+      expect(low).toBeGreaterThanOrEqual(MIN);
+      expect(low).toBeLessThan(high);
+    }
   });
 });
 

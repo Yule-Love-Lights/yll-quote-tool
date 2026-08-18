@@ -32,12 +32,22 @@ function clean(v: string | null | undefined): string | null {
  *
  * SECURITY: `quoteId` comes straight from a PUBLIC request body, so before
  * touching the row we verify it is actually a SELF-SERVE DRAFT (status 'draft'
- * AND inputs.meta.source === 'self_serve_estimate'). Without this, anyone
+ * AND inputs.meta.source is one of the self-serve sources). Without this, anyone
  * holding a quote UUID (it's the portal capability token, visible in customer
  * portal URLs) could overwrite the customer_name/email/phone + GHL link on a
  * staff-built quote for a real paying customer. A non-self-serve or non-draft
  * id is refused (returns false), never mutated.
  */
+// Both self-serve draft sources are customer-created via the public flow and
+// equally safe to enrich: the address-measure path (self_serve_estimate) and the
+// upload-your-photo path (self_serve_upload). Pure + exported so the ownership
+// scope is unit-tested — a new self-serve source that isn't added here would
+// silently leave those leads stuck 'Anonymous' (the bug this fixed for uploads).
+const SELF_SERVE_DRAFT_SOURCES: ReadonlySet<string> = new Set(['self_serve_estimate', 'self_serve_upload']);
+export function isEnrichableSelfServeDraft(status: string | null | undefined, source: string | null | undefined): boolean {
+  return status === 'draft' && !!source && SELF_SERVE_DRAFT_SOURCES.has(source);
+}
+
 export async function enrichSelfServeQuote(
   quoteId: string,
   contact: SelfServeContact,
@@ -74,8 +84,7 @@ export async function enrichSelfServeQuote(
       return false;
     }
     if (!row) return false; // unknown id
-    const isSelfServeDraft = row.status === 'draft' && row.inputs?.meta?.source === 'self_serve_estimate';
-    if (!isSelfServeDraft) {
+    if (!isEnrichableSelfServeDraft(row.status, row.inputs?.meta?.source)) {
       console.warn('[selfServe] enrichSelfServeQuote refused a non-self-serve-draft quote id');
       return false;
     }

@@ -417,6 +417,87 @@ export async function getDesignByQuote(quoteId: string): Promise<DesignWithPhoto
   return toDesignWithPhoto(data as unknown as DesignWithPhotoRow);
 }
 
+export type SampleDesign = {
+  quoteId: string | null;
+  scene: DesignScene;
+  photoUrl: string;
+  photoW: number | null;
+  photoH: number | null;
+};
+
+/**
+ * Recent REAL designed jobs to feature on the public self-serve estimate landing
+ * (ledger self-serve, S48). Non-test, HOLIDAY, STAFF-SENT quotes (sent/viewed/
+ * approved/booked/changes_requested — never a raw draft) that have a base photo + a
+ * drawn scene — the ACTUAL designs staff traced, so they render (via DesignCanvas)
+ * exactly like the portal, not a fabricated overlay on a stock photo. Best-effort:
+ * returns [] on any failure. The payload is the house render only (no name/address/
+ * PII); the same render is already public on that quote's own portal by UUID.
+ *
+ * Two plain queries rather than a PostgREST foreign-key embed: the designs/quotes
+ * schema is RLS-disabled and may not declare the FK the embed needs, which would
+ * error the whole call. The status floor is a PRIVACY gate, not just quality:
+ * /api/estimate auto-creates a draft for any visitor, so only staff-sent quotes may
+ * be featured publicly (a self-serve draft becomes eligible only once staff send it).
+ */
+export async function listSampleDesigns(limit = 6): Promise<SampleDesign[]> {
+  const sb = getSb();
+  if (!sb) return [];
+  // 1) Recent designs that actually have a base photo (a decent-sized pool).
+  const { data: designRows, error: dErr } = await sb
+    .from('designs')
+    .select(DESIGN_WITH_PHOTO_COLUMNS)
+    .not('photo_path', 'is', null)
+    .not('quote_id', 'is', null)
+    .order('updated_at', { ascending: false })
+    .limit(limit * 8);
+  if (dErr) {
+    console.error('Supabase listSampleDesigns designs error:', dErr);
+    return [];
+  }
+  const rows = (designRows ?? []) as unknown as DesignWithPhotoRow[];
+  if (rows.length === 0) return [];
+
+  // 2) The quotes those designs belong to — to drop test + dead (declined/lost/
+  //    cancelled) quotes without an FK embed.
+  const quoteIds = Array.from(new Set(rows.map((r) => r.quote_id).filter((v): v is string => !!v)));
+  const { data: quoteRows, error: qErr } = await sb
+    .from('quotes')
+    .select('id, is_test, status, service_type')
+    .in('id', quoteIds);
+  if (qErr) {
+    console.error('Supabase listSampleDesigns quotes error:', qErr);
+    return [];
+  }
+  // PRIVACY: only quotes STAFF actually sent to a real customer — never a raw
+  // 'draft'. /api/estimate auto-creates a draft + design for ANYONE who types an
+  // address, so a "non-dead" filter would put a random visitor's (or an unsent
+  // internal) home on the public marketing gallery. A self-serve quote qualifies
+  // only once staff review it and send it.
+  const SENT_PLUS = new Set(['sent', 'viewed', 'approved', 'booked', 'changes_requested']);
+  const showable = new Set<string>();
+  for (const q of (quoteRows ?? []) as Array<{ id: string; is_test: boolean | null; status: string | null; service_type: string | null }>) {
+    // HOLIDAY (Christmas) only — exclude permanent / event / bistro. A NULL
+    // service_type reads as 'holiday' (the DB default), so include it.
+    const isHoliday = q.service_type === 'holiday' || q.service_type == null;
+    if (!q.is_test && isHoliday && q.status != null && SENT_PLUS.has(q.status)) showable.add(q.id);
+  }
+
+  // 3) Keep good designs (photo + a non-empty scene) of real, live quotes — recent
+  //    first. Check the scene before signing so we only sign the ones we'll show.
+  const usable: SampleDesign[] = [];
+  for (const r of rows) {
+    if (!r.quote_id || !showable.has(r.quote_id)) continue;
+    const scene = (r.scene ?? EMPTY_SCENE) as DesignScene;
+    if (!Array.isArray(scene.items) || scene.items.length === 0) continue;
+    const d = await toDesignWithPhoto(r);
+    if (!d.photoUrl) continue;
+    usable.push({ quoteId: d.quoteId, scene: d.scene, photoUrl: d.photoUrl, photoW: d.photoW, photoH: d.photoH });
+    if (usable.length >= limit) break;
+  }
+  return usable;
+}
+
 // Autosave path: overwrite the scene jsonb. The DB trigger bumps updated_at.
 export async function updateDesignScene(id: string, scene: DesignScene): Promise<boolean> {
   const sb = getSb();

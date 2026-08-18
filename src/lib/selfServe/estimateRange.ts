@@ -37,6 +37,24 @@ export function computeEstimateRange(total: number, marginPct: number = DEFAULT_
 }
 
 /**
+ * The customer-facing range the self-serve estimate actually shows. Composes the
+ * raw margin bracket with the $1,000 job minimum in ONE tested place so the route
+ * can't get it half-right:
+ *   1. lift the whole bracket so a small home's HIGH clears the minimum too
+ *      (calculateQuote.total doesn't apply the minimum — it's enforced at the
+ *      portal approval gate — so a small roof can price below $1,000), then
+ *   2. floor the LOW at the minimum, because computeEstimateRange's -10% margin
+ *      would otherwise re-introduce a sub-minimum low ($1,000 total → $900 low)
+ *      the customer can never actually be charged — anchoring them on a number
+ *      below what they'll pay is misleading.
+ * The saved draft keeps the raw engine total; only this shown range is floored.
+ */
+export function customerEstimateRange(total: number, minimum: number): EstimateRange {
+  const { low, high } = computeEstimateRange(Math.max(total, minimum));
+  return { low: Math.max(low, minimum), high };
+}
+
+/**
  * The roofline footage the estimate is priced on, per line. Prefers the source
  * the analyzer chose (satellite when preferredSource==='satellite', else
  * street), but falls back to the other source when the chosen one is 0 — so a

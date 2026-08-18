@@ -1,0 +1,254 @@
+/* Customer self-serve estimate — dark "cinematic" theme (ledger self-serve, S48).
+   Ported from the approved "Self-Serve Front Door: Phase A" mockup; tokens mirror
+   the portal-dark skin. Everything is scoped under .est-dark and est-* prefixed so
+   it never bleeds into the rest of the app (this file is a global import). */
+
+.est-dark {
+  --est-bg: #0B140F;
+  --est-bg-raised: #121B16;
+  --est-card: #18221C;
+  --est-border: #243029;
+  --est-border-mid: #2E3D34;
+  --est-border-hi: #3C4F43;
+  --est-gold: #E8B862;
+  --est-gold-bright: #F5CC7A;
+  --est-gold-dim: #B08840;
+  --est-gold-deep: #7A5E20;
+  --est-red: #C8313D;
+  --est-cream: #F4ECD8;
+  --est-cream-2: #E0D7C1;
+  --est-cream-dim: #A89F87;
+  --est-cream-muted: #7B7361;
+  --est-glow-sm: 0 0 14px rgba(232, 184, 98, 0.35);
+  --est-glow-md: 0 0 28px rgba(232, 184, 98, 0.45), 0 0 60px rgba(232, 184, 98, 0.18);
+  --est-shadow-card: 0 1px 2px rgba(0,0,0,0.4), 0 12px 32px -8px rgba(0,0,0,0.55);
+
+  color-scheme: dark;
+  background: var(--est-bg);
+  color: var(--est-cream);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.5;
+  position: relative;
+}
+.est-dark * { box-sizing: border-box; }
+.est-dark::before {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(ellipse 80% 60% at 50% 20%, rgba(232,184,98,0.035), transparent 60%);
+}
+.est-display { font-family: ui-serif, Georgia, "Times New Roman", serif; }
+
+.est-shell { max-width: 480px; margin: 0 auto; padding: 20px 16px 56px; position: relative; z-index: 1; }
+
+.est-stepper { display: flex; justify-content: center; gap: 8px; margin: 4px 0 22px; }
+.est-stepper span { width: 8px; height: 8px; border-radius: 50%; background: var(--est-border-hi); transition: all .3s; }
+.est-stepper span.on { background: var(--est-gold); box-shadow: var(--est-glow-sm); }
+
+.est-screen { animation: est-fadein .35s ease; }
+@keyframes est-fadein { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .est-screen { animation: none; }
+  .est-dark * { transition: none !important; }
+}
+
+.est-eyebrow { font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--est-gold); margin: 0 0 8px; text-align: center; }
+.est-h1 { font-size: clamp(26px, 7vw, 34px); line-height: 1.15; font-weight: 600; margin: 0 0 10px; text-align: center; text-wrap: balance; }
+.est-sub { color: var(--est-cream-dim); text-align: center; margin: 0 0 20px; font-size: 15px; }
+
+.est-framebox {
+  position: relative; border-radius: 14px; overflow: hidden;
+  border: 1px solid var(--est-border-mid); box-shadow: var(--est-shadow-card);
+  background: #0C1322;
+}
+
+/* Gold trim around the install box (Naldo) */
+.est-install {
+  border: 1.5px solid var(--est-gold);
+  box-shadow: 0 0 0 1px rgba(232,184,98,0.22), var(--est-shadow-card), var(--est-glow-sm);
+}
+/* Crop the bottom (Street View "Google" footer) — scale both image layers as one
+   from the top so the design overlay stays aligned. */
+.est-crop { position: absolute; inset: 0; transform: scale(1.08); transform-origin: top center; }
+
+/* Before/after hero */
+.est-ba-label {
+  position: absolute; top: 10px; font-size: 11px; letter-spacing: 0.06em;
+  background: rgba(0,0,0,0.5); border-radius: 999px; padding: 3px 10px;
+  color: var(--est-cream-2); pointer-events: none; z-index: 2;
+}
+.est-ba-label-l { left: 10px; }
+.est-ba-label-r { right: 10px; }
+.est-ba-range { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: col-resize; margin: 0; z-index: 3; }
+.est-ba-handle { position: absolute; top: 0; bottom: 0; width: 2px; background: rgba(244,236,216,0.8); pointer-events: none; z-index: 2; }
+.est-ba-handle::after {
+  content: '\2194'; position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+  width: 34px; height: 34px; border-radius: 50%; background: var(--est-cream); color: var(--est-bg);
+  display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 700;
+}
+.est-hero-hint { text-align: center; color: var(--est-cream-muted); font-size: 12px; margin: 6px 0 22px; }
+
+/* Gallery dots (browse the featured real homes) */
+.est-dots { display: flex; gap: 8px; justify-content: center; margin: 12px 0 0; }
+.est-dot { width: 8px; height: 8px; border-radius: 999px; border: none; padding: 0; background: var(--est-border-hi); cursor: pointer; transition: all .3s; }
+.est-dot.on { width: 22px; background: var(--est-gold); box-shadow: var(--est-glow-sm); }
+
+/* House style picker */
+.est-housepick { display: flex; gap: 8px; justify-content: center; margin: 0 0 14px; flex-wrap: wrap; }
+.est-housechip {
+  background: var(--est-bg-raised); border: 1px solid var(--est-border-hi);
+  border-radius: 999px; padding: 7px 14px; cursor: pointer;
+  color: var(--est-cream-dim); font-size: 12px; font-weight: 600;
+}
+.est-housechip:hover { color: var(--est-cream); }
+.est-housechip.on { border-color: var(--est-gold); color: var(--est-cream); box-shadow: var(--est-glow-sm); }
+.est-pick-cap { text-align: center; color: var(--est-cream-muted); font-size: 12px; margin: 0 0 10px; }
+
+/* Gold section heading (Naldo) */
+.est-section-title {
+  text-align: center; color: var(--est-gold-bright); font-weight: 700; font-size: 15px;
+  letter-spacing: 0.02em; margin: 4px 0 0; text-shadow: var(--est-glow-sm);
+}
+
+/* How-it-works steps */
+.est-steps { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.est-steps li { display: flex; gap: 12px; align-items: flex-start; }
+.est-step-n {
+  flex: none; width: 28px; height: 28px; border-radius: 999px;
+  background: var(--est-gold); color: #241A06; font-weight: 800; font-size: 14px;
+  display: flex; align-items: center; justify-content: center; box-shadow: var(--est-glow-sm);
+}
+.est-steps b { font-size: 14px; color: var(--est-cream); }
+.est-steps p { margin: 2px 0 0; font-size: 13px; color: var(--est-cream-dim); }
+
+.est-field {
+  width: 100%; background: var(--est-bg-raised);
+  border: 1px solid var(--est-border-hi); border-radius: 10px;
+  color: var(--est-cream); font-size: 16px; padding: 14px 16px; outline: none;
+}
+.est-field:focus { border-color: var(--est-gold); box-shadow: var(--est-glow-sm); }
+.est-field::placeholder { color: var(--est-cream-muted); }
+.est-flabel { display: block; font-size: 12px; color: var(--est-cream-dim); margin: 14px 0 6px; letter-spacing: 0.04em; }
+
+.est-btn {
+  display: block; width: 100%; text-align: center;
+  background: var(--est-gold); color: #241A06;
+  font-weight: 700; font-size: 16px; border: none; border-radius: 10px;
+  padding: 15px 18px; margin-top: 14px; cursor: pointer; box-shadow: var(--est-glow-sm);
+}
+.est-btn:hover { background: var(--est-gold-bright); box-shadow: var(--est-glow-md); }
+.est-btn:focus-visible { outline: 2px solid var(--est-cream); outline-offset: 2px; }
+.est-btn:disabled { opacity: 0.55; cursor: default; }
+.est-btn-ghost { background: transparent; color: var(--est-cream-dim); border: 1px solid var(--est-border-hi); box-shadow: none; font-weight: 500; }
+.est-btn-ghost:hover { color: var(--est-cream); border-color: var(--est-cream-dim); }
+/* Upload-your-own-photo option */
+.est-upload { margin-top: 16px; text-align: center; }
+.est-upload > span { display: block; color: var(--est-cream-muted); font-size: 12px; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.1em; }
+.est-upload-btn {
+  display: inline-block; cursor: pointer;
+  background: var(--est-bg-raised); border: 1px solid var(--est-border-hi); border-radius: 10px;
+  padding: 11px 18px; color: var(--est-cream-dim); font-size: 14px; font-weight: 600;
+}
+.est-upload-btn:hover { color: var(--est-cream); border-color: var(--est-cream-dim); }
+.est-upload-btn.is-busy { opacity: 0.6; cursor: default; }
+
+.est-backlink { background: none; border: none; color: var(--est-cream-muted); font-size: 13px; cursor: pointer; padding: 8px 0; margin-top: 6px; display: block; margin-inline: auto; }
+.est-backlink:hover { color: var(--est-cream-dim); }
+.est-error { color: #F1A0A6; font-size: 14px; margin: 12px 0 0; text-align: center; }
+
+/* Scan / measuring */
+.est-scan-status { text-align: center; margin: 16px 0 4px; font-size: 15px; color: var(--est-cream-2); min-height: 24px; }
+.est-scan-stats { display: flex; justify-content: center; gap: 24px; margin-top: 10px; font-variant-numeric: tabular-nums; }
+.est-scan-stats > div { text-align: center; }
+.est-scan-stats .v { font-size: 22px; font-weight: 700; color: var(--est-gold-bright); }
+.est-scan-stats .k { font-size: 11px; color: var(--est-cream-muted); text-transform: uppercase; letter-spacing: 0.08em; }
+.est-mock-cap { text-align: center; color: var(--est-cream-muted); font-size: 12px; margin: 6px 0 16px; }
+
+/* Measuring — an indeterminate "scanning" sweep under the status line. */
+.est-scanbar { position: relative; height: 4px; border-radius: 999px; background: var(--est-border); overflow: hidden; margin: 14px auto 10px; max-width: 260px; }
+.est-scanbar span { position: absolute; top: 0; bottom: 0; width: 40%; border-radius: 999px; background: linear-gradient(90deg, transparent, var(--est-gold), transparent); animation: est-scan 1.4s ease-in-out infinite; }
+@keyframes est-scan { 0% { left: -40%; } 100% { left: 100%; } }
+@media (prefers-reduced-motion: reduce) { .est-scanbar span { animation: none; left: 30%; } }
+
+/* Color swatches */
+.est-swatches { display: flex; gap: 8px; justify-content: center; margin: 0 0 16px; flex-wrap: wrap; }
+.est-swatch {
+  display: flex; align-items: center; gap: 7px;
+  background: var(--est-bg-raised); border: 1px solid var(--est-border-hi);
+  border-radius: 999px; padding: 7px 13px; cursor: pointer;
+  color: var(--est-cream-dim); font-size: 12px; font-weight: 600;
+}
+.est-swatch:hover { color: var(--est-cream); }
+.est-swatch.on { border-color: var(--est-gold); color: var(--est-cream); box-shadow: var(--est-glow-sm); }
+.est-swatch .dots { display: flex; gap: 3px; }
+.est-swatch .dots i { width: 8px; height: 8px; border-radius: 50%; display: block; }
+
+/* Price card + items */
+.est-price-card {
+  background: var(--est-card); border: 1px solid var(--est-border-mid);
+  border-radius: 14px; padding: 20px; box-shadow: var(--est-shadow-card); text-align: center;
+}
+.est-price-band {
+  font-family: ui-serif, Georgia, serif; font-size: clamp(28px, 7.5vw, 38px); font-weight: 700;
+  color: var(--est-gold-bright); text-shadow: var(--est-glow-sm);
+  font-variant-numeric: tabular-nums; margin: 4px 0 2px;
+}
+.est-price-note { font-size: 13px; color: var(--est-cream-dim); margin: 0; }
+.est-verify-tag {
+  display: inline-block; margin-top: 12px; font-size: 12px; color: var(--est-cream-2);
+  background: var(--est-bg-raised); border: 1px dashed var(--est-gold-dim); border-radius: 999px; padding: 5px 14px;
+}
+.est-items { margin-top: 18px; text-align: left; }
+.est-item {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--est-bg-raised); border: 1px solid var(--est-border);
+  border-radius: 10px; padding: 12px 14px; margin-bottom: 8px; cursor: pointer; user-select: none;
+}
+.est-item input { accent-color: var(--est-gold); width: 18px; height: 18px; }
+.est-item .nm { flex: 1; font-size: 14px; }
+.est-item .nm small { display: block; color: var(--est-cream-muted); font-size: 12px; }
+.est-item .amt { font-variant-numeric: tabular-nums; font-size: 14px; color: var(--est-cream-2); white-space: nowrap; }
+.est-item.off { opacity: 0.45; }
+
+/* Contact mini-price + save status */
+.est-mini-price {
+  display: flex; justify-content: space-between; align-items: baseline;
+  background: var(--est-card); border: 1px solid var(--est-border-mid);
+  border-radius: 10px; padding: 12px 16px; margin: 14px 0 6px;
+}
+.est-mini-price .b { font-family: ui-serif, Georgia, serif; font-size: 20px; font-weight: 700; color: var(--est-gold-bright); font-variant-numeric: tabular-nums; }
+.est-keep-note { font-size: 12px; color: var(--est-cream-muted); text-align: center; margin: 10px 0 0; }
+.est-checkline { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; color: var(--est-cream-dim); margin-top: 12px; }
+.est-checkline input { accent-color: var(--est-gold); margin-top: 3px; }
+
+/* Portal preview */
+.est-portal-card { background: var(--est-card); border: 1px solid var(--est-border-mid); border-radius: 14px; padding: 20px; box-shadow: var(--est-shadow-card); }
+.est-portal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 8px; }
+.est-portal-head .q { font-size: 13px; color: var(--est-cream-dim); }
+.est-badge {
+  font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+  background: rgba(232,184,98,0.12); color: var(--est-gold-bright);
+  border-radius: 999px; padding: 3px 10px; white-space: nowrap;
+}
+.est-prow { display: flex; justify-content: space-between; font-size: 14px; padding: 9px 0; border-bottom: 1px solid var(--est-border); }
+.est-prow:last-of-type { border-bottom: none; }
+.est-prow .amt { font-variant-numeric: tabular-nums; }
+.est-prow.total { font-weight: 700; font-size: 16px; }
+.est-prow.total .amt { color: var(--est-gold-bright); }
+.est-today-note {
+  margin-top: 16px; font-size: 13px; color: var(--est-cream-2);
+  background: var(--est-bg-raised); border-left: 3px solid var(--est-gold);
+  border-radius: 8px; padding: 10px 14px;
+}
+.est-spinner {
+  margin: 0 auto; width: 40px; height: 40px; border-radius: 50%;
+  border: 4px solid var(--est-border-hi); border-top-color: var(--est-gold); animation: est-spin 0.9s linear infinite;
+}
+@keyframes est-spin { to { transform: rotate(360deg); } }
+
+/* Tighter spacing on small phones so nothing feels cramped or overflows. */
+@media (max-width: 400px) {
+  .est-shell { padding: 16px 12px 48px; }
+  .est-swatch { padding: 6px 10px; font-size: 11px; }
+  .est-housechip { padding: 6px 11px; }
+  .est-h1 { font-size: clamp(24px, 8vw, 30px); }
+}
