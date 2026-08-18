@@ -80,6 +80,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   afterTasks.length = 0;
   rateLimitedRef.current = false;
+  // Review fix 2: the route 404s when this is unset, so every existing test
+  // below (written before the flag existed) needs it on by default. The
+  // flag's own on/off behavior is covered by the dedicated describe block
+  // further down, which sets this explicitly per test.
+  process.env.REFERRAL_SELF_SERVE_ENABLED = 'true';
   searchContacts.mockResolvedValue([]);
   sendEmail.mockResolvedValue({});
   upsertContactCustomField.mockResolvedValue(undefined);
@@ -87,6 +92,32 @@ beforeEach(() => {
   ensureReferralCode.mockResolvedValue('CODE1234');
   delete process.env.HIGHLEVEL_CONTACT_FIELD_BRAND_AMBASSADOR_STATUS;
   delete process.env.HIGHLEVEL_CONTACT_FIELD_BRAND_AMBASSADOR_ENROLLMENT_DATE;
+});
+
+describe('REFERRAL_SELF_SERVE_ENABLED flag (review fix 2)', () => {
+  it('404s and schedules nothing when the flag is unset', async () => {
+    delete process.env.REFERRAL_SELF_SERVE_ENABLED;
+    const res = await POST(req({ email: 'jamie@example.com' }));
+    expect(res.status).toBe(404);
+    expect(afterTasks).toHaveLength(0);
+    expect(searchContacts).not.toHaveBeenCalled();
+    expect(findOrCreateCustomer).not.toHaveBeenCalled();
+  });
+
+  it('404s for anything other than the literal string "true" (strict comparison)', async () => {
+    process.env.REFERRAL_SELF_SERVE_ENABLED = 'TRUE';
+    const res = await POST(req({ email: 'jamie@example.com' }));
+    expect(res.status).toBe(404);
+    expect(afterTasks).toHaveLength(0);
+  });
+
+  it('proceeds normally when the flag is the literal string "true"', async () => {
+    process.env.REFERRAL_SELF_SERVE_ENABLED = 'true';
+    const res = await POST(req({ email: 'jamie@example.com' }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(afterTasks).toHaveLength(1);
+  });
 });
 
 describe('POST /api/referrals/request-link', () => {

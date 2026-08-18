@@ -8,9 +8,18 @@
 // client form. See src/app/api/referrals/request-link/route.ts for the
 // uniform-response contract the form's confirmation copy is written around
 // (it can never reveal whether an email matched a real contact).
+//
+// Review fix 2: flag-gated (REFERRAL_SELF_SERVE_ENABLED, ships OFF), same
+// notFound()-when-off pattern as src/app/estimate/page.tsx. This is the
+// feature's rollback lever, see referralSelfServeFlag.ts.
 
 import type { Metadata } from 'next';
+import { notFound } from 'next/navigation';
+import { isReferralSelfServeEnabled } from '@/lib/referralSelfServeFlag';
 import { ReferralLinkForm } from './ReferralLinkForm';
+
+// The flag is a runtime server env read, never statically pre-render this page.
+export const dynamic = 'force-dynamic';
 
 export const metadata: Metadata = {
   title: 'Get Your Referral Link | Yule Love Lights',
@@ -19,6 +28,7 @@ export const metadata: Metadata = {
 };
 
 export default function ReferralLinkPage() {
+  if (!isReferralSelfServeEnabled()) notFound();
   return (
     <main className="relative min-h-screen w-full bg-[#060B0F] flex items-center justify-center px-4 py-16">
       <div className="w-full max-w-lg">

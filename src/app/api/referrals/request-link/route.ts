@@ -35,6 +35,7 @@ import { findOrCreateCustomer } from '@/lib/customers';
 import { ensureReferralCode } from '@/lib/referrals';
 import { appBaseUrl } from '@/lib/integrations/telegramNotify';
 import { REFERRAL_LINK_EMAIL_SUBJECT, referralLinkEmailHtml } from '@/lib/integrations/quoteMessages';
+import { isReferralSelfServeEnabled } from '@/lib/referralSelfServeFlag';
 
 export const runtime = 'nodejs';
 // The after() task below can fire up to five sequential GHL calls
@@ -80,6 +81,13 @@ function normalizeEmailForCompare(email: string | undefined | null): string {
 }
 
 export async function POST(req: NextRequest) {
+  // Review fix 2: flag off → the whole feature is dark; 404 so it isn't even
+  // advertised, before rate limiting or anything else. Mirrors
+  // src/app/api/estimate/route.ts's own flag check.
+  if (!isReferralSelfServeEnabled()) {
+    return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  }
+
   const rl = rateLimitResponse(req, { bucket: 'referral-request-link', limit: 5, windowMs: 60_000 });
   if (rl) return rl;
 
