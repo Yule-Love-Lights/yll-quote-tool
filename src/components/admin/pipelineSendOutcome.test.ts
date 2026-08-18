@@ -3,7 +3,7 @@
 // PipelineActionsMenu's 'send' case — see that file's helper doc comment for
 // why one function classifies both a fresh send and a ?retryDelivery=1 retry.
 import { describe, it, expect } from 'vitest';
-import { decideSendOutcome, classifyChannelOutcome } from './pipelineSendOutcome';
+import { decideSendOutcome, classifyChannelOutcome, isTimeoutHedgedFailure, retryOfferFor } from './pipelineSendOutcome';
 // Row 290: the REAL exported constant the send route writes onto a timed-out
 // smsError/emailError (src/lib/quoteDeliveries.ts, via
 // deliveryErrorMessage()/timeoutHedgedErrorMessage() in
@@ -385,5 +385,35 @@ describe('classifyChannelOutcome', () => {
         error: `${DELIVERY_TIMEOUT_ERROR_PREFIX}delivery outcome unknown (GHL may have still delivered it): socket hang up`,
       }),
     ).toBe('unknown');
+  });
+});
+
+// Row 269: both were private until QuoteBuilder.tsx needed to gate its own
+// retry buttons the same way PipelineActionsMenu already does — locking in
+// the public contract now that a second caller depends on it.
+describe('isTimeoutHedgedFailure / retryOfferFor (row 269 — now exported for QuoteBuilder.tsx)', () => {
+  it('isTimeoutHedgedFailure: undefined -> false', () => {
+    expect(isTimeoutHedgedFailure(undefined)).toBe(false);
+  });
+
+  it('isTimeoutHedgedFailure: a confirmed rejection -> false', () => {
+    expect(isTimeoutHedgedFailure('rate limited')).toBe(false);
+  });
+
+  it('isTimeoutHedgedFailure: text containing the real DELIVERY_TIMEOUT_ERROR_PREFIX -> true', () => {
+    expect(isTimeoutHedgedFailure(`${DELIVERY_TIMEOUT_ERROR_PREFIX}delivery outcome unknown: socket hang up`)).toBe(true);
+  });
+
+  it('retryOfferFor: not hedged -> plain confirm gate', () => {
+    expect(retryOfferFor('sms', true, false)).toEqual({
+      retryPrompt: 'Redeliver text again?',
+      retryGate: 'confirm',
+    });
+  });
+
+  it('retryOfferFor: hedged -> typed-yes gate', () => {
+    const { retryGate, retryPrompt } = retryOfferFor('both', true, true);
+    expect(retryGate).toBe('typed-yes');
+    expect(retryPrompt).toContain('Type YES to redeliver');
   });
 });

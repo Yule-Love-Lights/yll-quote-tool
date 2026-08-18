@@ -65,7 +65,12 @@ import { downscaleForUpload, downscaleForUploadAsBlob, readUploadErrorMessage } 
 // Supabase), so pulling it in here does not drag anything server-only into
 // this bundle. See that file's own comment for why it deliberately does NOT
 // import quoteDeliveries.ts's DELIVERY_TIMEOUT_ERROR_PREFIX directly.
-import { classifyChannelOutcome, type ChannelDeliveryClassification } from '@/components/admin/pipelineSendOutcome';
+import {
+  classifyChannelOutcome,
+  isTimeoutHedgedFailure,
+  retryOfferFor,
+  type ChannelDeliveryClassification,
+} from '@/components/admin/pipelineSendOutcome';
 
 // The Konva design editor touches the DOM/canvas, so load it client-only.
 const DesignEditor = dynamic(() => import('@/components/design/DesignEditor'), { ssr: false });
@@ -623,6 +628,15 @@ export default function QuoteBuilder({
   // failure puts Send in the error state while preserving the valid portal URL.
   const [deliveryWarning, setDeliveryWarning] = useState<string | null>(null);
   const [deliveryRetryChannel, setDeliveryRetryChannel] = useState<'sms' | 'email' | 'both' | null>(null);
+  // Row 269 fix round: whether the CURRENT deliveryWarning/sendError text
+  // reflects a timeout-hedged failure (GHL may have delivered it anyway —
+  // isTimeoutHedgedFailure, pipelineSendOutcome.ts) rather than a confirmed
+  // rejection. Captured at the moment the warning/error is set (the two
+  // deliveryWarning set-sites and the two 502-throw sites below all pass
+  // data.messageError/data.error) instead of re-sniffing the rendered string
+  // at click time, so the retry buttons' confirm-vs-typed-YES gate can't
+  // drift from the text that produced it.
+  const [deliveryFailureHedged, setDeliveryFailureHedged] = useState(false);
   // #241: when the send route short-circuits with alreadySent:true (a
   // double-click / re-click on an already-sent quote), nothing was texted or
   // emailed — this holds the ORIGINAL quote_sent_at so the UI can say so
@@ -2994,6 +3008,7 @@ export default function QuoteBuilder({
     setGhlSyncWarning(null);
     setDeliveryWarning(null);
     setDeliveryRetryChannel(null);
+    setDeliveryFailureHedged(false);
     setAlreadySentAt(null);
     setAlreadySentChannels(null);
     setCopiedUrl(false);
@@ -3080,6 +3095,9 @@ export default function QuoteBuilder({
       if (!res.ok) {
         if (data.code === 'delivery-failed' && failedChannels.length > 0) {
           setDeliveryRetryChannel(failedChannels.length === 2 ? 'both' : failedChannels[0]);
+          // Row 269 fix round: captured HERE, at the point data.error is
+          // known — see deliveryFailureHedged's own state comment for why.
+          setDeliveryFailureHedged(isTimeoutHedgedFailure(data.error));
         }
         throw new Error(data.error ?? `Send failed (${res.status})`);
       }
@@ -3141,6 +3159,8 @@ export default function QuoteBuilder({
         setDeliveryWarning(
           `${failedChannels.map((c: 'sms' | 'email') => c.toUpperCase()).join(' and ')} failed. The other requested channel was delivered.${data.messageError ? ` (${data.messageError})` : ''}`,
         );
+        // Row 269 fix round: see deliveryFailureHedged's state comment.
+        setDeliveryFailureHedged(isTimeoutHedgedFailure(data.messageError));
       }
       // PostHog v1 — staff-side confirmation the quote actually sent.
       track('quote_sent', { quote_id: savedQuoteId, service_type: form.serviceType });
@@ -3190,7 +3210,12 @@ export default function QuoteBuilder({
         body: JSON.stringify({ channel: deliveryRetryChannel }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? `Delivery retry failed (${res.status})`);
+      if (!res.ok) {
+        // Row 269 fix round: captured HERE, at the point data.error is known
+        // — see deliveryFailureHedged's own state comment for why.
+        setDeliveryFailureHedged(isTimeoutHedgedFailure(data.error));
+        throw new Error(data.error ?? `Delivery retry failed (${res.status})`);
+      }
       // #241 defect 2 (review MEDIUM): the retry can ALSO fall through the
       // route's alreadySent short-circuit (e.g. the customer approved or
       // the job got booked between the original send and this click — see
@@ -3224,9 +3249,12 @@ export default function QuoteBuilder({
         setDeliveryWarning(
           `${retryFailedChannels.map((c: 'sms' | 'email') => c.toUpperCase()).join(' and ')} failed. The other requested channel was delivered.${data.messageError ? ` (${data.messageError})` : ''}`,
         );
+        // Row 269 fix round: see deliveryFailureHedged's state comment.
+        setDeliveryFailureHedged(isTimeoutHedgedFailure(data.messageError));
       } else {
         setDeliveryWarning(null);
         setDeliveryRetryChannel(null);
+        setDeliveryFailureHedged(false);
       }
       // #264 round 2, FIX 6: a delivery-only retry structurally never
       // attempts the GHL stage move — route.ts's ghlStageChain returns
@@ -3259,6 +3287,59 @@ export default function QuoteBuilder({
     } finally {
       sendInFlightRef.current = false;
     }
+  };
+
+  // Row 269 fix round: none of the three redeliver buttons below had ANY
+  // confirm gate — a stray click blind-fired a real customer text/email with
+  // zero friction. The two wrappers below gate handleRetryDelivery itself
+  // (never called directly from a button anymore), mirroring
+  // PipelineActionsMenu.tsx's redeliverAndReport idiom (window.prompt +
+  // exact-"YES" + mistype feedback for typed-yes; plain window.confirm
+  // otherwise) so a declined/mistyped gate makes ZERO network requests —
+  // handleRetryDelivery's own fetch is the only thing that reaches the wire.
+
+  // The alreadySent-origin button: always typed-YES, unconditionally,
+  // because the ENTIRE reason this button exists is that a click on it may
+  // be re-texting/re-emailing a customer who could already have the quote
+  // from the original send (mirrors decideSendOutcome's alreadySent branch,
+  // pipelineSendOutcome.ts, which gates the identical PipelineActionsMenu
+  // case the same fixed way).
+  const handleForceRedeliverClick = async () => {
+    if (!deliveryRetryChannel) return;
+    const label = deliveryRetryChannel === 'both' ? 'SMS + email' : deliveryRetryChannel.toUpperCase();
+    const typed = window.prompt(
+      `This quote was already sent and the customer may already have it. Type YES to redeliver ${label} now:`,
+    );
+    if (typed === null) return; // Cancel — deliberate, stays silent.
+    if (typed.trim().toUpperCase() !== 'YES') {
+      window.alert('Not redelivered — type YES exactly to confirm.');
+      return;
+    }
+    await handleRetryDelivery();
+  };
+
+  // The partial-failure (~6135) and error-state (~6120) buttons: derives its
+  // gate from retryOfferFor (pipelineSendOutcome.ts) — the SAME function
+  // PipelineActionsMenu uses — off deliveryFailureHedged (captured at the
+  // moment the current failure/warning was set, not re-sniffed from the
+  // rendered string here). A confirmed failure stays low-friction (a
+  // duplicate is impossible — the customer got nothing from THIS attempt); a
+  // timeout-hedged failure steps up to typed-YES (GHL may have delivered it
+  // anyway).
+  const handleScopedRetryClick = async () => {
+    if (!deliveryRetryChannel) return;
+    const { retryPrompt, retryGate } = retryOfferFor(deliveryRetryChannel, true, deliveryFailureHedged);
+    if (retryGate === 'typed-yes') {
+      const typed = window.prompt(retryPrompt);
+      if (typed === null) return; // Cancel — deliberate, stays silent.
+      if (typed.trim().toUpperCase() !== 'YES') {
+        window.alert('Not redelivered — type YES exactly to confirm.');
+        return;
+      }
+    } else if (!window.confirm(retryPrompt)) {
+      return;
+    }
+    await handleRetryDelivery();
   };
 
   // Re-run ONLY the HighLevel stage-sync for a quote that was sent locally but
@@ -6104,7 +6185,7 @@ export default function QuoteBuilder({
                 {!retryIneligible && deliveryRetryChannel && (
                   <button
                     type="button"
-                    onClick={handleRetryDelivery}
+                    onClick={handleForceRedeliverClick}
                     className="mt-2 text-xs font-medium text-amber-900 underline hover:no-underline"
                   >
                     {/* Row 269: label now names the SCOPED channel(s) —
@@ -6123,7 +6204,7 @@ export default function QuoteBuilder({
                 {deliveryRetryChannel && (
                   <button
                     type="button"
-                    onClick={handleRetryDelivery}
+                    onClick={handleScopedRetryClick}
                     className="mt-2 font-medium underline hover:no-underline"
                   >
                     Retry {deliveryRetryChannel === 'both' ? 'SMS and email' : deliveryRetryChannel.toUpperCase()}
@@ -6137,7 +6218,7 @@ export default function QuoteBuilder({
                 <p>{deliveryWarning}</p>
                 <button
                   type="button"
-                  onClick={handleRetryDelivery}
+                  onClick={handleScopedRetryClick}
                   className="mt-2 text-xs font-medium text-amber-900 underline hover:no-underline"
                 >
                   Retry {deliveryRetryChannel === 'both' ? 'SMS and email' : deliveryRetryChannel.toUpperCase()}

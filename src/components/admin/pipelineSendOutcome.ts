@@ -136,7 +136,13 @@ const TIMEOUT_HEDGE_PREFIX = 'timeout — ';
 // channel on the response body) instead of string-sniffing — not attempted
 // here since it's a route.ts response-shape change, out of scope for this
 // pure-function fix.
-function isTimeoutHedgedFailure(detail: string | undefined): boolean {
+// Row 269: exported so QuoteBuilder.tsx (src/components/quote/) can classify
+// its OWN raw error/warning text (sendError, deliveryWarning's
+// data.messageError source) the exact same way this file already does,
+// instead of duplicating the substring check or a second copy of
+// TIMEOUT_HEDGE_PREFIX. Was private until QuoteBuilder needed it — no
+// behavior change.
+export function isTimeoutHedgedFailure(detail: string | undefined): boolean {
   return !!detail && detail.includes(TIMEOUT_HEDGE_PREFIX);
 }
 
@@ -186,7 +192,13 @@ export function classifyChannelOutcome(
 // `isTimeoutHedgedFailure(...)` call, never a bare second boolean variable,
 // so there's nothing to transpose today; flagged here for whoever adds a
 // third call site later.
-function retryOfferFor(
+// Row 269: exported so QuoteBuilder.tsx's three retry buttons (which have no
+// confirm gate of any kind today, and don't route through decideSendOutcome
+// — they manage their own state independently of PipelineActionsMenu's
+// 'send' case) can pick the SAME gate/prompt for a given channel + hedge
+// state instead of a second, possibly-drifting implementation. Was private
+// until QuoteBuilder needed it — no behavior change for PipelineActionsMenu.
+export function retryOfferFor(
   channel: Channel,
   isRetry: boolean,
   timeoutHedged: boolean,
