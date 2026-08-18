@@ -5,6 +5,13 @@
 > sessions plus the scorecard; the full narrative always lives in
 > `docs/context/session_log_naldo.md` / `session_log.md`.
 
+<!-- filed directly to the archive at the S31 late close (2026-08-18) — the conversation predates S32–S40 but closed after them -->
+### S31 (Jason) — 2026-07-27→08-18 — winback SMS campaign pickup: recon disproved the handoff, 79 sends, GHL compliance trip, STOPPED; 5 conversions / 1 booked
+
+- MISTAKES: my 3 message variants ran a ~6% STOP rate vs the incumbent copy's 0.9% — I flagged the rate as a watch-item after day 1 and STILL sent day 2 at full volume, which tripped GHL's 6% account-wide compliance restriction. Lesson: on an outbound channel with an incumbent baseline, a 7× worse early metric is a STOP signal, not a watch-item — canary the new copy against the incumbent's metric BEFORE volume. · My recon script's opp-activity guard read Naldo's 7/20 bulk status backfill as "active deals" and skipped ALL 268 pending contacts — caught only because the dry run ran first; a mass admin write poisons any freshness field it touches.
+- DID RIGHT: live recon disproved the handoff's core premise (claimed zero replies; found two, one of which was the S30 diana arc's hidden cause) before any send · the send engine's design survived a 3-week dead session cleanly (durable state outside the session, state-save after every send, sends never auto-retry, ambiguous outcomes parked not requeued — the S29 lesson as code) · the dry-run-first habit caught the backfill poisoning with zero customer impact · the close-review customer lens confirmed a real HIGH from data (4 of 5 campaign quotes missing the texted 10% promise — a booked job among them) instead of hand-waving the campaign closed · returned the main tree to master within seconds of detecting a concurrent session's uncommitted edits appearing under my branch switch (the S40 tree-ownership pitfall, caught in the act this time).
+- Full detail: `session_log_archive.md` S31 (chronological slot). Campaign record: `project_winback_campaign.md`.
+
 <!-- moved from CLAUDE.md journal at the S39 close (2026-08-17) -->
 ### S50 POST-CLOSE (Naldo) -- 2026-08-04/05 -- ledger #195 SHIPPED (non-lead website forms, 5 PRs) + #194 built as drafts; two customer-facing defects found at close and left for Naldo
 
