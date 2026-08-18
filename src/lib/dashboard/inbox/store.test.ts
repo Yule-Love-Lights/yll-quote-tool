@@ -333,6 +333,7 @@ vi.mock('@/lib/supabase', () => ({
 }));
 
 import {
+  closeFollowUpsForResolvedItem,
   closeQuoteInboxNoise,
   dismissItem,
   ensureFollowUp,
@@ -352,6 +353,7 @@ import {
   quoteIdPrefix,
   recordSuppressedFollowUp,
   sweepOrphanedFollowUps,
+  sweepResolvedItemFollowUps,
 } from './store';
 
 /** Build a Supabase chain stub where the terminal await returns `result`.
@@ -1644,6 +1646,142 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
     expect(fake.rows[0].inbox_item_id).toBe('item-1');
     expect(fake.rows[0].reason).toBe('quote_sent_no_reply');
   });
+
+  // #252 follow-up-autoclose: closeFollowUpsForResolvedItem + its backlog
+  // sweep, exercised against the REAL create/update/select shape via the
+  // (now-fixed) stateful fake above rather than a fixed-response stub — this
+  // is exactly the update().eq(...).select() chain the fake used to get wrong.
+  describe('closeFollowUpsForResolvedItem — closes ALL pending follow-ups anchored to a resolved item (#252)', () => {
+    it('closes a pending follow-up and returns count 1', async () => {
+      const fake = makeFollowUpsFake([
+        { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'pending' },
+      ]);
+      sbRef.current = { from: (table: string) => (table === 'follow_ups' ? fake.table() : genericTable()) };
+
+      const closed = await closeFollowUpsForResolvedItem('item-1');
+
+      expect(closed).toBe(1);
+      expect(fake.rows[0].status).toBe('done');
+    });
+
+    it('leaves an already-done follow-up untouched and returns count 0 for it', async () => {
+      const fake = makeFollowUpsFake([
+        { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'done' },
+      ]);
+      sbRef.current = { from: (table: string) => (table === 'follow_ups' ? fake.table() : genericTable()) };
+
+      const closed = await closeFollowUpsForResolvedItem('item-1');
+
+      expect(closed).toBe(0);
+      expect(fake.rows[0].status).toBe('done'); // unchanged, not re-touched
+    });
+
+    it('closes a pending follow-up regardless of reason (no reason filter — the item being terminal invalidates any anchored nag)', async () => {
+      const fake = makeFollowUpsFake([
+        { id: 'fu-1', inbox_item_id: 'item-1', reason: 'some_future_reason', status: 'pending' },
+      ]);
+      sbRef.current = { from: (table: string) => (table === 'follow_ups' ? fake.table() : genericTable()) };
+
+      const closed = await closeFollowUpsForResolvedItem('item-1');
+
+      expect(closed).toBe(1);
+      expect(fake.rows[0].status).toBe('done');
+    });
+
+    it('returns 0 without touching an unrelated item\'s pending follow-up', async () => {
+      const fake = makeFollowUpsFake([
+        { id: 'fu-1', inbox_item_id: 'item-OTHER', reason: 'quote_sent_no_reply', status: 'pending' },
+      ]);
+      sbRef.current = { from: (table: string) => (table === 'follow_ups' ? fake.table() : genericTable()) };
+
+      const closed = await closeFollowUpsForResolvedItem('item-1');
+
+      expect(closed).toBe(0);
+      expect(fake.rows[0].status).toBe('pending');
+    });
+
+    it('swallows a store-level failure and returns 0 (non-fatal — never throws)', async () => {
+      sbRef.current = {
+        from: (table: string) =>
+          table === 'follow_ups'
+            ? { update: () => ({ eq: () => ({ eq: () => ({ select: () => Promise.resolve({ data: null, error: { message: 'connection reset' } }) }) }) }) }
+            : genericTable(),
+      };
+
+      const closed = await closeFollowUpsForResolvedItem('item-1');
+
+      expect(closed).toBe(0);
+    });
+  });
+
+  describe('sweepResolvedItemFollowUps — backlog self-heal for items already terminal before the write-site fix (#252)', () => {
+    /** Minimal fixed-response fake for inbox_items' single `.select().in()` lookup. */
+    function makeItemsFake(items: { id: string; status: string }[]) {
+      const self: Record<string, unknown> = {};
+      self.select = () => self;
+      self.in = () => self;
+      self.then = (resolve: (v: unknown) => void) => resolve({ data: items, error: null });
+      return self;
+    }
+
+    it('closes a pre-existing pending follow-up whose item is already completed, and returns count 1', async () => {
+      const fake = makeFollowUpsFake([
+        { id: 'fu-1', inbox_item_id: 'item-done', reason: 'quote_sent_no_reply', status: 'pending' },
+      ]);
+      const itemsFake = makeItemsFake([{ id: 'item-done', status: 'completed' }]);
+      sbRef.current = {
+        from: (table: string) => {
+          if (table === 'follow_ups') return fake.table();
+          if (table === 'inbox_items') return itemsFake;
+          return genericTable();
+        },
+      };
+
+      const closed = await sweepResolvedItemFollowUps();
+
+      expect(closed).toBe(1);
+      expect(fake.rows[0].status).toBe('done');
+    });
+
+    it('leaves a pending follow-up alone when its item is only handled (the normal quote-sent-awaiting-reply case)', async () => {
+      const fake = makeFollowUpsFake([
+        { id: 'fu-1', inbox_item_id: 'item-handled', reason: 'quote_sent_no_reply', status: 'pending' },
+      ]);
+      const itemsFake = makeItemsFake([{ id: 'item-handled', status: 'handled' }]);
+      sbRef.current = {
+        from: (table: string) => {
+          if (table === 'follow_ups') return fake.table();
+          if (table === 'inbox_items') return itemsFake;
+          return genericTable();
+        },
+      };
+
+      const closed = await sweepResolvedItemFollowUps();
+
+      expect(closed).toBe(0);
+      expect(fake.rows[0].status).toBe('pending');
+    });
+
+    it('returns 0 without querying inbox_items when there are no pending follow-ups', async () => {
+      const fake = makeFollowUpsFake([]);
+      let inboxItemsQueried = false;
+      sbRef.current = {
+        from: (table: string) => {
+          if (table === 'follow_ups') return fake.table();
+          if (table === 'inbox_items') {
+            inboxItemsQueried = true;
+            return makeItemsFake([]);
+          }
+          return genericTable();
+        },
+      };
+
+      const closed = await sweepResolvedItemFollowUps();
+
+      expect(closed).toBe(0);
+      expect(inboxItemsQueried).toBe(false);
+    });
+  });
 });
 
 // ─── planIngest — clearFollowedUp ────────────────────────────────────────────
@@ -2894,6 +3032,138 @@ describe('markItemHandledLocal / dismissItem / markItemCompleted — handled_by 
     const res = await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
     expect(res.ok).toBe(false);
     expect(res.error).toBe('connection reset');
+  });
+});
+
+// #252 follow-up-autoclose: nothing closed a pending follow-up when its
+// anchored item reached a TERMINAL state (completed/dismissed) — it kept
+// nagging "due today" forever. markItemCompleted/dismissItem now close any
+// pending follow-up anchored to the item, but ONLY on the path where their own
+// guarded update actually matched a row, and NEVER for markItemHandledLocal
+// ('handled' is not terminal — it's the normal quote-sent-awaiting-reply case
+// the follow-up exists to chase, and must keep nagging until a reply or a
+// terminal transition closes it).
+describe('markItemCompleted / dismissItem — close anchored follow-ups on terminal transition (#252 follow-up-autoclose)', () => {
+  const ITEM_ID = 'item-42';
+  const OPERATOR_ID = '11111111-2222-3333-4444-555555555555';
+  const NOW = new Date('2026-08-18T12:00:00Z');
+
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  /** Dispatch by table: inbox_items (1st call = priorStateOf's SELECT, 2nd =
+   *  the function's own guarded UPDATE), dashboard_activity, and follow_ups
+   *  (the #252 close). Mirrors the #208 describe block's makeSbFor above,
+   *  extended with a follow_ups builder. */
+  function makeSbFor(
+    itemUpdateResult: { data: unknown; error: null | { message: string } },
+    followUpCloseResult: { data: unknown; error: null | { message: string } } = { data: [], error: null },
+  ) {
+    const { builder: priorBuilder } = makeBuilder({ data: null, error: null });
+    const { builder: updateBuilder } = makeBuilder(itemUpdateResult);
+    const { builder: activityBuilder, calls: activityCalls } = makeBuilder({ data: null, error: null });
+    const { builder: followUpBuilder, calls: followUpCalls } = makeBuilder(followUpCloseResult);
+    let inboxCallCount = 0;
+    const from = (table: string) => {
+      if (table === 'inbox_items') {
+        inboxCallCount += 1;
+        return inboxCallCount === 1 ? priorBuilder : updateBuilder;
+      }
+      if (table === 'dashboard_activity') return activityBuilder;
+      if (table === 'follow_ups') return followUpBuilder;
+      throw new Error(`unexpected table: ${table}`);
+    };
+    return { from, activityCalls, followUpCalls };
+  }
+
+  it('markItemCompleted closes a pending follow-up anchored to the item', async () => {
+    const { from, followUpCalls } = makeSbFor({ data: { id: ITEM_ID }, error: null }, { data: [{ id: 'fu-1' }], error: null });
+    sbRef.current = { from };
+
+    const res = await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+    const updateCall = followUpCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ status: 'done' });
+    const eqCalls = followUpCalls.filter((c) => c.method === 'eq');
+    expect(eqCalls.some((c) => c.args[0] === 'inbox_item_id' && c.args[1] === ITEM_ID)).toBe(true);
+    expect(eqCalls.some((c) => c.args[0] === 'status' && c.args[1] === 'pending')).toBe(true);
+  });
+
+  it('dismissItem closes a pending follow-up anchored to the item', async () => {
+    const { from, followUpCalls } = makeSbFor({ data: { dashboard_contacts: null }, error: null }, { data: [{ id: 'fu-1' }], error: null });
+    sbRef.current = { from };
+
+    const res = await dismissItem(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+    const updateCall = followUpCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ status: 'done' });
+    const eqCalls = followUpCalls.filter((c) => c.method === 'eq');
+    expect(eqCalls.some((c) => c.args[0] === 'inbox_item_id' && c.args[1] === ITEM_ID)).toBe(true);
+  });
+
+  it('markItemCompleted no-op (guard matched nothing) never touches follow_ups', async () => {
+    const { from, followUpCalls } = makeSbFor({ data: null, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    expect(followUpCalls.length).toBe(0);
+  });
+
+  it('dismissItem no-op (already dismissed) never touches follow_ups', async () => {
+    const { from, followUpCalls } = makeSbFor({ data: null, error: null });
+    sbRef.current = { from };
+
+    const res = await dismissItem(ITEM_ID, OPERATOR_ID, NOW);
+
+    // Already-dismissed is a reported success no-op per dismissItem's own doc
+    // (never re-logs a duplicate reversible row) — but it must still skip the
+    // follow-up close, since nothing actually transitioned.
+    expect(res.ok).toBe(true);
+    expect(followUpCalls.length).toBe(0);
+  });
+
+  it('a store-level failure closing the follow-up is swallowed — the completion still reports ok', async () => {
+    const { from } = makeSbFor({ data: { id: ITEM_ID }, error: null }, { data: null, error: { message: 'connection reset' } });
+    sbRef.current = { from };
+
+    const res = await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+  });
+
+  it("markItemHandledLocal ('handled') never touches follow_ups — the quote-sent-awaiting-reply nag must keep nagging", async () => {
+    const { builder: priorBuilder } = makeBuilder({ data: null, error: null });
+    const { builder: updateBuilder } = makeBuilder({
+      data: { source: 'ghl', external_id: 'ext-1', source_message_id: null, dashboard_contacts: null },
+      error: null,
+    });
+    const { builder: activityBuilder } = makeBuilder({ data: null, error: null });
+    let inboxCallCount = 0;
+    let followUpsQueried = false;
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'inbox_items') {
+          inboxCallCount += 1;
+          return inboxCallCount === 1 ? priorBuilder : updateBuilder;
+        }
+        if (table === 'dashboard_activity') return activityBuilder;
+        if (table === 'follow_ups') {
+          followUpsQueried = true;
+          throw new Error('markItemHandledLocal must never touch follow_ups');
+        }
+        throw new Error(`unexpected table: ${table}`);
+      },
+    };
+
+    const res = await markItemHandledLocal(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+    expect(followUpsQueried).toBe(false);
   });
 });
 

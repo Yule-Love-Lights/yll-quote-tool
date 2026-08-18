@@ -38,6 +38,7 @@ import {
   setEscalation,
   setSyncCursor,
   sweepOrphanedFollowUps,
+  sweepResolvedItemFollowUps,
 } from './store';
 import { appBaseUrl } from '@/lib/integrations/telegramNotify';
 import { escalationLevel, isDueForEodDigest, newlyCrossedLevel } from './escalation';
@@ -219,6 +220,11 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
     // never reached there and would sit overdue-pending forever. One sweep per
     // reconcile closes those.
     followUpsClosed += await sweepOrphanedFollowUps(FOLLOWUP_REASONS.quoteSentNoReply);
+    // #252 follow-up-autoclose backlog: a pending follow-up whose anchored item
+    // was ALREADY completed/dismissed before markItemCompleted/dismissItem
+    // learned to close it at the write site. Self-heals on the next reconcile —
+    // no manual production data edit needed.
+    followUpsClosed += await sweepResolvedItemFollowUps();
     await recordSyncRun('quotetool', errors > 0 ? 'error' : 'ok', errors > 0 ? `${errors} item error(s)` : undefined);
     return { ok: true, scanned: quotes.length, ingested, skipped, followUpsCreated, followUpsSuppressed, followUpsClosed, errors };
   } catch (err) {

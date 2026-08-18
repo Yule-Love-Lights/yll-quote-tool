@@ -34,6 +34,7 @@ const ensureFollowUpMock = vi.fn();
 const recordSyncRunMock = vi.fn();
 const recordSuppressedFollowUpMock = vi.fn();
 const sweepOrphanedFollowUpsMock = vi.fn();
+const sweepResolvedItemFollowUpsMock = vi.fn();
 
 vi.mock('./store', () => ({
   closeFollowUp: (...args: unknown[]) => closeFollowUpMock(...args),
@@ -54,6 +55,7 @@ vi.mock('./store', () => ({
   setEscalation: vi.fn(),
   setSyncCursor: vi.fn(),
   sweepOrphanedFollowUps: (...args: unknown[]) => sweepOrphanedFollowUpsMock(...args),
+  sweepResolvedItemFollowUps: (...args: unknown[]) => sweepResolvedItemFollowUpsMock(...args),
 }));
 
 const listQuotesForDashboardMock = vi.fn();
@@ -412,6 +414,7 @@ describe('runQuoteToolReconcile — orphan follow-up sweep wiring (#183 BUG 3)',
     recordSuppressedFollowUpMock.mockResolvedValue(undefined);
     getFollowUpDaysMock.mockResolvedValue(3);
     listQuotesForDashboardMock.mockResolvedValue([]);
+    sweepResolvedItemFollowUpsMock.mockResolvedValue(0);
   });
 
   it('calls sweepOrphanedFollowUps once with the quote_sent_no_reply reason and adds its count into followUpsClosed', async () => {
@@ -423,6 +426,20 @@ describe('runQuoteToolReconcile — orphan follow-up sweep wiring (#183 BUG 3)',
     expect(sweepOrphanedFollowUpsMock).toHaveBeenCalledTimes(1);
     expect(sweepOrphanedFollowUpsMock).toHaveBeenCalledWith('quote_sent_no_reply');
     expect(summary.followUpsClosed).toBe(2);
+  });
+
+  // #252 follow-up-autoclose backlog sweep: a pending follow-up whose anchored
+  // item was ALREADY completed/dismissed before the write-site fix existed.
+  // Verifies the wiring — the pure decision is covered in store.test.ts.
+  it('calls sweepResolvedItemFollowUps once and adds its count into followUpsClosed', async () => {
+    sweepOrphanedFollowUpsMock.mockResolvedValue(0);
+    sweepResolvedItemFollowUpsMock.mockResolvedValue(3);
+
+    const summary = await runQuoteToolReconcile(new Date());
+
+    expect(summary.ok).toBe(true);
+    expect(sweepResolvedItemFollowUpsMock).toHaveBeenCalledTimes(1);
+    expect(summary.followUpsClosed).toBe(3);
   });
 
   it('adds to (not replaces) follow-ups closed by the main per-quote loop', async () => {

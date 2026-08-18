@@ -875,6 +875,10 @@ export async function dismissItem(itemId: string, operatorId: string | null, now
   await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'dismissed', inbox_item_id: itemId, detail: { from } });
   const c = (data as { dashboard_contacts?: { primary_email?: string | null; primary_phone?: string | null } } | null)?.dashboard_contacts;
   if (c) await addSuppressedSenders([c.primary_email ?? null, c.primary_phone ?? null]);
+  // #252 follow-up-autoclose: dismissed is terminal — its conversation is not
+  // a real lead, so any pending nag anchored to it should die with it. Only on
+  // the matched (real transition) path above, never the already-dismissed no-op.
+  await closeFollowUpsForResolvedItem(itemId);
   return { ok: true };
 }
 
@@ -1084,6 +1088,44 @@ export async function closeFollowUp(inboxItemId: string, reason: string): Promis
     .eq('status', 'pending')
     .select('id');
   return data ? data.length : 0;
+}
+
+/**
+ * Close EVERY pending follow-up anchored to `itemId`, called once that item
+ * reaches a terminal state (completed/dismissed) — the conversation is over,
+ * so any nag still chasing it is stale (#252 follow-up-autoclose). Unlike
+ * closeFollowUp/sweepOrphanedFollowUps, this does NOT scope to a `reason`:
+ * FOLLOWUP_REASONS has exactly one member today (quote_sent_no_reply), and
+ * there is no manual-follow-up-creation path that anchors a different reason
+ * to an inbox item, but the item's own terminal-ness invalidates ANY follow-up
+ * anchored to it — a future new reason should die with the item too, not slip
+ * through a reason-scoped filter. A 'handled' item is NOT terminal (that's the
+ * normal "quote sent, awaiting reply" case the nag exists to chase) — callers
+ * must only invoke this on the completed/dismissed transition itself.
+ *
+ * Best-effort — never throws, so a close failure never fails the caller's
+ * completion/dismissal (mirrors closeQuoteInboxNoise's non-fatal contract).
+ * Returns how many rows were closed (0 on no-op or a swallowed failure).
+ */
+export async function closeFollowUpsForResolvedItem(itemId: string): Promise<number> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return 0;
+  try {
+    const { data, error } = await sb
+      .from('follow_ups')
+      .update({ status: 'done' })
+      .eq('inbox_item_id', itemId)
+      .eq('status', 'pending')
+      .select('id');
+    if (error) {
+      console.warn('[inbox] follow-up close on resolve failed (non-fatal):', error.message);
+      return 0;
+    }
+    return data ? data.length : 0;
+  } catch (e) {
+    console.warn('[inbox] follow-up close on resolve failed (non-fatal):', e);
+    return 0;
+  }
 }
 
 /** #230(a): the ONLY human-visible trace of a #220 internal-domain follow-up
@@ -1328,6 +1370,49 @@ export async function sweepOrphanedFollowUps(reason: string): Promise<number> {
   let closed = 0;
   for (const itemId of itemIdsToClose) {
     closed += await closeFollowUp(itemId, reason);
+  }
+  return closed;
+}
+
+/**
+ * Self-heal backlog for #252 follow-up-autoclose: markItemCompleted/dismissItem
+ * only close a follow-up going FORWARD from the moment they run — a follow-up
+ * left pending from BEFORE that fix (its item already sitting completed/
+ * dismissed) would otherwise nag "due today" forever. One batched pass per
+ * reconcile closes those: all pending follow-ups -> their anchored items'
+ * current status -> closeFollowUpsForResolvedItem for every item already in a
+ * terminal (completed/dismissed) state. Unscoped by source or reason (see
+ * closeFollowUpsForResolvedItem's doc) — a 'handled' item is untouched, same
+ * as the write-site fix. Fails open (closes nothing) on a lookup error rather
+ * than guessing, mirroring sweepOrphanedFollowUps. Returns how many follow-ups
+ * were closed.
+ */
+export async function sweepResolvedItemFollowUps(): Promise<number> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return 0;
+
+  const { data: pending, error: pendingErr } = await sb.from('follow_ups').select('id, inbox_item_id').eq('status', 'pending');
+  if (pendingErr) {
+    console.error('[inbox] resolved-item follow-up sweep: pending lookup failed:', pendingErr.message);
+    return 0;
+  }
+  const followUpRows = (pending ?? []) as { id: string; inbox_item_id: string | null }[];
+  const itemIds = [...new Set(followUpRows.map((r) => r.inbox_item_id).filter((id): id is string => !!id))];
+  if (!itemIds.length) return 0;
+
+  const { data: items, error: itemsErr } = await sb.from('inbox_items').select('id, status').in('id', itemIds);
+  if (itemsErr) {
+    console.error('[inbox] resolved-item follow-up sweep: inbox_items lookup failed:', itemsErr.message);
+    return 0;
+  }
+  const terminalItemIds = ((items ?? []) as { id: string; status: string }[])
+    .filter((r) => r.status === 'completed' || r.status === 'dismissed')
+    .map((r) => r.id);
+  if (!terminalItemIds.length) return 0;
+
+  let closed = 0;
+  for (const itemId of terminalItemIds) {
+    closed += await closeFollowUpsForResolvedItem(itemId);
   }
   return closed;
 }
@@ -1687,6 +1772,10 @@ export async function markItemCompleted(
     inbox_item_id: itemId,
     detail: { from },
   });
+  // #252 follow-up-autoclose: completed is terminal — the conversation is
+  // finished, so any pending nag anchored to it should die with it. Only on
+  // the matched (guard passed) path above, never the guarded-out no-op.
+  await closeFollowUpsForResolvedItem(itemId);
   return { ok: true };
 }
 
