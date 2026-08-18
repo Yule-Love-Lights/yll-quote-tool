@@ -1408,7 +1408,7 @@ export async function listItemsForMetrics(): Promise<MetricsResult> {
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const { data, error } = await sb
     .from('inbox_items')
-    .select('status, last_message_at, last_inbound_at, handled_at, handled_by, source, created_at')
+    .select('status, last_message_at, last_inbound_at, handled_at, handled_by, source, created_at, direction')
     .order('last_message_at', { ascending: false })
     .limit(METRICS_ROW_CAP);
   if (error) return { ok: false, error: error.message };
@@ -1420,6 +1420,9 @@ export async function listItemsForMetrics(): Promise<MetricsResult> {
     handledBy: (r.handled_by as string | null) ?? null,
     source: r.source as string,
     createdAt: r.created_at ? new Date(r.created_at as string) : null,
+    // #252 slice F fix round: needed by responseMetrics.ts's hadNoInboundLeg
+    // to distinguish an outbound-born item from a genuine legacy row.
+    direction: (r.direction as string | null) ?? null,
   }));
   return { ok: true, items, truncated: items.length >= METRICS_ROW_CAP };
 }

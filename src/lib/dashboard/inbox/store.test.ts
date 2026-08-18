@@ -127,6 +127,22 @@ describe('planIngest — skip outbound-with-no-existing (avoid noise)', () => {
     expect(plan.item.direction).toBe('outbound');
     expect(plan.autoResolved).toBe(true);
   });
+  // #252 slice F fix round (MED, technical lens): reachable today via any
+  // unmapped GHL lastMessageType (e.g. TYPE_CAMPAIGN_EMAIL) sent outbound —
+  // ghl.ts's channelOf returns null for anything not in CHANNEL_BY_TYPE.
+  // Pins tracksOutboundFirstObservation's channel check to EXACT equality
+  // ('call'), not a truthy/startsWith match — nothing else pinned this before,
+  // so a future widening of the check would have shipped silently.
+  it('still skips a ghl outbound touch with channel:null (an unmapped GHL type) — the call-channel exception does not fire on null', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: null,
+      touch: touch({ direction: 'outbound', channel: null }),
+      now: at(HOUR),
+    });
+    expect(plan.skip).toBe(true);
+    expect(plan.skipReason).toBe('cold-outbound');
+  });
   it('never skips an inbound touch', () => {
     const plan = planIngest({ candidates: [], existing: null, touch: touch(), now: at(HOUR) });
     expect(plan.skip).toBe(false);

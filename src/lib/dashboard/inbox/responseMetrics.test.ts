@@ -124,6 +124,58 @@ describe('computeResponseMetrics — measures from last_inbound_at, not last_mes
   });
 });
 
+// #252 slice F fix round (HIGH, admin lens): an item CREATED directly by an
+// outbound touch (a cold-outbound GHL call, #252 slice F, or a #222 fast-sent
+// quote) never had a real inbound leg — last_inbound_at was never written —
+// but the legacy fallback above would otherwise hand it a fabricated
+// near-zero response time. Distinguished from a genuine legacy row by
+// direction (see hadNoInboundLeg's doc in responseMetrics.ts).
+describe('computeResponseMetrics — excludes outbound-born items with no inbound leg (#252 slice F fix round, HIGH)', () => {
+  it('excludes a handled item created by an outbound touch (direction=outbound, lastInboundAt never set) from handled count, median, and buckets', () => {
+    const outboundBorn: MetricItem = {
+      status: 'handled',
+      direction: 'outbound',
+      lastMessageAt: T,
+      lastInboundAt: null,
+      handledAt: T, // auto-resolved at ingest — same instant as lastMessageAt
+      handledBy: null, // system auto-resolve, per store.ts's autoResolved path
+      source: 'ghl',
+      createdAt: T,
+    };
+    const m = computeResponseMetrics([outboundBorn], T);
+    expect(m.handled).toBe(0);
+    expect(m.medianResponseMs).toBeNull();
+    expect(m.avgResponseMs).toBeNull();
+    expect(m.buckets.reduce((s, b) => s + b.count, 0)).toBe(0);
+  });
+
+  it('does NOT exclude a legacy row with a real (but unrecorded) inbound leg — inbound direction, or direction omitted entirely, both stay included via the fallback', () => {
+    const legacyInboundDirection: MetricItem = {
+      status: 'handled',
+      direction: 'inbound', // last real touch on record was the customer's
+      lastMessageAt: ago(120 * MIN),
+      lastInboundAt: null,
+      handledAt: T,
+      handledBy: 'rep-A',
+      source: 'ghl',
+      createdAt: ago(120 * MIN),
+    };
+    const legacyNoDirection: MetricItem = {
+      status: 'handled',
+      // direction omitted — rows fetched before this fix round never populated it
+      lastMessageAt: ago(90 * MIN),
+      lastInboundAt: null,
+      handledAt: T,
+      handledBy: 'rep-A',
+      source: 'gmail',
+      createdAt: ago(90 * MIN),
+    };
+    const m = computeResponseMetrics([legacyInboundDirection, legacyNoDirection], T);
+    expect(m.handled).toBe(2);
+    expect(m.medianResponseMs).toBe(105 * MIN); // median([120, 90]) = 105
+  });
+});
+
 // ─── Task 1: buckets + window filter + extended computeResponseMetrics ───────
 
 const T2 = new Date('2026-06-30T12:00:00Z');
@@ -236,6 +288,41 @@ describe('computeTrend', () => {
     ];
     const t = computeTrend(items, T2);
     expect(t.thisWeekMs).toBe(3 * DAY); // the real wait, NOT ~1 min
+  });
+
+  // #252 slice F fix round (HIGH): medianResponseIn's population is WIDER than
+  // handledItems' (completed/dismissed too, not just handled) — same
+  // hadNoInboundLeg exclusion, but here direction genuinely can be 'inbound'
+  // on a legitimate row (an operator closing an item without ever replying),
+  // so the pin below matters more here than in computeResponseMetrics.
+  it('excludes an outbound-born item (no lastInboundAt) from the trend even though it falls in the window', () => {
+    const outboundBorn: MetricItem = {
+      status: 'handled',
+      direction: 'outbound',
+      lastMessageAt: agoMs(2 * DAY),
+      lastInboundAt: null,
+      handledAt: agoMs(2 * DAY),
+      handledBy: null,
+      source: 'ghl',
+      createdAt: agoMs(2 * DAY),
+    };
+    const t = computeTrend([outboundBorn], T2);
+    expect(t.thisWeekMs).toBeNull();
+  });
+
+  it('still measures a legacy completed row with inbound direction and a lost lastInboundAt — direction alone must not over-exclude', () => {
+    const legacy: MetricItem = {
+      status: 'completed',
+      direction: 'inbound', // last real touch on record was the customer's
+      lastMessageAt: agoMs(2 * DAY + 30 * MIN),
+      lastInboundAt: null,
+      handledAt: agoMs(2 * DAY),
+      handledBy: 'a',
+      source: 'ghl',
+      createdAt: agoMs(2 * DAY + 30 * MIN),
+    };
+    const t = computeTrend([legacy], T2);
+    expect(t.thisWeekMs).toBe(30 * MIN); // NOT excluded — falls back to lastMessageAt
   });
 });
 
