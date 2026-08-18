@@ -4,6 +4,15 @@
 // why one function classifies both a fresh send and a ?retryDelivery=1 retry.
 import { describe, it, expect } from 'vitest';
 import { decideSendOutcome } from './pipelineSendOutcome';
+// Row 290: the REAL exported constant the send route writes onto a timed-out
+// smsError/emailError (src/lib/quoteDeliveries.ts, via
+// deliveryErrorMessage()/timeoutHedgedErrorMessage() in
+// src/app/api/quotes/[id]/send/route.ts) — fixtures below build their
+// body.error/messageError from THIS, not a hand-typed 'timeout — ' guess, so
+// a drifted/renamed prefix fails these tests instead of the two copies
+// silently disagreeing (see pipelineSendOutcome.ts's own duplicated-literal
+// comment for why it isn't imported there — client/server bundle boundary).
+import { DELIVERY_TIMEOUT_ERROR_PREFIX } from '@/lib/quoteDeliveries';
 
 describe('decideSendOutcome', () => {
   it('full success (both channels delivered) — no extra message, no retry offered', () => {
@@ -85,6 +94,139 @@ describe('decideSendOutcome', () => {
     const outcome = decideSendOutcome(false, { code: 'delivery-failed', error: 'boom' }, 'email', false);
     expect(outcome.retryChannel).toBe('email');
     expect(outcome.retryGate).toBe('confirm');
+  });
+
+  // Row 290 (S39 wrap customer-lens MED): the 'confirm' comments this fix
+  // replaced both said a duplicate is "structurally impossible" on a channel
+  // that just failed — false for a GHL TIMEOUT failure, whose true outcome
+  // is UNKNOWN (GHL may have delivered it before our socket gave up
+  // waiting — see RetryGate's doc comment in pipelineSendOutcome.ts). A
+  // confirm-gated redeliver on that channel risks a REAL duplicate
+  // SMS/email, so it now gets the alreadySent-idiom typed-yes gate instead.
+  describe('Row 290: timeout-hedged failures get typed-yes, not confirm', () => {
+    it('502 delivery-failed with a TIMEOUT-hedged error — typed-YES gate (alreadySent idiom)', () => {
+      const outcome = decideSendOutcome(
+        false,
+        {
+          code: 'delivery-failed',
+          error: `${DELIVERY_TIMEOUT_ERROR_PREFIX}delivery outcome unknown (GHL may have still delivered it): HighLevel POST /conversations/messages timed out after 10000ms`,
+          failedChannels: ['sms'],
+        },
+        'sms',
+        false,
+      );
+      expect(outcome.retryChannel).toBe('sms');
+      expect(outcome.retryGate).toBe('typed-yes');
+      expect(outcome.retryPrompt).toBe(
+        'This attempt included a timeout — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver text now:',
+      );
+    });
+
+    it('502 delivery-failed with a PLAIN (non-timeout) error — confirm gate unchanged', () => {
+      const outcome = decideSendOutcome(
+        false,
+        { code: 'delivery-failed', error: 'HighLevel rejected the request (400)', failedChannels: ['sms', 'email'] },
+        'both',
+        false,
+      );
+      expect(outcome.retryChannel).toBe('both');
+      expect(outcome.retryGate).toBe('confirm');
+      expect(outcome.retryPrompt).toBe('Redeliver email + text now?');
+    });
+
+    it('200 partial failure with a TIMEOUT-hedged messageError — typed-YES gate', () => {
+      const outcome = decideSendOutcome(
+        true,
+        {
+          failedChannels: ['email'],
+          messageError: `${DELIVERY_TIMEOUT_ERROR_PREFIX}delivery outcome unknown (GHL may have still delivered it): HighLevel POST /emails timed out after 10000ms`,
+        },
+        'both',
+        false,
+      );
+      expect(outcome.retryChannel).toBe('email');
+      expect(outcome.retryGate).toBe('typed-yes');
+      expect(outcome.retryPrompt).toBe(
+        'This attempt included a timeout — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver email now:',
+      );
+    });
+
+    it('200 partial failure with a PLAIN messageError — confirm gate unchanged (pre-existing behavior, pinned post-fix)', () => {
+      const outcome = decideSendOutcome(
+        true,
+        { failedChannels: ['sms'], messageError: 'rate limited' },
+        'both',
+        false,
+      );
+      expect(outcome.retryGate).toBe('confirm');
+    });
+
+    // Proves the seam route.ts -> pipelineSendOutcome.ts (row 290's "prove
+    // the prefix actually flows" ask — untested before this fix:
+    // route.test.ts's timeout coverage only asserts the DB-logged
+    // quote_deliveries row, never the HTTP response body's error/
+    // messageError). This is exactly the shape route.ts's messageError
+    // construction produces (`[smsError, emailError].filter(Boolean).join('
+    // ; ')`, folded into body.error for the 502 shape) when ONE requested
+    // channel times out and the OTHER gets a confirmed rejection.
+    //
+    // PR #786 review (staff MED + customer LOW, converged): also pins the
+    // PROMPT text is honest for this exact mixed shape, not just the gate —
+    // the prior wording's "the customer may already have it" read as
+    // covering BOTH channels, when here only the email leg is ambiguous and
+    // the sms leg verifiably delivered nothing. The new copy makes no
+    // per-channel claim (retryOfferFor only has ONE timeoutHedged boolean —
+    // see its doc comment) but is still true for both halves at once.
+    it('502 with BOTH channels failed, only ONE via timeout (mixed) — the joined error still trips typed-yes for the WHOLE "both" offer, with honest (non-overclaiming) prompt copy', () => {
+      const mixedError = `SMS provider rejected the number (400); ${DELIVERY_TIMEOUT_ERROR_PREFIX}delivery outcome unknown (GHL may have still delivered it): email socket reset`;
+      const outcome = decideSendOutcome(
+        false,
+        { code: 'delivery-failed', error: mixedError, failedChannels: ['sms', 'email'] },
+        'both',
+        false,
+      );
+      // decideSendOutcome's real granularity: ONE retryChannel/retryGate for
+      // the WHOLE response (SendOutcome has no per-channel gate array) — so
+      // retrying 'both' would ALSO re-touch the timed-out email leg. The
+      // conservative choice gates the entire offer behind typed-yes rather
+      // than trusting the sms-side "confirmed rejection" half alone.
+      expect(outcome.retryChannel).toBe('both');
+      expect(outcome.retryGate).toBe('typed-yes');
+      expect(outcome.retryPrompt).toBe(
+        'This attempt included a timeout — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver email + text now:',
+      );
+    });
+
+    it('502 mixed in the OTHER order (timeout first, plain second) — .includes catches it regardless of position, same honest prompt', () => {
+      const mixedError = `${DELIVERY_TIMEOUT_ERROR_PREFIX}delivery outcome unknown (GHL may have still delivered it): sms socket reset; Email rejected (400)`;
+      const outcome = decideSendOutcome(
+        false,
+        { code: 'delivery-failed', error: mixedError, failedChannels: ['sms', 'email'] },
+        'both',
+        false,
+      );
+      expect(outcome.retryGate).toBe('typed-yes');
+      expect(outcome.retryPrompt).toBe(
+        'This attempt included a timeout — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver email + text now:',
+      );
+    });
+
+    it('retry-still-fails on a timeout-hedged channel keeps typed-yes, "again" wording (isRetry:true)', () => {
+      const outcome = decideSendOutcome(
+        false,
+        {
+          code: 'delivery-failed',
+          error: `${DELIVERY_TIMEOUT_ERROR_PREFIX}delivery outcome unknown (GHL may have still delivered it): still timing out`,
+          failedChannels: ['sms'],
+        },
+        'sms',
+        true,
+      );
+      expect(outcome.retryGate).toBe('typed-yes');
+      expect(outcome.retryPrompt).toBe(
+        'This attempt included a timeout — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver text again:',
+      );
+    });
   });
 
   it('non-delivery failure (e.g. empty-quote/no-contact/view-only) — surfaces body.error, no retry offered', () => {
