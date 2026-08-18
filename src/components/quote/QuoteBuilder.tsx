@@ -3488,6 +3488,14 @@ export default function QuoteBuilder({
     // — but leaving it dangling true after a recalc is a trap for any future
     // path that sets 'already-sent' without going through those two functions.
     setRetryIneligible(false);
+    // Row 269 fix round FIX 5 (LOW): the two fields this fix round added
+    // (deliveryFailureHedged, alreadySentChannels) were missing from this
+    // same reset block — the exact "trap for any future path" the comment
+    // above already warns about. Inert today for the same reason
+    // retryIneligible is (both re-entry points reset these first), but
+    // leaving them dangling here is the trap, not a bug yet.
+    setDeliveryFailureHedged(false);
+    setAlreadySentChannels(null);
     setCopiedUrl(false);
     setTrainStatus('idle');
     setTrainError(null);
