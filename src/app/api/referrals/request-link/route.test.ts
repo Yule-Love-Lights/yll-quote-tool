@@ -22,6 +22,7 @@ const {
   ingestTouch,
   rateLimitedRef,
   ingestCapExhausted,
+  checkRateLimit,
   emailCooldownSeen,
   afterTasks,
 } = vi.hoisted(() => ({
@@ -44,6 +45,15 @@ const {
   // per-email cooldown below. Exhausting it must silently skip the inbox
   // write and change nothing about the response.
   ingestCapExhausted: { current: false },
+  // A real vi.fn() (not a plain arrow function), so a test can assert it
+  // was never called at all: proof that the ingest cap is computed only
+  // where it can ever be spent, not on a honeypot-tripped request that was
+  // always going to skip recordRequestForStaff anyway.
+  checkRateLimit: vi.fn((_req: unknown, _opts: unknown) =>
+    ingestCapExhausted.current
+      ? { ok: false, remaining: 0, resetMs: 3_600_000 }
+      : { ok: true, remaining: 19, resetMs: 3_600_000 },
+  ),
   // Review fix 3: mirrors the REAL checkRateLimitByKey's per-key "limit: 1"
   // semantics (first call for a key is ok, every later one is not) without
   // depending on wall-clock timing, decoupled from the outer per-IP mock
@@ -73,11 +83,9 @@ vi.mock('@/lib/rateLimit', () => ({
     emailCooldownSeen.add(key);
     return { ok: true, remaining: 0, resetMs: 3_600_000 };
   },
-  // Delta-verify fix A: the per-IP ingest ceiling.
-  checkRateLimit: (_req: unknown, _opts: unknown) =>
-    ingestCapExhausted.current
-      ? { ok: false, remaining: 0, resetMs: 3_600_000 }
-      : { ok: true, remaining: 19, resetMs: 3_600_000 },
+  // Delta-verify fix A: the per-IP ingest ceiling. checkRateLimit itself is
+  // the hoisted vi.fn() above, so a test can assert on calls to it.
+  checkRateLimit,
 }));
 vi.mock('@/lib/integrations/highlevel', () => ({ searchContacts, sendEmail, upsertContactCustomField }));
 vi.mock('@/lib/customers', () => ({ findOrCreateCustomer }));
@@ -396,10 +404,15 @@ describe('POST /api/referrals/request-link', () => {
       expect(touch.leadKind).toBe('automated');
     });
 
-    it('never records anything when the honeypot is tripped', async () => {
+    it('never records anything when the honeypot is tripped, and never even spends an ingest-cap slot', async () => {
       await POST(req({ email: 'jamie@example.com', company: 'a bot filled this' }));
       await drainAfterTasks();
       expect(ingestTouch).not.toHaveBeenCalled();
+      // Delta-verify fix A follow-up: the ingest-cap check must not run for
+      // a tripped request either, so bot traffic hitting the honeypot can
+      // never burn real users' shared-IP budget on a path that was always
+      // going to skip recordRequestForStaff anyway.
+      expect(checkRateLimit).not.toHaveBeenCalled();
     });
 
     // Named for what it actually asserts. ingestTouch is mocked here, so this

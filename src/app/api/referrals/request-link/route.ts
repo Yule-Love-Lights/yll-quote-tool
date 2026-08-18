@@ -130,28 +130,6 @@ export async function POST(req: NextRequest) {
   // scheduled at all.
   const honeypotTripped = typeof company === 'string' && company.trim() !== '';
 
-  // Delta-verify fix A: cap the staff-record path per client IP.
-  //
-  // recordRequestForStaff below runs for EVERY request, matched or not, and
-  // that symmetry is deliberate (see its own comment): a write that happened
-  // only on a match would hand anyone with dashboard access a match oracle.
-  // But ingestTouch INSERTs a dashboard_contacts row whenever the submitted
-  // email matches no existing contact, so distinct garbage emails each mint
-  // a permanent row. The outer 5-per-60s limit allows roughly 300 rows an
-  // hour per IP, which is not a cap in any useful sense.
-  //
-  // Computed here, before the response, so the boolean can be closed over
-  // rather than re-deriving it from `req` inside after(). A silent skip: it
-  // never touches the response, so it cannot reintroduce the enumeration
-  // leak. 20 an hour is far above real use (one request per person, and a
-  // household or small office shares one IP) while cutting the worst case by
-  // roughly 15x.
-  const mayRecord = checkRateLimit(req, {
-    bucket: 'referral-link-ingest',
-    limit: INGEST_CAP_PER_IP_PER_HOUR,
-    windowMs: INGEST_CAP_WINDOW_MS,
-  }).ok;
-
   // Read into a plain local before the response returns and close over that,
   // not `req` itself, inside after() below. Route Handlers may call
   // request-time APIs from inside after() (Next.js docs), so this is a style
@@ -159,6 +137,33 @@ export async function POST(req: NextRequest) {
   // reason src/app/api/estimate/route.ts does it.
   if (!honeypotTripped) {
     const emailForLookup = cleanEmail;
+
+    // Delta-verify fix A: cap the staff-record path per client IP.
+    //
+    // recordRequestForStaff below runs for EVERY request that reaches this
+    // block, matched or not, and that symmetry is deliberate (see its own
+    // comment): a write that happened only on a match would hand anyone
+    // with dashboard access a match oracle. But ingestTouch INSERTs a
+    // dashboard_contacts row whenever the submitted email matches no
+    // existing contact, so distinct garbage emails each mint a permanent
+    // row. The outer 5-per-60s limit allows roughly 300 rows an hour per
+    // IP, which is not a cap in any useful sense.
+    //
+    // Computed here, inside the honeypot guard and before the response, so
+    // the boolean can be closed over rather than re-deriving it from `req`
+    // inside after(), and so a honeypot trip never spends a slot of this
+    // budget it will never use: recordRequestForStaff already never runs
+    // for a tripped request, whether or not this check would have passed.
+    // A silent skip either way: it never touches the response, so it
+    // cannot reintroduce the enumeration leak. 20 an hour is far above real
+    // use (one request per person, and a household or small office shares
+    // one IP) while cutting the worst case by roughly 15x.
+    const mayRecord = checkRateLimit(req, {
+      bucket: 'referral-link-ingest',
+      limit: INGEST_CAP_PER_IP_PER_HOUR,
+      windowMs: INGEST_CAP_WINDOW_MS,
+    }).ok;
+
     after(async () => {
       try {
         await findAndSendIfMatch(emailForLookup);
