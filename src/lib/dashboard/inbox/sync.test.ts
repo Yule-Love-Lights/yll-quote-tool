@@ -409,7 +409,9 @@ describe('runHandledWriteback — Gmail write-back targeting (#288 GML split + f
 describe('runQuoteToolReconcile — orphan follow-up sweep wiring (#183 BUG 3)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    ensureFollowUpMock.mockResolvedValue(undefined);
+    // #252: ensureFollowUp now returns whether it actually wrote — the reconcile
+    // counts followUpsCreated off that, so the default here must be a real create.
+    ensureFollowUpMock.mockResolvedValue(true);
     recordSyncRunMock.mockResolvedValue(undefined);
     recordSuppressedFollowUpMock.mockResolvedValue(undefined);
     getFollowUpDaysMock.mockResolvedValue(3);
@@ -691,6 +693,31 @@ describe('runQuoteToolReconcile — orphan follow-up sweep wiring (#183 BUG 3)',
       afterDays: 3,
     });
     expect(closeFollowUpMock).not.toHaveBeenCalled();
+  });
+
+  // #252 churn gate: ensureFollowUp declines to re-arm a nag whose anchored item
+  // is already completed/dismissed, and reports that by returning false. The
+  // reconcile must not count that as a creation — it used to increment
+  // unconditionally, which reported ~1,440 phantom creations a day for every
+  // resolved item whose quote was still open.
+  it('does not count a followUpCreated when ensureFollowUp declines to write', async () => {
+    listQuotesForDashboardMock.mockResolvedValue([
+      {
+        id: 'q1',
+        quote_sent_at: '2026-08-06T11:00:00Z',
+        customer_approved_at: null,
+        customer_email: 'real@customer.com',
+        status: 'sent',
+      },
+    ]);
+    ingestTouchMock.mockResolvedValue(OK_RESULT);
+    sweepOrphanedFollowUpsMock.mockResolvedValue(0);
+    ensureFollowUpMock.mockResolvedValue(false); // item already resolved
+
+    const summary = await runQuoteToolReconcile(new Date('2026-08-10T12:00:00Z'));
+
+    expect(ensureFollowUpMock).toHaveBeenCalledTimes(1); // still asked
+    expect(summary.followUpsCreated).toBe(0); // but nothing was written
   });
 });
 

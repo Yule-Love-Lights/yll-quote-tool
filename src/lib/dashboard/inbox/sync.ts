@@ -181,8 +181,13 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
       if (res.itemId && decision.kind === 'create') {
         // WT-44: forward the configured cadence so the "Follow-up reminder
         // (days)" setting actually controls when this follow-up is due.
-        await ensureFollowUp({ inboxItemId: res.itemId, contactId: res.contactId, reason: decision.reason, sentAt: decision.sentAt, afterDays: followUpDays });
-        followUpsCreated++;
+        // #252: count only an actual write. ensureFollowUp returns false when a
+        // pending row already exists OR when the anchored item is already
+        // completed/dismissed (its own churn gate) — counting unconditionally
+        // reported a "creation" on every tick for every resolved item whose
+        // quote is still open.
+        const created = await ensureFollowUp({ inboxItemId: res.itemId, contactId: res.contactId, reason: decision.reason, sentAt: decision.sentAt, afterDays: followUpDays });
+        if (created) followUpsCreated++;
       } else if (res.itemId && decision.kind === 'suppress' && !res.skipped) {
         // #220: internal recipients never mint a real follow-up row.
         // #230(b): gated on !res.skipped — decision.kind is recomputed from

@@ -1603,6 +1603,11 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
     self.eq = () => self;
     self.insert = () => self;
     self.update = () => self;
+    // #252 churn gate: ensureFollowUp now reads the anchored item's status via
+    // inbox_items.select().eq().maybeSingle(). Null data here = "status unknown",
+    // which the gate treats as NOT terminal, so these follow-up tests behave as
+    // they did before the gate existed.
+    self.maybeSingle = () => Promise.resolve({ data: null, error: null });
     self.then = (resolve: (v: unknown) => void) => resolve({ data: null, error: null });
     return self;
   }
@@ -1647,6 +1652,38 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
     expect(fake.rows[0].reason).toBe('quote_sent_no_reply');
   });
 
+  // #252 salvage: markFollowUpDone's operatorId widened to `string | null` for
+  // parity with markItemHandledLocal/dismissItem/markItemCompleted. The activity
+  // row must still name an actor when no operator resolved — dashboard_activity
+  // .actor is free text whose migration comment allows 'system'.
+  it('records the activity actor as system when markFollowUpDone gets a null operator', async () => {
+    const fake = makeFollowUpsFake([
+      { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'pending' },
+    ]);
+    const activityInserts: Record<string, unknown>[] = [];
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'follow_ups') return fake.table();
+        if (table === 'dashboard_activity') {
+          return {
+            insert: (row: Record<string, unknown>) => {
+              activityInserts.push(row);
+              return Promise.resolve({ data: null, error: null });
+            },
+          };
+        }
+        return genericTable();
+      },
+    };
+
+    const done = await markFollowUpDone('fu-1', null);
+
+    expect(done.ok).toBe(true);
+    expect(fake.rows[0].status).toBe('done');
+    expect(activityInserts).toHaveLength(1);
+    expect(activityInserts[0]).toMatchObject({ actor: 'system', action: 'handled' });
+  });
+
   // #252 follow-up-autoclose: closeFollowUpsForResolvedItem + its backlog
   // sweep, exercised against the REAL create/update/select shape via the
   // (now-fixed) stateful fake above rather than a fixed-response stub — this
@@ -1658,7 +1695,7 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
       ]);
       sbRef.current = { from: (table: string) => (table === 'follow_ups' ? fake.table() : genericTable()) };
 
-      const closed = await closeFollowUpsForResolvedItem('item-1');
+      const closed = await closeFollowUpsForResolvedItem('item-1', 'completed');
 
       expect(closed).toBe(1);
       expect(fake.rows[0].status).toBe('done');
@@ -1670,7 +1707,7 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
       ]);
       sbRef.current = { from: (table: string) => (table === 'follow_ups' ? fake.table() : genericTable()) };
 
-      const closed = await closeFollowUpsForResolvedItem('item-1');
+      const closed = await closeFollowUpsForResolvedItem('item-1', 'completed');
 
       expect(closed).toBe(0);
       expect(fake.rows[0].status).toBe('done'); // unchanged, not re-touched
@@ -1682,7 +1719,7 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
       ]);
       sbRef.current = { from: (table: string) => (table === 'follow_ups' ? fake.table() : genericTable()) };
 
-      const closed = await closeFollowUpsForResolvedItem('item-1');
+      const closed = await closeFollowUpsForResolvedItem('item-1', 'completed');
 
       expect(closed).toBe(1);
       expect(fake.rows[0].status).toBe('done');
@@ -1694,7 +1731,7 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
       ]);
       sbRef.current = { from: (table: string) => (table === 'follow_ups' ? fake.table() : genericTable()) };
 
-      const closed = await closeFollowUpsForResolvedItem('item-1');
+      const closed = await closeFollowUpsForResolvedItem('item-1', 'completed');
 
       expect(closed).toBe(0);
       expect(fake.rows[0].status).toBe('pending');
@@ -1708,9 +1745,187 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
             : genericTable(),
       };
 
-      const closed = await closeFollowUpsForResolvedItem('item-1');
+      const closed = await closeFollowUpsForResolvedItem('item-1', 'completed');
 
       expect(closed).toBe(0);
+    });
+
+    // #252 review (admin lens): an auto-close used to leave NO human-visible
+    // trace — the nag just vanished off the "due today" strip, and follow_ups
+    // has no column recording who closed a row. Same reasoning as #230(a)'s
+    // recordSuppressedFollowUp, which exists for exactly this failure shape.
+    it('writes one followup_autoclosed activity row per closed follow-up, carrying the triggering status', async () => {
+      const fake = makeFollowUpsFake([
+        { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'pending' },
+      ]);
+      const activityInserts: Record<string, unknown>[] = [];
+      sbRef.current = {
+        from: (table: string) => {
+          if (table === 'follow_ups') return fake.table();
+          if (table === 'dashboard_activity') {
+            return {
+              insert: (rows: Record<string, unknown>[]) => {
+                activityInserts.push(...rows);
+                return Promise.resolve({ data: null, error: null });
+              },
+            };
+          }
+          return genericTable();
+        },
+      };
+
+      const closed = await closeFollowUpsForResolvedItem('item-1', 'dismissed');
+
+      expect(closed).toBe(1);
+      expect(activityInserts).toHaveLength(1);
+      expect(activityInserts[0]).toMatchObject({
+        actor: 'system',
+        action: 'followup_autoclosed',
+        inbox_item_id: 'item-1',
+        detail: { followUpId: 'fu-1', terminalStatus: 'dismissed' },
+      });
+    });
+
+    it('writes no activity row when nothing was closed', async () => {
+      const fake = makeFollowUpsFake([
+        { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'done' },
+      ]);
+      const activityInserts: Record<string, unknown>[] = [];
+      sbRef.current = {
+        from: (table: string) => {
+          if (table === 'follow_ups') return fake.table();
+          if (table === 'dashboard_activity') {
+            return {
+              insert: (rows: Record<string, unknown>[]) => {
+                activityInserts.push(...rows);
+                return Promise.resolve({ data: null, error: null });
+              },
+            };
+          }
+          return genericTable();
+        },
+      };
+
+      const closed = await closeFollowUpsForResolvedItem('item-1', 'completed');
+
+      expect(closed).toBe(0);
+      expect(activityInserts).toHaveLength(0);
+    });
+
+    it('still reports the close when the audit write throws — the audit is best-effort, the close is the real work', async () => {
+      const fake = makeFollowUpsFake([
+        { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'pending' },
+      ]);
+      sbRef.current = {
+        from: (table: string) => {
+          if (table === 'follow_ups') return fake.table();
+          if (table === 'dashboard_activity') {
+            return {
+              insert: () => {
+                throw new Error('activity table unavailable');
+              },
+            };
+          }
+          return genericTable();
+        },
+      };
+
+      const closed = await closeFollowUpsForResolvedItem('item-1', 'completed');
+
+      expect(closed).toBe(1); // the follow-up really was closed
+      expect(fake.rows[0].status).toBe('done');
+    });
+  });
+
+  // #252 churn gate. quoteFollowUpDecision derives kind:'create' from the
+  // QUOTE's own fields alone, so the reconcile asks for a follow-up on every
+  // tick for any sent-but-unapproved quote — including one whose inbox item an
+  // operator has since resolved. Without this gate the upsert flipped the
+  // auto-closed row back to pending every 5 minutes, and the sweep re-closed it
+  // later in the same tick, so the end state looked correct while the row
+  // churned forever.
+  describe('ensureFollowUp — does not re-arm a nag whose anchored item is already resolved (#252)', () => {
+    /** inbox_items stub for ensureFollowUp's `.select('status').eq('id').maybeSingle()`. */
+    function makeItemStatusFake(status: string | null) {
+      return {
+        select: () => ({
+          eq: () => ({
+            maybeSingle: () => Promise.resolve({ data: status === null ? null : { status }, error: null }),
+          }),
+        }),
+      };
+    }
+
+    function wire(fake: ReturnType<typeof makeFollowUpsFake>, status: string | null) {
+      sbRef.current = {
+        from: (table: string) => {
+          if (table === 'follow_ups') return fake.table();
+          if (table === 'inbox_items') return makeItemStatusFake(status);
+          return genericTable();
+        },
+      };
+    }
+
+    it('returns false and leaves a done row done when the item is completed', async () => {
+      const fake = makeFollowUpsFake([
+        { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'done' },
+      ]);
+      wire(fake, 'completed');
+
+      const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
+
+      expect(created).toBe(false);
+      expect(fake.rows[0].status).toBe('done');
+    });
+
+    it('returns false and leaves a done row done when the item is dismissed', async () => {
+      const fake = makeFollowUpsFake([
+        { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'done' },
+      ]);
+      wire(fake, 'dismissed');
+
+      const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
+
+      expect(created).toBe(false);
+      expect(fake.rows[0].status).toBe('done');
+    });
+
+    // The regression that would hurt most: a still-open conversation must keep
+    // getting its nag re-armed exactly as before this gate existed.
+    it('re-arms a done row to pending when the item is only handled', async () => {
+      const fake = makeFollowUpsFake([
+        { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'done' },
+      ]);
+      wire(fake, 'handled');
+
+      const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
+
+      expect(created).toBe(true);
+      expect(fake.rows[0].status).toBe('pending');
+    });
+
+    it('re-arms a done row to pending when the item is unresponded', async () => {
+      const fake = makeFollowUpsFake([
+        { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'done' },
+      ]);
+      wire(fake, 'unresponded');
+
+      const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
+
+      expect(created).toBe(true);
+      expect(fake.rows[0].status).toBe('pending');
+    });
+
+    it('returns false without a second write when a pending row already exists (the pre-existing early return still wins)', async () => {
+      const fake = makeFollowUpsFake([
+        { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'pending' },
+      ]);
+      wire(fake, 'handled');
+
+      const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
+
+      expect(created).toBe(false);
+      expect(fake.rows).toHaveLength(1);
     });
   });
 

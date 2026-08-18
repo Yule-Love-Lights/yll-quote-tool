@@ -878,7 +878,7 @@ export async function dismissItem(itemId: string, operatorId: string | null, now
   // #252 follow-up-autoclose: dismissed is terminal — its conversation is not
   // a real lead, so any pending nag anchored to it should die with it. Only on
   // the matched (real transition) path above, never the already-dismissed no-op.
-  await closeFollowUpsForResolvedItem(itemId);
+  await closeFollowUpsForResolvedItem(itemId, 'dismissed');
   return { ok: true };
 }
 
@@ -1042,9 +1042,9 @@ export async function ensureFollowUp(input: {
   // WT-44: cadence override so the "Follow-up reminder (days)" setting can
   // drive when the strip nudge is due; falls back to DEFAULT_FOLLOW_UP_DAYS.
   afterDays?: number;
-}): Promise<void> {
+}): Promise<boolean> {
   const sb = getSupabaseServiceClient();
-  if (!sb) return;
+  if (!sb) return false;
   const { data } = await sb
     .from('follow_ups')
     .select('id')
@@ -1052,7 +1052,23 @@ export async function ensureFollowUp(input: {
     .eq('reason', input.reason)
     .eq('status', 'pending')
     .limit(1);
-  if (data && data.length > 0) return; // a pending one already exists — don't duplicate
+  if (data && data.length > 0) return false; // a pending one already exists — don't duplicate
+
+  // #252 churn gate: quoteFollowUpDecision (quotetool.ts) derives kind:'create'
+  // from the QUOTE's own fields alone — never the anchored item's status — so
+  // the reconcile asks for a follow-up on EVERY tick for any sent-but-unapproved,
+  // non-dead quote. Once that item is resolved and its nag auto-closed
+  // (closeFollowUpsForResolvedItem), the upsert below would flip the 'done' row
+  // straight back to 'pending' every 5 minutes forever; sweepResolvedItemFollowUps
+  // re-closes it later in the same tick, so the end-of-tick state looks right and
+  // nothing fails — the only visible symptoms are permanent write churn and an
+  // inflated followUpsCreated counter. Same class as the #230(b) gate on the
+  // suppress branch, which exists because decision.kind is recomputed per tick.
+  // Costs one read, and only on the path that would otherwise write: the
+  // early-return above already covers the steady state.
+  const { data: item } = await sb.from('inbox_items').select('status').eq('id', input.inboxItemId).maybeSingle();
+  const itemStatus = (item as { status: string } | null)?.status ?? null;
+  if (itemStatus === 'completed' || itemStatus === 'dismissed') return false;
   const fu = quoteSentNoReplyFollowUp({ contactId: input.contactId, inboxItemId: input.inboxItemId, sentAt: input.sentAt, afterDays: input.afterDays });
   // WT-43: UPSERT, not insert. The table has `unique (inbox_item_id, reason)`
   // with no status predicate, so once a prior nudge is marked 'done' a plain
@@ -1072,6 +1088,7 @@ export async function ensureFollowUp(input: {
     },
     { onConflict: 'inbox_item_id,reason' },
   );
+  return true;
 }
 
 /** Mark a pending follow-up for an item done (e.g. the quote got approved).
@@ -1106,8 +1123,14 @@ export async function closeFollowUp(inboxItemId: string, reason: string): Promis
  * Best-effort — never throws, so a close failure never fails the caller's
  * completion/dismissal (mirrors closeQuoteInboxNoise's non-fatal contract).
  * Returns how many rows were closed (0 on no-op or a swallowed failure).
+ *
+ * `terminalStatus` is the status that triggered the close; it is recorded on the
+ * audit row so /inbox/activity can say WHY the nag went away (see below).
  */
-export async function closeFollowUpsForResolvedItem(itemId: string): Promise<number> {
+export async function closeFollowUpsForResolvedItem(
+  itemId: string,
+  terminalStatus: 'completed' | 'dismissed',
+): Promise<number> {
   const sb = getSupabaseServiceClient();
   if (!sb) return 0;
   try {
@@ -1121,10 +1144,41 @@ export async function closeFollowUpsForResolvedItem(itemId: string): Promise<num
       console.warn('[inbox] follow-up close on resolve failed (non-fatal):', error.message);
       return 0;
     }
-    return data ? data.length : 0;
+    const closedIds = ((data ?? []) as { id: string }[]).map((r) => r.id);
+    if (closedIds.length) await recordAutoClosedFollowUps(itemId, closedIds, terminalStatus);
+    return closedIds.length;
   } catch (e) {
     console.warn('[inbox] follow-up close on resolve failed (non-fatal):', e);
     return 0;
+  }
+}
+
+/** #252, same reasoning as #230(a)'s recordSuppressedFollowUp directly below:
+ *  a follow-up closed by the system rather than by an operator clicking Done
+ *  would otherwise leave NO human-visible trace — it just disappears off the
+ *  "due today" strip, and follow_ups has no column recording who closed a row.
+ *  One activity row per closed follow-up, carrying the status that triggered it,
+ *  so /inbox/activity can answer "why did that nag go away". Best-effort and
+ *  deliberately swallowed: an audit-write failure must never turn a successful
+ *  close into a reported failure, nor fail the caller's completion/dismissal. */
+async function recordAutoClosedFollowUps(
+  inboxItemId: string,
+  followUpIds: string[],
+  terminalStatus: 'completed' | 'dismissed',
+): Promise<void> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return;
+  try {
+    await sb.from('dashboard_activity').insert(
+      followUpIds.map((followUpId) => ({
+        actor: 'system',
+        action: 'followup_autoclosed',
+        inbox_item_id: inboxItemId,
+        detail: { followUpId, terminalStatus },
+      })),
+    );
+  } catch (e) {
+    console.warn('[inbox] follow-up auto-close audit write failed (non-fatal):', e);
   }
 }
 
@@ -1405,14 +1459,16 @@ export async function sweepResolvedItemFollowUps(): Promise<number> {
     console.error('[inbox] resolved-item follow-up sweep: inbox_items lookup failed:', itemsErr.message);
     return 0;
   }
-  const terminalItemIds = ((items ?? []) as { id: string; status: string }[])
-    .filter((r) => r.status === 'completed' || r.status === 'dismissed')
-    .map((r) => r.id);
-  if (!terminalItemIds.length) return 0;
+  // Carry each item's own terminal status through, rather than re-reading it in
+  // the close — the audit row records WHICH terminal state retired the nag.
+  const terminalItems = ((items ?? []) as { id: string; status: string }[]).filter(
+    (r): r is { id: string; status: 'completed' | 'dismissed' } => r.status === 'completed' || r.status === 'dismissed',
+  );
+  if (!terminalItems.length) return 0;
 
   let closed = 0;
-  for (const itemId of terminalItemIds) {
-    closed += await closeFollowUpsForResolvedItem(itemId);
+  for (const item of terminalItems) {
+    closed += await closeFollowUpsForResolvedItem(item.id, item.status);
   }
   return closed;
 }
@@ -1775,7 +1831,7 @@ export async function markItemCompleted(
   // #252 follow-up-autoclose: completed is terminal — the conversation is
   // finished, so any pending nag anchored to it should die with it. Only on
   // the matched (guard passed) path above, never the guarded-out no-op.
-  await closeFollowUpsForResolvedItem(itemId);
+  await closeFollowUpsForResolvedItem(itemId, 'completed');
   return { ok: true };
 }
 
