@@ -39,14 +39,16 @@ import { isReferralSelfServeEnabled } from '@/lib/referralSelfServeFlag';
 import { ingestTouch } from '@/lib/dashboard/inbox/store';
 
 export const runtime = 'nodejs';
-// The after() task below can fire up to five sequential GHL calls
-// (searchContacts, an optional referral-link stamp on first code creation,
-// sendEmail, and the two Brand Ambassador stamps), each with a 10s
-// worst-case timeout (highlevel.ts GHL_TIMEOUT_MS). after() keeps the
-// invocation alive only for the route's max duration, so the platform
-// default would risk cutting the task off mid-chain, e.g. a code minted
-// with no email sent. 60s matches this repo's convention for routes making
-// several external calls (estimate, analyze-photo, analyze-address, training).
+// The after() task below can fire up to five GHL calls total (searchContacts,
+// sendEmail, and the two Brand Ambassador stamps run directly in sequence
+// here; an optional referral-link stamp on first code creation is scheduled
+// separately, from inside ensureReferralCode, via its OWN nested after() call,
+// review fix 8), each with a 10s worst-case timeout (highlevel.ts
+// GHL_TIMEOUT_MS). Every one of them is covered by SOME after()'s
+// invocation-lifetime extension, so the platform default would risk cutting
+// one off mid-chain, e.g. a code minted with no email sent. 60s matches this
+// repo's convention for routes making several external calls (estimate,
+// analyze-photo, analyze-address, training).
 export const maxDuration = 60;
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;

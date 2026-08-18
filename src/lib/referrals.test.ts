@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // including a UNIQUE(referee_quote_id) constraint so the accrual/idempotency
 // paths exercise the SAME race-recovery a real Postgres unique-violation forces.
 
-const { sbRef, hl } = vi.hoisted(() => ({
+const { sbRef, hl, afterCalls } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
   hl: {
     upsertContactCustomField: vi.fn(async () => undefined),
@@ -19,7 +19,29 @@ const { sbRef, hl } = vi.hoisted(() => ({
     })),
     configured: { value: false },
   },
+  // Review fix 8: counts real calls to next/server's after(), so a test can
+  // prove the referral-link stamp is scheduled THROUGH after(), not a
+  // detached void call.
+  afterCalls: { count: 0 },
 }));
+
+// Review fix 8: referrals.ts now nests after() (see ensureReferralCode's
+// stampReferralLinkOnContact call) instead of a detached void call. The real
+// after() throws outside a request scope (Next.js docs), which this plain
+// vitest environment never establishes, so it must be mocked. Fires the task
+// immediately without awaiting it, the same non-blocking timing the old void
+// call had, so the existing "stamps the GHL contact custom field ONLY when a
+// code is newly created" test below keeps passing unmodified.
+vi.mock('next/server', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('next/server')>();
+  return {
+    ...actual,
+    after: (task: () => Promise<void> | void) => {
+      afterCalls.count++;
+      void task();
+    },
+  };
+});
 
 vi.mock('./supabase', () => ({
   getSupabaseServiceClient: () => sbRef.current,
@@ -220,6 +242,7 @@ beforeEach(() => {
   hl.sendEmail.mockClear();
   hl.sendEmail.mockResolvedValue({ messageId: 'email-1' });
   hl.configured.value = false;
+  afterCalls.count = 0;
 });
 
 describe('generateReferralCode', () => {
@@ -276,6 +299,31 @@ describe('ensureReferralCode', () => {
       'field_referral_link',
       `https://quote.yulelovelights.com/refer/${code}`,
     );
+    delete process.env.HIGHLEVEL_CONTACT_FIELD_REFERRAL_LINK;
+  });
+
+  it('review fix 8: schedules the GHL stamp THROUGH after(), not a detached call', async () => {
+    process.env.HIGHLEVEL_CONTACT_FIELD_REFERRAL_LINK = 'field_referral_link';
+    hl.configured.value = true;
+    sbRef.current = makeFakeSupabase({
+      customers: [{ id: 'c1', referral_code: null, hl_contact_id: 'contact_1' }],
+    });
+    await ensureReferralCode('c1');
+    expect(afterCalls.count).toBe(1);
+  });
+
+  it('review fix 8: after() is still scheduled on a first mint with nothing to stamp (no linked contact), but the stamp itself no-ops', async () => {
+    // after() is called unconditionally whenever a code is newly claimed;
+    // stampReferralLinkOnContact's OWN fail-open guard (no hl_contact_id) is
+    // what actually skips the GHL call, not a check before scheduling it.
+    hl.configured.value = true;
+    process.env.HIGHLEVEL_CONTACT_FIELD_REFERRAL_LINK = 'field_referral_link';
+    sbRef.current = makeFakeSupabase({
+      customers: [{ id: 'c1', referral_code: null, hl_contact_id: null }],
+    });
+    await ensureReferralCode('c1');
+    expect(afterCalls.count).toBe(1);
+    expect(hl.upsertContactCustomField).not.toHaveBeenCalled();
     delete process.env.HIGHLEVEL_CONTACT_FIELD_REFERRAL_LINK;
   });
 

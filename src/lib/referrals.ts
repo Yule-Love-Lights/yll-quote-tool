@@ -17,6 +17,7 @@
 // can't double-credit — it stays pending until a real quote (a 'mention' row)
 // exists for that lead and gets booked.
 
+import { after } from 'next/server';
 import { getSupabaseServiceClient } from './supabase';
 import { randomBytes } from 'crypto';
 import { upsertContactCustomField, isHighLevelConfigured, sendSms, sendEmail } from './integrations/highlevel';
@@ -171,7 +172,20 @@ export async function ensureReferralCode(customerId: string): Promise<string | n
     }
     if (claimed) {
       // We won the race — best-effort GHL stamp, first-creation only.
-      void stampReferralLinkOnContact(existing.hl_contact_id, code);
+      //
+      // Review fix 8: nested after() (Next.js docs: after() can be nested
+      // inside other after() calls), not a detached void call. A bare void
+      // here would NOT be covered by a caller's own invocation-lifetime
+      // extension: per node_modules/next/dist/docs/.../after.md, waitUntil
+      // only extends the invocation for the promise(s) actually passed to
+      // after(), and a detached child promise started inside an AWAITED
+      // after() task is not one of them, since the outer task's own promise
+      // can resolve before the detached one finishes. Nesting after() here
+      // registers this call with whatever waitUntil the CURRENT request
+      // context provides (Route Handlers, Server Components), same as any
+      // top-level after() call, with no added latency for any caller (this
+      // still doesn't block ensureReferralCode's own return).
+      after(() => stampReferralLinkOnContact(existing.hl_contact_id, code));
       return code;
     }
     // Lost the race (a concurrent call already set one) — re-read the winner's code.
