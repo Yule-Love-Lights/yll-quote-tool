@@ -349,12 +349,16 @@ function errMsg(err: unknown): string {
  * every customer after a coalesced thread's earliest. Only reached by
  * runHandledWriteback's THREAD-level fallback now (fix round: the primary
  * path for any row with a sourceMessageId is message-level modifyMessage,
- * which needs no stripping at all) — this remains a defensive safety net so
- * a composite value can never reach modifyThread's URL and target a
- * nonexistent thread, even on a row that somehow has a composite external_id
- * but no sourceMessageId. Gmail thread/message ids are hex, so a literal ':'
- * can only appear here as this deliberate separator, never inside a real id
- * — safe to split on the first one.
+ * which needs no stripping at all). #288 backfill fix round (staff HIGH, 2nd
+ * instance): the ONE other way to reach this fallback — a composite
+ * external_id with no sourceMessageId — now SKIPS before ever calling this
+ * function (see runHandledWriteback's gmail branch), so in today's code this
+ * always runs on an already-bare id and the strip is a no-op. Kept anyway as
+ * a defensive safety net: it costs nothing and still protects the modifyThread
+ * URL from ever seeing a composite value should a future caller reach this
+ * fallback with one. Gmail thread/message ids are hex, so a literal ':' can
+ * only appear here as this deliberate separator, never inside a real id —
+ * safe to split on the first one.
  *
  * NOT store.ts's quoteIdPrefix: that helper is quotetool/uuid-specific (its
  * callers additionally filter through isUuid) — this is its Gmail-specific
@@ -417,19 +421,36 @@ export async function runHandledWriteback(target: HandledTarget, operatorLabel: 
       // triaging raw Gmail, which the tool's own "Reply in Gmail" affordance
       // sends them to, would see an already-handled thread and skip it,
       // reintroducing the buried-lead failure one layer up). Go message-level
-      // whenever the row knows its own message id — every real split touch
-      // (hybrid single-parse or 2+-parse, gmail.ts's
-      // normalizeGmailThreadTouches) carries one; only a legacy/non-split/
-      // non-GML row (sourceMessageId null) falls back to the thread-wide
-      // call. Accepted: for a genuinely single-message thread, the thread's
-      // OTHER messages (e.g. an unread platform receipt) no longer get
-      // marked read either — honest per-message semantics, deliberate.
+      // whenever the row knows its own message id — every real LIVE-FETCH
+      // split touch (hybrid single-parse or 2+-parse, gmail.ts's
+      // normalizeGmailThreadTouches) carries one; only a genuinely bare,
+      // non-composite external_id (a legacy/non-split/non-GML row) falls back
+      // to the thread-wide call. Accepted: for a genuinely single-message
+      // thread, the thread's OTHER messages (e.g. an unread platform receipt)
+      // no longer get marked read either — honest per-message semantics,
+      // deliberate.
+      //
+      // #288 backfill fix round (staff HIGH, 2nd instance): a composite
+      // external_id (contains ':') with NO sourceMessageId is a STORED-RAW
+      // backfilled row (scripts/backfill-gml-threads.ts mints
+      // `${threadId}:bf-<epochMs>` for these — stored raw predates #787's
+      // per-message ids, so there's no message id to go message-level with).
+      // Falling through to modifyThread here would re-open the exact bug
+      // above for that population: thread-wide marks EVERY sibling
+      // customer's still-unworked forward read/labeled too. No signal beats
+      // a wrong signal — skip the write-back entirely rather than guess at
+      // the thread level. Best-effort by design: the local handled_at stamp
+      // already landed before this runs, so skipping here loses nothing but
+      // the external Gmail label/read-state sync for this one row.
       if (target.sourceMessageId) {
         await modifyMessage(token, target.sourceMessageId, { addLabelIds: [labelId], removeLabelIds: ['UNREAD'] });
+        sync.gmailLabel = 'ok';
+      } else if (target.externalId.includes(':')) {
+        sync.gmailLabel = 'skipped';
       } else {
         await modifyThread(token, gmailThreadIdFromExternalId(target.externalId), { addLabelIds: [labelId], removeLabelIds: ['UNREAD'] });
+        sync.gmailLabel = 'ok';
       }
-      sync.gmailLabel = 'ok';
     } catch (err) {
       sync.gmailLabel = 'failed';
       sync.gmailLabelError = errMsg(err);
