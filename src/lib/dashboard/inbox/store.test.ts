@@ -1491,20 +1491,41 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
 
   /** Minimal stateful fake for the follow_ups table: supports the
    *  select().eq().eq().eq().limit() idempotency check, the plain insert()
-   *  ensureFollowUp issues, and the update().eq('id', ...) markFollowUpDone
-   *  issues — enough to exercise the real create → done → recreate lifecycle. */
+   *  ensureFollowUp issues, the update().eq('id', ...) markFollowUpDone
+   *  issues, and an update().eq(...).eq(...).select().maybeSingle()-shaped
+   *  close chain — enough to exercise the real create → done → recreate
+   *  lifecycle AND #252's closeFollowUpsForResolvedItem/sweepResolvedItemFollowUps.
+   *
+   *  #252 fix (salvaged from the closed #793 branch): the ORIGINAL version of
+   *  this fake had two defects that made it lie about real supabase-js shape:
+   *  (a) `.select()` unconditionally set mode='select', so a real
+   *  `.update(...).eq(...).select(...)` chain lost the update entirely and
+   *  silently took the read-only branch (data: rows as they were BEFORE the
+   *  update, not the affected rows, and the update itself never applied); (b)
+   *  there was no `.maybeSingle()` at all, so a chain ending in it would call
+   *  a nonexistent method. Neither defect was ever hit by the two tests below
+   *  (markFollowUpDone's `.update().eq('id', id)` never chains `.select()`,
+   *  and ensureFollowUp never calls `.maybeSingle()`), so fixing this changes
+   *  neither test's outcome — the bug was latent, not currently masking a
+   *  false-passing assertion. */
   function makeFollowUpsFake(seed: FollowUpRow[]) {
     const rows: FollowUpRow[] = seed.map((r) => ({ ...r }));
     let nextId = rows.length + 1;
     function table() {
       const filters: Record<string, unknown> = {};
       let mode: 'select' | 'insert' | 'update' | 'upsert' | null = null;
+      let selectRequested = false;
       let insertRow: Record<string, unknown> | undefined;
       let updateFields: Record<string, unknown> | undefined;
       let upsertConflict: string | undefined;
       const self: Record<string, unknown> = {};
       self.select = () => {
-        mode = 'select';
+        // Real supabase-js: `.select()` after `.update()`/`.insert()`/`.upsert()`
+        // requests the affected rows back WITHOUT changing which operation
+        // runs — only a bare `.select()` (nothing else called first) is
+        // itself the read.
+        if (mode === null) mode = 'select';
+        else selectRequested = true;
         return self;
       };
       self.eq = (col: string, val: unknown) => {
@@ -1530,16 +1551,17 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
         upsertConflict = opts?.onConflict;
         return self;
       };
-      self.then = (resolve: (v: unknown) => void) => {
+      function resolveResult(): { data: unknown; error: null } {
         if (mode === 'insert') {
           const row = { id: String(nextId++), ...insertRow } as FollowUpRow;
           rows.push(row);
-          resolve({ data: [row], error: null });
+          return { data: [row], error: null };
         } else if (mode === 'update') {
-          for (const r of rows) {
-            if (Object.entries(filters).every(([k, v]) => r[k] === v)) Object.assign(r, updateFields);
-          }
-          resolve({ data: null, error: null });
+          const matched = rows.filter((r) => Object.entries(filters).every(([k, v]) => r[k] === v));
+          for (const r of matched) Object.assign(r, updateFields);
+          // Only a chain that actually asked for rows back (.select()) gets them;
+          // a bare update().eq(...) (e.g. markFollowUpDone) still resolves data: null.
+          return { data: selectRequested ? matched.map((r) => ({ ...r })) : null, error: null };
         } else if (mode === 'upsert') {
           const cols = (upsertConflict ?? '').split(',').map((c) => c.trim()).filter(Boolean);
           const existing = cols.length
@@ -1547,16 +1569,25 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
             : undefined;
           if (existing) {
             Object.assign(existing, insertRow); // re-arm: done -> pending, fresh due_at
-            resolve({ data: [existing], error: null });
+            return { data: [existing], error: null };
           } else {
             const row = { id: String(nextId++), ...insertRow } as FollowUpRow;
             rows.push(row);
-            resolve({ data: [row], error: null });
+            return { data: [row], error: null };
           }
         } else {
           const matched = rows.filter((r) => Object.entries(filters).every(([k, v]) => r[k] === v));
-          resolve({ data: matched, error: null });
+          return { data: matched, error: null };
         }
+      }
+      self.then = (resolve: (v: unknown) => void) => resolve(resolveResult());
+      // Terminal single-row resolution (e.g. an update().eq(...).select().maybeSingle()
+      // chain) — real supabase-js: null when zero rows matched, the bare row
+      // (not an array) when exactly one did.
+      self.maybeSingle = async () => {
+        const result = resolveResult();
+        const matchedRows = (result.data as FollowUpRow[] | null) ?? [];
+        return { data: matchedRows[0] ?? null, error: result.error };
       };
       return self;
     }
