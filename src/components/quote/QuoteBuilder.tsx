@@ -60,6 +60,12 @@ import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
 import { track } from '@/lib/analytics/posthog';
 import { loadQuoteDraft, saveQuoteDraft, clearQuoteDraft, customerIsEmpty, draftAutosaveActive } from '@/lib/quoteDraft';
 import { downscaleForUpload, downscaleForUploadAsBlob, readUploadErrorMessage } from '@/lib/clientImage';
+// Row 269: pure, client-safe helpers shared with PipelineActionsMenu.tsx —
+// pipelineSendOutcome.ts has zero imports of its own (no React, no
+// Supabase), so pulling it in here does not drag anything server-only into
+// this bundle. See that file's own comment for why it deliberately does NOT
+// import quoteDeliveries.ts's DELIVERY_TIMEOUT_ERROR_PREFIX directly.
+import { classifyChannelOutcome, type ChannelDeliveryClassification } from '@/components/admin/pipelineSendOutcome';
 
 // The Konva design editor touches the DOM/canvas, so load it client-only.
 const DesignEditor = dynamic(() => import('@/components/design/DesignEditor'), { ssr: false });
@@ -243,6 +249,23 @@ const MINI_SURFACE_LABELS: Record<Surface, string> = {
 };
 function miniSurfaceLabel(surface: string | null): string {
   return surface && surface in MINI_SURFACE_LABELS ? MINI_SURFACE_LABELS[surface as Surface] : 'group';
+}
+
+// Row 269: renders one channel's classified delivery status for the
+// already-sent notice below — see alreadySentChannels' own state comment for
+// where these classifications come from (classifyChannelOutcome,
+// pipelineSendOutcome.ts).
+function channelDeliveryPhrase(
+  label: string,
+  info: { classification: ChannelDeliveryClassification; at: string | null } | undefined,
+): string {
+  if (!info) return `${label} status unknown`;
+  if (info.classification === 'delivered') {
+    const dateStr = info.at ? new Date(info.at).toLocaleDateString() : null;
+    return `${label} was delivered${dateStr ? ` ${dateStr}` : ''}`;
+  }
+  if (info.classification === 'failed') return `${label} failed`;
+  return `${label} delivery is unconfirmed`;
 }
 // #741 defect 5: prunedMiniGroups previously trusted `Array.isArray` alone,
 // then the render below dereferences g.surface/g.stringCount per element — a
@@ -606,6 +629,17 @@ export default function QuoteBuilder({
   // instead of rendering an identical plain success. Cleared on any fresh
   // send attempt or recalculation.
   const [alreadySentAt, setAlreadySentAt] = useState<string | null>(null);
+  // Row 269: per-channel classification of the alreadySent short-circuit's
+  // new channelOutcomes field (route.ts) — 'unknown' whenever the field is
+  // absent entirely (the read failed) or a channel has no logged attempt, so
+  // this is never mistaken for a confirmed-delivered state. Drives both the
+  // already-sent notice's per-channel copy and (below) the scoped redeliver
+  // offer replacing the old hardcoded 'both'. Null until an alreadySent
+  // response is seen; cleared on any fresh send attempt.
+  const [alreadySentChannels, setAlreadySentChannels] = useState<{
+    sms: { classification: ChannelDeliveryClassification; at: string | null };
+    email: { classification: ChannelDeliveryClassification; at: string | null };
+  } | null>(null);
   const [copiedUrl, setCopiedUrl] = useState(false);
   // GHL stage-sync result of the last send: a non-null message means the quote
   // WAS sent locally but the HighLevel card did NOT advance to "Bid Sent" (the
@@ -2961,6 +2995,7 @@ export default function QuoteBuilder({
     setDeliveryWarning(null);
     setDeliveryRetryChannel(null);
     setAlreadySentAt(null);
+    setAlreadySentChannels(null);
     setCopiedUrl(false);
     setRetryIneligible(false);
 
@@ -3048,15 +3083,44 @@ export default function QuoteBuilder({
         }
         throw new Error(data.error ?? `Send failed (${res.status})`);
       }
-      // #241: the route short-circuited — this click delivered NOTHING (no
-      // SMS, no email, no CRM stage move, no re-stamped quote_sent_at). Don't
-      // render the identical success state; surface it loudly and offer a
-      // one-click force-redeliver via the existing ?retryDelivery=1 path
+      // #241: the route short-circuited — this click delivered NOTHING itself
+      // (no CRM stage move, no re-stamped quote_sent_at, no message sent BY
+      // THIS CLICK). Don't render the identical success state; surface it
+      // loudly and offer a redeliver via the existing ?retryDelivery=1 path
       // instead of falling through to the normal "sent" handling below.
+      //
+      // Row 269: the ORIGINAL send may still have delivered one or both
+      // channels — data.channelOutcomes (route.ts) is a best-effort read of
+      // that history. Scope the redeliver offer to only the channel(s) that
+      // did NOT confirm-deliver, instead of the old hardcoded 'both' (which
+      // could re-fire a channel that already succeeded — GHL's
+      // /conversations/messages has no idempotency key, so that's a REAL
+      // duplicate text/email, not just a wasted click). A missing
+      // channelOutcomes field (the read itself failed) classifies both
+      // channels 'unknown' via classifyChannelOutcome's own null/undefined
+      // branch, which naturally reproduces today's 'both' offer — no special
+      // case needed here.
       if (data.alreadySent) {
         setSendStatus('already-sent');
         setAlreadySentAt(typeof data.sentAt === 'string' ? data.sentAt : null);
-        setDeliveryRetryChannel('both');
+        const channelOutcomes = data.channelOutcomes as
+          | { sms: { outcome: 'sent' | 'failed'; error: string | null; at: string } | null;
+              email: { outcome: 'sent' | 'failed'; error: string | null; at: string } | null }
+          | undefined;
+        const smsEntry = channelOutcomes?.sms ?? null;
+        const emailEntry = channelOutcomes?.email ?? null;
+        const smsClass = classifyChannelOutcome(smsEntry);
+        const emailClass = classifyChannelOutcome(emailEntry);
+        setAlreadySentChannels({
+          sms: { classification: smsClass, at: smsEntry?.at ?? null },
+          email: { classification: emailClass, at: emailEntry?.at ?? null },
+        });
+        const notConfirmed: ('sms' | 'email')[] = [];
+        if (smsClass !== 'delivered') notConfirmed.push('sms');
+        if (emailClass !== 'delivered') notConfirmed.push('email');
+        setDeliveryRetryChannel(
+          notConfirmed.length === 0 ? null : notConfirmed.length === 2 ? 'both' : notConfirmed[0],
+        );
         return;
       }
       setSendStatus('sent');
@@ -6011,10 +6075,20 @@ export default function QuoteBuilder({
                     Portal URL above and share it with the customer directly.
                   </p>
                 ) : (
+                  // Row 269: was a hardcoded "Nothing was delivered" — false
+                  // whenever the original send DID confirm-deliver one or
+                  // both channels (this click just didn't deliver anything
+                  // ITSELF). Report the actual per-channel history instead.
                   <p>
-                    Nothing was delivered — this quote was already sent
+                    This quote was already sent
                     {alreadySentAt ? ` on ${new Date(alreadySentAt).toLocaleString()}` : ' earlier'}.
-                    Clicking Send again does not re-text or re-email the customer.
+                    Clicking Send again does not re-text or re-email the
+                    customer.{' '}
+                    {alreadySentChannels
+                      ? `${channelDeliveryPhrase('SMS', alreadySentChannels.sms)}; ${channelDeliveryPhrase('email', alreadySentChannels.email)}.`
+                      : ''}
+                    {deliveryRetryChannel === null &&
+                      ' Both channels are confirmed delivered — copy the Customer Portal URL above if the customer needs it again.'}
                   </p>
                 )}
                 {/* No `disabled={sendStatus === 'sending'}` here (and on its
@@ -6033,7 +6107,11 @@ export default function QuoteBuilder({
                     onClick={handleRetryDelivery}
                     className="mt-2 text-xs font-medium text-amber-900 underline hover:no-underline"
                   >
-                    Force redeliver (SMS + email) now
+                    {/* Row 269: label now names the SCOPED channel(s) —
+                        deliveryRetryChannel is no longer hardcoded 'both'
+                        (see the alreadySent branch above), so "SMS + email"
+                        would overclaim when only one channel is offered. */}
+                    Force redeliver ({deliveryRetryChannel === 'both' ? 'SMS + email' : deliveryRetryChannel.toUpperCase()}) now
                   </button>
                 )}
               </div>
