@@ -18,6 +18,7 @@ const {
   findOrCreateCustomer,
   ensureReferralCode,
   rateLimitedRef,
+  emailCooldownSeen,
   afterTasks,
 } = vi.hoisted(() => ({
   searchContacts: vi.fn(async (_query: string, _limit?: number) => [] as CrmContact[]),
@@ -26,6 +27,11 @@ const {
   findOrCreateCustomer: vi.fn(async (_identity: unknown) => ({ id: 'cust-1' }) as { id: string } | null),
   ensureReferralCode: vi.fn(async (_id: string) => 'CODE1234' as string | null),
   rateLimitedRef: { current: false },
+  // Review fix 3: mirrors the REAL checkRateLimitByKey's per-key "limit: 1"
+  // semantics (first call for a key is ok, every later one is not) without
+  // depending on wall-clock timing, decoupled from the outer per-IP mock
+  // above (rateLimitedRef), which is a separate check entirely.
+  emailCooldownSeen: new Set<string>(),
   afterTasks: [] as Array<() => Promise<void> | void>,
 }));
 
@@ -45,6 +51,11 @@ vi.mock('next/server', async (importOriginal) => {
 vi.mock('@/lib/rateLimit', () => ({
   rateLimitResponse: (..._args: unknown[]) =>
     rateLimitedRef.current ? NextResponse.json({ error: 'Too many requests' }, { status: 429 }) : null,
+  checkRateLimitByKey: (key: string, _opts: unknown) => {
+    if (emailCooldownSeen.has(key)) return { ok: false, remaining: 0, resetMs: 3_600_000 };
+    emailCooldownSeen.add(key);
+    return { ok: true, remaining: 0, resetMs: 3_600_000 };
+  },
 }));
 vi.mock('@/lib/integrations/highlevel', () => ({ searchContacts, sendEmail, upsertContactCustomField }));
 vi.mock('@/lib/customers', () => ({ findOrCreateCustomer }));
@@ -80,6 +91,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   afterTasks.length = 0;
   rateLimitedRef.current = false;
+  emailCooldownSeen.clear();
   // Review fix 2: the route 404s when this is unset, so every existing test
   // below (written before the flag existed) needs it on by default. The
   // flag's own on/off behavior is covered by the dedicated describe block
@@ -211,6 +223,40 @@ describe('POST /api/referrals/request-link', () => {
     const sendArgs = sendEmail.mock.calls[0]![0] as { contactId: string; subject: string; html: string };
     expect(sendArgs.contactId).toBe('contact-1');
     expect(sendArgs.html).toContain('https://quote.example.com/refer/CODE1234');
+  });
+
+  it('review fix 3: a second submission for the same normalized email within the cooldown window sends nothing, and the response stays byte-identical', async () => {
+    searchContacts.mockResolvedValue([MATCHING_CONTACT]);
+
+    const first = await POST(req({ email: 'jamie@example.com' }));
+    const firstBody = await first.json();
+    await drainAfterTasks();
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+
+    // Different case/whitespace, same normalized email: proves the cooldown
+    // key is normalized the same way the exact-match check is.
+    const second = await POST(req({ email: '  Jamie@Example.com  ' }));
+    const secondBody = await second.json();
+    await drainAfterTasks();
+
+    expect(sendEmail).toHaveBeenCalledTimes(1); // still just once
+    expect(findOrCreateCustomer).toHaveBeenCalledTimes(1); // no wasted work either
+    expect(second.status).toBe(first.status);
+    expect(secondBody).toEqual(firstBody);
+  });
+
+  it('review fix 3: the cooldown is keyed on the match, never on a no-match lookup', async () => {
+    // A no-match query must never consume the cooldown slot a genuine later
+    // match for the SAME email would need.
+    searchContacts.mockResolvedValueOnce([]);
+    await POST(req({ email: 'jamie@example.com' }));
+    await drainAfterTasks();
+    expect(sendEmail).not.toHaveBeenCalled();
+
+    searchContacts.mockResolvedValueOnce([MATCHING_CONTACT]);
+    await POST(req({ email: 'jamie@example.com' }));
+    await drainAfterTasks();
+    expect(sendEmail).toHaveBeenCalledTimes(1);
   });
 
   it('never sends when findOrCreateCustomer resolves null', async () => {

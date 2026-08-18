@@ -29,7 +29,7 @@
 // anything is minted or sent.
 
 import { NextRequest, NextResponse, after } from 'next/server';
-import { rateLimitResponse } from '@/lib/rateLimit';
+import { rateLimitResponse, checkRateLimitByKey } from '@/lib/rateLimit';
 import { searchContacts, sendEmail, upsertContactCustomField } from '@/lib/integrations/highlevel';
 import { findOrCreateCustomer } from '@/lib/customers';
 import { ensureReferralCode } from '@/lib/referrals';
@@ -67,6 +67,14 @@ const MAX_EMAIL_LEN = 320; // mirrors MAX_LEN.email in /api/site-forms
 // standing up a new, unverified GHL integration is out of scope for this
 // change.
 const CONTACT_SEARCH_LIMIT = 100;
+
+// Review fix 3: the outer rate limit above is per-IP, 5/60s, with no cap
+// across IPs or over time, so anyone who knows an address can submit it
+// repeatedly and the victim gets a fresh link email every time. This caps
+// SENDING to once per normalized email per hour. In-memory (rateLimit.ts's
+// own module-scoped Map), so it is per-instance and reset by a cold start:
+// it raises the bar on this abuse vector, it does not close it completely.
+const EMAIL_SEND_COOLDOWN_MS = 60 * 60 * 1000;
 
 // Uniform response body and status: identical on the match and no-match
 // paths.
@@ -145,6 +153,19 @@ async function findAndSendIfMatch(email: string): Promise<void> {
     const results = await searchContacts(email, CONTACT_SEARCH_LIMIT);
     const match = results.find((c) => normalizeEmailForCompare(c.email) === wantEmail);
     if (!match) return;
+
+    // Review fix 3: checked only on the match path, never on a no-match
+    // query, so an unrelated lookup can't burn the one slot a genuine future
+    // match would need. A silent skip, not a different response: the
+    // uniform response above is already built and sent by the time this
+    // runs, so this can't reintroduce the enumeration leak the uniform
+    // response exists to prevent either way.
+    const cooldown = checkRateLimitByKey(wantEmail, {
+      bucket: 'referral-request-link-email-cooldown',
+      limit: 1,
+      windowMs: EMAIL_SEND_COOLDOWN_MS,
+    });
+    if (!cooldown.ok) return;
 
     const name =
       match.fullName?.trim() || [match.firstName, match.lastName].filter(Boolean).join(' ').trim() || null;
