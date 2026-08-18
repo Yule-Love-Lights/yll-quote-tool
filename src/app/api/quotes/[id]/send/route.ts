@@ -19,7 +19,19 @@
 //     opportunityId: string | null, stageError?: string, ghlRetry: boolean,
 //     deliveryRetry: boolean, ghlSynced: boolean, smsSent: boolean,
 //     emailSent: boolean, messageError?: string, failedChannels: ('sms'|'email')[],
-//     channel: 'sms' | 'email' | 'both', alreadySent?: boolean, revived?: true }
+//     channel: 'sms' | 'email' | 'both', alreadySent?: boolean, revived?: true,
+//     channelOutcomes?: { sms: ChannelOutcome | null, email: ChannelOutcome | null } }
+//     — channelOutcomes is set ONLY on the alreadySent short-circuit (row 269;
+//     both the fresh-send and retry-path hits of it share this one return
+//     site — see below), a best-effort read of quote_deliveries
+//     (fetchLatestDeliveryOutcomes, src/lib/quoteDeliveries.ts) telling the
+//     caller which channel(s) actually confirmed delivery on the send that
+//     made this quote "already sent" so a redeliver offer can be scoped to
+//     only the channel(s) that didn't. ChannelOutcome = { outcome:
+//     'sent'|'failed', error: string | null, at: ISO }; null for a channel
+//     means no delivery attempt was ever recorded for it. The field is
+//     omitted entirely (not present, not null) when the read itself fails —
+//     distinct from a channel being null inside a present object.
 //   { error: string, code?: string }  — no server state changed (empty-quote,
 //     no-contact, view-only, deposit-paid, send-conflict, a stamp-write failure)
 //   502 { ok: false, code: 'delivery-failed', error: string, locallySent: true,
@@ -67,7 +79,11 @@ import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/sup
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { deriveStatus, canRevive } from '@/lib/quoteStatus';
 import { attachQuoteToCustomer, propagateQuoteTagsToCustomer, quoteRowToIdentity } from '@/lib/customers';
-import { logQuoteDelivery, DELIVERY_TIMEOUT_ERROR_PREFIX } from '@/lib/quoteDeliveries';
+import {
+  logQuoteDelivery,
+  DELIVERY_TIMEOUT_ERROR_PREFIX,
+  fetchLatestDeliveryOutcomes,
+} from '@/lib/quoteDeliveries';
 
 export const runtime = 'nodejs';
 
@@ -355,11 +371,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     retryDelivery &&
     (currentStatus === 'sent' || currentStatus === 'viewed');
   if (quote.quote_sent_at && !isGhlRetry && !isDeliveryRetry && !isResend && !isRevive) {
+    // Row 269: tell the caller WHICH channel(s) actually confirmed delivery
+    // on the send that made this quote "already sent" — without this, the
+    // UI has zero information and (before this fix) defaulted to offering a
+    // blind 'both' redeliver, which could re-fire a channel that already
+    // succeeded (GHL's /conversations/messages has no idempotency key of its
+    // own, so that's a REAL duplicate text/email, not just a wasted click).
+    // Best-effort: fetchLatestDeliveryOutcomes never throws and returns null
+    // on any failure, in which case channelOutcomes is simply omitted below
+    // and the caller falls back to today's behavior.
+    const channelOutcomes = await fetchLatestDeliveryOutcomes(id);
     return NextResponse.json({
       ok: true,
       sentAt: quote.quote_sent_at,
       stageUpdated: false,
       alreadySent: true,
+      ...(channelOutcomes ? { channelOutcomes } : {}),
     });
   }
 

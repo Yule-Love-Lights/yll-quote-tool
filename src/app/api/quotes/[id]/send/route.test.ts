@@ -1433,6 +1433,122 @@ describe('POST /api/quotes/[id]/send — quote delivery log (#250)', () => {
   });
 });
 
+// Row 269: the alreadySent short-circuit now reads quote_deliveries so the
+// caller can scope its redeliver offer to only the channel(s) that didn't
+// confirm-deliver on the original send, instead of a blind 'both'.
+describe('POST /api/quotes/[id]/send — row 269 channelOutcomes on alreadySent', () => {
+  // The base makeSb fake above has no .order() (it never needed one — every
+  // OTHER query in this route is .eq().single() or a plain .update()/.insert()
+  // awaited directly), so a query built with fetchLatestDeliveryOutcomes'
+  // .select().eq().order().abortSignal() shape would throw synchronously on
+  // that fake — which fetchLatestDeliveryOutcomes catches and turns into
+  // channelOutcomes being omitted (proven by the "omits" test below, using the
+  // base fake unmodified). This helper adds a SEPARATE branch for the
+  // 'quote_deliveries' table only, so a test can assert what happens when
+  // that read actually succeeds — the 'quotes' table keeps using the exact
+  // same base builder everything else in this file already relies on.
+  function makeSbWithDeliveries(quote: Quote, deliveryRows: Array<Record<string, unknown>>) {
+    const base = makeSb(quote);
+    const client = {
+      ...base.client,
+      from: (table: string) => {
+        if (table === 'quote_deliveries') {
+          return {
+            select: () => ({
+              eq: () => ({
+                order: () => ({
+                  abortSignal: async () => ({ data: deliveryRows, error: null }),
+                }),
+              }),
+            }),
+          };
+        }
+        return (base.client as { from: (t: string) => unknown }).from(table);
+      },
+    };
+    return { client, updatePayloads: base.updatePayloads };
+  }
+
+  it('includes channelOutcomes (latest attempt per channel) when the read succeeds', async () => {
+    const alreadySent = { ...FRESH_QUOTE, quote_sent_at: '2026-08-14T12:00:00Z' };
+    const { client } = makeSbWithDeliveries(alreadySent, [
+      // Newest-first, as the real quote_id/created_at index returns them.
+      { channel: 'sms', outcome: 'sent', error: null, created_at: '2026-08-14T12:00:01Z' },
+      { channel: 'email', outcome: 'failed', error: 'timeout — delivery outcome unknown (GHL may have still delivered it): socket hang up', created_at: '2026-08-14T12:00:02Z' },
+      // An older sms row — must be ignored in favor of the newer one above.
+      { channel: 'sms', outcome: 'failed', error: 'rate limited', created_at: '2026-08-13T00:00:00Z' },
+    ]);
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(json.alreadySent).toBe(true);
+    expect(json.channelOutcomes).toEqual({
+      sms: { outcome: 'sent', error: null, at: '2026-08-14T12:00:01Z' },
+      email: {
+        outcome: 'failed',
+        error: 'timeout — delivery outcome unknown (GHL may have still delivered it): socket hang up',
+        at: '2026-08-14T12:00:02Z',
+      },
+    });
+  });
+
+  it('omits channelOutcomes entirely when the read fails (falls back to today\'s behavior)', async () => {
+    const alreadySent = { ...FRESH_QUOTE, quote_sent_at: '2026-08-14T12:00:00Z' };
+    // The base fake (no .order()) — fetchLatestDeliveryOutcomes' query throws
+    // synchronously against it, caught internally, resolves null.
+    const { client } = makeSb(alreadySent);
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(json.alreadySent).toBe(true);
+    expect(json.channelOutcomes).toBeUndefined();
+  });
+
+  it('both channels null when no delivery was ever logged for this quote (legacy pre-#250 row)', async () => {
+    const alreadySent = { ...FRESH_QUOTE, quote_sent_at: '2026-08-14T12:00:00Z' };
+    const { client } = makeSbWithDeliveries(alreadySent, []);
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(json.alreadySent).toBe(true);
+    expect(json.channelOutcomes).toEqual({ sms: null, email: null });
+  });
+
+  it('the RETRY-path alreadySent short-circuit (quote moved past sent/viewed) also carries channelOutcomes — same return site', async () => {
+    // Mirrors the existing "retryDelivery against a since-BOOKED quote"
+    // fixture elsewhere in this file (deposit_paid_at set makes isDeliveryRetry
+    // false, falling through to the plain alreadySent short-circuit).
+    const booked = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-08-01T00:00:00.000Z',
+      customer_approved_at: '2026-08-02T00:00:00.000Z',
+      deposit_paid_at: '2026-08-05T00:00:00.000Z', // deriveStatus → 'booked'
+      ghl_stage_synced_at: '2026-08-01T00:00:01.000Z',
+      status: 'booked',
+    };
+    const { client } = makeSbWithDeliveries(booked, [
+      { channel: 'sms', outcome: 'sent', error: null, created_at: '2026-08-01T00:00:01Z' },
+      { channel: 'email', outcome: 'sent', error: null, created_at: '2026-08-01T00:00:02Z' },
+    ]);
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ channel: 'both' }, true), { params });
+    const json = await res.json();
+
+    expect(json.alreadySent).toBe(true);
+    expect(json.channelOutcomes).toEqual({
+      sms: { outcome: 'sent', error: null, at: '2026-08-01T00:00:01Z' },
+      email: { outcome: 'sent', error: null, at: '2026-08-01T00:00:02Z' },
+    });
+  });
+});
+
 // #264 round 2, FIX 1 (HIGH): tagPropagation is NOT a rare path — prod:
 // 149/182 sent quotes (82%) carry legacy_rebook=true. Its own DB calls
 // (attachQuoteToCustomer et al, in src/lib/customers.ts) are mocked here via

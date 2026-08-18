@@ -57,6 +57,80 @@ const DELIVERY_LOG_TIMEOUT_MS = 5_000;
 // of re-deriving/duplicating it.
 export const DELIVERY_TIMEOUT_ERROR_PREFIX = 'timeout — ';
 
+// Row 269: the alreadySent short-circuit (send route, both the fresh-send
+// and retry-path hits of it) previously told the operator NOTHING about
+// which channel(s) actually delivered on the send that made this quote
+// "already sent" — QuoteBuilder.tsx then hardcoded a 'both' redeliver offer
+// on every alreadySent response, so a Force-Redeliver click could re-fire a
+// channel that had already succeeded (GHL's /conversations/messages has no
+// idempotency key of its own — a real duplicate text/email). This is the
+// read side of that gap: one bounded, best-effort query over the rows
+// logQuoteDelivery already writes, reduced to the LATEST attempt per
+// channel so the caller can scope its retry offer to only the channel(s)
+// that didn't confirm-deliver.
+export type QuoteDeliveryChannelOutcome = {
+  outcome: QuoteDeliveryOutcome;
+  error: string | null;
+  at: string;
+};
+
+export type QuoteDeliveryOutcomesByChannel = {
+  sms: QuoteDeliveryChannelOutcome | null;
+  email: QuoteDeliveryChannelOutcome | null;
+};
+
+// Never throws — same best-effort contract as logQuoteDelivery (see the file
+// header above). Returns null on ANY failure (no client configured, query
+// error, unexpected exception, or a malformed non-array response) so the
+// caller can treat "couldn't determine delivery history" as its own case
+// rather than one that could be confused with "no attempt was ever
+// recorded" (a channel that IS null inside a successfully-returned object).
+export async function fetchLatestDeliveryOutcomes(
+  quoteId: string,
+): Promise<QuoteDeliveryOutcomesByChannel | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const sb = getSupabaseServiceClient() ?? getSupabaseClient();
+    if (!sb) {
+      console.warn('[quoteDeliveries] no Supabase client configured — delivery outcomes not fetched');
+      return null;
+    }
+    const controller = new AbortController();
+    timer = setTimeout(() => controller.abort(), DELIVERY_LOG_TIMEOUT_MS);
+    const { data, error } = await sb
+      .from('quote_deliveries')
+      .select('channel, outcome, error, created_at')
+      .eq('quote_id', quoteId)
+      .order('created_at', { ascending: false })
+      .abortSignal(controller.signal);
+    if (error || !Array.isArray(data)) {
+      if (error) console.warn('[quoteDeliveries] fetch failed:', error.message);
+      return null;
+    }
+    // Rows come back newest-first (the composite quote_id/created_at index
+    // this query hits is defined exactly that way — see the migration), so
+    // the FIRST row seen per channel is its latest attempt; skip any further
+    // rows for a channel already resolved.
+    const result: QuoteDeliveryOutcomesByChannel = { sms: null, email: null };
+    for (const row of data as Array<Record<string, unknown>>) {
+      const channel = row.channel;
+      if ((channel === 'sms' || channel === 'email') && result[channel] === null) {
+        result[channel] = {
+          outcome: row.outcome as QuoteDeliveryOutcome,
+          error: (row.error as string | null | undefined) ?? null,
+          at: row.created_at as string,
+        };
+      }
+    }
+    return result;
+  } catch (err) {
+    console.warn('[quoteDeliveries] fetch threw:', err);
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function logQuoteDelivery(input: QuoteDeliveryInput): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
