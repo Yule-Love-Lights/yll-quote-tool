@@ -1,32 +1,55 @@
 'use client';
 
-// Customer self-serve estimate — interactive flow (ledger self-serve, Phase A).
+// Customer self-serve estimate — interactive flow (ledger self-serve, S48 redesign).
 //
-// Steps: address → measuring → (result | followup) → done.
-//   result   — we measured the roof and priced it: show a RANGE (never a binding
-//              number in Phase A) + a "save my quote" contact form.
-//   followup — no Street View / low confidence / no footage: no price, capture
-//              contact so staff can finish a custom quote and reach out.
-// Contact info is saved progressively (on field blur) so an abandoned form still
-// leaves the team a lead. The price is shown BEFORE the contact form — the whole
-// point vs the competitors' contact-wall-first flows.
+// The dark "cinematic" front door ported from the approved mockup. Same REAL
+// pipeline as before (address → /api/estimate → range + measured-roofline visual →
+// progressive contact capture); this slice re-skins it and adds the landing's
+// sample-home style picker + before/after hero (kept up through the measuring step
+// so there's something to play with while we look up the customer's house).
+//
+// Steps: address → measuring → (result | followup | outofarea) → done.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import './estimate-dark.css';
+import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react';
+import { EstimateVisual } from './EstimateVisual';
+import { BeforeAfter } from './BeforeAfter';
+import type { SampleDesign } from '@/lib/designs';
+import { DEFAULT_COLOR_SCHEMES, DEFAULT_COLOR_SCHEME_ID } from '@/lib/design/colorSchemes';
+import { COLOR_MAP } from '@/components/design/editor-core/colors';
 
 type Step = 'address' | 'measuring' | 'result' | 'followup' | 'outofarea' | 'done';
 
 const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
+// Holiday-flavored so the wait is fun (Naldo).
+const MEASURING_LINES = [
+  'Untangling the lights…',
+  'Waking up the elves…',
+  'Measuring your roof from space…',
+  'Testing every bulb (twice)…',
+  "Consulting Santa's blueprints…",
+  'Warming up the ladder…',
+];
+// The customer-facing color options — the real quote-tool schemes minus "Staff's
+// pick" (the as-designed no-override), which Naldo pulled from the picker.
+const COLOR_SCHEMES = DEFAULT_COLOR_SCHEMES.filter((s) => s.id !== DEFAULT_COLOR_SCHEME_ID);
 
-const MEASURING_LINES = ['Locating your home…', 'Tracing your roofline…', 'Pricing your lights…'];
+const STEP_INDEX: Record<Step, number> = { address: 0, measuring: 1, result: 2, followup: 2, outofarea: 2, done: 2 };
 
 export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) {
   const [step, setStep] = useState<Step>('address');
   const [address, setAddress] = useState('');
   const [error, setError] = useState<string | null>(null);
-  // Set once an address fails to resolve precisely — reveals the "leave your
-  // info instead" escape hatch so an un-geocodable home still becomes a lead
-  // rather than a bounce.
   const [canFallback, setCanFallback] = useState(false);
+
+  // Featured real-job gallery + "play with it" state (landing + measuring).
+  const [schemeId, setSchemeId] = useState<string>(COLOR_SCHEMES[0].id);
+  const [samples, setSamples] = useState<SampleDesign[]>([]);
+  const [sampleIdx, setSampleIdx] = useState(0);
+  const activeScheme = COLOR_SCHEMES.find((s) => s.id === schemeId) ?? COLOR_SCHEMES[0];
+  // The customer recoloring their OWN measured house on the result screen.
+  const [resultSchemeId, setResultSchemeId] = useState<string>(COLOR_SCHEMES[0].id);
+  const resultScheme = COLOR_SCHEMES.find((s) => s.id === resultSchemeId) ?? COLOR_SCHEMES[0];
 
   // Measured result
   const [quoteId, setQuoteId] = useState<string | null>(null);
@@ -39,15 +62,13 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
   const [phone, setPhone] = useState('');
   const [consent, setConsent] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const company = useRef(''); // honeypot (never rendered visibly for real users)
+  const [uploading, setUploading] = useState(false);
+  const [uploaded, setUploaded] = useState(false);
+  const company = useRef(''); // honeypot
   const mountedAt = useRef(0);
   const rootRef = useRef<HTMLElement>(null);
 
-  // Embedded in an <iframe>, an iframe has a FIXED height — content taller than
-  // it gets an inner scrollbar (ugly), shorter leaves dead space. Post our real
-  // content height to the parent page on every size change so its resize script
-  // can match the frame to us. Harmless off-embed (no parent listens); we only
-  // wire it when embedded. targetOrigin is our marketing site, not '*'.
+  // Embedded height handshake (unchanged): post our content height to the parent.
   useEffect(() => {
     if (!embedded || typeof window === 'undefined' || window.parent === window) return;
     const el = rootRef.current;
@@ -64,16 +85,24 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
     return () => ro.disconnect();
   }, [embedded]);
   useEffect(() => {
-    // Stamp mount time in an effect (Date.now() is impure — not allowed during render).
     mountedAt.current = Date.now();
   }, []);
 
-  // Rotate the measuring status lines (reset happens in measure(), not here — a
-  // setState in an effect body triggers cascading renders).
+  // Featured real completed-job designs for the gallery. Best-effort: no samples →
+  // the gallery is simply omitted, never blocks the estimator.
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/estimate/samples')
+      .then((r) => (r.ok ? r.json() : { samples: [] }))
+      .then((d) => { if (alive && Array.isArray(d.samples)) setSamples(d.samples); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
   const [measureLine, setMeasureLine] = useState(0);
   useEffect(() => {
     if (step !== 'measuring') return;
-    const t = setInterval(() => setMeasureLine((i) => (i + 1) % MEASURING_LINES.length), 1400);
+    const t = setInterval(() => setMeasureLine((i) => (i + 1) % MEASURING_LINES.length), 1600);
     return () => clearInterval(t);
   }, [step]);
 
@@ -88,11 +117,17 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
     setError(null);
     setMeasureLine(0);
     setStep('measuring');
+    // Guard against a silent stall (mobile drop, backgrounded tab) — abort just
+    // past the server's 60s maxDuration so we always land back on the address step
+    // with a retry rather than spinning forever.
+    const controller = new AbortController();
+    const stallTimer = setTimeout(() => controller.abort(), 65_000);
     try {
       const res = await fetch('/api/estimate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ address: addr, company: company.current, elapsedMs: Date.now() - mountedAt.current }),
+        signal: controller.signal,
       });
       const data = await res.json().catch(() => ({}));
       if (res.status === 429) {
@@ -111,34 +146,66 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
         setFormattedAddress(data.formattedAddress ?? addr);
         setStep('result');
       } else if (data.served === false) {
-        // Outside Nassau/Suffolk — no price, offer to leave info for expansion.
         setStep('outofarea');
       } else if (data.reason === 'address_not_found') {
-        // The precision gate refused a town/ZIP centroid (or Google couldn't
-        // resolve the street at all). Let them fix a typo — but ALSO offer the
-        // manual-quote escape hatch, because some real homes (rural routes, new
-        // construction) never geocode to a rooftop and would otherwise dead-end
-        // here with no lead captured at all.
         setError("We couldn't find that address. Please check it and try again.");
         setCanFallback(true);
         setStep('address');
       } else if (data.reason === 'unavailable') {
-        // Honeypot / too-fast guard fired. A real (fast-autofill) visitor lands
-        // here too, so send them back to retry rather than dead-ending them in
-        // the "we'll reach out" capture with no price.
         setError('One moment — please try that again.');
         setStep('address');
       } else {
-        // no_streetview / low_confidence / no_footage / analyzer_unavailable
         setStep('followup');
       }
     } catch {
-      setError('We could not reach the estimator. Please try again.');
+      setError('That took too long — please try again.');
       setStep('address');
+    } finally {
+      clearTimeout(stallTimer);
     }
   }, [address]);
 
-  // Progressive save on blur — an abandoned form still leaves a lead.
+  // Upload-your-own-photo: an uploaded photo can't auto-measure, so it creates a
+  // draft with the photo attached and routes to the hand-designed follow-up.
+  const onUploadPhoto = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // let the same file be re-picked after an error
+    if (!file) return;
+    // Match the server allowlist so an unsupported format fails fast, before the
+    // encode + upload round-trip (e.g. an iOS HEIC picked via Files).
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) return setError('Please choose a JPG, PNG, or WEBP image.');
+    if (file.size > 10 * 1024 * 1024) return setError('That image is too large (max 10MB).');
+    setError(null);
+    setUploading(true);
+    try {
+      const dataUrl: string = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result));
+        r.onerror = () => reject(new Error('read failed'));
+        r.readAsDataURL(file);
+      });
+      const photoBase64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+      const photoMediaType = dataUrl.slice(5, dataUrl.indexOf(';')) || 'image/jpeg';
+      const res = await fetch('/api/estimate/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ photoBase64, photoMediaType, address: address.trim() || undefined }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.quoteId) {
+        setError(data?.error || 'Upload failed. Please try again.');
+        setUploading(false);
+        return;
+      }
+      setQuoteId(data.quoteId);
+      setUploaded(true);
+      setStep('followup');
+    } catch {
+      setError('Upload failed. Please try again.');
+    }
+    setUploading(false);
+  }, [address]);
+
   const savePartial = useCallback(() => {
     const hasEmail = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim());
     const hasPhone = (phone.match(/\d/g)?.length ?? 0) >= 7;
@@ -162,16 +229,7 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
       const res = await fetch('/api/estimate/contact', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          quoteId,
-          name: name.trim(),
-          email: email.trim(),
-          phone: phone.trim(),
-          address: formattedAddress ?? address,
-          consent: true,
-          rangeLabel,
-          company: company.current,
-        }),
+        body: JSON.stringify({ quoteId, name: name.trim(), email: email.trim(), phone: phone.trim(), address: formattedAddress ?? address, consent: true, rangeLabel, company: company.current }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -186,128 +244,180 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
     }
   }, [name, email, phone, consent, quoteId, formattedAddress, address, rangeLabel]);
 
-  return (
-    <main
-      ref={rootRef}
-      className={
-        embedded
-          ? 'bg-transparent text-slate-900'
-          : 'min-h-screen bg-gradient-to-b from-amber-50 to-white text-slate-900'
-      }
-    >
-      <div className={`mx-auto flex max-w-xl flex-col gap-6 px-5 ${embedded ? 'py-6' : 'py-12 sm:py-20'}`}>
-        {/* Standalone page carries its own hero; embedded, the WordPress page
-            supplies the heading, so we drop it to avoid a double title. */}
-        {!embedded && (
-          <header className="text-center">
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-700">Yule Love Lights</p>
-            <h1 className="mt-2 text-balance text-3xl font-bold sm:text-4xl">Your holiday lighting price, in seconds</h1>
-            <p className="mt-3 text-slate-600">Type your address. We measure your roof from above and show you a real range. No photos, no waiting.</p>
-          </header>
-        )}
+  const contactProps = { name, setName, email, setEmail, phone, setPhone, consent, setConsent, error, submitting, savePartial, submitContact };
+  const showSamples = step === 'address' || step === 'measuring';
 
-        {/* Honeypot — off-screen, real users never see or fill it */}
+  return (
+    <main ref={rootRef} className="est-dark">
+      <div className={`est-shell ${embedded ? '' : ''}`} style={embedded ? { paddingTop: 12 } : undefined}>
+        <div className="est-stepper" aria-hidden>
+          {[0, 1, 2].map((i) => (
+            <span key={i} className={STEP_INDEX[step] >= i ? 'on' : ''} />
+          ))}
+        </div>
+
+        {/* Honeypot — offscreen, real users never fill it. */}
         <input
-          type="text"
-          tabIndex={-1}
-          autoComplete="off"
-          aria-hidden="true"
-          className="absolute left-[-9999px] h-0 w-0 opacity-0"
+          type="text" tabIndex={-1} autoComplete="off" aria-hidden
+          style={{ position: 'absolute', left: -9999, height: 0, width: 0, opacity: 0 }}
           onChange={(e) => (company.current = e.target.value)}
         />
 
         {step === 'address' && (
-          <section className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
-            <label htmlFor="addr" className="block text-sm font-medium text-slate-700">Home address</label>
+          <section className="est-screen">
+            {!embedded && <p className="est-eyebrow">Yule Love Lights</p>}
+            <h1 className="est-h1 est-display">Let&apos;s make your life bright</h1>
+            <p className="est-sub">Type your address. We measure your roof from above and price it on the spot — no visit needed to see your number.</p>
+          </section>
+        )}
+
+        {/* Featured real completed-job designs + before/after — kept up on the
+            address AND measuring screens so there's something to look at during the
+            wait. Omitted entirely until the gallery loads. */}
+        {showSamples && samples.length > 0 && (
+          <section className="est-screen">
+            <p className="est-pick-cap">Homes we&apos;ve lit up on Long Island — drag to compare</p>
+            <BeforeAfter design={samples[Math.min(sampleIdx, samples.length - 1)]} colorOverride={activeScheme.colorIds} />
+            {samples.length > 1 && (
+              <div className="est-dots">
+                {samples.map((s, i) => (
+                  <button
+                    key={s.quoteId ?? i}
+                    type="button"
+                    aria-label={`Show home ${i + 1}`}
+                    onClick={() => setSampleIdx(i)}
+                    className={`est-dot ${i === Math.min(sampleIdx, samples.length - 1) ? 'on' : ''}`}
+                  />
+                ))}
+              </div>
+            )}
+            <ColorSwatches value={schemeId} onChange={setSchemeId} />
+            <p className="est-hero-hint">Real Yule Love Lights installs · tap a color to see your options</p>
+          </section>
+        )}
+
+        {step === 'address' && (
+          <section className="est-screen">
+            <label className="est-flabel" htmlFor="addr">Your home address</label>
             <input
-              id="addr"
-              type="text"
-              value={address}
+              id="addr" type="text" className="est-field" value={address}
               onChange={(e) => setAddress(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && measure()}
-              placeholder="123 Main St, Your Town, NY"
+              placeholder="123 Candy Cane Ln, Huntington NY"
               autoComplete="street-address"
-              className="mt-2 w-full rounded-lg border border-slate-300 px-4 py-3 text-base outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
             />
-            {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
-            <button
-              onClick={measure}
-              className="mt-4 w-full rounded-lg bg-amber-600 px-4 py-3 text-base font-semibold text-white transition hover:bg-amber-700"
-            >
-              See my instant estimate
-            </button>
-            <p className="mt-3 text-center text-xs text-slate-500">Free. No obligation. Takes about 15 seconds.</p>
+            {error && <p className="est-error">{error}</p>}
+            <button className="est-btn" onClick={measure}>Get my instant quote</button>
+            <p className="est-hero-hint" style={{ margin: '10px 0 0' }}>Free. No obligation. Takes about 15 seconds.</p>
+            <div className="est-upload">
+              <span>or</span>
+              <label className={`est-upload-btn ${uploading ? 'is-busy' : ''}`}>
+                {uploading ? 'Uploading…' : '📷 Upload a photo of your home'}
+                <input type="file" accept="image/jpeg,image/png,image/webp" disabled={uploading} onChange={onUploadPhoto} style={{ display: 'none' }} />
+              </label>
+              <p className="est-hero-hint" style={{ margin: '8px 0 0' }}>We&apos;ll design your lights from your photo by hand.</p>
+            </div>
             {canFallback && (
-              <div className="mt-4 border-t border-slate-200 pt-4 text-center">
-                <p className="text-sm text-slate-600">Still not finding your home?</p>
-                <button
-                  onClick={() => { setError(null); setStep('followup'); }}
-                  className="mt-2 text-sm font-semibold text-amber-700 underline underline-offset-2 hover:text-amber-800"
-                >
-                  Leave your info and we&apos;ll quote it by hand
-                </button>
-              </div>
+              <button className="est-backlink" onClick={() => { setError(null); setStep('followup'); }}>
+                Still not finding your home? Leave your info and we&apos;ll quote it by hand
+              </button>
             )}
           </section>
         )}
 
+        {step === 'address' && (
+          <section className="est-screen" style={{ marginTop: 6 }}>
+            <p className="est-section-title">How it works</p>
+            <ol className="est-steps">
+              <li>
+                <span className="est-step-n">1</span>
+                <div><b>Enter your address</b><p>We pull your home from the street and satellite — no photos needed.</p></div>
+              </li>
+              <li>
+                <span className="est-step-n">2</span>
+                <div><b>We measure &amp; price it</b><p>Our tool traces your roofline and shows you a real range on the spot.</p></div>
+              </li>
+              <li>
+                <span className="est-step-n">3</span>
+                <div><b>We confirm &amp; light it up</b><p>Our team reviews your quote, then makes your home shine.</p></div>
+              </li>
+            </ol>
+          </section>
+        )}
+
         {step === 'measuring' && (
-          <section className="rounded-2xl bg-white p-10 text-center shadow-sm ring-1 ring-slate-200">
-            <div className="mx-auto h-10 w-10 animate-spin rounded-full border-4 border-amber-200 border-t-amber-600" />
-            <p className="mt-5 text-lg font-medium text-slate-700">{MEASURING_LINES[measureLine]}</p>
-            <p className="mt-1 text-sm text-slate-500">Reading the satellite view of {address}</p>
+          <section className="est-screen" style={{ textAlign: 'center', marginTop: 18 }}>
+            <div className="est-spinner" />
+            <p className="est-scan-status">{MEASURING_LINES[measureLine]}</p>
+            <div className="est-scanbar"><span /></div>
+            <p className="est-price-note">Reading the satellite view of {address}</p>
           </section>
         )}
 
         {step === 'result' && range && (
-          <section className="flex flex-col gap-5">
-            <div className="rounded-2xl bg-white p-6 text-center shadow-sm ring-1 ring-slate-200">
-              <p className="text-sm text-slate-500">Estimated holiday lighting for</p>
-              <p className="text-sm font-medium text-slate-700">{formattedAddress}</p>
-              <p className="mt-4 text-4xl font-bold text-amber-700">{usd.format(range.low)} – {usd.format(range.high)}</p>
-              <p className="mt-3 text-sm text-slate-500">A real range from your measured roofline. We confirm the exact number before anything is due.</p>
+          <section className="est-screen" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div className="est-price-card">
+              <p className="est-price-note">Estimated holiday lighting for</p>
+              <p className="est-price-note" style={{ color: 'var(--est-cream-2)' }}>{formattedAddress}</p>
+              <div className="est-price-band">{usd.format(range.low)} – {usd.format(range.high)}</div>
+              <p className="est-price-note">A real range from your measured roofline.</p>
+              <span className="est-verify-tag">Our team confirms your final number before anything is due</span>
             </div>
-            <ContactCard
-              heading="Save your quote"
-              blurb="Enter your info and we'll lock in your design, confirm the final price, and send you a link to review and book."
-              cta="Save my quote"
-              {...{ name, setName, email, setEmail, phone, setPhone, consent, setConsent, error, submitting, savePartial, submitContact }}
-            />
+            {quoteId && (
+              <div>
+                <EstimateVisual
+                  quoteId={quoteId}
+                  colorOverride={resultScheme.colorIds}
+                  footer={
+                    <>
+                      <p className="est-section-title" style={{ marginTop: 16 }}>See your home in your colors</p>
+                      <ColorSwatches value={resultSchemeId} onChange={setResultSchemeId} />
+                    </>
+                  }
+                />
+              </div>
+            )}
+            <ContactCard heading="Save your quote" blurb="Enter your info and we'll lock in your design, confirm the final price, and send you a link to review and book." cta="Save my quote" {...contactProps} />
           </section>
         )}
 
         {step === 'followup' && (
           <ContactCard
-            heading="Let's finish your custom quote"
-            blurb="Your home needs a closer look for an exact price. Leave your info and we'll put together a custom quote and reach out within one business day."
-            cta="Get my custom quote"
-            {...{ name, setName, email, setEmail, phone, setPhone, consent, setConsent, error, submitting, savePartial, submitContact }}
+            heading={uploaded ? 'Got your photo!' : "Let's finish your custom quote"}
+            blurb={uploaded
+              ? "Thanks — leave your info and we'll design your lights from your photo and reach out within one business day with your custom quote."
+              : "Your home needs a closer look for an exact price. Leave your info and we'll put together a custom quote and reach out within one business day."}
+            cta={uploaded ? 'Design my quote' : 'Get my custom quote'}
+            {...contactProps}
           />
         )}
 
         {step === 'outofarea' && (
-          <section className="flex flex-col gap-5">
-            <div className="rounded-2xl bg-white p-6 text-center shadow-sm ring-1 ring-slate-200">
-              <p className="text-lg font-medium text-slate-800">We&apos;re not in your area just yet</p>
-              <p className="mt-2 text-sm text-slate-600">We currently install across Nassau and Suffolk County. Leave your info and we&apos;ll reach out if we expand near you.</p>
+          <section className="est-screen" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <div className="est-price-card">
+              <div style={{ fontSize: 36, lineHeight: 1 }}>📍</div>
+              <p className="est-price-band" style={{ fontSize: 20, marginTop: 6 }}>We&apos;re not in your neighborhood… yet</p>
+              <p className="est-price-note">Right now we install across Nassau and Suffolk County. Leave your info and you&apos;ll be first to know when we light up your area.</p>
             </div>
-            <ContactCard
-              heading="Get on the list"
-              blurb="We'll let you know as soon as we're installing in your area."
-              cta="Keep me posted"
-              {...{ name, setName, email, setEmail, phone, setPhone, consent, setConsent, error, submitting, savePartial, submitContact }}
-            />
+            <ContactCard heading="Get on the list" blurb="We'll let you know the moment we're installing near you." cta="Keep me posted" {...contactProps} />
           </section>
         )}
 
         {step === 'done' && (
-          <section className="rounded-2xl bg-white p-10 text-center shadow-sm ring-1 ring-slate-200">
-            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-green-100 text-2xl">✓</div>
-            <h2 className="mt-4 text-2xl font-bold">You&apos;re all set</h2>
-            <p className="mt-2 text-slate-600">
-              {rangeLabel ? `We saved your ${rangeLabel} estimate. ` : ''}
-              Our team will confirm your details and reach out shortly.
-            </p>
+          <section className="est-screen" style={{ textAlign: 'center' }}>
+            <div className="est-price-card">
+              <div style={{ fontSize: 40, lineHeight: 1 }}>🎄</div>
+              <div className="est-price-band" style={{ fontSize: 24, marginTop: 6 }}>You&apos;re all set!</div>
+              <p className="est-price-note">
+                {rangeLabel ? `We saved your ${rangeLabel} estimate. ` : ''}
+                Here&apos;s what happens next:
+              </p>
+              <ol className="est-steps" style={{ textAlign: 'left', marginTop: 16 }}>
+                <li><span className="est-step-n">1</span><div><b>We review your design</b><p>Our team double-checks your roofline and home.</p></div></li>
+                <li><span className="est-step-n">2</span><div><b>We confirm your final price</b><p>No surprises — you&apos;ll see the exact number before anything is due.</p></div></li>
+                <li><span className="est-step-n">3</span><div><b>You get a link to book</b><p>Review your design, pick your colors, and lock in your install.</p></div></li>
+              </ol>
+            </div>
           </section>
         )}
       </div>
@@ -315,54 +425,56 @@ export function EstimateFlow({ embedded = false }: { embedded?: boolean } = {}) 
   );
 }
 
+// The quote-tool color options, reused by the sample gallery and the customer's own
+// result. Each swatch previews its real palette colors and drives DesignCanvas's
+// colorOverride.
+function ColorSwatches({ value, onChange }: { value: string; onChange: (id: string) => void }) {
+  return (
+    <div className="est-swatches" style={{ marginTop: 12 }}>
+      {COLOR_SCHEMES.map((s) => (
+        <button
+          key={s.id}
+          type="button"
+          className={`est-swatch ${s.id === value ? 'on' : ''}`}
+          onClick={() => onChange(s.id)}
+        >
+          <span className="dots">
+            {(s.colorIds ?? []).slice(0, 4).map((id, i) => <i key={i} style={{ background: COLOR_MAP.get(id)?.hex ?? '#fff' }} />)}
+          </span>
+          {s.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 type ContactCardProps = {
-  heading: string;
-  blurb: string;
-  cta: string;
+  heading: string; blurb: string; cta: string;
   name: string; setName: (v: string) => void;
   email: string; setEmail: (v: string) => void;
   phone: string; setPhone: (v: string) => void;
   consent: boolean; setConsent: (v: boolean) => void;
-  error: string | null;
-  submitting: boolean;
-  savePartial: () => void;
-  submitContact: () => void;
+  error: string | null; submitting: boolean;
+  savePartial: () => void; submitContact: () => void;
 };
 
 function ContactCard(p: ContactCardProps) {
   return (
-    <section className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
-      <h2 className="text-lg font-semibold text-slate-800">{p.heading}</h2>
-      <p className="mt-1 text-sm text-slate-600">{p.blurb}</p>
-      <div className="mt-4 flex flex-col gap-3">
-        <input
-          type="text" value={p.name} onChange={(e) => p.setName(e.target.value)}
-          placeholder="Full name" autoComplete="name" aria-label="Full name"
-          className="w-full rounded-lg border border-slate-300 px-4 py-3 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
-        />
-        <input
-          type="email" value={p.email} onChange={(e) => p.setEmail(e.target.value)} onBlur={p.savePartial}
-          placeholder="Email" autoComplete="email" aria-label="Email"
-          className="w-full rounded-lg border border-slate-300 px-4 py-3 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
-        />
-        <input
-          type="tel" value={p.phone} onChange={(e) => p.setPhone(e.target.value)} onBlur={p.savePartial}
-          placeholder="Phone" autoComplete="tel" aria-label="Phone"
-          className="w-full rounded-lg border border-slate-300 px-4 py-3 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200"
-        />
-        <label className="flex items-start gap-2 text-sm text-slate-600">
-          <input type="checkbox" checked={p.consent} onChange={(e) => p.setConsent(e.target.checked)} className="mt-1" />
-          <span>It&apos;s okay to text or email me about my quote.</span>
-        </label>
-        {p.error && <p className="text-sm text-red-600">{p.error}</p>}
-        <button
-          onClick={p.submitContact}
-          disabled={p.submitting}
-          className="w-full rounded-lg bg-amber-600 px-4 py-3 text-base font-semibold text-white transition hover:bg-amber-700 disabled:opacity-50"
-        >
-          {p.submitting ? 'Sending…' : p.cta}
-        </button>
-      </div>
+    <section className="est-price-card" style={{ textAlign: 'left' }}>
+      <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>{p.heading}</h2>
+      <p className="est-price-note" style={{ margin: '6px 0 0' }}>{p.blurb}</p>
+      <label className="est-flabel" htmlFor="cname">Full name</label>
+      <input id="cname" type="text" className="est-field" value={p.name} onChange={(e) => p.setName(e.target.value)} placeholder="Full name" autoComplete="name" />
+      <label className="est-flabel" htmlFor="cemail">Email</label>
+      <input id="cemail" type="email" className="est-field" value={p.email} onChange={(e) => p.setEmail(e.target.value)} onBlur={p.savePartial} placeholder="you@example.com" autoComplete="email" />
+      <label className="est-flabel" htmlFor="cphone">Phone</label>
+      <input id="cphone" type="tel" className="est-field" value={p.phone} onChange={(e) => p.setPhone(e.target.value)} onBlur={p.savePartial} placeholder="(516) 555-0100" autoComplete="tel" />
+      <label className="est-checkline">
+        <input type="checkbox" checked={p.consent} onChange={(e) => p.setConsent(e.target.checked)} />
+        <span>It&apos;s okay to text or email me about my quote.</span>
+      </label>
+      {p.error && <p className="est-error" style={{ textAlign: 'left' }}>{p.error}</p>}
+      <button className="est-btn" onClick={p.submitContact} disabled={p.submitting}>{p.submitting ? 'Sending…' : p.cta}</button>
     </section>
   );
 }

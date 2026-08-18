@@ -16,13 +16,14 @@ import {
   getThread,
   isGmailConfigured,
   listInboxThreads,
+  modifyMessage,
   modifyThread,
 } from '@/lib/integrations/gmail';
 import type { HandledTarget } from './store';
 import { handledByTag } from './assignment';
 import { listQuotesForDashboard } from '@/lib/dashboard/queries';
 import { normalizeGhlConversation } from './ghl';
-import { mapGmailThread, normalizeGmailThread } from './gmail';
+import { mapGmailThread, normalizeGmailThreadTouches } from './gmail';
 import { normalizeQuoteTouch, quoteFollowUpDecision } from './quotetool';
 import { getFollowUpDays } from './settings';
 import { FOLLOWUP_REASONS } from './followups';
@@ -239,12 +240,16 @@ export type GmailPollSummary = {
 };
 
 /**
- * Poll the Gmail inbox (sales@) and ingest each thread. Read-only. Needs-reply is
- * the thread last-sender check (in normalizeGmailThread): a thread whose latest
+ * Poll the Gmail inbox (sales@) and ingest each thread (as one or more touches
+ * — see normalizeGmailThreadTouches, #288). For an ordinary thread, needs-reply
+ * is the thread last-sender check (in normalizeGmailThread, the single-touch
+ * path normalizeGmailThreadTouches falls back to): a thread whose latest
  * message is from us → outbound → the reducer skips/auto-resolves it. That also
  * neutralizes the self-ingest loop — our own escalation emails (From: sales@) read
- * as "from us". Full inbox scan each run (bounded); history.list incremental is a
- * future optimization.
+ * as "from us". A coalesced GML lead-forward thread's split touches are the
+ * exception: each is always 'inbound' regardless of the thread's last sender
+ * (normalizeGmailThreadTouches's own doc explains why). Full inbox scan each
+ * run (bounded); history.list incremental is a future optimization.
  */
 export async function runGmailPoll(now: Date, opts: { maxResults?: number } = {}): Promise<GmailPollSummary> {
   if (!isGmailConfigured()) {
@@ -295,18 +300,32 @@ export async function runGmailPoll(now: Date, opts: { maxResults?: number } = {}
           skipped++;
           continue;
         }
+        // #288: a coalesced GML lead-forward thread splits into MULTIPLE
+        // touches (one per distinct customer) — everything else still maps to
+        // exactly one, so this loop's shape (and its error isolation) applies
+        // per TOUCH, not per thread. `scanned` (below, threads.length) stays
+        // thread-count; ingested/skipped/etc. accumulate per touch.
+        let touches: ReturnType<typeof normalizeGmailThreadTouches>;
         try {
-          const res = await ingestTouch(normalizeGmailThread(mapGmailThread(f.raw, identity), suppressed), now);
-          if (!res.ok) {
-            errors++;
-            continue;
-          }
-          if (res.skipped) skipped++;
-          else ingested++;
-          if (res.autoResolved) autoResolved++;
-          if (res.ambiguous) ambiguous++;
+          touches = normalizeGmailThreadTouches(mapGmailThread(f.raw, identity), suppressed);
         } catch {
           errors++;
+          continue;
+        }
+        for (const touch of touches) {
+          try {
+            const res = await ingestTouch(touch, now);
+            if (!res.ok) {
+              errors++;
+              continue;
+            }
+            if (res.skipped) skipped++;
+            else ingested++;
+            if (res.autoResolved) autoResolved++;
+            if (res.ambiguous) ambiguous++;
+          } catch {
+            errors++;
+          }
         }
       }
     }
@@ -322,6 +341,32 @@ export async function runGmailPoll(now: Date, opts: { maxResults?: number } = {}
 function errMsg(err: unknown): string {
   // Bound it: keeps a stray verbose API body out of the stored handled_channel_sync.
   return (err instanceof Error ? err.message : String(err)).slice(0, 500);
+}
+
+/**
+ * #288: a gmail item's external_id can be a GML-split composite
+ * `${threadId}:${msgId}` (see gmail.ts's normalizeGmailThreadTouches) for
+ * every customer after a coalesced thread's earliest. Only reached by
+ * runHandledWriteback's THREAD-level fallback now (fix round: the primary
+ * path for any row with a sourceMessageId is message-level modifyMessage,
+ * which needs no stripping at all). #288 backfill fix round (staff HIGH, 2nd
+ * instance): the ONE other way to reach this fallback — a composite
+ * external_id with no sourceMessageId — now SKIPS before ever calling this
+ * function (see runHandledWriteback's gmail branch), so in today's code this
+ * always runs on an already-bare id and the strip is a no-op. Kept anyway as
+ * a defensive safety net: it costs nothing and still protects the modifyThread
+ * URL from ever seeing a composite value should a future caller reach this
+ * fallback with one. Gmail thread/message ids are hex, so a literal ':' can
+ * only appear here as this deliberate separator, never inside a real id —
+ * safe to split on the first one.
+ *
+ * NOT store.ts's quoteIdPrefix: that helper is quotetool/uuid-specific (its
+ * callers additionally filter through isUuid) — this is its Gmail-specific
+ * sibling, kept local since nothing outside the Gmail write-back needs it.
+ */
+function gmailThreadIdFromExternalId(externalId: string): string {
+  const i = externalId.indexOf(':');
+  return i === -1 ? externalId : externalId.slice(0, i);
 }
 
 /**
@@ -370,8 +415,42 @@ export async function runHandledWriteback(target: HandledTarget, operatorLabel: 
     try {
       const token = await getAccessToken();
       const labelId = await getOrCreateLabel(token, 'YLL/Handled');
-      await modifyThread(token, target.externalId, { addLabelIds: [labelId], removeLabelIds: ['UNREAD'] });
-      sync.gmailLabel = 'ok';
+      // #288 fix round (staff HIGH): modifyThread marks EVERY message on the
+      // thread read/labeled — for a GML-split row, that silently stamps
+      // sibling customers' still-unworked forwards Handled too (a staffer
+      // triaging raw Gmail, which the tool's own "Reply in Gmail" affordance
+      // sends them to, would see an already-handled thread and skip it,
+      // reintroducing the buried-lead failure one layer up). Go message-level
+      // whenever the row knows its own message id — every real LIVE-FETCH
+      // split touch (hybrid single-parse or 2+-parse, gmail.ts's
+      // normalizeGmailThreadTouches) carries one; only a genuinely bare,
+      // non-composite external_id (a legacy/non-split/non-GML row) falls back
+      // to the thread-wide call. Accepted: for a genuinely single-message
+      // thread, the thread's OTHER messages (e.g. an unread platform receipt)
+      // no longer get marked read either — honest per-message semantics,
+      // deliberate.
+      //
+      // #288 backfill fix round (staff HIGH, 2nd instance): a composite
+      // external_id (contains ':') with NO sourceMessageId is a STORED-RAW
+      // backfilled row (scripts/backfill-gml-threads.ts mints
+      // `${threadId}:bf-<epochMs>` for these — stored raw predates #787's
+      // per-message ids, so there's no message id to go message-level with).
+      // Falling through to modifyThread here would re-open the exact bug
+      // above for that population: thread-wide marks EVERY sibling
+      // customer's still-unworked forward read/labeled too. No signal beats
+      // a wrong signal — skip the write-back entirely rather than guess at
+      // the thread level. Best-effort by design: the local handled_at stamp
+      // already landed before this runs, so skipping here loses nothing but
+      // the external Gmail label/read-state sync for this one row.
+      if (target.sourceMessageId) {
+        await modifyMessage(token, target.sourceMessageId, { addLabelIds: [labelId], removeLabelIds: ['UNREAD'] });
+        sync.gmailLabel = 'ok';
+      } else if (target.externalId.includes(':')) {
+        sync.gmailLabel = 'skipped';
+      } else {
+        await modifyThread(token, gmailThreadIdFromExternalId(target.externalId), { addLabelIds: [labelId], removeLabelIds: ['UNREAD'] });
+        sync.gmailLabel = 'ok';
+      }
     } catch (err) {
       sync.gmailLabel = 'failed';
       sync.gmailLabelError = errMsg(err);

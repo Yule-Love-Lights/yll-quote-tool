@@ -32,7 +32,7 @@ import { saveQuote } from '@/lib/quotes';
 import {
   isMeasurable,
   analysisToHolidayInputs,
-  computeEstimateRange,
+  customerEstimateRange,
 } from '@/lib/selfServe/estimateRange';
 import { recordSelfServeEstimate } from '@/lib/selfServe/telemetry';
 import { persistSelfServeDesign } from '@/lib/selfServe/design';
@@ -176,14 +176,11 @@ export async function POST(req: NextRequest) {
   try {
     quoteInputs = analysisToHolidayInputs(result!);
     priced = calculateQuote(quoteInputs);
-    // Floor the SHOWN range at the $1,000 job minimum. calculateQuote.total does
-    // NOT apply that minimum (it's enforced at the portal approval gate), so a
-    // small home can price below $1,000 — but the customer will still pay at
-    // least the minimum, and anchoring them on a sub-$1,000 range they can never
-    // actually get would be misleading. The saved draft keeps the raw engine
-    // total; only the customer-facing range is floored.
-    const shownTotal = Math.max(priced.total, BUSINESS_RULES.minimumQuoteAmount);
-    ({ low, high } = computeEstimateRange(shownTotal));
+    // Bracket the engine total into the customer-facing range, floored at the
+    // $1,000 job minimum (both the total AND the range low — the -10% margin
+    // would otherwise show a sub-minimum low the customer can never be charged).
+    // The saved draft keeps the raw engine total; only this shown range is floored.
+    ({ low, high } = customerEstimateRange(priced.total, BUSINESS_RULES.minimumQuoteAmount));
   } catch (err) {
     console.error('[api/estimate] pricing failed:', err instanceof Error ? err.message : 'error');
     return NextResponse.json({ error: 'Estimator is temporarily unavailable' }, { status: 503 });

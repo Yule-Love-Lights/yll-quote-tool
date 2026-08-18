@@ -15,6 +15,8 @@ const getThreadMock = vi.fn();
 const listInboxThreadsMock = vi.fn();
 const getAccessTokenMock = vi.fn();
 const isGmailConfiguredMock = vi.fn();
+const modifyThreadMock = vi.fn();
+const modifyMessageMock = vi.fn();
 
 vi.mock('@/lib/integrations/gmail', () => ({
   getAccessToken: (...args: unknown[]) => getAccessTokenMock(...args),
@@ -22,7 +24,8 @@ vi.mock('@/lib/integrations/gmail', () => ({
   getThread: (...args: unknown[]) => getThreadMock(...args),
   isGmailConfigured: (...args: unknown[]) => isGmailConfiguredMock(...args),
   listInboxThreads: (...args: unknown[]) => listInboxThreadsMock(...args),
-  modifyThread: vi.fn(),
+  modifyThread: (...args: unknown[]) => modifyThreadMock(...args),
+  modifyMessage: (...args: unknown[]) => modifyMessageMock(...args),
 }));
 
 const ingestTouchMock = vi.fn();
@@ -67,9 +70,10 @@ vi.mock('./suppression', () => ({
   getSuppressedSenders: vi.fn().mockResolvedValue(new Set()),
 }));
 
+const normalizeGmailThreadTouchesMock = vi.fn();
 vi.mock('./gmail', () => ({
   mapGmailThread: (raw: unknown) => raw,
-  normalizeGmailThread: (mapped: unknown) => mapped,
+  normalizeGmailThreadTouches: (...args: unknown[]) => normalizeGmailThreadTouchesMock(...args),
 }));
 
 const addContactTagsMock = vi.fn();
@@ -116,6 +120,10 @@ describe('runGmailPoll concurrency', () => {
     isGmailConfiguredMock.mockReturnValue(true);
     getAccessTokenMock.mockResolvedValue('token');
     ingestTouchMock.mockResolvedValue(OK_RESULT);
+    // Default: pass-through-wrapped-in-an-array, mirroring normalizeGmailThread's
+    // old 1-touch-per-thread shape so the pre-existing tests below (written
+    // against the singular function) still hold under the plural one (#288).
+    normalizeGmailThreadTouchesMock.mockImplementation((mapped: unknown) => [mapped]);
   });
 
   it('fetches thread bodies with bounded (<=8) concurrency, not serially', async () => {
@@ -180,6 +188,39 @@ describe('runGmailPoll concurrency', () => {
     expect(summary.errors).toBe(1);
     expect(summary.ingested).toBe(THREAD_COUNT - 1);
   });
+
+  // #288: normalizeGmailThreadTouches can return MORE THAN ONE touch for a
+  // single coalesced GML thread (one per distinct customer). `scanned` stays
+  // thread-count, but ingestTouch must run — and be counted — once per touch,
+  // not once per thread.
+  it('ingests and counts every touch a single thread splits into, while `scanned` stays the thread count (#288)', async () => {
+    listInboxThreadsMock.mockResolvedValue(threadRefs(1));
+    getThreadMock.mockResolvedValue({ messages: [{ id: 'm1' }] });
+    normalizeGmailThreadTouchesMock.mockReturnValue([{ id: 'touch-a' }, { id: 'touch-b' }, { id: 'touch-c' }]);
+
+    const summary = await runGmailPoll(new Date(), { maxResults: 1 });
+
+    expect(summary.ok).toBe(true);
+    expect(summary.scanned).toBe(1);
+    expect(ingestTouchMock).toHaveBeenCalledTimes(3);
+    expect(summary.ingested).toBe(3);
+  });
+
+  it('one bad touch (ingestTouch failure) does not stop sibling touches from the SAME split thread from being ingested (#288)', async () => {
+    listInboxThreadsMock.mockResolvedValue(threadRefs(1));
+    getThreadMock.mockResolvedValue({ messages: [{ id: 'm1' }] });
+    normalizeGmailThreadTouchesMock.mockReturnValue([{ id: 'touch-a' }, { id: 'touch-b' }, { id: 'touch-c' }]);
+    ingestTouchMock.mockImplementation(async (touch: { id?: string }) => {
+      if (touch.id === 'touch-b') return { ok: false, error: 'boom' };
+      return OK_RESULT;
+    });
+
+    const summary = await runGmailPoll(new Date(), { maxResults: 1 });
+
+    expect(summary.ok).toBe(true);
+    expect(summary.errors).toBe(1);
+    expect(summary.ingested).toBe(2);
+  });
 });
 
 // WT-49: Mark-Handled must never create a GHL pipeline opportunity. It used to
@@ -235,6 +276,126 @@ describe('runHandledWriteback — WT-49 (no opportunity write)', () => {
     expect(addContactTagsMock).toHaveBeenCalledWith('contact-1', ['dashboard-handled', expect.any(String)]);
     expect(sync.ghlTags).toBe('ok');
     expect(findOrCreateOpportunityForContactMock).not.toHaveBeenCalled();
+  });
+});
+
+// #288: a GML-split gmail item's external_id can be `${threadId}:${msgId}`
+// (gmail.ts's normalizeGmailThreadTouches) for every customer after the
+// thread's earliest.
+//
+// #288 fix round (staff HIGH): modifyThread is THREAD-wide — Gmail's
+// threads.modify labels/marks-read EVERY message on the thread, so marking
+// one split row Handled would silently stamp sibling customers' still-
+// unworked forwards read/labeled too (a staffer triaging raw Gmail — the
+// tool's own "Reply in Gmail" affordance sends them there — would see an
+// already-handled thread and skip it, reintroducing the buried-lead failure
+// one layer up). The write-back now goes MESSAGE-level (modifyMessage)
+// whenever the row knows its own message id, and only falls back to the
+// thread-wide modifyThread for a genuinely bare, non-composite external_id
+// (a legacy/non-split/non-GML row). modifyThread's URL wants the bare Gmail
+// THREAD id in that fallback — a composite external_id passed straight
+// through would target a nonexistent thread, hence
+// gmailThreadIdFromExternalId's strip (kept as a defensive no-op: today's
+// code never actually reaches it with a composite value — test (iv) below
+// proves the composite+null case skips instead of reaching modifyThread).
+//
+// #288 backfill fix round (staff HIGH, 2nd instance): every real LIVE-FETCH
+// split touch (hybrid or 2+, gmail.ts's normalizeGmailThreadTouches) carries
+// a sourceMessageId — but scripts/backfill-gml-threads.ts's STORED-RAW mode
+// mints composite external_ids (`${threadId}:bf-<epochMs>`) for backfilled
+// rows that predate #787's per-message ids, so sourceMessageId is null on
+// THOSE rows. Falling through to the thread-wide modifyThread for a
+// composite id (as this code used to) re-opens the exact bug above for the
+// backfilled population: marking one buried customer Handled would silently
+// mark every sibling customer's still-unworked forward read/labeled too. Fix:
+// a composite external_id with no sourceMessageId now SKIPS the Gmail
+// write-back entirely — no signal beats a wrong signal, and the write-back is
+// best-effort by design (the local handled_at stamp already landed before
+// this runs). See test (iv) below.
+describe('runHandledWriteback — Gmail write-back targeting (#288 GML split + fix round message-level HIGH)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    isGmailConfiguredMock.mockReturnValue(true);
+    getAccessTokenMock.mockResolvedValue('token');
+    modifyThreadMock.mockResolvedValue(undefined);
+    modifyMessageMock.mockResolvedValue(undefined);
+  });
+
+  it('(i) a target with sourceMessageId goes MESSAGE-level: modifyMessage is called with the bare message id, modifyThread is never called', async () => {
+    const target: HandledTarget = {
+      source: 'gmail',
+      externalId: 'thr-abc123:msg-def456',
+      sourceMessageId: 'msg-def456',
+      ghlContactId: null,
+      displayName: 'Later Customer',
+    };
+
+    const sync = await runHandledWriteback(target, 'jason');
+
+    expect(modifyMessageMock).toHaveBeenCalledTimes(1);
+    expect(modifyMessageMock).toHaveBeenCalledWith('token', 'msg-def456', expect.objectContaining({ removeLabelIds: ['UNREAD'] }));
+    expect(modifyThreadMock).not.toHaveBeenCalled();
+    expect(sync.gmailLabel).toBe('ok');
+  });
+
+  it('(ii) a target with NO sourceMessageId (legacy / non-split row) falls back to THREAD-level modifyThread on the (already-bare) id — existing behavior pinned', async () => {
+    const target: HandledTarget = {
+      source: 'gmail',
+      externalId: 'thr-abc123',
+      sourceMessageId: null,
+      ghlContactId: null,
+      displayName: 'Legacy Row',
+    };
+
+    const sync = await runHandledWriteback(target, 'jason');
+
+    expect(modifyThreadMock).toHaveBeenCalledTimes(1);
+    expect(modifyThreadMock).toHaveBeenCalledWith('token', 'thr-abc123', expect.objectContaining({ removeLabelIds: ['UNREAD'] }));
+    expect(modifyMessageMock).not.toHaveBeenCalled();
+    expect(sync.gmailLabel).toBe('ok');
+  });
+
+  it('(iv) a composite external_id with NO sourceMessageId (a STORED-RAW backfilled row — scripts/backfill-gml-threads.ts mints `${threadId}:bf-<epochMs>` for these, since stored raw predates #787\'s per-message ids) skips the Gmail write-back entirely: neither modifyMessage nor modifyThread is called, and the outcome is recorded as skipped', async () => {
+    const target: HandledTarget = {
+      source: 'gmail',
+      externalId: 'thr-abc123:bf-1755500000000',
+      sourceMessageId: null,
+      ghlContactId: null,
+      displayName: 'Backfilled Row',
+    };
+
+    const sync = await runHandledWriteback(target, 'jason');
+
+    expect(modifyMessageMock).not.toHaveBeenCalled();
+    expect(modifyThreadMock).not.toHaveBeenCalled();
+    expect(sync.gmailLabel).toBe('skipped');
+  });
+
+  it('(iii) two rows from the same coalesced thread each get their OWN independent message-level write-back — no cross-talk, no error propagation', async () => {
+    const aliceTarget: HandledTarget = {
+      source: 'gmail',
+      externalId: 'thr-gml',
+      sourceMessageId: 'm1',
+      ghlContactId: null,
+      displayName: 'Alice Anderson',
+    };
+    const bobTarget: HandledTarget = {
+      source: 'gmail',
+      externalId: 'thr-gml:m2',
+      sourceMessageId: 'm2',
+      ghlContactId: null,
+      displayName: 'Bob Baker',
+    };
+
+    const aliceSync = await runHandledWriteback(aliceTarget, 'jason');
+    const bobSync = await runHandledWriteback(bobTarget, 'jason');
+
+    expect(modifyMessageMock).toHaveBeenCalledTimes(2);
+    expect(modifyMessageMock).toHaveBeenNthCalledWith(1, 'token', 'm1', expect.anything());
+    expect(modifyMessageMock).toHaveBeenNthCalledWith(2, 'token', 'm2', expect.anything());
+    expect(modifyThreadMock).not.toHaveBeenCalled();
+    expect(aliceSync.gmailLabel).toBe('ok');
+    expect(bobSync.gmailLabel).toBe('ok');
   });
 });
 

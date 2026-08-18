@@ -6,6 +6,7 @@ import {
   isGmailConfigured,
   getOrCreateLabel,
   modifyThread,
+  modifyMessage,
 } from './gmail';
 
 const realFetch = global.fetch;
@@ -115,6 +116,22 @@ describe('modifyThread (WRITE)', () => {
     await modifyThread('tok', 't1', { addLabelIds: ['L1'], removeLabelIds: ['UNREAD'] });
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toContain('/threads/t1/modify');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({ addLabelIds: ['L1'], removeLabelIds: ['UNREAD'] });
+  });
+});
+
+// #288 fix round: modifyThread's single-message sibling — the Handled
+// write-back prefers this whenever it knows the specific message id, so
+// marking one GML-split row Handled doesn't label/mark-read the WHOLE
+// thread (and every other coalesced customer's still-unworked forward on it).
+describe('modifyMessage (WRITE)', () => {
+  it('POSTs add/remove labels to the MESSAGE modify endpoint, not the thread one', async () => {
+    const fetchMock = stubFetch({});
+    await modifyMessage('tok', 'm1', { addLabelIds: ['L1'], removeLabelIds: ['UNREAD'] });
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toContain('/messages/m1/modify');
+    expect(url).not.toContain('/threads/');
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({ addLabelIds: ['L1'], removeLabelIds: ['UNREAD'] });
   });

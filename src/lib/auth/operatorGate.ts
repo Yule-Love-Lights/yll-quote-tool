@@ -199,8 +199,23 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   // operator-gated. Same shape as the referrals carve-out above.
   if (
     method.toUpperCase() === 'POST' &&
-    (path === '/api/estimate' || path === '/api/estimate/contact')
+    (path === '/api/estimate' || path === '/api/estimate/contact' || path === '/api/estimate/upload')
   ) {
+    return true;
+  }
+
+  // GET /api/estimate/design — the self-serve result screen polls this for the
+  // measured-roofline visual (ledger self-serve, Slice 3). It's flag-gated +
+  // rate-limited in the route and returns the same { scene, photoUrl } the portal
+  // hero already exposes by UUID. GET only; other methods stay operator-gated.
+  if (method.toUpperCase() === 'GET' && path === '/api/estimate/design') {
+    return true;
+  }
+
+  // GET /api/estimate/samples — the landing's featured real-job gallery (S48).
+  // Flag-gated + rate-limited; returns house renders only (no PII), the same shape
+  // the portal exposes. GET only; other methods stay operator-gated.
+  if (method.toUpperCase() === 'GET' && path === '/api/estimate/samples') {
     return true;
   }
 

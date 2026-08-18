@@ -220,13 +220,30 @@ describe('isPublicPath — customer-facing allowlist', () => {
     expect(isPublicPath('/estimate/anything')).toBe(false);
   });
 
-  it('allows POST /api/estimate + /api/estimate/contact but keeps other methods operator-only (self-serve Phase A)', () => {
-    for (const p of ['/api/estimate', '/api/estimate/contact']) {
+  it('allows POST /api/estimate + /api/estimate/contact + /api/estimate/upload but keeps other methods operator-only (self-serve Phase A)', () => {
+    for (const p of ['/api/estimate', '/api/estimate/contact', '/api/estimate/upload']) {
       expect(isPublicPath(p, 'POST'), p).toBe(true);
       expect(isPublicPath(p, 'GET'), p).toBe(false);
       expect(isPublicPath(p), p).toBe(false); // method defaults to GET, which is NOT allowlisted here
       expect(isPublicPath(`${p}/`, 'POST'), p).toBe(true); // tolerates a single trailing slash
     }
+  });
+
+  it('allows GET /api/estimate/design (result-screen visual poll) but keeps other methods operator-only (self-serve Slice 3)', () => {
+    const p = '/api/estimate/design';
+    expect(isPublicPath(p, 'GET')).toBe(true);
+    expect(isPublicPath(p)).toBe(true); // method defaults to GET
+    expect(isPublicPath(p, 'POST')).toBe(false);
+    expect(isPublicPath(p, 'DELETE')).toBe(false);
+    expect(isPublicPath(`${p}/`, 'GET')).toBe(true); // tolerates a single trailing slash
+  });
+
+  it('allows GET /api/estimate/samples (featured real-job gallery) but keeps other methods operator-only (self-serve S48)', () => {
+    const p = '/api/estimate/samples';
+    expect(isPublicPath(p, 'GET')).toBe(true);
+    expect(isPublicPath(p)).toBe(true); // method defaults to GET
+    expect(isPublicPath(p, 'POST')).toBe(false);
+    expect(isPublicPath(`${p}/`, 'GET')).toBe(true); // tolerates a single trailing slash
   });
 
   // #195 — the non-lead website forms are iframed on yulelovelights.com, so the
