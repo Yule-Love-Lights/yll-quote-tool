@@ -272,6 +272,27 @@ function channelDeliveryPhrase(
   if (info.classification === 'failed') return `${label} failed`;
   return `${label} delivery is unconfirmed`;
 }
+
+// Row 269 fix round FIX 4 (technical MED — unchecked `as` cast at the
+// response boundary): the alreadySent handler used to do
+// `data.channelOutcomes as {...} | undefined` with zero runtime validation,
+// inconsistent with this SAME function's sibling failedChannels handling
+// (Array.isArray(...).filter(...) a few lines above it). Not reachable in
+// normal operation today — the route only ever writes this exact shape —
+// but if `error` were ever a truthy non-string, isTimeoutHedgedFailure's
+// `.includes` call would throw a TypeError inside the try block and turn a
+// benign "already sent" response into a hard "Send failed: ...
+// .includes is not a function" with no retry affordance at all. Mirrors
+// sanitizePrunedMiniGroups above: defense-in-depth + consistency with the
+// neighbouring code, not a schema library.
+function parseChannelOutcomeEntry(raw: unknown): { outcome: 'sent' | 'failed'; error: string | null; at: string } | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (r.outcome !== 'sent' && r.outcome !== 'failed') return null;
+  if (typeof r.error !== 'string' && r.error !== null) return null;
+  if (typeof r.at !== 'string') return null;
+  return { outcome: r.outcome, error: r.error, at: r.at };
+}
 // #741 defect 5: prunedMiniGroups previously trusted `Array.isArray` alone,
 // then the render below dereferences g.surface/g.stringCount per element — a
 // malformed element (from either the seed-analysis or photo-delete response)
@@ -3121,12 +3142,11 @@ export default function QuoteBuilder({
       if (data.alreadySent) {
         setSendStatus('already-sent');
         setAlreadySentAt(typeof data.sentAt === 'string' ? data.sentAt : null);
-        const channelOutcomes = data.channelOutcomes as
-          | { sms: { outcome: 'sent' | 'failed'; error: string | null; at: string } | null;
-              email: { outcome: 'sent' | 'failed'; error: string | null; at: string } | null }
-          | undefined;
-        const smsEntry = channelOutcomes?.sms ?? null;
-        const emailEntry = channelOutcomes?.email ?? null;
+        // Row 269 fix round FIX 4: parseChannelOutcomeEntry validates each
+        // entry instead of trusting an unchecked `as` cast — see that
+        // function's own comment above for why.
+        const smsEntry = parseChannelOutcomeEntry(data.channelOutcomes?.sms);
+        const emailEntry = parseChannelOutcomeEntry(data.channelOutcomes?.email);
         const smsClass = classifyChannelOutcome(smsEntry);
         const emailClass = classifyChannelOutcome(emailEntry);
         setAlreadySentChannels({
