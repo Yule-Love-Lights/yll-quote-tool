@@ -29,6 +29,14 @@
 -- HOW TO APPLY: safe/additive per AGENTS.md's migration-application default
 -- (nullable column-add plus a unique index that cannot collide - every
 -- existing row is NULL and a partial index skips NULLs).
+--
+-- APPLIED to prod 2026-08-16 and verified by a real query, not the tool's
+-- success message: column present as nullable `uuid`, the partial unique index
+-- present with its `WHERE (auth_user_id IS NOT NULL)` predicate, the column
+-- comment attached, 4 crew rows and 0 linked (expected - no crew logins exist
+-- yet). It was applied a few hours after the PR merged because the Supabase MCP
+-- had dropped mid-session; the SQL applied was verified byte-identical to
+-- master's copy of this file first.
 -- =====================================================================
 
 alter table public.crew_members
