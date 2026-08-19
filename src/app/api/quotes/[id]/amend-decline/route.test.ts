@@ -2,13 +2,30 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 import type { AmendmentTrailEntry } from '@/lib/amend';
 
-const { sbRef } = vi.hoisted(() => ({ sbRef: { current: null as unknown } }));
+const { sbRef, getJobByQuoteMock, getInvoiceByJobMock, resyncInvoiceToAgreedTotalMock } = vi.hoisted(() => ({
+  sbRef: { current: null as unknown },
+  getJobByQuoteMock: vi.fn(async (): Promise<unknown> => null),
+  getInvoiceByJobMock: vi.fn(async (): Promise<unknown> => null),
+  resyncInvoiceToAgreedTotalMock: vi.fn(async () => ({ invoicedBalance: null, invoicedTotal: null })),
+}));
 
 vi.mock('@/lib/supabase', () => ({
   isSupabaseServiceConfigured: () => true,
   getSupabaseServiceClient: () => sbRef.current,
 }));
 vi.mock('@/lib/rateLimit', () => ({ rateLimitResponse: () => null }));
+// FIX2: the invoice re-sync's own DB reads/writes are covered by
+// quoteAmendInvoiceSync's OWN unit tests + amend/route.test.ts (same shared
+// function); this route's tests verify WHEN it's called and with what,
+// mocking getJobByQuote/getInvoiceByJob (else the real implementations would
+// hit this file's Supabase fake, which doesn't implement .maybeSingle()) and
+// the resync call itself.
+vi.mock('@/lib/jobs', () => ({ getJobByQuote: getJobByQuoteMock }));
+vi.mock('@/lib/invoices', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/invoices')>();
+  return { ...actual, getInvoiceByJob: getInvoiceByJobMock };
+});
+vi.mock('@/lib/quoteAmendInvoiceSync', () => ({ resyncInvoiceToAgreedTotal: resyncInvoiceToAgreedTotalMock }));
 
 import { POST } from './route';
 
@@ -294,5 +311,131 @@ describe('POST /api/quotes/[id]/amend-decline', () => {
     const json = await res.json();
     expect(res.status).toBe(200);
     expect(json.stillBlocksSettlement).toBe(false);
+  });
+});
+
+// FIX2 (review HIGH): before this fix, a decline never touched the invoice —
+// on an already-invoiced order it stayed frozen at the rejected figures. The
+// re-sync's OWN money math is covered by quoteAmendInvoiceSync (the shared
+// function) via amend/route.test.ts's existing suite; these tests verify
+// WHEN this route calls it and with what.
+describe('POST /api/quotes/[id]/amend-decline — invoice re-sync (FIX2)', () => {
+  const RESULT = { subtotalBeforeDiscount: 3200, discountAmount: 0, taxAmount: 0, total: 3200 };
+
+  it('does not attempt a resync when the quote has no job at all', async () => {
+    const { client } = makeSb({
+      ...bookedQuote({ amendments: [amendment] }),
+      result: RESULT,
+      deposit_amount_usd: 1000,
+    });
+    sbRef.current = client;
+    getJobByQuoteMock.mockResolvedValueOnce(null);
+
+    const res = await POST(req({ amendedAt: AMENDED_AT }), ctx);
+    expect(res.status).toBe(200);
+    expect(getInvoiceByJobMock).not.toHaveBeenCalled();
+    expect(resyncInvoiceToAgreedTotalMock).not.toHaveBeenCalled();
+  });
+
+  it('does not attempt a resync when the job has no invoice yet', async () => {
+    const { client } = makeSb({
+      ...bookedQuote({ amendments: [amendment] }),
+      result: RESULT,
+      deposit_amount_usd: 1000,
+    });
+    sbRef.current = client;
+    getJobByQuoteMock.mockResolvedValueOnce({ id: 'job-1' });
+    getInvoiceByJobMock.mockResolvedValueOnce(null);
+
+    const res = await POST(req({ amendedAt: AMENDED_AT }), ctx);
+    expect(res.status).toBe(200);
+    expect(resyncInvoiceToAgreedTotalMock).not.toHaveBeenCalled();
+  });
+
+  it('skips a CANCELLED invoice (never resurrects it)', async () => {
+    const { client } = makeSb({
+      ...bookedQuote({ amendments: [amendment] }),
+      result: RESULT,
+      deposit_amount_usd: 1000,
+    });
+    sbRef.current = client;
+    getJobByQuoteMock.mockResolvedValueOnce({ id: 'job-1' });
+    getInvoiceByJobMock.mockResolvedValueOnce({ id: 'inv-1', status: 'cancelled' });
+
+    const res = await POST(req({ amendedAt: AMENDED_AT }), ctx);
+    expect(res.status).toBe(200);
+    expect(resyncInvoiceToAgreedTotalMock).not.toHaveBeenCalled();
+  });
+
+  it('re-syncs to the now-effective (post-decline) agreed total — falls back to the prior selection', async () => {
+    // customerSelection $2,000 (the original approval); the sole amendment
+    // proposed $2,400 and IS declined here. Post-decline, resolveAgreedTotal
+    // skips the declined entry (FIX1) and lands back on the $2,000 selection —
+    // NOT the $2,400 the customer just refused.
+    const snapshot = { customerSelection: { currentTotalUsd: 2000 }, amendments: [amendment] };
+    const { client } = makeSb({ ...bookedQuote(snapshot), result: RESULT, deposit_amount_usd: 1000 });
+    sbRef.current = client;
+    getJobByQuoteMock.mockResolvedValueOnce({ id: 'job-1' });
+    const invoiceRow = { id: 'inv-1', status: 'awaiting_payment', tax_overridden: false };
+    getInvoiceByJobMock.mockResolvedValueOnce(invoiceRow);
+
+    const res = await POST(req({ amendedAt: AMENDED_AT }), ctx);
+    expect(res.status).toBe(200);
+    expect(resyncInvoiceToAgreedTotalMock).toHaveBeenCalledTimes(1);
+    expect(resyncInvoiceToAgreedTotalMock).toHaveBeenCalledWith({
+      jobId: 'job-1',
+      invoice: invoiceRow,
+      result: RESULT,
+      depositPaid: 1000,
+      newTotal: 2000,
+      logPrefix: '[api/quotes/:id/amend-decline]',
+      retiredReason: 'amend-decline-reopen',
+    });
+  });
+
+  it('re-syncs to an earlier ACCEPTED amendment when the latest (declined) one is skipped', async () => {
+    const acceptedFirst: AmendmentTrailEntry = {
+      ...amendment,
+      amended_at: '2026-07-10T00:00:00.000Z',
+      new_total: 2400,
+      consent: { status: 'accepted', accepted_at: '2026-07-10T01:00:00.000Z', signature: { name: 'Jordan', kind: 'typed', value: 'Jordan', signed_at: '2026-07-10T01:00:00.000Z', ip: null } },
+    };
+    const declinedSecond: AmendmentTrailEntry = {
+      ...amendment,
+      amended_at: AMENDED_AT,
+      previous_total: 2400,
+      new_total: 2900,
+      delta: 500,
+    };
+    const snapshot = { amendments: [acceptedFirst, declinedSecond] };
+    const { client } = makeSb({ ...bookedQuote(snapshot), result: RESULT, deposit_amount_usd: 1000 });
+    sbRef.current = client;
+    getJobByQuoteMock.mockResolvedValueOnce({ id: 'job-1' });
+    const invoiceRow = { id: 'inv-1', status: 'awaiting_payment', tax_overridden: false };
+    getInvoiceByJobMock.mockResolvedValueOnce(invoiceRow);
+
+    const res = await POST(req({ amendedAt: AMENDED_AT }), ctx);
+    expect(res.status).toBe(200);
+    expect(resyncInvoiceToAgreedTotalMock).toHaveBeenCalledWith(
+      expect.objectContaining({ newTotal: 2400 }), // the earlier accepted amendment, not the declined $2,900
+    );
+  });
+
+  it('does not attempt a resync for the idempotent already-declined short-circuit', async () => {
+    const alreadyDeclined: AmendmentTrailEntry = {
+      ...amendment,
+      consent: { status: 'declined', declined_at: '2026-07-18T13:00:00.000Z', ip: null },
+    };
+    const { client } = makeSb({
+      ...bookedQuote({ amendments: [alreadyDeclined] }),
+      result: RESULT,
+      deposit_amount_usd: 1000,
+    });
+    sbRef.current = client;
+
+    const res = await POST(req({ amendedAt: AMENDED_AT }), ctx);
+    expect(res.status).toBe(200);
+    expect(getJobByQuoteMock).not.toHaveBeenCalled();
+    expect(resyncInvoiceToAgreedTotalMock).not.toHaveBeenCalled();
   });
 });

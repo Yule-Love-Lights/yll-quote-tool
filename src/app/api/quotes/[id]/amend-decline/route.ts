@@ -7,14 +7,20 @@
 // it on the portal, and had to phone in. This endpoint records that refusal.
 //
 // What this endpoint deliberately does NOT do: it does NOT re-price the
-// order, touch the invoice, or change the quote's lifecycle status. Staff
-// priced the change in the builder; only staff can un-price it (a new
-// amendment). This just marks the latest amendment `consent: {status:
-// 'declined', ...}` so blocksSettlement (src/lib/amend.ts) keeps blocking the
-// balance exactly as hard as it did while pending — a decline is NOT
-// consent, so it must never become collectable. See amend.ts's
-// isAmendmentConsentPending/blocksSettlement doc comments for the full
-// reasoning; this route does not re-derive it.
+// order or change the quote's lifecycle status. Staff priced the change in
+// the builder; only staff can un-price it (a new amendment). This marks the
+// latest amendment `consent: {status: 'declined', ...}` so blocksSettlement
+// (src/lib/amend.ts) keeps blocking the balance exactly as hard as it did
+// while pending — a decline is NOT consent, so it must never become
+// collectable. See amend.ts's isAmendmentConsentPending/blocksSettlement doc
+// comments for the full reasoning; this route does not re-derive it.
+//
+// FIX2 (review HIGH): it DOES, best-effort, re-sync the linked invoice (if
+// the job was completed) — /amend already does this on every recorded
+// amendment, but a decline used to leave the invoice frozen at the rejected
+// figures. Combined with the operator override on the collection routes,
+// that meant an operator could charge exactly the amount the customer
+// refused. Shared logic with /amend — src/lib/quoteAmendInvoiceSync.ts.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { rateLimitResponse } from '@/lib/rateLimit';
@@ -26,6 +32,10 @@ import {
   type AmendmentTrailEntry,
 } from '@/lib/amend';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
+import { getJobByQuote } from '@/lib/jobs';
+import { getInvoiceByJob, type InvoicePricingInput } from '@/lib/invoices';
+import { resolveAgreedTotal } from '@/lib/agreedTotal';
+import { resyncInvoiceToAgreedTotal } from '@/lib/quoteAmendInvoiceSync';
 
 export const runtime = 'nodejs';
 
@@ -46,6 +56,11 @@ type QuoteRow = {
   customer_approved_at: string | null;
   deposit_paid_at: string | null;
   approval_snapshot: ApprovalSnapshot | null;
+  // FIX2: the full pricing result + the actually-paid deposit — needed to
+  // re-sync the linked invoice (resolveAgreedTotal + resyncInvoiceToAgreedTotal),
+  // same fields amend/route.ts's own QuoteRow selects for the same reason.
+  result: (InvoicePricingInput & { total: number }) | null;
+  deposit_amount_usd: number | null;
 };
 
 function clientIp(req: NextRequest): string | null {
@@ -97,7 +112,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: readError } = await sb
     .from('quotes')
-    .select('id, status, quote_sent_at, customer_approved_at, deposit_paid_at, approval_snapshot')
+    .select(
+      'id, status, quote_sent_at, customer_approved_at, deposit_paid_at, approval_snapshot, result, deposit_amount_usd',
+    )
     .eq('id', id)
     .single<QuoteRow>();
   if (readError || !quote) {
@@ -182,6 +199,31 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       { error: 'The amendment changed while you were responding. Refresh and try again.', code: 'concurrent-amendment' },
       { status: 409 },
     );
+  }
+
+  // FIX2 (review HIGH): re-sync the linked invoice (if the job was completed)
+  // to the now-effective agreed total — resolveAgreedTotal on the JUST-WRITTEN
+  // snapshot skips the entry we declined (FIX1), so this naturally resolves
+  // back to whatever the customer last actually agreed to. Best-effort: the
+  // decline is already recorded above; a sync failure here must never make
+  // this endpoint report a failure back to the customer. getJobByQuote /
+  // getInvoiceByJob already fail safe to null on a read error (same contract
+  // /amend relies on), so no extra try/catch is needed beyond that.
+  if (quote.result) {
+    const job = await getJobByQuote(id);
+    const invoice = job ? await getInvoiceByJob(job.id) : null;
+    if (invoice && invoice.status !== 'cancelled') {
+      const newTotal = resolveAgreedTotal(nextSnapshot, quote.result);
+      await resyncInvoiceToAgreedTotal({
+        jobId: job!.id,
+        invoice,
+        result: quote.result,
+        depositPaid: quote.deposit_amount_usd ?? 0,
+        newTotal,
+        logPrefix: '[api/quotes/:id/amend-decline]',
+        retiredReason: 'amend-decline-reopen',
+      });
+    }
   }
 
   return NextResponse.json({
