@@ -17,6 +17,7 @@
 // can't double-credit — it stays pending until a real quote (a 'mention' row)
 // exists for that lead and gets booked.
 
+import { after } from 'next/server';
 import { getSupabaseServiceClient } from './supabase';
 import { randomBytes } from 'crypto';
 import { upsertContactCustomField, isHighLevelConfigured, sendSms, sendEmail } from './integrations/highlevel';
@@ -94,6 +95,49 @@ const MAX_CODE_GEN_ATTEMPTS = 5;
 // ─── Ensure / lookup ────────────────────────────────────────────────────────
 
 /**
+ * Review fix 4: cheap pre-check for a caller that needs to know, BEFORE
+ * calling ensureReferralCode, whether this would be a first-time mint. Reads
+ * the exact same column ensureReferralCode itself checks below
+ * (`if (existing.referral_code) return existing.referral_code;`), so "false"
+ * here lines up exactly with "ensureReferralCode is about to mint a new
+ * code" there. A separate read rather than widening ensureReferralCode's own
+ * return shape, so its 7+ existing callers (the portal approved page, the
+ * customer dashboard panel, three webhook/job routes) are unaffected.
+ *
+ * Not atomic by itself (this read and the later ensureReferralCode call are
+ * two separate round-trips), but for its one current caller (POST
+ * /api/referrals/request-link) the obvious risk, a same-email double
+ * submission, is already closed: a per-normalized-email cooldown
+ * (checkRateLimitByKey) runs synchronously, with no await of its own,
+ * before this is ever reached, so only one request per MATCHED GoHighLevel
+ * contact can ever get past the cooldown. A match requires the submitted
+ * email to equal that contact's own stored email exactly, so two requests
+ * that share a contact always share a cooldown key too, and the loser
+ * returns before reaching here.
+ *
+ * What remains is narrower: two DIFFERENT GoHighLevel contacts (their own
+ * emails, their own cooldown keys) that findOrCreateCustomer resolves onto
+ * the SAME customer row. Even that doesn't collide, because the caller
+ * stamps the enrollment date on each request's own matched contact id, not
+ * on the shared row, so two near-simultaneous "first" reads produce two
+ * independent, correct per-contact stamps rather than one field
+ * overwritten. The one value that IS shared, referral_code itself, is
+ * protected separately by ensureReferralCode's own conditional claim. A
+ * future caller without an equivalent per-identity gate would need to
+ * revisit this.
+ */
+export async function hasReferralCode(customerId: string): Promise<boolean> {
+  const sb = svc();
+  if (!sb) return false;
+  const { data } = await sb
+    .from('customers')
+    .select('referral_code')
+    .eq('id', customerId)
+    .maybeSingle<{ referral_code: string | null }>();
+  return !!data?.referral_code;
+}
+
+/**
  * Create-if-missing the customer's referral code, race-safe: two concurrent
  * callers for the same customer converge on the SAME code (a conditional
  * UPDATE ... WHERE referral_code IS NULL wins at most once; the loser re-reads
@@ -143,7 +187,20 @@ export async function ensureReferralCode(customerId: string): Promise<string | n
     }
     if (claimed) {
       // We won the race — best-effort GHL stamp, first-creation only.
-      void stampReferralLinkOnContact(existing.hl_contact_id, code);
+      //
+      // Review fix 8: nested after() (Next.js docs: after() can be nested
+      // inside other after() calls), not a detached void call. A bare void
+      // here would NOT be covered by a caller's own invocation-lifetime
+      // extension: per node_modules/next/dist/docs/.../after.md, waitUntil
+      // only extends the invocation for the promise(s) actually passed to
+      // after(), and a detached child promise started inside an AWAITED
+      // after() task is not one of them, since the outer task's own promise
+      // can resolve before the detached one finishes. Nesting after() here
+      // registers this call with whatever waitUntil the CURRENT request
+      // context provides (Route Handlers, Server Components), same as any
+      // top-level after() call, with no added latency for any caller (this
+      // still doesn't block ensureReferralCode's own return).
+      after(() => stampReferralLinkOnContact(existing.hl_contact_id, code));
       return code;
     }
     // Lost the race (a concurrent call already set one) — re-read the winner's code.
