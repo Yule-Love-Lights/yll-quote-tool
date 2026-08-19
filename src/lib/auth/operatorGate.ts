@@ -49,14 +49,17 @@ const PUBLIC_QUOTE_SUBROUTES_BY_METHOD: Record<string, string> = {
   'color-change-request': 'POST',
 };
 
-// The embeddable non-lead form pages (#195), listed one by one rather than by
-// prefix so adding a form is a deliberate act. These render an empty form and
-// read no customer record, which is why they are safe to serve signed-out.
+// Public, empty-form pages listed one by one rather than by prefix, so
+// adding a page is a deliberate act. These read no customer record, which is
+// why they are safe to serve signed-out. The first four are the embeddable
+// non-lead forms (#195); referral-link is the self-serve referral link
+// request page (naldo/referral-self-serve).
 const PUBLIC_FORM_PAGES = new Set([
   '/forms/newsletter',
   '/forms/careers',
   '/forms/intern',
   '/forms/nomination',
+  '/referral-link',
 ]);
 
 // Exact public API paths (webhooks + crons + the login surface).
@@ -178,6 +181,15 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   // itself. POST only; other methods on this exact path stay operator-gated
   // (mirrors the offered-colors GET-only carve-out, S26).
   if (method.toUpperCase() === 'POST' && path === '/api/referrals/submit') {
+    return true;
+  }
+
+  // POST /api/referrals/request-link is the self-serve referral link request
+  // (naldo/referral-self-serve): a visitor types an email, and the route
+  // rate-limits, honeypot-checks, and validates before doing anything. POST
+  // only; other methods on this exact path stay operator-gated (mirrors the
+  // /api/referrals/submit carve-out directly above).
+  if (method.toUpperCase() === 'POST' && path === '/api/referrals/request-link') {
     return true;
   }
 

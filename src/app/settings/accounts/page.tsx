@@ -11,6 +11,7 @@ import { SettingsSubNav } from '@/components/dashboard/SettingsSubNav';
 import { getOperator } from '@/lib/auth/supabaseServer';
 import { AccountsManager } from '@/components/settings/AccountsManager';
 import { ChangeMyPassword } from '@/components/settings/ChangeMyPassword';
+import { CrewLogins } from '@/components/settings/CrewLogins';
 
 export const dynamic = 'force-dynamic';
 

@@ -18,14 +18,15 @@ import { appBaseUrl } from '@/lib/integrations/telegramNotify';
 import { notifyTelegramAudience } from '@/lib/integrations/telegramRouting';
 import { lowStockMessage } from '@/lib/integrations/telegramMessages';
 import { newlyLowSkus, getLastLowStockNotified, recordLowStockNotified } from '@/lib/inventory/lowStockNotify';
+import { cronDenial } from '@/lib/auth/cronAuth';
 
 export const runtime = 'nodejs';
 
 export async function GET(req: NextRequest) {
-  const secret = process.env.CRON_SECRET;
-  if (!secret || !safeEqual(req.headers.get('authorization') ?? undefined, `Bearer ${secret}`)) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  // Shared guard: 503 (naming the variable) when CRON_SECRET is unset, 401 when
+  // the token is merely wrong. See src/lib/auth/cronAuth.ts for why.
+  const denied = cronDenial(req.headers.get('authorization'));
+  if (denied) return denied;
   if (!isSupabaseServiceConfigured()) {
     return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
   }

@@ -1,16 +1,16 @@
 'use client';
 
-// Referral program (#41) — the /refer/<code> landing page's lead-capture form.
+// Referral program (#41): the /refer/<code> landing page's lead-capture form.
 // POSTs to /api/referrals/submit (public, rate-limited, re-validates the code
 // server-side). Fires `referral_form_submitted` via the fail-open PostHog
-// track() on a successful submit — mirrors QuoteViewTracker's usage.
+// track() on a successful submit. Mirrors QuoteViewTracker's usage.
 //
 // #41 adversarial-review LOW fix: attribute by `code` alone (see
-// ReferralPageTracker's own note) — the route re-derives the referrer from
+// ReferralPageTracker's own note): the route re-derives the referrer from
 // the code server-side anyway, so the client never needs their customer id.
 //
 // #41 V2: the submit response optionally carries a `preview` (the "see your
-// house in lights instantly" AI auto-analyze — dormant behind
+// house in lights instantly" AI auto-analyze, dormant behind
 // REFERRAL_AUTO_ANALYZE_ENABLED, see src/lib/referralAutoAnalyze.ts). When
 // present, ReferralSuccessScreen shows the analyzed photo instead of the
 // plain "we'll text you" copy. `preview` is only a type-only import here (no
@@ -29,13 +29,13 @@ const labelClass = 'block text-[11px] font-semibold uppercase tracking-[0.18em] 
 
 /**
  * The post-submit confirmation. Pure-render (no hooks) so it can be unit
- * tested with renderToStaticMarkup, same pattern as ReferralSection.test.tsx
- * — no jsdom / testing-library needed to assert the exact customer copy.
+ * tested with renderToStaticMarkup, same pattern as ReferralSection.test.tsx.
+ * No jsdom / testing-library needed to assert the exact customer copy.
  *
  * Positive-match on `preview`: the analyzed-photo screen only ever shows when
  * the auto-analyze actually produced a result. Every other case (flag off,
  * capped, deduped, no address, analyzer failure) falls through to the
- * original "we'll text you" copy — unchanged from before #41 V2.
+ * original "we'll text you" copy, unchanged from before #41 V2.
  */
 export function ReferralSuccessScreen({
   preview,
@@ -71,14 +71,14 @@ export function ReferralSuccessScreen({
         We are on it.
       </p>
       <p className="mt-3 text-[15px] text-[#A89F87] leading-[1.6]">
-        Expect a text from us today to set up your free light preview.
+        Expect a text from us today, and we will get you a free quote.
       </p>
     </div>
   );
 }
 
 // #41 adversarial-review LOW fix (kept from PR2): no referrerCustomerId prop
-// here — the client never needs the referrer's customer id, only `code`.
+// here: the client never needs the referrer's customer id, only `code`.
 export function ReferralForm({
   code,
   friendSpritzers,
@@ -198,7 +198,7 @@ export function ReferralForm({
         disabled={status === 'submitting'}
         className="mt-2 inline-flex items-center justify-center px-5 py-3.5 rounded-xl bg-[#FFB744] text-[#1A1206] font-semibold text-[15px] cursor-pointer transition-colors duration-200 hover:bg-[#FFC565] disabled:opacity-60 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0D1519]"
       >
-        {status === 'submitting' ? 'Sending...' : 'See my house in lights'}
+        {status === 'submitting' ? 'Sending...' : 'Get my free quote'}
       </button>
     </form>
   );
