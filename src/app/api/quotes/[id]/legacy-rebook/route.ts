@@ -70,6 +70,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // #243: reject turning ON before any write, when the quote's own service
   // type can't carry the tag — see the /nce route's sibling comment for why
   // this is a separate pre-write read rather than folded into the update.
+  // gateServiceType is hoisted out of this block (fix-round LOW below, same
+  // sibling-guard parity as the /nce route's own CAS) so the write can CAS
+  // against the EXACT value this gate just approved.
+  let gateServiceType: string | null | undefined;
   if (legacyRebook) {
     const { data: gateRow, error: gateError } = await sb
       .from('quotes')
@@ -93,12 +97,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         { status: 400 },
       );
     }
+    gateServiceType = gateRow.service_type;
   }
 
-  const { data, error } = await sb
-    .from('quotes')
-    .update({ legacy_rebook: legacyRebook })
-    .eq('id', id)
+  let updateQuery = sb.from('quotes').update({ legacy_rebook: legacyRebook }).eq('id', id);
+  // Fix-round LOW (TOCTOU, sibling-guard parity with the /nce route's own
+  // fix): CAS the write against the EXACT service_type value the ON-gate
+  // above just approved — closes the narrow window where a concurrent
+  // service-type change lands between the read and this write. `.is(...)`
+  // for the null case (a SQL NULL never matches `.eq('col', null)`), mirrors
+  // canCarryNceOrYllNeighborTag's own null-is-eligible rule. Only applied on
+  // the ON path — turning OFF is unconditionally allowed regardless of
+  // service_type (see the header comment).
+  if (legacyRebook) {
+    updateQuery =
+      gateServiceType === null
+        ? updateQuery.is('service_type', null)
+        : updateQuery.eq('service_type', gateServiceType as string);
+  }
+  const { data, error } = await updateQuery
     // quote_sent_at + customer_id ridden along so the propagation check below
     // needs no second round trip (#198). is_test ridden along too (review
     // fix, admin MED, S34 #198 review) — defense-in-depth, see the sibling
@@ -126,6 +143,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Failed to update the quote' }, { status: 500 });
   }
   if (!data) {
+    // The ON-path CAS above can legitimately produce 0 rows for a REASON
+    // distinct from "quote not found" — the service type changed between the
+    // gate read and this write (sibling-guard parity with the /nce route's
+    // own gate-race response). Name both possibilities rather than assert
+    // "not found" when it might not be true.
+    if (legacyRebook) {
+      return NextResponse.json(
+        {
+          error:
+            'Could not set YLL Neighbor — the quote was not found, or its service type changed at the same time. Reload and try again.',
+          code: 'gate-race',
+        },
+        { status: 409 },
+      );
+    }
     return NextResponse.json({ error: 'Quote not found' }, { status: 404 });
   }
 

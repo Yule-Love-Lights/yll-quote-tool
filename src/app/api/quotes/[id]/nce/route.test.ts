@@ -83,9 +83,23 @@ function makeSb(
   } | null,
   opts: {
     depositWriteResult?: { data: Array<{ id: string }> | null; error: { message: string } | null };
+    // Fix-round LOW (TOCTOU) test hook: simulate the #243 ON-gate's CAS
+    // losing a race — service_type changed between the gate read and the
+    // main is_nce write, so that write's own .eq/.is('service_type', ...)
+    // matches 0 rows. Only takes effect on the MAIN update's maybeSingle
+    // call (see the updatePayloads.length check below) — never the gate
+    // read itself (or the gate could never approve turning ON to begin
+    // with) and never the deposit-write CAS (a separate, already-tested
+    // mechanism via depositWriteResult above).
+    simulateServiceTypeRace?: boolean;
   } = {},
 ) {
   const updatePayloads: Array<Record<string, unknown>> = [];
+  // Tracks every .eq/.is filter call, tagged with which update (by index
+  // into updatePayloads at call time) it applied to — lets a test assert
+  // the CAS actually filtered on 'service_type', not just that SOME filter
+  // ran (0 = calls before any update, e.g. the gate read's .eq('id', id)).
+  const filterCalls: Array<{ method: 'eq' | 'is'; col: string; val: unknown; updateIndex: number }> = [];
   const builder: Record<string, unknown> = {};
   Object.assign(builder, {
     from: () => builder,
@@ -93,8 +107,14 @@ function makeSb(
       updatePayloads.push(payload);
       return builder;
     },
-    eq: () => builder,
-    is: () => builder,
+    eq: (col: string, val: unknown) => {
+      filterCalls.push({ method: 'eq', col, val, updateIndex: updatePayloads.length });
+      return builder;
+    },
+    is: (col: string, val: unknown) => {
+      filterCalls.push({ method: 'is', col, val, updateIndex: updatePayloads.length });
+      return builder;
+    },
     select: (cols?: string) => {
       // The SECOND (deposit-default) update's terminal .select('id') — the
       // FIRST update's own .select(<long column list>) never passes 'id' alone.
@@ -107,6 +127,16 @@ function makeSb(
     },
     maybeSingle: async () => {
       if (!row) return { data: null, error: null };
+      // updatePayloads.length === 1 identifies THIS call as the main
+      // update's own maybeSingle (the gate read's maybeSingle runs with
+      // ZERO update payloads pushed yet).
+      if (
+        opts.simulateServiceTypeRace &&
+        updatePayloads.length === 1 &&
+        updatePayloads[0]?.is_nce === true
+      ) {
+        return { data: null, error: null };
+      }
       const merged = { ...row, ...(updatePayloads[0] ?? {}) };
       return {
         data: {
@@ -129,7 +159,7 @@ function makeSb(
       };
     },
   });
-  return { client: builder, updatePayloads };
+  return { client: builder, updatePayloads, filterCalls };
 }
 
 beforeEach(() => {
@@ -289,6 +319,80 @@ describe('POST /api/quotes/[id]/nce — service-type gate (#243)', () => {
     expect(res.status).toBe(200);
     expect(json).toEqual({ ok: true, isNce: false });
     expect(updatePayloads[0]).toEqual({ is_nce: false });
+  });
+});
+
+// Fix-round LOW (TOCTOU): the #243 ON-gate above reads service_type, then
+// the write previously landed unconditionally — a concurrent service-type
+// change between the read and the write could land is_nce:true on a
+// now-ineligible quote. The write now CASes against the exact value the gate
+// just approved.
+describe('POST /api/quotes/[id]/nce — service-type write CAS (fix-round LOW, TOCTOU)', () => {
+  it('CASes the ON write against service_type — .eq for a concrete value', async () => {
+    const { client, filterCalls } = makeSb({
+      id: VALID_UUID,
+      is_nce: false,
+      service_type: 'holiday',
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ isNce: true }), makeParams(VALID_UUID));
+    expect(res.status).toBe(200);
+    // updateIndex === 1 = filters applied to the MAIN (is_nce) update, not
+    // the gate read (updateIndex 0) or a later deposit-default write.
+    expect(filterCalls).toContainEqual({
+      method: 'eq',
+      col: 'service_type',
+      val: 'holiday',
+      updateIndex: 1,
+    });
+  });
+
+  it('CASes the ON write against service_type — .is for the null case (mirrors canCarryNceOrYllNeighborTag\'s null-is-eligible rule)', async () => {
+    const { client, filterCalls } = makeSb({
+      id: VALID_UUID,
+      is_nce: false,
+      service_type: null,
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ isNce: true }), makeParams(VALID_UUID));
+    expect(res.status).toBe(200);
+    expect(filterCalls).toContainEqual({
+      method: 'is',
+      col: 'service_type',
+      val: null,
+      updateIndex: 1,
+    });
+  });
+
+  it('does NOT CAS the OFF write on service_type — turning OFF stays unconditional', async () => {
+    const { client, filterCalls } = makeSb({
+      id: VALID_UUID,
+      is_nce: true,
+      service_type: 'permanent',
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ isNce: false }), makeParams(VALID_UUID));
+    expect(res.status).toBe(200);
+    expect(filterCalls.some((c) => c.col === 'service_type' && c.updateIndex === 1)).toBe(false);
+  });
+
+  it('409s with code gate-race when service_type changes between the gate read and the write', async () => {
+    const { client, updatePayloads } = makeSb(
+      { id: VALID_UUID, is_nce: false, service_type: 'holiday' },
+      { simulateServiceTypeRace: true },
+    );
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ isNce: true }), makeParams(VALID_UUID));
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('gate-race');
+    // The write was attempted once (the CAS'd main update) and never reached
+    // the #199 deposit-default write — data was null, so that section never runs.
+    expect(updatePayloads).toHaveLength(1);
   });
 });
 
