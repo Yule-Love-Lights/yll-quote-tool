@@ -2357,3 +2357,28 @@ drop trigger if exists job_assignments_updated_at on public.job_assignments;
 create trigger job_assignments_updated_at
   before update on public.job_assignments
   for each row execute function public.job_assignments_set_updated_at();
+
+
+-- ---------------------------------------------------------------------
+-- quotes.browsing_selection / browsing_selection_updated_at (2026-08-19,
+-- migrations/2026-08-19-quotes-browsing-selection.sql) — ledger row 239: the
+-- customer's LIVE, still-editable portal selection (packageId/
+-- selectedItemIds/rushSelected/takedownSelected/installTiming/colorSchemeId/
+-- customPattern/permanentEffect), so the portal remembers what a customer
+-- picked across visits (device change) and staff can see what a not-yet-
+-- approved customer is leaning toward. Distinct from approval_snapshot (the
+-- FROZEN agreement) — this column is written only pre-approval by
+-- /api/quotes/[id]/selection and never trusted for money math; a saved
+-- selection is reconciled against the quote's CURRENT packages/lineItems on
+-- read (src/lib/portal/adapter.ts's resolveBrowsingSelectionSeed) before it
+-- seeds anything, the same way approval selections already are. Both
+-- nullable — no backfill needed.
+-- ---------------------------------------------------------------------
+alter table public.quotes
+  add column if not exists browsing_selection jsonb;
+
+alter table public.quotes
+  add column if not exists browsing_selection_updated_at timestamptz;
+
+comment on column public.quotes.browsing_selection is
+  'Customer''s LIVE, still-editable portal selection (ledger row 239) — packageId/selectedItemIds/rushSelected/takedownSelected/installTiming/colorSchemeId/customPattern/permanentEffect. NOT the frozen agreement (see approval_snapshot); never trusted for money math; reconciled against live packages/lineItems on read (resolveBrowsingSelectionSeed). Written only pre-approval by /api/quotes/[id]/selection.';
