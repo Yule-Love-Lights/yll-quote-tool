@@ -4313,6 +4313,47 @@ export default function QuoteBuilder({
                         // (the no-op re-click guard just above).
                         const { clearIsNce, clearLegacyRebook } =
                           clearNceOrNeighborOnServiceTypeSwitch(st, isNceRef.current, legacyRebookRef.current);
+                        // Fix-round MED: this auto-clear reverts a MONEY setting
+                        // (isNce's 40% deposit) with none of the disclosure the
+                        // manual chip-off click a few hundred lines up gives —
+                        // same end state, one path silent. Reuses the identical
+                        // legacyRebookConfirmMessage/nceConfirmMessage(turningOn:
+                        // false, ...) builders the manual click calls, so the
+                        // copy can never drift between the two paths — a staff
+                        // member sees the SAME "reverts your deposit from X% to
+                        // blank" / "won't move any existing GHL card" bullets
+                        // either way. Decision: confirm BEFORE, not a notice
+                        // after — this is a money revert, and the manual OFF
+                        // path already sets that bar. Declining aborts the WHOLE
+                        // type switch (return before any apply/setForm below),
+                        // never a partial state, because the #243 domain rule
+                        // above is non-discretionary — there is no "switch type
+                        // but keep the ineligible tag" outcome to decline into.
+                        // Silent when clearIsNce/clearLegacyRebook are both
+                        // false (nothing to disclose) or when nceConfirmMessage
+                        // itself has nothing to disclose (deposit unaffected,
+                        // never left draft) — exactly mirrors the manual click's
+                        // own `confirmMsg && !window.confirm(...)` gate.
+                        const clearMessages = [
+                          clearLegacyRebook ? legacyRebookConfirmMessage(false, quoteLeftDraft) : null,
+                          clearIsNce
+                            ? nceConfirmMessage(
+                                false,
+                                form.depositPercent,
+                                nceDepositLocked,
+                                nceDepositSetByRuleRef.current,
+                                quoteLeftDraft,
+                              )
+                            : null,
+                        ].filter((m): m is string => m != null);
+                        if (clearMessages.length > 0) {
+                          const switchConfirmMsg = [
+                            `Switching to ${SERVICE_TYPE_LABELS[st]} clears the tag(s) below — ${SERVICE_TYPE_LABELS[st]} can never carry NCE or YLL Neighbor:`,
+                            '',
+                            clearMessages.join('\n\n'),
+                          ].join('\n');
+                          if (!window.confirm(switchConfirmMsg)) return;
+                        }
                         if (clearIsNce) {
                           isNceTouchedRef.current = true;
                           applyIsNce(false);
