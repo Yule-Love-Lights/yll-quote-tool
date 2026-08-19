@@ -128,6 +128,43 @@ describe('parseSelectionBody', () => {
     expect(parsed?.permanentEffect).toBeUndefined();
   });
 
+  it('FIX B: drops an over-length entry from selectedItemIds/customPattern instead of storing it', () => {
+    const tooLong = 'x'.repeat(201); // MAX_STRING_LEN is 200
+    const parsed = parseSelectionBody({
+      ...VALID_BODY,
+      selectedItemIds: ['item-1', tooLong, 'item-2'],
+      customPattern: ['red', tooLong],
+    });
+    expect(parsed?.selectedItemIds).toEqual(['item-1', 'item-2']);
+    expect(parsed?.customPattern).toEqual(['red']);
+  });
+
+  it('FIX B: keeps a selectedItemIds/customPattern entry at exactly the 200-char boundary', () => {
+    const atLimit = 'x'.repeat(200);
+    const parsed = parseSelectionBody({
+      ...VALID_BODY,
+      selectedItemIds: [atLimit],
+      customPattern: [atLimit],
+    });
+    expect(parsed?.selectedItemIds).toEqual([atLimit]);
+    expect(parsed?.customPattern).toEqual([atLimit]);
+  });
+
+  it('FIX B: drops an over-length colorSchemeId instead of storing it', () => {
+    const parsed = parseSelectionBody({ ...VALID_BODY, colorSchemeId: 'x'.repeat(201) });
+    expect(parsed?.colorSchemeId).toBeUndefined();
+  });
+
+  it('FIX B: keeps a real-shaped colorSchemeId/selectedItemIds well under the cap (a scene-item id is 12 chars, a free-item/custom-color UUID is 36)', () => {
+    const parsed = parseSelectionBody({
+      ...VALID_BODY,
+      selectedItemIds: ['a1b2c3d4e5f6', '11111111-1111-1111-1111-111111111111'],
+      colorSchemeId: 'cool-white-faceted',
+    });
+    expect(parsed?.selectedItemIds).toEqual(['a1b2c3d4e5f6', '11111111-1111-1111-1111-111111111111']);
+    expect(parsed?.colorSchemeId).toBe('cool-white-faceted');
+  });
+
   it('omits optional fields entirely when absent (never writes them as undefined)', () => {
     const parsed = parseSelectionBody({
       packageId: 'A',

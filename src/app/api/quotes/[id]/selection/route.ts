@@ -55,6 +55,27 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const MAX_ITEM_IDS = 500;
 const MAX_PATTERN_COLORS = 100;
 
+// FIX B (technical lens, MED, row 239 fix round): the two caps above bound
+// how MANY ids/colors a payload can carry, but nothing capped how LONG each
+// individual string could be — this is a public, unauthenticated route (see
+// header), so anyone holding a quote link could post up to MAX_ITEM_IDS
+// multi-KB strings at 30/min, real jsonb write amplification the sibling
+// public routes (/view, /interested) never expose because they take no
+// attacker-shaped body at all.
+//
+// 200 is generous for every real value here: a scene-item id is
+// crypto.randomUUID() stripped of dashes and sliced to 12 chars (editor.ts's
+// genId), a free-item id is a full crypto.randomUUID() (36 chars,
+// free-items/route.ts), a colorSchemeId is either a fixed catalog slug (≤19
+// chars, design/colorSchemes.ts) or 'custom', and a customPattern entry is a
+// palette color id — either a built-in slug (≤19 chars,
+// editor-core/colors.ts) or a custom palette color's crypto.randomUUID() (36
+// chars, settings/page.tsx). 200 also matches this codebase's existing
+// convention for an id/name-shaped field elsewhere (estimate/contact's
+// MAX_LEN.name, the HighLevel attach route's contactName/contactEmail caps,
+// the Homeworks signed route's homeworksContractId cap — all 200).
+const MAX_STRING_LEN = 200;
+
 type QuoteRow = { id: string; customer_approved_at: string | null; quote_sent_at: string | null };
 
 type SelectionBody = {
@@ -82,12 +103,14 @@ export function parseSelectionBody(body: unknown): SelectionBody | null {
   if (packageId !== 'A' && packageId !== 'B' && packageId !== 'C' && packageId !== 'D') return null;
   if (!Array.isArray(b.selectedItemIds)) return null;
   const selectedItemIds = b.selectedItemIds
-    .filter((x): x is string => typeof x === 'string')
+    .filter((x): x is string => typeof x === 'string' && x.length <= MAX_STRING_LEN)
     .slice(0, MAX_ITEM_IDS);
   const installTiming =
     b.installTiming === 'september' || b.installTiming === 'october' ? b.installTiming : 'none';
   const customPattern = Array.isArray(b.customPattern)
-    ? b.customPattern.filter((x): x is string => typeof x === 'string').slice(0, MAX_PATTERN_COLORS)
+    ? b.customPattern
+        .filter((x): x is string => typeof x === 'string' && x.length <= MAX_STRING_LEN)
+        .slice(0, MAX_PATTERN_COLORS)
     : undefined;
   return {
     packageId,
@@ -95,7 +118,13 @@ export function parseSelectionBody(body: unknown): SelectionBody | null {
     rushSelected: b.rushSelected === true,
     takedownSelected: b.takedownSelected === true,
     installTiming,
-    ...(typeof b.colorSchemeId === 'string' ? { colorSchemeId: b.colorSchemeId } : {}),
+    // FIX B: an over-length colorSchemeId is dropped (same treatment as a
+    // non-string value) rather than truncated — a truncated id wouldn't match
+    // any real scheme anyway, and the read side already tolerates a missing
+    // colorSchemeId (falls back to the default scheme).
+    ...(typeof b.colorSchemeId === 'string' && b.colorSchemeId.length <= MAX_STRING_LEN
+      ? { colorSchemeId: b.colorSchemeId }
+      : {}),
     ...(customPattern ? { customPattern } : {}),
     ...(isPermanentEffect(b.permanentEffect) ? { permanentEffect: b.permanentEffect } : {}),
   };
