@@ -48,6 +48,24 @@ export function selectionKey(f: PersistedSelectionFields): string {
   });
 }
 
+// FIX A (customer lens, HIGH, row 239 fix round) — pure CAS decision for
+// what lastSavedKeyRef should hold after a save attempt FAILS. `send()` below
+// claims the dedup slot optimistically (sets lastSavedKeyRef = attemptedKey)
+// before the network call goes out, so a second send for the same value
+// can't double-post while the first is in flight. If that attempt then
+// fails, the slot needs to revert to priorKey so the SAME value gets retried
+// — but only if nothing NEWER has since claimed the slot (the customer kept
+// changing the selection while this attempt was in flight): `currentKey` is
+// whatever lastSavedKeyRef holds right now, and reverting is safe only when
+// it still equals `attemptedKey` (this attempt still "owns" it). Exported —
+// same pure-logic-testing convention as selectionKey above — because this
+// repo has no jsdom/hook-rendering test setup (verified: no jsdom/happy-dom/
+// @testing-library/react in node_modules or package.json), so the retry
+// decision is tested here directly rather than by rendering the hook.
+export function dedupKeyAfterFailedSave(attemptedKey: string, priorKey: string, currentKey: string): string {
+  return currentKey === attemptedKey ? priorKey : currentKey;
+}
+
 const SAVE_DEBOUNCE_MS = 1500;
 
 export function usePersistedSelection(opts: {
@@ -83,25 +101,48 @@ export function usePersistedSelection(opts: {
     if (!id) return;
     const key = selectionKey(fieldsRef.current);
     if (key === lastSavedKeyRef.current) return; // unchanged since the last save — skip
+    const priorKey = lastSavedKeyRef.current;
+    // Optimistic claim: prevents a second send for this SAME value firing
+    // again while this attempt is still in flight (e.g. the debounce timer
+    // settling right as the page-leave beacon also fires). markFailed()
+    // below undoes this on failure — see FIX A comment on
+    // dedupKeyAfterFailedSave above for the full reasoning.
     lastSavedKeyRef.current = key;
     const body = JSON.stringify(fieldsRef.current);
     const url = `/api/quotes/${id}/selection`;
+
+    // FIX A: on ANY failure, revert the dedup key (via the CAS above) so the
+    // next debounced write or page-leave beacon sees `key !== lastSavedKeyRef`
+    // again and retries the same value — a failed save used to be marked
+    // "saved" forever (the route's own 429, a transient 500, or a keepalive
+    // request dropped while the tab backgrounds all looked identical to a
+    // real success). Still fail-soft: nothing here is ever surfaced to the
+    // customer, this only changes what gets retried later.
+    function markFailed() {
+      lastSavedKeyRef.current = dedupKeyAfterFailedSave(key, priorKey, lastSavedKeyRef.current);
+    }
+
     if (useBeacon && typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
       try {
         // text/plain (not application/json) keeps this a CORS-simple request —
         // the route parses the body regardless of content-type, same as
-        // usePartialCapture's beacon.
-        navigator.sendBeacon(url, new Blob([body], { type: 'text/plain' }));
+        // usePartialCapture's beacon. sendBeacon returns false (rather than
+        // throwing) when the browser refuses to queue it — that's a failure
+        // too, not just a thrown exception.
+        const queued = navigator.sendBeacon(url, new Blob([body], { type: 'text/plain' }));
+        if (!queued) markFailed();
       } catch {
-        /* best-effort — a failed beacon is never surfaced to the customer */
+        markFailed(); // best-effort — a failed beacon is never surfaced to the customer
       }
       return;
     }
-    void fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true }).catch(
-      () => {
-        /* best-effort — persistence never bothers the customer */
-      },
-    );
+    void fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true })
+      .then((res) => {
+        if (!res.ok) markFailed();
+      })
+      .catch(() => {
+        markFailed(); // best-effort — persistence never bothers the customer
+      });
   }
 
   // Debounced save: fires ~1.5s after the last selection-affecting change
