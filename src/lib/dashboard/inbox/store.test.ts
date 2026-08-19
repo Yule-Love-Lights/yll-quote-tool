@@ -350,11 +350,13 @@ import {
   markFollowUpDone,
   markItemCompleted,
   markItemHandledLocal,
+  needsLookReason,
   quoteIdPrefix,
   recordSuppressedFollowUp,
   sweepOrphanedFollowUps,
   sweepResolvedItemFollowUps,
 } from './store';
+import { QUOTE_STATUSES, type QuoteStatus } from '@/lib/quoteStatus';
 
 /** Build a Supabase chain stub where the terminal await returns `result`.
  *  All intermediate chaining methods (select, eq, order, limit, in, or, is) return
@@ -604,6 +606,93 @@ describe('quoteIdPrefix (#183 BUG 1)', () => {
   });
 });
 
+// ─── needsLookReason — #307 "Needs a look" (pure) ────────────────────────────
+
+describe('needsLookReason (#307 — pure "Needs a look" evidence rule)', () => {
+  const settled = { direction: 'outbound' as string | null, quoteStatus: null as QuoteStatus | null, followUpPending: false };
+
+  // Rule (a), proved over the FULL QuoteStatus enum rather than a few
+  // hand-picked cases — 'sent'/'viewed'/'changes_requested' flag, every other
+  // status (including the three dead ones and 'draft') does not.
+  it.each(QUOTE_STATUSES)('rule (a) alone — quoteStatus=%s (direction outbound, no pending follow-up)', (status) => {
+    const result = needsLookReason({ ...settled, quoteStatus: status });
+    const expectFlagged = status === 'sent' || status === 'viewed' || status === 'changes_requested';
+    expect(result).toBe(expectFlagged ? 'Quote unanswered' : null);
+  });
+
+  it('rule (a): no linked quote (quoteStatus null) does not flag on its own', () => {
+    expect(needsLookReason({ ...settled, quoteStatus: null })).toBeNull();
+  });
+
+  it('rule (b) alone: direction "inbound" flags "They wrote last"', () => {
+    expect(needsLookReason({ direction: 'inbound', quoteStatus: null, followUpPending: false })).toBe(
+      'They wrote last',
+    );
+  });
+
+  it('rule (b): direction "outbound" does not flag on its own', () => {
+    expect(needsLookReason({ direction: 'outbound', quoteStatus: null, followUpPending: false })).toBeNull();
+  });
+
+  it('rule (b): direction null (no message direction recorded) does not flag on its own', () => {
+    expect(needsLookReason({ direction: null, quoteStatus: null, followUpPending: false })).toBeNull();
+  });
+
+  it('rule (c) alone: a pending follow-up flags "Follow-up due"', () => {
+    expect(needsLookReason({ direction: 'outbound', quoteStatus: null, followUpPending: true })).toBe(
+      'Follow-up due',
+    );
+  });
+
+  it('rule (c): no pending follow-up does not flag on its own', () => {
+    expect(needsLookReason({ direction: 'outbound', quoteStatus: null, followUpPending: false })).toBeNull();
+  });
+
+  it('the negative case: a genuinely finished row (booked quote, staff spoke last, no pending follow-up) is NOT flagged', () => {
+    expect(needsLookReason({ direction: 'outbound', quoteStatus: 'booked', followUpPending: false })).toBeNull();
+  });
+
+  it('the negative case, no linked quote at all: staff spoke last, no pending follow-up is NOT flagged', () => {
+    expect(needsLookReason({ direction: 'outbound', quoteStatus: null, followUpPending: false })).toBeNull();
+  });
+
+  it('combination a+b: "Quote unanswered" wins over "They wrote last" when both fire', () => {
+    expect(needsLookReason({ direction: 'inbound', quoteStatus: 'sent', followUpPending: false })).toBe(
+      'Quote unanswered',
+    );
+  });
+
+  it('combination a+c: "Quote unanswered" wins over "Follow-up due" when both fire', () => {
+    expect(needsLookReason({ direction: 'outbound', quoteStatus: 'viewed', followUpPending: true })).toBe(
+      'Quote unanswered',
+    );
+  });
+
+  it('combination b+c: "They wrote last" wins over "Follow-up due" when rule (a) does not fire', () => {
+    expect(needsLookReason({ direction: 'inbound', quoteStatus: null, followUpPending: true })).toBe(
+      'They wrote last',
+    );
+  });
+
+  it('combination a+b+c: "Quote unanswered" still wins when all three fire together', () => {
+    expect(
+      needsLookReason({ direction: 'inbound', quoteStatus: 'changes_requested', followUpPending: true }),
+    ).toBe('Quote unanswered');
+  });
+
+  it('an approved quote does not itself satisfy rule (a), but does not suppress rule (b) either', () => {
+    expect(needsLookReason({ direction: 'inbound', quoteStatus: 'approved', followUpPending: false })).toBe(
+      'They wrote last',
+    );
+  });
+
+  it('a declined (dead) quote does not itself satisfy rule (a), but does not suppress rule (c) either', () => {
+    expect(needsLookReason({ direction: 'outbound', quoteStatus: 'declined', followUpPending: true })).toBe(
+      'Follow-up due',
+    );
+  });
+});
+
 describe('listOpenItems — select string, sort order, and field mapping', () => {
   beforeEach(() => {
     // Reset between tests.
@@ -810,18 +899,35 @@ describe('getReopenCounts — window pairs run concurrently (#185)', () => {
   });
 });
 
-// ─── listInWorks — parallel fetch (#185) ────────────────────────────────────
+// ─── listInWorks — parallel fetch (#185) + Needs a look (#307) ──────────────
 //
 // Was two sequential `await`s (awaiting -> handled). Now both fire together
 // via Promise.all; the array-literal argument order keeps [awaiting, handled]
-// deterministic, so a call-index-keyed mock still lets us assert correctness.
+// deterministic, so a call-index-keyed mock still lets us assert correctness
+// for the two inbox_items queries. #307 added two MORE batched queries
+// (quotes, follow_ups) that fire only after the handled bucket is known, so
+// this mock routes by table name instead so each table's builder/call-count
+// is asserted independently — the wiring this section pins is "batched, not
+// per-row": exactly one quotes call and one follow_ups call, regardless of
+// how many handled rows there are.
+
+function makeTableRouter(byTable: Record<string, { data: unknown; error: null | { message: string } }>) {
+  const calls: Record<string, number> = {};
+  const from = (table: string) => {
+    calls[table] = (calls[table] ?? 0) + 1;
+    const spec = byTable[table];
+    if (!spec) throw new Error(`unexpected table in test: ${table}`);
+    return makeBuilder(spec).builder;
+  };
+  return { from, calls };
+}
 
 describe('listInWorks — parallel fetch (#185)', () => {
   beforeEach(() => {
     sbRef.current = null;
   });
 
-  it('maps the awaiting + handled buckets from the two parallel queries', async () => {
+  it('maps the awaiting + handled buckets from the two parallel queries; needsLookReason is null when no evidence contradicts "finished"', async () => {
     const awaitingRow = {
       id: 'i-aw',
       source: 'ghl',
@@ -840,15 +946,27 @@ describe('listInWorks — parallel fetch (#185)', () => {
       followed_up_at: null,
       handled_at: '2026-07-21T09:00:00Z',
       status: 'handled',
+      direction: 'outbound',
+      external_id: 'msg-1',
       dashboard_contacts: { display_name: 'Handled Hank' },
     };
-    let callIndex = 0;
+    // inbox_items is queried twice (awaiting, then handled); route by call order.
+    let inboxCallIndex = 0;
+    const router = makeTableRouter({
+      // Never reached: the handled row is source='gmail', so quotetoolQuoteIds
+      // is empty and fetchQuoteStatusesById short-circuits before any 'quotes'
+      // query — asserted below via router.calls.quotes being undefined.
+      quotes: { data: [], error: null },
+      follow_ups: { data: [], error: null },
+    });
     sbRef.current = {
-      from: (_table: string) => {
-        const idx = callIndex;
-        callIndex += 1;
-        const data = idx === 0 ? [awaitingRow] : [handledRow];
-        return makeBuilder({ data, error: null }).builder;
+      from: (table: string) => {
+        if (table === 'inbox_items') {
+          const idx = inboxCallIndex;
+          inboxCallIndex += 1;
+          return makeBuilder({ data: idx === 0 ? [awaitingRow] : [handledRow], error: null }).builder;
+        }
+        return router.from(table);
       },
     };
 
@@ -857,12 +975,195 @@ describe('listInWorks — parallel fetch (#185)', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.awaiting).toEqual([
-      { id: 'i-aw', source: 'ghl', channel: 'sms', preview: 'following up', customerName: 'Awaiting Amy', lastActivityAt: '2026-07-20T10:00:00Z' },
+      {
+        id: 'i-aw',
+        source: 'ghl',
+        channel: 'sms',
+        preview: 'following up',
+        customerName: 'Awaiting Amy',
+        lastActivityAt: '2026-07-20T10:00:00Z',
+        needsLookReason: null,
+      },
     ]);
     expect(result.handled).toEqual([
-      { id: 'i-hd', source: 'gmail', channel: 'email', preview: 'handled it', customerName: 'Handled Hank', lastActivityAt: '2026-07-21T09:00:00Z' },
+      {
+        id: 'i-hd',
+        source: 'gmail',
+        channel: 'email',
+        preview: 'handled it',
+        customerName: 'Handled Hank',
+        lastActivityAt: '2026-07-21T09:00:00Z',
+        needsLookReason: null,
+      },
     ]);
-    expect(callIndex).toBe(2);
+    expect(inboxCallIndex).toBe(2);
+    // Batched-not-per-row: follow_ups queried exactly once for the whole
+    // handled page; quotes never queried at all (no quotetool rows present).
+    expect(router.calls.follow_ups).toBe(1);
+    expect(router.calls.quotes).toBeUndefined();
+  });
+
+  it('flags a handled quotetool row whose quote is sent-but-unanswered as "Quote unanswered", batching the quote lookup in ONE query', async () => {
+    // #183 BUG 1: quoteIdPrefix/isUuid means the id must be genuinely
+    // UUID-shaped once the :color-request suffix is stripped, or the batch
+    // lookup's isUuid filter drops it before the query ever fires (mirrors
+    // listOpenItems' own tests, e.g. line ~601 above).
+    const QUOTE_UUID = '123e4567-e89b-12d3-a456-426614174000';
+    const handledRow = {
+      id: 'i-hd',
+      source: 'quotetool',
+      channel: null,
+      preview: 'quote sent',
+      followed_up_at: null,
+      handled_at: '2026-07-21T09:00:00Z',
+      status: 'handled',
+      direction: 'outbound',
+      external_id: `${QUOTE_UUID}:color-request`,
+      dashboard_contacts: { display_name: 'Quoted Customer' },
+    };
+    let inboxCallIndex = 0;
+    const router = makeTableRouter({
+      quotes: {
+        data: [
+          {
+            id: QUOTE_UUID,
+            status: null,
+            quote_sent_at: '2026-07-20T00:00:00Z',
+            customer_approved_at: null,
+            deposit_paid_at: null,
+            viewed_at: null,
+          },
+        ],
+        error: null,
+      },
+      follow_ups: { data: [], error: null },
+    });
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'inbox_items') {
+          const idx = inboxCallIndex;
+          inboxCallIndex += 1;
+          return makeBuilder({ data: idx === 0 ? [] : [handledRow], error: null }).builder;
+        }
+        return router.from(table);
+      },
+    };
+
+    const result = await listInWorks(200);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.handled).toHaveLength(1);
+    expect(result.handled[0].needsLookReason).toBe('Quote unanswered');
+    // Exactly one quotes query for the whole page (not one per handled row) —
+    // and it was looked up by the QUOTE id (quoteIdPrefix strips the
+    // :color-request suffix), not the raw external_id.
+    expect(router.calls.quotes).toBe(1);
+  });
+
+  it('flags a handled row whose direction is inbound as "They wrote last"', async () => {
+    const handledRow = {
+      id: 'i-hd',
+      source: 'ghl',
+      channel: 'sms',
+      preview: 'customer replied',
+      followed_up_at: null,
+      handled_at: '2026-07-21T09:00:00Z',
+      status: 'handled',
+      direction: 'inbound',
+      external_id: 'conv-1',
+      dashboard_contacts: { display_name: 'Talked Last' },
+    };
+    let inboxCallIndex = 0;
+    const router = makeTableRouter({ follow_ups: { data: [], error: null } });
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'inbox_items') {
+          const idx = inboxCallIndex;
+          inboxCallIndex += 1;
+          return makeBuilder({ data: idx === 0 ? [] : [handledRow], error: null }).builder;
+        }
+        return router.from(table);
+      },
+    };
+
+    const result = await listInWorks(200);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.handled[0].needsLookReason).toBe('They wrote last');
+    // No quotetool rows on this page — the quotes query is skipped entirely.
+    expect(router.calls.quotes).toBeUndefined();
+  });
+
+  it('flags a handled row with a still-pending follow_ups row as "Follow-up due", batching the lookup in ONE query for the whole page', async () => {
+    const handledRow1 = {
+      id: 'i-hd-1',
+      source: 'ghl',
+      channel: 'sms',
+      preview: 'a',
+      followed_up_at: null,
+      handled_at: '2026-07-21T09:00:00Z',
+      status: 'handled',
+      direction: 'outbound',
+      external_id: 'conv-1',
+      dashboard_contacts: { display_name: 'Row One' },
+    };
+    const handledRow2 = {
+      id: 'i-hd-2',
+      source: 'ghl',
+      channel: 'sms',
+      preview: 'b',
+      followed_up_at: null,
+      handled_at: '2026-07-21T09:05:00Z',
+      status: 'handled',
+      direction: 'outbound',
+      external_id: 'conv-2',
+      dashboard_contacts: { display_name: 'Row Two' },
+    };
+    let inboxCallIndex = 0;
+    const router = makeTableRouter({
+      follow_ups: { data: [{ inbox_item_id: 'i-hd-2' }], error: null },
+    });
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'inbox_items') {
+          const idx = inboxCallIndex;
+          inboxCallIndex += 1;
+          return makeBuilder({ data: idx === 0 ? [] : [handledRow1, handledRow2], error: null }).builder;
+        }
+        return router.from(table);
+      },
+    };
+
+    const result = await listInWorks(200);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const byId = new Map(result.handled.map((i) => [i.id, i.needsLookReason]));
+    expect(byId.get('i-hd-1')).toBeNull();
+    expect(byId.get('i-hd-2')).toBe('Follow-up due');
+    // ONE follow_ups query covers BOTH handled rows — not one per row.
+    expect(router.calls.follow_ups).toBe(1);
+  });
+
+  it('the handled bucket is empty: neither the quotes nor the follow_ups query fires at all', async () => {
+    let inboxCallIndex = 0;
+    const router = makeTableRouter({});
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'inbox_items') {
+          inboxCallIndex += 1;
+          return makeBuilder({ data: [], error: null }).builder;
+        }
+        return router.from(table);
+      },
+    };
+
+    const result = await listInWorks(200);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.handled).toEqual([]);
+    expect(inboxCallIndex).toBe(2); // awaiting + handled inbox_items queries still both fire
+    expect(router.calls.quotes).toBeUndefined();
+    expect(router.calls.follow_ups).toBeUndefined();
   });
 
   it('surfaces the AWAITING query error even though both queries were fired', async () => {
@@ -879,7 +1180,9 @@ describe('listInWorks — parallel fetch (#185)', () => {
 
     const result = await listInWorks(200);
     expect(result).toEqual({ ok: false, error: 'awaiting query failed' });
-    // Both queries fired (parallel) even though the first one errored.
+    // Both queries fired (parallel) even though the first one errored — and
+    // the function returns before ever reaching the #307 quotes/follow_ups
+    // lookups, so no third table is queried.
     expect(callIndex).toBe(2);
   });
 

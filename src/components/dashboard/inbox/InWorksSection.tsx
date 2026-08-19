@@ -55,6 +55,12 @@ export function InWorksSection({
   const [busyIds, setBusyIds] = useState<Record<string, boolean>>({});
   const [errorIds, setErrorIds] = useState<Record<string, boolean>>({});
   const [composerFor, setComposerFor] = useState<string | null>(null);
+  // #307: "Handled" starts collapsed; "Needs a look" always renders expanded
+  // (there's no toggle for it). Both are views over the SAME handledItems
+  // state array (split below by needsLookReason) — no separate state slice,
+  // so act()/moveGroup/removeFromGroup keep working unchanged regardless of
+  // which subsection a row currently renders in.
+  const [handledExpanded, setHandledExpanded] = useState(false);
 
   if (awaitingItems.length === 0 && handledItems.length === 0) return null;
 
@@ -166,6 +172,19 @@ export function InWorksSection({
                   Follow up — {staleDays}d quiet
                 </span>
               )}
+              {/* #307: informational marker only — never phrased as an operator
+                  error. A row can land here on rule (b) alone (they wrote last),
+                  which is an accepted false-positive for a conversation a staffer
+                  genuinely closed over the phone; one click on the same action
+                  buttons below clears it. */}
+              {item.needsLookReason && (
+                <span
+                  className="text-xs font-medium px-1.5 py-0.5 rounded"
+                  style={{ background: '#dbeafe', color: '#1e40af' }}
+                >
+                  {item.needsLookReason}
+                </span>
+              )}
             </div>
             {item.preview && (
               <p className="text-xs mt-0.5 truncate" style={{ color: 'var(--op-text-2)' }}>
@@ -265,6 +284,11 @@ export function InWorksSection({
     );
   }
 
+  // #307: a rendering-only split of the SAME handledItems state array (see
+  // that state's own comment above) — no third bucket/state slice exists.
+  const needsLookItems = handledItems.filter((item) => item.needsLookReason != null);
+  const settledHandledItems = handledItems.filter((item) => item.needsLookReason == null);
+
   return (
     <section
       className="mt-6 rounded-lg border p-4"
@@ -285,14 +309,35 @@ export function InWorksSection({
         </div>
       )}
 
-      {handledItems.length > 0 && (
-        <div>
+      {/* #307: a split VIEW over handledItems, not a separate group — both
+          subsections act on 'handled' rows the same way (renderRow's group
+          param, and thus every action button, is unaffected by the split). */}
+      {needsLookItems.length > 0 && (
+        <div className="mb-4">
           <p className="text-xs font-medium uppercase tracking-wide mb-2" style={{ color: 'var(--op-text-2)' }}>
-            Handled ({handledItems.length})
+            Needs a look ({needsLookItems.length})
           </p>
           <ul className="space-y-2">
-            {handledItems.map((item) => renderRow(item, 'handled'))}
+            {needsLookItems.map((item) => renderRow(item, 'handled'))}
           </ul>
+        </div>
+      )}
+
+      {settledHandledItems.length > 0 && (
+        <div>
+          <button
+            type="button"
+            onClick={() => setHandledExpanded((v) => !v)}
+            className="text-xs font-medium uppercase tracking-wide mb-2 underline"
+            style={{ color: 'var(--op-text-2)' }}
+          >
+            Handled ({settledHandledItems.length})
+          </button>
+          {handledExpanded && (
+            <ul className="space-y-2">
+              {settledHandledItems.map((item) => renderRow(item, 'handled'))}
+            </ul>
+          )}
         </div>
       )}
     </section>

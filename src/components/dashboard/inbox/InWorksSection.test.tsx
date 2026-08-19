@@ -27,15 +27,21 @@ const baseItem: InWorksItem = {
   preview: null,
   customerName: null,
   lastActivityAt: null,
+  needsLookReason: null,
 };
 
 describe('InWorksSection (row 291 — initial render)', () => {
+  // #307: the settled-Handled subsection now starts COLLAPSED (see the
+  // "Needs a look split" describe block below for that behavior directly), so
+  // this row is given a needsLookReason — it renders under "Needs a look",
+  // which is always expanded — to keep proving "one row per item, in each
+  // bucket, independently" on the very first render.
   it('renders one row per item in each of the awaiting/handled buckets, independently', () => {
     const awaiting: InWorksItem[] = [
       { ...baseItem, id: 'a1', customerName: 'Awaiting Customer', lastActivityAt: at(3_600_000) },
     ];
     const handled: InWorksItem[] = [
-      { ...baseItem, id: 'h1', customerName: 'Handled Customer', lastActivityAt: at(7_200_000) },
+      { ...baseItem, id: 'h1', customerName: 'Handled Customer', lastActivityAt: at(7_200_000), needsLookReason: 'Quote unanswered' },
     ];
     const html = renderToStaticMarkup(
       <InWorksSection awaiting={awaiting} handled={handled} followUpDays={3} nowMs={now} />,
@@ -43,7 +49,7 @@ describe('InWorksSection (row 291 — initial render)', () => {
     expect(html).toContain('Awaiting Customer');
     expect(html).toContain('Handled Customer');
     expect(html).toContain('Awaiting their reply (1)');
-    expect(html).toContain('Handled (1)');
+    expect(html).toContain('Needs a look (1)');
   });
 
   it('renders nothing when both buckets are empty', () => {
@@ -62,6 +68,65 @@ describe('InWorksSection (row 291 — initial render)', () => {
     );
     expect(html).not.toContain('Something went wrong');
     expect(html).not.toContain('Saving…');
+  });
+});
+
+// #307: "Needs a look" splits the handled bucket into a rendering-only view
+// (needsLookItems / settledHandledItems, both filters over the same
+// handledItems state — see InWorksSection.tsx's own comment). A static render
+// can prove the INITIAL split (which section a row's name appears in, whether
+// the settled list is collapsed) but not the collapse/expand CLICK itself —
+// that needs jsdom, which this repo doesn't have (same limitation the file's
+// header comment already states for the busy/error click-then-fetch flow).
+describe('InWorksSection (#307 — Needs a look split)', () => {
+  it('a handled row with a needsLookReason renders under "Needs a look", not silently inside "Handled"', () => {
+    const handled: InWorksItem[] = [
+      { ...baseItem, id: 'h1', customerName: 'Flagged Customer', needsLookReason: 'Quote unanswered' },
+    ];
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={[]} handled={handled} followUpDays={3} nowMs={now} />,
+    );
+    expect(html).toContain('Needs a look (1)');
+    expect(html).toContain('Flagged Customer');
+    expect(html).toContain('Quote unanswered');
+    // No settled rows in this fixture, so the Handled subsection never renders.
+    expect(html).not.toContain('Handled (');
+  });
+
+  it('a handled row with no needsLookReason renders under "Handled", not "Needs a look"', () => {
+    const handled: InWorksItem[] = [
+      { ...baseItem, id: 'h1', customerName: 'Settled Customer', needsLookReason: null },
+    ];
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={[]} handled={handled} followUpDays={3} nowMs={now} />,
+    );
+    expect(html).toContain('Handled (1)');
+    expect(html).not.toContain('Needs a look');
+  });
+
+  it('the Handled subsection starts COLLAPSED — its row name is absent from the initial render even though the count shows', () => {
+    const handled: InWorksItem[] = [
+      { ...baseItem, id: 'h1', customerName: 'Should Be Hidden Initially', needsLookReason: null },
+    ];
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={[]} handled={handled} followUpDays={3} nowMs={now} />,
+    );
+    expect(html).toContain('Handled (1)');
+    expect(html).not.toContain('Should Be Hidden Initially');
+  });
+
+  it('a mixed handled bucket splits: the flagged row\'s name appears (Needs a look renders expanded), the settled row\'s name does not (Handled starts collapsed)', () => {
+    const handled: InWorksItem[] = [
+      { ...baseItem, id: 'h1', customerName: 'Flagged One', needsLookReason: 'They wrote last' },
+      { ...baseItem, id: 'h2', customerName: 'Settled One', needsLookReason: null },
+    ];
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={[]} handled={handled} followUpDays={3} nowMs={now} />,
+    );
+    expect(html).toContain('Needs a look (1)');
+    expect(html).toContain('Flagged One');
+    expect(html).toContain('Handled (1)');
+    expect(html).not.toContain('Settled One');
   });
 });
 
