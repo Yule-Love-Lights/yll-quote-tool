@@ -81,6 +81,31 @@ function usd(n: number): string {
   });
 }
 
+// Customer greetings are built from `customer_name` as typed by staff, which is
+// frequently lowercase ("susan pace-burke") — rendering that verbatim into a
+// customer-facing "Hi susan!" reads careless. Capitalises the FIRST LETTER ONLY
+// and leaves the rest of the token untouched, so an already-correct "McDonough"
+// or "O'Brien" is never re-cased into something wrong.
+//
+// What this deliberately does NOT do (review finding, stated so the next reader
+// doesn't assume otherwise): it does not fix interior capitals. A lowercase
+// "o'brien" becomes "O'brien", not "O'Brien", and "mary-jane" becomes
+// "Mary-jane". That is an improvement on the raw value but not a full
+// name-casing solution, and a real one needs a decision about which name
+// families to special-case — not something to guess at inside a greeting.
+const GREETING_FALLBACK = 'there';
+
+function greetingName(firstName: string): string {
+  if (!firstName) return firstName;
+  // The ONE caller (POST /api/quotes/[id]/amend) resolves a missing/blank
+  // customer_name to the literal 'there' BEFORE calling us, so a nameless
+  // customer's greeting arrives here as a sentence word, not a name.
+  // Capitalising it turns the natural "Hi there!" into "Hi There!", which
+  // reads like a literal name. Caught by a review lens, not by the author.
+  if (firstName === GREETING_FALLBACK) return firstName;
+  return firstName.charAt(0).toUpperCase() + firstName.slice(1);
+}
+
 // Exact format (with cents) for the internal record.
 function usdExact(n: number): string {
   return n.toLocaleString('en-US', {
@@ -408,10 +433,36 @@ export function supplierOrderEmailHtml(input: { lines: SupplierOrderLine[]; jobC
 // ── Amendment notice (ledger #83 Phase 4) ───────────────────────────────────
 // Sent to the customer (staff-initiated, optional — the SPEC §4.4 re-consent
 // default) when a booked order is amended to a new total.
+//
+// MONEY FORMAT — usdExact, NOT usd (Jason 2026-08-19, after a live send was
+// held back to fix this). These two messages are the only place the customer
+// is told their new balance BEFORE they open the portal to re-consent, and the
+// portal's own AmendmentConsentCard formats with cents
+// (src/components/portal/snowglobe/AmendmentConsentCard.tsx has its OWN usd()
+// with default 2-decimal precision), as does the invoice and Valor's checkout
+// page. Rounding here to whole dollars was tried and reverted: it made the SMS
+// and email agree with each other but disagree with the signature page the
+// email links to. Two review lenses found that independently. usd()'s rounding
+// is also NOT monotonic in the customer's favour — a balance ending under 50c
+// rounds DOWN, quoting a number LOWER than what is actually billed.
 export const AMENDMENT_EMAIL_SUBJECT = 'Your Yule Love Lights order was updated';
 
-export function amendmentSmsBody(firstName: string, newBalanceUsd: number, phone: string): string {
-  return `Hi ${firstName}! Your Yule Love Lights order was updated — your remaining balance is now ${usd(newBalanceUsd)}. We'll confirm the details with you. Questions? Call or text ${phone}.`;
+// `dueAfterInstall` — whether the balance is genuinely still ahead of the
+// customer (the job has not been installed/invoiced yet). Review lens HIGH: an
+// amendment on an ALREADY-INSTALLED, already-invoiced job is an ordinary case
+// (a post-install correction or add-on), and telling that customer their
+// balance is due "after installation" says it isn't owed yet when it already
+// is — which delays collection. The clause is therefore stated only when it is
+// true; a post-install amendment falls back to the plain balance sentence and
+// makes no timing claim at all, rather than inventing one.
+export function amendmentSmsBody(
+  firstName: string,
+  newBalanceUsd: number,
+  phone: string,
+  dueAfterInstall: boolean,
+): string {
+  const timing = dueAfterInstall ? ' after installation' : '';
+  return `Hi ${greetingName(firstName)}! Your Yule Love Lights order was updated, your remaining balance is now ${usdExact(newBalanceUsd)}${timing}. We'll confirm the details with you. Questions? Call or text ${phone}.`;
 }
 
 export function amendmentEmailHtml(input: {
@@ -420,14 +471,16 @@ export function amendmentEmailHtml(input: {
   newBalanceUsd: number;
   portalUrl: string;
   phone: string;
+  // See amendmentSmsBody above for why this is conditional.
+  dueAfterInstall: boolean;
 }): string {
-  const name = escapeHtml(input.firstName);
+  const name = escapeHtml(greetingName(input.firstName));
   return [
     `<p>Hi ${name},</p>`,
     `<p>We've updated your holiday lighting order. Here are the new figures:</p>`,
     `<table style="border-collapse:collapse;font-size:14px;margin:12px 0;">`,
     `<tr><td style="padding:2px 14px 2px 0;color:#666;">New order total</td><td style="padding:2px 0;"><strong>${usdExact(input.newTotalUsd)}</strong></td></tr>`,
-    `<tr><td style="padding:2px 14px 2px 0;color:#666;">Remaining balance</td><td style="padding:2px 0;"><strong>${usdExact(input.newBalanceUsd)}</strong></td></tr>`,
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">Remaining balance${input.dueAfterInstall ? ' (due after installation)' : ''}</td><td style="padding:2px 0;"><strong>${usdExact(input.newBalanceUsd)}</strong></td></tr>`,
     `</table>`,
     `<p>You can review your order here: <a href="${escapeHtml(input.portalUrl)}">${escapeHtml(input.portalUrl)}</a></p>`,
     `<p>Questions? Call or text ${escapeHtml(input.phone)}.</p>`,
@@ -797,6 +850,27 @@ export function referralEarnedEmailHtml(friendFirstName: string, amountUsd: numb
     `<p>There's no limit, refer another friend anytime:</p>`,
     `<p><a href="${escapeHtml(referLink)}">${escapeHtml(referLink)}</a></p>`,
     `<p>Thank you for spreading the word,<br>Yule Love Lights</p>`,
+  ].join('\n');
+}
+
+// ─── Referral self-serve link request (naldo/referral-self-serve) ───────────
+// Fired by POST /api/referrals/request-link when a typed email matches an
+// existing GHL contact: mints/fetches that contact's referral code and
+// emails them the link, mirroring referralEarnedEmailHtml's house style.
+
+export const REFERRAL_LINK_EMAIL_SUBJECT = "Here's your Yule Love Lights referral link";
+
+export function referralLinkEmailHtml(input: { firstName?: string | null; referralUrl: string }): string {
+  const name = input.firstName?.trim() ? escapeHtml(input.firstName.trim()) : 'there';
+  const link = escapeHtml(input.referralUrl);
+  return [
+    `<p>Hi ${name},</p>`,
+    `<p>Here's your personal Yule Love Lights referral link:</p>`,
+    `<p><a href="${link}">${link}</a></p>`,
+    `<p>Send it to a friend or neighbor. When they book with us, you get <strong>$125 off your next YLL job</strong>, good for two years. They get <strong>2 free 16" spritzers</strong> with their install.</p>`,
+    `<p>No limit, share it with as many people as you like.</p>`,
+    `<p>Questions? Just reply here or text/call us at (631) 517-0186, we're happy to help!</p>`,
+    `<p>Warm wishes,<br>Yule Love Lights team</p>`,
   ].join('\n');
 }
 

@@ -17,9 +17,14 @@
 //     approval_snapshot.amendments[] — the original signed snapshot is preserved
 //     (the signature attests to the original agreement).
 //   • The linked invoice (if the job was completed) is re-synced to the new totals.
-//   • A total change moves the quote to the re-consent status (changes_requested):
-//     the customer re-approves the new total before any balance is charged (the
-//     SPEC §9 default — staff-initiated; re-notification is a follow-up).
+//   • A total change marks the amendment PENDING RE-CONSENT: the customer
+//     re-approves the new total (portal AmendmentConsentCard -> /amend-consent)
+//     before any balance is charged. The quote's own lifecycle status is
+//     deliberately NOT moved to changes_requested — see the write below: booked
+//     -> changes_requested is not a legal transition and would make a paid order
+//     read as a change-request everywhere deriveStatus() is used (review HIGH x3).
+//     This comment claimed the opposite until 2026-08-19; the code has always
+//     left the status alone.
 //
 // No money moves here (no Valor) — collecting the new balance is the separate,
 // gated "Charge remaining balance" step.
@@ -258,6 +263,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
+  // Jason 2026-08-19: the customer notice must quote the balance the customer
+  // will ACTUALLY be billed, which is the invoice's balance — not the
+  // amendment trail's new_balance. The two are NOT the same number on a
+  // tax-overridden invoice: computeInvoiceTotals subtracts the (scaled) tax
+  // from the invoice total, while amendment.new_balance is newTotal − deposit
+  // with the tax still in it, so the message would overstate the balance by
+  // the tax. 2 of the 4 invoices in prod today are tax_overridden, so this is
+  // an ordinary case, not a corner. Stays null when there is no invoice yet
+  // (the job is not complete) or when the re-sync write failed — in both of
+  // those the trail's new_balance is the honest figure to quote.
+  let invoicedBalance: number | null = null;
+  let invoicedTotal: number | null = null;
+
   // Re-sync the linked invoice (if the job was completed) to the re-priced totals,
   // so the balance the operator collects matches the amended order. Skip a
   // cancelled invoice (don't resurrect it).
@@ -343,9 +361,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
             ...paidAtPatch,
           })
           .eq('id', invoiceForSync.id);
+        if (!invErr) {
+          invoicedBalance = totals.balance;
+          // Same reasoning as invoicedBalance: on a tax-overridden invoice the
+          // invoice TOTAL is newTotal minus the scaled tax, so quoting the
+          // trail's new_total would disagree with the invoice too.
+          invoicedTotal = totals.total;
+        }
         if (invErr) {
           // The amendment trail is already recorded; an invoice-sync failure is
           // reconcilable (re-run the amendment / edit the invoice). Surface it.
+          // invoicedBalance deliberately stays null: the row still holds its
+          // PRE-amendment figures, so neither number is the billed one and the
+          // notice falls back to the trail's own new_balance.
           console.error('[api/quotes/:id/amend] invoice re-sync failed:', invErr);
         } else if (
           // #170(b): reopening a PAID invoice starts a NEW charge cycle — retire
@@ -392,13 +420,38 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       notifyError = 'not-configured';
     } else {
       const firstName = quote.customer_name?.trim().split(/\s+/)[0] || 'there';
+      // Whether the install is genuinely still AHEAD of this customer, which is
+      // the only case where telling them the balance is due "after
+      // installation" is true.
+      //
+      // Delta-verify HIGH: this was first written as `!invoice`, on the premise
+      // that an invoice exists only once a job is complete. The forward premise
+      // holds, but the CONVERSE does not — getJobByQuote and getInvoiceByJob
+      // both swallow a read error and return null (src/lib/jobs.ts,
+      // src/lib/invoices.ts), and jobs/[id]/complete commits the status advance
+      // BEFORE creating the invoice, so an already-installed job can sit with a
+      // null invoice after a failed/unretried create. Either shape would have
+      // told a customer whose lights are already up that their balance is due
+      // after an installation that already happened.
+      //
+      // Keyed on the job's own status instead, as a POSITIVE match on the two
+      // pre-install states (repo convention: positive seam gates, never
+      // negative — a future status must not silently inherit "pre-install").
+      // Fails SAFE: an unreadable/absent job yields false, which states no
+      // timing at all rather than a false one.
+      const dueAfterInstall = job?.status === 'to_schedule' || job?.status === 'scheduled';
+      // Quote the ACTUAL invoiced balance when there is one (see invoicedBalance
+      // above); otherwise the trail's projected balance, which is what the
+      // invoice will be built from when the job completes.
+      const notifiedBalance = invoicedBalance ?? amendment.new_balance;
+      const notifiedTotal = invoicedTotal ?? amendment.new_total;
       const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
       const portalUrl = `${baseUrl}/portal/${id}`;
       const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || '(631) 517-0186';
       try {
         await sendSms({
           contactId: quote.highlevel_contact_id,
-          message: amendmentSmsBody(firstName, amendment.new_balance, phone),
+          message: amendmentSmsBody(firstName, notifiedBalance, phone, dueAfterInstall),
           fromNumber: process.env.HIGHLEVEL_SMS_FROM_NUMBER || undefined,
         });
         await sendEmail({
@@ -406,10 +459,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           subject: AMENDMENT_EMAIL_SUBJECT,
           html: amendmentEmailHtml({
             firstName,
-            newTotalUsd: amendment.new_total,
-            newBalanceUsd: amendment.new_balance,
+            newTotalUsd: notifiedTotal,
+            newBalanceUsd: notifiedBalance,
             portalUrl,
             phone,
+            dueAfterInstall,
           }),
           emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
         });

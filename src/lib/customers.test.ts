@@ -420,13 +420,69 @@ describe('findOrCreateCustomer', () => {
     const fake = makeFakeSupabase();
     sbRef.current = fake.client;
     const a = await findOrCreateCustomer({ email: 'jane@x.com', name: 'Jane', phone: '5550001111' });
-    // #213: name repeated (email+name agree = 2 fields) — phone is simply
+    // #213: name repeated (email+name agree = 2 fields), phone is simply
     // omitted this time, which is what this test is actually verifying.
     const b = await findOrCreateCustomer({ email: 'jane@x.com', name: 'Jane' }); // no phone
     expect(b?.id).toBe(a?.id);
-    // #213 fix 8: no name assertion here — both calls use the SAME name, so
+    // #213 fix 8: no name assertion here, both calls use the SAME name, so
     // asserting on it would prove nothing about preservation either way.
-    expect(fake.tables.customers[0].phone).toBe('5550001111'); // absent → preserved, not wiped
+    expect(fake.tables.customers[0].phone).toBe('5550001111'); // absent, preserved, not wiped
+  });
+
+  describe('skipIdentityRefresh (review fix 5)', () => {
+    it('leaves an existing row unchanged on the exact match_key path, even when identity fields differ', async () => {
+      const fake = makeFakeSupabase();
+      sbRef.current = fake.client;
+      const a = await findOrCreateCustomer({ email: 'jane@x.com', name: 'Jane', phone: '5550001111' });
+      // Same person resolves again, but the caller's own source (e.g. a
+      // stale GHL record) now claims a different phone.
+      const b = await findOrCreateCustomer(
+        { email: 'jane@x.com', name: 'Jane', phone: '5559998888' },
+        { skipIdentityRefresh: true },
+      );
+      expect(b?.id).toBe(a?.id); // still resolves to the same customer
+      expect(fake.tables.customers).toHaveLength(1); // not a duplicate
+      expect(fake.tables.customers[0].phone).toBe('5550001111'); // unchanged, not overwritten
+      expect(fake.tables.customers[0].name).toBe('Jane');
+    });
+
+    it('leaves an existing row unchanged on the secondary-key merge (adopt) path too, but still upgrades match_key', async () => {
+      const fake = makeFakeSupabase();
+      sbRef.current = fake.client;
+      // Quote A: email-only customer (not yet HL-linked).
+      const a = await findOrCreateCustomer({ email: 'jane@x.com', name: 'Jane', phone: '5550001111' });
+      // This route's identity always carries hl_contact_id (see
+      // route.ts's caller), which this row doesn't have yet, so this
+      // resolves via the secondary/OR search (adopt()), not the exact
+      // match_key path covered by the test above.
+      const b = await findOrCreateCustomer(
+        { hl_contact_id: 'hl9', email: 'jane@x.com', name: 'Jane', phone: '5559998888' },
+        { skipIdentityRefresh: true },
+      );
+      expect(b?.id).toBe(a?.id);
+      expect(fake.tables.customers).toHaveLength(1);
+      const row = fake.tables.customers[0];
+      // The match_key upgrade still applies (an internal linkage
+      // improvement, never a customer-visible field, and the whole point of
+      // the merge), but the display/contact columns stay exactly as they
+      // were before this call.
+      expect(row.match_key).toBe('hl:hl9');
+      expect(row.phone).toBe('5550001111');
+      expect(row.hl_contact_id).toBeNull();
+    });
+
+    it('still creates a brand-new row when none exists', async () => {
+      const fake = makeFakeSupabase();
+      sbRef.current = fake.client;
+      const result = await findOrCreateCustomer(
+        { email: 'brand-new@x.com', name: 'Brand New' },
+        { skipIdentityRefresh: true },
+      );
+      expect(result?.id).toBeTruthy();
+      expect(fake.tables.customers).toHaveLength(1);
+      expect(fake.tables.customers[0].name).toBe('Brand New');
+      expect(fake.tables.customers[0].email).toBe('brand-new@x.com');
+    });
   });
 
   it('separates distinct identities into distinct customers', async () => {

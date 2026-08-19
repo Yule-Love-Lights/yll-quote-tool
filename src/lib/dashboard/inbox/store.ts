@@ -875,6 +875,10 @@ export async function dismissItem(itemId: string, operatorId: string | null, now
   await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'dismissed', inbox_item_id: itemId, detail: { from } });
   const c = (data as { dashboard_contacts?: { primary_email?: string | null; primary_phone?: string | null } } | null)?.dashboard_contacts;
   if (c) await addSuppressedSenders([c.primary_email ?? null, c.primary_phone ?? null]);
+  // #252 follow-up-autoclose: dismissed is terminal — its conversation is not
+  // a real lead, so any pending nag anchored to it should die with it. Only on
+  // the matched (real transition) path above, never the already-dismissed no-op.
+  await closeFollowUpsForResolvedItem(itemId, 'dismissed');
   return { ok: true };
 }
 
@@ -1038,9 +1042,9 @@ export async function ensureFollowUp(input: {
   // WT-44: cadence override so the "Follow-up reminder (days)" setting can
   // drive when the strip nudge is due; falls back to DEFAULT_FOLLOW_UP_DAYS.
   afterDays?: number;
-}): Promise<void> {
+}): Promise<boolean> {
   const sb = getSupabaseServiceClient();
-  if (!sb) return;
+  if (!sb) return false;
   const { data } = await sb
     .from('follow_ups')
     .select('id')
@@ -1048,7 +1052,23 @@ export async function ensureFollowUp(input: {
     .eq('reason', input.reason)
     .eq('status', 'pending')
     .limit(1);
-  if (data && data.length > 0) return; // a pending one already exists — don't duplicate
+  if (data && data.length > 0) return false; // a pending one already exists — don't duplicate
+
+  // #252 churn gate: quoteFollowUpDecision (quotetool.ts) derives kind:'create'
+  // from the QUOTE's own fields alone — never the anchored item's status — so
+  // the reconcile asks for a follow-up on EVERY tick for any sent-but-unapproved,
+  // non-dead quote. Once that item is resolved and its nag auto-closed
+  // (closeFollowUpsForResolvedItem), the upsert below would flip the 'done' row
+  // straight back to 'pending' every 5 minutes forever; sweepResolvedItemFollowUps
+  // re-closes it later in the same tick, so the end-of-tick state looks right and
+  // nothing fails — the only visible symptoms are permanent write churn and an
+  // inflated followUpsCreated counter. Same class as the #230(b) gate on the
+  // suppress branch, which exists because decision.kind is recomputed per tick.
+  // Costs one read, and only on the path that would otherwise write: the
+  // early-return above already covers the steady state.
+  const { data: item } = await sb.from('inbox_items').select('status').eq('id', input.inboxItemId).maybeSingle();
+  const itemStatus = (item as { status: string } | null)?.status ?? null;
+  if (itemStatus === 'completed' || itemStatus === 'dismissed') return false;
   const fu = quoteSentNoReplyFollowUp({ contactId: input.contactId, inboxItemId: input.inboxItemId, sentAt: input.sentAt, afterDays: input.afterDays });
   // WT-43: UPSERT, not insert. The table has `unique (inbox_item_id, reason)`
   // with no status predicate, so once a prior nudge is marked 'done' a plain
@@ -1068,6 +1088,7 @@ export async function ensureFollowUp(input: {
     },
     { onConflict: 'inbox_item_id,reason' },
   );
+  return true;
 }
 
 /** Mark a pending follow-up for an item done (e.g. the quote got approved).
@@ -1084,6 +1105,81 @@ export async function closeFollowUp(inboxItemId: string, reason: string): Promis
     .eq('status', 'pending')
     .select('id');
   return data ? data.length : 0;
+}
+
+/**
+ * Close EVERY pending follow-up anchored to `itemId`, called once that item
+ * reaches a terminal state (completed/dismissed) — the conversation is over,
+ * so any nag still chasing it is stale (#252 follow-up-autoclose). Unlike
+ * closeFollowUp/sweepOrphanedFollowUps, this does NOT scope to a `reason`:
+ * FOLLOWUP_REASONS has exactly one member today (quote_sent_no_reply), and
+ * there is no manual-follow-up-creation path that anchors a different reason
+ * to an inbox item, but the item's own terminal-ness invalidates ANY follow-up
+ * anchored to it — a future new reason should die with the item too, not slip
+ * through a reason-scoped filter. A 'handled' item is NOT terminal (that's the
+ * normal "quote sent, awaiting reply" case the nag exists to chase) — callers
+ * must only invoke this on the completed/dismissed transition itself.
+ *
+ * Best-effort — never throws, so a close failure never fails the caller's
+ * completion/dismissal (mirrors closeQuoteInboxNoise's non-fatal contract).
+ * Returns how many rows were closed (0 on no-op or a swallowed failure).
+ *
+ * `terminalStatus` is the status that triggered the close; it is recorded on the
+ * audit row so /inbox/activity can say WHY the nag went away (see below).
+ */
+export async function closeFollowUpsForResolvedItem(
+  itemId: string,
+  terminalStatus: 'completed' | 'dismissed',
+): Promise<number> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return 0;
+  try {
+    const { data, error } = await sb
+      .from('follow_ups')
+      .update({ status: 'done' })
+      .eq('inbox_item_id', itemId)
+      .eq('status', 'pending')
+      .select('id');
+    if (error) {
+      console.warn('[inbox] follow-up close on resolve failed (non-fatal):', error.message);
+      return 0;
+    }
+    const closedIds = ((data ?? []) as { id: string }[]).map((r) => r.id);
+    if (closedIds.length) await recordAutoClosedFollowUps(itemId, closedIds, terminalStatus);
+    return closedIds.length;
+  } catch (e) {
+    console.warn('[inbox] follow-up close on resolve failed (non-fatal):', e);
+    return 0;
+  }
+}
+
+/** #252, same reasoning as #230(a)'s recordSuppressedFollowUp directly below:
+ *  a follow-up closed by the system rather than by an operator clicking Done
+ *  would otherwise leave NO human-visible trace — it just disappears off the
+ *  "due today" strip, and follow_ups has no column recording who closed a row.
+ *  One activity row per closed follow-up, carrying the status that triggered it,
+ *  so /inbox/activity can answer "why did that nag go away". Best-effort and
+ *  deliberately swallowed: an audit-write failure must never turn a successful
+ *  close into a reported failure, nor fail the caller's completion/dismissal. */
+async function recordAutoClosedFollowUps(
+  inboxItemId: string,
+  followUpIds: string[],
+  terminalStatus: 'completed' | 'dismissed',
+): Promise<void> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return;
+  try {
+    await sb.from('dashboard_activity').insert(
+      followUpIds.map((followUpId) => ({
+        actor: 'system',
+        action: 'followup_autoclosed',
+        inbox_item_id: inboxItemId,
+        detail: { followUpId, terminalStatus },
+      })),
+    );
+  } catch (e) {
+    console.warn('[inbox] follow-up auto-close audit write failed (non-fatal):', e);
+  }
 }
 
 /** #230(a): the ONLY human-visible trace of a #220 internal-domain follow-up
@@ -1332,6 +1428,51 @@ export async function sweepOrphanedFollowUps(reason: string): Promise<number> {
   return closed;
 }
 
+/**
+ * Self-heal backlog for #252 follow-up-autoclose: markItemCompleted/dismissItem
+ * only close a follow-up going FORWARD from the moment they run — a follow-up
+ * left pending from BEFORE that fix (its item already sitting completed/
+ * dismissed) would otherwise nag "due today" forever. One batched pass per
+ * reconcile closes those: all pending follow-ups -> their anchored items'
+ * current status -> closeFollowUpsForResolvedItem for every item already in a
+ * terminal (completed/dismissed) state. Unscoped by source or reason (see
+ * closeFollowUpsForResolvedItem's doc) — a 'handled' item is untouched, same
+ * as the write-site fix. Fails open (closes nothing) on a lookup error rather
+ * than guessing, mirroring sweepOrphanedFollowUps. Returns how many follow-ups
+ * were closed.
+ */
+export async function sweepResolvedItemFollowUps(): Promise<number> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return 0;
+
+  const { data: pending, error: pendingErr } = await sb.from('follow_ups').select('id, inbox_item_id').eq('status', 'pending');
+  if (pendingErr) {
+    console.error('[inbox] resolved-item follow-up sweep: pending lookup failed:', pendingErr.message);
+    return 0;
+  }
+  const followUpRows = (pending ?? []) as { id: string; inbox_item_id: string | null }[];
+  const itemIds = [...new Set(followUpRows.map((r) => r.inbox_item_id).filter((id): id is string => !!id))];
+  if (!itemIds.length) return 0;
+
+  const { data: items, error: itemsErr } = await sb.from('inbox_items').select('id, status').in('id', itemIds);
+  if (itemsErr) {
+    console.error('[inbox] resolved-item follow-up sweep: inbox_items lookup failed:', itemsErr.message);
+    return 0;
+  }
+  // Carry each item's own terminal status through, rather than re-reading it in
+  // the close — the audit row records WHICH terminal state retired the nag.
+  const terminalItems = ((items ?? []) as { id: string; status: string }[]).filter(
+    (r): r is { id: string; status: 'completed' | 'dismissed' } => r.status === 'completed' || r.status === 'dismissed',
+  );
+  if (!terminalItems.length) return 0;
+
+  let closed = 0;
+  for (const item of terminalItems) {
+    closed += await closeFollowUpsForResolvedItem(item.id, item.status);
+  }
+  return closed;
+}
+
 export type DueFollowUpsResult = { ok: true; items: DueFollowUp[] } | { ok: false; error: string };
 
 /**
@@ -1383,12 +1524,20 @@ export async function listDueFollowUps(now: Date): Promise<DueFollowUpsResult> {
   return { ok: true, items };
 }
 
-export async function markFollowUpDone(id: string, operatorId: string): Promise<{ ok: boolean; error?: string }> {
+/** `operatorId` must be a real auth.users uuid, or null — mirrors
+ *  markItemHandledLocal's doc comment / the sibling-guard-parity convention:
+ *  the route's fallback is `operator?.id ?? null`, never the literal string
+ *  'system', so this never has to launder a non-uuid sentinel into a
+ *  uuid-typed column if a future change (e.g. coupling this to an
+ *  inbox_items.handled_by write) reuses operatorId that way. dashboard_activity
+ *  .actor stays a free-text column (schema comment: "auth.users id (as text)
+ *  or 'system'"), so a null operator still logs as the literal 'system' there. */
+export async function markFollowUpDone(id: string, operatorId: string | null): Promise<{ ok: boolean; error?: string }> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const { error } = await sb.from('follow_ups').update({ status: 'done' }).eq('id', id);
   if (error) return { ok: false, error: error.message };
-  await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'handled', detail: { followUpId: id } });
+  await sb.from('dashboard_activity').insert({ actor: operatorId ?? 'system', action: 'handled', detail: { followUpId: id } });
   return { ok: true };
 }
 
@@ -1679,6 +1828,10 @@ export async function markItemCompleted(
     inbox_item_id: itemId,
     detail: { from },
   });
+  // #252 follow-up-autoclose: completed is terminal — the conversation is
+  // finished, so any pending nag anchored to it should die with it. Only on
+  // the matched (guard passed) path above, never the guarded-out no-op.
+  await closeFollowUpsForResolvedItem(itemId, 'completed');
   return { ok: true };
 }
 

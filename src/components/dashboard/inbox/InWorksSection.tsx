@@ -13,6 +13,27 @@ const SOURCE_LABEL: Record<string, string> = {
   homeworks: 'Homeworks',
 };
 
+// Row 291 fix: pure read/write helpers over the per-item busyIds/errorIds
+// maps, used by act() and dismissError below. InboxList.tsx carries its own
+// separate copy of this exact pattern (row 291 hit both files with an
+// identical single-global-slot bug — the two files' act()/dismissError
+// implementations stay deliberately un-shared, same as before this fix; see
+// this file's own act() comment for why). Exported only so the "one row's
+// transition never touches another row's key" invariant is directly
+// unit-testable without jsdom or a mocked fetch. withRowFlagCleared fully
+// removes the key rather than setting it false, and a no-op clear returns
+// the SAME object reference.
+export function withRowFlagSet(map: Record<string, boolean>, id: string): Record<string, boolean> {
+  return { ...map, [id]: true };
+}
+
+export function withRowFlagCleared(map: Record<string, boolean>, id: string): Record<string, boolean> {
+  if (!map[id]) return map;
+  const next = { ...map };
+  delete next[id];
+  return next;
+}
+
 export function InWorksSection({
   awaiting,
   handled,
@@ -26,8 +47,13 @@ export function InWorksSection({
 }) {
   const [awaitingItems, setAwaitingItems] = useState<InWorksItem[]>(awaiting);
   const [handledItems, setHandledItems] = useState<InWorksItem[]>(handled);
-  const [busyId, setBusyId] = useState<string | null>(null);
-  const [errorId, setErrorId] = useState<string | null>(null);
+  // Row 291 fix: busyId/errorId were single global slots (`string | null`) —
+  // acting on one row stole another row's busy pin and, worse, silently
+  // cleared another row's still-true error note (act() unconditionally
+  // called setErrorId(null)). Both are now per-item records keyed by item
+  // id, mirroring InboxList.tsx's own fix for this identical pattern.
+  const [busyIds, setBusyIds] = useState<Record<string, boolean>>({});
+  const [errorIds, setErrorIds] = useState<Record<string, boolean>>({});
   const [composerFor, setComposerFor] = useState<string | null>(null);
 
   if (awaitingItems.length === 0 && handledItems.length === 0) return null;
@@ -72,8 +98,11 @@ export function InWorksSection({
     path: string,
     outcome: 'awaiting' | 'handled' | 'remove',
   ) {
-    setBusyId(item.id);
-    setErrorId(null);
+    setBusyIds((prev) => withRowFlagSet(prev, item.id));
+    // Row 291 fix: clear only THIS row's own error, never every row's — the
+    // old setErrorId(null) here was the single-slot steal (acting on row B
+    // silently erased row A's still-true failure note).
+    setErrorIds((prev) => withRowFlagCleared(prev, item.id));
     try {
       const res = await fetch(path, {
         method: 'POST',
@@ -88,13 +117,20 @@ export function InWorksSection({
           moveGroup(item.id, group, outcome);
         }
       } else {
-        setErrorId(item.id);
+        setErrorIds((prev) => withRowFlagSet(prev, item.id));
       }
     } catch {
-      setErrorId(item.id);
+      setErrorIds((prev) => withRowFlagSet(prev, item.id));
     } finally {
-      setBusyId(null);
+      setBusyIds((prev) => withRowFlagCleared(prev, item.id));
     }
+  }
+
+  // Row 291 fix: explicit acknowledge control for the error note. Previously
+  // the only ways to clear a row's error were retrying that exact row (via
+  // act()) or the accidental cross-row steal this fix removes.
+  function dismissError(itemId: string) {
+    setErrorIds((prev) => withRowFlagCleared(prev, itemId));
   }
 
   function renderRow(item: InWorksItem, group: 'awaiting' | 'handled') {
@@ -141,9 +177,17 @@ export function InWorksSection({
                 {formatWaiting(waitMs)}
               </p>
             )}
-            {errorId === item.id && (
-              <p className="text-xs mt-0.5" style={{ color: '#dc2626' }}>
-                Something went wrong — try again.
+            {errorIds[item.id] && (
+              <p className="text-xs mt-0.5 flex items-center gap-2" style={{ color: '#dc2626' }}>
+                <span>Something went wrong — try again.</span>
+                <button
+                  type="button"
+                  onClick={() => dismissError(item.id)}
+                  className="underline"
+                  style={{ color: '#dc2626' }}
+                >
+                  Dismiss
+                </button>
               </p>
             )}
           </div>
@@ -182,7 +226,7 @@ export function InWorksSection({
             {group === 'handled' && (
               <button
                 type="button"
-                disabled={busyId === item.id}
+                disabled={!!busyIds[item.id]}
                 onClick={() => act(item, group, '/api/dashboard/followed', 'awaiting')}
                 title="I followed up — snooze until they reply"
                 className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
@@ -193,12 +237,12 @@ export function InWorksSection({
             )}
             <button
               type="button"
-              disabled={busyId === item.id}
+              disabled={!!busyIds[item.id]}
               onClick={() => act(item, group, '/api/dashboard/completed', 'remove')}
               className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
               style={{ border: '1px solid var(--op-border)', color: 'var(--op-text-2)' }}
             >
-              {busyId === item.id ? 'Saving…' : 'Mark completed'}
+              {busyIds[item.id] ? 'Saving…' : 'Mark completed'}
             </button>
           </div>
         </div>

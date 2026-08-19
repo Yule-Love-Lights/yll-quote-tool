@@ -3,7 +3,13 @@
 // PipelineActionsMenu's 'send' case — see that file's helper doc comment for
 // why one function classifies both a fresh send and a ?retryDelivery=1 retry.
 import { describe, it, expect } from 'vitest';
-import { decideSendOutcome } from './pipelineSendOutcome';
+import {
+  decideSendOutcome,
+  classifyChannelOutcome,
+  isTimeoutHedgedFailure,
+  retryOfferFor,
+  type SendResponseBody,
+} from './pipelineSendOutcome';
 // Row 290: the REAL exported constant the send route writes onto a timed-out
 // smsError/emailError (src/lib/quoteDeliveries.ts, via
 // deliveryErrorMessage()/timeoutHedgedErrorMessage() in
@@ -118,7 +124,7 @@ describe('decideSendOutcome', () => {
       expect(outcome.retryChannel).toBe('sms');
       expect(outcome.retryGate).toBe('typed-yes');
       expect(outcome.retryPrompt).toBe(
-        'This attempt included a timeout — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver text now:',
+        "This attempt's outcome is unknown — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver text now:",
       );
     });
 
@@ -147,7 +153,7 @@ describe('decideSendOutcome', () => {
       expect(outcome.retryChannel).toBe('email');
       expect(outcome.retryGate).toBe('typed-yes');
       expect(outcome.retryPrompt).toBe(
-        'This attempt included a timeout — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver email now:',
+        "This attempt's outcome is unknown — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver email now:",
       );
     });
 
@@ -193,7 +199,7 @@ describe('decideSendOutcome', () => {
       expect(outcome.retryChannel).toBe('both');
       expect(outcome.retryGate).toBe('typed-yes');
       expect(outcome.retryPrompt).toBe(
-        'This attempt included a timeout — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver email + text now:',
+        "This attempt's outcome is unknown — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver email + text now:",
       );
     });
 
@@ -207,7 +213,7 @@ describe('decideSendOutcome', () => {
       );
       expect(outcome.retryGate).toBe('typed-yes');
       expect(outcome.retryPrompt).toBe(
-        'This attempt included a timeout — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver email + text now:',
+        "This attempt's outcome is unknown — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver email + text now:",
       );
     });
 
@@ -224,7 +230,7 @@ describe('decideSendOutcome', () => {
       );
       expect(outcome.retryGate).toBe('typed-yes');
       expect(outcome.retryPrompt).toBe(
-        'This attempt included a timeout — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver text again:',
+        "This attempt's outcome is unknown — the customer MAY already have that message. Any channel that failed outright did NOT arrive. Type YES to redeliver text again:",
       );
     });
   });
@@ -296,6 +302,181 @@ describe('decideSendOutcome', () => {
     expect(outcome.retryGate).toBe('typed-yes');
   });
 
+  // Row 269 fix round FIX 1 (three-lens HIGH — sibling-guard parity):
+  // PipelineActionsMenu never consumed channelOutcomes before this fix, so
+  // an operator clicking "Send (email + text)" on a quote whose SMS already
+  // confirmed delivered got an unscoped 'both' offer — this describe block
+  // pins the new scoping. The two tests above (no channelOutcomes in the
+  // body at all) already pin the CRITICAL COMPATIBILITY case byte-identical.
+  describe('Row 269 fix round FIX 1: alreadySent fresh-send scoped by channelOutcomes', () => {
+    it('one channel already confirmed delivered ("sent"), the other never attempted (null) — offers ONLY the undelivered channel, notes what already went out, still typed-yes (null = unknown = duplicate still possible)', () => {
+      const outcome = decideSendOutcome(
+        true,
+        {
+          alreadySent: true,
+          channelOutcomes: { sms: { outcome: 'sent', error: null, at: '2026-08-01T00:00:00Z' }, email: null },
+        },
+        'both',
+        false,
+      );
+      expect(outcome.retryChannel).toBe('email');
+      expect(outcome.retryGate).toBe('typed-yes');
+      expect(outcome.retryPrompt).toBe(
+        'text already delivered. This quote was already sent earlier and the customer may already have it. Type YES to send email for this quote now:',
+      );
+    });
+
+    it('both channels already confirmed delivered — no offer at all, honest message, no gate', () => {
+      const outcome = decideSendOutcome(
+        true,
+        {
+          alreadySent: true,
+          channelOutcomes: {
+            sms: { outcome: 'sent', error: null, at: '2026-08-01T00:00:00Z' },
+            email: { outcome: 'sent', error: null, at: '2026-08-01T00:00:01Z' },
+          },
+        },
+        'both',
+        false,
+      );
+      expect(outcome.retryChannel).toBeNull();
+      expect(outcome.retryPrompt).toBeNull();
+      expect(outcome.retryGate).toBeNull();
+      expect(outcome.message).toBe(
+        'email + text already delivered for this quote — nothing to redeliver. Share the portal URL with the customer directly if they need it again.',
+      );
+    });
+
+    it('single-channel click on an already-confirmed-delivered channel — no offer, message names just that channel', () => {
+      const outcome = decideSendOutcome(
+        true,
+        {
+          alreadySent: true,
+          channelOutcomes: { sms: { outcome: 'sent', error: null, at: '2026-08-01T00:00:00Z' }, email: null },
+        },
+        'sms',
+        false,
+      );
+      expect(outcome.retryChannel).toBeNull();
+      expect(outcome.message).toBe(
+        'text already delivered for this quote — nothing to redeliver. Share the portal URL with the customer directly if they need it again.',
+      );
+    });
+
+    it('both channels CONFIRMED failed (non-timeout) on the earlier send — offers both, but a duplicate is impossible so the gate steps DOWN to plain confirm', () => {
+      const outcome = decideSendOutcome(
+        true,
+        {
+          alreadySent: true,
+          channelOutcomes: {
+            sms: { outcome: 'failed', error: 'invalid phone number', at: '2026-08-01T00:00:00Z' },
+            email: { outcome: 'failed', error: 'mailbox rejected', at: '2026-08-01T00:00:01Z' },
+          },
+        },
+        'both',
+        false,
+      );
+      expect(outcome.retryChannel).toBe('both');
+      expect(outcome.retryGate).toBe('confirm');
+      expect(outcome.retryPrompt).toBe(
+        'This quote was already sent earlier, but email + text confirmed failed to deliver — send it now?',
+      );
+    });
+
+    it('one delivered, the other CONFIRMED failed — offers only the failed one, plain confirm (delivered one correctly excluded from the offer)', () => {
+      const outcome = decideSendOutcome(
+        true,
+        {
+          alreadySent: true,
+          channelOutcomes: {
+            sms: { outcome: 'sent', error: null, at: '2026-08-01T00:00:00Z' },
+            email: { outcome: 'failed', error: 'mailbox rejected', at: '2026-08-01T00:00:01Z' },
+          },
+        },
+        'both',
+        false,
+      );
+      expect(outcome.retryChannel).toBe('email');
+      expect(outcome.retryGate).toBe('confirm');
+      expect(outcome.retryPrompt).toBe(
+        'text already delivered. This quote was already sent earlier, but email confirmed failed to deliver — send it now?',
+      );
+    });
+
+    it('one CONFIRMED failed, the other TIMEOUT-hedged — mixed offered set: the unknown (timeout) channel forces typed-yes for the WHOLE offer, not confirm', () => {
+      const outcome = decideSendOutcome(
+        true,
+        {
+          alreadySent: true,
+          channelOutcomes: {
+            sms: { outcome: 'failed', error: 'invalid phone number', at: '2026-08-01T00:00:00Z' },
+            email: {
+              outcome: 'failed',
+              error: `${DELIVERY_TIMEOUT_ERROR_PREFIX}delivery outcome unknown (GHL may have still delivered it): socket hang up`,
+              at: '2026-08-01T00:00:01Z',
+            },
+          },
+        },
+        'both',
+        false,
+      );
+      expect(outcome.retryChannel).toBe('both');
+      expect(outcome.retryGate).toBe('typed-yes');
+    });
+  });
+
+  // Row 269 fix round 2 FIX B (sibling-guard parity, MED): decideSendOutcome
+  // reads body.channelOutcomes[ch] — an untrusted field off an HTTP response
+  // — straight into classifyChannelOutcome. Before this fix a malformed entry
+  // could throw inside isTimeoutHedgedFailure's `.includes()` call (a truthy
+  // non-string `error`) instead of degrading to 'unknown', the same class of
+  // gap QuoteBuilder.tsx's parseChannelOutcomeEntry already closed on its
+  // twin read of this same field. Not reachable via the real route today —
+  // this pins the defensive floor. `channelOutcomes` is built with
+  // `as unknown as SendResponseBody['channelOutcomes']` because every shape
+  // here is deliberately outside the real type — that's the point.
+  describe('Row 269 fix round 2 FIX B: malformed channelOutcomes entries degrade to "unknown" instead of throwing', () => {
+    it('a truthy non-string `error` field does not throw — degrades to unknown (typed-yes offered)', () => {
+      const malformed = {
+        sms: { outcome: 'failed', error: 12345, at: '2026-08-01T00:00:00Z' },
+        email: null,
+      } as unknown as SendResponseBody['channelOutcomes'];
+      const outcome = decideSendOutcome(true, { alreadySent: true, channelOutcomes: malformed }, 'sms', false);
+      expect(outcome.retryChannel).toBe('sms');
+      expect(outcome.retryGate).toBe('typed-yes');
+    });
+
+    it('a non-object entry (e.g. a bare string) does not throw — degrades to unknown', () => {
+      const malformed = { sms: 'bogus', email: null } as unknown as SendResponseBody['channelOutcomes'];
+      const outcome = decideSendOutcome(true, { alreadySent: true, channelOutcomes: malformed }, 'sms', false);
+      expect(outcome.retryChannel).toBe('sms');
+      expect(outcome.retryGate).toBe('typed-yes');
+    });
+
+    it('an invalid `outcome` value (neither "sent" nor "failed") does not throw — degrades to unknown', () => {
+      const malformed = {
+        sms: { outcome: 'pending', error: null, at: '2026-08-01T00:00:00Z' },
+        email: null,
+      } as unknown as SendResponseBody['channelOutcomes'];
+      const outcome = decideSendOutcome(true, { alreadySent: true, channelOutcomes: malformed }, 'sms', false);
+      expect(outcome.retryChannel).toBe('sms');
+      expect(outcome.retryGate).toBe('typed-yes');
+    });
+
+    it('a non-string `at` field does not throw — degrades to unknown', () => {
+      const malformed = {
+        sms: { outcome: 'sent', error: null, at: null },
+        email: null,
+      } as unknown as SendResponseBody['channelOutcomes'];
+      const outcome = decideSendOutcome(true, { alreadySent: true, channelOutcomes: malformed }, 'sms', false);
+      // A malformed 'sent' entry does NOT get to claim 'delivered' — it fails
+      // validation entirely and falls back to 'unknown', same as no row ever
+      // having been logged. Still offered, still typed-yes.
+      expect(outcome.retryChannel).toBe('sms');
+      expect(outcome.retryGate).toBe('typed-yes');
+    });
+  });
+
   it('retry-answers-alreadySent — the quote moved on since the original send; says so plainly and drops the retry offer (#241 defect 2 idiom)', () => {
     const outcome = decideSendOutcome(true, { alreadySent: true }, 'both', true);
     expect(outcome.retryChannel).toBeNull();
@@ -348,5 +529,72 @@ describe('decideSendOutcome', () => {
     const outcome = decideSendOutcome(true, { failedChannels: ['sms', 'sms'] }, 'both', false);
     expect(outcome.retryChannel).toBe('sms');
     expect(outcome.message).toBe('SMS failed. The other requested channel was delivered.');
+  });
+});
+
+// Row 269: classifyChannelOutcome is the pure per-channel classifier behind
+// QuoteBuilder.tsx's scoped alreadySent redeliver offer — see that route's
+// channelOutcomes field (src/app/api/quotes/[id]/send/route.ts) for the
+// shape this consumes.
+describe('classifyChannelOutcome', () => {
+  it('null (no delivery row was ever logged for this channel) -> unknown', () => {
+    expect(classifyChannelOutcome(null)).toBe('unknown');
+  });
+
+  it('undefined (channelOutcomes missing entirely — the read failed) -> unknown', () => {
+    expect(classifyChannelOutcome(undefined)).toBe('unknown');
+  });
+
+  it('outcome "sent" -> delivered, regardless of error field', () => {
+    expect(classifyChannelOutcome({ outcome: 'sent', error: null })).toBe('delivered');
+  });
+
+  it('outcome "failed" with a CONFIRMED (non-timeout) error -> failed', () => {
+    expect(classifyChannelOutcome({ outcome: 'failed', error: 'rate limited' })).toBe('failed');
+  });
+
+  it('outcome "failed" with no error text at all -> failed (never mistaken for a hedge)', () => {
+    expect(classifyChannelOutcome({ outcome: 'failed', error: null })).toBe('failed');
+  });
+
+  // Builds its fixture from the REAL exported constant (see the file header
+  // comment above) rather than a hand-typed 'timeout — ' guess.
+  it('outcome "failed" with a TIMEOUT-HEDGED error -> unknown, not failed (GHL may have delivered it anyway)', () => {
+    expect(
+      classifyChannelOutcome({
+        outcome: 'failed',
+        error: `${DELIVERY_TIMEOUT_ERROR_PREFIX}delivery outcome unknown (GHL may have still delivered it): socket hang up`,
+      }),
+    ).toBe('unknown');
+  });
+});
+
+// Row 269: both were private until QuoteBuilder.tsx needed to gate its own
+// retry buttons the same way PipelineActionsMenu already does — locking in
+// the public contract now that a second caller depends on it.
+describe('isTimeoutHedgedFailure / retryOfferFor (row 269 — now exported for QuoteBuilder.tsx)', () => {
+  it('isTimeoutHedgedFailure: undefined -> false', () => {
+    expect(isTimeoutHedgedFailure(undefined)).toBe(false);
+  });
+
+  it('isTimeoutHedgedFailure: a confirmed rejection -> false', () => {
+    expect(isTimeoutHedgedFailure('rate limited')).toBe(false);
+  });
+
+  it('isTimeoutHedgedFailure: text containing the real DELIVERY_TIMEOUT_ERROR_PREFIX -> true', () => {
+    expect(isTimeoutHedgedFailure(`${DELIVERY_TIMEOUT_ERROR_PREFIX}delivery outcome unknown: socket hang up`)).toBe(true);
+  });
+
+  it('retryOfferFor: not hedged -> plain confirm gate', () => {
+    expect(retryOfferFor('sms', true, false)).toEqual({
+      retryPrompt: 'Redeliver text again?',
+      retryGate: 'confirm',
+    });
+  });
+
+  it('retryOfferFor: hedged -> typed-yes gate', () => {
+    const { retryGate, retryPrompt } = retryOfferFor('both', true, true);
+    expect(retryGate).toBe('typed-yes');
+    expect(retryPrompt).toContain('Type YES to redeliver');
   });
 });
