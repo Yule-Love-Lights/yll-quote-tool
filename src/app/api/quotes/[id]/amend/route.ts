@@ -397,13 +397,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       notifyError = 'not-configured';
     } else {
       const firstName = quote.customer_name?.trim().split(/\s+/)[0] || 'there';
+      // An invoice exists only once the job has been completed (see
+      // jobs/[id]/complete), so "no invoice yet" is the signal that the
+      // installation — and therefore the balance — is still ahead of the
+      // customer. Review lens HIGH: without this, a post-install amendment told
+      // the customer their balance was due "after installation" when the
+      // install had already happened.
+      const dueAfterInstall = !invoice;
       const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
       const portalUrl = `${baseUrl}/portal/${id}`;
       const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || '(631) 517-0186';
       try {
         await sendSms({
           contactId: quote.highlevel_contact_id,
-          message: amendmentSmsBody(firstName, amendment.new_balance, phone),
+          message: amendmentSmsBody(firstName, amendment.new_balance, phone, dueAfterInstall),
           fromNumber: process.env.HIGHLEVEL_SMS_FROM_NUMBER || undefined,
         });
         await sendEmail({
@@ -415,6 +422,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
             newBalanceUsd: amendment.new_balance,
             portalUrl,
             phone,
+            dueAfterInstall,
           }),
           emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
         });

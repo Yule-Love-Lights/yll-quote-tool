@@ -354,23 +354,28 @@ export default function JobDetailPage() {
                   'edit it in the builder'
                 )}{' '}
                 and Calculate to re-price, then record the amendment here. The deposit already paid stays
-                applied; the balance recomputes. A price change sends it back for the customer to re-approve.
+                applied; the balance recomputes. A price change puts a re-approval card on the customer&apos;s
+                portal; the order itself stays booked. Until they sign it, collecting the balance is blocked
+                for a price INCREASE only (a decrease never blocks, and the invoice page can override).
+              </p>
+              {/* Jason 2026-08-19: this reason is NOT an internal note — the portal's
+                  AmendmentConsentCard renders it verbatim to the customer while the
+                  re-consent is pending (src/components/portal/snowglobe/AmendmentConsentCard.tsx).
+                  Operators had no way to know that from this screen. Sits ABOVE the
+                  field, not below it: a review lens pointed out that a warning under
+                  the box is read only after the note has already been typed. */}
+              <p className="text-xs text-amber-700 mb-1">
+                ⚠️ The customer sees this reason on their portal — write it for them, not as an internal
+                note. Line breaks are not preserved.
               </p>
               <textarea
                 value={amendReason}
                 onChange={(e) => setAmendReason(e.target.value)}
                 rows={2}
                 maxLength={500}
-                placeholder="Reason for the amendment (e.g. added an extra wreath)"
-                className="w-full text-sm border border-gray-300 rounded-md px-3 py-2 mb-1"
+                placeholder="Reason the customer will see (e.g. added a 36&quot; wreath)"
+                className="w-full text-sm border border-gray-300 rounded-md px-3 py-2 mb-2"
               />
-              {/* Jason 2026-08-19: this reason is NOT an internal note — the portal's
-                  AmendmentConsentCard renders it verbatim to the customer while the
-                  re-consent is pending (src/components/portal/snowglobe/AmendmentConsentCard.tsx).
-                  Operators had no way to know that from this screen. */}
-              <p className="text-xs text-amber-700 mb-2">
-                ⚠️ The customer sees this reason on their portal — write it for them, not as an internal note.
-              </p>
               <label className="flex items-center gap-2 text-sm text-gray-600 mb-2">
                 <input
                   type="checkbox"

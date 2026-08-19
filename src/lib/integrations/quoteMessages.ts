@@ -83,12 +83,26 @@ function usd(n: number): string {
 
 // Customer greetings are built from `customer_name` as typed by staff, which is
 // frequently lowercase ("susan pace-burke") — rendering that verbatim into a
-// customer-facing "Hi susan!" reads careless. Capitalises the first letter only;
-// the rest of the token is left ALONE on purpose so "McDonough", "O'Brien" and
-// "de la Cruz" are never re-cased into something wrong. A already-capitalised or
-// empty name passes through unchanged.
+// customer-facing "Hi susan!" reads careless. Capitalises the FIRST LETTER ONLY
+// and leaves the rest of the token untouched, so an already-correct "McDonough"
+// or "O'Brien" is never re-cased into something wrong.
+//
+// What this deliberately does NOT do (review finding, stated so the next reader
+// doesn't assume otherwise): it does not fix interior capitals. A lowercase
+// "o'brien" becomes "O'brien", not "O'Brien", and "mary-jane" becomes
+// "Mary-jane". That is an improvement on the raw value but not a full
+// name-casing solution, and a real one needs a decision about which name
+// families to special-case — not something to guess at inside a greeting.
+const GREETING_FALLBACK = 'there';
+
 function greetingName(firstName: string): string {
   if (!firstName) return firstName;
+  // The ONE caller (POST /api/quotes/[id]/amend) resolves a missing/blank
+  // customer_name to the literal 'there' BEFORE calling us, so a nameless
+  // customer's greeting arrives here as a sentence word, not a name.
+  // Capitalising it turns the natural "Hi there!" into "Hi There!", which
+  // reads like a literal name. Caught by a review lens, not by the author.
+  if (firstName === GREETING_FALLBACK) return firstName;
   return firstName.charAt(0).toUpperCase() + firstName.slice(1);
 }
 
@@ -419,10 +433,36 @@ export function supplierOrderEmailHtml(input: { lines: SupplierOrderLine[]; jobC
 // ── Amendment notice (ledger #83 Phase 4) ───────────────────────────────────
 // Sent to the customer (staff-initiated, optional — the SPEC §4.4 re-consent
 // default) when a booked order is amended to a new total.
+//
+// MONEY FORMAT — usdExact, NOT usd (Jason 2026-08-19, after a live send was
+// held back to fix this). These two messages are the only place the customer
+// is told their new balance BEFORE they open the portal to re-consent, and the
+// portal's own AmendmentConsentCard formats with cents
+// (src/components/portal/snowglobe/AmendmentConsentCard.tsx has its OWN usd()
+// with default 2-decimal precision), as does the invoice and Valor's checkout
+// page. Rounding here to whole dollars was tried and reverted: it made the SMS
+// and email agree with each other but disagree with the signature page the
+// email links to. Two review lenses found that independently. usd()'s rounding
+// is also NOT monotonic in the customer's favour — a balance ending under 50c
+// rounds DOWN, quoting a number LOWER than what is actually billed.
 export const AMENDMENT_EMAIL_SUBJECT = 'Your Yule Love Lights order was updated';
 
-export function amendmentSmsBody(firstName: string, newBalanceUsd: number, phone: string): string {
-  return `Hi ${greetingName(firstName)}! Your Yule Love Lights order was updated, your remaining balance is now ${usd(newBalanceUsd)} after installation. We'll confirm the details with you. Questions? Call or text ${phone}.`;
+// `dueAfterInstall` — whether the balance is genuinely still ahead of the
+// customer (the job has not been installed/invoiced yet). Review lens HIGH: an
+// amendment on an ALREADY-INSTALLED, already-invoiced job is an ordinary case
+// (a post-install correction or add-on), and telling that customer their
+// balance is due "after installation" says it isn't owed yet when it already
+// is — which delays collection. The clause is therefore stated only when it is
+// true; a post-install amendment falls back to the plain balance sentence and
+// makes no timing claim at all, rather than inventing one.
+export function amendmentSmsBody(
+  firstName: string,
+  newBalanceUsd: number,
+  phone: string,
+  dueAfterInstall: boolean,
+): string {
+  const timing = dueAfterInstall ? ' after installation' : '';
+  return `Hi ${greetingName(firstName)}! Your Yule Love Lights order was updated, your remaining balance is now ${usdExact(newBalanceUsd)}${timing}. We'll confirm the details with you. Questions? Call or text ${phone}.`;
 }
 
 export function amendmentEmailHtml(input: {
@@ -431,14 +471,16 @@ export function amendmentEmailHtml(input: {
   newBalanceUsd: number;
   portalUrl: string;
   phone: string;
+  // See amendmentSmsBody above for why this is conditional.
+  dueAfterInstall: boolean;
 }): string {
   const name = escapeHtml(greetingName(input.firstName));
   return [
     `<p>Hi ${name},</p>`,
     `<p>We've updated your holiday lighting order. Here are the new figures:</p>`,
     `<table style="border-collapse:collapse;font-size:14px;margin:12px 0;">`,
-    `<tr><td style="padding:2px 14px 2px 0;color:#666;">New order total</td><td style="padding:2px 0;"><strong>${usd(input.newTotalUsd)}</strong></td></tr>`,
-    `<tr><td style="padding:2px 14px 2px 0;color:#666;">Remaining balance (due after installation)</td><td style="padding:2px 0;"><strong>${usd(input.newBalanceUsd)}</strong></td></tr>`,
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">New order total</td><td style="padding:2px 0;"><strong>${usdExact(input.newTotalUsd)}</strong></td></tr>`,
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">Remaining balance${input.dueAfterInstall ? ' (due after installation)' : ''}</td><td style="padding:2px 0;"><strong>${usdExact(input.newBalanceUsd)}</strong></td></tr>`,
     `</table>`,
     `<p>You can review your order here: <a href="${escapeHtml(input.portalUrl)}">${escapeHtml(input.portalUrl)}</a></p>`,
     `<p>Questions? Call or text ${escapeHtml(input.phone)}.</p>`,
