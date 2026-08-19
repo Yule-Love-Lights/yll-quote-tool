@@ -1,14 +1,30 @@
 'use client';
 
-// Self-serve referral link request form (naldo/referral-self-serve). POSTs
-// to /api/referrals/request-link, which responds ok:true whether or not the
-// typed email matched a GHL contact, so ReferralLinkSuccess below is the
-// ONLY confirmation state this form ever shows. That is by design: the copy
-// is written so it never reveals whether an email belongs to a YLL
-// customer. Never imports highlevel.ts, customers.ts, or referrals.ts here,
-// this component only ever fetch()es the API.
+// Self-serve referral link request form (naldo/referral-self-serve +
+// naldo/referral-link-personalized). POSTs to /api/referrals/request-link.
+//
+// Two modes, picked by whether a `contactId` prop is present (set by the
+// server component from an optional ?c=<ghl-contact-id> query param, itself
+// only ever set by a GoHighLevel merge field, never typed by a visitor):
+//
+// - No contactId: the original typed-email flow. The route responds
+//   ok:true whether or not the typed email matched a GHL contact, so
+//   ReferralLinkSuccess below is the ONLY confirmation state this mode ever
+//   shows, by design: the copy never reveals whether an email belongs to a
+//   YLL customer.
+// - A contactId: a single button, no typing. The route resolves the id
+//   directly and, on a match, returns the referral URL in the same
+//   response, so ReferralLinkReady below can show it immediately. A
+//   contactId that fails to resolve gets the exact same ok:true, no-link
+//   response the email path uses, so this mode falls back to the same
+//   ReferralLinkSuccess screen too, see route.ts's file header for why that
+//   is the right fallback either way.
+//
+// Never imports highlevel.ts, customers.ts, or referrals.ts here, this
+// component only ever fetch()es the API.
 
 import { useState, type FormEvent } from 'react';
+import { ReferralLinkCopy } from '@/components/portal/dark/ReferralLinkCopy';
 
 const inputClass =
   'w-full rounded-lg bg-[#060B0F] border border-[#1F2A23] px-3.5 py-2.5 text-[15px] text-[#F4ECD8] placeholder:text-[#5A5648] focus:outline-none focus:ring-2 focus:ring-[#FFB744]';
@@ -46,6 +62,27 @@ export function ReferralLinkSuccess() {
 }
 
 /**
+ * naldo/referral-link-personalized: the contact-id path's success screen,
+ * shown only when the route actually returned a referral URL. Reuses
+ * ReferralLinkCopy (src/components/portal/dark/ReferralLinkCopy.tsx), the
+ * SAME copy-to-clipboard control the booked-page referral section already
+ * uses, so this gets the same dark palette and the same "Copy link" /
+ * "Copied" interaction for free, no new component to build or maintain.
+ */
+export function ReferralLinkReady({ link }: { link: string }) {
+  return (
+    <div className="rounded-2xl bg-[#0D1519] border border-[#1F2A23] p-8 text-center">
+      <p className="font-display text-[22px] md:text-[26px] font-semibold text-[#F4ECD8]">Your link is ready.</p>
+      <p className="mt-3 text-[15px] text-[#A89F87] leading-[1.6]">
+        Share it with a friend or neighbor. When they book, you get $125 off your next job. They get 2 free
+        16&quot; spritzers. We also emailed you a copy, so it is easy to find later.
+      </p>
+      <ReferralLinkCopy link={link} />
+    </div>
+  );
+}
+
+/**
  * The error state's message content. Extracted (mirrors ReferralLinkSuccess
  * above) so it can be unit tested with renderToStaticMarkup, no jsdom
  * needed. `serverError` is a genuine server-supplied message (e.g. a 400
@@ -69,29 +106,40 @@ export function ReferralLinkErrorMessage({ serverError }: { serverError: string 
   );
 }
 
-export function ReferralLinkForm() {
+export function ReferralLinkForm({ contactId }: { contactId?: string }) {
   const [email, setEmail] = useState('');
   const [status, setStatus] = useState<'idle' | 'submitting' | 'done' | 'error'>('idle');
   const [serverError, setServerError] = useState<string | null>(null);
+  const [referralUrl, setReferralUrl] = useState<string | null>(null);
+
+  // naldo/referral-link-personalized: a truthy contactId prop switches this
+  // whole form into the one-click mode below. The page only ever passes a
+  // trimmed, non-empty string or undefined (see referral-link/page.tsx), so
+  // no further validation is needed here, the route re-validates it anyway.
+  const hasContactId = !!contactId;
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (!email.trim()) return;
+    if (!hasContactId && !email.trim()) return;
     setStatus('submitting');
     setServerError(null);
     const data = new FormData(e.currentTarget);
+    const company = String(data.get('company') ?? '');
     try {
       const res = await fetch('/api/referrals/request-link', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email: email.trim(), company: String(data.get('company') ?? '') }),
+        body: JSON.stringify(hasContactId ? { contactId, company } : { email: email.trim(), company }),
       });
-      const json = await res.json().catch(() => ({}) as { ok?: boolean; error?: string });
+      const json = await res
+        .json()
+        .catch(() => ({}) as { ok?: boolean; error?: string; referralUrl?: string });
       if (!res.ok || !json.ok) {
         setServerError(json.error || null);
         setStatus('error');
         return;
       }
+      setReferralUrl(json.referralUrl ?? null);
       setStatus('done');
     } catch {
       setServerError(null);
@@ -100,7 +148,10 @@ export function ReferralLinkForm() {
   }
 
   if (status === 'done') {
-    return <ReferralLinkSuccess />;
+    // A referral URL only ever comes back on the contact-id path, and only
+    // on a real match (route.ts). Every other outcome, either path, falls
+    // back to the same generic "check your inbox" screen.
+    return referralUrl ? <ReferralLinkReady link={referralUrl} /> : <ReferralLinkSuccess />;
   }
 
   return (
@@ -111,7 +162,9 @@ export function ReferralLinkForm() {
       {/* Honeypot: hidden from people, catnip for bots. Off-screen rather
           than display:none or aria-hidden, which would put a focusable field
           inside a hidden subtree, mirrors src/app/forms/[type]/SiteForm.tsx
-          and src/app/refer/[code]/ReferralForm's sibling pattern. */}
+          and src/app/refer/[code]/ReferralForm's sibling pattern. Kept in
+          BOTH modes below: it costs nothing when there is no email field to
+          fill either, and the route checks it either way. */}
       <div style={{ position: 'absolute', left: -9999, width: 1, height: 1, overflow: 'hidden' }}>
         <label>
           Company
@@ -119,22 +172,24 @@ export function ReferralLinkForm() {
         </label>
       </div>
 
-      <div>
-        <label className={labelClass} htmlFor="referral-link-email">
-          Email
-        </label>
-        <input
-          id="referral-link-email"
-          name="email"
-          required
-          type="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          className={inputClass}
-          placeholder="you@example.com"
-          autoComplete="email"
-        />
-      </div>
+      {!hasContactId && (
+        <div>
+          <label className={labelClass} htmlFor="referral-link-email">
+            Email
+          </label>
+          <input
+            id="referral-link-email"
+            name="email"
+            required
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className={inputClass}
+            placeholder="you@example.com"
+            autoComplete="email"
+          />
+        </div>
+      )}
       {status === 'error' && (
         <p role="alert" className="text-[13px] text-[#E88]">
           <ReferralLinkErrorMessage serverError={serverError} />
@@ -145,7 +200,13 @@ export function ReferralLinkForm() {
         disabled={status === 'submitting'}
         className="mt-2 inline-flex items-center justify-center px-5 py-3.5 rounded-xl bg-[#FFB744] text-[#1A1206] font-semibold text-[15px] cursor-pointer transition-colors duration-200 hover:bg-[#FFC565] disabled:opacity-60 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0D1519]"
       >
-        {status === 'submitting' ? 'Sending...' : 'Send me my link'}
+        {hasContactId
+          ? status === 'submitting'
+            ? 'Getting your link...'
+            : 'Get my referral link'
+          : status === 'submitting'
+            ? 'Sending...'
+            : 'Send me my link'}
       </button>
     </form>
   );
