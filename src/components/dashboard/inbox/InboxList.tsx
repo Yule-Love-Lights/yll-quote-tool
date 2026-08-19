@@ -305,6 +305,26 @@ export function withRowFlagCleared(map: Record<string, boolean>, id: string): Re
   return next;
 }
 
+// #302 fix: pure helper mirroring withRowFlagSet/withRowFlagCleared's own
+// pattern above — restores a row act() optimistically removed from `items`,
+// used by act()'s catch (a thrown fetch: network down, DNS failure, a
+// dropped connection) below. `removedItem` is the row's own pre-removal
+// snapshot, captured before the optimistic filter ran; `undefined` (nothing
+// was captured, e.g. the id was already absent) is a no-op. Guards against
+// duplicating the row if a concurrent refresh() (the 25s poll) already
+// brought it back — or replaced it with a fresher copy — in the window
+// before the throw resolves: an id already present in `items` always wins
+// over the stale pre-removal snapshot.
+export function withItemRestored<T extends { id: string }>(
+  items: T[],
+  id: string,
+  removedItem: T | undefined,
+): T[] {
+  if (!removedItem) return items;
+  if (items.some((i) => i.id === id)) return items;
+  return [...items, removedItem];
+}
+
 // #270 fix (staff HIGH — see the finding this comment is attached to): a
 // group whose members include the item currently being composed to must
 // never render collapsed, or the operator's live ReplyComposer gets hidden
@@ -645,13 +665,6 @@ export function InboxList({
   // errorIds/"Something went wrong" pattern) in case the row is still on
   // screen after refresh() (e.g. a real server error, not a lost race).
   //
-  // The network-throw catch path is UNCHANGED (still passive, "next poll
-  // re-syncs") — a thrown fetch means the request may never have reached the
-  // server at all, so there's no fresher truth to pull yet; an immediate
-  // refresh() would likely hit the same network failure. That's a different
-  // failure mode than "the server responded and said no", which this fix
-  // targets.
-  //
   // Not unit-tested end-to-end: InboxList.test.tsx only exercises
   // renderToStaticMarkup (no jsdom, no click/fetch simulation, no effects) —
   // it cannot drive this async click-then-refetch flow. The two map
@@ -662,12 +675,47 @@ export function InboxList({
   // surrounding fetch/refresh choreography is still only a trace, matching
   // ContactRow's own doc-comment-as-proof pattern elsewhere in this file for
   // behavior static rendering can't observe.
+  //
+  // #302 fix (sibling-parity divergence vs. InWorksSection.tsx's act(),
+  // found by a real device check with DevTools set to Offline): the
+  // network-throw catch below used to be passive — just a comment claiming
+  // "the next poll re-syncs the true state if the write failed" — and set no
+  // error state at all. That comment was never accurate for THIS file: the
+  // errorIds note a few lines up only renders for a row that's still present
+  // in `items` (ItemRow is built from `groups`, built from `visibleItems`,
+  // built from `items` — see the render below), and the optimistic removal
+  // two lines above already takes the row out of `items` before the fetch
+  // even starts. So on a throw, setting errorIds alone would have been
+  // INERT — there'd be no row left to render the note on. If it was the
+  // operator's last open item, `items.length === 0` even swaps in the
+  // celebratory "Nothing unanswered right now" empty state. Nor can the poll
+  // actually be trusted to fix it: refresh()'s own catch (above) is a silent
+  // no-op, so while genuinely offline — the exact scenario a thrown fetch
+  // signals — the 25s poll fails the identical way and never brings the row
+  // back either.
+  //
+  // Fix: snapshot the row being removed (via `removedItem` below) before the
+  // optimistic filter, and on a throw, set errorIds AND put it back if it
+  // isn't already present (a concurrent refresh() from the poll could have
+  // already restored — or further changed — this exact row in the window
+  // before the throw resolves). Unlike the not-ok branch above, there's no
+  // reason to prefer refresh()'s authoritative state here: a throw means the
+  // request may never have reached the server at all, so "unchanged" is the
+  // honest read, not a guess. `items` is now a dependency of this callback
+  // specifically so `removedItem`'s lookup is never a stale closure (every
+  // other read of `items` in this component goes through a functional
+  // setState updater for the same reason, which is why `act` never needed
+  // `items` as a dependency until now). Recreating `act` on every `items`
+  // change is safe: `act` is not referenced in any other dependency array in
+  // this file, and `rowActions` (below) is a plain object rebuilt fresh every
+  // render regardless — nothing here relies on `act`'s referential identity.
   const act = useCallback(async (id: string, path: string) => {
     setBusyIds((prev) => withRowFlagSet(prev, id));
     // Row 291 fix: clear only THIS row's own error, never every row's — the
     // old setErrorId(null) here was the single-slot steal (acting on row B
     // silently erased row A's still-true failure note).
     setErrorIds((prev) => withRowFlagCleared(prev, id));
+    const removedItem = items.find((i) => i.id === id);
     setItems((prev) => prev.filter((i) => i.id !== id)); // optimistic removal
     try {
       const res = await fetch(path, {
@@ -681,11 +729,17 @@ export function InboxList({
         await refresh();
       }
     } catch {
-      // The next poll re-syncs the true state if the write failed.
+      // #302 fix: restore the optimistically-removed row (if it isn't
+      // already back — see withItemRestored's own doc comment) and flag it,
+      // so the "Something went wrong" note and its Dismiss control render
+      // immediately — see the doc comment above act() for why neither
+      // errorIds alone nor waiting on refresh() would have been enough.
+      setErrorIds((prev) => withRowFlagSet(prev, id));
+      setItems((prev) => withItemRestored(prev, id, removedItem));
     } finally {
       setBusyIds((prev) => withRowFlagCleared(prev, id));
     }
-  }, [refresh]);
+  }, [refresh, items]);
 
   // Row 291 fix: explicit acknowledge control for the error note. Previously
   // the only ways to clear a row's error were retrying that exact row (via

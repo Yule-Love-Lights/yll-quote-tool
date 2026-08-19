@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { InboxList, isGroupExpanded, canToggleGroup, withRowFlagSet, withRowFlagCleared } from './InboxList';
+import { InboxList, isGroupExpanded, canToggleGroup, withRowFlagSet, withRowFlagCleared, withItemRestored } from './InboxList';
 import type { OpenInboxItem } from '@/lib/dashboard/inbox/types';
 import type { InboxGroup } from '@/lib/dashboard/inbox/groupInboxItems';
 
@@ -470,5 +470,53 @@ describe('withRowFlagSet / withRowFlagCleared (row 291 — per-item busy/error m
   it('setting a flag for a new id preserves an existing map\'s other entries', () => {
     const map: Record<string, boolean> = { rowA: true, rowC: true };
     expect(withRowFlagSet(map, 'rowB')).toEqual({ rowA: true, rowB: true, rowC: true });
+  });
+});
+
+// #302 fix: withItemRestored is the exact pure primitive act()'s catch block
+// (a thrown fetch — network down, DNS failure, a dropped connection) calls to
+// put a row back after the optimistic removal, mirroring withRowFlagSet's own
+// call in that same catch. Pinned directly, no jsdom/fetch mock needed, for
+// the same reason the busy/error map helpers above are: the defect (and the
+// fix) lives entirely in this state-shape logic, not in any render or network
+// code the repo's static-render harness can't drive. What this does NOT (and
+// cannot, without jsdom) prove: that InboxList actually renders the restored
+// row's "Something went wrong" note and Dismiss control on screen — that's
+// asserted by reading the render path in the source (ItemRow's
+// `errorIds[item.id]` check, fed by `groups` <- `visibleItems` <- `items`),
+// not by a test here.
+describe('withItemRestored (#302 — restore an optimistically-removed row after a thrown fetch)', () => {
+  const solo: OpenInboxItem = { ...base, id: 'x', contactId: 'c1', contact: { displayName: 'Restored Customer', email: null, phone: null } };
+
+  it('restores a row that is absent from items — the fix for a thrown fetch otherwise leaving the row (and its error note) gone for good', () => {
+    expect(withItemRestored([], 'x', solo)).toEqual([solo]);
+  });
+
+  it('preserves the other rows already in items when restoring one', () => {
+    const other: OpenInboxItem = { ...base, id: 'other', contactId: 'c2' };
+    expect(withItemRestored([other], 'x', solo)).toEqual([other, solo]);
+  });
+
+  it('does not duplicate a row a concurrent refresh() already restored — an id already present in items always wins over the stale pre-removal snapshot', () => {
+    const fresher: OpenInboxItem = { ...base, id: 'x', contactId: 'c1', escalationLevel: 2 }; // e.g. escalated by the poll in the meantime
+    const items = [fresher];
+    const result = withItemRestored(items, 'x', solo);
+    expect(result).toBe(items); // same reference — no-op, and definitely not solo's stale copy
+    expect(result).toEqual([fresher]);
+  });
+
+  it('is a no-op (same reference) when there is no snapshot to restore — removedItem undefined (e.g. the id was already absent when act() captured it)', () => {
+    const items: OpenInboxItem[] = [];
+    expect(withItemRestored(items, 'x', undefined)).toBe(items);
+  });
+
+  it('mirrors act()\'s actual catch block: a thrown fetch leaves the row present (restored) AND flagged errored, combining this fix with row 291\'s per-item errorIds', () => {
+    let items: OpenInboxItem[] = []; // state right after act()'s optimistic removal
+    let errorIds: Record<string, boolean> = {};
+    // These two lines are exactly act()'s catch body.
+    errorIds = withRowFlagSet(errorIds, solo.id);
+    items = withItemRestored(items, solo.id, solo);
+    expect(items).toEqual([solo]);
+    expect(errorIds).toEqual({ x: true });
   });
 });
