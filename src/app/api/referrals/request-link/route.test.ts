@@ -535,13 +535,29 @@ describe('POST /api/referrals/request-link', () => {
   });
 });
 
-// naldo/referral-link-personalized: the contact-id path. The mint/send
-// chain is awaited inline, so most assertions below read straight off the
-// POST response, no drainAfterTasks() needed. Review fix 2 (this round)
-// adds ONE deferred after() task on a resolved contact id (the staff
-// inbox record, see its own describe block further down), so a test that
-// asserts on afterTasks now expects exactly that one task, not zero.
+// naldo/referral-link-personalized: the contact-id path. Only the lookup
+// and the code mint are awaited inline (the response depends on them), so
+// assertions about the RESPONSE (status, referralUrl) read straight off
+// the POST call with no draining needed. Review fix 2 (staff record) and
+// review fix 7 (send + Brand Ambassador stamps), both this round, defer
+// the rest with after(): a test that asserts on sendEmail/
+// upsertContactCustomField/ingestTouch needs drainAfterTasks() first.
 describe('POST /api/referrals/request-link (contact-id path)', () => {
+  it('review fix 7: a mid-chain kill after the response is built cannot leave the mint applied with no response delivered, because the mint IS the response', async () => {
+    // Regression guard for the maxDuration risk fix 7 addresses: proves the
+    // referralUrl in the response was produced by the SAME inline mint
+    // that a caller could observe, not by a deferred step that might never
+    // run. If this ever regressed to awaiting sendEmail inline again, this
+    // test would still pass, so it is deliberately paired with the
+    // "queued via after()" test below, which is the one that would catch
+    // that regression.
+    getContact.mockResolvedValue(RESOLVED_CONTACT);
+    ensureReferralCode.mockResolvedValue('DEADLINE1');
+    const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+    expect((await res.json()).referralUrl).toBe('https://quote.example.com/refer/DEADLINE1');
+  });
+
+
   it('a contact id that resolves mints the code, sends the email, and returns the link in the body', async () => {
     getContact.mockResolvedValue(RESOLVED_CONTACT);
     const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
@@ -562,20 +578,27 @@ describe('POST /api/referrals/request-link (contact-id path)', () => {
       { skipIdentityRefresh: true },
     );
     expect(ensureReferralCode).toHaveBeenCalledWith('cust-1');
+
+    // Review fix 7 (this round): the send is now deferred with after(), so
+    // it hasn't run yet at this point, only after draining.
+    expect(sendEmail).not.toHaveBeenCalled();
+    await drainAfterTasks();
     expect(sendEmail).toHaveBeenCalledTimes(1);
     const sendArgs = sendEmail.mock.calls[0]![0] as { contactId: string; html: string };
     expect(sendArgs.contactId).toBe('ijusgE2q5QhlYjBZ6RG9');
     expect(sendArgs.html).toContain('https://quote.example.com/refer/CODE1234');
   });
 
-  it('the mint/send chain resolves inline: the response already carries the link before any after() task runs', async () => {
+  it('the lookup and mint resolve inline: the response already carries the link, with send + stamps still queued via after()', async () => {
     getContact.mockResolvedValue(RESOLVED_CONTACT);
     const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
     expect((await res.json()).referralUrl).toBeTruthy();
-    expect(sendEmail).toHaveBeenCalledTimes(1); // already sent, no drain needed
-    // Review fix 2: exactly the staff-record task, deferred so it can never
-    // delay or risk the response above.
-    expect(afterTasks).toHaveLength(1);
+    expect(sendEmail).not.toHaveBeenCalled();
+    // Review fix 2 + review fix 7: two deferred tasks by the time the
+    // response is built, the staff-record write and the send+stamp tail.
+    expect(afterTasks).toHaveLength(2);
+    await drainAfterTasks();
+    expect(sendEmail).toHaveBeenCalledTimes(1);
   });
 
   it('a contact id that does not resolve (getContact throws) returns the generic response with no link, and writes nothing', async () => {
@@ -616,15 +639,19 @@ describe('POST /api/referrals/request-link (contact-id path)', () => {
 
     const first = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
     const firstJson = (await first.json()) as { referralUrl?: string };
+    await drainAfterTasks();
     expect(sendEmail).toHaveBeenCalledTimes(1);
     expect(firstJson.referralUrl).toBeTruthy();
 
     const second = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
     const secondJson = await second.json();
+    await drainAfterTasks();
     expect(sendEmail).toHaveBeenCalledTimes(1); // still just once
     expect(findOrCreateCustomer).toHaveBeenCalledTimes(1); // no wasted work either
     // The cooldown short-circuits before the mint, so the second click's
-    // response falls back to the generic one, no link.
+    // response falls back to the generic one, no link. (Review fix 4, next
+    // round, revisits this: the cooldown should gate the send only, never
+    // the returning of an already-minted link.)
     expect(secondJson).toEqual({ ok: true });
   });
 
@@ -640,6 +667,8 @@ describe('POST /api/referrals/request-link (contact-id path)', () => {
     process.env.HIGHLEVEL_CONTACT_FIELD_BRAND_AMBASSADOR_ENROLLMENT_DATE = 'field-date-id';
     getContact.mockResolvedValue(RESOLVED_CONTACT);
     await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+    // Review fix 7: the stamps are deferred along with the send now.
+    await drainAfterTasks();
     expect(upsertContactCustomField).toHaveBeenCalledWith('ijusgE2q5QhlYjBZ6RG9', 'field-status-id', 'Active');
     expect(upsertContactCustomField).toHaveBeenCalledWith('ijusgE2q5QhlYjBZ6RG9', 'field-date-id', expect.any(String));
   });
