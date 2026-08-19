@@ -8,6 +8,7 @@ import {
   latestConsentAmendment,
   blocksSettlement,
   isAmendmentConsentPending,
+  isSupersededPendingAmendment,
   type AmendmentTrailEntry,
 } from './amend';
 
@@ -253,6 +254,91 @@ describe('latestConsentAmendment — consent survives cosmetic trail entries', (
     });
 
     expect(blocksSettlement(latestConsentAmendment([financial, cosmetic]))).toBe(false);
+  });
+});
+
+// FIX6 (review MED): only the LATEST total-changing amendment is reachable
+// via consent/decline — a real live incident on a real order: +342.56
+// (pending, never resolved) then -342.56 (accepted). The admin trail views
+// (src/app/admin/quotes/[id]/page.tsx, src/app/admin/jobs/[id]/page.tsx) use
+// this to badge the first row "Superseded" instead of "still awaiting the
+// customer" — nothing will ever resolve it, since amend-consent/amend-decline
+// both 409 'stale-amendment' on anything but the current latest.
+describe('isSupersededPendingAmendment', () => {
+  it('an earlier PENDING amendment is superseded once a later one is recorded', () => {
+    const first = computeAmendment({ ...bookedBase(), newTotal: 5343, reason: 'added a wreath' });
+    first.consent = { status: 'pending' };
+    const second = computeAmendment({
+      previousTotal: first.new_total,
+      depositPaid: first.deposit_applied,
+      previousBalance: first.new_balance,
+      newTotal: 5000.44,
+      by: 'staff:naldo',
+      reason: 'removed the wreath (customer changed their mind before answering)',
+    });
+    second.consent = {
+      status: 'accepted',
+      accepted_at: '2026-07-19T00:00:00.000Z',
+      signature: { name: 'Jordan Smith', kind: 'typed', value: 'Jordan Smith', signed_at: '2026-07-19T00:00:00.000Z', ip: null },
+    };
+
+    expect(isSupersededPendingAmendment(first, [first, second])).toBe(true);
+    expect(isSupersededPendingAmendment(second, [first, second])).toBe(false); // the live, actionable one
+  });
+
+  it('the CURRENT latest pending amendment is never superseded', () => {
+    const only = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+    only.consent = { status: 'pending' };
+    expect(isSupersededPendingAmendment(only, [only])).toBe(false);
+  });
+
+  it('an earlier amendment that already resolved (accepted) is NOT superseded — it has a real answer', () => {
+    const first = computeAmendment({ ...bookedBase(), newTotal: 5343 });
+    first.consent = {
+      status: 'accepted',
+      accepted_at: '2026-07-18T00:00:00.000Z',
+      signature: { name: 'Jordan Smith', kind: 'typed', value: 'Jordan Smith', signed_at: '2026-07-18T00:00:00.000Z', ip: null },
+    };
+    const second = computeAmendment({
+      previousTotal: first.new_total,
+      depositPaid: first.deposit_applied,
+      previousBalance: first.new_balance,
+      newTotal: 5700,
+      by: 'staff:naldo',
+      reason: 'added a garland',
+    });
+    second.consent = { status: 'pending' };
+
+    expect(isSupersededPendingAmendment(first, [first, second])).toBe(false);
+  });
+
+  it('an earlier amendment that already resolved (declined) is NOT superseded — it has a real answer', () => {
+    const first = computeAmendment({ ...bookedBase(), newTotal: 5343 });
+    first.consent = { status: 'declined', declined_at: '2026-07-18T00:00:00.000Z', ip: null };
+    const second = computeAmendment({
+      previousTotal: bookedBase().previousTotal, // the decline reverted the total
+      depositPaid: first.deposit_applied,
+      previousBalance: first.previous_balance,
+      newTotal: 5700,
+      by: 'staff:naldo',
+      reason: 'a different change entirely',
+    });
+    second.consent = { status: 'pending' };
+
+    expect(isSupersededPendingAmendment(first, [first, second])).toBe(false);
+  });
+
+  it('a cosmetic (zero-delta) entry is never superseded (requiresReconsent is false)', () => {
+    const cosmetic = computeAmendment({ ...bookedBase(), newTotal: 5000 });
+    const another = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+    another.consent = { status: 'pending' };
+    expect(isSupersededPendingAmendment(cosmetic, [cosmetic, another])).toBe(false);
+  });
+
+  it('a lone amendment with no later entries is not superseded', () => {
+    const only = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+    only.consent = { status: 'pending' };
+    expect(isSupersededPendingAmendment(only, [only])).toBe(false);
   });
 });
 

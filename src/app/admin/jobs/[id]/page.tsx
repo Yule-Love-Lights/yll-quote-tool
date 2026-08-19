@@ -9,6 +9,7 @@ import { JobStatusBadge } from '@/components/admin/JobStatusBadge';
 import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
 import { NceBadge } from '@/components/admin/NceBadge';
 import { reconcileInvoice } from '@/lib/invoices';
+import { isSupersededPendingAmendment } from '@/lib/amend';
 import type { JobDetail } from '@/lib/jobs';
 
 // Operator BILLING detail for one job (ledger #83): customer, the booking-time
@@ -357,15 +358,25 @@ export default function JobDetailPage() {
                     // Cosmetic (zero-delta) entries never carry `consent` — mirrors
                     // /admin/quotes/[id]'s badge logic (requiresReconsent gates it).
                     const requiresConsent = Math.abs(a.delta) >= 0.005;
-                    const status = requiresConsent ? (a.consent?.status ?? 'pending') : null;
+                    const rawStatus = requiresConsent ? (a.consent?.status ?? 'pending') : null;
+                    // FIX6 (review MED): relabel a still-'pending' entry that's
+                    // been superseded by a later amendment (no route will ever
+                    // resolve it — see isSupersededPendingAmendment's doc
+                    // comment in lib/amend.ts) so it doesn't read as still
+                    // actionable. Real live incident: this order has +342.56
+                    // (pending, never resolved) then -342.56 (accepted).
+                    const isSuperseded = isSupersededPendingAmendment(a, data.amendments);
+                    const status = isSuperseded ? 'superseded' : rawStatus;
                     const badge =
                       status === 'declined'
                         ? { label: 'Declined', cls: 'bg-red-100 text-red-700' }
                         : status === 'accepted'
                           ? { label: 'Approved', cls: 'bg-emerald-100 text-emerald-700' }
-                          : status === 'pending'
-                            ? { label: 'Awaiting customer', cls: 'bg-amber-100 text-amber-700' }
-                            : null;
+                          : status === 'superseded'
+                            ? { label: 'Superseded — see latest', cls: 'bg-gray-100 text-gray-500' }
+                            : status === 'pending'
+                              ? { label: 'Awaiting customer', cls: 'bg-amber-100 text-amber-700' }
+                              : null;
                     return (
                       <li key={i} className="border-t border-gray-100 pt-2 first:border-0 first:pt-0">
                         <div className="flex items-start justify-between gap-2">

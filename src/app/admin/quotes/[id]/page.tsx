@@ -16,7 +16,7 @@ import { buildPortalLineItems } from '@/lib/portal/adapter';
 import { BUSINESS_RULES, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { getQuoteRaw } from '@/lib/quotes';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
-import { requiresReconsent } from '@/lib/amend';
+import { requiresReconsent, isSupersededPendingAmendment } from '@/lib/amend';
 import { getJobByQuote } from '@/lib/jobs';
 import { getInvoiceByJob } from '@/lib/invoices';
 import { getDesignByQuote } from '@/lib/designs';
@@ -533,15 +533,23 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
                 // A missing `consent` on a REAL price change reads as pending,
                 // matching the backward-compat convention documented on
                 // AmendmentConsent in lib/amend.ts.
-                const status = requiresReconsent(a) ? (a.consent?.status ?? 'pending') : null;
+                const rawStatus = requiresReconsent(a) ? (a.consent?.status ?? 'pending') : null;
+                // FIX6: relabel a still-'pending' entry that's been superseded
+                // by a later amendment (no route will ever resolve it — see
+                // isSupersededPendingAmendment's doc comment) so an operator
+                // doesn't read "Pending customer response" as still actionable.
+                const isSuperseded = isSupersededPendingAmendment(a, amendments);
+                const status = isSuperseded ? 'superseded' : rawStatus;
                 const badge =
                   status === 'declined'
                     ? { label: 'Declined', cls: 'bg-red-100 text-red-700' }
                     : status === 'accepted'
                       ? { label: 'Approved', cls: 'bg-emerald-100 text-emerald-700' }
-                      : status === 'pending'
-                        ? { label: 'Pending customer response', cls: 'bg-amber-100 text-amber-700' }
-                        : null;
+                      : status === 'superseded'
+                        ? { label: 'Superseded — see latest', cls: 'bg-gray-100 text-gray-500' }
+                        : status === 'pending'
+                          ? { label: 'Pending customer response', cls: 'bg-amber-100 text-amber-700' }
+                          : null;
                 return (
                   <li key={i} className="border-t border-gray-100 pt-2 first:border-0 first:pt-0">
                     <div className="flex items-start justify-between gap-2">

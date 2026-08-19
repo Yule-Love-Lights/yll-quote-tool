@@ -266,6 +266,29 @@ export function latestConsentAmendment(
 }
 
 /**
+ * FIX6 (review MED): only the LATEST total-changing amendment is reachable
+ * via consent/decline — amend-consent and amend-decline both resolve against
+ * latestConsentAmendment and 409 'stale-amendment' on anything else. So once
+ * a SECOND total-changing amendment is recorded, an earlier one that was
+ * still 'pending' can never be answered — no route will ever act on it
+ * again. True when `amendment` requires consent, is structurally still
+ * 'pending' (missing consent or explicitly 'pending'), AND is not the
+ * current latestConsentAmendment(amendments). An earlier entry that already
+ * resolved (accepted or declined) is NOT superseded by this predicate — it
+ * has a real, historically-accurate answer; only an UNANSWERED one is stuck.
+ * Display-only (the admin trail views badge it distinctly); never mutates
+ * stored consent.
+ */
+export function isSupersededPendingAmendment(
+  amendment: AmendmentTrailEntry,
+  amendments: AmendmentTrailEntry[] | null | undefined,
+): boolean {
+  if (!requiresReconsent(amendment)) return false;
+  if ((amendment.consent?.status ?? 'pending') !== 'pending') return false;
+  return amendment !== latestConsentAmendment(amendments);
+}
+
+/**
  * True whenever the customer has NOT accepted (signed) the latest
  * total-changing amendment — whether because they haven't answered yet
  * (`consent` missing/`'pending'`) OR because they explicitly DECLINED it.
