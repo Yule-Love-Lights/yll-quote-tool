@@ -979,11 +979,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   };
 
   // #264 round 2: the allSettled batch's bounded worst case is now roughly
-  // ghlStageChain's ~5 sequential GHL calls at 10s each (~50s) vs. Vercel's
-  // Fluid Compute default function timeout of 300s (verified via Vercel docs
-  // + this project's plan) — comfortably inside budget with no maxDuration
-  // export needed (round-2 staff-lens correction to round 1's fix 5, which
-  // had assumed a 60s default).
+  // ghlStageChain's ~5 sequential GHL calls at 10s each (~50s, the stage
+  // move + quote-link stamp) PLUS the event-date push's own internally
+  // deadline-bounded ≤6s (FIX E, #237 fix round — this comment predated the
+  // event-date push and was never updated when that 6th step landed inside
+  // the same chain; the push's ≤6s is a SEPARATE Promise.race inside
+  // pushEventDateToGhl, not part of this 10s-per-call GHL_TIMEOUT_MS chain —
+  // see PUSH_DEADLINE_MS in ghlEventDate.ts) — ~56s worst case, not ~50s.
+  // Still comfortably inside Vercel's Fluid Compute default function timeout
+  // of 300s (verified via Vercel docs + this project's plan) — no
+  // maxDuration export needed (round-2 staff-lens correction to round 1's
+  // fix 5, which had assumed a 60s default).
   await Promise.allSettled([ghlStageChain(), customerSms(), customerEmail(), tagPropagationRaced()]);
 
   // Join the two message errors deterministically (SMS first, then email),

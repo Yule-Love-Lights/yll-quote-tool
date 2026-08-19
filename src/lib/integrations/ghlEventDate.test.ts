@@ -118,7 +118,12 @@ describe('formatEventDateForGhl', () => {
     expect(formatEventDateForGhl('2026-04-30')).toBe('04/30/2026');
   });
 
-  it('never constructs a Date object internally — a value that would shift under UTC-vs-local parsing round-trips exactly', () => {
+  // FIX E (#237 fix round): renamed from "never constructs a Date object
+  // internally..." — the assertions below only ever compare two output
+  // STRINGS and never spy on the global `Date` constructor, so this proves
+  // the round-trip is correct, not that no Date was built (the file header's
+  // own comment is what actually documents the no-Date-object design).
+  it('a value that would shift under UTC-vs-local Date parsing round-trips exactly', () => {
     // 2026-01-01 is the classic "new Date('2026-01-01')" trap: parsed as UTC
     // midnight, some local timezones would print December 31 2025 instead.
     // Pure string splitting can't reproduce that bug.
@@ -166,7 +171,12 @@ describe('pushEventDateToGhl — guards', () => {
     expect(hl.listLocationCustomFields).not.toHaveBeenCalled();
   });
 
-  it('a GHL error on the final upsert fails soft — logs, returns pushed:false, never throws', async () => {
+  // FIX E (#237 fix round): renamed from "...never throws" — this ONE test
+  // only exercises the final-upsert-rejects case; it doesn't by itself prove
+  // the general never-throws property. The OTHER cases in this describe
+  // block (the 401/403 scope error above, the deadline timeout below) cover
+  // the rest, each under its own honestly-scoped name.
+  it('a GHL error on the final upsert fails soft — logs, resolves pushed:false rather than rejecting', async () => {
     hl.listLocationCustomFields.mockResolvedValue([{ id: 'field-1', name: EVENT_DATE_FIELD_NAME }]);
     hl.upsertContactCustomField.mockRejectedValue(new hl.HighLevelError('GHL down', 502));
 
