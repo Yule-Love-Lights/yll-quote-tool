@@ -1810,7 +1810,10 @@ describe('quoteRowToPortalQuote — amendment consent card money basis (FIX4)', 
   const fullTotal = result.total;
   const fullTax = result.taxAmount;
 
-  function amendedPortalWithBasis(invoiceTaxOverridden: boolean | null) {
+  function amendedPortalWithBasis(
+    invoiceTaxOverridden: boolean | null,
+    consent: { status: 'pending' } | { status: 'declined'; declined_at: string; ip: null } = { status: 'pending' },
+  ) {
     const row = rowWith(result, inputs);
     row.customer_approved_at = '2026-07-01T00:00:00.000Z';
     row.deposit_paid_at = '2026-07-01T00:10:00.000Z';
@@ -1836,7 +1839,7 @@ describe('quoteRowToPortalQuote — amendment consent card money basis (FIX4)', 
           deposit_applied: 1000,
           delta: 400,
           line_item_changes: [],
-          consent: { status: 'pending' },
+          consent,
         },
       ],
     };
@@ -1881,6 +1884,21 @@ describe('quoteRowToPortalQuote — amendment consent card money basis (FIX4)', 
     expect(Math.round((expectedNew - pending.deltaUsd) * 100) / 100).toBe(expectedPrevious);
     // The balance derives from the (invoice-basis) new total, not the trail's.
     expect(pending.newBalanceUsd).toBe(Math.round(Math.max(0, expectedNew - 1000) * 100) / 100);
+  });
+
+  it('a DECLINED entry also shows the invoice-basis previousTotalUsd (the field the card actually renders)', () => {
+    // AmendmentConsentCard's declined branch renders ONLY previousTotalUsd —
+    // proving it independently since it shares the same computation path as
+    // the pending branch's fuller field set, not assuming parity.
+    const declinedConsent = { status: 'declined' as const, declined_at: '2026-07-19T09:00:00.000Z', ip: null };
+    const trailBasis = amendedPortalWithBasis(null, declinedConsent).approval!.pendingAmendment!;
+    const invoiceBasis = amendedPortalWithBasis(true, declinedConsent).approval!.pendingAmendment!;
+    expect(trailBasis.consentStatus).toBe('declined');
+    expect(trailBasis.previousTotalUsd).toBe(2000); // no invoice yet — trail basis
+    const expectedPrevious = invoiceBasisTotal(2000, fullTotal, fullTax, true);
+    expect(invoiceBasis.consentStatus).toBe('declined');
+    expect(invoiceBasis.previousTotalUsd).toBe(expectedPrevious);
+    expect(expectedPrevious).not.toBe(2000); // proves the fixture has real tax to scale
   });
 
   it('the deposit-already-paid figure stays basis-independent (the real dollar amount charged)', () => {
