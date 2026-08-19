@@ -35,12 +35,22 @@ function contactName(item: OpenInboxItem): string {
 // to repeat the same nine-prop list at every call site.
 type RowActions = {
   now: number;
-  busyId: string | null;
+  // Row 291 fix: busyId/errorId were single global slots (`string | null`) —
+  // acting on row B stole row A's busy pin and, worse, silently cleared row
+  // A's error note (act() unconditionally called setErrorId(null)) even
+  // though row A's underlying failure was untouched on the server. Both are
+  // now per-item records keyed by item id, so each row's busy/error state is
+  // independent of every other row's.
+  busyIds: Record<string, boolean>;
   // #224 delta-verify fix (staff + customer lenses converged): the response
   // read act() now does can fail (a status-guard block, or any other non-2xx)
-  // — errorId surfaces that visibly, mirroring InWorksSection.tsx's identical
-  // pattern for this same /api/dashboard/* route family.
-  errorId: string | null;
+  // — errorIds surfaces that visibly, mirroring InWorksSection.tsx's
+  // identical pattern for this same /api/dashboard/* route family.
+  errorIds: Record<string, boolean>;
+  // Row 291 fix: explicit acknowledge control for a persistent error note —
+  // previously the ONLY ways to clear one were retrying that exact row or
+  // the accidental cross-row steal above.
+  dismissError: (id: string) => void;
   claimBusy: string | null;
   composerFor: string | null;
   currentOperatorId: string | null;
@@ -63,7 +73,7 @@ type RowActions = {
 // "call/text directly" affordance instead, see the source==='gmail' branch
 // below) with its ReplyComposer.
 function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }) {
-  const { now, busyId, errorId, claimBusy, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent } = actions;
+  const { now, busyIds, errorIds, dismissError, claimBusy, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent } = actions;
   const esc = escalation(item.escalationLevel);
   const waiting = item.lastMessageAt ? formatWaiting(now - new Date(item.lastMessageAt).getTime()) : '';
   const cs = claimState(item.assignedTo, currentOperatorId);
@@ -159,16 +169,24 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
               )}
             </p>
           )}
-          {errorId === item.id && (
-            <p className="text-xs mt-1" style={{ color: '#dc2626' }}>
-              Something went wrong — try again.
+          {errorIds[item.id] && (
+            <p className="text-xs mt-1 flex items-center gap-2" style={{ color: '#dc2626' }}>
+              <span>Something went wrong — try again.</span>
+              <button
+                type="button"
+                onClick={() => dismissError(item.id)}
+                className="underline"
+                style={{ color: '#dc2626' }}
+              >
+                Dismiss
+              </button>
             </p>
           )}
         </div>
         <div className="flex shrink-0 gap-2">
           <button
             type="button"
-            disabled={busyId === item.id}
+            disabled={!!busyIds[item.id]}
             onClick={() => act(item.id, '/api/dashboard/handled')}
             title="Closed as answered"
             className="px-3 py-1.5 rounded-md text-sm font-medium disabled:opacity-50"
@@ -178,7 +196,7 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
           </button>
           <button
             type="button"
-            disabled={busyId === item.id}
+            disabled={!!busyIds[item.id]}
             onClick={() => act(item.id, '/api/dashboard/dismiss')}
             title="Permanently hidden as spam"
             className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
@@ -188,7 +206,7 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
           </button>
           <button
             type="button"
-            disabled={busyId === item.id}
+            disabled={!!busyIds[item.id]}
             onClick={() => act(item.id, '/api/dashboard/followed')}
             title="I followed up: snoozed until they reply"
             className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
@@ -198,7 +216,7 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
           </button>
           <button
             type="button"
-            disabled={busyId === item.id}
+            disabled={!!busyIds[item.id]}
             onClick={() => act(item.id, '/api/dashboard/completed')}
             title="Closed as done"
             className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
@@ -252,11 +270,39 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
   );
 }
 
-// Shared by isGroupExpanded and canToggleGroup below: does `id` name one of
-// this group's CURRENT members? Both functions pin on exactly this test,
-// just for different ids (composerFor, errorId).
+// Shared by isGroupExpanded and canToggleGroup below for the composerFor
+// pin: does `id` name one of this group's CURRENT members?
 function memberMatches(group: InboxGroup, id: string | null): boolean {
   return id !== null && group.members.some((m) => m.id === id);
+}
+
+// Row 291 fix: errorId used to be a single id, tested with memberMatches
+// above. Now that errors are per-item (errorIds, keyed by item id), the
+// group-pin question is "does ANY current member of this group have an
+// error", not "does one specific id match" — this is the errorIds
+// equivalent of memberMatches.
+function groupHasError(group: InboxGroup, errorIds: Record<string, boolean>): boolean {
+  return group.members.some((m) => !!errorIds[m.id]);
+}
+
+// Row 291 fix: pure read/write helpers over the per-item busyIds/errorIds
+// maps, used by both act() and dismissError below. Pulled out (mirroring
+// isGroupExpanded/canToggleGroup's own pure-and-exported pattern in this
+// file) so the "one row's transition can never touch another row's key"
+// invariant — the actual bug — is directly unit-testable without jsdom or a
+// mocked fetch. withRowFlagCleared fully removes the key rather than setting
+// it false, so a dismissed/resolved row is indistinguishable from one that
+// was never touched, and a no-op clear returns the SAME object reference
+// (skips an unnecessary state update when there's nothing to clear).
+export function withRowFlagSet(map: Record<string, boolean>, id: string): Record<string, boolean> {
+  return { ...map, [id]: true };
+}
+
+export function withRowFlagCleared(map: Record<string, boolean>, id: string): Record<string, boolean> {
+  if (!map[id]) return map;
+  const next = { ...map };
+  delete next[id];
+  return next;
 }
 
 // #270 fix (staff HIGH — see the finding this comment is attached to): a
@@ -283,13 +329,19 @@ function memberMatches(group: InboxGroup, id: string | null): boolean {
 // why that also makes ITS errorId-driven disable safe rather than a
 // lockout. Pure and exported so this decision is unit-testable without
 // rendering.
+//
+// Row 291 fix: errorId was a single global slot (string | null) — this
+// function now takes errorIds, a per-item record, and asks "does any CURRENT
+// member of this group have an error" (groupHasError) rather than "does one
+// specific id match" (memberMatches). See canToggleGroup's doc comment below
+// for what that single-slot shape used to break.
 export function isGroupExpanded(
   group: InboxGroup,
   expandedMap: Record<string, boolean>,
   composerFor: string | null,
-  errorId: string | null,
+  errorIds: Record<string, boolean>,
 ): boolean {
-  if (memberMatches(group, composerFor) || memberMatches(group, errorId)) return true;
+  if (memberMatches(group, composerFor) || groupHasError(group, errorIds)) return true;
   return !!expandedMap[group.key];
 }
 
@@ -326,13 +378,17 @@ export function isGroupExpanded(
 // that would re-hide a group already guaranteed to render expanded; it can
 // no longer strand the group collapsed-with-no-way-out the way round 1 did.
 //
-// Known limitation, NOT fixed here (pre-existing #224-family behavior,
-// tracked separately — ledger row 291): errorId is a single global slot on
-// InboxList, not per-item — any unrelated act() call elsewhere in the inbox
-// clears it (and with it, this note), regardless of whether THIS group's
-// error was ever seen or resolved.
-export function canToggleGroup(group: InboxGroup, composerFor: string | null, errorId: string | null): boolean {
-  return !(memberMatches(group, composerFor) || memberMatches(group, errorId));
+// Row 291 fix (was a known limitation, pre-existing #224-family behavior):
+// errorId used to be a single global slot on InboxList, not per-item — any
+// unrelated act() call elsewhere in the inbox cleared it (and with it, this
+// note), regardless of whether THIS group's error was ever seen or resolved.
+// errorIds is now a per-item record, so act() on one row only ever touches
+// that row's own entry — see act()'s own doc comment in the InboxList
+// component below. An operator can also explicitly clear a persistent error
+// via the new Dismiss control on the row (dismissError), rather than only by
+// retrying that exact row or via the old accidental cross-row steal.
+export function canToggleGroup(group: InboxGroup, composerFor: string | null, errorIds: Record<string, boolean>): boolean {
+  return !(memberMatches(group, composerFor) || groupHasError(group, errorIds));
 }
 
 // A stable-identity row for ONE CONTACT, covering both shapes a contact can
@@ -424,7 +480,7 @@ function ContactRow({
   // #270 delta-verify fix: disabling the button (rather than only guarding
   // the click handler) makes the "you can't collapse this while replying"
   // state VISIBLE, not just structurally safe — see canToggleGroup's doc.
-  const canToggle = canToggleGroup(group, actions.composerFor, actions.errorId);
+  const canToggle = canToggleGroup(group, actions.composerFor, actions.errorIds);
 
   const rowChildren: ReactNode[] = [];
   if (isMulti) {
@@ -514,10 +570,14 @@ export function InboxList({
   currentOperatorId?: string | null;
 }) {
   const [items, setItems] = useState<OpenInboxItem[]>(initialItems);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  // Row 291 fix: busyId/errorId were single global slots (string | null) —
+  // acting on one row stole another row's busy pin, and worse, silently
+  // cleared another row's error note even though its underlying failure was
+  // untouched server-side. Both are now per-item records keyed by item id.
+  const [busyIds, setBusyIds] = useState<Record<string, boolean>>({});
   // #224 delta-verify fix (staff + customer lenses converged): act() used to
   // never read the response at all — see act()'s own doc comment below.
-  const [errorId, setErrorId] = useState<string | null>(null);
+  const [errorIds, setErrorIds] = useState<Record<string, boolean>>({});
   const [claimBusy, setClaimBusy] = useState<string | null>(null);
   const [composerFor, setComposerFor] = useState<string | null>(null);
   // `now` is seeded from the server render (stable across hydration) and ticked
@@ -581,8 +641,8 @@ export function InboxList({
   // before". refresh() pulls that authoritative state immediately, mirroring
   // claim()'s own `if (!res.ok) await refresh()` pattern a few lines below —
   // the same file already established this exact reconciliation shape.
-  // errorId also surfaces a visible note (parity with InWorksSection's
-  // errorId/"Something went wrong" pattern) in case the row is still on
+  // errorIds also surfaces a visible note (parity with InWorksSection's
+  // errorIds/"Something went wrong" pattern) in case the row is still on
   // screen after refresh() (e.g. a real server error, not a lost race).
   //
   // The network-throw catch path is UNCHANGED (still passive, "next poll
@@ -592,16 +652,22 @@ export function InboxList({
   // failure mode than "the server responded and said no", which this fix
   // targets.
   //
-  // Not unit-tested: InboxList.test.tsx only exercises
+  // Not unit-tested end-to-end: InboxList.test.tsx only exercises
   // renderToStaticMarkup (no jsdom, no click/fetch simulation, no effects) —
-  // it cannot drive this async click-then-refetch flow. There's no non-
-  // trivial PURE decision here to extract either (the check is a two-field
-  // boolean read); this comment is the trace, matching ContactRow's own
-  // doc-comment-as-proof pattern elsewhere in this file for behavior static
-  // rendering can't observe.
+  // it cannot drive this async click-then-refetch flow. The two map
+  // transitions below (clear this row's own error on the way in; set it on
+  // failure) delegate to withRowFlagSet/withRowFlagCleared specifically so
+  // THAT non-trivial part — "one row's action never touches another row's
+  // key" (row 291's actual bug) — is unit-tested directly, even though the
+  // surrounding fetch/refresh choreography is still only a trace, matching
+  // ContactRow's own doc-comment-as-proof pattern elsewhere in this file for
+  // behavior static rendering can't observe.
   const act = useCallback(async (id: string, path: string) => {
-    setBusyId(id);
-    setErrorId(null);
+    setBusyIds((prev) => withRowFlagSet(prev, id));
+    // Row 291 fix: clear only THIS row's own error, never every row's — the
+    // old setErrorId(null) here was the single-slot steal (acting on row B
+    // silently erased row A's still-true failure note).
+    setErrorIds((prev) => withRowFlagCleared(prev, id));
     setItems((prev) => prev.filter((i) => i.id !== id)); // optimistic removal
     try {
       const res = await fetch(path, {
@@ -611,15 +677,22 @@ export function InboxList({
       });
       const data = (await res.json().catch(() => null)) as { ok?: boolean } | null;
       if (!res.ok || !data?.ok) {
-        setErrorId(id);
+        setErrorIds((prev) => withRowFlagSet(prev, id));
         await refresh();
       }
     } catch {
       // The next poll re-syncs the true state if the write failed.
     } finally {
-      setBusyId(null);
+      setBusyIds((prev) => withRowFlagCleared(prev, id));
     }
   }, [refresh]);
+
+  // Row 291 fix: explicit acknowledge control for the error note. Previously
+  // the only ways to clear a row's error were retrying that exact row (via
+  // act()) or the accidental cross-row steal this fix removes.
+  const dismissError = useCallback((id: string) => {
+    setErrorIds((prev) => withRowFlagCleared(prev, id));
+  }, []);
 
   const claim = useCallback(
     async (contactId: string, action: 'claim' | 'release') => {
@@ -670,7 +743,7 @@ export function InboxList({
   // place; there's no empty group to separately prune.
   const groups = groupInboxItems(visibleItems);
   const rowActions: RowActions = {
-    now, busyId, errorId, claimBusy, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent,
+    now, busyIds, errorIds, dismissError, claimBusy, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent,
   };
 
   if (items.length === 0) {
@@ -716,13 +789,13 @@ export function InboxList({
           <ContactRow
             key={group.key}
             group={group}
-            expanded={isGroupExpanded(group, expanded, composerFor, errorId)}
+            expanded={isGroupExpanded(group, expanded, composerFor, errorIds)}
             // #270 delta-verify fix, extended #289 round 2: no-op while
-            // composerFor/errorId pins this group open — see
+            // composerFor/errorIds pins this group open — see
             // canToggleGroup's doc comment for why a swallowed toggle during
             // the pin must not mutate expandedMap.
             onToggleExpanded={() => {
-              if (canToggleGroup(group, composerFor, errorId)) toggleExpanded(group.key);
+              if (canToggleGroup(group, composerFor, errorIds)) toggleExpanded(group.key);
             }}
             actions={rowActions}
           />

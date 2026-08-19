@@ -60,6 +60,18 @@ import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
 import { track } from '@/lib/analytics/posthog';
 import { loadQuoteDraft, saveQuoteDraft, clearQuoteDraft, customerIsEmpty, draftAutosaveActive } from '@/lib/quoteDraft';
 import { downscaleForUpload, downscaleForUploadAsBlob, readUploadErrorMessage } from '@/lib/clientImage';
+// Row 269: pure, client-safe helpers shared with PipelineActionsMenu.tsx —
+// pipelineSendOutcome.ts has zero imports of its own (no React, no
+// Supabase), so pulling it in here does not drag anything server-only into
+// this bundle. See that file's own comment for why it deliberately does NOT
+// import quoteDeliveries.ts's DELIVERY_TIMEOUT_ERROR_PREFIX directly.
+import {
+  classifyChannelOutcome,
+  isTimeoutHedgedFailure,
+  retryOfferFor,
+  type ChannelDeliveryClassification,
+  type RetryGate,
+} from '@/components/admin/pipelineSendOutcome';
 
 // The Konva design editor touches the DOM/canvas, so load it client-only.
 const DesignEditor = dynamic(() => import('@/components/design/DesignEditor'), { ssr: false });
@@ -243,6 +255,74 @@ const MINI_SURFACE_LABELS: Record<Surface, string> = {
 };
 function miniSurfaceLabel(surface: string | null): string {
   return surface && surface in MINI_SURFACE_LABELS ? MINI_SURFACE_LABELS[surface as Surface] : 'group';
+}
+
+// Row 269 fix round FIX 2 (two-lens MED — dishonest null-case copy): renders
+// one channel's classified delivery status for the already-sent notice below
+// — see alreadySentChannels' own state comment for where these
+// classifications come from (classifyChannelOutcome, pipelineSendOutcome.ts).
+//
+// The old 'unknown' wording ("X delivery is unconfirmed") asserted an
+// ATTEMPT was made and merely unverified — false in two very common real
+// cases: (a) a deliberately single-channel send (sendActions() in
+// pipelineActions.ts offers independent "Send email"/"Send text" actions,
+// and the send route returns before logQuoteDelivery for whichever channel
+// wasn't requested, so that channel has zero rows forever); (b) delivery
+// logging only began 2026-08-12 (#250) — a majority of quotes sent before
+// that date have no delivery rows at all despite having gone out. `hadAttempt`
+// (set at the call site below from whether channelOutcomes had a non-null
+// entry for this channel, not a new piece of component state — same
+// alreadySentChannels object, one more field) distinguishes that genuine
+// "nothing on record" case from a timeout-hedged 'failed' row, which really
+// IS "attempted, outcome unknown" (classifyChannelOutcome folds both into
+// the same 'unknown' classification — see that function's own doc comment
+// for why — so classification alone can't tell them apart).
+function channelDeliveryPhrase(
+  label: string,
+  info: { classification: ChannelDeliveryClassification; at: string | null; hadAttempt: boolean } | undefined,
+): string {
+  if (!info) return `${label} has no delivery on record`;
+  if (info.classification === 'delivered') {
+    const dateStr = info.at ? new Date(info.at).toLocaleDateString() : null;
+    // Row 269 fix round FIX 2: was "was delivered" — outcome:'sent' only
+    // means GHL's API accepted the request without throwing; there is no
+    // delivery RECEIPT anywhere in this codebase. Reworded to claim only
+    // what's actually true.
+    return `${label} went out${dateStr ? ` ${dateStr}` : ''}`;
+  }
+  if (info.classification === 'failed') return `${label} failed`;
+  // Row 269 fix round 2 (delta-verify HIGH, found while widening the
+  // upstream invariant): was "timed out (outcome unknown — may have gone
+  // through anyway)", naming a specific cause. The upstream hedge this
+  // classification is built from (isTimeoutHedgedFailure, pipelineSendOutcome
+  // .ts) is no longer timeout-exclusive — a socket reset, DNS failure, or
+  // connection refused all get the identical 'unknown' classification now
+  // (see classifyChannelOutcome's doc comment) — so this string can no longer
+  // claim the cause was specifically a timeout.
+  return info.hadAttempt
+    ? `${label} — outcome unknown (may have gone through anyway)`
+    : `${label} has no delivery on record`;
+}
+
+// Row 269 fix round FIX 4 (technical MED — unchecked `as` cast at the
+// response boundary): the alreadySent handler used to do
+// `data.channelOutcomes as {...} | undefined` with zero runtime validation,
+// inconsistent with this SAME function's sibling failedChannels handling
+// (Array.isArray(...).filter(...) a few lines above it). Not reachable in
+// normal operation today — the route only ever writes this exact shape —
+// but if `error` were ever a truthy non-string, isTimeoutHedgedFailure's
+// `.includes` call would throw a TypeError inside the try block and turn a
+// benign "already sent" response into a hard "Send failed: ...
+// .includes is not a function" with no retry affordance at all. Mirrors
+// sanitizePrunedMiniGroups above: defense-in-depth + consistency with the
+// neighbouring code, not a schema library.
+function parseChannelOutcomeEntry(raw: unknown): { outcome: 'sent' | 'failed'; error: string | null; at: string } | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (r.outcome !== 'sent' && r.outcome !== 'failed') return null;
+  if (typeof r.error !== 'string' && r.error !== null) return null;
+  if (typeof r.at !== 'string') return null;
+  return { outcome: r.outcome, error: r.error, at: r.at };
 }
 // #741 defect 5: prunedMiniGroups previously trusted `Array.isArray` alone,
 // then the render below dereferences g.surface/g.stringCount per element — a
@@ -600,12 +680,39 @@ export default function QuoteBuilder({
   // failure puts Send in the error state while preserving the valid portal URL.
   const [deliveryWarning, setDeliveryWarning] = useState<string | null>(null);
   const [deliveryRetryChannel, setDeliveryRetryChannel] = useState<'sms' | 'email' | 'both' | null>(null);
+  // Row 269 fix round: whether the CURRENT deliveryWarning/sendError text
+  // reflects a timeout-hedged failure (GHL may have delivered it anyway —
+  // isTimeoutHedgedFailure, pipelineSendOutcome.ts) rather than a confirmed
+  // rejection. Captured at the moment the warning/error is set (the two
+  // deliveryWarning set-sites and the two 502-throw sites below all pass
+  // data.messageError/data.error) instead of re-sniffing the rendered string
+  // at click time, so the retry buttons' confirm-vs-typed-YES gate can't
+  // drift from the text that produced it.
+  const [deliveryFailureHedged, setDeliveryFailureHedged] = useState(false);
   // #241: when the send route short-circuits with alreadySent:true (a
   // double-click / re-click on an already-sent quote), nothing was texted or
   // emailed — this holds the ORIGINAL quote_sent_at so the UI can say so
   // instead of rendering an identical plain success. Cleared on any fresh
   // send attempt or recalculation.
   const [alreadySentAt, setAlreadySentAt] = useState<string | null>(null);
+  // Row 269: per-channel classification of the alreadySent short-circuit's
+  // new channelOutcomes field (route.ts) — 'unknown' whenever the field is
+  // absent entirely (the read failed) or a channel has no logged attempt, so
+  // this is never mistaken for a confirmed-delivered state. Drives both the
+  // already-sent notice's per-channel copy and (below) the scoped redeliver
+  // offer replacing the old hardcoded 'both'. Null until an alreadySent
+  // response is seen; cleared on any fresh send attempt.
+  // Row 269 fix round FIX 2: `hadAttempt` added (not a new useState — same
+  // object, one more field) so channelDeliveryPhrase can tell "no delivery
+  // row was ever logged for this channel" (entry was null) apart from "a row
+  // exists but it's a timeout-hedged failure" (entry present, classification
+  // still 'unknown') — classifyChannelOutcome collapses both into 'unknown'
+  // on purpose (see its own doc comment), so the raw entry's presence is the
+  // only place left to recover that distinction.
+  const [alreadySentChannels, setAlreadySentChannels] = useState<{
+    sms: { classification: ChannelDeliveryClassification; at: string | null; hadAttempt: boolean };
+    email: { classification: ChannelDeliveryClassification; at: string | null; hadAttempt: boolean };
+  } | null>(null);
   const [copiedUrl, setCopiedUrl] = useState(false);
   // GHL stage-sync result of the last send: a non-null message means the quote
   // WAS sent locally but the HighLevel card did NOT advance to "Bid Sent" (the
@@ -2960,7 +3067,9 @@ export default function QuoteBuilder({
     setGhlSyncWarning(null);
     setDeliveryWarning(null);
     setDeliveryRetryChannel(null);
+    setDeliveryFailureHedged(false);
     setAlreadySentAt(null);
+    setAlreadySentChannels(null);
     setCopiedUrl(false);
     setRetryIneligible(false);
 
@@ -3045,18 +3154,53 @@ export default function QuoteBuilder({
       if (!res.ok) {
         if (data.code === 'delivery-failed' && failedChannels.length > 0) {
           setDeliveryRetryChannel(failedChannels.length === 2 ? 'both' : failedChannels[0]);
+          // Row 269 fix round: captured HERE, at the point data.error is
+          // known — see deliveryFailureHedged's own state comment for why.
+          setDeliveryFailureHedged(isTimeoutHedgedFailure(data.error));
         }
         throw new Error(data.error ?? `Send failed (${res.status})`);
       }
-      // #241: the route short-circuited — this click delivered NOTHING (no
-      // SMS, no email, no CRM stage move, no re-stamped quote_sent_at). Don't
-      // render the identical success state; surface it loudly and offer a
-      // one-click force-redeliver via the existing ?retryDelivery=1 path
+      // #241: the route short-circuited — this click delivered NOTHING itself
+      // (no CRM stage move, no re-stamped quote_sent_at, no message sent BY
+      // THIS CLICK). Don't render the identical success state; surface it
+      // loudly and offer a redeliver via the existing ?retryDelivery=1 path
       // instead of falling through to the normal "sent" handling below.
+      //
+      // Row 269: the ORIGINAL send may still have delivered one or both
+      // channels — data.channelOutcomes (route.ts) is a best-effort read of
+      // that history. Scope the redeliver offer to only the channel(s) that
+      // did NOT confirm-deliver, instead of the old hardcoded 'both' (which
+      // could re-fire a channel that already succeeded — GHL's
+      // /conversations/messages has no idempotency key, so that's a REAL
+      // duplicate text/email, not just a wasted click). A missing
+      // channelOutcomes field (the read itself failed) classifies both
+      // channels 'unknown' via classifyChannelOutcome's own null/undefined
+      // branch, which naturally reproduces today's 'both' offer — no special
+      // case needed here.
       if (data.alreadySent) {
         setSendStatus('already-sent');
         setAlreadySentAt(typeof data.sentAt === 'string' ? data.sentAt : null);
-        setDeliveryRetryChannel('both');
+        // Row 269 fix round FIX 4: parseChannelOutcomeEntry validates each
+        // entry instead of trusting an unchecked `as` cast — see that
+        // function's own comment above for why.
+        const smsEntry = parseChannelOutcomeEntry(data.channelOutcomes?.sms);
+        const emailEntry = parseChannelOutcomeEntry(data.channelOutcomes?.email);
+        const smsClass = classifyChannelOutcome(smsEntry);
+        const emailClass = classifyChannelOutcome(emailEntry);
+        // FIX 2: hadAttempt distinguishes "no delivery row logged" from "a
+        // row exists but it's a timeout-hedged failure" — see
+        // channelDeliveryPhrase's own comment for why classification alone
+        // can't tell the two apart.
+        setAlreadySentChannels({
+          sms: { classification: smsClass, at: smsEntry?.at ?? null, hadAttempt: smsEntry !== null },
+          email: { classification: emailClass, at: emailEntry?.at ?? null, hadAttempt: emailEntry !== null },
+        });
+        const notConfirmed: ('sms' | 'email')[] = [];
+        if (smsClass !== 'delivered') notConfirmed.push('sms');
+        if (emailClass !== 'delivered') notConfirmed.push('email');
+        setDeliveryRetryChannel(
+          notConfirmed.length === 0 ? null : notConfirmed.length === 2 ? 'both' : notConfirmed[0],
+        );
         return;
       }
       setSendStatus('sent');
@@ -3066,17 +3210,23 @@ export default function QuoteBuilder({
         // #264 round 2, FIX 3: data.messageError already carries the
         // backend's own honesty hedge (deliveryErrorMessage in route.ts —
         // "timeout — delivery outcome unknown (GHL may have still delivered
-        // it): …" when the failure was a timeout our socket gave up on, vs.
-        // the real rejection text otherwise). This hardcoded sentence was
-        // silently discarding it, so a channel that actually timed out (the
-        // most likely real-world shape) rendered a confidently wrong
-        // "failed" here even though the backend explicitly did not know
-        // that. Appends it rather than re-deriving a new sentence, mirroring
-        // the existing pattern in src/app/admin/invoices/[id]/page.tsx's
-        // sendBalanceLink (surfaces body.messageError verbatim).
+        // it): …" whenever the failure's true outcome is unknown — a request
+        // timeout, a socket reset, a DNS failure, connection refused, or
+        // anything else short of a definitive HTTP response from GHL (row
+        // 269 fix round 2 widened this beyond literal timeouts — see
+        // timeoutHedgedErrorMessage's comment in the send route), vs. the
+        // real rejection text for a confirmed HTTP-status rejection). This
+        // hardcoded sentence was silently discarding it, so a channel whose
+        // outcome was actually unknown rendered a confidently wrong "failed"
+        // here even though the backend explicitly did not know that. Appends
+        // it rather than re-deriving a new sentence, mirroring the existing
+        // pattern in src/app/admin/invoices/[id]/page.tsx's sendBalanceLink
+        // (surfaces body.messageError verbatim).
         setDeliveryWarning(
           `${failedChannels.map((c: 'sms' | 'email') => c.toUpperCase()).join(' and ')} failed. The other requested channel was delivered.${data.messageError ? ` (${data.messageError})` : ''}`,
         );
+        // Row 269 fix round: see deliveryFailureHedged's state comment.
+        setDeliveryFailureHedged(isTimeoutHedgedFailure(data.messageError));
       }
       // PostHog v1 — staff-side confirmation the quote actually sent.
       track('quote_sent', { quote_id: savedQuoteId, service_type: form.serviceType });
@@ -3126,7 +3276,12 @@ export default function QuoteBuilder({
         body: JSON.stringify({ channel: deliveryRetryChannel }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? `Delivery retry failed (${res.status})`);
+      if (!res.ok) {
+        // Row 269 fix round: captured HERE, at the point data.error is known
+        // — see deliveryFailureHedged's own state comment for why.
+        setDeliveryFailureHedged(isTimeoutHedgedFailure(data.error));
+        throw new Error(data.error ?? `Delivery retry failed (${res.status})`);
+      }
       // #241 defect 2 (review MEDIUM): the retry can ALSO fall through the
       // route's alreadySent short-circuit (e.g. the customer approved or
       // the job got booked between the original send and this click — see
@@ -3160,9 +3315,12 @@ export default function QuoteBuilder({
         setDeliveryWarning(
           `${retryFailedChannels.map((c: 'sms' | 'email') => c.toUpperCase()).join(' and ')} failed. The other requested channel was delivered.${data.messageError ? ` (${data.messageError})` : ''}`,
         );
+        // Row 269 fix round: see deliveryFailureHedged's state comment.
+        setDeliveryFailureHedged(isTimeoutHedgedFailure(data.messageError));
       } else {
         setDeliveryWarning(null);
         setDeliveryRetryChannel(null);
+        setDeliveryFailureHedged(false);
       }
       // #264 round 2, FIX 6: a delivery-only retry structurally never
       // attempts the GHL stage move — route.ts's ghlStageChain returns
@@ -3195,6 +3353,92 @@ export default function QuoteBuilder({
     } finally {
       sendInFlightRef.current = false;
     }
+  };
+
+  // Row 269 fix round: none of the three redeliver buttons below had ANY
+  // confirm gate — a stray click blind-fired a real customer text/email with
+  // zero friction. The two wrappers below gate handleRetryDelivery itself
+  // (never called directly from a button anymore), mirroring
+  // PipelineActionsMenu.tsx's redeliverAndReport idiom (window.prompt +
+  // exact-"YES" + mistype feedback for typed-yes; plain window.confirm
+  // otherwise) so a declined/mistyped gate makes ZERO network requests —
+  // handleRetryDelivery's own fetch is the only thing that reaches the wire.
+
+  // The alreadySent-origin button. Row 269 fix round FIX 3 (MED —
+  // over-gating): used to be always typed-YES, unconditionally, with no
+  // regard for WHY deliveryRetryChannel is being offered. alreadySentChannels
+  // (state, set when the alreadySent response was processed — see its own
+  // comment) carries per-channel classification for the SAME channel(s)
+  // deliveryRetryChannel offers. A channel classified 'failed' there is a
+  // CONFIRMED rejection on the EARLIER send (the customer verifiably got
+  // nothing on that channel), so a duplicate is structurally impossible and
+  // the low-friction plain confirm from RetryGate's doc comment
+  // (pipelineSendOutcome.ts) is correct — over-gating trains operators to
+  // type YES reflexively, eroding the gate where it actually matters. A
+  // channel classified 'unknown' (no delivery row logged, or a
+  // timeout-hedged failure) keeps typed-YES: the customer may already have
+  // it. The strictest classification among the offered channels wins for a
+  // 'both' offer (same reasoning as retryOfferFor's timeoutHedged param,
+  // below, and decideSendOutcome's identical alreadySent-branch rule for
+  // PipelineActionsMenu — row 269 fix round FIX 1).
+  //
+  // retryOfferFor does NOT fit here (tried first, per the fix brief): its
+  // hedged branch is worded "This attempt's outcome is unknown" (row 269 fix
+  // round 2: reworded from the earlier "This attempt included a timeout",
+  // which named the wrong cause once the hedge widened beyond literal
+  // timeouts — see retryOfferFor's own comment) — correct for
+  // handleScopedRetryClick below, where THIS click's own delivery attempt
+  // just failed, but wrong here, where the ambiguous outcome belongs to an
+  // EARLIER send, not this click. Kept as its own small, local gate
+  // derivation with wording specific to the alreadySent context instead of
+  // reusing a function whose copy would misdescribe what actually happened.
+  const handleForceRedeliverClick = async () => {
+    if (!deliveryRetryChannel) return;
+    const label = deliveryRetryChannel === 'both' ? 'SMS + email' : deliveryRetryChannel.toUpperCase();
+    const offeredClassifications: ChannelDeliveryClassification[] =
+      deliveryRetryChannel === 'both'
+        ? [alreadySentChannels?.sms.classification ?? 'unknown', alreadySentChannels?.email.classification ?? 'unknown']
+        : [alreadySentChannels?.[deliveryRetryChannel].classification ?? 'unknown'];
+    const gate: RetryGate = offeredClassifications.some((c) => c === 'unknown') ? 'typed-yes' : 'confirm';
+    if (gate === 'typed-yes') {
+      const typed = window.prompt(
+        `This quote was already sent and the customer may already have it. Type YES to redeliver ${label} now:`,
+      );
+      if (typed === null) return; // Cancel — deliberate, stays silent.
+      if (typed.trim().toUpperCase() !== 'YES') {
+        window.alert('Not redelivered — type YES exactly to confirm.');
+        return;
+      }
+    } else if (
+      !window.confirm(`This quote was already sent, but ${label} confirmed failed to deliver on that send — redeliver it now?`)
+    ) {
+      return;
+    }
+    await handleRetryDelivery();
+  };
+
+  // The partial-failure (~6135) and error-state (~6120) buttons: derives its
+  // gate from retryOfferFor (pipelineSendOutcome.ts) — the SAME function
+  // PipelineActionsMenu uses — off deliveryFailureHedged (captured at the
+  // moment the current failure/warning was set, not re-sniffed from the
+  // rendered string here). A confirmed failure stays low-friction (a
+  // duplicate is impossible — the customer got nothing from THIS attempt); a
+  // timeout-hedged failure steps up to typed-YES (GHL may have delivered it
+  // anyway).
+  const handleScopedRetryClick = async () => {
+    if (!deliveryRetryChannel) return;
+    const { retryPrompt, retryGate } = retryOfferFor(deliveryRetryChannel, true, deliveryFailureHedged);
+    if (retryGate === 'typed-yes') {
+      const typed = window.prompt(retryPrompt);
+      if (typed === null) return; // Cancel — deliberate, stays silent.
+      if (typed.trim().toUpperCase() !== 'YES') {
+        window.alert('Not redelivered — type YES exactly to confirm.');
+        return;
+      }
+    } else if (!window.confirm(retryPrompt)) {
+      return;
+    }
+    await handleRetryDelivery();
   };
 
   // Re-run ONLY the HighLevel stage-sync for a quote that was sent locally but
@@ -3259,6 +3503,14 @@ export default function QuoteBuilder({
     // — but leaving it dangling true after a recalc is a trap for any future
     // path that sets 'already-sent' without going through those two functions.
     setRetryIneligible(false);
+    // Row 269 fix round FIX 5 (LOW): the two fields this fix round added
+    // (deliveryFailureHedged, alreadySentChannels) were missing from this
+    // same reset block — the exact "trap for any future path" the comment
+    // above already warns about. Inert today for the same reason
+    // retryIneligible is (both re-entry points reset these first), but
+    // leaving them dangling here is the trap, not a bug yet.
+    setDeliveryFailureHedged(false);
+    setAlreadySentChannels(null);
     setCopiedUrl(false);
     setTrainStatus('idle');
     setTrainError(null);
@@ -6011,10 +6263,25 @@ export default function QuoteBuilder({
                     Portal URL above and share it with the customer directly.
                   </p>
                 ) : (
+                  // Row 269: was a hardcoded "Nothing was delivered" — false
+                  // whenever the original send DID confirm-deliver one or
+                  // both channels (this click just didn't deliver anything
+                  // ITSELF). Report the actual per-channel history instead.
                   <p>
-                    Nothing was delivered — this quote was already sent
+                    This quote was already sent
                     {alreadySentAt ? ` on ${new Date(alreadySentAt).toLocaleString()}` : ' earlier'}.
-                    Clicking Send again does not re-text or re-email the customer.
+                    Clicking Send again does not re-text or re-email the
+                    customer.{' '}
+                    {alreadySentChannels
+                      ? `${channelDeliveryPhrase('SMS', alreadySentChannels.sms)}; ${channelDeliveryPhrase('email', alreadySentChannels.email)}.`
+                      : ''}
+                    {/* Row 269 fix round FIX 2 (two-lens MED): was "Both
+                        channels are confirmed delivered" — outcome:'sent'
+                        only means GHL's API accepted the request without
+                        throwing; there's no delivery RECEIPT anywhere in
+                        this codebase. Reworded to claim only what's true. */}
+                    {deliveryRetryChannel === null &&
+                      ' Both channels went out successfully — copy the Customer Portal URL above if the customer needs it again.'}
                   </p>
                 )}
                 {/* No `disabled={sendStatus === 'sending'}` here (and on its
@@ -6030,10 +6297,14 @@ export default function QuoteBuilder({
                 {!retryIneligible && deliveryRetryChannel && (
                   <button
                     type="button"
-                    onClick={handleRetryDelivery}
+                    onClick={handleForceRedeliverClick}
                     className="mt-2 text-xs font-medium text-amber-900 underline hover:no-underline"
                   >
-                    Force redeliver (SMS + email) now
+                    {/* Row 269: label now names the SCOPED channel(s) —
+                        deliveryRetryChannel is no longer hardcoded 'both'
+                        (see the alreadySent branch above), so "SMS + email"
+                        would overclaim when only one channel is offered. */}
+                    Force redeliver ({deliveryRetryChannel === 'both' ? 'SMS + email' : deliveryRetryChannel.toUpperCase()}) now
                   </button>
                 )}
               </div>
@@ -6045,7 +6316,7 @@ export default function QuoteBuilder({
                 {deliveryRetryChannel && (
                   <button
                     type="button"
-                    onClick={handleRetryDelivery}
+                    onClick={handleScopedRetryClick}
                     className="mt-2 font-medium underline hover:no-underline"
                   >
                     Retry {deliveryRetryChannel === 'both' ? 'SMS and email' : deliveryRetryChannel.toUpperCase()}
@@ -6059,7 +6330,7 @@ export default function QuoteBuilder({
                 <p>{deliveryWarning}</p>
                 <button
                   type="button"
-                  onClick={handleRetryDelivery}
+                  onClick={handleScopedRetryClick}
                   className="mt-2 text-xs font-medium text-amber-900 underline hover:no-underline"
                 >
                   Retry {deliveryRetryChannel === 'both' ? 'SMS and email' : deliveryRetryChannel.toUpperCase()}
