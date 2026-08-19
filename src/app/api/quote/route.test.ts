@@ -846,6 +846,77 @@ describe('POST /api/quote — NCE + YLL Neighbor tags (#198)', () => {
   });
 });
 
+describe('POST /api/quote — NCE/YLL Neighbor holiday-only gate (#243)', () => {
+  it('clamps an explicit true legacyRebook/isNce to false on a NEW permanent-service-type save', async () => {
+    const res = await POST(
+      makeReq({ serviceType: 'permanent', inputs: permInputs(100), legacyRebook: true, isNce: true }),
+    );
+    expect(res.status).toBe(200);
+    const saveArgs = save.mock.calls[0] as unknown[];
+    expect(saveArgs[8]).toBe(false); // legacyRebook — clamped
+    expect(saveArgs[9]).toBe(false); // isNce — clamped
+  });
+
+  it.each([['event'], ['permanent_bistro']])(
+    'clamps an explicit true legacyRebook/isNce to false on a NEW %s save too',
+    async (st) => {
+      const res = await POST(
+        makeReq({ serviceType: st, inputs: validInputs(), legacyRebook: true, isNce: true }),
+      );
+      expect(res.status).toBe(200);
+      const saveArgs = save.mock.calls[0] as unknown[];
+      expect(saveArgs[8]).toBe(false);
+      expect(saveArgs[9]).toBe(false);
+    },
+  );
+
+  it('still honors an explicit true legacyRebook/isNce on a NEW holiday save (regression)', async () => {
+    const res = await POST(
+      makeReq({ serviceType: 'holiday', inputs: validInputs(), legacyRebook: true, isNce: true }),
+    );
+    expect(res.status).toBe(200);
+    const saveArgs = save.mock.calls[0] as unknown[];
+    expect(saveArgs[8]).toBe(true);
+    expect(saveArgs[9]).toBe(true);
+  });
+
+  it('clamps an explicit true legacyRebook/isNce to false on an UPDATE of an existing permanent quote', async () => {
+    rawRef.current!.service_type = 'permanent';
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, inputs: permInputs(100), legacyRebook: true, isNce: true }),
+    );
+    expect(res.status).toBe(200);
+    const updateArgs = update.mock.calls[0] as unknown[];
+    expect(updateArgs[6]).toBe(false); // legacyRebook — clamped
+    expect(updateArgs[7]).toBe(false); // isNce — clamped
+  });
+
+  // The gate must NEVER touch an OMITTED tag — an untouched chip already
+  // means "leave the stored value alone" (resolveTagPayload), and clamping
+  // `undefined` to `false` here would silently correct an EXISTING violating
+  // row's tag as a side effect of an unrelated save (exactly what the ledger
+  // row's "do not silently mutate existing rows" instruction forbids).
+  it('does NOT clamp an OMITTED (undefined) legacyRebook/isNce on an update of an existing permanent quote', async () => {
+    rawRef.current!.service_type = 'permanent';
+    const res = await POST(makeReq({ quoteId: REAL_UUID, inputs: permInputs(100) }));
+    expect(res.status).toBe(200);
+    const updateArgs = update.mock.calls[0] as unknown[];
+    expect(updateArgs[6]).toBeUndefined();
+    expect(updateArgs[7]).toBeUndefined();
+  });
+
+  it('does NOT clamp an explicit FALSE legacyRebook/isNce on an update of an existing permanent quote — turning OFF is never gated', async () => {
+    rawRef.current!.service_type = 'permanent';
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, inputs: permInputs(100), legacyRebook: false, isNce: false }),
+    );
+    expect(res.status).toBe(200);
+    const updateArgs = update.mock.calls[0] as unknown[];
+    expect(updateArgs[6]).toBe(false);
+    expect(updateArgs[7]).toBe(false);
+  });
+});
+
 describe('POST /api/quote — Test Quote flag (#93)', () => {
   it('threads isTest=true into the NEW-save path (saveQuote 5th arg)', async () => {
     const res = await POST(makeReq({ inputs: validInputs(), isTest: true }));
