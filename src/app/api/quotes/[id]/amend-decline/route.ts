@@ -21,6 +21,13 @@
 // figures. Combined with the operator override on the collection routes,
 // that meant an operator could charge exactly the amount the customer
 // refused. Shared logic with /amend — src/lib/quoteAmendInvoiceSync.ts.
+//
+// FIX5 (review HIGH): it also fires a best-effort staff alert. Before this,
+// a decline wrote to the DB and returned JSON to the customer's OWN browser —
+// nothing told staff. Direct precedent: the Valor webhook's card-declined
+// staff alert (src/app/api/integrations/valor/webhook/route.ts) — same
+// email-to-internal-contact shape (src/lib/integrations/quoteMessages.ts's
+// amendmentDeclinedInternalEmail*).
 
 import { NextRequest, NextResponse } from 'next/server';
 import { rateLimitResponse } from '@/lib/rateLimit';
@@ -36,6 +43,11 @@ import { getJobByQuote } from '@/lib/jobs';
 import { getInvoiceByJob, type InvoicePricingInput } from '@/lib/invoices';
 import { resolveAgreedTotal } from '@/lib/agreedTotal';
 import { resyncInvoiceToAgreedTotal } from '@/lib/quoteAmendInvoiceSync';
+import { sendEmail, isHighLevelConfigured } from '@/lib/integrations/highlevel';
+import {
+  amendmentDeclinedInternalEmailSubject,
+  amendmentDeclinedInternalEmailHtml,
+} from '@/lib/integrations/quoteMessages';
 
 export const runtime = 'nodejs';
 
@@ -61,6 +73,12 @@ type QuoteRow = {
   // same fields amend/route.ts's own QuoteRow selects for the same reason.
   result: (InvoicePricingInput & { total: number }) | null;
   deposit_amount_usd: number | null;
+  // FIX5: for the staff alert — who declined, which quote, and (is_test) so a
+  // test quote never fires a real alert, matching every other outward
+  // integration's test-safety convention in this codebase.
+  customer_name: string | null;
+  quote_number: number | null;
+  is_test: boolean | null;
 };
 
 function clientIp(req: NextRequest): string | null {
@@ -113,7 +131,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { data: quote, error: readError } = await sb
     .from('quotes')
     .select(
-      'id, status, quote_sent_at, customer_approved_at, deposit_paid_at, approval_snapshot, result, deposit_amount_usd',
+      'id, status, quote_sent_at, customer_approved_at, deposit_paid_at, approval_snapshot, result, deposit_amount_usd, customer_name, quote_number, is_test',
     )
     .eq('id', id)
     .single<QuoteRow>();
@@ -223,6 +241,43 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         logPrefix: '[api/quotes/:id/amend-decline]',
         retiredReason: 'amend-decline-reopen',
       });
+    }
+  }
+
+  // FIX5 (review HIGH): tell staff. Best-effort — the decline is already
+  // recorded above; a failed/unconfigured alert must never fail this
+  // response. Test-safe: a test quote never fires a real send (matches every
+  // other outward integration in this codebase).
+  if (!quote.is_test) {
+    const internalContactId = process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
+    if (isHighLevelConfigured() && internalContactId) {
+      const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
+      try {
+        await sendEmail({
+          contactId: internalContactId,
+          subject: amendmentDeclinedInternalEmailSubject({
+            customerName: quote.customer_name,
+            quoteNumber: quote.quote_number,
+            refusedTotalUsd: declined.new_total,
+          }),
+          html: amendmentDeclinedInternalEmailHtml({
+            customerName: quote.customer_name,
+            quoteNumber: quote.quote_number,
+            previousTotalUsd: declined.previous_total,
+            refusedTotalUsd: declined.new_total,
+            deltaUsd: declined.delta,
+            ...(rawReason ? { reason: rawReason } : {}),
+            adminUrl: `${baseUrl}/admin/quotes/${id}`,
+            portalUrl: `${baseUrl}/portal/${id}`,
+          }),
+          emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
+        });
+      } catch (err) {
+        console.error(
+          '[api/quotes/:id/amend-decline] staff decline alert failed:',
+          err instanceof Error ? err.message : err,
+        );
+      }
     }
   }
 

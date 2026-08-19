@@ -548,6 +548,68 @@ export function amendmentEmailHtml(input: {
   ].join('');
 }
 
+// ─── Amendment DECLINED — staff alert (FIX5, ledger #83 follow-up) ──────────
+// A customer declining a price change writes to the DB and returns JSON to
+// their own browser — nothing told staff. Direct precedent in this repo: the
+// Valor webhook's card-declined staff alert (internalDepositDeclinedEmailSubject/
+// Html above) exists for exactly this reason — "staff discovered a decline a
+// day later on the Valor dashboard while the quote sat approved-but-unpaid
+// with zero explanation" (see that section's own comment). Same shape here: a
+// HighLevel email to the internal staff contact (HIGHLEVEL_INTERNAL_CONTACT_ID),
+// fired by amend-decline/route.ts, best-effort.
+//
+// Money figures are the TRAIL basis (the just-recorded amendment's own
+// previous_total/new_total/delta) — this is a STAFF-facing alert, not the
+// customer notice FIX4 governs; staff can cross-reference the invoice via the
+// admin link. Not throttled (unlike the Valor alert, which guards against
+// webhook REDELIVERY): amend-decline's compare-and-swap write only succeeds
+// once per decline, and a retry/double-submit hits the idempotent
+// alreadyDeclined short-circuit before this is ever reached, so a second
+// alert for the same decline is structurally not possible.
+export function amendmentDeclinedInternalEmailSubject(input: {
+  customerName: string | null;
+  quoteNumber: number | null;
+  refusedTotalUsd: number;
+}): string {
+  const who = input.customerName?.replace(/[\r\n]+/g, ' ').trim() || 'A customer';
+  const quoteLabel = input.quoteNumber != null ? ` quote #${input.quoteNumber}` : '';
+  return `🔴 Price change DECLINED — ${who}${quoteLabel} (${usdExact(input.refusedTotalUsd)})`;
+}
+
+export function amendmentDeclinedInternalEmailHtml(input: {
+  customerName: string | null;
+  quoteNumber: number | null;
+  previousTotalUsd: number;
+  refusedTotalUsd: number;
+  deltaUsd: number;
+  // The customer's own optional free text — safe to relay to STAFF (an
+  // internal alert), distinct from the customer-facing SMS/email, which
+  // deliberately never echoes it back (see amend-decline/route.ts).
+  reason?: string;
+  adminUrl: string;
+  portalUrl: string;
+}): string {
+  const name = escapeHtml(input.customerName?.trim() || 'Unknown');
+  const quoteLabel = input.quoteNumber != null ? ` (quote #${input.quoteNumber})` : '';
+  const signedDelta = `${input.deltaUsd >= 0 ? '+' : ''}${usdExact(input.deltaUsd)}`;
+  const row = (labelText: string, value: string) =>
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">${labelText}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
+  return [
+    `<p><strong>${name}</strong>${quoteLabel} DECLINED a price change — they said no to ${usdExact(
+      input.refusedTotalUsd,
+    )} (${signedDelta}). Their order stays at ${usdExact(input.previousTotalUsd)}; nothing was charged.</p>`,
+    `<table style="border-collapse:collapse;font-size:14px;">`,
+    row('Customer', name),
+    row('Order stays at', usdExact(input.previousTotalUsd)),
+    row('They declined', usdExact(input.refusedTotalUsd)),
+    row('Change', signedDelta),
+    ...(input.reason ? [row('Their reason', escapeHtml(input.reason))] : []),
+    `</table>`,
+    `<p>We'll be in touch to sort out the details — the customer's own portal already tells them this.</p>`,
+    `<p><a href="${input.adminUrl}">Open in quote tool →</a> &nbsp;|&nbsp; <a href="${input.portalUrl}">Customer portal →</a></p>`,
+  ].join('\n');
+}
+
 // ── Balance pay-link (ledger #83) ───────────────────────────────────────────
 // Staff-initiated: after a job is complete, the operator sends the customer a
 // link to pay their remaining balance (100% minus whatever deposit percent this

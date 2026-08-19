@@ -1,12 +1,21 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 import type { AmendmentTrailEntry } from '@/lib/amend';
 
-const { sbRef, getJobByQuoteMock, getInvoiceByJobMock, resyncInvoiceToAgreedTotalMock } = vi.hoisted(() => ({
+const {
+  sbRef,
+  getJobByQuoteMock,
+  getInvoiceByJobMock,
+  resyncInvoiceToAgreedTotalMock,
+  sendEmailMock,
+  isHighLevelConfiguredMock,
+} = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
   getJobByQuoteMock: vi.fn(async (): Promise<unknown> => null),
   getInvoiceByJobMock: vi.fn(async (): Promise<unknown> => null),
   resyncInvoiceToAgreedTotalMock: vi.fn(async () => ({ invoicedBalance: null, invoicedTotal: null })),
+  sendEmailMock: vi.fn(async () => ({})),
+  isHighLevelConfiguredMock: vi.fn(() => false),
 }));
 
 vi.mock('@/lib/supabase', () => ({
@@ -26,6 +35,13 @@ vi.mock('@/lib/invoices', async (importOriginal) => {
   return { ...actual, getInvoiceByJob: getInvoiceByJobMock };
 });
 vi.mock('@/lib/quoteAmendInvoiceSync', () => ({ resyncInvoiceToAgreedTotal: resyncInvoiceToAgreedTotalMock }));
+// FIX5: isHighLevelConfigured defaults FALSE, so every EXISTING test (none of
+// which set HIGHLEVEL_INTERNAL_CONTACT_ID) never attempts a real send —
+// mirrors amend/route.test.ts's own mock shape.
+vi.mock('@/lib/integrations/highlevel', () => ({
+  sendEmail: sendEmailMock,
+  isHighLevelConfigured: isHighLevelConfiguredMock,
+}));
 
 import { POST } from './route';
 
@@ -437,5 +453,119 @@ describe('POST /api/quotes/[id]/amend-decline — invoice re-sync (FIX2)', () =>
     expect(res.status).toBe(200);
     expect(getJobByQuoteMock).not.toHaveBeenCalled();
     expect(resyncInvoiceToAgreedTotalMock).not.toHaveBeenCalled();
+  });
+});
+
+// FIX5 (review HIGH): before this fix, a decline wrote to the DB and
+// returned JSON to the customer's OWN browser — nothing told staff.
+describe('POST /api/quotes/[id]/amend-decline — staff alert (FIX5)', () => {
+  const emailCall = () => sendEmailMock.mock.calls[0] as unknown as
+    | [{ contactId: string; subject: string; html: string }]
+    | undefined;
+
+  beforeEach(() => {
+    process.env.HIGHLEVEL_INTERNAL_CONTACT_ID = 'internal-1';
+    // req() (this file's shared helper) doesn't set nextUrl — the route falls
+    // back to req.nextUrl.origin only when PORTAL_BASE_URL is unset.
+    process.env.PORTAL_BASE_URL = 'https://quote.yulelovelights.com';
+  });
+  afterEach(() => {
+    delete process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
+    delete process.env.PORTAL_BASE_URL;
+  });
+
+  it('does NOT alert when HighLevel is not configured', async () => {
+    isHighLevelConfiguredMock.mockReturnValueOnce(false);
+    const { client } = makeSb(bookedQuote({ amendments: [amendment] }));
+    sbRef.current = client;
+
+    const res = await POST(req({ amendedAt: AMENDED_AT }), ctx);
+    expect(res.status).toBe(200);
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT alert when no internal contact id is configured', async () => {
+    delete process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
+    isHighLevelConfiguredMock.mockReturnValueOnce(true);
+    const { client } = makeSb(bookedQuote({ amendments: [amendment] }));
+    sbRef.current = client;
+
+    const res = await POST(req({ amendedAt: AMENDED_AT }), ctx);
+    expect(res.status).toBe(200);
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT alert for a TEST quote (test-safe, matches every other outward integration)', async () => {
+    isHighLevelConfiguredMock.mockReturnValueOnce(true);
+    const { client } = makeSb({ ...bookedQuote({ amendments: [amendment] }), is_test: true });
+    sbRef.current = client;
+
+    const res = await POST(req({ amendedAt: AMENDED_AT }), ctx);
+    expect(res.status).toBe(200);
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT attempt an alert for the idempotent already-declined short-circuit', async () => {
+    isHighLevelConfiguredMock.mockReturnValueOnce(true);
+    const alreadyDeclined: AmendmentTrailEntry = {
+      ...amendment,
+      consent: { status: 'declined', declined_at: '2026-07-18T13:00:00.000Z', ip: null },
+    };
+    const { client } = makeSb(bookedQuote({ amendments: [alreadyDeclined] }));
+    sbRef.current = client;
+
+    const res = await POST(req({ amendedAt: AMENDED_AT }), ctx);
+    expect(res.status).toBe(200);
+    expect(sendEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('alerts staff with the customer, the refused figures, and their reason, still returns 200', async () => {
+    isHighLevelConfiguredMock.mockReturnValueOnce(true);
+    const { client } = makeSb({
+      ...bookedQuote({ amendments: [amendment] }),
+      customer_name: 'Jordan Smith',
+      quote_number: 42,
+    });
+    sbRef.current = client;
+
+    const res = await POST(
+      req({ amendedAt: AMENDED_AT, reason: 'too pricey' }),
+      ctx,
+    );
+    expect(res.status).toBe(200);
+    expect(sendEmailMock).toHaveBeenCalledOnce();
+
+    const call = emailCall();
+    expect(call?.[0].contactId).toBe('internal-1');
+    expect(call?.[0].subject).toContain('DECLINED');
+    expect(call?.[0].subject).toContain('Jordan Smith');
+    expect(call?.[0].subject).toContain('42');
+    // amendment: previous_total 2000, new_total 2400 — the refused figures.
+    expect(call?.[0].html).toContain('2,000.00');
+    expect(call?.[0].html).toContain('2,400.00');
+    expect(call?.[0].html).toContain('too pricey');
+  });
+
+  it('omits the reason block when the customer left no reason', async () => {
+    isHighLevelConfiguredMock.mockReturnValueOnce(true);
+    const { client } = makeSb(bookedQuote({ amendments: [amendment] }));
+    sbRef.current = client;
+
+    const res = await POST(req({ amendedAt: AMENDED_AT }), ctx);
+    expect(res.status).toBe(200);
+    const call = emailCall();
+    expect(call?.[0].html).not.toContain('Their reason');
+  });
+
+  it('a failed alert send never breaks the recorded decline response', async () => {
+    isHighLevelConfiguredMock.mockReturnValueOnce(true);
+    sendEmailMock.mockRejectedValueOnce(new Error('HighLevel down'));
+    const { client } = makeSb(bookedQuote({ amendments: [amendment] }));
+    sbRef.current = client;
+
+    const res = await POST(req({ amendedAt: AMENDED_AT }), ctx);
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
   });
 });

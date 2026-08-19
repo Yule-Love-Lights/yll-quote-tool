@@ -22,6 +22,8 @@ import {
   internalDepositDeclinedEmailHtml,
   amendmentSmsBody,
   amendmentEmailHtml,
+  amendmentDeclinedInternalEmailSubject,
+  amendmentDeclinedInternalEmailHtml,
 } from './quoteMessages';
 
 describe('quote-ready notifications, per service type (S26)', () => {
@@ -776,5 +778,88 @@ describe('amendment notice copy (Jason 2026-08-19, portal link + direction/size)
     const reasonLikeText = 'added a 36" wreath to the front door';
     expect(smsIncrease()).not.toContain(reasonLikeText);
     expect(htmlIncrease(true)).not.toContain(reasonLikeText);
+  });
+});
+
+// FIX5 (review HIGH, ledger #83 follow-up): a decline used to write to the DB
+// and return JSON to the customer's own browser — nothing told staff. Same
+// shape as the Valor webhook's card-declined staff alert (above).
+describe('amendmentDeclinedInternalEmailSubject', () => {
+  it('names the customer, with a fallback', () => {
+    expect(
+      amendmentDeclinedInternalEmailSubject({ customerName: 'Jordan Smith', quoteNumber: 12, refusedTotalUsd: 2400 }),
+    ).toContain('Jordan Smith');
+    expect(
+      amendmentDeclinedInternalEmailSubject({ customerName: null, quoteNumber: null, refusedTotalUsd: 2400 }),
+    ).toContain('A customer');
+  });
+
+  it('includes the quote number when present, omits it when absent', () => {
+    expect(
+      amendmentDeclinedInternalEmailSubject({ customerName: 'Jordan', quoteNumber: 42, refusedTotalUsd: 100 }),
+    ).toContain('quote #42');
+    expect(
+      amendmentDeclinedInternalEmailSubject({ customerName: 'Jordan', quoteNumber: null, refusedTotalUsd: 100 }),
+    ).not.toContain('quote #');
+  });
+
+  it('says DECLINED and states the refused amount', () => {
+    const subject = amendmentDeclinedInternalEmailSubject({
+      customerName: 'Jordan',
+      quoteNumber: 42,
+      refusedTotalUsd: 2400,
+    });
+    expect(subject).toContain('DECLINED');
+    expect(subject).toContain('$2,400.00');
+  });
+});
+
+describe('amendmentDeclinedInternalEmailHtml', () => {
+  const base = {
+    customerName: 'Jordan Smith',
+    quoteNumber: 42,
+    previousTotalUsd: 2000,
+    refusedTotalUsd: 2400,
+    deltaUsd: 400,
+    adminUrl: 'https://quote.yulelovelights.com/admin/quotes/abc',
+    portalUrl: 'https://quote.yulelovelights.com/portal/abc',
+  };
+
+  it('carries the customer, both totals, the signed delta, and both links', () => {
+    const html = amendmentDeclinedInternalEmailHtml(base);
+    expect(html).toContain('Jordan Smith');
+    expect(html).toContain('quote #42');
+    expect(html).toContain('$2,000.00'); // stays-at (previous) total
+    expect(html).toContain('$2,400.00'); // the refused total
+    expect(html).toContain('+$400.00'); // signed delta
+    expect(html).toContain(base.adminUrl);
+    expect(html).toContain(base.portalUrl);
+  });
+
+  it('shows a NEGATIVE sign for a declined price decrease', () => {
+    const html = amendmentDeclinedInternalEmailHtml({ ...base, deltaUsd: -400 });
+    expect(html).toContain('-$400.00');
+    expect(html).not.toContain('+-$400.00');
+  });
+
+  it('includes the customer-typed reason when given, safely HTML-escaped', () => {
+    const html = amendmentDeclinedInternalEmailHtml({
+      ...base,
+      reason: 'too expensive <script>alert(1)</script>',
+    });
+    expect(html).toContain('Their reason');
+    expect(html).toContain('too expensive');
+    expect(html).not.toContain('<script>alert(1)</script>');
+    expect(html).toContain('&lt;script&gt;');
+  });
+
+  it('omits the reason row entirely when no reason was given', () => {
+    const html = amendmentDeclinedInternalEmailHtml(base);
+    expect(html).not.toContain('Their reason');
+  });
+
+  it('falls back to "Unknown" for a null customer name', () => {
+    const html = amendmentDeclinedInternalEmailHtml({ ...base, customerName: null });
+    expect(html).toContain('Unknown');
   });
 });
