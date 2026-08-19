@@ -3,7 +3,7 @@
 -- Paste into the Supabase SQL Editor and click Run.
 --
 -- GENERATED (audit #110 wave 2, finding W2-007): this file is produced by
--- reconciling ALL 81 dated migrations/*.sql files IN DATE ORDER (creates,
+-- reconciling ALL 82 dated migrations/*.sql files IN DATE ORDER (creates,
 -- alters, drops, RLS enable/disable applied in sequence) into one canonical
 -- end-state schema. It supersedes running db/schema.sql + the individual
 -- dated migrations separately (CREATE ... IF NOT EXISTS on a fresh DB; the
@@ -32,7 +32,7 @@
 -- Previous refresh: 2026-08-03 @ commit bf2ed09, through
 -- 2026-08-03-dashboard-activity-action-idx.sql (64 files, ledger #188).
 --
--- Tables (37 LIVE + 2 REMOVED tombstones below; RLS ENABLED on 36 of the 37
+-- Tables (38 LIVE + 2 REMOVED tombstones below; RLS ENABLED on 37 of the 38
 -- live ones — #90 defense in depth). The one exception, inventory_orders,
 -- ships RLS DISABLED — see its own posture bullet below, not silently
 -- "fixed" here. Three RLS postures coexist by design (see
@@ -2297,3 +2297,63 @@ alter table public.site_submissions enable row level security;
 insert into storage.buckets (id, name, public)
 values ('applications', 'applications', false)
 on conflict (id) do nothing;
+
+
+-- ---------------------------------------------------------------------
+-- job_assignments (2026-08-18, migrations/2026-08-18-job-assignments.sql) —
+-- P4P Phase 3 scheduling: one row per (job, crew member, calendar day). A DATE
+-- rather than a timestamptz, because "who is on this job on the 22nd" is a
+-- calendar question and an instant would reintroduce UTC-vs-ET drift. Feeds
+-- per-day capacity: job BH divided across the crew assigned to that job that
+-- day, with a job scheduled and nobody assigned reported as UNASSIGNED load
+-- rather than zero. ⚠️ BH is still placeholder, so capacity is too, and
+-- src/lib/scheduling.ts tags it via readLaborPlan. RLS ENABLED, ZERO POLICIES.
+-- ---------------------------------------------------------------------
+create table if not exists public.job_assignments (
+  id              uuid primary key default gen_random_uuid(),
+  job_id          uuid not null references public.jobs(id) on delete cascade,
+  crew_member_id  uuid not null references public.crew_members(id),
+
+  -- The calendar day this assignment is for, in the BUSINESS timezone. A DATE,
+  -- not a timestamptz: "who is on this job on the 22nd" is a calendar question,
+  -- and storing an instant would reintroduce the UTC-vs-ET drift this repo has
+  -- already been bitten by.
+  assigned_date   date not null,
+
+  -- Who scheduled it, for the same reason every other consequential action here
+  -- records a source.
+  created_by      uuid references public.crew_members(id),
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now(),
+
+  -- One person cannot be assigned to the same job twice on the same day.
+  constraint job_assignments_unique_per_day unique (job_id, crew_member_id, assigned_date)
+);
+
+-- ON DELETE CASCADE on job_id: an assignment to a deleted job is meaningless.
+-- crew_member_id deliberately has NO cascade — deleting a crew member who has
+-- scheduled work should fail loudly rather than silently unschedule the work.
+
+create index if not exists job_assignments_date_idx
+  on public.job_assignments (assigned_date);
+
+create index if not exists job_assignments_crew_date_idx
+  on public.job_assignments (crew_member_id, assigned_date);
+
+create index if not exists job_assignments_job_id_idx
+  on public.job_assignments (job_id);
+
+alter table public.job_assignments enable row level security;
+
+create or replace function public.job_assignments_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists job_assignments_updated_at on public.job_assignments;
+create trigger job_assignments_updated_at
+  before update on public.job_assignments
+  for each row execute function public.job_assignments_set_updated_at();

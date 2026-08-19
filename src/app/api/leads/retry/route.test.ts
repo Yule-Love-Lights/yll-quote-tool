@@ -44,10 +44,15 @@ describe('GET /api/leads/retry (cron)', () => {
     expect(retryStuckLeads).not.toHaveBeenCalled();
   });
 
-  it('401s when CRON_SECRET is unset (dormant until configured)', async () => {
+  it('503s when CRON_SECRET is unset, so a dead cron is distinguishable', async () => {
+    // Previously a 401, identical to a bad token — which is how the sibling
+    // copilot project ran dark for 8+ days without anyone noticing (row 286).
     delete process.env.CRON_SECRET;
     const res = await GET(req('Bearer sekret'));
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      error: 'CRON_SECRET is not configured on this deployment',
+    });
     expect(retryStuckLeads).not.toHaveBeenCalled();
   });
 

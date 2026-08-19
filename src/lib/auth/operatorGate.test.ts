@@ -272,6 +272,25 @@ describe('isPublicPath — customer-facing allowlist', () => {
     expect(isPublicPath('/api/admin/site-forms', 'GET')).toBe(false);
     expect(isPublicPath('/admin/site-forms')).toBe(false);
   });
+
+  // naldo/referral-self-serve: a GHL lead who never bought has no quote and
+  // no portal link, so this page + its API are the only way for them to get
+  // a referral link. Missing either entry serves the login shell / 401s a
+  // real visitor, invisible while signed in as an operator (same trap as
+  // #195 and the partial-lead 401, both noted above).
+  it('treats /referral-link as public, EXACT match only (naldo/referral-self-serve)', () => {
+    expect(isPublicPath('/referral-link')).toBe(true);
+    expect(isPublicPath('/referral-link/')).toBe(true); // single trailing slash is normalized
+    expect(isPublicPath('/referral-link/anything')).toBe(false);
+  });
+
+  it('allows POST /api/referrals/request-link and nothing else (naldo/referral-self-serve)', () => {
+    expect(isPublicPath('/api/referrals/request-link', 'POST')).toBe(true);
+    expect(isPublicPath('/api/referrals/request-link/', 'POST')).toBe(true);
+    expect(isPublicPath('/api/referrals/request-link', 'GET')).toBe(false);
+    expect(isPublicPath('/api/referrals/request-link', 'DELETE')).toBe(false);
+    expect(isPublicPath('/api/referrals/request-link')).toBe(false); // defaults to GET
+  });
 });
 
 describe('isCrewPath — the crew-only surface (row 279)', () => {

@@ -1,6 +1,6 @@
-// #41 V2 — the referral landing page's post-submit confirmation screen.
+// #41 V2: the referral landing page's post-submit confirmation screen.
 // Renders with react-dom/server (same approach as ReferralSection.test.tsx /
-// ReferredByPicker.test.tsx — no jsdom needed for a pure-render component).
+// ReferredByPicker.test.tsx: no jsdom needed for a pure-render component).
 // Mocks @/lib/analytics/posthog because ReferralForm.tsx imports `track` at
 // module scope (only used inside the stateful ReferralForm, not
 // ReferralSuccessScreen, but importing the file evaluates that import too).
@@ -14,18 +14,25 @@ import { ReferralSuccessScreen } from './ReferralForm';
 
 const FRIEND_SPRITZERS = { count: 2, sizeInches: 16 };
 
-describe('ReferralSuccessScreen — no preview (flag off / capped / deduped / failed)', () => {
+describe('ReferralSuccessScreen: no preview (flag off / capped / deduped / failed)', () => {
   it('shows the original "we will text you" copy, unchanged', () => {
     const html = renderToStaticMarkup(
       <ReferralSuccessScreen preview={null} friendSpritzers={FRIEND_SPRITZERS} />,
     );
     expect(html).toContain('We are on it.');
-    expect(html).toContain('Expect a text from us today to set up your free light preview.');
+    expect(html).toContain('Expect a text from us today, and we will get you a free quote.');
     expect(html).not.toContain('ready to glow');
+  });
+
+  it('does not promise a preview the visitor will not receive', () => {
+    const html = renderToStaticMarkup(
+      <ReferralSuccessScreen preview={null} friendSpritzers={FRIEND_SPRITZERS} />,
+    );
+    expect(html).not.toContain('preview');
   });
 });
 
-describe('ReferralSuccessScreen — preview present (#41 V2 auto-analyze succeeded)', () => {
+describe('ReferralSuccessScreen: preview present (#41 V2 auto-analyze succeeded)', () => {
   const preview = {
     photoDataUrl: 'data:image/jpeg;base64,abc123',
     formattedAddress: '123 Main St, Smithtown, NY 11787',
@@ -61,7 +68,7 @@ describe('ReferralSuccessScreen — preview present (#41 V2 auto-analyze succeed
   });
 });
 
-describe('ReferralSuccessScreen — voice rules', () => {
+describe('ReferralSuccessScreen: voice rules', () => {
   it('never uses an em dash in either state', () => {
     const preview = {
       photoDataUrl: 'data:image/jpeg;base64,abc123',

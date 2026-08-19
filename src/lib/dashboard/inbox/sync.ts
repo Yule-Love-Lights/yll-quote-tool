@@ -17,7 +17,6 @@ import {
   isGmailConfigured,
   listInboxThreads,
   modifyMessage,
-  modifyThread,
 } from '@/lib/integrations/gmail';
 import type { HandledTarget } from './store';
 import { handledByTag } from './assignment';
@@ -38,6 +37,7 @@ import {
   setEscalation,
   setSyncCursor,
   sweepOrphanedFollowUps,
+  sweepResolvedItemFollowUps,
 } from './store';
 import { appBaseUrl } from '@/lib/integrations/telegramNotify';
 import { escalationLevel, isDueForEodDigest, newlyCrossedLevel } from './escalation';
@@ -180,8 +180,13 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
       if (res.itemId && decision.kind === 'create') {
         // WT-44: forward the configured cadence so the "Follow-up reminder
         // (days)" setting actually controls when this follow-up is due.
-        await ensureFollowUp({ inboxItemId: res.itemId, contactId: res.contactId, reason: decision.reason, sentAt: decision.sentAt, afterDays: followUpDays });
-        followUpsCreated++;
+        // #252: count only an actual write. ensureFollowUp returns false when a
+        // pending row already exists OR when the anchored item is already
+        // completed/dismissed (its own churn gate) — counting unconditionally
+        // reported a "creation" on every tick for every resolved item whose
+        // quote is still open.
+        const created = await ensureFollowUp({ inboxItemId: res.itemId, contactId: res.contactId, reason: decision.reason, sentAt: decision.sentAt, afterDays: followUpDays });
+        if (created) followUpsCreated++;
       } else if (res.itemId && decision.kind === 'suppress' && !res.skipped) {
         // #220: internal recipients never mint a real follow-up row.
         // #230(b): gated on !res.skipped — decision.kind is recomputed from
@@ -219,6 +224,11 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
     // never reached there and would sit overdue-pending forever. One sweep per
     // reconcile closes those.
     followUpsClosed += await sweepOrphanedFollowUps(FOLLOWUP_REASONS.quoteSentNoReply);
+    // #252 follow-up-autoclose backlog: a pending follow-up whose anchored item
+    // was ALREADY completed/dismissed before markItemCompleted/dismissItem
+    // learned to close it at the write site. Self-heals on the next reconcile —
+    // no manual production data edit needed.
+    followUpsClosed += await sweepResolvedItemFollowUps();
     await recordSyncRun('quotetool', errors > 0 ? 'error' : 'ok', errors > 0 ? `${errors} item error(s)` : undefined);
     return { ok: true, scanned: quotes.length, ingested, skipped, followUpsCreated, followUpsSuppressed, followUpsClosed, errors };
   } catch (err) {
@@ -344,32 +354,6 @@ function errMsg(err: unknown): string {
 }
 
 /**
- * #288: a gmail item's external_id can be a GML-split composite
- * `${threadId}:${msgId}` (see gmail.ts's normalizeGmailThreadTouches) for
- * every customer after a coalesced thread's earliest. Only reached by
- * runHandledWriteback's THREAD-level fallback now (fix round: the primary
- * path for any row with a sourceMessageId is message-level modifyMessage,
- * which needs no stripping at all). #288 backfill fix round (staff HIGH, 2nd
- * instance): the ONE other way to reach this fallback — a composite
- * external_id with no sourceMessageId — now SKIPS before ever calling this
- * function (see runHandledWriteback's gmail branch), so in today's code this
- * always runs on an already-bare id and the strip is a no-op. Kept anyway as
- * a defensive safety net: it costs nothing and still protects the modifyThread
- * URL from ever seeing a composite value should a future caller reach this
- * fallback with one. Gmail thread/message ids are hex, so a literal ':' can
- * only appear here as this deliberate separator, never inside a real id —
- * safe to split on the first one.
- *
- * NOT store.ts's quoteIdPrefix: that helper is quotetool/uuid-specific (its
- * callers additionally filter through isUuid) — this is its Gmail-specific
- * sibling, kept local since nothing outside the Gmail write-back needs it.
- */
-function gmailThreadIdFromExternalId(externalId: string): string {
-  const i = externalId.indexOf(':');
-  return i === -1 ? externalId : externalId.slice(0, i);
-}
-
-/**
  * Best-effort source write-back for a Handled item — runs AFTER the local stamp,
  * so attribution never depends on it. Each channel step is caught independently;
  * the per-step outcome goes into handled_channel_sync. ⚠️ These are live GHL/Gmail
@@ -413,43 +397,35 @@ export async function runHandledWriteback(target: HandledTarget, operatorLabel: 
 
   if (target.source === 'gmail' && target.externalId && isGmailConfigured()) {
     try {
-      const token = await getAccessToken();
-      const labelId = await getOrCreateLabel(token, 'YLL/Handled');
-      // #288 fix round (staff HIGH): modifyThread marks EVERY message on the
-      // thread read/labeled — for a GML-split row, that silently stamps
-      // sibling customers' still-unworked forwards Handled too (a staffer
-      // triaging raw Gmail, which the tool's own "Reply in Gmail" affordance
-      // sends them to, would see an already-handled thread and skip it,
-      // reintroducing the buried-lead failure one layer up). Go message-level
-      // whenever the row knows its own message id — every real LIVE-FETCH
-      // split touch (hybrid single-parse or 2+-parse, gmail.ts's
-      // normalizeGmailThreadTouches) carries one; only a genuinely bare,
-      // non-composite external_id (a legacy/non-split/non-GML row) falls back
-      // to the thread-wide call. Accepted: for a genuinely single-message
-      // thread, the thread's OTHER messages (e.g. an unread platform receipt)
-      // no longer get marked read either — honest per-message semantics,
-      // deliberate.
-      //
-      // #288 backfill fix round (staff HIGH, 2nd instance): a composite
-      // external_id (contains ':') with NO sourceMessageId is a STORED-RAW
-      // backfilled row (scripts/backfill-gml-threads.ts mints
-      // `${threadId}:bf-<epochMs>` for these — stored raw predates #787's
-      // per-message ids, so there's no message id to go message-level with).
-      // Falling through to modifyThread here would re-open the exact bug
-      // above for that population: thread-wide marks EVERY sibling
-      // customer's still-unworked forward read/labeled too. No signal beats
-      // a wrong signal — skip the write-back entirely rather than guess at
-      // the thread level. Best-effort by design: the local handled_at stamp
-      // already landed before this runs, so skipping here loses nothing but
-      // the external Gmail label/read-state sync for this one row.
+      // #293 fix round (customer HIGH, 3rd instance of this class): message-
+      // level or nothing — the old THREAD-level fallback is retired. Gmail
+      // coalesces multiple different customers' Zapier lead-forwards into one
+      // thread whenever they share a subject line, so a thread-wide modify
+      // would silently stamp sibling customers' still-unworked forwards
+      // Handled too (a staffer triaging raw Gmail — the tool's own "Reply in
+      // Gmail" affordance sends them there — would see an already-handled
+      // thread and skip it, reintroducing the buried-lead failure one layer
+      // up). Only run the write-back when the row knows its own message id.
+      // A null sourceMessageId is the ORDINARY shape, not a legacy one:
+      // normalizeGmailThread (gmail.ts) sets it unconditionally for every
+      // non-lead-forward thread — the overwhelming majority of Gmail traffic
+      // — and only the parsed-lead-forward shapes (normalizeGmailThreadTouches'
+      // 1-parsed and 2+-parsed branches) carry a real message id. Skipping
+      // here makes zero Gmail API calls (getAccessToken/getOrCreateLabel both
+      // sit inside the sourceMessageId branch below — see sync.test.ts).
+      // Best-effort by design: the local handled_at stamp already landed
+      // before this runs, and the retired thread-wide call only ever fired on
+      // an explicit Handled action (most gmail rows resolve by dismiss or
+      // complete, which never reach this code), so the accepted cost is on
+      // the order of a couple of unlabeled Gmail threads a month — not a
+      // broad loss of write-back coverage.
       if (target.sourceMessageId) {
+        const token = await getAccessToken();
+        const labelId = await getOrCreateLabel(token, 'YLL/Handled');
         await modifyMessage(token, target.sourceMessageId, { addLabelIds: [labelId], removeLabelIds: ['UNREAD'] });
         sync.gmailLabel = 'ok';
-      } else if (target.externalId.includes(':')) {
-        sync.gmailLabel = 'skipped';
       } else {
-        await modifyThread(token, gmailThreadIdFromExternalId(target.externalId), { addLabelIds: [labelId], removeLabelIds: ['UNREAD'] });
-        sync.gmailLabel = 'ok';
+        sync.gmailLabel = 'skipped';
       }
     } catch (err) {
       sync.gmailLabel = 'failed';

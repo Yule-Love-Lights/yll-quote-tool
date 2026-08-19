@@ -1,0 +1,192 @@
+'use client';
+
+import { useCallback, useEffect, useState } from 'react';
+
+/**
+ * Settings → Accounts → Crew logins (row 279).
+ *
+ * Creates the SHARED login a crew member uses for both the Quote Tool and the
+ * Operations Hub, and links it to their pay identity in `crew_members`.
+ *
+ * A crew login is NOT an operator login: it carries app_metadata.role='crew',
+ * which makes getOperator() return null for it and confines it to the crew API.
+ * That is why this panel is separate from the staff table above rather than a
+ * third option in its role dropdown — mixing the two populations in one control
+ * is how someone accidentally hands a crew member the operator surface.
+ */
+
+type CrewRow = { id: string; displayName: string; active: boolean; hasLogin: boolean };
+
+export function CrewLogins() {
+  const [crew, setCrew] = useState<CrewRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+
+  // Fetch inside the effect with a cancelled guard, rather than calling a
+  // useCallback from the effect body: the latter trips the cascading-render
+  // lint rule, and this shape also avoids setting state after unmount.
+  const [reloadToken, setReloadToken] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchCrew() {
+      try {
+        const res = await fetch('/api/admin/crew-accounts');
+        if (!res.ok) {
+          const body = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(body.error ?? 'Failed to load');
+        }
+        const data = (await res.json()) as { crew: CrewRow[] };
+        if (!cancelled) setCrew(data.crew ?? []);
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load crew members');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    void fetchCrew();
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadToken]);
+
+  const reload = useCallback(() => {
+    setLoading(true);
+    setReloadToken((n) => n + 1);
+  }, []);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    setDone(null);
+    try {
+      const res = await fetch('/api/admin/crew-accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ crewMemberId: selected, email, password }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string; displayName?: string };
+      if (!res.ok) throw new Error(data.error ?? 'Failed to create the login');
+      setDone(`${data.displayName} can now sign in as ${email}.`);
+      setSelected('');
+      setEmail('');
+      setPassword('');
+      reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to create the login');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const withoutLogin = crew.filter((c) => !c.hasLogin);
+
+  return (
+    <section className="mt-8 border-t border-gray-200 pt-6">
+      <h2 className="text-base font-semibold text-gray-900">Crew logins</h2>
+      <p className="text-sm text-gray-500 mt-1">
+        One login per crew member, used for both the Quote Tool and the Operations Hub. A crew
+        login can only reach the crew time-clock screens — never customer records.
+      </p>
+
+      {loading ? (
+        <p className="text-sm text-gray-500 mt-4">Loading crew…</p>
+      ) : (
+        <>
+          <ul className="mt-4 divide-y divide-gray-100 border border-gray-200 rounded-md">
+            {crew.map((c) => (
+              <li key={c.id} className="flex items-center justify-between px-3 py-2 text-sm">
+                <span className="text-gray-900">
+                  {c.displayName}
+                  {!c.active && <span className="ml-2 text-xs text-gray-400">(inactive)</span>}
+                </span>
+                <span className={c.hasLogin ? 'text-xs text-green-700' : 'text-xs text-gray-400'}>
+                  {c.hasLogin ? 'Has login' : 'No login yet'}
+                </span>
+              </li>
+            ))}
+            {crew.length === 0 && (
+              <li className="px-3 py-2 text-sm text-gray-500">No crew members yet.</li>
+            )}
+          </ul>
+
+          {withoutLogin.length > 0 && (
+            <form onSubmit={submit} className="mt-4 space-y-3">
+              <div>
+                <label className="block text-sm text-gray-700 mb-1" htmlFor="crew-member">
+                  Crew member
+                </label>
+                <select
+                  id="crew-member"
+                  className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm"
+                  value={selected}
+                  onChange={(e) => setSelected(e.target.value)}
+                  required
+                >
+                  <option value="">Choose…</option>
+                  {withoutLogin.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.displayName}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm text-gray-700 mb-1" htmlFor="crew-email">
+                  Email
+                </label>
+                <input
+                  id="crew-email"
+                  type="email"
+                  className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm text-gray-700 mb-1" htmlFor="crew-password">
+                  Temporary password
+                </label>
+                <input
+                  id="crew-password"
+                  type="password"
+                  className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  minLength={8}
+                  required
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  At least 8 characters. Give it to them directly and have them change it.
+                </p>
+              </div>
+
+              <button
+                type="submit"
+                disabled={busy}
+                className="px-4 py-2 rounded-md text-sm font-medium text-white disabled:opacity-50"
+                style={{ backgroundColor: 'var(--brand-evergreen-3)' }}
+              >
+                {busy ? 'Creating…' : 'Create crew login'}
+              </button>
+            </form>
+          )}
+
+          {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
+          {done && <p className="mt-3 text-sm text-green-700">{done}</p>}
+        </>
+      )}
+    </section>
+  );
+}

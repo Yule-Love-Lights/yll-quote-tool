@@ -428,6 +428,109 @@ describe('POST /api/quotes/[id]/amend', () => {
     expect(sendEmailMock).toHaveBeenCalledOnce();
   });
 
+  const usdText = (n: number): string =>
+    n.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  // sendSmsMock is declared as vi.fn(async () => ({})) — no typed params — so
+  // .mock.calls[0][0] has no element type. Narrow once, here.
+  const sentSmsMessage = (): string => {
+    const call = sendSmsMock.mock.calls[0] as unknown as [{ message: string }] | undefined;
+    return call?.[0]?.message ?? '';
+  };
+
+  // Delta-verify HIGH: dueAfterInstall was first derived from `!invoice`, which
+  // reads null both when the job is genuinely pre-install AND when the invoice
+  // lookup fails or a completed job's invoice creation failed and was never
+  // retried. These cover the DERIVATION in this route, not just the message
+  // builders it feeds (which take the flag as a literal).
+  it('tells a pre-install customer the balance is due after installation', async () => {
+    sbRef.current = makeSb(BOOKED_QUOTE).client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1', status: 'to_schedule' });
+    getInvoiceByJobMock.mockResolvedValue(null);
+
+    await POST(req({ reason: 'extra wreath', notifyCustomer: true }), ctx());
+    expect(sentSmsMessage()).toContain('after installation');
+  });
+
+  it('makes NO timing claim once the job is already installed', async () => {
+    sbRef.current = makeSb(BOOKED_QUOTE).client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+    getInvoiceByJobMock.mockResolvedValue({ id: 'inv-1', balance: 2500, status: 'draft', tax_overridden: false });
+
+    await POST(req({ reason: 'post-install correction', notifyCustomer: true }), ctx());
+    expect(sentSmsMessage()).not.toContain('after installation');
+  });
+
+  it('makes NO timing claim when an installed job has no invoice (failed create) — fails safe', async () => {
+    // The exact shape that broke the first fix: jobs/[id]/complete commits the
+    // status advance BEFORE creating the invoice, so an installed job can sit
+    // with a null invoice.
+    sbRef.current = makeSb(BOOKED_QUOTE).client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1', status: 'installed' });
+    getInvoiceByJobMock.mockResolvedValue(null);
+
+    await POST(req({ reason: 'post-install correction', notifyCustomer: true }), ctx());
+    expect(sentSmsMessage()).not.toContain('after installation');
+  });
+
+  it('makes NO timing claim when the job row cannot be read — fails safe', async () => {
+    // getJobByQuote swallows a read error and returns null; an unknown state
+    // must not assert a timing the customer could act on.
+    sbRef.current = makeSb(BOOKED_QUOTE).client;
+    getJobByQuoteMock.mockResolvedValue(null);
+    getInvoiceByJobMock.mockResolvedValue(null);
+
+    await POST(req({ reason: 'extra wreath', notifyCustomer: true }), ctx());
+    expect(sentSmsMessage()).not.toContain('after installation');
+  });
+
+  // Jason 2026-08-19: the notice must quote what the customer is actually
+  // BILLED. On a tax-overridden invoice computeInvoiceTotals removes the tax
+  // from the invoice total, while the amendment trail's new_balance keeps it —
+  // so the trail figure would overstate the balance. 2 of 4 prod invoices are
+  // tax_overridden, so this is an ordinary case.
+  it('quotes the INVOICE balance, not the trail balance, on a tax-overridden invoice', async () => {
+    // BOOKED_QUOTE carries taxAmount 0, where a tax override removes nothing and
+    // the two figures trivially agree — that fixture cannot show the divergence.
+    // Give this one real tax: 5600 total including 450 tax.
+    const TAXED = {
+      ...BOOKED_QUOTE,
+      result: { subtotalBeforeDiscount: 5150, discountAmount: 0, taxAmount: 450, total: 5600 },
+    };
+    const sb = makeSb(TAXED);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+    getInvoiceByJobMock.mockResolvedValue({
+      id: 'inv-1',
+      balance: 2500,
+      status: 'draft',
+      tax_overridden: true,
+    });
+
+    const res = await POST(req({ reason: 'post-install add-on', notifyCustomer: true }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+
+    // The invoice write that just happened is what the customer will actually
+    // be billed — assert the message quotes THAT, and that it genuinely
+    // differs from the trail's own balance (otherwise this proves nothing).
+    const billed = (sb.updates.invoices[0] as { balance: number }).balance;
+    expect(billed).not.toBe(json.amendment.new_balance);
+    expect(sentSmsMessage()).toContain(usdText(billed));
+    expect(sentSmsMessage()).not.toContain(usdText(json.amendment.new_balance));
+  });
+
+  it('falls back to the trail balance when there is no invoice yet', async () => {
+    sbRef.current = makeSb(BOOKED_QUOTE).client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1', status: 'to_schedule' });
+    getInvoiceByJobMock.mockResolvedValue(null);
+
+    const res = await POST(req({ reason: 'extra wreath', notifyCustomer: true }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(sentSmsMessage()).toContain(usdText(json.amendment.new_balance));
+  });
+
   it('does NOT send a real message for a TEST quote (test-safe)', async () => {
     sbRef.current = makeSb({ ...BOOKED_QUOTE, is_test: true }).client;
     getJobByQuoteMock.mockResolvedValue(null);
