@@ -76,6 +76,10 @@ function makeSb(
     deposit_paid_at?: string | null;
     customer_approved_at?: string | null;
     inputs?: Record<string, unknown> | null;
+    // #243: undefined (every pre-existing test's default) resolves holiday-
+    // eligible, matching canCarryNceOrYllNeighborTag's null/undefined case —
+    // so no pre-existing test needed updating for the new gate.
+    service_type?: string | null;
   } | null,
   opts: {
     depositWriteResult?: { data: Array<{ id: string }> | null; error: { message: string } | null };
@@ -116,6 +120,10 @@ function makeSb(
           deposit_paid_at: merged.deposit_paid_at ?? null,
           customer_approved_at: merged.customer_approved_at ?? null,
           inputs: merged.inputs ?? null,
+          // #243: the service-type gate's pre-write read reuses this same
+          // chainable mock (select → maybeSingle, called BEFORE any update
+          // payload exists) — see its own describe block below.
+          service_type: merged.service_type ?? null,
         },
         error: null,
       };
@@ -216,6 +224,71 @@ describe('POST /api/quotes/[id]/nce — unknown id', () => {
 
     expect(res.status).toBe(404);
     expect(json.error).toMatch(/not found/i);
+  });
+});
+
+describe('POST /api/quotes/[id]/nce — service-type gate (#243)', () => {
+  it.each([['permanent'], ['event'], ['permanent_bistro']])(
+    'rejects turning ON for a %s quote with 400/not-holiday, no write',
+    async (serviceType) => {
+      const { client, updatePayloads } = makeSb({
+        id: VALID_UUID,
+        is_nce: false,
+        service_type: serviceType,
+      });
+      sbRef.current = client;
+
+      const res = await POST(makeReq({ isNce: true }), makeParams(VALID_UUID));
+      const json = await res.json();
+      expect(res.status).toBe(400);
+      expect(json.code).toBe('not-holiday');
+      expect(updatePayloads).toHaveLength(0);
+    },
+  );
+
+  it.each([['holiday'], [null], [undefined]])(
+    'allows turning ON for a holiday (or un-categorized) quote — service_type %p',
+    async (serviceType) => {
+      const { client, updatePayloads } = makeSb({
+        id: VALID_UUID,
+        is_nce: false,
+        service_type: serviceType as string | null | undefined,
+      });
+      sbRef.current = client;
+
+      const res = await POST(makeReq({ isNce: true }), makeParams(VALID_UUID));
+      expect(res.status).toBe(200);
+      expect(updatePayloads[0]).toEqual({ is_nce: true });
+    },
+  );
+
+  it('404s (not 400) when turning ON a non-existent quote — the gate read runs before the not-found check', async () => {
+    const { client, updatePayloads } = makeSb(null);
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ isNce: true }), makeParams(VALID_UUID));
+    const json = await res.json();
+    expect(res.status).toBe(404);
+    expect(json.error).toMatch(/not found/i);
+    expect(updatePayloads).toHaveLength(0);
+  });
+
+  // Turning OFF must always be allowed, even on a permanent quote — this is
+  // the correction path for an existing violating row (from before this gate
+  // shipped); the gate only ever blocks the ON direction.
+  it('allows turning OFF on a permanent quote (untagging an existing violation is never blocked)', async () => {
+    const { client, updatePayloads } = makeSb({
+      id: VALID_UUID,
+      is_nce: true,
+      service_type: 'permanent',
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq({ isNce: false }), makeParams(VALID_UUID));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toEqual({ ok: true, isNce: false });
+    expect(updatePayloads[0]).toEqual({ is_nce: false });
   });
 });
 

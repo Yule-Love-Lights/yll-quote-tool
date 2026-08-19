@@ -39,11 +39,21 @@
 // resolves through effectiveDepositRate to the 50% default correctly (0 is
 // out of its [1,100] range), matching the builder chip's own OFF behavior
 // (resolveNceDepositPercent in quoteForm.ts already returns 0, not undefined).
+//
+// #243 (domain rule locked 2026-08-11): permanent/event/bistro quotes can
+// never carry the NCE tag — canCarryNceOrYllNeighborTag (serviceType.ts) is
+// the single source of truth every set/inherit site shares. Only the ON
+// direction is gated below — turning OFF (including correcting an existing
+// violation from before this gate shipped) is always allowed, unconditionally.
+// A separate pre-write read, not folded into the update below: the gate must
+// run BEFORE any write lands — there's no safe way to "undo" the update once
+// it's already committed.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { attachQuoteToCustomer, propagateQuoteTagsToCustomer, quoteRowToIdentity } from '@/lib/customers';
+import { canCarryNceOrYllNeighborTag, type ServiceType } from '@/lib/serviceType';
 
 export const runtime = 'nodejs';
 
@@ -77,6 +87,35 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   const sb = getSupabaseServiceClient()!;
+
+  // #243: reject turning ON before any write, when the quote's own service
+  // type can't carry the tag. A plain read (not a write) — see the header
+  // comment above for why this can't be folded into the update below.
+  if (isNce) {
+    const { data: gateRow, error: gateError } = await sb
+      .from('quotes')
+      .select('service_type')
+      .eq('id', id)
+      .maybeSingle<{ service_type: string | null }>();
+    if (gateError) {
+      console.error('[api/quotes/:id/nce] service-type read failed:', gateError);
+      return NextResponse.json({ error: 'Failed to update the quote' }, { status: 500 });
+    }
+    if (!gateRow) {
+      return NextResponse.json({ error: 'Quote not found' }, { status: 404 });
+    }
+    if (!canCarryNceOrYllNeighborTag(gateRow.service_type as ServiceType | null)) {
+      return NextResponse.json(
+        {
+          error:
+            'NCE can only be set on holiday quotes — permanent lighting is always real money, never trade.',
+          code: 'not-holiday',
+        },
+        { status: 400 },
+      );
+    }
+  }
+
   const { data, error } = await sb
     .from('quotes')
     .update({ is_nce: isNce })

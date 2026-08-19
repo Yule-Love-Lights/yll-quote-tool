@@ -21,11 +21,18 @@
 // customers row, turning the flag ON propagates "YLL Neighbor" onto that
 // customer immediately — see src/app/api/quotes/[id]/nce/route.ts's sibling
 // doc comment for the full rationale (same pattern, added alongside NCE).
+//
+// #243 (domain rule locked 2026-08-11): permanent/event/bistro quotes can
+// never carry the YLL Neighbor tag — canCarryNceOrYllNeighborTag
+// (serviceType.ts) is the single source of truth every set/inherit site
+// shares; sibling-guard parity with the /nce route's own #243 gate (same
+// pre-write read, same "OFF is always allowed" posture — see its comment).
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { attachQuoteToCustomer, propagateQuoteTagsToCustomer, quoteRowToIdentity } from '@/lib/customers';
+import { canCarryNceOrYllNeighborTag, type ServiceType } from '@/lib/serviceType';
 
 export const runtime = 'nodejs';
 
@@ -59,6 +66,35 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   const sb = getSupabaseServiceClient()!;
+
+  // #243: reject turning ON before any write, when the quote's own service
+  // type can't carry the tag — see the /nce route's sibling comment for why
+  // this is a separate pre-write read rather than folded into the update.
+  if (legacyRebook) {
+    const { data: gateRow, error: gateError } = await sb
+      .from('quotes')
+      .select('service_type')
+      .eq('id', id)
+      .maybeSingle<{ service_type: string | null }>();
+    if (gateError) {
+      console.error('[api/quotes/:id/legacy-rebook] service-type read failed:', gateError);
+      return NextResponse.json({ error: 'Failed to update the quote' }, { status: 500 });
+    }
+    if (!gateRow) {
+      return NextResponse.json({ error: 'Quote not found' }, { status: 404 });
+    }
+    if (!canCarryNceOrYllNeighborTag(gateRow.service_type as ServiceType | null)) {
+      return NextResponse.json(
+        {
+          error:
+            'YLL Neighbor can only be set on holiday quotes — permanent lighting is always real money, never trade.',
+          code: 'not-holiday',
+        },
+        { status: 400 },
+      );
+    }
+  }
+
   const { data, error } = await sb
     .from('quotes')
     .update({ legacy_rebook: legacyRebook })

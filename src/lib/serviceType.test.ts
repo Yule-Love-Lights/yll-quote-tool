@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   asServiceType,
   canCustomerRecolor,
+  canCarryNceOrYllNeighborTag,
   SERVICE_TYPES,
   SERVICE_TYPE_LABELS,
   DEFAULT_SERVICE_TYPE,
@@ -47,5 +48,20 @@ describe('serviceType', () => {
 
   it('canCustomerRecolor excludes permanent_bistro (warm-white Edison only)', () => {
     expect(canCustomerRecolor('permanent_bistro')).toBe(false);
+  });
+
+  // #243: single source of truth for the NCE/YLL Neighbor holiday-only gate
+  // — every set/inherit site calls this instead of its own `=== 'holiday'`
+  // copy, so they can never drift apart.
+  it('canCarryNceOrYllNeighborTag allows holiday and null/undefined (matches DEFAULT_SERVICE_TYPE)', () => {
+    expect(canCarryNceOrYllNeighborTag('holiday')).toBe(true);
+    expect(canCarryNceOrYllNeighborTag(null)).toBe(true);
+    expect(canCarryNceOrYllNeighborTag(undefined)).toBe(true);
+  });
+
+  it('canCarryNceOrYllNeighborTag excludes permanent, event, and permanent_bistro (permanent lighting is always real money, never trade)', () => {
+    expect(canCarryNceOrYllNeighborTag('permanent')).toBe(false);
+    expect(canCarryNceOrYllNeighborTag('event')).toBe(false);
+    expect(canCarryNceOrYllNeighborTag('permanent_bistro')).toBe(false);
   });
 });
