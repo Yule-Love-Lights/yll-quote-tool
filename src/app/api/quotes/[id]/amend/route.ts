@@ -390,9 +390,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
             phone,
             dueAfterInstall,
             portalUrl,
-            // FIX4: same basis as newTotalUsd (see notifiedDelta above) — was
-            // amendment.delta unconditionally, which could disagree with
-            // notifiedTotal by the whole tax line on a tax-overridden invoice.
+            // Same basis as newTotalUsd — see resolveAmendmentBasis above.
             deltaUsd: notifiedDelta,
             newTotalUsd: notifiedTotal,
           }),
