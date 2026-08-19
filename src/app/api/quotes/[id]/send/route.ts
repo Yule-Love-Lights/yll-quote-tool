@@ -17,10 +17,16 @@
 // Response:
 //   { ok: true, sentAt: ISO, stageUpdated: boolean, opportunityCreated: boolean,
 //     opportunityId: string | null, stageError?: string, ghlRetry: boolean,
-//     deliveryRetry: boolean, ghlSynced: boolean, smsSent: boolean,
+//     deliveryRetry: boolean, ghlSynced: boolean, eventDateSyncError?: string,
+//     smsSent: boolean,
 //     emailSent: boolean, messageError?: string, failedChannels: ('sms'|'email')[],
 //     channel: 'sms' | 'email' | 'both', alreadySent?: boolean, revived?: true,
 //     channelOutcomes?: { sms: ChannelOutcome | null, email: ChannelOutcome | null } }
+//     — eventDateSyncError (#237 FIX A) is present only for an EVENT quote
+//     with a real event date and a linked contact: undefined means either
+//     "not applicable" or "pushed fine," a string means the push to GHL's
+//     "Event Date" custom field was attempted and failed (see
+//     src/lib/integrations/ghlEventDate.ts).
 //     — channelOutcomes is set ONLY on the alreadySent short-circuit (row 269;
 //     both the fresh-send and retry-path hits of it share this one return
 //     site — see below), a best-effort read of quote_deliveries
@@ -38,7 +44,8 @@
 //     sentAt: ISO, smsSent: boolean, emailSent: boolean,
 //     failedChannels: ('sms'|'email')[], channel: 'sms' | 'email' | 'both',
 //     deliveryRetry: boolean, stageUpdated: boolean, stageError?: string,
-//     opportunityId: string | null, ghlSynced: boolean } — every requested
+//     opportunityId: string | null, ghlSynced: boolean,
+//     eventDateSyncError?: string } — every requested
 //     customer channel failed, but the quote WAS stamped sent locally and the
 //     GHL stage move (fresh send only — see stageUpdated/ghlSynced above) may
 //     still have gone through (row 271).
@@ -71,7 +78,7 @@ import {
   HighLevelError,
 } from '@/lib/integrations/highlevel';
 import { resolvePipelineStages, quoteLinkFieldId, quoteLinkFieldEnvVar } from '@/lib/integrations/ghlPipelineMap';
-import { pushEventDateToGhl } from '@/lib/integrations/ghlEventDate';
+import { pushEventDateToGhl, formatEventDateForGhl } from '@/lib/integrations/ghlEventDate';
 import {
   quoteEmailSubject,
   quoteSmsBody,
@@ -538,6 +545,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   let opportunityId = quote.highlevel_opportunity_id;
   let opportunityCreated = false;
   let stageError: string | undefined;
+  // FIX A (#237 fix round, staff-lens HIGH) — see the event-date push block
+  // below (inside ghlStageChain) for the full reasoning. Undefined = no
+  // problem (or nothing was attempted); a string = the push was attempted
+  // (a real event date existed) and pushEventDateToGhl reported pushed:false.
+  let eventDateSyncError: string | undefined;
 
   // Per-service-type pipeline/stage resolution (#GHL pipeline sync) — holiday
   // still honors the legacy HIGHLEVEL_PIPELINE_ID/STAGE_* env vars when set
@@ -703,17 +715,54 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // delivery-only retry (no CRM card move, no re-stamp) also skips this
     // push, exactly like the rest of the CRM-write chain. A `?retryGhl`
     // reconcile does reach this line and re-pushes the same value again,
-    // which is harmless (a plain overwrite, not an append).
+    // which is harmless (a plain overwrite, not an append) — and, per the
+    // FIX A comment below, is also how the operator's "Retry CRM sync"
+    // button recovers from a failed push, not just a failed stage move.
     //
-    // pushEventDateToGhl is itself fail-soft/deadline-bounded and never
-    // throws (see that file) — the try/catch here is defense-in-depth only,
-    // mirroring how every pushTenureYearsToGhl call site wraps it the same
-    // way despite that same documented contract.
-    if (quote.service_type === 'event' && !quote.is_test && quote.highlevel_contact_id) {
-      try {
-        await pushEventDateToGhl(quote.highlevel_contact_id, quote.inputs?.event?.eventDate);
-      } catch (err) {
-        console.error('[api/quotes/:id/send] event-date GHL push failed (non-fatal):', err);
+    // No try/catch: pushEventDateToGhl is documented AND actually
+    // implemented (read ghlEventDate.ts) to never throw — every internal
+    // failure (missing scope, a GHL error, the deadline) is caught inside
+    // and resolves { pushed: false }. A prior version of this comment called
+    // a wrapping try/catch here "defense-in-depth, mirroring every
+    // pushTenureYearsToGhl call site" — false on inspection: grep every real
+    // pushTenureYearsToGhl call site (tenure-years/route.ts, the Valor
+    // webhook, convert-to-job, simulate-deposit) and every one of them calls
+    // it bare, unwrapped, for the exact same never-throws reason. The dead
+    // catch here could never execute; removed instead of kept mislabeled.
+    //
+    // FIX A (#237 fix round, staff-lens HIGH): the outcome used to be
+    // discarded here entirely — `pushEventDateToGhl(...)` was called for its
+    // side effect only, its `{ pushed }` return value never read — so a
+    // missing Custom Fields scope, a GHL 500, or the 6s deadline tripping
+    // left the operator seeing a clean "✓ Sent" with zero indication the
+    // date never reached the CRM. eventDateSyncError (declared with
+    // stageError above) now carries that outcome to the JSON response,
+    // mirroring stageError/ghlSynced's existing shape — see
+    // QuoteBuilder.tsx's eventDateSyncWarning state + banner, which reuses
+    // the SAME "Retry CRM sync" button as the stage-move warning (that
+    // retry re-runs this whole chain, including this push) rather than
+    // inventing a new retry path. Kept as a SEPARATE banner from the
+    // existing one rather than folded into it: that banner's copy explicitly
+    // claims "the HighLevel card didn't advance to Bid Sent," which would be
+    // a false claim on a send where the card moved fine and only this push
+    // failed.
+    //
+    // Only a date that was actually worth pushing counts as an "attempt" to
+    // report on — formatEventDateForGhl mirrors the no-op check
+    // pushEventDateToGhlInner runs internally, so a blank/malformed date
+    // (the deliberate "quietly do nothing" case a few lines up) never
+    // manufactures a false warning; it only means there's nothing to warn
+    // about.
+    if (
+      quote.service_type === 'event' &&
+      !quote.is_test &&
+      quote.highlevel_contact_id &&
+      formatEventDateForGhl(quote.inputs?.event?.eventDate)
+    ) {
+      const { pushed } = await pushEventDateToGhl(quote.highlevel_contact_id, quote.inputs?.event?.eventDate);
+      if (!pushed) {
+        eventDateSyncError =
+          'The event date may not have synced to HighLevel — check the CRM contact, or retry below.';
       }
     }
 
@@ -992,6 +1041,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         stageError,
         opportunityId,
         ghlSynced: stageUpdated || (isDeliveryRetry && quote.ghl_stage_synced_at != null),
+        // FIX A (#237 fix round): same reasoning as the 200 body below —
+        // mirror it here too so a split failure (delivery fails AND the
+        // event-date push failed) doesn't drop this half of the picture.
+        eventDateSyncError,
       },
       { status: 502 },
     );
@@ -1010,6 +1063,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     ghlRetry: isGhlRetry,
     deliveryRetry: isDeliveryRetry,
     ghlSynced: stageUpdated || (isDeliveryRetry && quote.ghl_stage_synced_at != null),
+    // FIX A (#237 fix round, staff-lens HIGH): undefined = nothing to report
+    // (not an event quote / no contact / test quote / nothing to push, or the
+    // push succeeded); a string = the push was attempted and
+    // pushEventDateToGhl reported pushed:false. See QuoteBuilder.tsx's
+    // eventDateSyncWarning banner.
+    eventDateSyncError,
     smsSent,
     emailSent,
     messageError,
