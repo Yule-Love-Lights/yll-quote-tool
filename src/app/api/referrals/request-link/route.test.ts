@@ -250,10 +250,25 @@ describe('POST /api/referrals/request-link', () => {
     searchContacts.mockResolvedValueOnce([MATCHING_CONTACT]);
     const matchRes = await POST(req({ email: 'jamie@example.com' }));
     const matchBody = await matchRes.json();
+    // Pre-existing test-isolation bug fixed this round: without draining,
+    // this test's TWO mockResolvedValueOnce queue entries on searchContacts
+    // are never consumed (they only get consumed when the deferred after()
+    // task actually calls searchContacts), so vi.clearAllMocks() in the
+    // NEXT test's beforeEach does NOT clear them (clearAllMocks resets call
+    // history, never a pending mockImplementationOnce/mockResolvedValueOnce
+    // queue, only resetAllMocks does that) and they silently bleed into
+    // whichever test runs next. Invisible when the whole file runs in its
+    // usual order (later tests happen to absorb the leftover queue), but
+    // reproducible with `vitest -t` against a subset that includes this
+    // test: confirmed it broke an unrelated later test's findOrCreateCustomer
+    // call count purely from this leak, with zero relation between the two
+    // tests otherwise.
+    await drainAfterTasks();
 
     searchContacts.mockResolvedValueOnce([]);
     const noMatchRes = await POST(req({ email: 'nobody@example.com' }));
     const noMatchBody = await noMatchRes.json();
+    await drainAfterTasks();
 
     expect(matchRes.status).toBe(noMatchRes.status);
     expect(matchBody).toEqual(noMatchBody);
