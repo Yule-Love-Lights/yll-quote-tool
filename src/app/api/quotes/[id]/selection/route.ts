@@ -1,9 +1,14 @@
 // Ledger row 239 — persist the customer's LIVE, still-editable portal
-// selection so it survives a device change (phone → laptop) and gives staff
-// visibility into what a not-yet-approved customer is leaning toward (a sales
-// signal). Fired client-side by usePersistedSelection (src/lib/portal/
-// usePersistedSelection.ts), debounced + deduped so an unchanged selection —
-// the overwhelming majority of opens — never triggers a write.
+// selection so it survives a device change (phone → laptop): what this route
+// actually delivers today. It does NOT give staff any visibility into it —
+// no staff surface reads this column yet; PortalBrowsingSelection.savedAt
+// (components/portal/types.ts) is explicitly the seam a FUTURE staff view
+// would use, not a capability that exists now. FIX E (technical lens, LOW,
+// row 239 fix round) corrected this header, which previously described that
+// future seam as already delivered. Fired client-side by
+// usePersistedSelection (src/lib/portal/usePersistedSelection.ts), debounced
+// + deduped so an unchanged selection — the overwhelming majority of opens —
+// never triggers a write.
 //
 // POST /api/quotes/[id]/selection
 // Body: { packageId, selectedItemIds, rushSelected, takedownSelected,
