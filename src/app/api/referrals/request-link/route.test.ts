@@ -535,10 +535,12 @@ describe('POST /api/referrals/request-link', () => {
   });
 });
 
-// naldo/referral-link-personalized: the contact-id path. Awaited inline (no
-// after()), so every assertion below reads straight off the POST response,
-// no drainAfterTasks() needed: the mint/send chain has already completed
-// by the time POST resolves.
+// naldo/referral-link-personalized: the contact-id path. The mint/send
+// chain is awaited inline, so most assertions below read straight off the
+// POST response, no drainAfterTasks() needed. Review fix 2 (this round)
+// adds ONE deferred after() task on a resolved contact id (the staff
+// inbox record, see its own describe block further down), so a test that
+// asserts on afterTasks now expects exactly that one task, not zero.
 describe('POST /api/referrals/request-link (contact-id path)', () => {
   it('a contact id that resolves mints the code, sends the email, and returns the link in the body', async () => {
     getContact.mockResolvedValue(RESOLVED_CONTACT);
@@ -566,11 +568,14 @@ describe('POST /api/referrals/request-link (contact-id path)', () => {
     expect(sendArgs.html).toContain('https://quote.example.com/refer/CODE1234');
   });
 
-  it('resolves inline: the response already carries the link with nothing left scheduled via after()', async () => {
+  it('the mint/send chain resolves inline: the response already carries the link before any after() task runs', async () => {
     getContact.mockResolvedValue(RESOLVED_CONTACT);
     const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
     expect((await res.json()).referralUrl).toBeTruthy();
-    expect(afterTasks).toHaveLength(0);
+    expect(sendEmail).toHaveBeenCalledTimes(1); // already sent, no drain needed
+    // Review fix 2: exactly the staff-record task, deferred so it can never
+    // delay or risk the response above.
+    expect(afterTasks).toHaveLength(1);
   });
 
   it('a contact id that does not resolve (getContact throws) returns the generic response with no link, and writes nothing', async () => {
@@ -647,6 +652,67 @@ describe('POST /api/referrals/request-link (contact-id path)', () => {
       expect.objectContaining({ email: null }),
       { skipIdentityRefresh: true },
     );
+  });
+
+  describe('staff inbox record (review fix 2, this round)', () => {
+    it('records an automated touch, deferred, once a contact id resolves', async () => {
+      getContact.mockResolvedValue(RESOLVED_CONTACT);
+      const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+      // Not written yet: it's scheduled, not run, before the response.
+      expect(ingestTouch).not.toHaveBeenCalled();
+      expect((await res.json()).referralUrl).toBeTruthy();
+
+      await drainAfterTasks();
+      expect(ingestTouch).toHaveBeenCalledTimes(1);
+      const [touch] = ingestTouch.mock.calls[0]!;
+      expect(touch.source).toBe('quotetool');
+      expect(touch.leadKind).toBe('automated');
+      expect(touch.identity.ghlContactId).toBe('ijusgE2q5QhlYjBZ6RG9');
+      expect(touch.identity.emails).toEqual(['riley@example.com']);
+    });
+
+    it('records even when the mint/send chain later fails, so a cooldown or a dead customer lookup still leaves a trace', async () => {
+      getContact.mockResolvedValue(RESOLVED_CONTACT);
+      findOrCreateCustomer.mockResolvedValue(null);
+      await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+      await drainAfterTasks();
+      expect(ingestTouch).toHaveBeenCalledTimes(1);
+    });
+
+    it('records nothing for a contact id that never resolves (no reliable signal a real person did anything)', async () => {
+      getContact.mockRejectedValue(new Error('HighLevel GET /contacts/GveMd2lybT1rfkBdReTD -> 404'));
+      await POST(req({ contactId: 'GveMd2lybT1rfkBdReTD' }));
+      await drainAfterTasks();
+      expect(ingestTouch).not.toHaveBeenCalled();
+    });
+
+    it('records nothing for a format-rejected id (review fix 9) or a honeypot trip', async () => {
+      await POST(req({ contactId: 'not-a-real-id!' }));
+      await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9', company: 'a bot filled this' }));
+      await drainAfterTasks();
+      expect(ingestTouch).not.toHaveBeenCalled();
+    });
+
+    it('a rejected ingestTouch never rejects the scheduled task or affects the already-sent response', async () => {
+      getContact.mockResolvedValue(RESOLVED_CONTACT);
+      ingestTouch.mockRejectedValueOnce(new Error('inbox table missing'));
+      const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+      expect((await res.json()).referralUrl).toBeTruthy();
+      await expect(drainAfterTasks()).resolves.toBeUndefined();
+    });
+
+    it('never inflates totalLeads or fires an escalation: leadKind is automated, matching store.ts own exclusion filters', async () => {
+      getContact.mockResolvedValue(RESOLVED_CONTACT);
+      await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+      await drainAfterTasks();
+      const [touch] = ingestTouch.mock.calls[0]!;
+      // store.ts: totalLeads subtracts lead_kind='automated' rows, and
+      // listEscalatableItems' own `.or('lead_kind.is.null,lead_kind.neq.automated')`
+      // filter excludes them outright (verified by reading store.ts directly,
+      // this round). A wrong leadKind here would silently bury real leads or
+      // fire false escalations under campaign-blast volume.
+      expect(touch.leadKind).toBe('automated');
+    });
   });
 
   it('the outer per-IP rate limit still applies to the contact-id path', async () => {

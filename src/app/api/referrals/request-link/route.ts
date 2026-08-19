@@ -317,6 +317,26 @@ async function findAndSendIfMatch(email: string): Promise<void> {
 async function findAndSendForContactId(contactId: string): Promise<string | null> {
   try {
     const match = await getContact(contactId);
+
+    // Review fix 2 (this round): recordRequestForStaff below was previously
+    // called only from the email path's after() block, so this path (about
+    // to carry the owner's whole campaign volume) left no staff trace at
+    // all. Scheduled with after() so it never delays or risks the response,
+    // same reasoning as the email path's own deferred staff write. Recorded
+    // once the id resolves to a real contact; a bad/stale id that never
+    // resolves (the catch below) records nothing, since there's no
+    // reliable signal a real person did anything, and recording every
+    // failed guess would let anyone spam the staff inbox just by guessing
+    // ids in the URL, the same abuse class INGEST_CAP_PER_IP_PER_HOUR
+    // guards against on the email path.
+    after(async () => {
+      try {
+        await recordContactRequestForStaff(match);
+      } catch (err) {
+        console.error('[api/referrals/request-link] contact-id inbox ingest failed:', err);
+      }
+    });
+
     return await mintAndSendReferralLink({
       match,
       emailForCustomer: match.email ?? null,
@@ -442,6 +462,42 @@ async function recordRequestForStaff(email: string): Promise<void> {
         emails: [email],
         phones: [],
         displayName: null,
+      },
+      leadKind: 'automated',
+    },
+    new Date(),
+  );
+}
+
+// Review fix 2 (this round): the contact-id path's own staff-visibility
+// record, called from findAndSendForContactId above once a contact id
+// resolves. A separate function rather than reusing recordRequestForStaff
+// above (which takes only an email string) so the email path's own
+// function and call site stay completely untouched. externalId is
+// prefixed `contact:` (mirrors the contact-id cooldown key's own prefix
+// convention) so it can never collide with the email path's
+// normalized-email keyspace, and a resubmission by the same contact
+// upserts one row instead of piling up. ghlContactId is included in
+// identity since this path always has one, a stronger signal than the
+// email-path record ever has.
+async function recordContactRequestForStaff(match: CrmContact): Promise<void> {
+  const name =
+    match.fullName?.trim() || [match.firstName, match.lastName].filter(Boolean).join(' ').trim() || null;
+  await ingestTouch(
+    {
+      source: 'quotetool',
+      externalId: `referral-link-request:contact:${match.id}`,
+      sourceMessageId: null,
+      direction: 'inbound',
+      channel: null,
+      lastMessageAt: new Date(),
+      preview: match.email ?? name ?? match.id,
+      subject: 'Referral link requested',
+      identity: {
+        ghlContactId: match.id,
+        emails: match.email ? [match.email] : [],
+        phones: match.phone ? [match.phone] : [],
+        displayName: name,
       },
       leadKind: 'automated',
     },
