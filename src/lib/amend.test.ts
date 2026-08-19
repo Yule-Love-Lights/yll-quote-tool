@@ -9,6 +9,7 @@ import {
   blocksSettlement,
   isAmendmentConsentPending,
   isSupersededPendingAmendment,
+  reconsentRequiredClause,
   type AmendmentTrailEntry,
 } from './amend';
 
@@ -339,6 +340,34 @@ describe('isSupersededPendingAmendment', () => {
     const only = computeAmendment({ ...bookedBase(), newTotal: 6000 });
     only.consent = { status: 'pending' };
     expect(isSupersededPendingAmendment(only, [only])).toBe(false);
+  });
+});
+
+// FIX7 (review MED): charge-balance/mark-paid/jobs-close all say "awaiting
+// customer re-approval" even for a DECLINED amendment — an operator about to
+// override deserves to know the customer explicitly refused, not just that
+// nobody's answered yet.
+describe('reconsentRequiredClause', () => {
+  it('says DECLINED when the customer explicitly refused', () => {
+    const declined = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+    declined.consent = { status: 'declined', declined_at: '2026-07-19T00:00:00.000Z', ip: null };
+    expect(reconsentRequiredClause(declined)).toContain('DECLINED');
+  });
+
+  it('says "awaiting" (not declined) when still pending', () => {
+    const pending = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+    pending.consent = { status: 'pending' };
+    expect(reconsentRequiredClause(pending)).toContain('awaiting');
+    expect(reconsentRequiredClause(pending)).not.toContain('DECLINED');
+  });
+
+  it('says "awaiting" for a missing consent (legacy row, back-compat pending)', () => {
+    const legacy = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+    expect(reconsentRequiredClause(legacy)).toContain('awaiting');
+  });
+
+  it('says "awaiting" for a null amendment (defensive default)', () => {
+    expect(reconsentRequiredClause(null)).toContain('awaiting');
   });
 });
 

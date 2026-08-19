@@ -342,6 +342,22 @@ export function blocksSettlement(amendment: AmendmentTrailEntry | null | undefin
   return !!amendment && isAmendmentConsentPending(amendment) && amendment.delta > 0;
 }
 
+/**
+ * FIX7 (review MED): the settlement-block error clause — one shared home so
+ * charge-balance / mark-paid / jobs-close (each appends its OWN trailing
+ * action verb — "charge anyway" / "settle anyway" / "close anyway") can't
+ * drift on whether a DECLINED amendment reads the same as a merely PENDING
+ * one. blocksSettlement treats a decline the same as pending on PURPOSE (a
+ * decline must keep blocking exactly as hard), but an operator about to
+ * override deserves to know the customer explicitly said no, not just that
+ * nobody's answered yet — those are very different overrides to make.
+ */
+export function reconsentRequiredClause(amendment: AmendmentTrailEntry | null | undefined): string {
+  return amendment?.consent?.status === 'declined'
+    ? 'This order has a price increase the customer explicitly DECLINED.'
+    : 'This order has a price increase awaiting customer re-approval.';
+}
+
 // #83 Phase 4 + #81: the amend route + UI (which wire this lib) are LIVE. The
 // operator "Edit booking" route (src/app/api/quotes/[id]/amend/route.ts) and
 // its UI are money-moving operator surfaces — they re-open a BOOKED order,
