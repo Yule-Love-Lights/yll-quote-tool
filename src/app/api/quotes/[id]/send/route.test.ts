@@ -1304,8 +1304,19 @@ describe('POST /api/quotes/[id]/send — quote delivery log (#250)', () => {
     });
   });
 
+  // Row 269 fix round 2 (delta-verify HIGH): this mock was originally a
+  // generic `new Error('SMS down')` — under the WIDENED hedge discriminator
+  // (timeoutHedgedErrorMessage in route.ts now hedges anything that isn't a
+  // status-bearing HighLevelError, not just HighLevelError#timedOut), a
+  // generic non-HighLevelError error is itself an outcome-unknown case and
+  // would now get hedged too, which would have silently invalidated this
+  // test's "confirmed failure" premise. Switched to a HighLevelError carrying
+  // a real HTTP status (the brief's own example: a rejected phone number),
+  // which is the genuine "GHL definitively rejected it" case this test means
+  // to demonstrate — and stays unhedged under the new logic, proving the
+  // round-1 over-gating fix still works on its actual target.
   it('writes a "failed" row with the error for a channel that fails, and a "sent" row for the one that succeeds', async () => {
-    hl.sendSms.mockRejectedValueOnce(new Error('SMS down'));
+    hl.sendSms.mockRejectedValueOnce(new HighLevelError('HighLevel POST /conversations/messages → 400: SMS down', 400));
     hl.sendEmail.mockResolvedValueOnce({ messageId: 'email_msg_1' });
     const { client, insertPayloads } = makeSb({ ...FRESH_QUOTE });
     sbRef.current = client;
@@ -1323,6 +1334,10 @@ describe('POST /api/quotes/[id]/send — quote delivery log (#250)', () => {
       provider_message_id: null,
     });
     expect(smsRow?.payload.error).toContain('SMS down');
+    // A real HTTP-status rejection is a DEFINITIVE answer from GHL — proves
+    // it is NOT hedged (the sibling TIMED-OUT/ambiguous tests below prove the
+    // opposite cases ARE hedged).
+    expect((smsRow?.payload.error as string).startsWith(DELIVERY_TIMEOUT_ERROR_PREFIX)).toBe(false);
     expect(emailRow?.payload).toMatchObject({
       quote_id: ID,
       channel: 'email',
@@ -1353,9 +1368,72 @@ describe('POST /api/quotes/[id]/send — quote delivery log (#250)', () => {
     expect(smsRow?.payload.outcome).toBe('failed');
     expect((smsRow?.payload.error as string).startsWith(DELIVERY_TIMEOUT_ERROR_PREFIX)).toBe(true);
     expect(smsRow?.payload.error as string).toContain('delivery outcome unknown');
-    // The sibling "failed" test above already pins a NORMAL (non-timeout)
-    // failure's error as verbatim "SMS down" — confirming by construction
-    // that a normal failure does NOT carry this prefix.
+    // The sibling "failed" test above (real HTTP-status rejection) pins the
+    // unhedged case explicitly; this test pins the hedged one — together they
+    // prove the discriminator, not just one side of it.
+  });
+
+  // Row 269 fix round 2 (delta-verify HIGH — the fix this test targets): a
+  // NON-timeout, NON-HTTP-status failure (a socket reset, DNS failure,
+  // connection refused — anything ghlFetch's own `catch (err) { if
+  // (controller.signal.aborted) throw timeoutError(...); throw err; }`
+  // rethrows raw when OUR abort wasn't the cause) must be hedged exactly like
+  // a real timeout, because we never learned GHL's true answer either way.
+  // Round 1 read this as a CONFIRMED failure (HighLevelError#timedOut was
+  // false) and granted a plain window.confirm redeliver — the exact gap this
+  // round closes. Modeled here as a bare non-HighLevelError Error (no
+  // `status`, no `timedOut`), the realistic shape of a raw fetch()-thrown
+  // network failure that never reached HighLevelError's !res.ok branch.
+  it('a NON-timeout, NON-HTTP-status failure (e.g. a socket reset) is hedged exactly like a timeout', async () => {
+    hl.sendSms.mockRejectedValueOnce(new Error('fetch failed: socket hang up'));
+    hl.sendEmail.mockResolvedValueOnce({ messageId: 'email_msg_1' });
+    const { client, insertPayloads } = makeSb({ ...FRESH_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+
+    const deliveryRows = insertPayloads.filter((p) => p.table === 'quote_deliveries');
+    const smsRow = deliveryRows.find((p) => p.payload.channel === 'sms');
+    expect(smsRow?.payload.outcome).toBe('failed');
+    expect((smsRow?.payload.error as string).startsWith(DELIVERY_TIMEOUT_ERROR_PREFIX)).toBe(true);
+    expect(smsRow?.payload.error as string).toContain('socket hang up');
+  });
+
+  // Same NON-timeout/NON-HTTP-status ambiguity, on the GHL STAGE-move path
+  // (stageErrorMessage, which shares timeoutHedgedErrorMessage with
+  // deliveryErrorMessage — see FIX 7's comment on that helper) — proves the
+  // widening applies to BOTH callers, not just the delivery path.
+  it('a NON-timeout, NON-HTTP-status GHL stage-move failure hedges ghl_sync_error the same way', async () => {
+    hl.updateOpportunity.mockRejectedValueOnce(new Error('fetch failed: ECONNRESET'));
+    const { client, updatePayloads } = makeSb({ ...FRESH_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+
+    const errWrite = updatePayloads.find((p) => 'ghl_sync_error' in p && !('ghl_stage_synced_at' in p));
+    expect(errWrite).toBeTruthy();
+    expect((errWrite!.ghl_sync_error as string).startsWith(DELIVERY_TIMEOUT_ERROR_PREFIX)).toBe(true);
+    expect(errWrite!.ghl_sync_error as string).toContain('ECONNRESET');
+  });
+
+  // Sibling to the stage-move hedge test above: a REAL HTTP-status rejection
+  // on the stage-move path (e.g. GHL 500ing the update with a real response)
+  // stays unhedged — the discriminator is symmetric across both callers of
+  // timeoutHedgedErrorMessage.
+  it('a real HTTP-status GHL stage-move rejection does NOT hedge ghl_sync_error', async () => {
+    hl.updateOpportunity.mockRejectedValueOnce(new HighLevelError('HighLevel PUT /opportunities/opp_1 → 500: server error', 500));
+    const { client, updatePayloads } = makeSb({ ...FRESH_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+
+    const errWrite = updatePayloads.find((p) => 'ghl_sync_error' in p && !('ghl_stage_synced_at' in p));
+    expect(errWrite).toBeTruthy();
+    expect((errWrite!.ghl_sync_error as string).startsWith(DELIVERY_TIMEOUT_ERROR_PREFIX)).toBe(false);
+    expect(errWrite!.ghl_sync_error as string).toContain('server error');
   });
 
   it('writes a "failed" row for BOTH channels when the whole requested delivery fails (502)', async () => {
@@ -1430,6 +1508,122 @@ describe('POST /api/quotes/[id]/send — quote delivery log (#250)', () => {
     const res = await POST(makeReq(true), { params });
     expect(res.status).toBe(200);
     expect(insertPayloads.filter((p) => p.table === 'quote_deliveries')).toHaveLength(0);
+  });
+});
+
+// Row 269: the alreadySent short-circuit now reads quote_deliveries so the
+// caller can scope its redeliver offer to only the channel(s) that didn't
+// confirm-deliver on the original send, instead of a blind 'both'.
+describe('POST /api/quotes/[id]/send — row 269 channelOutcomes on alreadySent', () => {
+  // The base makeSb fake above has no .order() (it never needed one — every
+  // OTHER query in this route is .eq().single() or a plain .update()/.insert()
+  // awaited directly), so a query built with fetchLatestDeliveryOutcomes'
+  // .select().eq().order().abortSignal() shape would throw synchronously on
+  // that fake — which fetchLatestDeliveryOutcomes catches and turns into
+  // channelOutcomes being omitted (proven by the "omits" test below, using the
+  // base fake unmodified). This helper adds a SEPARATE branch for the
+  // 'quote_deliveries' table only, so a test can assert what happens when
+  // that read actually succeeds — the 'quotes' table keeps using the exact
+  // same base builder everything else in this file already relies on.
+  function makeSbWithDeliveries(quote: Quote, deliveryRows: Array<Record<string, unknown>>) {
+    const base = makeSb(quote);
+    const client = {
+      ...base.client,
+      from: (table: string) => {
+        if (table === 'quote_deliveries') {
+          return {
+            select: () => ({
+              eq: () => ({
+                order: () => ({
+                  abortSignal: async () => ({ data: deliveryRows, error: null }),
+                }),
+              }),
+            }),
+          };
+        }
+        return (base.client as { from: (t: string) => unknown }).from(table);
+      },
+    };
+    return { client, updatePayloads: base.updatePayloads };
+  }
+
+  it('includes channelOutcomes (latest attempt per channel) when the read succeeds', async () => {
+    const alreadySent = { ...FRESH_QUOTE, quote_sent_at: '2026-08-14T12:00:00Z' };
+    const { client } = makeSbWithDeliveries(alreadySent, [
+      // Newest-first, as the real quote_id/created_at index returns them.
+      { channel: 'sms', outcome: 'sent', error: null, created_at: '2026-08-14T12:00:01Z' },
+      { channel: 'email', outcome: 'failed', error: 'timeout — delivery outcome unknown (GHL may have still delivered it): socket hang up', created_at: '2026-08-14T12:00:02Z' },
+      // An older sms row — must be ignored in favor of the newer one above.
+      { channel: 'sms', outcome: 'failed', error: 'rate limited', created_at: '2026-08-13T00:00:00Z' },
+    ]);
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(json.alreadySent).toBe(true);
+    expect(json.channelOutcomes).toEqual({
+      sms: { outcome: 'sent', error: null, at: '2026-08-14T12:00:01Z' },
+      email: {
+        outcome: 'failed',
+        error: 'timeout — delivery outcome unknown (GHL may have still delivered it): socket hang up',
+        at: '2026-08-14T12:00:02Z',
+      },
+    });
+  });
+
+  it('omits channelOutcomes entirely when the read fails (falls back to today\'s behavior)', async () => {
+    const alreadySent = { ...FRESH_QUOTE, quote_sent_at: '2026-08-14T12:00:00Z' };
+    // The base fake (no .order()) — fetchLatestDeliveryOutcomes' query throws
+    // synchronously against it, caught internally, resolves null.
+    const { client } = makeSb(alreadySent);
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(json.alreadySent).toBe(true);
+    expect(json.channelOutcomes).toBeUndefined();
+  });
+
+  it('both channels null when no delivery was ever logged for this quote (legacy pre-#250 row)', async () => {
+    const alreadySent = { ...FRESH_QUOTE, quote_sent_at: '2026-08-14T12:00:00Z' };
+    const { client } = makeSbWithDeliveries(alreadySent, []);
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(json.alreadySent).toBe(true);
+    expect(json.channelOutcomes).toEqual({ sms: null, email: null });
+  });
+
+  it('the RETRY-path alreadySent short-circuit (quote moved past sent/viewed) also carries channelOutcomes — same return site', async () => {
+    // Mirrors the existing "retryDelivery against a since-BOOKED quote"
+    // fixture elsewhere in this file (deposit_paid_at set makes isDeliveryRetry
+    // false, falling through to the plain alreadySent short-circuit).
+    const booked = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-08-01T00:00:00.000Z',
+      customer_approved_at: '2026-08-02T00:00:00.000Z',
+      deposit_paid_at: '2026-08-05T00:00:00.000Z', // deriveStatus → 'booked'
+      ghl_stage_synced_at: '2026-08-01T00:00:01.000Z',
+      status: 'booked',
+    };
+    const { client } = makeSbWithDeliveries(booked, [
+      { channel: 'sms', outcome: 'sent', error: null, created_at: '2026-08-01T00:00:01Z' },
+      { channel: 'email', outcome: 'sent', error: null, created_at: '2026-08-01T00:00:02Z' },
+    ]);
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ channel: 'both' }, true), { params });
+    const json = await res.json();
+
+    expect(json.alreadySent).toBe(true);
+    expect(json.channelOutcomes).toEqual({
+      sms: { outcome: 'sent', error: null, at: '2026-08-01T00:00:01Z' },
+      email: { outcome: 'sent', error: null, at: '2026-08-01T00:00:02Z' },
+    });
   });
 });
 
