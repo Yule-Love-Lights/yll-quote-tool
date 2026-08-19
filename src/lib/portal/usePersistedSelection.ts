@@ -163,6 +163,13 @@ export function usePersistedSelection(opts: {
   // timer would have fired — still gets it saved.
   useEffect(() => {
     function onLeave() {
+      // FIX C (row 239 fix round) — clearing the pending timer BEFORE the
+      // beacon fires means a beacon can never race an unfired debounce call:
+      // there's only ever the ONE outbound request from this branch. The
+      // residual out-of-order risk this can't remove — an OLDER fetch,
+      // already in flight from a previous debounce settle, landing after this
+      // beacon — is accepted; see the selection route's header for the full
+      // reasoning.
       if (timerRef.current) {
         clearTimeout(timerRef.current);
         timerRef.current = null;

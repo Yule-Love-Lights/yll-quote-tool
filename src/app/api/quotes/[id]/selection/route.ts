@@ -36,6 +36,24 @@
 //     against whatever the catalog looks like THEN, which can't be done
 //     correctly at write time anyway (the catalog can change again before the
 //     next visit). This mirrors /view and /interested's own light-touch model.
+//   * FIX C (technical lens, MED, row 239 fix round) — ACCEPTED, not fixed:
+//     the debounced fetch and the page-leave beacon are independent, unordered
+//     requests with no version/timestamp from the client, and the write below
+//     stamps browsing_selection_updated_at = now() unconditionally, so an
+//     older in-flight fetch CAN land after a newer beacon if it happens to be
+//     slower. usePersistedSelection.ts's onLeave() already cancels any
+//     pending, not-yet-FIRED debounce timer before sending the beacon, so a
+//     beacon never races an unfired timer — the only residual window is an
+//     ALREADY in-flight older request (issued before the customer's last
+//     change) landing late. Left unordered because the stakes don't justify a
+//     client-sent sequence number + a server-side conditional write: this
+//     column is only ever a pre-fill for the customer's NEXT visit, always
+//     reconciled against the live catalog before use
+//     (resolveBrowsingSelectionSeed) and immediately re-editable — it's never
+//     money and never the frozen approval (which has its own, real, guarded
+//     write above). Out of scope: cross-device last-write-wins is a separate,
+//     explicitly-accepted gap (two different people holding the same link) —
+//     see usePersistedSelection.ts.
 //   * Auth model mirrors /view + /approve: the quote UUID is the capability
 //     token. Rate-limited to blunt abuse.
 
@@ -207,6 +225,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         ...(customPattern ? { customPattern } : {}),
         ...(permanentEffect ? { permanentEffect } : {}),
       },
+      // Stamped unconditionally, no ordering check against a client
+      // timestamp — see the route header's FIX C note for why an
+      // out-of-order landing here is an accepted, low-stakes gap.
       browsing_selection_updated_at: new Date().toISOString(),
     })
     .eq('id', id)
