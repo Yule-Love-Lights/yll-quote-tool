@@ -125,7 +125,7 @@ const MATCHING_CONTACT: CrmContact = {
 // separate id/name from MATCHING_CONTACT above so a test can tell the two
 // paths' calls apart at a glance.
 const RESOLVED_CONTACT: CrmContact = {
-  id: 'ghl-contact-xyz',
+  id: 'ijusgE2q5QhlYjBZ6RG9',
   source: 'highlevel',
   firstName: 'Riley',
   lastName: 'Nguyen',
@@ -191,7 +191,7 @@ describe('REFERRAL_SELF_SERVE_ENABLED flag (review fix 2)', () => {
   it('404s the contact-id path too when the flag is unset, before any GHL call', async () => {
     delete process.env.REFERRAL_SELF_SERVE_ENABLED;
     getContact.mockResolvedValue(RESOLVED_CONTACT);
-    const res = await POST(req({ contactId: 'ghl-contact-xyz' }));
+    const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
     expect(res.status).toBe(404);
     expect(getContact).not.toHaveBeenCalled();
     expect(findOrCreateCustomer).not.toHaveBeenCalled();
@@ -542,17 +542,17 @@ describe('POST /api/referrals/request-link', () => {
 describe('POST /api/referrals/request-link (contact-id path)', () => {
   it('a contact id that resolves mints the code, sends the email, and returns the link in the body', async () => {
     getContact.mockResolvedValue(RESOLVED_CONTACT);
-    const res = await POST(req({ contactId: 'ghl-contact-xyz' }));
+    const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
 
     expect(res.status).toBe(200);
     const json = (await res.json()) as { ok: boolean; referralUrl?: string };
     expect(json.ok).toBe(true);
     expect(json.referralUrl).toBe('https://quote.example.com/refer/CODE1234');
 
-    expect(getContact).toHaveBeenCalledWith('ghl-contact-xyz');
+    expect(getContact).toHaveBeenCalledWith('ijusgE2q5QhlYjBZ6RG9');
     expect(findOrCreateCustomer).toHaveBeenCalledWith(
       {
-        hl_contact_id: 'ghl-contact-xyz',
+        hl_contact_id: 'ijusgE2q5QhlYjBZ6RG9',
         email: 'riley@example.com',
         name: 'Riley Nguyen',
         phone: '6315550111',
@@ -562,23 +562,28 @@ describe('POST /api/referrals/request-link (contact-id path)', () => {
     expect(ensureReferralCode).toHaveBeenCalledWith('cust-1');
     expect(sendEmail).toHaveBeenCalledTimes(1);
     const sendArgs = sendEmail.mock.calls[0]![0] as { contactId: string; html: string };
-    expect(sendArgs.contactId).toBe('ghl-contact-xyz');
+    expect(sendArgs.contactId).toBe('ijusgE2q5QhlYjBZ6RG9');
     expect(sendArgs.html).toContain('https://quote.example.com/refer/CODE1234');
   });
 
   it('resolves inline: the response already carries the link with nothing left scheduled via after()', async () => {
     getContact.mockResolvedValue(RESOLVED_CONTACT);
-    const res = await POST(req({ contactId: 'ghl-contact-xyz' }));
+    const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
     expect((await res.json()).referralUrl).toBeTruthy();
     expect(afterTasks).toHaveLength(0);
   });
 
   it('a contact id that does not resolve (getContact throws) returns the generic response with no link, and writes nothing', async () => {
-    getContact.mockRejectedValue(new Error('HighLevel GET /contacts/does-not-exist → 404'));
-    const res = await POST(req({ contactId: 'does-not-exist' }));
+    // A validly-formatted id (passes CONTACT_ID_RE, review fix 9) that GHL
+    // simply doesn't recognize, distinct from RESOLVED_CONTACT's own id, so
+    // this exercises the getContact-throws branch specifically rather than
+    // the format guard covered in its own describe block below.
+    getContact.mockRejectedValue(new Error('HighLevel GET /contacts/GveMd2lybT1rfkBdReTD -> 404'));
+    const res = await POST(req({ contactId: 'GveMd2lybT1rfkBdReTD' }));
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
+    expect(getContact).toHaveBeenCalledWith('GveMd2lybT1rfkBdReTD');
     expect(findOrCreateCustomer).not.toHaveBeenCalled();
     expect(ensureReferralCode).not.toHaveBeenCalled();
     expect(sendEmail).not.toHaveBeenCalled();
@@ -587,7 +592,7 @@ describe('POST /api/referrals/request-link (contact-id path)', () => {
   it('never sends when findOrCreateCustomer resolves null', async () => {
     getContact.mockResolvedValue(RESOLVED_CONTACT);
     findOrCreateCustomer.mockResolvedValue(null);
-    const res = await POST(req({ contactId: 'ghl-contact-xyz' }));
+    const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
     expect(await res.json()).toEqual({ ok: true });
     expect(ensureReferralCode).not.toHaveBeenCalled();
     expect(sendEmail).not.toHaveBeenCalled();
@@ -596,7 +601,7 @@ describe('POST /api/referrals/request-link (contact-id path)', () => {
   it('never sends when ensureReferralCode resolves null', async () => {
     getContact.mockResolvedValue(RESOLVED_CONTACT);
     ensureReferralCode.mockResolvedValue(null);
-    const res = await POST(req({ contactId: 'ghl-contact-xyz' }));
+    const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
     expect(await res.json()).toEqual({ ok: true });
     expect(sendEmail).not.toHaveBeenCalled();
   });
@@ -604,12 +609,12 @@ describe('POST /api/referrals/request-link (contact-id path)', () => {
   it('clicking twice does not send two emails: the cooldown is keyed on the contact id', async () => {
     getContact.mockResolvedValue(RESOLVED_CONTACT);
 
-    const first = await POST(req({ contactId: 'ghl-contact-xyz' }));
+    const first = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
     const firstJson = (await first.json()) as { referralUrl?: string };
     expect(sendEmail).toHaveBeenCalledTimes(1);
     expect(firstJson.referralUrl).toBeTruthy();
 
-    const second = await POST(req({ contactId: 'ghl-contact-xyz' }));
+    const second = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
     const secondJson = await second.json();
     expect(sendEmail).toHaveBeenCalledTimes(1); // still just once
     expect(findOrCreateCustomer).toHaveBeenCalledTimes(1); // no wasted work either
@@ -619,7 +624,7 @@ describe('POST /api/referrals/request-link (contact-id path)', () => {
   });
 
   it('honeypot tripped: generic response, no lookup at all', async () => {
-    const res = await POST(req({ contactId: 'ghl-contact-xyz', company: 'a bot filled this' }));
+    const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9', company: 'a bot filled this' }));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
     expect(getContact).not.toHaveBeenCalled();
@@ -629,14 +634,14 @@ describe('POST /api/referrals/request-link (contact-id path)', () => {
     process.env.HIGHLEVEL_CONTACT_FIELD_BRAND_AMBASSADOR_STATUS = 'field-status-id';
     process.env.HIGHLEVEL_CONTACT_FIELD_BRAND_AMBASSADOR_ENROLLMENT_DATE = 'field-date-id';
     getContact.mockResolvedValue(RESOLVED_CONTACT);
-    await POST(req({ contactId: 'ghl-contact-xyz' }));
-    expect(upsertContactCustomField).toHaveBeenCalledWith('ghl-contact-xyz', 'field-status-id', 'Active');
-    expect(upsertContactCustomField).toHaveBeenCalledWith('ghl-contact-xyz', 'field-date-id', expect.any(String));
+    await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+    expect(upsertContactCustomField).toHaveBeenCalledWith('ijusgE2q5QhlYjBZ6RG9', 'field-status-id', 'Active');
+    expect(upsertContactCustomField).toHaveBeenCalledWith('ijusgE2q5QhlYjBZ6RG9', 'field-date-id', expect.any(String));
   });
 
   it('a contact with no email on file still mints and sends, keyed on the id alone', async () => {
     getContact.mockResolvedValue({ ...RESOLVED_CONTACT, email: undefined });
-    const res = await POST(req({ contactId: 'ghl-contact-xyz' }));
+    const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
     expect((await res.json()).referralUrl).toBeTruthy();
     expect(findOrCreateCustomer).toHaveBeenCalledWith(
       expect.objectContaining({ email: null }),
@@ -646,7 +651,7 @@ describe('POST /api/referrals/request-link (contact-id path)', () => {
 
   it('the outer per-IP rate limit still applies to the contact-id path', async () => {
     rateLimitedRef.current = true;
-    const res = await POST(req({ contactId: 'ghl-contact-xyz' }));
+    const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
     expect(res.status).toBe(429);
     expect(getContact).not.toHaveBeenCalled();
   });
@@ -656,7 +661,7 @@ describe('POST /api/referrals/request-link (contact-id path)', () => {
 // contactId is rejected" / "A body with neither is rejected."
 describe('POST /api/referrals/request-link (body validation: email vs contactId)', () => {
   it('rejects a body carrying both email and contactId, before either path runs', async () => {
-    const res = await POST(req({ email: 'jamie@example.com', contactId: 'ghl-contact-xyz' }));
+    const res = await POST(req({ email: 'jamie@example.com', contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
     expect(res.status).toBe(400);
     expect(getContact).not.toHaveBeenCalled();
     expect(searchContacts).not.toHaveBeenCalled();
@@ -678,5 +683,38 @@ describe('POST /api/referrals/request-link (body validation: email vs contactId)
     const res = await POST(req({ contactId: '' }));
     expect(res.status).toBe(400);
     expect(getContact).not.toHaveBeenCalled();
+  });
+});
+
+// Review fix 9: the CONTACT_ID_RE format guard. A rejected id must look
+// identical to a failed lookup from the outside (generic 200, no link), and
+// must never reach GHL at all.
+describe('POST /api/referrals/request-link (contact-id format guard, review fix 9)', () => {
+  it('rejects an id with non-alphanumeric characters before calling getContact', async () => {
+    const res = await POST(req({ contactId: 'not-a-real-ghl-id!' }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(getContact).not.toHaveBeenCalled();
+  });
+
+  it('rejects an id shorter than the tolerance window', async () => {
+    const res = await POST(req({ contactId: 'tooShort123' }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(getContact).not.toHaveBeenCalled();
+  });
+
+  it('rejects an id longer than the tolerance window', async () => {
+    const res = await POST(req({ contactId: 'a'.repeat(40) }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(getContact).not.toHaveBeenCalled();
+  });
+
+  it('accepts the measured real-world length (20 chars, mixed-case alphanumeric)', async () => {
+    getContact.mockResolvedValue(RESOLVED_CONTACT);
+    const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+    expect(await res.json()).toMatchObject({ ok: true, referralUrl: expect.any(String) });
+    expect(getContact).toHaveBeenCalledWith('ijusgE2q5QhlYjBZ6RG9');
   });
 });

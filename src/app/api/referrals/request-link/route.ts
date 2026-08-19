@@ -33,13 +33,16 @@
 //    Why returning the link here is safe: possessing a valid GoHighLevel
 //    contact id already means you ARE that contact, because the id only
 //    ever reaches a real person through a merge field GoHighLevel
-//    substitutes into an email addressed to them. GHL contact ids are long,
-//    non-sequential, random-looking strings, not enumerable the way an
-//    email address is guessable, so handing back a result keyed on one is
-//    not a practical oracle. Two different threat models, two different
-//    behaviours, on purpose: the email path stays uniform and timing-safe
-//    because the KEY (an email) is guessable; the contact-id path can
-//    answer directly because the key is not.
+//    substitutes into an email addressed to them. MEASURED against the live
+//    GoHighLevel account, 2026-08-19 (2,187 contacts): real contact ids are
+//    exactly 20 characters, mixed-case alphanumeric ([A-Za-z0-9]),
+//    non-sequential (examples: GveMd2lybT1rfkBdReTD, ijusgE2q5QhlYjBZ6RG9,
+//    1zJnvIyitrpbtmuXIkyG), not enumerable the way an email address is
+//    guessable, so handing back a result keyed on one is not a practical
+//    oracle. Two different threat models, two different behaviours, on
+//    purpose: the email path stays uniform and timing-safe because the KEY
+//    (an email) is guessable; the contact-id path can answer directly
+//    because the key is not.
 //
 // Most of the owner's mailing list are GHL leads who never bought: no
 // `customers` row, no quote. This route is deliberately narrower than
@@ -81,10 +84,23 @@ export const maxDuration = 60;
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const MAX_EMAIL_LEN = 320; // mirrors MAX_LEN.email in /api/site-forms
-// naldo/referral-link-personalized: GHL contact ids are short opaque
-// strings (no documented format in this codebase), this just keeps an
-// obviously-garbage body from being carried any further than necessary.
+// naldo/referral-link-personalized: a coarse first clamp before the precise
+// CONTACT_ID_RE format guard below ever runs, so an extremely long garbage
+// body isn't even carried that far. See CONTACT_ID_RE's own comment for the
+// measured real-world format.
 const MAX_CONTACT_ID_LEN = 100;
+// Review fix 9 (this round): cheap format guard, checked before an id is
+// ever sent to GoHighLevel. MEASURED against the live account, 2026-08-19
+// (2,187 contacts): real ids are exactly 20 characters, mixed-case
+// alphanumeric (see the file header comment for examples). Pinning to
+// exactly 20 would be brittle against a length this one-time sample never
+// happened to observe, so this allows 16-32: wide enough to absorb a real
+// id this sample missed, narrow enough to reject an obviously-garbage body
+// (a sentence, a URL, whitespace, punctuation) before it ever reaches GHL.
+// A rejected id returns the SAME generic response as a failed lookup (see
+// its use site in POST below), never a distinct error, so this guard can
+// never become a format oracle either.
+const CONTACT_ID_RE = /^[A-Za-z0-9]{16,32}$/;
 
 // searchContacts is a free-text search (see highlevel.ts), clamped there to
 // at most 100 results. A full email address is a fairly specific query, so
@@ -181,6 +197,13 @@ export async function POST(req: NextRequest) {
     // Same treatment as the email path's own honeypot trip: the generic
     // fallback response, no lookup at all.
     if (honeypotTripped) {
+      return NextResponse.json(UNIFORM_RESPONSE);
+    }
+
+    // Review fix 9: reject anything that doesn't plausibly look like a real
+    // GHL contact id before it is ever sent to GoHighLevel. Same generic
+    // fallback as a failed lookup, see CONTACT_ID_RE's own comment for why.
+    if (!CONTACT_ID_RE.test(cleanContactId)) {
       return NextResponse.json(UNIFORM_RESPONSE);
     }
 
