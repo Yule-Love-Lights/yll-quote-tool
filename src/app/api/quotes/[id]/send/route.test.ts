@@ -1890,4 +1890,41 @@ describe('POST /api/quotes/[id]/send — event-date GHL push (#237)', () => {
     // ...yet the event-date push still fired, independently of that failure.
     expect(hl.upsertContactCustomField).toHaveBeenCalledWith('contact_1', 'ed_field_1', '12/25/2026');
   });
+
+  // FIX E (#237 fix round 2, LOW — coverage, not a defect): eventDateSyncError
+  // is populated from the SAME variable on both the 200 body (asserted by the
+  // "failure is soft" test above) and the 502 delivery-failed body (route.ts
+  // ~1053, "same reasoning as the 200 body below") — this is the missing
+  // other half. Every requested customer channel fails (mirrors "returns 502
+  // when every requested customer channel fails" above) AND the event-date
+  // field write fails, so a split failure (message delivery AND the CRM
+  // date push both die) doesn't drop this half of the picture from the 502
+  // body the way row 271's stageUpdated/stageError gap once did.
+  it('eventDateSyncError is present on the 502 delivery-failed body too, not just the 200 body', async () => {
+    hl.sendSms.mockRejectedValueOnce(new Error('SMS down'));
+    hl.sendEmail.mockRejectedValueOnce(new Error('Email down'));
+    hl.upsertContactCustomField.mockImplementation(async (_contactId: string, fieldId: string) => {
+      if (fieldId === 'ed_field_1') {
+        throw new HighLevelError('GHL 500', 500, 'server error');
+      }
+      return undefined;
+    });
+    const { client } = makeSb({
+      ...FRESH_QUOTE,
+      service_type: 'event',
+      inputs: { event: { eventDate: '2026-12-25' } },
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ channel: 'both' }), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(502);
+    expect(json.code).toBe('delivery-failed');
+    expect(typeof json.eventDateSyncError).toBe('string');
+    expect(json.eventDateSyncError.length).toBeGreaterThan(0);
+    // The failed write was actually attempted — proves this exercised the
+    // real failure path, not a silently-skipped one.
+    expect(hl.upsertContactCustomField).toHaveBeenCalledWith('contact_1', 'ed_field_1', '12/25/2026');
+  });
 });
