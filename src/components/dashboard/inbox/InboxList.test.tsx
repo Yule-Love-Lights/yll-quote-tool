@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { InboxList, isGroupExpanded, canToggleGroup } from './InboxList';
+import { InboxList, isGroupExpanded, canToggleGroup, withRowFlagSet, withRowFlagCleared } from './InboxList';
 import type { OpenInboxItem } from '@/lib/dashboard/inbox/types';
 import type { InboxGroup } from '@/lib/dashboard/inbox/groupInboxItems';
 
@@ -163,12 +163,19 @@ describe('InboxList — #268 forwarded-lead reply affordance', () => {
 // ReplyComposer's draft) is proven by the reconciliation trace in
 // ContactRow's own doc comment in InboxList.tsx, not by a test here (a
 // jsdom-free static render can't observe remounts).
+// Row 291 fix: isGroupExpanded/canToggleGroup's 4th parameter changed from a
+// single errorId (string | null) to errorIds, a per-item record keyed by
+// item id (Record<string, boolean>) — `null` becomes `{}` (no errors) and a
+// single id becomes `{ [id]: true }` below. This is purely a call-signature
+// migration for the pre-existing composer-pin tests in this describe block;
+// none of them concern errorId/errorIds at all (they pass an empty record
+// throughout), so their assertions are unchanged.
 describe('isGroupExpanded (#270 fix — composer pin)', () => {
   it('forces expanded=true when composerFor points at a member of the group, even with no expandedMap entry', () => {
     const group = makeGroup([
       { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
     ]);
-    expect(isGroupExpanded(group, {}, 'm1', null)).toBe(true);
+    expect(isGroupExpanded(group, {}, 'm1', {})).toBe(true);
   });
 
   it('forces expanded=true for composerFor even when the SAME group key was explicitly collapsed in expandedMap', () => {
@@ -176,22 +183,22 @@ describe('isGroupExpanded (#270 fix — composer pin)', () => {
       { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
       { ...base, id: 'm2', contactId: 'c1', lastMessageAt: at(2 * 3_600_000) },
     ]);
-    expect(isGroupExpanded(group, { c1: false }, 'm2', null)).toBe(true);
+    expect(isGroupExpanded(group, { c1: false }, 'm2', {})).toBe(true);
   });
 
-  it('falls back to the raw expandedMap value when composerFor and errorId are both null', () => {
+  it('falls back to the raw expandedMap value when composerFor is null and errorIds is empty', () => {
     const group = makeGroup([
       { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
     ]);
-    expect(isGroupExpanded(group, { c1: true }, null, null)).toBe(true);
-    expect(isGroupExpanded(group, {}, null, null)).toBe(false);
+    expect(isGroupExpanded(group, { c1: true }, null, {})).toBe(true);
+    expect(isGroupExpanded(group, {}, null, {})).toBe(false);
   });
 
   it('does not force-expand a DIFFERENT group just because some other group has the open composer', () => {
     const group = makeGroup([
       { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
     ]);
-    expect(isGroupExpanded(group, {}, 'someone-elses-item-id', null)).toBe(false);
+    expect(isGroupExpanded(group, {}, 'someone-elses-item-id', {})).toBe(false);
   });
 });
 
@@ -207,16 +214,16 @@ describe('canToggleGroup (#270 delta-verify fix — suppress toggle during pin)'
       { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
       { ...base, id: 'm2', contactId: 'c1', lastMessageAt: at(2 * 3_600_000) },
     ]);
-    expect(canToggleGroup(group, 'm1', null)).toBe(false);
-    expect(canToggleGroup(group, 'm2', null)).toBe(false);
+    expect(canToggleGroup(group, 'm1', {})).toBe(false);
+    expect(canToggleGroup(group, 'm2', {})).toBe(false);
   });
 
   it('returns true when composerFor is null or points at an item outside this group', () => {
     const group = makeGroup([
       { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
     ]);
-    expect(canToggleGroup(group, null, null)).toBe(true);
-    expect(canToggleGroup(group, 'someone-elses-item-id', null)).toBe(true);
+    expect(canToggleGroup(group, null, {})).toBe(true);
+    expect(canToggleGroup(group, 'someone-elses-item-id', {})).toBe(true);
   });
 
   it('a toggle click during the pin is a no-op, and releasing the pin restores the PRE-PIN expandedMap value (the exact failing sequence this fix closes)', () => {
@@ -228,13 +235,13 @@ describe('canToggleGroup (#270 delta-verify fix — suppress toggle during pin)'
     let expandedMap: Record<string, boolean> = { c1: true };
     // 2. Operator opens Reply on m1 — composerFor pins the group open.
     const composerForDuringReply = 'm1';
-    expect(isGroupExpanded(group, expandedMap, composerForDuringReply, null)).toBe(true);
+    expect(isGroupExpanded(group, expandedMap, composerForDuringReply, {})).toBe(true);
 
     // 3. Operator clicks the header while composing. InboxList's real
     // onToggleExpanded only mutates expandedMap when canToggleGroup allows
     // it — mirror that guard here rather than mutating unconditionally.
     const clickHeader = () => {
-      if (canToggleGroup(group, composerForDuringReply, null)) {
+      if (canToggleGroup(group, composerForDuringReply, {})) {
         expandedMap = { ...expandedMap, [group.key]: !expandedMap[group.key] };
       }
     };
@@ -244,7 +251,7 @@ describe('canToggleGroup (#270 delta-verify fix — suppress toggle during pin)'
     // 4. Reply sends -> composerFor clears. isGroupExpanded now falls
     // through to the raw expandedMap, which still holds its PRE-PIN value
     // (true) instead of a swallowed click's stale flip.
-    expect(isGroupExpanded(group, expandedMap, null, null)).toBe(true);
+    expect(isGroupExpanded(group, expandedMap, null, {})).toBe(true);
   });
 });
 
@@ -258,13 +265,16 @@ describe('canToggleGroup (#270 delta-verify fix — suppress toggle during pin)'
 // with nothing left to re-open it. See canToggleGroup's own doc comment in
 // InboxList.tsx for the full trace, and the round-1-lockout test in the
 // describe block below for the exact end-to-end sequence.
-describe('isGroupExpanded (#289 fix round 2 — also force-open on errorId)', () => {
-  it('forces expanded=true when errorId names a member, even when the SAME group key was explicitly collapsed in expandedMap', () => {
+//
+// Row 291 fix: errorId (a single id) is now errorIds (a per-item record) —
+// `'m2'` becomes `{ m2: true }` below.
+describe('isGroupExpanded (#289 fix round 2 — also force-open on errorIds)', () => {
+  it('forces expanded=true when errorIds names a member, even when the SAME group key was explicitly collapsed in expandedMap', () => {
     const group = makeGroup([
       { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
       { ...base, id: 'm2', contactId: 'c1', lastMessageAt: at(2 * 3_600_000) },
     ]);
-    expect(isGroupExpanded(group, { c1: false }, null, 'm2')).toBe(true);
+    expect(isGroupExpanded(group, { c1: false }, null, { m2: true })).toBe(true);
   });
 
   it('forces expanded=true for a group with NO expandedMap entry at all — the newly-multi case: a poll adds a sibling to a contact whose earlier action just failed', () => {
@@ -272,14 +282,30 @@ describe('isGroupExpanded (#289 fix round 2 — also force-open on errorId)', ()
       { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
       { ...base, id: 'm2', contactId: 'c1', lastMessageAt: at(2 * 3_600_000) },
     ]);
-    expect(isGroupExpanded(group, {}, null, 'm1')).toBe(true);
+    expect(isGroupExpanded(group, {}, null, { m1: true })).toBe(true);
   });
 
   it('does not force-expand a DIFFERENT group just because some other group has the errored member', () => {
     const group = makeGroup([
       { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
     ]);
-    expect(isGroupExpanded(group, {}, null, 'someone-elses-item-id')).toBe(false);
+    expect(isGroupExpanded(group, {}, null, { 'someone-elses-item-id': true })).toBe(false);
+  });
+
+  // Row 291 fix, new: TWO different groups can each have their own errored
+  // member in errorIds SIMULTANEOUSLY (the whole point of the per-item
+  // record) — each group's force-open decision reads only ITS OWN members,
+  // so neither group's pin is affected by the other's entry.
+  it('force-opens each of two DIFFERENT groups independently when errorIds names a member of each at once', () => {
+    const groupA = makeGroup([
+      { ...base, id: 'aMember', contactId: 'cA', lastMessageAt: at(1 * 3_600_000) },
+    ]);
+    const groupB = makeGroup([
+      { ...base, id: 'bMember', contactId: 'cB', lastMessageAt: at(1 * 3_600_000) },
+    ]);
+    const errorIds = { aMember: true, bMember: true };
+    expect(isGroupExpanded(groupA, {}, null, errorIds)).toBe(true);
+    expect(isGroupExpanded(groupB, {}, null, errorIds)).toBe(true);
   });
 });
 
@@ -288,30 +314,33 @@ describe('isGroupExpanded (#289 fix round 2 — also force-open on errorId)', ()
 // parameter (see canToggleGroup's own doc comment in InboxList.tsx for the
 // reachability proof: act() removes a busy item from `items` in the SAME
 // batched render that sets busyId, so a busy item can never be a
-// group.members entry when this function runs). errorId is the only real
+// group.members entry when this function runs). errorIds is the only real
 // pin here now, alongside composerFor.
-describe('canToggleGroup (#289 fix round 2 — errorId pin only; busyId removed as unreachable)', () => {
-  it('returns false while errorId names a member of the group', () => {
+//
+// Row 291 fix: errorId (a single id) is now errorIds (a per-item record) —
+// `'m1'` becomes `{ m1: true }` below.
+describe('canToggleGroup (#289 fix round 2 — errorIds pin only; busyId removed as unreachable)', () => {
+  it('returns false while errorIds names a member of the group', () => {
     const group = makeGroup([
       { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
       { ...base, id: 'm2', contactId: 'c1', lastMessageAt: at(2 * 3_600_000) },
     ]);
-    expect(canToggleGroup(group, null, 'm1')).toBe(false);
-    expect(canToggleGroup(group, null, 'm2')).toBe(false);
+    expect(canToggleGroup(group, null, { m1: true })).toBe(false);
+    expect(canToggleGroup(group, null, { m2: true })).toBe(false);
   });
 
-  it('returns true again once errorId clears back to null — collapsible', () => {
+  it('returns true again once errorIds no longer names any member — collapsible', () => {
     const group = makeGroup([
       { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
     ]);
-    expect(canToggleGroup(group, null, null)).toBe(true);
+    expect(canToggleGroup(group, null, {})).toBe(true);
   });
 
-  it('returns true when errorId names an item OUTSIDE this group — a sibling group erroring elsewhere in the inbox must never pin this one', () => {
+  it('returns true when errorIds names an item OUTSIDE this group — a sibling group erroring elsewhere in the inbox must never pin this one', () => {
     const group = makeGroup([
       { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
     ]);
-    expect(canToggleGroup(group, null, 'some-other-groups-item')).toBe(true);
+    expect(canToggleGroup(group, null, { 'some-other-groups-item': true })).toBe(true);
   });
 
   it('composerFor pinning is unchanged by the round-2 signature change', () => {
@@ -319,18 +348,18 @@ describe('canToggleGroup (#289 fix round 2 — errorId pin only; busyId removed 
       { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
       { ...base, id: 'm2', contactId: 'c1', lastMessageAt: at(2 * 3_600_000) },
     ]);
-    expect(canToggleGroup(group, 'm1', null)).toBe(false);
-    expect(canToggleGroup(group, null, null)).toBe(true);
+    expect(canToggleGroup(group, 'm1', {})).toBe(false);
+    expect(canToggleGroup(group, null, {})).toBe(true);
   });
 
   // THE EXACT round-1 lockout this round fixes (finding 2 in the review):
   // an already-expanded, 3+-member group where one member goes busy (and is
   // therefore ABSENT from group.members — see canToggleGroup's doc comment)
   // can still be collapsed, because nothing pins it during the busy window.
-  // If that action then fails, errorId names the now-restored member of a
+  // If that action then fails, errorIds names the now-restored member of a
   // COLLAPSED group — round 1 would have blocked the toggle (correct) but
   // never forced the display back open (the bug), stranding it hidden with
-  // its own re-open control disabled. Round 2's isGroupExpanded errorId pin
+  // its own re-open control disabled. Round 2's isGroupExpanded errorIds pin
   // (see that describe block above) closes the display half; this proves
   // both halves together, plus the release back to the operator's own
   // pre-error collapse choice once the error clears.
@@ -341,7 +370,7 @@ describe('canToggleGroup (#289 fix round 2 — errorId pin only; busyId removed 
       { ...base, id: 'm3', contactId: 'c1', lastMessageAt: at(3 * 3_600_000) },
     ]);
     // 1. Group starts expanded. Operator clicks an action on m1 — act()
-    // removes m1 from `items` in the same batch as setBusyId, so the very
+    // removes m1 from `items` in the same batch as setBusyIds, so the very
     // next render's group has only m2/m3 (modeled directly here, matching
     // production's real per-render recompute).
     const whileM1Busy = makeGroup([
@@ -349,21 +378,97 @@ describe('canToggleGroup (#289 fix round 2 — errorId pin only; busyId removed 
       { ...base, id: 'm3', contactId: 'c1', lastMessageAt: at(3 * 3_600_000) },
     ]);
     let expandedMap: Record<string, boolean> = { c1: true };
-    expect(canToggleGroup(whileM1Busy, null, null)).toBe(true); // nothing blocks the collapse
+    expect(canToggleGroup(whileM1Busy, null, {})).toBe(true); // nothing blocks the collapse
     expandedMap = { ...expandedMap, c1: false }; // operator collapses it
 
-    // 2. m1's action fails. errorId is set and refresh() restores m1 —
-    // group is back to all 3 members, with errorId naming one of them.
-    const errorId = 'm1';
-    expect(isGroupExpanded(allThree, expandedMap, null, errorId)).toBe(true); // forced back open...
-    expect(canToggleGroup(allThree, null, errorId)).toBe(false); // ...and can't be re-collapsed while it stands
+    // 2. m1's action fails. errorIds gets m1 set and refresh() restores m1 —
+    // group is back to all 3 members, with errorIds naming one of them.
+    const errorIds = { m1: true };
+    expect(isGroupExpanded(allThree, expandedMap, null, errorIds)).toBe(true); // forced back open...
+    expect(canToggleGroup(allThree, null, errorIds)).toBe(false); // ...and can't be re-collapsed while it stands
 
-    // 3. Operator resolves it (retries m1 successfully) — errorId clears.
+    // 3. Operator resolves it (retries m1 successfully) — errorIds clears
+    // back to empty (mirroring withRowFlagCleared, exercised directly below).
     // isGroupExpanded falls back to expandedMap, which still holds the
     // operator's OWN earlier collapse choice — not a swallowed click's
     // stale flip, because nothing needed to suppress that click in step 1
     // (there was nothing to hide while m1 was merely busy and absent).
-    expect(isGroupExpanded(allThree, expandedMap, null, null)).toBe(false);
-    expect(canToggleGroup(allThree, null, null)).toBe(true);
+    expect(isGroupExpanded(allThree, expandedMap, null, {})).toBe(false);
+    expect(canToggleGroup(allThree, null, {})).toBe(true);
+  });
+
+  // Row 291 fix, new: the group force-open/lock behavior survives an
+  // UNRELATED row's action elsewhere in the inbox. Before the fix, act() on
+  // any row cleared the single global errorId slot — which would have wiped
+  // THIS group's pin even though none of its own members were touched.
+  // withRowFlagCleared is the exact primitive act() calls on its own row id;
+  // using it here (rather than hand-rolling the same delete) proves the
+  // real production transition, not a re-implementation of it.
+  it('an unrelated row resolving its own error (withRowFlagCleared on a DIFFERENT id) leaves this group force-open, because its own member key is untouched', () => {
+    const group = makeGroup([
+      { ...base, id: 'm1', contactId: 'c1', lastMessageAt: at(1 * 3_600_000) },
+    ]);
+    let errorIds: Record<string, boolean> = { m1: true, 'unrelated-row': true };
+    expect(isGroupExpanded(group, {}, null, errorIds)).toBe(true);
+
+    // Some OTHER row's act() call succeeds and clears its own key.
+    errorIds = withRowFlagCleared(errorIds, 'unrelated-row');
+    expect(errorIds).toEqual({ m1: true }); // m1's entry is untouched
+    expect(isGroupExpanded(group, {}, null, errorIds)).toBe(true); // still forced open
+    expect(canToggleGroup(group, null, errorIds)).toBe(false); // still can't collapse
+  });
+});
+
+// Row 291 fix: withRowFlagSet/withRowFlagCleared are the exact pure
+// primitives act() and dismissError call to read/write the per-item
+// busyIds/errorIds maps — see their own doc comment in InboxList.tsx. These
+// tests pin the ledger-291 bug directly at the level of that shared logic:
+// no jsdom or fetch mock needed, because the whole defect was in the STATE
+// SHAPE (a single global slot), not in any render or network code the repo's
+// static-render harness can't drive. ItemRow's own read of the map
+// (`errorIds[item.id]`, `busyIds[item.id]`) is a one-line lookup with no
+// branching to test independently — its correctness follows directly from
+// the map holding the right keys, which is what's pinned here.
+describe('withRowFlagSet / withRowFlagCleared (row 291 — per-item busy/error maps)', () => {
+  it('setting the flag for two different row ids leaves both present simultaneously — the fix for "only one row can show an error at a time"', () => {
+    let errorIds: Record<string, boolean> = {};
+    errorIds = withRowFlagSet(errorIds, 'rowA');
+    errorIds = withRowFlagSet(errorIds, 'rowB');
+    // Both rows' error notes render off this same map (errorIds[item.id]),
+    // so both being present here is exactly "both notes visible at once".
+    expect(errorIds).toEqual({ rowA: true, rowB: true });
+  });
+
+  it('helper: the clear act() runs for row B on entry leaves row A\'s entry untouched', () => {
+    const bothErrored: Record<string, boolean> = { rowA: true, rowB: true };
+    // This is exactly what act(id='rowB', ...) does at its own start.
+    const afterActingOnRowB = withRowFlagCleared(bothErrored, 'rowB');
+    expect(afterActingOnRowB).toEqual({ rowA: true }); // rowA survives untouched
+  });
+
+  it('helper: the clear dismissError runs for row A leaves row B\'s entry intact', () => {
+    const bothErrored: Record<string, boolean> = { rowA: true, rowB: true };
+    // This is exactly what dismissError('rowA') does.
+    const afterDismissingRowA = withRowFlagCleared(bothErrored, 'rowA');
+    expect(afterDismissingRowA).toEqual({ rowB: true }); // rowB survives untouched
+  });
+
+  it('helper: set/clear on one busy id never adds or removes another id\'s entry', () => {
+    let busyIds: Record<string, boolean> = {};
+    busyIds = withRowFlagSet(busyIds, 'rowA'); // rowA starts an action
+    busyIds = withRowFlagSet(busyIds, 'rowB'); // rowB starts a different action
+    expect(busyIds).toEqual({ rowA: true, rowB: true }); // both independently busy
+    busyIds = withRowFlagCleared(busyIds, 'rowA'); // rowA's action finishes (the `finally` clause)
+    expect(busyIds).toEqual({ rowB: true }); // rowB is still busy/disabled; rowA is not
+  });
+
+  it('clearing a flag for an id that was never set is a no-op that returns the SAME object reference (skips an unnecessary state update)', () => {
+    const errorIds: Record<string, boolean> = { rowA: true };
+    expect(withRowFlagCleared(errorIds, 'rowB')).toBe(errorIds);
+  });
+
+  it('setting a flag for a new id preserves an existing map\'s other entries', () => {
+    const map: Record<string, boolean> = { rowA: true, rowC: true };
+    expect(withRowFlagSet(map, 'rowB')).toEqual({ rowA: true, rowB: true, rowC: true });
   });
 });
