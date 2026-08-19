@@ -63,15 +63,38 @@ const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
  * `<input type="date">` never produces an out-of-range value, mirroring
  * formatTenureYearsForGhl's own "do not trust the input blindly" stance even
  * though its own callers are already validated.
+ *
+ * FIX C (#237 fix round, technical-lens MED): "range" means real CALENDAR
+ * validity, not just 01-12 / 01-31 — the old bounds let 2026-02-30 (February
+ * has 28/29 days, never 30) and 2026-04-31 (April has 30) through unchanged,
+ * so they'd have been pushed verbatim to a real customer's GHL contact.
+ * isValidCalendarDate below checks the real day-count for the given month +
+ * year (leap-year-aware) WITHOUT ever constructing a `Date` — the file
+ * header's whole reason for pure string/number splitting (no UTC-vs-local
+ * shift possible) would be defeated by reaching for `new Date(...).getDate()
+ * !== dayNum` here just to validate.
  */
+const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] as const;
+
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+function isValidCalendarDate(year: number, month: number, day: number): boolean {
+  if (month < 1 || month > 12) return false;
+  const max = month === 2 && isLeapYear(year) ? 29 : DAYS_IN_MONTH[month - 1]!;
+  return day >= 1 && day <= max;
+}
+
 export function formatEventDateForGhl(raw: string | null | undefined): string {
   if (typeof raw !== 'string') return '';
   const m = ISO_DATE_RE.exec(raw.trim());
   if (!m) return '';
   const [, year, month, day] = m;
+  const yearNum = Number(year);
   const monthNum = Number(month);
   const dayNum = Number(day);
-  if (monthNum < 1 || monthNum > 12 || dayNum < 1 || dayNum > 31) return '';
+  if (!isValidCalendarDate(yearNum, monthNum, dayNum)) return '';
   return `${month}/${day}/${year}`;
 }
 

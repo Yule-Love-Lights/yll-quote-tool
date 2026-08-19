@@ -88,6 +88,36 @@ describe('formatEventDateForGhl', () => {
     expect(formatEventDateForGhl('2026-01-32')).toBe('');
   });
 
+  // FIX C (#237 fix round, technical-lens MED): calendar-invalid dates that
+  // still pass the old 01-31 bound.
+  it('February 30 (no such day in ANY year) → empty string', () => {
+    expect(formatEventDateForGhl('2026-02-30')).toBe('');
+  });
+
+  it('February 29 in a non-leap year (2026 is not a leap year) → empty string', () => {
+    expect(formatEventDateForGhl('2026-02-29')).toBe('');
+  });
+
+  it('February 29 in a real leap year (2028) → passes through', () => {
+    expect(formatEventDateForGhl('2028-02-29')).toBe('02/29/2028');
+  });
+
+  it('February 29 in a century non-leap year (2100, divisible by 100 but not 400) → empty string', () => {
+    expect(formatEventDateForGhl('2100-02-29')).toBe('');
+  });
+
+  it('February 29 in a century leap year (2000, divisible by 400) → passes through', () => {
+    expect(formatEventDateForGhl('2000-02-29')).toBe('02/29/2000');
+  });
+
+  it('April 31 (April has 30 days) → empty string', () => {
+    expect(formatEventDateForGhl('2026-04-31')).toBe('');
+  });
+
+  it('a real April 30 → passes through', () => {
+    expect(formatEventDateForGhl('2026-04-30')).toBe('04/30/2026');
+  });
+
   it('never constructs a Date object internally — a value that would shift under UTC-vs-local parsing round-trips exactly', () => {
     // 2026-01-01 is the classic "new Date('2026-01-01')" trap: parsed as UTC
     // midnight, some local timezones would print December 31 2025 instead.
