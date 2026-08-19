@@ -39,8 +39,9 @@ import {
   DEFAULT_BUILDABLE_COLOR_IDS,
   type ColorScheme,
 } from '@/lib/design/colorSchemes';
-import { DEFAULT_PERMANENT_EFFECT, type SceneEffect } from '@/lib/design/permanentScenes';
+import { DEFAULT_PERMANENT_EFFECT, isPermanentEffect, type SceneEffect } from '@/lib/design/permanentScenes';
 import type { ServiceType } from '@/lib/serviceType';
+import { usePersistedSelection } from '@/lib/portal/usePersistedSelection';
 
 type SelectionContextValue = {
   packageId: PackageId;
@@ -387,6 +388,13 @@ export type SelectionProviderProps = {
   // keeps the S9 default: open on "as designed".
   initialColorSchemeId?: string;
   initialCustomPattern?: string[];
+  // Ledger row 239 — seeds the permanent animation effect from the customer's
+  // last SAVED browsing pick (never from approval today — see the approval
+  // snapshot does freeze `permanentEffect`, but nothing currently reads it
+  // back on reopen; that's a separate, pre-existing gap this task doesn't
+  // touch). Undefined/invalid falls back to DEFAULT_PERMANENT_EFFECT, so
+  // every existing caller (none pass this yet) is byte-identical.
+  initialPermanentEffect?: SceneEffect;
   // #155 — true for a quote migrated from last year's Jobber data (a legacy
   // rebook). Passed straight through onto the context value (see
   // SelectionContextValue.legacyRebook) so LightColorPicker/WhatsIncluded can
@@ -427,6 +435,7 @@ export function SelectionProvider({
   colorPreviewWhenLocked = false,
   initialColorSchemeId,
   initialCustomPattern,
+  initialPermanentEffect,
   legacyRebook = false,
   daylightAvailable = false,
   initialInstallTiming = 'none',
@@ -512,9 +521,14 @@ export function SelectionProvider({
   );
   const [colorSchemeId, setColorScheme] = useState<string>(initialColor.schemeId);
   // #88 P6b-4 — the permanent animation effect, chosen separately from the color.
-  // Opens on Chase (a booked portal re-opens on the default, same as colorSchemeId —
-  // the frozen effect lives in the approval snapshot, not re-displayed here).
-  const [permanentEffect, setPermanentEffect] = useState<SceneEffect>(DEFAULT_PERMANENT_EFFECT);
+  // Ledger row 239: seeds from the customer's last SAVED browsing pick when the
+  // caller passes one (initialPermanentEffect); otherwise opens on the default
+  // Chase, same as before this shipped.
+  const [permanentEffect, setPermanentEffect] = useState<SceneEffect>(
+    initialPermanentEffect && isPermanentEffect(initialPermanentEffect)
+      ? initialPermanentEffect
+      : DEFAULT_PERMANENT_EFFECT,
+  );
   const [customPattern, setCustomPattern] = useState<string[]>(initialColor.pattern);
   // Custom pattern (#49) drives the override when its scheme is active; otherwise
   // resolve the preset. Sanitize the custom list so an invalid/empty pattern can
@@ -654,6 +668,29 @@ export function SelectionProvider({
   // items (a legacy rebook at exactly 1 item, or ANY quote at exactly 1 item)
   // — fees and colors stay interactive either way.
   const frozen = frozenMutatorGroups({ locked, legacyRebook, itemCount: lineItems.length, colorPreviewWhenLocked });
+
+  // Ledger row 239 — debounced autosave of the browsing selection to the DB.
+  // Gated on `!locked` only (not the finer-grained `frozen.*` groups): even a
+  // 1-item quote's rush/takedown/color/effect picks are worth remembering,
+  // and once the quote is APPROVED the frozen snapshot is the durable record
+  // from here on, so autosave stops entirely (the API route also refuses the
+  // write server-side — belt-and-suspenders, same as every other `locked` gate
+  // in this file). `quoteId` is undefined for the mock/dev fallback, which the
+  // hook itself also no-ops on.
+  usePersistedSelection({
+    enabled: !locked && !!quoteId,
+    quoteId,
+    fields: {
+      packageId,
+      selectedItemIds: [...selectedItemIds],
+      rushSelected,
+      takedownSelected,
+      installTiming,
+      colorSchemeId,
+      customPattern,
+      permanentEffect,
+    },
+  });
 
   const value: SelectionContextValue = {
     packageId,
