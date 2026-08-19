@@ -14,6 +14,10 @@ const ACTION_LABEL: Record<string, string> = {
   // #230(a): a #220 internal-domain follow-up suppression — see
   // recordSuppressedFollowUp's doc (store.ts).
   followup_suppressed: 'Follow-up suppressed (internal)',
+  // #252: a pending nag retired because its item reached completed/dismissed —
+  // see recordAutoClosedFollowUps' doc (store.ts). Unlabelled actions already
+  // fall through to the raw string below; this just reads properly on the page.
+  followup_autoclosed: 'Follow-up closed (conversation resolved)',
 };
 
 function friendlyAction(action: string): string {

@@ -37,6 +37,7 @@ import {
   setEscalation,
   setSyncCursor,
   sweepOrphanedFollowUps,
+  sweepResolvedItemFollowUps,
 } from './store';
 import { appBaseUrl } from '@/lib/integrations/telegramNotify';
 import { escalationLevel, isDueForEodDigest, newlyCrossedLevel } from './escalation';
@@ -179,8 +180,13 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
       if (res.itemId && decision.kind === 'create') {
         // WT-44: forward the configured cadence so the "Follow-up reminder
         // (days)" setting actually controls when this follow-up is due.
-        await ensureFollowUp({ inboxItemId: res.itemId, contactId: res.contactId, reason: decision.reason, sentAt: decision.sentAt, afterDays: followUpDays });
-        followUpsCreated++;
+        // #252: count only an actual write. ensureFollowUp returns false when a
+        // pending row already exists OR when the anchored item is already
+        // completed/dismissed (its own churn gate) — counting unconditionally
+        // reported a "creation" on every tick for every resolved item whose
+        // quote is still open.
+        const created = await ensureFollowUp({ inboxItemId: res.itemId, contactId: res.contactId, reason: decision.reason, sentAt: decision.sentAt, afterDays: followUpDays });
+        if (created) followUpsCreated++;
       } else if (res.itemId && decision.kind === 'suppress' && !res.skipped) {
         // #220: internal recipients never mint a real follow-up row.
         // #230(b): gated on !res.skipped — decision.kind is recomputed from
@@ -218,6 +224,11 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
     // never reached there and would sit overdue-pending forever. One sweep per
     // reconcile closes those.
     followUpsClosed += await sweepOrphanedFollowUps(FOLLOWUP_REASONS.quoteSentNoReply);
+    // #252 follow-up-autoclose backlog: a pending follow-up whose anchored item
+    // was ALREADY completed/dismissed before markItemCompleted/dismissItem
+    // learned to close it at the write site. Self-heals on the next reconcile —
+    // no manual production data edit needed.
+    followUpsClosed += await sweepResolvedItemFollowUps();
     await recordSyncRun('quotetool', errors > 0 ? 'error' : 'ok', errors > 0 ? `${errors} item error(s)` : undefined);
     return { ok: true, scanned: quotes.length, ingested, skipped, followUpsCreated, followUpsSuppressed, followUpsClosed, errors };
   } catch (err) {
