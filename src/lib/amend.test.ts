@@ -355,11 +355,18 @@ describe('amendment consent — booked re-sign flow', () => {
       expect(blocksSettlement(inc)).toBe(true);
     });
 
-    it('only a later accepted or a fresh amendment lifts a decline — the decline itself has no undo here', () => {
+    it('only a FRESH amendment lifts a decline — the decline itself has no undo here', () => {
       // This module only computes/derives; it never mutates a past entry.
-      // "Undo" in practice is a NEW amendment (computeAmendment again) or the
-      // customer separately hitting accept on the SAME latest entry, both of
-      // which are the caller's (the route's) job, not this pure module's.
+      // FIX3 (review HIGH, corrected 2026-08-19): "undo" in practice is a NEW
+      // amendment from staff (computeAmendment again) — NOT the customer
+      // re-hitting accept on the SAME declined entry. This comment used to say
+      // the latter was a legitimate path; amend-consent/route.ts now explicitly
+      // REFUSES it (409 'already-declined', mirroring amend-decline's own
+      // already-accepted guard in reverse) because it would silently overwrite
+      // a real refusal — destroying declined_at/reason/ip and unblocking
+      // settlement — on nothing more than a stale tab or the back button.
+      // Enforcing the refusal is the caller's (the route's) job, not this pure
+      // module's; this test only confirms the entry itself stays inert.
       const inc = computeAmendment({ ...bookedBase(), newTotal: 6000 });
       inc.consent = { status: 'declined', declined_at: '2026-07-19T09:00:00.000Z', ip: null };
       const stillDeclined = { ...inc };
