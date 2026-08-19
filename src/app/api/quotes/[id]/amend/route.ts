@@ -301,6 +301,40 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     invoicedTotal = outcome.invoicedTotal;
     if (invoicedTotal != null && outcome.previousInvoicedTotal != null) {
       invoicedDelta = round2(invoicedTotal - outcome.previousInvoicedTotal);
+
+      // Delta-verify HIGH (fix round 3): stamp the SAME invoice-basis figures
+      // the notify block below sends (invoicedTotal / previousInvoicedTotal /
+      // invoicedDelta) onto the trail entry itself, so the portal can read a
+      // recorded number instead of reconstructing one from whatever the
+      // full-quote pricing happens to be at PAGE-LOAD time — which is only
+      // valid for the amendment that produced it, and goes wrong the moment
+      // a LATER amendment re-prices the quote again (the bug this fixes; see
+      // amend.ts's AmendmentTrailEntry.invoice_basis).
+      //
+      // A SECOND, best-effort CAS write. The FIRST write above already
+      // durably recorded this entry — a real total change is on the books
+      // regardless of what happens next — so this only adds display
+      // metadata. `priorSnapshotJson` is captured BEFORE the mutation below;
+      // Supabase serializes `newSnapshot` at call time (AFTER the mutation),
+      // so the CAS filter checks against what's actually still in the DB
+      // while the update body carries the new field. A lost race (a
+      // concurrent accept/decline/amend landing between the two writes)
+      // silently no-ops here — the entry just lacks invoice_basis, same as
+      // any pre-fix amendment; adapter.ts falls back to the trail figures.
+      const priorSnapshotJson = JSON.stringify(newSnapshot);
+      amendment.invoice_basis = {
+        previous_total: outcome.previousInvoicedTotal,
+        new_total: invoicedTotal,
+        delta: invoicedDelta,
+      };
+      const { error: basisErr } = await sb
+        .from('quotes')
+        .update({ approval_snapshot: newSnapshot })
+        .eq('id', id)
+        .eq('approval_snapshot', priorSnapshotJson);
+      if (basisErr) {
+        console.error('[api/quotes/:id/amend] invoice-basis patch failed (non-fatal):', basisErr);
+      }
     }
   }
 

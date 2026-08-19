@@ -19,8 +19,6 @@ import { applyOurRecommendation } from './derivePackages';
 import { isWisetackFinancingEnabled, getWisetackPrequalUrl } from '@/lib/integrations/wisetack';
 import { financedBalanceUsd } from '@/lib/financing/eligibility';
 import { resolveAgreedTotal } from '@/lib/agreedTotal';
-import { getJobByQuote } from '@/lib/jobs';
-import { getInvoiceByJob } from '@/lib/invoices';
 
 export class PortalConfigError extends Error {
   constructor(message: string) {
@@ -85,29 +83,20 @@ export async function loadPortalQuote(id: string): Promise<PortalQuote | null> {
     }
     if (!data) return null;
 
-    // FIX4 (review HIGH, money): the amendment-consent card must show the
-    // same money basis the SMS/email quote (amend/route.ts's notifiedTotal/
-    // notifiedBalance/notifiedDelta) — the invoice basis whenever a linked
-    // invoice exists. Only the invoice's tax_overridden flag is needed (the
-    // rest of the math derives from row.result, already selected above) —
-    // see adapter.ts's invoiceBasisTotal for why even that flag is threaded
-    // through rather than importing invoices.ts directly into the adapter.
-    // Only fetched when the quote actually HAS an amendment trail — the
-    // common case (no amendments) skips this extra round-trip entirely.
-    let invoiceTaxOverridden: boolean | null = null;
-    if (Array.isArray(data.approval_snapshot?.amendments) && data.approval_snapshot.amendments.length > 0) {
-      try {
-        const job = await getJobByQuote(id);
-        const invoice = job ? await getInvoiceByJob(job.id) : null;
-        if (invoice) invoiceTaxOverridden = invoice.tax_overridden;
-      } catch (err) {
-        // Best-effort: falls back to the trail basis, same as "no invoice yet".
-        console.error('[loadPortalQuote] invoice lookup for amendment basis failed:', err);
-      }
-    }
-
+    // Delta-verify HIGH (fix round 3): this used to also fetch the linked
+    // job + invoice here (FIX4) just to read invoice.tax_overridden, so the
+    // adapter could reconstruct an invoice-basis total from it on every
+    // load. That reconstruction is gone: the amend route now stamps the
+    // invoice-basis previous/new/delta directly onto the trail entry at
+    // amend time (amend.ts's AmendmentTrailEntry.invoice_basis; read by
+    // adapter.ts's buildApproval), so the portal reads a recorded number and
+    // never needs a live invoice lookup to render the card. This also
+    // resolves the round-2 MEDIUM finding by elimination rather than by
+    // narrowing: that extra round-trip previously fired on every load of any
+    // quote that ever had an amendment — including routine $0-delta
+    // free-item/colour-change entries, forever — and now never fires at all.
     const photos = fetchPortalPhotos(data.customer_address);
-    const portal = quoteRowToPortalQuote({ row: data, photos, invoiceTaxOverridden });
+    const portal = quoteRowToPortalQuote({ row: data, photos });
     // Attach the linked design (if any) so the hero can render it live (#27
     // Phase 2). Best-effort: a design lookup failure never blocks the quote.
     if (portal) {

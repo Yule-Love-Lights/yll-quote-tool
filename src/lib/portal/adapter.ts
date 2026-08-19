@@ -561,41 +561,9 @@ function frozenWarranty(
   };
 }
 
-// FIX4 (review HIGH, money): the amendment-consent card must show the SAME
-// basis the SMS/email quote (amend/route.ts's notifiedTotal/notifiedBalance/
-// notifiedDelta) — the invoice basis whenever a linked invoice exists (that
-// is what the customer will actually be billed), the trail basis only when
-// there is no invoice yet. Same tax-scaling formula amend/route.ts's re-sync
-// and invoices.ts's createInvoiceFromJob/setInvoiceTaxOverride use (exact
-// under the flat rate: total = taxable × (1+rate) ⇒ trailTotal/fullTotal =
-// taxable ratio).
-//
-// Deliberately duplicated here rather than imported from invoices.ts:
-// invoices.ts imports the Supabase SERVICE-role client, and this adapter is
-// imported by src/components/quote/QuoteBuilder.tsx (a client component) —
-// pulling that import in here would drag a server-only dependency into every
-// client bundle that imports this adapter. Exported for direct unit tests.
-export function invoiceBasisTotal(
-  trailTotalUsd: number,
-  fullTotalUsd: number,
-  fullTaxAmountUsd: number,
-  taxOverridden: boolean,
-): number {
-  if (!taxOverridden) return roundMoney(trailTotalUsd);
-  const scaledTax =
-    fullTotalUsd > 0
-      ? roundMoney(fullTaxAmountUsd * (trailTotalUsd / fullTotalUsd))
-      : roundMoney(fullTaxAmountUsd);
-  return roundMoney(trailTotalUsd - scaledTax);
-}
-
 function buildApproval(
   row: QuoteRowForPortal,
   packages: PortalPackage[],
-  // null = no linked invoice yet (job not complete) → trail basis throughout,
-  // same as before this fix. Set from loader.ts (server-only) — never fetched
-  // in this module itself; see the invoiceBasisTotal comment above for why.
-  invoiceTaxOverridden: boolean | null,
 ): PortalApproval | undefined {
   if (!row.customer_approved_at) return undefined;
   const snap = row.approval_snapshot;
@@ -683,20 +651,26 @@ function buildApproval(
       // display-layer branch, not a money decision.
       if (!isAmendmentConsentPending(amendment)) return {};
       const declined = amendment!.consent?.status === 'declined';
-      // FIX4: derive both totals on the SAME basis, from the SAME live
-      // full-quote pricing (row.result), so newTotalUsd − deltaUsd always
-      // equals previousTotalUsd exactly — the card can never show a delta
-      // that doesn't reconcile with the totals either side of it.
-      const fullTotal = row.result?.total ?? 0;
-      const fullTax = row.result?.taxAmount ?? 0;
-      const previousTotalUsd =
-        invoiceTaxOverridden == null
-          ? amendment!.previous_total
-          : invoiceBasisTotal(amendment!.previous_total, fullTotal, fullTax, invoiceTaxOverridden);
-      const newTotalUsd =
-        invoiceTaxOverridden == null
-          ? amendment!.new_total
-          : invoiceBasisTotal(amendment!.new_total, fullTotal, fullTax, invoiceTaxOverridden);
+      // Delta-verify HIGH (fix round 3): read the RECORDED invoice-basis
+      // figures (stamped by the amend route right after its own invoice
+      // re-sync — the same numbers the SMS/email sent) instead of
+      // reconstructing them from row.result, the quote's CURRENT full-quote
+      // pricing. Reconstruction was the bug: previous_total was priced
+      // against an EARLIER full-quote state, so scaling it by a ratio taken
+      // from the CURRENT state (which only reflects the state that produced
+      // new_total) silently drifted the moment a later amendment re-priced
+      // the quote again. See amend.ts's AmendmentTrailEntry.invoice_basis.
+      //
+      // Absent invoice_basis (no linked invoice existed at amend time, the
+      // re-sync failed, or this entry predates the field) falls back to the
+      // raw trail figures — never to a reconstruction. That's an honest,
+      // internally-consistent choice: previous/new/delta all come from the
+      // SAME computeAmendment() call either way, so newTotalUsd − deltaUsd
+      // always equals previousTotalUsd exactly, on whichever basis is used.
+      const basis = amendment!.invoice_basis;
+      const previousTotalUsd = basis ? basis.previous_total : amendment!.previous_total;
+      const newTotalUsd = basis ? basis.new_total : amendment!.new_total;
+      const deltaUsd = basis ? basis.delta : amendment!.delta;
       // Deposit paid is basis-independent (the actual dollar amount charged);
       // balance is derived from the (possibly invoice-basis) newTotalUsd so it
       // agrees with it, mirroring computeInvoiceTotals' own balance formula.
@@ -707,7 +681,7 @@ function buildApproval(
           reason: amendment!.reason,
           previousTotalUsd,
           newTotalUsd,
-          deltaUsd: roundMoney(newTotalUsd - previousTotalUsd),
+          deltaUsd,
           depositAppliedUsd: amendment!.deposit_applied,
           newBalanceUsd,
           consentStatus: declined ? 'declined' : 'pending',
@@ -805,19 +779,9 @@ function buildVideo(row: QuoteRowForPortal): PortalVideo | undefined {
 export type AdapterInput = {
   row: QuoteRowForPortal;
   photos: PortalPhotos;
-  // FIX4: the linked invoice's tax_overridden flag, when a job/invoice exists
-  // for this quote — threaded in from loader.ts (server-only; this adapter
-  // never reads the invoice itself, see invoiceBasisTotal's comment).
-  // undefined/omitted (every pre-FIX4 caller) reads the same as null — no
-  // invoice, trail basis — so this is backward-compatible.
-  invoiceTaxOverridden?: boolean | null;
 };
 
-export function quoteRowToPortalQuote({
-  row,
-  photos,
-  invoiceTaxOverridden = null,
-}: AdapterInput): PortalQuote | null {
+export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuote | null {
   // Without a pricing result there's nothing to show — caller should 404.
   if (!row.result) return null;
 
@@ -960,7 +924,7 @@ export function quoteRowToPortalQuote({
   // APPROVED choice on a booked quote over the staff default (#40) — otherwise a
   // locked, approved portal could show a price based on the staff's offer rather
   // than what the customer actually confirmed.
-  const approval = buildApproval(row, packages, invoiceTaxOverridden);
+  const approval = buildApproval(row, packages);
   // Staff "Apply discount" from the builder → flowed to the live portal price so
   // the customer sees + gets it. Percentage rides as a fraction off the subtotal;
   // flat as dollars. Mutually exclusive with the early-install promo (one per quote).

@@ -5,6 +5,13 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
+// Integration-shaped test (delta-verify HIGH, fix round 3): the portal READ
+// path, run for real (not mocked) against the EXACT snapshot this route
+// persists — proves the card, not just the SMS/email, agrees with what got
+// billed. See the describe block at the bottom of this file.
+import { quoteRowToPortalQuote, type QuoteRowForPortal } from '@/lib/portal/adapter';
+import type { PortalPhotos } from '@/lib/portal/photos';
+import { calculateQuote, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 
 const {
   sbRef,
@@ -752,5 +759,143 @@ describe('POST /api/quotes/[id]/amend', () => {
     const invUpdate = sb.updates.invoices[0];
     expect(invUpdate.status).toBe('awaiting_payment');
     expect(appendRetiredTxnMock).not.toHaveBeenCalled();
+  });
+});
+
+// Delta-verify HIGH (fix round 3): the previous round's portal card
+// RECONSTRUCTED previousTotalUsd/newTotalUsd by scaling the trail figures
+// through the row's CURRENT full-quote pricing — correct for new_total (the
+// current state produced it) but wrong for previous_total (priced against
+// an earlier state), so the card could show numbers that disagreed with
+// what the SMS/email actually said and what the invoice actually billed.
+//
+// This is an INTEGRATION-shaped test, not another adapter unit test: it
+// drives the REAL route handler (POST), reads the EXACT approval_snapshot
+// the route persisted to Supabase (via the sb fake below) straight back out
+// through the REAL, un-mocked `quoteRowToPortalQuote` — the same function
+// the portal page calls — and checks the resulting card figures against the
+// SAME SMS text the route sent. The existing adapter unit tests (in
+// adapter.test.ts) construct one static `result` and feed it to both the
+// "previous" and "current" side of the math, which can only prove a formula
+// is applied consistently — never that it matches what actually happened,
+// which is exactly why the round-2 bug shipped past them.
+describe('POST /api/quotes/[id]/amend → portal read path — card/SMS/email money-basis agreement (delta-verify HIGH)', () => {
+  const PHOTOS: PortalPhotos = { beforeUrl: null, afterUrl: null, alt: null };
+  const usdText = (n: number): string =>
+    n.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  it('the portal card, the SMS, and the invoice all agree — on a tax-overridden invoice where the PRIOR pricing state genuinely differs from the current one', async () => {
+    // Full quote 5600 (450 tax on a 5150 subtotal) — this IS the row's
+    // CURRENT full-quote pricing (quote.result), the exact thing the broken
+    // reconstruction would have scaled previous_total through.
+    const TAXED = {
+      ...BOOKED_QUOTE,
+      result: { subtotalBeforeDiscount: 5150, discountAmount: 0, taxAmount: 450, total: 5600 },
+    };
+    const sb = makeSb(TAXED);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+    // The invoice was created EARLIER, at a DIFFERENT (lower) agreed total —
+    // a genuinely prior pricing state, not derivable from TAXED.result at all.
+    getInvoiceByJobMock.mockResolvedValue({
+      id: 'inv-1',
+      balance: 2500,
+      status: 'draft',
+      tax_overridden: true,
+      total: 4598.21, // the invoice's total BEFORE this amendment's resync
+    });
+
+    const res = await POST(req({ reason: 'post-install add-on', notifyCustomer: true }), ctx());
+    expect(res.status).toBe(200);
+
+    // 1) The SMS states the invoice-basis figures (same math the sibling
+    // test above verifies in detail: previous 4598.21 → new 5150.00, delta
+    // 551.79 — NOT the trail's previous 5000 / new 5600 / delta 600).
+    const smsCall = sendSmsMock.mock.calls[0] as unknown as [{ message: string }] | undefined;
+    const sms = smsCall?.[0]?.message ?? '';
+    expect(sms).toContain(usdText(5150));
+    expect(sms).toContain(usdText(551.79));
+
+    // 2) The invoice was actually billed 5150.00.
+    expect(sb.updates.invoices[0]).toMatchObject({ total: 5150, balance: 2650 });
+
+    // 3) The trail entry the route persisted carries the SAME figures as
+    // invoice_basis — read the LAST write to 'quotes' (the second, patch
+    // write that attaches invoice_basis; see amend/route.ts).
+    const lastQuoteWrite = sb.updates.quotes[sb.updates.quotes.length - 1];
+    // Cast from `unknown` (the mock's Row type) straight to the REAL
+    // approval_snapshot type — no hand-rolled narrow shape to drift from
+    // amend.ts's actual AmendmentTrailEntry.
+    const persistedSnapshot = lastQuoteWrite.approval_snapshot as QuoteRowForPortal['approval_snapshot'];
+    const persistedAmendments = persistedSnapshot?.amendments ?? [];
+    const persistedAmendment = persistedAmendments[persistedAmendments.length - 1];
+    expect(persistedAmendment?.invoice_basis).toEqual({
+      previous_total: 4598.21,
+      new_total: 5150,
+      delta: 551.79,
+    });
+
+    // 4) Feed that EXACT persisted row back through the REAL portal read
+    // path (quoteRowToPortalQuote, un-mocked) — the same function
+    // loadPortalQuote calls — and confirm the card shows the SAME numbers
+    // as the SMS above, not a reconstruction from TAXED.result.
+    //
+    // buildApproval's pendingAmendment branch only reads amendment.invoice_basis
+    // (or the raw trail fields as fallback) — never row.result — so a real,
+    // fully-shaped QuoteResult with the SAME totals TAXED.result carried is
+    // built via calculateQuote (matching adapter.test.ts's own pattern)
+    // rather than a hand-built partial object, which wouldn't satisfy the
+    // QuoteResult type the adapter's line-item rendering expects.
+    const zeroInputs: QuoteInputs = {
+      santasFootage: 0,
+      santasDifficulty: 'medium',
+      gingerbreadFootage: 0,
+      gingerbreadDifficulty: 'medium',
+      winterWonderlandFootage: 0,
+      winterWonderlandDifficulty: 'medium',
+      stakeLightingFootage: 0,
+      stakeLightingDifficulty: 'medium',
+      miniLightItems: [],
+      spritzers: [],
+      wreaths: [],
+      garland: [],
+      takedown: 'included',
+      rushFee: false,
+    };
+    const portalResult = {
+      ...calculateQuote(zeroInputs),
+      ...TAXED.result, // land on the SAME subtotal/tax/total the route actually used
+    };
+    const row: QuoteRowForPortal = {
+      id: TAXED.id,
+      customer_name: TAXED.customer_name,
+      customer_address: null,
+      customer_phone: null,
+      customer_email: null,
+      result: portalResult,
+      inputs: null,
+      total: portalResult.total,
+      video_kind: null,
+      video_src: null,
+      video_poster: null,
+      video_title: null,
+      video_duration_sec: null,
+      customer_approved_at: '2026-01-01T00:00:00Z',
+      approval_snapshot: persistedSnapshot,
+      deposit_paid_at: TAXED.deposit_paid_at,
+      status: 'booked',
+    };
+    const portal = quoteRowToPortalQuote({ row, photos: PHOTOS });
+    const pending = portal?.approval?.pendingAmendment;
+    expect(pending).toBeDefined();
+    expect(pending!.previousTotalUsd).toBe(4598.21);
+    expect(pending!.newTotalUsd).toBe(5150);
+    expect(pending!.deltaUsd).toBe(551.79);
+    // Byte-for-byte agreement with what the SMS actually said, and with what
+    // the invoice actually billed — the whole point of the fix.
+    expect(usdText(pending!.newTotalUsd)).toBe(usdText(5150));
+    expect(sms).toContain(usdText(pending!.newTotalUsd));
+    expect(sms).toContain(usdText(pending!.deltaUsd));
+    expect(pending!.newTotalUsd).toBe(sb.updates.invoices[0].total);
   });
 });

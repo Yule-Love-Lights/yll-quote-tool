@@ -108,6 +108,27 @@ export type AmendmentTrailEntry = {
   // Absent on a normal amendment.
   credit_note?: number;
   overpayment?: boolean;
+  // Delta-verify HIGH (fix round 3): the invoice-basis previous/new/delta the
+  // customer was ACTUALLY told (the same invoicedTotal/previousInvoicedTotal/
+  // invoicedDelta the amend route's SMS/email use), stamped by the route right
+  // after the invoice re-sync. Read directly by the portal instead of
+  // reconstructed — a stored figure never goes stale the way a RATIO against
+  // the quote's CURRENT full-quote pricing does once a LATER amendment
+  // re-prices the quote again (the previous round's bug: the ratio was
+  // recomputed at every page load against whatever pricing state happened to
+  // be live, which is only valid for the entry that produced it). Absent when
+  // there was no linked invoice at amend time (the trail basis already IS the
+  // invoice basis in that case — nothing to store separately), when the
+  // re-sync failed (best-effort — the amendment itself is still recorded),
+  // or on any entry written BEFORE this field existed. See adapter.ts's
+  // buildApproval for the read side, which falls back to the raw trail
+  // figures (previous_total/new_total/delta) whenever this is absent — never
+  // to a reconstruction.
+  invoice_basis?: {
+    previous_total: number;
+    new_total: number;
+    delta: number;
+  };
   // Total-changing amendments start pending. The public portal replaces this
   // with an accepted, server-stamped signature — or a declined refusal —
   // without changing booked status. Missing on historical entries means
