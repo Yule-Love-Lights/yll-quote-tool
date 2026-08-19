@@ -10,6 +10,7 @@ import { calculateEventQuote } from '@/lib/event/pricing';
 import { calculatePermanentBistro } from '@/lib/permanentBistro/pricing';
 import { getAppSettings } from '@/lib/appSettings';
 import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
+import { pushEventDateToGhl, formatEventDateForGhl } from '@/lib/integrations/ghlEventDate';
 
 const VALID_DIFFICULTIES = ['easy', 'medium', 'hard'];
 const VALID_TAKEDOWNS = ['included', 'premium'];
@@ -720,6 +721,83 @@ export async function POST(req: NextRequest) {
           legacyRebook,
           isNce,
         );
+
+    // FIX B (#237 fix round, staff/admin-lens HIGH/MED — the two lenses
+    // converged on the same gap from different angles, see the fix round's
+    // brief): the send route only ever pushed an event quote's date to GHL
+    // on SEND. The everyday reschedule never re-pushes: the customer
+    // confirms/reschedules after the quote already went out, staff edit the
+    // date and hit Save (NOT Send — re-sending would re-text/re-email the
+    // customer), and this route had zero HighLevel logic at all. The CRM
+    // then holds a stale date indefinitely — exactly the manual re-entry
+    // this feature exists to eliminate.
+    //
+    // Placement: here, in the UPDATE branch, not a new endpoint or a
+    // dedicated "sync to CRM" button — an operator-triggered action would be
+    // safer in the abstract, but this route is ALREADY the one place every
+    // date edit passes through (the builder's Save/Calculate flow), so
+    // piggy-backing is less surface, not more, and needs no new UI.
+    //
+    // Gates, deliberately narrower than "any event quote save":
+    //   - isUpdate && saved: only an in-place update that actually PERSISTED
+    //     — never on a brand-new quote (saveQuote's branch), and never when
+    //     the DB write itself failed.
+    //   - existing.quote_sent_at != null: only an ALREADY-SENT quote has a
+    //     real CRM contact worth correcting for this reason. A draft quote's
+    //     date is unconfirmed, staff may be mid-edit across several
+    //     Calculate clicks, and there is no "everyday reschedule" to fix yet
+    //     — pushing here would spam the contact's record with in-progress
+    //     values instead of the eventual final one.
+    //   - effectiveServiceType === 'event' (positive gate, never
+    //     `!== 'permanent'`, per this repo's standing rule).
+    //   - !existing.is_test / existing.highlevel_contact_id: identical to
+    //     the send route's own gates — never touch a real GHL contact for a
+    //     simulated quote, and there must be a contact to push to.
+    //   - the FORMATTED value actually changed vs. what's already stored —
+    //     compared through formatEventDateForGhl (the exact function the
+    //     push itself uses), not a raw string compare, so a blank<->
+    //     malformed no-op, or an unrelated field edit (a price override, an
+    //     item added, ...) on the SAME already-sent event quote, never fires
+    //     a spurious push. This is what stops the push from firing on every
+    //     Calculate click.
+    //
+    // Booked-order amend (src/app/api/quotes/[id]/amend/route.ts): that
+    // route only records the amendment TRAIL entry — the actual re-price
+    // that changes inputs/result for a booked order runs through THIS same
+    // isUpdate branch first (with amendReprice=true bypassing the
+    // REPRICE_LOCKED_STATUSES guard above), so a date change on a booked
+    // order's amend is covered for free by the gates above (quote_sent_at is
+    // set for a booked order too) — no separate wiring needed in
+    // amend/route.ts itself.
+    //
+    // Fire-and-forget (NOT awaited): unlike the send route's ghlStageChain
+    // (which already tolerates several seconds of GHL latency inside its own
+    // Promise.allSettled group and reports the outcome back to the operator
+    // via eventDateSyncError — FIX A), this route answers a routine builder
+    // Save/Calculate click with no equivalent warning mechanism. Blocking
+    // the save on a GHL round trip would make Save itself feel slow for a
+    // CRM write the operator isn't watching for — and the gate above already
+    // means this only fires on the rare click that actually changed the
+    // date, not on every save. pushEventDateToGhl is already fail-soft and
+    // internally deadline-bounded (6s, see ghlEventDate.ts) — a failure here
+    // only logs, exactly like every other best-effort GHL call site in this
+    // codebase; there is nothing to await FOR.
+    if (
+      isUpdate &&
+      saved &&
+      existing &&
+      existing.quote_sent_at &&
+      effectiveServiceType === 'event' &&
+      !existing.is_test &&
+      existing.highlevel_contact_id
+    ) {
+      const priorFormatted = formatEventDateForGhl(existing.inputs?.event?.eventDate);
+      const nextFormatted = formatEventDateForGhl(quoteInputs.event?.eventDate);
+      if (nextFormatted && nextFormatted !== priorFormatted) {
+        void pushEventDateToGhl(existing.highlevel_contact_id, quoteInputs.event?.eventDate);
+      }
+    }
+
     return NextResponse.json({
       customer: safeCustomer,
       result,

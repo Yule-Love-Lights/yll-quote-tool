@@ -31,7 +31,12 @@ const { save, update, getRaw, rawRef, operatorRef } = vi.hoisted(() => ({
       } | null;
       // #177 fix 3b: the stored depositPercent, read back to compare against an
       // incoming change on an already-approved quote.
-      inputs?: { depositPercent?: number } | null;
+      // FIX B (#237 fix round): event.eventDate — the stored PRIOR value the
+      // re-push gate compares the incoming save against.
+      inputs?: { depositPercent?: number; event?: { eventDate?: string } } | null;
+      // FIX B (#237 fix round): the two other gates the re-push needs.
+      is_test?: boolean;
+      highlevel_contact_id?: string | null;
     } | null,
   },
   operatorRef: { current: null as { id: string; email: string | null; role: string } | null },
@@ -41,6 +46,18 @@ vi.mock('@/lib/quotes', () => ({
   saveQuote: save,
   updateQuote: update,
   getQuoteRaw: getRaw,
+}));
+
+// FIX B (#237 fix round): only pushEventDateToGhl is mocked (spied on) — the
+// real formatEventDateForGhl runs (importOriginal), the same real function
+// the route uses for its own change-comparison, so a test can't accidentally
+// pass by comparing against a fake.
+const { pushEventDateMock } = vi.hoisted(() => ({
+  pushEventDateMock: vi.fn(async (_contactId: string, _eventDate: string | null | undefined) => ({ pushed: true })),
+}));
+vi.mock('@/lib/integrations/ghlEventDate', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/integrations/ghlEventDate')>()),
+  pushEventDateToGhl: pushEventDateMock,
 }));
 
 // No design linked in most tests → isValidDesignId false, getDesign untouched.
@@ -1199,5 +1216,110 @@ describe('POST /api/quote — deposit percent locked post-approval (#177 fix 3b)
     const body = (await res.json()) as { error: string; code?: string };
     expect(body.code).toBe('deposit-percent-locked');
     expect(update).not.toHaveBeenCalled();
+  });
+});
+
+// FIX B (#237 fix round, staff/admin-lens HIGH/MED): the everyday reschedule
+// — customer confirms/reschedules AFTER the quote already sent, staff edit
+// the event date and hit Save (not Send) — used to leave GHL holding a stale
+// date forever, because this route had zero HighLevel logic. Base fixture:
+// an already-sent event quote with a linked contact and a real prior date.
+const SENT_EVENT_ROW = {
+  quote_sent_at: '2026-01-01T00:00:00Z',
+  customer_approved_at: null,
+  deposit_paid_at: null,
+  viewed_at: null,
+  status: 'sent',
+  service_type: 'event',
+  is_test: false,
+  highlevel_contact_id: 'contact_1',
+  inputs: { event: { eventDate: '2026-12-01' } },
+};
+
+describe('POST /api/quote — event-date GHL re-push on save (FIX B, #237 fix round)', () => {
+  it('re-pushes when an already-sent event quote\'s date CHANGES', async () => {
+    rawRef.current = { ...SENT_EVENT_ROW };
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, serviceType: 'event', inputs: { ...validInputs(), event: { eventDate: '2026-12-25' } } }),
+    );
+    expect(res.status).toBe(200);
+    expect(pushEventDateMock).toHaveBeenCalledWith('contact_1', '2026-12-25');
+  });
+
+  it('does NOT re-push when the date is unchanged (a routine unrelated re-save)', async () => {
+    rawRef.current = { ...SENT_EVENT_ROW }; // stored eventDate is already 2026-12-01
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, serviceType: 'event', inputs: { ...validInputs(), event: { eventDate: '2026-12-01' } } }),
+    );
+    expect(res.status).toBe(200);
+    expect(pushEventDateMock).not.toHaveBeenCalled();
+  });
+
+  it('re-pushes the FIRST real date entered on an already-sent quote that had none yet', async () => {
+    rawRef.current = { ...SENT_EVENT_ROW, inputs: { event: {} } }; // no stored eventDate
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, serviceType: 'event', inputs: { ...validInputs(), event: { eventDate: '2026-12-25' } } }),
+    );
+    expect(res.status).toBe(200);
+    expect(pushEventDateMock).toHaveBeenCalledWith('contact_1', '2026-12-25');
+  });
+
+  it('does NOT re-push when the new date is blank/absent — nothing to push, don\'t clobber the stored value', async () => {
+    rawRef.current = { ...SENT_EVENT_ROW };
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, serviceType: 'event', inputs: { ...validInputs(), event: {} } }),
+    );
+    expect(res.status).toBe(200);
+    expect(pushEventDateMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT re-push on a DRAFT event quote (never sent) even though the date changed', async () => {
+    rawRef.current = { ...SENT_EVENT_ROW, quote_sent_at: null, status: null };
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, serviceType: 'event', inputs: { ...validInputs(), event: { eventDate: '2026-12-25' } } }),
+    );
+    expect(res.status).toBe(200);
+    expect(pushEventDateMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT re-push for a NEW quote (the insert branch — no quoteId, isUpdate is false)', async () => {
+    const res = await POST(
+      makeReq({ serviceType: 'event', inputs: { ...validInputs(), event: { eventDate: '2026-12-25' } } }),
+    );
+    expect(res.status).toBe(200);
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(pushEventDateMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT re-push for a Test Quote, even with a changed date and a linked contact', async () => {
+    rawRef.current = { ...SENT_EVENT_ROW, is_test: true };
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, serviceType: 'event', inputs: { ...validInputs(), event: { eventDate: '2026-12-25' } } }),
+    );
+    expect(res.status).toBe(200);
+    expect(pushEventDateMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT re-push when no HighLevel contact is linked', async () => {
+    rawRef.current = { ...SENT_EVENT_ROW, highlevel_contact_id: null };
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, serviceType: 'event', inputs: { ...validInputs(), event: { eventDate: '2026-12-25' } } }),
+    );
+    expect(res.status).toBe(200);
+    expect(pushEventDateMock).not.toHaveBeenCalled();
+  });
+
+  // Positive gate (`=== 'event'`, never `!== 'event'`, per this repo's
+  // standing rule): a holiday quote whose stored row happens to carry a
+  // leftover event.eventDate (e.g. a service-type switch) must never push.
+  it('does NOT re-push for a non-event quote, even with an event.eventDate present in the stored inputs', async () => {
+    rawRef.current = { ...SENT_EVENT_ROW, service_type: 'holiday' };
+    // Body omits serviceType → effectiveServiceType falls back to the STORED
+    // 'holiday' (H2), not 'event'.
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, inputs: { ...validInputs(), event: { eventDate: '2026-12-25' } } }),
+    );
+    expect(res.status).toBe(200);
+    expect(pushEventDateMock).not.toHaveBeenCalled();
   });
 });
