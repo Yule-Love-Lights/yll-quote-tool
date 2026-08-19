@@ -72,6 +72,12 @@ export function EventSection({
             value={value.eventDate}
             onChange={(ev) => set('eventDate', ev.target.value)}
           />
+          {/* FIX D (#237 fix round, staff-lens MED): without this, a staffer
+              who doesn't know the field syncs will either re-type it into
+              HighLevel by hand (defeating the feature) or trust a value that
+              may be stale. Honest about WHEN it syncs — send, and again if
+              changed on a later save (#237 FIX B) — not just that it does. */}
+          <p className="text-[11px] text-gray-400 mt-1">Synced to the CRM contact on send (and again if changed later).</p>
         </div>
         <div>
           <label className={lbl}>Takedown date</label>
