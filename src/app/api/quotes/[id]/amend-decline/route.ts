@@ -36,6 +36,7 @@ import {
   isAmendmentConsentPending,
   latestConsentAmendment,
   requiresReconsent,
+  resolveAmendmentBasis,
   type AmendmentTrailEntry,
 } from '@/lib/amend';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
@@ -252,20 +253,29 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const internalContactId = process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
     if (isHighLevelConfigured() && internalContactId) {
       const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
+      // FIX D (delta-verify's adjacent observation, fix round 4): use the
+      // SAME basis resolution the customer's own portal card and SMS/email
+      // use (resolveAmendmentBasis, amend.ts) instead of the raw trail
+      // fields. `declined` carries whatever invoice_basis the ORIGINAL
+      // amendment entry was stamped with (declined is `{...latest, consent}`
+      // — the spread preserves it), so on a tax-overridden invoice this
+      // alert now states the same figures staff would see if they opened
+      // the quote, instead of the pre-tax-override trail total/delta.
+      const { previousTotalUsd, newTotalUsd, deltaUsd } = resolveAmendmentBasis(declined);
       try {
         await sendEmail({
           contactId: internalContactId,
           subject: amendmentDeclinedInternalEmailSubject({
             customerName: quote.customer_name,
             quoteNumber: quote.quote_number,
-            refusedTotalUsd: declined.new_total,
+            refusedTotalUsd: newTotalUsd,
           }),
           html: amendmentDeclinedInternalEmailHtml({
             customerName: quote.customer_name,
             quoteNumber: quote.quote_number,
-            previousTotalUsd: declined.previous_total,
-            refusedTotalUsd: declined.new_total,
-            deltaUsd: declined.delta,
+            previousTotalUsd,
+            refusedTotalUsd: newTotalUsd,
+            deltaUsd,
             ...(rawReason ? { reason: rawReason } : {}),
             adminUrl: `${baseUrl}/admin/quotes/${id}`,
             portalUrl: `${baseUrl}/portal/${id}`,

@@ -546,6 +546,34 @@ describe('POST /api/quotes/[id]/amend-decline — staff alert (FIX5)', () => {
     expect(call?.[0].html).toContain('too pricey');
   });
 
+  // FIX D (delta-verify's adjacent observation, fix round 4): on a
+  // tax-overridden invoice the stamped invoice_basis differs from the raw
+  // trail total/delta — the staff alert must state the SAME figures the
+  // customer's own portal/SMS would show, not the pre-tax-override trail
+  // ones.
+  it('states the INVOICE-basis figures, not the trail ones, when the declined amendment carries invoice_basis', async () => {
+    isHighLevelConfiguredMock.mockReturnValueOnce(true);
+    const withBasis: AmendmentTrailEntry = {
+      ...amendment,
+      invoice_basis: { previous_total: 1848.21, new_total: 2211.79, delta: 363.58 },
+    };
+    const { client } = makeSb({
+      ...bookedQuote({ amendments: [withBasis] }),
+      customer_name: 'Jordan Smith',
+      quote_number: 42,
+    });
+    sbRef.current = client;
+
+    const res = await POST(req({ amendedAt: AMENDED_AT, reason: 'too pricey' }), ctx);
+    expect(res.status).toBe(200);
+
+    const call = emailCall();
+    expect(call?.[0].html).toContain('1,848.21');
+    expect(call?.[0].html).toContain('2,211.79');
+    expect(call?.[0].html).not.toContain('2,000.00');
+    expect(call?.[0].html).not.toContain('2,400.00');
+  });
+
   it('omits the reason block when the customer left no reason', async () => {
     isHighLevelConfiguredMock.mockReturnValueOnce(true);
     const { client } = makeSb(bookedQuote({ amendments: [amendment] }));
