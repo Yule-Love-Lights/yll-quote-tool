@@ -599,6 +599,27 @@ export default function QuoteBuilder({
           ...(prefill?.isNce ? { depositPercent: 40 } : {}),
         },
   );
+  // Fix-round HIGH (staff lens, #243 gate): a ref mirror of `form.serviceType`,
+  // same never-stale idiom as isNceRef/legacyRebookRef above — but unlike those
+  // two, serviceType has no single "apply" function every change funnels
+  // through (the type button below, and the draft-restore effect, both call
+  // setForm directly), so this stays current via the effect right below instead
+  // of an inline write at one call site. Exists specifically for
+  // pickHighLevelContact's async tag-lookup .then() (a few hundred lines down):
+  // that closure used to read `form.serviceType` directly — the value captured
+  // when the contact was CLICKED, not when the fetch resolves. Sequence: staff
+  // start a quote as holiday, pick an NCE-tagged contact, then click "permanent"
+  // before the ~200ms fetch returns (an ordinary correction) — the type-switch
+  // handler sees no tag yet (nothing to clear), the fetch then resolves against
+  // the STALE holiday closure and calls applyIsNce(true), setting
+  // depositPercent=40 on what is now a permanent quote. The chip strip is
+  // already hidden (service type is permanent), so the wrong state is invisible
+  // in the UI. The #243 server-side gate (route.ts) is a backstop for exactly
+  // this, but the client shouldn't manufacture the bad request to begin with.
+  const serviceTypeRef = useRef(form.serviceType);
+  useEffect(() => {
+    serviceTypeRef.current = form.serviceType;
+  }, [form.serviceType]);
   // In edit mode the saved result hydrates too, so the operator sees the
   // current price breakdown (and the portal/send buttons) without recalculating.
   const [result, setResult] = useState<QuoteResult | null>(initialQuote?.result ?? null);
@@ -2894,7 +2915,11 @@ export default function QuoteBuilder({
         // (matches an untagged/mismatched pick exactly as before); only the
         // `true` case is gated. canCarryNceOrYllNeighborTag is the single
         // source of truth every set/inherit site shares (serviceType.ts).
-        const eligibleForTags = canCarryNceOrYllNeighborTag(form.serviceType);
+        // Fix-round HIGH: reads serviceTypeRef.current, NOT the render-closure
+        // `form.serviceType` — see serviceTypeRef's own declaration for why a
+        // direct read here is stale the instant staff switch service type
+        // between the contact click and this fetch resolving.
+        const eligibleForTags = canCarryNceOrYllNeighborTag(serviceTypeRef.current);
         if (!legacyRebookTouchedRef.current) {
           applyLegacyRebook(eligibleForTags && (tags?.is_yll_neighbor ?? false));
         }
