@@ -91,6 +91,12 @@ vi.mock('@/lib/rateLimit', () => ({
     emailCooldownSeen.add(key);
     return { ok: true, remaining: 0, resetMs: 3_600_000 };
   },
+  // Review fix 4b (this round): mirrors the real releaseRateLimitByKey's
+  // undo-the-check semantics against this mock's own Set-based model, so a
+  // test can prove a failed send frees the slot for a later retry.
+  releaseRateLimitByKey: (key: string, _opts: unknown) => {
+    emailCooldownSeen.delete(key);
+  },
   // Delta-verify fix A: the per-IP ingest ceiling. checkRateLimit itself is
   // the hoisted vi.fn() above, so a test can assert on calls to it.
   checkRateLimit,
@@ -333,14 +339,20 @@ describe('POST /api/referrals/request-link', () => {
     await drainAfterTasks();
     expect(sendEmail).toHaveBeenCalledTimes(1);
 
-    // Different case/whitespace, same normalized email: proves the cooldown
-    // key is normalized the same way the exact-match check is.
+    // Different case/whitespace, same normalized email: resolves to the
+    // SAME GHL contact (MATCHING_CONTACT), so the cooldown (keyed on
+    // match.id, review fix 4c this round) still catches it even though the
+    // key is no longer derived from the email string itself.
     const second = await POST(req({ email: '  Jamie@Example.com  ' }));
     const secondBody = await second.json();
     await drainAfterTasks();
 
     expect(sendEmail).toHaveBeenCalledTimes(1); // still just once
-    expect(findOrCreateCustomer).toHaveBeenCalledTimes(1); // no wasted work either
+    // Review fix 4a (this round): the cooldown gates the SEND only, not the
+    // mint, so findOrCreateCustomer runs again on the second submission
+    // (findOrCreateCustomer/ensureReferralCode are both idempotent
+    // fetch-or-create, so this is a cheap repeat read, not wasted writes).
+    expect(findOrCreateCustomer).toHaveBeenCalledTimes(2);
     expect(second.status).toBe(first.status);
     expect(secondBody).toEqual(firstBody);
   });
@@ -634,7 +646,7 @@ describe('POST /api/referrals/request-link (contact-id path)', () => {
     expect(sendEmail).not.toHaveBeenCalled();
   });
 
-  it('clicking twice does not send two emails: the cooldown is keyed on the contact id', async () => {
+  it('clicking twice does not send two emails, but the link still comes back both times (review fix 4a, this round)', async () => {
     getContact.mockResolvedValue(RESOLVED_CONTACT);
 
     const first = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
@@ -644,15 +656,61 @@ describe('POST /api/referrals/request-link (contact-id path)', () => {
     expect(firstJson.referralUrl).toBeTruthy();
 
     const second = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
-    const secondJson = await second.json();
+    const secondJson = (await second.json()) as { referralUrl?: string };
     await drainAfterTasks();
-    expect(sendEmail).toHaveBeenCalledTimes(1); // still just once
-    expect(findOrCreateCustomer).toHaveBeenCalledTimes(1); // no wasted work either
-    // The cooldown short-circuits before the mint, so the second click's
-    // response falls back to the generic one, no link. (Review fix 4, next
-    // round, revisits this: the cooldown should gate the send only, never
-    // the returning of an already-minted link.)
-    expect(secondJson).toEqual({ ok: true });
+    expect(sendEmail).toHaveBeenCalledTimes(1); // still just once, the cooldown gated the SEND
+    // Review fix 4a: the cooldown no longer blocks the mint, so the second
+    // click still gets the (already-minted, safe-to-redisplay) link back,
+    // instead of falling through to the generic no-link screen.
+    expect(secondJson.referralUrl).toBe(firstJson.referralUrl);
+    // And the mint genuinely ran again (an idempotent fetch-or-create, not
+    // wasted writes), it wasn't short-circuited by the cooldown.
+    expect(findOrCreateCustomer).toHaveBeenCalledTimes(2);
+  });
+
+  it('review fix 4b: a failed send releases the cooldown slot, so a later click in the same hour can still succeed', async () => {
+    getContact.mockResolvedValue(RESOLVED_CONTACT);
+    sendEmail.mockRejectedValueOnce(new Error('HighLevel 500'));
+
+    await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+    // The failed send is caught inside findAndSendForContactId's own
+    // after() wrapper, so draining must not reject.
+    await expect(drainAfterTasks()).resolves.toBeUndefined();
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+
+    await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+    await drainAfterTasks();
+    // Released, not spent: the retry could send.
+    expect(sendEmail).toHaveBeenCalledTimes(2);
+  });
+
+  it('review fix 4b: a failed send skips the Brand Ambassador stamps too, same coupling as before the fix 7 split', async () => {
+    process.env.HIGHLEVEL_CONTACT_FIELD_BRAND_AMBASSADOR_STATUS = 'field-status-id';
+    getContact.mockResolvedValue(RESOLVED_CONTACT);
+    sendEmail.mockRejectedValueOnce(new Error('HighLevel 500'));
+
+    await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+    await drainAfterTasks();
+    expect(upsertContactCustomField).not.toHaveBeenCalled();
+  });
+
+  it('review fix 4c: the email and contact-id paths share one cooldown when they resolve to the same GHL contact', async () => {
+    // Both paths resolve to a contact sharing the SAME id, the way the
+    // same real person could show up through either channel.
+    searchContacts.mockResolvedValue([MATCHING_CONTACT]);
+    getContact.mockResolvedValue({ ...RESOLVED_CONTACT, id: MATCHING_CONTACT.id });
+
+    await POST(req({ email: 'jamie@example.com' }));
+    await drainAfterTasks();
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+
+    const second = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+    const secondJson = (await second.json()) as { referralUrl?: string };
+    await drainAfterTasks();
+    // Still just once: the SAME hourly budget covered both channels.
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    // The contact-id path still gets its link back either way (fix 4a).
+    expect(secondJson.referralUrl).toBeTruthy();
   });
 
   it('honeypot tripped: generic response, no lookup at all', async () => {

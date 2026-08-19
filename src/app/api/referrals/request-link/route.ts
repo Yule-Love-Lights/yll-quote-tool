@@ -62,7 +62,7 @@
 // real GHL outage, same as a no-match on the email path).
 
 import { NextRequest, NextResponse, after } from 'next/server';
-import { rateLimitResponse, checkRateLimitByKey, checkRateLimit } from '@/lib/rateLimit';
+import { rateLimitResponse, checkRateLimitByKey, checkRateLimit, releaseRateLimitByKey } from '@/lib/rateLimit';
 import { searchContacts, sendEmail, upsertContactCustomField, getContact } from '@/lib/integrations/highlevel';
 import type { CrmContact } from '@/lib/integrations/types';
 import { findOrCreateCustomer } from '@/lib/customers';
@@ -297,17 +297,17 @@ async function findAndSendIfMatch(email: string): Promise<void> {
     if (!match) return;
 
     // naldo/referral-link-personalized: the mint-and-send tail below is now
-    // shared with the contact-id path (mintAndSendReferralLink). Both
-    // arguments here are byte-identical to what this function computed
-    // inline before that split (verified against route.test.ts, which
-    // still passes unchanged): `match.email ?? email` is kept exactly as it
-    // was, even though the exact-match filter above already guarantees
-    // match.email is never nullish in practice, and the cooldown key is
-    // still the normalized email, unchanged.
+    // shared with the contact-id path (mintAndSendReferralLink).
+    // `match.email ?? email` is kept exactly as it was before that split,
+    // even though the exact-match filter above already guarantees
+    // match.email is never nullish in practice. Review fix 4c (this round):
+    // the cooldown key used to be `wantEmail` (the normalized email); it now
+    // lives inside sendAndStamp, keyed on match.id, same as the contact-id
+    // path, so the same human reachable both ways shares one hourly budget
+    // instead of two.
     await mintAndSendReferralLink({
       match,
       emailForCustomer: match.email ?? email,
-      cooldownKey: wantEmail,
     });
   } catch (err) {
     console.error('[api/referrals/request-link] match lookup/send failed:', err);
@@ -317,10 +317,12 @@ async function findAndSendIfMatch(email: string): Promise<void> {
 // naldo/referral-link-personalized: fetch ONE contact by id (no fuzzy
 // search involved, unlike the email path above) and hand off to the same
 // mint-and-send tail. Returns the referral URL on success, or null on
-// anything else (id does not resolve, GHL errors, cooldown active,
-// customer/code could not be resolved), so the caller falls back to the
-// same generic response the email path uses either way, never confirming
-// or denying that an id is real.
+// anything else (id does not resolve, a GHL error, customer/code could not
+// be resolved), so the caller falls back to the same generic response the
+// email path uses either way, never confirming or denying that an id is
+// real. Review fix 4a (this round): the cooldown no longer belongs to this
+// list. A resolved contact always gets its link back, cooldown or not; see
+// sendAndStamp below for what the cooldown actually gates now.
 async function findAndSendForContactId(contactId: string): Promise<string | null> {
   try {
     const match = await getContact(contactId);
@@ -344,19 +346,13 @@ async function findAndSendForContactId(contactId: string): Promise<string | null
       }
     });
 
-    // Review fix 3 (naldo/referral-self-serve): checked before any send, so
-    // an unrelated lookup or a second click can't burn the one slot a
-    // genuine send needs. Still gates the MINT below too in this commit
-    // (unchanged position/logic from before this round's split); review
-    // fix 4 (next) revisits whether it should.
-    const cooldownKey = `contact:${match.id}`;
-    const cooldown = checkRateLimitByKey(cooldownKey, {
-      bucket: 'referral-request-link-email-cooldown',
-      limit: 1,
-      windowMs: EMAIL_SEND_COOLDOWN_MS,
-    });
-    if (!cooldown.ok) return null;
-
+    // Review fix 4a (this round): NO cooldown check here. The cooldown used
+    // to gate this mint too (a blocked check returned null before the code
+    // was even read), so a second click within the hour showed the generic
+    // failure screen even though the code already existed and was
+    // perfectly safe to redisplay. The cooldown now lives inside
+    // sendAndStamp below and gates the EMAIL SEND only; the mint always
+    // runs and the link always comes back on a resolved contact.
     const minted = await mintReferralCode({ match, emailForCustomer: match.email ?? null });
     if (!minted) return null;
 
@@ -437,12 +433,44 @@ async function mintReferralCode(input: {
 // sequence with after(), while the email path's own wrapper just below
 // keeps running it inline relative to itself, unchanged (it was already
 // fully deferred by POST's own outer after() before this round).
+//
+// Review fix 4 (this round, three related corrections to the cooldown that
+// used to sit in the caller):
+//   (a) Gates the EMAIL SEND only, never the mint/return of the link (that
+//       already happened before this function was ever called) and never
+//       the Brand Ambassador stamps below (the status stamp is idempotent;
+//       the enrollment date is separately guarded by isFirstEnrollment).
+//   (b) Checking a rate limit consumes the slot immediately, before send
+//       even runs (see checkRateLimitByKey), so a slot spent on a send that
+//       then FAILS would lock this contact out of a resend for the rest of
+//       the hour having received nothing. Released back on a thrown send so
+//       the next attempt (their next click, or ANY later after() retry
+//       path) can still succeed inside the same hour.
+//   (c) Keyed on match.id, the one identifier both the email and contact-id
+//       paths always have, so the same human reachable either way shares
+//       one hourly budget instead of two independent ones.
+// A failed send still rethrows (after releasing), so stampBrandAmbassador
+// below is skipped on a send failure, same coupling as before this split:
+// callers already catch and log this (POST's outer after() for the email
+// path, findAndSendForContactId's own after() for the contact-id path).
 async function sendAndStamp(match: CrmContact, referralUrl: string, isFirstEnrollment: boolean): Promise<void> {
-  await sendEmail({
-    contactId: match.id,
-    subject: REFERRAL_LINK_EMAIL_SUBJECT,
-    html: referralLinkEmailHtml({ firstName: match.firstName ?? null, referralUrl }),
+  const cooldown = checkRateLimitByKey(match.id, {
+    bucket: 'referral-request-link-email-cooldown',
+    limit: 1,
+    windowMs: EMAIL_SEND_COOLDOWN_MS,
   });
+  if (cooldown.ok) {
+    try {
+      await sendEmail({
+        contactId: match.id,
+        subject: REFERRAL_LINK_EMAIL_SUBJECT,
+        html: referralLinkEmailHtml({ firstName: match.firstName ?? null, referralUrl }),
+      });
+    } catch (err) {
+      releaseRateLimitByKey(match.id, { bucket: 'referral-request-link-email-cooldown' });
+      throw err;
+    }
+  }
 
   // Best-effort Brand Ambassador enrollment stamps (owner-approved this
   // session). Awaited, not fire-and-forget: both callers now run this
@@ -455,31 +483,17 @@ async function sendAndStamp(match: CrmContact, referralUrl: string, isFirstEnrol
   await stampBrandAmbassador(match.id, isFirstEnrollment);
 }
 
-// Email path's own wrapper: cooldown, then mint, then send + stamp, in that
-// order, unchanged from before this round's split (see mintReferralCode and
-// sendAndStamp above for what each step now does). Returns the referral
-// URL on success, or null the moment any step can't complete (cooldown
-// active, no customer, no code); this path's only caller (findAndSendIfMatch)
-// already discards the return value, since the email path's response never
-// carries it.
+// Email path's own wrapper: mint, then send + stamp (the cooldown now lives
+// inside sendAndStamp above, see its own comment for what changed and
+// why). Returns the referral URL on success, or null the moment mint can't
+// complete (no customer, no code); this path's only caller
+// (findAndSendIfMatch) already discards the return value, since the email
+// path's response never carries it.
 async function mintAndSendReferralLink(input: {
   match: CrmContact;
   emailForCustomer: string | null;
-  cooldownKey: string;
 }): Promise<string | null> {
-  const { match, emailForCustomer, cooldownKey } = input;
-
-  // Review fix 3 (naldo/referral-self-serve): checked before any write, so
-  // an unrelated lookup or a second click can't burn the one slot a genuine
-  // send needs. A silent skip, not a different response: the email path's
-  // uniform response is already built and sent by the time this runs, so
-  // this can't reintroduce the enumeration leak either way.
-  const cooldown = checkRateLimitByKey(cooldownKey, {
-    bucket: 'referral-request-link-email-cooldown',
-    limit: 1,
-    windowMs: EMAIL_SEND_COOLDOWN_MS,
-  });
-  if (!cooldown.ok) return null;
+  const { match, emailForCustomer } = input;
 
   const minted = await mintReferralCode({ match, emailForCustomer });
   if (!minted) return null;
