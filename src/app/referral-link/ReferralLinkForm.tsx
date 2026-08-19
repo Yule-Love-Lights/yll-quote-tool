@@ -13,12 +13,15 @@
 //   shows, by design: the copy never reveals whether an email belongs to a
 //   YLL customer.
 // - A contactId: a single button, no typing. The route resolves the id
-//   directly and, on a match, returns the referral URL in the same
-//   response, so ReferralLinkReady below can show it immediately. A
-//   contactId that fails to resolve gets the exact same ok:true, no-link
-//   response the email path uses, so this mode falls back to the same
-//   ReferralLinkSuccess screen too, see route.ts's file header for why that
-//   is the right fallback either way.
+//   directly and, on a match, returns the referral URL (and a firstName) in
+//   the same response, so ReferralLinkReady below can show it immediately.
+//   Review fix 3 (this round): a contactId that fails to resolve gets the
+//   exact same ok:true, no-link response the email path uses (route.ts's
+//   file header explains why), but this mode no longer falls back to
+//   ReferralLinkSuccess's "check your inbox" copy for it: that visitor
+//   never typed or saw an email address, they clicked one button and
+//   waited, so ReferralLinkContactIdFailed below is this mode's OWN
+//   terminal state for a no-link outcome.
 //
 // Never imports highlevel.ts, customers.ts, or referrals.ts here, this
 // component only ever fetch()es the API.
@@ -109,6 +112,31 @@ export function ReferralLinkReady({ link, name }: { link: string; name: string |
 }
 
 /**
+ * Review fix 3 (this round): the contact-id path's OWN terminal state when
+ * the route came back with no referralUrl (a stale id, a merged contact, a
+ * GHL error, or the email cooldown). ReferralLinkSuccess's "Check your
+ * inbox" copy is never true for this visitor: they never typed or saw an
+ * email address, they clicked one button and waited. Same tappable
+ * tel: link pattern as ReferralLinkErrorMessage, no inbox language at all.
+ */
+export function ReferralLinkContactIdFailed() {
+  return (
+    <div className="rounded-2xl bg-[#0D1519] border border-[#1F2A23] p-8 text-center">
+      <p className="font-display text-[22px] md:text-[26px] font-semibold text-[#F4ECD8]">
+        We could not pull up your link.
+      </p>
+      <p className="mt-3 text-[15px] text-[#A89F87] leading-[1.6]">
+        Call or text us at{' '}
+        <a href={TEL_HREF} className={linkClass}>
+          {PHONE}
+        </a>{' '}
+        and we&apos;ll send it right over.
+      </p>
+    </div>
+  );
+}
+
+/**
  * The error state's message content. Extracted (mirrors ReferralLinkSuccess
  * above) so it can be unit tested with renderToStaticMarkup, no jsdom
  * needed. `serverError` is a genuine server-supplied message (e.g. a 400
@@ -179,9 +207,19 @@ export function ReferralLinkForm({ contactId }: { contactId?: string }) {
 
   if (status === 'done') {
     // A referral URL only ever comes back on the contact-id path, and only
-    // on a real match (route.ts). Every other outcome, either path, falls
-    // back to the same generic "check your inbox" screen.
-    return referralUrl ? <ReferralLinkReady link={referralUrl} name={firstName} /> : <ReferralLinkSuccess />;
+    // on a real match (route.ts). Review fix 3 (this round): a no-link
+    // outcome now gets a DIFFERENT screen per mode, since ReferralLinkSuccess's
+    // "check your inbox" copy was never true for a contact-id visitor (they
+    // never typed or saw an email address). The email path keeps its one
+    // and only, unchanged confirmation state either way.
+    if (hasContactId) {
+      return referralUrl ? (
+        <ReferralLinkReady link={referralUrl} name={firstName} />
+      ) : (
+        <ReferralLinkContactIdFailed />
+      );
+    }
+    return <ReferralLinkSuccess />;
   }
 
   return (

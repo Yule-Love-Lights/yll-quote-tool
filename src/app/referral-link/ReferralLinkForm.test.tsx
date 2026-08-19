@@ -23,7 +23,13 @@
 // prop shows or hides. That is a one-shot render, not an interaction test.
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ReferralLinkSuccess, ReferralLinkErrorMessage, ReferralLinkReady, ReferralLinkForm } from './ReferralLinkForm';
+import {
+  ReferralLinkSuccess,
+  ReferralLinkErrorMessage,
+  ReferralLinkReady,
+  ReferralLinkContactIdFailed,
+  ReferralLinkForm,
+} from './ReferralLinkForm';
 
 describe('ReferralLinkSuccess', () => {
   it('shows the exact confirmation copy from the brief, verbatim, with a tappable phone link', () => {
@@ -126,6 +132,26 @@ describe('ReferralLinkReady (naldo/referral-link-personalized, review fix 1 this
         expect(html.toLowerCase()).not.toContain(banned);
       }
     }
+  });
+});
+
+describe('ReferralLinkContactIdFailed (review fix 3, this round)', () => {
+  it('says plainly the link could not be pulled up, with no inbox language at all', () => {
+    const html = renderToStaticMarkup(<ReferralLinkContactIdFailed />);
+    expect(html).toContain('We could not pull up your link.');
+    expect(html).not.toContain('inbox');
+    expect(html).not.toContain('email');
+  });
+
+  it('gives the phone number as a tappable tel: link, matching the error state', () => {
+    const html = renderToStaticMarkup(<ReferralLinkContactIdFailed />);
+    expect(html).toContain('href="tel:6315170186"');
+    expect(html).toContain('>(631) 517-0186</a>');
+  });
+
+  it('never uses an em dash', () => {
+    const html = renderToStaticMarkup(<ReferralLinkContactIdFailed />);
+    expect(html).not.toContain('—');
   });
 });
 
