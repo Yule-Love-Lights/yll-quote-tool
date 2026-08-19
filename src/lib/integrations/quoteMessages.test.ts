@@ -572,14 +572,17 @@ describe('amendment notice copy (Jason 2026-08-19, portal link + direction/size)
     });
 
   it('the increase SMS is the exact copy: direction, size, link, approval-needed', () => {
+    // FIX8 (review MED): the order total and the balance owed are now
+    // explicitly labeled ("a new order total of X" / "You'll owe Y"),
+    // replacing the old unlabeled "to X (balance Y)" pairing.
     expect(smsIncrease()).toBe(
-      "Hi Susan! Your Yule Love Lights order was changed — the total went up by $342.56 to $1,770.72 (balance $1,056.64 after installation). This needs your approval before we charge anything at the new amount — nothing changes until you approve it. Review & respond: https://quote.yulelovelights.com/portal/1 Questions? Call or text (631) 517-0186.",
+      "Hi Susan! Your Yule Love Lights order was changed — the total went up by $342.56 to a new order total of $1,770.72. You'll owe $1,056.64 after installation. This needs your approval before we charge anything at the new amount — nothing changes until you approve it. Review & respond: https://quote.yulelovelights.com/portal/1 Questions? Call or text (631) 517-0186.",
     );
   });
 
   it('the decrease SMS is the exact copy: calm, no urgency, still links the portal', () => {
     expect(smsDecrease()).toBe(
-      "Hi Susan! Good news — your Yule Love Lights order was changed and the total went down by $342.56 to $1,428.16 (balance $714.08 after installation). Nothing you owe is going up. Please confirm on your portal whenever it's convenient, no rush: https://quote.yulelovelights.com/portal/1 Questions? Call or text (631) 517-0186.",
+      "Hi Susan! Good news — your Yule Love Lights order was changed and the total went down by $342.56 to a new order total of $1,428.16. You'll owe $714.08 after installation. Nothing you owe is going up. Please confirm on your portal whenever it's convenient, no rush: https://quote.yulelovelights.com/portal/1 Questions? Call or text (631) 517-0186.",
     );
   });
 
@@ -607,6 +610,17 @@ describe('amendment notice copy (Jason 2026-08-19, portal link + direction/size)
     expect(decHtml).toContain('Nothing you owe is going up');
     expect(decHtml).toContain('$1,428.16');
     expect(decHtml).toContain('$714.08');
+  });
+
+  // FIX8 (review MED): "to $1,770.72 (balance $1,056.64...)" ran two
+  // unlabeled dollar figures together — nothing distinguished the order
+  // total from what's actually owed.
+  it('labels the order total and the balance owed distinctly (not two unlabeled figures)', () => {
+    const sms = smsIncrease();
+    expect(sms).toContain('a new order total of $1,770.72');
+    expect(sms).toContain("You'll owe $1,056.64");
+    // The old unlabeled pairing is gone.
+    expect(sms).not.toContain('to $1,770.72 (balance');
   });
 
   it('quotes cents, matching the portal card and the invoice rather than rounding', () => {
@@ -733,7 +747,7 @@ describe('amendment notice copy (Jason 2026-08-19, portal link + direction/size)
       deltaUsd: 342.56,
       newTotalUsd: 1770.72,
     });
-    expect(sms).toContain('(balance $1,056.64)');
+    expect(sms).toContain("You'll owe $1,056.64.");
     expect(sms).not.toContain('after installation');
     const html = htmlIncrease(false);
     expect(html).toContain('Remaining balance</td>');

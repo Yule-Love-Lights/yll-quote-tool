@@ -502,16 +502,24 @@ export function amendmentSmsBody(input: {
 }): string {
   const { firstName, newBalanceUsd, phone, dueAfterInstall, portalUrl, deltaUsd, newTotalUsd } = input;
   const timing = dueAfterInstall ? ' after installation' : '';
-  const balanceClause = `balance ${usdExact(newBalanceUsd)}${timing}`;
+  // FIX8 (review MED): "to $1,770.72 (balance $1,056.64...)" runs two
+  // unlabeled dollar figures together — nothing marks which is the order
+  // total and which is what's actually owed. Explicitly label both: "a new
+  // order total of $X" / "You'll owe $Y". The email already solves this with
+  // a labeled table (New order total / Remaining balance below); this is the
+  // SMS equivalent that doesn't need a second sentence-structure change to
+  // stay unambiguous without materially growing the message (it's already
+  // ~3 SMS segments).
+  const owesClause = `You'll owe ${usdExact(newBalanceUsd)}${timing}.`;
   // `>= 0` reads a true zero as an "increase" ("went up by $0.00") — harmless
   // in practice, not exercised: the route rejects |delta| < 1 cent (code
   // 'no-change') before a notice is ever built, so this function is never
   // called with a real zero. Not re-guarded here to avoid a third silent
   // branch this module can't verify against anything.
   if (deltaUsd >= 0) {
-    return `Hi ${greetingName(firstName)}! Your Yule Love Lights order was changed — the total went up by ${usdExact(deltaUsd)} to ${usdExact(newTotalUsd)} (${balanceClause}). This needs your approval before we charge anything at the new amount — nothing changes until you approve it. Review & respond: ${portalUrl} Questions? Call or text ${phone}.`;
+    return `Hi ${greetingName(firstName)}! Your Yule Love Lights order was changed — the total went up by ${usdExact(deltaUsd)} to a new order total of ${usdExact(newTotalUsd)}. ${owesClause} This needs your approval before we charge anything at the new amount — nothing changes until you approve it. Review & respond: ${portalUrl} Questions? Call or text ${phone}.`;
   }
-  return `Hi ${greetingName(firstName)}! Good news — your Yule Love Lights order was changed and the total went down by ${usdExact(Math.abs(deltaUsd))} to ${usdExact(newTotalUsd)} (${balanceClause}). Nothing you owe is going up. Please confirm on your portal whenever it's convenient, no rush: ${portalUrl} Questions? Call or text ${phone}.`;
+  return `Hi ${greetingName(firstName)}! Good news — your Yule Love Lights order was changed and the total went down by ${usdExact(Math.abs(deltaUsd))} to a new order total of ${usdExact(newTotalUsd)}. ${owesClause} Nothing you owe is going up. Please confirm on your portal whenever it's convenient, no rush: ${portalUrl} Questions? Call or text ${phone}.`;
 }
 
 export function amendmentEmailHtml(input: {
