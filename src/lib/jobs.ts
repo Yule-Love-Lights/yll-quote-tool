@@ -17,6 +17,7 @@ import { getInvoiceByJob, type InvoiceRow } from './invoices';
 import { estimateLaborForQuote } from './laborEstimate';
 import type { LineItem } from './pricing/pricingEngine';
 import { asServiceType } from './serviceType';
+import type { AmendmentTrailEntry } from './amend';
 
 // The job row as the billing side reads/writes it. `fulfillment_stage` is the
 // #82 axis — present in the type for completeness but owned by inventory.
@@ -263,6 +264,12 @@ export type JobDetail = {
   // means such a consumer gets `status: 'placeholder'` in the payload itself,
   // instead of a bare number that looks measured. See src/lib/laborPlan.ts.
   laborPlan: LaborPlan;
+  // Ledger #83 follow-up (a real live incident): the linked quote's amendment
+  // trail, so the operator recording an amendment on THIS job page can see
+  // whether an earlier one is still awaiting the customer's answer or was
+  // DECLINED — previously invisible here (only /admin/quotes/[id] rendered
+  // it). Empty array when the job has no linked quote or none was amended.
+  amendments: AmendmentTrailEntry[];
 };
 
 /**
@@ -285,10 +292,11 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
   let isNce = false;
   let quoteServiceType: string | null = null;
   let intendedDepositUsd: number | null = null;
+  let amendments: AmendmentTrailEntry[] = [];
   if (job.quote_id) {
     const { data } = await db
       .from('quotes')
-      .select('customer_name, customer_email, customer_phone, customer_address, is_test, is_nce, service_type, deposit_amount_usd')
+      .select('customer_name, customer_email, customer_phone, customer_address, is_test, is_nce, service_type, deposit_amount_usd, approval_snapshot')
       .eq('id', job.quote_id)
       .maybeSingle<{
         customer_name: string | null;
@@ -299,6 +307,7 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
         is_nce: boolean | null;
         service_type: string | null;
         deposit_amount_usd: number | null;
+        approval_snapshot: { amendments?: AmendmentTrailEntry[] } | null;
       }>();
     if (data) {
       customerName = data.customer_name ?? null;
@@ -309,6 +318,9 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
       isNce = !!data.is_nce;
       quoteServiceType = data.service_type ?? null;
       intendedDepositUsd = data.deposit_amount_usd ?? null;
+      amendments = Array.isArray(data.approval_snapshot?.amendments)
+        ? data.approval_snapshot.amendments
+        : [];
     }
   }
 
@@ -322,6 +334,7 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
     isTest,
     isNce,
     quoteServiceType,
+    amendments,
     invoice,
     intendedDepositUsd,
     laborPlan: readLaborPlan(job),

@@ -342,6 +342,55 @@ export default function JobDetailPage() {
               {actionMsg && <p className="text-sm text-gray-600 mt-2">{actionMsg}</p>}
             </div>
 
+            {/* Ledger #83 follow-up (a real live incident — a customer had no way to
+                decline a price change and had to phone in): this page could RECORD an
+                amendment but never showed whether an earlier one was still awaiting the
+                customer's answer or was declined. Compact history, same consent-status
+                badges as /admin/quotes/[id]'s fuller trail. */}
+            {data.amendments.length > 0 && (
+              <div className="bg-white border border-gray-200 rounded-lg p-4 mt-4">
+                <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
+                  Amendment history ({data.amendments.length})
+                </h2>
+                <ol className="space-y-2 text-sm">
+                  {data.amendments.map((a, i) => {
+                    // Cosmetic (zero-delta) entries never carry `consent` — mirrors
+                    // /admin/quotes/[id]'s badge logic (requiresReconsent gates it).
+                    const requiresConsent = Math.abs(a.delta) >= 0.005;
+                    const status = requiresConsent ? (a.consent?.status ?? 'pending') : null;
+                    const badge =
+                      status === 'declined'
+                        ? { label: 'Declined', cls: 'bg-red-100 text-red-700' }
+                        : status === 'accepted'
+                          ? { label: 'Approved', cls: 'bg-emerald-100 text-emerald-700' }
+                          : status === 'pending'
+                            ? { label: 'Awaiting customer', cls: 'bg-amber-100 text-amber-700' }
+                            : null;
+                    return (
+                      <li key={i} className="border-t border-gray-100 pt-2 first:border-0 first:pt-0">
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="text-gray-800">{a.reason}</p>
+                          {badge && (
+                            <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${badge.cls}`}>
+                              {badge.label}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-gray-500 text-xs">
+                          {fmtDate(a.amended_at)} · {a.delta >= 0 ? '+' : '−'}{money(Math.abs(a.delta))} → balance {money(a.new_balance)}
+                        </p>
+                        {a.consent?.status === 'declined' && (
+                          <p className="mt-1 text-xs text-red-700">
+                            Customer declined{a.consent.reason ? `: "${a.consent.reason}"` : ' (no reason given)'}
+                          </p>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ol>
+              </div>
+            )}
+
             <div className="bg-white border border-gray-200 rounded-lg p-4 mt-4">
               <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Amend order</h2>
               <p className="text-sm text-gray-500 mb-2">

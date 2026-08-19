@@ -7,6 +7,7 @@ import {
   latestAmendment,
   latestConsentAmendment,
   blocksSettlement,
+  isAmendmentConsentPending,
   type AmendmentTrailEntry,
 } from './amend';
 
@@ -309,6 +310,61 @@ describe('amendment consent — booked re-sign flow', () => {
     };
     expect(blocksSettlement(inc)).toBe(false);
     expect(amendedQuoteStatus(inc, 'booked')).toBe('booked');
+  });
+
+  // Ledger #83 follow-up (a real live incident — a customer with no way to say
+  // no had to phone in): the customer can now DECLINE. This is the
+  // money-critical case — a decline must NOT become collectable just because
+  // it is no longer literally "pending".
+  describe('a DECLINED amendment', () => {
+    it('a declined price INCREASE still blocks settlement — declining is not consenting', () => {
+      const inc = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+      inc.consent = { status: 'declined', declined_at: '2026-07-19T09:00:00.000Z', ip: null };
+      expect(blocksSettlement(inc)).toBe(true);
+      expect(isAmendmentConsentPending(inc)).toBe(true);
+      // Still reads as "back in staff/customer hands" — same conceptual state
+      // as pending, never silently re-promoted to booked by a decline.
+      expect(amendedQuoteStatus(inc, 'booked')).toBe('changes_requested');
+    });
+
+    it('a declined price DECREASE still does not block settlement (a decrease never over-collects)', () => {
+      const dec = computeAmendment({ ...bookedBase(), newTotal: 4000 });
+      dec.consent = { status: 'declined', declined_at: '2026-07-19T09:00:00.000Z', ip: null };
+      expect(blocksSettlement(dec)).toBe(false);
+      // But it is still NOT accepted — latestConsentAmendment/portal-adapter
+      // callers must be able to tell "declined" apart from "accepted".
+      expect(isAmendmentConsentPending(dec)).toBe(true);
+    });
+
+    it('carries an optional customer-typed reason and an IP breadcrumb, same shape as a signature', () => {
+      const inc = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+      inc.consent = {
+        status: 'declined',
+        declined_at: '2026-07-19T09:00:00.000Z',
+        reason: 'too expensive, please remove the wreath',
+        ip: '203.0.113.7',
+      };
+      expect(inc.consent.status).toBe('declined');
+      expect(blocksSettlement(inc)).toBe(true);
+    });
+
+    it('a decline reason is optional', () => {
+      const inc = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+      inc.consent = { status: 'declined', declined_at: '2026-07-19T09:00:00.000Z', ip: null };
+      expect(inc.consent).not.toHaveProperty('reason');
+      expect(blocksSettlement(inc)).toBe(true);
+    });
+
+    it('only a later accepted or a fresh amendment lifts a decline — the decline itself has no undo here', () => {
+      // This module only computes/derives; it never mutates a past entry.
+      // "Undo" in practice is a NEW amendment (computeAmendment again) or the
+      // customer separately hitting accept on the SAME latest entry, both of
+      // which are the caller's (the route's) job, not this pure module's.
+      const inc = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+      inc.consent = { status: 'declined', declined_at: '2026-07-19T09:00:00.000Z', ip: null };
+      const stillDeclined = { ...inc };
+      expect(blocksSettlement(stillDeclined)).toBe(true);
+    });
   });
 });
 

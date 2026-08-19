@@ -639,19 +639,33 @@ function buildApproval(row: QuoteRowForPortal, packages: PortalPackage[]): Porta
       : {}),
     permanentWarranty: frozenWarranty(snap?.permanentWarranty),
     ...(() => {
-      return isAmendmentConsentPending(amendment)
-        ? {
-            pendingAmendment: {
-              amendedAt: amendment!.amended_at,
-              reason: amendment!.reason,
-              previousTotalUsd: amendment!.previous_total,
-              newTotalUsd: amendment!.new_total,
-              deltaUsd: amendment!.delta,
-              depositAppliedUsd: amendment!.deposit_applied,
-              newBalanceUsd: amendment!.new_balance,
-            },
-          }
-        : {};
+      // isAmendmentConsentPending is true for BOTH 'pending' and 'declined'
+      // (see amend.ts — a decline is "not accepted", same as never having
+      // answered), which is exactly the population that still needs a card on
+      // the portal: pending asks the question, declined shows the customer
+      // their own answer instead of asking again. Read consent.status
+      // directly here (not a new amend.ts predicate) — this is a pure
+      // display-layer branch, not a money decision.
+      if (!isAmendmentConsentPending(amendment)) return {};
+      const declined = amendment!.consent?.status === 'declined';
+      return {
+        pendingAmendment: {
+          amendedAt: amendment!.amended_at,
+          reason: amendment!.reason,
+          previousTotalUsd: amendment!.previous_total,
+          newTotalUsd: amendment!.new_total,
+          deltaUsd: amendment!.delta,
+          depositAppliedUsd: amendment!.deposit_applied,
+          newBalanceUsd: amendment!.new_balance,
+          consentStatus: declined ? 'declined' : 'pending',
+          ...(declined && amendment!.consent?.status === 'declined' && amendment!.consent.reason
+            ? { declinedReason: amendment!.consent.reason }
+            : {}),
+          ...(declined && amendment!.consent?.status === 'declined'
+            ? { declinedAt: amendment!.consent.declined_at }
+            : {}),
+        },
+      };
     })(),
   };
 }

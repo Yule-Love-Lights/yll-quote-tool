@@ -1620,7 +1620,13 @@ describe('staff-approved portal selection seeds non-empty (PS-C1/WT-L1)', () => 
 
 
 describe('quoteRowToPortalQuote — pending booked amendment consent', () => {
-  function amendedPortal(consent: { status: 'pending' } | { status: 'accepted'; accepted_at: string; signature: { name: string; kind: 'typed'; value: string; signed_at: string; ip: null } }, trailingCosmetic = false) {
+  function amendedPortal(
+    consent:
+      | { status: 'pending' }
+      | { status: 'accepted'; accepted_at: string; signature: { name: string; kind: 'typed'; value: string; signed_at: string; ip: null } }
+      | { status: 'declined'; declined_at: string; reason?: string; ip: string | null },
+    trailingCosmetic = false,
+  ) {
     const inputs = emptyInputs({ customLineItems: [{ label: 'Lighting', amount: 2400 }] });
     const result = calculateQuote(inputs);
     const row = rowWith(result, inputs);
@@ -1676,7 +1682,56 @@ describe('quoteRowToPortalQuote — pending booked amendment consent', () => {
       deltaUsd: 400,
       depositAppliedUsd: 1000,
       newBalanceUsd: 1400,
+      consentStatus: 'pending',
     });
+  });
+
+  // Ledger #83 follow-up: a decline is NOT acceptance — the portal must keep
+  // showing the same card population (isAmendmentConsentPending is true for
+  // both 'pending' and 'declined'), just with the customer's own answer
+  // instead of the ask. The durable booked total stays at the ORIGINAL
+  // pre-amendment figure, same as pending — only 'accepted' promotes it.
+  it('surfaces a DECLINED amendment as a distinct consentStatus, not as still-pending', () => {
+    const approval = amendedPortal({
+      status: 'declined',
+      declined_at: '2026-07-19T09:00:00.000Z',
+      reason: 'too expensive, please remove the wreath',
+      ip: '203.0.113.7',
+    }).approval;
+    expect(approval?.totalUsd).toBe(2000); // NOT the declined amendment's new_total
+    expect(approval?.depositUsd).toBe(1000);
+    expect(approval?.pendingAmendment).toEqual({
+      amendedAt: '2026-07-18T12:00:00.000Z',
+      reason: 'Added front wreaths',
+      previousTotalUsd: 2000,
+      newTotalUsd: 2400,
+      deltaUsd: 400,
+      depositAppliedUsd: 1000,
+      newBalanceUsd: 1400,
+      consentStatus: 'declined',
+      declinedReason: 'too expensive, please remove the wreath',
+      declinedAt: '2026-07-19T09:00:00.000Z',
+    });
+  });
+
+  it('omits declinedReason when the customer left no reason', () => {
+    const approval = amendedPortal({
+      status: 'declined',
+      declined_at: '2026-07-19T09:00:00.000Z',
+      ip: null,
+    }).approval;
+    expect(approval?.pendingAmendment?.consentStatus).toBe('declined');
+    expect(approval?.pendingAmendment).not.toHaveProperty('declinedReason');
+  });
+
+  it('keeps a declined amendment visible after a later zero-dollar edit (same as pending)', () => {
+    const approval = amendedPortal(
+      { status: 'declined', declined_at: '2026-07-19T09:00:00.000Z', ip: null },
+      true,
+    ).approval;
+    expect(approval?.pendingAmendment?.consentStatus).toBe('declined');
+    expect(approval?.pendingAmendment?.amendedAt).toBe('2026-07-18T12:00:00.000Z');
+    expect(approval?.totalUsd).toBe(2000);
   });
 
   it('uses the accepted amendment as the durable booked total', () => {

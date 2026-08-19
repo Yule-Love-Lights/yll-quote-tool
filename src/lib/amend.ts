@@ -65,9 +65,21 @@ export type AmendmentConsentSignature = {
   ip: string | null;
 };
 
+// 'declined' (ledger #83 follow-up, a real live incident — a customer had no
+// way to say no and had to phone in): the customer explicitly refused this
+// price change. Deliberately NOT a reversion — only staff can un-price a
+// booked order (they re-price it in the builder and record a NEW amendment);
+// this just RECORDS the refusal so it is unmistakable to staff and so
+// settlement stays blocked. `reason` is the customer's own optional free text
+// (distinct from `AmendmentTrailEntry.reason`, which is STAFF's text describing
+// the change) — never echoed back into a customer-facing notice, staff-only.
+// `ip` mirrors the signature's own audit field, captured the same way, for the
+// same reason (a cheap provenance breadcrumb on a public capability-token
+// endpoint) even though there is no signature to attach it to.
 export type AmendmentConsent =
   | { status: 'pending' }
-  | { status: 'accepted'; accepted_at: string; signature: AmendmentConsentSignature };
+  | { status: 'accepted'; accepted_at: string; signature: AmendmentConsentSignature }
+  | { status: 'declined'; declined_at: string; reason?: string; ip: string | null };
 
 export type AmendmentTrailEntry = {
   amended_at: string; // ISO 8601
@@ -90,8 +102,9 @@ export type AmendmentTrailEntry = {
   credit_note?: number;
   overpayment?: boolean;
   // Total-changing amendments start pending. The public portal replaces this
-  // with an accepted, server-stamped signature without changing booked status.
-  // Missing on historical entries means pending for backward compatibility.
+  // with an accepted, server-stamped signature — or a declined refusal —
+  // without changing booked status. Missing on historical entries means
+  // pending for backward compatibility.
   consent?: AmendmentConsent;
 };
 
@@ -253,6 +266,30 @@ export function latestConsentAmendment(
 }
 
 /**
+ * True whenever the customer has NOT accepted (signed) the latest
+ * total-changing amendment — whether because they haven't answered yet
+ * (`consent` missing/`'pending'`) OR because they explicitly DECLINED it.
+ * Deliberately does not distinguish those two: a decline is a customer
+ * saying no, not a customer saying nothing, but for every caller of this
+ * predicate (the portal's "is there a live ask" gate, and blocksSettlement
+ * below) "not accepted" is the exact question being asked — a decline must
+ * keep blocking settlement exactly as hard as an un-answered pending entry
+ * does, per the review note on blocksSettlement below. Callers that need to
+ * tell pending apart from declined (the portal card's copy, the admin trail
+ * display) read `amendment.consent?.status` directly instead of adding a
+ * second predicate here.
+ */
+export function isAmendmentConsentPending(
+  amendment: AmendmentTrailEntry | null | undefined,
+): boolean {
+  return (
+    !!amendment &&
+    requiresReconsent(amendment) &&
+    amendment.consent?.status !== 'accepted'
+  );
+}
+
+/**
  * WT-18 — the settlement re-consent gate. mark-paid / charge-balance /
  * job-close all call this before moving money, on the quote's LATEST
  * amendment (via latestAmendment).
@@ -266,20 +303,18 @@ export function latestConsentAmendment(
  * decrease can never over-collect, so it must NOT block — gating it would
  * strand a legitimate lower payment behind a re-sign nobody needs.
  *
- * True only when both hold: the delta is a real change (not float dust, via
- * requiresReconsent) AND it is a positive delta (the customer owes MORE than
- * the last total they're on record as having agreed to).
+ * True only when both hold: the delta is a real change and NOT accepted (via
+ * isAmendmentConsentPending — pending OR declined both count) AND it is a
+ * positive delta (the customer owes MORE than the last total they're on
+ * record as having agreed to).
+ *
+ * A DECLINED increase is the money-critical case this must get right: the
+ * customer said no, so the old (lower) total is still what they agreed to —
+ * this must keep blocking exactly as hard as it did while pending, and it
+ * does, because isAmendmentConsentPending reads 'declined' as "not accepted"
+ * same as 'pending'. Only a NEW amendment (staff re-pricing down in the
+ * builder and recording it) or the customer actually ACCEPTING can lift this.
  */
-export function isAmendmentConsentPending(
-  amendment: AmendmentTrailEntry | null | undefined,
-): boolean {
-  return (
-    !!amendment &&
-    requiresReconsent(amendment) &&
-    amendment.consent?.status !== 'accepted'
-  );
-}
-
 export function blocksSettlement(amendment: AmendmentTrailEntry | null | undefined): boolean {
   return !!amendment && isAmendmentConsentPending(amendment) && amendment.delta > 0;
 }
