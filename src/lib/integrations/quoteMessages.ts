@@ -464,9 +464,14 @@ export function supplierOrderEmailHtml(input: { lines: SupplierOrderLine[]; jobC
 // preview step; duplicating it into a carrier-filtered SMS risks a garbled or
 // overlong message for no gain the structured delta+link don't already cover,
 // and keeps the two channels' assertions limited to numbers this module can
-// verify against the trail. See amend-consent's sibling amend-decline route
-// for where a typed decline reason goes instead (staff-facing only, never
-// echoed back into a notice).
+// verify against the trail. amend-decline's sibling route records a
+// DIFFERENT `reason` — the customer's own optional decline text. FIX10
+// (review MED, corrected 2026-08-19): this used to say that one was also
+// "staff-facing only, never echoed back into a notice" — false as written.
+// It never rides these SMS/email NOTICES (same reasoning as above), but the
+// portal's AmendmentConsentCard DOES render it back to the customer as "What
+// you told us:" — their own text, shown to them, not a leak, just not what
+// "never echoed back" claimed.
 export const AMENDMENT_EMAIL_SUBJECT = 'Your Yule Love Lights order was updated';
 
 // `dueAfterInstall` — whether the balance is genuinely still ahead of the

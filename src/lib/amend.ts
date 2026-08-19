@@ -72,7 +72,14 @@ export type AmendmentConsentSignature = {
 // this just RECORDS the refusal so it is unmistakable to staff and so
 // settlement stays blocked. `reason` is the customer's own optional free text
 // (distinct from `AmendmentTrailEntry.reason`, which is STAFF's text describing
-// the change) — never echoed back into a customer-facing notice, staff-only.
+// the change). FIX10 (review MED, corrected 2026-08-19): this used to claim
+// `reason` is "never echoed back into a customer-facing notice, staff-only" —
+// false as written. It never rides the SMS/email NOTICE (amendmentSmsBody/
+// amendmentEmailHtml deliberately omit it — see quoteMessages.ts), and it
+// DOES now ride the FIX5 staff alert email, but the portal's own
+// AmendmentConsentCard also renders it back to the customer as "What you
+// told us:" once they decline — their own text, shown to them, not a leak,
+// just not "staff-only."
 // `ip` mirrors the signature's own audit field, captured the same way, for the
 // same reason (a cheap provenance breadcrumb on a public capability-token
 // endpoint) even though there is no signature to attach it to.
