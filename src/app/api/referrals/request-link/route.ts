@@ -1,36 +1,64 @@
-// Self-serve referral link request (naldo/referral-self-serve).
+// Self-serve referral link request (naldo/referral-self-serve +
+// naldo/referral-link-personalized).
 //
 // POST /api/referrals/request-link
 //
-// Public, no operator auth (allowlisted in src/lib/auth/operatorGate.ts). A
-// visitor types their email. If it matches an EXISTING GHL contact, we mint
-// or fetch their referral code and email them the link. If it does not
-// match, we do nothing. THE RESPONSE IS IDENTICAL EITHER WAY (same status,
-// same body): this endpoint can never be used to test whether an email
-// belongs to a YLL customer.
+// Public, no operator auth (allowlisted in src/lib/auth/operatorGate.ts).
+// Two independent ways in, each with its OWN threat model, each responding
+// differently on purpose:
 //
-// The uniform response is a STRUCTURAL guarantee, not a timed one: the
-// entire GHL lookup and match branch is scheduled with Next's after() (see
-// src/app/api/estimate/route.ts for this repo's established pattern), which
-// runs only once the response below has already been produced and sent.
-// Nothing about the response can depend on whether a match was found,
-// because the code that finds out hasn't run yet when the response is
-// built, so match and no-match are indistinguishable by construction.
+// 1) { email }: a visitor types their email. If it matches an EXISTING GHL
+//    contact, we mint or fetch their referral code and email them the link.
+//    If it does not match, we do nothing. THE RESPONSE IS IDENTICAL EITHER
+//    WAY (same status, same body): this path can never be used to test
+//    whether an email belongs to a YLL customer, because an email address
+//    IS guessable. The uniform response is a STRUCTURAL guarantee, not a
+//    timed one: the entire GHL lookup and match branch is scheduled with
+//    Next's after() (see src/app/api/estimate/route.ts for this repo's
+//    established pattern), which runs only once the response below has
+//    already been produced and sent. Nothing about the response can depend
+//    on whether a match was found, because the code that finds out hasn't
+//    run yet when the response is built, so match and no-match are
+//    indistinguishable by construction.
+//
+// 2) { contactId }: the owner emails his whole GHL list, and GoHighLevel
+//    can merge each recipient's OWN contact id into the link
+//    (/referral-link?c=<id>), so the page never has to ask them to type
+//    anything. Unlike the email path, a successful lookup here returns the
+//    referral URL in the response body so the page can show it immediately,
+//    and this is deliberately NOT scheduled with after(): the response
+//    itself depends on the lookup's result, so it is awaited inline,
+//    still within this route's maxDuration budget.
+//
+//    Why returning the link here is safe: possessing a valid GoHighLevel
+//    contact id already means you ARE that contact, because the id only
+//    ever reaches a real person through a merge field GoHighLevel
+//    substitutes into an email addressed to them. GHL contact ids are long,
+//    non-sequential, random-looking strings, not enumerable the way an
+//    email address is guessable, so handing back a result keyed on one is
+//    not a practical oracle. Two different threat models, two different
+//    behaviours, on purpose: the email path stays uniform and timing-safe
+//    because the KEY (an email) is guessable; the contact-id path can
+//    answer directly because the key is not.
 //
 // Most of the owner's mailing list are GHL leads who never bought: no
 // `customers` row, no quote. This route is deliberately narrower than
 // /api/referrals/submit (the /refer/<code> landing page's lead-capture
 // form): that route CREATES a new contact/lead. This one only ever acts on
-// an email that ALREADY exists in GHL, and only ever sends a link email,
+// a contact that ALREADY exists in GHL, and only ever sends a link email,
 // never a sales tag, never an SMS enrollment.
 //
-// searchContacts is free-text, not exact-match (see highlevel.ts). Every
-// result is re-filtered here for a normalized EXACT email match before
-// anything is minted or sent.
+// searchContacts (email path) is free-text, not exact-match (see
+// highlevel.ts). Every result is re-filtered here for a normalized EXACT
+// email match before anything is minted or sent. getContact (contact-id
+// path) is a direct id lookup, no fuzzy matching involved, and throws on a
+// non-2xx (a bogus or stale id lands in a catch, indistinguishable from a
+// real GHL outage, same as a no-match on the email path).
 
 import { NextRequest, NextResponse, after } from 'next/server';
 import { rateLimitResponse, checkRateLimitByKey, checkRateLimit } from '@/lib/rateLimit';
-import { searchContacts, sendEmail, upsertContactCustomField } from '@/lib/integrations/highlevel';
+import { searchContacts, sendEmail, upsertContactCustomField, getContact } from '@/lib/integrations/highlevel';
+import type { CrmContact } from '@/lib/integrations/types';
 import { findOrCreateCustomer } from '@/lib/customers';
 import { ensureReferralCode, hasReferralCode } from '@/lib/referrals';
 import { appBaseUrl } from '@/lib/integrations/telegramNotify';
@@ -53,6 +81,10 @@ export const maxDuration = 60;
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const MAX_EMAIL_LEN = 320; // mirrors MAX_LEN.email in /api/site-forms
+// naldo/referral-link-personalized: GHL contact ids are short opaque
+// strings (no documented format in this codebase), this just keeps an
+// obviously-garbage body from being carried any further than necessary.
+const MAX_CONTACT_ID_LEN = 100;
 
 // searchContacts is a free-text search (see highlevel.ts), clamped there to
 // at most 100 results. A full email address is a fairly specific query, so
@@ -80,7 +112,9 @@ const CONTACT_SEARCH_LIMIT = 100;
 const EMAIL_SEND_COOLDOWN_MS = 60 * 60 * 1000;
 
 // Uniform response body and status: identical on the match and no-match
-// paths.
+// paths for the email path, and reused as the contact-id path's fallback
+// too (no match, an honeypot trip, or any failure), since that path never
+// confirms or denies a bad id either.
 const UNIFORM_RESPONSE = { ok: true } as const;
 
 // Delta-verify fix A: per-IP ceiling on the staff-record path. See the
@@ -118,17 +152,52 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Request body must be an object' }, { status: 400 });
   }
 
-  const { email, company } = body as Record<string, unknown>;
+  const { email, contactId, company } = body as Record<string, unknown>;
 
-  const cleanEmail = typeof email === 'string' ? email.trim().slice(0, MAX_EMAIL_LEN) : '';
-  if (!cleanEmail || !EMAIL_RE.test(cleanEmail)) {
-    return NextResponse.json({ error: 'A valid email address is required' }, { status: 400 });
+  // naldo/referral-link-personalized: the two paths are mutually exclusive.
+  // The client only ever sends one shape (see ReferralLinkForm.tsx), so a
+  // body carrying both is either a caller bug or a probe, rejected before
+  // either path's own logic runs. cleanContactId is computed the same way
+  // cleanEmail below always has been (typeof-guarded, trimmed, length-
+  // capped), so it is TS-narrowed to a real string from this point on and
+  // truthy only when a non-empty contactId was actually sent.
+  const cleanContactId = typeof contactId === 'string' ? contactId.trim().slice(0, MAX_CONTACT_ID_LEN) : '';
+  const hasEmailField = typeof email === 'string' && email.trim() !== '';
+  if (cleanContactId && hasEmailField) {
+    return NextResponse.json({ error: 'Send either an email or a contactId, not both' }, { status: 400 });
   }
 
   // Honeypot: a real visitor never fills a field they cannot see. Tripped
   // means the success response, with no lookup, mint, or send work
-  // scheduled at all.
+  // scheduled at all. Shared by both paths below.
   const honeypotTripped = typeof company === 'string' && company.trim() !== '';
+
+  // ─── Contact-id path (naldo/referral-link-personalized) ──────────────────
+  // See the file header comment for the full two-threat-model reasoning.
+  // Awaited inline, on purpose: this path's response depends on the
+  // lookup's result, unlike the email path below, which schedules
+  // everything with after() and never lets the response wait on GHL at all.
+  if (cleanContactId) {
+    // Same treatment as the email path's own honeypot trip: the generic
+    // fallback response, no lookup at all.
+    if (honeypotTripped) {
+      return NextResponse.json(UNIFORM_RESPONSE);
+    }
+
+    let referralUrl: string | null = null;
+    try {
+      referralUrl = await findAndSendForContactId(cleanContactId);
+    } catch (err) {
+      console.error('[api/referrals/request-link] contact-id path failed:', err);
+    }
+    return referralUrl ? NextResponse.json({ ok: true, referralUrl }) : NextResponse.json(UNIFORM_RESPONSE);
+  }
+
+  // ─── Email path (unchanged from naldo/referral-self-serve) ───────────────
+  const cleanEmail = typeof email === 'string' ? email.trim().slice(0, MAX_EMAIL_LEN) : '';
+  if (!cleanEmail || !EMAIL_RE.test(cleanEmail)) {
+    return NextResponse.json({ error: 'A valid email address is required' }, { status: 400 });
+  }
 
   // Read into a plain local before the response returns and close over that,
   // not `req` itself, inside after() below. Route Handlers may call
@@ -197,67 +266,124 @@ async function findAndSendIfMatch(email: string): Promise<void> {
     const match = results.find((c) => normalizeEmailForCompare(c.email) === wantEmail);
     if (!match) return;
 
-    // Review fix 3: checked only on the match path, never on a no-match
-    // query, so an unrelated lookup can't burn the one slot a genuine future
-    // match would need. A silent skip, not a different response: the
-    // uniform response above is already built and sent by the time this
-    // runs, so this can't reintroduce the enumeration leak the uniform
-    // response exists to prevent either way.
-    const cooldown = checkRateLimitByKey(wantEmail, {
-      bucket: 'referral-request-link-email-cooldown',
-      limit: 1,
-      windowMs: EMAIL_SEND_COOLDOWN_MS,
+    // naldo/referral-link-personalized: the mint-and-send tail below is now
+    // shared with the contact-id path (mintAndSendReferralLink). Both
+    // arguments here are byte-identical to what this function computed
+    // inline before that split (verified against route.test.ts, which
+    // still passes unchanged): `match.email ?? email` is kept exactly as it
+    // was, even though the exact-match filter above already guarantees
+    // match.email is never nullish in practice, and the cooldown key is
+    // still the normalized email, unchanged.
+    await mintAndSendReferralLink({
+      match,
+      emailForCustomer: match.email ?? email,
+      cooldownKey: wantEmail,
     });
-    if (!cooldown.ok) return;
-
-    const name =
-      match.fullName?.trim() || [match.firstName, match.lastName].filter(Boolean).join(' ').trim() || null;
-    // Review fix 5: skipIdentityRefresh true. This is the first ANONYMOUS,
-    // unauthenticated caller of findOrCreateCustomer (every other caller is
-    // a staff-driven quote flow). Without it, anyone who knows an email
-    // could force a stale GHL field to overwrite a more recently corrected
-    // stored record, on demand, by resubmitting that email. Creating a new
-    // row when none exists is unaffected.
-    const customer = await findOrCreateCustomer(
-      {
-        hl_contact_id: match.id,
-        email: match.email ?? email,
-        name,
-        phone: match.phone ?? null,
-      },
-      { skipIdentityRefresh: true },
-    );
-    if (!customer) return;
-
-    // Review fix 4: read BEFORE minting, so "false" means ensureReferralCode
-    // below is about to create a code that didn't exist a moment ago (a
-    // genuine first enrollment). Used only to gate the enrollment-date stamp
-    // further down, see hasReferralCode's own doc comment for why a
-    // same-email race is closed and what narrower window remains.
-    const isFirstEnrollment = !(await hasReferralCode(customer.id));
-
-    const code = await ensureReferralCode(customer.id);
-    if (!code) return;
-
-    const referralUrl = `${appBaseUrl()}/refer/${code}`;
-    await sendEmail({
-      contactId: match.id,
-      subject: REFERRAL_LINK_EMAIL_SUBJECT,
-      html: referralLinkEmailHtml({ firstName: match.firstName ?? null, referralUrl }),
-    });
-
-    // Best-effort Brand Ambassador enrollment stamps (owner-approved this
-    // session). Awaited, not fire-and-forget: this whole function runs
-    // inside after(), which extends the invocation's lifetime for exactly
-    // this reason (Next.js docs, serverless waitUntil), so there is no
-    // early-teardown risk here the way a bare void call on the main request
-    // path would have. Each env var independently gates its own stamp;
-    // unset means that stamp is skipped silently. Each stamp keeps its own
-    // try/catch so one failing never prevents the other.
-    await stampBrandAmbassador(match.id, isFirstEnrollment);
   } catch (err) {
     console.error('[api/referrals/request-link] match lookup/send failed:', err);
   }
+}
+
+// naldo/referral-link-personalized: fetch ONE contact by id (no fuzzy
+// search involved, unlike the email path above) and hand off to the same
+// mint-and-send tail. Returns the referral URL on success, or null on
+// anything else (id does not resolve, GHL errors, cooldown active,
+// customer/code could not be resolved), so the caller falls back to the
+// same generic response the email path uses either way, never confirming
+// or denying that an id is real.
+async function findAndSendForContactId(contactId: string): Promise<string | null> {
+  try {
+    const match = await getContact(contactId);
+    return await mintAndSendReferralLink({
+      match,
+      emailForCustomer: match.email ?? null,
+      // Keyed on the contact id itself, not an email string: this path
+      // always has an id (that's the lookup key), but a GHL contact is not
+      // guaranteed to carry an email on file. The prefix keeps this
+      // bucket's keyspace visibly distinct from the email path's
+      // normalized-email keys, though the two could never collide in
+      // practice (an email always contains "@", a GHL id never does).
+      cooldownKey: `contact:${match.id}`,
+    });
+  } catch (err) {
+    console.error('[api/referrals/request-link] contact-id lookup/send failed:', err);
+    return null;
+  }
+}
+
+// Shared tail for both paths above: given an already-resolved GHL contact
+// and a cooldown key appropriate to how it was found, mints or fetches the
+// referral code, sends the link email, and applies the Brand Ambassador
+// stamps. Returns the referral URL on success, or null the moment any step
+// can't complete (cooldown active, no customer, no code); the caller
+// decides what null means for its own response.
+async function mintAndSendReferralLink(input: {
+  match: CrmContact;
+  emailForCustomer: string | null;
+  cooldownKey: string;
+}): Promise<string | null> {
+  const { match, emailForCustomer, cooldownKey } = input;
+
+  // Review fix 3 (naldo/referral-self-serve): checked before any write, so
+  // an unrelated lookup or a second click can't burn the one slot a genuine
+  // send needs. A silent skip, not a different response: on the email path
+  // the uniform response is already built and sent by the time this runs;
+  // on the contact-id path, a cooldown hit falls back to that same generic
+  // response, so this can't reintroduce the enumeration leak either way.
+  const cooldown = checkRateLimitByKey(cooldownKey, {
+    bucket: 'referral-request-link-email-cooldown',
+    limit: 1,
+    windowMs: EMAIL_SEND_COOLDOWN_MS,
+  });
+  if (!cooldown.ok) return null;
+
+  const name =
+    match.fullName?.trim() || [match.firstName, match.lastName].filter(Boolean).join(' ').trim() || null;
+  // Review fix 5 (naldo/referral-self-serve): skipIdentityRefresh true.
+  // Both callers are anonymous/unauthenticated (a typed email, or a contact
+  // id lifted from an email merge field), so neither should ever let a
+  // stale GHL field overwrite a more recently corrected stored record on
+  // demand. Creating a new row when none exists is unaffected.
+  const customer = await findOrCreateCustomer(
+    {
+      hl_contact_id: match.id,
+      email: emailForCustomer,
+      name,
+      phone: match.phone ?? null,
+    },
+    { skipIdentityRefresh: true },
+  );
+  if (!customer) return null;
+
+  // Review fix 4 (naldo/referral-self-serve): read BEFORE minting, so
+  // "false" means ensureReferralCode below is about to create a code that
+  // didn't exist a moment ago (a genuine first enrollment). Used only to
+  // gate the enrollment-date stamp further down, see hasReferralCode's own
+  // doc comment for why a same-customer race is closed and what narrower
+  // window remains.
+  const isFirstEnrollment = !(await hasReferralCode(customer.id));
+
+  const code = await ensureReferralCode(customer.id);
+  if (!code) return null;
+
+  const referralUrl = `${appBaseUrl()}/refer/${code}`;
+  await sendEmail({
+    contactId: match.id,
+    subject: REFERRAL_LINK_EMAIL_SUBJECT,
+    html: referralLinkEmailHtml({ firstName: match.firstName ?? null, referralUrl }),
+  });
+
+  // Best-effort Brand Ambassador enrollment stamps (owner-approved this
+  // session). Awaited, not fire-and-forget: the email path's caller runs
+  // this whole chain inside after(), which extends the invocation's
+  // lifetime for exactly this reason (Next.js docs, serverless waitUntil).
+  // The contact-id path's caller awaits this function directly inline
+  // instead (no after() involved there), so there is no early-teardown
+  // risk on that path either. Each env var independently gates its own
+  // stamp; unset means that stamp is skipped silently. Each stamp keeps its
+  // own try/catch so one failing never prevents the other.
+  await stampBrandAmbassador(match.id, isFirstEnrollment);
+  return referralUrl;
 }
 
 // Review fix 6: best-effort inbox touch so staff have a record that a link
