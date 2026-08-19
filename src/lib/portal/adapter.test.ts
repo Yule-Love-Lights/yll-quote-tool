@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   quoteRowToPortalQuote,
   resolveApprovalSelectionSeed,
+  resolveBrowsingSelectionSeed,
   BILLED_ROOFLINE_IDS,
   type QuoteRowForPortal,
 } from './adapter';
@@ -1718,5 +1719,164 @@ describe('quoteRowToPortalQuote — pending booked amendment consent', () => {
     expect(approval?.pendingAmendment).toBeUndefined();
     expect(approval?.totalUsd).toBe(2400);
     expect(approval?.depositUsd).toBe(1000);
+  });
+});
+
+// Ledger row 239 — persisted portal BROWSING selection (never the frozen
+// approval). Covers the pure reconciliation function directly, then the full
+// quoteRowToPortalQuote → resolveBrowsingSelectionSeed pipeline the portal
+// page actually drives.
+describe('resolveBrowsingSelectionSeed', () => {
+  const FALLBACK = { initialPackageId: 'A' as const, initialSelectedItemIds: undefined };
+  const VALID_PACKAGE_IDS = new Set(['A', 'B', 'D'] as const);
+  const REAL_ITEM_IDS = new Set(['item-1', 'item-2', 'item-3']);
+
+  it('returns the fallback when there is no saved browsing selection', () => {
+    expect(resolveBrowsingSelectionSeed(undefined, FALLBACK, VALID_PACKAGE_IDS, REAL_ITEM_IDS)).toEqual(
+      FALLBACK,
+    );
+  });
+
+  it('restores a custom (D) selection whose ids are ALL still valid', () => {
+    const seed = resolveBrowsingSelectionSeed(
+      { packageId: 'D', selectedItemIds: ['item-1', 'item-3'] },
+      FALLBACK,
+      VALID_PACKAGE_IDS,
+      REAL_ITEM_IDS,
+    );
+    expect(seed).toEqual({ initialPackageId: 'D', initialSelectedItemIds: ['item-1', 'item-3'] });
+  });
+
+  it('restores a custom (D) selection FILTERED to the ids still valid (partial staleness is coherent)', () => {
+    const seed = resolveBrowsingSelectionSeed(
+      { packageId: 'D', selectedItemIds: ['item-1', 'item-99-gone'] },
+      FALLBACK,
+      VALID_PACKAGE_IDS,
+      REAL_ITEM_IDS,
+    );
+    expect(seed).toEqual({ initialPackageId: 'D', initialSelectedItemIds: ['item-1'] });
+  });
+
+  it('falls back to the staff default when a custom (D) selection has gone ENTIRELY stale — never seeds an empty custom set', () => {
+    const seed = resolveBrowsingSelectionSeed(
+      { packageId: 'D', selectedItemIds: ['item-97-gone', 'item-98-gone'] },
+      FALLBACK,
+      VALID_PACKAGE_IDS,
+      REAL_ITEM_IDS,
+    );
+    expect(seed).toEqual(FALLBACK);
+  });
+
+  it('restores a lettered tier (A/B/C) that still exists among the quote\'s current packages', () => {
+    const seed = resolveBrowsingSelectionSeed(
+      { packageId: 'B', selectedItemIds: [] },
+      FALLBACK,
+      VALID_PACKAGE_IDS,
+      REAL_ITEM_IDS,
+    );
+    expect(seed).toEqual({ initialPackageId: 'B', initialSelectedItemIds: undefined });
+  });
+
+  it('falls back to the staff default when the saved lettered tier no longer exists (e.g. a service-type change)', () => {
+    const seed = resolveBrowsingSelectionSeed(
+      { packageId: 'C', selectedItemIds: [] }, // 'C' not in VALID_PACKAGE_IDS
+      FALLBACK,
+      VALID_PACKAGE_IDS,
+      REAL_ITEM_IDS,
+    );
+    expect(seed).toEqual(FALLBACK);
+  });
+});
+
+describe('quoteRowToPortalQuote — browsing selection (ledger row 239)', () => {
+  const result = calculateQuote(emptyInputs({ santasFootage: 100 }));
+
+  function rowWithBrowsing(
+    browsing: unknown,
+    overrides: Partial<QuoteRowForPortal> = {},
+  ): QuoteRowForPortal {
+    return {
+      ...rowWith(result),
+      browsing_selection: browsing as QuoteRowForPortal['browsing_selection'],
+      browsing_selection_updated_at: '2026-08-18T12:00:00Z',
+      ...overrides,
+    };
+  }
+
+  it('surfaces a saved browsing selection on an UNAPPROVED quote', () => {
+    const portal = quoteRowToPortalQuote({
+      row: rowWithBrowsing({
+        packageId: 'D',
+        selectedItemIds: ['roofline-santas'],
+        rushSelected: true,
+        takedownSelected: false,
+        installTiming: 'october',
+        colorSchemeId: 'red-green',
+        customPattern: ['red', 'green'],
+        permanentEffect: 'static',
+      }),
+      photos: PHOTOS,
+    })!;
+    expect(portal.browsingSelection).toEqual({
+      packageId: 'D',
+      selectedItemIds: ['roofline-santas'],
+      rushSelected: true,
+      takedownSelected: false,
+      installTiming: 'october',
+      colorSchemeId: 'red-green',
+      customPattern: ['red', 'green'],
+      permanentEffect: 'static',
+      savedAt: '2026-08-18T12:00:00Z',
+    });
+    // installTiming precedence: approval (absent) > browsing (present) > staff default.
+    expect(portal.installTiming).toBe('october');
+  });
+
+  it('NEVER surfaces browsingSelection on an APPROVED quote — the frozen snapshot always wins', () => {
+    const portal = quoteRowToPortalQuote({
+      row: rowWithBrowsing(
+        { packageId: 'D', selectedItemIds: ['roofline-santas'], installTiming: 'october' },
+        {
+          customer_approved_at: '2026-08-19T00:00:00Z',
+          approval_snapshot: {
+            approvedAt: '2026-08-19T00:00:00Z',
+            customerSelection: { packageId: 'A', installTiming: 'september' },
+          },
+        },
+      ),
+      photos: PHOTOS,
+    })!;
+    expect(portal.browsingSelection).toBeUndefined();
+    // installTiming comes from the FROZEN approval, not the stale browsing save.
+    expect(portal.installTiming).toBe('september');
+  });
+
+  it('degrades gracefully (undefined) on a malformed/garbage browsing_selection instead of crashing', () => {
+    const portal = quoteRowToPortalQuote({
+      row: rowWithBrowsing({ packageId: 'not-a-real-package', selectedItemIds: 'not-an-array' }),
+      photos: PHOTOS,
+    })!;
+    expect(portal.browsingSelection).toBeUndefined();
+  });
+
+  it('is undefined when the quote has never been browsed (no browsing_selection column value)', () => {
+    const portal = quoteRowToPortalQuote({ row: rowWith(result), photos: PHOTOS })!;
+    expect(portal.browsingSelection).toBeUndefined();
+  });
+
+  it('drops non-string entries and an invalid permanentEffect, defaults a missing installTiming to none', () => {
+    const portal = quoteRowToPortalQuote({
+      row: rowWithBrowsing({
+        packageId: 'D',
+        selectedItemIds: ['roofline-santas', 42, null],
+        permanentEffect: 'not-a-real-effect',
+      }),
+      photos: PHOTOS,
+    })!;
+    expect(portal.browsingSelection).toMatchObject({
+      selectedItemIds: ['roofline-santas'],
+      installTiming: 'none',
+    });
+    expect(portal.browsingSelection?.permanentEffect).toBeUndefined();
   });
 });
