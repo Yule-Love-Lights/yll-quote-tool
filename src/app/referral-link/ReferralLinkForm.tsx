@@ -36,7 +36,11 @@ const labelClass = 'block text-[11px] font-semibold uppercase tracking-[0.18em] 
 // as src/app/portal/error.tsx and src/components/portal/dark/PersonalContact.tsx.
 const PHONE = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || '(631) 517-0186';
 const TEL_HREF = `tel:${PHONE.replace(/[^\d+]/g, '')}`;
-const phoneLinkClass =
+// Shared underline-link treatment. Originally just the phone tel: link
+// below; review fix 1 (this round) reuses it for ReferralLinkReady's own
+// "get your own link" escape hatch, so it's named for what it looks like,
+// not just its first use.
+const linkClass =
   'text-[#FFB744] underline underline-offset-2 hover:text-[#FFC565] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0D1519] rounded-sm';
 
 /**
@@ -52,7 +56,7 @@ export function ReferralLinkSuccess() {
       <p className="mt-3 text-[15px] text-[#A89F87] leading-[1.6]">
         If that email&apos;s in our system, your referral link is on its way, give it a few minutes and peek at
         spam if it&apos;s not there yet. Still nothing by tonight? Call or text us at{' '}
-        <a href={TEL_HREF} className={phoneLinkClass}>
+        <a href={TEL_HREF} className={linkClass}>
           {PHONE}
         </a>{' '}
         and we&apos;ll send it right over.
@@ -68,16 +72,38 @@ export function ReferralLinkSuccess() {
  * SAME copy-to-clipboard control the booked-page referral section already
  * uses, so this gets the same dark palette and the same "Copy link" /
  * "Copied" interaction for free, no new component to build or maintain.
+ *
+ * Review fix 1 (this round): forwarding is exactly what a referral
+ * campaign encourages, and the ORIGINAL copy here ("Your link is ready...
+ * We also emailed you a copy") was actively wrong for anyone who opens a
+ * forwarded copy of the campaign email: it is not their link, and the
+ * email did not go to them. `name` (the contact's first name from the
+ * route's response, null if GHL has none on file) lets the heading say
+ * WHOSE link this is instead of assuming the reader; the "we emailed you"
+ * claim is dropped rather than reworded, since this screen has no way to
+ * know who is actually looking at it. The line below the copy button is
+ * the escape hatch: a plain link to /referral-link with no query string,
+ * so a forwarded viewer can get their OWN link instead of using someone
+ * else's, whether or not a name was available to name them by.
  */
-export function ReferralLinkReady({ link }: { link: string }) {
+export function ReferralLinkReady({ link, name }: { link: string; name: string | null }) {
   return (
     <div className="rounded-2xl bg-[#0D1519] border border-[#1F2A23] p-8 text-center">
-      <p className="font-display text-[22px] md:text-[26px] font-semibold text-[#F4ECD8]">Your link is ready.</p>
+      <p className="font-display text-[22px] md:text-[26px] font-semibold text-[#F4ECD8]">
+        {name ? `${name}'s referral link is ready.` : 'This referral link is ready.'}
+      </p>
       <p className="mt-3 text-[15px] text-[#A89F87] leading-[1.6]">
         Share it with a friend or neighbor. When they book, you get $125 off your next job. They get 2 free
-        16&quot; spritzers. We also emailed you a copy, so it is easy to find later.
+        16&quot; spritzers.
       </p>
       <ReferralLinkCopy link={link} />
+      <p className="mt-5 text-[13px] text-[#A89F87] leading-[1.5]">
+        Forwarded to you? This link belongs to {name || 'someone else'}.{' '}
+        <a href="/referral-link" className={linkClass}>
+          Get your own referral link
+        </a>
+        .
+      </p>
     </div>
   );
 }
@@ -98,7 +124,7 @@ export function ReferralLinkErrorMessage({ serverError }: { serverError: string 
   return (
     <>
       Something went wrong. Please call or text us instead at{' '}
-      <a href={TEL_HREF} className={phoneLinkClass}>
+      <a href={TEL_HREF} className={linkClass}>
         {PHONE}
       </a>
       .
@@ -111,6 +137,9 @@ export function ReferralLinkForm({ contactId }: { contactId?: string }) {
   const [status, setStatus] = useState<'idle' | 'submitting' | 'done' | 'error'>('idle');
   const [serverError, setServerError] = useState<string | null>(null);
   const [referralUrl, setReferralUrl] = useState<string | null>(null);
+  // Review fix 1 (this round): the contact's first name, alongside
+  // referralUrl, so ReferralLinkReady can say WHOSE link this is.
+  const [firstName, setFirstName] = useState<string | null>(null);
 
   // naldo/referral-link-personalized: a truthy contactId prop switches this
   // whole form into the one-click mode below. The page only ever passes a
@@ -133,13 +162,14 @@ export function ReferralLinkForm({ contactId }: { contactId?: string }) {
       });
       const json = await res
         .json()
-        .catch(() => ({}) as { ok?: boolean; error?: string; referralUrl?: string });
+        .catch(() => ({}) as { ok?: boolean; error?: string; referralUrl?: string; firstName?: string | null });
       if (!res.ok || !json.ok) {
         setServerError(json.error || null);
         setStatus('error');
         return;
       }
       setReferralUrl(json.referralUrl ?? null);
+      setFirstName(json.firstName ?? null);
       setStatus('done');
     } catch {
       setServerError(null);
@@ -151,7 +181,7 @@ export function ReferralLinkForm({ contactId }: { contactId?: string }) {
     // A referral URL only ever comes back on the contact-id path, and only
     // on a real match (route.ts). Every other outcome, either path, falls
     // back to the same generic "check your inbox" screen.
-    return referralUrl ? <ReferralLinkReady link={referralUrl} /> : <ReferralLinkSuccess />;
+    return referralUrl ? <ReferralLinkReady link={referralUrl} name={firstName} /> : <ReferralLinkSuccess />;
   }
 
   return (

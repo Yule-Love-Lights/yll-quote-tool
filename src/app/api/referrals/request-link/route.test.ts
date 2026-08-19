@@ -569,7 +569,6 @@ describe('POST /api/referrals/request-link (contact-id path)', () => {
     expect((await res.json()).referralUrl).toBe('https://quote.example.com/refer/DEADLINE1');
   });
 
-
   it('a contact id that resolves mints the code, sends the email, and returns the link in the body', async () => {
     getContact.mockResolvedValue(RESOLVED_CONTACT);
     const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
@@ -739,6 +738,31 @@ describe('POST /api/referrals/request-link (contact-id path)', () => {
       expect.objectContaining({ email: null }),
       { skipIdentityRefresh: true },
     );
+  });
+
+  describe('firstName in the response (review fix 1, this round)', () => {
+    it('includes the resolved contact first name alongside the link', async () => {
+      getContact.mockResolvedValue(RESOLVED_CONTACT);
+      const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+      const json = (await res.json()) as { firstName?: string | null };
+      expect(json.firstName).toBe('Riley');
+    });
+
+    it('is null when the contact has no first name on file', async () => {
+      getContact.mockResolvedValue({ ...RESOLVED_CONTACT, firstName: undefined });
+      const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+      const json = (await res.json()) as { firstName?: string | null; referralUrl?: string };
+      expect(json.referralUrl).toBeTruthy(); // still mints and returns the link
+      expect(json.firstName).toBeNull();
+    });
+
+    it('the email path response never carries a firstName field (uniform response, unchanged)', async () => {
+      searchContacts.mockResolvedValue([MATCHING_CONTACT]);
+      const res = await POST(req({ email: 'jamie@example.com' }));
+      const json = await res.json();
+      expect(json).toEqual({ ok: true });
+      expect(Object.keys(json)).not.toContain('firstName');
+    });
   });
 
   describe('staff inbox record (review fix 2, this round)', () => {

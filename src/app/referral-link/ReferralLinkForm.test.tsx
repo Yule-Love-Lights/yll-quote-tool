@@ -72,22 +72,59 @@ describe('ReferralLinkErrorMessage (review fix 1)', () => {
   });
 });
 
-describe('ReferralLinkReady (naldo/referral-link-personalized)', () => {
+describe('ReferralLinkReady (naldo/referral-link-personalized, review fix 1 this round)', () => {
   const LINK = 'https://quote.yulelovelights.com/refer/CODE1234';
 
   it('shows the link and an obvious way to copy it', () => {
-    const html = renderToStaticMarkup(<ReferralLinkReady link={LINK} />);
-    expect(html).toContain('Your link is ready.');
+    const html = renderToStaticMarkup(<ReferralLinkReady link={LINK} name="Riley" />);
     expect(html).toContain(LINK);
     // ReferralLinkCopy's own copy button, reused here rather than rebuilt.
     expect(html).toContain('Copy link');
   });
 
+  it('names the person in the heading when a name is available', () => {
+    const html = renderToStaticMarkup(<ReferralLinkReady link={LINK} name="Riley" />);
+    // React escapes ' to &#x27; in serialized text content.
+    expect(html).toContain('Riley&#x27;s referral link is ready.');
+    expect(html).not.toContain('>Your link is ready.<');
+  });
+
+  it('falls back to a neutral, non-possessive heading when no name is available', () => {
+    const html = renderToStaticMarkup(<ReferralLinkReady link={LINK} name={null} />);
+    expect(html).toContain('This referral link is ready.');
+    // Never claims ownership ("Your link") when there is nobody to name.
+    expect(html).not.toContain('Your link is ready.');
+  });
+
+  it('never claims the visitor was emailed a copy (review fix 1: that claim is false for a forwarded viewer)', () => {
+    const html = renderToStaticMarkup(<ReferralLinkReady link={LINK} name="Riley" />);
+    expect(html).not.toContain('emailed you');
+  });
+
+  it('gives a forwarded viewer an obvious escape hatch to their own link', () => {
+    const html = renderToStaticMarkup(<ReferralLinkReady link={LINK} name="Riley" />);
+    expect(html).toContain('Forwarded to you?');
+    expect(html).toContain('Riley');
+    expect(html).toContain('href="/referral-link"');
+    expect(html).toContain('Get your own referral link');
+    // The escape hatch itself must carry no query string, so it lands on
+    // the typed-email form, never re-resolving the same forwarded id.
+    expect(html).not.toContain('href="/referral-link?');
+  });
+
+  it('the escape hatch still reads sensibly with no name available', () => {
+    const html = renderToStaticMarkup(<ReferralLinkReady link={LINK} name={null} />);
+    expect(html).toContain('someone else');
+    expect(html).toContain('href="/referral-link"');
+  });
+
   it('never uses an em dash and never uses the banned words', () => {
-    const html = renderToStaticMarkup(<ReferralLinkReady link={LINK} />);
-    expect(html).not.toContain('—');
-    for (const banned of ['unlock', 'leverage', 'delve']) {
-      expect(html.toLowerCase()).not.toContain(banned);
+    for (const name of ['Riley', null]) {
+      const html = renderToStaticMarkup(<ReferralLinkReady link={LINK} name={name} />);
+      expect(html).not.toContain('—');
+      for (const banned of ['unlock', 'leverage', 'delve']) {
+        expect(html.toLowerCase()).not.toContain(banned);
+      }
     }
   });
 });

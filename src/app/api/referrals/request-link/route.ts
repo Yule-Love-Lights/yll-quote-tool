@@ -214,13 +214,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(UNIFORM_RESPONSE);
     }
 
-    let referralUrl: string | null = null;
+    let result: { referralUrl: string; firstName: string | null } | null = null;
     try {
-      referralUrl = await findAndSendForContactId(cleanContactId);
+      result = await findAndSendForContactId(cleanContactId);
     } catch (err) {
       console.error('[api/referrals/request-link] contact-id path failed:', err);
     }
-    return referralUrl ? NextResponse.json({ ok: true, referralUrl }) : NextResponse.json(UNIFORM_RESPONSE);
+    // Review fix 1 (this round): firstName rides along so the confirmation
+    // screen can say WHOSE link this is (see ReferralLinkForm.tsx), instead
+    // of a bare "your link", which is actively wrong for anyone who opens a
+    // forwarded copy of the campaign email.
+    return result
+      ? NextResponse.json({ ok: true, referralUrl: result.referralUrl, firstName: result.firstName })
+      : NextResponse.json(UNIFORM_RESPONSE);
   }
 
   // ─── Email path (unchanged from naldo/referral-self-serve) ───────────────
@@ -316,14 +322,18 @@ async function findAndSendIfMatch(email: string): Promise<void> {
 
 // naldo/referral-link-personalized: fetch ONE contact by id (no fuzzy
 // search involved, unlike the email path above) and hand off to the same
-// mint-and-send tail. Returns the referral URL on success, or null on
-// anything else (id does not resolve, a GHL error, customer/code could not
-// be resolved), so the caller falls back to the same generic response the
-// email path uses either way, never confirming or denying that an id is
-// real. Review fix 4a (this round): the cooldown no longer belongs to this
-// list. A resolved contact always gets its link back, cooldown or not; see
+// mint-and-send tail. Returns the referral URL and the contact's first
+// name (review fix 1, this round: so the confirmation screen can say
+// WHOSE link it is) on success, or null on anything else (id does not
+// resolve, a GHL error, customer/code could not be resolved), so the
+// caller falls back to the same generic response the email path uses
+// either way, never confirming or denying that an id is real. Review fix
+// 4a (this round): the cooldown no longer belongs to that null-cases list.
+// A resolved contact always gets its link back, cooldown or not; see
 // sendAndStamp below for what the cooldown actually gates now.
-async function findAndSendForContactId(contactId: string): Promise<string | null> {
+async function findAndSendForContactId(
+  contactId: string,
+): Promise<{ referralUrl: string; firstName: string | null } | null> {
   try {
     const match = await getContact(contactId);
 
@@ -373,7 +383,7 @@ async function findAndSendForContactId(contactId: string): Promise<string | null
       }
     });
 
-    return minted.referralUrl;
+    return { referralUrl: minted.referralUrl, firstName: match.firstName ?? null };
   } catch (err) {
     console.error('[api/referrals/request-link] contact-id lookup/send failed:', err);
     return null;
