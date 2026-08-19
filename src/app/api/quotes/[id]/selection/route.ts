@@ -88,14 +88,15 @@ const MAX_PATTERN_COLORS = 100;
 // attacker-shaped body at all.
 //
 // 200 is generous for every real value here: a scene-item id is
-// crypto.randomUUID() stripped of dashes and sliced to 12 chars (editor.ts's
-// genId), a free-item id is a full crypto.randomUUID() (36 chars,
-// free-items/route.ts), a colorSchemeId is either a fixed catalog slug (≤19
-// chars, design/colorSchemes.ts) or 'custom', and a customPattern entry is a
-// palette color id — either a built-in slug (≤19 chars,
-// editor-core/colors.ts) or a custom palette color's crypto.randomUUID() (36
-// chars, settings/page.tsx). 200 also matches this codebase's existing
-// convention for an id/name-shaped field elsewhere (estimate/contact's
+// crypto.randomUUID() stripped of dashes and sliced to 12 chars
+// (editor-core/editor.ts's cryptoId), a free-item id is a full
+// crypto.randomUUID() (36 chars, free-items/route.ts), a colorSchemeId is
+// either a fixed catalog slug (≤19 chars, design/colorSchemes.ts) or
+// 'custom', and a customPattern entry is a palette color id — either a
+// built-in slug (≤19 chars, editor-core/colors.ts) or a custom palette
+// color's crypto.randomUUID() (36 chars, settings/page.tsx). 200 also
+// matches this codebase's existing convention for an id/name-shaped field
+// elsewhere (estimate/contact's
 // MAX_LEN.name, the HighLevel attach route's contactName/contactEmail caps,
 // the Homeworks signed route's homeworksContractId cap — all 200).
 const MAX_STRING_LEN = 200;
