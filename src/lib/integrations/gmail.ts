@@ -119,25 +119,16 @@ export async function getOrCreateLabel(accessToken: string, name: string): Promi
   return created.id;
 }
 
-/** ⚠️ WRITE. Add/remove labels on a thread (Handled: + YLL/Handled, − UNREAD).
- *  Affects EVERY message on the thread — see modifyMessage below for the
- *  single-message sibling the Handled write-back prefers whenever it knows
- *  the specific message id (#288 fix round). */
-export async function modifyThread(
-  accessToken: string,
-  threadId: string,
-  body: { addLabelIds?: string[]; removeLabelIds?: string[] },
-): Promise<void> {
-  const user = encodeURIComponent(gmailUser());
-  await gmailPost<unknown>(`/users/${user}/threads/${encodeURIComponent(threadId)}/modify`, accessToken, body);
-}
-
 /** ⚠️ WRITE. Add/remove labels on a single MESSAGE (not its whole thread).
- *  #288 fix round (staff HIGH): the Handled write-back uses this instead of
- *  modifyThread whenever the target row knows its own message id (any
- *  GML-split touch), so marking one customer's row Handled doesn't also
- *  stamp sibling customers' still-unworked forwards on the same coalesced
- *  thread as read/labeled. */
+ *  #293 fix round (customer HIGH, 3rd instance of the class): this is now the
+ *  ONLY way the Handled write-back touches Gmail. A thread-wide modify
+ *  (threads.modify, labels every message on the thread) used to be the
+ *  fallback for a row with no message id — retired, because Gmail coalesces
+ *  multiple different customers' Zapier lead-forwards into one thread when
+ *  they share a subject line, so a thread-wide call would silently stamp
+ *  sibling customers' still-unworked forwards read/labeled too. sync.ts calls
+ *  this only when the target row knows its own message id; a null id skips
+ *  the write-back rather than falling back to a thread-wide call. */
 export async function modifyMessage(
   accessToken: string,
   messageId: string,
