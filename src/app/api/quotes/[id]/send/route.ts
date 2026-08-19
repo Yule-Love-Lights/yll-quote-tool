@@ -57,6 +57,7 @@
 // that no longer applies now that admin auth is enforced.)
 
 import { NextRequest, NextResponse } from 'next/server';
+import type { QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { rateLimitResponse } from '@/lib/rateLimit';
 import {
   createOpportunity,
@@ -70,6 +71,7 @@ import {
   HighLevelError,
 } from '@/lib/integrations/highlevel';
 import { resolvePipelineStages, quoteLinkFieldId, quoteLinkFieldEnvVar } from '@/lib/integrations/ghlPipelineMap';
+import { pushEventDateToGhl } from '@/lib/integrations/ghlEventDate';
 import {
   quoteEmailSubject,
   quoteSmsBody,
@@ -254,6 +256,11 @@ type QuoteRow = {
   customer_email: string | null;
   customer_phone: string | null;
   customer_address: string | null;
+  // Event-date GHL push (#237): only column read here is inputs.event.eventDate
+  // (an ISO yyyy-mm-dd string, staff-entered on EventSection — see
+  // src/lib/event/types.ts's EventInputFields). Not selected before this row;
+  // added specifically for the event-date push below.
+  inputs: QuoteInputs | null;
 };
 
 export function hasDeliverableQuoteResult(
@@ -310,7 +317,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { data: quote, error: fetchErr } = await withDbTimeout((signal) =>
     sb
       .from('quotes')
-      .select('id, highlevel_opportunity_id, highlevel_contact_id, customer_name, service_type, total, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status, ghl_stage_synced_at, is_test, legacy_rebook, is_nce, view_only, customer_id, customer_email, customer_phone, customer_address')
+      .select('id, highlevel_opportunity_id, highlevel_contact_id, customer_name, service_type, total, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status, ghl_stage_synced_at, is_test, legacy_rebook, is_nce, view_only, customer_id, customer_email, customer_phone, customer_address, inputs')
       .eq('id', id)
       .abortSignal(signal)
       .single<QuoteRow>(),
@@ -670,6 +677,43 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         } catch (err) {
           console.error('[api/quotes/:id/send] quote-link custom field stamp failed:', hlErrorMessage(err));
         }
+      }
+    }
+
+    // Event-date GHL push (#237): mirror an EVENT quote's staff-entered event
+    // date onto its linked contact's "Event Date" custom field — see
+    // src/lib/integrations/ghlEventDate.ts for the find-or-create-by-name
+    // resolution (1:1 with ghlTenure.ts) and the MM/DD/YYYY format decision.
+    //
+    // Positive service-type gate (never `!== 'permanent'`, per this repo's
+    // standing rule) — a negative gate would silently push a garbage/blank
+    // value for every future non-event vertical instead of a clean no-op.
+    //
+    // Deliberately NOT gated on `stageUpdated` (unlike the quote-link stamp
+    // just above): the event date is independent contact metadata, not tied
+    // to the portal URL a card move stamps — a customer should still get
+    // their event date recorded on the CRM contact even if the pipeline card
+    // move itself failed (e.g. a transient GHL error on that one call). Still
+    // gated on `!quote.is_test` (never touch a real GHL contact for a
+    // simulated send) and a linked contact.
+    //
+    // Placement (answers ledger #237 open question (b), "should it also fire
+    // on ?retryDelivery"): inside ghlStageChain, which already returns
+    // immediately at the top of this closure when `isDeliveryRetry` — so a
+    // delivery-only retry (no CRM card move, no re-stamp) also skips this
+    // push, exactly like the rest of the CRM-write chain. A `?retryGhl`
+    // reconcile does reach this line and re-pushes the same value again,
+    // which is harmless (a plain overwrite, not an append).
+    //
+    // pushEventDateToGhl is itself fail-soft/deadline-bounded and never
+    // throws (see that file) — the try/catch here is defense-in-depth only,
+    // mirroring how every pushTenureYearsToGhl call site wraps it the same
+    // way despite that same documented contract.
+    if (quote.service_type === 'event' && !quote.is_test && quote.highlevel_contact_id) {
+      try {
+        await pushEventDateToGhl(quote.highlevel_contact_id, quote.inputs?.event?.eventDate);
+      } catch (err) {
+        console.error('[api/quotes/:id/send] event-date GHL push failed (non-fatal):', err);
       }
     }
 
