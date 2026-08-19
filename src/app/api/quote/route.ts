@@ -669,8 +669,22 @@ export async function POST(req: NextRequest) {
     // applyNceDepositDefault's own OFF branch. Must land before price()
     // below so both the priced result.depositRate snapshot and the saved
     // inputs reflect the correction.
+    //
+    // Delta-verify MED (sibling-guard parity): gated on the quote NOT being
+    // approved yet, matching the rule the sibling NCE toggle route already
+    // states in its own header — "pre-approval only (customer_approved_at
+    // null — the #177 freeze owns an approved/booked quote's deposit)". The
+    // #177 freeze block above only 409s when the INCOMING depositPercent
+    // DIFFERS from the stored one, so a plain reopen-and-resave of an
+    // already-approved quote that carries a pre-existing violation (is_nce
+    // true + 40 on an ineligible service type) sails through it — and without
+    // this guard the reset would then silently move an APPROVED customer's
+    // deposit from 40% to the 50% default, with only a console.warn as a
+    // trace. A pre-existing violation on an approved quote is a data problem
+    // for a human to resolve deliberately, not something a routine re-save
+    // should rewrite underneath them. Prod currently has zero such rows.
     const gateForcedNceOff = !eligibleForTags && isNce === true;
-    if (gateForcedNceOff && quoteInputs.depositPercent === 40) {
+    if (gateForcedNceOff && quoteInputs.depositPercent === 40 && !existing?.customer_approved_at) {
       console.warn(
         `[quote/route] #243 gate: clamped is_nce off for ineligible serviceType=${effectiveServiceType} on quoteId=${
           typeof quoteId === 'string' ? quoteId : '(new)'

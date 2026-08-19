@@ -1006,6 +1006,37 @@ describe('POST /api/quote — NCE-gated deposit-rate reset (#243 fix round)', ()
     expect(updatedInputs.depositPercent).toBe(0);
   });
 
+  // Delta-verify MED (sibling-guard parity): the #177 freeze above only 409s
+  // when the INCOMING depositPercent DIFFERS from the stored one, so a plain
+  // reopen-and-resave of an already-approved quote carrying a pre-existing
+  // violation sails past it. Without the approval guard the reset would then
+  // silently move an APPROVED customer's deposit from 40% to the 50% default.
+  it('does NOT reset the deposit on an already-APPROVED quote — the #177 freeze owns it', async () => {
+    rawRef.current!.service_type = 'permanent';
+    rawRef.current!.customer_approved_at = '2026-01-02T00:00:00Z';
+    // The stored deposit must ALSO be 40 — that is what makes this the real
+    // scenario: the #177 freeze compares incoming vs stored and only 409s on a
+    // DIFFERENCE, so a reopen-and-resave of the same hydrated values passes it
+    // and reaches the reset. With a differing stored value the freeze 409s
+    // first and the reset is never reached (verified: this test failed with a
+    // 409 until the stored value matched).
+    rawRef.current!.inputs = { depositPercent: 40 };
+    const res = await POST(
+      makeReq({
+        quoteId: REAL_UUID,
+        inputs: { ...permInputs(100), depositPercent: 40 },
+        isNce: true,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const updateArgs = update.mock.calls[0] as unknown[];
+    // The TAG is still clamped — that half is not deposit money and stays correct.
+    expect(updateArgs[7]).toBe(false);
+    // The DEPOSIT is left exactly as the approved customer agreed to it.
+    const updatedInputs = updateArgs[1] as { depositPercent?: number };
+    expect(updatedInputs.depositPercent).toBe(40);
+  });
+
   it('warns via console.warn when the deposit reset fires, naming the quoteId', async () => {
     rawRef.current!.service_type = 'permanent';
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
