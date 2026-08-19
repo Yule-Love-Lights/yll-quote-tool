@@ -68,6 +68,28 @@ vi.mock('@/lib/integrations/ghlEventDate', async (importOriginal) => ({
   pushEventDateToGhl: pushEventDateMock,
 }));
 
+// FIX A (#237 fix round 2): route.ts now schedules the re-push via
+// next/server's after() instead of a bare `void` call (see the route's own
+// FIX A comment) — the real after() throws outside a request scope, which
+// this plain vitest environment never establishes, so it must be mocked.
+// Fires the task immediately without awaiting it (same non-blocking timing
+// the old void call had, per referrals.test.ts's identical precedent — see
+// its "Review fix 8" comment) so every existing pushEventDateMock assertion
+// below keeps working unmodified; afterCallCount lets ONE test additionally
+// assert the call was actually routed through after(), not just that the
+// push still fires (a bare void call would make these tests pass too).
+const { afterCallCount } = vi.hoisted(() => ({ afterCallCount: { current: 0 } }));
+vi.mock('next/server', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('next/server')>();
+  return {
+    ...actual,
+    after: (task: () => Promise<void> | void) => {
+      afterCallCount.current++;
+      void task();
+    },
+  };
+});
+
 // No design linked in most tests → isValidDesignId false, getDesign untouched.
 // W1-010: designIdRef.current flips this per-test so the design-projection
 // money branch (route.ts ~398: getDesign → applyProjectionToInputs) gets real
@@ -141,6 +163,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   operatorRef.current = null;
   designIdRef.current = false;
+  afterCallCount.current = 0;
   getDesignMock.mockResolvedValue(null);
   // Default the update-branch row to a plain draft (no lifecycle timestamps) so
   // the existing UUID→update tests still re-price; booked/terminal cases set it.
@@ -1252,6 +1275,12 @@ describe('POST /api/quote — event-date GHL re-push on save (FIX B, #237 fix ro
     );
     expect(res.status).toBe(200);
     expect(pushEventDateMock).toHaveBeenCalledWith('contact_1', '2026-12-25');
+    // FIX A (#237 fix round 2, technical HIGH): proves the push is actually
+    // scheduled via after(), not a bare `void` call that a platform could
+    // reclaim before it completes — a regression back to a plain void call
+    // would still make the assertion above pass (the mocked after() fires
+    // the task either way), but afterCallCount would stay 0.
+    expect(afterCallCount.current).toBe(1);
   });
 
   it('does NOT re-push when the date is unchanged (a routine unrelated re-save)', async () => {

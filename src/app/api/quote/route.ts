@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { calculateQuote, QuoteInputs, MINI_LIGHT_TYPES, normalizedDepositOverride } from '@/lib/pricing/pricingEngine';
 import { saveQuote, updateQuote, getQuoteRaw, Customer } from '@/lib/quotes';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
@@ -770,18 +770,37 @@ export async function POST(req: NextRequest) {
     // set for a booked order too) — no separate wiring needed in
     // amend/route.ts itself.
     //
-    // Fire-and-forget (NOT awaited): unlike the send route's ghlStageChain
-    // (which already tolerates several seconds of GHL latency inside its own
+    // Not awaited: unlike the send route's ghlStageChain (which already
+    // tolerates several seconds of GHL latency inside its own
     // Promise.allSettled group and reports the outcome back to the operator
-    // via eventDateSyncError — FIX A), this route answers a routine builder
-    // Save/Calculate click with no equivalent warning mechanism. Blocking
-    // the save on a GHL round trip would make Save itself feel slow for a
-    // CRM write the operator isn't watching for — and the gate above already
-    // means this only fires on the rare click that actually changed the
-    // date, not on every save. pushEventDateToGhl is already fail-soft and
-    // internally deadline-bounded (6s, see ghlEventDate.ts) — a failure here
-    // only logs, exactly like every other best-effort GHL call site in this
-    // codebase; there is nothing to await FOR.
+    // via eventDateSyncError — FIX A of round 1), this route answers a
+    // routine builder Save/Calculate click with no equivalent warning
+    // mechanism. Blocking the save on a GHL round trip would make Save
+    // itself feel slow for a CRM write the operator isn't watching for — and
+    // the gate above already means this only fires on the rare click that
+    // actually changed the date, not on every save. pushEventDateToGhl is
+    // already fail-soft and internally deadline-bounded (6s, see
+    // ghlEventDate.ts) — a failure here only logs, exactly like every other
+    // best-effort GHL call site in this codebase; there is nothing to await
+    // FOR.
+    //
+    // FIX A (#237 fix round 2, technical HIGH): "not awaited" used to mean a
+    // bare `void pushEventDateToGhl(...)` immediately before this handler's
+    // `return NextResponse.json(...)` below — src/lib/referrals.ts's
+    // ensureReferralCode (see its "Review fix 8" comment) documents exactly
+    // why that's unsafe: a detached child promise started on the main
+    // request path is NOT covered by `waitUntil`, which "only extends the
+    // invocation for the promise(s) actually passed to after()"
+    // (node_modules/next/dist/docs/.../after.md) — so once this handler's
+    // own response promise resolves, the platform may reclaim the execution
+    // context before the in-flight GHL call (up to its own 6s deadline)
+    // finishes. Nothing here surfaces that failure to the operator (unlike
+    // the send route's eventDateSyncError), so a reclaimed context makes the
+    // push silently, non-deterministically inert — a clean Save with no
+    // indication the date never synced. Wrapped in `after()` here, 1:1 with
+    // referrals.ts's own nested-after() call: registers with whatever
+    // waitUntil the current request context provides, with no added latency
+    // for this handler's own response (still not awaited).
     if (
       isUpdate &&
       saved &&
@@ -819,7 +838,7 @@ export async function POST(req: NextRequest) {
       const priorFormatted = formatEventDateForGhl(priorInputs?.event?.eventDate);
       const nextFormatted = formatEventDateForGhl(quoteInputs.event?.eventDate);
       if (nextFormatted && nextFormatted !== priorFormatted) {
-        void pushEventDateToGhl(existing.highlevel_contact_id, quoteInputs.event?.eventDate);
+        after(() => pushEventDateToGhl(existing.highlevel_contact_id, quoteInputs.event?.eventDate));
       }
     }
 
