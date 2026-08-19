@@ -10,7 +10,7 @@
 // the read-only declined branch — so it's mocked here, same shape as this
 // repo's other vi.mock('@/lib/...') fakes.
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: () => {} }) }));
@@ -97,5 +97,30 @@ describe('AmendmentConsentCard — declined (read-only confirmation)', () => {
     const html = renderToStaticMarkup(<AmendmentConsentCard quoteId="q1" amendment={noReason} />);
     expect(html).toContain('You kept your order as it was');
     expect(html).not.toContain('What you told us');
+  });
+
+  // FIX9 (review MED): this screen's own comment says "changing their mind
+  // means calling/texting" — but had no phone number on it; the only one on
+  // the whole portal sat ~10 sections down.
+  describe('phone number (FIX9)', () => {
+    const OLD_PHONE = process.env.NEXT_PUBLIC_PORTAL_PHONE;
+    afterEach(() => {
+      if (OLD_PHONE === undefined) delete process.env.NEXT_PUBLIC_PORTAL_PHONE;
+      else process.env.NEXT_PUBLIC_PORTAL_PHONE = OLD_PHONE;
+    });
+
+    it('shows the default portal phone number with a tel: link', () => {
+      delete process.env.NEXT_PUBLIC_PORTAL_PHONE;
+      const html = renderToStaticMarkup(<AmendmentConsentCard quoteId="q1" amendment={declined} />);
+      expect(html).toContain('(631) 517-0186');
+      expect(html).toContain('href="tel:6315170186"');
+    });
+
+    it('uses the configured phone when set — same source as the rest of the portal', () => {
+      process.env.NEXT_PUBLIC_PORTAL_PHONE = '(555) 111-2222';
+      const html = renderToStaticMarkup(<AmendmentConsentCard quoteId="q1" amendment={declined} />);
+      expect(html).toContain('(555) 111-2222');
+      expect(html).toContain('href="tel:5551112222"');
+    });
   });
 });

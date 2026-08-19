@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { SignaturePad, type CapturedSignature } from './SignaturePad';
 import type { PortalPendingAmendment } from '@/components/portal/types';
+import { portalPhone } from '@/components/portal/friendlyError';
 
 function usd(value: number): string {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
@@ -40,6 +41,15 @@ export function AmendmentConsentCard({
   // here; changing their mind means calling/texting, same as changing an
   // approved order does.
   if (amendment.consentStatus === 'declined') {
+    // FIX9 (review MED): the only phone number on the whole portal used to
+    // sit ~10 sections down — this screen's own copy ("We'll be in touch")
+    // said nothing was actionable, and its comment above says a change of
+    // mind means calling. portalPhone() is the same source + fallback every
+    // other portal surface reads (friendlyError.ts, ledger #90) — reused
+    // here rather than re-duplicating the inline env-read expression a
+    // fourth time.
+    const phone = portalPhone();
+    const telHref = `tel:${phone.replace(/[^0-9+]/g, '')}`;
     return (
       <section className="bg-slate-950 px-4 pt-6 text-slate-100 sm:px-6" aria-labelledby="amendment-declined-title">
         <div className="mx-auto max-w-2xl rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-xl sm:p-7">
@@ -58,6 +68,13 @@ export function AmendmentConsentCard({
               {amendment.declinedReason}
             </p>
           )}
+          <p className="mt-3 text-sm text-slate-300">
+            Change your mind, or want to talk it through sooner? Call or text us at{' '}
+            <a href={telHref} className="font-semibold text-amber-300 hover:underline">
+              {phone}
+            </a>
+            .
+          </p>
         </div>
       </section>
     );
