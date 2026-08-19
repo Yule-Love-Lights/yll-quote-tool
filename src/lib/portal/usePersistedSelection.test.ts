@@ -2,17 +2,22 @@
 // house convention is pure-logic tests, no jsdom/hook-rendering — mirrors
 // src/lib/leads/usePartialCapture.test.ts's coverage of its own dedup key.
 //
-// FIX A (row 239 fix round, customer lens HIGH) added dedupKeyAfterFailedSave
-// — the pure CAS decision `send()`'s markFailed() calls when a save fails, so
-// the failure-then-retry path is exercised directly here. This repo has no
-// jsdom/happy-dom/@testing-library/react in node_modules or package.json
-// (checked before writing this), so rendering the actual hook and mocking
-// fetch/sendBeacon/document isn't possible — dedupKeyAfterFailedSave is the
-// hook's entire retry decision extracted to a pure function, same convention
-// as selectionKey, so this is a direct test of the real logic, not a stand-in.
+// FIX (row 239 fix round 2, delta-verify HIGH) replaced the round-1 model
+// (dedupKeyAfterFailedSave, a revert-on-failure CAS) with shouldSend, which
+// `send()`'s success/failure handlers use directly — lastConfirmedKeyRef is
+// only ever written on a CONFIRMED success, never reverted, so a value that
+// was never actually saved can never be mistaken for one that was (see the
+// shouldSend comment in usePersistedSelection.ts for the full trace of why
+// round 1's revert-based model lost data on two consecutive failures, and
+// why this model can't). This repo has no jsdom/happy-dom/@testing-library/
+// react in node_modules or package.json (checked before writing this), so
+// rendering the actual hook and mocking fetch/sendBeacon/document isn't
+// possible — shouldSend is the hook's entire send-or-skip decision extracted
+// to a pure function, same convention as selectionKey, so this is a direct
+// test of the real logic, not a stand-in.
 
 import { describe, it, expect } from 'vitest';
-import { selectionKey, dedupKeyAfterFailedSave, type PersistedSelectionFields } from './usePersistedSelection';
+import { selectionKey, shouldSend, type PersistedSelectionFields } from './usePersistedSelection';
 
 const BASE: PersistedSelectionFields = {
   packageId: 'A',
@@ -59,32 +64,81 @@ describe('selectionKey (dedup)', () => {
   });
 });
 
-describe('dedupKeyAfterFailedSave (FIX A — failed-save retry)', () => {
-  it('reverts to the prior key when nothing newer has claimed the slot — the failed value is retried', () => {
-    // send() optimistically set lastSavedKeyRef to 'B' before the request went
-    // out; the request then failed and nothing else has touched the ref since
-    // (currentKey === attemptedKey === 'B'), so it reverts to 'A'.
-    expect(dedupKeyAfterFailedSave('B', 'A', 'B')).toBe('A');
+describe('shouldSend (fix round 2 — confirmed-only dedup, no revert)', () => {
+  it('sends when the key differs from the last CONFIRMED key and nothing is in flight', () => {
+    expect(shouldSend('B', 'A', new Set())).toBe(true);
   });
 
-  it('does NOT stomp a newer key claimed by a later send while this one was in flight', () => {
-    // The first attempt (key 'B') is still in flight when the customer
-    // changes the selection again and a second send claims the slot with
-    // 'C'. When the FIRST attempt's failure lands, currentKey is 'C', not
-    // 'B' — reverting would incorrectly erase the newer pending value.
-    expect(dedupKeyAfterFailedSave('B', 'A', 'C')).toBe('C');
+  it('skips when the key matches the last CONFIRMED key — nothing changed since the real save', () => {
+    expect(shouldSend('A', 'A', new Set())).toBe(false);
   });
 
-  it('a later failure correctly reverts to what the EARLIER attempt actually saved', () => {
-    // Attempt 1 (key 'B', prior 'A') succeeds — the server now holds 'B'.
-    // Attempt 2 (key 'C', prior 'B') was already in flight and then fails.
-    // currentKey is still 'C' (attempt 1's success doesn't touch the ref), so
-    // attempt 2's own attemptedKey ('C') still owns the slot and it reverts
-    // to ITS prior key, 'B' — which matches what the server really has.
-    expect(dedupKeyAfterFailedSave('C', 'B', 'C')).toBe('B');
+  it('skips when a request for this exact value is already in flight, even though it differs from the confirmed key', () => {
+    expect(shouldSend('B', 'A', new Set(['B']))).toBe(false);
   });
 
-  it('is idempotent when called with matching attempted/current and no intervening change', () => {
-    expect(dedupKeyAfterFailedSave('X', 'X', 'X')).toBe('X');
+  it('does not skip for a DIFFERENT in-flight value — only an exact-key match blocks', () => {
+    expect(shouldSend('B', 'A', new Set(['C']))).toBe(true);
+  });
+
+  it('two different values can be in flight at once, and each is judged independently', () => {
+    const inFlight = new Set(['A', 'B']);
+    expect(shouldSend('A', 'K0', inFlight)).toBe(false); // A itself is in flight
+    expect(shouldSend('C', 'K0', inFlight)).toBe(true); // C is neither confirmed nor in flight
+  });
+
+  it('replays the full six-step delta-verify sequence: two consecutive failures never lose data', () => {
+    // The exact sequence the round-2 delta-verify found broken under round
+    // 1's revert-based model. Traced here against the real shouldSend
+    // decision plus the same only-on-success write rule send() uses.
+    // lastConfirmedKey is never reassigned below — that IS the point: both
+    // attempts fail, so nothing ever confirms A or B, and it stays K0
+    // throughout (round 1's model wrongly moved it to A at step 4).
+    const lastConfirmedKey = 'K0'; // whatever the server actually holds
+    const inFlight = new Set<string>();
+
+    // 1. Selection -> A. send() checks shouldSend, then claims the in-flight
+    //    slot before the (slow) fetch goes out.
+    expect(shouldSend('A', lastConfirmedKey, inFlight)).toBe(true);
+    inFlight.add('A');
+
+    // 2. Selection -> B before A resolves. Same check, independently true —
+    //    A being in flight doesn't block a completely different value B.
+    expect(shouldSend('B', lastConfirmedKey, inFlight)).toBe(true);
+    inFlight.add('B');
+
+    // 3. Fetch A fails: only inFlight is cleaned up. lastConfirmedKey is
+    //    NEVER written on failure — no revert, nothing to get wrong.
+    inFlight.delete('A');
+    expect(lastConfirmedKey).toBe('K0');
+
+    // 4. Fetch B fails: same — inFlight cleanup only, lastConfirmedKey untouched.
+    inFlight.delete('B');
+    expect(lastConfirmedKey).toBe('K0');
+
+    // 5. lastConfirmedKey is STILL K0 — correctly reflecting that neither A
+    //    nor B was ever actually saved (the server still holds K0).
+    expect(lastConfirmedKey).toBe('K0');
+
+    // 6. Customer flips back to A. Nothing is in flight for A any more, and
+    //    A !== lastConfirmedKey (K0) -> shouldSend is true, so it retries.
+    //    Round 1's model returned false here (the reverted slot equalled A)
+    //    and silently lost the customer's real selection for good.
+    expect(shouldSend('A', lastConfirmedKey, inFlight)).toBe(true);
+  });
+
+  it('a confirmed success updates the dedup key, so a later identical value is correctly skipped', () => {
+    // Mirrors send()'s .then((res) => { if (res.ok) lastConfirmedKeyRef.current = key })
+    let lastConfirmedKey = 'A';
+    const inFlight = new Set<string>();
+
+    expect(shouldSend('B', lastConfirmedKey, inFlight)).toBe(true);
+    inFlight.add('B');
+    // Fetch B succeeds:
+    inFlight.delete('B');
+    lastConfirmedKey = 'B';
+
+    // A later settle recomputing the SAME value B is now correctly a no-op.
+    expect(shouldSend('B', lastConfirmedKey, inFlight)).toBe(false);
   });
 });
