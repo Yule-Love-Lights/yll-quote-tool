@@ -5,7 +5,6 @@ import {
   getThread,
   isGmailConfigured,
   getOrCreateLabel,
-  modifyThread,
   modifyMessage,
 } from './gmail';
 
@@ -110,21 +109,11 @@ describe('getOrCreateLabel (WRITE)', () => {
   });
 });
 
-describe('modifyThread (WRITE)', () => {
-  it('POSTs add/remove labels to the thread modify endpoint', async () => {
-    const fetchMock = stubFetch({});
-    await modifyThread('tok', 't1', { addLabelIds: ['L1'], removeLabelIds: ['UNREAD'] });
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toContain('/threads/t1/modify');
-    expect(init.method).toBe('POST');
-    expect(JSON.parse(init.body as string)).toEqual({ addLabelIds: ['L1'], removeLabelIds: ['UNREAD'] });
-  });
-});
-
-// #288 fix round: modifyThread's single-message sibling — the Handled
-// write-back prefers this whenever it knows the specific message id, so
-// marking one GML-split row Handled doesn't label/mark-read the WHOLE
-// thread (and every other coalesced customer's still-unworked forward on it).
+// #293 fix round (customer HIGH, 3rd instance): message-level is the ONLY
+// way the Handled write-back touches Gmail — a thread-wide modify would
+// label/mark-read every OTHER coalesced customer's still-unworked forward on
+// the same thread too (Gmail merges different customers' Zapier lead-forwards
+// into one thread when they share a subject line).
 describe('modifyMessage (WRITE)', () => {
   it('POSTs add/remove labels to the MESSAGE modify endpoint, not the thread one', async () => {
     const fetchMock = stubFetch({});
