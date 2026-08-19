@@ -182,3 +182,69 @@ describe('proxy — crew sessions are confined to the crew surface', () => {
     expect((res as unknown as { __res?: boolean }).__res).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Self-serve referral link perimeter wiring (naldo/referral-self-serve).
+// operatorGate.test.ts already proves isPublicPath() classifies /referral-link
+// and POST /api/referrals/request-link correctly as pure boolean logic. These
+// tests prove proxy() actually wires that classification to a real signed-out
+// request: that each public path is let through before Supabase is ever
+// touched, and that the cases right next to it (a wrong method, a sub-path, an
+// unrelated operator page) are not accidentally opened by the same allowlist
+// entry.
+// ---------------------------------------------------------------------------
+
+describe('proxy: referral-link self-serve perimeter (naldo/referral-self-serve)', () => {
+  it('lets a signed-out GET /referral-link through without a redirect to /login', async () => {
+    const res = await proxy(makeReq('/referral-link'));
+    expect(res.status).toBe(200); // NextResponse.next() default, not a redirect
+    expect(createMiddlewareSupabaseMock).not.toHaveBeenCalled();
+  });
+
+  it('lets a signed-out POST /api/referrals/request-link through without a 401', async () => {
+    const res = await proxy(makeReq('/api/referrals/request-link', 'POST'));
+    expect(res.status).toBe(200); // NextResponse.next() default, not 401
+    expect(createMiddlewareSupabaseMock).not.toHaveBeenCalled();
+  });
+
+  it('does not open GET on /api/referrals/request-link: signed-out returns 401', async () => {
+    createMiddlewareSupabaseMock.mockReturnValue({
+      supabase: { auth: { getUser: async () => ({ data: { user: null } }) } },
+      res: NextResponse.next(),
+    });
+    const res = await proxy(makeReq('/api/referrals/request-link', 'GET'));
+    expect(res.status).toBe(401);
+  });
+
+  it('does not open DELETE on /api/referrals/request-link: signed-out returns 401', async () => {
+    createMiddlewareSupabaseMock.mockReturnValue({
+      supabase: { auth: { getUser: async () => ({ data: { user: null } }) } },
+      res: NextResponse.next(),
+    });
+    const res = await proxy(makeReq('/api/referrals/request-link', 'DELETE'));
+    expect(res.status).toBe(401);
+  });
+
+  it('does not extend the /referral-link allowlist entry to a sub-path: redirects to /login', async () => {
+    createMiddlewareSupabaseMock.mockReturnValue({
+      supabase: { auth: { getUser: async () => ({ data: { user: null } }) } },
+      res: NextResponse.next(),
+    });
+    const res = await proxy(makeReq('/referral-link/anything'));
+    expect(res.status).toBe(307);
+    expect(res.headers.get('location')).toContain('/login');
+  });
+
+  it('negative control: signed-out GET /settings still redirects to /login under the same setup', async () => {
+    // Proves the harness above is honest: if the gate were accidentally
+    // dormant in these tests, every assertion above would pass for the wrong
+    // reason. This unrelated operator page must still be denied.
+    createMiddlewareSupabaseMock.mockReturnValue({
+      supabase: { auth: { getUser: async () => ({ data: { user: null } }) } },
+      res: NextResponse.next(),
+    });
+    const res = await proxy(makeReq('/settings'));
+    expect(res.status).toBe(307);
+    expect(res.headers.get('location')).toContain('/login');
+  });
+});

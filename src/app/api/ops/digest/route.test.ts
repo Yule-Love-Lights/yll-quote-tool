@@ -76,11 +76,15 @@ afterEach(() => {
 });
 
 describe('GET /api/ops/digest', () => {
-  it('401s without the cron secret (and when CRON_SECRET is unset)', async () => {
+  it('401s a bad token, and 503s when CRON_SECRET is UNSET', async () => {
+    // The two cases are deliberately distinguishable now: a 401 is the caller's
+    // problem, a 503 means this cron has been dead since the variable went
+    // missing. The sibling copilot project ran dark 8+ days because both
+    // answered 401 (ledger row 286).
     expect((await GET(makeReq())).status).toBe(401);
     expect((await GET(makeReq('wrong'))).status).toBe(401);
     delete process.env.CRON_SECRET;
-    expect((await GET(makeReq(SECRET))).status).toBe(401);
+    expect((await GET(makeReq(SECRET))).status).toBe(503);
     expect(notifyTelegramAudience).not.toHaveBeenCalled();
   });
 

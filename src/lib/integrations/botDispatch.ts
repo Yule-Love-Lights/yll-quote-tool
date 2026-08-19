@@ -45,6 +45,7 @@ import { transcribeAudio, isTranscriptionConfigured } from './transcribe';
 import { notifyTelegramAudience } from './telegramRouting';
 import { fieldLeadMessage } from './telegramMessages';
 import { LEAD_SERVICES, SERVICE_FIELD_VALUE } from '@/lib/leads/leadService';
+import { handleCrewTimeMessage } from '@/lib/integrations/crewTimeHandler';
 
 export type BotIncomingMessage = {
   chatId: string;
@@ -89,6 +90,19 @@ export async function handleBotMessage(msg: BotIncomingMessage): Promise<string 
   });
 
   let text = cleanTelegramCommand(msg.text);
+
+  // ── CREW TIME CAPTURE, ahead of everything else ───────────────────────────
+  // Pay actions are matched deterministically and never reach the LLM tool
+  // layer. A misread inventory count is recoverable; a misread clock-out is
+  // somebody's paycheck, and "the model read it that way" is not an acceptable
+  // answer about someone's hours.
+  //
+  // It runs before the addressed-gate too: in a crew group, "in" and "back" are
+  // exactly how people talk, and requiring an @mention to clock in would get
+  // punches dropped silently. The parser only fires on an exact match, so
+  // ordinary chatter still falls through untouched.
+  const crewTime = await handleCrewTimeMessage(msg.userId, text);
+  if (crewTime.handled) return crewTime.reply;
 
   if (!addressed) {
     // One exception to the group gate, and it is the important one: a bare

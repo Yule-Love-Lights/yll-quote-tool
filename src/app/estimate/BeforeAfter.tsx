@@ -8,7 +8,7 @@
 // plain photo clipped over it. Carries the YLL logo + gold trim like the quote tool.
 // Color schemes recolor the render live via colorOverride.
 
-import { useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
 import type { SampleDesign } from '@/lib/designs';
 
@@ -19,9 +19,17 @@ const DesignCanvas = dynamic(() => import('@/components/design/DesignCanvas'), {
 // read (Naldo's "2nd try"). This is the uniform dim, NOT the top sky gradient.
 const SAMPLE_BRIGHTNESS = 20;
 
-export function BeforeAfter({ design, colorOverride }: { design: SampleDesign; colorOverride: string[] | null }) {
+// memo'd: the parent (EstimateFlow) re-renders on every address keystroke, but
+// this hero has nothing to do with the address. Its props (design, colorOverride)
+// are referentially stable across keystrokes, so memo skips the whole subtree —
+// including the Konva canvas — unless the sample or color scheme actually changes.
+export const BeforeAfter = memo(function BeforeAfter({ design, colorOverride }: { design: SampleDesign; colorOverride: string[] | null }) {
   const [split, setSplit] = useState(50);
-  const litScene = { ...design.scene, brightness: SAMPLE_BRIGHTNESS };
+  // Stable scene reference. DesignCanvas tears down and remounts its Konva stage
+  // whenever the `scene` prop IDENTITY changes (its mount effect keys on it), which
+  // flashed the render on every re-render — each address keystroke and each
+  // compare-slider drag. Memoize so the lit scene only changes when the design does.
+  const litScene = useMemo(() => ({ ...design.scene, brightness: SAMPLE_BRIGHTNESS }), [design.scene]);
 
   return (
     <div className="est-framebox est-install">
@@ -71,4 +79,4 @@ export function BeforeAfter({ design, colorOverride }: { design: SampleDesign; c
       </div>
     </div>
   );
-}
+});
