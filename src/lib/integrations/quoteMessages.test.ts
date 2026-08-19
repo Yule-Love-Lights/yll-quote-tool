@@ -20,6 +20,8 @@ import {
   depositDeclineReasonText,
   internalDepositDeclinedEmailSubject,
   internalDepositDeclinedEmailHtml,
+  amendmentSmsBody,
+  amendmentEmailHtml,
 } from './quoteMessages';
 
 describe('quote-ready notifications, per service type (S26)', () => {
@@ -503,5 +505,80 @@ describe('declined deposit/balance staff alert (#175)', () => {
       expect(html).not.toContain('<script>');
       expect(html).toContain('&lt;script&gt;');
     });
+  });
+});
+
+
+// Jason 2026-08-19 (live amendment for a booked customer): the text and the
+// email were quoting DIFFERENT numbers for the same balance — the SMS rounds to
+// whole dollars, the email printed exact cents — and neither said WHEN the
+// balance is due. Both now round and both say "after installation". The
+// greeting is also cased, because customer_name is stored as staff typed it.
+describe('amendment notice copy (Jason 2026-08-19)', () => {
+  const phone = '(631) 517-0186';
+
+  it('the SMS names the balance as due after installation', () => {
+    const sms = amendmentSmsBody('susan', 1056.64, phone);
+    expect(sms).toBe(
+      "Hi Susan! Your Yule Love Lights order was updated, your remaining balance is now $1,057 after installation. We'll confirm the details with you. Questions? Call or text (631) 517-0186.",
+    );
+  });
+
+  it('the email quotes the SAME rounded balance the SMS does, for these inputs', () => {
+    // Scoped claim, not a general one: both builders round with the same
+    // maximumFractionDigits:0 formatter, so they agree on any input; this
+    // asserts the real Susan figures that motivated the change.
+    const balance = 1056.64;
+    const sms = amendmentSmsBody('susan', balance, phone);
+    const html = amendmentEmailHtml({
+      firstName: 'susan',
+      newTotalUsd: 1770.72,
+      newBalanceUsd: balance,
+      portalUrl: 'https://x/portal/1',
+      phone,
+    });
+    expect(sms).toContain('$1,057');
+    expect(html).toContain('$1,057');
+    expect(html).not.toContain('$1,056.64');
+  });
+
+  it('the email labels the balance as due after installation and cases the greeting', () => {
+    const html = amendmentEmailHtml({
+      firstName: 'susan',
+      newTotalUsd: 1770.72,
+      newBalanceUsd: 1056.64,
+      portalUrl: 'https://x/portal/1',
+      phone,
+    });
+    expect(html).toContain('Remaining balance (due after installation)');
+    expect(html).toContain('Hi Susan,');
+  });
+
+  it('leaves an already-capitalised name alone and does not re-case the rest of it', () => {
+    expect(amendmentSmsBody('McDonough', 100, phone)).toContain('Hi McDonough!');
+    expect(amendmentSmsBody("O'Brien", 100, phone)).toContain("Hi O'Brien!");
+  });
+
+  it('falls back to the existing "there" greeting without throwing on an empty name', () => {
+    expect(amendmentSmsBody('', 100, phone)).toContain('Hi !');
+    expect(() => amendmentEmailHtml({
+      firstName: '',
+      newTotalUsd: 1,
+      newBalanceUsd: 1,
+      portalUrl: 'https://x/portal/1',
+      phone,
+    })).not.toThrow();
+  });
+
+  it('escapes HTML in the customer name', () => {
+    const html = amendmentEmailHtml({
+      firstName: '<script>',
+      newTotalUsd: 1,
+      newBalanceUsd: 1,
+      portalUrl: 'https://x/portal/1',
+      phone,
+    });
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('&lt;script&gt;');
   });
 });

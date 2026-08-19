@@ -362,8 +362,15 @@ export default function JobDetailPage() {
                 rows={2}
                 maxLength={500}
                 placeholder="Reason for the amendment (e.g. added an extra wreath)"
-                className="w-full text-sm border border-gray-300 rounded-md px-3 py-2 mb-2"
+                className="w-full text-sm border border-gray-300 rounded-md px-3 py-2 mb-1"
               />
+              {/* Jason 2026-08-19: this reason is NOT an internal note — the portal's
+                  AmendmentConsentCard renders it verbatim to the customer while the
+                  re-consent is pending (src/components/portal/snowglobe/AmendmentConsentCard.tsx).
+                  Operators had no way to know that from this screen. */}
+              <p className="text-xs text-amber-700 mb-2">
+                ⚠️ The customer sees this reason on their portal — write it for them, not as an internal note.
+              </p>
               <label className="flex items-center gap-2 text-sm text-gray-600 mb-2">
                 <input
                   type="checkbox"

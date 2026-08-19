@@ -17,9 +17,14 @@
 //     approval_snapshot.amendments[] — the original signed snapshot is preserved
 //     (the signature attests to the original agreement).
 //   • The linked invoice (if the job was completed) is re-synced to the new totals.
-//   • A total change moves the quote to the re-consent status (changes_requested):
-//     the customer re-approves the new total before any balance is charged (the
-//     SPEC §9 default — staff-initiated; re-notification is a follow-up).
+//   • A total change marks the amendment PENDING RE-CONSENT: the customer
+//     re-approves the new total (portal AmendmentConsentCard -> /amend-consent)
+//     before any balance is charged. The quote's own lifecycle status is
+//     deliberately NOT moved to changes_requested — see the write below: booked
+//     -> changes_requested is not a legal transition and would make a paid order
+//     read as a change-request everywhere deriveStatus() is used (review HIGH x3).
+//     This comment claimed the opposite until 2026-08-19; the code has always
+//     left the status alone.
 //
 // No money moves here (no Valor) — collecting the new balance is the separate,
 // gated "Charge remaining balance" step.

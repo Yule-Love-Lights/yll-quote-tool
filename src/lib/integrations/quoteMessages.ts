@@ -81,6 +81,17 @@ function usd(n: number): string {
   });
 }
 
+// Customer greetings are built from `customer_name` as typed by staff, which is
+// frequently lowercase ("susan pace-burke") — rendering that verbatim into a
+// customer-facing "Hi susan!" reads careless. Capitalises the first letter only;
+// the rest of the token is left ALONE on purpose so "McDonough", "O'Brien" and
+// "de la Cruz" are never re-cased into something wrong. A already-capitalised or
+// empty name passes through unchanged.
+function greetingName(firstName: string): string {
+  if (!firstName) return firstName;
+  return firstName.charAt(0).toUpperCase() + firstName.slice(1);
+}
+
 // Exact format (with cents) for the internal record.
 function usdExact(n: number): string {
   return n.toLocaleString('en-US', {
@@ -411,7 +422,7 @@ export function supplierOrderEmailHtml(input: { lines: SupplierOrderLine[]; jobC
 export const AMENDMENT_EMAIL_SUBJECT = 'Your Yule Love Lights order was updated';
 
 export function amendmentSmsBody(firstName: string, newBalanceUsd: number, phone: string): string {
-  return `Hi ${firstName}! Your Yule Love Lights order was updated — your remaining balance is now ${usd(newBalanceUsd)}. We'll confirm the details with you. Questions? Call or text ${phone}.`;
+  return `Hi ${greetingName(firstName)}! Your Yule Love Lights order was updated, your remaining balance is now ${usd(newBalanceUsd)} after installation. We'll confirm the details with you. Questions? Call or text ${phone}.`;
 }
 
 export function amendmentEmailHtml(input: {
@@ -421,13 +432,13 @@ export function amendmentEmailHtml(input: {
   portalUrl: string;
   phone: string;
 }): string {
-  const name = escapeHtml(input.firstName);
+  const name = escapeHtml(greetingName(input.firstName));
   return [
     `<p>Hi ${name},</p>`,
     `<p>We've updated your holiday lighting order. Here are the new figures:</p>`,
     `<table style="border-collapse:collapse;font-size:14px;margin:12px 0;">`,
-    `<tr><td style="padding:2px 14px 2px 0;color:#666;">New order total</td><td style="padding:2px 0;"><strong>${usdExact(input.newTotalUsd)}</strong></td></tr>`,
-    `<tr><td style="padding:2px 14px 2px 0;color:#666;">Remaining balance</td><td style="padding:2px 0;"><strong>${usdExact(input.newBalanceUsd)}</strong></td></tr>`,
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">New order total</td><td style="padding:2px 0;"><strong>${usd(input.newTotalUsd)}</strong></td></tr>`,
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">Remaining balance (due after installation)</td><td style="padding:2px 0;"><strong>${usd(input.newBalanceUsd)}</strong></td></tr>`,
     `</table>`,
     `<p>You can review your order here: <a href="${escapeHtml(input.portalUrl)}">${escapeHtml(input.portalUrl)}</a></p>`,
     `<p>Questions? Call or text ${escapeHtml(input.phone)}.</p>`,
