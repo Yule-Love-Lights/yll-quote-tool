@@ -47,6 +47,10 @@ type RowActions = {
   // — errorIds surfaces that visibly, mirroring InWorksSection.tsx's
   // identical pattern for this same /api/dashboard/* route family.
   errorIds: Record<string, boolean>;
+  /** #302: for an error from a THROWN fetch (no answer received, unlike a
+   *  server rejection), the LABEL of the action that was attempted — e.g.
+   *  'Handled'. Drives both the wording and the lock below. */
+  unreachableActions: Record<string, string>;
   // Row 291 fix: explicit acknowledge control for a persistent error note —
   // previously the ONLY ways to clear one were retrying that exact row or
   // the accidental cross-row steal above.
@@ -54,7 +58,7 @@ type RowActions = {
   claimBusy: string | null;
   composerFor: string | null;
   currentOperatorId: string | null;
-  act: (id: string, path: string) => void;
+  act: (id: string, path: string, label: string) => void;
   claim: (contactId: string, action: 'claim' | 'release') => void;
   toggleComposer: (id: string) => void;
   onComposerSent: (id: string) => void;
@@ -73,7 +77,7 @@ type RowActions = {
 // "call/text directly" affordance instead, see the source==='gmail' branch
 // below) with its ReplyComposer.
 function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }) {
-  const { now, busyIds, errorIds, dismissError, claimBusy, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent } = actions;
+  const { now, busyIds, errorIds, unreachableActions, dismissError, claimBusy, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent } = actions;
   const esc = escalation(item.escalationLevel);
   const waiting = item.lastMessageAt ? formatWaiting(now - new Date(item.lastMessageAt).getTime()) : '';
   const cs = claimState(item.assignedTo, currentOperatorId);
@@ -86,6 +90,16 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
   // replyable Gmail thread and falsely trigger this. parseLeadForwardDisplay
   // never reads the contact at all — see its doc comment in leadForward.ts.
   const forwarded = item.source === 'gmail' ? parseLeadForwardDisplay(item.subject, item.preview) : null;
+  // #302 review (customer lens HIGH-value find): after a THROWN fetch the write
+  // may already have committed server-side, so the row's true status is unknown.
+  // Every other action stays enabled at that moment, and picking a DIFFERENT one
+  // is not harmless: dismissItem's guard is `.neq('status','dismissed')`, so on a
+  // row that is really already 'handled' it passes, flips a genuinely answered
+  // lead to dismissed, and calls addSuppressedSenders — the customer's future
+  // messages get auto-filtered out of the default view. Lock the row to the one
+  // action actually attempted until it is retried or dismissed.
+  const lockedTo = unreachableActions[item.id] ?? null;
+  const lockedOut = (label: string) => lockedTo !== null && lockedTo !== label;
   return (
     <li
       className="rounded-lg border p-4"
@@ -171,7 +185,21 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
           )}
           {errorIds[item.id] && (
             <p className="text-xs mt-1 flex items-center gap-2" style={{ color: '#dc2626' }}>
-              <span>Something went wrong — try again.</span>
+              {/* #302 review (three lenses converged): a THROWN fetch and a
+                  server REJECTION are not the same claim, and saying "went
+                  wrong" for both overstates the first. A throw means we never
+                  got an answer — the write may well have landed and only the
+                  reply been lost — so the copy says exactly that, and stops
+                  short of inviting the confident retry the rejection copy
+                  does. (`followed` is the one action whose retry is not
+                  idempotent — it re-stamps followed_up_at and resets the
+                  customer's waiting clock — which is why this wording
+                  matters rather than being cosmetic.) */}
+              <span>
+                {unreachableActions[item.id]
+                  ? `Couldn't reach the server — this may or may not have gone through. Click ${unreachableActions[item.id]} again to confirm.`
+                  : 'Something went wrong — try again.'}
+              </span>
               <button
                 type="button"
                 onClick={() => dismissError(item.id)}
@@ -186,9 +214,9 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
         <div className="flex shrink-0 gap-2">
           <button
             type="button"
-            disabled={!!busyIds[item.id]}
-            onClick={() => act(item.id, '/api/dashboard/handled')}
-            title="Closed as answered"
+            disabled={!!busyIds[item.id] || lockedOut('Handled')}
+            onClick={() => act(item.id, '/api/dashboard/handled', 'Handled')}
+            title={lockedOut('Handled') ? `Locked until the ${lockedTo} attempt is confirmed` : 'Closed as answered'}
             className="px-3 py-1.5 rounded-md text-sm font-medium disabled:opacity-50"
             style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
           >
@@ -196,9 +224,9 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
           </button>
           <button
             type="button"
-            disabled={!!busyIds[item.id]}
-            onClick={() => act(item.id, '/api/dashboard/dismiss')}
-            title="Permanently hidden as spam"
+            disabled={!!busyIds[item.id] || lockedOut('Not a lead')}
+            onClick={() => act(item.id, '/api/dashboard/dismiss', 'Not a lead')}
+            title={lockedOut('Not a lead') ? `Locked until the ${lockedTo} attempt is confirmed` : 'Permanently hidden as spam'}
             className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
             style={{ color: 'var(--op-text-2)' }}
           >
@@ -206,9 +234,9 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
           </button>
           <button
             type="button"
-            disabled={!!busyIds[item.id]}
-            onClick={() => act(item.id, '/api/dashboard/followed')}
-            title="I followed up: snoozed until they reply"
+            disabled={!!busyIds[item.id] || lockedOut('Followed')}
+            onClick={() => act(item.id, '/api/dashboard/followed', 'Followed')}
+            title={lockedOut('Followed') ? `Locked until the ${lockedTo} attempt is confirmed` : 'I followed up: snoozed until they reply'}
             className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
             style={{ border: '1px solid var(--op-border)', color: 'var(--op-text-2)' }}
           >
@@ -216,9 +244,9 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
           </button>
           <button
             type="button"
-            disabled={!!busyIds[item.id]}
-            onClick={() => act(item.id, '/api/dashboard/completed')}
-            title="Closed as done"
+            disabled={!!busyIds[item.id] || lockedOut('Mark completed')}
+            onClick={() => act(item.id, '/api/dashboard/completed', 'Mark completed')}
+            title={lockedOut('Mark completed') ? `Locked until the ${lockedTo} attempt is confirmed` : 'Closed as done'}
             className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
             style={{ border: '1px solid var(--op-border)', color: 'var(--op-text-2)' }}
           >
@@ -300,6 +328,17 @@ export function withRowFlagSet(map: Record<string, boolean>, id: string): Record
 
 export function withRowFlagCleared(map: Record<string, boolean>, id: string): Record<string, boolean> {
   if (!map[id]) return map;
+  const next = { ...map };
+  delete next[id];
+  return next;
+}
+
+/** #302: withRowFlagCleared's sibling for the string-valued unreachableActions
+ *  map (it records WHICH action was attempted, not merely that one was). Same
+ *  contract: returns the SAME reference when the key is absent, so clearing on
+ *  an unaffected row never forces a needless re-render. */
+export function omitKey<T>(map: Record<string, T>, id: string): Record<string, T> {
+  if (!(id in map)) return map;
   const next = { ...map };
   delete next[id];
   return next;
@@ -598,6 +637,8 @@ export function InboxList({
   // #224 delta-verify fix (staff + customer lenses converged): act() used to
   // never read the response at all — see act()'s own doc comment below.
   const [errorIds, setErrorIds] = useState<Record<string, boolean>>({});
+  // #302: parallel to errorIds and always cleared with it — see the note copy.
+  const [unreachableActions, setUnreachableActions] = useState<Record<string, string>>({});
   const [claimBusy, setClaimBusy] = useState<string | null>(null);
   const [composerFor, setComposerFor] = useState<string | null>(null);
   // `now` is seeded from the server render (stable across hydration) and ticked
@@ -709,12 +750,13 @@ export function InboxList({
   // change is safe: `act` is not referenced in any other dependency array in
   // this file, and `rowActions` (below) is a plain object rebuilt fresh every
   // render regardless — nothing here relies on `act`'s referential identity.
-  const act = useCallback(async (id: string, path: string) => {
+  const act = useCallback(async (id: string, path: string, label: string) => {
     setBusyIds((prev) => withRowFlagSet(prev, id));
     // Row 291 fix: clear only THIS row's own error, never every row's — the
     // old setErrorId(null) here was the single-slot steal (acting on row B
     // silently erased row A's still-true failure note).
     setErrorIds((prev) => withRowFlagCleared(prev, id));
+    setUnreachableActions((prev) => omitKey(prev, id));
     const removedItem = items.find((i) => i.id === id);
     setItems((prev) => prev.filter((i) => i.id !== id)); // optimistic removal
     try {
@@ -726,6 +768,7 @@ export function InboxList({
       const data = (await res.json().catch(() => null)) as { ok?: boolean } | null;
       if (!res.ok || !data?.ok) {
         setErrorIds((prev) => withRowFlagSet(prev, id));
+        setUnreachableActions((prev) => omitKey(prev, id));
         await refresh();
       }
     } catch {
@@ -735,6 +778,7 @@ export function InboxList({
       // immediately — see the doc comment above act() for why neither
       // errorIds alone nor waiting on refresh() would have been enough.
       setErrorIds((prev) => withRowFlagSet(prev, id));
+      setUnreachableActions((prev) => ({ ...prev, [id]: label }));
       setItems((prev) => withItemRestored(prev, id, removedItem));
     } finally {
       setBusyIds((prev) => withRowFlagCleared(prev, id));
@@ -746,6 +790,7 @@ export function InboxList({
   // act()) or the accidental cross-row steal this fix removes.
   const dismissError = useCallback((id: string) => {
     setErrorIds((prev) => withRowFlagCleared(prev, id));
+    setUnreachableActions((prev) => omitKey(prev, id));
   }, []);
 
   const claim = useCallback(
@@ -797,7 +842,7 @@ export function InboxList({
   // place; there's no empty group to separately prune.
   const groups = groupInboxItems(visibleItems);
   const rowActions: RowActions = {
-    now, busyIds, errorIds, dismissError, claimBusy, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent,
+    now, busyIds, errorIds, unreachableActions, dismissError, claimBusy, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent,
   };
 
   if (items.length === 0) {

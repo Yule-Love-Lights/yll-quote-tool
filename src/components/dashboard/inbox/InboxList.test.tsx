@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { InboxList, isGroupExpanded, canToggleGroup, withRowFlagSet, withRowFlagCleared, withItemRestored } from './InboxList';
+import { InboxList, isGroupExpanded, canToggleGroup, withRowFlagSet, withRowFlagCleared, withItemRestored, omitKey } from './InboxList';
 import type { OpenInboxItem } from '@/lib/dashboard/inbox/types';
 import type { InboxGroup } from '@/lib/dashboard/inbox/groupInboxItems';
 
@@ -518,5 +518,56 @@ describe('withItemRestored (#302 — restore an optimistically-removed row after
     items = withItemRestored(items, solo.id, solo);
     expect(items).toEqual([solo]);
     expect(errorIds).toEqual({ x: true });
+  });
+});
+
+// #302 review (customer lens): after a THROWN fetch the write may already have
+// committed, so the row's real status is unknown. Leaving every OTHER action
+// enabled is not harmless — dismissItem's guard is `.neq('status','dismissed')`,
+// so on a row that is really already 'handled' a "Not a lead" click passes the
+// guard, flips an answered lead to dismissed, and suppresses that customer's
+// future messages. unreachableActions records WHICH action was attempted so the
+// row can be locked to retrying that one; omitKey is how that record is cleared.
+describe('omitKey (#302 — clearing the recorded unreachable action)', () => {
+  it('removes only the named key', () => {
+    expect(omitKey({ a: 'Handled', b: 'Followed' }, 'a')).toEqual({ b: 'Followed' });
+  });
+
+  it('returns the SAME reference when the key is absent, so an unaffected row does not re-render', () => {
+    const map = { a: 'Handled' };
+    expect(omitKey(map, 'missing')).toBe(map);
+  });
+
+  it('does not mutate the input map', () => {
+    const map = { a: 'Handled', b: 'Followed' };
+    omitKey(map, 'a');
+    expect(map).toEqual({ a: 'Handled', b: 'Followed' });
+  });
+
+  it('leaves an empty map alone, same reference', () => {
+    const map: Record<string, string> = {};
+    expect(omitKey(map, 'a')).toBe(map);
+  });
+});
+
+// The lock predicate as ItemRow computes it: `lockedTo` is the recorded action
+// for THIS row (or null), and every other action is disabled while it stands.
+describe('the unreachable-action lock (#302)', () => {
+  const lockedOut = (lockedTo: string | null, label: string) => lockedTo !== null && lockedTo !== label;
+
+  it('locks the three actions that were not attempted', () => {
+    expect(lockedOut('Handled', 'Not a lead')).toBe(true);
+    expect(lockedOut('Handled', 'Followed')).toBe(true);
+    expect(lockedOut('Handled', 'Mark completed')).toBe(true);
+  });
+
+  it('leaves the attempted action clickable so the operator can retry it', () => {
+    expect(lockedOut('Handled', 'Handled')).toBe(false);
+  });
+
+  it('locks nothing when no unreachable action is recorded for the row', () => {
+    for (const label of ['Handled', 'Not a lead', 'Followed', 'Mark completed']) {
+      expect(lockedOut(null, label)).toBe(false);
+    }
   });
 });
