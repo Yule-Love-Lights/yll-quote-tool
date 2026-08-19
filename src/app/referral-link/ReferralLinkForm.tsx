@@ -276,6 +276,13 @@ export function ReferralLinkForm({ contactId }: { contactId?: string }) {
             ? 'Sending...'
             : 'Send me my link'}
       </button>
+      {/* Review fix 8 (this round): the button dimming and its label change
+          were the only signal during a wait that can run several seconds
+          (the contact-id path now awaits a live GHL lookup plus a mint, see
+          route.ts). A short, plain reassurance while in flight. */}
+      {status === 'submitting' && (
+        <p className="text-center text-[13px] text-[#A89F87]">This can take a few seconds.</p>
+      )}
     </form>
   );
 }

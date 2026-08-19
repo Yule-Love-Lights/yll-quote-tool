@@ -186,4 +186,17 @@ describe('ReferralLinkForm initial render (naldo/referral-link-personalized)', (
     expect(renderToStaticMarkup(<ReferralLinkForm />)).not.toContain('—');
     expect(renderToStaticMarkup(<ReferralLinkForm contactId="ghl-contact-xyz" />)).not.toContain('—');
   });
+
+  // Review fix 8 (this round): the in-flight reassurance line is gated on
+  // status === 'submitting', which the INITIAL (idle) render this file's
+  // convention exercises never reaches (renderToStaticMarkup never fires
+  // onSubmit; see the file header for why this repo tests it this way).
+  // This only proves the line is absent before any submit, not that it
+  // appears during one; that leg was checked in the browser.
+  it('the in-flight reassurance line is absent before any submit', () => {
+    expect(renderToStaticMarkup(<ReferralLinkForm />)).not.toContain('This can take a few seconds.');
+    expect(renderToStaticMarkup(<ReferralLinkForm contactId="ghl-contact-xyz" />)).not.toContain(
+      'This can take a few seconds.',
+    );
+  });
 });
