@@ -38,6 +38,14 @@ import { roundMoney as round2 } from '@/lib/money';
 export type InvoiceResyncOutcome = {
   invoicedBalance: number | null;
   invoicedTotal: number | null;
+  // FIX4 (review HIGH, money): the invoice's total immediately BEFORE this
+  // re-sync overwrote it (from the fresh re-read) — null whenever
+  // invoicedTotal is null (the resync never reached a successful write). Lets
+  // a caller derive an invoice-basis DELTA (invoicedTotal − previousInvoicedTotal)
+  // that reconciles with invoicedTotal on the SAME basis, instead of pairing an
+  // invoice-basis total with the trail's tax-inclusive delta — the two can
+  // disagree by the whole tax line on a tax-overridden invoice.
+  previousInvoicedTotal: number | null;
 };
 
 export type ResyncInvoiceArgs = {
@@ -71,7 +79,11 @@ export type ResyncInvoiceArgs = {
  */
 export async function resyncInvoiceToAgreedTotal(args: ResyncInvoiceArgs): Promise<InvoiceResyncOutcome> {
   const { jobId, invoice, result, depositPaid, newTotal, logPrefix, retiredReason } = args;
-  const outcome: InvoiceResyncOutcome = { invoicedBalance: null, invoicedTotal: null };
+  const outcome: InvoiceResyncOutcome = {
+    invoicedBalance: null,
+    invoicedTotal: null,
+    previousInvoicedTotal: null,
+  };
 
   // B10 fix (re-read): re-fetch the invoice immediately before the status
   // decision + write to reduce the clobber window. A concurrent balance-webhook
@@ -169,6 +181,10 @@ export async function resyncInvoiceToAgreedTotal(args: ResyncInvoiceArgs): Promi
   // invoice TOTAL is newTotal minus the scaled tax, so quoting the trail's
   // own total would disagree with the invoice too.
   outcome.invoicedTotal = totals.total;
+  // FIX4: the PRE-resync invoice total (from the fresh re-read above), on the
+  // SAME invoice basis as outcome.invoicedTotal — a caller can subtract to get
+  // an internally-consistent delta.
+  outcome.previousInvoicedTotal = invoiceForSync.total;
 
   // #170(b): reopening a PAID invoice starts a NEW charge cycle — retire the
   // settled txn to valor_txn_log and clear the live slot, or the next card

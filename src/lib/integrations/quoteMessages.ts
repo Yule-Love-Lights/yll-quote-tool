@@ -483,12 +483,20 @@ export function amendmentSmsBody(input: {
   phone: string;
   dueAfterInstall: boolean;
   portalUrl: string;
-  // Signed, new_total − previous_total (computeAmendment's own `delta`, on the
-  // AGREED-total basis — the same number blocksSettlement/requiresReconsent
-  // read). Positive = customer owes more, negative = owes less. NOT derived
-  // from the invoice-priority newTotalUsd/newBalanceUsd below, which can be on
-  // a tax-scaled basis (#125-1) — the direction/size of the underlying change
-  // is the same real-world fact either way, so it always reads off the trail.
+  // Signed change amount for "went up/down by X to newTotalUsd". FIX4 (review
+  // HIGH, money — corrected 2026-08-19): this used to be documented as always
+  // reading off the trail's own `delta` (new_total − previous_total, tax
+  // included) regardless of newTotalUsd's basis, on the premise that "the
+  // direction/size of the underlying change is the same real-world fact
+  // either way" — that premise was WRONG. On a tax-overridden invoice, the
+  // invoice-basis total differs from the trail total by the (scaled) tax
+  // line, so the invoice-basis PREVIOUS total differs from the trail's
+  // previous_total by a DIFFERENT tax amount than the invoice-basis NEW total
+  // does — the two don't cancel, and "went up by $217.50 to $2,135.00" could
+  // describe a prior total that was never $1,917.50 on ANY basis. The caller
+  // now derives this on the SAME basis as newTotalUsd (invoice basis
+  // whenever an invoice exists, trail basis only when there is no invoice
+  // yet) — see amend/route.ts's notifiedDelta.
   deltaUsd: number;
   newTotalUsd: number;
 }): string {
@@ -514,7 +522,8 @@ export function amendmentEmailHtml(input: {
   phone: string;
   // See amendmentSmsBody above for why this is conditional.
   dueAfterInstall: boolean;
-  // See amendmentSmsBody above — same signed trail delta, same reasoning.
+  // See amendmentSmsBody above (FIX4) — must be on the SAME basis as
+  // newTotalUsd, not unconditionally the trail's delta.
   deltaUsd: number;
 }): string {
   const name = escapeHtml(greetingName(input.firstName));

@@ -13,9 +13,16 @@ import { calculateQuote, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 import type { Scene } from '@/lib/design/sceneTypes';
 import type { DesignWithPhoto } from '@/lib/designs';
 
-const { sbRef, getDesignByQuoteMock, events } = vi.hoisted(() => ({
+const { sbRef, getDesignByQuoteMock, getJobByQuoteMock, getInvoiceByJobMock, events } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
   getDesignByQuoteMock: vi.fn(),
+  // FIX4: mocked explicitly (rather than left to fall through to the real
+  // implementations against the generic quote-row fake below) so a fixture
+  // with `amendments` set can't accidentally reuse the QUOTE row's own shape
+  // as a fake job/invoice — see loader.ts's own FIX4 comment for what these
+  // feed.
+  getJobByQuoteMock: vi.fn(async (): Promise<unknown> => null),
+  getInvoiceByJobMock: vi.fn(async (): Promise<unknown> => null),
   // Records the order in which the two DB-backed calls start/finish, to prove
   // they run concurrently rather than the design lookup starting only after
   // the quote fetch resolves.
@@ -27,6 +34,11 @@ vi.mock('@/lib/supabase', () => ({
   getSupabaseServiceClient: () => sbRef.current,
 }));
 vi.mock('@/lib/designs', () => ({ getDesignByQuote: getDesignByQuoteMock }));
+vi.mock('@/lib/jobs', () => ({ getJobByQuote: getJobByQuoteMock }));
+vi.mock('@/lib/invoices', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/invoices')>();
+  return { ...actual, getInvoiceByJob: getInvoiceByJobMock };
+});
 
 import { loadPortalQuote } from './loader';
 
@@ -374,5 +386,65 @@ describe('loadPortalQuote — applyOurRecommendation gate (#117)', () => {
     expect(d!.includedItemIds).toContain(
       portal!.lineItems.find((li) => li.label.includes('Extra swag'))!.id,
     );
+  });
+});
+
+// FIX4 (review HIGH, money): the amendment-consent card needs the linked
+// invoice's tax_overridden flag to match the SMS/email's basis — fetched
+// ONLY when the quote actually has an amendment trail, so the common case
+// (no amendments) never pays for the extra round-trip.
+describe('loadPortalQuote — invoice tax_overridden threading for the amendment card (FIX4)', () => {
+  it('never looks up the job/invoice when the quote has no amendments', async () => {
+    sbRef.current = makeSb(baseRow({ approval_snapshot: { amendments: [] } }));
+    getDesignByQuoteMock.mockResolvedValue(null);
+
+    await loadPortalQuote(ID);
+    expect(getJobByQuoteMock).not.toHaveBeenCalled();
+    expect(getInvoiceByJobMock).not.toHaveBeenCalled();
+  });
+
+  it('never looks up the job/invoice when approval_snapshot is null', async () => {
+    sbRef.current = makeSb(baseRow({ approval_snapshot: null }));
+    getDesignByQuoteMock.mockResolvedValue(null);
+
+    await loadPortalQuote(ID);
+    expect(getJobByQuoteMock).not.toHaveBeenCalled();
+  });
+
+  it('looks up the job/invoice when the quote HAS an amendment, and threads tax_overridden through', async () => {
+    sbRef.current = makeSb(
+      baseRow({ approval_snapshot: { amendments: [{ new_total: 3000, delta: 1000 }] } }),
+    );
+    getDesignByQuoteMock.mockResolvedValue(null);
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1' });
+    getInvoiceByJobMock.mockResolvedValue({ id: 'inv-1', tax_overridden: true });
+
+    await loadPortalQuote(ID);
+    expect(getJobByQuoteMock).toHaveBeenCalledWith(ID);
+    expect(getInvoiceByJobMock).toHaveBeenCalledWith('job-1');
+  });
+
+  it('falls back to the trail basis (no crash) when the job exists but has no invoice yet', async () => {
+    sbRef.current = makeSb(
+      baseRow({ approval_snapshot: { amendments: [{ new_total: 3000, delta: 1000 }] } }),
+    );
+    getDesignByQuoteMock.mockResolvedValue(null);
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1' });
+    getInvoiceByJobMock.mockResolvedValue(null);
+
+    const portal = await loadPortalQuote(ID);
+    expect(portal).not.toBeNull();
+  });
+
+  it('falls back to the trail basis (no crash, no throw) when the invoice lookup itself fails', async () => {
+    sbRef.current = makeSb(
+      baseRow({ approval_snapshot: { amendments: [{ new_total: 3000, delta: 1000 }] } }),
+    );
+    getDesignByQuoteMock.mockResolvedValue(null);
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1' });
+    getInvoiceByJobMock.mockRejectedValue(new Error('db down'));
+
+    const portal = await loadPortalQuote(ID);
+    expect(portal).not.toBeNull();
   });
 });

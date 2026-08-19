@@ -34,6 +34,7 @@ import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/sup
 import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
 import { computeAmendment, requiresReconsent, type AmendmentTrailEntry } from '@/lib/amend';
 import { getInvoiceByJob, type InvoicePricingInput } from '@/lib/invoices';
+import { roundMoney as round2 } from '@/lib/money';
 import { resolveAgreedTotal, amendedAgreedTotal } from '@/lib/agreedTotal';
 import { resyncInvoiceToAgreedTotal } from '@/lib/quoteAmendInvoiceSync';
 import { getJobByQuote } from '@/lib/jobs';
@@ -274,6 +275,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // those the trail's new_balance is the honest figure to quote.
   let invoicedBalance: number | null = null;
   let invoicedTotal: number | null = null;
+  // FIX4 (review HIGH, money): the invoice-basis DELTA — invoicedTotal minus
+  // the invoice's PRE-resync total, both on the same basis. See the notify
+  // block below for why this must replace amendment.delta whenever an invoice
+  // exists (mixing the two produced a message where the stated total and the
+  // stated delta didn't reconcile to any real number).
+  let invoicedDelta: number | null = null;
 
   // Re-sync the linked invoice (if the job was completed) to the re-priced totals,
   // so the balance the operator collects matches the amended order. Skip a
@@ -292,6 +299,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     });
     invoicedBalance = outcome.invoicedBalance;
     invoicedTotal = outcome.invoicedTotal;
+    if (invoicedTotal != null && outcome.previousInvoicedTotal != null) {
+      invoicedDelta = round2(invoicedTotal - outcome.previousInvoicedTotal);
+    }
   }
 
   // Optional, STAFF-INITIATED customer notice of the change (SPEC §4.4 re-consent
@@ -331,6 +341,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       // invoice will be built from when the job completes.
       const notifiedBalance = invoicedBalance ?? amendment.new_balance;
       const notifiedTotal = invoicedTotal ?? amendment.new_total;
+      // FIX4 (review HIGH, money): ONE basis for everything the customer sees.
+      // notifiedTotal/notifiedBalance are on the INVOICE basis whenever an
+      // invoice exists (a tax-overridden invoice's total is newTotal MINUS the
+      // scaled tax — #125-1). amendment.delta is always the TRAIL basis
+      // (new_total − previous_total, tax still in it). Pairing the invoice
+      // total with the trail delta let the message state two numbers that
+      // don't reconcile — "went up by $217.50 to $2,135.00" when the prior
+      // INVOICED total was actually $1,935.00, not $2,135.00 − $217.50. Use
+      // invoicedDelta (computed on the SAME invoice basis as notifiedTotal)
+      // whenever the resync succeeded; fall back to the trail delta only when
+      // there's no invoice yet (both notifiedTotal and the delta are then on
+      // the trail basis together, still internally consistent).
+      const notifiedDelta = invoicedDelta ?? amendment.delta;
       const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
       const portalUrl = `${baseUrl}/portal/${id}`;
       const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || '(631) 517-0186';
@@ -343,10 +366,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
             phone,
             dueAfterInstall,
             portalUrl,
-            // The trail's own signed delta — see amendmentSmsBody's comment for
-            // why this is NOT derived from notifiedTotal/notifiedBalance (which
-            // may be on the tax-scaled invoice basis, #125-1).
-            deltaUsd: amendment.delta,
+            // FIX4: same basis as newTotalUsd (see notifiedDelta above) — was
+            // amendment.delta unconditionally, which could disagree with
+            // notifiedTotal by the whole tax line on a tax-overridden invoice.
+            deltaUsd: notifiedDelta,
             newTotalUsd: notifiedTotal,
           }),
           fromNumber: process.env.HIGHLEVEL_SMS_FROM_NUMBER || undefined,
@@ -361,7 +384,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
             portalUrl,
             phone,
             dueAfterInstall,
-            deltaUsd: amendment.delta,
+            deltaUsd: notifiedDelta,
           }),
           emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
         });

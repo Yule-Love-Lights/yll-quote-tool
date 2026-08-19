@@ -520,6 +520,62 @@ describe('POST /api/quotes/[id]/amend', () => {
     expect(sentSmsMessage()).not.toContain(usdText(json.amendment.new_balance));
   });
 
+  // FIX4 (review HIGH, money): the SMS/email must state a delta that
+  // reconciles with newTotalUsd — a reader computing "newTotalUsd − deltaUsd"
+  // must land on the REAL prior invoiced total, not an arbitrary number.
+  // Before this fix, deltaUsd was unconditionally the TRAIL delta while
+  // newTotalUsd was the INVOICE-basis total — different bases, so the two
+  // numbers in the same sentence didn't add up to anything real.
+  it('states a delta that reconciles with the invoice-basis total on a tax-overridden invoice', async () => {
+    // Full quote 5600 (450 tax on a 5150 subtotal). Approval: agreed $5,000 of
+    // that $5,600 full total (a diverged selection) — approval-time full total
+    // frozen at snap.pricing.total 5000. This amendment brings the full total
+    // to $5,600 (no builder edit — BOOKED_QUOTE.result IS already 5600), so
+    // the AGREED total also rises to $5,600 (trail: previous 5000 → new 5600,
+    // delta +600).
+    //
+    // The invoice was created earlier at the ORIGINAL $5,000 agreed total,
+    // tax-scaled: scaledTax = round2(450 × 5000/5600) = 401.79,
+    // invoice.total = 5000 − 401.79 = 4598.21 (the PRE-resync figure below).
+    // After this amendment resyncs it to the new $5,600 agreed total:
+    // scaledTax = round2(450 × 5600/5600) = 450.00, invoice.total =
+    // 5600 − 450.00 = 5150.00. Invoice-basis delta = 5150.00 − 4598.21 =
+    // 551.79 — NOT the trail's 600.00, and NOT reconstructable by subtracting
+    // the whole $450 tax either (the two invoices don't share a tax basis).
+    const TAXED = {
+      ...BOOKED_QUOTE,
+      result: { subtotalBeforeDiscount: 5150, discountAmount: 0, taxAmount: 450, total: 5600 },
+    };
+    sbRef.current = makeSb(TAXED).client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+    getInvoiceByJobMock.mockResolvedValue({
+      id: 'inv-1',
+      balance: 2500,
+      status: 'draft',
+      tax_overridden: true,
+      total: 4598.21, // the invoice's total BEFORE this amendment's resync
+    });
+
+    const res = await POST(req({ reason: 'post-install add-on', notifyCustomer: true }), ctx());
+    expect(res.status).toBe(200);
+
+    const sms = sentSmsMessage();
+    // The message states the invoice-basis new total (5150.00) and MUST pair
+    // it with the invoice-basis delta (551.79) — not the trail's 600.00.
+    expect(sms).toContain(usdText(5150));
+    expect(sms).toContain(usdText(551.79));
+    expect(sms).not.toContain(usdText(600));
+    // Prove it reconciles: newTotalUsd − deltaUsd must equal the REAL prior
+    // invoiced total (4598.21), the number a reader would infer.
+    expect(Math.round((5150 - 551.79) * 100) / 100).toBe(4598.21);
+
+    const emailCall = sendEmailMock.mock.calls[0] as unknown as [{ html: string }] | undefined;
+    const emailHtml = emailCall?.[0]?.html ?? '';
+    expect(emailHtml).toContain(usdText(5150));
+    expect(emailHtml).toContain(usdText(551.79));
+    expect(emailHtml).not.toContain(usdText(600));
+  });
+
   it('falls back to the trail balance when there is no invoice yet', async () => {
     sbRef.current = makeSb(BOOKED_QUOTE).client;
     getJobByQuoteMock.mockResolvedValue({ id: 'job-1', status: 'to_schedule' });

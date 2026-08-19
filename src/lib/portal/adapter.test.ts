@@ -3,6 +3,7 @@ import {
   quoteRowToPortalQuote,
   resolveApprovalSelectionSeed,
   BILLED_ROOFLINE_IDS,
+  invoiceBasisTotal,
   type QuoteRowForPortal,
 } from './adapter';
 import { computeInitialSelection } from '@/components/portal/SelectionContext';
@@ -1626,6 +1627,7 @@ describe('quoteRowToPortalQuote — pending booked amendment consent', () => {
       | { status: 'accepted'; accepted_at: string; signature: { name: string; kind: 'typed'; value: string; signed_at: string; ip: null } }
       | { status: 'declined'; declined_at: string; reason?: string; ip: string | null },
     trailingCosmetic = false,
+    invoiceTaxOverridden: boolean | null = null,
   ) {
     const inputs = emptyInputs({ customLineItems: [{ label: 'Lighting', amount: 2400 }] });
     const result = calculateQuote(inputs);
@@ -1667,7 +1669,7 @@ describe('quoteRowToPortalQuote — pending booked amendment consent', () => {
         line_item_changes: [{ id: 'free-spritzers', label: 'Free spritzers', change: 'added' as const, price: 0 }],
       }] : [])],
     };
-    return quoteRowToPortalQuote({ row, photos: PHOTOS })!;
+    return quoteRowToPortalQuote({ row, photos: PHOTOS, invoiceTaxOverridden })!;
   }
 
   it('exposes the latest unsigned amendment with its money comparison', () => {
@@ -1773,5 +1775,118 @@ describe('quoteRowToPortalQuote — pending booked amendment consent', () => {
     expect(approval?.pendingAmendment).toBeUndefined();
     expect(approval?.totalUsd).toBe(2400);
     expect(approval?.depositUsd).toBe(1000);
+  });
+});
+
+// FIX4 (review HIGH, money): the amendment-consent card must show the SAME
+// basis the SMS/email quote (amend/route.ts's notifiedTotal/notifiedBalance/
+// notifiedDelta) — the invoice basis whenever a linked invoice exists.
+describe('invoiceBasisTotal (pure)', () => {
+  it('returns the trail total unchanged when not tax-overridden', () => {
+    expect(invoiceBasisTotal(2000, 5600, 450, false)).toBe(2000);
+  });
+
+  it('scales the removable tax to the trail total\'s share of the full total when overridden', () => {
+    // fullTotal 5600 includes 450 tax; a 2000 trail total is 2000/5600 of the
+    // full quote, so its share of the tax is 450 × (2000/5600) = 160.71.
+    expect(invoiceBasisTotal(2000, 5600, 450, true)).toBe(1839.29);
+  });
+
+  it('the full (non-diverged) total removes the WHOLE tax', () => {
+    expect(invoiceBasisTotal(5600, 5600, 450, true)).toBe(5150);
+  });
+
+  it('guards a zero full total (no divide-by-zero)', () => {
+    expect(invoiceBasisTotal(0, 0, 0, true)).toBe(0);
+  });
+});
+
+describe('quoteRowToPortalQuote — amendment consent card money basis (FIX4)', () => {
+  // Real engine output (not guessed) so the tax figures are genuine — the
+  // same fixture shape as the "pending booked amendment consent" describe
+  // above (a $2,400 custom item, default 8.75% tax).
+  const inputs = emptyInputs({ customLineItems: [{ label: 'Lighting', amount: 2400 }] });
+  const result = calculateQuote(inputs);
+  const fullTotal = result.total;
+  const fullTax = result.taxAmount;
+
+  function amendedPortalWithBasis(invoiceTaxOverridden: boolean | null) {
+    const row = rowWith(result, inputs);
+    row.customer_approved_at = '2026-07-01T00:00:00.000Z';
+    row.deposit_paid_at = '2026-07-01T00:10:00.000Z';
+    row.status = 'booked';
+    row.approval_snapshot = {
+      approvedAt: '2026-07-01T00:00:00.000Z',
+      customerSelection: {
+        packageId: 'A',
+        activeName: 'Original order',
+        selectedItemIds: ['custom-0'],
+        currentTotalUsd: 2000,
+        currentDepositUsd: 1000,
+      },
+      amendments: [
+        {
+          amended_at: '2026-07-18T12:00:00.000Z',
+          by: 'staff:ops',
+          reason: 'Added front wreaths',
+          previous_total: 2000,
+          new_total: 2400,
+          previous_balance: 1000,
+          new_balance: 1400,
+          deposit_applied: 1000,
+          delta: 400,
+          line_item_changes: [],
+          consent: { status: 'pending' },
+        },
+      ],
+    };
+    return quoteRowToPortalQuote({ row, photos: PHOTOS, invoiceTaxOverridden })!;
+  }
+
+  it('no invoice yet (null / omitted) — pendingAmendment is exactly the trail figures, unchanged', () => {
+    const approval = amendedPortalWithBasis(null).approval;
+    expect(approval?.pendingAmendment).toMatchObject({
+      previousTotalUsd: 2000,
+      newTotalUsd: 2400,
+      deltaUsd: 400,
+      newBalanceUsd: 1400,
+    });
+  });
+
+  it('invoice exists but NOT tax-overridden — matches the trail figures exactly', () => {
+    const approval = amendedPortalWithBasis(false).approval;
+    expect(approval?.pendingAmendment).toMatchObject({
+      previousTotalUsd: 2000,
+      newTotalUsd: 2400,
+      deltaUsd: 400,
+      newBalanceUsd: 1400,
+    });
+  });
+
+  it('invoice exists AND is tax-overridden — the card shows the invoice basis, internally reconciled', () => {
+    const approval = amendedPortalWithBasis(true).approval;
+    const expectedPrevious = invoiceBasisTotal(2000, fullTotal, fullTax, true);
+    const expectedNew = invoiceBasisTotal(2400, fullTotal, fullTax, true);
+    const pending = approval!.pendingAmendment!;
+
+    expect(pending.previousTotalUsd).toBe(expectedPrevious);
+    expect(pending.newTotalUsd).toBe(expectedNew);
+    // Differs from the raw trail figures — proves this test isn't vacuous
+    // (this fixture genuinely has tax to scale out).
+    expect(expectedPrevious).not.toBe(2000);
+    expect(expectedNew).not.toBe(2400);
+    // Internal consistency: newTotalUsd − deltaUsd === previousTotalUsd
+    // exactly — the SAME property FIX4 required of the SMS/email, so the
+    // card can never show a delta that doesn't reconcile with its own totals.
+    expect(Math.round((expectedNew - pending.deltaUsd) * 100) / 100).toBe(expectedPrevious);
+    // The balance derives from the (invoice-basis) new total, not the trail's.
+    expect(pending.newBalanceUsd).toBe(Math.round(Math.max(0, expectedNew - 1000) * 100) / 100);
+  });
+
+  it('the deposit-already-paid figure stays basis-independent (the real dollar amount charged)', () => {
+    const trailBasis = amendedPortalWithBasis(null).approval!.pendingAmendment!;
+    const invoiceBasis = amendedPortalWithBasis(true).approval!.pendingAmendment!;
+    expect(trailBasis.depositAppliedUsd).toBe(1000);
+    expect(invoiceBasis.depositAppliedUsd).toBe(1000);
   });
 });
