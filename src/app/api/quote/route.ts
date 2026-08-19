@@ -791,7 +791,32 @@ export async function POST(req: NextRequest) {
       !existing.is_test &&
       existing.highlevel_contact_id
     ) {
-      const priorFormatted = formatEventDateForGhl(existing.inputs?.event?.eventDate);
+      // FIX D (#237 fix round 2, technical MED — TOCTOU): `existing` above was
+      // read at the very TOP of this handler, before customer resolution,
+      // design projection, and pricing — a wide window. Two overlapping
+      // Calculate requests on the SAME quote can leave GHL stuck on a
+      // superseded date while the DB is correct, silently: A reads D1, writes
+      // D2, pushes D2 (GHL=D2); B ALSO read D1 before A's write landed,
+      // writes D1 back, and — if this compared against B's own stale
+      // `existing` — would see D1-vs-D1, no change, never push, leaving
+      // GHL=D2 stuck against a DB that now correctly says D1.
+      // `saved.priorInputs` (quotes.ts, SaveQuoteResult) is updateQuote's OWN
+      // late pre-read, taken immediately before its `.update()` call rather
+      // than here — so it reflects whatever the LAST write actually left in
+      // place (A's D2, in the scenario above), not this handler's early
+      // snapshot. Comparing against that instead correctly detects B's write
+      // as a real change from D2 back to D1 and re-pushes, keeping GHL
+      // aligned with whatever the DB now holds. This narrows the race window
+      // to two back-to-back Supabase calls inside updateQuote instead of the
+      // whole request — not a full elimination (that needs a row lock or an
+      // optimistic-concurrency version column across the route, out of scope
+      // for a MED) but far below "two ops Calculate the same quote within a
+      // double-digit-millisecond window," which this internal tool's usage
+      // doesn't plausibly produce. Falls back to the old early snapshot only
+      // when priorInputs comes back null (see StoredIdentityRow's comment in
+      // quotes.ts for when that happens) — degraded, not broken.
+      const priorInputs = saved.priorInputs ?? existing.inputs;
+      const priorFormatted = formatEventDateForGhl(priorInputs?.event?.eventDate);
       const nextFormatted = formatEventDateForGhl(quoteInputs.event?.eventDate);
       if (nextFormatted && nextFormatted !== priorFormatted) {
         void pushEventDateToGhl(existing.highlevel_contact_id, quoteInputs.event?.eventDate);

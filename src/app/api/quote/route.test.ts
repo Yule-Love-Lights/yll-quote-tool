@@ -11,7 +11,15 @@ const { save, update, getRaw, rawRef, operatorRef } = vi.hoisted(() => ({
   // Typed varargs so `.mock.calls[n]` is an indexable unknown[] (the permanent
   // dispatch tests read positional args like calls[0][3] = serviceType).
   save: vi.fn(async (..._args: unknown[]) => ({ id: 'new-id' })),
-  update: vi.fn(async (..._args: unknown[]) => ({ id: 'existing-id' })),
+  // FIX D (#237 fix round 2): return type widened (still defaults to the
+  // plain { id } shape) so individual tests can override with
+  // mockResolvedValueOnce to simulate updateQuote's late-read priorInputs —
+  // see the TOCTOU tests below.
+  update: vi.fn(
+    async (
+      ..._args: unknown[]
+    ): Promise<{ id: string; priorInputs?: { event?: { eventDate?: string } } | null }> => ({ id: 'existing-id' }),
+  ),
   // getQuoteRaw is consulted only on the update branch (W1-003 booked-re-price
   // gate). rawRef.current is the row the mock returns; null = row not found,
   // undefined default = a plain draft (no lifecycle timestamps → not booked).
@@ -1318,6 +1326,54 @@ describe('POST /api/quote — event-date GHL re-push on save (FIX B, #237 fix ro
     // 'holiday' (H2), not 'event'.
     const res = await POST(
       makeReq({ quoteId: REAL_UUID, inputs: { ...validInputs(), event: { eventDate: '2026-12-25' } } }),
+    );
+    expect(res.status).toBe(200);
+    expect(pushEventDateMock).not.toHaveBeenCalled();
+  });
+
+  // FIX D (#237 fix round 2, technical MED — TOCTOU): the regression this
+  // whole fix guards. `rawRef.current` (getQuoteRaw's mocked return) stands
+  // in for route.ts's EARLY read, taken at the top of the handler — here it
+  // still shows the ORIGINAL '2026-12-01', matching what THIS request is
+  // about to write back (a staffer who never saw a concurrent edit re-saving
+  // the same date they started with). `update`'s mocked return stands in for
+  // updateQuote's OWN late pre-read (quotes.ts, `stored.inputs`, taken
+  // immediately before its write) — set here to a DIFFERENT date
+  // ('2026-12-20'), simulating a second request that landed its own write
+  // (and its own GHL push) in the gap between this request's early read and
+  // its actual update call. Under the pre-fix logic (compare against
+  // `existing.inputs`, i.e. rawRef.current) this would wrongly read as "no
+  // change" ('2026-12-01' === '2026-12-01') and skip the push, leaving GHL
+  // stuck on '2026-12-20' forever even though the DB now correctly holds
+  // '2026-12-01' again. Asserting the push DOES fire, with the date this
+  // request is actually writing, proves the compare now uses
+  // saved.priorInputs (the late read) instead.
+  it('re-pushes when a concurrent write landed between this request\'s early read and its own update (TOCTOU)', async () => {
+    rawRef.current = { ...SENT_EVENT_ROW }; // early snapshot: still shows 2026-12-01
+    update.mockResolvedValueOnce({
+      id: 'existing-id',
+      priorInputs: { event: { eventDate: '2026-12-20' } }, // late read: someone else already moved it
+    });
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, serviceType: 'event', inputs: { ...validInputs(), event: { eventDate: '2026-12-01' } } }),
+    );
+    expect(res.status).toBe(200);
+    expect(pushEventDateMock).toHaveBeenCalledWith('contact_1', '2026-12-01');
+  });
+
+  // Counterpart: when updateQuote's late read agrees with the early
+  // snapshot (the ordinary case — no concurrent writer), the push still
+  // correctly stays silent on a same-value re-save. Guards against a
+  // regression that made the new compare fire on EVERY save regardless of
+  // an actual change.
+  it('still does NOT re-push when the late read agrees with the early snapshot (no concurrent writer)', async () => {
+    rawRef.current = { ...SENT_EVENT_ROW }; // 2026-12-01
+    update.mockResolvedValueOnce({
+      id: 'existing-id',
+      priorInputs: { event: { eventDate: '2026-12-01' } }, // late read agrees — no one else touched it
+    });
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, serviceType: 'event', inputs: { ...validInputs(), event: { eventDate: '2026-12-01' } } }),
     );
     expect(res.status).toBe(200);
     expect(pushEventDateMock).not.toHaveBeenCalled();

@@ -185,6 +185,16 @@ function blankToNull(v: string | undefined): string | null {
   return trimmed.length ? trimmed : null;
 }
 
+// FIX D (#237 fix round 2, technical MED — TOCTOU): shared by saveQuote AND
+// updateQuote purely so the ternary that picks between them in
+// /api/quote/route.ts (`isUpdate ? await updateQuote(...) : await
+// saveQuote(...)`) infers ONE clean type instead of a union TypeScript can't
+// narrow on `isUpdate` alone. `priorInputs` is optional and saveQuote never
+// sets it (a brand-new insert has no "prior" row) — only updateQuote
+// populates it, from its own late pre-read (see `stored` below), taken
+// immediately before the write rather than route.ts's much-earlier snapshot.
+export type SaveQuoteResult = { id: string; priorInputs?: Partial<QuoteInputs> | null };
+
 export async function saveQuote(
   customer: Customer,
   inputs: QuoteInputs,
@@ -221,7 +231,7 @@ export async function saveQuote(
   // first save.
   legacyRebook = false,
   isNce = false,
-): Promise<{ id: string } | null> {
+): Promise<SaveQuoteResult | null> {
   // Service client first so the write bypasses RLS (enabled on quotes, #90); the
   // anon fallback keeps dev (no service key) working.
   const supabase = getSupabaseServiceClient() ?? getSupabaseClient();
@@ -377,7 +387,7 @@ export async function updateQuote(
   // findOrCreateCustomer's hl-agree/veto rules sat dead on every re-save
   // and a weak-field reject could fork a silent dup customers row (#214 b).
   hlContactId?: string | null,
-): Promise<{ id: string } | null> {
+): Promise<SaveQuoteResult | null> {
   // Service client first so the write bypasses RLS (enabled on quotes, #90).
   const supabase = getSupabaseServiceClient() ?? getSupabaseClient();
   if (!supabase) return null;
@@ -403,6 +413,22 @@ export async function updateQuote(
   // hlContactId), not just serviceType. An update carrying none of the three
   // (a bare re-price) still skips it entirely — nothing it guards can change
   // on such a call.
+  //
+  // FIX D (#237 fix round 2, technical MED — TOCTOU): also carries `inputs`
+  // now, for the SAME reason — this is a late read, taken immediately before
+  // the `.update()` call a few lines down, not the much-earlier snapshot
+  // /api/quote/route.ts reads at the top of its handler. The route's own
+  // event-date-changed compare uses THIS read (returned below as
+  // SaveQuoteResult.priorInputs) instead of its early one, closing most of a
+  // race where two overlapping Calculate requests on the same quote leave
+  // GHL stuck on a superseded date while the DB is correct — see that
+  // route's comment for the full scenario. Relies on this block actually
+  // running for that caller: /api/quote/route.ts always passes a truthy
+  // `serviceType` (effectiveServiceType falls back to DEFAULT_SERVICE_TYPE,
+  // never empty), so this `if` is unconditionally true for it today. A
+  // future caller that omits serviceType/customer/hlContactId would get
+  // priorInputs: null back, which route.ts falls back to its own early
+  // snapshot for — degraded, not broken.
   type StoredIdentityRow = {
     service_type: string | null;
     customer_name: string | null;
@@ -411,6 +437,7 @@ export async function updateQuote(
     customer_address: string | null;
     highlevel_contact_id: string | null;
     customer_id: string | null;
+    inputs: Partial<QuoteInputs> | null;
   };
   let stored: StoredIdentityRow | null = null;
   let clearGhlLink = false;
@@ -418,7 +445,7 @@ export async function updateQuote(
     const { data: existing, error: readErr } = await supabase
       .from('quotes')
       .select(
-        'service_type, customer_name, customer_email, customer_phone, customer_address, highlevel_contact_id, customer_id',
+        'service_type, customer_name, customer_email, customer_phone, customer_address, highlevel_contact_id, customer_id, inputs',
       )
       .eq('id', id)
       .maybeSingle<StoredIdentityRow>();
@@ -631,7 +658,16 @@ export async function updateQuote(
     }
   }
 
-  return { id: data.id };
+  // FIX D (#237 fix round 2): see StoredIdentityRow's comment above —
+  // `stored` (when populated) was read immediately before the write just
+  // completed, so its `inputs` is the true pre-write state for THIS call.
+  // Plain `stored?.inputs` (not `?? null`) deliberately keeps `undefined`
+  // (stored was never populated — this call's guard above skipped the
+  // pre-read) distinct from `null` (stored WAS populated but its `inputs`
+  // column itself read back empty) — both mean "nothing to report" to
+  // route.ts's fallback (`saved.priorInputs ?? existing.inputs`), but only
+  // the former is truly "we never looked."
+  return { id: data.id, priorInputs: stored?.inputs };
 }
 
 // The raw row the EDIT flow needs (/quote/[id], #31): stored customer columns +
