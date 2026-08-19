@@ -1730,7 +1730,16 @@ export type InWorksItem = {
   needsLookReason: string | null;
 };
 export type InWorksResult =
-  | { ok: true; awaiting: InWorksItem[]; handled: InWorksItem[] }
+  | {
+      ok: true;
+      awaiting: InWorksItem[];
+      handled: InWorksItem[];
+      // #307 review fix 2: true when either of the two needsLookReason evidence
+      // lookups (quote status, pending follow-up) failed and fell back to an
+      // empty result — meaning some 'handled' row may be missing its reason
+      // and reads as settled when the evidence for that couldn't be checked.
+      evidenceIncomplete: boolean;
+    }
   | { ok: false; error: string };
 
 const IN_WORKS_SELECT =
@@ -1809,24 +1818,28 @@ const QUOTE_UNANSWERED_STATUSES: ReadonlySet<QuoteStatus> = new Set(['sent', 'vi
 /**
  * #307: batch-fetches the derived QuoteStatus for every id in `quoteIds` in
  * ONE query (mirrors fetchHiddenLegacyRebookQuoteIds's pattern above — never a
- * per-row query in a loop). Fails OPEN + VISIBLY on a lookup error, same
- * convention as that function: an empty map means no handled row reads as
- * quote-unanswered from this signal, which is the same "worse outcome avoided
- * is the wrong direction, but matches this file's established fail-open
- * convention on a transient read failure" tradeoff as the rest of this file.
+ * per-row query in a loop). On a lookup error this still fails OPEN (returns
+ * an empty map rather than throwing — a transient read failure must not crash
+ * the page), but unlike fetchHiddenLegacyRebookQuoteIds's fail-open (which is
+ * SAFE — an empty result there means "hide nothing"), an empty map here is
+ * UNSAFE — it means "no handled row reads as quote-unanswered", which can
+ * silently under-populate the one list whose entire premise is that evidence
+ * must not go missing. `failed` carries that distinction to the caller so
+ * listInWorks can surface it instead of only logging it server-side (#307
+ * review fix 2).
  */
 async function fetchQuoteStatusesById(
   sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
   quoteIds: readonly string[],
-): Promise<Map<string, QuoteStatus>> {
-  if (quoteIds.length === 0) return new Map();
+): Promise<{ statuses: Map<string, QuoteStatus>; failed: boolean }> {
+  if (quoteIds.length === 0) return { statuses: new Map(), failed: false };
   const { data, error } = await sb
     .from('quotes')
     .select('id, status, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at')
     .in('id', quoteIds);
   if (error) {
     console.error('[inbox] needs-a-look quote status lookup failed:', error.message);
-    return new Map();
+    return { statuses: new Map(), failed: true };
   }
   const map = new Map<string, QuoteStatus>();
   for (const q of (data ?? []) as {
@@ -1839,20 +1852,21 @@ async function fetchQuoteStatusesById(
   }[]) {
     map.set(String(q.id), deriveStatus(q));
   }
-  return map;
+  return { statuses: map, failed: false };
 }
 
 /**
  * #307 rule (c): batch-fetches which of `itemIds` has at least one still-
  * pending follow_ups row, in ONE query (`.in('inbox_item_id', itemIds)`) —
- * never a per-row query. Same fail-open-on-error convention as its sibling
- * above.
+ * never a per-row query. Same fail-open-but-report-it convention as its
+ * sibling above: `failed` tells listInWorks this specific lookup didn't
+ * complete, rather than being indistinguishable from "nothing pending".
  */
 async function fetchPendingFollowUpItemIds(
   sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
   itemIds: readonly string[],
-): Promise<Set<string>> {
-  if (itemIds.length === 0) return new Set();
+): Promise<{ ids: Set<string>; failed: boolean }> {
+  if (itemIds.length === 0) return { ids: new Set(), failed: false };
   const { data, error } = await sb
     .from('follow_ups')
     .select('inbox_item_id')
@@ -1860,20 +1874,27 @@ async function fetchPendingFollowUpItemIds(
     .in('inbox_item_id', itemIds);
   if (error) {
     console.error('[inbox] needs-a-look pending follow-up lookup failed:', error.message);
-    return new Set();
+    return { ids: new Set(), failed: true };
   }
-  return new Set(
-    ((data ?? []) as { inbox_item_id: string | null }[])
-      .map((r) => r.inbox_item_id)
-      .filter((v): v is string => !!v),
-  );
+  return {
+    ids: new Set(
+      ((data ?? []) as { inbox_item_id: string | null }[])
+        .map((r) => r.inbox_item_id)
+        .filter((v): v is string => !!v),
+    ),
+    failed: false,
+  };
 }
 
 /** Two-group In-Works list: items being actively followed up (awaiting) + locally
  *  handled items that aren't yet dismissed or completed (handled). Both sorted
  *  stalest-first so the longest-waiting surface at the top. Every 'handled' row
  *  also carries needsLookReason (#307) — computed from two BATCHED lookups (a
- *  quote-status map + a pending-follow-up set), never a per-row query. */
+ *  quote-status map + a pending-follow-up set), never a per-row query.
+ *  `evidenceIncomplete` (#307 review fix 2) is true when either of those two
+ *  lookups failed and fell back to empty — the caller renders that as a
+ *  visible note rather than only the server-side console.error already inside
+ *  each lookup. */
 export async function listInWorks(limit = 200): Promise<InWorksResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
@@ -1911,10 +1932,12 @@ export async function listInWorks(limit = 200): Promise<InWorksResult> {
         .filter(isUuid),
     ),
   ];
-  const [quoteStatusById, pendingFollowUpItemIds] = await Promise.all([
+  const [quoteStatusResult, pendingFollowUpResult] = await Promise.all([
     fetchQuoteStatusesById(sb, quotetoolQuoteIds),
     fetchPendingFollowUpItemIds(sb, handledIds),
   ]);
+  const quoteStatusById = quoteStatusResult.statuses;
+  const pendingFollowUpItemIds = pendingFollowUpResult.ids;
 
   const handled = mapInWorksRow(handledRows, 'handled_at', (row) => {
     const quoteStatus =
@@ -1932,6 +1955,7 @@ export async function listInWorks(limit = 200): Promise<InWorksResult> {
     ok: true,
     awaiting: mapInWorksRow(aw.data ?? [], 'followed_up_at'),
     handled,
+    evidenceIncomplete: quoteStatusResult.failed || pendingFollowUpResult.failed,
   };
 }
 

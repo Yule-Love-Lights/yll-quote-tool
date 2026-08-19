@@ -1201,6 +1201,119 @@ describe('listInWorks — parallel fetch (#185)', () => {
     const result = await listInWorks(200);
     expect(result).toEqual({ ok: false, error: 'handled query failed' });
   });
+
+  // #307 review fix 2: fetchQuoteStatusesById/fetchPendingFollowUpItemIds
+  // still fail OPEN on a lookup error (an empty map/set, never a thrown
+  // error) — but now also report it via evidenceIncomplete instead of only
+  // console.error, since an empty result here silently UNDER-populates
+  // "Needs a look" (the unsafe direction — see the two functions' own doc
+  // comments for the contrast with fetchHiddenLegacyRebookQuoteIds's safe
+  // fail-open).
+  it('evidenceIncomplete is false when both evidence lookups succeed', async () => {
+    const handledRow = {
+      id: 'i-hd',
+      source: 'ghl',
+      channel: 'sms',
+      preview: 'handled it',
+      followed_up_at: null,
+      handled_at: '2026-07-21T09:00:00Z',
+      status: 'handled',
+      direction: 'outbound',
+      external_id: 'conv-1',
+      dashboard_contacts: { display_name: 'Settled Sam' },
+    };
+    let inboxCallIndex = 0;
+    const router = makeTableRouter({ follow_ups: { data: [], error: null } });
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'inbox_items') {
+          const idx = inboxCallIndex;
+          inboxCallIndex += 1;
+          return makeBuilder({ data: idx === 0 ? [] : [handledRow], error: null }).builder;
+        }
+        return router.from(table);
+      },
+    };
+
+    const result = await listInWorks(200);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.evidenceIncomplete).toBe(false);
+  });
+
+  it('evidenceIncomplete is true when the quotes evidence lookup errors, without failing the whole request', async () => {
+    const QUOTE_UUID = '123e4567-e89b-12d3-a456-426614174000';
+    const handledRow = {
+      id: 'i-hd',
+      source: 'quotetool',
+      channel: null,
+      preview: 'quote sent',
+      followed_up_at: null,
+      handled_at: '2026-07-21T09:00:00Z',
+      status: 'handled',
+      direction: 'outbound',
+      external_id: `${QUOTE_UUID}:color-request`,
+      dashboard_contacts: { display_name: 'Quoted Customer' },
+    };
+    let inboxCallIndex = 0;
+    const router = makeTableRouter({
+      quotes: { data: null, error: { message: 'quotes lookup failed' } },
+      follow_ups: { data: [], error: null },
+    });
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'inbox_items') {
+          const idx = inboxCallIndex;
+          inboxCallIndex += 1;
+          return makeBuilder({ data: idx === 0 ? [] : [handledRow], error: null }).builder;
+        }
+        return router.from(table);
+      },
+    };
+
+    const result = await listInWorks(200);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The request still succeeds and the row still renders — it just can't
+    // be trusted as "settled" from this signal, which is what the flag is for.
+    expect(result.evidenceIncomplete).toBe(true);
+    expect(result.handled[0].needsLookReason).toBeNull();
+  });
+
+  it('evidenceIncomplete is true when the follow-ups evidence lookup errors, even for a non-quotetool row that never queries "quotes"', async () => {
+    const handledRow = {
+      id: 'i-hd',
+      source: 'ghl',
+      channel: 'sms',
+      preview: 'handled it',
+      followed_up_at: null,
+      handled_at: '2026-07-21T09:00:00Z',
+      status: 'handled',
+      direction: 'outbound',
+      external_id: 'conv-1',
+      dashboard_contacts: { display_name: 'Settled Sam' },
+    };
+    let inboxCallIndex = 0;
+    const router = makeTableRouter({
+      follow_ups: { data: null, error: { message: 'follow_ups lookup failed' } },
+    });
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'inbox_items') {
+          const idx = inboxCallIndex;
+          inboxCallIndex += 1;
+          return makeBuilder({ data: idx === 0 ? [] : [handledRow], error: null }).builder;
+        }
+        return router.from(table);
+      },
+    };
+
+    const result = await listInWorks(200);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.evidenceIncomplete).toBe(true);
+    expect(router.calls.quotes).toBeUndefined();
+  });
 });
 
 // ─── listOpenItems — truncation signal (WT-41) ───────────────────────────────

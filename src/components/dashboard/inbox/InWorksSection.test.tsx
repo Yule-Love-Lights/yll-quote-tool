@@ -14,7 +14,12 @@
 
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { InWorksSection, withRowFlagSet, withRowFlagCleared } from './InWorksSection';
+import {
+  InWorksSection,
+  withRowFlagSet,
+  withRowFlagCleared,
+  requiresCompleteConfirmation,
+} from './InWorksSection';
 import type { InWorksItem } from '@/lib/dashboard/inbox/store';
 
 const now = 1_000_000_000_000;
@@ -167,5 +172,89 @@ describe('withRowFlagSet / withRowFlagCleared (row 291 — per-item busy/error m
   it('clearing a flag for an id that was never set is a no-op that returns the SAME object reference', () => {
     const errorIds: Record<string, boolean> = { rowA: true };
     expect(withRowFlagCleared(errorIds, 'rowB')).toBe(errorIds);
+  });
+});
+
+// #307 review fix 1: pins the pure predicate handleMarkCompleted's confirm
+// gate is built on — see requiresCompleteConfirmation's own doc comment in
+// InWorksSection.tsx. The click-then-confirm-then-act flow itself can't be
+// driven without jsdom (same limitation as the rest of this file), but the
+// decision rule that flow depends on is fully covered here.
+describe('requiresCompleteConfirmation (#307 review fix 1 — pure)', () => {
+  it('is true for a row carrying a needsLookReason', () => {
+    expect(requiresCompleteConfirmation({ needsLookReason: 'Quote unanswered' })).toBe(true);
+  });
+
+  it('is false for a row with no needsLookReason (today\'s one-click behavior is unchanged)', () => {
+    expect(requiresCompleteConfirmation({ needsLookReason: null })).toBe(false);
+  });
+});
+
+// #307 review fix 2: evidenceIncomplete must render its note even when the
+// "Needs a look" heading itself does not (zero flagged rows) — that's the
+// exact silent-undercount scenario the flag exists to surface.
+describe('InWorksSection (#307 review fix 2 — evidenceIncomplete banner)', () => {
+  it('shows no incomplete-evidence note when evidenceIncomplete is omitted (default false)', () => {
+    const handled: InWorksItem[] = [
+      { ...baseItem, id: 'h1', customerName: 'Settled Customer', needsLookReason: null },
+    ];
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={[]} handled={handled} followUpDays={3} nowMs={now} />,
+    );
+    expect(html).not.toContain('evidence checks');
+  });
+
+  it('shows the incomplete-evidence note even when zero rows are flagged (the "Needs a look" heading never renders)', () => {
+    const handled: InWorksItem[] = [
+      { ...baseItem, id: 'h1', customerName: 'Settled Customer', needsLookReason: null },
+    ];
+    const html = renderToStaticMarkup(
+      <InWorksSection
+        awaiting={[]}
+        handled={handled}
+        followUpDays={3}
+        nowMs={now}
+        evidenceIncomplete={true}
+      />,
+    );
+    // The heading (which always carries a "(" count) never renders; only the
+    // banner's own prose mentions "Needs a look" by name.
+    expect(html).not.toContain('Needs a look (');
+    expect(html).toContain('evidence checks');
+  });
+
+  it('shows the incomplete-evidence note alongside a populated "Needs a look" list too', () => {
+    const handled: InWorksItem[] = [
+      { ...baseItem, id: 'h1', customerName: 'Flagged Customer', needsLookReason: 'They wrote last' },
+    ];
+    const html = renderToStaticMarkup(
+      <InWorksSection
+        awaiting={[]}
+        handled={handled}
+        followUpDays={3}
+        nowMs={now}
+        evidenceIncomplete={true}
+      />,
+    );
+    expect(html).toContain('Needs a look (1)');
+    expect(html).toContain('evidence checks');
+  });
+});
+
+// #307 review fix 3: the collapsed Handled toggle previously read the same
+// static "Handled (N)" whether the list below was open or closed. A static
+// render can only ever prove the INITIAL (collapsed) state — see this file's
+// header comment — but that's enough to pin that the label is now
+// state-aware (says "Show", not the old bare count) rather than static.
+describe('InWorksSection (#307 review fix 3 — Handled toggle label feedback)', () => {
+  it('the collapsed Handled toggle reads "Show Handled (N)", not the old bare "Handled (N)"', () => {
+    const handled: InWorksItem[] = [
+      { ...baseItem, id: 'h1', customerName: 'Settled Customer', needsLookReason: null },
+    ];
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={[]} handled={handled} followUpDays={3} nowMs={now} />,
+    );
+    expect(html).toContain('Show Handled (1)');
+    expect(html).not.toContain('Hide Handled');
   });
 });

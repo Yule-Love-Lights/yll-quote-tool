@@ -34,16 +34,32 @@ export function withRowFlagCleared(map: Record<string, boolean>, id: string): Re
   return next;
 }
 
+// #307 review fix 1: a flagged row ("Needs a look") is exactly the case
+// "Mark completed" must not silently one-click through — completing is
+// terminal (store.ts markItemCompleted sets status='completed', which no
+// inbox list queries again, and closes any pending follow-up along with it).
+// Pure so the "which rows require the confirmation gate" rule is directly
+// unit-testable without rendering or mocking fetch.
+export function requiresCompleteConfirmation(item: Pick<InWorksItem, 'needsLookReason'>): boolean {
+  return item.needsLookReason != null;
+}
+
 export function InWorksSection({
   awaiting,
   handled,
   followUpDays,
   nowMs,
+  evidenceIncomplete = false,
 }: {
   awaiting: InWorksItem[];
   handled: InWorksItem[];
   followUpDays: number;
   nowMs: number;
+  // #307 review fix 2: true when a "Needs a look" evidence lookup (quote
+  // status or pending follow-up) failed server-side and fell back to empty —
+  // see store.ts listInWorks's evidenceIncomplete. Defaulted so existing
+  // callers/tests that don't pass it render exactly as before (no banner).
+  evidenceIncomplete?: boolean;
 }) {
   const [awaitingItems, setAwaitingItems] = useState<InWorksItem[]>(awaiting);
   const [handledItems, setHandledItems] = useState<InWorksItem[]>(handled);
@@ -137,6 +153,22 @@ export function InWorksSection({
   // act()) or the accidental cross-row steal this fix removes.
   function dismissError(itemId: string) {
     setErrorIds((prev) => withRowFlagCleared(prev, itemId));
+  }
+
+  // #307 review fix 1: the "Mark completed" click handler. For a flagged row,
+  // requires an explicit window.confirm naming the reason before act() ever
+  // runs — cancelling returns before act() is called, so no status write, no
+  // follow-up close, and no busy state (act() is what sets busyIds). An
+  // unflagged row (requiresCompleteConfirmation false) calls act() directly,
+  // identical to the pre-fix one-click behavior.
+  function handleMarkCompleted(item: InWorksItem, group: 'awaiting' | 'handled') {
+    if (requiresCompleteConfirmation(item)) {
+      const ok = window.confirm(
+        `${item.needsLookReason} — mark completed anyway?\n\nThis removes it from every inbox list and closes any pending follow-up. It can't be undone from here.`,
+      );
+      if (!ok) return;
+    }
+    act(item, group, '/api/dashboard/completed', 'remove');
   }
 
   function renderRow(item: InWorksItem, group: 'awaiting' | 'handled') {
@@ -257,7 +289,7 @@ export function InWorksSection({
             <button
               type="button"
               disabled={!!busyIds[item.id]}
-              onClick={() => act(item, group, '/api/dashboard/completed', 'remove')}
+              onClick={() => handleMarkCompleted(item, group)}
               className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
               style={{ border: '1px solid var(--op-border)', color: 'var(--op-text-2)' }}
             >
@@ -309,6 +341,17 @@ export function InWorksSection({
         </div>
       )}
 
+      {/* #307 review fix 2: rendered independent of needsLookItems.length —
+          on a lookup failure the "Needs a look" heading below may not render
+          at all (empty list), which is exactly the silent-undercount this
+          note exists to surface. Non-alarming, plain: it does not claim any
+          specific row is missing, only that the check may be incomplete. */}
+      {evidenceIncomplete && (
+        <p className="text-xs mb-2" style={{ color: '#92400e' }}>
+          Some evidence checks didn’t finish — Needs a look may be missing rows.
+        </p>
+      )}
+
       {/* #307: a split VIEW over handledItems, not a separate group — both
           subsections act on 'handled' rows the same way (renderRow's group
           param, and thus every action button, is unaffected by the split). */}
@@ -325,13 +368,17 @@ export function InWorksSection({
 
       {settledHandledItems.length > 0 && (
         <div>
+          {/* #307 review fix 3: label toggles with state (Show/Hide), matching
+              InboxList.tsx's "Show N filtered" / "Hide filtered" expander —
+              this button previously read "Handled (N)" in both states, giving
+              no feedback about whether the list below was open. */}
           <button
             type="button"
             onClick={() => setHandledExpanded((v) => !v)}
             className="text-xs font-medium uppercase tracking-wide mb-2 underline"
             style={{ color: 'var(--op-text-2)' }}
           >
-            Handled ({settledHandledItems.length})
+            {handledExpanded ? `Hide Handled (${settledHandledItems.length})` : `Show Handled (${settledHandledItems.length})`}
           </button>
           {handledExpanded && (
             <ul className="space-y-2">

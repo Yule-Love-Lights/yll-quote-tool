@@ -120,6 +120,7 @@ export default async function InboxPage() {
             handled={inWorksRes.handled}
             followUpDays={days}
             nowMs={now.getTime()}
+            evidenceIncomplete={inWorksRes.evidenceIncomplete}
           />
         )}
 
