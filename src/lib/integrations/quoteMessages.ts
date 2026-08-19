@@ -445,6 +445,28 @@ export function supplierOrderEmailHtml(input: { lines: SupplierOrderLine[]; jobC
 // email links to. Two review lenses found that independently. usd()'s rounding
 // is also NOT monotonic in the customer's favour — a balance ending under 50c
 // rounds DOWN, quoting a number LOWER than what is actually billed.
+//
+// REWRITE (Jason 2026-08-19, real incident): a customer got the old SMS below
+// — a bare new balance, no link, no mention that anything was ADDED, no
+// indication she needed to do anything — and had to phone in to say no,
+// because there was no decline path either. Fixed here + the portal card
+// (AmendmentConsentCard) gaining a decline button. This version:
+//   - includes the portal link in the SMS (previously email-only)
+//   - states the DIRECTION and SIZE of the change (deltaUsd, signed) and says
+//     plainly that approval is needed before anything is charged at the new
+//     amount — the previous total is what's actually collectible until then
+//     (WT-18 blocksSettlement enforces exactly this for an increase)
+//   - a DECREASE gets calmer, non-urgent phrasing ("no rush") — the customer
+//     owes less either way, so there is nothing to hurry them into
+// Deliberately does NOT repeat the staff-typed `reason` here (the portal card
+// already shows it verbatim once they click through). `reason` is free text
+// an operator types for a *different* surface (the sign-off card) with no
+// preview step; duplicating it into a carrier-filtered SMS risks a garbled or
+// overlong message for no gain the structured delta+link don't already cover,
+// and keeps the two channels' assertions limited to numbers this module can
+// verify against the trail. See amend-consent's sibling amend-decline route
+// for where a typed decline reason goes instead (staff-facing only, never
+// echoed back into a notice).
 export const AMENDMENT_EMAIL_SUBJECT = 'Your Yule Love Lights order was updated';
 
 // `dueAfterInstall` — whether the balance is genuinely still ahead of the
@@ -455,14 +477,28 @@ export const AMENDMENT_EMAIL_SUBJECT = 'Your Yule Love Lights order was updated'
 // is — which delays collection. The clause is therefore stated only when it is
 // true; a post-install amendment falls back to the plain balance sentence and
 // makes no timing claim at all, rather than inventing one.
-export function amendmentSmsBody(
-  firstName: string,
-  newBalanceUsd: number,
-  phone: string,
-  dueAfterInstall: boolean,
-): string {
+export function amendmentSmsBody(input: {
+  firstName: string;
+  newBalanceUsd: number;
+  phone: string;
+  dueAfterInstall: boolean;
+  portalUrl: string;
+  // Signed, new_total − previous_total (computeAmendment's own `delta`, on the
+  // AGREED-total basis — the same number blocksSettlement/requiresReconsent
+  // read). Positive = customer owes more, negative = owes less. NOT derived
+  // from the invoice-priority newTotalUsd/newBalanceUsd below, which can be on
+  // a tax-scaled basis (#125-1) — the direction/size of the underlying change
+  // is the same real-world fact either way, so it always reads off the trail.
+  deltaUsd: number;
+  newTotalUsd: number;
+}): string {
+  const { firstName, newBalanceUsd, phone, dueAfterInstall, portalUrl, deltaUsd, newTotalUsd } = input;
   const timing = dueAfterInstall ? ' after installation' : '';
-  return `Hi ${greetingName(firstName)}! Your Yule Love Lights order was updated, your remaining balance is now ${usdExact(newBalanceUsd)}${timing}. We'll confirm the details with you. Questions? Call or text ${phone}.`;
+  const balanceClause = `balance ${usdExact(newBalanceUsd)}${timing}`;
+  if (deltaUsd >= 0) {
+    return `Hi ${greetingName(firstName)}! Your Yule Love Lights order was changed — the total went up by ${usdExact(deltaUsd)} to ${usdExact(newTotalUsd)} (${balanceClause}). This needs your approval before we charge anything at the new amount — nothing changes until you approve it. Review & respond: ${portalUrl} Questions? Call or text ${phone}.`;
+  }
+  return `Hi ${greetingName(firstName)}! Good news — your Yule Love Lights order was changed and the total went down by ${usdExact(Math.abs(deltaUsd))} to ${usdExact(newTotalUsd)} (${balanceClause}). Nothing you owe is going up. Please confirm on your portal whenever it's convenient, no rush: ${portalUrl} Questions? Call or text ${phone}.`;
 }
 
 export function amendmentEmailHtml(input: {
@@ -473,16 +509,26 @@ export function amendmentEmailHtml(input: {
   phone: string;
   // See amendmentSmsBody above for why this is conditional.
   dueAfterInstall: boolean;
+  // See amendmentSmsBody above — same signed trail delta, same reasoning.
+  deltaUsd: number;
 }): string {
   const name = escapeHtml(greetingName(input.firstName));
+  const increased = input.deltaUsd >= 0;
+  const changeSentence = increased
+    ? `Your order was changed — the total went up by <strong>${usdExact(input.deltaUsd)}</strong>.`
+    : `Your order was changed — the total went down by <strong>${usdExact(Math.abs(input.deltaUsd))}</strong>. Nothing you owe is going up.`;
+  const approvalSentence = increased
+    ? `This needs your approval before we charge anything at the new amount — nothing changes until you approve it.`
+    : `Please take a look and confirm it whenever it's convenient — no rush.`;
   return [
     `<p>Hi ${name},</p>`,
-    `<p>We've updated your holiday lighting order. Here are the new figures:</p>`,
+    `<p>${changeSentence}</p>`,
     `<table style="border-collapse:collapse;font-size:14px;margin:12px 0;">`,
     `<tr><td style="padding:2px 14px 2px 0;color:#666;">New order total</td><td style="padding:2px 0;"><strong>${usdExact(input.newTotalUsd)}</strong></td></tr>`,
     `<tr><td style="padding:2px 14px 2px 0;color:#666;">Remaining balance${input.dueAfterInstall ? ' (due after installation)' : ''}</td><td style="padding:2px 0;"><strong>${usdExact(input.newBalanceUsd)}</strong></td></tr>`,
     `</table>`,
-    `<p>You can review your order here: <a href="${escapeHtml(input.portalUrl)}">${escapeHtml(input.portalUrl)}</a></p>`,
+    `<p>${approvalSentence}</p>`,
+    `<p>Review and respond here: <a href="${escapeHtml(input.portalUrl)}">${escapeHtml(input.portalUrl)}</a></p>`,
     `<p>Questions? Call or text ${escapeHtml(input.phone)}.</p>`,
     `<p>— Yule Love Lights</p>`,
   ].join('');

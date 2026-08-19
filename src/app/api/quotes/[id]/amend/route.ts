@@ -451,7 +451,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       try {
         await sendSms({
           contactId: quote.highlevel_contact_id,
-          message: amendmentSmsBody(firstName, notifiedBalance, phone, dueAfterInstall),
+          message: amendmentSmsBody({
+            firstName,
+            newBalanceUsd: notifiedBalance,
+            phone,
+            dueAfterInstall,
+            portalUrl,
+            // The trail's own signed delta — see amendmentSmsBody's comment for
+            // why this is NOT derived from notifiedTotal/notifiedBalance (which
+            // may be on the tax-scaled invoice basis, #125-1).
+            deltaUsd: amendment.delta,
+            newTotalUsd: notifiedTotal,
+          }),
           fromNumber: process.env.HIGHLEVEL_SMS_FROM_NUMBER || undefined,
         });
         await sendEmail({
@@ -464,6 +475,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
             portalUrl,
             phone,
             dueAfterInstall,
+            deltaUsd: amendment.delta,
           }),
           emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
         });
