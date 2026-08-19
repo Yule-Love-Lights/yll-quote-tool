@@ -29,7 +29,12 @@ import { derivePackagesEvent, eventSuggestions } from '@/lib/event/packages';
 import { derivePackagesPermanentBistro } from '@/lib/permanentBistro/packages';
 import type { PortalPhotos } from './photos';
 import { deriveStatus, isPortalActionable, type QuoteStatus } from '@/lib/quoteStatus';
-import { isAmendmentConsentPending, latestConsentAmendment, type AmendmentTrailEntry } from '@/lib/amend';
+import {
+  isAmendmentConsentPending,
+  latestConsentAmendment,
+  resolveAmendmentBasis,
+  type AmendmentTrailEntry,
+} from '@/lib/amend';
 
 // Frozen-snapshot shape stored in the `approval_snapshot` jsonb column.
 // Mirrors what /api/quotes/[id]/approve writes — kept here as a narrow
@@ -652,29 +657,28 @@ function buildApproval(
       if (!isAmendmentConsentPending(amendment)) return {};
       const declined = amendment!.consent?.status === 'declined';
       // Delta-verify HIGH (fix round 3): read the RECORDED invoice-basis
-      // figures (stamped by the amend route right after its own invoice
-      // re-sync — the same numbers the SMS/email sent) instead of
-      // reconstructing them from row.result, the quote's CURRENT full-quote
-      // pricing. Reconstruction was the bug: previous_total was priced
-      // against an EARLIER full-quote state, so scaling it by a ratio taken
-      // from the CURRENT state (which only reflects the state that produced
+      // figures (stamped by the amend route BEFORE it persists the trail
+      // entry, as of fix round 4 — see amend/route.ts's pre-write comment —
+      // the same numbers the SMS/email send) instead of reconstructing them
+      // from row.result, the quote's CURRENT full-quote pricing.
+      // Reconstruction was the bug: previous_total was priced against an
+      // EARLIER full-quote state, so scaling it by a ratio taken from the
+      // CURRENT state (which only reflects the state that produced
       // new_total) silently drifted the moment a later amendment re-priced
       // the quote again. See amend.ts's AmendmentTrailEntry.invoice_basis.
       //
-      // Absent invoice_basis (no linked invoice existed at amend time, the
-      // re-sync failed, or this entry predates the field) falls back to the
-      // raw trail figures — never to a reconstruction. That's an honest,
-      // internally-consistent choice: previous/new/delta all come from the
-      // SAME computeAmendment() call either way, so newTotalUsd − deltaUsd
-      // always equals previousTotalUsd exactly, on whichever basis is used.
-      const basis = amendment!.invoice_basis;
-      const previousTotalUsd = basis ? basis.previous_total : amendment!.previous_total;
-      const newTotalUsd = basis ? basis.new_total : amendment!.new_total;
-      const deltaUsd = basis ? basis.delta : amendment!.delta;
-      // Deposit paid is basis-independent (the actual dollar amount charged);
-      // balance is derived from the (possibly invoice-basis) newTotalUsd so it
-      // agrees with it, mirroring computeInvoiceTotals' own balance formula.
-      const newBalanceUsd = roundMoney(Math.max(0, newTotalUsd - amendment!.deposit_applied));
+      // resolveAmendmentBasis (amend.ts) is the SAME function the amend
+      // route's own customer notice calls on this SAME amendment object —
+      // absent invoice_basis (no linked invoice existed at amend time, the
+      // pre-write computation couldn't read a previous invoice total, or
+      // this entry predates the field) it falls back to the raw trail
+      // figures, never to a reconstruction, and it validates invoice_basis's
+      // shape (FIX C, fix round 4) rather than trusting the stored JSON
+      // blindly. Genuinely internally consistent now, not just
+      // self-reconciling: because the amend route's SMS/email read the exact
+      // same function on the exact same object, this card can never disagree
+      // with what the customer was already told.
+      const { previousTotalUsd, newTotalUsd, deltaUsd, newBalanceUsd } = resolveAmendmentBasis(amendment!);
       return {
         pendingAmendment: {
           amendedAt: amendment!.amended_at,

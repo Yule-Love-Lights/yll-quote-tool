@@ -1892,4 +1892,27 @@ describe('quoteRowToPortalQuote — amendment consent card money basis (delta-ve
     expect(trailBasis.depositAppliedUsd).toBe(1000);
     expect(invoiceBasis.depositAppliedUsd).toBe(1000);
   });
+
+  // FIX C (fix round 4): a malformed invoice_basis — not reachable through
+  // any current write path (the amend route only ever stamps all three
+  // fields together, as finite numbers, or omits the field entirely) — must
+  // render the trail figures, never undefined/NaN. Exercises
+  // resolveAmendmentBasis's shape guard through the real adapter, not just
+  // amend.test.ts's direct unit tests of the function.
+  it('a malformed invoice_basis (bad shape, not reachable through any current write path) falls back to the trail figures', () => {
+    const approval = amendedPortalWithBasis(
+      // `as any` — this shape can never come from the amend route.
+      { previous_total: '4608.33', new_total: 5446.81 } as unknown as {
+        previous_total: number;
+        new_total: number;
+        delta: number;
+      },
+    ).approval;
+    expect(approval?.pendingAmendment).toMatchObject({
+      previousTotalUsd: 2000,
+      newTotalUsd: 2400,
+      deltaUsd: 400,
+      newBalanceUsd: 1400,
+    });
+  });
 });
