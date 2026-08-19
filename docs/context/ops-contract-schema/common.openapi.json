@@ -5,7 +5,108 @@
     "title": "Yule Love Lights Operations Hub shared contract components",
     "version": "1.0.0-draft"
   },
-  "paths": {},
+  "paths": {
+    "/api/ops/v1/commitment-events": {
+      "get": {
+        "operationId": "listCommitmentEvents",
+        "summary": "Pull Quote Tool commitment-verification events",
+        "description": "The commitment store calls Quote Tool with the consumer-to-QT machine credential. The route is unavailable while COMMITMENT_EVENTS_ENABLED is off.",
+        "security": [
+          {
+            "YllHmac": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/YllKeyId"
+          },
+          {
+            "$ref": "#/components/parameters/YllTimestamp"
+          },
+          {
+            "$ref": "#/components/parameters/YllNonce"
+          },
+          {
+            "$ref": "#/components/parameters/YllSignature"
+          },
+          {
+            "$ref": "#/components/parameters/YllContractVersion"
+          },
+          {
+            "$ref": "#/components/parameters/YllSchemaVersion"
+          },
+          {
+            "$ref": "#/components/parameters/YllClientVersion"
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A cursor-ordered page of commitment-verification events.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommitmentEventsPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Generic machine-authentication failure."
+          },
+          "409": {
+            "description": "The signed caller contract or schema version is incompatible.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionUnsupportedReadErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "The supplied cursor expired and requires audited admin reconciliation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CursorExpiredReadErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The independent commitment-events kill switch is off.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KillSwitchedReadErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
   "components": {
     "securitySchemes": {
       "YllHmac": {
@@ -21,6 +122,9 @@
           "canonical_path_and_query",
           "unix_timestamp_seconds",
           "nonce",
+          "contract_version",
+          "schema_version",
+          "client_version",
           "lowercase_sha256_hex_of_exact_body"
         ],
         "x-yll-key-scope": [
@@ -32,10 +136,227 @@
           "X-YLL-Key-Id",
           "X-YLL-Timestamp",
           "X-YLL-Nonce",
+          "X-YLL-Contract-Version",
+          "X-YLL-Schema-Version",
+          "X-YLL-Client-Version",
           "X-YLL-Signature"
         ],
         "x-yll-freshness-seconds": 300,
-        "x-yll-nonce-retention-seconds": 600
+        "x-yll-nonce-retention-seconds": 600,
+        "x-yll-request-target-rules": [
+          "use the untouched raw request target",
+          "reject noncanonical path or query encoding",
+          "uppercase percent hex and never encode RFC3986 unreserved bytes",
+          "query pairs require equals, reject plus, sort encoded key then value"
+        ],
+        "x-yll-test-key": "yll-contract-public-test-key-v1",
+        "x-yll-test-vectors": [
+          {
+            "name": "get-empty-body",
+            "valid": true,
+            "method": "GET",
+            "raw_target": "/api/ops/v1/commitment-events?limit=100&since=abc%2Fdef",
+            "canonical_target": "/api/ops/v1/commitment-events?limit=100&since=abc%2Fdef",
+            "timestamp": "1787097600",
+            "nonce": "AAECAwQFBgcICQoLDA0ODw",
+            "contract_version": "1.4.0-draft",
+            "schema_version": "1.0.0-draft",
+            "client_version": "hub-test-v1",
+            "version_compatible": true,
+            "body_utf8": "",
+            "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "canonical_input": "v1\nGET\n/api/ops/v1/commitment-events?limit=100&since=abc%2Fdef\n1787097600\nAAECAwQFBgcICQoLDA0ODw\n1.4.0-draft\n1.0.0-draft\nhub-test-v1\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "expected_signature": "v1=a36679380314c538e9cb8f1852e623868114ee5cb7eb11132e516fa9bc4445a3"
+          },
+          {
+            "name": "post-json-body-duplicate-query",
+            "valid": true,
+            "method": "POST",
+            "raw_target": "/api/ops/v1/example?a=1&a=2&z=~",
+            "canonical_target": "/api/ops/v1/example?a=1&a=2&z=~",
+            "timestamp": "1787097660",
+            "nonce": "EBESExQVFhcYGRobHB0eHw",
+            "contract_version": "1.4.0-draft",
+            "schema_version": "1.0.0-draft",
+            "client_version": "quote-test-v1",
+            "version_compatible": true,
+            "body_utf8": "{\"ok\":true}",
+            "body_sha256": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
+            "canonical_input": "v1\nPOST\n/api/ops/v1/example?a=1&a=2&z=~\n1787097660\nEBESExQVFhcYGRobHB0eHw\n1.4.0-draft\n1.0.0-draft\nquote-test-v1\n4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
+            "expected_signature": "v1=b93502602e1fb65d2f82261fc9a20c2307c88dfbc2ff9985408117edd9c10771"
+          },
+          {
+            "name": "signed-unsupported-contract-version",
+            "valid": true,
+            "method": "GET",
+            "raw_target": "/api/ops/v1/commitment-events?limit=1",
+            "canonical_target": "/api/ops/v1/commitment-events?limit=1",
+            "timestamp": "1787097720",
+            "nonce": "ICEiIyQlJicoKSorLC0uLw",
+            "contract_version": "1.3.0",
+            "schema_version": "1.0.0-draft",
+            "client_version": "legacy-hub-v1",
+            "version_compatible": false,
+            "expected_http_status": 409,
+            "expected_error_code": "contract_version_unsupported",
+            "body_utf8": "",
+            "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "canonical_input": "v1\nGET\n/api/ops/v1/commitment-events?limit=1\n1787097720\nICEiIyQlJicoKSorLC0uLw\n1.3.0\n1.0.0-draft\nlegacy-hub-v1\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "expected_signature": "v1=ce962c23a9b354850dfe663355e9a64800c909ed61ad67a1d4043080565e2915"
+          },
+          {
+            "name": "signed-unsupported-schema-version",
+            "valid": true,
+            "method": "GET",
+            "raw_target": "/api/ops/v1/commitment-events?limit=1",
+            "canonical_target": "/api/ops/v1/commitment-events?limit=1",
+            "timestamp": "1787097780",
+            "nonce": "MDEyMzQ1Njc4OTo7PD0-Pw",
+            "contract_version": "1.4.0-draft",
+            "schema_version": "0.9.0",
+            "client_version": "legacy-hub-v2",
+            "version_compatible": false,
+            "expected_http_status": 409,
+            "expected_error_code": "schema_version_unsupported",
+            "body_utf8": "",
+            "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "canonical_input": "v1\nGET\n/api/ops/v1/commitment-events?limit=1\n1787097780\nMDEyMzQ1Njc4OTo7PD0-Pw\n1.4.0-draft\n0.9.0\nlegacy-hub-v2\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "expected_signature": "v1=0d4b20418a05a0c1ee0b2614d1f7e11d97aad4479693bd6d5be3bdf665317b66"
+          },
+          {
+            "name": "unsorted-query",
+            "valid": false,
+            "canonical_target": null,
+            "raw_target": "/api/ops/v1/commitment-events?since=abc%2Fdef&limit=100",
+            "rejection_reason": "query_not_sorted"
+          },
+          {
+            "name": "literal-plus",
+            "valid": false,
+            "canonical_target": null,
+            "raw_target": "/api/ops/v1/commitment-events?since=abc+def",
+            "rejection_reason": "literal_plus"
+          },
+          {
+            "name": "lowercase-percent-hex",
+            "valid": false,
+            "canonical_target": null,
+            "raw_target": "/api/ops/v1/commitment-events?since=abc%2fdef",
+            "rejection_reason": "lowercase_percent_hex"
+          },
+          {
+            "name": "encoded-unreserved-byte",
+            "valid": false,
+            "canonical_target": null,
+            "raw_target": "/api/ops/v1/commitment-events?since=%61bc",
+            "rejection_reason": "encoded_unreserved_byte"
+          },
+          {
+            "name": "missing-query-equals",
+            "valid": false,
+            "canonical_target": null,
+            "raw_target": "/api/ops/v1/commitment-events?since",
+            "rejection_reason": "missing_query_equals"
+          },
+          {
+            "name": "dot-segment",
+            "valid": false,
+            "canonical_target": null,
+            "raw_target": "/api/ops/../commitment-events?limit=100",
+            "rejection_reason": "dot_segment"
+          },
+          {
+            "name": "double-slash",
+            "valid": false,
+            "canonical_target": null,
+            "raw_target": "/api//ops/v1/commitment-events?limit=100",
+            "rejection_reason": "empty_path_segment"
+          },
+          {
+            "name": "trailing-slash",
+            "valid": false,
+            "canonical_target": null,
+            "raw_target": "/api/ops/v1/commitment-events/?limit=100",
+            "rejection_reason": "trailing_empty_path_segment"
+          },
+          {
+            "name": "fragment",
+            "valid": false,
+            "canonical_target": null,
+            "raw_target": "/api/ops/v1/commitment-events?limit=100#fragment",
+            "rejection_reason": "fragment"
+          },
+          {
+            "name": "backslash",
+            "valid": false,
+            "canonical_target": null,
+            "raw_target": "/api\\ops/v1/commitment-events?limit=100",
+            "rejection_reason": "backslash"
+          },
+          {
+            "name": "malformed-percent",
+            "valid": false,
+            "canonical_target": null,
+            "raw_target": "/api/ops/v1/commitment-events?since=%2",
+            "rejection_reason": "malformed_percent_escape"
+          },
+          {
+            "name": "non-utf8-percent",
+            "valid": false,
+            "canonical_target": null,
+            "raw_target": "/api/ops/v1/commitment-events?since=%FF",
+            "rejection_reason": "non_utf8_escape"
+          },
+          {
+            "name": "encoded-slash-in-segment",
+            "valid": false,
+            "canonical_target": null,
+            "raw_target": "/api/ops%2Fv1/commitment-events?limit=100",
+            "rejection_reason": "decoded_slash"
+          },
+          {
+            "name": "decoded-control",
+            "valid": false,
+            "canonical_target": null,
+            "raw_target": "/api/ops/v1/commitment-events?since=%00",
+            "rejection_reason": "decoded_control"
+          },
+          {
+            "name": "decoded-backslash-in-segment",
+            "valid": false,
+            "canonical_target": null,
+            "raw_target": "/api/ops%5Cv1/commitment-events?limit=100",
+            "rejection_reason": "decoded_backslash"
+          },
+          {
+            "name": "empty-query-pair",
+            "valid": false,
+            "canonical_target": null,
+            "raw_target": "/api/ops/v1/commitment-events?a=1&&b=2",
+            "rejection_reason": "empty_query_pair"
+          },
+          {
+            "name": "raw-control-byte",
+            "valid": false,
+            "canonical_target": null,
+            "raw_target": "/api/ops/v1/commitment-events?since=\u0001",
+            "rejection_reason": "raw_control"
+          },
+          {
+            "name": "missing-leading-slash",
+            "valid": false,
+            "canonical_target": null,
+            "raw_target": "api/ops/v1/commitment-events?limit=100",
+            "rejection_reason": "missing_leading_slash"
+          },
+          {
+            "name": "bare-query-marker",
+            "valid": false,
+            "canonical_target": null,
+            "raw_target": "/api/ops/v1/commitment-events?",
+            "rejection_reason": "bare_query"
+          }
+        ]
       }
     },
     "parameters": {
@@ -70,9 +391,41 @@
         "schema": {
           "$ref": "#/components/schemas/MachineSignature"
         }
+      },
+      "YllContractVersion": {
+        "name": "X-YLL-Contract-Version",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/RequestedContractVersion"
+        }
+      },
+      "YllSchemaVersion": {
+        "name": "X-YLL-Schema-Version",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/RequestedSchemaVersion"
+        }
+      },
+      "YllClientVersion": {
+        "name": "X-YLL-Client-Version",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/ClientVersion"
+        }
       }
     },
     "schemas": {
+      "RequestedContractVersion": {
+        "type": "string",
+        "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
+      },
+      "RequestedSchemaVersion": {
+        "type": "string",
+        "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
+      },
       "ContractVersion": {
         "type": "string",
         "const": "1.4.0-draft"
@@ -138,6 +491,7 @@
           "validation_failed",
           "gate_locked",
           "kill_switched",
+          "cursor_expired",
           "rate_limited",
           "internal",
           "contract_version_unsupported",
@@ -162,6 +516,91 @@
           },
           {
             "type": "null"
+          }
+        ]
+      },
+      "MachineReadErrorCode": {
+        "type": "string",
+        "enum": [
+          "cursor_expired",
+          "kill_switched",
+          "contract_version_unsupported",
+          "schema_version_unsupported"
+        ]
+      },
+      "MachineReadErrorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error_code",
+          "contract_version",
+          "schema_version",
+          "client_version",
+          "correlation_id"
+        ],
+        "properties": {
+          "error_code": {
+            "$ref": "#/components/schemas/MachineReadErrorCode"
+          },
+          "contract_version": {
+            "$ref": "#/components/schemas/ContractVersion"
+          },
+          "schema_version": {
+            "$ref": "#/components/schemas/SchemaVersion"
+          },
+          "client_version": {
+            "$ref": "#/components/schemas/ClientVersion"
+          },
+          "correlation_id": {
+            "$ref": "#/components/schemas/Uuid"
+          }
+        }
+      },
+      "CursorExpiredReadErrorResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/MachineReadErrorResponse"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "error_code": {
+                "const": "cursor_expired"
+              }
+            }
+          }
+        ]
+      },
+      "KillSwitchedReadErrorResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/MachineReadErrorResponse"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "error_code": {
+                "const": "kill_switched"
+              }
+            }
+          }
+        ]
+      },
+      "VersionUnsupportedReadErrorResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/MachineReadErrorResponse"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "error_code": {
+                "enum": [
+                  "contract_version_unsupported",
+                  "schema_version_unsupported"
+                ]
+              }
+            }
           }
         ]
       },
@@ -406,7 +845,6 @@
       },
       "EventEnvelope": {
         "type": "object",
-        "additionalProperties": true,
         "required": [
           "event_id",
           "event_type",
@@ -495,6 +933,400 @@
               "properties": {
                 "actor_employee_id": {
                   "$ref": "#/components/schemas/Uuid"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "CanonicalUuid": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+      },
+      "ResolvedContactRef": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/CanonicalUuid"
+          }
+        ],
+        "description": "Canonical lowercase Quote Tool-owned UUID; never a phone number or email address."
+      },
+      "ContactIdentity": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "resolution",
+          "contact_ref"
+        ],
+        "properties": {
+          "resolution": {
+            "type": "string",
+            "enum": [
+              "resolved",
+              "manual_only"
+            ]
+          },
+          "contact_ref": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ResolvedContactRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "resolution": {
+                  "const": "resolved"
+                }
+              },
+              "required": [
+                "resolution"
+              ]
+            },
+            "then": {
+              "properties": {
+                "contact_ref": {
+                  "$ref": "#/components/schemas/ResolvedContactRef"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "contact_ref": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "PerformerIdentity": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "employee_id",
+          "system_principal"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "employee",
+              "system"
+            ]
+          },
+          "employee_id": {
+            "$ref": "#/components/schemas/NullableUuid"
+          },
+          "system_principal": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "employee"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            },
+            "then": {
+              "properties": {
+                "employee_id": {
+                  "$ref": "#/components/schemas/Uuid"
+                },
+                "system_principal": {
+                  "type": "null"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "employee_id": {
+                  "type": "null"
+                },
+                "system_principal": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        ]
+      },
+      "QuoteSentEvent": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/EventEnvelope"
+          },
+          {
+            "type": "object",
+            "required": [
+              "quote_id",
+              "quote_number",
+              "contact_identity",
+              "sending_rep_employee_id",
+              "sent_at",
+              "total_cents"
+            ],
+            "properties": {
+              "event_type": {
+                "const": "QuoteSent"
+              },
+              "aggregate_id": {
+                "$ref": "#/components/schemas/CanonicalUuid"
+              },
+              "entity_version": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "quote_id": {
+                "$ref": "#/components/schemas/CanonicalUuid"
+              },
+              "quote_number": {
+                "type": "string",
+                "minLength": 1
+              },
+              "contact_identity": {
+                "$ref": "#/components/schemas/ContactIdentity"
+              },
+              "sending_rep_employee_id": {
+                "$ref": "#/components/schemas/Uuid"
+              },
+              "sent_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "total_cents": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        ],
+        "unevaluatedProperties": false
+      },
+      "OutboundMessageChannel": {
+        "type": "string",
+        "enum": [
+          "sms",
+          "email"
+        ]
+      },
+      "OutboundMessageSentEvent": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/EventEnvelope"
+          },
+          {
+            "type": "object",
+            "required": [
+              "outbound_delivery_id",
+              "contact_identity",
+              "performed_by",
+              "channel",
+              "sent_at",
+              "has_media",
+              "has_portal_link"
+            ],
+            "properties": {
+              "event_type": {
+                "const": "OutboundMessageSent"
+              },
+              "aggregate_id": {
+                "$ref": "#/components/schemas/CanonicalUuid"
+              },
+              "entity_version": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "outbound_delivery_id": {
+                "$ref": "#/components/schemas/CanonicalUuid"
+              },
+              "contact_identity": {
+                "$ref": "#/components/schemas/ContactIdentity"
+              },
+              "performed_by": {
+                "$ref": "#/components/schemas/PerformerIdentity"
+              },
+              "channel": {
+                "$ref": "#/components/schemas/OutboundMessageChannel"
+              },
+              "sent_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "has_media": {
+                "type": "boolean"
+              },
+              "has_portal_link": {
+                "type": "boolean"
+              }
+            }
+          }
+        ],
+        "unevaluatedProperties": false
+      },
+      "CallDirection": {
+        "type": "string",
+        "enum": [
+          "inbound",
+          "outbound"
+        ]
+      },
+      "CallAttemptedEvent": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/EventEnvelope"
+          },
+          {
+            "type": "object",
+            "required": [
+              "call_attempt_id",
+              "contact_identity",
+              "performed_by",
+              "direction",
+              "duration_seconds",
+              "connected",
+              "attempted_at"
+            ],
+            "properties": {
+              "event_type": {
+                "const": "CallAttempted"
+              },
+              "aggregate_id": {
+                "$ref": "#/components/schemas/CanonicalUuid"
+              },
+              "entity_version": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "call_attempt_id": {
+                "$ref": "#/components/schemas/CanonicalUuid"
+              },
+              "contact_identity": {
+                "$ref": "#/components/schemas/ContactIdentity"
+              },
+              "performed_by": {
+                "$ref": "#/components/schemas/PerformerIdentity"
+              },
+              "direction": {
+                "$ref": "#/components/schemas/CallDirection"
+              },
+              "duration_seconds": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "connected": {
+                "type": "boolean"
+              },
+              "attempted_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
+        ],
+        "unevaluatedProperties": false
+      },
+      "CommitmentEvent": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/QuoteSentEvent"
+          },
+          {
+            "$ref": "#/components/schemas/OutboundMessageSentEvent"
+          },
+          {
+            "$ref": "#/components/schemas/CallAttemptedEvent"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "event_type",
+          "mapping": {
+            "QuoteSent": "#/components/schemas/QuoteSentEvent",
+            "OutboundMessageSent": "#/components/schemas/OutboundMessageSentEvent",
+            "CallAttempted": "#/components/schemas/CallAttemptedEvent"
+          }
+        }
+      },
+      "CommitmentEventsPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "events",
+          "next_cursor",
+          "has_more",
+          "contract_version",
+          "schema_version",
+          "client_version",
+          "correlation_id"
+        ],
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CommitmentEvent"
+            }
+          },
+          "next_cursor": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "contract_version": {
+            "$ref": "#/components/schemas/ContractVersion"
+          },
+          "schema_version": {
+            "$ref": "#/components/schemas/SchemaVersion"
+          },
+          "client_version": {
+            "$ref": "#/components/schemas/ClientVersion"
+          },
+          "correlation_id": {
+            "$ref": "#/components/schemas/Uuid"
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "has_more": {
+                  "const": true
+                }
+              },
+              "required": [
+                "has_more"
+              ]
+            },
+            "then": {
+              "properties": {
+                "next_cursor": {
+                  "type": "string",
+                  "minLength": 1
                 }
               }
             }
