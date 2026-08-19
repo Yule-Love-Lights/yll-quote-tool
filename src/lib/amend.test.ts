@@ -10,6 +10,7 @@ import {
   isAmendmentConsentPending,
   isSupersededPendingAmendment,
   reconsentRequiredClause,
+  resolveAmendmentBasis,
   type AmendmentTrailEntry,
 } from './amend';
 
@@ -516,4 +517,67 @@ describe('repeated amendments — each entry stands alone', () => {
     expect(trail).toHaveLength(1);
     expect(Object.isFrozen(first)).toBe(false); // a plain serializable object
   });
+});
+
+// FIX A/C (fix round 4): resolveAmendmentBasis is the SINGLE function every
+// consumer (the amend route's own SMS/email, the portal's pendingAmendment
+// card, the amend-decline staff alert) reads to pick total/balance/delta on
+// ONE basis — never a mix. These tests pin its own contract directly (the
+// call-site tests only prove it end-to-end through one consumer each).
+describe('resolveAmendmentBasis — one basis for total/balance/delta, never mixed', () => {
+  const trailOnly: AmendmentTrailEntry = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+
+  it('no invoice_basis (never stamped, or predates the field) — falls back to the trail figures', () => {
+    const basis = resolveAmendmentBasis(trailOnly);
+    expect(basis).toEqual({
+      previousTotalUsd: 5000,
+      newTotalUsd: 6000,
+      deltaUsd: 1000,
+      newBalanceUsd: 3500, // 6000 − 2500 deposit
+    });
+  });
+
+  it('a well-formed invoice_basis is read directly — total/delta on the invoice basis, balance derived to match', () => {
+    const withBasis: AmendmentTrailEntry = {
+      ...trailOnly,
+      invoice_basis: { previous_total: 4598.21, new_total: 5150, delta: 551.79 },
+    };
+    const basis = resolveAmendmentBasis(withBasis);
+    expect(basis).toEqual({
+      previousTotalUsd: 4598.21,
+      newTotalUsd: 5150,
+      deltaUsd: 551.79,
+      newBalanceUsd: 2650, // 5150 − 2500 deposit — the INVOICE basis, not the trail's 3500
+    });
+    // Reconciles with itself, on the basis actually used.
+    expect(round2ForTest(basis.newTotalUsd - basis.deltaUsd)).toBe(basis.previousTotalUsd);
+  });
+
+  it('a malformed invoice_basis (a bad shape unreachable through any current write path) falls back to the trail — FIX C', () => {
+    const malformed: AmendmentTrailEntry = {
+      ...trailOnly,
+      // `as unknown as` — this shape can never come from the amend route
+      // (which stamps all three fields together or none), only from a
+      // corrupted/hand-edited row.
+      invoice_basis: { previous_total: '4598.21', new_total: 5150 } as unknown as AmendmentTrailEntry['invoice_basis'],
+    };
+    expect(resolveAmendmentBasis(malformed)).toEqual({
+      previousTotalUsd: 5000,
+      newTotalUsd: 6000,
+      deltaUsd: 1000,
+      newBalanceUsd: 3500,
+    });
+  });
+
+  it('a non-finite invoice_basis field (NaN/Infinity) falls back to the trail', () => {
+    const malformed: AmendmentTrailEntry = {
+      ...trailOnly,
+      invoice_basis: { previous_total: NaN, new_total: 5150, delta: 551.79 },
+    };
+    expect(resolveAmendmentBasis(malformed).previousTotalUsd).toBe(5000);
+  });
+
+  function round2ForTest(n: number): number {
+    return Math.round(n * 100) / 100;
+  }
 });

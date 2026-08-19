@@ -38,7 +38,7 @@ vi.mock('@/lib/invoices', async (importOriginal) => {
   return { ...actual, getInvoiceByJob: getInvoiceByJobMock, appendRetiredTxn: appendRetiredTxnMock };
 });
 
-import { resyncInvoiceToAgreedTotal } from './quoteAmendInvoiceSync';
+import { resyncInvoiceToAgreedTotal, computeInvoiceResyncTotals } from './quoteAmendInvoiceSync';
 
 // Minimal fake matching the ONE direct call this module makes itself:
 // sb.from('invoices').update({...}).eq('id', invoiceForSync.id) — no
@@ -181,5 +181,54 @@ describe('resyncInvoiceToAgreedTotal — declining a DECREASE reopens an already
 
     expect(sb.updates[0]).toMatchObject({ status: 'awaiting_payment' });
     expect(appendRetiredTxnMock).not.toHaveBeenCalled();
+  });
+});
+
+// FIX A (fix round 4): computeInvoiceResyncTotals is the money formula PULLED
+// OUT of resyncInvoiceToAgreedTotal so the amend route can compute the SAME
+// invoice-basis figures BEFORE it persists the amendment trail entry (see
+// that route's pre-write invoice_basis stamp) — no IO, no mocks needed. These
+// tests pin the formula directly, and prove it against the SAME inputs the
+// describe block above already drives through the real resyncInvoiceToAgreedTotal,
+// confirming the two call sites can't silently diverge into two different
+// numbers for what is supposed to be one figure.
+describe('computeInvoiceResyncTotals — the shared money formula (no IO)', () => {
+  it('scales the removable tax to the new agreed total on a tax-overridden invoice (#125-1)', () => {
+    // Full quote 5600 (450 tax on a 5150 subtotal); re-syncing to the full
+    // agreed total (5600) removes the FULL 450 (no partial scaling needed).
+    const result: InvoicePricingInput & { total: number } = {
+      subtotalBeforeDiscount: 5150,
+      discountAmount: 0,
+      taxAmount: 450,
+      total: 5600,
+    };
+    const totals = computeInvoiceResyncTotals(result, 2500, 5600, true);
+    expect(totals.total).toBe(5150);
+    expect(totals.balance).toBe(2650);
+  });
+
+  it('produces the IDENTICAL total/balance that resyncInvoiceToAgreedTotal actually writes, for the same inputs', () => {
+    // The exact fixture from the "declining a DECREASE reopens an
+    // already-PAID invoice" test above — proving the pre-write computation
+    // (this function) and the real invoice-table write (that test's
+    // sb.updates[0] / outcome) agree byte-for-byte on the same inputs, which
+    // is the whole safety argument for eliminating the amend route's second
+    // write in favor of computing this up front.
+    const result: InvoicePricingInput & { total: number } = { total: 2400 };
+    const totals = computeInvoiceResyncTotals(result, 1000, 2400, false);
+    expect(totals.total).toBe(2400);
+    expect(totals.balance).toBe(1400);
+  });
+
+  it('leaves the total untouched when tax is not overridden', () => {
+    const result: InvoicePricingInput & { total: number } = {
+      subtotalBeforeDiscount: 5150,
+      discountAmount: 0,
+      taxAmount: 450,
+      total: 5600,
+    };
+    const totals = computeInvoiceResyncTotals(result, 2500, 5600, false);
+    expect(totals.total).toBe(5600); // no tax removed
+    expect(totals.balance).toBe(3100);
   });
 });

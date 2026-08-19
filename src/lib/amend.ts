@@ -243,6 +243,54 @@ export function requiresReconsent(amendment: AmendmentTrailEntry): boolean {
 }
 
 /**
+ * Resolve the previous/new/delta/balance figures to show for an amendment on
+ * ONE basis: the recorded invoice-basis figures when present and well-formed,
+ * else the raw trail (agreed-total) figures. Never mixes the two — a reader
+ * computing newTotalUsd − deltaUsd always lands on previousTotalUsd, on
+ * whichever basis was used. newBalanceUsd is always DERIVED from the chosen
+ * newTotalUsd (not read from amendment.new_balance, which is trail-basis
+ * only), mirroring computeInvoiceTotals' own balance formula — see
+ * quoteAmendInvoiceSync.ts's computeInvoiceResyncTotals for the invoice side
+ * of that same formula.
+ *
+ * A malformed invoice_basis (a partial/corrupt object — not reachable through
+ * any current write path, since the amend route only ever stamps all three
+ * fields together or none at all) falls back to the trail basis rather than
+ * rendering undefined/NaN. FIX C (fix round 4).
+ *
+ * Shared by the amend route's own customer notice (SMS/email — so the
+ * message and the recorded trail entry can never disagree), the portal's
+ * pendingAmendment card (adapter.ts), and the amend-decline staff alert.
+ */
+export function resolveAmendmentBasis(amendment: AmendmentTrailEntry): {
+  previousTotalUsd: number;
+  newTotalUsd: number;
+  deltaUsd: number;
+  newBalanceUsd: number;
+} {
+  const raw = amendment.invoice_basis;
+  const basis =
+    raw &&
+    typeof raw.previous_total === 'number' &&
+    Number.isFinite(raw.previous_total) &&
+    typeof raw.new_total === 'number' &&
+    Number.isFinite(raw.new_total) &&
+    typeof raw.delta === 'number' &&
+    Number.isFinite(raw.delta)
+      ? raw
+      : null;
+  const previousTotalUsd = basis ? basis.previous_total : amendment.previous_total;
+  const newTotalUsd = basis ? basis.new_total : amendment.new_total;
+  const deltaUsd = basis ? basis.delta : amendment.delta;
+  return {
+    previousTotalUsd,
+    newTotalUsd,
+    deltaUsd,
+    newBalanceUsd: round2(Math.max(0, newTotalUsd - amendment.deposit_applied)),
+  };
+}
+
+/**
  * The QuoteStatus an amendment resolves to. A total-changing amendment moves the
  * order into the re-consent status (it awaits the customer re-approving the new
  * total); a zero-delta amendment leaves the current status untouched.

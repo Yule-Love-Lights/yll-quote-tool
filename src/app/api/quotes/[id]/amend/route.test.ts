@@ -512,6 +512,15 @@ describe('POST /api/quotes/[id]/amend', () => {
       balance: 2500,
       status: 'draft',
       tax_overridden: true,
+      // FIX A (fix round 4): a real InvoiceRow.total is NOT NULL — give this
+      // fixture one (a real prior invoice total), matching how the
+      // pre-write invoice_basis stamp reads it. Without it the route can't
+      // stamp previous_total, so resolveAmendmentBasis (shared by the trail
+      // stamp, the SMS/email, and the portal card as of fix round 4) falls
+      // back to the TRAIL basis for total/balance/delta together — which
+      // would make this test assert the trail balance and stop testing what
+      // its own name claims.
+      total: 5000,
     });
 
     const res = await POST(req({ reason: 'post-install add-on', notifyCustomer: true }), ctx());
@@ -581,6 +590,66 @@ describe('POST /api/quotes/[id]/amend', () => {
     expect(emailHtml).toContain(usdText(5150));
     expect(emailHtml).toContain(usdText(551.79));
     expect(emailHtml).not.toContain(usdText(600));
+  });
+
+  // FIX A / FIX E (fix round 4): the residual case the brief asked to be
+  // reasoned about explicitly — the invoice re-sync fails AFTER the
+  // amendment (with its invoice_basis already stamped, pre-write) is
+  // durably recorded. Simulated here via a concurrent CANCELLATION of the
+  // invoice between the route's initial read (used for the pre-write stamp)
+  // and the re-sync's own fresh re-read (which bails out on a cancelled
+  // invoice without writing anything — resyncInvoiceToAgreedTotal's first
+  // guard). Before this fix, the SMS would have used the (never-happened)
+  // real resync outcome — null, falling back to the TRAIL balance — while
+  // any comparable stamp would've been skipped by the same nullness. After
+  // this fix, the SMS and the stamped trail entry both read the SAME
+  // pre-computed `amendment.invoice_basis`, so they still agree with each
+  // other; only the invoices TABLE itself is left stale (a pre-existing,
+  // separately-known best-effort characteristic of the re-sync, not
+  // something this fix changes).
+  it('when the invoice re-sync fails after the amendment is recorded, the SMS and the stamped trail entry still agree with each other', async () => {
+    const TAXED = {
+      ...BOOKED_QUOTE,
+      result: { subtotalBeforeDiscount: 5150, discountAmount: 0, taxAmount: 450, total: 5600 },
+    };
+    const sb = makeSb(TAXED);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+    const liveInvoice = {
+      id: 'inv-1',
+      balance: 2500,
+      status: 'draft' as const,
+      tax_overridden: true,
+      total: 4598.21,
+    };
+    // First call: the route's own early read (feeds the pre-write stamp).
+    // Second call: resyncInvoiceToAgreedTotal's own fresh re-read (B10) —
+    // simulate a concurrent decline/cancellation landing in between.
+    getInvoiceByJobMock.mockResolvedValueOnce(liveInvoice).mockResolvedValueOnce({
+      ...liveInvoice,
+      status: 'cancelled' as const,
+    });
+
+    const res = await POST(req({ reason: 'post-install add-on', notifyCustomer: true }), ctx());
+    expect(res.status).toBe(200);
+
+    // The invoices table was never actually written (resync bailed early).
+    expect(sb.updates.invoices).toHaveLength(0);
+
+    // The trail entry still carries the invoice-basis figures computed
+    // BEFORE the resync ran.
+    const quoteWrite = sb.updates.quotes[0];
+    const snap = quoteWrite.approval_snapshot as { amendments?: Array<{ invoice_basis?: unknown }> };
+    const persisted = snap.amendments?.[snap.amendments.length - 1];
+    expect(persisted?.invoice_basis).toEqual({ previous_total: 4598.21, new_total: 5150, delta: 551.79 });
+
+    // The SMS agrees with that SAME stamp — not with the trail basis (5600 /
+    // 600.00), which is what a resync-outcome-driven notify would have sent
+    // once the (never-happened) resync reported null.
+    const sms = sentSmsMessage();
+    expect(sms).toContain(usdText(5150));
+    expect(sms).toContain(usdText(551.79));
+    expect(sms).not.toContain(usdText(5600));
   });
 
   it('falls back to the trail balance when there is no invoice yet', async () => {
@@ -819,9 +888,12 @@ describe('POST /api/quotes/[id]/amend → portal read path — card/SMS/email mo
     // 2) The invoice was actually billed 5150.00.
     expect(sb.updates.invoices[0]).toMatchObject({ total: 5150, balance: 2650 });
 
-    // 3) The trail entry the route persisted carries the SAME figures as
-    // invoice_basis — read the LAST write to 'quotes' (the second, patch
-    // write that attaches invoice_basis; see amend/route.ts).
+    // 3) FIX A (fix round 4): invoice_basis rides in on the SAME write that
+    // records the amendment — pin the atomicity (this was TWO writes to
+    // 'quotes' before fix round 4; a lost race on the second could leave the
+    // trail entry without invoice_basis even though the SMS already sent
+    // invoice-basis figures — the HIGH this fix eliminates).
+    expect(sb.updates.quotes).toHaveLength(1);
     const lastQuoteWrite = sb.updates.quotes[sb.updates.quotes.length - 1];
     // Cast from `unknown` (the mock's Row type) straight to the REAL
     // approval_snapshot type — no hand-rolled narrow shape to drift from

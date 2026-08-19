@@ -31,9 +31,39 @@ import {
   appendRetiredTxn,
   type InvoiceRow,
   type InvoicePricingInput,
+  type InvoiceTotals,
 } from '@/lib/invoices';
 import { canTransition, type InvoiceStatus } from '@/lib/invoiceStatus';
 import { roundMoney as round2 } from '@/lib/money';
+
+// FIX A (delta-verify HIGH, fix round 4): the exact money formula
+// resyncInvoiceToAgreedTotal uses to re-price the invoice — pulled out so the
+// amend route can compute the SAME figures BEFORE it persists the amendment
+// trail entry (see that route's pre-write invoice_basis stamp), instead of
+// duplicating the scaled-tax formula in a second place where it could drift.
+// Pure — no IO. Takes the tax_overridden flag directly (not an InvoiceRow)
+// so a caller that hasn't fetched the row yet (or has only a partial one)
+// can still call it.
+export function computeInvoiceResyncTotals(
+  result: InvoicePricingInput & { total: number },
+  depositPaidUsd: number,
+  newTotal: number,
+  taxOverridden: boolean,
+): InvoiceTotals {
+  // #125-1: when tax is overridden, computeInvoiceTotals subtracts
+  // pricing.taxAmount from the total — so the whole-quote tax against a
+  // partial/amended newTotal would OVER-remove and UNDER-BILL. Scale the
+  // removable tax to the amended basis (exact under the flat rate: newTotal
+  // = taxable × (1+rate) ⇒ newTotal/fullTotal = taxable ratio).
+  const fullTotal = result.total ?? 0;
+  const scaledTax =
+    fullTotal > 0 ? round2((result.taxAmount ?? 0) * (newTotal / fullTotal)) : (result.taxAmount ?? 0);
+  return computeInvoiceTotals(
+    { ...result, taxAmount: scaledTax, total: newTotal },
+    depositPaidUsd,
+    { taxOverridden },
+  );
+}
 
 export type InvoiceResyncOutcome = {
   invoicedBalance: number | null;
@@ -101,22 +131,11 @@ export async function resyncInvoiceToAgreedTotal(args: ResyncInvoiceArgs): Promi
   // W1-004: re-sync to the AGREED new total (on the selection basis), not the
   // full quote.result.total — the breakdown lines stay from result for display,
   // the load-bearing total/balance use newTotal (same as the amendment trail).
-  //
-  // #125-1: one of several invoice write-paths (createInvoiceFromJob,
-  // setInvoiceTaxOverride, this one). When tax is overridden,
-  // computeInvoiceTotals subtracts pricing.taxAmount from the total — so the
-  // whole-quote tax against a partial/amended newTotal would OVER-remove and
-  // UNDER-BILL. Scale the removable tax to the amended basis (exact under the
-  // flat rate: newTotal = taxable × (1+rate) ⇒ newTotal/fullTotal = taxable
-  // ratio), mirroring the other write paths.
-  const fullTotal = result.total ?? 0;
-  const scaledTax =
-    fullTotal > 0 ? round2((result.taxAmount ?? 0) * (newTotal / fullTotal)) : (result.taxAmount ?? 0);
-  const totals = computeInvoiceTotals(
-    { ...result, taxAmount: scaledTax, total: newTotal },
-    depositPaid,
-    { taxOverridden: invoiceForSync.tax_overridden },
-  );
+  // FIX A: the scaled-tax + computeInvoiceTotals formula now lives in ONE
+  // place (computeInvoiceResyncTotals, above) — the amend route's pre-write
+  // invoice_basis stamp calls the exact same function on the exact same
+  // inputs, so the two can't silently diverge into two different numbers.
+  const totals = computeInvoiceResyncTotals(result, depositPaid, newTotal, invoiceForSync.tax_overridden);
   // Reconcile the invoice STATUS to the new balance (review MEDIUM): a
   // re-sync that raises the total on an already-paid invoice reopens it to
   // awaiting_payment (more is owed); a re-sync that lowers the total to what
