@@ -10,7 +10,7 @@
 //         installTiming, colorSchemeId?, customPattern?, permanentEffect? }
 // Response:
 //   { ok: true }                                    — saved
-//   { ok: true, skipped: 'staff' | 'not-sent' | 'approved' }
+//   { ok: true, skipped: 'staff' | 'not-sent' | 'approved' | 'inactive' }
 //   { error: string }                                — on failure
 //
 // Design notes (see the migration + adapter.ts's resolveBrowsingSelectionSeed
@@ -62,6 +62,7 @@ import { rateLimitResponse } from '@/lib/rateLimit';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { isStaffPreview } from '@/lib/auth/staffDevice';
 import { isPermanentEffect } from '@/lib/design/permanentScenes';
+import { isPortalActionable } from '@/lib/quoteStatus';
 
 export const runtime = 'nodejs';
 
@@ -94,7 +95,14 @@ const MAX_PATTERN_COLORS = 100;
 // the Homeworks signed route's homeworksContractId cap — all 200).
 const MAX_STRING_LEN = 200;
 
-type QuoteRow = { id: string; customer_approved_at: string | null; quote_sent_at: string | null };
+type QuoteRow = {
+  id: string;
+  customer_approved_at: string | null;
+  quote_sent_at: string | null;
+  // FIX D (technical lens, LOW, row 239 fix round) — the persisted lifecycle
+  // status; see the guard below.
+  status: string | null;
+};
 
 type SelectionBody = {
   packageId: 'A' | 'B' | 'C' | 'D';
@@ -182,7 +190,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
-    .select('id, customer_approved_at, quote_sent_at')
+    .select('id, customer_approved_at, quote_sent_at, status')
     .eq('id', id)
     .single<QuoteRow>();
   if (fetchErr || !quote) {
@@ -199,6 +207,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // after approval (it must never shadow or get confused with approval_snapshot).
   if (quote.customer_approved_at) {
     return NextResponse.json({ ok: true, skipped: 'approved' });
+  }
+
+  // FIX D (technical lens, LOW, row 239 fix round) — defense-in-depth: a
+  // quote that was sent, never approved, then moved to a terminal/branch
+  // state (declined, cancelled, abandoned) or is under revision
+  // (changes_requested) still has customer_approved_at === null, so without
+  // this it would fall through to the write below. isPortalActionable is the
+  // SAME check page.tsx already uses to gate the portal UI — once a quote is
+  // non-actionable the page shows a "no longer available" / "being updated"
+  // screen and never mounts <SelectionProvider>, so the client never reaches
+  // this route in that state; this only guards a hand-crafted POST holding
+  // the capability UUID. Impact is cosmetic (a stale browsing_selection
+  // value), not a real race with anything of consequence, so this is a
+  // fast-path check only — no `.eq('status', ...)` re-check on the write
+  // itself the way the approval guard has one. Fail-open on a null/legacy
+  // status (isPortalActionable's own contract) keeps pre-migration rows
+  // working exactly as before this fix.
+  if (!isPortalActionable(quote.status)) {
+    return NextResponse.json({ ok: true, skipped: 'inactive' });
   }
 
   const { packageId, selectedItemIds, rushSelected, takedownSelected, installTiming, colorSchemeId, customPattern, permanentEffect } =

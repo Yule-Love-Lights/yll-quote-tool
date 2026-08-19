@@ -5,7 +5,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-type QuoteRow = { id: string; customer_approved_at: string | null; quote_sent_at: string | null };
+type QuoteRow = {
+  id: string;
+  customer_approved_at: string | null;
+  quote_sent_at: string | null;
+  status: string | null;
+};
 
 const { state } = vi.hoisted(() => ({
   state: {
@@ -14,6 +19,7 @@ const { state } = vi.hoisted(() => ({
       id: 'q1',
       customer_approved_at: null,
       quote_sent_at: '2026-01-01T00:00:00Z',
+      status: 'sent',
     } as QuoteRow | null,
     fetchErr: null as { message: string } | null,
     updateErr: null as { message: string } | null,
@@ -79,7 +85,7 @@ const VALID_BODY = {
 beforeEach(() => {
   vi.clearAllMocks();
   state.isConfigured = true;
-  state.quote = { id: 'q1', customer_approved_at: null, quote_sent_at: '2026-01-01T00:00:00Z' };
+  state.quote = { id: 'q1', customer_approved_at: null, quote_sent_at: '2026-01-01T00:00:00Z', status: 'sent' };
   state.fetchErr = null;
   state.updateErr = null;
   state.lastUpdatePayload = null;
@@ -222,7 +228,7 @@ describe('POST /api/quotes/[id]/selection', () => {
   });
 
   it('skips as not-sent when the quote has never been sent', async () => {
-    state.quote = { id: 'q1', customer_approved_at: null, quote_sent_at: null };
+    state.quote = { id: 'q1', customer_approved_at: null, quote_sent_at: null, status: 'draft' };
     const res = await POST(makeReq(VALID_BODY), ctx());
     const json = await res.json();
     expect(res.status).toBe(200);
@@ -235,12 +241,42 @@ describe('POST /api/quotes/[id]/selection', () => {
       id: 'q1',
       customer_approved_at: '2026-01-02T00:00:00Z',
       quote_sent_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
     };
     const res = await POST(makeReq(VALID_BODY), ctx());
     const json = await res.json();
     expect(res.status).toBe(200);
     expect(json.skipped).toBe('approved');
     expect(state.lastUpdatePayload).toBeNull();
+  });
+
+  it.each(['declined', 'cancelled', 'abandoned', 'changes_requested'] as const)(
+    'FIX D: skips as inactive and never writes when status is %s (defense-in-depth — the client already blocks this)',
+    async (status) => {
+      state.quote = { id: 'q1', customer_approved_at: null, quote_sent_at: '2026-01-01T00:00:00Z', status };
+      const res = await POST(makeReq(VALID_BODY), ctx());
+      const json = await res.json();
+      expect(res.status).toBe(200);
+      expect(json.skipped).toBe('inactive');
+      expect(state.lastUpdatePayload).toBeNull();
+    },
+  );
+
+  it('FIX D: a null status (legacy/pre-migration row) still saves — fail-open, unchanged behavior', async () => {
+    state.quote = { id: 'q1', customer_approved_at: null, quote_sent_at: '2026-01-01T00:00:00Z', status: null };
+    const res = await POST(makeReq(VALID_BODY), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(state.lastUpdatePayload).not.toBeNull();
+  });
+
+  it.each(['sent', 'viewed'] as const)('FIX D: status %s still saves normally', async (status) => {
+    state.quote = { id: 'q1', customer_approved_at: null, quote_sent_at: '2026-01-01T00:00:00Z', status };
+    const res = await POST(makeReq(VALID_BODY), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
   });
 
   it('saves a valid selection, guarded by .is(customer_approved_at, null) on the write', async () => {
