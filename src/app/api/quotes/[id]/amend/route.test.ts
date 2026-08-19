@@ -428,6 +428,59 @@ describe('POST /api/quotes/[id]/amend', () => {
     expect(sendEmailMock).toHaveBeenCalledOnce();
   });
 
+  // sendSmsMock is declared as vi.fn(async () => ({})) — no typed params — so
+  // .mock.calls[0][0] has no element type. Narrow once, here.
+  const sentSmsMessage = (): string => {
+    const call = sendSmsMock.mock.calls[0] as unknown as [{ message: string }] | undefined;
+    return call?.[0]?.message ?? '';
+  };
+
+  // Delta-verify HIGH: dueAfterInstall was first derived from `!invoice`, which
+  // reads null both when the job is genuinely pre-install AND when the invoice
+  // lookup fails or a completed job's invoice creation failed and was never
+  // retried. These cover the DERIVATION in this route, not just the message
+  // builders it feeds (which take the flag as a literal).
+  it('tells a pre-install customer the balance is due after installation', async () => {
+    sbRef.current = makeSb(BOOKED_QUOTE).client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1', status: 'to_schedule' });
+    getInvoiceByJobMock.mockResolvedValue(null);
+
+    await POST(req({ reason: 'extra wreath', notifyCustomer: true }), ctx());
+    expect(sentSmsMessage()).toContain('after installation');
+  });
+
+  it('makes NO timing claim once the job is already installed', async () => {
+    sbRef.current = makeSb(BOOKED_QUOTE).client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+    getInvoiceByJobMock.mockResolvedValue({ id: 'inv-1', balance: 2500, status: 'draft', tax_overridden: false });
+
+    await POST(req({ reason: 'post-install correction', notifyCustomer: true }), ctx());
+    expect(sentSmsMessage()).not.toContain('after installation');
+  });
+
+  it('makes NO timing claim when an installed job has no invoice (failed create) — fails safe', async () => {
+    // The exact shape that broke the first fix: jobs/[id]/complete commits the
+    // status advance BEFORE creating the invoice, so an installed job can sit
+    // with a null invoice.
+    sbRef.current = makeSb(BOOKED_QUOTE).client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1', status: 'installed' });
+    getInvoiceByJobMock.mockResolvedValue(null);
+
+    await POST(req({ reason: 'post-install correction', notifyCustomer: true }), ctx());
+    expect(sentSmsMessage()).not.toContain('after installation');
+  });
+
+  it('makes NO timing claim when the job row cannot be read — fails safe', async () => {
+    // getJobByQuote swallows a read error and returns null; an unknown state
+    // must not assert a timing the customer could act on.
+    sbRef.current = makeSb(BOOKED_QUOTE).client;
+    getJobByQuoteMock.mockResolvedValue(null);
+    getInvoiceByJobMock.mockResolvedValue(null);
+
+    await POST(req({ reason: 'extra wreath', notifyCustomer: true }), ctx());
+    expect(sentSmsMessage()).not.toContain('after installation');
+  });
+
   it('does NOT send a real message for a TEST quote (test-safe)', async () => {
     sbRef.current = makeSb({ ...BOOKED_QUOTE, is_test: true }).client;
     getJobByQuoteMock.mockResolvedValue(null);

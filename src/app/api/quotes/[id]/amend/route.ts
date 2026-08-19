@@ -397,13 +397,26 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       notifyError = 'not-configured';
     } else {
       const firstName = quote.customer_name?.trim().split(/\s+/)[0] || 'there';
-      // An invoice exists only once the job has been completed (see
-      // jobs/[id]/complete), so "no invoice yet" is the signal that the
-      // installation — and therefore the balance — is still ahead of the
-      // customer. Review lens HIGH: without this, a post-install amendment told
-      // the customer their balance was due "after installation" when the
-      // install had already happened.
-      const dueAfterInstall = !invoice;
+      // Whether the install is genuinely still AHEAD of this customer, which is
+      // the only case where telling them the balance is due "after
+      // installation" is true.
+      //
+      // Delta-verify HIGH: this was first written as `!invoice`, on the premise
+      // that an invoice exists only once a job is complete. The forward premise
+      // holds, but the CONVERSE does not — getJobByQuote and getInvoiceByJob
+      // both swallow a read error and return null (src/lib/jobs.ts,
+      // src/lib/invoices.ts), and jobs/[id]/complete commits the status advance
+      // BEFORE creating the invoice, so an already-installed job can sit with a
+      // null invoice after a failed/unretried create. Either shape would have
+      // told a customer whose lights are already up that their balance is due
+      // after an installation that already happened.
+      //
+      // Keyed on the job's own status instead, as a POSITIVE match on the two
+      // pre-install states (repo convention: positive seam gates, never
+      // negative — a future status must not silently inherit "pre-install").
+      // Fails SAFE: an unreadable/absent job yields false, which states no
+      // timing at all rather than a false one.
+      const dueAfterInstall = job?.status === 'to_schedule' || job?.status === 'scheduled';
       const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
       const portalUrl = `${baseUrl}/portal/${id}`;
       const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || '(631) 517-0186';
