@@ -76,8 +76,22 @@ export function EventSection({
               who doesn't know the field syncs will either re-type it into
               HighLevel by hand (defeating the feature) or trust a value that
               may be stale. Honest about WHEN it syncs — send, and again if
-              changed on a later save (#237 FIX B) — not just that it does. */}
-          <p className="text-[11px] text-gray-400 mt-1">Synced to the CRM contact on send (and again if changed later).</p>
+              changed on a later save (#237 FIX B) — not just that it does.
+              FIX C (#237 fix round 2, technical MED): the re-push gate
+              (route.ts) only fires on a NEW real date — blanking this field
+              formats to '' and is treated as nothing-to-push, so the CRM
+              keeps whatever date it last had. This caption used to promise
+              "and again if changed later" with no exception, which reads as
+              "clearing it clears the CRM too" — false. Said plainly instead
+              of silently pushing an empty value to "fix" it: GHL's actual
+              handling of an empty custom-field write is unverified against a
+              live location (see ghlEventDate.ts's own "only deviate after
+              verifying" stance on this exact field), so guessing there
+              risked storing something worse than a stale-but-known date. */}
+          <p className="text-[11px] text-gray-400 mt-1">
+            Synced to the CRM contact on send (and again if changed to a new date later) — clearing this field does
+            not clear the CRM&apos;s copy.
+          </p>
         </div>
         <div>
           <label className={lbl}>Takedown date</label>
