@@ -4276,6 +4276,18 @@ export default function QuoteBuilder({
                       role="radio"
                       aria-checked={selected}
                       onClick={() => {
+                        // Fix-round LOW-MED: a no-op re-click on the ALREADY-
+                        // selected type must do nothing. Without this, the
+                        // comment two blocks down ("this only fires when staff
+                        // actually click a service-type button") was false —
+                        // clicking the currently-selected button on a reopened
+                        // quote holding a stale is_nce=true (e.g. from before
+                        // this gate shipped) would still run
+                        // clearNceOrNeighborOnServiceTypeSwitch, mark the tag
+                        // TOUCHED, and write `false` on the next save. That only
+                        // ever pushes toward the correct end state, but it's an
+                        // unintended side effect of a click that changed nothing.
+                        if (st === form.serviceType) return;
                         // #243 (domain rule locked 2026-08-11): switching AWAY
                         // from a type that can carry NCE/YLL Neighbor silently
                         // clears any currently-true chip — this ENFORCES the
@@ -4297,7 +4309,8 @@ export default function QuoteBuilder({
                         // gate shipped and is never re-typed here at all stays
                         // untouched by design (resolveTagPayload's own
                         // touched-gating protects it) — this only fires when
-                        // staff actually click a service-type button.
+                        // staff actually click a DIFFERENT service-type button
+                        // (the no-op re-click guard just above).
                         const { clearIsNce, clearLegacyRebook } =
                           clearNceOrNeighborOnServiceTypeSwitch(st, isNceRef.current, legacyRebookRef.current);
                         if (clearIsNce) {
