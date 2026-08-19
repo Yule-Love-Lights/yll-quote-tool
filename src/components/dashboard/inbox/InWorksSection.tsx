@@ -164,7 +164,7 @@ export function InWorksSection({
   function handleMarkCompleted(item: InWorksItem, group: 'awaiting' | 'handled') {
     if (requiresCompleteConfirmation(item)) {
       const ok = window.confirm(
-        `${item.needsLookReason} — mark completed anyway?\n\nThis removes it from every inbox list and closes any pending follow-up. It can't be undone from here.`,
+        `${item.needsLookReason} — mark completed anyway?\n\nThis removes it from every inbox list and closes any pending follow-up. To undo it you have to go to the Activity Log and hit Reverse.`,
       );
       if (!ok) return;
     }
