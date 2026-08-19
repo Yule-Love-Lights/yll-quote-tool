@@ -134,6 +134,41 @@ describe('etMidnightAfter', () => {
     expect(etMidnightAfter(lateEt).toISOString()).toBe('2026-07-16T04:00:00.000Z');
   });
 
+  // ── The case the old implementation got wrong ───────────────────────────
+  // These compute midnight ON a transition day, not the midnight AFTER one. The
+  // previous tests only did the latter, which is an ordinary day, so the bug
+  // shipped with a passing suite whose names claimed DST coverage.
+
+  it('SPRING FORWARD: the boundary ending 2026-03-07 is 05:00Z (00:00 EST, before the 02:00 change)', () => {
+    // Returned 04:00Z before the fix — 23:00 ET on the 7th, an hour early, so a
+    // forgotten shift was capped an hour short and UNDERPAID.
+    expect(etMidnightAfter(new Date('2026-03-07T18:00:00Z')).toISOString()).toBe(
+      '2026-03-08T05:00:00.000Z',
+    );
+  });
+
+  it('FALL BACK: the boundary ending 2026-10-31 is 04:00Z (00:00 EDT, before the 02:00 change)', () => {
+    // Returned 05:00Z before the fix — 01:00 ET, an hour late, crediting an hour
+    // that belonged to the next day: OVERPAY.
+    expect(etMidnightAfter(new Date('2026-10-31T18:00:00Z')).toISOString()).toBe(
+      '2026-11-01T04:00:00.000Z',
+    );
+  });
+
+  it('a shift on a transition day is never credited past its own midnight', () => {
+    // The invariant the whole function exists to hold.
+    for (const [clockIn, boundary] of [
+      ['2026-03-07T18:00:00Z', '2026-03-08T05:00:00.000Z'],
+      ['2026-10-31T18:00:00Z', '2026-11-01T04:00:00.000Z'],
+    ] as const) {
+      const close = etMidnightAfter(new Date(clockIn));
+      expect(close.toISOString()).toBe(boundary);
+      expect(close.getTime()).toBeGreaterThan(new Date(clockIn).getTime());
+      // Never more than 24h of credit for one day.
+      expect(close.getTime() - new Date(clockIn).getTime()).toBeLessThanOrEqual(24 * 3600 * 1000);
+    }
+  });
+
   it('handles the spring-forward day (2026-03-08) without landing in the gap', () => {
     // The day itself starts EST and ends EDT; midnight AFTER it is EDT.
     expect(etMidnightAfter(new Date('2026-03-08T18:00:00Z')).toISOString()).toBe(
