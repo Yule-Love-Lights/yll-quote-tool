@@ -21,7 +21,20 @@ type Handled = { handled: true; refresh: boolean };
 // The full response body shape the 'send' case reads from — SendResponseBody
 // (pipelineSendOutcome.ts) covers the delivery-outcome fields; stageUpdated/
 // stageError are read here only, for the existing HighLevel stage line.
-type SendCaseBody = SendResponseBody & { stageUpdated?: boolean; stageError?: string };
+//
+// FIX B (#237 fix round 2, staff/admin-lens HIGH — sibling-guard parity):
+// eventDateSyncError added, same idiom as stageUpdated/stageError above.
+// Round 1 surfaced this field on QuoteBuilder.tsx (the send route's OTHER
+// caller) but left this menu blind to it — worse than the gap that fix
+// closed, since this menu has no ?retryGhl action at all (only
+// ?retryDelivery=1 — see redeliverAndReport above), unlike QuoteBuilder's
+// dedicated "Retry CRM sync" button. See the 'send' case below for how it's
+// surfaced and why no new retry action was added here.
+type SendCaseBody = SendResponseBody & {
+  stageUpdated?: boolean;
+  stageError?: string;
+  eventDateSyncError?: string;
+};
 
 // Row 270 fix round, FIX 1 (technical MED — sibling-guard parity with
 // QuoteBuilder.tsx's sendInFlightRef, ~line 629: "state-based guards race —
@@ -198,10 +211,23 @@ async function run(action: PipelineAction, rec: PipelineRecord): Promise<Respons
         : body.stageError
           ? `\nHighLevel: ${body.stageError}`
           : '';
+      // FIX B (#237 fix round 2, staff/admin-lens HIGH — sibling-guard
+      // parity): same idiom as `stage` above (a labeled passthrough of the
+      // route's own message), with one deviation — the route's message ends
+      // "...or retry below," which assumes QuoteBuilder.tsx's dedicated
+      // "Retry CRM sync" button; this menu is a one-shot alert() with no
+      // "below" and no ?retryGhl action to offer (see redeliverAndReport
+      // above — it only knows ?retryDelivery=1). Rather than build a new
+      // retry entry point here (menu redesign, out of scope for this fix) or
+      // leave the alert making a promise this surface can't keep, this tells
+      // the operator plainly where the real retry lives instead.
+      const dateSync = body.eventDateSyncError
+        ? `\nEvent date: ${body.eventDateSyncError} (Retry from the quote's own page — this menu has no CRM-sync retry.)`
+        : '';
       const already = body.alreadySent ? ' (already sent earlier)' : '';
       const outcome = decideSendOutcome(res.ok, body, action.channel, false);
       alert(
-        `Portal URL${copied ? ' copied to clipboard' : ''}${already}:\n\n${portalUrl}${stage}${outcome.message ? `\n\n${outcome.message}` : ''}`,
+        `Portal URL${copied ? ' copied to clipboard' : ''}${already}:\n\n${portalUrl}${stage}${dateSync}${outcome.message ? `\n\n${outcome.message}` : ''}`,
       );
       if (outcome.retryChannel && outcome.retryPrompt && outcome.retryGate) {
         await redeliverAndReport(q, outcome.retryChannel, outcome.retryPrompt, outcome.retryGate);
