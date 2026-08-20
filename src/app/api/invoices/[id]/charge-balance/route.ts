@@ -92,7 +92,7 @@ import {
 } from '@/lib/integrations/quoteMessages';
 import { planBalanceCollection } from '@/lib/balanceCollection';
 import { chargeBalanceOnFile, isAutoChargeEnabled, CHARGE_SLOT_STALE_MS } from '@/lib/integrations/valorBalance';
-import { latestConsentAmendment, blocksSettlement, amendedQuoteStatus, type AmendmentTrailEntry } from '@/lib/amend';
+import { latestConsentAmendment, blocksSettlement, amendedQuoteStatus, reconsentRequiredClause, type AmendmentTrailEntry } from '@/lib/amend';
 import type { QuoteStatus } from '@/lib/quoteStatus';
 // #173: same EPSILON-nudged + finite-guarded round-to-cents invoices.ts/amend.ts/
 // balanceCollection.ts already alias as round2 — used to keep the stale-balance
@@ -253,8 +253,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           ok: false,
           reason: 'reconsent-required',
           code: 'reconsent-required',
-          error:
-            'This order has a price increase awaiting customer re-approval. Pass an operator override to charge anyway.',
+          // FIX7 (review MED): distinguish "no answer yet" from "customer
+          // said no" — an operator about to override deserves to know which.
+          error: `${reconsentRequiredClause(latest)} Pass an operator override to charge anyway.`,
         },
         { status: 409 },
       );

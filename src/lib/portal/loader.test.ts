@@ -376,3 +376,69 @@ describe('loadPortalQuote — applyOurRecommendation gate (#117)', () => {
     );
   });
 });
+
+// Delta-verify HIGH (fix round 3): loadPortalQuote used to fetch the linked
+// job + invoice here (FIX4) purely to read invoice.tax_overridden for the
+// adapter's ratio reconstruction. That whole fetch — and the reconstruction
+// it fed — is gone: getJobByQuote/getInvoiceByJob are no longer imported by
+// loader.ts at all, so there is nothing left to mock or assert "was not
+// called" on (that would test the absence of code, not behavior). What's
+// left to prove is that the loader passes a RECORDED invoice_basis straight
+// through to the portal, unmodified, and that it still degrades honestly
+// (falls back to the trail figures) when a legacy entry lacks one.
+describe('loadPortalQuote — pending amendment money basis (delta-verify HIGH fix)', () => {
+  function pendingAmendmentRow(amendmentOverrides: Record<string, unknown> = {}) {
+    return baseRow({
+      customer_approved_at: '2026-07-01T00:00:00.000Z',
+      deposit_paid_at: '2026-07-01T00:10:00.000Z',
+      status: 'booked',
+      approval_snapshot: {
+        customerSelection: { packageId: 'A', currentTotalUsd: 2000, currentDepositUsd: 1000 },
+        amendments: [
+          {
+            amended_at: '2026-07-18T12:00:00.000Z',
+            by: 'staff:ops',
+            reason: 'Added front wreaths',
+            previous_total: 2000,
+            new_total: 2400,
+            previous_balance: 1000,
+            new_balance: 1400,
+            deposit_applied: 1000,
+            delta: 400,
+            line_item_changes: [],
+            consent: { status: 'pending' },
+            ...amendmentOverrides,
+          },
+        ],
+      },
+    });
+  }
+
+  it('surfaces the RECORDED invoice-basis figures unchanged, straight from the row — no job/invoice lookup involved', async () => {
+    sbRef.current = makeSb(
+      pendingAmendmentRow({
+        invoice_basis: { previous_total: 1839.29, new_total: 2206.15, delta: 366.86 },
+      }),
+    );
+    getDesignByQuoteMock.mockResolvedValue(null);
+
+    const portal = await loadPortalQuote(ID);
+    expect(portal?.approval?.pendingAmendment).toMatchObject({
+      previousTotalUsd: 1839.29,
+      newTotalUsd: 2206.15,
+      deltaUsd: 366.86,
+    });
+  });
+
+  it('falls back to the raw trail figures for a pre-fix entry with no stored invoice_basis', async () => {
+    sbRef.current = makeSb(pendingAmendmentRow());
+    getDesignByQuoteMock.mockResolvedValue(null);
+
+    const portal = await loadPortalQuote(ID);
+    expect(portal?.approval?.pendingAmendment).toMatchObject({
+      previousTotalUsd: 2000,
+      newTotalUsd: 2400,
+      deltaUsd: 400,
+    });
+  });
+});

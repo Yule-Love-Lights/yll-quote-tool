@@ -492,6 +492,32 @@ describe('POST /api/invoices/[id]/charge-balance — WT-18 re-consent settlement
     expect(chargeMock).toHaveBeenCalled();
   });
 
+  // FIX7 (review MED): an operator about to override deserves to know the
+  // customer explicitly said no, not just that nobody's answered yet.
+  it('tells the operator the customer explicitly DECLINED, not just "awaiting"', async () => {
+    sbRef.current = makeSb({
+      ...QUOTE,
+      approval_snapshot: {
+        amendments: [
+          { delta: 500, new_total: 6000, consent: { status: 'declined', declined_at: '2026-07-19T00:00:00.000Z', ip: null } },
+        ],
+      },
+    });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.error).toContain('DECLINED');
+  });
+
+  it('still says "awaiting" (not declined) for a merely pending amendment', async () => {
+    sbRef.current = makeSb({ ...QUOTE, approval_snapshot: { amendments: [{ delta: 500, new_total: 6000 }] } });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.error).toContain('awaiting');
+    expect(json.error).not.toContain('DECLINED');
+  });
+
   it('succeeds with an operator override via the ?override=true query param', async () => {
     sbRef.current = makeSb({ ...QUOTE, approval_snapshot: { amendments: [{ delta: 500, new_total: 6000 }] } });
     const res = await POST(req(undefined, 'override=true'), ctx());
