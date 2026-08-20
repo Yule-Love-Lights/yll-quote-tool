@@ -6,14 +6,6 @@ import { cronDenial } from '@/lib/auth/cronAuth';
 
 export const runtime = 'nodejs';
 
-/** Timing-safe-ish equality for the cron bearer, mirroring the sibling crons. */
-function safeEqual(a: string | undefined, b: string): boolean {
-  if (!a || a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}
-
 /**
  * Vercel Cron — midnight auto-close for forgotten days (contract section 4).
  *

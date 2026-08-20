@@ -17,6 +17,10 @@ vi.mock('@/lib/auth/supabaseServer', () => ({
   roleOf: (m: { role?: unknown } | null | undefined) => (m?.role === 'admin' ? 'admin' : 'operator'),
   nameOf: (m: { name?: unknown } | null | undefined) =>
     typeof m?.name === 'string' && m.name.trim() ? m.name.trim() : null,
+  // Real behaviour, not a stub: this is the guard that keeps a crew login from
+  // being promoted to admin through this route, so faking it would defeat the
+  // test below.
+  isCrewAccount: (m: { role?: unknown } | null | undefined) => m?.role === 'crew',
 }));
 vi.mock('@/lib/supabase', () => ({
   getSupabaseServiceClient: () => ({
@@ -85,6 +89,40 @@ describe('PATCH /api/admin/users/[id]', () => {
     const res = await PATCH(makeReq({ role: 'admin' }), params(OP2));
     expect(res.status).toBe(200);
     expect(updateUserById).toHaveBeenCalledWith(OP2, expect.objectContaining({ app_metadata: expect.objectContaining({ role: 'admin' }) }));
+  });
+});
+
+const CREW_USER = '33333333-3333-3333-3333-333333333333';
+
+describe('PATCH /api/admin/users/[id] — crew logins are refused here', () => {
+  it('REFUSES to promote a crew login to admin (403), and updates nothing', async () => {
+    // Before the guard this returned 200 and the account became a real admin
+    // with access to /customers: roleOf collapses 'crew' to 'operator', so the
+    // role change looked like an ordinary operator promotion, and the metadata
+    // spread erased the crew marker. (S58 wrap review, security lens.)
+    getUserById.mockResolvedValue({
+      data: { user: { id: CREW_USER, app_metadata: { role: 'crew', name: 'SonSon' } } },
+      error: null,
+    });
+
+    const res = await PATCH(makeReq({ role: 'admin' }), { params: Promise.resolve({ id: CREW_USER }) });
+
+    expect(res.status).toBe(403);
+    expect(updateUserById).not.toHaveBeenCalled();
+  });
+
+  it('refuses any PATCH of a crew login, not just a role change', async () => {
+    getUserById.mockResolvedValue({
+      data: { user: { id: CREW_USER, app_metadata: { role: 'crew', name: 'SonSon' } } },
+      error: null,
+    });
+
+    const res = await PATCH(makeReq({ name: 'New Name' }), {
+      params: Promise.resolve({ id: CREW_USER }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(updateUserById).not.toHaveBeenCalled();
   });
 });
 

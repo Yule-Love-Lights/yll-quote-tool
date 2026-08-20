@@ -6,6 +6,7 @@
 
 import type { Scene } from '@/lib/design/sceneTypes';
 import type { PermanentWarranty } from '@/lib/permanent/types';
+import type { SceneEffect } from '@/lib/design/permanentScenes';
 
 export type PackageId = 'A' | 'B' | 'C' | 'D';
 
@@ -164,6 +165,29 @@ export type PortalApproval = {
 // mid-Nov–early-Dec install with no discount.
 export type InstallTiming = 'none' | 'september' | 'october';
 
+// Ledger row 239 — the customer's LIVE, still-editable portal browsing
+// selection, persisted to quotes.browsing_selection so it survives a device
+// change and gives staff a "what are they leaning toward" signal. Distinct
+// from PortalApproval: this is never frozen, never charged against, and is
+// reconciled (resolveBrowsingSelectionSeed in lib/portal/adapter.ts) against
+// the quote's CURRENT packages/lineItems before it ever seeds the portal —
+// see that function's own comment for why. Optional fields mirror
+// PortalApproval's back-compat convention (an older/malformed saved row
+// degrades gracefully instead of crashing the page).
+export type PortalBrowsingSelection = {
+  packageId: PackageId;
+  selectedItemIds: string[];
+  rushSelected: boolean;
+  takedownSelected: boolean;
+  installTiming: InstallTiming;
+  colorSchemeId?: string;
+  customPattern?: string[];
+  permanentEffect?: SceneEffect;
+  /** ISO timestamp of the last save — the seam a future staff-visibility
+   *  surface (e.g. /quote/[id]) would show, per row 239's second reason. */
+  savedAt: string;
+};
+
 // Effective per-job charges fed into priceSelection: the actual dollar
 // amounts to add (0 when a fee is toggled off) plus the quote's tax rate.
 export type SelectionCharges = {
@@ -321,6 +345,13 @@ export type PortalQuote = {
   // its absence as the signal to 404 (prevents anyone from previewing
   // the celebration page before approval).
   approval?: PortalApproval;
+  // Ledger row 239 — the customer's last SAVED (not yet approved) browsing
+  // selection, when one exists and this quote isn't approved. Undefined for a
+  // quote nobody has opened yet, an approved quote (the frozen `approval`
+  // always wins — see resolveApprovalSelectionSeed), or a saved selection the
+  // adapter couldn't parse. Raw/unreconciled here; page.tsx reconciles it
+  // against packages/lineItems via resolveBrowsingSelectionSeed before seeding.
+  browsingSelection?: PortalBrowsingSelection;
   // Linked on-photo light design (#27 Phase 2). When present, the hero renders
   // it live instead of the static render image. Undefined for quotes with no
   // design (they keep the current static-image behavior).

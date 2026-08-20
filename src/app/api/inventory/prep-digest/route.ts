@@ -12,7 +12,6 @@
 // sends a one-line all-clear (prepDigestMessage never returns null).
 
 import { NextRequest, NextResponse } from 'next/server';
-import { safeEqual } from '@/lib/security';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { isTelegramBotEnabled, isTelegramConfigured } from '@/lib/integrations/telegram';
 import { appBaseUrl } from '@/lib/integrations/telegramNotify';

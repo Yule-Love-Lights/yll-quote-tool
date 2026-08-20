@@ -36,6 +36,7 @@ const PUBLIC_QUOTE_SUBROUTES = new Set([
   'decline',
   'request-changes',
   'interested',
+  'selection', // ledger row 239 — debounced browsing-selection autosave; route refuses once approved
   'simulate-deposit', // TEST quotes only — route re-checks is_test (#81 W6-008)
 ]);
 

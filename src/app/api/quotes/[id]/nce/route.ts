@@ -39,11 +39,21 @@
 // resolves through effectiveDepositRate to the 50% default correctly (0 is
 // out of its [1,100] range), matching the builder chip's own OFF behavior
 // (resolveNceDepositPercent in quoteForm.ts already returns 0, not undefined).
+//
+// #243 (domain rule locked 2026-08-11): permanent/event/bistro quotes can
+// never carry the NCE tag — canCarryNceOrYllNeighborTag (serviceType.ts) is
+// the single source of truth every set/inherit site shares. Only the ON
+// direction is gated below — turning OFF (including correcting an existing
+// violation from before this gate shipped) is always allowed, unconditionally.
+// A separate pre-write read, not folded into the update below: the gate must
+// run BEFORE any write lands — there's no safe way to "undo" the update once
+// it's already committed.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { attachQuoteToCustomer, propagateQuoteTagsToCustomer, quoteRowToIdentity } from '@/lib/customers';
+import { canCarryNceOrYllNeighborTag, type ServiceType } from '@/lib/serviceType';
 
 export const runtime = 'nodejs';
 
@@ -77,10 +87,59 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   const sb = getSupabaseServiceClient()!;
-  const { data, error } = await sb
-    .from('quotes')
-    .update({ is_nce: isNce })
-    .eq('id', id)
+
+  // #243: reject turning ON before any write, when the quote's own service
+  // type can't carry the tag. A plain read (not a write) — see the header
+  // comment above for why this can't be folded into the update below.
+  // gateServiceType is hoisted out of this block (fix-round LOW below) so the
+  // write can CAS against the EXACT value this gate just approved.
+  let gateServiceType: string | null | undefined;
+  if (isNce) {
+    const { data: gateRow, error: gateError } = await sb
+      .from('quotes')
+      .select('service_type')
+      .eq('id', id)
+      .maybeSingle<{ service_type: string | null }>();
+    if (gateError) {
+      console.error('[api/quotes/:id/nce] service-type read failed:', gateError);
+      return NextResponse.json({ error: 'Failed to update the quote' }, { status: 500 });
+    }
+    if (!gateRow) {
+      return NextResponse.json({ error: 'Quote not found' }, { status: 404 });
+    }
+    if (!canCarryNceOrYllNeighborTag(gateRow.service_type as ServiceType | null)) {
+      return NextResponse.json(
+        {
+          error:
+            'NCE can only be set on holiday quotes — permanent lighting is always real money, never trade.',
+          code: 'not-holiday',
+        },
+        { status: 400 },
+      );
+    }
+    gateServiceType = gateRow.service_type;
+  }
+
+  let updateQuery = sb.from('quotes').update({ is_nce: isNce }).eq('id', id);
+  // Fix-round LOW (TOCTOU, two admin toggle routes): the ON-gate above reads
+  // service_type, then this write landed unconditionally — a service-type
+  // change racing between the read and this write could land is_nce:true on
+  // a now-ineligible quote (narrow window, low-concurrency admin tool, but
+  // this repo has a recorded TOCTOU/sibling-parity defect class). CAS against
+  // the EXACT service_type value the gate just approved — `.is(...)` for the
+  // null case since a SQL NULL never matches `.eq('col', null)` (mirrors the
+  // inputs-jsonb CAS a few lines down in this same file, and
+  // canCarryNceOrYllNeighborTag's own null-is-eligible rule above). Only
+  // applied on the ON path — turning OFF is unconditionally allowed
+  // regardless of service_type (see the header comment), so there's nothing
+  // to guard there.
+  if (isNce) {
+    updateQuery =
+      gateServiceType === null
+        ? updateQuery.is('service_type', null)
+        : updateQuery.eq('service_type', gateServiceType as string);
+  }
+  const { data, error } = await updateQuery
     // quote_sent_at + customer_id ridden along so the propagation check below
     // needs no second round trip. is_test ridden along too (review fix, admin
     // MED, S34 #198 review) — defense-in-depth even though staff have no
@@ -112,6 +171,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Failed to update the quote' }, { status: 500 });
   }
   if (!data) {
+    // The ON-path CAS above can legitimately produce 0 rows for a REASON
+    // distinct from "quote not found" — the service type changed between the
+    // gate read and this write. No cheap way to tell the two apart without a
+    // second round trip on an admin toggle where either is rare; name both
+    // possibilities rather than assert "not found" when it might not be true.
+    if (isNce) {
+      return NextResponse.json(
+        {
+          error:
+            'Could not set NCE — the quote was not found, or its service type changed at the same time. Reload and try again.',
+          code: 'gate-race',
+        },
+        { status: 409 },
+      );
+    }
     return NextResponse.json({ error: 'Quote not found' }, { status: 404 });
   }
 

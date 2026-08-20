@@ -30,9 +30,9 @@ import { isAnsweredByDirection } from './escalation';
 import { FOLLOWUP_REASONS, isDueToday, quoteSentNoReplyFollowUp } from './followups';
 import type { MetricItem, WindowKey, ReopenCounts } from './responseMetrics';
 import { addSuppressedSenders, removeSuppressedSenders } from './suppression';
-import { inverseOf, type ReverseAction } from './lifecycle';
+import { applyBucketFilter, inverseOf, type ReverseAction } from './lifecycle';
 import { listOperatorAccounts } from '@/lib/auth/adminUsers';
-import { isParkedLegacyRebookDraft, type QuoteStatus } from '@/lib/quoteStatus';
+import { deriveStatus, isParkedLegacyRebookDraft, type QuoteStatus } from '@/lib/quoteStatus';
 
 // ─── Pure ingest planner ────────────────────────────────────────────────────
 
@@ -42,6 +42,55 @@ export type ExistingItem = {
   status: InboxStatus;
   notifiedLevels: number[];
   lastMessageAt: Date | null;
+  /** #316: the rest of the stored row's touch-derived fields. Read ONLY by the
+   *  unresponded-item noop check below (see `noopReingest`'s doc) to catch a
+   *  material change that doesn't move last_message_at — e.g. a still-DRAFT
+   *  quotetool lead's lastMessageAt is pinned to created_at (quotetool.ts's
+   *  normalizeQuoteTouch), so staff editing that draft's total changes
+   *  preview/quote_value with NO timestamp movement at all. All optional:
+   *  findExistingItem always populates them from the real row; a hand-built
+   *  test fixture that omits one just never qualifies for that noop path
+   *  (undefined never `===` a real value — fails safe, never over-skips a
+   *  write it shouldn't).
+   *
+   *  Honesty note on source_message_id specifically (review fix, #316
+   *  follow-up): every live touch-producing path sets it to null —
+   *  normalizeGhlConversation (ghl.ts), normalizeGmailThread (gmail.ts),
+   *  normalizeQuoteTouch (quotetool.ts), parseIngestPayload (ingest.ts). The
+   *  ONLY site that ever populates a real one is gmail.ts's rare lead-forward
+   *  branch (buildLeadForwardTouch). So for essentially all live traffic this
+   *  field compares null===null and contributes zero discriminating power
+   *  today; it stays in the comparison for future-proofing (a real
+   *  per-message id eventually reaching more sources) and to catch that one
+   *  lead-forward case — not because it's doing real work today. The fields
+   *  that actually discriminate live traffic are last_message_at (compared
+   *  separately, above) plus direction/channel/preview/subject/lead_kind/
+   *  quote_value here. */
+  direction?: string | null;
+  channel?: string | null;
+  preview?: string | null;
+  subject?: string | null;
+  sourceMessageId?: string | null;
+  leadKind?: string | null;
+  quoteValue?: number | null;
+  /** #316 follow-up (review FIX 2): the two raw-JSON fields getItemForReply
+   *  falls back to when the joined dashboard_contacts row lacks them (see
+   *  getItemForReply below) — raw.highlevel_contact_id / raw.customer_name.
+   *  Selected narrowly via a PostgREST JSON-path expression (findExistingItem
+   *  below), not by fetching the whole raw blob. Only the quotetool source's
+   *  raw (`raw: q`, a DashboardQuote row) ever carries these keys today —
+   *  ghl.ts/gmail.ts/ingest.ts's raw shapes don't have them, so for those
+   *  sources both sides compare null===null and this pair is inert, same
+   *  fail-safe direction as every other field here. Concrete case this
+   *  closes: a draft quote gets linked to a GHL contact via
+   *  /api/integrations/highlevel/attach (writes quotes.highlevel_contact_id
+   *  only, never dashboard_contacts or inbox_items) — without this pair, if
+   *  none of the OTHER 7 fields changed on the next reconcile tick, the tick
+   *  would noop and inbox_items.raw would stay frozen pre-attach, leaving
+   *  getItemForReply's fallback showing "no GHL contact" on an item that IS
+   *  linked. */
+  rawHighlevelContactId?: string | null;
+  rawCustomerName?: string | null;
 };
 
 export type ContactOp =
@@ -91,11 +140,32 @@ export type IngestPlan = {
    *  reason-1 cold-outbound skip, not a #252 reason-2 skip, even though
    *  isActivityNoise is true on that touch. */
   skipReason: 'cold-outbound' | 'activity-noise-existing' | null;
-  /** When true, a resolved item (handled/completed/dismissed) is being re-ingested
-   *  with NOTHING to persist — same status, same last_message_at, no reopen /
-   *  auto-resolve / snooze-clear. The reconcile cron re-reads these every minute,
-   *  so writing them anyway floods inbox_items (fresh updated_at) + dashboard_activity
-   *  with dead 'ingested' rows. ingestTouch short-circuits on it (#110 W7-004). */
+  /** When true, an item is being re-ingested with NOTHING to persist — same
+   *  status, same last_message_at, no reopen / auto-resolve / snooze-clear.
+   *  The reconcile cron re-reads these every minute, so writing them anyway
+   *  floods inbox_items (fresh updated_at) + dashboard_activity with dead
+   *  'ingested' rows. ingestTouch short-circuits on it (#110 W7-004). Two
+   *  cases feed this:
+   *    1. A RESOLVED item (handled/completed/dismissed) — the original
+   *       #110 W7-004 case. Same status + same last_message_at is sufficient;
+   *       nothing else about a resolved item's display depends on the touch.
+   *    2. #316: an UNRESOLVED ('unresponded') item whose touch-derived fields
+   *       (direction/channel/preview/subject/source_message_id/lead_kind/
+   *       quote_value, plus the raw.highlevel_contact_id/raw.customer_name
+   *       pair added in the review FIX 2 follow-up — see ExistingItem's doc
+   *       for what each field actually discriminates on live traffic) ALSO
+   *       match the stored row — same status + same last_message_at is not
+   *       enough here, because a still-DRAFT
+   *       quotetool lead's lastMessageAt is pinned to created_at, so an
+   *       edited draft total can change preview/quote_value with the
+   *       timestamp frozen. Deliberately does NOT compare escalation_level —
+   *       that's a pure function of (last_message_at, now), so it changes on
+   *       almost every tick for an aging open item and would defeat this
+   *       noop entirely; the separately-scheduled escalate cron (runEscalation,
+   *       every 10 min, sync.ts) is what keeps the STORED column caught up,
+   *       independent of ingest — skipping the ingest-time write just means
+   *       the displayed level can lag by <=10 minutes after crossing a
+   *       threshold, which is exactly what that cron exists to backstop. */
   noopReingest: boolean;
   contactOp: ContactOp;
   item: ItemRow;
@@ -155,6 +225,20 @@ function tracksOutboundFirstObservation(source: InboxSource, channel: Normalized
   return TRACKS_OUTBOUND_FIRST_OBSERVATION.has(source) || (source === 'ghl' && channel === 'call');
 }
 
+// #316 follow-up (review FIX 2): safely pull one string field out of a
+// touch's `raw` blob — typed `unknown` on NormalizedTouch because every
+// source shapes it differently (a GhlConversation, a GmailThreadLite, a
+// DashboardQuote row, an arbitrary ingest POST body). Only the quotetool
+// source's raw ever carries highlevel_contact_id/customer_name (it IS a
+// DashboardQuote row); every other source's raw lacks both keys, so this
+// returns null for them — same null===null fail-safe direction as every
+// other unrespondedNoContentChange comparison below.
+function rawStringField(raw: unknown, key: string): string | null {
+  if (raw === null || typeof raw !== 'object') return null;
+  const v = (raw as Record<string, unknown>)[key];
+  return typeof v === 'string' ? v : null;
+}
+
 /**
  * Decide what an inbound/outbound touch should do, given the matching contact
  * candidates and the existing item (if any). PURE — no I/O.
@@ -209,23 +293,62 @@ export function planIngest(input: {
   // skip that escalation email.
   const notifiedLevels = decision.reopened ? [] : (existing?.notifiedLevels ?? []);
 
-  // #110 W7-004: a resolved item re-ingested with nothing to persist is a no-op.
-  // Restricted to resolved statuses (escalation_level is fixed at 0, so skipping
-  // never freezes an aging unresponded item's display colour) AND an unchanged
-  // last_message_at (our own outbound reply re-read every reconcile is the common
-  // case). Everything that actually changes state — reopen, auto-resolve,
-  // snooze-clear, a newer message — falls through and writes normally.
-  const isResolvedStatus =
-    decision.status === 'handled' || decision.status === 'completed' || decision.status === 'dismissed';
-  const noopReingest =
+  // #110 W7-004 / #316: an item re-ingested with nothing to persist is a no-op.
+  // Shared preconditions for EITHER case below: an existing item, no state
+  // transition the reducer made (no auto-resolve / reopen / snooze-clear), same
+  // status, and an unchanged last_message_at (our own outbound reply re-read
+  // every reconcile, or a still-open conversation nobody has touched, are both
+  // the common case). Everything that actually changes state — reopen,
+  // auto-resolve, snooze-clear, a newer message — falls through and writes
+  // normally, for both cases.
+  const commonNoopPreconditions =
     !!existing &&
     !decision.autoResolved &&
     !decision.reopened &&
     !clearFollowedUp &&
-    isResolvedStatus &&
     decision.status === existing.status &&
     existing.lastMessageAt != null &&
     touch.lastMessageAt.getTime() === existing.lastMessageAt.getTime();
+
+  // Case 1 (#110 W7-004): a RESOLVED item (handled/completed/dismissed).
+  // Nothing else about a resolved item's display depends on the touch, so the
+  // shared preconditions alone are sufficient.
+  const isResolvedStatus =
+    decision.status === 'handled' || decision.status === 'completed' || decision.status === 'dismissed';
+
+  // Case 2 (#316): an UNRESOLVED ('unresponded') item ALSO needs its
+  // touch-derived fields to match the stored row before it's a true no-op —
+  // unlike a resolved item, an unresponded item's last_message_at can be
+  // pinned (a still-DRAFT quotetool lead pins it to created_at; see
+  // quotetool.ts's normalizeQuoteTouch) while a real edit changes what's
+  // shown (a draft's total → preview + quote_value). Compares every
+  // touch-derived field the upsert writes that could plausibly change without
+  // moving last_message_at, plus (review FIX 2, #316 follow-up) the
+  // raw.highlevel_contact_id/raw.customer_name pair getItemForReply falls
+  // back to. Not every field pulls equal weight on live traffic today:
+  // source_message_id is null on every path except gmail.ts's rare
+  // lead-forward branch, and the raw pair is only ever non-null for the
+  // quotetool source — both stay in the comparison for future-proofing and
+  // fail-safe symmetry with the rest, not because they discriminate most
+  // traffic (see ExistingItem's doc for the honest breakdown). Deliberately
+  // EXCLUDES escalation_level (see the IngestPlan.noopReingest doc above —
+  // it's a pure function of elapsed time, not of the touch, and the escalate
+  // cron owns keeping it current independent of ingest) and notified_levels
+  // (already byte-identical to `existing` here by construction — see
+  // `notifiedLevels` above, `reopened` is false whenever this runs).
+  const unrespondedNoContentChange =
+    decision.status === 'unresponded' &&
+    (touch.direction ?? null) === existing?.direction &&
+    (touch.channel ?? null) === existing?.channel &&
+    (touch.preview ?? null) === existing?.preview &&
+    (touch.subject ?? null) === existing?.subject &&
+    (touch.sourceMessageId ?? null) === existing?.sourceMessageId &&
+    (touch.leadKind ?? 'lead') === existing?.leadKind &&
+    (touch.quoteValue ?? null) === existing?.quoteValue &&
+    rawStringField(touch.raw, 'highlevel_contact_id') === existing?.rawHighlevelContactId &&
+    rawStringField(touch.raw, 'customer_name') === existing?.rawCustomerName;
+
+  const noopReingest = commonNoopPreconditions && (isResolvedStatus || unrespondedNoContentChange);
 
   const item: ItemRow = {
     source: touch.source,
@@ -313,9 +436,17 @@ async function findCandidates(identity: ContactIdentity): Promise<StoredContact[
 async function findExistingItem(source: InboxSource, externalId: string): Promise<ExistingItem | null> {
   const sb = getSupabaseServiceClient();
   if (!sb) return null;
+  // #316: also selects the touch-derived columns planIngest's unresponded-item
+  // noop check compares (see ExistingItem's doc) — direction/channel/preview/
+  // subject/source_message_id/lead_kind/quote_value — plus (review FIX 2) the
+  // raw.highlevel_contact_id/raw.customer_name pair, pulled narrowly via a
+  // PostgREST JSON-path select (raw->>key, aliased) rather than fetching the
+  // whole raw blob per row.
   const { data } = await sb
     .from('inbox_items')
-    .select('id, contact_id, status, notified_levels, last_message_at')
+    .select(
+      'id, contact_id, status, notified_levels, last_message_at, direction, channel, preview, subject, source_message_id, lead_kind, quote_value, raw_highlevel_contact_id:raw->>highlevel_contact_id, raw_customer_name:raw->>customer_name',
+    )
     .eq('source', source)
     .eq('external_id', externalId)
     .maybeSingle();
@@ -327,6 +458,15 @@ async function findExistingItem(source: InboxSource, externalId: string): Promis
     status: row.status as InboxStatus,
     notifiedLevels: (row.notified_levels as number[] | null) ?? [],
     lastMessageAt: row.last_message_at ? new Date(row.last_message_at as string) : null,
+    direction: (row.direction as string | null) ?? null,
+    channel: (row.channel as string | null) ?? null,
+    preview: (row.preview as string | null) ?? null,
+    subject: (row.subject as string | null) ?? null,
+    sourceMessageId: (row.source_message_id as string | null) ?? null,
+    leadKind: (row.lead_kind as string | null) ?? null,
+    quoteValue: (row.quote_value as number | null) ?? null,
+    rawHighlevelContactId: (row.raw_highlevel_contact_id as string | null) ?? null,
+    rawCustomerName: (row.raw_customer_name as string | null) ?? null,
   };
 }
 
@@ -377,9 +517,10 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
     return { ok: true, skipped: true, itemId: null, contactId: null, autoResolved: false, reopened: false, ambiguous: false, skipReason: plan.skipReason };
   }
 
-  // #110 W7-004: a resolved item re-ingested with nothing to persist — skip the
-  // item upsert AND the 'ingested' activity insert so the every-minute reconcile
-  // cron stops flooding both tables with no-change writes. `existing` is non-null
+  // #110 W7-004 / #316: an item (resolved OR unresponded — see noopReingest's
+  // doc) re-ingested with nothing to persist — skip the item upsert AND the
+  // 'ingested' activity insert so the every-minute reconcile cron stops
+  // flooding both tables with no-change writes. `existing` is non-null
   // whenever noopReingest is true. Not a plan.skip reason, so skipReason is null.
   if (plan.noopReingest) {
     return { ok: true, skipped: true, itemId: existing?.id ?? null, contactId: existing?.contactId ?? null, autoResolved: false, reopened: false, ambiguous: false, skipReason: null };
@@ -627,15 +768,17 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
   // LEGACY_REBOOK_FETCH_BUFFER above.
   const fetchLimit = EXCLUDE_LEGACY_REBOOK_FROM_INBOX ? limit + LEGACY_REBOOK_FETCH_BUFFER : limit;
 
-  const { data, error, count } = await sb
-    .from('inbox_items')
-    .select(
-      'id, source, external_id, channel, direction, last_message_at, preview, subject, escalation_level, contact_id, lead_kind, quote_value, ' +
-        'dashboard_contacts ( display_name, primary_email, primary_phone, assigned_to )',
-      { count: 'exact' },
-    )
-    .eq('status', 'unresponded')
-    .is('followed_up_at', null)
+  // #252 slice C: the base query is bound to a const BEFORE applyBucketFilter
+  // — inlining the .select(...) call directly as the generic call's argument
+  // hits a real `tsc` "Type instantiation is excessively deep" error (the
+  // nested dashboard_contacts relation in the select string, combined with
+  // bidirectional generic inference on the inline argument).
+  const baseQuery = sb.from('inbox_items').select(
+    'id, source, external_id, channel, direction, last_message_at, preview, subject, escalation_level, contact_id, lead_kind, quote_value, ' +
+      'dashboard_contacts ( display_name, primary_email, primary_phone, assigned_to )',
+    { count: 'exact' },
+  );
+  const { data, error, count } = await applyBucketFilter(baseQuery, 'needs_reply')
     .order('last_message_at', { ascending: true })
     .limit(fetchLimit);
   if (error) return { ok: false, error: error.message };
@@ -920,18 +1063,24 @@ export type EscalatableResult = { ok: true; items: EscalatableItem[] } | { ok: f
 export async function listEscalatableItems(): Promise<EscalatableResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
-  const { data, error } = await sb
+  // #110 W7-005: a manually-Followed item (followed_up_at stamped, status still
+  // 'unresponded') must NOT keep firing amber/red alerts + EOD digests — it's
+  // been handled outside the tool. Mirrors listOpenItems' needs_reply bucket;
+  // an inbound clears followed_up_at (planIngest.clearFollowedUp) and re-arms
+  // escalation. #252 slice C: the status/followed_up_at pair below is exactly
+  // the needs_reply bucket, routed through the same applyBucketFilter
+  // listOpenItems uses — the lead_kind .or(...) is an escalation-only
+  // narrowing on TOP of that bucket, not part of the bucket definition itself.
+  // (baseQuery is bound to a const before applyBucketFilter for the same
+  // reason as listOpenItems — see its comment.)
+  const baseQuery = sb
     .from('inbox_items')
     .select(
       'id, source, external_id, last_message_at, notified_levels, escalation_level, preview, dashboard_contacts ( display_name )',
-    )
-    .eq('status', 'unresponded')
-    // #110 W7-005: a manually-Followed item (followed_up_at stamped, status still
-    // 'unresponded') must NOT keep firing amber/red alerts + EOD digests — it's
-    // been handled outside the tool. Mirrors listOpenItems; an inbound clears
-    // followed_up_at (planIngest.clearFollowedUp) and re-arms escalation.
-    .is('followed_up_at', null)
-    .or('lead_kind.is.null,lead_kind.neq.automated');
+    );
+  const { data, error } = await applyBucketFilter(baseQuery, 'needs_reply').or(
+    'lead_kind.is.null,lead_kind.neq.automated',
+  );
   if (error) return { ok: false, error: error.message };
 
   let rows = (data ?? []) as unknown as Record<string, unknown>[];
@@ -1033,7 +1182,15 @@ export async function setSyncCursor(source: string, cursor: Record<string, unkno
  *  is stable, so a prior follow-up marked 'done' must NOT block a fresh nudge
  *  (e.g. a second "quote sent, no reply" cycle weeks later on the same
  *  still-unapproved item). Without the status scope, clicking Done once
- *  permanently killed the nudge for that item+reason forever. */
+ *  permanently killed the nudge for that item+reason forever.
+ *
+ *  Returns 'created' on an actual write, 'skipped' for a legitimate no-op (a
+ *  pending row already exists, or the anchored item is already resolved —
+ *  see the churn-gate comment below), or 'failed' when a read errored/threw.
+ *  #310 fix-round: a plain boolean collapsed 'skipped' and 'failed' into the
+ *  same `false`, so the caller (runQuoteToolReconcile, sync.ts) had no way to
+ *  count a degraded tick separately from an ordinary one — see its
+ *  `followUpErrors` field. */
 export async function ensureFollowUp(input: {
   inboxItemId: string;
   contactId: string | null;
@@ -1042,53 +1199,74 @@ export async function ensureFollowUp(input: {
   // WT-44: cadence override so the "Follow-up reminder (days)" setting can
   // drive when the strip nudge is due; falls back to DEFAULT_FOLLOW_UP_DAYS.
   afterDays?: number;
-}): Promise<boolean> {
+}): Promise<'created' | 'skipped' | 'failed'> {
   const sb = getSupabaseServiceClient();
-  if (!sb) return false;
-  const { data } = await sb
-    .from('follow_ups')
-    .select('id')
-    .eq('inbox_item_id', input.inboxItemId)
-    .eq('reason', input.reason)
-    .eq('status', 'pending')
-    .limit(1);
-  if (data && data.length > 0) return false; // a pending one already exists — don't duplicate
+  if (!sb) return 'skipped';
+  // #310: this whole body used to run unguarded — a throw from either read
+  // below (or the upsert) escaped straight into runQuoteToolReconcile's single
+  // top-level try/catch (sync.ts), aborting the WHOLE reconcile tick (zeroing
+  // every counter, skipping both tail sweeps) over one bad read on one quote.
+  // Wrapped + each read's own {error} checked, mirroring this file's other
+  // best-effort I/O (closeQuoteInboxNoise, closeFollowUpsForResolvedItem):
+  // fail open by skipping just this item, log, and let the next tick (5 min
+  // later) retry — never let one item's read failure take down the batch.
+  try {
+    const { data, error: pendingErr } = await sb
+      .from('follow_ups')
+      .select('id')
+      .eq('inbox_item_id', input.inboxItemId)
+      .eq('reason', input.reason)
+      .eq('status', 'pending')
+      .limit(1);
+    if (pendingErr) {
+      console.error('[inbox] ensureFollowUp: pending lookup failed (skipping item):', pendingErr.message);
+      return 'failed';
+    }
+    if (data && data.length > 0) return 'skipped'; // a pending one already exists — don't duplicate
 
-  // #252 churn gate: quoteFollowUpDecision (quotetool.ts) derives kind:'create'
-  // from the QUOTE's own fields alone — never the anchored item's status — so
-  // the reconcile asks for a follow-up on EVERY tick for any sent-but-unapproved,
-  // non-dead quote. Once that item is resolved and its nag auto-closed
-  // (closeFollowUpsForResolvedItem), the upsert below would flip the 'done' row
-  // straight back to 'pending' every 5 minutes forever; sweepResolvedItemFollowUps
-  // re-closes it later in the same tick, so the end-of-tick state looks right and
-  // nothing fails — the only visible symptoms are permanent write churn and an
-  // inflated followUpsCreated counter. Same class as the #230(b) gate on the
-  // suppress branch, which exists because decision.kind is recomputed per tick.
-  // Costs one read, and only on the path that would otherwise write: the
-  // early-return above already covers the steady state.
-  const { data: item } = await sb.from('inbox_items').select('status').eq('id', input.inboxItemId).maybeSingle();
-  const itemStatus = (item as { status: string } | null)?.status ?? null;
-  if (itemStatus === 'completed' || itemStatus === 'dismissed') return false;
-  const fu = quoteSentNoReplyFollowUp({ contactId: input.contactId, inboxItemId: input.inboxItemId, sentAt: input.sentAt, afterDays: input.afterDays });
-  // WT-43: UPSERT, not insert. The table has `unique (inbox_item_id, reason)`
-  // with no status predicate, so once a prior nudge is marked 'done' a plain
-  // insert 23505s (swallowed by supabase-js into {error}) and the nudge never
-  // re-arms. Conflict-target the constraint so a 'done' row is flipped back to
-  // 'pending' with a fresh due_at (and no pending row exists here, guaranteed by
-  // the early-return above, so this never resets a live pending nudge).
-  await sb.from('follow_ups').upsert(
-    {
-      contact_id: fu.contactId,
-      inbox_item_id: fu.inboxItemId,
-      due_at: fu.dueAt.toISOString(),
-      reason: fu.reason,
-      status: fu.status,
-      assigned_to: fu.assignedTo,
-      created_by: fu.createdBy,
-    },
-    { onConflict: 'inbox_item_id,reason' },
-  );
-  return true;
+    // #252 churn gate: quoteFollowUpDecision (quotetool.ts) derives kind:'create'
+    // from the QUOTE's own fields alone — never the anchored item's status — so
+    // the reconcile asks for a follow-up on EVERY tick for any sent-but-unapproved,
+    // non-dead quote. Once that item is resolved and its nag auto-closed
+    // (closeFollowUpsForResolvedItem), the upsert below would flip the 'done' row
+    // straight back to 'pending' every 5 minutes forever; sweepResolvedItemFollowUps
+    // re-closes it later in the same tick, so the end-of-tick state looks right and
+    // nothing fails — the only visible symptoms are permanent write churn and an
+    // inflated followUpsCreated counter. Same class as the #230(b) gate on the
+    // suppress branch, which exists because decision.kind is recomputed per tick.
+    // Costs one read, and only on the path that would otherwise write: the
+    // early-return above already covers the steady state.
+    const { data: item, error: itemErr } = await sb.from('inbox_items').select('status').eq('id', input.inboxItemId).maybeSingle();
+    if (itemErr) {
+      console.error('[inbox] ensureFollowUp: item status lookup failed (skipping item):', itemErr.message);
+      return 'failed';
+    }
+    const itemStatus = (item as { status: string } | null)?.status ?? null;
+    if (itemStatus === 'completed' || itemStatus === 'dismissed') return 'skipped';
+    const fu = quoteSentNoReplyFollowUp({ contactId: input.contactId, inboxItemId: input.inboxItemId, sentAt: input.sentAt, afterDays: input.afterDays });
+    // WT-43: UPSERT, not insert. The table has `unique (inbox_item_id, reason)`
+    // with no status predicate, so once a prior nudge is marked 'done' a plain
+    // insert 23505s (swallowed by supabase-js into {error}) and the nudge never
+    // re-arms. Conflict-target the constraint so a 'done' row is flipped back to
+    // 'pending' with a fresh due_at (and no pending row exists here, guaranteed by
+    // the early-return above, so this never resets a live pending nudge).
+    await sb.from('follow_ups').upsert(
+      {
+        contact_id: fu.contactId,
+        inbox_item_id: fu.inboxItemId,
+        due_at: fu.dueAt.toISOString(),
+        reason: fu.reason,
+        status: fu.status,
+        assigned_to: fu.assignedTo,
+        created_by: fu.createdBy,
+      },
+      { onConflict: 'inbox_item_id,reason' },
+    );
+    return 'created';
+  } catch (e) {
+    console.error('[inbox] ensureFollowUp failed (skipping item):', e);
+    return 'failed';
+  }
 }
 
 /** Mark a pending follow-up for an item done (e.g. the quote got approved).
@@ -1373,7 +1551,18 @@ export async function sweepOrphanedFollowUps(reason: string): Promise<number> {
     .from('follow_ups')
     .select('id, inbox_item_id')
     .eq('reason', reason)
-    .eq('status', 'pending');
+    .eq('status', 'pending')
+    // #310: was unbounded — PostgREST silently truncates at its 1000-row
+    // default, so past that this sweep would stop covering rows with no
+    // error and no signal. follow_ups holds 57 today; 5000 mirrors the cap
+    // already used a few times in this file (getReopenCounts' distinct(),
+    // the returning-contact tally above) for the same "generous headroom,
+    // bound the pathological case" reasoning.
+    // Ordered so the capped subset is DETERMINISTIC — without an order, a
+    // table past the cap could nondeterministically flip which rows this
+    // sweep covers on each run (same reasoning as the #185 precedent above).
+    .order('id', { ascending: true })
+    .limit(5000);
   if (pendingErr) {
     console.error('[inbox] orphan follow-up sweep: pending lookup failed:', pendingErr.message);
     return 0;
@@ -1445,7 +1634,16 @@ export async function sweepResolvedItemFollowUps(): Promise<number> {
   const sb = getSupabaseServiceClient();
   if (!sb) return 0;
 
-  const { data: pending, error: pendingErr } = await sb.from('follow_ups').select('id, inbox_item_id').eq('status', 'pending');
+  // #310: was unbounded — same PostgREST 1000-row default-truncation risk as
+  // sweepOrphanedFollowUps' pending lookup above (sibling-parity fix, one pass).
+  // Ordered so the capped subset is DETERMINISTIC — same #185 precedent cited
+  // there.
+  const { data: pending, error: pendingErr } = await sb
+    .from('follow_ups')
+    .select('id, inbox_item_id')
+    .eq('status', 'pending')
+    .order('id', { ascending: true })
+    .limit(5000);
   if (pendingErr) {
     console.error('[inbox] resolved-item follow-up sweep: pending lookup failed:', pendingErr.message);
     return 0;
@@ -1723,15 +1921,39 @@ export type InWorksItem = {
   preview: string | null;
   customerName: string | null;
   lastActivityAt: string | null;
+  // #307: null for every 'awaiting' row (the rule set below only evaluates the
+  // 'handled' bucket) and for a 'handled' row where none of the three signals
+  // fire. Non-null is the single displayed reason — see needsLookReason's own
+  // doc comment for why only one shows when a row trips more than one rule.
+  needsLookReason: string | null;
 };
 export type InWorksResult =
-  | { ok: true; awaiting: InWorksItem[]; handled: InWorksItem[] }
+  | {
+      ok: true;
+      awaiting: InWorksItem[];
+      handled: InWorksItem[];
+      // #307 review fix 2: true when either of the two needsLookReason evidence
+      // lookups (quote status, pending follow-up) failed and fell back to an
+      // empty result — meaning some 'handled' row may be missing its reason
+      // and reads as settled when the evidence for that couldn't be checked.
+      evidenceIncomplete: boolean;
+    }
   | { ok: false; error: string };
 
 const IN_WORKS_SELECT =
   'id, source, channel, preview, followed_up_at, handled_at, status, dashboard_contacts ( display_name )';
 
-function mapInWorksRow(rows: unknown[], tsKey: 'followed_up_at' | 'handled_at'): InWorksItem[] {
+// #307: the 'handled' bucket alone also needs external_id (to derive the
+// backing quote id, quoteIdPrefix) and direction (rule b) to compute "Needs a
+// look" — the 'awaiting' bucket's query stays on the narrower IN_WORKS_SELECT
+// since none of the three rules apply there (out of scope for this change).
+const IN_WORKS_HANDLED_SELECT = IN_WORKS_SELECT + ', external_id, direction';
+
+function mapInWorksRow(
+  rows: unknown[],
+  tsKey: 'followed_up_at' | 'handled_at',
+  reasonFor?: (row: Record<string, unknown>) => string | null,
+): InWorksItem[] {
   return (rows ?? []).map((r) => {
     const row = r as Record<string, unknown>;
     const c = (row.dashboard_contacts as { display_name?: string | null } | null) ?? null;
@@ -1742,41 +1964,192 @@ function mapInWorksRow(rows: unknown[], tsKey: 'followed_up_at' | 'handled_at'):
       preview: (row.preview as string | null) ?? null,
       customerName: (c?.display_name as string | null) ?? null,
       lastActivityAt: (row[tsKey] as string | null) ?? null,
+      needsLookReason: reasonFor ? reasonFor(row) : null,
     };
   });
 }
 
+/**
+ * #307: pure "does the evidence contradict Handled" decision for one handled
+ * row. Order is the deliberate single-reason priority when a row trips more
+ * than one rule — most concrete/actionable evidence wins:
+ *   1. quoteStatus unanswered — a real quote is sitting sent-but-not-approved;
+ *      the most concrete, money-bearing evidence a "finished" row is wrong.
+ *   2. direction === 'inbound' — the customer's message is the newest thing on
+ *      the thread. Weaker signal (a call-closed conversation can still read
+ *      this way — see the brief's accepted false-positive note), so it only
+ *      shows when rule 1 didn't already give a sharper reason.
+ *   3. followUpPending — our own follow-up system already flagged this item;
+ *      shown last since today's only follow-up reason (quote_sent_no_reply)
+ *      usually already surfaces via rule 1 on the same row.
+ * Pure — no I/O — so it's directly unit-testable without a DB.
+ */
+export function needsLookReason(evidence: {
+  direction: string | null;
+  quoteStatus: QuoteStatus | null;
+  followUpPending: boolean;
+}): string | null {
+  if (evidence.quoteStatus != null && QUOTE_UNANSWERED_STATUSES.has(evidence.quoteStatus)) {
+    return 'Quote unanswered';
+  }
+  if (evidence.direction === 'inbound') {
+    return 'They wrote last';
+  }
+  if (evidence.followUpPending) {
+    return 'Follow-up due';
+  }
+  return null;
+}
+
+// #307 rule (a): a quote is "sent but not approved, not dead" when its derived
+// status is one of these three. Deliberately derived via deriveStatus (the
+// canonical lifecycle read, per its own doc comment) rather than a raw
+// `quote_sent_at != null && customer_approved_at == null` column check — a
+// booked-but-somehow-missing-customer_approved_at row would otherwise
+// misfire here; deriveStatus's deposit_paid_at-wins precedence correctly
+// reads that as 'booked' (approved, not flagged) instead. 'changes_requested'
+// is included: the quote was sent, is not approved, and is not in the dead
+// set (declined/cancelled/abandoned) — it's an active back-and-forth, not a
+// finished one.
+const QUOTE_UNANSWERED_STATUSES: ReadonlySet<QuoteStatus> = new Set(['sent', 'viewed', 'changes_requested']);
+
+/**
+ * #307: batch-fetches the derived QuoteStatus for every id in `quoteIds` in
+ * ONE query (mirrors fetchHiddenLegacyRebookQuoteIds's pattern above — never a
+ * per-row query in a loop). On a lookup error this still fails OPEN (returns
+ * an empty map rather than throwing — a transient read failure must not crash
+ * the page), but unlike fetchHiddenLegacyRebookQuoteIds's fail-open (which is
+ * SAFE — an empty result there means "hide nothing"), an empty map here is
+ * UNSAFE — it means "no handled row reads as quote-unanswered", which can
+ * silently under-populate the one list whose entire premise is that evidence
+ * must not go missing. `failed` carries that distinction to the caller so
+ * listInWorks can surface it instead of only logging it server-side (#307
+ * review fix 2).
+ */
+async function fetchQuoteStatusesById(
+  sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  quoteIds: readonly string[],
+): Promise<{ statuses: Map<string, QuoteStatus>; failed: boolean }> {
+  if (quoteIds.length === 0) return { statuses: new Map(), failed: false };
+  const { data, error } = await sb
+    .from('quotes')
+    .select('id, status, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at')
+    .in('id', quoteIds);
+  if (error) {
+    console.error('[inbox] needs-a-look quote status lookup failed:', error.message);
+    return { statuses: new Map(), failed: true };
+  }
+  const map = new Map<string, QuoteStatus>();
+  for (const q of (data ?? []) as {
+    id: string;
+    status: QuoteStatus | null;
+    quote_sent_at: string | null;
+    customer_approved_at: string | null;
+    deposit_paid_at: string | null;
+    viewed_at: string | null;
+  }[]) {
+    map.set(String(q.id), deriveStatus(q));
+  }
+  return { statuses: map, failed: false };
+}
+
+/**
+ * #307 rule (c): batch-fetches which of `itemIds` has at least one still-
+ * pending follow_ups row, in ONE query (`.in('inbox_item_id', itemIds)`) —
+ * never a per-row query. Same fail-open-but-report-it convention as its
+ * sibling above: `failed` tells listInWorks this specific lookup didn't
+ * complete, rather than being indistinguishable from "nothing pending".
+ */
+async function fetchPendingFollowUpItemIds(
+  sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  itemIds: readonly string[],
+): Promise<{ ids: Set<string>; failed: boolean }> {
+  if (itemIds.length === 0) return { ids: new Set(), failed: false };
+  const { data, error } = await sb
+    .from('follow_ups')
+    .select('inbox_item_id')
+    .eq('status', 'pending')
+    .in('inbox_item_id', itemIds);
+  if (error) {
+    console.error('[inbox] needs-a-look pending follow-up lookup failed:', error.message);
+    return { ids: new Set(), failed: true };
+  }
+  return {
+    ids: new Set(
+      ((data ?? []) as { inbox_item_id: string | null }[])
+        .map((r) => r.inbox_item_id)
+        .filter((v): v is string => !!v),
+    ),
+    failed: false,
+  };
+}
+
 /** Two-group In-Works list: items being actively followed up (awaiting) + locally
  *  handled items that aren't yet dismissed or completed (handled). Both sorted
- *  stalest-first so the longest-waiting surface at the top. */
+ *  stalest-first so the longest-waiting surface at the top. Every 'handled' row
+ *  also carries needsLookReason (#307) — computed from two BATCHED lookups (a
+ *  quote-status map + a pending-follow-up set), never a per-row query.
+ *  `evidenceIncomplete` (#307 review fix 2) is true when either of those two
+ *  lookups failed and fell back to empty — the caller renders that as a
+ *  visible note rather than only the server-side console.error already inside
+ *  each lookup. */
 export async function listInWorks(limit = 200): Promise<InWorksResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   // #185: the two list fetches are independent (different status/followed_up_at
   // predicates on the same table) — no reason for the second to wait on the
   // first's round-trip.
+  // (Each base query is bound to a const before applyBucketFilter for the
+  // same reason as listOpenItems — see its comment.)
+  const awaitingBaseQuery = sb.from('inbox_items').select(IN_WORKS_SELECT);
+  const handledBaseQuery = sb.from('inbox_items').select(IN_WORKS_HANDLED_SELECT);
   const [aw, hd] = await Promise.all([
-    sb
-      .from('inbox_items')
-      .select(IN_WORKS_SELECT)
-      .not('followed_up_at', 'is', null)
-      .not('status', 'in', '(completed,dismissed)')
+    applyBucketFilter(awaitingBaseQuery, 'awaiting_reply')
       .order('followed_up_at', { ascending: true })
       .limit(limit),
-    sb
-      .from('inbox_items')
-      .select(IN_WORKS_SELECT)
-      .eq('status', 'handled')
-      .is('followed_up_at', null)
+    applyBucketFilter(handledBaseQuery, 'handled')
       .order('handled_at', { ascending: true })
       .limit(limit),
   ]);
   if (aw.error) return { ok: false, error: aw.error.message };
   if (hd.error) return { ok: false, error: hd.error.message };
+
+  const handledRows = (hd.data ?? []) as unknown as Record<string, unknown>[];
+  const handledIds = handledRows.map((r) => String(r.id));
+  // #307: only a 'quotetool' item's external_id backs a quote id — same gate
+  // excludeLegacyRebookItems/fetchHiddenLegacyRebookQuoteIds use above.
+  const quotetoolQuoteIds = [
+    ...new Set(
+      handledRows
+        .filter((r) => r.source === 'quotetool')
+        .map((r) => quoteIdPrefix(String(r.external_id)))
+        .filter(isUuid),
+    ),
+  ];
+  const [quoteStatusResult, pendingFollowUpResult] = await Promise.all([
+    fetchQuoteStatusesById(sb, quotetoolQuoteIds),
+    fetchPendingFollowUpItemIds(sb, handledIds),
+  ]);
+  const quoteStatusById = quoteStatusResult.statuses;
+  const pendingFollowUpItemIds = pendingFollowUpResult.ids;
+
+  const handled = mapInWorksRow(handledRows, 'handled_at', (row) => {
+    const quoteStatus =
+      row.source === 'quotetool'
+        ? (quoteStatusById.get(quoteIdPrefix(String(row.external_id))) ?? null)
+        : null;
+    return needsLookReason({
+      direction: (row.direction as string | null) ?? null,
+      quoteStatus,
+      followUpPending: pendingFollowUpItemIds.has(String(row.id)),
+    });
+  });
+
   return {
     ok: true,
     awaiting: mapInWorksRow(aw.data ?? [], 'followed_up_at'),
-    handled: mapInWorksRow(hd.data ?? [], 'handled_at'),
+    handled,
+    evidenceIncomplete: quoteStatusResult.failed || pendingFollowUpResult.failed,
   };
 }
 
@@ -1850,7 +2223,11 @@ export type ReplyItem = {
 /**
  * Resolve the send-target coordinates for a reply action: source, channel,
  * external ID, GHL contact ID, customer name, and quote total. The GHL contact
- * ID and customer name fall back to the raw payload if the contact row is absent.
+ * ID and customer name fall back to the raw payload if the contact row is
+ * absent — #316 follow-up (review FIX 2): planIngest's noop check now
+ * compares raw.highlevel_contact_id/raw.customer_name (see ExistingItem's
+ * doc), so a later attach that changes either un-noops the next reconcile
+ * tick and refreshes `raw` instead of leaving this fallback frozen stale.
  */
 export async function getItemForReply(itemId: string): Promise<ReplyItem | null> {
   const sb = getSupabaseServiceClient();
@@ -1889,7 +2266,31 @@ export type ActivityRow = {
 };
 export type ActivityResult = { ok: true; rows: ActivityRow[] } | { ok: false; error: string };
 
-const REVERSIBLE_ACTIONS = new Set(['handled', 'followed', 'completed', 'dismissed']);
+// row 312: 'reclassified' added — the 26 S41 data-op rows say "reversible by
+// setting followed_up_at back to null" in their own detail text; it belongs
+// here so /inbox/activity actually renders the Reverse button that wording
+// promises (see inverseOf's 'reclassified' case, lifecycle.ts).
+const REVERSIBLE_ACTIONS = new Set(['handled', 'followed', 'completed', 'dismissed', 'reclassified']);
+
+/**
+ * row 312 fix-round FIX 3 (MED, admin lens, prod-verified): the bare action
+ * string 'reclassified' covers TWO populations in prod (confirmed via a direct
+ * query, 2026-08-20) — 26 S41 bucket-refile rows (`actor: 'system'`, detail
+ * carries `followedUpAtSetTo`/`from`/`to`; inverseOf('reclassified')'s premise
+ * — "only ever set followed_up_at" — holds) and 8 `actor:
+ * 'assistant-backfill-268'` rows (2026-08-14, a lead_kind/contact repoint;
+ * detail carries `reason`/`customer`/`from_contact` and NONE of the 8 carry
+ * followedUpAtSetTo — the inverse's premise is false for them). Today the 8 are
+ * refused only by the emergent luck of their item's current followed_up_at
+ * reading null — gate on the PAYLOAD shape instead of the bare action string so
+ * that holds by construction. Non-'reclassified' actions are unaffected (their
+ * detail shape has never split into two populations).
+ */
+export function isReversibleActivity(action: string, detail: unknown): boolean {
+  if (!REVERSIBLE_ACTIONS.has(action)) return false;
+  if (action !== 'reclassified') return true;
+  return !!(detail && typeof detail === 'object' && 'followedUpAtSetTo' in (detail as Record<string, unknown>));
+}
 
 /** Paginated, newest-first read of dashboard_activity, joined to the customer
  *  display name via inbox_item → dashboard_contact. actorName resolves the raw
@@ -1905,7 +2306,11 @@ export async function listActivity(limit = 100): Promise<ActivityResult> {
       // Show operator DECISIONS, not the system firehose: 'ingested' (one row per
       // reconcile touch — thousands) and 'escalated' would otherwise bury the
       // handled/dismissed/followed/completed rows (and their Reverse buttons).
-      .select('id, action, actor, inbox_item_id, created_at, inbox_items ( dashboard_contacts ( display_name ) )')
+      // `detail` added (row 312 fix-round FIX 3) — isReversibleActivity needs it
+      // to tell the two 'reclassified' populations apart.
+      .select(
+        'id, action, actor, inbox_item_id, created_at, detail, inbox_items ( dashboard_contacts ( display_name ) )',
+      )
       .not('action', 'in', '(ingested,escalated)')
       .order('created_at', { ascending: false })
       .limit(limit),
@@ -1924,7 +2329,7 @@ export async function listActivity(limit = 100): Promise<ActivityResult> {
       itemId: (row.inbox_item_id as string | null) ?? null,
       customerName: (item?.dashboard_contacts?.display_name as string | null) ?? null,
       at: (row.created_at as string | null) ?? null,
-      reversible: REVERSIBLE_ACTIONS.has(String(row.action)),
+      reversible: isReversibleActivity(String(row.action), row.detail),
     };
   });
   return { ok: true, rows };
@@ -1958,15 +2363,74 @@ export async function reverseItemState(
   };
   if (!a.inbox_item_id) return { ok: false, error: 'Entry has no item to reverse' };
 
-  const reversible: ReverseAction[] = ['handled', 'followed', 'completed', 'dismissed'];
-  if (!reversible.includes(a.action as ReverseAction)) {
+  const reversible: ReverseAction[] = ['handled', 'followed', 'completed', 'dismissed', 'reclassified'];
+  // row 312 fix-round FIX 3 (MED): the bare action-string check above is
+  // necessary but not sufficient for 'reclassified' — see isReversibleActivity's
+  // doc (two prod populations share the action string; only one's inverse
+  // premise holds). A direct POST naming an unreversible-by-payload row is
+  // refused here with the same message a genuinely-unreversible action gets.
+  if (!reversible.includes(a.action as ReverseAction) || !isReversibleActivity(a.action, a.detail)) {
     return { ok: false, error: 'This entry cannot be reversed' };
   }
   const action = a.action as ReverseAction;
 
+  // row 312(c) wrong-occurrence guard: stillMatches (below) only checks that the
+  // CURRENT state happens to equal what this action would have produced — it
+  // can't tell that state apart from an unrelated LATER action that coincidentally
+  // landed the item back in the same state (e.g. a later Reverse restores
+  // status='handled', which then also matches a much-older, unrelated 'handled'
+  // row for the same item). Require this row to actually be the most recent
+  // state-changing row for the item before trusting stillMatches at all.
+  // row 312 fix-round FIX 5(b) (LOW, hardening): 'reopened' added to the tracked
+  // action set. A reopen (ingestTouch, on a genuinely-newer inbound) sets status
+  // back to 'unresponded' — a real state change this guard should know about.
+  // Verified NON-exploitable today without this: if a 'reopened' row landed
+  // after the row being reversed, stillMatches (below) already catches the
+  // divergence (curRow.status would read 'unresponded', not the action's
+  // expected value) and refuses independently. Added anyway so this guard's own
+  // action list stays self-documenting/complete rather than relying on a
+  // different check to cover the gap.
+  const { data: latest, error: latestErr } = await sb
+    .from('dashboard_activity')
+    .select('id')
+    .eq('inbox_item_id', a.inbox_item_id)
+    .in('action', [...reversible, 'reversed', 'reopened'])
+    .order('created_at', { ascending: false })
+    // row 312 fix-round FIX 5(a) (LOW, hardening): secondary tiebreaker so two
+    // rows sharing an identical created_at (e.g. a batch data-op script that
+    // stamps the same timestamp across many inserts) resolve deterministically
+    // instead of depending on whatever order Postgres happens to return ties
+    // in. `id` is a random uuid (gen_random_uuid()), not chronological, so this
+    // doesn't recover true insertion order on a real tie — it only guarantees
+    // the SAME row wins every time this query runs, mirroring the #185
+    // determinism comment elsewhere in this file (listOpenItems' `returning`
+    // count).
+    .order('id', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  // row 312 fix-round FIX 2 (MED, technical + staff converged): the prior code
+  // destructured only `{ data: latest }` — a query ERROR left `latest` null/
+  // undefined and the `if (latest && ...)` guard below read that as "no later
+  // row exists," silently PASSING the wrong-occurrence check on a failed read
+  // (fails OPEN). Opposite of this function's other two reads (the `act` and
+  // `cur` lookups above/below), which both fail CLOSED today — a query error on
+  // either one leaves their `data` null too, and `if (!data) return { ok: false,
+  // ... }` refuses regardless of whether the null came from a real error or a
+  // genuine not-found. Fail closed here too: a query error is NOT proof no later
+  // action exists, and Reverse is exactly the wrong feature to fail open on.
+  if (latestErr) {
+    return { ok: false, error: 'Could not verify this is the latest action for this item — try again' };
+  }
+  if (latest && String((latest as { id: string }).id) !== activityId) {
+    return { ok: false, error: 'A later action already changed this item; nothing to reverse from here' };
+  }
+
   // Only reverse if the item is STILL in the state this action produced — otherwise
-  // a later action superseded it and reversing now would clobber the newer state
-  // (this also de-dupes a double-clicked reverse).
+  // a later action superseded it and reversing now would clobber the newer state.
+  // This is a fast, friendly pre-check only — it does NOT by itself de-dupe a
+  // double-clicked reverse (a read-check-then-act has a race window between this
+  // read and the write below); the atomic CAS on the update IS what de-dupes it,
+  // see the fix-round comment there.
   const { data: cur } = await sb
     .from('inbox_items')
     .select('status, followed_up_at')
@@ -1974,7 +2438,10 @@ export async function reverseItemState(
     .maybeSingle();
   if (!cur) return { ok: false, error: 'Item not found' };
   const curRow = cur as { status: string; followed_up_at: string | null };
-  const stillMatches = action === 'followed' ? curRow.followed_up_at != null : curRow.status === action;
+  // 'reclassified', like 'followed', only ever sets followed_up_at — never
+  // status — so its match check is the same shape (see inverseOf's doc).
+  const stillMatches =
+    action === 'followed' || action === 'reclassified' ? curRow.followed_up_at != null : curRow.status === action;
   if (!stillMatches) return { ok: false, error: 'Item state has changed since this action; nothing to reverse' };
 
   const t = inverseOf(action, a.detail?.from as { status?: InboxStatus; wasFollowed?: boolean } | undefined);
@@ -1984,8 +2451,28 @@ export async function reverseItemState(
   if (t.clearFollowed) upd.followed_up_at = null;
   if (t.setFollowed) upd.followed_up_at = now.toISOString();
 
-  const { error } = await sb.from('inbox_items').update(upd).eq('id', a.inbox_item_id);
+  // row 312 fix-round HIGH (technical lens, sibling-parity class): re-encode the
+  // SAME condition `stillMatches` just checked, atomically, IN the update's WHERE
+  // — mirrors markItemHandledLocal / dismissItem's sibling CAS idiom in this same
+  // file (`.eq('id').neq('status', target).select().maybeSingle()`, no-row-
+  // matched = refused). Without this the read above and this write are two
+  // separate round-trips: a concurrent write (e.g. another operator's Mark
+  // handled) landing in that window would be silently clobbered by an
+  // unconditional update, and a double-clicked Reverse would double-apply (the
+  // OLD comment here claimed the read-check alone "de-dupes" that — false, since
+  // read-check-then-act has no such property on its own). The CAS closes both:
+  // after the first write succeeds the row's status/followed_up_at no longer
+  // matches `action`'s condition, so a second concurrent call's WHERE matches
+  // zero rows and it gets the same honest refusal as the wrong-occurrence guard
+  // above, instead of clobbering the first call's result.
+  let casQuery = sb.from('inbox_items').update(upd).eq('id', a.inbox_item_id);
+  casQuery =
+    action === 'followed' || action === 'reclassified'
+      ? casQuery.not('followed_up_at', 'is', null)
+      : casQuery.eq('status', action);
+  const { data: casRow, error } = await casQuery.select('id').maybeSingle();
   if (error) return { ok: false, error: error.message };
+  if (!casRow) return { ok: false, error: 'Item state has changed since this action; nothing to reverse' };
 
   if (t.unsuppress) {
     const { data: c } = await sb
@@ -1999,11 +2486,23 @@ export async function reverseItemState(
     if (dc) await removeSuppressedSenders([dc.primary_email ?? null, dc.primary_phone ?? null]);
   }
 
+  // row 312 fix-round FIX 4 (MED, admin lens): carry the reversed row's own id
+  // + the prior values this reverse is clearing/restoring, mirroring the
+  // `detail: { from }` shape the forward siblings (markItemHandledLocal,
+  // dismissItem, markItemCompleted) already write. `curRow` and `activityId`
+  // are already in scope — without this, a 'reversed' row told you WHAT action
+  // got undone but not WHICH activity row or what state it undid, so the audit
+  // trail couldn't answer "what did this reverse actually change" without
+  // cross-referencing the original row by hand.
   await sb.from('dashboard_activity').insert({
     actor: operatorId,
     action: 'reversed',
     inbox_item_id: a.inbox_item_id,
-    detail: { reversed_action: a.action },
+    detail: {
+      reversed_action: a.action,
+      reversedActivityId: activityId,
+      from: { status: curRow.status, followedUpAt: curRow.followed_up_at },
+    },
   });
 
   return { ok: true };

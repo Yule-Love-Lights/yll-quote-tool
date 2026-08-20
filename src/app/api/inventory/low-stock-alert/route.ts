@@ -7,7 +7,6 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
-import { safeEqual } from '@/lib/security';
 import { listOnHand } from '@/lib/inventory/onHand';
 import { listCatalog } from '@/lib/inventory/catalog';
 import { lowStockItems } from '@/lib/inventory/lowStock';

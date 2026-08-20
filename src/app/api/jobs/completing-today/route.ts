@@ -18,7 +18,6 @@
 // per area ownership: the billing jobs data layer is out of scope to edit).
 
 import { NextRequest, NextResponse } from 'next/server';
-import { safeEqual } from '@/lib/security';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { isTelegramBotEnabled, isTelegramConfigured } from '@/lib/integrations/telegram';
 import { appBaseUrl } from '@/lib/integrations/telegramNotify';

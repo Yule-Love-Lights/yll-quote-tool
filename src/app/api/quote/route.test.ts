@@ -11,7 +11,15 @@ const { save, update, getRaw, rawRef, operatorRef } = vi.hoisted(() => ({
   // Typed varargs so `.mock.calls[n]` is an indexable unknown[] (the permanent
   // dispatch tests read positional args like calls[0][3] = serviceType).
   save: vi.fn(async (..._args: unknown[]) => ({ id: 'new-id' })),
-  update: vi.fn(async (..._args: unknown[]) => ({ id: 'existing-id' })),
+  // FIX D (#237 fix round 2): return type widened (still defaults to the
+  // plain { id } shape) so individual tests can override with
+  // mockResolvedValueOnce to simulate updateQuote's late-read priorInputs —
+  // see the TOCTOU tests below.
+  update: vi.fn(
+    async (
+      ..._args: unknown[]
+    ): Promise<{ id: string; priorInputs?: { event?: { eventDate?: string } } | null }> => ({ id: 'existing-id' }),
+  ),
   // getQuoteRaw is consulted only on the update branch (W1-003 booked-re-price
   // gate). rawRef.current is the row the mock returns; null = row not found,
   // undefined default = a plain draft (no lifecycle timestamps → not booked).
@@ -31,7 +39,12 @@ const { save, update, getRaw, rawRef, operatorRef } = vi.hoisted(() => ({
       } | null;
       // #177 fix 3b: the stored depositPercent, read back to compare against an
       // incoming change on an already-approved quote.
-      inputs?: { depositPercent?: number } | null;
+      // FIX B (#237 fix round): event.eventDate — the stored PRIOR value the
+      // re-push gate compares the incoming save against.
+      inputs?: { depositPercent?: number; event?: { eventDate?: string } } | null;
+      // FIX B (#237 fix round): the two other gates the re-push needs.
+      is_test?: boolean;
+      highlevel_contact_id?: string | null;
     } | null,
   },
   operatorRef: { current: null as { id: string; email: string | null; role: string } | null },
@@ -42,6 +55,40 @@ vi.mock('@/lib/quotes', () => ({
   updateQuote: update,
   getQuoteRaw: getRaw,
 }));
+
+// FIX B (#237 fix round): only pushEventDateToGhl is mocked (spied on) — the
+// real formatEventDateForGhl runs (importOriginal), the same real function
+// the route uses for its own change-comparison, so a test can't accidentally
+// pass by comparing against a fake.
+const { pushEventDateMock } = vi.hoisted(() => ({
+  pushEventDateMock: vi.fn(async (_contactId: string, _eventDate: string | null | undefined) => ({ pushed: true })),
+}));
+vi.mock('@/lib/integrations/ghlEventDate', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/integrations/ghlEventDate')>()),
+  pushEventDateToGhl: pushEventDateMock,
+}));
+
+// FIX A (#237 fix round 2): route.ts now schedules the re-push via
+// next/server's after() instead of a bare `void` call (see the route's own
+// FIX A comment) — the real after() throws outside a request scope, which
+// this plain vitest environment never establishes, so it must be mocked.
+// Fires the task immediately without awaiting it (same non-blocking timing
+// the old void call had, per referrals.test.ts's identical precedent — see
+// its "Review fix 8" comment) so every existing pushEventDateMock assertion
+// below keeps working unmodified; afterCallCount lets ONE test additionally
+// assert the call was actually routed through after(), not just that the
+// push still fires (a bare void call would make these tests pass too).
+const { afterCallCount } = vi.hoisted(() => ({ afterCallCount: { current: 0 } }));
+vi.mock('next/server', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('next/server')>();
+  return {
+    ...actual,
+    after: (task: () => Promise<void> | void) => {
+      afterCallCount.current++;
+      void task();
+    },
+  };
+});
 
 // No design linked in most tests → isValidDesignId false, getDesign untouched.
 // W1-010: designIdRef.current flips this per-test so the design-projection
@@ -116,6 +163,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   operatorRef.current = null;
   designIdRef.current = false;
+  afterCallCount.current = 0;
   getDesignMock.mockResolvedValue(null);
   // Default the update-branch row to a plain draft (no lifecycle timestamps) so
   // the existing UUID→update tests still re-price; booked/terminal cases set it.
@@ -846,6 +894,218 @@ describe('POST /api/quote — NCE + YLL Neighbor tags (#198)', () => {
   });
 });
 
+describe('POST /api/quote — NCE/YLL Neighbor holiday-only gate (#243)', () => {
+  it('clamps an explicit true legacyRebook/isNce to false on a NEW permanent-service-type save', async () => {
+    const res = await POST(
+      makeReq({ serviceType: 'permanent', inputs: permInputs(100), legacyRebook: true, isNce: true }),
+    );
+    expect(res.status).toBe(200);
+    const saveArgs = save.mock.calls[0] as unknown[];
+    expect(saveArgs[8]).toBe(false); // legacyRebook — clamped
+    expect(saveArgs[9]).toBe(false); // isNce — clamped
+  });
+
+  it.each([['event'], ['permanent_bistro']])(
+    'clamps an explicit true legacyRebook/isNce to false on a NEW %s save too',
+    async (st) => {
+      const res = await POST(
+        makeReq({ serviceType: st, inputs: validInputs(), legacyRebook: true, isNce: true }),
+      );
+      expect(res.status).toBe(200);
+      const saveArgs = save.mock.calls[0] as unknown[];
+      expect(saveArgs[8]).toBe(false);
+      expect(saveArgs[9]).toBe(false);
+    },
+  );
+
+  it('still honors an explicit true legacyRebook/isNce on a NEW holiday save (regression)', async () => {
+    const res = await POST(
+      makeReq({ serviceType: 'holiday', inputs: validInputs(), legacyRebook: true, isNce: true }),
+    );
+    expect(res.status).toBe(200);
+    const saveArgs = save.mock.calls[0] as unknown[];
+    expect(saveArgs[8]).toBe(true);
+    expect(saveArgs[9]).toBe(true);
+  });
+
+  it('clamps an explicit true legacyRebook/isNce to false on an UPDATE of an existing permanent quote', async () => {
+    rawRef.current!.service_type = 'permanent';
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, inputs: permInputs(100), legacyRebook: true, isNce: true }),
+    );
+    expect(res.status).toBe(200);
+    const updateArgs = update.mock.calls[0] as unknown[];
+    expect(updateArgs[6]).toBe(false); // legacyRebook — clamped
+    expect(updateArgs[7]).toBe(false); // isNce — clamped
+  });
+
+  // The gate must NEVER touch an OMITTED tag — an untouched chip already
+  // means "leave the stored value alone" (resolveTagPayload), and clamping
+  // `undefined` to `false` here would silently correct an EXISTING violating
+  // row's tag as a side effect of an unrelated save (exactly what the ledger
+  // row's "do not silently mutate existing rows" instruction forbids).
+  it('does NOT clamp an OMITTED (undefined) legacyRebook/isNce on an update of an existing permanent quote', async () => {
+    rawRef.current!.service_type = 'permanent';
+    const res = await POST(makeReq({ quoteId: REAL_UUID, inputs: permInputs(100) }));
+    expect(res.status).toBe(200);
+    const updateArgs = update.mock.calls[0] as unknown[];
+    expect(updateArgs[6]).toBeUndefined();
+    expect(updateArgs[7]).toBeUndefined();
+  });
+
+  it('does NOT clamp an explicit FALSE legacyRebook/isNce on an update of an existing permanent quote — turning OFF is never gated', async () => {
+    rawRef.current!.service_type = 'permanent';
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, inputs: permInputs(100), legacyRebook: false, isNce: false }),
+    );
+    expect(res.status).toBe(200);
+    const updateArgs = update.mock.calls[0] as unknown[];
+    expect(updateArgs[6]).toBe(false);
+    expect(updateArgs[7]).toBe(false);
+  });
+});
+
+// Fix-round HIGH (two lenses converged): the #243 gate above clamps the
+// is_nce COLUMN but previously left quoteInputs.depositPercent — the field
+// effectiveDepositRate actually prices off — untouched, so a clamped-tag
+// permanent/event/bistro quote could still persist depositPercent:40 with no
+// tag left to explain it. Mirrors rebook.ts's buildRebookInsert/
+// applyNceDepositDefault gateForcedNceOff semantics: reset ONLY an exact 40,
+// ONLY when the tag gate itself is what forced isNce off.
+describe('POST /api/quote — NCE-gated deposit-rate reset (#243 fix round)', () => {
+  it('resets a carried depositPercent=40 to 0 when the gate clamps isNce off on a NEW permanent save', async () => {
+    const res = await POST(
+      makeReq({
+        serviceType: 'permanent',
+        inputs: { ...permInputs(100), depositPercent: 40 },
+        isNce: true,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const saveArgs = save.mock.calls[0] as unknown[];
+    expect(saveArgs[9]).toBe(false); // isNce — clamped (existing #243 behavior)
+    const savedInputs = saveArgs[1] as { depositPercent?: number };
+    expect(savedInputs.depositPercent).toBe(0); // NEW: deposit rate reset too
+    // Prices off the corrected 0 (⇒ "no override" ⇒ the 50% default), not a
+    // stale 40% — proves the reset lands BEFORE pricing, not just on the
+    // saved row.
+    const savedResultArg = saveArgs[2] as { depositRate: number };
+    expect(savedResultArg.depositRate).toBe(0.5);
+  });
+
+  it('does NOT touch a hand-typed depositPercent that is not exactly 40, even when the gate clamps isNce off', async () => {
+    const res = await POST(
+      makeReq({
+        serviceType: 'permanent',
+        inputs: { ...permInputs(100), depositPercent: 25 },
+        isNce: true,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const saveArgs = save.mock.calls[0] as unknown[];
+    expect(saveArgs[9]).toBe(false); // isNce still clamped
+    const savedInputs = saveArgs[1] as { depositPercent?: number };
+    expect(savedInputs.depositPercent).toBe(25); // untouched — a legit staff override
+  });
+
+  it('does NOT reset depositPercent=40 when isNce is omitted (no explicit true ⇒ gate never fires) — a genuinely hand-typed 40% survives', async () => {
+    const res = await POST(
+      makeReq({
+        serviceType: 'permanent',
+        inputs: { ...permInputs(100), depositPercent: 40 },
+        // isNce intentionally omitted
+      }),
+    );
+    expect(res.status).toBe(200);
+    const saveArgs = save.mock.calls[0] as unknown[];
+    expect(saveArgs[9]).toBeUndefined(); // untouched, not clamped
+    const savedInputs = saveArgs[1] as { depositPercent?: number };
+    expect(savedInputs.depositPercent).toBe(40); // left alone
+  });
+
+  it('does NOT reset depositPercent=40 on an eligible (holiday) save even with isNce:true — the gate never fires', async () => {
+    const res = await POST(
+      makeReq({
+        serviceType: 'holiday',
+        inputs: { ...validInputs(), depositPercent: 40 },
+        isNce: true,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const saveArgs = save.mock.calls[0] as unknown[];
+    expect(saveArgs[9]).toBe(true); // NCE legitimately on
+    const savedInputs = saveArgs[1] as { depositPercent?: number };
+    expect(savedInputs.depositPercent).toBe(40); // this IS the NCE rate — untouched
+  });
+
+  it('resets a carried depositPercent=40 to 0 on an UPDATE of an existing permanent quote too', async () => {
+    rawRef.current!.service_type = 'permanent';
+    const res = await POST(
+      makeReq({
+        quoteId: REAL_UUID,
+        inputs: { ...permInputs(100), depositPercent: 40 },
+        isNce: true,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const updateArgs = update.mock.calls[0] as unknown[];
+    expect(updateArgs[7]).toBe(false); // isNce — clamped
+    const updatedInputs = updateArgs[1] as { depositPercent?: number };
+    expect(updatedInputs.depositPercent).toBe(0);
+  });
+
+  // Delta-verify MED (sibling-guard parity): the #177 freeze above only 409s
+  // when the INCOMING depositPercent DIFFERS from the stored one, so a plain
+  // reopen-and-resave of an already-approved quote carrying a pre-existing
+  // violation sails past it. Without the approval guard the reset would then
+  // silently move an APPROVED customer's deposit from 40% to the 50% default.
+  it('does NOT reset the deposit on an already-APPROVED quote — the #177 freeze owns it', async () => {
+    rawRef.current!.service_type = 'permanent';
+    rawRef.current!.customer_approved_at = '2026-01-02T00:00:00Z';
+    // The stored deposit must ALSO be 40 — that is what makes this the real
+    // scenario: the #177 freeze compares incoming vs stored and only 409s on a
+    // DIFFERENCE, so a reopen-and-resave of the same hydrated values passes it
+    // and reaches the reset. With a differing stored value the freeze 409s
+    // first and the reset is never reached (verified: this test failed with a
+    // 409 until the stored value matched).
+    rawRef.current!.inputs = { depositPercent: 40 };
+    const res = await POST(
+      makeReq({
+        quoteId: REAL_UUID,
+        inputs: { ...permInputs(100), depositPercent: 40 },
+        isNce: true,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const updateArgs = update.mock.calls[0] as unknown[];
+    // The TAG is still clamped — that half is not deposit money and stays correct.
+    expect(updateArgs[7]).toBe(false);
+    // The DEPOSIT is left exactly as the approved customer agreed to it.
+    const updatedInputs = updateArgs[1] as { depositPercent?: number };
+    expect(updatedInputs.depositPercent).toBe(40);
+  });
+
+  it('warns via console.warn when the deposit reset fires, naming the quoteId', async () => {
+    rawRef.current!.service_type = 'permanent';
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await POST(
+      makeReq({
+        quoteId: REAL_UUID,
+        inputs: { ...permInputs(100), depositPercent: 40 },
+        isNce: true,
+      }),
+    );
+    expect(res.status).toBe(200);
+    // Not asserting the exact wording (a report, not a contract) — just that
+    // a trace exists and names the affected quote, per the brief's "today
+    // the clamp leaves no trace anywhere" concern.
+    expect(warnSpy).toHaveBeenCalled();
+    const warnedText = warnSpy.mock.calls.map((c) => String(c[0])).join(' ');
+    expect(warnedText).toContain(REAL_UUID);
+    warnSpy.mockRestore();
+  });
+});
+
 describe('POST /api/quote — Test Quote flag (#93)', () => {
   it('threads isTest=true into the NEW-save path (saveQuote 5th arg)', async () => {
     const res = await POST(makeReq({ inputs: validInputs(), isTest: true }));
@@ -1199,5 +1459,164 @@ describe('POST /api/quote — deposit percent locked post-approval (#177 fix 3b)
     const body = (await res.json()) as { error: string; code?: string };
     expect(body.code).toBe('deposit-percent-locked');
     expect(update).not.toHaveBeenCalled();
+  });
+});
+
+// FIX B (#237 fix round, staff/admin-lens HIGH/MED): the everyday reschedule
+// — customer confirms/reschedules AFTER the quote already sent, staff edit
+// the event date and hit Save (not Send) — used to leave GHL holding a stale
+// date forever, because this route had zero HighLevel logic. Base fixture:
+// an already-sent event quote with a linked contact and a real prior date.
+const SENT_EVENT_ROW = {
+  quote_sent_at: '2026-01-01T00:00:00Z',
+  customer_approved_at: null,
+  deposit_paid_at: null,
+  viewed_at: null,
+  status: 'sent',
+  service_type: 'event',
+  is_test: false,
+  highlevel_contact_id: 'contact_1',
+  inputs: { event: { eventDate: '2026-12-01' } },
+};
+
+describe('POST /api/quote — event-date GHL re-push on save (FIX B, #237 fix round)', () => {
+  it('re-pushes when an already-sent event quote\'s date CHANGES', async () => {
+    rawRef.current = { ...SENT_EVENT_ROW };
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, serviceType: 'event', inputs: { ...validInputs(), event: { eventDate: '2026-12-25' } } }),
+    );
+    expect(res.status).toBe(200);
+    expect(pushEventDateMock).toHaveBeenCalledWith('contact_1', '2026-12-25');
+    // FIX A (#237 fix round 2, technical HIGH): proves the push is actually
+    // scheduled via after(), not a bare `void` call that a platform could
+    // reclaim before it completes — a regression back to a plain void call
+    // would still make the assertion above pass (the mocked after() fires
+    // the task either way), but afterCallCount would stay 0.
+    expect(afterCallCount.current).toBe(1);
+  });
+
+  it('does NOT re-push when the date is unchanged (a routine unrelated re-save)', async () => {
+    rawRef.current = { ...SENT_EVENT_ROW }; // stored eventDate is already 2026-12-01
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, serviceType: 'event', inputs: { ...validInputs(), event: { eventDate: '2026-12-01' } } }),
+    );
+    expect(res.status).toBe(200);
+    expect(pushEventDateMock).not.toHaveBeenCalled();
+  });
+
+  it('re-pushes the FIRST real date entered on an already-sent quote that had none yet', async () => {
+    rawRef.current = { ...SENT_EVENT_ROW, inputs: { event: {} } }; // no stored eventDate
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, serviceType: 'event', inputs: { ...validInputs(), event: { eventDate: '2026-12-25' } } }),
+    );
+    expect(res.status).toBe(200);
+    expect(pushEventDateMock).toHaveBeenCalledWith('contact_1', '2026-12-25');
+  });
+
+  it('does NOT re-push when the new date is blank/absent — nothing to push, don\'t clobber the stored value', async () => {
+    rawRef.current = { ...SENT_EVENT_ROW };
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, serviceType: 'event', inputs: { ...validInputs(), event: {} } }),
+    );
+    expect(res.status).toBe(200);
+    expect(pushEventDateMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT re-push on a DRAFT event quote (never sent) even though the date changed', async () => {
+    rawRef.current = { ...SENT_EVENT_ROW, quote_sent_at: null, status: null };
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, serviceType: 'event', inputs: { ...validInputs(), event: { eventDate: '2026-12-25' } } }),
+    );
+    expect(res.status).toBe(200);
+    expect(pushEventDateMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT re-push for a NEW quote (the insert branch — no quoteId, isUpdate is false)', async () => {
+    const res = await POST(
+      makeReq({ serviceType: 'event', inputs: { ...validInputs(), event: { eventDate: '2026-12-25' } } }),
+    );
+    expect(res.status).toBe(200);
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(pushEventDateMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT re-push for a Test Quote, even with a changed date and a linked contact', async () => {
+    rawRef.current = { ...SENT_EVENT_ROW, is_test: true };
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, serviceType: 'event', inputs: { ...validInputs(), event: { eventDate: '2026-12-25' } } }),
+    );
+    expect(res.status).toBe(200);
+    expect(pushEventDateMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT re-push when no HighLevel contact is linked', async () => {
+    rawRef.current = { ...SENT_EVENT_ROW, highlevel_contact_id: null };
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, serviceType: 'event', inputs: { ...validInputs(), event: { eventDate: '2026-12-25' } } }),
+    );
+    expect(res.status).toBe(200);
+    expect(pushEventDateMock).not.toHaveBeenCalled();
+  });
+
+  // Positive gate (`=== 'event'`, never `!== 'event'`, per this repo's
+  // standing rule): a holiday quote whose stored row happens to carry a
+  // leftover event.eventDate (e.g. a service-type switch) must never push.
+  it('does NOT re-push for a non-event quote, even with an event.eventDate present in the stored inputs', async () => {
+    rawRef.current = { ...SENT_EVENT_ROW, service_type: 'holiday' };
+    // Body omits serviceType → effectiveServiceType falls back to the STORED
+    // 'holiday' (H2), not 'event'.
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, inputs: { ...validInputs(), event: { eventDate: '2026-12-25' } } }),
+    );
+    expect(res.status).toBe(200);
+    expect(pushEventDateMock).not.toHaveBeenCalled();
+  });
+
+  // FIX D (#237 fix round 2, technical MED — TOCTOU): the regression this
+  // whole fix guards. `rawRef.current` (getQuoteRaw's mocked return) stands
+  // in for route.ts's EARLY read, taken at the top of the handler — here it
+  // still shows the ORIGINAL '2026-12-01', matching what THIS request is
+  // about to write back (a staffer who never saw a concurrent edit re-saving
+  // the same date they started with). `update`'s mocked return stands in for
+  // updateQuote's OWN late pre-read (quotes.ts, `stored.inputs`, taken
+  // immediately before its write) — set here to a DIFFERENT date
+  // ('2026-12-20'), simulating a second request that landed its own write
+  // (and its own GHL push) in the gap between this request's early read and
+  // its actual update call. Under the pre-fix logic (compare against
+  // `existing.inputs`, i.e. rawRef.current) this would wrongly read as "no
+  // change" ('2026-12-01' === '2026-12-01') and skip the push, leaving GHL
+  // stuck on '2026-12-20' forever even though the DB now correctly holds
+  // '2026-12-01' again. Asserting the push DOES fire, with the date this
+  // request is actually writing, proves the compare now uses
+  // saved.priorInputs (the late read) instead.
+  it('re-pushes when a concurrent write landed between this request\'s early read and its own update (TOCTOU)', async () => {
+    rawRef.current = { ...SENT_EVENT_ROW }; // early snapshot: still shows 2026-12-01
+    update.mockResolvedValueOnce({
+      id: 'existing-id',
+      priorInputs: { event: { eventDate: '2026-12-20' } }, // late read: someone else already moved it
+    });
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, serviceType: 'event', inputs: { ...validInputs(), event: { eventDate: '2026-12-01' } } }),
+    );
+    expect(res.status).toBe(200);
+    expect(pushEventDateMock).toHaveBeenCalledWith('contact_1', '2026-12-01');
+  });
+
+  // Counterpart: when updateQuote's late read agrees with the early
+  // snapshot (the ordinary case — no concurrent writer), the push still
+  // correctly stays silent on a same-value re-save. Guards against a
+  // regression that made the new compare fire on EVERY save regardless of
+  // an actual change.
+  it('still does NOT re-push when the late read agrees with the early snapshot (no concurrent writer)', async () => {
+    rawRef.current = { ...SENT_EVENT_ROW }; // 2026-12-01
+    update.mockResolvedValueOnce({
+      id: 'existing-id',
+      priorInputs: { event: { eventDate: '2026-12-01' } }, // late read agrees — no one else touched it
+    });
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, serviceType: 'event', inputs: { ...validInputs(), event: { eventDate: '2026-12-01' } } }),
+    );
+    expect(res.status).toBe(200);
+    expect(pushEventDateMock).not.toHaveBeenCalled();
   });
 });

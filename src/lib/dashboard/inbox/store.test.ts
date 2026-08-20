@@ -243,7 +243,7 @@ describe('planIngest — leadKind + quoteValue thread through to item row', () =
   });
 });
 
-// ─── planIngest — noopReingest (#110 W7-004 write-amplification) ──────────────
+// ─── planIngest — noopReingest (#110 W7-004 + #316 write-amplification) ───────
 
 describe('planIngest — noopReingest short-circuits dead re-ingests', () => {
   const resolved = (status: 'handled' | 'completed' | 'dismissed'): ExistingItem => ({
@@ -252,6 +252,33 @@ describe('planIngest — noopReingest short-circuits dead re-ingests', () => {
     status,
     notifiedLevels: [],
     lastMessageAt: T,
+  });
+
+  // #316: an ExistingItem whose touch-derived fields exactly mirror what
+  // touch()'s defaults produce on the ItemRow (direction 'inbound', channel
+  // 'sms', preview 'hello', no subject/sourceMessageId, leadKind 'lead', no
+  // quoteValue, no raw so no raw.highlevel_contact_id/raw.customer_name) —
+  // i.e. the stored row from a PRIOR identical ingest of touch(). Absent
+  // touch fields normalize to `null` on the item (`?? null` / `?? 'lead'`),
+  // so the matching existing fixture must spell those out as `null`, not
+  // leave them `undefined` — see the "missing fields" test below for why
+  // that distinction matters.
+  const unrespondedMatchingTouch = (over: Partial<ExistingItem> = {}): ExistingItem => ({
+    id: 'i1',
+    contactId: 'A',
+    status: 'unresponded',
+    notifiedLevels: [],
+    lastMessageAt: T,
+    direction: 'inbound',
+    channel: 'sms',
+    preview: 'hello',
+    subject: null,
+    sourceMessageId: null,
+    leadKind: 'lead',
+    quoteValue: null,
+    rawHighlevelContactId: null,
+    rawCustomerName: null,
+    ...over,
   });
 
   it('re-ingesting our own outbound on an already-handled item (same last_message_at) is a no-op', () => {
@@ -298,7 +325,136 @@ describe('planIngest — noopReingest short-circuits dead re-ingests', () => {
     expect(plan.noopReingest).toBe(false);
   });
 
-  it('an unresponded item re-ingested with the same message is NOT a no-op (escalation colour ages)', () => {
+  // #316: this used to assert `false` ("escalation colour ages") — flipped to
+  // `true`. escalation_level is deliberately NOT part of the content-change
+  // check (see IngestPlan.noopReingest's doc): it's a pure function of
+  // (last_message_at, now) that changes on nearly every tick for an aging
+  // open item, and the separately-scheduled escalate cron (every 10 min,
+  // sync.ts's runEscalation) — not ingest — is what keeps the stored column
+  // caught up. A genuinely identical re-observation of the same open
+  // conversation now stops writing a dead 'ingested' row every reconcile tick.
+  it('an unresponded item re-ingested with the identical message AND identical content is a no-op (#316)', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: unrespondedMatchingTouch(),
+      touch: touch({ direction: 'inbound', lastMessageAt: T }),
+      now: at(5 * HOUR),
+    });
+    expect(plan.noopReingest).toBe(true);
+    expect(plan.item.escalation_level).toBe(2); // still computed fresh in the plan...
+    // ...but ingestTouch never persists it on a noop — the escalate cron owns
+    // catching the stored column up (see the doc above).
+  });
+
+  it('a genuinely newer last_message_at on an unresponded item is NOT a no-op, even with identical content otherwise', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: unrespondedMatchingTouch(),
+      touch: touch({ direction: 'inbound', lastMessageAt: at(HOUR), preview: 'hello' }),
+      now: at(2 * HOUR),
+    });
+    expect(plan.noopReingest).toBe(false);
+  });
+
+  // #316 concrete real-world case: a still-DRAFT quotetool lead pins
+  // lastMessageAt to created_at (quotetool.ts's normalizeQuoteTouch), so
+  // staff editing the draft's total changes preview + quote_value with the
+  // timestamp completely frozen. Decided MATERIAL — a changed price is
+  // exactly the kind of content staff need to see, so it must still write
+  // and log, not disappear into the noop.
+  it('a changed preview + quote_value with the SAME last_message_at is NOT a no-op (a still-draft quote total was edited)', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: unrespondedMatchingTouch({ channel: 'app', preview: 'Quote — $2500', quoteValue: 2500 }),
+      touch: touch({
+        source: 'quotetool',
+        externalId: 'quote-1',
+        channel: 'app',
+        direction: 'inbound',
+        lastMessageAt: T,
+        preview: 'Quote — $2800', // total was edited from $2500 to $2800
+        leadKind: 'lead',
+        quoteValue: 2800,
+      }),
+      now: at(HOUR),
+    });
+    expect(plan.noopReingest).toBe(false);
+    expect(plan.item.quote_value).toBe(2800); // the new total DOES get persisted
+  });
+
+  // A subject-only change (same preview, same timestamp) — subject is a real
+  // touch-derived field the upsert writes, so it's held to the same bar.
+  it('a changed subject with the SAME last_message_at is NOT a no-op', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: unrespondedMatchingTouch({ subject: 'Old subject' }),
+      touch: touch({ direction: 'inbound', lastMessageAt: T, subject: 'New subject' }),
+      now: at(HOUR),
+    });
+    expect(plan.noopReingest).toBe(false);
+  });
+
+  // #316 follow-up (review FIX 2) — concrete traced case: a still-open draft
+  // quote gets linked to a GHL contact via /api/integrations/highlevel/attach
+  // (writes quotes.highlevel_contact_id only, never inbox_items or
+  // dashboard_contacts) between two reconcile ticks. The stored item's
+  // frozen raw still shows no contact; the next tick's touch carries the
+  // newly-attached one, content otherwise identical. MUST NOT no-op, or
+  // inbox_items.raw stays frozen pre-attach and getItemForReply's fallback
+  // keeps showing "no GHL contact linked" on an item that IS linked.
+  it('a draft quote attached to a GHL contact between two ticks (raw.highlevel_contact_id changed, nothing else did) is NOT a no-op', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: unrespondedMatchingTouch({ rawHighlevelContactId: null, rawCustomerName: 'Jane Doe' }),
+      touch: touch({
+        source: 'quotetool',
+        direction: 'inbound',
+        lastMessageAt: T,
+        raw: { highlevel_contact_id: 'ghl-contact-99', customer_name: 'Jane Doe' },
+      }),
+      now: at(HOUR),
+    });
+    expect(plan.noopReingest).toBe(false);
+  });
+
+  // #316 follow-up: both sides null is the ORDINARY shape (every non-quotetool
+  // source's raw lacks these keys entirely, and so does an un-attached
+  // quotetool draft) — still a no-op. Guards against the new pair breaking
+  // the noop for sources that never carry it.
+  it('raw.highlevel_contact_id/customer_name null on BOTH sides is still a no-op', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: unrespondedMatchingTouch(), // rawHighlevelContactId/rawCustomerName both null
+      touch: touch({ direction: 'inbound', lastMessageAt: T }), // no raw on the touch -> both null
+      now: at(HOUR),
+    });
+    expect(plan.noopReingest).toBe(true);
+  });
+
+  // #316 follow-up: raw.customer_name changing alone (contact id unchanged)
+  // is held to the same bar as the contact-id case above.
+  it('a changed raw.customer_name with everything else identical is NOT a no-op', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: unrespondedMatchingTouch({ rawHighlevelContactId: 'ghl-contact-1', rawCustomerName: 'Old Name' }),
+      touch: touch({
+        source: 'quotetool',
+        direction: 'inbound',
+        lastMessageAt: T,
+        raw: { highlevel_contact_id: 'ghl-contact-1', customer_name: 'New Name' },
+      }),
+      now: at(HOUR),
+    });
+    expect(plan.noopReingest).toBe(false);
+  });
+
+  // Fail-safe design check: an ExistingItem fixture that never populated the
+  // new #316 fields (undefined, as every OTHER test in this file predates
+  // #316) never qualifies for the content-match path, even when the touch's
+  // content would otherwise line up — undefined never `===` a real value.
+  // findExistingItem always populates them in production; this only protects
+  // against a future caller that forgets to.
+  it('an unresponded item with UNPOPULATED existing content fields is NOT a no-op (fails safe, never over-skips)', () => {
     const existing: ExistingItem = { id: 'i1', contactId: 'A', status: 'unresponded', notifiedLevels: [], lastMessageAt: T };
     const plan = planIngest({
       candidates: [],
@@ -343,6 +499,8 @@ import {
   findViewOnlyFollowUpItems,
   getReopenCounts,
   isHiddenLegacyRebookQuote,
+  isReversibleActivity,
+  listActivity,
   listDueFollowUps,
   listInWorks,
   listOpenItems,
@@ -350,11 +508,14 @@ import {
   markFollowUpDone,
   markItemCompleted,
   markItemHandledLocal,
+  needsLookReason,
   quoteIdPrefix,
   recordSuppressedFollowUp,
+  reverseItemState,
   sweepOrphanedFollowUps,
   sweepResolvedItemFollowUps,
 } from './store';
+import { QUOTE_STATUSES, type QuoteStatus } from '@/lib/quoteStatus';
 
 /** Build a Supabase chain stub where the terminal await returns `result`.
  *  All intermediate chaining methods (select, eq, order, limit, in, or, is) return
@@ -604,6 +765,93 @@ describe('quoteIdPrefix (#183 BUG 1)', () => {
   });
 });
 
+// ─── needsLookReason — #307 "Needs a look" (pure) ────────────────────────────
+
+describe('needsLookReason (#307 — pure "Needs a look" evidence rule)', () => {
+  const settled = { direction: 'outbound' as string | null, quoteStatus: null as QuoteStatus | null, followUpPending: false };
+
+  // Rule (a), proved over the FULL QuoteStatus enum rather than a few
+  // hand-picked cases — 'sent'/'viewed'/'changes_requested' flag, every other
+  // status (including the three dead ones and 'draft') does not.
+  it.each(QUOTE_STATUSES)('rule (a) alone — quoteStatus=%s (direction outbound, no pending follow-up)', (status) => {
+    const result = needsLookReason({ ...settled, quoteStatus: status });
+    const expectFlagged = status === 'sent' || status === 'viewed' || status === 'changes_requested';
+    expect(result).toBe(expectFlagged ? 'Quote unanswered' : null);
+  });
+
+  it('rule (a): no linked quote (quoteStatus null) does not flag on its own', () => {
+    expect(needsLookReason({ ...settled, quoteStatus: null })).toBeNull();
+  });
+
+  it('rule (b) alone: direction "inbound" flags "They wrote last"', () => {
+    expect(needsLookReason({ direction: 'inbound', quoteStatus: null, followUpPending: false })).toBe(
+      'They wrote last',
+    );
+  });
+
+  it('rule (b): direction "outbound" does not flag on its own', () => {
+    expect(needsLookReason({ direction: 'outbound', quoteStatus: null, followUpPending: false })).toBeNull();
+  });
+
+  it('rule (b): direction null (no message direction recorded) does not flag on its own', () => {
+    expect(needsLookReason({ direction: null, quoteStatus: null, followUpPending: false })).toBeNull();
+  });
+
+  it('rule (c) alone: a pending follow-up flags "Follow-up due"', () => {
+    expect(needsLookReason({ direction: 'outbound', quoteStatus: null, followUpPending: true })).toBe(
+      'Follow-up due',
+    );
+  });
+
+  it('rule (c): no pending follow-up does not flag on its own', () => {
+    expect(needsLookReason({ direction: 'outbound', quoteStatus: null, followUpPending: false })).toBeNull();
+  });
+
+  it('the negative case: a genuinely finished row (booked quote, staff spoke last, no pending follow-up) is NOT flagged', () => {
+    expect(needsLookReason({ direction: 'outbound', quoteStatus: 'booked', followUpPending: false })).toBeNull();
+  });
+
+  it('the negative case, no linked quote at all: staff spoke last, no pending follow-up is NOT flagged', () => {
+    expect(needsLookReason({ direction: 'outbound', quoteStatus: null, followUpPending: false })).toBeNull();
+  });
+
+  it('combination a+b: "Quote unanswered" wins over "They wrote last" when both fire', () => {
+    expect(needsLookReason({ direction: 'inbound', quoteStatus: 'sent', followUpPending: false })).toBe(
+      'Quote unanswered',
+    );
+  });
+
+  it('combination a+c: "Quote unanswered" wins over "Follow-up due" when both fire', () => {
+    expect(needsLookReason({ direction: 'outbound', quoteStatus: 'viewed', followUpPending: true })).toBe(
+      'Quote unanswered',
+    );
+  });
+
+  it('combination b+c: "They wrote last" wins over "Follow-up due" when rule (a) does not fire', () => {
+    expect(needsLookReason({ direction: 'inbound', quoteStatus: null, followUpPending: true })).toBe(
+      'They wrote last',
+    );
+  });
+
+  it('combination a+b+c: "Quote unanswered" still wins when all three fire together', () => {
+    expect(
+      needsLookReason({ direction: 'inbound', quoteStatus: 'changes_requested', followUpPending: true }),
+    ).toBe('Quote unanswered');
+  });
+
+  it('an approved quote does not itself satisfy rule (a), but does not suppress rule (b) either', () => {
+    expect(needsLookReason({ direction: 'inbound', quoteStatus: 'approved', followUpPending: false })).toBe(
+      'They wrote last',
+    );
+  });
+
+  it('a declined (dead) quote does not itself satisfy rule (a), but does not suppress rule (c) either', () => {
+    expect(needsLookReason({ direction: 'outbound', quoteStatus: 'declined', followUpPending: true })).toBe(
+      'Follow-up due',
+    );
+  });
+});
+
 describe('listOpenItems — select string, sort order, and field mapping', () => {
   beforeEach(() => {
     // Reset between tests.
@@ -810,18 +1058,35 @@ describe('getReopenCounts — window pairs run concurrently (#185)', () => {
   });
 });
 
-// ─── listInWorks — parallel fetch (#185) ────────────────────────────────────
+// ─── listInWorks — parallel fetch (#185) + Needs a look (#307) ──────────────
 //
 // Was two sequential `await`s (awaiting -> handled). Now both fire together
 // via Promise.all; the array-literal argument order keeps [awaiting, handled]
-// deterministic, so a call-index-keyed mock still lets us assert correctness.
+// deterministic, so a call-index-keyed mock still lets us assert correctness
+// for the two inbox_items queries. #307 added two MORE batched queries
+// (quotes, follow_ups) that fire only after the handled bucket is known, so
+// this mock routes by table name instead so each table's builder/call-count
+// is asserted independently — the wiring this section pins is "batched, not
+// per-row": exactly one quotes call and one follow_ups call, regardless of
+// how many handled rows there are.
+
+function makeTableRouter(byTable: Record<string, { data: unknown; error: null | { message: string } }>) {
+  const calls: Record<string, number> = {};
+  const from = (table: string) => {
+    calls[table] = (calls[table] ?? 0) + 1;
+    const spec = byTable[table];
+    if (!spec) throw new Error(`unexpected table in test: ${table}`);
+    return makeBuilder(spec).builder;
+  };
+  return { from, calls };
+}
 
 describe('listInWorks — parallel fetch (#185)', () => {
   beforeEach(() => {
     sbRef.current = null;
   });
 
-  it('maps the awaiting + handled buckets from the two parallel queries', async () => {
+  it('maps the awaiting + handled buckets from the two parallel queries; needsLookReason is null when no evidence contradicts "finished"', async () => {
     const awaitingRow = {
       id: 'i-aw',
       source: 'ghl',
@@ -840,15 +1105,27 @@ describe('listInWorks — parallel fetch (#185)', () => {
       followed_up_at: null,
       handled_at: '2026-07-21T09:00:00Z',
       status: 'handled',
+      direction: 'outbound',
+      external_id: 'msg-1',
       dashboard_contacts: { display_name: 'Handled Hank' },
     };
-    let callIndex = 0;
+    // inbox_items is queried twice (awaiting, then handled); route by call order.
+    let inboxCallIndex = 0;
+    const router = makeTableRouter({
+      // Never reached: the handled row is source='gmail', so quotetoolQuoteIds
+      // is empty and fetchQuoteStatusesById short-circuits before any 'quotes'
+      // query — asserted below via router.calls.quotes being undefined.
+      quotes: { data: [], error: null },
+      follow_ups: { data: [], error: null },
+    });
     sbRef.current = {
-      from: (_table: string) => {
-        const idx = callIndex;
-        callIndex += 1;
-        const data = idx === 0 ? [awaitingRow] : [handledRow];
-        return makeBuilder({ data, error: null }).builder;
+      from: (table: string) => {
+        if (table === 'inbox_items') {
+          const idx = inboxCallIndex;
+          inboxCallIndex += 1;
+          return makeBuilder({ data: idx === 0 ? [awaitingRow] : [handledRow], error: null }).builder;
+        }
+        return router.from(table);
       },
     };
 
@@ -857,12 +1134,262 @@ describe('listInWorks — parallel fetch (#185)', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.awaiting).toEqual([
-      { id: 'i-aw', source: 'ghl', channel: 'sms', preview: 'following up', customerName: 'Awaiting Amy', lastActivityAt: '2026-07-20T10:00:00Z' },
+      {
+        id: 'i-aw',
+        source: 'ghl',
+        channel: 'sms',
+        preview: 'following up',
+        customerName: 'Awaiting Amy',
+        lastActivityAt: '2026-07-20T10:00:00Z',
+        needsLookReason: null,
+      },
     ]);
     expect(result.handled).toEqual([
-      { id: 'i-hd', source: 'gmail', channel: 'email', preview: 'handled it', customerName: 'Handled Hank', lastActivityAt: '2026-07-21T09:00:00Z' },
+      {
+        id: 'i-hd',
+        source: 'gmail',
+        channel: 'email',
+        preview: 'handled it',
+        customerName: 'Handled Hank',
+        lastActivityAt: '2026-07-21T09:00:00Z',
+        needsLookReason: null,
+      },
     ]);
-    expect(callIndex).toBe(2);
+    expect(inboxCallIndex).toBe(2);
+    // Batched-not-per-row: follow_ups queried exactly once for the whole
+    // handled page; quotes never queried at all (no quotetool rows present).
+    expect(router.calls.follow_ups).toBe(1);
+    expect(router.calls.quotes).toBeUndefined();
+  });
+
+  // #307 review fix 3 (admin lens): nothing previously tied the awaiting/
+  // handled Promise.all array positions to the correct QueryBucket literal —
+  // a future swap of 'awaiting_reply'/'handled' between the two applyBucketFilter
+  // calls in store.ts would pass tsc, the applyBucketFilter<->bucketOf drift
+  // test in lifecycle.test.ts, and every other existing test here, while
+  // silently swapping the two In-the-works sections' contents system-wide.
+  // Pins the exact recorded filter-chain args per query, mirroring the
+  // listOpenItems .is("followed_up_at", null) assertion (line ~798 above) and
+  // the listEscalatableItems .or(...) assertion (line ~2730 below).
+  it("wires the awaiting query to applyBucketFilter(..., 'awaiting_reply') and the handled query to applyBucketFilter(..., 'handled') -- not swapped", async () => {
+    let inboxCallIndex = 0;
+    const inboxCalls: { method: string; args: unknown[] }[][] = [];
+    const router = makeTableRouter({
+      quotes: { data: [], error: null },
+      follow_ups: { data: [], error: null },
+    });
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'inbox_items') {
+          const idx = inboxCallIndex;
+          inboxCallIndex += 1;
+          const { builder, calls } = makeBuilder({ data: [], error: null });
+          inboxCalls[idx] = calls;
+          return builder;
+        }
+        return router.from(table);
+      },
+    };
+
+    const result = await listInWorks(200);
+    expect(result.ok).toBe(true);
+    // Call index 0 = awaiting, index 1 = handled — attribution follows the
+    // CONST-DECLARATION order of the two base queries in listInWorks (each
+    // `sb.from('inbox_items')` fires when its const line evaluates, before the
+    // Promise.all array is even built), NOT the Promise.all array positions.
+    // A cosmetic reorder of those two const lines would flip these indexes and
+    // fail this test spuriously — if that happens, swap the indexes here; the
+    // per-bucket predicate assertions below are what this test is really for.
+    expect(inboxCallIndex).toBe(2);
+
+    const awaitingCalls = inboxCalls[0];
+    expect(
+      awaitingCalls.some(
+        (c) => c.method === 'not' && c.args[0] === 'followed_up_at' && c.args[1] === 'is' && c.args[2] === null,
+      ),
+    ).toBe(true);
+    expect(
+      awaitingCalls.some(
+        (c) => c.method === 'not' && c.args[0] === 'status' && c.args[1] === 'in' && c.args[2] === '(completed,dismissed)',
+      ),
+    ).toBe(true);
+    // Not the 'handled' bucket's predicate.
+    expect(awaitingCalls.some((c) => c.method === 'eq' && c.args[0] === 'status' && c.args[1] === 'handled')).toBe(
+      false,
+    );
+
+    const handledCalls = inboxCalls[1];
+    expect(handledCalls.some((c) => c.method === 'eq' && c.args[0] === 'status' && c.args[1] === 'handled')).toBe(
+      true,
+    );
+    expect(
+      handledCalls.some((c) => c.method === 'is' && c.args[0] === 'followed_up_at' && c.args[1] === null),
+    ).toBe(true);
+    // Not the 'awaiting_reply' bucket's predicate.
+    expect(handledCalls.some((c) => c.method === 'not' && c.args[0] === 'followed_up_at')).toBe(false);
+  });
+
+  it('flags a handled quotetool row whose quote is sent-but-unanswered as "Quote unanswered", batching the quote lookup in ONE query', async () => {
+    // #183 BUG 1: quoteIdPrefix/isUuid means the id must be genuinely
+    // UUID-shaped once the :color-request suffix is stripped, or the batch
+    // lookup's isUuid filter drops it before the query ever fires (mirrors
+    // listOpenItems' own tests, e.g. line ~601 above).
+    const QUOTE_UUID = '123e4567-e89b-12d3-a456-426614174000';
+    const handledRow = {
+      id: 'i-hd',
+      source: 'quotetool',
+      channel: null,
+      preview: 'quote sent',
+      followed_up_at: null,
+      handled_at: '2026-07-21T09:00:00Z',
+      status: 'handled',
+      direction: 'outbound',
+      external_id: `${QUOTE_UUID}:color-request`,
+      dashboard_contacts: { display_name: 'Quoted Customer' },
+    };
+    let inboxCallIndex = 0;
+    const router = makeTableRouter({
+      quotes: {
+        data: [
+          {
+            id: QUOTE_UUID,
+            status: null,
+            quote_sent_at: '2026-07-20T00:00:00Z',
+            customer_approved_at: null,
+            deposit_paid_at: null,
+            viewed_at: null,
+          },
+        ],
+        error: null,
+      },
+      follow_ups: { data: [], error: null },
+    });
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'inbox_items') {
+          const idx = inboxCallIndex;
+          inboxCallIndex += 1;
+          return makeBuilder({ data: idx === 0 ? [] : [handledRow], error: null }).builder;
+        }
+        return router.from(table);
+      },
+    };
+
+    const result = await listInWorks(200);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.handled).toHaveLength(1);
+    expect(result.handled[0].needsLookReason).toBe('Quote unanswered');
+    // Exactly one quotes query for the whole page (not one per handled row) —
+    // and it was looked up by the QUOTE id (quoteIdPrefix strips the
+    // :color-request suffix), not the raw external_id.
+    expect(router.calls.quotes).toBe(1);
+  });
+
+  it('flags a handled row whose direction is inbound as "They wrote last"', async () => {
+    const handledRow = {
+      id: 'i-hd',
+      source: 'ghl',
+      channel: 'sms',
+      preview: 'customer replied',
+      followed_up_at: null,
+      handled_at: '2026-07-21T09:00:00Z',
+      status: 'handled',
+      direction: 'inbound',
+      external_id: 'conv-1',
+      dashboard_contacts: { display_name: 'Talked Last' },
+    };
+    let inboxCallIndex = 0;
+    const router = makeTableRouter({ follow_ups: { data: [], error: null } });
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'inbox_items') {
+          const idx = inboxCallIndex;
+          inboxCallIndex += 1;
+          return makeBuilder({ data: idx === 0 ? [] : [handledRow], error: null }).builder;
+        }
+        return router.from(table);
+      },
+    };
+
+    const result = await listInWorks(200);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.handled[0].needsLookReason).toBe('They wrote last');
+    // No quotetool rows on this page — the quotes query is skipped entirely.
+    expect(router.calls.quotes).toBeUndefined();
+  });
+
+  it('flags a handled row with a still-pending follow_ups row as "Follow-up due", batching the lookup in ONE query for the whole page', async () => {
+    const handledRow1 = {
+      id: 'i-hd-1',
+      source: 'ghl',
+      channel: 'sms',
+      preview: 'a',
+      followed_up_at: null,
+      handled_at: '2026-07-21T09:00:00Z',
+      status: 'handled',
+      direction: 'outbound',
+      external_id: 'conv-1',
+      dashboard_contacts: { display_name: 'Row One' },
+    };
+    const handledRow2 = {
+      id: 'i-hd-2',
+      source: 'ghl',
+      channel: 'sms',
+      preview: 'b',
+      followed_up_at: null,
+      handled_at: '2026-07-21T09:05:00Z',
+      status: 'handled',
+      direction: 'outbound',
+      external_id: 'conv-2',
+      dashboard_contacts: { display_name: 'Row Two' },
+    };
+    let inboxCallIndex = 0;
+    const router = makeTableRouter({
+      follow_ups: { data: [{ inbox_item_id: 'i-hd-2' }], error: null },
+    });
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'inbox_items') {
+          const idx = inboxCallIndex;
+          inboxCallIndex += 1;
+          return makeBuilder({ data: idx === 0 ? [] : [handledRow1, handledRow2], error: null }).builder;
+        }
+        return router.from(table);
+      },
+    };
+
+    const result = await listInWorks(200);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const byId = new Map(result.handled.map((i) => [i.id, i.needsLookReason]));
+    expect(byId.get('i-hd-1')).toBeNull();
+    expect(byId.get('i-hd-2')).toBe('Follow-up due');
+    // ONE follow_ups query covers BOTH handled rows — not one per row.
+    expect(router.calls.follow_ups).toBe(1);
+  });
+
+  it('the handled bucket is empty: neither the quotes nor the follow_ups query fires at all', async () => {
+    let inboxCallIndex = 0;
+    const router = makeTableRouter({});
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'inbox_items') {
+          inboxCallIndex += 1;
+          return makeBuilder({ data: [], error: null }).builder;
+        }
+        return router.from(table);
+      },
+    };
+
+    const result = await listInWorks(200);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.handled).toEqual([]);
+    expect(inboxCallIndex).toBe(2); // awaiting + handled inbox_items queries still both fire
+    expect(router.calls.quotes).toBeUndefined();
+    expect(router.calls.follow_ups).toBeUndefined();
   });
 
   it('surfaces the AWAITING query error even though both queries were fired', async () => {
@@ -879,7 +1406,9 @@ describe('listInWorks — parallel fetch (#185)', () => {
 
     const result = await listInWorks(200);
     expect(result).toEqual({ ok: false, error: 'awaiting query failed' });
-    // Both queries fired (parallel) even though the first one errored.
+    // Both queries fired (parallel) even though the first one errored — and
+    // the function returns before ever reaching the #307 quotes/follow_ups
+    // lookups, so no third table is queried.
     expect(callIndex).toBe(2);
   });
 
@@ -897,6 +1426,119 @@ describe('listInWorks — parallel fetch (#185)', () => {
 
     const result = await listInWorks(200);
     expect(result).toEqual({ ok: false, error: 'handled query failed' });
+  });
+
+  // #307 review fix 2: fetchQuoteStatusesById/fetchPendingFollowUpItemIds
+  // still fail OPEN on a lookup error (an empty map/set, never a thrown
+  // error) — but now also report it via evidenceIncomplete instead of only
+  // console.error, since an empty result here silently UNDER-populates
+  // "Needs a look" (the unsafe direction — see the two functions' own doc
+  // comments for the contrast with fetchHiddenLegacyRebookQuoteIds's safe
+  // fail-open).
+  it('evidenceIncomplete is false when both evidence lookups succeed', async () => {
+    const handledRow = {
+      id: 'i-hd',
+      source: 'ghl',
+      channel: 'sms',
+      preview: 'handled it',
+      followed_up_at: null,
+      handled_at: '2026-07-21T09:00:00Z',
+      status: 'handled',
+      direction: 'outbound',
+      external_id: 'conv-1',
+      dashboard_contacts: { display_name: 'Settled Sam' },
+    };
+    let inboxCallIndex = 0;
+    const router = makeTableRouter({ follow_ups: { data: [], error: null } });
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'inbox_items') {
+          const idx = inboxCallIndex;
+          inboxCallIndex += 1;
+          return makeBuilder({ data: idx === 0 ? [] : [handledRow], error: null }).builder;
+        }
+        return router.from(table);
+      },
+    };
+
+    const result = await listInWorks(200);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.evidenceIncomplete).toBe(false);
+  });
+
+  it('evidenceIncomplete is true when the quotes evidence lookup errors, without failing the whole request', async () => {
+    const QUOTE_UUID = '123e4567-e89b-12d3-a456-426614174000';
+    const handledRow = {
+      id: 'i-hd',
+      source: 'quotetool',
+      channel: null,
+      preview: 'quote sent',
+      followed_up_at: null,
+      handled_at: '2026-07-21T09:00:00Z',
+      status: 'handled',
+      direction: 'outbound',
+      external_id: `${QUOTE_UUID}:color-request`,
+      dashboard_contacts: { display_name: 'Quoted Customer' },
+    };
+    let inboxCallIndex = 0;
+    const router = makeTableRouter({
+      quotes: { data: null, error: { message: 'quotes lookup failed' } },
+      follow_ups: { data: [], error: null },
+    });
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'inbox_items') {
+          const idx = inboxCallIndex;
+          inboxCallIndex += 1;
+          return makeBuilder({ data: idx === 0 ? [] : [handledRow], error: null }).builder;
+        }
+        return router.from(table);
+      },
+    };
+
+    const result = await listInWorks(200);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The request still succeeds and the row still renders — it just can't
+    // be trusted as "settled" from this signal, which is what the flag is for.
+    expect(result.evidenceIncomplete).toBe(true);
+    expect(result.handled[0].needsLookReason).toBeNull();
+  });
+
+  it('evidenceIncomplete is true when the follow-ups evidence lookup errors, even for a non-quotetool row that never queries "quotes"', async () => {
+    const handledRow = {
+      id: 'i-hd',
+      source: 'ghl',
+      channel: 'sms',
+      preview: 'handled it',
+      followed_up_at: null,
+      handled_at: '2026-07-21T09:00:00Z',
+      status: 'handled',
+      direction: 'outbound',
+      external_id: 'conv-1',
+      dashboard_contacts: { display_name: 'Settled Sam' },
+    };
+    let inboxCallIndex = 0;
+    const router = makeTableRouter({
+      follow_ups: { data: null, error: { message: 'follow_ups lookup failed' } },
+    });
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'inbox_items') {
+          const idx = inboxCallIndex;
+          inboxCallIndex += 1;
+          return makeBuilder({ data: idx === 0 ? [] : [handledRow], error: null }).builder;
+        }
+        return router.from(table);
+      },
+    };
+
+    const result = await listInWorks(200);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.evidenceIncomplete).toBe(true);
+    expect(router.calls.quotes).toBeUndefined();
   });
 });
 
@@ -1535,6 +2177,10 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
         return self;
       };
       self.limit = () => self;
+      // #310: sweepResolvedItemFollowUps' pending-follow_ups select now chains
+      // .order() before .limit() — a no-op here, this fake doesn't model sort
+      // order, but it must exist on the chain or the real call throws.
+      self.order = () => self;
       self.insert = (row: Record<string, unknown>) => {
         mode = 'insert';
         insertRow = row;
@@ -1866,7 +2512,7 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
       };
     }
 
-    it('returns false and leaves a done row done when the item is completed', async () => {
+    it('returns skipped and leaves a done row done when the item is completed', async () => {
       const fake = makeFollowUpsFake([
         { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'done' },
       ]);
@@ -1874,11 +2520,11 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
 
       const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
 
-      expect(created).toBe(false);
+      expect(created).toBe('skipped');
       expect(fake.rows[0].status).toBe('done');
     });
 
-    it('returns false and leaves a done row done when the item is dismissed', async () => {
+    it('returns skipped and leaves a done row done when the item is dismissed', async () => {
       const fake = makeFollowUpsFake([
         { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'done' },
       ]);
@@ -1886,7 +2532,7 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
 
       const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
 
-      expect(created).toBe(false);
+      expect(created).toBe('skipped');
       expect(fake.rows[0].status).toBe('done');
     });
 
@@ -1900,7 +2546,7 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
 
       const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
 
-      expect(created).toBe(true);
+      expect(created).toBe('created');
       expect(fake.rows[0].status).toBe('pending');
     });
 
@@ -1912,11 +2558,11 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
 
       const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
 
-      expect(created).toBe(true);
+      expect(created).toBe('created');
       expect(fake.rows[0].status).toBe('pending');
     });
 
-    it('returns false without a second write when a pending row already exists (the pre-existing early return still wins)', async () => {
+    it('returns skipped without a second write when a pending row already exists (the pre-existing early return still wins)', async () => {
       const fake = makeFollowUpsFake([
         { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'pending' },
       ]);
@@ -1924,8 +2570,122 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
 
       const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
 
-      expect(created).toBe(false);
+      expect(created).toBe('skipped');
       expect(fake.rows).toHaveLength(1);
+    });
+  });
+
+  // #310: both reads used to destructure only `data` — an {error} response or a
+  // genuine throw (network blip) propagated straight out of ensureFollowUp into
+  // runQuoteToolReconcile's single top-level catch, aborting the WHOLE reconcile
+  // tick (zeroing every counter, skipping both tail sweeps) over one bad read on
+  // one quote. Guarded to fail open: skip just this item, log, return 'failed'
+  // (distinct from a legitimate 'skipped' no-op — see the fix-round doc on
+  // ensureFollowUp and QuoteReconcileSummary.followUpErrors).
+  describe('ensureFollowUp — guards its reads so one failure skips the item, not the whole tick (#310)', () => {
+    /** follow_ups fake whose pending-lookup chain resolves to a fixed {data, error}. */
+    function makePendingLookupFake(result: { data: unknown; error: { message: string } | null }) {
+      const self: Record<string, unknown> = {};
+      self.select = () => self;
+      self.eq = () => self;
+      self.limit = () => self;
+      self.upsert = () => {
+        throw new Error('upsert must not be called when a read fails open');
+      };
+      self.then = (resolve: (v: unknown) => void) => resolve(result);
+      return self;
+    }
+
+    /** inbox_items fake for the churn-gate `.select('status').eq('id').maybeSingle()` read. */
+    function makeItemStatusLookupFake(result: { data: unknown; error: { message: string } | null }) {
+      return {
+        select: () => ({
+          eq: () => ({
+            maybeSingle: () => Promise.resolve(result),
+          }),
+        }),
+      };
+    }
+
+    it('returns failed and never reaches the write when the pending lookup errors', async () => {
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        sbRef.current = {
+          from: (table: string) =>
+            table === 'follow_ups'
+              ? makePendingLookupFake({ data: null, error: { message: 'connection reset' } })
+              : genericTable(),
+        };
+
+        const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
+
+        expect(created).toBe('failed');
+        expect(consoleErrorSpy).toHaveBeenCalledWith(
+          '[inbox] ensureFollowUp: pending lookup failed (skipping item):',
+          'connection reset',
+        );
+      } finally {
+        consoleErrorSpy.mockRestore();
+      }
+    });
+
+    it('returns failed and never reaches the write when the item-status (churn-gate) lookup errors', async () => {
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        sbRef.current = {
+          from: (table: string) => {
+            if (table === 'follow_ups') return makePendingLookupFake({ data: [], error: null });
+            if (table === 'inbox_items') return makeItemStatusLookupFake({ data: null, error: { message: 'timeout' } });
+            return genericTable();
+          },
+        };
+
+        const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
+
+        expect(created).toBe('failed');
+        expect(consoleErrorSpy).toHaveBeenCalledWith(
+          '[inbox] ensureFollowUp: item status lookup failed (skipping item):',
+          'timeout',
+        );
+      } finally {
+        consoleErrorSpy.mockRestore();
+      }
+    });
+
+    it('catches a thrown exception from a read and returns failed instead of propagating (would otherwise abort the whole reconcile tick)', async () => {
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        sbRef.current = {
+          from: (table: string) => {
+            if (table === 'follow_ups') {
+              return {
+                select: () => ({
+                  eq: () => ({
+                    eq: () => ({
+                      eq: () => ({
+                        limit: () => {
+                          throw new Error('socket hang up');
+                        },
+                      }),
+                    }),
+                  }),
+                }),
+              };
+            }
+            return genericTable();
+          },
+        };
+
+        await expect(
+          ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() }),
+        ).resolves.toBe('failed');
+        expect(consoleErrorSpy).toHaveBeenCalledWith(
+          '[inbox] ensureFollowUp failed (skipping item):',
+          expect.any(Error),
+        );
+      } finally {
+        consoleErrorSpy.mockRestore();
+      }
     });
   });
 
@@ -1977,6 +2737,60 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
       expect(fake.rows[0].status).toBe('pending');
     });
 
+    // #310: the only tests above ever seed a SINGLE terminal status per run.
+    // sweepResolvedItemFollowUps derives each item's OWN status via a
+    // type-narrowing filter (`r.status === 'completed' || r.status === 'dismissed'`)
+    // then loops `closeFollowUpsForResolvedItem(item.id, item.status)` per item —
+    // correct today, but nothing pinned that a MIX of completed + dismissed items
+    // in one run each get closed under their OWN status rather than, say, every
+    // audit row silently inheriting the first item's status. A non-terminal
+    // 'handled' item is mixed in too, to prove it stays untouched alongside the
+    // two that close.
+    it('closes a MIX of completed and dismissed items in one run, each audit row carrying its OWN terminalStatus', async () => {
+      const fake = makeFollowUpsFake([
+        { id: 'fu-completed', inbox_item_id: 'item-completed', reason: 'quote_sent_no_reply', status: 'pending' },
+        { id: 'fu-dismissed', inbox_item_id: 'item-dismissed', reason: 'quote_sent_no_reply', status: 'pending' },
+        { id: 'fu-handled', inbox_item_id: 'item-handled', reason: 'quote_sent_no_reply', status: 'pending' },
+      ]);
+      const itemsFake = makeItemsFake([
+        { id: 'item-completed', status: 'completed' },
+        { id: 'item-dismissed', status: 'dismissed' },
+        { id: 'item-handled', status: 'handled' },
+      ]);
+      const activityInserts: Record<string, unknown>[] = [];
+      sbRef.current = {
+        from: (table: string) => {
+          if (table === 'follow_ups') return fake.table();
+          if (table === 'inbox_items') return itemsFake;
+          if (table === 'dashboard_activity') {
+            return {
+              insert: (rows: Record<string, unknown>[]) => {
+                activityInserts.push(...rows);
+                return Promise.resolve({ data: null, error: null });
+              },
+            };
+          }
+          return genericTable();
+        },
+      };
+
+      const closed = await sweepResolvedItemFollowUps();
+
+      expect(closed).toBe(2); // completed + dismissed close; handled stays untouched
+      expect(fake.rows.find((r) => r.id === 'fu-completed')!.status).toBe('done');
+      expect(fake.rows.find((r) => r.id === 'fu-dismissed')!.status).toBe('done');
+      expect(fake.rows.find((r) => r.id === 'fu-handled')!.status).toBe('pending');
+
+      expect(activityInserts).toHaveLength(2); // one per closed item; the untouched 'handled' item gets none
+      const completedActivity = activityInserts.find((r) => r.inbox_item_id === 'item-completed');
+      const dismissedActivity = activityInserts.find((r) => r.inbox_item_id === 'item-dismissed');
+      expect(completedActivity).toMatchObject({ detail: { followUpId: 'fu-completed', terminalStatus: 'completed' } });
+      expect(dismissedActivity).toMatchObject({ detail: { followUpId: 'fu-dismissed', terminalStatus: 'dismissed' } });
+      // The failure mode this test guards: neither row inherits the OTHER item's status.
+      expect((completedActivity!.detail as { terminalStatus: string }).terminalStatus).not.toBe('dismissed');
+      expect((dismissedActivity!.detail as { terminalStatus: string }).terminalStatus).not.toBe('completed');
+    });
+
     it('returns 0 without querying inbox_items when there are no pending follow-ups', async () => {
       const fake = makeFollowUpsFake([]);
       let inboxItemsQueried = false;
@@ -1995,6 +2809,25 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
 
       expect(closed).toBe(0);
       expect(inboxItemsQueried).toBe(false);
+    });
+
+    // #310: sibling-parity fix to the sweepOrphanedFollowUps bound above — same
+    // unbounded pending-follow_ups select, same silent-truncation risk, and the
+    // same #185-precedent determinism concern (an .order() so the capped
+    // subset can't nondeterministically flip which rows this sweep covers).
+    it('bounds the pending-follow_ups lookup with an explicit .limit() and orders it deterministically (#310)', async () => {
+      const { builder: pendingBuilder, calls } = makeBuilder({ data: [], error: null });
+      sbRef.current = { from: (_table: string) => pendingBuilder };
+
+      await sweepResolvedItemFollowUps();
+
+      const limitCall = calls.find((c) => c.method === 'limit');
+      expect(limitCall).toBeDefined();
+      expect(limitCall!.args[0]).toBeGreaterThanOrEqual(1000);
+      const orderCall = calls.find((c) => c.method === 'order');
+      expect(orderCall).toBeDefined();
+      expect(orderCall!.args[0]).toBe('id');
+      expect(orderCall!.args[1]).toEqual({ ascending: true });
     });
   });
 });
@@ -2821,6 +3654,28 @@ describe('sweepOrphanedFollowUps — I/O wiring (#183 BUG 3)', () => {
     expect(fromCalls).toBe(1); // only the pending-follow_ups query fired
   });
 
+  // #310: was unbounded — PostgREST silently truncates at its 1000-row default,
+  // so past that this sweep would stop covering rows with no error and no
+  // signal. Pins that the pending-follow_ups lookup carries an explicit bound
+  // with real headroom over the current ~57-row table, AND that the capped
+  // subset is deterministic (an .order() — same #185 precedent as
+  // listOpenItems' returning-contact tally, without which a page past the cap
+  // could nondeterministically flip which rows this sweep covers).
+  it('bounds the pending-follow_ups lookup with an explicit .limit() and orders it deterministically (#310)', async () => {
+    const { builder: pendingBuilder, calls } = makeBuilder({ data: [], error: null });
+    sbRef.current = { from: (_table: string) => pendingBuilder };
+
+    await sweepOrphanedFollowUps(REASON);
+
+    const limitCall = calls.find((c) => c.method === 'limit');
+    expect(limitCall).toBeDefined();
+    expect(limitCall!.args[0]).toBeGreaterThanOrEqual(1000);
+    const orderCall = calls.find((c) => c.method === 'order');
+    expect(orderCall).toBeDefined();
+    expect(orderCall!.args[0]).toBe('id');
+    expect(orderCall!.args[1]).toEqual({ ascending: true });
+  });
+
   it('fails open (closes nothing) and logs when the pending-follow_ups lookup errors', async () => {
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
@@ -3484,5 +4339,345 @@ describe('recordSuppressedFollowUp (#230a — suppression visibility)', () => {
   it('no-ops (no throw) when the service client is not configured', async () => {
     sbRef.current = null;
     await expect(recordSuppressedFollowUp('item-99', {})).resolves.toBeUndefined();
+  });
+});
+
+// row 312a: /inbox/activity's Reverse button is driven by listActivity's
+// `reversible` flag (REVERSIBLE_ACTIONS, store.ts) — a 'reclassified' row must
+// flip it true, or the button never renders regardless of what reverseItemState
+// itself accepts.
+//
+// row 312 fix-round FIX 3: the bare action string 'reclassified' now ISN'T
+// enough on its own — confirmed against prod (2026-08-20, execute_sql) that 34
+// 'reclassified' rows split into two real populations: 26 `actor: 'system'`
+// S41 rows all carrying `detail.followedUpAtSetTo`, and 8 `actor:
+// 'assistant-backfill-268'` rows where NONE carry it (their detail is
+// `reason`/`customer`/`from_contact` — a lead_kind/contact repoint that never
+// touched followed_up_at). isReversibleActivity gates on that key's presence.
+describe('listActivity — reversible flag (row 312a / row 312 fix-round FIX 3)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('marks an S41-shaped reclassified row (detail carries followedUpAtSetTo) reversible: true', async () => {
+    const { builder } = makeBuilder({
+      data: [
+        {
+          id: 'a1',
+          action: 'reclassified',
+          actor: 'system',
+          inbox_item_id: 'i1',
+          created_at: '2026-08-19T00:00:00Z',
+          detail: { op: 're-file', to: 'awaiting_reply', from: 'handled', followedUpAtSetTo: '2026-08-06T16:33:02.701Z' },
+          inbox_items: null,
+        },
+      ],
+      error: null,
+    });
+    sbRef.current = { from: () => builder };
+
+    const res = await listActivity(10);
+
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.rows).toHaveLength(1);
+      expect(res.rows[0]).toMatchObject({ action: 'reclassified', reversible: true });
+    }
+  });
+
+  it('marks a #268-backfill-shaped reclassified row (no followedUpAtSetTo) reversible: false', async () => {
+    const { builder } = makeBuilder({
+      data: [
+        {
+          id: 'a2',
+          action: 'reclassified',
+          actor: 'assistant-backfill-268',
+          inbox_item_id: 'i2',
+          created_at: '2026-08-14T00:00:00Z',
+          detail: { reason: 'row 268 backfill', customer: 'Chris Hughes', lead_kind: 'automated -> lead', from_contact: 'c1' },
+          inbox_items: null,
+        },
+      ],
+      error: null,
+    });
+    sbRef.current = { from: () => builder };
+
+    const res = await listActivity(10);
+
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.rows).toHaveLength(1);
+      expect(res.rows[0]).toMatchObject({ action: 'reclassified', reversible: false });
+    }
+  });
+
+  it('a non-reclassified reversible action (e.g. dismissed) stays reversible: true regardless of detail shape', async () => {
+    const { builder } = makeBuilder({
+      data: [
+        { id: 'a3', action: 'dismissed', actor: 'op-1', inbox_item_id: 'i3', created_at: '2026-08-19T00:00:00Z', detail: null, inbox_items: null },
+      ],
+      error: null,
+    });
+    sbRef.current = { from: () => builder };
+
+    const res = await listActivity(10);
+
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.rows[0]).toMatchObject({ action: 'dismissed', reversible: true });
+  });
+});
+
+// row 312 fix-round FIX 3: isReversibleActivity is the pure predicate driving
+// both listActivity's flag and reverseItemState's guard — direct tests here
+// pin the exact boundary against the real prod payload shapes queried above.
+describe('isReversibleActivity (pure, row 312 fix-round FIX 3)', () => {
+  it('rejects an action outside REVERSIBLE_ACTIONS regardless of detail', () => {
+    expect(isReversibleActivity('ingested', { followedUpAtSetTo: 'x' })).toBe(false);
+  });
+  it('accepts every non-reclassified reversible action with any detail (incl. null)', () => {
+    for (const action of ['handled', 'followed', 'completed', 'dismissed']) {
+      expect(isReversibleActivity(action, null)).toBe(true);
+    }
+  });
+  it("accepts 'reclassified' only when detail carries followedUpAtSetTo", () => {
+    expect(isReversibleActivity('reclassified', { followedUpAtSetTo: '2026-08-06T16:33:02.701Z' })).toBe(true);
+    expect(isReversibleActivity('reclassified', { reason: 'row 268 backfill', from_contact: 'c1' })).toBe(false);
+    expect(isReversibleActivity('reclassified', null)).toBe(false);
+    expect(isReversibleActivity('reclassified', undefined)).toBe(false);
+  });
+});
+
+// row 312: reverseItemState — 'reclassified' reversibility + the wrong-occurrence
+// guard (312c). Sequence of sb.from() calls: dashboard_activity (act lookup) ->
+// dashboard_activity (latest-row guard) -> inbox_items (current state) ->
+// inbox_items (update) -> [inbox_items (unsuppress lookup), dismissed only] ->
+// dashboard_activity (insert the 'reversed' row).
+describe('reverseItemState (row 312 — reclassified + wrong-occurrence guard)', () => {
+  const OPERATOR_ID = '11111111-2222-3333-4444-555555555555';
+  const NOW = new Date('2026-08-20T12:00:00Z');
+  const ITEM_ID = 'item-1';
+  const ACTIVITY_ID = 'act-1';
+
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  function makeSbForReverse(opts: {
+    activityRow: { data: unknown; error?: null | { message: string } };
+    latestRow: { data: unknown; error?: null | { message: string } };
+    curItem?: { data: unknown; error?: null | { message: string } };
+    updateResult?: { data: unknown; error: null | { message: string } };
+    unsuppressRow?: { data: unknown; error?: null | { message: string } };
+  }) {
+    const { builder: activityLookupBuilder } = makeBuilder({
+      data: opts.activityRow.data,
+      error: opts.activityRow.error ?? null,
+    });
+    const { builder: latestBuilder, calls: latestCalls } = makeBuilder({
+      data: opts.latestRow.data,
+      error: opts.latestRow.error ?? null,
+    });
+    const { builder: curBuilder } = makeBuilder({
+      data: opts.curItem?.data ?? null,
+      error: opts.curItem?.error ?? null,
+    });
+    const { builder: updateBuilder, calls: updateCalls } = makeBuilder(opts.updateResult ?? { data: null, error: null });
+    const { builder: unsuppressBuilder } = makeBuilder({
+      data: opts.unsuppressRow?.data ?? null,
+      error: opts.unsuppressRow?.error ?? null,
+    });
+    const { builder: insertBuilder, calls: insertCalls } = makeBuilder({ data: null, error: null });
+
+    let activityCallCount = 0;
+    let inboxCallCount = 0;
+    const from = (table: string) => {
+      if (table === 'dashboard_activity') {
+        activityCallCount += 1;
+        if (activityCallCount === 1) return activityLookupBuilder;
+        if (activityCallCount === 2) return latestBuilder;
+        return insertBuilder;
+      }
+      if (table === 'inbox_items') {
+        inboxCallCount += 1;
+        if (inboxCallCount === 1) return curBuilder;
+        if (inboxCallCount === 2) return updateBuilder;
+        return unsuppressBuilder;
+      }
+      throw new Error(`unexpected table: ${table}`);
+    };
+    return { from, latestCalls, updateCalls, insertCalls };
+  }
+
+  // row 312 fix-round FIX 3: an S41-shaped 'reclassified' row must carry
+  // detail.followedUpAtSetTo to pass the payload-shape gate before any of these
+  // tests can reach the wrong-occurrence guard / stillMatches logic below — a
+  // bare `detail: null` (the pre-fix-round fixture shape) is now refused
+  // immediately as a #268-backfill-shaped row would be. See the dedicated FIX 3
+  // refusal test further down for that path itself.
+  const RECLASSIFIED_DETAIL = { op: 're-file', to: 'awaiting_reply', from: 'handled', followedUpAtSetTo: '2026-08-06T16:33:02.701Z' };
+
+  it("reverses a 'reclassified' row: clears followed_up_at only, status untouched, CASing on followed_up_at IS NOT NULL (FIX 1)", async () => {
+    const { from, updateCalls, insertCalls } = makeSbForReverse({
+      activityRow: { data: { action: 'reclassified', inbox_item_id: ITEM_ID, detail: RECLASSIFIED_DETAIL } },
+      latestRow: { data: { id: ACTIVITY_ID } }, // this row IS the latest — passes 312c
+      curItem: { data: { status: 'handled', followed_up_at: '2026-08-01T00:00:00Z' } },
+      updateResult: { data: { id: ITEM_ID }, error: null }, // FIX 1: CAS matched a row
+    });
+    sbRef.current = { from };
+
+    const res = await reverseItemState(ACTIVITY_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+    const updateCall = updateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ followed_up_at: null });
+    expect(updateCall!.args[0]).not.toHaveProperty('status'); // inverseOf('reclassified') never sets status
+    // FIX 1: 'reclassified' CASes on followed_up_at IS NOT NULL, not on status.
+    const casNotCall = updateCalls.find((c) => c.method === 'not');
+    expect(casNotCall!.args).toEqual(['followed_up_at', 'is', null]);
+    expect(updateCalls.some((c) => c.method === 'eq' && c.args[0] === 'status')).toBe(false);
+    // FIX 4: the 'reversed' audit row now carries the reversed activity's own
+    // id + the prior values it cleared/restored.
+    const insertCall = insertCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toMatchObject({
+      action: 'reversed',
+      detail: {
+        reversed_action: 'reclassified',
+        reversedActivityId: ACTIVITY_ID,
+        from: { status: 'handled', followedUpAt: '2026-08-01T00:00:00Z' },
+      },
+    });
+  });
+
+  // row 312 fix-round FIX 1 (HIGH): the CAS on the update — not the earlier
+  // read — is what actually closes the race/double-click window. Simulated
+  // here by having the pre-check (curItem) pass stillMatches while the update
+  // itself matches zero rows (updateResult.data: null) — exactly what a
+  // concurrent write landing between the read and the write would produce.
+  it('FIX 1: refuses (lost race) when the CAS update matches no row even though the pre-check read passed', async () => {
+    const { from, insertCalls } = makeSbForReverse({
+      activityRow: { data: { action: 'handled', inbox_item_id: ITEM_ID, detail: null } },
+      latestRow: { data: { id: ACTIVITY_ID } },
+      curItem: { data: { status: 'handled', followed_up_at: null } }, // stillMatches passes
+      updateResult: { data: null, error: null }, // but the CAS itself matches nothing (lost race)
+    });
+    sbRef.current = { from };
+
+    const res = await reverseItemState(ACTIVITY_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/state has changed/i);
+    // No 'reversed' audit row gets written for a lost-race refusal.
+    expect(insertCalls.some((c) => c.method === 'insert')).toBe(false);
+  });
+
+  it("refuses a 'reclassified' row whose item is no longer awaiting reply (followed_up_at already cleared)", async () => {
+    const { from, updateCalls } = makeSbForReverse({
+      activityRow: { data: { action: 'reclassified', inbox_item_id: ITEM_ID, detail: RECLASSIFIED_DETAIL } },
+      latestRow: { data: { id: ACTIVITY_ID } },
+      curItem: { data: { status: 'handled', followed_up_at: null } },
+    });
+    sbRef.current = { from };
+
+    const res = await reverseItemState(ACTIVITY_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/state has changed/i);
+    expect(updateCalls.some((c) => c.method === 'update')).toBe(false);
+  });
+
+  // row 312 fix-round FIX 3: the payload-shape gate applies to a direct POST
+  // too, not just listActivity's rendered button — a #268-backfill-shaped row
+  // (no followedUpAtSetTo) is refused before ever running the wrong-occurrence
+  // query, exactly like a genuinely-unreversible action string.
+  it("FIX 3: refuses a 'reclassified' row shaped like the #268 backfill (no followedUpAtSetTo in detail)", async () => {
+    const backfillDetail = { reason: 'row 268 backfill', customer: 'Chris Hughes', lead_kind: 'automated -> lead', from_contact: 'c1' };
+    const { from, latestCalls, updateCalls } = makeSbForReverse({
+      activityRow: { data: { action: 'reclassified', inbox_item_id: ITEM_ID, detail: backfillDetail } },
+      latestRow: { data: { id: ACTIVITY_ID } },
+    });
+    sbRef.current = { from };
+
+    const res = await reverseItemState(ACTIVITY_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toBe('This entry cannot be reversed');
+    // Short-circuits before the wrong-occurrence query or any write.
+    expect(latestCalls.length).toBe(0);
+    expect(updateCalls.length).toBe(0);
+  });
+
+  it('312c: refuses when a LATER state-changing row exists for the same item (wrong-occurrence guard)', async () => {
+    const { from, updateCalls } = makeSbForReverse({
+      activityRow: { data: { action: 'handled', inbox_item_id: ITEM_ID, detail: null } },
+      latestRow: { data: { id: 'act-later-999' } }, // some other, more recent row
+      curItem: { data: { status: 'handled', followed_up_at: null } }, // would otherwise "stillMatch"
+    });
+    sbRef.current = { from };
+
+    const res = await reverseItemState(ACTIVITY_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/later action/i);
+    // Short-circuits before ever reading current state or writing anything.
+    expect(updateCalls.length).toBe(0);
+  });
+
+  // row 312 fix-round FIX 2: a query ERROR on the wrong-occurrence guard must
+  // fail CLOSED (refuse), not read as "no later row exists" and proceed.
+  it('FIX 2: fails closed when the wrong-occurrence guard query itself errors', async () => {
+    const { from, updateCalls } = makeSbForReverse({
+      activityRow: { data: { action: 'handled', inbox_item_id: ITEM_ID, detail: null } },
+      latestRow: { data: null, error: { message: 'connection reset' } },
+      curItem: { data: { status: 'handled', followed_up_at: null } },
+    });
+    sbRef.current = { from };
+
+    const res = await reverseItemState(ACTIVITY_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/try again/i);
+    // Never reaches the write on a failed guard read.
+    expect(updateCalls.length).toBe(0);
+  });
+
+  it('312c: proceeds normally when no later row exists at all (this IS the only row for the item)', async () => {
+    const { from, updateCalls } = makeSbForReverse({
+      activityRow: { data: { action: 'handled', inbox_item_id: ITEM_ID, detail: null } },
+      latestRow: { data: null }, // no row found (maybeSingle null) — nothing later
+      curItem: { data: { status: 'handled', followed_up_at: null } },
+      updateResult: { data: { id: ITEM_ID }, error: null }, // FIX 1: CAS matched a row
+    });
+    sbRef.current = { from };
+
+    const res = await reverseItemState(ACTIVITY_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+    expect(updateCalls.some((c) => c.method === 'update')).toBe(true);
+    // FIX 1: non-followed/reclassified actions CAS on status, not followed_up_at.
+    expect(updateCalls.some((c) => c.method === 'eq' && c.args[0] === 'status' && c.args[1] === 'handled')).toBe(true);
+  });
+
+  it("312c: the latest-row query's action set covers every reversible action plus 'reversed'/'reopened', ordered with an id tiebreaker (FIX 5a/5b)", async () => {
+    const { from, latestCalls } = makeSbForReverse({
+      activityRow: { data: { action: 'dismissed', inbox_item_id: ITEM_ID, detail: { from: { status: 'unresponded' } } } },
+      latestRow: { data: { id: ACTIVITY_ID } },
+      curItem: { data: { status: 'dismissed', followed_up_at: null } },
+      unsuppressRow: { data: null },
+    });
+    sbRef.current = { from };
+
+    await reverseItemState(ACTIVITY_ID, OPERATOR_ID, NOW);
+
+    const inCall = latestCalls.find((c) => c.method === 'in');
+    const [, actionSet] = inCall!.args as [string, string[]];
+    expect(actionSet).toEqual(
+      expect.arrayContaining(['handled', 'followed', 'completed', 'dismissed', 'reclassified', 'reversed', 'reopened']),
+    );
+    // FIX 5(a): secondary deterministic tiebreaker on id, after the created_at order.
+    const orderCalls = latestCalls.filter((c) => c.method === 'order');
+    expect(orderCalls).toEqual([
+      { method: 'order', args: ['created_at', { ascending: false }] },
+      { method: 'order', args: ['id', { ascending: false }] },
+    ]);
   });
 });
