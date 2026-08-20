@@ -103,9 +103,12 @@ function greetingName(firstName: string): string {
   // Capitalising it turns the natural "Hi there!" into "Hi There!", which
   // reads like a literal name. Caught by a review lens, not by the author.
   // (row 315: every other customer greeting now routes through this same
-  // helper, but none of them pass the literal 'there' through it — they use
-  // their own 'there'/'Unknown' fallback for a missing name instead — so this
-  // exemption stays scoped to the amend route's calling shape.)
+  // helper — and several of their callers (send, approve, send-balance,
+  // apply-color-request, valor webhook) resolve a blank name to the SAME
+  // literal 'there' before calling, so this exemption is value-based on
+  // purpose: it protects every caller that passes 'there', not one route's
+  // calling shape. The staff lens corrected an earlier version of this
+  // comment that claimed the opposite.)
   if (firstName === GREETING_FALLBACK) return firstName;
   return firstName.charAt(0).toUpperCase() + firstName.slice(1);
 }

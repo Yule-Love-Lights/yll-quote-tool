@@ -896,6 +896,12 @@ describe('greeting casing sweep (row 315): every customer greeting routes throug
     expect(quoteSmsBody('Susan', 'https://x/portal/1', 'holiday')).toContain('Hi Susan!');
   });
 
+  it("the literal 'there' fallback passes through every swept builder uncapitalised (value-based exemption)", () => {
+    expect(quoteSmsBody('there', 'https://x/portal/1', 'holiday')).toContain('Hi there!');
+    expect(quoteEmailHtml('there', 'https://x/portal/1', 'holiday')).toContain('Hi there,');
+    expect(approvalSmsBody('there', 2700, '(631) 517-0186', 50)).toContain('Hi there!');
+  });
+
   it('quoteEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {
     expect(quoteEmailHtml('susan', 'https://x/portal/1', 'holiday')).toContain('Hi Susan,');
     expect(quoteEmailHtml('Susan', 'https://x/portal/1', 'holiday')).toContain('Hi Susan,');
