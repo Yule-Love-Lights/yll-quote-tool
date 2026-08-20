@@ -15,7 +15,7 @@ import { ColorRequestPanel } from '@/components/admin/ColorRequestPanel';
 import { buildPortalLineItems } from '@/lib/portal/adapter';
 import { BUSINESS_RULES, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { getQuoteRaw } from '@/lib/quotes';
-import { deriveStatus, APPROVED_STAGE_DISPLAY_LABEL, type QuoteStatus } from '@/lib/quoteStatus';
+import { deriveStatus, APPROVED_DISPLAYS_AS, type QuoteStatus } from '@/lib/quoteStatus';
 import { getJobByQuote } from '@/lib/jobs';
 import { getInvoiceByJob } from '@/lib/invoices';
 import { getDesignByQuote } from '@/lib/designs';
@@ -33,16 +33,17 @@ import { isVaultRegisterEnabled } from '@/lib/integrations/valorVault';
 // Read-only operator detail for a single quote (PR1 of #83 ops console).
 // No action buttons here — those land in PR2's PipelineActionsMenu.
 
-// Row 242: 'approved' reads as APPROVED_STAGE_DISPLAY_LABEL, not "Approved" —
-// see quoteStatus.ts for the rationale (no standalone Approved pipeline
-// stage; deriveStatus/canTransition/money guards are unaffected). Note the
-// "Approved" dt below in the Lifecycle timeline is a DIFFERENT thing (a raw
-// event timestamp — when customer_approved_at was stamped) and is untouched.
+// Row 242 (Jason's ruling — no third stage): 'approved' reads + colors
+// IDENTICALLY to 'sent' (APPROVED_DISPLAYS_AS === 'Sent') — see quoteStatus.ts
+// for the rationale. deriveStatus/canTransition/money guards are unaffected;
+// this is presentation only. Note the "Approved" dt below in the Lifecycle
+// timeline is a DIFFERENT thing (a raw event timestamp — when
+// customer_approved_at was stamped) and is untouched.
 const STATUS_LABELS: Record<QuoteStatus, string> = {
   draft: 'Draft',
   sent: 'Sent',
   viewed: 'Viewed',
-  approved: APPROVED_STAGE_DISPLAY_LABEL,
+  approved: APPROVED_DISPLAYS_AS,
   booked: 'Booked',
   changes_requested: 'Changes requested',
   declined: 'Declined',
@@ -52,7 +53,8 @@ const STATUS_LABELS: Record<QuoteStatus, string> = {
 
 const STATUS_STYLES: Record<QuoteStatus, string> = {
   booked: 'bg-emerald-100 text-emerald-700',
-  approved: 'bg-green-100 text-green-700',
+  // Row 242: no distinct color for approved — takes sent's exact style.
+  approved: 'bg-blue-100 text-blue-700',
   viewed: 'bg-purple-100 text-purple-700',
   sent: 'bg-blue-100 text-blue-700',
   draft: 'bg-amber-100 text-amber-700',

@@ -6,7 +6,8 @@ import {
   isQuoteStatus,
   isPortalActionable,
   QUOTE_STATUSES,
-  APPROVED_STAGE_DISPLAY_LABEL,
+  APPROVED_DISPLAYS_AS,
+  statusMatchesFilter,
   type QuoteStatus,
   type QuoteStatusRow,
 } from './quoteStatus';
@@ -197,17 +198,17 @@ describe('isPortalActionable — customer approve+pay UI gate (Bug 3)', () => {
   });
 });
 
-describe('APPROVED_STAGE_DISPLAY_LABEL — row 242 (remove the Approved stage from display)', () => {
+describe('APPROVED_DISPLAYS_AS / statusMatchesFilter — row 242 (no third stage; Jason\'s ruling)', () => {
   it('is not the bare word "Approved" — no surface should badge it as a standalone stage', () => {
-    expect(APPROVED_STAGE_DISPLAY_LABEL).not.toBe('Approved');
-    expect(APPROVED_STAGE_DISPLAY_LABEL.toLowerCase()).not.toBe('approved');
+    expect(APPROVED_DISPLAYS_AS).not.toBe('Approved');
+    expect(APPROVED_DISPLAYS_AS.toLowerCase()).not.toBe('approved');
   });
 
-  it('names what a sent-but-unpaid approval is actually waiting on', () => {
-    expect(APPROVED_STAGE_DISPLAY_LABEL).toBe('Awaiting Deposit');
+  it('presents identically to Sent, per Jason\'s ruling (sent -> booked, or -> declined; nothing in between)', () => {
+    expect(APPROVED_DISPLAYS_AS).toBe('Sent');
   });
 
-  it('a sent-then-approved-but-unpaid quote still derives the approved CODE, which every quote-lane surface then renders under this display label — the mechanism (deriveStatus) and the presentation (the label) are independently verifiable and stay in sync', () => {
+  it('a sent-then-approved-but-unpaid quote still derives the approved CODE, which every quote-lane surface then renders under the Sent label — the mechanism (deriveStatus) and the presentation are independently verifiable and stay in sync', () => {
     const approvedUnpaid = ts({
       quote_sent_at: '2026-06-02T00:00:00Z',
       viewed_at: '2026-06-02T01:00:00Z',
@@ -228,20 +229,46 @@ describe('APPROVED_STAGE_DISPLAY_LABEL — row 242 (remove the Approved stage fr
       draft: 'Draft',
       sent: 'Sent',
       viewed: 'Viewed',
-      approved: APPROVED_STAGE_DISPLAY_LABEL,
+      approved: APPROVED_DISPLAYS_AS,
       booked: 'Booked',
       changes_requested: 'Changes',
       declined: 'Declined',
       cancelled: 'Cancelled',
       abandoned: 'Abandoned',
     };
-    expect(displayLabelForCode[code]).toBe('Awaiting Deposit');
+    expect(displayLabelForCode[code]).toBe('Sent');
   });
 
-  it('canTransition still treats approved as a full, real status (the mechanism is untouched by the label change)', () => {
+  it('canTransition still treats approved as a full, real status (the mechanism is untouched by the display change)', () => {
     expect(canTransition('approved', 'booked')).toBe(true);
     expect(canTransition('approved', 'declined')).toBe(true);
     expect(canTransition('approved', 'cancelled')).toBe(true);
+  });
+
+  it('statusMatchesFilter: an approved-unpaid quote appears under the Sent filter and (per the badge maps above) shows the Sent badge', () => {
+    // The /admin/quotes Stage row has no separate Approved chip any more —
+    // this is the predicate that keeps an approved-unpaid quote from being
+    // silently orphaned from every filter except "All".
+    expect(statusMatchesFilter('approved', 'sent')).toBe(true);
+    // And it must NOT double-match some other chip a filter click didn't ask for.
+    expect(statusMatchesFilter('approved', 'viewed')).toBe(false);
+    expect(statusMatchesFilter('approved', 'booked')).toBe(false);
+    expect(statusMatchesFilter('approved', 'draft')).toBe(false);
+  });
+
+  it('statusMatchesFilter: every other status still matches only itself (the sent<-approved fold is the ONE exception)', () => {
+    for (const s of QUOTE_STATUSES) {
+      if (s === 'approved') continue; // covered above
+      expect(statusMatchesFilter(s, s)).toBe(true);
+      for (const other of QUOTE_STATUSES) {
+        if (other === s) continue;
+        expect(statusMatchesFilter(s, other)).toBe(false);
+      }
+    }
+  });
+
+  it('statusMatchesFilter: sent does not reverse-match approved (the fold is filter-direction-specific: code=approved,filter=sent, not the other way)', () => {
+    expect(statusMatchesFilter('sent', 'approved')).toBe(false);
   });
 });
 

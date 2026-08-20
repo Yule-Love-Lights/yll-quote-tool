@@ -209,24 +209,38 @@ export function isPortalActionable(status: string | null | undefined): boolean {
 }
 
 /**
- * Ledger row 242 (Jason, 2026-08-11 decision, framing corrected by recon):
- * `'approved'` stays a real QuoteStatus union member — deriveStatus above
- * still synthesizes it from `customer_approved_at` whenever `deposit_paid_at`
- * is null, and it's a full member of ALLOWED_TRANSITIONS — but every quote-
- * lane surface that used to badge it as a standalone "Approved" pipeline
- * STAGE now shows this label instead, so the visible progression reads
- * sent -> viewed -> booked with no separate "Approved" milestone. The chosen
- * wording ("Awaiting Deposit") names what's actually still outstanding for
- * this derived state, rather than presenting the approval as a finish line —
- * a sent-but-unpaid approval is exactly that: awaiting the deposit.
+ * Ledger row 242 — Jason's ruling (2026-08-20, revising the initial "Awaiting
+ * Deposit" pass): no third stage AT ALL. His workflow is
+ * sent -> (approve + sign + pay deposit) -> booked, or -> declined; nothing
+ * shows in between. `'approved'` stays a real QuoteStatus union member —
+ * deriveStatus above still synthesizes it from `customer_approved_at`
+ * whenever `deposit_paid_at` is null, and it's a full member of
+ * ALLOWED_TRANSITIONS — but a derived-'approved' quote (customer signed,
+ * deposit not yet paid) now presents on every quote-lane surface EXACTLY as
+ * if it were 'sent': same badge label, same badge color, and (on the
+ * /admin/quotes Stage filter, which has no separate Approved chip any more)
+ * the same filter bucket. Presentation/filtering only — nothing here touches
+ * deriveStatus, canTransition, or any money-guard route, which all keep
+ * reading the real 'approved' CODE + the customer_approved_at timestamp
+ * directly, untouched by this.
  *
  * Single source so the admin quotes list, the quote detail page, and the
  * quote builder header pill can't drift into three different wordings for
  * the same derived state (they already had for `changes_requested` before
  * this — 'Changes' vs 'Changes requested' — a warning sign this scope
- * creates real drift risk without one shared string). Presentation only:
- * nothing here touches deriveStatus, canTransition, or any money-guard route
- * — those all key off the 'approved' CODE + the customer_approved_at
- * timestamp, both untouched by this label.
+ * creates real drift risk without one shared string).
  */
-export const APPROVED_STAGE_DISPLAY_LABEL = 'Awaiting Deposit';
+export const APPROVED_DISPLAYS_AS = 'Sent';
+
+/**
+ * The predicate a Stage-filter UI should use instead of a raw `===` compare,
+ * now that `'approved'` has no chip of its own (see APPROVED_DISPLAYS_AS
+ * above): a filter aimed at 'sent' must also match a derived-'approved' row,
+ * or dropping the Approved chip would silently orphan every approved-unpaid
+ * quote from every filter except "All". Every other status still matches
+ * only itself — this does not change any other filter's behavior.
+ */
+export function statusMatchesFilter(code: QuoteStatus, filter: QuoteStatus): boolean {
+  if (code === filter) return true;
+  return code === 'approved' && filter === 'sent';
+}
