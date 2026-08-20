@@ -29,8 +29,16 @@ import {
 
 // Factory defaults — the per-type starting values (mirror the design tool's
 // FACTORY_DEFAULTS / DEFAULT_TOOL_DEFAULTS). Also the target of "Reset".
+// #843 fix 1: c9/bistro spacingIn are derived from the imported preset
+// arrays (their Medium/middle entry) rather than hand literals -- the old
+// literal "12" was valid before #248's trim but isn't a member of either
+// type's new 3-value list, so a fresh install (no stored app_settings.defaults
+// row yet) fed this straight into editor.ts's applyDefaultsForCurrentType,
+// which silently clamped it to Medium on first tool select. Deriving from
+// the array means a future trim moves this automatically instead of
+// orphaning it again.
 export const DEFAULT_TOOL_DEFAULTS: ToolDefaults = {
-  c9: { spacingIn: 12, drawingStyle: 'strand', colorPattern: ['warm-white'] },
+  c9: { spacingIn: C9_SPACINGS[Math.floor(C9_SPACINGS.length / 2)], drawingStyle: 'strand', colorPattern: ['warm-white'] },
   mini: { spacingIn: 6, drawingStyle: 'strand', colorPattern: ['warm-white'] },
   permanent: {
     spacingIn: 8,
@@ -43,7 +51,7 @@ export const DEFAULT_TOOL_DEFAULTS: ToolDefaults = {
     showCoverage: false,
     showBeam: true,
   },
-  bistro: { spacingIn: 12, drawingStyle: 'strand', colorPattern: ['warm-white'], sagFactor: 0.1 },
+  bistro: { spacingIn: BISTRO_SPACINGS[Math.floor(BISTRO_SPACINGS.length / 2)], drawingStyle: 'strand', colorPattern: ['warm-white'], sagFactor: 0.1 },
   wreath: { sizeIn: 36, withLights: true, withBow: true, colorPattern: ['warm-white'] },
   bow: { sizeIn: 24 },
   garland: { sizeIn: 12, withLights: true, drawingStyle: 'strand' },

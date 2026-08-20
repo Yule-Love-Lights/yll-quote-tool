@@ -130,31 +130,55 @@ describe('legacy (pre-#202) size value round-trips through mergeToolDefaults (#2
   });
 });
 
-// #248: same guarantee as above, for a dropped light-spacing tier -- notably
-// the FACTORY c9/bistro spacingIn values themselves (12) are now off-preset
-// (Jason's picks didn't preserve the old shared default the way #202 did for
-// decor), so this also documents that DEFAULT_TOOL_DEFAULTS is intentionally
-// left as-is: mergeToolDefaults never coerces it, and the Settings dropdown's
-// existing spacingSelectOptions "(current)" affordance (#223) already covers
-// showing it correctly once trimmed.
-describe('legacy (pre-#248) spacing value round-trips through mergeToolDefaults (#248)', () => {
-  it('a dropped c9 spacing tier (12", the old factory default) is preserved exactly, not snapped to a kept preset', () => {
-    expect(C9_SPACINGS).not.toContain(12);
-    expect(DEFAULT_TOOL_DEFAULTS.c9.spacingIn).toBe(12); // factory value intentionally unchanged by #248
-    const merged = mergeToolDefaults(null);
-    expect(merged.c9.spacingIn).toBe(12);
+// #843 fix 1 (post-#248 review): every factory spacingIn -- the value a
+// FRESH install seeds before any app_settings.defaults row has ever been
+// saved -- must itself be a member of that type's own preset list.
+// Previously c9/bistro's factory value was a leftover "12" hand literal that
+// #248's trim orphaned (valid pre-trim, off-preset after): a brand new
+// environment would silently hit editor.ts's pre-existing
+// applyDefaultsForCurrentType off-preset clamp on the very first tool
+// select, snapping to Medium with no record of why. c9/bistro now derive
+// from their own preset array's middle entry instead (toolDefaults.ts), so
+// this locks both "on-list" and the exact expected value, and a future trim
+// can't orphan it again without this test catching it.
+describe('every factory spacingIn is a member of its own preset list (#843 fix 1)', () => {
+  const CASES: { type: string; options: readonly number[] }[] = [
+    { type: 'c9', options: C9_SPACINGS },
+    { type: 'mini', options: MINI_SPACINGS },
+    { type: 'permanent', options: [8] },
+    { type: 'bistro', options: BISTRO_SPACINGS },
+  ];
+
+  for (const { type, options } of CASES) {
+    it(`${type}.spacingIn factory default is one of its own presets`, () => {
+      expect(options).toContain(DEFAULT_TOOL_DEFAULTS[type].spacingIn);
+    });
+  }
+
+  it("c9/bistro factory defaults land on Medium (the array's middle entry), matching editor.ts's own ToolState-seed convention", () => {
+    expect(DEFAULT_TOOL_DEFAULTS.c9.spacingIn).toBe(15);
+    expect(DEFAULT_TOOL_DEFAULTS.bistro.spacingIn).toBe(18);
+  });
+});
+
+// A genuinely legacy STORED value (e.g. a staff account whose
+// app_settings.defaults row predates #248/#843) must still round-trip
+// through mergeToolDefaults unchanged -- the merge layer must not
+// coerce/clamp it onto one of the 3 kept presets, same guarantee #223
+// already locked for decor sizes above. Distinct from the factory-integrity
+// block above: this is about a value a user actually SAVED, not the
+// out-of-the-box default.
+describe('legacy (pre-#248) stored spacing value round-trips through mergeToolDefaults (#248)', () => {
+  it('a dropped c9 spacing tier (36", the pre-#248 max) is preserved exactly, not snapped to a kept preset', () => {
+    expect(C9_SPACINGS).not.toContain(36);
+    const merged = mergeToolDefaults({ c9: { spacingIn: 36 } });
+    expect(merged.c9.spacingIn).toBe(36);
   });
 
-  it('a dropped bistro spacing tier (12", the old factory default) is preserved exactly, not snapped to a kept preset', () => {
+  it('a dropped bistro spacing tier (12", the pre-#843 factory default) is preserved exactly, not snapped to a kept preset', () => {
     expect(BISTRO_SPACINGS).not.toContain(12);
-    expect(DEFAULT_TOOL_DEFAULTS.bistro.spacingIn).toBe(12); // factory value intentionally unchanged by #248
-    const merged = mergeToolDefaults(null);
+    const merged = mergeToolDefaults({ bistro: { spacingIn: 12 } });
     expect(merged.bistro.spacingIn).toBe(12);
-  });
-
-  it("mini's factory default (6\") is still a kept preset -- no off-preset case there", () => {
-    expect(MINI_SPACINGS).toContain(6);
-    expect(DEFAULT_TOOL_DEFAULTS.mini.spacingIn).toBe(6);
   });
 });
 
@@ -169,7 +193,7 @@ describe('mergeToolDefaults', () => {
     const merged = mergeToolDefaults({ spritzer: { sizeIn: 36 } });
     expect(merged.spritzer.sizeIn).toBe(36); // stored wins
     expect(merged.spritzer.colorPattern).toEqual(['warm-white']); // factory field preserved
-    expect(merged.c9.spacingIn).toBe(12); // untouched type still has factory
+    expect(merged.c9.spacingIn).toBe(15); // untouched type still has factory (#843 fix 1: was 12 pre-fix)
   });
 
   it('preserves unknown stored types (forward-compat)', () => {

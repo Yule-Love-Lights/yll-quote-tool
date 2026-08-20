@@ -8,6 +8,7 @@ import {
 } from './seedRoofline';
 import type { Scene, StrandItem, WreathItem } from './sceneTypes';
 import { isStrand } from './sceneTypes';
+import { C9_SPACINGS } from '@/components/design/editor-core/sizePresets';
 
 const W = 640;
 const H = 480;
@@ -76,6 +77,19 @@ describe('seedRooflineStrands', () => {
 
     expect(strands.filter((s) => s.surface === 'gingerbread')).toHaveLength(2);
     expect(strands.filter((s) => s.surface === 'winter-wonderland')).toHaveLength(1);
+  });
+
+  // #843 fix 2: C9_SPACING_IN is now DERIVED from C9_SPACINGS (its own
+  // middle/Medium entry) rather than a fresh hand literal -- the original
+  // row-248 literal (12) orphaned the moment the trim landed, requiring a
+  // follow-up fix (#834) to hand-update it to 15. Deriving means this can't
+  // happen again: this test re-derives the expected value from the same
+  // array the seed function imports, so it keeps passing across any future
+  // trim instead of needing a manual update alongside one.
+  it('the seeded roofline spacing always tracks C9_SPACINGS\' Medium entry, not a hand literal (#843 fix 2)', () => {
+    const out = seedRooflineStrands(emptyScene(), LINES, W, H);
+    const santas = out.items.filter(isStrand).find((s) => s.surface === 'santas-roofline')!;
+    expect(santas.spacingIn).toBe(C9_SPACINGS[Math.floor(C9_SPACINGS.length / 2)]);
   });
 
   it('seeds stake-lighting polylines into tagged C9 strands (own surface + id prefix)', () => {
