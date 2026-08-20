@@ -1,0 +1,957 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ops.yulelovelights.com/schemas/operations-hub/common.schema.json",
+  "title": "Yule Love Lights Operations Hub shared contract schemas",
+  "schema_version": "1.0.0-draft",
+  "contract_version": "1.4.0-draft",
+  "$defs": {
+    "RequestedContractVersion": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
+    },
+    "RequestedSchemaVersion": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
+    },
+    "ContractVersion": {
+      "type": "string",
+      "const": "1.4.0-draft"
+    },
+    "SchemaVersion": {
+      "type": "string",
+      "const": "1.0.0-draft"
+    },
+    "ClientVersion": {
+      "type": "string",
+      "minLength": 1
+    },
+    "Uuid": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "NullableUuid": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Uuid"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "Source": {
+      "type": "string",
+      "enum": [
+        "hub_pwa",
+        "telegram",
+        "office",
+        "admin",
+        "system"
+      ]
+    },
+    "CommandStatus": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "accepted_with_review",
+        "pending",
+        "rejected",
+        "superseded"
+      ]
+    },
+    "ReviewFlag": {
+      "type": "string",
+      "enum": [
+        "none",
+        "needs_review",
+        "quarantined"
+      ]
+    },
+    "ErrorCode": {
+      "type": "string",
+      "enum": [
+        "unauthorized",
+        "forbidden",
+        "not_found",
+        "conflict_stale_version",
+        "conflict_idempotency",
+        "validation_failed",
+        "gate_locked",
+        "kill_switched",
+        "cursor_expired",
+        "rate_limited",
+        "internal",
+        "contract_version_unsupported",
+        "schema_version_unsupported",
+        "entity_version_conflict",
+        "identity_not_linked",
+        "membership_stale",
+        "active_department_required",
+        "clock_required",
+        "offline_packet_expired",
+        "offline_packet_scope_denied",
+        "effective_time_review_required",
+        "placement_ack_pending",
+        "inventory_reconciliation_required",
+        "pay_period_locked"
+      ]
+    },
+    "NullableErrorCode": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "MachineReadErrorCode": {
+      "type": "string",
+      "enum": [
+        "cursor_expired",
+        "kill_switched",
+        "contract_version_unsupported",
+        "schema_version_unsupported"
+      ]
+    },
+    "MachineReadErrorResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "error_code",
+        "contract_version",
+        "schema_version",
+        "client_version",
+        "correlation_id"
+      ],
+      "properties": {
+        "error_code": {
+          "$ref": "#/$defs/MachineReadErrorCode"
+        },
+        "contract_version": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        },
+        "client_version": {
+          "$ref": "#/$defs/ClientVersion"
+        },
+        "correlation_id": {
+          "$ref": "#/$defs/Uuid"
+        }
+      }
+    },
+    "CursorExpiredReadErrorResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/MachineReadErrorResponse"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "error_code": {
+              "const": "cursor_expired"
+            }
+          }
+        }
+      ]
+    },
+    "KillSwitchedReadErrorResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/MachineReadErrorResponse"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "error_code": {
+              "const": "kill_switched"
+            }
+          }
+        }
+      ]
+    },
+    "VersionUnsupportedReadErrorResponse": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/MachineReadErrorResponse"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "error_code": {
+              "enum": [
+                "contract_version_unsupported",
+                "schema_version_unsupported"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "GpsEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "latitude",
+        "longitude",
+        "accuracy_meters",
+        "captured_at",
+        "source"
+      ],
+      "properties": {
+        "latitude": {
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90
+        },
+        "longitude": {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180
+        },
+        "accuracy_meters": {
+          "type": "number",
+          "minimum": 0
+        },
+        "captured_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "CommandRequest": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "command_id",
+        "idempotency_key",
+        "semantic_operation",
+        "actor_employee_id",
+        "impersonating_actor_id",
+        "source",
+        "contract_version",
+        "schema_version",
+        "client_version",
+        "expected_entity_version",
+        "device_occurred_at",
+        "device_timezone",
+        "client_sequence",
+        "effective_at_requested",
+        "offline_packet_id",
+        "active_department_id",
+        "membership_version",
+        "gps_evidence",
+        "reason",
+        "evidence_refs",
+        "correlation_id"
+      ],
+      "properties": {
+        "command_id": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "semantic_operation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "actor_employee_id": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "impersonating_actor_id": {
+          "$ref": "#/$defs/NullableUuid"
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "contract_version": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        },
+        "client_version": {
+          "$ref": "#/$defs/ClientVersion"
+        },
+        "expected_entity_version": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "device_occurred_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "device_timezone": {
+          "type": "string",
+          "minLength": 1
+        },
+        "client_sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "effective_at_requested": {
+          "oneOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "offline_packet_id": {
+          "$ref": "#/$defs/NullableUuid"
+        },
+        "active_department_id": {
+          "$ref": "#/$defs/NullableUuid"
+        },
+        "membership_version": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "gps_evidence": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/GpsEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "correlation_id": {
+          "$ref": "#/$defs/Uuid"
+        }
+      }
+    },
+    "CommandResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "command_id",
+        "canonical_operation_id",
+        "command_status",
+        "received_at",
+        "effective_at",
+        "entity_version",
+        "review_flag",
+        "error_code",
+        "duplicate_of_command_id",
+        "contract_version",
+        "schema_version",
+        "client_version",
+        "correlation_id"
+      ],
+      "properties": {
+        "command_id": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "canonical_operation_id": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "command_status": {
+          "$ref": "#/$defs/CommandStatus"
+        },
+        "received_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "effective_at": {
+          "oneOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "entity_version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "review_flag": {
+          "$ref": "#/$defs/ReviewFlag"
+        },
+        "error_code": {
+          "$ref": "#/$defs/NullableErrorCode"
+        },
+        "duplicate_of_command_id": {
+          "$ref": "#/$defs/NullableUuid"
+        },
+        "contract_version": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        },
+        "client_version": {
+          "$ref": "#/$defs/ClientVersion"
+        },
+        "correlation_id": {
+          "$ref": "#/$defs/Uuid"
+        }
+      }
+    },
+    "EventEnvelope": {
+      "type": "object",
+      "required": [
+        "event_id",
+        "event_type",
+        "aggregate_id",
+        "entity_version",
+        "occurred_at",
+        "effective_at",
+        "accepted_at",
+        "actor_employee_id",
+        "source",
+        "contract_version",
+        "schema_version",
+        "client_version",
+        "correlation_id",
+        "causation_id",
+        "idempotency_key"
+      ],
+      "properties": {
+        "event_id": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "event_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "aggregate_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "entity_version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "occurred_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "effective_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "accepted_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "actor_employee_id": {
+          "$ref": "#/$defs/NullableUuid"
+        },
+        "source": {
+          "$ref": "#/$defs/Source"
+        },
+        "contract_version": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        },
+        "client_version": {
+          "$ref": "#/$defs/ClientVersion"
+        },
+        "correlation_id": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "causation_id": {
+          "$ref": "#/$defs/NullableUuid"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "source": {
+                "const": "system"
+              }
+            },
+            "required": [
+              "source"
+            ]
+          },
+          "then": {},
+          "else": {
+            "properties": {
+              "actor_employee_id": {
+                "$ref": "#/$defs/Uuid"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "CanonicalUuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "ResolvedContactRef": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/CanonicalUuid"
+        }
+      ],
+      "description": "Canonical lowercase Quote Tool-owned UUID; never a phone number or email address."
+    },
+    "ContactIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resolution",
+        "contact_ref"
+      ],
+      "properties": {
+        "resolution": {
+          "type": "string",
+          "enum": [
+            "resolved",
+            "manual_only"
+          ]
+        },
+        "contact_ref": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ResolvedContactRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "resolution": {
+                "const": "resolved"
+              }
+            },
+            "required": [
+              "resolution"
+            ]
+          },
+          "then": {
+            "properties": {
+              "contact_ref": {
+                "$ref": "#/$defs/ResolvedContactRef"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "contact_ref": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "PerformerIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "employee_id",
+        "system_principal"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "employee",
+            "system"
+          ]
+        },
+        "employee_id": {
+          "$ref": "#/$defs/NullableUuid"
+        },
+        "system_principal": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "employee"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "employee_id": {
+                "$ref": "#/$defs/Uuid"
+              },
+              "system_principal": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "employee_id": {
+                "type": "null"
+              },
+              "system_principal": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "QuoteSentEvent": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/EventEnvelope"
+        },
+        {
+          "type": "object",
+          "required": [
+            "quote_id",
+            "quote_number",
+            "contact_identity",
+            "sending_rep_employee_id",
+            "sent_at",
+            "total_cents"
+          ],
+          "properties": {
+            "event_type": {
+              "const": "QuoteSent"
+            },
+            "aggregate_id": {
+              "$ref": "#/$defs/CanonicalUuid"
+            },
+            "entity_version": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "quote_id": {
+              "$ref": "#/$defs/CanonicalUuid"
+            },
+            "quote_number": {
+              "type": "string",
+              "minLength": 1
+            },
+            "contact_identity": {
+              "$ref": "#/$defs/ContactIdentity"
+            },
+            "sending_rep_employee_id": {
+              "$ref": "#/$defs/Uuid"
+            },
+            "sent_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "total_cents": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "OutboundMessageChannel": {
+      "type": "string",
+      "enum": [
+        "sms",
+        "email"
+      ]
+    },
+    "OutboundMessageSentEvent": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/EventEnvelope"
+        },
+        {
+          "type": "object",
+          "required": [
+            "outbound_delivery_id",
+            "contact_identity",
+            "performed_by",
+            "channel",
+            "sent_at",
+            "has_media",
+            "has_portal_link"
+          ],
+          "properties": {
+            "event_type": {
+              "const": "OutboundMessageSent"
+            },
+            "aggregate_id": {
+              "$ref": "#/$defs/CanonicalUuid"
+            },
+            "entity_version": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "outbound_delivery_id": {
+              "$ref": "#/$defs/CanonicalUuid"
+            },
+            "contact_identity": {
+              "$ref": "#/$defs/ContactIdentity"
+            },
+            "performed_by": {
+              "$ref": "#/$defs/PerformerIdentity"
+            },
+            "channel": {
+              "$ref": "#/$defs/OutboundMessageChannel"
+            },
+            "sent_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "has_media": {
+              "type": "boolean"
+            },
+            "has_portal_link": {
+              "type": "boolean"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "CallDirection": {
+      "type": "string",
+      "enum": [
+        "inbound",
+        "outbound"
+      ]
+    },
+    "CallAttemptedEvent": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/EventEnvelope"
+        },
+        {
+          "type": "object",
+          "required": [
+            "call_attempt_id",
+            "contact_identity",
+            "performed_by",
+            "direction",
+            "duration_seconds",
+            "connected",
+            "attempted_at"
+          ],
+          "properties": {
+            "event_type": {
+              "const": "CallAttempted"
+            },
+            "aggregate_id": {
+              "$ref": "#/$defs/CanonicalUuid"
+            },
+            "entity_version": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "call_attempt_id": {
+              "$ref": "#/$defs/CanonicalUuid"
+            },
+            "contact_identity": {
+              "$ref": "#/$defs/ContactIdentity"
+            },
+            "performed_by": {
+              "$ref": "#/$defs/PerformerIdentity"
+            },
+            "direction": {
+              "$ref": "#/$defs/CallDirection"
+            },
+            "duration_seconds": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "connected": {
+              "type": "boolean"
+            },
+            "attempted_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "CommitmentEvent": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/QuoteSentEvent"
+        },
+        {
+          "$ref": "#/$defs/OutboundMessageSentEvent"
+        },
+        {
+          "$ref": "#/$defs/CallAttemptedEvent"
+        }
+      ],
+      "discriminator": {
+        "propertyName": "event_type",
+        "mapping": {
+          "QuoteSent": "#/$defs/QuoteSentEvent",
+          "OutboundMessageSent": "#/$defs/OutboundMessageSentEvent",
+          "CallAttempted": "#/$defs/CallAttemptedEvent"
+        }
+      }
+    },
+    "CommitmentEventsPage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "events",
+        "next_cursor",
+        "has_more",
+        "contract_version",
+        "schema_version",
+        "client_version",
+        "correlation_id"
+      ],
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CommitmentEvent"
+          }
+        },
+        "next_cursor": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "has_more": {
+          "type": "boolean"
+        },
+        "contract_version": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        },
+        "client_version": {
+          "$ref": "#/$defs/ClientVersion"
+        },
+        "correlation_id": {
+          "$ref": "#/$defs/Uuid"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "has_more": {
+                "const": true
+              }
+            },
+            "required": [
+              "has_more"
+            ]
+          },
+          "then": {
+            "properties": {
+              "next_cursor": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "MachineKeyId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "UnixTimestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{10,}$"
+    },
+    "MachineNonce": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{22,}$"
+    },
+    "MachineSignature": {
+      "type": "string",
+      "pattern": "^v1=[0-9a-f]{64}$"
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/CommandRequest"
+    },
+    {
+      "$ref": "#/$defs/CommandResponse"
+    },
+    {
+      "$ref": "#/$defs/CommitmentEvent"
+    },
+    {
+      "$ref": "#/$defs/CommitmentEventsPage"
+    },
+    {
+      "$ref": "#/$defs/MachineReadErrorResponse"
+    }
+  ]
+}

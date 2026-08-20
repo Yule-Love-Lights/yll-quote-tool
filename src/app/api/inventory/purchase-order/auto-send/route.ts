@@ -21,7 +21,6 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
-import { safeEqual } from '@/lib/security';
 import { cronDenial } from '@/lib/auth/cronAuth';
 import {
   buildSupplierPurchaseOrder,
