@@ -747,6 +747,14 @@ export default function QuoteBuilder({
   // for the ?retryGhl reconcile bucket). Surfaced so the operator knows + can
   // retry, instead of the old falsely-confident "stage moved to Bid Sent".
   const [ghlSyncWarning, setGhlSyncWarning] = useState<string | null>(null);
+  // FIX A (#237 fix round, staff-lens HIGH): mirrors ghlSyncWarning's shape
+  // (send route field: eventDateSyncError) for a DIFFERENT failure surface —
+  // the event-date GHL custom-field push can fail independently of the stage
+  // move. Kept as its OWN state/banner rather than folded into
+  // ghlSyncWarning: that banner's copy explicitly claims "the HighLevel card
+  // didn't advance to Bid Sent," which would be a false claim on a send
+  // where the card moved fine and only this push failed.
+  const [eventDateSyncWarning, setEventDateSyncWarning] = useState<string | null>(null);
   // Guards against re-attaching the same quote+contact on every recalculation,
   // now that Calculate updates the saved row in place instead of inserting.
   const lastAttachKey = useRef<string | null>(null);
@@ -3288,6 +3296,12 @@ export default function QuoteBuilder({
           ? (data.stageError ?? 'The HighLevel card may not have advanced to Bid Sent.')
           : null,
       );
+      // FIX A (#237 fix round): see eventDateSyncWarning's own state comment
+      // for why this is separate from ghlSyncWarning above. data.
+      // eventDateSyncError is only ever present for an event quote whose
+      // push was attempted and failed — undefined otherwise, which clears
+      // any stale warning from a prior send.
+      setEventDateSyncWarning(data.eventDateSyncError ?? null);
       // Auto-capture (#8 Stage A / #141): sending = staff vouching the design
       // is right, so the staff-final state becomes a training example
       // (replaces this quote's previous auto snapshot on a re-send).
@@ -3397,6 +3411,15 @@ export default function QuoteBuilder({
           ? 'This was a delivery-only retry, which never touches the CRM card.'
           : null,
       );
+      // FIX A (#237 fix round): deliberately NOT touching eventDateSyncWarning
+      // here — a delivery-only retry structurally never re-runs the
+      // event-date push either (route.ts's ghlStageChain returns immediately
+      // on isDeliveryRetry, same as the stage move), and unlike ghlSynced
+      // there's no persisted server-side flag (no ghl_stage_synced_at
+      // equivalent) this route could read to reconstruct "was a PRIOR push
+      // failing." Leaving the state as-is is the honest choice: it already
+      // reflects the outcome of the last attempt that actually ran, and this
+      // click made no new attempt.
     } catch (err) {
       setSendStatus('error');
       setSendError(err instanceof Error ? err.message : 'Delivery retry failed');
@@ -3507,10 +3530,23 @@ export default function QuoteBuilder({
           ? (data.stageError ?? 'The HighLevel card still has not advanced — check the integration.')
           : null,
       );
+      // FIX A (#237 fix round): ?retryGhl re-runs the WHOLE stage chain
+      // (route.ts), including the event-date push — see that route's
+      // comment on the push's placement — so this retry's own outcome for
+      // BOTH banners comes back in the same response.
+      setEventDateSyncWarning(data.eventDateSyncError ?? null);
     } catch (err) {
-      // It was already sent; only the sync retry failed.
+      // It was already sent; only the sync retry failed. The request itself
+      // never completed, so there's no per-banner outcome to distinguish —
+      // both warnings reflect the one real fact: this retry attempt failed.
+      // eventDateSyncWarning only for an event quote (form.serviceType
+      // guard): a non-event quote never had an event date to sync in the
+      // first place, so showing that banner here would be a false claim,
+      // not an honest one.
       setSendStatus('sent');
-      setGhlSyncWarning(err instanceof Error ? err.message : 'CRM sync retry failed.');
+      const message = err instanceof Error ? err.message : 'CRM sync retry failed.';
+      setGhlSyncWarning(message);
+      if (form.serviceType === 'event') setEventDateSyncWarning(message);
     }
   };
 
@@ -6511,6 +6547,25 @@ export default function QuoteBuilder({
                   Sent to the customer — but the HighLevel card didn&apos;t advance to
                   &ldquo;Bid Sent&rdquo;. {ghlSyncWarning}
                 </p>
+                <button
+                  type="button"
+                  onClick={handleRetryGhlSync}
+                  className="mt-2 text-xs font-medium text-amber-900 underline hover:no-underline"
+                >
+                  Retry CRM sync
+                </button>
+              </div>
+            )}
+
+            {/* FIX A (#237 fix round, staff-lens HIGH): sent locally, the
+                HighLevel card may well have advanced fine, but the event date
+                itself failed to sync onto the contact's custom field. Its own
+                banner (not folded into the one above) so it never claims the
+                card didn't advance when it did — reuses the SAME retry
+                action, since ?retryGhl re-runs this push too. */}
+            {sendStatus === 'sent' && eventDateSyncWarning && (
+              <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                <p>{eventDateSyncWarning}</p>
                 <button
                   type="button"
                   onClick={handleRetryGhlSync}

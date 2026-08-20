@@ -22,12 +22,25 @@ const { sbRef, hl, attachQuoteToCustomerMock, propagateMock } = vi.hoisted(() =>
     createOpportunity: vi.fn(async () => ({ id: 'opp_new' })),
     findOpportunityForContact: vi.fn(async () => null as { id: string } | null),
     resurrectDuplicateOpportunity: vi.fn(async (_err: unknown, _input: unknown) => null as { id: string } | null),
-    upsertContactCustomField: vi.fn(async () => undefined),
+    // #237: typed with its real (contactId, fieldId, value) signature (was
+    // zero-arg) so the event-date failure-is-soft test below can
+    // discriminate its mockImplementation by fieldId.
+    upsertContactCustomField: vi.fn(async (_contactId: string, _fieldId: string, _value: string | string[]) => undefined as void),
     // #250: typed to allow tests to resolve a GHL-shaped { messageId } so the
     // quote_deliveries provider_message_id capture can be asserted.
     sendSms: vi.fn(async () => undefined as { messageId?: string } | undefined),
     sendEmail: vi.fn(async () => undefined as { messageId?: string } | undefined),
     configured: { value: true },
+    // #237: the event-date custom-field push (src/lib/integrations/
+    // ghlEventDate.ts) resolves its field id through these two — real module,
+    // mocked GHL client, same as everything else in this file. Default: an
+    // already-existing "Event Date" field, so most tests never need the
+    // create path.
+    listLocationCustomFields: vi.fn(async () => [{ id: 'ed_field_1', name: 'Event Date' }] as Array<{ id: string; name: string }>),
+    createLocationCustomField: vi.fn(async (_input: { name: string; dataType: string }) => ({
+      id: 'ed_field_created',
+      name: 'Event Date',
+    })),
   },
 }));
 
@@ -58,6 +71,9 @@ vi.mock('@/lib/integrations/highlevel', () => ({
   sendSms: hl.sendSms,
   sendEmail: hl.sendEmail,
   isHighLevelConfigured: () => hl.configured.value,
+  // #237: event-date custom-field resolution (see ghlEventDate.ts).
+  listLocationCustomFields: hl.listLocationCustomFields,
+  createLocationCustomField: hl.createLocationCustomField,
   // #264 round 2: constructor now mirrors the real class exactly (message,
   // status, body, timedOut) so a test can construct a timed-out error the
   // same way ghlFetch does, instead of hand-setting fields after the fact.
@@ -77,6 +93,10 @@ vi.mock('@/lib/integrations/quoteMessages', () => ({
 
 import { POST } from './route';
 import { HighLevelError } from '@/lib/integrations/highlevel';
+// #237: resolveEventDateFieldId caches the resolved field id at module scope
+// (mirrors ghlTenure.ts) — reset it every test so one test's resolution
+// doesn't silently skip another test's listLocationCustomFields call.
+import { resetEventDateFieldCacheForTests } from '@/lib/integrations/ghlEventDate';
 import { DELIVERY_TIMEOUT_ERROR_PREFIX } from '@/lib/quoteDeliveries';
 
 // Fake Supabase: read = from().select().eq().single(); each write =
@@ -194,6 +214,7 @@ beforeEach(() => {
   hl.findOpportunityForContact.mockResolvedValue(null);
   process.env.HIGHLEVEL_STAGE_QUOTE_SENT = 'stage_bid_sent';
   process.env.HIGHLEVEL_PIPELINE_ID = 'pipeline_1';
+  resetEventDateFieldCacheForTests();
 });
 
 describe('POST /api/quotes/[id]/send — GHL sync state', () => {
@@ -1662,5 +1683,248 @@ describe('POST /api/quotes/[id]/send — tagPropagation deadline (#264 round 2, 
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// Ledger #237: push an EVENT quote's staff-entered event date to its linked
+// GHL contact's "Event Date" custom field on send. The real ghlEventDate.ts
+// module runs in these tests (not mocked) against the same mocked
+// @/lib/integrations/highlevel client every other test in this file uses —
+// listLocationCustomFields/createLocationCustomField default to an
+// already-existing "Event Date" field (id 'ed_field_1'; see the hl mock
+// above), so these tests exercise the real find/format/push logic end to
+// end through the route, not just "was a spy called."
+describe('POST /api/quotes/[id]/send — event-date GHL push (#237)', () => {
+  it('fires for an event quote: pushes MM/DD/YYYY (not the raw ISO input) to the resolved field', async () => {
+    const { client } = makeSb({
+      ...FRESH_QUOTE,
+      service_type: 'event',
+      inputs: { event: { eventDate: '2026-12-25' } },
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    expect(hl.listLocationCustomFields).toHaveBeenCalledTimes(1);
+    expect(hl.upsertContactCustomField).toHaveBeenCalledWith('contact_1', 'ed_field_1', '12/25/2026');
+  });
+
+  // Positive gate (`=== 'event'`, never `!== 'event'`): the other three
+  // service types must never even attempt field resolution, let alone a
+  // write — asserted via listLocationCustomFields, which nothing else in
+  // this route calls (the quote-link stamp resolves its field id from an env
+  // var, not a GHL list call).
+  it.each(['holiday', 'permanent', 'permanent_bistro'])(
+    'does NOT fire for a %s quote, even with a well-formed event date on the row',
+    async (serviceType) => {
+      const { client } = makeSb({
+        ...FRESH_QUOTE,
+        service_type: serviceType,
+        inputs: { event: { eventDate: '2026-12-25' } },
+      });
+      sbRef.current = client;
+
+      const res = await POST(makeReq(), { params });
+      expect(res.status).toBe(200);
+      expect(hl.listLocationCustomFields).not.toHaveBeenCalled();
+      // No custom-field write ever carries a pushed-date-shaped value.
+      expect(hl.upsertContactCustomField).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        '12/25/2026',
+      );
+    },
+  );
+
+  it('a missing event date does nothing, quietly: no field lookup, no write, send still succeeds', async () => {
+    const { client } = makeSb({
+      ...FRESH_QUOTE,
+      service_type: 'event',
+      inputs: { event: {} }, // eventDate absent — the real-world "staff never filled it in" shape
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    // formatEventDateForGhl short-circuits on the blank value BEFORE any GHL
+    // call — this proves the no-op happens at the cheapest possible point,
+    // not just that the end result looks fine.
+    expect(hl.listLocationCustomFields).not.toHaveBeenCalled();
+    expect(hl.upsertContactCustomField).not.toHaveBeenCalledWith(
+      'contact_1',
+      expect.anything(),
+      expect.stringMatching(/\d{2}\/\d{2}\/\d{4}/),
+    );
+  });
+
+  it('a blank-string event date (the untouched-input shape from quoteForm.ts) is treated the same as missing', async () => {
+    const { client } = makeSb({
+      ...FRESH_QUOTE,
+      service_type: 'event',
+      inputs: { event: { eventDate: '' } },
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    expect(hl.listLocationCustomFields).not.toHaveBeenCalled();
+  });
+
+  it('failure is soft: a GHL error on the custom-field write never fails or delays the send', async () => {
+    hl.upsertContactCustomField.mockImplementation(async (_contactId: string, fieldId: string) => {
+      if (fieldId === 'ed_field_1') {
+        throw new HighLevelError('GHL 500', 500, 'server error');
+      }
+      // Any other field (e.g. a quote-link stamp, if one fires) succeeds
+      // normally — isolates this test to the event-date write specifically.
+      return undefined;
+    });
+    const { client } = makeSb({
+      ...FRESH_QUOTE,
+      service_type: 'event',
+      inputs: { event: { eventDate: '2026-12-25' } },
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    // The send itself completed successfully — a GHL hiccup on this
+    // best-effort field push must never surface as a failed/delayed send.
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.stageUpdated).toBe(true);
+    // The failed write was actually attempted (proves this test exercised
+    // the real failure path, not a silently-skipped one).
+    expect(hl.upsertContactCustomField).toHaveBeenCalledWith('contact_1', 'ed_field_1', '12/25/2026');
+    // FIX A (#237 fix round, staff-lens HIGH): "soft" used to mean the
+    // outcome was discarded entirely — the operator had no way to learn the
+    // date never synced. It must now be a non-empty string the UI can render
+    // (see QuoteBuilder.tsx's eventDateSyncWarning banner).
+    expect(typeof json.eventDateSyncError).toBe('string');
+    expect(json.eventDateSyncError.length).toBeGreaterThan(0);
+  });
+
+  it('never touches a real GHL contact for a Test Quote, even for a well-formed event quote', async () => {
+    const { client } = makeSb({
+      ...FRESH_QUOTE,
+      service_type: 'event',
+      is_test: true,
+      inputs: { event: { eventDate: '2026-12-25' } },
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    expect(hl.listLocationCustomFields).not.toHaveBeenCalled();
+  });
+
+  // FIX A (#237 fix round, staff-lens HIGH): the happy-path counterpart to
+  // the failure-is-soft test above — a successful push must NOT manufacture
+  // a warning.
+  it('eventDateSyncError is undefined (not present, not empty string) when the push succeeds', async () => {
+    // vi.clearAllMocks() (beforeEach) clears call history but NOT a prior
+    // test's mockImplementation override — the "failure is soft" test above
+    // sets one. Reset explicitly so this test's outcome doesn't depend on
+    // file execution order.
+    hl.upsertContactCustomField.mockResolvedValue(undefined);
+    const { client } = makeSb({
+      ...FRESH_QUOTE,
+      service_type: 'event',
+      inputs: { event: { eventDate: '2026-12-25' } },
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.eventDateSyncError).toBeUndefined();
+  });
+
+  // FIX A (#237 fix round): a blank date is a deliberate no-op (see the
+  // "missing event date does nothing, quietly" test above) — it must not be
+  // reported as a sync FAILURE just because pushEventDateToGhl itself
+  // returns pushed:false for that case too.
+  it('eventDateSyncError stays undefined for a blank event date — nothing was attempted, not a failure', async () => {
+    const { client } = makeSb({
+      ...FRESH_QUOTE,
+      service_type: 'event',
+      inputs: { event: {} },
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(json.eventDateSyncError).toBeUndefined();
+  });
+
+  // FIX E (#237 fix round): regression test for the deliberate "NOT gated on
+  // stageUpdated" decision documented in route.ts — a future edit copying
+  // the adjacent quote-link stamp's `stageUpdated &&` guard onto this push
+  // would silently break event-date sync every time the stage move fails,
+  // with every OTHER test in this file still green (they all default to a
+  // successful stage move). Forces stageUpdated=false via a genuine stage
+  // failure (findOpportunityForContact rejects) while highlevel_contact_id
+  // stays linked, and asserts the push still fires.
+  it('still pushes the event date when the stage move itself failed (not gated on stageUpdated)', async () => {
+    hl.findOpportunityForContact.mockRejectedValueOnce(new HighLevelError('GHL 500', 500));
+    const { client } = makeSb({
+      ...FRESH_QUOTE,
+      highlevel_opportunity_id: null, // forces the find-or-create branch, not the direct-update one
+      service_type: 'event',
+      inputs: { event: { eventDate: '2026-12-25' } },
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.stageUpdated).toBe(false); // the stage move genuinely failed
+    expect(json.stageError).toBeTruthy();
+    // ...yet the event-date push still fired, independently of that failure.
+    expect(hl.upsertContactCustomField).toHaveBeenCalledWith('contact_1', 'ed_field_1', '12/25/2026');
+  });
+
+  // FIX E (#237 fix round 2, LOW — coverage, not a defect): eventDateSyncError
+  // is populated from the SAME variable on both the 200 body (asserted by the
+  // "failure is soft" test above) and the 502 delivery-failed body (route.ts
+  // ~1053, "same reasoning as the 200 body below") — this is the missing
+  // other half. Every requested customer channel fails (mirrors "returns 502
+  // when every requested customer channel fails" above) AND the event-date
+  // field write fails, so a split failure (message delivery AND the CRM
+  // date push both die) doesn't drop this half of the picture from the 502
+  // body the way row 271's stageUpdated/stageError gap once did.
+  it('eventDateSyncError is present on the 502 delivery-failed body too, not just the 200 body', async () => {
+    hl.sendSms.mockRejectedValueOnce(new Error('SMS down'));
+    hl.sendEmail.mockRejectedValueOnce(new Error('Email down'));
+    hl.upsertContactCustomField.mockImplementation(async (_contactId: string, fieldId: string) => {
+      if (fieldId === 'ed_field_1') {
+        throw new HighLevelError('GHL 500', 500, 'server error');
+      }
+      return undefined;
+    });
+    const { client } = makeSb({
+      ...FRESH_QUOTE,
+      service_type: 'event',
+      inputs: { event: { eventDate: '2026-12-25' } },
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ channel: 'both' }), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(502);
+    expect(json.code).toBe('delivery-failed');
+    expect(typeof json.eventDateSyncError).toBe('string');
+    expect(json.eventDateSyncError.length).toBeGreaterThan(0);
+    // The failed write was actually attempted — proves this exercised the
+    // real failure path, not a silently-skipped one.
+    expect(hl.upsertContactCustomField).toHaveBeenCalledWith('contact_1', 'ed_field_1', '12/25/2026');
   });
 });
