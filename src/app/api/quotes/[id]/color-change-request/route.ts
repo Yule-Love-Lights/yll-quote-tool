@@ -7,10 +7,13 @@
 // A booked customer previews a different light colour on the portal and asks us
 // to change it. This does NOT alter the booked order — it records the requested
 // colour on the quote (approval_snapshot.pendingColorRequest) so staff can review
-// + apply it deliberately (ledger #163 "one-click apply", separate route), and
-// drops an /inbox notification so it lands in the operator queue. The colour is
-// sanitized here exactly like the approve route (never trust the client), so a
-// later apply re-freezes a known-good scheme/pattern.
+// + apply it deliberately (ledger #163 "one-click apply", separate route), drops
+// an /inbox notification so it lands in the operator queue, and (ledger row 319)
+// fires a best-effort internal staff email immediately so the request is never
+// visible ONLY in /inbox — both the email and the inbox ping are independent
+// best-effort sends; either failing never fails the customer's already-saved
+// request. The colour is sanitized here exactly like the approve route (never
+// trust the client), so a later apply re-freezes a known-good scheme/pattern.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { rateLimitResponse } from '@/lib/rateLimit';
@@ -27,6 +30,11 @@ import { resolveColorChoice } from '@/lib/inventory/resolveInstalls';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { ingestTouch } from '@/lib/dashboard/inbox/store';
 import type { NormalizedTouch } from '@/lib/dashboard/inbox/types';
+import { sendEmail, isHighLevelConfigured } from '@/lib/integrations/highlevel';
+import {
+  internalColorChangeRequestedEmailSubject,
+  internalColorChangeRequestedEmailHtml,
+} from '@/lib/integrations/quoteMessages';
 
 export const runtime = 'nodejs';
 
@@ -37,6 +45,7 @@ type QuoteRow = {
   customer_name: string | null;
   customer_email: string | null;
   customer_phone: string | null;
+  customer_address: string | null;
   highlevel_contact_id: string | null;
   service_type: string | null;
   customer_approved_at: string | null;
@@ -79,7 +88,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_email, customer_phone, highlevel_contact_id, service_type, customer_approved_at, deposit_paid_at, quote_sent_at, status, total, approval_snapshot',
+      'id, customer_name, customer_email, customer_phone, customer_address, highlevel_contact_id, service_type, customer_approved_at, deposit_paid_at, quote_sent_at, status, total, approval_snapshot',
     )
     .eq('id', id)
     .single<QuoteRow>();
@@ -192,6 +201,36 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     await ingestTouch(touch, new Date());
   } catch (e) {
     console.warn('[api/quotes/:id/color-change-request] inbox notify failed (request still saved):', e);
+  }
+
+  // Immediate internal staff email (ledger row 319) — the /inbox row above is
+  // easy to miss (Susan Pace-Burke's request sat unanswered 3 days; Kristie
+  // Tibbetts' was dismissed same-day with no email ever firing). Best-effort,
+  // independent of the inbox ping above: a send failure here must never fail
+  // the customer's already-saved request. Mirrors request-changes/route.ts's
+  // internal-alert pattern exactly (same shape: a customer portal action on an
+  // existing quote that needs a staff look).
+  const internalContactId = process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
+  if (isHighLevelConfigured() && internalContactId) {
+    const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
+    try {
+      await sendEmail({
+        contactId: internalContactId,
+        subject: internalColorChangeRequestedEmailSubject(quote.customer_name),
+        html: internalColorChangeRequestedEmailHtml({
+          customerName: quote.customer_name,
+          address: quote.customer_address,
+          phone: quote.customer_phone,
+          email: quote.customer_email,
+          label,
+          portalUrl: `${baseUrl}/portal/${id}`,
+          adminUrl: `${baseUrl}/quote/${id}`,
+        }),
+        emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
+      });
+    } catch (err) {
+      console.error('[api/quotes/:id/color-change-request] staff email failed (request still saved):', err);
+    }
   }
 
   return NextResponse.json({ ok: true, label });
