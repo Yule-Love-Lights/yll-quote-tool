@@ -20,6 +20,7 @@ import type {
   InboxStatus,
   NormalizedTouch,
   OpenInboxItem,
+  PendingColorRequestItem,
   StoredContact,
 } from './types';
 import { normalizeEmail, normalizePhone } from './normalize';
@@ -671,6 +672,20 @@ const LEGACY_REBOOK_FETCH_BUFFER = 200;
 export function quoteIdPrefix(externalId: string): string {
   const i = externalId.indexOf(':');
   return i === -1 ? externalId : externalId.slice(0, i);
+}
+
+/**
+ * Row 321: true when a quotetool item's external_id carries the color-request
+ * suffix apply-color-request/color-change-request mint (`${quoteId}:color-
+ * request` — see quoteIdPrefix's own doc above). Used both to exclude a live
+ * request from #317's terminal auto-complete (completeTerminalQuoteItems
+ * below) and to badge/confirm-gate the row in the /inbox UI (InboxList.tsx,
+ * InWorksSection.tsx) so the ordinary Handled/Mark-completed buttons can't
+ * silently bury it — see ledger row 321's Kristie Tibbetts case (a plain Mark
+ * completed left her request unfulfilled and invisible for three weeks).
+ */
+export function isColorRequestExternalId(externalId: string): boolean {
+  return externalId.endsWith(':color-request');
 }
 
 /**
@@ -2064,6 +2079,71 @@ export async function listDueFollowUps(now: Date): Promise<DueFollowUpsResult> {
         contactEmail: (c?.primary_email as string | null) ?? null,
       };
     });
+  return { ok: true, items };
+}
+
+export type PendingColorRequestsResult =
+  | { ok: true; items: PendingColorRequestItem[] }
+  | { ok: false; error: string };
+
+/**
+ * Row 321 (S43 wrap CUSTOMER lens, HIGH — LIVE PROD CASE): the ONLY existing
+ * view of a pending colour request was `ColorRequestPanel`, gated on
+ * `approval_snapshot?.pendingColorRequest` and rendered only on that ONE
+ * quote's own /admin/quotes/[id] page — nothing else in the app surfaced it,
+ * so once the inbox item that announced it left the board (Handled/Mark
+ * completed, or #317's terminal auto-complete), the request became invisible
+ * with no trace but a generic activity row. Kristie Tibbetts' colour request
+ * sat unfulfilled for three weeks this way (her inbox item was marked
+ * completed on 08-18; her quote's pendingColorRequest is still set today).
+ *
+ * This reads pendingColorRequest DIRECTLY off `quotes.approval_snapshot` —
+ * independent of any inbox_items row's status — so a hidden/completed/
+ * dismissed inbox item can never suppress it. Feeds a standing /inbox section
+ * (PendingColorRequestsSection) that lists every quote with a live request
+ * and links to the admin page where ColorRequestPanel can act on it.
+ *
+ * Bounded + single query, same chokepoint filters (is_test/view_only) as
+ * listQuotesForDashboard (queries.ts) — the live population is 2 quotes
+ * today; `limit` guards the pathological case without ever fetching more than
+ * one page over the wire. `.not('approval_snapshot->pendingColorRequest',
+ * 'is', null)` filters server-side (confirmed against prod: matches exactly
+ * the 2 live requests, `EXPLAIN` shows one Seq Scan over the ~190-row quotes
+ * table — no per-row fetch, no N+1).
+ */
+export async function listPendingColorRequests(limit = 200): Promise<PendingColorRequestsResult> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const { data, error } = await sb
+    .from('quotes')
+    .select('id, customer_name, quote_number, approval_snapshot')
+    .eq('is_test', false)
+    .eq('view_only', false)
+    .not('approval_snapshot->pendingColorRequest', 'is', null)
+    .limit(limit);
+  if (error) return { ok: false, error: error.message };
+  const items = ((data ?? []) as {
+    id: string;
+    customer_name: string | null;
+    quote_number: number | null;
+    approval_snapshot: { pendingColorRequest?: { label?: string; requestedAt?: string } } | null;
+  }[])
+    .map((r): PendingColorRequestItem | null => {
+      const pending = r.approval_snapshot?.pendingColorRequest;
+      if (!pending) return null; // defensive — the query filter above already excludes these
+      return {
+        quoteId: String(r.id),
+        quoteNumber: r.quote_number,
+        customerName: r.customer_name,
+        label: pending.label || 'Colour change',
+        requestedAt: pending.requestedAt ?? null,
+      };
+    })
+    .filter((i): i is PendingColorRequestItem => i !== null)
+    // Oldest request first — the longest-waiting customer surfaces at the top,
+    // matching every other /inbox strip's stalest-first convention. A tiny
+    // in-memory sort over a population capped at `limit` (2 rows today).
+    .sort((a, b) => (a.requestedAt ?? '').localeCompare(b.requestedAt ?? ''));
   return { ok: true, items };
 }
 

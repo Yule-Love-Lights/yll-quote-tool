@@ -499,6 +499,7 @@ import {
   findOrphanedFollowUpItems,
   findViewOnlyFollowUpItems,
   getReopenCounts,
+  isColorRequestExternalId,
   isHiddenLegacyRebookQuote,
   isReversibleActivity,
   listActivity,
@@ -506,6 +507,7 @@ import {
   listInWorks,
   listOpenItems,
   listEscalatableItems,
+  listPendingColorRequests,
   markFollowUpDone,
   markItemCompleted,
   markItemFollowed,
@@ -764,6 +766,22 @@ describe('quoteIdPrefix (#183 BUG 1)', () => {
     expect(quoteIdPrefix('123e4567-e89b-12d3-a456-426614174000:color-request')).toBe(
       '123e4567-e89b-12d3-a456-426614174000',
     );
+  });
+});
+
+// ─── isColorRequestExternalId — row 321 (pure) ───────────────────────────────
+
+describe('isColorRequestExternalId (row 321)', () => {
+  it('true for a :color-request-suffixed external_id', () => {
+    expect(isColorRequestExternalId('quote-1:color-request')).toBe(true);
+  });
+
+  it('false for a bare quote id', () => {
+    expect(isColorRequestExternalId('quote-1')).toBe(false);
+  });
+
+  it('false for a non-quotetool-shaped external_id', () => {
+    expect(isColorRequestExternalId('conv-abc123')).toBe(false);
   });
 });
 
@@ -2115,6 +2133,89 @@ describe('listDueFollowUps — contact fallback + due-window (#229)', () => {
     expect(result.items).toHaveLength(1);
     expect(result.items[0].contactName).toBe('YLL Neighbor Lead');
     expect(fromCalls).toBe(1); // no second (quotes) lookup — the anchoring machinery is gone
+  });
+});
+
+// ─── listPendingColorRequests — row 321 (I/O wiring) ────────────────────────
+
+describe('listPendingColorRequests (row 321 — the unsuppressible surface)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('maps a quote row with a live pendingColorRequest, independent of any inbox_items status', async () => {
+    const row = {
+      id: 'quote-kristie',
+      customer_name: 'Kristie Tibbetts',
+      quote_number: 1129,
+      approval_snapshot: {
+        customerSelection: { colorSchemeId: 'as-designed' },
+        pendingColorRequest: { label: "Staff's pick", requestedAt: '2026-07-29T15:15:41.787Z' },
+      },
+    };
+    const { builder, calls } = makeBuilder({ data: [row], error: null });
+    sbRef.current = { from: () => builder };
+
+    const result = await listPendingColorRequests();
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items).toEqual([
+      {
+        quoteId: 'quote-kristie',
+        quoteNumber: 1129,
+        customerName: 'Kristie Tibbetts',
+        label: "Staff's pick",
+        requestedAt: '2026-07-29T15:15:41.787Z',
+      },
+    ]);
+    // The query filters DIRECTLY on the quote's own jsonb column — never joins
+    // or reads inbox_items at all, so a completed/dismissed/hidden inbox row
+    // cannot suppress this. Also asserts the is_test/view_only chokepoint
+    // filters (queries.ts's DASHBOARD_QUOTES_SELECT convention) are wired.
+    const notCall = calls.find((c) => c.method === 'not');
+    expect(notCall!.args).toEqual(['approval_snapshot->pendingColorRequest', 'is', null]);
+    expect(calls.some((c) => c.method === 'eq' && c.args[0] === 'is_test' && c.args[1] === false)).toBe(true);
+    expect(calls.some((c) => c.method === 'eq' && c.args[0] === 'view_only' && c.args[1] === false)).toBe(true);
+  });
+
+  it('sorts oldest request first', async () => {
+    const rows = [
+      { id: 'q-new', customer_name: 'New', quote_number: 2, approval_snapshot: { pendingColorRequest: { label: 'A', requestedAt: '2026-08-17T17:37:48.337Z' } } },
+      { id: 'q-old', customer_name: 'Old', quote_number: 1, approval_snapshot: { pendingColorRequest: { label: 'B', requestedAt: '2026-07-29T15:15:41.787Z' } } },
+    ];
+    const { builder } = makeBuilder({ data: rows, error: null });
+    sbRef.current = { from: () => builder };
+
+    const result = await listPendingColorRequests();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items.map((i) => i.quoteId)).toEqual(['q-old', 'q-new']);
+  });
+
+  it('falls back to a generic label when the stored request has none', async () => {
+    const row = { id: 'q-1', customer_name: 'No Label', quote_number: null, approval_snapshot: { pendingColorRequest: {} } };
+    const { builder } = makeBuilder({ data: [row], error: null });
+    sbRef.current = { from: () => builder };
+
+    const result = await listPendingColorRequests();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items[0].label).toBe('Colour change');
+  });
+
+  it('surfaces a query error', async () => {
+    const { builder } = makeBuilder({ data: null, error: { message: 'db down' } });
+    sbRef.current = { from: () => builder };
+
+    const result = await listPendingColorRequests();
+    expect(result).toEqual({ ok: false, error: 'db down' });
+  });
+
+  it('no-ops (ok:false, no throw) when the service client is not configured', async () => {
+    sbRef.current = null;
+    const result = await listPendingColorRequests();
+    expect(result).toEqual({ ok: false, error: 'Supabase service role not configured' });
   });
 });
 
