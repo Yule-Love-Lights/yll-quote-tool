@@ -28,7 +28,18 @@ export async function POST(req: NextRequest) {
   }
 
   const operator = await getOperator();
+  // Row 311 fix-round FIX 1: default (no opts) is allowRestamp:false — this is
+  // the manual snooze button, not a send, so a retry/lost-race landing on an
+  // already-followed row must not reset the customer's waiting clock. See
+  // markItemFollowed's own doc comment for the full A/B caller split.
   const res = await markItemFollowed(itemId, operator?.id ?? 'system', new Date());
-  if (!res.ok) return NextResponse.json({ error: res.error }, { status: 503 });
+  if (!res.ok) {
+    // The operator's goal (this item is snoozed) is already the current
+    // state — an "already followed" refusal is a duplicate click or a lost
+    // race against another tab, not a real failure, so treat it as an
+    // idempotent success rather than surfacing a scary error note.
+    if (res.alreadyFollowed) return NextResponse.json({ ok: true });
+    return NextResponse.json({ error: res.error }, { status: 503 });
+  }
   return NextResponse.json({ ok: true });
 }

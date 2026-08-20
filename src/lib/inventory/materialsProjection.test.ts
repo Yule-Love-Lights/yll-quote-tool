@@ -75,8 +75,8 @@ const SP = (id: string, quoteSize?: string, colorPattern?: string[]): SceneItem 
   ({ kind: 'spritzer', id, quoteSize, colorPattern, included: true }) as unknown as SceneItem;
 const MINI = (id: string, surface?: string, stringCount?: number, colorPattern?: string[], groupId?: string): SceneItem =>
   ({ kind: 'strand', id, surface, stringCount, colorPattern, groupId, included: true }) as unknown as SceneItem;
-const AREA = (id: string, surface: string, stringCount: number, colorPattern: string[]): SceneItem =>
-  ({ kind: 'miniArea', id, surface, stringCount, colorPattern, included: true }) as unknown as SceneItem;
+const AREA = (id: string, surface: string, stringCount: number, colorPattern: string[], groupId?: string): SceneItem =>
+  ({ kind: 'miniArea', id, surface, stringCount, colorPattern, groupId, included: true }) as unknown as SceneItem;
 const GROUP = (id: string, surface: string, stringCount: number): SceneItem =>
   ({ kind: 'miniGroup', id, surface, stringCount, memberIds: [], included: true }) as unknown as SceneItem;
 const ROOF = (id: string, surface?: string): SceneItem =>
@@ -194,6 +194,27 @@ describe('projectMaterials — skips', () => {
     const excluded = { ...(W('w1', '36noble', 'bow') as object), included: false } as unknown as SceneItem;
     const grouped = MINI('m1', 'tree', 2, ['warm-white'], 'grp1');
     expect(projectMaterials(scene([excluded, grouped]), B)).toEqual([]);
+  });
+  // #840 review fix: a grouped scattershot (mixed-group member) must be
+  // skipped here too — it's projected via its MiniGroupItem, same as a
+  // grouped strand just above. Before this fix a grouped scattershot would
+  // bill BOTH its own individual line AND the group's line.
+  it('skips a grouped scattershot (projected via its MiniGroupItem, not doubled)', () => {
+    const groupedArea = AREA('a1', 'bush', 2, ['warm-white'], 'grp1');
+    expect(projectMaterials(scene([groupedArea]), B)).toEqual([]);
+  });
+  it('a mixed group (grouped strand + grouped scattershot) bills ONLY the group line, not either member', () => {
+    const lines = projectMaterials(
+      scene([
+        MINI('m1', 'bush', 1, ['warm-white'], 'grp1'),
+        AREA('a1', 'bush', 1, ['warm-white'], 'grp1'),
+        GROUP('grp1', 'bush', 5),
+      ]),
+      B,
+    );
+    expect(lines).toEqual([
+      { sku: 'MINIWW', qty: 5, category: 'mini', conceptKey: 'mini:Warm White', label: 'Warm White mini (bush) × 5', sceneItemId: 'grp1' },
+    ]);
   });
   it('skips roofline strands with no bulbType or geometry, and unmapped strands', () => {
     // r1: santas-roofline but no bulbType/points → not a complete c9 run.
