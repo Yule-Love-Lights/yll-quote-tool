@@ -326,6 +326,30 @@ describe('HighLevel attach — post-link customers re-resolution (#214)', () => 
     expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
   });
 
+  // #839 fix-round HIGH (staff+technical lenses): this is the live incident's
+  // ACTUAL click path — pickHighLevelContact calls this route directly on a
+  // confirmed pick (queueAttach), before any Calculate ever reaches
+  // updateQuote's own #251 freeze. An approved-but-unpaid quote must be
+  // frozen HERE too, exactly like the booked case above — parity with
+  // quotes.ts's identical widening (~line 564).
+  it('never re-resolves an APPROVED-but-unpaid quote (customer_approved_at set) — the GHL link still updates, the customers link is frozen', async () => {
+    sbRef.current = makeSb(
+      {
+        ...HOLIDAY_QUOTE,
+        is_test: false,
+        customer_approved_at: '2026-08-10T00:00:00Z',
+        customer_id: 'cust-frozen',
+      },
+      null,
+    );
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1', ...CONTACT_FIELDS }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.linked).toBe(true); // the route's own GHL-card job still happened
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+  });
+
   // Round-3 delta-verify MED: the non-hl-field gate runs POST-translation —
   // a contact literally named 'Anonymous' (no email/phone) must not sneak
   // an hl-only identity past the guard.

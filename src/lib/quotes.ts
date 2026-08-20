@@ -547,19 +547,25 @@ export async function updateQuote(
   // moment); the customers link deserves the same immutability from that
   // moment on, not just from booking. So the freeze now triggers on EITHER
   // customer_approved_at OR deposit_paid_at — approved behaves exactly like
-  // booked already does here: the re-attach is skipped, the cached
-  // customer_id is left untouched, a console.warn would fire if this block
-  // ran (it doesn't), and the save itself still succeeds normally — this is
-  // a silent, best-effort skip, not a rejection. (Verified: this function
-  // has no channel back to the caller for "identity frozen" today — no
-  // existing 409/error idiom applies at this layer, unlike the route-level
-  // #177 deposit-percent-locked check. Widening this gate keeps that same
-  // silent-skip shape rather than inventing a new one; see the #251 PR
-  // notes for why a hard reject was rejected as broader than asked.) A
-  // same-contact no-op re-pick still passes through untouched regardless —
-  // identityChanged/hlChanged below are false when nothing actually
-  // differs from `stored`, so this widening only ever blocks a REAL change
-  // of identity, never a redundant re-save.
+  // booked already does here: the re-attach is skipped and the cached
+  // customer_id is left untouched. (#839 fix-round update: this is no longer
+  // fully silent — see `identityFrozen` below, set + returned on
+  // SaveQuoteResult exactly when this freeze refuses a would-be reattach;
+  // there is still no 409/error idiom at this layer, unlike the route-level
+  // #177 deposit-percent-locked check — a blocked identity change is a
+  // successful save with a flag, not a rejection.) A same-contact no-op
+  // re-pick still passes through untouched regardless — identityChanged/
+  // hlChanged below are false when nothing actually differs from `stored`,
+  // so this widening only ever blocks a REAL change of identity, never a
+  // redundant re-save.
+  //
+  // SIBLING (#839 fix-round HIGH): src/app/api/integrations/highlevel/
+  // attach/route.ts carries the IDENTICAL freeze condition on its own
+  // customers re-resolution — that route is what pickHighLevelContact calls
+  // DIRECTLY on a confirmed pick (queueAttach), before any Calculate ever
+  // reaches this function, so widening only HERE left the live incident's
+  // actual click path unprotected for a full fix-round (the route's copy
+  // stayed booked-only). Widen both together from now on.
   const effectiveHl =
     hlContactId === undefined
       ? (stored?.highlevel_contact_id ?? null)

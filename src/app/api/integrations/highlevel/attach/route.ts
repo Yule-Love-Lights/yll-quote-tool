@@ -125,8 +125,9 @@ export async function POST(req: NextRequest) {
     // deposit_paid_at (booked-freeze, round-3 delta-verify HIGH) ride along
     // for the post-link customers re-resolution below (no second read). The
     // re-resolution's IDENTITY comes from the request body's contact
-    // fields, never from this row — see the block below.
-    .select('id, service_type, legacy_rebook, is_test, customer_id, deposit_paid_at')
+    // fields, never from this row — see the block below. customer_approved_at
+    // rides along for the #251/#839 approved-freeze parity fix (same block).
+    .select('id, service_type, legacy_rebook, is_test, customer_id, deposit_paid_at, customer_approved_at')
     .eq('id', body.quoteId)
     .maybeSingle<{
       id: string;
@@ -135,6 +136,7 @@ export async function POST(req: NextRequest) {
       is_test: boolean;
       customer_id: string | null;
       deposit_paid_at: string | null;
+      customer_approved_at: string | null;
     }>();
   if (quoteErr) {
     console.warn(
@@ -185,6 +187,28 @@ export async function POST(req: NextRequest) {
     // lost the local link. We report `linked:false` so the operator UI can
     // surface "card created but not linked — retry safe" (a retry re-finds the
     // same open card and re-attaches, so no hard 500 is needed).
+    //
+    // #839 fix-round DESIGN QUESTION (deliberately left open, not decided
+    // here): this write is UNCONDITIONAL — unlike the customers re-resolution
+    // below (which the #251/#839 freeze now blocks on an approved/booked
+    // quote), highlevel_contact_id/highlevel_opportunity_id keep moving to
+    // whatever contact was just picked, no matter the quote's lifecycle
+    // stage. That is the pre-existing booked-era behavior (unchanged by this
+    // fix round) and it means a CONFIRMED re-pick on an approved-but-unpaid
+    // quote now produces a deliberately SPLIT identity state: the quote's
+    // HighLevel card/contact link moves to the new contact, while
+    // quotes.customer_id (billing, jobs, invoices, tenure) stays frozen on
+    // the original customer. The stated rationale for "the GHL card
+    // representation can move; the customer link can't" is that the GHL side
+    // is a lighter-weight, correctable pointer (re-picking again, or Clear +
+    // re-pick, fixes it) whereas customer_id drives money/reporting that
+    // must never silently fork across two people. Whether that split is
+    // actually the right call — vs. also freezing this write once approved,
+    // which would make the whole endpoint a no-op past approval and push
+    // corrections through the amend flow instead — is a real design
+    // question for Jason, not resolved by this comment. See the #251/#839
+    // PR notes for the client-side confirm (contactRelinkConfirmMessage)
+    // that now discloses this split before staff can trigger it.
     const { error: updateErr } = await sb
       .from('quotes')
       .update({
@@ -251,7 +275,29 @@ export async function POST(req: NextRequest) {
     // re-pick through the still-enabled builder autocomplete must not
     // relink the quote. The GHL card link above still updates (that's this
     // route's job); only the customers re-resolution freezes.
-    if (!updateErr && quoteRow && !quoteRow.is_test && !quoteRow.deposit_paid_at && hasNonHlField) {
+    //
+    // #839 fix-round HIGH (staff+technical lenses, sibling-guard parity —
+    // round 2 of THIS parity, same class again): this freeze widened to
+    // deposit_paid_at only tracked quotes.ts's PRE-#251 state — the #251
+    // widening (quotes.ts, ~line 564: "!data.deposit_paid_at &&
+    // !data.customer_approved_at") added the approved-unpaid boundary there
+    // but this route's own copy was never updated to match, leaving a
+    // confirmed contact re-pick on an approved-but-unpaid quote free to
+    // repoint customer_id through THIS route even after quotes.ts's freeze
+    // shipped (queueAttach fires this route directly on pick, before any
+    // Calculate ever reaches quotes.ts's own freeze — by then `stored`
+    // already holds the new id and there's nothing left to block). These
+    // two freezes are siblings guarding the SAME invariant from two
+    // different write paths; widen them TOGETHER from now on — see
+    // quotes.ts's identical condition and comment for the other half.
+    if (
+      !updateErr &&
+      quoteRow &&
+      !quoteRow.is_test &&
+      !quoteRow.deposit_paid_at &&
+      !quoteRow.customer_approved_at &&
+      hasNonHlField
+    ) {
       try {
         const resolved = await attachQuoteToCustomer(contactIdentity);
         // Repoint visibility (#214 review, WT-55 family): a resolution that
