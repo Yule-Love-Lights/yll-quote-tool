@@ -51,7 +51,21 @@ export type ExistingItem = {
    *  findExistingItem always populates them from the real row; a hand-built
    *  test fixture that omits one just never qualifies for that noop path
    *  (undefined never `===` a real value — fails safe, never over-skips a
-   *  write it shouldn't). */
+   *  write it shouldn't).
+   *
+   *  Honesty note on source_message_id specifically (review fix, #316
+   *  follow-up): every live touch-producing path sets it to null —
+   *  normalizeGhlConversation (ghl.ts), normalizeGmailThread (gmail.ts),
+   *  normalizeQuoteTouch (quotetool.ts), parseIngestPayload (ingest.ts). The
+   *  ONLY site that ever populates a real one is gmail.ts's rare lead-forward
+   *  branch (buildLeadForwardTouch). So for essentially all live traffic this
+   *  field compares null===null and contributes zero discriminating power
+   *  today; it stays in the comparison for future-proofing (a real
+   *  per-message id eventually reaching more sources) and to catch that one
+   *  lead-forward case — not because it's doing real work today. The fields
+   *  that actually discriminate live traffic are last_message_at (compared
+   *  separately, above) plus direction/channel/preview/subject/lead_kind/
+   *  quote_value here. */
   direction?: string | null;
   channel?: string | null;
   preview?: string | null;
@@ -119,8 +133,10 @@ export type IngestPlan = {
    *       nothing else about a resolved item's display depends on the touch.
    *    2. #316: an UNRESOLVED ('unresponded') item whose touch-derived fields
    *       (direction/channel/preview/subject/source_message_id/lead_kind/
-   *       quote_value) ALSO match the stored row — same status + same
-   *       last_message_at is not enough here, because a still-DRAFT
+   *       quote_value — see ExistingItem's doc for source_message_id's real,
+   *       near-inert discriminating power on live traffic) ALSO match the
+   *       stored row — same status + same last_message_at is not enough here,
+   *       because a still-DRAFT
    *       quotetool lead's lastMessageAt is pinned to created_at, so an
    *       edited draft total can change preview/quote_value with the
    *       timestamp frozen. Deliberately does NOT compare escalation_level —
@@ -274,12 +290,16 @@ export function planIngest(input: {
   // quotetool.ts's normalizeQuoteTouch) while a real edit changes what's
   // shown (a draft's total → preview + quote_value). Compares every
   // touch-derived field the upsert writes that could plausibly change without
-  // moving last_message_at. Deliberately EXCLUDES escalation_level (see the
-  // IngestPlan.noopReingest doc above — it's a pure function of elapsed time,
-  // not of the touch, and the escalate cron owns keeping it current
-  // independent of ingest) and notified_levels (already byte-identical to
-  // `existing` here by construction — see `notifiedLevels` above, `reopened`
-  // is false whenever this runs).
+  // moving last_message_at — though not every field pulls equal weight on
+  // live traffic today: source_message_id is null on every path except
+  // gmail.ts's rare lead-forward branch, so it stays in the comparison for
+  // future-proofing, not because it discriminates most traffic (see
+  // ExistingItem's doc for the honest breakdown). Deliberately EXCLUDES
+  // escalation_level (see the IngestPlan.noopReingest doc above — it's a
+  // pure function of elapsed time, not of the touch, and the escalate cron
+  // owns keeping it current independent of ingest) and notified_levels
+  // (already byte-identical to `existing` here by construction — see
+  // `notifiedLevels` above, `reopened` is false whenever this runs).
   const unrespondedNoContentChange =
     decision.status === 'unresponded' &&
     (touch.direction ?? null) === existing?.direction &&
