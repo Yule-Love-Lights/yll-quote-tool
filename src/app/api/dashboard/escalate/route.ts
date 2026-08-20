@@ -5,7 +5,6 @@
 // anyone being logged in. CRON-ONLY (Bearer ${CRON_SECRET}); dormant until set.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { safeEqual } from '@/lib/security';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { runEscalation } from '@/lib/dashboard/inbox/sync';
 import { cronDenial } from '@/lib/auth/cronAuth';

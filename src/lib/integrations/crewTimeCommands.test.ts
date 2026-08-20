@@ -1,10 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  CREW_HELP_TEXT,
-  isDepartMissingReason,
-  parseCrewTimeCommand,
-} from './crewTimeCommands';
+import { isDepartMissingReason, parseCrewTimeCommand } from './crewTimeCommands';
+import { WHATSAPP_HELP } from './whatsappCommands';
 
 describe('parseCrewTimeCommand — the simple punches', () => {
   it('recognises clock in across the words crew actually type', () => {
@@ -30,7 +27,6 @@ describe('parseCrewTimeCommand — the simple punches', () => {
 
   it('recognises status, help and done', () => {
     expect(parseCrewTimeCommand('status')).toEqual({ kind: 'status' });
-    expect(parseCrewTimeCommand('help')).toEqual({ kind: 'help' });
     expect(parseCrewTimeCommand('done')).toEqual({ kind: 'complete' });
     expect(parseCrewTimeCommand('finished')).toEqual({ kind: 'complete' });
   });
@@ -123,12 +119,20 @@ describe('it stays silent on ordinary chatter — the safe default', () => {
   });
 });
 
-describe('help text', () => {
-  it('lists every command a crew member needs and the reason words', () => {
-    for (const needle of ['in', 'out', 'break', 'back', 'arrive', 'done', 'depart', 'status']) {
-      expect(CREW_HELP_TEXT).toContain(needle);
+describe('help belongs to the EXISTING bot, not to us', () => {
+  it('does NOT claim help / commands / ?', () => {
+    // Claiming these served crew time-clock help to every user in every chat in
+    // place of the real bot help. The crew commands live in WHATSAPP_HELP now.
+    for (const t of ['help', 'commands', '?', '/help']) {
+      expect(parseCrewTimeCommand(t)).toBeNull();
     }
-    expect(CREW_HELP_TEXT).toContain('weather');
-    expect(CREW_HELP_TEXT).toContain('unpaid');
+  });
+
+  it('still lists the commands and reason words somewhere a crew member sees', () => {
+    for (const needle of ['in', 'out', 'break', 'back', 'arrive', 'done', 'depart', 'status']) {
+      expect(WHATSAPP_HELP).toContain(needle);
+    }
+    expect(WHATSAPP_HELP).toContain('weather');
+    expect(WHATSAPP_HELP).toContain('unpaid');
   });
 });
