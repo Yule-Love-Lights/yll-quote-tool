@@ -58,7 +58,10 @@ function isEditableMini(item: SceneItem): boolean {
   if (!MINI_SURFACES.includes(surface as MiniSurface)) return false;
   if (isStrand(item)) return item.bulbType === 'mini' && !item.groupId;
   if (isMiniGroup(item)) return true; // grouped railing/curtain — edit the group's count
-  return isMiniArea(item);
+  // #240 fix: a GROUPED scattershot's count is the group's, same reasoning as
+  // the isStrand branch above — editing it individually here would desync
+  // from the group's billed count instead of correcting it.
+  return isMiniArea(item) && !item.groupId;
 }
 
 export function editableItems(scene: Scene): EditableItem[] {

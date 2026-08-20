@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { isItemOnPhoto, isLinkedTwin, pruneOrphanedMiniGroups, removeItemsForPhoto } from './sceneTypes';
-import type { SceneItem, StrandItem, MiniGroupItem } from './sceneTypes';
+import { isItemOnPhoto, isLinkedTwin, isMiniGroupable, pruneOrphanedMiniGroups, removeItemsForPhoto } from './sceneTypes';
+import type { SceneItem, StrandItem, MiniAreaItem, MiniGroupItem, WreathItem } from './sceneTypes';
 
 // #13 multi-image: the one predicate both the editor's per-photo filtering and
 // the portal's per-photo rendering hang off. null/absent photoId = the BASE
@@ -44,9 +44,26 @@ describe('pruneOrphanedMiniGroups (#227)', () => {
       ...over,
     };
   }
+  function mkArea(over: Partial<MiniAreaItem> = {}): MiniAreaItem {
+    return { id: 'a1', yardstickId: null, kind: 'miniArea', shape: 'box', ...over };
+  }
   function mkGroup(over: Partial<MiniGroupItem> = {}): MiniGroupItem {
     return { id: 'g1', yardstickId: null, kind: 'miniGroup', memberIds: [], surface: 'bush', stringCount: 3, ...over };
   }
+
+  // #240: a group's members can be strands AND/OR scattershots (miniArea).
+  it('keeps a mixed-membership group alive when only its scattershot member survives', () => {
+    const items: SceneItem[] = [
+      mkArea({ id: 'a1' }), // the one survivor; s1 already deleted
+      mkGroup({ id: 'g1', memberIds: ['s1', 'a1'] }),
+    ];
+    expect(pruneOrphanedMiniGroups(items)).toEqual(items);
+  });
+
+  it('drops a mixed-membership group once BOTH its strand and its scattershot member are gone', () => {
+    const items: SceneItem[] = [mkGroup({ id: 'g1', memberIds: ['s1', 'a1'] })];
+    expect(pruneOrphanedMiniGroups(items)).toEqual([]);
+  });
 
   it('drops a miniGroup whose members are ALL gone from items', () => {
     const items: SceneItem[] = [mkGroup({ id: 'g1', memberIds: ['s1', 's2'] })];
@@ -158,5 +175,47 @@ describe('removeItemsForPhoto (#741 defect 1)', () => {
     const items: SceneItem[] = [mkStrand({ id: 's2', photoId: P2 })];
     const once = removeItemsForPhoto(items, P1);
     expect(removeItemsForPhoto(once, P1)).toBe(once);
+  });
+});
+
+// #240: the single shared gate every "select 2+ → group" affordance uses
+// (strand-only, scattershot-only, and mixed selections all call this same
+// function so their eligibility rules can't drift apart).
+describe('isMiniGroupable (#240)', () => {
+  function mkStrand(over: Partial<StrandItem> = {}): StrandItem {
+    return {
+      id: 's1', yardstickId: null, kind: 'strand', bulbType: 'mini', spacingIn: 6,
+      drawingStyle: 'strand', colorPattern: ['warm'], points: [0, 0, 10, 0],
+      ...over,
+    };
+  }
+  function mkArea(over: Partial<MiniAreaItem> = {}): MiniAreaItem {
+    return { id: 'a1', yardstickId: null, kind: 'miniArea', shape: 'box', ...over };
+  }
+  function mkWreath(over: Partial<WreathItem> = {}): WreathItem {
+    return { id: 'w1', yardstickId: null, kind: 'wreath', x: 0, y: 0, sizeIn: 60, withLights: true, ...over };
+  }
+
+  it('a plain mini strand is groupable', () => {
+    expect(isMiniGroupable(mkStrand())).toBe(true);
+  });
+  it('a c9/permanent/bistro strand is NOT groupable (only mini bulbs wrap into a group)', () => {
+    expect(isMiniGroupable(mkStrand({ bulbType: 'c9' }))).toBe(false);
+    expect(isMiniGroupable(mkStrand({ bulbType: 'permanent' }))).toBe(false);
+    expect(isMiniGroupable(mkStrand({ bulbType: 'bistro' }))).toBe(false);
+  });
+  it('a plain scattershot (miniArea) is groupable', () => {
+    expect(isMiniGroupable(mkArea())).toBe(true);
+  });
+  it('an already-grouped strand or scattershot is NOT groupable', () => {
+    expect(isMiniGroupable(mkStrand({ groupId: 'g1' }))).toBe(false);
+    expect(isMiniGroupable(mkArea({ groupId: 'g1' }))).toBe(false);
+  });
+  it('a #13 linked twin (strand or scattershot) is NOT groupable', () => {
+    expect(isMiniGroupable(mkStrand({ linkedToId: 'canonical' }))).toBe(false);
+    expect(isMiniGroupable(mkArea({ linkedToId: 'canonical' }))).toBe(false);
+  });
+  it('a non-mini-light item kind is never groupable', () => {
+    expect(isMiniGroupable(mkWreath())).toBe(false);
   });
 });
