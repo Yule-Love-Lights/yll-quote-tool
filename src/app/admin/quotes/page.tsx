@@ -5,7 +5,7 @@ import Link from 'next/link';
 import type { QuoteListItem } from '@/lib/quotes';
 import { OperatorShell } from '@/components/OperatorShell';
 import { BillingSubNav } from '@/components/admin/BillingSubNav';
-import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
+import { deriveStatus, APPROVED_DISPLAYS_AS, statusMatchesFilter, type QuoteStatus } from '@/lib/quoteStatus';
 import { PipelineActionsMenu } from '@/components/admin/PipelineActionsMenu';
 import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
 import { NceBadge } from '@/components/admin/NceBadge';
@@ -38,11 +38,18 @@ function rowStatus(q: QuoteListItem): QuoteStatus {
 }
 
 // Display label + badge style per canonical status. Title-cased for the UI.
+// Row 242 (Jason's ruling — no third stage): 'approved' reads + colors
+// IDENTICALLY to 'sent' (APPROVED_DISPLAYS_AS === 'Sent') — see quoteStatus.ts
+// for the rationale. deriveStatus/canTransition/money guards are unaffected;
+// this is presentation only. The row-below badge for an approved-derived
+// quote still reads this map directly (STATUS_LABELS[code]/STATUS_STYLES[code]
+// with code='approved'), so both entries must actually hold sent's values,
+// not just the filter chip.
 const STATUS_LABELS: Record<QuoteStatus, string> = {
   draft: 'Draft',
   sent: 'Sent',
   viewed: 'Viewed',
-  approved: 'Approved',
+  approved: APPROVED_DISPLAYS_AS,
   booked: 'Booked',
   changes_requested: 'Changes',
   declined: 'Declined',
@@ -52,7 +59,8 @@ const STATUS_LABELS: Record<QuoteStatus, string> = {
 
 const STATUS_STYLES: Record<QuoteStatus, string> = {
   booked: 'bg-emerald-100 text-emerald-700',
-  approved: 'bg-green-100 text-green-700',
+  // Row 242: no distinct color for approved — takes sent's exact style.
+  approved: 'bg-blue-100 text-blue-700',
   viewed: 'bg-purple-100 text-purple-700',
   sent: 'bg-blue-100 text-blue-700',
   draft: 'bg-amber-100 text-amber-700',
@@ -66,11 +74,15 @@ const STATUS_STYLES: Record<QuoteStatus, string> = {
 // portal branch states (Changes/Declined) and the staff-only terminal state
 // (Abandoned, #235's "Mark abandoned" action) sit at the end. `cancelled` is
 // deliberately NOT offered here — prod has zero cancelled quotes ever.
+// Row 242: `approved` is ALSO deliberately not offered here — no separate
+// Approved chip. Unlike cancelled (which is simply invisible to every filter
+// except "All"), an approved-unpaid quote must still show up under the Sent
+// chip — statusMatchesFilter (quoteStatus.ts) folds it in below, so dropping
+// this entry doesn't orphan those quotes from filtering entirely.
 const FILTER_STATUSES: QuoteStatus[] = [
   'draft',
   'sent',
   'viewed',
-  'approved',
   'booked',
   'changes_requested',
   'declined',
@@ -161,9 +173,12 @@ export default function QuotesAdminPage() {
 
   // Audit fix (Finding #40): apply the status filter + text search client-side.
   // Search matches name / address / phone / email / quote-id prefix.
+  // Row 242: statusMatchesFilter (not a raw ===) so the Sent chip also
+  // catches a derived-'approved' row now that Approved has no chip of its
+  // own — see FILTER_STATUSES's comment above.
   const term = search.trim().toLowerCase();
   const visible = items.filter(q => {
-    if (statusFilter !== 'All' && rowStatus(q) !== statusFilter) return false;
+    if (statusFilter !== 'All' && !statusMatchesFilter(rowStatus(q), statusFilter)) return false;
     if (serviceFilter !== 'All' && (q.service_type ?? DEFAULT_SERVICE_TYPE) !== serviceFilter) return false;
     if (testOnly && !q.is_test) return false;
     if (!term) return true;

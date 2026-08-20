@@ -63,6 +63,77 @@ describe('resolveAgreedTotal', () => {
   it('accepts 0 as a valid agreed total (a fully-discounted / waived selection)', () => {
     expect(resolveAgreedTotal({ customerSelection: { currentTotalUsd: 0 } }, { total: 500 })).toBe(0);
   });
+
+  // Review HIGH (ledger #83 decline follow-up): a DECLINED amendment must
+  // never be picked up as "the agreed total" — the customer explicitly
+  // refused it. Every shape below is a real trail an operator can produce.
+  describe('a DECLINED amendment is never the agreed total', () => {
+    it('a lone declined-latest amendment falls back to the prior (accepted) amendment', () => {
+      const snap = {
+        customerSelection: { currentTotalUsd: 2000 },
+        amendments: [
+          { new_total: 2400, consent: { status: 'accepted' } },
+          { new_total: 2800, consent: { status: 'declined' } },
+        ],
+      };
+      expect(resolveAgreedTotal(snap, { total: 9999 })).toBe(2400);
+    });
+
+    it('a lone declined amendment with no prior amendment falls back to the selection total', () => {
+      const snap = {
+        customerSelection: { currentTotalUsd: 2000 },
+        amendments: [{ new_total: 2400, consent: { status: 'declined' } }],
+      };
+      expect(resolveAgreedTotal(snap, { total: 9999 })).toBe(2000);
+    });
+
+    it('TWO declines in a row both skip, falling back to the selection total', () => {
+      const snap = {
+        customerSelection: { currentTotalUsd: 2000 },
+        amendments: [
+          { new_total: 2400, consent: { status: 'declined' } },
+          { new_total: 2900, consent: { status: 'declined' } },
+        ],
+      };
+      expect(resolveAgreedTotal(snap, { total: 9999 })).toBe(2000);
+    });
+
+    it('accepted THEN declined: the declined entry is skipped, the earlier accepted one wins', () => {
+      const snap = {
+        amendments: [
+          { new_total: 2400, consent: { status: 'accepted' } },
+          { new_total: 1900, consent: { status: 'declined' } }, // a declined DECREASE
+        ],
+      };
+      expect(resolveAgreedTotal(snap, { total: 9999 })).toBe(2400);
+    });
+
+    it('declined THEN accepted: the later acceptance is the live agreed total', () => {
+      const snap = {
+        amendments: [
+          { new_total: 2900, consent: { status: 'declined' } },
+          { new_total: 2600, consent: { status: 'accepted' } },
+        ],
+      };
+      expect(resolveAgreedTotal(snap, { total: 9999 })).toBe(2600);
+    });
+
+    it('a PENDING latest amendment is still picked up (unchanged, deliberate — not the decline fix)', () => {
+      const snap = {
+        customerSelection: { currentTotalUsd: 2000 },
+        amendments: [{ new_total: 2400, consent: { status: 'pending' } }],
+      };
+      expect(resolveAgreedTotal(snap, { total: 9999 })).toBe(2400);
+    });
+
+    it('a legacy amendment with no consent field at all is still picked up (not declined)', () => {
+      const snap = {
+        customerSelection: { currentTotalUsd: 2000 },
+        amendments: [{ new_total: 2400 }],
+      };
+      expect(resolveAgreedTotal(snap, { total: 9999 })).toBe(2400);
+    });
+  });
 });
 
 describe('amendedAgreedTotal', () => {
@@ -148,5 +219,55 @@ describe('amendedAgreedTotal', () => {
     };
     const priorAgreed = 10600;
     expect(amendedAgreedTotal(snap, { total: 11200 }, priorAgreed)).toBe(11200);
+  });
+
+  // Delta-verify (fix-round self-check, ledger #83 decline follow-up): a
+  // declined amendment's delta must NOT count as "already applied" in the
+  // basis, or a second amendment after a decline mis-measures its own shift —
+  // see the exact worked numbers in the function's own comment.
+  describe('a DECLINED amendment is excluded from the applied-delta basis', () => {
+    it('staff REMOVE the declined item afterward: reads as no-change, not a phantom discount', () => {
+      // $5,600 full / $5,000 agreed. Amendment 1 added a $900 item (declined):
+      // full moved to $6,500, but the customer said no, so agreedTotal (via
+      // resolveAgreedTotal) is still $5,000. Staff then remove that item in the
+      // builder — full reverts to $5,600 — and record amendment 2.
+      const snap = {
+        pricing: { total: 5600 },
+        amendments: [{ new_total: 6500, delta: 900, consent: { status: 'declined' } }],
+      };
+      const agreedAfterDecline = 5000; // resolveAgreedTotal skips the declined entry
+      expect(amendedAgreedTotal(snap, { total: 5600 }, agreedAfterDecline)).toBe(5000);
+    });
+
+    it('staff RE-OFFER the same declined item: the full amount is asked for again, not silently re-granted', () => {
+      // Same setup, but staff leave the declined $900 item in the builder and
+      // add $200 more of new work — full is now $6,700 (5600 + 900 + 200).
+      const snap = {
+        pricing: { total: 5600 },
+        amendments: [{ new_total: 6500, delta: 900, consent: { status: 'declined' } }],
+      };
+      const agreedAfterDecline = 5000;
+      // basis excludes the declined $900 → basis 5600; shift = 6700 − 5600 = 1100
+      // → 5000 + 1100 = 6100 (re-asks for both the re-offered $900 AND the new $200).
+      expect(amendedAgreedTotal(snap, { total: 6700 }, agreedAfterDecline)).toBe(6100);
+    });
+
+    it('a declined amendment sandwiched between two accepted ones excludes only its own delta', () => {
+      // agreed $10,000 == full. Amendment 1: +$1,000 (accepted, agreed → $11,000).
+      // Amendment 2: +$500 (DECLINED — never applied). Amendment 3 (this call):
+      // full moves to $11,600 (net +$600 from the $11,000 base the accepted
+      // amendment 1 left, since the declined amendment 2 never touched the
+      // builder's committed scope). basis excludes amendment 2's $500 → basis =
+      // 10000 + 1000 = 11000; shift = 11600 − 11000 = 600 → 11000 + 600 = 11600.
+      const snap = {
+        pricing: { total: 10000 },
+        amendments: [
+          { new_total: 11000, delta: 1000, consent: { status: 'accepted' } },
+          { new_total: 11500, delta: 500, consent: { status: 'declined' } },
+        ],
+      };
+      const priorAgreed = 11000; // resolveAgreedTotal skips the declined entry, lands on the accepted one
+      expect(amendedAgreedTotal(snap, { total: 11600 }, priorAgreed)).toBe(11600);
+    });
   });
 });
