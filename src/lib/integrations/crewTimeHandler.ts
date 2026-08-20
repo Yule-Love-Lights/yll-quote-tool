@@ -6,7 +6,6 @@ import { arriveAtJob, departFromJob, getOpenSegment } from '@/lib/jobSegments';
 import { getJob, setJobStatus } from '@/lib/jobs';
 import { canTransition } from '@/lib/jobStatus';
 import {
-  CREW_HELP_TEXT,
   isDepartMissingReason,
   parseCrewTimeCommand,
   type CrewTimeCommand,
@@ -63,6 +62,7 @@ function timeOfDay(iso: string): string {
 export async function handleCrewTimeMessage(
   telegramUserId: string,
   text: string,
+  opts: { addressed: boolean } = { addressed: true },
 ): Promise<CrewTimeOutcome> {
   const command = parseCrewTimeCommand(text);
 
@@ -78,10 +78,15 @@ export async function handleCrewTimeMessage(
   }
 
   if (!command) return { handled: false };
-  if (command.kind === 'help') return { handled: true, reply: CREW_HELP_TEXT };
 
   const crew = await getCrewMemberByTelegramUserId(telegramUserId);
   if (!crew) {
+    // NOT crew. If they did not address the bot, stay silent and let the normal
+    // dispatch have the message: a group is full of people saying "done" and
+    // "back" to each other, and replying to all of them breaks the bot's
+    // "answers ONLY when spoken to" contract. When they DID address the bot, a
+    // real crew member whose Telegram is unlinked deserves the explanation.
+    if (!opts.addressed) return { handled: false };
     return {
       handled: true,
       reply:
@@ -212,8 +217,7 @@ async function execute(
       return lines.join('\n');
     }
 
-    // `help` is handled before identity resolution.
     default:
-      return CREW_HELP_TEXT;
+      return 'Unrecognised command.';
   }
 }

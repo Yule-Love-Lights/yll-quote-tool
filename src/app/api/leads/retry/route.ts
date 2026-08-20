@@ -7,7 +7,6 @@
 // Dormant until CRON_SECRET is set.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { safeEqual } from '@/lib/security';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { retryStuckLeads } from '@/lib/leads/leadRetry';
 import { cronDenial } from '@/lib/auth/cronAuth';

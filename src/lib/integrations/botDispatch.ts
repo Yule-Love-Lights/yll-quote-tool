@@ -101,7 +101,7 @@ export async function handleBotMessage(msg: BotIncomingMessage): Promise<string 
   // exactly how people talk, and requiring an @mention to clock in would get
   // punches dropped silently. The parser only fires on an exact match, so
   // ordinary chatter still falls through untouched.
-  const crewTime = await handleCrewTimeMessage(msg.userId, text);
+  const crewTime = await handleCrewTimeMessage(msg.userId, text, { addressed });
   if (crewTime.handled) return crewTime.reply;
 
   if (!addressed) {
