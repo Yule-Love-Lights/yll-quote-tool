@@ -31,6 +31,22 @@ export function friendlyAction(action: string): string {
   return ACTION_LABEL[action] ?? action;
 }
 
+// row 317 fix-round FIX 4 (staff LOW): completeTerminalQuoteItems (store.ts)
+// writes `detail: { auto: true, reason: 'quote_terminal', ... }` on the
+// 'completed' rows it produces, but nothing rendered WHY a row marked
+// "System" happened — only THAT it did. ActivityRow.autoReason (store.ts)
+// carries `detail.reason` through for exactly this. Only one reason exists
+// today; falls through to the raw string for anything future, same
+// convention as friendlyAction above. Exported for pure-function testing
+// without jsdom (mirrors friendlyAction/isPermanentReverseRefusal).
+const AUTO_REASON_LABEL: Record<string, string> = {
+  quote_terminal: 'quote booked/declined/abandoned',
+};
+
+export function friendlyAutoReason(reason: string): string {
+  return AUTO_REASON_LABEL[reason] ?? reason;
+}
+
 // row 312 fix-round FIX 5(c) (LOW, converged): a refusal from the wrong-
 // occurrence guard (312c) or a staleness check (reverseItemState's stillMatches
 // pre-check, or the FIX-1 atomic CAS) means this row can NEVER be reversed
@@ -86,6 +102,7 @@ export function ActivityLog({ initialRows }: { initialRows: ActivityRow[] }) {
             customerName: original.customerName,
             at: new Date().toISOString(),
             reversible: false,
+            autoReason: null,
           };
           setRows((prev) => [syntheticRow, ...prev]);
         }
@@ -134,6 +151,12 @@ export function ActivityLog({ initialRows }: { initialRows: ActivityRow[] }) {
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-medium text-sm" style={{ color: 'var(--op-text)' }}>
                     {friendlyAction(row.action)}
+                    {row.autoReason && (
+                      <span className="font-normal" style={{ color: 'var(--op-text-2)' }}>
+                        {' '}
+                        · auto ({friendlyAutoReason(row.autoReason)})
+                      </span>
+                    )}
                   </span>
                   {row.customerName && (
                     <span className="text-sm" style={{ color: 'var(--op-text)' }}>

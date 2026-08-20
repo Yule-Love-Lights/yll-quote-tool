@@ -2480,6 +2480,13 @@ export type ActivityRow = {
   customerName: string | null;
   at: string | null;
   reversible: boolean;
+  /** row 317 fix-round FIX 4 (staff LOW): non-null only when this row's own
+   *  `detail.auto` is true (currently only completeTerminalQuoteItems's
+   *  'completed' rows) — carries `detail.reason` so ActivityLog can render WHY
+   *  an action was automatic, not just THAT it was (friendlyActor already
+   *  covers the THAT-it-was-System half). null for every operator-driven row,
+   *  including 'system'-actor rows that aren't auto (e.g. setEscalation). */
+  autoReason: string | null;
 };
 export type ActivityResult = { ok: true; rows: ActivityRow[] } | { ok: false; error: string };
 
@@ -2538,6 +2545,10 @@ export async function listActivity(limit = 100): Promise<ActivityResult> {
     const row = r as Record<string, unknown>;
     const item = (row.inbox_items as { dashboard_contacts?: { display_name?: string | null } | null } | null) ?? null;
     const actor = (row.actor as string | null) ?? null;
+    // row 317 fix-round FIX 4: only ever non-null when the row's own writer
+    // set `detail.auto === true` (completeTerminalQuoteItems, above) — an
+    // operator-driven row's detail never carries that shape.
+    const detail = row.detail as { auto?: boolean; reason?: string } | null;
     return {
       id: String(row.id),
       action: String(row.action),
@@ -2547,6 +2558,7 @@ export async function listActivity(limit = 100): Promise<ActivityResult> {
       customerName: (item?.dashboard_contacts?.display_name as string | null) ?? null,
       at: (row.created_at as string | null) ?? null,
       reversible: isReversibleActivity(String(row.action), row.detail),
+      autoReason: detail?.auto ? (detail.reason ?? null) : null,
     };
   });
   return { ok: true, rows };

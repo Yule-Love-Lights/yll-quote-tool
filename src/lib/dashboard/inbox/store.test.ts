@@ -4803,6 +4803,55 @@ describe('listActivity — reversible flag (row 312a / row 312 fix-round FIX 3)'
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.rows[0]).toMatchObject({ action: 'dismissed', reversible: true });
   });
+
+  // row 317 fix-round FIX 4 (staff LOW): autoReason threads detail.reason
+  // through only when detail.auto is true — the shape completeTerminalQuoteItems
+  // writes (store.ts).
+  it('surfaces detail.reason as autoReason when detail.auto is true', async () => {
+    const { builder } = makeBuilder({
+      data: [
+        {
+          id: 'a4',
+          action: 'completed',
+          actor: 'system',
+          inbox_item_id: 'i4',
+          created_at: '2026-08-20T12:00:00Z',
+          detail: { auto: true, reason: 'quote_terminal', from: { status: 'handled', wasFollowed: false } },
+          inbox_items: null,
+        },
+      ],
+      error: null,
+    });
+    sbRef.current = { from: () => builder };
+
+    const res = await listActivity(10);
+
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.rows[0]).toMatchObject({ action: 'completed', autoReason: 'quote_terminal' });
+  });
+
+  it('autoReason is null for an operator-driven row (detail.auto absent)', async () => {
+    const { builder } = makeBuilder({
+      data: [
+        {
+          id: 'a5',
+          action: 'completed',
+          actor: 'op-1',
+          inbox_item_id: 'i5',
+          created_at: '2026-08-20T12:00:00Z',
+          detail: { from: { status: 'handled', wasFollowed: false } },
+          inbox_items: null,
+        },
+      ],
+      error: null,
+    });
+    sbRef.current = { from: () => builder };
+
+    const res = await listActivity(10);
+
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.rows[0]).toMatchObject({ action: 'completed', autoReason: null });
+  });
 });
 
 // row 312 fix-round FIX 3: isReversibleActivity is the pure predicate driving

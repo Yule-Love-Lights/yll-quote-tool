@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { friendlyAction, isPermanentReverseRefusal } from './ActivityLog';
+import { friendlyAction, friendlyAutoReason, isPermanentReverseRefusal } from './ActivityLog';
 
 // row 312(b): the 26 S41 'reclassified' data-op rows rendered as the raw
 // action string — no ACTION_LABEL entry existed. Pure-function test only
@@ -17,6 +17,19 @@ describe('friendlyAction', () => {
     expect(friendlyAction('completed')).toBe('Completed');
     expect(friendlyAction('dismissed')).toBe('Not a lead');
     expect(friendlyAction('reversed')).toBe('Reversed');
+  });
+});
+
+// row 317 fix-round FIX 4 (staff LOW): ActivityRow.autoReason (store.ts) only
+// ever carries a value listActivity actually produces — 'quote_terminal' from
+// completeTerminalQuoteItems today. Pure-function test only (no jsdom — see
+// this file's header note above).
+describe('friendlyAutoReason (row 317 fix-round FIX 4)', () => {
+  it('labels quote_terminal', () => {
+    expect(friendlyAutoReason('quote_terminal')).toBe('quote booked/declined/abandoned');
+  });
+  it('falls through to the raw string for an unmapped reason', () => {
+    expect(friendlyAutoReason('some_future_reason')).toBe('some_future_reason');
   });
 });
 
