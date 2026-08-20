@@ -2683,12 +2683,20 @@ export default function QuoteBuilder({
     isNceRef.current = next;
     setIsNce(next);
     if (next === wasNce) return;
+    // Read provenance NOW, not inside the updater: React runs the functional
+    // updater at flush time, AFTER this handler finishes — by which point the
+    // synchronous clear on the last line below has already set the ref to
+    // `next`. On a turn-OFF that meant resolveNceDepositPercent always saw
+    // wasRuleSet=false and the 40→blank revert was structurally dead on every
+    // OFF path (chip click, contact-pick, #243 type-switch) — deposit stayed
+    // 40 on an untagged quote. Device-check-found (S44).
+    const wasRuleSet = nceDepositSetByRuleRef.current;
     setForm(f => {
       const resolved = resolveNceDepositPercent(
         f.depositPercent,
         next,
         nceDepositLocked,
-        nceDepositSetByRuleRef.current,
+        wasRuleSet,
       );
       return resolved === f.depositPercent ? f : { ...f, depositPercent: resolved };
     });
