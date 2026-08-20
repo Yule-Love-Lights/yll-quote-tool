@@ -4,23 +4,34 @@
 YouTube's auto-captions use a rolling window: each cue repeats the tail of the
 previous cue so the on-screen text scrolls. Concatenating them naively yields
 2-3x the real word count. This collapses that back down and groups the result
-into readable ~30s blocks prefixed with [mm:ss], so quotes stay citable.
-
-Usage: vtt_to_text.py IN.vtt [OUT.txt] [--block-seconds N]
+into readable blocks prefixed with [mm:ss], so quotes stay citable.
 """
+import argparse
+import os
 import re
 import sys
 from collections import deque
 
+# The rolling duplication YouTube produces is adjacent-only: a line repeats at
+# most ~2 positions back. Keep this window as small as that allows — every extra
+# slot silently deletes real speech when a speaker repeats a short phrase
+# ("Okay.", "Right.") within the window.
+DEDUPE_WINDOW = 3
+
 TAG = re.compile(r"<[^>]+>")            # <c>, </c>, <00:00:01.199>
-CUE = re.compile(
-    r"^(\d{1,2}:\d{2}:\d{2}[.,]\d{3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[.,]\d{3})"
-)
-DROP = ("WEBVTT", "Kind:", "Language:", "NOTE", "STYLE", "REGION")
+STAMP = r"(?:\d{1,3}:)?\d{2}:\d{2}[.,]\d{3}"   # hours are optional in WebVTT
+CUE = re.compile(rf"^({STAMP})\s*-->\s*({STAMP})")
+HEADERS = ("WEBVTT", "Kind:", "Language:")
+# These open a block that runs until the next blank line — not just one line.
+BLOCKS = ("NOTE", "STYLE", "REGION")
 
 
 def to_seconds(stamp):
-    h, m, s = stamp.replace(",", ".").split(":")
+    parts = stamp.replace(",", ".").split(":")
+    if len(parts) == 3:
+        h, m, s = parts
+    else:
+        h, m, s = 0, parts[0], parts[1]
     return int(h) * 3600 + int(m) * 60 + float(s)
 
 
@@ -32,20 +43,28 @@ def fmt(seconds):
 
 def parse(text):
     """Yield (start_seconds, line) for each distinct caption line, in order."""
-    recent = deque(maxlen=8)          # rolling-window dedupe
+    recent = deque(maxlen=DEDUPE_WINDOW)
     start = 0.0
+    in_block = False
     for raw in text.splitlines():
         line = raw.strip("﻿").rstrip()
-        if not line or line.startswith(DROP):
+        if not line:
+            in_block = False           # a blank line closes a NOTE/STYLE block
+            continue
+        if in_block:
+            continue
+        if line.startswith(BLOCKS):
+            in_block = True
+            continue
+        if line.startswith(HEADERS):
             continue
         cue = CUE.match(line)
         if cue:
             start = to_seconds(cue.group(1))
             continue
-        if line.isdigit():            # sequence number in SRT-style files
+        if line.isdigit():             # sequence number in SRT-style files
             continue
-        clean = TAG.sub("", line).strip()
-        clean = re.sub(r"\s+", " ", clean)
+        clean = re.sub(r"\s+", " ", TAG.sub("", line)).strip()
         if not clean or clean in recent:
             continue
         recent.append(clean)
@@ -67,28 +86,28 @@ def group(pairs, block_seconds):
 
 
 def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    block = 30
-    for a in sys.argv[1:]:
-        if a.startswith("--block-seconds"):
-            block = int(a.split("=", 1)[1]) if "=" in a else 30
-    if not args:
-        print(__doc__.strip(), file=sys.stderr)
-        return 2
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("src", help="input .vtt file")
+    ap.add_argument("dest", nargs="?", help="output .txt (default: stdout)")
+    ap.add_argument("--block-seconds", type=int, default=30,
+                    help="seconds of speech per [mm:ss] block (default: 30)")
+    args = ap.parse_args()
 
-    src = open(args[0], encoding="utf-8", errors="replace").read()
-    out = [f"[{fmt(t)}] {body}" for t, body in group(parse(src), block)]
+    with open(args.src, encoding="utf-8", errors="replace") as fh:
+        src = fh.read()
+
+    out = [f"[{fmt(t)}] {body}"
+           for t, body in group(parse(src), args.block_seconds)]
     body = "\n\n".join(out) + "\n"
 
-    if len(args) > 1:
-        # atomic-ish write: build the whole payload first, then place it
-        tmp = args[1] + ".tmp"
+    if args.dest:
+        # atomic: the payload is fully built above, so a fault cannot truncate
+        tmp = args.dest + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             fh.write(body)
-        import os
-        os.replace(tmp, args[1])
-        words = len(body.split())
-        print(f"wrote {args[1]} — {len(out)} blocks, ~{words} words", file=sys.stderr)
+        os.replace(tmp, args.dest)
+        print(f"wrote {args.dest} — {len(out)} blocks, ~{len(body.split())} words",
+              file=sys.stderr)
     else:
         sys.stdout.write(body)
     return 0
