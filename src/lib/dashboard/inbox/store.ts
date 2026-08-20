@@ -689,6 +689,75 @@ export function isColorRequestExternalId(externalId: string): boolean {
 }
 
 /**
+ * Row 321 fix-round FIX 1 (technical HIGH + staff MED, converged): batch-
+ * fetches which of `quoteIds` currently has a LIVE
+ * `approval_snapshot.pendingColorRequest` — the shared seam listOpenItems and
+ * listInWorks both call so a `:color-request`-shaped item's badge/confirm-gate
+ * tracks the REAL live state of the request, not merely its external_id's
+ * shape. Before this fix `isColorRequest` was pure shape (isColorRequestExternalId
+ * alone), which caused two bugs the review converged on: (a) IN_WORKS_SELECT
+ * never selected external_id at all, so the InWorksSection "awaiting" bucket
+ * read isColorRequest:false unconditionally — an ordinary Handled -> Followed
+ * (snooze) -> Mark completed sequence could bury a still-pending request with
+ * no confirm and no server check; (b) shape alone meant the badge/confirm kept
+ * warning FOREVER even after staff applied the colour via ColorRequestPanel,
+ * training operators to click through a confirm that no longer meant anything.
+ *
+ * Mirrors fetchHiddenLegacyRebookQuoteIds's batched-not-per-row pattern (ONE
+ * query for every candidate id) but is DELIBERATELY independent of
+ * EXCLUDE_LEGACY_REBOOK_FROM_INBOX / fetchHiddenLegacyRebookQuoteIds — that
+ * flag exists to hide parked YLL Neighbor drafts and its own doc comment says
+ * it flips off once #157 ships; coupling the color-request badge's
+ * correctness to an unrelated feature flag would silently break the badge the
+ * day that flag flips.
+ *
+ * Fails SAFE the OPPOSITE direction from fetchHiddenLegacyRebookQuoteIds's own
+ * fail-open: `failed:true` here must make the caller show MORE badges/
+ * confirms (over-warn), never fewer — a query error is not proof a pending
+ * request was resolved, and silently dropping the guard on a real error is
+ * exactly the live-prod failure row 321 exists to close. See
+ * isLiveColorRequestItem below for how the caller applies `failed`.
+ */
+async function fetchLiveColorRequestQuoteIds(
+  sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  quoteIds: readonly string[],
+): Promise<{ liveIds: Set<string>; failed: boolean }> {
+  if (quoteIds.length === 0) return { liveIds: new Set(), failed: false };
+  const { data, error } = await sb.from('quotes').select('id, approval_snapshot').in('id', quoteIds);
+  if (error) {
+    console.error('[inbox] color-request liveness lookup failed:', error.message);
+    return { liveIds: new Set(), failed: true };
+  }
+  const liveIds = new Set(
+    ((data ?? []) as { id: string; approval_snapshot: { pendingColorRequest?: unknown } | null }[])
+      .filter((q) => !!q.approval_snapshot?.pendingColorRequest)
+      .map((q) => String(q.id)),
+  );
+  return { liveIds, failed: false };
+}
+
+/**
+ * Row 321 fix-round FIX 1: the shared "should this row badge/confirm-gate as
+ * a live colour request" decision — shape (isColorRequestExternalId) AND
+ * liveness (fetchLiveColorRequestQuoteIds's result), never shape alone. A
+ * bare "quote sent" item (no `:color-request` suffix) is never flagged by
+ * this, even if its quote happens to carry a pendingColorRequest — the badge
+ * stays scoped to the item that actually represents the customer's ask, same
+ * as before this fix. `lookup.failed` fails SAFE (over-warn): every
+ * shape-matching row reads as still-live rather than silently dropping the
+ * guard — see fetchLiveColorRequestQuoteIds's own doc for why. Pure — no
+ * I/O — so it's directly unit-testable without a DB.
+ */
+function isLiveColorRequestItem(
+  source: unknown,
+  externalId: string,
+  lookup: { liveIds: ReadonlySet<string>; failed: boolean },
+): boolean {
+  if (source !== 'quotetool' || !isColorRequestExternalId(externalId)) return false;
+  return lookup.failed || lookup.liveIds.has(quoteIdPrefix(externalId));
+}
+
+/**
  * #157: drop items whose backing quote id is in `hiddenQuoteIds`. Only a
  * 'quotetool' item can match — its external_id is the quote id, optionally
  * suffixed `:color-request` (quoteIdPrefix strips it, #183 BUG 1) — so every
@@ -882,6 +951,21 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
     for (const [cid, n] of tally) if (n > 1) returning.add(cid);
   }
 
+  // Row 321 fix-round FIX 1: batched liveness lookup, scoped to the
+  // color-request-shaped quotetool ids on THIS PAGE (trimmed, post legacy-
+  // exclusion/slice — the actual page about to render) — ONE query, never
+  // per-row. See fetchLiveColorRequestQuoteIds's own doc for the fail-safe
+  // direction and why this is independent of the legacy-rebook flag above.
+  const colorRequestQuoteIds = [
+    ...new Set(
+      (trimmed as unknown as Record<string, unknown>[])
+        .filter((r) => r.source === 'quotetool' && isColorRequestExternalId(String(r.external_id ?? '')))
+        .map((r) => quoteIdPrefix(String(r.external_id)))
+        .filter(isUuid),
+    ),
+  ];
+  const colorRequestLookup = await fetchLiveColorRequestQuoteIds(sb, colorRequestQuoteIds);
+
   const items = (trimmed as unknown as Record<string, unknown>[]).map((row): OpenInboxItem => {
     const c = (row.dashboard_contacts as Record<string, unknown> | null) ?? null;
     return {
@@ -906,8 +990,10 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
           }
         : null,
       // Row 321: badges + confirm-gates Handled/Mark-completed in InboxList.tsx
-      // so a still-live colour request can't be silently buried by them.
-      isColorRequest: row.source === 'quotetool' && isColorRequestExternalId(String(row.external_id ?? '')),
+      // so a still-live colour request can't be silently buried by them. Fix-
+      // round FIX 1: now driven by the batched LIVENESS lookup above, not
+      // shape alone — see isLiveColorRequestItem's own doc.
+      isColorRequest: isLiveColorRequestItem(row.source, String(row.external_id ?? ''), colorRequestLookup),
     };
   });
   // count is null only if Postgrest didn't return one (shouldn't happen with
@@ -2416,18 +2502,25 @@ export type InWorksResult =
     }
   | { ok: false; error: string };
 
+// Row 321 fix-round FIX 1 (technical HIGH): external_id now selected for BOTH
+// buckets — it used to be handled-only ("avoid churning the shared select"),
+// which is exactly what let the HIGH through: the 'awaiting' bucket (the
+// Handled -> Followed/snooze path) read isColorRequest:false unconditionally
+// no matter what, because the column was never fetched at all. That earlier
+// scoping call is overruled here; every InWorksItem now carries external_id.
 const IN_WORKS_SELECT =
-  'id, source, channel, preview, followed_up_at, handled_at, status, dashboard_contacts ( display_name )';
+  'id, source, external_id, channel, preview, followed_up_at, handled_at, status, dashboard_contacts ( display_name )';
 
-// #307: the 'handled' bucket alone also needs external_id (to derive the
-// backing quote id, quoteIdPrefix) and direction (rule b) to compute "Needs a
-// look" — the 'awaiting' bucket's query stays on the narrower IN_WORKS_SELECT
-// since none of the three rules apply there (out of scope for this change).
-const IN_WORKS_HANDLED_SELECT = IN_WORKS_SELECT + ', external_id, direction';
+// #307: the 'handled' bucket alone also needs direction (rule b) to compute
+// "Needs a look" — the 'awaiting' bucket's query stays on the narrower
+// IN_WORKS_SELECT since none of the three needsLookReason rules apply there
+// (out of scope for that change; unrelated to external_id above).
+const IN_WORKS_HANDLED_SELECT = IN_WORKS_SELECT + ', direction';
 
 function mapInWorksRow(
   rows: unknown[],
   tsKey: 'followed_up_at' | 'handled_at',
+  colorRequestLookup: { liveIds: ReadonlySet<string>; failed: boolean },
   reasonFor?: (row: Record<string, unknown>) => string | null,
 ): InWorksItem[] {
   return (rows ?? []).map((r) => {
@@ -2441,10 +2534,10 @@ function mapInWorksRow(
       customerName: (c?.display_name as string | null) ?? null,
       lastActivityAt: (row[tsKey] as string | null) ?? null,
       needsLookReason: reasonFor ? reasonFor(row) : null,
-      // Row 321: 'awaiting' rows never select external_id (see
-      // IN_WORKS_SELECT's own comment above), so this is always false there —
-      // undefined coerced to false by isColorRequestExternalId('').
-      isColorRequest: row.source === 'quotetool' && isColorRequestExternalId(String(row.external_id ?? '')),
+      // Row 321 fix-round FIX 1: shape AND liveness, for BOTH buckets now
+      // that external_id is selected on both — see isLiveColorRequestItem's
+      // own doc for the fail-safe direction on a lookup error.
+      isColorRequest: isLiveColorRequestItem(row.source, String(row.external_id ?? ''), colorRequestLookup),
     };
   });
 }
@@ -2594,6 +2687,7 @@ export async function listInWorks(limit = 200): Promise<InWorksResult> {
   if (aw.error) return { ok: false, error: aw.error.message };
   if (hd.error) return { ok: false, error: hd.error.message };
 
+  const awaitingRows = (aw.data ?? []) as unknown as Record<string, unknown>[];
   const handledRows = (hd.data ?? []) as unknown as Record<string, unknown>[];
   const handledIds = handledRows.map((r) => String(r.id));
   // #307: only a 'quotetool' item's external_id backs a quote id — same gate
@@ -2606,14 +2700,28 @@ export async function listInWorks(limit = 200): Promise<InWorksResult> {
         .filter(isUuid),
     ),
   ];
-  const [quoteStatusResult, pendingFollowUpResult] = await Promise.all([
+  // Row 321 fix-round FIX 1: color-request liveness ids come from BOTH
+  // buckets — unlike quotetoolQuoteIds above (needsLookReason only applies to
+  // the handled bucket), the HIGH this fix closes is specifically the
+  // AWAITING bucket never carrying isColorRequest at all. ONE query covers
+  // both buckets combined, not one per bucket.
+  const colorRequestQuoteIds = [
+    ...new Set(
+      [...awaitingRows, ...handledRows]
+        .filter((r) => r.source === 'quotetool' && isColorRequestExternalId(String(r.external_id ?? '')))
+        .map((r) => quoteIdPrefix(String(r.external_id)))
+        .filter(isUuid),
+    ),
+  ];
+  const [quoteStatusResult, pendingFollowUpResult, colorRequestLookup] = await Promise.all([
     fetchQuoteStatusesById(sb, quotetoolQuoteIds),
     fetchPendingFollowUpItemIds(sb, handledIds),
+    fetchLiveColorRequestQuoteIds(sb, colorRequestQuoteIds),
   ]);
   const quoteStatusById = quoteStatusResult.statuses;
   const pendingFollowUpItemIds = pendingFollowUpResult.ids;
 
-  const handled = mapInWorksRow(handledRows, 'handled_at', (row) => {
+  const handled = mapInWorksRow(handledRows, 'handled_at', colorRequestLookup, (row) => {
     const quoteStatus =
       row.source === 'quotetool'
         ? (quoteStatusById.get(quoteIdPrefix(String(row.external_id))) ?? null)
@@ -2627,7 +2735,7 @@ export async function listInWorks(limit = 200): Promise<InWorksResult> {
 
   return {
     ok: true,
-    awaiting: mapInWorksRow(aw.data ?? [], 'followed_up_at'),
+    awaiting: mapInWorksRow(awaitingRows, 'followed_up_at', colorRequestLookup),
     handled,
     evidenceIncomplete: quoteStatusResult.failed || pendingFollowUpResult.failed,
   };
@@ -2651,7 +2759,28 @@ export async function listInWorks(limit = 200): Promise<InWorksResult> {
  * two forms are provably identical, but a negative pair fails OPEN on a
  * future 5th status (silently allowed through) while positive fails CLOSED
  * (silently blocked, the safe direction — a blocked completion is visible to
- * the operator via the ok:false path; a wrongly-allowed clobber is not). */
+ * the operator via the ok:false path; a wrongly-allowed clobber is not).
+ *
+ * Row 321 fix-round FIX 1(b) (server-side backstop): a client window.confirm()
+ * is not a guard — it can be stale, bypassed, or raced. Before the status-
+ * guarded UPDATE runs, a `:color-request`-shaped item whose quote still has a
+ * live approval_snapshot.pendingColorRequest is REFUSED, mirroring
+ * completeTerminalQuoteItems' own hard exclusion of the same shape (see that
+ * function's doc). Chosen over allow-with-audit: the whole point of this
+ * feature is that a colour request stays actionable until ColorRequestPanel
+ * resolves it (apply/dismiss) — completing the INBOX message while
+ * pendingColorRequest stays set would reproduce Kristie Tibbetts' exact bug
+ * with an audit trail bolted on, not fix it. An operator who genuinely
+ * resolved this by phone records that via ColorRequestPanel's own Dismiss
+ * flow (which prompts for a reason) — that clears pendingColorRequest and
+ * this guard then passes normally on the next attempt. markItemHandledLocal
+ * deliberately does NOT get the same guard: 'handled' is not terminal — the
+ * item stays fully tracked (badge + confirm both still apply) in
+ * InWorksSection's 'handled'/'awaiting' buckets either way, so nothing is
+ * buried by that action alone; only Mark completed actually removes the item
+ * from every inbox list. Fails CLOSED on its own lookup error, same
+ * direction as completeTerminalQuoteItems' pendingColorRequest check: a query
+ * error is not proof the request was resolved. */
 export async function markItemCompleted(
   itemId: string,
   operatorId: string | null,
@@ -2660,6 +2789,32 @@ export async function markItemCompleted(
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const from = await priorStateOf(sb, itemId);
+
+  // Row 321 fix-round FIX 1(b): a targeted, separate lookup (never folded into
+  // priorStateOf above, which is shared by three OTHER actions whose
+  // dashboard_activity `detail.from` shape this must not change) — only fires
+  // the follow-on 'quotes' query when the item is actually shape-matching.
+  const target = await sb.from('inbox_items').select('external_id').eq('id', itemId).maybeSingle();
+  const targetExternalId = String((target.data as { external_id?: string | null } | null)?.external_id ?? '');
+  if (isColorRequestExternalId(targetExternalId)) {
+    const quoteId = quoteIdPrefix(targetExternalId);
+    const { data: quoteRow, error: quoteErr } = await sb
+      .from('quotes')
+      .select('approval_snapshot')
+      .eq('id', quoteId)
+      .maybeSingle<{ approval_snapshot: { pendingColorRequest?: unknown } | null }>();
+    if (quoteErr) {
+      const msg = "Could not confirm the colour request is resolved — try again";
+      await recordActionFailed(itemId, operatorId, 'completed', msg);
+      return { ok: false, error: msg };
+    }
+    if (quoteRow?.approval_snapshot?.pendingColorRequest) {
+      const msg = "This customer has a pending colour change request — resolve it from the quote's admin page first";
+      await recordActionFailed(itemId, operatorId, 'completed', msg);
+      return { ok: false, error: msg };
+    }
+  }
+
   const { data, error } = await sb
     .from('inbox_items')
     .update({

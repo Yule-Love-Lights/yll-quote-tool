@@ -974,12 +974,15 @@ describe('listOpenItems — select string, sort order, and field mapping', () =>
     expect(item.isReturning).toBe(false); // no contact_id
   });
 
-  // Row 321: badges/confirm-gates a color-request row in InboxList.tsx.
-  it('sets isColorRequest true for a quotetool item whose external_id is :color-request-suffixed, false otherwise', async () => {
+  // Row 321 fix-round FIX 1: isColorRequest is now shape AND liveness (a
+  // batched quotes lookup), not shape alone — see isLiveColorRequestItem's
+  // own doc in store.ts.
+  it('sets isColorRequest true for a quotetool item whose external_id is :color-request-suffixed AND whose quote still has a live pendingColorRequest, false for the bare sibling regardless', async () => {
+    const QUOTE_UUID = '123e4567-e89b-12d3-a456-426614174000';
     const colorRequestRow = {
       id: 'item-cr',
       source: 'quotetool',
-      external_id: '123e4567-e89b-12d3-a456-426614174000:color-request',
+      external_id: `${QUOTE_UUID}:color-request`,
       channel: null,
       direction: 'inbound',
       last_message_at: '2026-08-17T17:37:48.337Z',
@@ -994,16 +997,87 @@ describe('listOpenItems — select string, sort order, and field mapping', () =>
     const bareQuoteRow = {
       ...colorRequestRow,
       id: 'item-bare',
-      external_id: '123e4567-e89b-12d3-a456-426614174000',
+      external_id: QUOTE_UUID,
     };
     const { builder: mainBuilder } = makeBuilder({ data: [colorRequestRow, bareQuoteRow], error: null });
-    sbRef.current = { from: (_table: string) => mainBuilder };
+    const { builder: quotesBuilder } = makeBuilder({
+      data: [{ id: QUOTE_UUID, approval_snapshot: { pendingColorRequest: { label: 'Champagne' } } }],
+      error: null,
+    });
+    sbRef.current = { from: (table: string) => (table === 'quotes' ? quotesBuilder : mainBuilder) };
 
     const result = await listOpenItems(100);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
+    // The bare item is NEVER flagged regardless of its quote's liveness — the
+    // badge stays scoped to the item that actually represents the ask.
     expect(result.items.find((i) => i.id === 'item-cr')!.isColorRequest).toBe(true);
     expect(result.items.find((i) => i.id === 'item-bare')!.isColorRequest).toBe(false);
+  });
+
+  // Row 321 fix-round FIX 1 (staff MED half): the ORIGINAL shape-only bug —
+  // once staff applies/dismisses the colour via ColorRequestPanel,
+  // approval_snapshot.pendingColorRequest is cleared, so the badge must turn
+  // OFF even though the item's external_id still carries the suffix forever.
+  it('reads isColorRequest false once pendingColorRequest has been applied/dismissed, even though the external_id suffix never changes', async () => {
+    const QUOTE_UUID = '123e4567-e89b-12d3-a456-426614174000';
+    const colorRequestRow = {
+      id: 'item-cr',
+      source: 'quotetool',
+      external_id: `${QUOTE_UUID}:color-request`,
+      channel: null,
+      direction: 'outbound',
+      last_message_at: '2026-08-17T17:37:48.337Z',
+      preview: 'Champagne',
+      subject: null,
+      escalation_level: 0,
+      contact_id: null,
+      lead_kind: 'lead',
+      quote_value: null,
+      dashboard_contacts: null,
+    };
+    const { builder: mainBuilder } = makeBuilder({ data: [colorRequestRow], error: null });
+    // No pendingColorRequest key at all — the normal post-apply/dismiss shape.
+    const { builder: quotesBuilder } = makeBuilder({
+      data: [{ id: QUOTE_UUID, approval_snapshot: { customerSelection: { colorSchemeId: 'as-applied' } } }],
+      error: null,
+    });
+    sbRef.current = { from: (table: string) => (table === 'quotes' ? quotesBuilder : mainBuilder) };
+
+    const result = await listOpenItems(100);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items[0].isColorRequest).toBe(false);
+  });
+
+  // Row 321 fix-round FIX 1: fail-safe direction on a liveness-lookup error —
+  // OPPOSITE of the legacy-rebook exclusion's own fail-open (hide nothing);
+  // here a query error must make the caller show MORE badges, never fewer.
+  it('fails SAFE (badges shown) when the color-request liveness lookup itself errors', async () => {
+    const QUOTE_UUID = '123e4567-e89b-12d3-a456-426614174000';
+    const colorRequestRow = {
+      id: 'item-cr',
+      source: 'quotetool',
+      external_id: `${QUOTE_UUID}:color-request`,
+      channel: null,
+      direction: 'inbound',
+      last_message_at: '2026-08-17T17:37:48.337Z',
+      preview: 'Champagne',
+      subject: null,
+      escalation_level: 0,
+      contact_id: null,
+      lead_kind: 'lead',
+      quote_value: null,
+      dashboard_contacts: null,
+    };
+    const { builder: mainBuilder } = makeBuilder({ data: [colorRequestRow], error: null });
+    const { builder: quotesBuilder } = makeBuilder({ data: null, error: { message: 'connection reset' } });
+    sbRef.current = { from: (table: string) => (table === 'quotes' ? quotesBuilder : mainBuilder) };
+
+    const result = await listOpenItems(100);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items[0].isColorRequest).toBe(true);
   });
 
   it('never flags isColorRequest for a non-quotetool source, even with a colon in external_id', async () => {
@@ -1241,6 +1315,132 @@ describe('listInWorks — parallel fetch (#185)', () => {
     expect(router.calls.quotes).toBeUndefined();
   });
 
+  // Row 321 fix-round FIX 1 (technical HIGH — the core regression test): the
+  // AWAITING bucket used to read isColorRequest:false UNCONDITIONALLY because
+  // IN_WORKS_SELECT never selected external_id for that bucket at all. An
+  // ordinary Handled -> Followed (snooze) -> Mark completed sequence could
+  // bury a still-pending colour request with no confirm and no server check.
+  // This pins that a `:color-request`-shaped row sitting in AWAITING (the
+  // snoozed/followed-up state) now correctly badges when its quote's
+  // pendingColorRequest is still live.
+  it('badges a :color-request-shaped item in the AWAITING bucket (the row-321 HIGH: this bucket never carried isColorRequest at all before this fix)', async () => {
+    const QUOTE_UUID = '123e4567-e89b-12d3-a456-426614174000';
+    const awaitingColorRequestRow = {
+      id: 'i-aw-cr',
+      source: 'quotetool',
+      external_id: `${QUOTE_UUID}:color-request`,
+      channel: null,
+      preview: 'Champagne please',
+      followed_up_at: '2026-08-01T10:00:00Z',
+      handled_at: null,
+      status: 'unresponded',
+      dashboard_contacts: { display_name: 'Kristie' },
+    };
+    let inboxCallIndex = 0;
+    const router = makeTableRouter({
+      quotes: {
+        data: [{ id: QUOTE_UUID, approval_snapshot: { pendingColorRequest: { label: "Staff's pick" } } }],
+        error: null,
+      },
+    });
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'inbox_items') {
+          const idx = inboxCallIndex;
+          inboxCallIndex += 1;
+          return makeBuilder({ data: idx === 0 ? [awaitingColorRequestRow] : [], error: null }).builder;
+        }
+        return router.from(table);
+      },
+    };
+
+    const result = await listInWorks(200);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.awaiting).toHaveLength(1);
+    expect(result.awaiting[0].isColorRequest).toBe(true);
+    // ONE batched quotes query covers the awaiting-bucket lookup too — never
+    // per-row, and never skipped just because the row is in the awaiting
+    // (not handled) bucket.
+    expect(router.calls.quotes).toBe(1);
+  });
+
+  // Row 321 fix-round FIX 1 (staff MED half, awaiting bucket): once the
+  // request is resolved, an awaiting-bucket row with the same suffix must
+  // stop badging too — not just the handled bucket.
+  it("does NOT badge a :color-request-shaped item in the AWAITING bucket once its quote's pendingColorRequest has been cleared", async () => {
+    const QUOTE_UUID = '123e4567-e89b-12d3-a456-426614174000';
+    const awaitingColorRequestRow = {
+      id: 'i-aw-cr',
+      source: 'quotetool',
+      external_id: `${QUOTE_UUID}:color-request`,
+      channel: null,
+      preview: 'Champagne please',
+      followed_up_at: '2026-08-01T10:00:00Z',
+      handled_at: null,
+      status: 'unresponded',
+      dashboard_contacts: { display_name: 'Kristie' },
+    };
+    let inboxCallIndex = 0;
+    const router = makeTableRouter({
+      quotes: { data: [{ id: QUOTE_UUID, approval_snapshot: {} }], error: null },
+    });
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'inbox_items') {
+          const idx = inboxCallIndex;
+          inboxCallIndex += 1;
+          return makeBuilder({ data: idx === 0 ? [awaitingColorRequestRow] : [], error: null }).builder;
+        }
+        return router.from(table);
+      },
+    };
+
+    const result = await listInWorks(200);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.awaiting[0].isColorRequest).toBe(false);
+  });
+
+  // Row 321 fix-round FIX 1: fail-safe direction on the color-request
+  // liveness lookup — OPPOSITE of fetchQuoteStatusesById/
+  // fetchPendingFollowUpItemIds' own fail-open-but-report, which is UNSAFE by
+  // design there (an empty result under-populates "Needs a look"). Here a
+  // lookup error must make the caller show MORE badges, never fewer.
+  it('fails SAFE (badges every shape-matching row) when the color-request liveness lookup itself errors, in EITHER bucket', async () => {
+    const QUOTE_UUID = '123e4567-e89b-12d3-a456-426614174000';
+    const awaitingRow = {
+      id: 'i-aw-cr',
+      source: 'quotetool',
+      external_id: `${QUOTE_UUID}:color-request`,
+      channel: null,
+      preview: 'Champagne please',
+      followed_up_at: '2026-08-01T10:00:00Z',
+      handled_at: null,
+      status: 'unresponded',
+      dashboard_contacts: { display_name: 'Kristie' },
+    };
+    let inboxCallIndex = 0;
+    const router = makeTableRouter({
+      quotes: { data: null, error: { message: 'connection reset' } },
+    });
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'inbox_items') {
+          const idx = inboxCallIndex;
+          inboxCallIndex += 1;
+          return makeBuilder({ data: idx === 0 ? [awaitingRow] : [], error: null }).builder;
+        }
+        return router.from(table);
+      },
+    };
+
+    const result = await listInWorks(200);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.awaiting[0].isColorRequest).toBe(true);
+  });
+
   // #307 review fix 3 (admin lens): nothing previously tied the awaiting/
   // handled Promise.all array positions to the correct QueryBucket literal —
   // a future swap of 'awaiting_reply'/'handled' between the two applyBucketFilter
@@ -1337,6 +1537,12 @@ describe('listInWorks — parallel fetch (#185)', () => {
             customer_approved_at: null,
             deposit_paid_at: null,
             viewed_at: null,
+            // Row 321 fix-round FIX 1: this row is now ALSO the fixture for
+            // the color-request liveness lookup (a separate, independent
+            // batched query — see the `router.calls.quotes` assertion below)
+            // — isColorRequest now needs a live pendingColorRequest, not just
+            // the external_id's shape.
+            approval_snapshot: { pendingColorRequest: { label: "Staff's pick" } },
           },
         ],
         error: null,
@@ -1359,12 +1565,16 @@ describe('listInWorks — parallel fetch (#185)', () => {
     if (!result.ok) return;
     expect(result.handled).toHaveLength(1);
     expect(result.handled[0].needsLookReason).toBe('Quote unanswered');
-    // Row 321: this row's external_id IS the :color-request suffix.
+    // Row 321: this row's external_id IS the :color-request suffix, and its
+    // quote's pendingColorRequest is still live.
     expect(result.handled[0].isColorRequest).toBe(true);
-    // Exactly one quotes query for the whole page (not one per handled row) —
-    // and it was looked up by the QUOTE id (quoteIdPrefix strips the
-    // :color-request suffix), not the raw external_id.
-    expect(router.calls.quotes).toBe(1);
+    // Row 321 fix-round FIX 1: TWO independent batched quotes queries now
+    // fire for this page — fetchQuoteStatusesById (needsLookReason) and
+    // fetchLiveColorRequestQuoteIds (isColorRequest) — each still batched
+    // ONCE for the whole page (never one per handled row), not folded into a
+    // single query (deliberately independent of each other — see
+    // fetchLiveColorRequestQuoteIds's own doc for why).
+    expect(router.calls.quotes).toBe(2);
   });
 
   it('flags a handled row whose direction is inbound as "They wrote last"', async () => {
@@ -4972,6 +5182,132 @@ describe('markItemCompleted — status guard (#224)', () => {
     expect(res.ok).toBe(true);
     const insertCall = activityCalls.find((c) => c.method === 'insert');
     expect(insertCall!.args[0]).toMatchObject({ actor: OPERATOR_ID, action: 'completed' });
+  });
+});
+
+// Row 321 fix-round FIX 1(b): a client window.confirm() is not a guard — it
+// can be stale, bypassed, or raced. markItemCompleted now refuses (before the
+// status-guarded UPDATE even runs) to complete a `:color-request`-shaped item
+// whose quote still has a live approval_snapshot.pendingColorRequest, closing
+// the awaiting-bucket path that used to be silently unguarded server-side.
+describe('markItemCompleted — server-side pending-color-request backstop (row 321 fix-round FIX 1(b))', () => {
+  const ITEM_ID = 'item-42';
+  const OPERATOR_ID = '11111111-2222-3333-4444-555555555555';
+  const QUOTE_ID = '123e4567-e89b-12d3-a456-426614174000';
+  const NOW = new Date('2026-08-20T12:00:00Z');
+
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  /** 1st .from('inbox_items') = priorStateOf's SELECT, 2nd = this fix's own
+   *  targeted external_id lookup, 3rd = the real guarded UPDATE. `quotes` and
+   *  `dashboard_activity` each get their own dedicated builder. */
+  function makeSbFor(opts: {
+    targetSelect: { data: unknown; error: null | { message: string } };
+    quoteSelect?: { data: unknown; error: null | { message: string } };
+    itemUpdateResult?: { data: unknown; error: null | { message: string } };
+  }) {
+    const { builder: priorBuilder } = makeBuilder({ data: null, error: null });
+    const { builder: targetBuilder } = makeBuilder(opts.targetSelect);
+    const { builder: updateBuilder, calls: updateCalls } = makeBuilder(
+      opts.itemUpdateResult ?? { data: null, error: null },
+    );
+    const { builder: quotesBuilder, calls: quoteCalls } = makeBuilder(opts.quoteSelect ?? { data: null, error: null });
+    const { builder: activityBuilder, calls: activityCalls } = makeBuilder({ data: null, error: null });
+    let inboxCallCount = 0;
+    const from = (table: string) => {
+      if (table === 'inbox_items') {
+        inboxCallCount += 1;
+        if (inboxCallCount === 1) return priorBuilder;
+        if (inboxCallCount === 2) return targetBuilder;
+        return updateBuilder;
+      }
+      if (table === 'quotes') return quotesBuilder;
+      if (table === 'dashboard_activity') return activityBuilder;
+      throw new Error(`unexpected table: ${table}`);
+    };
+    return { from, updateCalls, quoteCalls, activityCalls };
+  }
+
+  it('refuses a :color-request item whose quote still has a live pendingColorRequest, and never reaches the update', async () => {
+    const { from, updateCalls, activityCalls } = makeSbFor({
+      targetSelect: { data: { external_id: `${QUOTE_ID}:color-request` }, error: null },
+      quoteSelect: { data: { approval_snapshot: { pendingColorRequest: { label: "Staff's pick" } } }, error: null },
+    });
+    sbRef.current = { from };
+
+    const res = await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/pending colour change request/i);
+    expect(updateCalls.some((c) => c.method === 'update')).toBe(false);
+    // The refusal itself gets a durable trace (row 308 convention), never a
+    // false 'completed' row.
+    const insertCalls = activityCalls.filter((c) => c.method === 'insert');
+    expect(insertCalls.some((c) => (c.args[0] as { action?: string }).action === 'completed')).toBe(false);
+    expect(insertCalls).toContainEqual(
+      expect.objectContaining({
+        args: [expect.objectContaining({ action: 'action_failed', inbox_item_id: ITEM_ID })],
+      }),
+    );
+  });
+
+  it('allows completing a :color-request item once pendingColorRequest has been applied/dismissed (cleared)', async () => {
+    const { from, updateCalls } = makeSbFor({
+      targetSelect: { data: { external_id: `${QUOTE_ID}:color-request` }, error: null },
+      // No pendingColorRequest key at all — the normal post-apply/dismiss shape.
+      quoteSelect: { data: { approval_snapshot: { customerSelection: {} } }, error: null },
+      itemUpdateResult: { data: { id: ITEM_ID }, error: null },
+    });
+    sbRef.current = { from };
+
+    const res = await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+    expect(updateCalls.some((c) => c.method === 'update')).toBe(true);
+  });
+
+  it('never queries the quotes table for a bare (non-:color-request) item, and still completes it normally', async () => {
+    const { from, quoteCalls, updateCalls } = makeSbFor({
+      targetSelect: { data: { external_id: QUOTE_ID }, error: null },
+      itemUpdateResult: { data: { id: ITEM_ID }, error: null },
+    });
+    sbRef.current = { from };
+
+    const res = await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+    expect(quoteCalls.length).toBe(0);
+    expect(updateCalls.some((c) => c.method === 'update')).toBe(true);
+  });
+
+  it('fails CLOSED (refuses, never completes) when the pending-color-request lookup itself errors', async () => {
+    const { from, updateCalls } = makeSbFor({
+      targetSelect: { data: { external_id: `${QUOTE_ID}:color-request` }, error: null },
+      quoteSelect: { data: null, error: { message: 'connection reset' } },
+    });
+    sbRef.current = { from };
+
+    const res = await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/could not confirm/i);
+    expect(updateCalls.some((c) => c.method === 'update')).toBe(false);
+  });
+
+  it('proceeds to the normal guard (never blocks) when the preliminary external_id lookup itself finds nothing', async () => {
+    const { from, quoteCalls, updateCalls } = makeSbFor({
+      targetSelect: { data: null, error: null }, // item not found by this preliminary lookup
+      itemUpdateResult: { data: { id: ITEM_ID }, error: null },
+    });
+    sbRef.current = { from };
+
+    const res = await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+    expect(quoteCalls.length).toBe(0);
+    expect(updateCalls.some((c) => c.method === 'update')).toBe(true);
   });
 });
 
