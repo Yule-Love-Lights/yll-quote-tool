@@ -33,7 +33,7 @@ const QUOTE_READY_SMS_INTRO: Record<ServiceType, string> = {
 
 export function quoteSmsBody(firstName: string, portalUrl: string, serviceType?: string | null): string {
   const type = asServiceType(serviceType) ?? DEFAULT_SERVICE_TYPE;
-  return `Hi ${firstName}! ${QUOTE_READY_SMS_INTRO[type]} View your design, see the price, and approve here: ${portalUrl} Reply with any questions!`;
+  return `Hi ${greetingName(firstName)}! ${QUOTE_READY_SMS_INTRO[type]} View your design, see the price, and approve here: ${portalUrl} Reply with any questions!`;
 }
 
 function escapeHtml(s: string): string {
@@ -54,7 +54,7 @@ const QUOTE_READY_EMAIL_COPY: Record<ServiceType, { intro: string; breakdown: st
 export function quoteEmailHtml(firstName: string, portalUrl: string, serviceType?: string | null): string {
   const type = asServiceType(serviceType) ?? DEFAULT_SERVICE_TYPE;
   const { intro, breakdown } = QUOTE_READY_EMAIL_COPY[type];
-  const name = escapeHtml(firstName);
+  const name = escapeHtml(greetingName(firstName));
   return [
     `<p>Hi ${name},</p>`,
     `<p>${intro}</p>`,
@@ -97,11 +97,15 @@ const GREETING_FALLBACK = 'there';
 
 function greetingName(firstName: string): string {
   if (!firstName) return firstName;
-  // The ONE caller (POST /api/quotes/[id]/amend) resolves a missing/blank
+  // The amend route (POST /api/quotes/[id]/amend) resolves a missing/blank
   // customer_name to the literal 'there' BEFORE calling us, so a nameless
   // customer's greeting arrives here as a sentence word, not a name.
   // Capitalising it turns the natural "Hi there!" into "Hi There!", which
   // reads like a literal name. Caught by a review lens, not by the author.
+  // (row 315: every other customer greeting now routes through this same
+  // helper, but none of them pass the literal 'there' through it — they use
+  // their own 'there'/'Unknown' fallback for a missing name instead — so this
+  // exemption stays scoped to the amend route's calling shape.)
   if (firstName === GREETING_FALLBACK) return firstName;
   return firstName.charAt(0).toUpperCase() + firstName.slice(1);
 }
@@ -126,7 +130,7 @@ export function approvalSmsBody(
   phone: string,
   depositPercent: number,
 ): string {
-  return `Hi ${firstName}! 🎄 Thanks for approving your Yule Love Lights quote. We'll reach out shortly to collect your ${depositPercent}% deposit (about ${usd(depositUsd)}) and lock in your install date — nothing to do right now. Questions? Call or text us at ${phone}.`;
+  return `Hi ${greetingName(firstName)}! 🎄 Thanks for approving your Yule Love Lights quote. We'll reach out shortly to collect your ${depositPercent}% deposit (about ${usd(depositUsd)}) and lock in your install date — nothing to do right now. Questions? Call or text us at ${phone}.`;
 }
 
 export function approvalEmailHtml(
@@ -136,7 +140,7 @@ export function approvalEmailHtml(
   phone: string,
   depositPercent: number,
 ): string {
-  const name = escapeHtml(firstName);
+  const name = escapeHtml(greetingName(firstName));
   return [
     `<p>Hi ${name},</p>`,
     `<p>Thanks for approving your holiday lighting quote! 🎄</p>`,
@@ -632,7 +636,7 @@ export function amendmentDeclinedInternalEmailHtml(input: {
 export const BALANCE_LINK_EMAIL_SUBJECT = 'Your Yule Love Lights balance is ready to pay';
 
 export function balanceLinkSmsBody(firstName: string, balanceUsd: number, payUrl: string, phone: string): string {
-  return `Hi ${firstName}! 🎄 Your Yule Love Lights install is wrapping up. Your remaining balance of ${usdExact(balanceUsd)} can be paid securely here: ${payUrl}  Questions? Call or text ${phone}.`;
+  return `Hi ${greetingName(firstName)}! 🎄 Your Yule Love Lights install is wrapping up. Your remaining balance of ${usdExact(balanceUsd)} can be paid securely here: ${payUrl}  Questions? Call or text ${phone}.`;
 }
 
 export function balanceLinkEmailHtml(input: {
@@ -641,7 +645,7 @@ export function balanceLinkEmailHtml(input: {
   payUrl: string;
   phone: string;
 }): string {
-  const name = escapeHtml(input.firstName);
+  const name = escapeHtml(greetingName(input.firstName));
   return [
     `<p>Hi ${name},</p>`,
     `<p>Your holiday lighting install is wrapping up — thank you! Here's your remaining balance:</p>`,
@@ -664,7 +668,7 @@ export const RECEIPT_EMAIL_SUBJECT = 'Your deposit is confirmed — you’re boo
 // Customer SMS confirming the deposit posted. Whole-dollar amount; points them
 // at the booked/confirmation page.
 export function receiptSmsBody(firstName: string, depositUsd: number, phone: string): string {
-  return `Hi ${firstName}! 🎄 We received your ${usd(depositUsd)} deposit — you're officially booked with Yule Love Lights. We'll be in touch about your install date. Questions? Call or text ${phone}.`;
+  return `Hi ${greetingName(firstName)}! 🎄 We received your ${usd(depositUsd)} deposit — you're officially booked with Yule Love Lights. We'll be in touch about your install date. Questions? Call or text ${phone}.`;
 }
 
 // Customer receipt email. Includes the deposit amount, the official Valor
@@ -677,7 +681,7 @@ export function receiptEmailHtml(input: {
   confirmationUrl: string;
   phone: string;
 }): string {
-  const name = escapeHtml(input.firstName);
+  const name = escapeHtml(greetingName(input.firstName));
   const balance = Math.max(0, input.totalUsd - input.depositUsd);
   return [
     `<p>Hi ${name},</p>`,
@@ -996,7 +1000,7 @@ export function referralEarnedEmailHtml(friendFirstName: string, amountUsd: numb
 export const REFERRAL_LINK_EMAIL_SUBJECT = "Here's your Yule Love Lights referral link";
 
 export function referralLinkEmailHtml(input: { firstName?: string | null; referralUrl: string }): string {
-  const name = input.firstName?.trim() ? escapeHtml(input.firstName.trim()) : 'there';
+  const name = input.firstName?.trim() ? escapeHtml(greetingName(input.firstName.trim())) : 'there';
   const link = escapeHtml(input.referralUrl);
   return [
     `<p>Hi ${name},</p>`,
@@ -1051,7 +1055,7 @@ export function colorChangeAppliedSmsBody(label: string): string {
 }
 
 export function colorChangeAppliedEmailHtml(firstName: string, label: string): string {
-  const name = escapeHtml(firstName);
+  const name = escapeHtml(greetingName(firstName));
   const safeLabel = escapeHtml(label);
   return [
     `<p>Hi ${name},</p>`,

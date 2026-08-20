@@ -24,6 +24,10 @@ import {
   amendmentEmailHtml,
   amendmentDeclinedInternalEmailSubject,
   amendmentDeclinedInternalEmailHtml,
+  receiptSmsBody,
+  receiptEmailHtml,
+  referralLinkEmailHtml,
+  colorChangeAppliedEmailHtml,
 } from './quoteMessages';
 
 describe('quote-ready notifications, per service type (S26)', () => {
@@ -875,5 +879,91 @@ describe('amendmentDeclinedInternalEmailHtml', () => {
   it('falls back to "Unknown" for a null customer name', () => {
     const html = amendmentDeclinedInternalEmailHtml({ ...base, customerName: null });
     expect(html).toContain('Unknown');
+  });
+});
+
+// Row 315: greetingName (the first-letter-only casing helper, shipped #805)
+// was wired into ONLY the amendment SMS/email — every other customer greeting
+// still rendered the raw stored name, so one customer could read "Hi susan!"
+// on the quote-ready text and "Hi Susan!" on the amendment text in the same
+// thread. Every customer-greeting builder below now routes through the same
+// helper. Each function gets BOTH directions: a lowercase name gets
+// capitalised, and an already-capitalised name is byte-identical to before
+// (greetingName only ever touches the first character).
+describe('greeting casing sweep (row 315): every customer greeting routes through greetingName', () => {
+  it('quoteSmsBody capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    expect(quoteSmsBody('susan', 'https://x/portal/1', 'holiday')).toContain('Hi Susan!');
+    expect(quoteSmsBody('Susan', 'https://x/portal/1', 'holiday')).toContain('Hi Susan!');
+  });
+
+  it('quoteEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    expect(quoteEmailHtml('susan', 'https://x/portal/1', 'holiday')).toContain('Hi Susan,');
+    expect(quoteEmailHtml('Susan', 'https://x/portal/1', 'holiday')).toContain('Hi Susan,');
+  });
+
+  it('approvalSmsBody capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    expect(approvalSmsBody('susan', 2700, '(631) 517-0186', 50)).toContain('Hi Susan!');
+    expect(approvalSmsBody('Susan', 2700, '(631) 517-0186', 50)).toContain('Hi Susan!');
+  });
+
+  it('approvalEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    expect(approvalEmailHtml('susan', 2700, 'https://x/portal/1', '(631) 517-0186', 50)).toContain('Hi Susan,');
+    expect(approvalEmailHtml('Susan', 2700, 'https://x/portal/1', '(631) 517-0186', 50)).toContain('Hi Susan,');
+  });
+
+  it('balanceLinkSmsBody capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    expect(balanceLinkSmsBody('susan', 551.91, 'https://x/portal/1/pay-balance', '(631) 517-0186')).toContain('Hi Susan!');
+    expect(balanceLinkSmsBody('Susan', 551.91, 'https://x/portal/1/pay-balance', '(631) 517-0186')).toContain('Hi Susan!');
+  });
+
+  it('balanceLinkEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    const args = (firstName: string) => ({
+      firstName,
+      balanceUsd: 551.91,
+      payUrl: 'https://x/portal/1/pay-balance',
+      phone: '(631) 517-0186',
+    });
+    expect(balanceLinkEmailHtml(args('susan'))).toContain('Hi Susan,');
+    expect(balanceLinkEmailHtml(args('Susan'))).toContain('Hi Susan,');
+  });
+
+  it('receiptSmsBody capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    expect(receiptSmsBody('susan', 2700, '(631) 517-0186')).toContain('Hi Susan!');
+    expect(receiptSmsBody('Susan', 2700, '(631) 517-0186')).toContain('Hi Susan!');
+  });
+
+  it('receiptEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    const args = (firstName: string) => ({
+      firstName,
+      depositUsd: 2700,
+      totalUsd: 5400,
+      receiptUrl: null,
+      confirmationUrl: 'https://x/portal/1',
+      phone: '(631) 517-0186',
+    });
+    expect(receiptEmailHtml(args('susan'))).toContain('Hi Susan,');
+    expect(receiptEmailHtml(args('Susan'))).toContain('Hi Susan,');
+  });
+
+  it('referralLinkEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    const referralUrl = 'https://x/refer/abc';
+    expect(referralLinkEmailHtml({ firstName: 'susan', referralUrl })).toContain('Hi Susan,');
+    expect(referralLinkEmailHtml({ firstName: 'Susan', referralUrl })).toContain('Hi Susan,');
+  });
+
+  it("referralLinkEmailHtml still falls back to 'there' (unchanged) for a missing/blank name", () => {
+    const referralUrl = 'https://x/refer/abc';
+    expect(referralLinkEmailHtml({ firstName: null, referralUrl })).toContain('Hi there,');
+    expect(referralLinkEmailHtml({ firstName: '   ', referralUrl })).toContain('Hi there,');
+  });
+
+  it('colorChangeAppliedEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    expect(colorChangeAppliedEmailHtml('susan', 'Warm White')).toContain('Hi Susan,');
+    expect(colorChangeAppliedEmailHtml('Susan', 'Warm White')).toContain('Hi Susan,');
+  });
+
+  it('never fixes interior capitals (documents the shared limitation, not a full name-caser)', () => {
+    expect(quoteSmsBody("o'brien", 'https://x/portal/1', 'holiday')).toContain("Hi O'brien!");
+    expect(receiptSmsBody("o'brien", 2700, '(631) 517-0186')).toContain("Hi O'brien!");
   });
 });
