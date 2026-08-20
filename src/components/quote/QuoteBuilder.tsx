@@ -3963,6 +3963,12 @@ export default function QuoteBuilder({
       const getData = await getRes.json();
       if (!getRes.ok) throw new Error(getData.error ?? 'Could not load the design');
       const scene: Scene = getData?.design?.scene ?? { yardsticks: [], items: [] };
+      // Ledger row 260: round-trip the version this scene was read at as the
+      // PUT's compare-and-swap precondition — this is a read-modify-write on
+      // a scene we just flushed + fetched fresh, but another tab/operator
+      // could still land a write in the gap, and the guard is what turns that
+      // into an honest error instead of a silent overwrite.
+      const readVersion: number | null = typeof getData?.design?.version === 'number' ? getData.design.version : null;
       const targets = new Set(sceneItemIds);
       const items = Array.isArray(scene.items) ? scene.items : [];
       const patched: Scene = {
@@ -3982,7 +3988,7 @@ export default function QuoteBuilder({
       const putRes = await fetch(`/api/designs/${designId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scene: patched }),
+        body: JSON.stringify({ scene: patched, version: readVersion }),
       });
       if (!putRes.ok) {
         const putData = await putRes.json().catch(() => ({}));

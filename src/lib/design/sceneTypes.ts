@@ -313,6 +313,11 @@ export type Design = {
   // tool's own storage doesn't supply it and the editor treats absent as "no
   // extras", so both apps compile/run unchanged without it.
   extraPhotos?: EditorExtraPhoto[];
+  // Compare-and-swap counter for the scene write (ledger row 260). Optional +
+  // additive — the standalone design tool's own storage doesn't supply it;
+  // absent/null is treated as "unknown version" (adopt, don't guard) by the
+  // storage seam and the server, so both apps compile/run unchanged without it.
+  version?: number | null;
 };
 
 // One entry in the custom-graphic library (deferred in Phase 1).
