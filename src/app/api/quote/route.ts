@@ -1,15 +1,21 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { calculateQuote, QuoteInputs, MINI_LIGHT_TYPES, normalizedDepositOverride } from '@/lib/pricing/pricingEngine';
 import { saveQuote, updateQuote, getQuoteRaw, Customer } from '@/lib/quotes';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { getDesign, isValidDesignId } from '@/lib/designs';
 import { applyProjectionToInputs } from '@/lib/design/projectScene';
-import { asServiceType, DEFAULT_SERVICE_TYPE, type ServiceType } from '@/lib/serviceType';
+import {
+  asServiceType,
+  DEFAULT_SERVICE_TYPE,
+  canCarryNceOrYllNeighborTag,
+  type ServiceType,
+} from '@/lib/serviceType';
 import { calculatePermanentQuote } from '@/lib/permanent/pricing';
 import { calculateEventQuote } from '@/lib/event/pricing';
 import { calculatePermanentBistro } from '@/lib/permanentBistro/pricing';
 import { getAppSettings } from '@/lib/appSettings';
 import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
+import { pushEventDateToGhl, formatEventDateForGhl } from '@/lib/integrations/ghlEventDate';
 
 const VALID_DIFFICULTIES = ['easy', 'medium', 'hard'];
 const VALID_TAKEDOWNS = ['included', 'premium'];
@@ -620,6 +626,74 @@ export async function POST(req: NextRequest) {
     const isEvent = effectiveServiceType === 'event';
     const isPermanentBistro = effectiveServiceType === 'permanent_bistro';
 
+    // #243 (domain rule locked 2026-08-11): server-side defense-in-depth —
+    // the builder already hides the NCE/YLL Neighbor chips and clears them on
+    // a service-type switch (QuoteBuilder.tsx), but THIS route is the actual
+    // write path both a new-quote insert and an existing-quote update funnel
+    // through, and it's directly POST-able on its own. Only an EXPLICIT
+    // `true` request is clamped to false — `undefined` (chip untouched /
+    // "leave the stored value alone" on an update, per resolveTagPayload)
+    // passes through unchanged, so this can never silently correct an
+    // EXISTING violating row's tag as a side effect of an unrelated save; it
+    // only refuses a NEW attempt to set the tag on an ineligible quote.
+    // Silent clamp, not a 400 — matches the locked "silently do not inherit,
+    // no disabled-with-reason UI" design for this feature (the two admin
+    // toggle routes DO 400, because those are single-purpose staff clicks
+    // that need feedback; this is the general Calculate/Save path, where a
+    // hypothetical client bug sending a stale true alongside an otherwise
+    // legitimate save shouldn't fail the whole thing).
+    const eligibleForTags = canCarryNceOrYllNeighborTag(effectiveServiceType);
+    const gatedLegacyRebook = !eligibleForTags && legacyRebook === true ? false : legacyRebook;
+    const gatedIsNce = !eligibleForTags && isNce === true ? false : isNce;
+
+    // #243 money HIGH fix (lens review, row 243): the clamp two lines up only
+    // corrects the is_nce COLUMN — quoteInputs.depositPercent (the field
+    // effectiveDepositRate/computeTotalsTail actually price off) came straight
+    // from the request body untouched. A request with serviceType:'permanent',
+    // isNce:true, depositPercent:40 would persist is_nce:false (correctly
+    // gated) AND depositPercent:40 — a real-money permanent job billed at
+    // NCE's 40% barter rate, with no tag left on the row to explain why.
+    // Mirrors rebook.ts's buildRebookInsert/applyNceDepositDefault exactly:
+    // `gateForcedNceOff` is the identical predicate rebook.ts uses
+    // (`srcIsNce && !isNce`, i.e. "the tag gate itself is what forced this
+    // false") — that gate firing is itself as strong an "this NCE state is
+    // invalid" signal as rebook's own resetOnOff case, so it resets the
+    // deposit the same way. Like applyNceDepositDefault, this only resets an
+    // EXACT 40 — any other stored value (a hand-typed 25%, a coincidentally-
+    // negotiated 35%) is left alone, so a legitimate staff override on an
+    // ineligible-for-NCE quote survives untouched (the server has no
+    // `wasRuleSet` bit the way quoteForm.ts's resolveNceDepositPercent does;
+    // "exactly 40" is the same approximation rebook.ts already ships with).
+    // Writes an explicit 0, never deletes the key — normalizedDepositOverride
+    // (pricingEngine.ts, #226) already treats an explicit 0 identically to
+    // "no override" (falls through to the 50% default), matching
+    // applyNceDepositDefault's own OFF branch. Must land before price()
+    // below so both the priced result.depositRate snapshot and the saved
+    // inputs reflect the correction.
+    //
+    // Delta-verify MED (sibling-guard parity): gated on the quote NOT being
+    // approved yet, matching the rule the sibling NCE toggle route already
+    // states in its own header — "pre-approval only (customer_approved_at
+    // null — the #177 freeze owns an approved/booked quote's deposit)". The
+    // #177 freeze block above only 409s when the INCOMING depositPercent
+    // DIFFERS from the stored one, so a plain reopen-and-resave of an
+    // already-approved quote that carries a pre-existing violation (is_nce
+    // true + 40 on an ineligible service type) sails through it — and without
+    // this guard the reset would then silently move an APPROVED customer's
+    // deposit from 40% to the 50% default, with only a console.warn as a
+    // trace. A pre-existing violation on an approved quote is a data problem
+    // for a human to resolve deliberately, not something a routine re-save
+    // should rewrite underneath them. Prod currently has zero such rows.
+    const gateForcedNceOff = !eligibleForTags && isNce === true;
+    if (gateForcedNceOff && quoteInputs.depositPercent === 40 && !existing?.customer_approved_at) {
+      console.warn(
+        `[quote/route] #243 gate: clamped is_nce off for ineligible serviceType=${effectiveServiceType} on quoteId=${
+          typeof quoteId === 'string' ? quoteId : '(new)'
+        } — also reset a carried depositPercent=40 to 0 (see rebook.ts's gateForcedNceOff for the same rule).`,
+      );
+      quoteInputs = { ...quoteInputs, depositPercent: 0 };
+    }
+
     // If a design is linked AND its scene has projectable per-unit items, the
     // DESIGN is the master list for those items (#27). Holiday + event both use
     // the design (event reuses the C9/mini/spritzer/curtain items); permanent
@@ -693,9 +767,11 @@ export async function POST(req: NextRequest) {
           referredByCustomerId,
           // NCE + YLL Neighbor tags (#198): these ARE honored on the update
           // path — undefined (not sent / chip strip not touched) leaves the
-          // stored value untouched.
-          legacyRebook,
-          isNce,
+          // stored value untouched. #243: the GATED values — see the gate's
+          // own comment above effectiveServiceType for why undefined passes
+          // through unclamped.
+          gatedLegacyRebook,
+          gatedIsNce,
           // #214: the session's live HL link, tri-state (see the validation
           // block above) — identity-resolution input only; updateQuote never
           // writes the highlevel_contact_id column.
@@ -716,10 +792,132 @@ export async function POST(req: NextRequest) {
           highlevelContactId,
           // NCE + YLL Neighbor tags (#198): the builder's chip strip's
           // current state at first save; undefined → saveQuote's own
-          // default (false).
-          legacyRebook,
-          isNce,
+          // default (false). #243: the GATED values — see the gate's own
+          // comment above effectiveServiceType.
+          gatedLegacyRebook,
+          gatedIsNce,
         );
+
+    // FIX B (#237 fix round, staff/admin-lens HIGH/MED — the two lenses
+    // converged on the same gap from different angles, see the fix round's
+    // brief): the send route only ever pushed an event quote's date to GHL
+    // on SEND. The everyday reschedule never re-pushes: the customer
+    // confirms/reschedules after the quote already went out, staff edit the
+    // date and hit Save (NOT Send — re-sending would re-text/re-email the
+    // customer), and this route had zero HighLevel logic at all. The CRM
+    // then holds a stale date indefinitely — exactly the manual re-entry
+    // this feature exists to eliminate.
+    //
+    // Placement: here, in the UPDATE branch, not a new endpoint or a
+    // dedicated "sync to CRM" button — an operator-triggered action would be
+    // safer in the abstract, but this route is ALREADY the one place every
+    // date edit passes through (the builder's Save/Calculate flow), so
+    // piggy-backing is less surface, not more, and needs no new UI.
+    //
+    // Gates, deliberately narrower than "any event quote save":
+    //   - isUpdate && saved: only an in-place update that actually PERSISTED
+    //     — never on a brand-new quote (saveQuote's branch), and never when
+    //     the DB write itself failed.
+    //   - existing.quote_sent_at != null: only an ALREADY-SENT quote has a
+    //     real CRM contact worth correcting for this reason. A draft quote's
+    //     date is unconfirmed, staff may be mid-edit across several
+    //     Calculate clicks, and there is no "everyday reschedule" to fix yet
+    //     — pushing here would spam the contact's record with in-progress
+    //     values instead of the eventual final one.
+    //   - effectiveServiceType === 'event' (positive gate, never
+    //     `!== 'permanent'`, per this repo's standing rule).
+    //   - !existing.is_test / existing.highlevel_contact_id: identical to
+    //     the send route's own gates — never touch a real GHL contact for a
+    //     simulated quote, and there must be a contact to push to.
+    //   - the FORMATTED value actually changed vs. what's already stored —
+    //     compared through formatEventDateForGhl (the exact function the
+    //     push itself uses), not a raw string compare, so a blank<->
+    //     malformed no-op, or an unrelated field edit (a price override, an
+    //     item added, ...) on the SAME already-sent event quote, never fires
+    //     a spurious push. This is what stops the push from firing on every
+    //     Calculate click.
+    //
+    // Booked-order amend (src/app/api/quotes/[id]/amend/route.ts): that
+    // route only records the amendment TRAIL entry — the actual re-price
+    // that changes inputs/result for a booked order runs through THIS same
+    // isUpdate branch first (with amendReprice=true bypassing the
+    // REPRICE_LOCKED_STATUSES guard above), so a date change on a booked
+    // order's amend is covered for free by the gates above (quote_sent_at is
+    // set for a booked order too) — no separate wiring needed in
+    // amend/route.ts itself.
+    //
+    // Not awaited: unlike the send route's ghlStageChain (which already
+    // tolerates several seconds of GHL latency inside its own
+    // Promise.allSettled group and reports the outcome back to the operator
+    // via eventDateSyncError — FIX A of round 1), this route answers a
+    // routine builder Save/Calculate click with no equivalent warning
+    // mechanism. Blocking the save on a GHL round trip would make Save
+    // itself feel slow for a CRM write the operator isn't watching for — and
+    // the gate above already means this only fires on the rare click that
+    // actually changed the date, not on every save. pushEventDateToGhl is
+    // already fail-soft and internally deadline-bounded (6s, see
+    // ghlEventDate.ts) — a failure here only logs, exactly like every other
+    // best-effort GHL call site in this codebase; there is nothing to await
+    // FOR.
+    //
+    // FIX A (#237 fix round 2, technical HIGH): "not awaited" used to mean a
+    // bare `void pushEventDateToGhl(...)` immediately before this handler's
+    // `return NextResponse.json(...)` below — src/lib/referrals.ts's
+    // ensureReferralCode (see its "Review fix 8" comment) documents exactly
+    // why that's unsafe: a detached child promise started on the main
+    // request path is NOT covered by `waitUntil`, which "only extends the
+    // invocation for the promise(s) actually passed to after()"
+    // (node_modules/next/dist/docs/.../after.md) — so once this handler's
+    // own response promise resolves, the platform may reclaim the execution
+    // context before the in-flight GHL call (up to its own 6s deadline)
+    // finishes. Nothing here surfaces that failure to the operator (unlike
+    // the send route's eventDateSyncError), so a reclaimed context makes the
+    // push silently, non-deterministically inert — a clean Save with no
+    // indication the date never synced. Wrapped in `after()` here, 1:1 with
+    // referrals.ts's own nested-after() call: registers with whatever
+    // waitUntil the current request context provides, with no added latency
+    // for this handler's own response (still not awaited).
+    if (
+      isUpdate &&
+      saved &&
+      existing &&
+      existing.quote_sent_at &&
+      effectiveServiceType === 'event' &&
+      !existing.is_test &&
+      existing.highlevel_contact_id
+    ) {
+      // FIX D (#237 fix round 2, technical MED — TOCTOU): `existing` above was
+      // read at the very TOP of this handler, before customer resolution,
+      // design projection, and pricing — a wide window. Two overlapping
+      // Calculate requests on the SAME quote can leave GHL stuck on a
+      // superseded date while the DB is correct, silently: A reads D1, writes
+      // D2, pushes D2 (GHL=D2); B ALSO read D1 before A's write landed,
+      // writes D1 back, and — if this compared against B's own stale
+      // `existing` — would see D1-vs-D1, no change, never push, leaving
+      // GHL=D2 stuck against a DB that now correctly says D1.
+      // `saved.priorInputs` (quotes.ts, SaveQuoteResult) is updateQuote's OWN
+      // late pre-read, taken immediately before its `.update()` call rather
+      // than here — so it reflects whatever the LAST write actually left in
+      // place (A's D2, in the scenario above), not this handler's early
+      // snapshot. Comparing against that instead correctly detects B's write
+      // as a real change from D2 back to D1 and re-pushes, keeping GHL
+      // aligned with whatever the DB now holds. This narrows the race window
+      // to two back-to-back Supabase calls inside updateQuote instead of the
+      // whole request — not a full elimination (that needs a row lock or an
+      // optimistic-concurrency version column across the route, out of scope
+      // for a MED) but far below "two ops Calculate the same quote within a
+      // double-digit-millisecond window," which this internal tool's usage
+      // doesn't plausibly produce. Falls back to the old early snapshot only
+      // when priorInputs comes back null (see StoredIdentityRow's comment in
+      // quotes.ts for when that happens) — degraded, not broken.
+      const priorInputs = saved.priorInputs ?? existing.inputs;
+      const priorFormatted = formatEventDateForGhl(priorInputs?.event?.eventDate);
+      const nextFormatted = formatEventDateForGhl(quoteInputs.event?.eventDate);
+      if (nextFormatted && nextFormatted !== priorFormatted) {
+        after(() => pushEventDateToGhl(existing.highlevel_contact_id, quoteInputs.event?.eventDate));
+      }
+    }
+
     return NextResponse.json({
       customer: safeCustomer,
       result,
