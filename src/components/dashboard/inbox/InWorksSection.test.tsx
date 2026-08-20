@@ -57,6 +57,30 @@ describe('InWorksSection (row 291 — initial render)', () => {
     expect(html).toContain('Needs a look (1)');
   });
 
+  // #252 slice H: "Awaiting their reply" and the main "Open leads" queue both
+  // read as "awaiting reply" at a glance — this sub-copy spells out who owes
+  // whom, and only appears alongside the bucket it describes.
+  //
+  // Row-292/staff-lens fix: the bucket admits rows via TWO paths — an actual
+  // reply (ReplyComposer → markItemFollowed) AND the standalone "Followed"
+  // button (src/app/api/dashboard/followed/route.ts, "No source write-back"),
+  // which stamps followed_up_at with no reply ever sent. The caption must be
+  // true for BOTH — "followed up", never "replied".
+  it('clarifies "Awaiting their reply" as ball-in-their-court sub-copy, true for both the reply path and the no-reply "Followed" path, only when that bucket has items', () => {
+    const awaiting: InWorksItem[] = [{ ...baseItem, id: 'a1', customerName: 'Awaiting Customer' }];
+    const withAwaiting = renderToStaticMarkup(
+      <InWorksSection awaiting={awaiting} handled={[]} followUpDays={3} nowMs={now} />,
+    );
+    expect(withAwaiting).toContain('You’ve followed up on these — nothing to do until they write back.');
+    expect(withAwaiting).not.toContain('already replied');
+
+    const handled: InWorksItem[] = [{ ...baseItem, id: 'h1', customerName: 'Handled Customer' }];
+    const noAwaiting = renderToStaticMarkup(
+      <InWorksSection awaiting={[]} handled={handled} followUpDays={3} nowMs={now} />,
+    );
+    expect(noAwaiting).not.toContain('nothing to do until they write back');
+  });
+
   it('renders nothing when both buckets are empty', () => {
     const html = renderToStaticMarkup(
       <InWorksSection awaiting={[]} handled={[]} followUpDays={3} nowMs={now} />,

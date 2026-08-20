@@ -128,6 +128,12 @@ export type QuoteReconcileSummary = {
   followUpsCreated: number;
   followUpsSuppressed: number;
   followUpsClosed: number;
+  /** #310 fix-round: count of ensureFollowUp calls that returned 'failed' (a
+   *  genuine read error, not a legitimate no-op) — see ensureFollowUp's own
+   *  doc. Kept separate from `errors` (ingestTouch failures) so a degraded
+   *  follow-up tick is distinguishable in the summary; `ok` and the route's
+   *  HTTP status both fold it in (see runQuoteToolReconcile). */
+  followUpErrors: number;
   errors: number;
   error?: string;
 };
@@ -161,6 +167,7 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
     let followUpsCreated = 0;
     let followUpsSuppressed = 0;
     let followUpsClosed = 0;
+    let followUpErrors = 0;
     let errors = 0;
     for (const q of quotes) {
       // #181: suppressed unsent YLL Neighbor draft — no touch, no follow-up.
@@ -180,13 +187,17 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
       if (res.itemId && decision.kind === 'create') {
         // WT-44: forward the configured cadence so the "Follow-up reminder
         // (days)" setting actually controls when this follow-up is due.
-        // #252: count only an actual write. ensureFollowUp returns false when a
-        // pending row already exists OR when the anchored item is already
-        // completed/dismissed (its own churn gate) — counting unconditionally
-        // reported a "creation" on every tick for every resolved item whose
-        // quote is still open.
-        const created = await ensureFollowUp({ inboxItemId: res.itemId, contactId: res.contactId, reason: decision.reason, sentAt: decision.sentAt, afterDays: followUpDays });
-        if (created) followUpsCreated++;
+        // #252: count only an actual write. ensureFollowUp returns 'skipped'
+        // when a pending row already exists OR when the anchored item is
+        // already completed/dismissed (its own churn gate) — counting
+        // unconditionally reported a "creation" on every tick for every
+        // resolved item whose quote is still open.
+        // #310 fix-round: 'failed' (a genuine read error inside ensureFollowUp)
+        // is counted separately from 'skipped' so a degraded tick is visible —
+        // see followUpErrors' own doc on QuoteReconcileSummary.
+        const followUpResult = await ensureFollowUp({ inboxItemId: res.itemId, contactId: res.contactId, reason: decision.reason, sentAt: decision.sentAt, afterDays: followUpDays });
+        if (followUpResult === 'created') followUpsCreated++;
+        else if (followUpResult === 'failed') followUpErrors++;
       } else if (res.itemId && decision.kind === 'suppress' && !res.skipped) {
         // #220: internal recipients never mint a real follow-up row.
         // #230(b): gated on !res.skipped — decision.kind is recomputed from
@@ -229,12 +240,28 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
     // learned to close it at the write site. Self-heals on the next reconcile —
     // no manual production data edit needed.
     followUpsClosed += await sweepResolvedItemFollowUps();
-    await recordSyncRun('quotetool', errors > 0 ? 'error' : 'ok', errors > 0 ? `${errors} item error(s)` : undefined);
-    return { ok: true, scanned: quotes.length, ingested, skipped, followUpsCreated, followUpsSuppressed, followUpsClosed, errors };
+    // #310 fix-round: a follow-up read failure used to throw all the way out
+    // of this function (aborting the whole tick) — now ensureFollowUp fails
+    // open per-item, so `errors > 0` alone would no longer catch it. Fold
+    // followUpErrors into the same 'error'/'ok' decision so a degraded tick
+    // still shows up here (sync_runs / /inbox/activity).
+    const degraded = errors > 0 || followUpErrors > 0;
+    const errorParts: string[] = [];
+    if (errors > 0) errorParts.push(`${errors} item error(s)`);
+    if (followUpErrors > 0) errorParts.push(`${followUpErrors} follow-up error(s)`);
+    await recordSyncRun('quotetool', degraded ? 'error' : 'ok', degraded ? errorParts.join(', ') : undefined);
+    // `ok` drives the reconcile route's HTTP status (200 vs 500) — a
+    // followUpErrors-only tick still processed every quote and both sweeps
+    // (no abort), but the route should still show red so a degraded tick
+    // doesn't silently read as a healthy one in Vercel's cron dashboard. The
+    // pre-existing `errors` (ingestTouch failures) counter does NOT itself
+    // flip `ok` here — that's an existing, separate condition unrelated to
+    // this fix, out of scope for #310.
+    return { ok: followUpErrors === 0, scanned: quotes.length, ingested, skipped, followUpsCreated, followUpsSuppressed, followUpsClosed, followUpErrors, errors };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     await recordSyncRun('quotetool', 'error', error);
-    return { ok: false, scanned: 0, ingested: 0, skipped: 0, followUpsCreated: 0, followUpsSuppressed: 0, followUpsClosed: 0, errors: 1, error };
+    return { ok: false, scanned: 0, ingested: 0, skipped: 0, followUpsCreated: 0, followUpsSuppressed: 0, followUpsClosed: 0, followUpErrors: 0, errors: 1, error };
   }
 }
 
