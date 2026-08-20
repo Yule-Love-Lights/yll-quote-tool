@@ -125,6 +125,9 @@ describe('inverseOf', () => {
     expect(inverseOf('handled')).toEqual({ status: 'unresponded', clearFollowed: false, setFollowed: false, unsuppress: false });
     expect(inverseOf('followed')).toEqual({ status: null, clearFollowed: true, setFollowed: false, unsuppress: false });
   });
+  it('row 312: un-reclassify clears the flag only, same as un-follow (status untouched)', () => {
+    expect(inverseOf('reclassified')).toEqual({ status: null, clearFollowed: true, setFollowed: false, unsuppress: false });
+  });
 });
 describe('clampFollowUpDays', () => {
   it('defaults to 3, clamps 1..60, rounds', () => {
