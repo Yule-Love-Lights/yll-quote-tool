@@ -188,10 +188,12 @@ describe('resyncInvoiceToAgreedTotal — declining a DECREASE reopens an already
 // OUT of resyncInvoiceToAgreedTotal so the amend route can compute the SAME
 // invoice-basis figures BEFORE it persists the amendment trail entry (see
 // that route's pre-write invoice_basis stamp) — no IO, no mocks needed. These
-// tests pin the formula directly, and prove it against the SAME inputs the
-// describe block above already drives through the real resyncInvoiceToAgreedTotal,
-// confirming the two call sites can't silently diverge into two different
-// numbers for what is supposed to be one figure.
+// tests pin the formula directly. One test below shares its exact fixture
+// numbers with the "declining a DECREASE" test in the describe block above
+// (task (b) rename, fix round 5: that test's name used to claim this proves
+// the two call sites "agree byte-for-byte" — it doesn't call
+// resyncInvoiceToAgreedTotal, so the fixtures matching is a manual tripwire,
+// not a programmatic cross-check; see that test's own comment).
 describe('computeInvoiceResyncTotals — the shared money formula (no IO)', () => {
   it('scales the removable tax to the new agreed total on a tax-overridden invoice (#125-1)', () => {
     // Full quote 5600 (450 tax on a 5150 subtotal); re-syncing to the full
@@ -207,13 +209,20 @@ describe('computeInvoiceResyncTotals — the shared money formula (no IO)', () =
     expect(totals.balance).toBe(2650);
   });
 
-  it('produces the IDENTICAL total/balance that resyncInvoiceToAgreedTotal actually writes, for the same inputs', () => {
-    // The exact fixture from the "declining a DECREASE reopens an
-    // already-PAID invoice" test above — proving the pre-write computation
-    // (this function) and the real invoice-table write (that test's
-    // sb.updates[0] / outcome) agree byte-for-byte on the same inputs, which
-    // is the whole safety argument for eliminating the amend route's second
-    // write in favor of computing this up front.
+  // Task (b) rename (fix round 5): this test previously claimed to prove
+  // computeInvoiceResyncTotals and resyncInvoiceToAgreedTotal "agree
+  // byte-for-byte" — but it never calls resyncInvoiceToAgreedTotal, only
+  // this pure function, with a fixture hand-copied from the "declining a
+  // DECREASE" test above (whose sb.updates[0]/outcome assertions were typed
+  // in independently). Genuinely calling both here would be a comparison
+  // that trivially agrees by construction — resyncInvoiceToAgreedTotal's
+  // `totals` variable literally IS this function's return value (see
+  // quoteAmendInvoiceSync.ts), so cross-calling would test the plumbing, not
+  // catch a real divergence. What actually guards against drift: both
+  // fixtures are the SAME literal numbers, so an edit to either formula that
+  // changes the result breaks whichever of the two tests nobody remembered
+  // to update — a manual tripwire, not a programmatic one.
+  it('pins the same total/balance the "declining a DECREASE" resync test hand-verifies on its real write, for the identical fixture (result.total=2400, depositPaid=1000, newTotal=2400) — not verified here by calling resyncInvoiceToAgreedTotal', () => {
     const result: InvoicePricingInput & { total: number } = { total: 2400 };
     const totals = computeInvoiceResyncTotals(result, 1000, 2400, false);
     expect(totals.total).toBe(2400);
