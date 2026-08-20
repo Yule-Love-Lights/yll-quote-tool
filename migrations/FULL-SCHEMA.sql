@@ -12,7 +12,12 @@
 -- HOW the schema got here; this file is WHERE it landed.
 --
 -- Regenerated: 2026-08-16 (ledger row 282), reconciling every dated migration
--- through 2026-08-16-crew-members-auth-user-id.sql (81 files).
+-- through 2026-08-16-crew-members-auth-user-id.sql (81 files). A second pass
+-- 2026-08-18 folded in job_assignments (82 files, 38 live tables) — recorded
+-- here because the FIRST version of this note said 81/08-16 while line 6 said
+-- 82, i.e. the exact hand-patch-without-updating-the-changelog drift row 282
+-- existed to end. The counts on line 6 and the roster below are the numbers to
+-- trust; re-derive them rather than incrementing by hand.
 -- WHY THIS PASS EXISTED: the S59 six-lens review found this file no longer was
 -- what its own header claimed. It said "64 dated migrations" and "30 LIVE"
 -- tables while 81 migrations and 37 live tables existed, and TWO tables

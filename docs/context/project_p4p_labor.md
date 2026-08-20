@@ -269,6 +269,20 @@ arrive/depart/complete segments, travel, and the Telegram wiring.
 
 ### Phase 3: scheduling, full calendar
 
+**FOUNDATION SHIPPED (S58 post-close, ledger row 298); the drag-drop calendar
+REMAINS.** Built: `job_assignments` (job x crew member x calendar DATE),
+`src/lib/scheduling.ts` with the capacity derivation stated below,
+`GET/POST/DELETE /api/ops/schedule`, and a dispatch **day view** at
+`/admin/schedule` with inline assign/unassign and the unscheduled-work list.
+Capacity is the placeholder-rate guardrail's first real consumer — hours are read
+through `readLaborPlan`, so a placeholder figure arrives tagged and the day view
+banners it. ⚠️ `migrations/2026-08-18-job-assignments.sql` is NOT YET APPLIED, so
+the schedule page errors until it is. NOT built: the drag-drop week/month
+calendar. It shares the day view's capacity derivation, so that only had to be
+right once. Row 300 tracks the missing tests on scheduling.ts's four DB
+functions.
+
+
 - Crew assignment on jobs, drag-drop week/month calendar, unscheduled-work list,
   dispatch/day view.
 - Capacity view driven by BH per person per day. **Derivation must be stated:**

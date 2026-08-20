@@ -15,7 +15,13 @@ import { useCallback, useEffect, useState } from 'react';
  * is how someone accidentally hands a crew member the operator surface.
  */
 
-type CrewRow = { id: string; displayName: string; active: boolean; hasLogin: boolean };
+type CrewRow = {
+  id: string;
+  displayName: string;
+  active: boolean;
+  hasLogin: boolean;
+  telegramUserId: string | null;
+};
 
 export function CrewLogins() {
   const [crew, setCrew] = useState<CrewRow[]>([]);
@@ -24,6 +30,9 @@ export function CrewLogins() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
+  const [tgSelected, setTgSelected] = useState('');
+  const [tgId, setTgId] = useState('');
+  const [tgBusy, setTgBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
 
@@ -87,6 +96,33 @@ export function CrewLogins() {
     }
   }
 
+  async function saveTelegram(crewMemberId: string, telegramUserId: string | null) {
+    setTgBusy(true);
+    setError(null);
+    setDone(null);
+    try {
+      const res = await fetch('/api/admin/crew-accounts', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ crewMemberId, telegramUserId }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string; displayName?: string };
+      if (!res.ok) throw new Error(data.error ?? 'Failed to save the Telegram link');
+      setDone(
+        telegramUserId
+          ? `${data.displayName} can now clock in by texting the bot.`
+          : `${data.displayName}'s Telegram is unlinked. Their texts no longer clock them in.`,
+      );
+      setTgSelected('');
+      setTgId('');
+      reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to save the Telegram link');
+    } finally {
+      setTgBusy(false);
+    }
+  }
+
   const withoutLogin = crew.filter((c) => !c.hasLogin);
 
   return (
@@ -108,8 +144,25 @@ export function CrewLogins() {
                   {c.displayName}
                   {!c.active && <span className="ml-2 text-xs text-gray-400">(inactive)</span>}
                 </span>
-                <span className={c.hasLogin ? 'text-xs text-green-700' : 'text-xs text-gray-400'}>
-                  {c.hasLogin ? 'Has login' : 'No login yet'}
+                <span className="flex items-center gap-3">
+                  <span className={c.hasLogin ? 'text-xs text-green-700' : 'text-xs text-gray-400'}>
+                    {c.hasLogin ? 'Has login' : 'No login yet'}
+                  </span>
+                  {c.telegramUserId ? (
+                    <span className="flex items-center gap-2">
+                      <span className="text-xs text-green-700">Telegram linked</span>
+                      <button
+                        type="button"
+                        disabled={tgBusy}
+                        onClick={() => void saveTelegram(c.id, null)}
+                        className="text-xs text-gray-500 underline disabled:opacity-50"
+                      >
+                        Unlink
+                      </button>
+                    </span>
+                  ) : (
+                    <span className="text-xs text-amber-700">No Telegram — cannot clock in</span>
+                  )}
                 </span>
               </li>
             ))}
@@ -182,6 +235,72 @@ export function CrewLogins() {
               </button>
             </form>
           )}
+
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void saveTelegram(tgSelected, tgId);
+            }}
+            className="mt-6 space-y-3 border-t border-gray-100 pt-4"
+          >
+            <div>
+              <h3 className="text-sm font-semibold text-gray-900">Telegram time clock</h3>
+              <p className="text-xs text-gray-500 mt-1">
+                Separate from the login above. The bot recognises a crew member by their Telegram
+                account, so until this is linked their &quot;in&quot; and &quot;out&quot; texts do
+                nothing. They can get their id by messaging @userinfobot.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-sm text-gray-700 mb-1" htmlFor="tg-crew-member">
+                Crew member
+              </label>
+              <select
+                id="tg-crew-member"
+                className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm"
+                value={tgSelected}
+                onChange={(e) => setTgSelected(e.target.value)}
+                required
+              >
+                <option value="">Choose…</option>
+                {crew.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.displayName}
+                    {c.telegramUserId ? ' (re-link)' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm text-gray-700 mb-1" htmlFor="tg-user-id">
+                Telegram user id
+              </label>
+              <input
+                id="tg-user-id"
+                inputMode="numeric"
+                pattern="\d*"
+                className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm"
+                value={tgId}
+                onChange={(e) => setTgId(e.target.value)}
+                placeholder="e.g. 123456789"
+                required
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Digits only — an @handle will not work, because Telegram sends the number.
+              </p>
+            </div>
+
+            <button
+              type="submit"
+              disabled={tgBusy}
+              className="px-4 py-2 rounded-md text-sm font-medium text-white disabled:opacity-50"
+              style={{ backgroundColor: 'var(--brand-evergreen-3)' }}
+            >
+              {tgBusy ? 'Saving…' : 'Link Telegram'}
+            </button>
+          </form>
 
           {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
           {done && <p className="mt-3 text-sm text-green-700">{done}</p>}

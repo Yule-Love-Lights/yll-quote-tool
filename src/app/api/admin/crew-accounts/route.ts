@@ -7,14 +7,27 @@ import {
   crewMetadataIsSafe,
   validateCrewAccount,
 } from '@/lib/auth/crewAccounts';
+import { TelegramUserIdTakenError, updateCrewMember } from '@/lib/crewMembers';
 
 export const runtime = 'nodejs';
 
 /**
  * Crew login management (row 279).
  *
- *   GET  /api/admin/crew-accounts  → every crew member + whether they have a login
- *   POST /api/admin/crew-accounts  → create a login and link it to a crew member
+ *   GET   /api/admin/crew-accounts → every crew member, their login state and
+ *                                    their Telegram link
+ *   POST  /api/admin/crew-accounts → create a login and link it to a crew member
+ *   PATCH /api/admin/crew-accounts → link or unlink a crew member's Telegram
+ *
+ * WHY PATCH EXISTS (row 301). A crew LOGIN and a crew member's TELEGRAM are two
+ * independent identities, and only the second one reaches the time clock:
+ * `handleCrewTimeMessage` resolves the sender through
+ * `getCrewMemberByTelegramUserId`, never through the auth session. Before this,
+ * NOTHING in the app could write `crew_members.telegram_user_id` —
+ * `updateCrewMember` existed with zero callers — so the entire Telegram time
+ * clock was unreachable by every crew member, and creating a login did not
+ * change that. Linking is an office task, so it lives on the office's screen
+ * instead of in a hand-written SQL UPDATE.
  *
  * ADMIN ONLY, and never dormancy-bypassed: `requireAdmin` fails closed. Creating
  * a login is exactly the kind of thing that must not be reachable anonymously.
@@ -30,7 +43,15 @@ type CrewRow = {
   display_name: string;
   active: boolean;
   auth_user_id: string | null;
+  telegram_user_id: string | null;
 };
+
+/**
+ * Telegram user ids are numeric. Accepting only digits keeps a pasted @handle
+ * ("@sonson") — which would silently never match an inbound message, because
+ * Telegram sends the numeric id — from being stored as if it were a link.
+ */
+const TELEGRAM_USER_ID_RE = /^\d{1,20}$/;
 
 export async function GET() {
   const auth = await requireAdmin();
@@ -43,7 +64,7 @@ export async function GET() {
 
   const { data, error } = await sb
     .from('crew_members')
-    .select('id, display_name, active, auth_user_id')
+    .select('id, display_name, active, auth_user_id, telegram_user_id')
     .order('display_name', { ascending: true });
 
   if (error) {
@@ -58,6 +79,7 @@ export async function GET() {
       displayName: r.display_name,
       active: r.active,
       hasLogin: r.auth_user_id !== null,
+      telegramUserId: r.telegram_user_id,
     })),
   });
 }
@@ -149,4 +171,78 @@ export async function POST(req: NextRequest) {
     email: input.email,
     linked: true,
   });
+}
+/**
+ * Link (or unlink) a crew member's Telegram account.
+ *
+ * ADMIN ONLY, same as the rest of this route. The id is written by the office
+ * from the admin screen and never accepted from the crew member themselves:
+ * whoever holds a Telegram id can clock in as the person it points at, so this
+ * is a pay-identity write, not a profile preference.
+ *
+ * Send `telegramUserId: null` (or an empty string) to unlink.
+ */
+export async function PATCH(req: NextRequest) {
+  const auth = await requireAdmin();
+  if ('response' in auth) return auth.response;
+
+  const sb = getSupabaseServiceClient();
+  if (!sb) {
+    return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
+  }
+
+  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+  const crewMemberId = String(body?.crewMemberId ?? '').trim();
+  if (!crewMemberId) {
+    return NextResponse.json({ error: 'Choose a crew member.' }, { status: 400 });
+  }
+
+  const raw = body?.telegramUserId;
+  // Absent is NOT the same as null here: null/'' means "unlink", while a missing
+  // key means the caller sent nothing to change and is almost certainly a bug.
+  if (raw === undefined) {
+    return NextResponse.json({ error: 'telegramUserId is required (send null to unlink).' }, { status: 400 });
+  }
+  const trimmed = raw === null ? '' : String(raw).trim();
+  const telegramUserId = trimmed === '' ? null : trimmed;
+  if (telegramUserId !== null && !TELEGRAM_USER_ID_RE.test(telegramUserId)) {
+    return NextResponse.json(
+      {
+        error:
+          'That is not a Telegram user id. It is a number, not an @handle — the crew member can get theirs from @userinfobot.',
+      },
+      { status: 400 },
+    );
+  }
+
+  const { data: existing, error: lookupError } = await sb
+    .from('crew_members')
+    .select('id, display_name, active, auth_user_id, telegram_user_id')
+    .eq('id', crewMemberId)
+    .maybeSingle();
+
+  if (lookupError) {
+    console.error('PATCH /api/admin/crew-accounts lookup:', lookupError.message);
+    return NextResponse.json({ error: 'Failed to load the crew member' }, { status: 500 });
+  }
+  const crew = existing as unknown as CrewRow | null;
+  if (!crew) return NextResponse.json({ error: 'Crew member not found' }, { status: 404 });
+
+  try {
+    const updated = await updateCrewMember(crewMemberId, { telegramUserId });
+    return NextResponse.json({
+      crewMemberId: updated.id,
+      displayName: updated.displayName,
+      telegramUserId: updated.telegramUserId,
+    });
+  } catch (e) {
+    // A partial unique index guards this column, so the conflict is a real
+    // "that account already belongs to someone else" — surface it as a 409 the
+    // office can act on rather than a generic 500.
+    if (e instanceof TelegramUserIdTakenError) {
+      return NextResponse.json({ error: e.message }, { status: 409 });
+    }
+    console.error('PATCH /api/admin/crew-accounts update:', e instanceof Error ? e.message : e);
+    return NextResponse.json({ error: 'Failed to update the Telegram link' }, { status: 500 });
+  }
 }
