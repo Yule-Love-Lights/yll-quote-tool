@@ -721,6 +721,94 @@ describe('updateQuote — #214 identity verify-or-reattach', () => {
     });
   });
 
+  // #251 widening: an APPROVED-but-not-yet-booked quote (customer_approved_at
+  // set, deposit_paid_at still null) must freeze the customers link exactly
+  // like a booked one does above — this is the live incident's exact gap
+  // (Sharon McDonough's approved #1173 had no deposit yet, so the pre-#251
+  // booked-only freeze let a stale hl pick re-point it).
+  it('never re-attaches an APPROVED-but-unpaid quote (customer_approved_at set — the #251 freeze widening)', async () => {
+    const fake = makeIdentityFake(STORED, {
+      customer_approved_at: '2026-08-10T00:00:00Z',
+      quote_sent_at: '2026-07-01T00:00:00Z',
+      customer_id: 'cust-1',
+    });
+    serviceRef.current = fake.client;
+
+    // Identity edit + hl change — both triggers present, both must be inert.
+    await updateQuote(
+      'q1', INPUTS, RESULT,
+      { ...CUSTOMER, name: 'Edited After Approval' },
+      'holiday', undefined, undefined, true, 'hl-NEW',
+    );
+
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+    // Tag propagation still runs, against the frozen cached id.
+    expect(propagateQuoteTagsToCustomerMock).toHaveBeenCalledWith('cust-1', {
+      isNce: true,
+      isYllNeighbor: undefined,
+    });
+  });
+
+  // Boundary check: a DRAFT/SENT quote (neither approved nor booked) must stay
+  // fully free to re-attach — the #251 widening must not creep past its two
+  // named triggers.
+  it('still re-attaches a draft/sent quote — customer_approved_at absent is NOT frozen', async () => {
+    attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'cust-fresh', propertyId: 'p1' });
+    const fake = makeIdentityFake(STORED, {
+      quote_sent_at: '2026-07-01T00:00:00Z',
+      customer_id: 'cust-1',
+    });
+    serviceRef.current = fake.client;
+
+    await updateQuote(
+      'q1', INPUTS, RESULT,
+      { ...CUSTOMER, name: 'Edited Pre-Approval' },
+      'holiday', undefined, undefined, true, 'hl-NEW',
+    );
+
+    expect(attachQuoteToCustomerMock).toHaveBeenCalled();
+  });
+
+  // is_test exemption must still win even when the quote is approved —
+  // attachQuoteToCustomer must never run against test data, full stop.
+  it('never re-attaches an APPROVED TEST quote (is_test exemption still wins)', async () => {
+    const fake = makeIdentityFake(STORED, {
+      customer_approved_at: '2026-08-10T00:00:00Z',
+      is_test: true,
+      customer_id: 'cust-1',
+    });
+    serviceRef.current = fake.client;
+
+    await updateQuote(
+      'q1', INPUTS, RESULT,
+      { ...CUSTOMER, name: 'Edited' },
+      'holiday', undefined, undefined, true, 'hl-NEW',
+    );
+
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+  });
+
+  // A same-contact no-op re-pick (identical hl id, identical identity fields)
+  // must never be treated as a blocked change on an approved quote — nothing
+  // actually differs from `stored`, so identityChanged/hlChanged are both
+  // false regardless of the freeze, and the save proceeds normally.
+  it('a same-id no-op re-pick on an APPROVED quote is not blocked (nothing actually changed)', async () => {
+    const fake = makeIdentityFake(STORED, {
+      customer_approved_at: '2026-08-10T00:00:00Z',
+      customer_id: 'cust-1',
+    });
+    serviceRef.current = fake.client;
+
+    // CUSTOMER matches STORED exactly; hlContactId 'hl-1' matches stored too.
+    const res = await updateQuote(
+      'q1', INPUTS, RESULT, CUSTOMER,
+      'holiday', undefined, undefined, undefined, 'hl-1',
+    );
+
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+    expect(res).toEqual({ id: 'q1' });
+  });
+
   it("translates the stored 'Anonymous'/'(no address)' display sentinels to null in the re-attach identity", async () => {
     attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'c1', propertyId: 'p1' });
     const fake = makeIdentityFake({

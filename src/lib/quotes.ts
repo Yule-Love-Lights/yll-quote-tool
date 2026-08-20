@@ -486,14 +486,16 @@ export async function updateQuote(
     // review) — updateQuote has no other way to know is_test (it's immutable
     // and never a param here), and a reopened TEST quote CAN be re-Calculated
     // through this exact path. deposit_paid_at rides along for the #214
-    // booked-freeze below.
-    .select('id, quote_sent_at, customer_id, is_test, deposit_paid_at')
+    // booked-freeze below; customer_approved_at rides along for the #251
+    // approved-freeze widening (same block, see its comment).
+    .select('id, quote_sent_at, customer_id, is_test, deposit_paid_at, customer_approved_at')
     .single<{
       id: string;
       quote_sent_at: string | null;
       customer_id: string | null;
       is_test: boolean;
       deposit_paid_at: string | null;
+      customer_approved_at: string | null;
     }>();
 
   if (error) {
@@ -530,12 +532,36 @@ export async function updateQuote(
   // restores the pre-#214 immutability-after-booking for the LINK
   // specifically; tag propagation below still runs against the (frozen)
   // cached id.
+  //
+  // #251 widening (real incident, 2026-08-11 — Sharon McDonough's APPROVED
+  // but not-yet-booked quote #1173 got silently re-pointed at a different
+  // customer via a stale HighLevel contact pick, invisible on every screen
+  // because the denormalized customer_name/email/phone never moved). The
+  // booked-only freeze above left every approved-but-unpaid quote exposed —
+  // the exact gap this incident fell through. An approval is itself a
+  // signed commitment (the approval_snapshot freezes pricing/terms the same
+  // moment); the customers link deserves the same immutability from that
+  // moment on, not just from booking. So the freeze now triggers on EITHER
+  // customer_approved_at OR deposit_paid_at — approved behaves exactly like
+  // booked already does here: the re-attach is skipped, the cached
+  // customer_id is left untouched, a console.warn would fire if this block
+  // ran (it doesn't), and the save itself still succeeds normally — this is
+  // a silent, best-effort skip, not a rejection. (Verified: this function
+  // has no channel back to the caller for "identity frozen" today — no
+  // existing 409/error idiom applies at this layer, unlike the route-level
+  // #177 deposit-percent-locked check. Widening this gate keeps that same
+  // silent-skip shape rather than inventing a new one; see the #251 PR
+  // notes for why a hard reject was rejected as broader than asked.) A
+  // same-contact no-op re-pick still passes through untouched regardless —
+  // identityChanged/hlChanged below are false when nothing actually
+  // differs from `stored`, so this widening only ever blocks a REAL change
+  // of identity, never a redundant re-save.
   const effectiveHl =
     hlContactId === undefined
       ? (stored?.highlevel_contact_id ?? null)
       : (hlContactId?.trim() || null);
   let reattached: { customerId: string } | null | undefined;
-  if (!data.is_test && !data.deposit_paid_at && stored) {
+  if (!data.is_test && !data.deposit_paid_at && !data.customer_approved_at && stored) {
     const written = customer
       ? {
           customer_name: blankToNull(customer.name) ?? 'Anonymous',
