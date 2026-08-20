@@ -1,5 +1,9 @@
 ﻿# Task ledger - ARCHIVE (completed + shelved)
 
+## Archived at S42 close (2026-08-20) -- row #292 (RESOLVED-by-#799, body byte-verbatim + resolution prefix)
+
+| 292 | **RESOLVED S42 (by #799 fix round 2, no dedicated build: the hedge discriminator became "did GHL return an HTTP status", so a socket reset now hedges outcome-unknown and takes the typed-YES gate. S41 independently corroborated — investigated under its launch authority, built a producer-side variant, discarded it unmerged once #799 proved sufficient; Jason ruled "Close 292".) GHL socket-reset mid-send skips the timeout hedge — an ambiguous outcome presented as a confirmed failure (S40, #786 technical lens; pre-existing #264 producer code)** | XS-S | `ghlFetch`'s catch-without-abort branch (highlevel.ts ~136-139) rethrows the RAW exception for any non-AbortController failure — e.g. a mid-request socket reset, which (unlike DNS/connection-refused) can occur AFTER GHL already received the request. `timeoutHedgedErrorMessage` (send route ~136-141) only hedges on `HighLevelError && err.timedOut`, so a raw rethrow gets NO hedge marker: the operator sees a plain confirmed-failure and row 290's typed-YES gate correctly (given its input) offers the LOW-friction confirm for what is really an outcome-unknown send — the fail-open sibling of the case #786 gated. Fix direction: classify post-request-transmission network errors (ECONNRESET et al) as hedged in the route, or wrap the rethrow in a HighLevelError with an outcomeUnknown flag; test the seam. Jason's area (send route). | - |
+
 ## Archived at S41 close (2026-08-20) -- rows #291/#293 (moved from ACTIVE with shipped-markers, bodies byte-verbatim) + rows #302/#307 (S41-created, shipped same session, written directly here)
 
 | # | Task | Size | Notes | Old # |

@@ -62,7 +62,7 @@ import {
 } from '@/components/portal/mockQuote';
 import { loadPortalQuote, PortalConfigError } from '@/lib/portal/loader';
 import { pickInitialPackageId } from '@/lib/portal/derivePackages';
-import { deriveIsBooked, resolveApprovalSelectionSeed } from '@/lib/portal/adapter';
+import { deriveIsBooked, resolveApprovalSelectionSeed, resolveBrowsingSelectionSeed } from '@/lib/portal/adapter';
 import { isPortalActionable } from '@/lib/quoteStatus';
 import { canCustomerRecolor } from '@/lib/serviceType';
 import type { PortalQuote } from '@/components/portal/types';
@@ -291,9 +291,24 @@ export default async function PortalPage({
   // recommendation/default seed. installTiming is already restored via
   // quote.installTiming (the adapter prefers the approval); this mirrors it for
   // the package/item selection and the rush/premium-takedown add-ons.
+  // Ledger row 239 — reconcile any saved BROWSING selection (the customer's
+  // last unapproved pick) against the quote's CURRENT catalog, falling back to
+  // the staff-computed default above when it's gone entirely stale (see
+  // resolveBrowsingSelectionSeed's own comment for why). This result becomes
+  // resolveApprovalSelectionSeed's fallback below, so the precedence is
+  // exactly: a frozen approval always wins → else the reconciled browsing
+  // pick → else the staff default. quote.browsingSelection is itself already
+  // undefined on an approved quote (see quoteRowToPortalQuote), so this is
+  // pure belt-and-suspenders there.
+  const browsingFallback = resolveBrowsingSelectionSeed(
+    quote.browsingSelection,
+    { initialPackageId: fallbackPackageId, initialSelectedItemIds: fallbackSelectedItemIds },
+    new Set(quote.packages.map((p) => p.id)),
+    new Set(quote.lineItems.map((li) => li.id)),
+  );
   const { initialPackageId, initialSelectedItemIds } = resolveApprovalSelectionSeed(
     quote.approval,
-    { initialPackageId: fallbackPackageId, initialSelectedItemIds: fallbackSelectedItemIds },
+    browsingFallback,
   );
   // #177 fix 2 — this quote's actual deposit percent (integer, for copy that
   // states it). Prefers the FROZEN quote.approval.depositRate (what the
@@ -308,13 +323,25 @@ export default async function PortalPage({
   // so overriding them with the frozen choices restores the customer's approved
   // add-ons (the staff defaults in quote.charges would otherwise contradict the
   // signed selection). Only affects the seed — live pricing uses charges.*.amount.
+  // Ledger row 239 — pre-approval, prefer the customer's last SAVED browsing
+  // rush/takedown picks over the staff default, same precedence as the
+  // package/item seed above (approval > browsing > staff default). No
+  // reconciliation needed here (unlike selectedItemIds) — rush/takedown are
+  // plain booleans against a fee structure (quote.charges.rush/takedown) that
+  // always exists, so there's no "no longer exists" case to fall back from.
   const seededCharges = quote.approval
     ? {
         ...quote.charges,
         rush: { ...quote.charges.rush, defaultOn: quote.approval.rushSelected },
         takedown: { ...quote.charges.takedown, defaultOn: quote.approval.takedownSelected },
       }
-    : quote.charges;
+    : quote.browsingSelection
+      ? {
+          ...quote.charges,
+          rush: { ...quote.charges.rush, defaultOn: quote.browsingSelection.rushSelected },
+          takedown: { ...quote.charges.takedown, defaultOn: quote.browsingSelection.takedownSelected },
+        }
+      : quote.charges;
 
   return (
     <main className="relative w-full">
@@ -347,10 +374,20 @@ export default async function PortalPage({
         // the picker's "Request colour change" button notifies staff instead.
         colorPreviewWhenLocked={isBooked}
         // #163 — an approved/booked order opens ON its frozen colour (approved
-        // choice or a staff-applied colour change) instead of "as designed";
-        // undefined pre-approval, so the S9 default is untouched.
-        initialColorSchemeId={quote.approval?.colorSchemeId}
-        initialCustomPattern={quote.approval?.customPattern}
+        // choice or a staff-applied colour change) instead of "as designed".
+        // Ledger row 239: pre-approval, fall back to the customer's last SAVED
+        // browsing colour/pattern before the S9 "as designed" default —
+        // SelectionProvider's own resolveInitialColorState validates whichever
+        // one lands here against `schemes`/`buildableColorIds` below, so an
+        // unknown/stale saved scheme degrades to the default exactly like a
+        // corrupted approval snapshot already does.
+        initialColorSchemeId={quote.approval?.colorSchemeId ?? quote.browsingSelection?.colorSchemeId}
+        initialCustomPattern={quote.approval?.customPattern ?? quote.browsingSelection?.customPattern}
+        // Ledger row 239 — same precedence, for the permanent animation effect.
+        // Approval doesn't carry a restorable effect today (a separate,
+        // pre-existing gap — see SelectionProvider's initialPermanentEffect doc),
+        // so this only ever comes from a saved browsing pick.
+        initialPermanentEffect={quote.browsingSelection?.permanentEffect}
         legacyRebook={quote.legacyRebook === true}
         daylightAvailable={!!quote.design?.photoUrl}
         initialInstallTiming={

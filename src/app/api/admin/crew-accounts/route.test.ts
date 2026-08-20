@@ -1,6 +1,6 @@
 // Contract: PATCH /api/admin/crew-accounts is admin-only and is the ONLY door in
 // the app that can write crew_members.telegram_user_id — the identity the
-// Telegram time clock resolves a punch through. Before row 313 nothing could
+// Telegram time clock resolves a punch through. Before row 316 nothing could
 // write it, so every crew member's "in" was unrecognised.
 import { NextRequest, NextResponse } from 'next/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
