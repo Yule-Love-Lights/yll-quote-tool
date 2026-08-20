@@ -51,6 +51,24 @@ export function isDeadQuote(q: DashboardQuote): boolean {
   return DEAD_QUOTE_STATUSES.has(deriveStatus(q));
 }
 
+// #317 (Jason's ruling, 2026-08-20, verbatim in ledger row 317): once a
+// quote's own status derives into one of these three, the customer "should
+// not show up in inbox anymore" — every quotetool inbox item tied to that
+// quote is treated as if staff clicked Mark completed (see store.ts's
+// completeTerminalQuoteItems). Deliberately NOT the same set as
+// DEAD_QUOTE_STATUSES above:
+//   - adds 'booked' — money moved, the deal is done, nothing left to chase.
+//   - drops 'cancelled' — Jason named booked/declined/abandoned only, twice.
+//     Leaving it out fails safe: a cancelled row keeps behaving exactly as it
+//     does today (the older #756 handled-only path), until a future ruling
+//     adds it explicitly.
+// Positive allowlist, never a negative gate, per AGENTS.md Pitfalls.
+const AUTO_COMPLETE_QUOTE_STATUSES: ReadonlySet<QuoteStatus> = new Set(['booked', 'declined', 'abandoned']);
+
+export function isAutoCompleteTerminalQuote(q: DashboardQuote): boolean {
+  return AUTO_COMPLETE_QUOTE_STATUSES.has(deriveStatus(q));
+}
+
 export function normalizeQuoteTouch(q: DashboardQuote): NormalizedTouch | null {
   // #181/#252/#263: unsent, still-DRAFT YLL Neighbor quotes are parked
   // send-wave inventory, not leads owed a response — suppress before any
