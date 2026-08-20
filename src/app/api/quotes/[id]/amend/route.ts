@@ -32,11 +32,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
 import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
-import { computeAmendment, requiresReconsent, type AmendmentTrailEntry } from '@/lib/amend';
-import { computeInvoiceTotals, getInvoiceByJob, appendRetiredTxn, type InvoicePricingInput } from '@/lib/invoices';
+import {
+  computeAmendment,
+  requiresReconsent,
+  resolveAmendmentBasis,
+  type AmendmentTrailEntry,
+} from '@/lib/amend';
+import { getInvoiceByJob, type InvoicePricingInput } from '@/lib/invoices';
 import { roundMoney as round2 } from '@/lib/money';
 import { resolveAgreedTotal, amendedAgreedTotal } from '@/lib/agreedTotal';
-import { canTransition, type InvoiceStatus } from '@/lib/invoiceStatus';
+import { resyncInvoiceToAgreedTotal, computeInvoiceResyncTotals } from '@/lib/quoteAmendInvoiceSync';
 import { getJobByQuote } from '@/lib/jobs';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { sendSms, sendEmail, isHighLevelConfigured } from '@/lib/integrations/highlevel';
@@ -217,6 +222,79 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
+  // FIX A (delta-verify HIGH, fix round 4): compute the invoice-basis figures
+  // BEFORE the amendment is persisted, and stamp them onto `amendment` here —
+  // so they ride the ONE write below instead of a second, independent CAS
+  // write that could silently lose a race (round 3's bug: the stamp used
+  // outcome.previousInvoicedTotal from the invoice re-sync's OWN fresh
+  // re-read, taken well after this route's first write; a concurrent write
+  // to approval_snapshot in that gap made the second CAS match 0 rows with
+  // no error at all).
+  //
+  // FIX B (task (a), fix round 5): re-read the invoice HERE, immediately
+  // before computing the basis payload below, instead of reusing the `invoice`
+  // fetched near the top of this handler (before computeAmendment / the
+  // no-change guard ran). That earlier read left a stale-invoice window open —
+  // a concurrent re-sync, mark-paid, or tax-override edit landing between the
+  // two could persist a basis computed from an invoice.total/tax_overridden
+  // that's already wrong by the time this stamp lands in the write below.
+  // Same fallback idiom as resyncInvoiceToAgreedTotal's own B10 re-read
+  // (quoteAmendInvoiceSync.ts): getInvoiceByJob swallows its own read errors
+  // and returns null, so `?? invoice` falls back to the earlier read rather
+  // than silently dropping the stamp on a transient failure. This narrows,
+  // but (short of a Postgres RPC) cannot fully eliminate, the window — the
+  // remaining gap is between this re-read and the CAS write a few lines
+  // below, not the whole handler.
+  //
+  // previousInvoicedTotal is that freshly re-read invoice's CURRENT total.
+  // The new invoice-basis total is a PURE computation (computeInvoiceResyncTotals,
+  // from quoteAmendInvoiceSync.ts — the SAME function the re-sync below calls
+  // on these SAME inputs, so the two can't drift into different numbers).
+  //
+  // Delta-verify MEDIUM-HIGH (fix round 5, gap in FIX B): the re-sync block
+  // below now gates on this EXACT `invoiceForBasis` value, not a second,
+  // independently-stale `invoice` read — one fresh read feeds both gates.
+  // Before this, the two blocks could disagree: `invoice` (line ~185) is
+  // null when the job hasn't been completed yet; if a concurrent
+  // job-completion created the invoice between that read and this one,
+  // `invoiceForBasis` would see it (non-null) and stamp invoice_basis, while
+  // the OLD resync gate — still reading the stale null `invoice` — would
+  // never call resyncInvoiceToAgreedTotal at all. The stamp and the invoices
+  // table would then disagree indefinitely (every surface downstream prefers
+  // invoice_basis once it's stamped, per resolveAmendmentBasis). Sharing the
+  // SAME `invoiceForBasis` for both gates makes that divergence structurally
+  // impossible — either both blocks act on this invoice, or neither does.
+  // The re-sync call itself still does its OWN independent fresh re-read
+  // (B10) before it writes, so it stays correct even if that later read
+  // lands on a newer snapshot than this one.
+  //
+  // If the re-sync below still fails for any reason (a genuine DB error, or
+  // a concurrent change this read couldn't see), the amendment trail entry
+  // already carries these figures and the customer notice (below) reads
+  // them from the SAME `amendment` object — the stamp and the notice always
+  // agree, even when the invoice itself never actually got updated to match.
+  // That's strictly better than before: previously a re-sync failure left
+  // the SECOND write ungated on anything (it ran only when the re-sync
+  // reported success), so this exact failure mode couldn't yet produce a
+  // stamped-but-unsent-to-invoice figure — but a LOST CAS RACE on a
+  // *successful* re-sync could, and silently, which is the bug FIX A fixed.
+  const invoiceForBasis = (job ? await getInvoiceByJob(job.id) : null) ?? invoice;
+  if (invoiceForBasis && invoiceForBasis.status !== 'cancelled' && quote.result) {
+    const planned = computeInvoiceResyncTotals(
+      quote.result,
+      depositPaid,
+      newTotal,
+      invoiceForBasis.tax_overridden,
+    );
+    if (typeof invoiceForBasis.total === 'number' && Number.isFinite(invoiceForBasis.total)) {
+      amendment.invoice_basis = {
+        previous_total: invoiceForBasis.total,
+        new_total: planned.total,
+        delta: round2(planned.total - invoiceForBasis.total),
+      };
+    }
+  }
+
   // Re-read immediately before the write for a fast conflict response. The
   // update below also compare-and-swaps the serialized full snapshot, which closes
   // the remaining window where two requests could both pass this length check and
@@ -263,149 +341,33 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
-  // Jason 2026-08-19: the customer notice must quote the balance the customer
-  // will ACTUALLY be billed, which is the invoice's balance — not the
-  // amendment trail's new_balance. The two are NOT the same number on a
-  // tax-overridden invoice: computeInvoiceTotals subtracts the (scaled) tax
-  // from the invoice total, while amendment.new_balance is newTotal − deposit
-  // with the tax still in it, so the message would overstate the balance by
-  // the tax. 2 of the 4 invoices in prod today are tax_overridden, so this is
-  // an ordinary case, not a corner. Stays null when there is no invoice yet
-  // (the job is not complete) or when the re-sync write failed — in both of
-  // those the trail's new_balance is the honest figure to quote.
-  let invoicedBalance: number | null = null;
-  let invoicedTotal: number | null = null;
-
   // Re-sync the linked invoice (if the job was completed) to the re-priced totals,
   // so the balance the operator collects matches the amended order. Skip a
-  // cancelled invoice (don't resurrect it).
-  if (invoice && invoice.status !== 'cancelled' && quote.result) {
-    // B10 fix (re-read): re-fetch the invoice immediately before the status
-    // decision + write to reduce the clobber window. A concurrent balance-webhook
-    // or mark-paid between the earlier read and this write could flip the invoice
-    // to 'paid'; without a re-read, the stale 'draft'/'awaiting_payment' status
-    // would overwrite that settlement. The re-read narrows (but cannot eliminate)
-    // that race; a fully atomic approach would require a Postgres RPC.
-    const freshInvoice = job ? await getInvoiceByJob(job.id) : null;
-    const invoiceForSync = freshInvoice ?? invoice;
-
-    if (invoiceForSync.status !== 'cancelled') {
-      // W1-004: re-sync to the AGREED new total (on the selection basis), not the
-      // full quote.result.total — the breakdown lines stay from result for display,
-      // the load-bearing total/balance use newTotal (same as the amendment trail).
-      //
-      // #125-1: this is the THIRD invoice write-path (after createInvoiceFromJob +
-      // setInvoiceTaxOverride, both fixed by #384). When tax is overridden,
-      // computeInvoiceTotals subtracts pricing.taxAmount from the total — so the
-      // whole-quote tax against a partial/amended newTotal would OVER-remove and
-      // UNDER-BILL. Scale the removable tax to the amended basis (exact under the
-      // flat rate: newTotal = taxable × (1+rate) ⇒ newTotal/fullTotal = taxable ratio),
-      // mirroring the other two write paths.
-      const fullTotal = quote.result.total ?? 0;
-      const scaledTax =
-        fullTotal > 0
-          ? round2((quote.result.taxAmount ?? 0) * (newTotal / fullTotal))
-          : (quote.result.taxAmount ?? 0);
-      const totals = computeInvoiceTotals(
-        { ...quote.result, taxAmount: scaledTax, total: newTotal },
-        depositPaid,
-        { taxOverridden: invoiceForSync.tax_overridden },
-      );
-      // Reconcile the invoice STATUS to the new balance (review MEDIUM): an
-      // amended-UP already-paid invoice reopens to awaiting_payment (more is owed);
-      // an amended-DOWN invoice that the deposit now covers settles to paid. A
-      // draft/awaiting invoice with a remaining balance is left as-is.
-      const reconciledStatus: InvoiceStatus =
-        totals.balance <= 0
-          ? 'paid'
-          : invoiceForSync.status === 'paid'
-            ? 'awaiting_payment'
-            : invoiceForSync.status;
-
-      // B10 fix (defense-in-depth guard): gate the bare status write through
-      // canTransition. Every transition the amend re-sync actually performs is
-      // already legal (draft/awaiting_payment→paid, paid→awaiting_payment, and the
-      // no-op self-transitions all live in invoiceStatus.ts's TRANSITIONS table),
-      // so this never blocks a real amend — it's a belt-and-suspenders check that
-      // catches a future illegal transition (e.g. resurrecting a cancelled invoice)
-      // instead of writing it blindly. A self-transition (status unchanged) is
-      // permitted so we still re-sync the money fields.
-      if (
-        reconciledStatus !== invoiceForSync.status &&
-        !canTransition(invoiceForSync.status, reconciledStatus)
-      ) {
-        console.error(
-          `[api/quotes/:id/amend] illegal invoice transition ${invoiceForSync.status} → ${reconciledStatus} (invoice ${invoiceForSync.id}) — skipping re-sync`,
-        );
-      } else {
-        // B10 fix (paid_at): maintain paid_at to match the reconciled status.
-        // Stamp on settle-to-paid (amend-down); clear on reopen (amend-up).
-        const paidAtPatch: Record<string, unknown> = {};
-        if (reconciledStatus === 'paid' && invoiceForSync.status !== 'paid') {
-          paidAtPatch.paid_at = new Date().toISOString();
-        } else if (reconciledStatus === 'awaiting_payment' && invoiceForSync.status === 'paid') {
-          paidAtPatch.paid_at = null;
-        }
-
-        const { error: invErr } = await sb
-          .from('invoices')
-          .update({
-            subtotal: totals.subtotal,
-            discount: totals.discount,
-            tax: totals.tax,
-            total: totals.total,
-            deposit_applied: totals.deposit_applied,
-            balance: totals.balance,
-            credit_note: totals.credit_note,
-            status: reconciledStatus,
-            ...paidAtPatch,
-          })
-          .eq('id', invoiceForSync.id);
-        if (!invErr) {
-          invoicedBalance = totals.balance;
-          // Same reasoning as invoicedBalance: on a tax-overridden invoice the
-          // invoice TOTAL is newTotal minus the scaled tax, so quoting the
-          // trail's new_total would disagree with the invoice too.
-          invoicedTotal = totals.total;
-        }
-        if (invErr) {
-          // The amendment trail is already recorded; an invoice-sync failure is
-          // reconcilable (re-run the amendment / edit the invoice). Surface it.
-          // invoicedBalance deliberately stays null: the row still holds its
-          // PRE-amendment figures, so neither number is the billed one and the
-          // notice falls back to the trail's own new_balance.
-          console.error('[api/quotes/:id/amend] invoice re-sync failed:', invErr);
-        } else if (
-          // #170(b): reopening a PAID invoice starts a NEW charge cycle — retire
-          // the settled txn to valor_txn_log and clear the live slot, or the
-          // next card charge 409s 'already-charged' against LAST cycle's txn
-          // (the misleading dead-end) and a new payment would clobber the old
-          // record. Runs through the CAS'd appendRetiredTxn AFTER the money
-          // re-sync (#640 review MED: a plain composite read-modify-write could
-          // lose a concurrent double-charge stash entry). The tiny window where
-          // the new balance coexists with the old txn id fails CLOSED — a
-          // charge in that instant 409s 'already-charged'. A pending sentinel
-          // can't be on a paid invoice; guarded anyway so a rotation can never
-          // eat a live claim.
-          reconciledStatus === 'awaiting_payment' &&
-          invoiceForSync.status === 'paid' &&
-          invoiceForSync.valor_balance_txn_id &&
-          !invoiceForSync.valor_balance_txn_id.startsWith('pending:')
-        ) {
-          await appendRetiredTxn(
-            invoiceForSync.id,
-            {
-              txnId: invoiceForSync.valor_balance_txn_id,
-              receiptUrl: invoiceForSync.valor_receipt_url,
-              settledAt: invoiceForSync.paid_at,
-              retiredAt: new Date().toISOString(),
-              reason: 'amend-reopen',
-            },
-            { clearLive: { expectTxnId: invoiceForSync.valor_balance_txn_id } },
-          );
-        }
-      }
-    }
+  // cancelled invoice (don't resurrect it). FIX2 (review HIGH): this re-sync is
+  // now shared with /amend-decline (src/lib/quoteAmendInvoiceSync.ts) — a
+  // decline used to leave the invoice frozen at the rejected figures.
+  //
+  // FIX A (fix round 4): this is now a PURE side effect on the invoices table
+  // — its return value is unused. The figures the customer notice quotes (and
+  // the figures already persisted in amendment.invoice_basis, above) are the
+  // PLANNED numbers computed before write 1, not this call's outcome; see the
+  // comment above the pre-write computation for why the two can't diverge in
+  // the case that matters (a successful re-sync), and what happens when they
+  // theoretically could (an unsuccessful one).
+  //
+  // Delta-verify MEDIUM-HIGH (fix round 5): gates on `invoiceForBasis` — the
+  // SAME fresh read the invoice_basis stamp above used — not a separately
+  // stale `invoice`. See that read's own comment for why sharing it matters.
+  if (invoiceForBasis && invoiceForBasis.status !== 'cancelled' && quote.result) {
+    await resyncInvoiceToAgreedTotal({
+      jobId: job ? job.id : null,
+      invoice: invoiceForBasis,
+      result: quote.result,
+      depositPaid,
+      newTotal,
+      logPrefix: '[api/quotes/:id/amend]',
+      retiredReason: 'amend-reopen',
+    });
   }
 
   // Optional, STAFF-INITIATED customer notice of the change (SPEC §4.4 re-consent
@@ -440,18 +402,34 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       // Fails SAFE: an unreadable/absent job yields false, which states no
       // timing at all rather than a false one.
       const dueAfterInstall = job?.status === 'to_schedule' || job?.status === 'scheduled';
-      // Quote the ACTUAL invoiced balance when there is one (see invoicedBalance
-      // above); otherwise the trail's projected balance, which is what the
-      // invoice will be built from when the job completes.
-      const notifiedBalance = invoicedBalance ?? amendment.new_balance;
-      const notifiedTotal = invoicedTotal ?? amendment.new_total;
+      // FIX A (fix round 4): read the SAME basis-resolution the trail entry
+      // and the portal card use (resolveAmendmentBasis, amend.ts) — total,
+      // balance, and delta all come from ONE source (amendment.invoice_basis
+      // when present, else the trail), so the SMS/email can never state a
+      // different total/balance/delta than what's persisted or than what the
+      // portal will later show. See amend.ts's resolveAmendmentBasis doc
+      // comment for the reconciliation guarantee.
+      const {
+        newTotalUsd: notifiedTotal,
+        newBalanceUsd: notifiedBalance,
+        deltaUsd: notifiedDelta,
+      } = resolveAmendmentBasis(amendment);
       const baseUrl = (process.env.PORTAL_BASE_URL || req.nextUrl.origin).replace(/\/+$/, '');
       const portalUrl = `${baseUrl}/portal/${id}`;
       const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || '(631) 517-0186';
       try {
         await sendSms({
           contactId: quote.highlevel_contact_id,
-          message: amendmentSmsBody(firstName, notifiedBalance, phone, dueAfterInstall),
+          message: amendmentSmsBody({
+            firstName,
+            newBalanceUsd: notifiedBalance,
+            phone,
+            dueAfterInstall,
+            portalUrl,
+            // Same basis as newTotalUsd — see resolveAmendmentBasis above.
+            deltaUsd: notifiedDelta,
+            newTotalUsd: notifiedTotal,
+          }),
           fromNumber: process.env.HIGHLEVEL_SMS_FROM_NUMBER || undefined,
         });
         await sendEmail({
@@ -464,6 +442,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
             portalUrl,
             phone,
             dueAfterInstall,
+            deltaUsd: notifiedDelta,
           }),
           emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
         });

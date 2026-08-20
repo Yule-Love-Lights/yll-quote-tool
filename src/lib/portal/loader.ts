@@ -85,6 +85,18 @@ export async function loadPortalQuote(id: string): Promise<PortalQuote | null> {
     }
     if (!data) return null;
 
+    // Delta-verify HIGH (fix round 3): this used to also fetch the linked
+    // job + invoice here (FIX4) just to read invoice.tax_overridden, so the
+    // adapter could reconstruct an invoice-basis total from it on every
+    // load. That reconstruction is gone: the amend route now stamps the
+    // invoice-basis previous/new/delta directly onto the trail entry at
+    // amend time (amend.ts's AmendmentTrailEntry.invoice_basis; read by
+    // adapter.ts's buildApproval), so the portal reads a recorded number and
+    // never needs a live invoice lookup to render the card. This also
+    // resolves the round-2 MEDIUM finding by elimination rather than by
+    // narrowing: that extra round-trip previously fired on every load of any
+    // quote that ever had an amendment — including routine $0-delta
+    // free-item/colour-change entries, forever — and now never fires at all.
     const photos = fetchPortalPhotos(data.customer_address);
     const portal = quoteRowToPortalQuote({ row: data, photos });
     // Attach the linked design (if any) so the hero can render it live (#27
