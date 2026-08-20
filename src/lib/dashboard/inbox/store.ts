@@ -943,30 +943,64 @@ export async function dismissItem(itemId: string, operatorId: string | null, now
  * markItemCompleted (AGENTS.md's positive-seam-gate convention: `.in(...)`
  * fails CLOSED on a future 5th status; a negative `.neq` pair would fail OPEN)
  * — only 'unresponded' and 'handled' are legal source statuses for a Follow.
- * The guard is on STATUS, never on followed_up_at itself, so both legitimate
- * callers keep working on a non-terminal row exactly as before: a post-throw
- * retry of the same Followed click, and a genuine re-Follow after a fresh
- * inbound cleared followed_up_at (planIngest.clearFollowedUp re-opens the item
- * to 'unresponded', which is still in the allowed set). CAS-style: the guard
- * lives IN the UPDATE's WHERE (not a separate read-check-then-act), same idiom
- * as the siblings — a no-row result is an honest "state changed since you
- * looked" refusal, not a silent no-op. */
-export async function markItemFollowed(itemId: string, operatorId: string, now: Date): Promise<{ ok: boolean; error?: string }> {
+ *
+ * Row 311 fix-round FIX 1 (the status guard above still lets a RETRY re-stamp
+ * followed_up_at, since this function never changes status — the headline row
+ * 306 harm): the two real callers need opposite behavior on an already-followed
+ * row. [A] the reply route (api/dashboard/reply) calls this right after a REAL
+ * send — the item may already be followed from an earlier round, and
+ * re-stamping is CORRECT there: the customer's waiting clock should restart
+ * because we just genuinely wrote to them. [B] the standalone "Followed"
+ * button (api/dashboard/followed) is a manual snooze with no send attached —
+ * every legitimate path to it starts from a row with followed_up_at NULL
+ * (InboxList's button only renders on open-queue rows; InWorksSection's only
+ * on handled-bucket rows, followed null by definition), so a retry landing
+ * AFTER an earlier attempt already stamped it is not a fresh follow-up, just a
+ * duplicate click/lost-race — restamping there would silently reset the
+ * waiting clock for no real reason. `opts.allowRestamp` differentiates the two
+ * (default false — the SAFER read, so an unknown future caller fails closed
+ * into "don't restamp" rather than silently reproducing the row 306 bug): true
+ * adds no extra guard (status-only, as before — the reply route's own call
+ * site passes this); false additionally requires `.is('followed_up_at', null)`
+ * in the same UPDATE...WHERE (CAS-style, same idiom as the siblings — no
+ * separate read-check-then-act). `alreadyFollowed` on a false-path refusal
+ * lets the caller (followed/route.ts) tell a genuine "already snoozed" no-op
+ * apart from a real guard block — see that route for why it treats the two
+ * differently. */
+export async function markItemFollowed(
+  itemId: string,
+  operatorId: string,
+  now: Date,
+  opts?: { allowRestamp?: boolean },
+): Promise<{ ok: true } | { ok: false; error: string; alreadyFollowed?: boolean }> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const allowRestamp = opts?.allowRestamp ?? false;
   const from = await priorStateOf(sb, itemId);
-  const { data, error } = await sb
+  let query = sb
     .from('inbox_items')
     .update({ followed_up_at: now.toISOString(), updated_at: now.toISOString() })
     .eq('id', itemId)
-    .in('status', ['unresponded', 'handled'])
-    .select('id')
-    .maybeSingle();
+    .in('status', ['unresponded', 'handled']);
+  if (!allowRestamp) {
+    query = query.is('followed_up_at', null);
+  }
+  const { data, error } = await query.select('id').maybeSingle();
   if (error) {
     await recordActionFailed(itemId, operatorId, 'followed', error.message);
     return { ok: false, error: error.message };
   }
   if (!data) {
+    // Row 311 fix-round: `from` is the pre-update snapshot (priorStateOf,
+    // above) — best-effort, not atomic with the guard itself, but good enough
+    // to word the refusal honestly. wasFollowed only means anything when the
+    // followed_up_at guard was actually in play (allowRestamp false); on the
+    // allowRestamp:true path the status guard is the only way to land here.
+    if (!allowRestamp && from?.wasFollowed) {
+      const msg = 'Already marked followed';
+      await recordActionFailed(itemId, operatorId, 'followed', msg);
+      return { ok: false, error: msg, alreadyFollowed: true };
+    }
     const msg = 'Item is completed or dismissed; cannot mark followed';
     await recordActionFailed(itemId, operatorId, 'followed', msg);
     return { ok: false, error: msg };

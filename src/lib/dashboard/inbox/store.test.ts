@@ -4240,7 +4240,16 @@ describe('markItemFollowed — status guard (row 306)', () => {
     expect(insertCall!.args[0]).toMatchObject({ actor: OPERATOR_ID, action: 'followed' });
   });
 
-  it('the guard predicate never touches followed_up_at — a post-throw retry / genuine re-Follow on a non-terminal row keeps working', async () => {
+  // Row 311 fix-round FIX 1 correction: this test used to assert the guard
+  // predicate NEVER touches followed_up_at — true before FIX 1, and no longer
+  // true for the default (allowRestamp:false) path, on purpose: that's exactly
+  // what closes row 306's headline harm (a retry could previously re-stamp
+  // followed_up_at silently, resetting the customer's waiting clock — see the
+  // dedicated "Already marked followed" tests below for the refusal case). A
+  // genuine re-Follow on a row where followed_up_at is already null (a fresh
+  // inbound cleared it, or it was never set) still passes the new guard and
+  // gets stamped, exactly as before.
+  it('still stamps followed_up_at on a genuine re-Follow (followed_up_at null), now via an explicit IS NULL guard alongside the status guard', async () => {
     const { from, updateCalls } = makeSbFor({ data: { id: ITEM_ID }, error: null });
     sbRef.current = { from };
 
@@ -4249,8 +4258,8 @@ describe('markItemFollowed — status guard (row 306)', () => {
     expect(res.ok).toBe(true);
     const updateCall = updateCalls.find((c) => c.method === 'update');
     expect(updateCall!.args[0]).toMatchObject({ followed_up_at: NOW.toISOString() });
-    // No guard clause reads/compares followed_up_at itself — only status is gated.
-    expect(updateCalls.some((c) => c.args[0] === 'followed_up_at')).toBe(false);
+    const isCalls = updateCalls.filter((c) => c.method === 'is').map((c) => c.args);
+    expect(isCalls).toContainEqual(['followed_up_at', null]);
   });
 
   it('still surfaces a real DB error (never silently swallowed)', async () => {
@@ -4260,6 +4269,94 @@ describe('markItemFollowed — status guard (row 306)', () => {
     const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toBe('connection reset');
+  });
+
+  // Row 311 fix-round FIX 1: the status guard above blocks the row-311 harm
+  // (stamping a terminal row) but NOT the row-306 headline harm — a RETRY can
+  // still re-stamp followed_up_at on a row that's already followed, resetting
+  // the customer's waiting clock, because this function never changes status.
+  // opts.allowRestamp differentiates the reply route's real-send re-stamp
+  // (correct) from the standalone Followed button's duplicate-click re-stamp
+  // (wrong) — see markItemFollowed's own doc comment for the full design.
+
+  /** Like makeSbFor above, but with a configurable prior-state row (makeSbFor
+   *  always hard-codes `{data: null, error: null}`, i.e. priorStateOf finds
+   *  nothing) — these tests need priorStateOf to see a real followed_up_at so
+   *  the "already followed" vs "guard blocked for another reason" distinction
+   *  is actually exercised, not vacuously true. */
+  function makeSbForWithPrior(
+    priorResult: { data: unknown; error: null | { message: string } },
+    itemUpdateResult: { data: unknown; error: null | { message: string } },
+  ) {
+    const { builder: priorBuilder } = makeBuilder(priorResult);
+    const { builder: updateBuilder, calls: updateCalls } = makeBuilder(itemUpdateResult);
+    const { builder: activityBuilder, calls: activityCalls } = makeBuilder({ data: null, error: null });
+    let inboxCallCount = 0;
+    const from = (table: string) => {
+      if (table === 'inbox_items') {
+        inboxCallCount += 1;
+        return inboxCallCount === 1 ? priorBuilder : updateBuilder;
+      }
+      if (table === 'dashboard_activity') return activityBuilder;
+      throw new Error(`unexpected table: ${table}`);
+    };
+    return { from, updateCalls, activityCalls };
+  }
+
+  it('allowRestamp:true (the reply-route caller) skips the followed_up_at guard entirely', async () => {
+    const { from, updateCalls } = makeSbFor({ data: { id: ITEM_ID }, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW, { allowRestamp: true });
+
+    expect(res.ok).toBe(true);
+    expect(updateCalls.some((c) => c.method === 'is')).toBe(false);
+  });
+
+  it('refuses a restamp of an already-followed row with "Already marked followed" (alreadyFollowed:true)', async () => {
+    const priorRow = { status: 'handled', followed_up_at: '2026-08-19T00:00:00Z' };
+    const { from, activityCalls } = makeSbForWithPrior({ data: priorRow, error: null }, { data: null, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toBe('Already marked followed');
+      expect(res.alreadyFollowed).toBe(true);
+    }
+    const insertCalls = activityCalls.filter((c) => c.method === 'insert');
+    expect(insertCalls).toContainEqual(
+      expect.objectContaining({
+        args: [expect.objectContaining({ action: 'action_failed', inbox_item_id: ITEM_ID, detail: { action: 'followed', error: 'Already marked followed' } })],
+      }),
+    );
+  });
+
+  it('a guard block NOT explained by wasFollowed (e.g. status changed concurrently) keeps the generic message and never sets alreadyFollowed', async () => {
+    const priorRow = { status: 'unresponded', followed_up_at: null };
+    const { from } = makeSbForWithPrior({ data: priorRow, error: null }, { data: null, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toBe('Item is completed or dismissed; cannot mark followed');
+      expect(res.alreadyFollowed).toBeUndefined();
+    }
+  });
+
+  it('allowRestamp:true succeeds and restamps even when the row is already followed', async () => {
+    const priorRow = { status: 'handled', followed_up_at: '2026-08-19T00:00:00Z' };
+    const { from, updateCalls } = makeSbForWithPrior({ data: priorRow, error: null }, { data: { id: ITEM_ID }, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW, { allowRestamp: true });
+
+    expect(res.ok).toBe(true);
+    const updateCall = updateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ followed_up_at: NOW.toISOString() });
   });
 });
 
