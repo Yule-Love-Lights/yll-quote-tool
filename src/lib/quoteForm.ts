@@ -520,6 +520,19 @@ export function nceConfirmMessage(
  * refetched on open), which is exactly the live incident's starting state
  * (Sharon McDonough's approved #1173 was already HL-linked when a stale pick
  * on a different quote's tab re-pointed it, invisible on every screen).
+ *
+ * #839 fix-round re-check (staff lens LOW): the isApproved branch's copy is
+ * now DIFFERENT from the unapproved branch, not just stronger — once BOTH
+ * the quotes.ts and attach/route.ts freezes ship (same fix round), a
+ * confirmed re-pick on an approved-but-unpaid quote no longer moves
+ * customer_id at all (frozen). The old copy ("risks attributing their
+ * approved price and signed terms to the wrong person") described exactly
+ * the customer_id repoint that's now blocked — claiming it here would
+ * overstate what a decline-and-proceed actually does. What's still true and
+ * still worth disclosing: the HighLevel contact/card link DOES still move
+ * unconditionally (see the write-site comment in attach/route.ts for why
+ * that's left unfrozen) — so the copy now names that residual precisely
+ * instead of the no-longer-real billing risk.
  */
 export function contactRelinkConfirmMessage(
   newContactId: string,
@@ -528,18 +541,46 @@ export function contactRelinkConfirmMessage(
   isApproved: boolean,
 ): string | null {
   if (!currentContactId || currentContactId === newContactId) return null;
-  const lines = [
-    `Link this quote to ${newContactLabel}?`,
-    '',
-    'This quote is currently linked to a DIFFERENT HighLevel contact — re-linking it changes which customer this quote (and its billing/GHL history) belongs to.',
-  ];
+  const lines = [`Link this quote to ${newContactLabel}?`, ''];
   if (isApproved) {
     lines.push(
-      '',
-      'This quote has already been approved by the customer — re-linking it risks attributing their approved price and signed terms to the wrong person.',
+      'This quote has already been approved by the customer, so its customer record (billing, jobs, invoices, tenure) is frozen and will NOT move. Confirming will still move this quote\'s HighLevel contact/card link to the new contact — if this pick is a mistake, HighLevel ends up pointing at the wrong contact until it\'s corrected.',
+    );
+  } else {
+    lines.push(
+      'This quote is currently linked to a DIFFERENT HighLevel contact — re-linking it changes which customer this quote (and its billing/GHL history) belongs to.',
     );
   }
   return lines.join('\n');
+}
+
+/**
+ * #839 fix-round (BYPASS 3, customer+technical lenses): window.confirm copy
+ * for clearHighLevelContact (the contact chip's "Change"/clear button) on an
+ * APPROVED/booked quote. Detach itself never touches quotes.customer_id —
+ * route.ts's `detach:true` branch is a bare two-column null-out
+ * (highlevel_contact_id/highlevel_opportunity_id), no attachQuoteToCustomer
+ * call — so this is a narrower risk than contactRelinkConfirmMessage above:
+ * clearing never changes who the quote BELONGS to (billing/jobs/invoices
+ * read customer_id, untouched here). The real, honest consequence is losing
+ * the HighLevel card/stage/date sync for this contact until a new pick.
+ * Returns null pre-approval — an everyday draft/sent correction needs no
+ * prompt, matching contactRelinkConfirmMessage's own posture.
+ *
+ * A server-side block was considered and rejected: unlike a re-pick, detach
+ * has a legitimate approved-quote use (undoing a wrong link before booking),
+ * and it structurally cannot cause the customer-misattribution class of harm
+ * the #251/#839 freezes exist for. A confirm — not a block — is the right
+ * shape here; see the write-site comment in attach/route.ts for the sibling
+ * design note on the (deliberately unfrozen) GHL-link write itself.
+ */
+export function clearContactConfirmMessage(isApproved: boolean): string | null {
+  if (!isApproved) return null;
+  return [
+    "Clear this quote's HighLevel contact link?",
+    '',
+    'This quote has already been approved. Clearing the link does NOT change which customer this quote belongs to — billing, jobs, and invoices are unaffected. It only stops HighLevel card/stage/date syncs for this contact until you pick a new one.',
+  ].join('\n');
 }
 
 /**
