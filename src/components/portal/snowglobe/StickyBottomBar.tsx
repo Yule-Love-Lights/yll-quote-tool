@@ -14,7 +14,7 @@ import { useModalFocus } from '../useModalFocus';
 import { DepositCheckout } from './DepositCheckout';
 import { SignaturePad, type CapturedSignature } from './SignaturePad';
 import { QuoteResponseModal, type ResponseIntent } from './QuoteResponseModal';
-import { isPortalActionable } from '@/lib/quoteStatus';
+import { isPortalActionable, isTerminalBrowseStatus } from '@/lib/quoteStatus';
 import type { InstallTiming, PackageId } from '../types';
 import { DEFAULT_PERMANENT_EFFECT, type SceneEffect } from '@/lib/design/permanentScenes';
 import type { ServiceType } from '@/lib/serviceType';
@@ -131,18 +131,6 @@ export function viewOnlyBrowsingCopy(phone: string): { label: string; phone: str
   };
 }
 
-// Ledger row 236 — true for the two terminal statuses whose portal stays
-// browsable (colors, line-item toggles — see page.tsx's terminal-block gate)
-// but must never show the live approve/pay/decline/request-changes bar
-// again. Mirrors canRevive (@/lib/quoteStatus) exactly — the SAME two
-// statuses the reopen-request route accepts — kept as a tiny local
-// predicate rather than importing canRevive, since this file already takes
-// quoteStatus as a bare `string | null | undefined` prop, not the narrower
-// QuoteStatus type canRevive expects.
-export function isTerminalBrowseStatus(status: string | null | undefined): boolean {
-  return status === 'declined' || status === 'abandoned';
-}
-
 // Ledger row 236 — the reopen-ask strip's tel:/mailto: hrefs, pure for the
 // same reason viewOnlyBrowsingCopy above is: no render-test infra in this
 // file (see StickyBottomBar.test.ts's header note). `email` is omitted
@@ -157,6 +145,18 @@ export function reopenAskCopy(
     telHref: `tel:${phone.replace(/[^0-9+]/g, '')}`,
     ...(email ? { email, mailtoHref: `mailto:${email}` } : {}),
   };
+}
+
+// Fix round (four-lens, MED) — the reopen-request route now returns
+// `{ ok: true, skipped: 'staff' }` for a staff preview (nothing was actually
+// sent). Pure so the branching is testable without render infra: a failed
+// fetch → 'error'; a staff skip → 'idle' (silently no-op, same as /view and
+// /interested treat a staff preview — never show the customer-facing "Thanks"
+// confirmation for a click that sent nothing); anything else ok → 'sent'.
+export function reopenResultState(ok: boolean, skipped?: unknown): 'sent' | 'idle' | 'error' {
+  if (!ok) return 'error';
+  if (skipped === 'staff') return 'idle';
+  return 'sent';
 }
 
 export type StickyBottomBarProps = {
@@ -366,8 +366,14 @@ export function StickyBottomBar({
           headers: { 'Content-Type': 'application/json' },
           body: '{}',
         });
-        if (!res.ok) throw new Error(`Request failed: ${res.status}`);
-        setReopenState('sent');
+        // Fix round (four-lens, MED) — a staff preview 200s with
+        // { ok: true, skipped: 'staff' }, mirroring /view + /interested; that
+        // must NOT show the customer-facing "Thanks" confirmation, since
+        // nothing was actually sent. reopenResultState maps the response to
+        // the right next state (sent / idle / error) in one testable place.
+        if (!res.ok) console.error('reopen request failed', res.status);
+        const body: { skipped?: string } = res.ok ? await res.json().catch(() => ({})) : {};
+        setReopenState(reopenResultState(res.ok, body.skipped));
       } catch (err) {
         console.error('reopen request failed', err);
         setReopenState('error');

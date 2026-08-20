@@ -4,6 +4,7 @@
 // Body: none required.
 // Response:
 //   { ok: true }                       — request received (email sent or best-effort attempted)
+//   { ok: true, skipped: 'staff' }     — a staff preview, never a customer ask (see below)
 //   { ok: true, skipped: 'cooldown' }  — a request for this quote already fired recently
 //   { error: string, code?: string }
 //
@@ -25,6 +26,15 @@
 // canonical definition of "a dead quote that can still be revived" already
 // used by the staff /send route, so this can never drift from that set.
 //
+// Fix round (four-lens, MED): row 236's browse mode means a staff member can
+// open a terminal quote's portal and the reopen button is the ONLY CTA there
+// — so a staff preview click needs the SAME isStaffPreview skip its siblings
+// view/route.ts and interested/route.ts already have, or a staff click fires
+// a real internal email indistinguishable from a genuine customer ask.
+// Checked BEFORE any DB work (mirrors view/route.ts's ordering) AND before
+// the cooldown claim below — a staff click must not burn the customer's
+// 1-hour cooldown slot either.
+//
 // Idempotent-ish (not a DB-backed dedupe): a per-quote in-memory cooldown
 // (mirrors referral request-link's sendAndStamp — checkRateLimitByKey keyed
 // on the quote id, limit 1 per window) stops a customer mashing the button
@@ -40,6 +50,7 @@ import {
   internalReopenRequestedEmailHtml,
 } from '@/lib/integrations/quoteMessages';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
+import { isStaffPreview } from '@/lib/auth/staffDevice';
 import { canRevive, deriveStatus, type QuoteStatusRow } from '@/lib/quoteStatus';
 
 export const runtime = 'nodejs';
@@ -59,6 +70,7 @@ function hlErrorMessage(err: unknown): string {
 
 type QuoteRow = QuoteStatusRow & {
   id: string;
+  quote_number: number | null;
   customer_name: string | null;
   customer_address: string | null;
   customer_phone: string | null;
@@ -79,11 +91,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Invalid quote id' }, { status: 400 });
   }
 
+  // Fix round (four-lens, MED) — a staff preview of a terminal quote's portal
+  // is not a customer ask. Checked before ANY DB work (mirrors view/route.ts
+  // + interested/route.ts exactly) and, critically, before the cooldown claim
+  // below: a staff click must never burn the customer's 1-hour cooldown slot.
+  if (await isStaffPreview(req)) {
+    return NextResponse.json({ ok: true, skipped: 'staff' });
+  }
+
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, highlevel_contact_id, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status',
+      'id, quote_number, customer_name, customer_address, customer_phone, customer_email, highlevel_contact_id, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status',
     )
     .eq('id', id)
     .single<QuoteRow>();
@@ -128,9 +148,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     try {
       await sendEmail({
         contactId: internalContactId,
-        subject: internalReopenRequestedEmailSubject(quote.customer_name),
+        subject: internalReopenRequestedEmailSubject({
+          customerName: quote.customer_name,
+          quoteNumber: quote.quote_number,
+        }),
         html: internalReopenRequestedEmailHtml({
           customerName: quote.customer_name,
+          quoteNumber: quote.quote_number,
           address: quote.customer_address,
           phone: quote.customer_phone,
           email: quote.customer_email,

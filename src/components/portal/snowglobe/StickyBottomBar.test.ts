@@ -18,8 +18,8 @@ import {
   isAlreadyApprovedCode,
   isViewOnlyCode,
   viewOnlyBrowsingCopy,
-  isTerminalBrowseStatus,
   reopenAskCopy,
+  reopenResultState,
 } from './StickyBottomBar';
 import type { CapturedSignature } from './SignaturePad';
 
@@ -94,31 +94,11 @@ describe('viewOnlyBrowsingCopy (#176)', () => {
   });
 });
 
-// Ledger row 236 — declined/abandoned quotes stay browsable but show the
-// reopen-ask strip instead of the live approve/decline bar; every other
-// status (including the two OTHER non-actionable ones, cancelled and
-// changes_requested — page.tsx still hard-blocks those before this component
-// ever mounts) keeps its existing behavior unchanged.
-describe('isTerminalBrowseStatus (row 236)', () => {
-  it('is true for declined and abandoned', () => {
-    expect(isTerminalBrowseStatus('declined')).toBe(true);
-    expect(isTerminalBrowseStatus('abandoned')).toBe(true);
-  });
-
-  it('is false for every other status, including the other two non-actionable ones', () => {
-    expect(isTerminalBrowseStatus('cancelled')).toBe(false);
-    expect(isTerminalBrowseStatus('changes_requested')).toBe(false);
-    expect(isTerminalBrowseStatus('sent')).toBe(false);
-    expect(isTerminalBrowseStatus('viewed')).toBe(false);
-    expect(isTerminalBrowseStatus('approved')).toBe(false);
-    expect(isTerminalBrowseStatus('booked')).toBe(false);
-  });
-
-  it('is false for null/undefined (fail toward the normal bar, not the reopen strip)', () => {
-    expect(isTerminalBrowseStatus(null)).toBe(false);
-    expect(isTerminalBrowseStatus(undefined)).toBe(false);
-  });
-});
+// Ledger row 236 — isTerminalBrowseStatus itself now lives in
+// @/lib/quoteStatus (shared with FinancingSection's eligibility gate — fix
+// round, four-lens MED) and is tested there (quoteStatus.test.ts). This file
+// only covers the pieces that stay local to StickyBottomBar's own render
+// branch: the reopen-ask copy + the fetch-result state mapping below.
 
 // Ledger row 236 — the reopen-ask strip's contact links. Mirrors
 // viewOnlyBrowsingCopy's tel: normalization; email is the new part —
@@ -143,6 +123,27 @@ describe('reopenAskCopy (row 236)', () => {
 
   it('preserves a leading +country code in the tel href', () => {
     expect(reopenAskCopy('+1 631-517-0186').telHref).toBe('tel:+16315170186');
+  });
+});
+
+// Fix round (four-lens, MED) — the reopen-request route now 200s a staff
+// preview with { ok: true, skipped: 'staff' } (nothing was actually sent).
+// onRequestReopen must NOT show the customer-facing "Thanks" confirmation for
+// that case — reopenResultState is the pure mapping it uses to decide.
+describe('reopenResultState (row 236 fix round)', () => {
+  it('maps a non-ok response to error, regardless of body', () => {
+    expect(reopenResultState(false)).toBe('error');
+    expect(reopenResultState(false, 'staff')).toBe('error');
+  });
+
+  it('maps an ok response with skipped:"staff" to idle — no "Thanks" shown', () => {
+    expect(reopenResultState(true, 'staff')).toBe('idle');
+  });
+
+  it('maps an ok response with no skip, or any other skip reason, to sent', () => {
+    expect(reopenResultState(true)).toBe('sent');
+    expect(reopenResultState(true, undefined)).toBe('sent');
+    expect(reopenResultState(true, 'cooldown')).toBe('sent');
   });
 });
 
