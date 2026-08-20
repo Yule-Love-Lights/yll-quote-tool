@@ -23,11 +23,12 @@ import { handledByTag } from './assignment';
 import { listQuotesForDashboard } from '@/lib/dashboard/queries';
 import { normalizeGhlConversation } from './ghl';
 import { mapGmailThread, normalizeGmailThreadTouches } from './gmail';
-import { normalizeQuoteTouch, quoteFollowUpDecision } from './quotetool';
+import { isAutoCompleteTerminalQuote, normalizeQuoteTouch, quoteFollowUpDecision } from './quotetool';
 import { getFollowUpDays } from './settings';
 import { FOLLOWUP_REASONS } from './followups';
 import {
   closeFollowUp,
+  completeTerminalQuoteItems,
   ensureFollowUp,
   getSyncCursor,
   ingestTouch,
@@ -125,6 +126,10 @@ export type QuoteReconcileSummary = {
   scanned: number;
   ingested: number;
   skipped: number;
+  /** #317: quotetool inbox items (bare + a `:color-request` sibling, if any)
+   *  auto-completed this tick because their backing quote derived into
+   *  booked/declined/abandoned — see completeTerminalQuoteItems (store.ts). */
+  autoCompleted: number;
   followUpsCreated: number;
   followUpsSuppressed: number;
   followUpsClosed: number;
@@ -164,6 +169,7 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
     const followUpDays = await getFollowUpDays();
     let ingested = 0;
     let skipped = 0;
+    let autoCompleted = 0;
     let followUpsCreated = 0;
     let followUpsSuppressed = 0;
     let followUpsClosed = 0;
@@ -183,6 +189,16 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
       }
       if (res.skipped) skipped++;
       else ingested++;
+      // #317: the quote's own status is now terminal (booked/declined/
+      // abandoned) — finish every quotetool item tied to it (bare +
+      // :color-request) to 'completed', skipping needs_reply (the hard
+      // constraint — see completeTerminalQuoteItems' own doc). Independent of
+      // `res` above: runs even on a noop-reingest tick (#826), which is
+      // exactly the "2 declined (awaiting)" self-heal case — ingestTouch has
+      // nothing new to persist, but this item was never completed before.
+      if (isAutoCompleteTerminalQuote(q)) {
+        autoCompleted += await completeTerminalQuoteItems(q.id, now);
+      }
       const decision = quoteFollowUpDecision(q);
       if (res.itemId && decision.kind === 'create') {
         // WT-44: forward the configured cadence so the "Follow-up reminder
@@ -257,11 +273,11 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
     // pre-existing `errors` (ingestTouch failures) counter does NOT itself
     // flip `ok` here — that's an existing, separate condition unrelated to
     // this fix, out of scope for #310.
-    return { ok: followUpErrors === 0, scanned: quotes.length, ingested, skipped, followUpsCreated, followUpsSuppressed, followUpsClosed, followUpErrors, errors };
+    return { ok: followUpErrors === 0, scanned: quotes.length, ingested, skipped, autoCompleted, followUpsCreated, followUpsSuppressed, followUpsClosed, followUpErrors, errors };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     await recordSyncRun('quotetool', 'error', error);
-    return { ok: false, scanned: 0, ingested: 0, skipped: 0, followUpsCreated: 0, followUpsSuppressed: 0, followUpsClosed: 0, followUpErrors: 0, errors: 1, error };
+    return { ok: false, scanned: 0, ingested: 0, skipped: 0, autoCompleted: 0, followUpsCreated: 0, followUpsSuppressed: 0, followUpsClosed: 0, followUpErrors: 0, errors: 1, error };
   }
 }
 

@@ -29,6 +29,7 @@ vi.mock('@/lib/integrations/gmail', () => ({
 
 const ingestTouchMock = vi.fn();
 const closeFollowUpMock = vi.fn();
+const completeTerminalQuoteItemsMock = vi.fn();
 const ensureFollowUpMock = vi.fn();
 const recordSyncRunMock = vi.fn();
 const recordSuppressedFollowUpMock = vi.fn();
@@ -37,6 +38,7 @@ const sweepResolvedItemFollowUpsMock = vi.fn();
 
 vi.mock('./store', () => ({
   closeFollowUp: (...args: unknown[]) => closeFollowUpMock(...args),
+  completeTerminalQuoteItems: (...args: unknown[]) => completeTerminalQuoteItemsMock(...args),
   // quotetool.ts (unmocked — its pure functions run for real in this file)
   // imports this flag from './store'; the strict vitest mock throws on any
   // accessed export the factory doesn't define.
@@ -408,6 +410,7 @@ describe('runQuoteToolReconcile — orphan follow-up sweep wiring (#183 BUG 3)',
     getFollowUpDaysMock.mockResolvedValue(3);
     listQuotesForDashboardMock.mockResolvedValue([]);
     sweepResolvedItemFollowUpsMock.mockResolvedValue(0);
+    completeTerminalQuoteItemsMock.mockResolvedValue(0);
   });
 
   it('calls sweepOrphanedFollowUps once with the quote_sent_no_reply reason and adds its count into followUpsClosed', async () => {
@@ -739,6 +742,109 @@ describe('runQuoteToolReconcile — orphan follow-up sweep wiring (#183 BUG 3)',
     expect(summary.followUpErrors).toBe(1);
     expect(summary.ok).toBe(false); // the route's 200-vs-500 decision reads this
     expect(recordSyncRunMock).toHaveBeenCalledWith('quotetool', 'error', expect.stringContaining('1 follow-up error(s)'));
+  });
+});
+
+// #317: terminal-quote auto-complete wiring. The pure allowlist
+// (isAutoCompleteTerminalQuote) and the store-level completion logic
+// (bucket eligibility, the needs_reply hard constraint) are covered in
+// quotetool.test.ts / store.test.ts respectively — this file only proves the
+// reconcile LOOP calls completeTerminalQuoteItems for the right quotes, with
+// the right id, and folds its count into the summary.
+describe('runQuoteToolReconcile — terminal-quote auto-complete wiring (#317)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    ensureFollowUpMock.mockResolvedValue('created');
+    recordSyncRunMock.mockResolvedValue(undefined);
+    recordSuppressedFollowUpMock.mockResolvedValue(undefined);
+    getFollowUpDaysMock.mockResolvedValue(3);
+    sweepOrphanedFollowUpsMock.mockResolvedValue(0);
+    sweepResolvedItemFollowUpsMock.mockResolvedValue(0);
+    ingestTouchMock.mockResolvedValue(OK_RESULT);
+    closeFollowUpMock.mockResolvedValue(0);
+  });
+
+  it('calls completeTerminalQuoteItems with the quote id for a BOOKED quote and folds its count into the summary', async () => {
+    listQuotesForDashboardMock.mockResolvedValue([
+      {
+        id: 'q-booked',
+        quote_sent_at: '2026-08-01T00:00:00Z',
+        customer_approved_at: '2026-08-02T00:00:00Z',
+        deposit_paid_at: '2026-08-03T00:00:00Z',
+        status: 'booked',
+      },
+    ]);
+    completeTerminalQuoteItemsMock.mockResolvedValue(2); // bare + color-request both completed
+
+    const summary = await runQuoteToolReconcile(new Date('2026-08-20T12:00:00Z'));
+
+    expect(completeTerminalQuoteItemsMock).toHaveBeenCalledTimes(1);
+    expect(completeTerminalQuoteItemsMock).toHaveBeenCalledWith('q-booked', new Date('2026-08-20T12:00:00Z'));
+    expect(summary.autoCompleted).toBe(2);
+  });
+
+  it('calls completeTerminalQuoteItems for a DECLINED quote (the live "2 declined (awaiting)" self-heal shape)', async () => {
+    listQuotesForDashboardMock.mockResolvedValue([
+      { id: 'q-declined', quote_sent_at: '2026-07-01T00:00:00Z', customer_approved_at: null, status: 'declined' },
+    ]);
+    completeTerminalQuoteItemsMock.mockResolvedValue(1);
+
+    const summary = await runQuoteToolReconcile(new Date('2026-08-20T12:00:00Z'));
+
+    expect(completeTerminalQuoteItemsMock).toHaveBeenCalledWith('q-declined', expect.any(Date));
+    expect(summary.autoCompleted).toBe(1);
+  });
+
+  it('still calls completeTerminalQuoteItems on a noop-reingest tick (#826) — never swallowed by the noop', async () => {
+    listQuotesForDashboardMock.mockResolvedValue([
+      { id: 'q-abandoned', created_at: '2026-06-01T00:00:00Z', quote_sent_at: null, customer_approved_at: null, status: 'abandoned' },
+    ]);
+    // ingestTouch reports skipped:true (its own noopReingest short-circuit) —
+    // completeTerminalQuoteItems must still be called; it's a wholly separate
+    // write path (see its own doc for why the noop can't reach it).
+    ingestTouchMock.mockResolvedValue({ ...OK_RESULT, skipped: true });
+    completeTerminalQuoteItemsMock.mockResolvedValue(1);
+
+    const summary = await runQuoteToolReconcile(new Date('2026-08-20T12:00:00Z'));
+
+    expect(completeTerminalQuoteItemsMock).toHaveBeenCalledWith('q-abandoned', expect.any(Date));
+    expect(summary.autoCompleted).toBe(1);
+  });
+
+  it('does NOT call completeTerminalQuoteItems for a quote that is not yet terminal (sent, unanswered)', async () => {
+    listQuotesForDashboardMock.mockResolvedValue([
+      { id: 'q-sent', quote_sent_at: '2026-08-01T00:00:00Z', customer_approved_at: null, status: 'sent' },
+    ]);
+
+    const summary = await runQuoteToolReconcile(new Date('2026-08-20T12:00:00Z'));
+
+    expect(completeTerminalQuoteItemsMock).not.toHaveBeenCalled();
+    expect(summary.autoCompleted).toBe(0);
+  });
+
+  it('does NOT call completeTerminalQuoteItems for a cancelled quote (deliberately excluded — Jason named only three)', async () => {
+    listQuotesForDashboardMock.mockResolvedValue([
+      { id: 'q-cancelled', quote_sent_at: '2026-08-01T00:00:00Z', customer_approved_at: null, status: 'cancelled' },
+    ]);
+
+    const summary = await runQuoteToolReconcile(new Date('2026-08-20T12:00:00Z'));
+
+    expect(completeTerminalQuoteItemsMock).not.toHaveBeenCalled();
+    expect(summary.autoCompleted).toBe(0);
+  });
+
+  it('sums autoCompleted across multiple terminal quotes in the same tick', async () => {
+    listQuotesForDashboardMock.mockResolvedValue([
+      { id: 'q-a', quote_sent_at: '2026-07-01T00:00:00Z', customer_approved_at: null, status: 'declined' },
+      { id: 'q-b', quote_sent_at: '2026-07-02T00:00:00Z', customer_approved_at: null, status: 'abandoned' },
+      { id: 'q-c', quote_sent_at: '2026-07-03T00:00:00Z', customer_approved_at: null, status: 'sent' }, // not terminal
+    ]);
+    completeTerminalQuoteItemsMock.mockResolvedValueOnce(1).mockResolvedValueOnce(2);
+
+    const summary = await runQuoteToolReconcile(new Date('2026-08-20T12:00:00Z'));
+
+    expect(completeTerminalQuoteItemsMock).toHaveBeenCalledTimes(2);
+    expect(summary.autoCompleted).toBe(3);
   });
 });
 
