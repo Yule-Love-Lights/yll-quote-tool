@@ -243,7 +243,7 @@ describe('planIngest — leadKind + quoteValue thread through to item row', () =
   });
 });
 
-// ─── planIngest — noopReingest (#110 W7-004 write-amplification) ──────────────
+// ─── planIngest — noopReingest (#110 W7-004 + #316 write-amplification) ───────
 
 describe('planIngest — noopReingest short-circuits dead re-ingests', () => {
   const resolved = (status: 'handled' | 'completed' | 'dismissed'): ExistingItem => ({
@@ -252,6 +252,30 @@ describe('planIngest — noopReingest short-circuits dead re-ingests', () => {
     status,
     notifiedLevels: [],
     lastMessageAt: T,
+  });
+
+  // #316: an ExistingItem whose touch-derived fields exactly mirror what
+  // touch()'s defaults produce on the ItemRow (direction 'inbound', channel
+  // 'sms', preview 'hello', no subject/sourceMessageId, leadKind 'lead', no
+  // quoteValue) — i.e. the stored row from a PRIOR identical ingest of
+  // touch(). Absent touch fields normalize to `null` on the item (`?? null` /
+  // `?? 'lead'`), so the matching existing fixture must spell those out as
+  // `null`, not leave them `undefined` — see the "missing fields" test below
+  // for why that distinction matters.
+  const unrespondedMatchingTouch = (over: Partial<ExistingItem> = {}): ExistingItem => ({
+    id: 'i1',
+    contactId: 'A',
+    status: 'unresponded',
+    notifiedLevels: [],
+    lastMessageAt: T,
+    direction: 'inbound',
+    channel: 'sms',
+    preview: 'hello',
+    subject: null,
+    sourceMessageId: null,
+    leadKind: 'lead',
+    quoteValue: null,
+    ...over,
   });
 
   it('re-ingesting our own outbound on an already-handled item (same last_message_at) is a no-op', () => {
@@ -298,7 +322,82 @@ describe('planIngest — noopReingest short-circuits dead re-ingests', () => {
     expect(plan.noopReingest).toBe(false);
   });
 
-  it('an unresponded item re-ingested with the same message is NOT a no-op (escalation colour ages)', () => {
+  // #316: this used to assert `false` ("escalation colour ages") — flipped to
+  // `true`. escalation_level is deliberately NOT part of the content-change
+  // check (see IngestPlan.noopReingest's doc): it's a pure function of
+  // (last_message_at, now) that changes on nearly every tick for an aging
+  // open item, and the separately-scheduled escalate cron (every 10 min,
+  // sync.ts's runEscalation) — not ingest — is what keeps the stored column
+  // caught up. A genuinely identical re-observation of the same open
+  // conversation now stops writing a dead 'ingested' row every reconcile tick.
+  it('an unresponded item re-ingested with the identical message AND identical content is a no-op (#316)', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: unrespondedMatchingTouch(),
+      touch: touch({ direction: 'inbound', lastMessageAt: T }),
+      now: at(5 * HOUR),
+    });
+    expect(plan.noopReingest).toBe(true);
+    expect(plan.item.escalation_level).toBe(2); // still computed fresh in the plan...
+    // ...but ingestTouch never persists it on a noop — the escalate cron owns
+    // catching the stored column up (see the doc above).
+  });
+
+  it('a genuinely newer last_message_at on an unresponded item is NOT a no-op, even with identical content otherwise', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: unrespondedMatchingTouch(),
+      touch: touch({ direction: 'inbound', lastMessageAt: at(HOUR), preview: 'hello' }),
+      now: at(2 * HOUR),
+    });
+    expect(plan.noopReingest).toBe(false);
+  });
+
+  // #316 concrete real-world case: a still-DRAFT quotetool lead pins
+  // lastMessageAt to created_at (quotetool.ts's normalizeQuoteTouch), so
+  // staff editing the draft's total changes preview + quote_value with the
+  // timestamp completely frozen. Decided MATERIAL — a changed price is
+  // exactly the kind of content staff need to see, so it must still write
+  // and log, not disappear into the noop.
+  it('a changed preview + quote_value with the SAME last_message_at is NOT a no-op (a still-draft quote total was edited)', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: unrespondedMatchingTouch({ channel: 'app', preview: 'Quote — $2500', quoteValue: 2500 }),
+      touch: touch({
+        source: 'quotetool',
+        externalId: 'quote-1',
+        channel: 'app',
+        direction: 'inbound',
+        lastMessageAt: T,
+        preview: 'Quote — $2800', // total was edited from $2500 to $2800
+        leadKind: 'lead',
+        quoteValue: 2800,
+      }),
+      now: at(HOUR),
+    });
+    expect(plan.noopReingest).toBe(false);
+    expect(plan.item.quote_value).toBe(2800); // the new total DOES get persisted
+  });
+
+  // A subject-only change (same preview, same timestamp) — subject is a real
+  // touch-derived field the upsert writes, so it's held to the same bar.
+  it('a changed subject with the SAME last_message_at is NOT a no-op', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: unrespondedMatchingTouch({ subject: 'Old subject' }),
+      touch: touch({ direction: 'inbound', lastMessageAt: T, subject: 'New subject' }),
+      now: at(HOUR),
+    });
+    expect(plan.noopReingest).toBe(false);
+  });
+
+  // Fail-safe design check: an ExistingItem fixture that never populated the
+  // new #316 fields (undefined, as every OTHER test in this file predates
+  // #316) never qualifies for the content-match path, even when the touch's
+  // content would otherwise line up — undefined never `===` a real value.
+  // findExistingItem always populates them in production; this only protects
+  // against a future caller that forgets to.
+  it('an unresponded item with UNPOPULATED existing content fields is NOT a no-op (fails safe, never over-skips)', () => {
     const existing: ExistingItem = { id: 'i1', contactId: 'A', status: 'unresponded', notifiedLevels: [], lastMessageAt: T };
     const plan = planIngest({
       candidates: [],

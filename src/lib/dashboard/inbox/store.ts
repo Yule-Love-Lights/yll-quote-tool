@@ -42,6 +42,23 @@ export type ExistingItem = {
   status: InboxStatus;
   notifiedLevels: number[];
   lastMessageAt: Date | null;
+  /** #316: the rest of the stored row's touch-derived fields. Read ONLY by the
+   *  unresponded-item noop check below (see `noopReingest`'s doc) to catch a
+   *  material change that doesn't move last_message_at — e.g. a still-DRAFT
+   *  quotetool lead's lastMessageAt is pinned to created_at (quotetool.ts's
+   *  normalizeQuoteTouch), so staff editing that draft's total changes
+   *  preview/quote_value with NO timestamp movement at all. All optional:
+   *  findExistingItem always populates them from the real row; a hand-built
+   *  test fixture that omits one just never qualifies for that noop path
+   *  (undefined never `===` a real value — fails safe, never over-skips a
+   *  write it shouldn't). */
+  direction?: string | null;
+  channel?: string | null;
+  preview?: string | null;
+  subject?: string | null;
+  sourceMessageId?: string | null;
+  leadKind?: string | null;
+  quoteValue?: number | null;
 };
 
 export type ContactOp =
@@ -91,11 +108,29 @@ export type IngestPlan = {
    *  reason-1 cold-outbound skip, not a #252 reason-2 skip, even though
    *  isActivityNoise is true on that touch. */
   skipReason: 'cold-outbound' | 'activity-noise-existing' | null;
-  /** When true, a resolved item (handled/completed/dismissed) is being re-ingested
-   *  with NOTHING to persist — same status, same last_message_at, no reopen /
-   *  auto-resolve / snooze-clear. The reconcile cron re-reads these every minute,
-   *  so writing them anyway floods inbox_items (fresh updated_at) + dashboard_activity
-   *  with dead 'ingested' rows. ingestTouch short-circuits on it (#110 W7-004). */
+  /** When true, an item is being re-ingested with NOTHING to persist — same
+   *  status, same last_message_at, no reopen / auto-resolve / snooze-clear.
+   *  The reconcile cron re-reads these every minute, so writing them anyway
+   *  floods inbox_items (fresh updated_at) + dashboard_activity with dead
+   *  'ingested' rows. ingestTouch short-circuits on it (#110 W7-004). Two
+   *  cases feed this:
+   *    1. A RESOLVED item (handled/completed/dismissed) — the original
+   *       #110 W7-004 case. Same status + same last_message_at is sufficient;
+   *       nothing else about a resolved item's display depends on the touch.
+   *    2. #316: an UNRESOLVED ('unresponded') item whose touch-derived fields
+   *       (direction/channel/preview/subject/source_message_id/lead_kind/
+   *       quote_value) ALSO match the stored row — same status + same
+   *       last_message_at is not enough here, because a still-DRAFT
+   *       quotetool lead's lastMessageAt is pinned to created_at, so an
+   *       edited draft total can change preview/quote_value with the
+   *       timestamp frozen. Deliberately does NOT compare escalation_level —
+   *       that's a pure function of (last_message_at, now), so it changes on
+   *       almost every tick for an aging open item and would defeat this
+   *       noop entirely; the separately-scheduled escalate cron (runEscalation,
+   *       every 10 min, sync.ts) is what keeps the STORED column caught up,
+   *       independent of ingest — skipping the ingest-time write just means
+   *       the displayed level can lag by <=10 minutes after crossing a
+   *       threshold, which is exactly what that cron exists to backstop. */
   noopReingest: boolean;
   contactOp: ContactOp;
   item: ItemRow;
@@ -209,23 +244,53 @@ export function planIngest(input: {
   // skip that escalation email.
   const notifiedLevels = decision.reopened ? [] : (existing?.notifiedLevels ?? []);
 
-  // #110 W7-004: a resolved item re-ingested with nothing to persist is a no-op.
-  // Restricted to resolved statuses (escalation_level is fixed at 0, so skipping
-  // never freezes an aging unresponded item's display colour) AND an unchanged
-  // last_message_at (our own outbound reply re-read every reconcile is the common
-  // case). Everything that actually changes state — reopen, auto-resolve,
-  // snooze-clear, a newer message — falls through and writes normally.
-  const isResolvedStatus =
-    decision.status === 'handled' || decision.status === 'completed' || decision.status === 'dismissed';
-  const noopReingest =
+  // #110 W7-004 / #316: an item re-ingested with nothing to persist is a no-op.
+  // Shared preconditions for EITHER case below: an existing item, no state
+  // transition the reducer made (no auto-resolve / reopen / snooze-clear), same
+  // status, and an unchanged last_message_at (our own outbound reply re-read
+  // every reconcile, or a still-open conversation nobody has touched, are both
+  // the common case). Everything that actually changes state — reopen,
+  // auto-resolve, snooze-clear, a newer message — falls through and writes
+  // normally, for both cases.
+  const commonNoopPreconditions =
     !!existing &&
     !decision.autoResolved &&
     !decision.reopened &&
     !clearFollowedUp &&
-    isResolvedStatus &&
     decision.status === existing.status &&
     existing.lastMessageAt != null &&
     touch.lastMessageAt.getTime() === existing.lastMessageAt.getTime();
+
+  // Case 1 (#110 W7-004): a RESOLVED item (handled/completed/dismissed).
+  // Nothing else about a resolved item's display depends on the touch, so the
+  // shared preconditions alone are sufficient.
+  const isResolvedStatus =
+    decision.status === 'handled' || decision.status === 'completed' || decision.status === 'dismissed';
+
+  // Case 2 (#316): an UNRESOLVED ('unresponded') item ALSO needs its
+  // touch-derived fields to match the stored row before it's a true no-op —
+  // unlike a resolved item, an unresponded item's last_message_at can be
+  // pinned (a still-DRAFT quotetool lead pins it to created_at; see
+  // quotetool.ts's normalizeQuoteTouch) while a real edit changes what's
+  // shown (a draft's total → preview + quote_value). Compares every
+  // touch-derived field the upsert writes that could plausibly change without
+  // moving last_message_at. Deliberately EXCLUDES escalation_level (see the
+  // IngestPlan.noopReingest doc above — it's a pure function of elapsed time,
+  // not of the touch, and the escalate cron owns keeping it current
+  // independent of ingest) and notified_levels (already byte-identical to
+  // `existing` here by construction — see `notifiedLevels` above, `reopened`
+  // is false whenever this runs).
+  const unrespondedNoContentChange =
+    decision.status === 'unresponded' &&
+    (touch.direction ?? null) === existing?.direction &&
+    (touch.channel ?? null) === existing?.channel &&
+    (touch.preview ?? null) === existing?.preview &&
+    (touch.subject ?? null) === existing?.subject &&
+    (touch.sourceMessageId ?? null) === existing?.sourceMessageId &&
+    (touch.leadKind ?? 'lead') === existing?.leadKind &&
+    (touch.quoteValue ?? null) === existing?.quoteValue;
+
+  const noopReingest = commonNoopPreconditions && (isResolvedStatus || unrespondedNoContentChange);
 
   const item: ItemRow = {
     source: touch.source,
@@ -313,9 +378,14 @@ async function findCandidates(identity: ContactIdentity): Promise<StoredContact[
 async function findExistingItem(source: InboxSource, externalId: string): Promise<ExistingItem | null> {
   const sb = getSupabaseServiceClient();
   if (!sb) return null;
+  // #316: also selects the touch-derived columns planIngest's unresponded-item
+  // noop check compares (see ExistingItem's doc) — direction/channel/preview/
+  // subject/source_message_id/lead_kind/quote_value.
   const { data } = await sb
     .from('inbox_items')
-    .select('id, contact_id, status, notified_levels, last_message_at')
+    .select(
+      'id, contact_id, status, notified_levels, last_message_at, direction, channel, preview, subject, source_message_id, lead_kind, quote_value',
+    )
     .eq('source', source)
     .eq('external_id', externalId)
     .maybeSingle();
@@ -327,6 +397,13 @@ async function findExistingItem(source: InboxSource, externalId: string): Promis
     status: row.status as InboxStatus,
     notifiedLevels: (row.notified_levels as number[] | null) ?? [],
     lastMessageAt: row.last_message_at ? new Date(row.last_message_at as string) : null,
+    direction: (row.direction as string | null) ?? null,
+    channel: (row.channel as string | null) ?? null,
+    preview: (row.preview as string | null) ?? null,
+    subject: (row.subject as string | null) ?? null,
+    sourceMessageId: (row.source_message_id as string | null) ?? null,
+    leadKind: (row.lead_kind as string | null) ?? null,
+    quoteValue: (row.quote_value as number | null) ?? null,
   };
 }
 
@@ -377,9 +454,10 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
     return { ok: true, skipped: true, itemId: null, contactId: null, autoResolved: false, reopened: false, ambiguous: false, skipReason: plan.skipReason };
   }
 
-  // #110 W7-004: a resolved item re-ingested with nothing to persist — skip the
-  // item upsert AND the 'ingested' activity insert so the every-minute reconcile
-  // cron stops flooding both tables with no-change writes. `existing` is non-null
+  // #110 W7-004 / #316: an item (resolved OR unresponded — see noopReingest's
+  // doc) re-ingested with nothing to persist — skip the item upsert AND the
+  // 'ingested' activity insert so the every-minute reconcile cron stops
+  // flooding both tables with no-change writes. `existing` is non-null
   // whenever noopReingest is true. Not a plan.skip reason, so skipReason is null.
   if (plan.noopReingest) {
     return { ok: true, skipped: true, itemId: existing?.id ?? null, contactId: existing?.contactId ?? null, autoResolved: false, reopened: false, ambiguous: false, skipReason: null };
