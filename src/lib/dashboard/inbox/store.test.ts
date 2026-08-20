@@ -349,6 +349,7 @@ import {
   listEscalatableItems,
   markFollowUpDone,
   markItemCompleted,
+  markItemFollowed,
   markItemHandledLocal,
   needsLookReason,
   quoteIdPrefix,
@@ -4152,6 +4153,96 @@ describe('markItemCompleted — status guard (#224)', () => {
     expect(res.ok).toBe(true);
     const insertCall = activityCalls.find((c) => c.method === 'insert');
     expect(insertCall!.args[0]).toMatchObject({ actor: OPERATOR_ID, action: 'completed' });
+  });
+});
+
+// Row 306 (10th sibling-parity instance): markItemFollowed used to be a bare
+// `.update({followed_up_at}).eq('id', itemId)` with NO status guard at all —
+// unlike ALL three siblings. Guarded the same positive-match way as
+// markItemCompleted's own describe block above (mirrors its makeSbFor).
+describe('markItemFollowed — status guard (row 306)', () => {
+  const ITEM_ID = 'item-42';
+  const OPERATOR_ID = '11111111-2222-3333-4444-555555555555';
+  const NOW = new Date('2026-08-20T12:00:00Z');
+
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  /** Mirrors markItemCompleted's own makeSbFor: 1st .from('inbox_items') call is
+   *  priorStateOf's SELECT, 2nd is the update chain under test. */
+  function makeSbFor(itemUpdateResult: { data: unknown; error: null | { message: string } }) {
+    const { builder: priorBuilder } = makeBuilder({ data: null, error: null });
+    const { builder: updateBuilder, calls: updateCalls } = makeBuilder(itemUpdateResult);
+    const { builder: activityBuilder, calls: activityCalls } = makeBuilder({ data: null, error: null });
+    let inboxCallCount = 0;
+    const from = (table: string) => {
+      if (table === 'inbox_items') {
+        inboxCallCount += 1;
+        return inboxCallCount === 1 ? priorBuilder : updateBuilder;
+      }
+      if (table === 'dashboard_activity') return activityBuilder;
+      throw new Error(`unexpected table: ${table}`);
+    };
+    return { from, updateCalls, activityCalls };
+  }
+
+  it('blocks stamping followed_up_at on a row the guard excluded (already completed or dismissed) — the row-311 harm path', async () => {
+    // maybeSingle() returns null when the guarded UPDATE...WHERE matched zero
+    // rows (status was 'completed' or 'dismissed') — no DB error, just nothing
+    // to update.
+    const { from, activityCalls } = makeSbFor({ data: null, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/completed|dismissed/i);
+    // A blocked guard must not ALSO write a false 'followed' activity trail.
+    expect(activityCalls.some((c) => c.method === 'insert')).toBe(false);
+  });
+
+  it('the update chain is a POSITIVE match on the two legal source statuses (AGENTS.md positive-seam-gate convention, mirroring markItemCompleted)', async () => {
+    const { from, updateCalls } = makeSbFor({ data: { id: ITEM_ID }, error: null });
+    sbRef.current = { from };
+
+    await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    const inCalls = updateCalls.filter((c) => c.method === 'in').map((c) => c.args);
+    expect(inCalls).toContainEqual(['status', ['unresponded', 'handled']]);
+  });
+
+  it('still allows a Follow on a legal source status (unresponded/handled), and logs activity', async () => {
+    const { from, activityCalls } = makeSbFor({ data: { id: ITEM_ID }, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toMatchObject({ actor: OPERATOR_ID, action: 'followed' });
+  });
+
+  it('the guard predicate never touches followed_up_at — a post-throw retry / genuine re-Follow on a non-terminal row keeps working', async () => {
+    const { from, updateCalls } = makeSbFor({ data: { id: ITEM_ID }, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+    const updateCall = updateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ followed_up_at: NOW.toISOString() });
+    // No guard clause reads/compares followed_up_at itself — only status is gated.
+    expect(updateCalls.some((c) => c.args[0] === 'followed_up_at')).toBe(false);
+  });
+
+  it('still surfaces a real DB error (never silently swallowed)', async () => {
+    const { from } = makeSbFor({ data: null, error: { message: 'connection reset' } });
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toBe('connection reset');
   });
 });
 

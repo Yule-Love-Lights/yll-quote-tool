@@ -886,16 +886,41 @@ export async function dismissItem(itemId: string, operatorId: string | null, now
 
 /** Snooze an item: stamp followed_up_at (the reply route does this on send [A]; a
  *  manual "I followed up" does it without sending [B]). Hides from the open list
- *  until a newer message clears it. Service-role glue. */
+ *  until a newer message clears it. Service-role glue.
+ *
+ * Row 306 (10th sibling-parity instance): this used to be a bare
+ * `.update({followed_up_at}).eq('id', itemId)` — no status guard at all, unlike
+ * its three siblings (markItemHandledLocal's `.neq('status','handled')`,
+ * dismissItem's `.neq('status','dismissed')`, markItemCompleted's positive
+ * `.in('status', [...])`). Concrete harm (row 311): a "Mark completed" click
+ * whose fetch throws may have already landed server-side; if the operator then
+ * clicks "Followed" instead, this call would silently stamp followed_up_at on a
+ * row that is really 'completed' — a terminal row no inbox list re-queries, so
+ * the corruption is invisible. Guarded the same POSITIVE-match way as
+ * markItemCompleted (AGENTS.md's positive-seam-gate convention: `.in(...)`
+ * fails CLOSED on a future 5th status; a negative `.neq` pair would fail OPEN)
+ * — only 'unresponded' and 'handled' are legal source statuses for a Follow.
+ * The guard is on STATUS, never on followed_up_at itself, so both legitimate
+ * callers keep working on a non-terminal row exactly as before: a post-throw
+ * retry of the same Followed click, and a genuine re-Follow after a fresh
+ * inbound cleared followed_up_at (planIngest.clearFollowedUp re-opens the item
+ * to 'unresponded', which is still in the allowed set). CAS-style: the guard
+ * lives IN the UPDATE's WHERE (not a separate read-check-then-act), same idiom
+ * as the siblings — a no-row result is an honest "state changed since you
+ * looked" refusal, not a silent no-op. */
 export async function markItemFollowed(itemId: string, operatorId: string, now: Date): Promise<{ ok: boolean; error?: string }> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const from = await priorStateOf(sb, itemId);
-  const { error } = await sb
+  const { data, error } = await sb
     .from('inbox_items')
     .update({ followed_up_at: now.toISOString(), updated_at: now.toISOString() })
-    .eq('id', itemId);
+    .eq('id', itemId)
+    .in('status', ['unresponded', 'handled'])
+    .select('id')
+    .maybeSingle();
   if (error) return { ok: false, error: error.message };
+  if (!data) return { ok: false, error: 'Item is completed or dismissed; cannot mark followed' };
   await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'followed', inbox_item_id: itemId, detail: { from } });
   return { ok: true };
 }
