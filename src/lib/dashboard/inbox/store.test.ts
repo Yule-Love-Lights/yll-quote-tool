@@ -4094,6 +4094,11 @@ describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', (
     followUpsUpdate?: { data: unknown; error: null | { message: string } };
     reversedLookup?: { data: unknown; error: null | { message: string } };
     activityInsert?: { data: unknown; error: null | { message: string } };
+    // Row 321: the pending-color-request quote lookup — only ever dispatched
+    // when the select above returned a `:color-request`-shaped candidate (see
+    // the guard's own doc). Omitted in every pre-row-321 test above, which
+    // never trip that branch (their fixtures carry no external_id at all).
+    quoteSelect?: { data: unknown; error: null | { message: string } };
   }) {
     const { builder: itemsSelectBuilder, calls: itemsSelectCalls } = makeBuilder(opts.itemsSelect);
     const { builder: itemsUpdateBuilder, calls: itemsUpdateCalls } = makeBuilder(
@@ -4108,6 +4113,9 @@ describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', (
     const { builder: activityBuilder, calls: activityCalls } = makeBuilder(
       opts.activityInsert ?? { data: null, error: null },
     );
+    const { builder: quoteBuilder, calls: quoteCalls } = makeBuilder(
+      opts.quoteSelect ?? { data: null, error: null },
+    );
     let inboxItemsCallCount = 0;
     let activityCallCount = 0;
     const from = (table: string) => {
@@ -4116,13 +4124,14 @@ describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', (
         return inboxItemsCallCount === 1 ? itemsSelectBuilder : itemsUpdateBuilder;
       }
       if (table === 'follow_ups') return fuBuilder;
+      if (table === 'quotes') return quoteBuilder;
       if (table === 'dashboard_activity') {
         activityCallCount += 1;
         return activityCallCount === 1 ? reversedLookupBuilder : activityBuilder;
       }
       throw new Error(`unexpected table: ${table}`);
     };
-    return { from, itemsSelectCalls, itemsUpdateCalls, fuCalls, reversedLookupCalls, activityCalls };
+    return { from, itemsSelectCalls, itemsUpdateCalls, fuCalls, reversedLookupCalls, activityCalls, quoteCalls };
   }
 
   it('looks up BOTH the bare quote id and its :color-request sibling', async () => {
@@ -4439,6 +4448,108 @@ describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', (
         expect(itemsUpdateCalls.some((c) => c.method === 'update')).toBe(false);
         expect(consoleWarnSpy).toHaveBeenCalledWith(
           '[inbox] terminal-quote auto-complete: reversed-row lookup failed (non-fatal):',
+          'db down',
+        );
+      } finally {
+        consoleWarnSpy.mockRestore();
+      }
+    });
+  });
+
+  // ─── FIX (row 321, S43 wrap CUSTOMER lens HIGH) ────────────────────────────
+  // Never auto-complete a `:color-request` item while its quote's
+  // approval_snapshot.pendingColorRequest is still live — see the guard's own
+  // doc comment on completeTerminalQuoteItems.
+  describe('pending-color-request guard (row 321)', () => {
+    it('does NOT complete a handled :color-request item whose quote still has a live pendingColorRequest', async () => {
+      const { from, itemsUpdateCalls, activityCalls, quoteCalls } = makeSbForComplete({
+        itemsSelect: {
+          data: [{ id: 'item-color-request', external_id: `${QUOTE_ID}:color-request`, status: 'handled', followed_up_at: null }],
+          error: null,
+        },
+        quoteSelect: { data: { approval_snapshot: { pendingColorRequest: { label: "Staff's pick" } } }, error: null },
+      });
+      sbRef.current = { from };
+
+      const { completed } = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+      expect(completed).toBe(0);
+      expect(itemsUpdateCalls.some((c) => c.method === 'update')).toBe(false);
+      expect(activityCalls.some((c) => c.method === 'insert')).toBe(false);
+      const eqCall = quoteCalls.find((c) => c.method === 'eq' && c.args[0] === 'id');
+      expect(eqCall!.args).toEqual(['id', QUOTE_ID]);
+    });
+
+    it('DOES complete a handled :color-request item once pendingColorRequest has been applied/dismissed (cleared)', async () => {
+      const { from, itemsUpdateCalls } = makeSbForComplete({
+        itemsSelect: {
+          data: [{ id: 'item-color-request', external_id: `${QUOTE_ID}:color-request`, status: 'handled', followed_up_at: null }],
+          error: null,
+        },
+        itemsUpdate: { data: [{ id: 'item-color-request' }], error: null },
+        // No pendingColorRequest key at all — the normal post-apply/dismiss shape.
+        quoteSelect: { data: { approval_snapshot: { customerSelection: {} } }, error: null },
+      });
+      sbRef.current = { from };
+
+      const { completed } = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+      expect(completed).toBe(1);
+      expect(itemsUpdateCalls.some((c) => c.method === 'update')).toBe(true);
+    });
+
+    it('the bare item still completes even when its :color-request sibling is excluded', async () => {
+      const { from, itemsUpdateCalls } = makeSbForComplete({
+        itemsSelect: {
+          data: [
+            { id: 'item-bare', external_id: QUOTE_ID, status: 'handled', followed_up_at: null },
+            { id: 'item-color-request', external_id: `${QUOTE_ID}:color-request`, status: 'handled', followed_up_at: null },
+          ],
+          error: null,
+        },
+        itemsUpdate: { data: [{ id: 'item-bare' }], error: null },
+        quoteSelect: { data: { approval_snapshot: { pendingColorRequest: { label: 'Champagne' } } }, error: null },
+      });
+      sbRef.current = { from };
+
+      const { completed } = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+      expect(completed).toBe(1);
+      const idInCall = itemsUpdateCalls.find((c) => c.method === 'in' && c.args[0] === 'id');
+      expect(idInCall!.args).toEqual(['id', ['item-bare']]); // color-request excluded, bare still writes
+    });
+
+    it('never queries the quotes table when no eligible row is color-request-shaped (no external_id match)', async () => {
+      const { from, quoteCalls } = makeSbForComplete({
+        itemsSelect: {
+          data: [{ id: 'item-bare', external_id: QUOTE_ID, status: 'handled', followed_up_at: null }],
+          error: null,
+        },
+        itemsUpdate: { data: [{ id: 'item-bare' }], error: null },
+      });
+      sbRef.current = { from };
+
+      await completeTerminalQuoteItems(QUOTE_ID, NOW);
+      expect(quoteCalls.length).toBe(0);
+    });
+
+    it('fails CLOSED (never completes) and reports failed:true when the pending-color-request lookup errors', async () => {
+      const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const { from, itemsUpdateCalls } = makeSbForComplete({
+          itemsSelect: {
+            data: [{ id: 'item-color-request', external_id: `${QUOTE_ID}:color-request`, status: 'handled', followed_up_at: null }],
+            error: null,
+          },
+          quoteSelect: { data: null, error: { message: 'db down' } },
+        });
+        sbRef.current = { from };
+
+        const result = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+        expect(result).toEqual({ completed: 0, failed: true });
+        expect(itemsUpdateCalls.some((c) => c.method === 'update')).toBe(false);
+        expect(consoleWarnSpy).toHaveBeenCalledWith(
+          '[inbox] terminal-quote auto-complete: pending-color-request lookup failed (non-fatal):',
           'db down',
         );
       } finally {

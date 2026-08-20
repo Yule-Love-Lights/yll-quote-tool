@@ -1678,6 +1678,15 @@ async function fetchReversedItemIds(
 // CURRENTLY in the needs_reply bucket (an unanswered inbound) — the live case
 // is Susan Pace-Burke's `:color-request` item, unanswered, on a BOOKED quote.
 //
+// A SECOND HARD CONSTRAINT (row 321, S43 wrap CUSTOMER lens HIGH — LIVE PROD
+// CASE): once staff clicks plain "Handled" (not the actual apply/dismiss
+// flow) on a `:color-request` item, THIS constraint above no longer protects
+// it — status is 'handled', not needs_reply. See the FIX below the FIX-1/
+// FIX-2 pair for the added guard: never complete a `:color-request` item
+// while its quote's `approval_snapshot.pendingColorRequest` is still live.
+// Kristie Tibbetts' request sat unfulfilled and invisible for three weeks
+// this exact way.
+//
 // FIX 1 (row 317 fix-round, customer MED + technical HIGH, one fix):
 // eligibility is narrower than "not needs_reply" — it is POSITIVELY
 // `status === 'handled'`, nothing else. bucketOf's 'awaiting_reply' bucket
@@ -1746,14 +1755,14 @@ export async function completeTerminalQuoteItems(
   try {
     const { data, error } = await sb
       .from('inbox_items')
-      .select('id, status, followed_up_at')
+      .select('id, external_id, status, followed_up_at')
       .eq('source', 'quotetool')
       .in('external_id', [quoteId, `${quoteId}:color-request`]);
     if (error) {
       console.warn('[inbox] terminal-quote auto-complete: item lookup failed (non-fatal):', error.message);
       return { completed: 0, failed: true };
     }
-    const rows = (data ?? []) as { id: string; status: InboxStatus; followed_up_at: string | null }[];
+    const rows = (data ?? []) as { id: string; external_id: string; status: InboxStatus; followed_up_at: string | null }[];
     if (!rows.length) return { completed: 0, failed: false };
 
     // FIX 1 (row 317 fix-round): status === 'handled' is the ONLY eligible
@@ -1762,6 +1771,39 @@ export async function completeTerminalQuoteItems(
     // followed_up_at set), which this must exclude.
     const eligibleByStatus = rows.filter((r) => r.status === 'handled');
     if (!eligibleByStatus.length) return { completed: 0, failed: false };
+
+    // FIX (row 321, S43 wrap CUSTOMER lens HIGH): #838 (FIX 1 immediately
+    // above) means a plain "Handled" click now makes a `:color-request` item
+    // auto-completable — but the customer's request is still sitting live on
+    // `quotes.approval_snapshot.pendingColorRequest`, unapplied, until staff
+    // works it through ColorRequestPanel. Excluded here BEFORE the write, not
+    // merely badged in the UI, because the whole point of this function is
+    // that it runs unattended (a cron reconcile tick), with no operator in
+    // the loop to see a badge. Only fetches the quote when a color-request-
+    // shaped candidate is actually present (the common case — most terminal
+    // quotes never had one) — never a per-row query, mirrors
+    // fetchReversedItemIds' batched-not-per-row convention just below. Fails
+    // CLOSED on a lookup error (same rationale as fetchReversedItemIds' own
+    // doc): a query error is not proof the request was resolved, and silently
+    // completing a possibly-still-pending request is exactly wrong to fail
+    // open on.
+    const colorRequestExternalId = `${quoteId}:color-request`;
+    let eligibleByColorRequest = eligibleByStatus;
+    if (eligibleByStatus.some((r) => r.external_id === colorRequestExternalId)) {
+      const { data: quoteRow, error: quoteErr } = await sb
+        .from('quotes')
+        .select('approval_snapshot')
+        .eq('id', quoteId)
+        .maybeSingle<{ approval_snapshot: { pendingColorRequest?: unknown } | null }>();
+      if (quoteErr) {
+        console.warn('[inbox] terminal-quote auto-complete: pending-color-request lookup failed (non-fatal):', quoteErr.message);
+        return { completed: 0, failed: true };
+      }
+      if (quoteRow?.approval_snapshot?.pendingColorRequest) {
+        eligibleByColorRequest = eligibleByStatus.filter((r) => r.external_id !== colorRequestExternalId);
+      }
+    }
+    if (!eligibleByColorRequest.length) return { completed: 0, failed: false };
 
     // FIX 2 (row 317 fix-round, staff HIGH + admin MED converged): a row an
     // operator explicitly Reversed is a deliberate human override of the auto
@@ -1775,10 +1817,10 @@ export async function completeTerminalQuoteItems(
     // so this skip never blocks a genuinely new touch from resolving normally.
     const { reversedIds, failed: reversedLookupFailed } = await fetchReversedItemIds(
       sb,
-      eligibleByStatus.map((r) => r.id),
+      eligibleByColorRequest.map((r) => r.id),
     );
     if (reversedLookupFailed) return { completed: 0, failed: true };
-    const eligible = eligibleByStatus.filter((r) => !reversedIds.has(r.id));
+    const eligible = eligibleByColorRequest.filter((r) => !reversedIds.has(r.id));
     if (!eligible.length) return { completed: 0, failed: false };
 
     const nowIso = now.toISOString();
