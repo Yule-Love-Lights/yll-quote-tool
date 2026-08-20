@@ -213,6 +213,16 @@ describe('isPublicPath — customer-facing allowlist', () => {
     expect(isPublicPath('/api/pdf', 'GET')).toBe(false);
   });
 
+  // Ledger row 236 — the declined/abandoned portal's "reopen my quote" ask.
+  it('allows POST /api/quotes/<id>/reopen-request (row 236 reopen ask) but no other method', () => {
+    const p = '/api/quotes/11111111-2222-4333-8444-555555555555/reopen-request';
+    expect(isPublicPath(p, 'POST')).toBe(true);
+    expect(isPublicPath(p, 'GET')).toBe(false);
+    expect(isPublicPath(p)).toBe(false); // default GET is NOT allowlisted here
+    expect(isPublicPath(p, 'DELETE')).toBe(false);
+    expect(isPublicPath(`${p}/`, 'POST')).toBe(true);
+  });
+
   // #611 tightened the self-serve gate from a prefix to an EXACT match, so the
   // old prefix test (which asserted /estimate/anything is public) is replaced.
   it('treats the self-serve estimate page as public — EXACT match only (ledger self-serve, Phase A)', () => {

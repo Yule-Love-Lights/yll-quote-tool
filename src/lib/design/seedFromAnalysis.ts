@@ -36,7 +36,7 @@ import type {
   Tier,
   WrapStyle,
 } from './sceneTypes';
-import { isStrand, pruneOrphanedMiniGroups } from './sceneTypes';
+import { isStrand, isMiniArea, pruneOrphanedMiniGroups } from './sceneTypes';
 import {
   seedRooflineStrands,
   sanitizeSeedLines,
@@ -545,22 +545,23 @@ export function seedSceneFromAnalysis(
 
   if (detectionsHaveContent(seed.detections)) {
     const existing: SceneItem[] = Array.isArray(out?.items) ? out.items : [];
-    // #227 double-bill guard: seed-mini-N ids are assigned by INDEX within
-    // THIS re-analyze's own detections array (below), so a re-analyze that
-    // redetects "the same" railing/column at the same index regenerates a
-    // strand with the SAME id as a member a staff MiniGroupItem already owns —
-    // but as a brand-new object with no `groupId` back-reference. Left alone,
-    // that strand both (a) satisfies pruneOrphanedMiniGroups' "member id still
+    // #227 double-bill guard (#240: widened to scattershot members too):
+    // seed-mini-N ids are assigned by INDEX within THIS re-analyze's own
+    // detections array (below), so a re-analyze that redetects "the same"
+    // railing/column at the same index regenerates a strand OR miniArea with
+    // the SAME id as a member a staff MiniGroupItem already owns — but as a
+    // brand-new object with no `groupId` back-reference. Left alone, that
+    // fresh item both (a) satisfies pruneOrphanedMiniGroups' "member id still
     // present" check (so the group keeps billing) AND (b) projects on its OWN
-    // in projectScene (groupId unset ⇒ the per-strand skip doesn't fire) — a
+    // in projectScene (groupId unset ⇒ the per-item skip doesn't fire) — a
     // real double-bill, worse than the fully-orphaned case because re-detecting
     // the same visible feature on a re-analyze is the COMMON case, not the
     // exception. Snapshot the dropped members' groupIds here, before the
-    // `kept` filter below removes them, so a same-id strand coming back can
-    // have its group membership reattached instead of billing twice.
+    // `kept` filter below removes them, so a same-id strand/miniArea coming
+    // back can have its group membership reattached instead of billing twice.
     const droppedGroupIds = new Map<string, string>();
     for (const i of existing) {
-      if (i.id.startsWith(SEED_PREFIX) && isStrand(i) && i.groupId) droppedGroupIds.set(i.id, i.groupId);
+      if (i.id.startsWith(SEED_PREFIX) && (isStrand(i) || isMiniArea(i)) && i.groupId) droppedGroupIds.set(i.id, i.groupId);
     }
     // Replace previously AI-seeded PER-UNIT items: seed-* ids that are not
     // roofline strands (those belong to the tag rule above) and not permanent
@@ -576,7 +577,7 @@ export function seedSceneFromAnalysis(
     // No scale of any kind → null → the deliberate 1-section default.
     const garlandPpf = ppf ?? firstYardstickPpf(out);
     const fresh = detectionItems(seed.detections!, photoW, photoH, garlandPpf).map((i) =>
-      isStrand(i) && droppedGroupIds.has(i.id) ? { ...i, groupId: droppedGroupIds.get(i.id) } : i,
+      (isStrand(i) || isMiniArea(i)) && droppedGroupIds.has(i.id) ? { ...i, groupId: droppedGroupIds.get(i.id) } : i,
     );
     // #227: this is the ONE seed-analysis block that can drop a mini strand —
     // and a staff-created MiniGroupItem (a railing/curtain grouped from

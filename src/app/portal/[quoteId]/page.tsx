@@ -200,7 +200,20 @@ export default async function PortalPage({
   // quote falls through to this neutral closed notice instead of a stale booked
   // view. Mirrors the empty-quote guard above (page-level read-only fallback
   // before the interactive UI mounts).
-  if (!isPortalActionable(quote.quoteStatus) && !isBooked) {
+  //
+  // Ledger row 236 — declined/abandoned are carved OUT of this hard block:
+  // Jason wanted those two to stay OPENABLE (colors, line-item toggles — the
+  // interactive UI below mounts normally) while approve/pay/decline stay
+  // closed, plus a "reopen your quote?" ask. `cancelled` and
+  // `changes_requested` are UNCHANGED — they still hit this full-screen
+  // notice below (cancelled is post-booking money territory, not this row's
+  // scope; changes_requested already has its own "being updated" screen).
+  // StickyBottomBar's terminalBrowse branch (isTerminalBrowseStatus) is the
+  // matching UI gate for the two carved-out statuses, and every
+  // approve/pay/decline/request-changes route independently 409s them
+  // server-side regardless of what this page renders.
+  const isTerminalBrowsable = quote.quoteStatus === 'declined' || quote.quoteStatus === 'abandoned';
+  if (!isPortalActionable(quote.quoteStatus) && !isBooked && !isTerminalBrowsable) {
     const isRevising = quote.quoteStatus === 'changes_requested';
     return (
       <main className="relative flex min-h-screen w-full flex-col items-center justify-center bg-slate-950 px-6 py-24 text-center text-slate-100">
@@ -486,6 +499,7 @@ export default async function PortalPage({
           prequalUrl={quote.financing?.prequalUrl}
           serviceType={quote.serviceType}
           viewOnly={quote.viewOnly}
+          quoteStatus={quote.quoteStatus}
         />
 
         {/* 4. Risk Reversal — permanent gets the lifetime-warranty variant (#88);
