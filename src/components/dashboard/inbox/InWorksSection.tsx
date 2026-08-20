@@ -339,7 +339,7 @@ export function InWorksSection({
               read as "awaiting reply" at a glance — spell out who owes whom so
               they're unambiguous side by side. */}
           <p className="text-xs mb-2" style={{ color: 'var(--op-text-2)' }}>
-            You already replied — nothing to do until they write back.
+            You’ve followed up on these — nothing to do until they write back.
           </p>
           <ul className="space-y-2">
             {awaitingItems.map((item) => renderRow(item, 'awaiting'))}
