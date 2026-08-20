@@ -1465,6 +1465,56 @@ export async function closeQuoteInboxNoise(quoteId: string, operatorId: string |
   }
 }
 
+// row 317 fix-round FIX 2: batched lookup of which of `itemIds` were most
+// recently REVERSED — mirrors fetchQuoteStatusesById/fetchPendingFollowUpItemIds's
+// pattern above (#307: ONE query for every candidate id, never a per-row
+// query — same discipline #814's batched lookups follow). Uses the SAME
+// state-changing action set as reverseItemState's wrong-occurrence guard
+// (below, row 312 fix-round FIX 5(b)): REVERSIBLE_ACTIONS (module-scope
+// const declared further down this file — referencing it here is safe, this
+// function's body only runs once the module has fully loaded) plus 'reversed'
+// itself (what this is looking for) and 'reopened' (a genuinely-new inbound
+// that supersedes an older reversed/completed row) — same tie-break order too
+// (created_at desc, then id desc, for the same determinism reason row 312
+// fix-round FIX 5(a) documents on reverseItemState's own query).
+//
+// Fails CLOSED, like #827's wrong-occurrence guard does on its own query
+// error: a query error is NOT proof nothing was reversed, and silently
+// re-completing an item an operator explicitly reversed is exactly the wrong
+// thing to fail open on. `failed` lets the caller (completeTerminalQuoteItems)
+// count this as a genuine auto-complete error (a future fix-round FIX 3) rather
+// than a quiet "nothing eligible" no-op.
+async function fetchReversedItemIds(
+  sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  itemIds: readonly string[],
+): Promise<{ reversedIds: Set<string>; failed: boolean }> {
+  if (itemIds.length === 0) return { reversedIds: new Set(), failed: false };
+  const { data, error } = await sb
+    .from('dashboard_activity')
+    .select('inbox_item_id, action')
+    .in('inbox_item_id', itemIds)
+    .in('action', [...REVERSIBLE_ACTIONS, 'reversed', 'reopened'])
+    .order('created_at', { ascending: false })
+    .order('id', { ascending: false });
+  if (error) {
+    console.warn('[inbox] terminal-quote auto-complete: reversed-row lookup failed (non-fatal):', error.message);
+    return { reversedIds: new Set(), failed: true };
+  }
+  // Rows arrive newest-first (per the ORDER above) — the FIRST occurrence of
+  // each inbox_item_id in iteration order is its most recent state-changing
+  // action; later occurrences of the same id are older and ignored.
+  const latestActionByItem = new Map<string, string>();
+  for (const row of (data ?? []) as { inbox_item_id: string | null; action: string }[]) {
+    if (!row.inbox_item_id || latestActionByItem.has(row.inbox_item_id)) continue;
+    latestActionByItem.set(row.inbox_item_id, row.action);
+  }
+  const reversedIds = new Set<string>();
+  for (const [itemId, action] of latestActionByItem) {
+    if (action === 'reversed') reversedIds.add(itemId);
+  }
+  return { reversedIds, failed: false };
+}
+
 // ─── Terminal-quote auto-complete (#317) ────────────────────────────────────
 // Jason's ruling (ledger #317, 2026-08-20, quoted verbatim in the row): once a
 // quote's own status derives (deriveStatus) into booked/declined/abandoned
@@ -1559,7 +1609,25 @@ export async function completeTerminalQuoteItems(quoteId: string, now: Date): Pr
     // shape — see the doc above. Deliberately NOT bucketOf(): bucketOf's
     // 'awaiting_reply' bucket also covers the snooze case (unresponded +
     // followed_up_at set), which this must exclude.
-    const eligible = rows.filter((r) => r.status === 'handled');
+    const eligibleByStatus = rows.filter((r) => r.status === 'handled');
+    if (!eligibleByStatus.length) return 0;
+
+    // FIX 2 (row 317 fix-round, staff HIGH + admin MED converged): a row an
+    // operator explicitly Reversed is a deliberate human override of the auto
+    // rule for THAT item — without this, eligibility has no memory of that
+    // override and the very next reconcile tick (≤5 min later) re-completes
+    // it, forever. See fetchReversedItemIds' own doc for the exact
+    // action-set convention (mirrors reverseItemState's wrong-occurrence
+    // guard below) and the fail-closed rationale. A NEW inbound after the
+    // reverse still reopens the item to needs_reply via ingestTouch — FIX 1's
+    // status==='handled' gate above already excludes that shape on its own,
+    // so this skip never blocks a genuinely new touch from resolving normally.
+    const { reversedIds, failed: reversedLookupFailed } = await fetchReversedItemIds(
+      sb,
+      eligibleByStatus.map((r) => r.id),
+    );
+    if (reversedLookupFailed) return 0;
+    const eligible = eligibleByStatus.filter((r) => !reversedIds.has(r.id));
     if (!eligible.length) return 0;
 
     const nowIso = now.toISOString();

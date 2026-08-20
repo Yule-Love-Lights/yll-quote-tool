@@ -3979,13 +3979,18 @@ describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', (
   const NOW = new Date('2026-08-20T12:00:00Z');
 
   /** Dispatch `from()` by table: 1st `inbox_items` call = the SELECT lookup,
-   *  2nd = the UPDATE; `follow_ups` and `dashboard_activity` get their own
-   *  builders (shared across closeFollowUpsForResolvedItem's own calls, which
-   *  this function invokes once per completed row). */
+   *  2nd = the UPDATE; `follow_ups` gets its own builder (shared across
+   *  closeFollowUpsForResolvedItem's own calls, which this function invokes
+   *  once per completed row). `dashboard_activity` is dispatched by call count
+   *  too (row 317 fix-round FIX 2 added a SELECT ahead of the pre-existing
+   *  INSERT(s)): 1st call = the FIX-2 reversed-row lookup, 2nd+ = the
+   *  completion insert + any followup_autoclosed insert(s) from
+   *  closeFollowUpsForResolvedItem, sharing one builder same as before. */
   function makeSbForComplete(opts: {
     itemsSelect: { data: unknown; error: null | { message: string } };
     itemsUpdate?: { data: unknown; error: null | { message: string } };
     followUpsUpdate?: { data: unknown; error: null | { message: string } };
+    reversedLookup?: { data: unknown; error: null | { message: string } };
     activityInsert?: { data: unknown; error: null | { message: string } };
   }) {
     const { builder: itemsSelectBuilder, calls: itemsSelectCalls } = makeBuilder(opts.itemsSelect);
@@ -3993,20 +3998,29 @@ describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', (
       opts.itemsUpdate ?? { data: [], error: null },
     );
     const { builder: fuBuilder, calls: fuCalls } = makeBuilder(opts.followUpsUpdate ?? { data: [], error: null });
+    // Default: nobody reversed anything — the safe default for every test that
+    // isn't specifically exercising FIX 2.
+    const { builder: reversedLookupBuilder, calls: reversedLookupCalls } = makeBuilder(
+      opts.reversedLookup ?? { data: [], error: null },
+    );
     const { builder: activityBuilder, calls: activityCalls } = makeBuilder(
       opts.activityInsert ?? { data: null, error: null },
     );
     let inboxItemsCallCount = 0;
+    let activityCallCount = 0;
     const from = (table: string) => {
       if (table === 'inbox_items') {
         inboxItemsCallCount += 1;
         return inboxItemsCallCount === 1 ? itemsSelectBuilder : itemsUpdateBuilder;
       }
       if (table === 'follow_ups') return fuBuilder;
-      if (table === 'dashboard_activity') return activityBuilder;
+      if (table === 'dashboard_activity') {
+        activityCallCount += 1;
+        return activityCallCount === 1 ? reversedLookupBuilder : activityBuilder;
+      }
       throw new Error(`unexpected table: ${table}`);
     };
-    return { from, itemsSelectCalls, itemsUpdateCalls, fuCalls, activityCalls };
+    return { from, itemsSelectCalls, itemsUpdateCalls, fuCalls, reversedLookupCalls, activityCalls };
   }
 
   it('looks up BOTH the bare quote id and its :color-request sibling', async () => {
@@ -4209,6 +4223,124 @@ describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', (
   it('no-ops (no throw) when the service client is not configured', async () => {
     sbRef.current = null;
     await expect(completeTerminalQuoteItems(QUOTE_ID, NOW)).resolves.toBe(0);
+  });
+
+  // ─── FIX 2 (row 317 fix-round, staff HIGH + admin MED converged) ───────────
+  // The reversed-row skip: an item an operator explicitly Reversed must not
+  // re-complete on the next tick.
+  describe('reversed-row skip (FIX 2)', () => {
+    it('does NOT re-complete an item whose most recent state-changing activity row is "reversed"', async () => {
+      const { from, itemsUpdateCalls, activityCalls, reversedLookupCalls } = makeSbForComplete({
+        itemsSelect: { data: [{ id: 'item-bare', status: 'handled', followed_up_at: null }], error: null },
+        reversedLookup: { data: [{ inbox_item_id: 'item-bare', action: 'reversed' }], error: null },
+      });
+      sbRef.current = { from };
+
+      const completed = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+      expect(completed).toBe(0);
+      expect(itemsUpdateCalls.some((c) => c.method === 'update')).toBe(false);
+      expect(activityCalls.some((c) => c.method === 'insert')).toBe(false);
+      // Batched: one lookup query covering every candidate id, never a per-row
+      // query (mirrors the #307/#814 batched-lookup pattern above).
+      const inItemIdsCall = reversedLookupCalls.find((c) => c.method === 'in' && c.args[0] === 'inbox_item_id');
+      expect(inItemIdsCall!.args).toEqual(['inbox_item_id', ['item-bare']]);
+    });
+
+    it('a fresh item with no activity history still completes (empty reversed lookup does not block it)', async () => {
+      const { from, itemsUpdateCalls } = makeSbForComplete({
+        itemsSelect: { data: [{ id: 'item-bare', status: 'handled', followed_up_at: null }], error: null },
+        itemsUpdate: { data: [{ id: 'item-bare' }], error: null },
+        reversedLookup: { data: [], error: null },
+      });
+      sbRef.current = { from };
+
+      const completed = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+      expect(completed).toBe(1);
+      expect(itemsUpdateCalls.some((c) => c.method === 'update')).toBe(true);
+    });
+
+    it('excludes only the specific reversed item, not a sibling on the same quote', async () => {
+      const { from, itemsUpdateCalls } = makeSbForComplete({
+        itemsSelect: {
+          data: [
+            { id: 'item-bare', status: 'handled', followed_up_at: null },
+            { id: 'item-color-request', status: 'handled', followed_up_at: null },
+          ],
+          error: null,
+        },
+        itemsUpdate: { data: [{ id: 'item-color-request' }], error: null },
+        reversedLookup: { data: [{ inbox_item_id: 'item-bare', action: 'reversed' }], error: null },
+      });
+      sbRef.current = { from };
+
+      const completed = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+      expect(completed).toBe(1);
+      const idInCall = itemsUpdateCalls.find((c) => c.method === 'in' && c.args[0] === 'id');
+      expect(idInCall!.args).toEqual(['id', ['item-color-request']]);
+    });
+
+    it('the MOST RECENT row wins — an older "reversed" row followed by a newer "handled" row does not block completion', async () => {
+      const { from, itemsUpdateCalls } = makeSbForComplete({
+        itemsSelect: { data: [{ id: 'item-bare', status: 'handled', followed_up_at: null }], error: null },
+        itemsUpdate: { data: [{ id: 'item-bare' }], error: null },
+        // Rows arrive newest-first (per the query's own ORDER) — the first
+        // occurrence of an id is its latest action.
+        reversedLookup: {
+          data: [
+            { inbox_item_id: 'item-bare', action: 'handled' },
+            { inbox_item_id: 'item-bare', action: 'reversed' },
+          ],
+          error: null,
+        },
+      });
+      sbRef.current = { from };
+
+      const completed = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+      expect(completed).toBe(1);
+      expect(itemsUpdateCalls.some((c) => c.method === 'update')).toBe(true);
+    });
+
+    it('uses the SAME state-changing action set as reverseItemState\'s wrong-occurrence guard', async () => {
+      const { from, reversedLookupCalls } = makeSbForComplete({
+        itemsSelect: { data: [{ id: 'item-bare', status: 'handled', followed_up_at: null }], error: null },
+        itemsUpdate: { data: [{ id: 'item-bare' }], error: null },
+      });
+      sbRef.current = { from };
+
+      await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+      const actionInCall = reversedLookupCalls.find((c) => c.method === 'in' && c.args[0] === 'action');
+      expect(actionInCall!.args).toEqual([
+        'action',
+        ['handled', 'followed', 'completed', 'dismissed', 'reclassified', 'reversed', 'reopened'],
+      ]);
+    });
+
+    it('fails CLOSED (never completes) when the reversed-row lookup errors', async () => {
+      const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const { from, itemsUpdateCalls } = makeSbForComplete({
+          itemsSelect: { data: [{ id: 'item-bare', status: 'handled', followed_up_at: null }], error: null },
+          reversedLookup: { data: null, error: { message: 'db down' } },
+        });
+        sbRef.current = { from };
+
+        const completed = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+        expect(completed).toBe(0);
+        expect(itemsUpdateCalls.some((c) => c.method === 'update')).toBe(false);
+        expect(consoleWarnSpy).toHaveBeenCalledWith(
+          '[inbox] terminal-quote auto-complete: reversed-row lookup failed (non-fatal):',
+          'db down',
+        );
+      } finally {
+        consoleWarnSpy.mockRestore();
+      }
+    });
   });
 });
 
