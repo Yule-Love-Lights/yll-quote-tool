@@ -343,6 +343,7 @@ import {
   findViewOnlyFollowUpItems,
   getReopenCounts,
   isHiddenLegacyRebookQuote,
+  isReversibleActivity,
   listActivity,
   listDueFollowUps,
   listInWorks,
@@ -3909,12 +3910,20 @@ describe('recordSuppressedFollowUp (#230a — suppression visibility)', () => {
 // `reversible` flag (REVERSIBLE_ACTIONS, store.ts) — a 'reclassified' row must
 // flip it true, or the button never renders regardless of what reverseItemState
 // itself accepts.
-describe('listActivity — reversible flag (row 312a)', () => {
+//
+// row 312 fix-round FIX 3: the bare action string 'reclassified' now ISN'T
+// enough on its own — confirmed against prod (2026-08-20, execute_sql) that 34
+// 'reclassified' rows split into two real populations: 26 `actor: 'system'`
+// S41 rows all carrying `detail.followedUpAtSetTo`, and 8 `actor:
+// 'assistant-backfill-268'` rows where NONE carry it (their detail is
+// `reason`/`customer`/`from_contact` — a lead_kind/contact repoint that never
+// touched followed_up_at). isReversibleActivity gates on that key's presence.
+describe('listActivity — reversible flag (row 312a / row 312 fix-round FIX 3)', () => {
   beforeEach(() => {
     sbRef.current = null;
   });
 
-  it('marks a reclassified row reversible: true', async () => {
+  it('marks an S41-shaped reclassified row (detail carries followedUpAtSetTo) reversible: true', async () => {
     const { builder } = makeBuilder({
       data: [
         {
@@ -3923,6 +3932,7 @@ describe('listActivity — reversible flag (row 312a)', () => {
           actor: 'system',
           inbox_item_id: 'i1',
           created_at: '2026-08-19T00:00:00Z',
+          detail: { op: 're-file', to: 'awaiting_reply', from: 'handled', followedUpAtSetTo: '2026-08-06T16:33:02.701Z' },
           inbox_items: null,
         },
       ],
@@ -3937,6 +3947,67 @@ describe('listActivity — reversible flag (row 312a)', () => {
       expect(res.rows).toHaveLength(1);
       expect(res.rows[0]).toMatchObject({ action: 'reclassified', reversible: true });
     }
+  });
+
+  it('marks a #268-backfill-shaped reclassified row (no followedUpAtSetTo) reversible: false', async () => {
+    const { builder } = makeBuilder({
+      data: [
+        {
+          id: 'a2',
+          action: 'reclassified',
+          actor: 'assistant-backfill-268',
+          inbox_item_id: 'i2',
+          created_at: '2026-08-14T00:00:00Z',
+          detail: { reason: 'row 268 backfill', customer: 'Chris Hughes', lead_kind: 'automated -> lead', from_contact: 'c1' },
+          inbox_items: null,
+        },
+      ],
+      error: null,
+    });
+    sbRef.current = { from: () => builder };
+
+    const res = await listActivity(10);
+
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.rows).toHaveLength(1);
+      expect(res.rows[0]).toMatchObject({ action: 'reclassified', reversible: false });
+    }
+  });
+
+  it('a non-reclassified reversible action (e.g. dismissed) stays reversible: true regardless of detail shape', async () => {
+    const { builder } = makeBuilder({
+      data: [
+        { id: 'a3', action: 'dismissed', actor: 'op-1', inbox_item_id: 'i3', created_at: '2026-08-19T00:00:00Z', detail: null, inbox_items: null },
+      ],
+      error: null,
+    });
+    sbRef.current = { from: () => builder };
+
+    const res = await listActivity(10);
+
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.rows[0]).toMatchObject({ action: 'dismissed', reversible: true });
+  });
+});
+
+// row 312 fix-round FIX 3: isReversibleActivity is the pure predicate driving
+// both listActivity's flag and reverseItemState's guard — direct tests here
+// pin the exact boundary against the real prod payload shapes queried above.
+describe('isReversibleActivity (pure, row 312 fix-round FIX 3)', () => {
+  it('rejects an action outside REVERSIBLE_ACTIONS regardless of detail', () => {
+    expect(isReversibleActivity('ingested', { followedUpAtSetTo: 'x' })).toBe(false);
+  });
+  it('accepts every non-reclassified reversible action with any detail (incl. null)', () => {
+    for (const action of ['handled', 'followed', 'completed', 'dismissed']) {
+      expect(isReversibleActivity(action, null)).toBe(true);
+    }
+  });
+  it("accepts 'reclassified' only when detail carries followedUpAtSetTo", () => {
+    expect(isReversibleActivity('reclassified', { followedUpAtSetTo: '2026-08-06T16:33:02.701Z' })).toBe(true);
+    expect(isReversibleActivity('reclassified', { reason: 'row 268 backfill', from_contact: 'c1' })).toBe(false);
+    expect(isReversibleActivity('reclassified', null)).toBe(false);
+    expect(isReversibleActivity('reclassified', undefined)).toBe(false);
   });
 });
 
@@ -4001,9 +4072,17 @@ describe('reverseItemState (row 312 — reclassified + wrong-occurrence guard)',
     return { from, latestCalls, updateCalls, insertCalls };
   }
 
+  // row 312 fix-round FIX 3: an S41-shaped 'reclassified' row must carry
+  // detail.followedUpAtSetTo to pass the payload-shape gate before any of these
+  // tests can reach the wrong-occurrence guard / stillMatches logic below — a
+  // bare `detail: null` (the pre-fix-round fixture shape) is now refused
+  // immediately as a #268-backfill-shaped row would be. See the dedicated FIX 3
+  // refusal test further down for that path itself.
+  const RECLASSIFIED_DETAIL = { op: 're-file', to: 'awaiting_reply', from: 'handled', followedUpAtSetTo: '2026-08-06T16:33:02.701Z' };
+
   it("reverses a 'reclassified' row: clears followed_up_at only, status untouched", async () => {
     const { from, updateCalls, insertCalls } = makeSbForReverse({
-      activityRow: { data: { action: 'reclassified', inbox_item_id: ITEM_ID, detail: null } },
+      activityRow: { data: { action: 'reclassified', inbox_item_id: ITEM_ID, detail: RECLASSIFIED_DETAIL } },
       latestRow: { data: { id: ACTIVITY_ID } }, // this row IS the latest — passes 312c
       curItem: { data: { status: 'handled', followed_up_at: '2026-08-01T00:00:00Z' } },
     });
@@ -4021,7 +4100,7 @@ describe('reverseItemState (row 312 — reclassified + wrong-occurrence guard)',
 
   it("refuses a 'reclassified' row whose item is no longer awaiting reply (followed_up_at already cleared)", async () => {
     const { from, updateCalls } = makeSbForReverse({
-      activityRow: { data: { action: 'reclassified', inbox_item_id: ITEM_ID, detail: null } },
+      activityRow: { data: { action: 'reclassified', inbox_item_id: ITEM_ID, detail: RECLASSIFIED_DETAIL } },
       latestRow: { data: { id: ACTIVITY_ID } },
       curItem: { data: { status: 'handled', followed_up_at: null } },
     });
@@ -4032,6 +4111,27 @@ describe('reverseItemState (row 312 — reclassified + wrong-occurrence guard)',
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toMatch(/state has changed/i);
     expect(updateCalls.some((c) => c.method === 'update')).toBe(false);
+  });
+
+  // row 312 fix-round FIX 3: the payload-shape gate applies to a direct POST
+  // too, not just listActivity's rendered button — a #268-backfill-shaped row
+  // (no followedUpAtSetTo) is refused before ever running the wrong-occurrence
+  // query, exactly like a genuinely-unreversible action string.
+  it("FIX 3: refuses a 'reclassified' row shaped like the #268 backfill (no followedUpAtSetTo in detail)", async () => {
+    const backfillDetail = { reason: 'row 268 backfill', customer: 'Chris Hughes', lead_kind: 'automated -> lead', from_contact: 'c1' };
+    const { from, latestCalls, updateCalls } = makeSbForReverse({
+      activityRow: { data: { action: 'reclassified', inbox_item_id: ITEM_ID, detail: backfillDetail } },
+      latestRow: { data: { id: ACTIVITY_ID } },
+    });
+    sbRef.current = { from };
+
+    const res = await reverseItemState(ACTIVITY_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toBe('This entry cannot be reversed');
+    // Short-circuits before the wrong-occurrence query or any write.
+    expect(latestCalls.length).toBe(0);
+    expect(updateCalls.length).toBe(0);
   });
 
   it('312c: refuses when a LATER state-changing row exists for the same item (wrong-occurrence guard)', async () => {

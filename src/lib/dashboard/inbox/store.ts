@@ -2074,6 +2074,26 @@ export type ActivityResult = { ok: true; rows: ActivityRow[] } | { ok: false; er
 // promises (see inverseOf's 'reclassified' case, lifecycle.ts).
 const REVERSIBLE_ACTIONS = new Set(['handled', 'followed', 'completed', 'dismissed', 'reclassified']);
 
+/**
+ * row 312 fix-round FIX 3 (MED, admin lens, prod-verified): the bare action
+ * string 'reclassified' covers TWO populations in prod (confirmed via a direct
+ * query, 2026-08-20) — 26 S41 bucket-refile rows (`actor: 'system'`, detail
+ * carries `followedUpAtSetTo`/`from`/`to`; inverseOf('reclassified')'s premise
+ * — "only ever set followed_up_at" — holds) and 8 `actor:
+ * 'assistant-backfill-268'` rows (2026-08-14, a lead_kind/contact repoint;
+ * detail carries `reason`/`customer`/`from_contact` and NONE of the 8 carry
+ * followedUpAtSetTo — the inverse's premise is false for them). Today the 8 are
+ * refused only by the emergent luck of their item's current followed_up_at
+ * reading null — gate on the PAYLOAD shape instead of the bare action string so
+ * that holds by construction. Non-'reclassified' actions are unaffected (their
+ * detail shape has never split into two populations).
+ */
+export function isReversibleActivity(action: string, detail: unknown): boolean {
+  if (!REVERSIBLE_ACTIONS.has(action)) return false;
+  if (action !== 'reclassified') return true;
+  return !!(detail && typeof detail === 'object' && 'followedUpAtSetTo' in (detail as Record<string, unknown>));
+}
+
 /** Paginated, newest-first read of dashboard_activity, joined to the customer
  *  display name via inbox_item → dashboard_contact. actorName resolves the raw
  *  `actor` operator UUID to a readable name via getOperatorLabels (task_bbc6490a)
@@ -2088,7 +2108,11 @@ export async function listActivity(limit = 100): Promise<ActivityResult> {
       // Show operator DECISIONS, not the system firehose: 'ingested' (one row per
       // reconcile touch — thousands) and 'escalated' would otherwise bury the
       // handled/dismissed/followed/completed rows (and their Reverse buttons).
-      .select('id, action, actor, inbox_item_id, created_at, inbox_items ( dashboard_contacts ( display_name ) )')
+      // `detail` added (row 312 fix-round FIX 3) — isReversibleActivity needs it
+      // to tell the two 'reclassified' populations apart.
+      .select(
+        'id, action, actor, inbox_item_id, created_at, detail, inbox_items ( dashboard_contacts ( display_name ) )',
+      )
       .not('action', 'in', '(ingested,escalated)')
       .order('created_at', { ascending: false })
       .limit(limit),
@@ -2107,7 +2131,7 @@ export async function listActivity(limit = 100): Promise<ActivityResult> {
       itemId: (row.inbox_item_id as string | null) ?? null,
       customerName: (item?.dashboard_contacts?.display_name as string | null) ?? null,
       at: (row.created_at as string | null) ?? null,
-      reversible: REVERSIBLE_ACTIONS.has(String(row.action)),
+      reversible: isReversibleActivity(String(row.action), row.detail),
     };
   });
   return { ok: true, rows };
@@ -2142,7 +2166,12 @@ export async function reverseItemState(
   if (!a.inbox_item_id) return { ok: false, error: 'Entry has no item to reverse' };
 
   const reversible: ReverseAction[] = ['handled', 'followed', 'completed', 'dismissed', 'reclassified'];
-  if (!reversible.includes(a.action as ReverseAction)) {
+  // row 312 fix-round FIX 3 (MED): the bare action-string check above is
+  // necessary but not sufficient for 'reclassified' — see isReversibleActivity's
+  // doc (two prod populations share the action string; only one's inverse
+  // premise holds). A direct POST naming an unreversible-by-payload row is
+  // refused here with the same message a genuinely-unreversible action gets.
+  if (!reversible.includes(a.action as ReverseAction) || !isReversibleActivity(a.action, a.detail)) {
     return { ok: false, error: 'This entry cannot be reversed' };
   }
   const action = a.action as ReverseAction;
