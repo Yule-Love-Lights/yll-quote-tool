@@ -5305,6 +5305,26 @@ describe('markItemCompleted — server-side pending-color-request backstop (row 
     expect(updateCalls.some((c) => c.method === 'update')).toBe(false);
   });
 
+  // Distinct from the error case above: `.maybeSingle()` on a genuinely
+  // DELETED quote row returns {data:null, error:null} — not an error at all.
+  // No live quote means no live pendingColorRequest left to protect, so the
+  // guard must fall through and allow completion. A real prod row is in
+  // exactly this state (a `:color-request` item whose quote no longer
+  // exists), and nothing previously pinned this path.
+  it('completes normally when the quote row itself has been deleted (.maybeSingle() -> {data:null,error:null}, not a lookup error)', async () => {
+    const { from, updateCalls } = makeSbFor({
+      targetSelect: { data: { external_id: `${QUOTE_ID}:color-request` }, error: null },
+      quoteSelect: { data: null, error: null },
+      itemUpdateResult: { data: { id: ITEM_ID }, error: null },
+    });
+    sbRef.current = { from };
+
+    const res = await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+    expect(updateCalls.some((c) => c.method === 'update')).toBe(true);
+  });
+
   it('proceeds to the normal guard (never blocks) when the preliminary external_id lookup itself finds nothing', async () => {
     const { from, quoteCalls, updateCalls } = makeSbFor({
       targetSelect: { data: null, error: null }, // item not found by this preliminary lookup

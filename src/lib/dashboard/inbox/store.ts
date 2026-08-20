@@ -2491,11 +2491,17 @@ export type InWorksItem = {
   // fire. Non-null is the single displayed reason — see needsLookReason's own
   // doc comment for why only one shows when a row trips more than one rule.
   needsLookReason: string | null;
-  /** Row 321: true for a `quotetool` item whose external_id carries the
-   *  `:color-request` suffix — badges + confirm-gates "Mark completed" in
-   *  InWorksSection.tsx. Always false for an 'awaiting' row (that bucket's
-   *  narrower IN_WORKS_SELECT doesn't fetch external_id — see its own comment
-   *  below); optional so existing fixtures that omit it read as false. */
+  /** Row 321: true when this item both LOOKS like a colour request (a
+   *  `quotetool` item whose external_id carries the `:color-request` suffix)
+   *  AND its backing quote still carries a LIVE
+   *  `approval_snapshot.pendingColorRequest` — badges + confirm-gates "Mark
+   *  completed" in InWorksSection.tsx. Applies to BOTH the 'awaiting' and
+   *  'handled' buckets — fix-round FIX 1 added external_id to
+   *  IN_WORKS_SELECT for both precisely to close the HIGH where the
+   *  'awaiting' bucket read this as false unconditionally; do not narrow it
+   *  back to handled-only. See isLiveColorRequestItem for the shape+liveness
+   *  rule, including its fail-safe over-warn direction on a lookup error.
+   *  Optional so existing fixtures that omit it read as false. */
   isColorRequest?: boolean;
 };
 export type InWorksResult =
@@ -2799,10 +2805,17 @@ export async function markItemCompleted(
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const from = await priorStateOf(sb, itemId);
 
-  // Row 321 fix-round FIX 1(b): a targeted, separate lookup (never folded into
-  // priorStateOf above, which is shared by three OTHER actions whose
-  // dashboard_activity `detail.from` shape this must not change) — only fires
-  // the follow-on 'quotes' query when the item is actually shape-matching.
+  // Row 321 fix-round FIX 1(b): a targeted, separate `inbox_items` lookup for
+  // external_id — never folded into priorStateOf above, which is shared by
+  // three OTHER actions whose dashboard_activity `detail.from` shape this
+  // must not change. This select itself runs on EVERY markItemCompleted call
+  // — a second inbox_items round-trip alongside priorStateOf's own, on the
+  // general hot path (not just shape-matching items); only the follow-on
+  // 'quotes' query below is conditional, firing solely when the item is
+  // actually shape-matching. Accepted tradeoff, not an oversight: folding
+  // this into priorStateOf would risk that shared `detail.from` contract for
+  // its three other callers, and an extra small select on every completion
+  // is cheaper than that risk.
   const target = await sb.from('inbox_items').select('external_id').eq('id', itemId).maybeSingle();
   const targetExternalId = String((target.data as { external_id?: string | null } | null)?.external_id ?? '');
   if (isColorRequestExternalId(targetExternalId)) {
