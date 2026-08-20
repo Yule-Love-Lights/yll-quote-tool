@@ -1401,6 +1401,10 @@ export async function sweepOrphanedFollowUps(reason: string): Promise<number> {
     // already used a few times in this file (getReopenCounts' distinct(),
     // the returning-contact tally above) for the same "generous headroom,
     // bound the pathological case" reasoning.
+    // Ordered so the capped subset is DETERMINISTIC — without an order, a
+    // table past the cap could nondeterministically flip which rows this
+    // sweep covers on each run (same reasoning as the #185 precedent above).
+    .order('id', { ascending: true })
     .limit(5000);
   if (pendingErr) {
     console.error('[inbox] orphan follow-up sweep: pending lookup failed:', pendingErr.message);
@@ -1475,10 +1479,13 @@ export async function sweepResolvedItemFollowUps(): Promise<number> {
 
   // #310: was unbounded — same PostgREST 1000-row default-truncation risk as
   // sweepOrphanedFollowUps' pending lookup above (sibling-parity fix, one pass).
+  // Ordered so the capped subset is DETERMINISTIC — same #185 precedent cited
+  // there.
   const { data: pending, error: pendingErr } = await sb
     .from('follow_ups')
     .select('id, inbox_item_id')
     .eq('status', 'pending')
+    .order('id', { ascending: true })
     .limit(5000);
   if (pendingErr) {
     console.error('[inbox] resolved-item follow-up sweep: pending lookup failed:', pendingErr.message);

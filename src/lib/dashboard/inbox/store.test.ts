@@ -2580,8 +2580,10 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
     });
 
     // #310: sibling-parity fix to the sweepOrphanedFollowUps bound above — same
-    // unbounded pending-follow_ups select, same silent-truncation risk.
-    it('bounds the pending-follow_ups lookup with an explicit .limit() (#310)', async () => {
+    // unbounded pending-follow_ups select, same silent-truncation risk, and the
+    // same #185-precedent determinism concern (an .order() so the capped
+    // subset can't nondeterministically flip which rows this sweep covers).
+    it('bounds the pending-follow_ups lookup with an explicit .limit() and orders it deterministically (#310)', async () => {
       const { builder: pendingBuilder, calls } = makeBuilder({ data: [], error: null });
       sbRef.current = { from: (_table: string) => pendingBuilder };
 
@@ -2590,6 +2592,10 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
       const limitCall = calls.find((c) => c.method === 'limit');
       expect(limitCall).toBeDefined();
       expect(limitCall!.args[0]).toBeGreaterThanOrEqual(1000);
+      const orderCall = calls.find((c) => c.method === 'order');
+      expect(orderCall).toBeDefined();
+      expect(orderCall!.args[0]).toBe('id');
+      expect(orderCall!.args[1]).toEqual({ ascending: true });
     });
   });
 });
@@ -3419,8 +3425,11 @@ describe('sweepOrphanedFollowUps — I/O wiring (#183 BUG 3)', () => {
   // #310: was unbounded — PostgREST silently truncates at its 1000-row default,
   // so past that this sweep would stop covering rows with no error and no
   // signal. Pins that the pending-follow_ups lookup carries an explicit bound
-  // with real headroom over the current ~57-row table.
-  it('bounds the pending-follow_ups lookup with an explicit .limit() (#310)', async () => {
+  // with real headroom over the current ~57-row table, AND that the capped
+  // subset is deterministic (an .order() — same #185 precedent as
+  // listOpenItems' returning-contact tally, without which a page past the cap
+  // could nondeterministically flip which rows this sweep covers).
+  it('bounds the pending-follow_ups lookup with an explicit .limit() and orders it deterministically (#310)', async () => {
     const { builder: pendingBuilder, calls } = makeBuilder({ data: [], error: null });
     sbRef.current = { from: (_table: string) => pendingBuilder };
 
@@ -3429,6 +3438,10 @@ describe('sweepOrphanedFollowUps — I/O wiring (#183 BUG 3)', () => {
     const limitCall = calls.find((c) => c.method === 'limit');
     expect(limitCall).toBeDefined();
     expect(limitCall!.args[0]).toBeGreaterThanOrEqual(1000);
+    const orderCall = calls.find((c) => c.method === 'order');
+    expect(orderCall).toBeDefined();
+    expect(orderCall!.args[0]).toBe('id');
+    expect(orderCall!.args[1]).toEqual({ ascending: true });
   });
 
   it('fails open (closes nothing) and logs when the pending-follow_ups lookup errors', async () => {
