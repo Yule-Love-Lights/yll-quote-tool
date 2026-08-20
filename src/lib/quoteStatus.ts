@@ -207,3 +207,40 @@ const NON_ACTIONABLE_PORTAL_STATUSES: ReadonlySet<string> = new Set([
 export function isPortalActionable(status: string | null | undefined): boolean {
   return !status || !NON_ACTIONABLE_PORTAL_STATUSES.has(status);
 }
+
+/**
+ * Ledger row 242 — Jason's ruling (2026-08-20, revising the initial "Awaiting
+ * Deposit" pass): no third stage AT ALL. His workflow is
+ * sent -> (approve + sign + pay deposit) -> booked, or -> declined; nothing
+ * shows in between. `'approved'` stays a real QuoteStatus union member —
+ * deriveStatus above still synthesizes it from `customer_approved_at`
+ * whenever `deposit_paid_at` is null, and it's a full member of
+ * ALLOWED_TRANSITIONS — but a derived-'approved' quote (customer signed,
+ * deposit not yet paid) now presents on every quote-lane surface EXACTLY as
+ * if it were 'sent': same badge label, same badge color, and (on the
+ * /admin/quotes Stage filter, which has no separate Approved chip any more)
+ * the same filter bucket. Presentation/filtering only — nothing here touches
+ * deriveStatus, canTransition, or any money-guard route, which all keep
+ * reading the real 'approved' CODE + the customer_approved_at timestamp
+ * directly, untouched by this.
+ *
+ * Single source so the admin quotes list, the quote detail page, and the
+ * quote builder header pill can't drift into three different wordings for
+ * the same derived state (they already had for `changes_requested` before
+ * this — 'Changes' vs 'Changes requested' — a warning sign this scope
+ * creates real drift risk without one shared string).
+ */
+export const APPROVED_DISPLAYS_AS = 'Sent';
+
+/**
+ * The predicate a Stage-filter UI should use instead of a raw `===` compare,
+ * now that `'approved'` has no chip of its own (see APPROVED_DISPLAYS_AS
+ * above): a filter aimed at 'sent' must also match a derived-'approved' row,
+ * or dropping the Approved chip would silently orphan every approved-unpaid
+ * quote from every filter except "All". Every other status still matches
+ * only itself — this does not change any other filter's behavior.
+ */
+export function statusMatchesFilter(code: QuoteStatus, filter: QuoteStatus): boolean {
+  if (code === filter) return true;
+  return code === 'approved' && filter === 'sent';
+}
