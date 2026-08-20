@@ -132,6 +132,7 @@ Two devs work in this repo on **different machines**. **Naldo owns the dashboard
 
 ## Branches
 - Prefix every branch with your name: **`jason/<desc>`** or **`naldo/<desc>`** (e.g. `naldo/dashboard-shell`). Instant attribution, no name clashes.
+- **Bot-initiated sessions are the accepted third prefix: `claude/<desc>-<id>`** (Claude Code on the web, GitHub Actions, and similar). The harness *assigns* that branch name and instructs the session to develop on it — the assistant cannot choose a `naldo/`/`jason/` name, so this is not a violation to correct. It is also not rare: 21 such branches existed as of 2026-08-20, against 189 `naldo/` and 104 `jason/`. **But `claude/` alone says nothing about WHOSE work it is, which is the whole point of the prefix — so a `claude/*` PR must name its operating dev in the PR body** ("run for Naldo", "run for Jason"). That restores the attribution the prefix would otherwise lose. Reason: added 2026-08-20 after a review flagged a `claude/*` branch as breaking the naming rule, when the rule had simply never addressed sessions that don't pick their own branch name.
 - Branch off fresh `master` (pull first); keep PRs small; merge `master` back in if a branch lives more than a day.
 
 ## Area ownership
@@ -140,9 +141,20 @@ Two devs work in this repo on **different machines**. **Naldo owns the dashboard
 | **Naldo** | `src/app/page.tsx`, `src/components/dashboard/**`, `src/app/api/dashboard/**`, `src/lib/dashboard/**` |
 | **Jason** | `src/app/portal/**`, `src/components/portal/**`, `src/app/quote/**`, `src/components/quote/**`, pricing (`pricingEngine` / `BUSINESS_RULES`), `src/components/design/**` + `editor-core/**`, training, settings |
 | **Operations Hub contract** | `docs/context/OPERATIONS_HUB_CONTRACT.md`, `crew_members` + future shared-labor tables/migrations, `/api/ops/v1/**` — Claude/quote-tool-assistant-owned only; the Operations Hub Codex reads this contract from its repo and never edits this repo's schema/routes |
-| **SHARED — claim it first** | `src/app/layout.tsx`, `globals.css`, `package.json` + lockfile, the data layer (`src/lib/quotes.ts`, `designs.ts`, `supabase*`), shared types (`sceneTypes.ts`), tsconfig / eslint / next config |
+| **SHARED — claim it first** | `src/app/layout.tsx`, `globals.css`, `package.json` + lockfile, the data layer (`src/lib/quotes.ts`, `designs.ts`, `supabase*`), shared types (`sceneTypes.ts`), tsconfig / eslint / next config, **`AGENTS.md` + `CLAUDE.md`** (the rule files), **`.claude/skills/**`** (both devs' assistants read and act on these) |
 
 *Reading* a shared file (e.g. importing from `src/lib/quotes.ts`) is always fine; only **editing** a SHARED file needs a heads-up to the other owner first.
+
+**Why the rule files and `.claude/skills/**` are SHARED (added 2026-08-20):** they are
+executable process. A skill or a Pitfalls bullet changes how the *other* dev's
+assistant behaves on their next session, with no code review of the behavior it
+produces — a wider blast radius than most `src/` files, not a narrower one. A
+four-lens review of the `video` skill flagged that the table never named them, so
+a new skill could land with no cross-review at all; that was the gap, and this row
+closes it. Two carve-outs stay as they are: the per-machine copies under
+`~/.claude/skills/` are personal and need no review, and the two `wrap` copies
+differ **on purpose** (per-dev merge behavior — see "Skills placement" above);
+don't "fix" that as drift.
 
 ## Review / merge
 - **An AI assistant never merges on its own — a human says go.** Assistants may create, push, and open PRs, but must **not** merge to `master` without their operating dev's explicit go-ahead (Jason's assistant ← Jason; Naldo's assistant ← Naldo). `master` auto-deploys to prod, so a human approves every merge. One standing exception (Naldo, 2026-07-02, per-machine): on Naldo's machine the `wrap` skill may auto-merge its OWN docs-only session-notes PR after a re-sync onto fresh master and a collision check; every code/feature PR still needs the dev's explicit go. Reason: wrap notes PRs once piled up six deep waiting for manual gos. (Jason's machine keeps the human-gated wrap; the two wrap skill copies differ on purpose.)
