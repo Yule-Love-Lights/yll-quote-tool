@@ -18,6 +18,9 @@ const ACTION_LABEL: Record<string, string> = {
   // see recordAutoClosedFollowUps' doc (store.ts). Unlabelled actions already
   // fall through to the raw string below; this just reads properly on the page.
   followup_autoclosed: 'Follow-up closed (conversation resolved)',
+  // Row 308: a colour-change-request staff email that failed to send — see
+  // color-change-request/route.ts's catch branch.
+  color_request_email_failed: 'Colour-change staff email failed',
 };
 
 function friendlyAction(action: string): string {

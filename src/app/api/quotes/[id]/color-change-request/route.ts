@@ -12,8 +12,11 @@
 // fires a best-effort internal staff email immediately so the request is never
 // visible ONLY in /inbox — both the email and the inbox ping are independent
 // best-effort sends; either failing never fails the customer's already-saved
-// request. The colour is sanitized here exactly like the approve route (never
-// trust the client), so a later apply re-freezes a known-good scheme/pattern.
+// request. (Ledger row 308) a send FAILURE is itself logged to
+// dashboard_activity (rendered by /inbox/activity) rather than only a Vercel
+// log line — see the catch branch below. The colour is sanitized here exactly
+// like the approve route (never trust the client), so a later apply re-freezes
+// a known-good scheme/pattern.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { rateLimitResponse } from '@/lib/rateLimit';
@@ -207,8 +210,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     leadKind: 'lead',
     quoteValue: quote.total,
   };
+  // Captured for the send-failure activity write below (row 308) — links a
+  // failed staff email to the same inbox item the ping above just created, when
+  // it succeeded. Stays null on a skipped/failed ingest; the activity write
+  // below tolerates that (inbox_item_id is nullable).
+  let inboxItemId: string | null = null;
   try {
-    await ingestTouch(touch, new Date());
+    const outcome = await ingestTouch(touch, new Date());
+    if (outcome.ok) inboxItemId = outcome.itemId;
   } catch (e) {
     console.warn('[api/quotes/:id/color-change-request] inbox notify failed (request still saved):', e);
   }
@@ -242,8 +251,36 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
       });
     } catch (err) {
-      console.error('[api/quotes/:id/color-change-request] staff email failed (request still saved):', hlErrorMessage(err));
+      const message = hlErrorMessage(err);
+      console.error('[api/quotes/:id/color-change-request] staff email failed (request still saved):', message);
+      // Row 308: a failed send used to leave no trace beyond a Vercel log stream
+      // nobody opens (same reasoning as recordSuppressedFollowUp, store.ts).
+      // Logs to dashboard_activity so /inbox/activity surfaces it —
+      // 'color_request_email_failed' is not in listActivity's ingested/escalated
+      // exclusion, so it renders there. Best-effort and deliberately swallowed:
+      // an audit-write failure must never turn this already-swallowed send
+      // failure into anything that blocks the response.
+      try {
+        await sb.from('dashboard_activity').insert({
+          actor: 'system',
+          action: 'color_request_email_failed',
+          inbox_item_id: inboxItemId,
+          detail: { quoteId: id, label, error: message },
+        });
+      } catch (e) {
+        console.warn('[api/quotes/:id/color-change-request] activity write for email failure failed (non-fatal):', e);
+      }
     }
+  } else {
+    // Unconfigured (HighLevel off, or no internal contact id set) — this is a
+    // standing env state, not a one-off failure: it would fire on EVERY colour
+    // request while unset, so a dashboard_activity row per request would spam
+    // the log the same way the review flagged the original silent skip for
+    // being invisible. One console.warn is enough to surface it to whoever
+    // reads Vercel logs without flooding /inbox/activity.
+    console.warn(
+      '[api/quotes/:id/color-change-request] staff email skipped — HighLevel not configured or HIGHLEVEL_INTERNAL_CONTACT_ID unset',
+    );
   }
 
   return NextResponse.json({ ok: true, label });

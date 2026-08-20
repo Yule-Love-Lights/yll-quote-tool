@@ -12,7 +12,7 @@ import { DEFAULT_COLOR_SCHEMES, DEFAULT_BUILDABLE_COLOR_IDS } from '@/lib/design
 
 const { sbRef, ingestTouchMock, hl } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
-  ingestTouchMock: vi.fn(async (_touch: unknown, _now: unknown) => ({ ok: true })),
+  ingestTouchMock: vi.fn(async (_touch: unknown, _now: unknown) => ({ ok: true, itemId: 'inbox-item-1' })),
   hl: {
     configured: { value: true },
     sendEmail: vi.fn(async (_args: { subject: string; html: string; contactId: string }) => ({})),
@@ -45,10 +45,17 @@ const req = (body: unknown) =>
 const ctx = (id = ID) => ({ params: Promise.resolve({ id }) });
 
 type Row = Record<string, unknown>;
-function makeSb(quote: Row | null, fresh: Row | null = quote, quoteUpdateRows: Row[] = [{ id: ID }]) {
+function makeSb(
+  quote: Row | null,
+  fresh: Row | null = quote,
+  quoteUpdateRows: Row[] = [{ id: ID }],
+  opts: { activityInsertThrows?: boolean } = {},
+) {
   const updates: Row[] = [];
+  const activityInserts: Row[] = [];
   let table = '';
   let updating = false;
+  let inserting = false;
   const b: Record<string, unknown> = {};
   Object.assign(b, {
     from: (t: string) => {
@@ -61,18 +68,38 @@ function makeSb(quote: Row | null, fresh: Row | null = quote, quoteUpdateRows: R
       updates.push(payload);
       return b;
     },
+    // Row 308: the send-failure activity write. Only dashboard_activity inserts
+    // are modeled here (the route's only other write is the quotes CAS update
+    // above); track the payload so FIX-2 tests can assert on it.
+    insert: (payload: Row) => {
+      inserting = true;
+      if (table === 'dashboard_activity') activityInserts.push(payload);
+      return b;
+    },
     eq: () => b,
     single: async () => ({ data: quote, error: quote ? null : { message: 'no rows' } }),
     maybeSingle: async () => ({ data: fresh, error: null }),
     // Models the CAS write: a quotes UPDATE resolves to the rows that matched the
     // .eq('approval_snapshot', ...) filter — [] simulates a lost concurrency race.
-    then: (resolve: (v: unknown) => void) => {
+    // Also models the dashboard_activity insert (row 308): resolves ok, or
+    // rejects when opts.activityInsertThrows simulates the audit write itself
+    // failing — the route's own try/catch around it must swallow that too.
+    then: (resolve: (v: unknown) => void, reject?: (e: unknown) => void) => {
+      if (inserting && table === 'dashboard_activity') {
+        inserting = false;
+        if (opts.activityInsertThrows) {
+          reject?.(new Error('activity insert failed'));
+          return;
+        }
+        resolve({ data: null, error: null });
+        return;
+      }
       const data = updating && table === 'quotes' ? quoteUpdateRows : null;
       updating = false;
       resolve({ data, error: null });
     },
   });
-  return { client: b, updates };
+  return { client: b, updates, activityInserts };
 }
 
 function bookedQuote(overrides: Row = {}) {
@@ -233,6 +260,52 @@ describe('POST /api/quotes/[id]/color-change-request', () => {
       expect(res.status).toBe(200);
       expect(body.ok).toBe(true);
       expect(updates).toHaveLength(1); // the request was still recorded
+    });
+
+    // ── row 308: send-failure visibility ─────────────────────────────────────
+    it('logs a dashboard_activity row when the staff email send fails, linked to the inbox item', async () => {
+      process.env.HIGHLEVEL_INTERNAL_CONTACT_ID = 'internal-1';
+      hl.sendEmail.mockRejectedValueOnce(new Error('GHL down'));
+      const { client, activityInserts } = makeSb(bookedQuote());
+      sbRef.current = client;
+
+      const res = await POST(req({ colorSchemeId: 'as-designed' }), ctx());
+      expect(res.status).toBe(200);
+      expect(activityInserts).toHaveLength(1);
+      expect(activityInserts[0].actor).toBe('system');
+      expect(activityInserts[0].action).toBe('color_request_email_failed');
+      // Linked to the same item ingestTouch just created (mocked to return
+      // itemId 'inbox-item-1') so staff can trace the failure back to it.
+      expect(activityInserts[0].inbox_item_id).toBe('inbox-item-1');
+      const detail = activityInserts[0].detail as { quoteId: string; error: string };
+      expect(detail.quoteId).toBe(ID);
+      expect(detail.error).toBe('GHL down'); // hlErrorMessage-extracted, not the raw Error object
+    });
+
+    it('does NOT throw and still 200s when the activity write for the failure ITSELF fails', async () => {
+      process.env.HIGHLEVEL_INTERNAL_CONTACT_ID = 'internal-1';
+      hl.sendEmail.mockRejectedValueOnce(new Error('GHL down'));
+      const { client, updates } = makeSb(bookedQuote(), undefined, undefined, {
+        activityInsertThrows: true,
+      });
+      sbRef.current = client;
+
+      const res = await POST(req({ colorSchemeId: 'as-designed' }), ctx());
+      const body = await res.json();
+      expect(res.status).toBe(200);
+      expect(body.ok).toBe(true);
+      expect(updates).toHaveLength(1); // the request was still recorded
+    });
+
+    it('does NOT write a dashboard_activity row for the unconfigured skip (would spam one row per request)', async () => {
+      hl.configured.value = false;
+      delete process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
+      const { client, activityInserts } = makeSb(bookedQuote());
+      sbRef.current = client;
+
+      const res = await POST(req({ colorSchemeId: 'as-designed' }), ctx());
+      expect(res.status).toBe(200);
+      expect(activityInserts).toHaveLength(0);
     });
 
     it('skips the email (no throw) when HighLevel is not configured', async () => {
