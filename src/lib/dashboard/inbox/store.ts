@@ -953,6 +953,40 @@ async function priorStateOf(
   return { status: row.status, wasFollowed: !!row.followed_up_at };
 }
 
+/** Row 308: best-effort trace for the FAILURE branch of the four action
+ *  functions below (markItemHandledLocal / dismissItem / markItemFollowed /
+ *  markItemCompleted). Before this, dashboard_activity only ever got a row on
+ *  the SUCCESS path of those four — so a systemic "our writes are failing"
+ *  pattern (a lost race, an RLS misconfiguration, a genuine DB error) left no
+ *  durable trace; prod confirmed zero failure-type actions in ~1.13M rows.
+ *  The action-column value is always the literal 'action_failed' (never one
+ *  of the four verbs); `action` names WHICH of the four attempts failed
+ *  inside `detail`, alongside the same `error` string the caller is already
+ *  returning to its own caller. Mirrors recordSuppressedFollowUp's (#230a)
+ *  fire-and-forget shape: never blocks or throws, so an audit-write failure
+ *  can never turn an already-failed action into a doubly-failed request.
+ *  Renders on /inbox/activity like every other row — listActivity's own
+ *  filter excludes only 'ingested'/'escalated'. */
+async function recordActionFailed(
+  inboxItemId: string,
+  actor: string | null,
+  action: string,
+  error: string,
+): Promise<void> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return;
+  try {
+    await sb.from('dashboard_activity').insert({
+      actor,
+      action: 'action_failed',
+      inbox_item_id: inboxItemId,
+      detail: { action, error },
+    });
+  } catch (e) {
+    console.warn('[inbox] action-failure audit write failed (non-fatal):', e);
+  }
+}
+
 export type HandledTarget = {
   source: InboxSource;
   externalId: string;
@@ -981,8 +1015,18 @@ export async function markItemHandledLocal(itemId: string, operatorId: string | 
     .neq('status', 'handled')
     .select('source, external_id, source_message_id, dashboard_contacts ( ghl_contact_id, display_name )')
     .maybeSingle();
-  if (error) return { ok: false, error: error.message };
-  if (!data) return { ok: false, error: 'Item not found or already handled' };
+  if (error) {
+    await recordActionFailed(itemId, operatorId, 'handled', error.message);
+    return { ok: false, error: error.message };
+  }
+  if (!data) {
+    // Row 311 fix-round FIX 4: hoisted, mirroring the sibling guard functions'
+    // own `const msg = '...'` pattern (markItemFollowed / markItemCompleted) —
+    // this repeated the literal twice.
+    const msg = 'Item not found or already handled';
+    await recordActionFailed(itemId, operatorId, 'handled', msg);
+    return { ok: false, error: msg };
+  }
   const row = data as unknown as Record<string, unknown>;
   const c = (row.dashboard_contacts as Record<string, unknown> | null) ?? null;
   await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'handled', inbox_item_id: itemId, detail: { from } });
@@ -1011,7 +1055,10 @@ export async function dismissItem(itemId: string, operatorId: string | null, now
     .neq('status', 'dismissed')
     .select('dashboard_contacts ( primary_email, primary_phone )')
     .maybeSingle();
-  if (error) return { ok: false, error: error.message };
+  if (error) {
+    await recordActionFailed(itemId, operatorId, 'dismissed', error.message);
+    return { ok: false, error: error.message };
+  }
   // Already dismissed → no-op: don't log a duplicate reversible row or re-suppress
   // (a stray reverse of that row would un-suppress a still-dismissed sender).
   if (!data) return { ok: true };
@@ -1027,16 +1074,97 @@ export async function dismissItem(itemId: string, operatorId: string | null, now
 
 /** Snooze an item: stamp followed_up_at (the reply route does this on send [A]; a
  *  manual "I followed up" does it without sending [B]). Hides from the open list
- *  until a newer message clears it. Service-role glue. */
-export async function markItemFollowed(itemId: string, operatorId: string, now: Date): Promise<{ ok: boolean; error?: string }> {
+ *  until a newer message clears it. Service-role glue.
+ *
+ * Row 306 (10th sibling-parity instance): this used to be a bare
+ * `.update({followed_up_at}).eq('id', itemId)` — no status guard at all, unlike
+ * its three siblings (markItemHandledLocal's `.neq('status','handled')`,
+ * dismissItem's `.neq('status','dismissed')`, markItemCompleted's positive
+ * `.in('status', [...])`). Concrete harm (row 311): a "Mark completed" click
+ * whose fetch throws may have already landed server-side; if the operator then
+ * clicks "Followed" instead, this call would silently stamp followed_up_at on a
+ * row that is really 'completed' — a terminal row no inbox list re-queries, so
+ * the corruption is invisible. Guarded the same POSITIVE-match way as
+ * markItemCompleted (AGENTS.md's positive-seam-gate convention: `.in(...)`
+ * fails CLOSED on a future 5th status; a negative `.neq` pair would fail OPEN)
+ * — only 'unresponded' and 'handled' are legal source statuses for a Follow.
+ *
+ * Row 311 fix-round FIX 1 (the status guard above still lets a RETRY re-stamp
+ * followed_up_at, since this function never changes status — the headline row
+ * 306 harm): the two real callers need opposite behavior on an already-followed
+ * row. [A] the reply route (api/dashboard/reply) calls this right after a REAL
+ * send — the item may already be followed from an earlier round, and
+ * re-stamping is CORRECT there: the customer's waiting clock should restart
+ * because we just genuinely wrote to them. [B] the standalone "Followed"
+ * button (api/dashboard/followed) is a manual snooze with no send attached —
+ * every legitimate path to it starts from a row with followed_up_at NULL
+ * (InboxList's button only renders on open-queue rows; InWorksSection's only
+ * on handled-bucket rows, followed null by definition), so a retry landing
+ * AFTER an earlier attempt already stamped it is not a fresh follow-up, just a
+ * duplicate click/lost-race — restamping there would silently reset the
+ * waiting clock for no real reason. `opts.allowRestamp` differentiates the two
+ * (default false — the SAFER read, so an unknown future caller fails closed
+ * into "don't restamp" rather than silently reproducing the row 306 bug): true
+ * adds no extra guard (status-only, as before — the reply route's own call
+ * site passes this); false additionally requires `.is('followed_up_at', null)`
+ * in the same UPDATE...WHERE (CAS-style, same idiom as the siblings — no
+ * separate read-check-then-act). `alreadyFollowed` on a false-path refusal
+ * lets the caller (followed/route.ts) tell a genuine "already snoozed" no-op
+ * apart from a real guard block — see that route for why it treats the two
+ * differently. */
+export async function markItemFollowed(
+  itemId: string,
+  operatorId: string,
+  now: Date,
+  opts?: { allowRestamp?: boolean },
+): Promise<{ ok: true } | { ok: false; error: string; alreadyFollowed?: boolean }> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const allowRestamp = opts?.allowRestamp ?? false;
   const from = await priorStateOf(sb, itemId);
-  const { error } = await sb
+  let query = sb
     .from('inbox_items')
     .update({ followed_up_at: now.toISOString(), updated_at: now.toISOString() })
-    .eq('id', itemId);
-  if (error) return { ok: false, error: error.message };
+    .eq('id', itemId)
+    .in('status', ['unresponded', 'handled']);
+  if (!allowRestamp) {
+    query = query.is('followed_up_at', null);
+  }
+  const { data, error } = await query.select('id').maybeSingle();
+  if (error) {
+    await recordActionFailed(itemId, operatorId, 'followed', error.message);
+    return { ok: false, error: error.message };
+  }
+  if (!data) {
+    // Row 311 fix-round 2 (delta-verify MED): `from` above is only the
+    // PRE-update snapshot, and TOCTOU makes it stale — a row whose snapshot
+    // showed wasFollowed=true can go TERMINAL (completed/dismissed by another
+    // operator) between the snapshot and this guarded UPDATE. The UPDATE then
+    // matches 0 rows because of the STATUS guard, not the followed_up_at
+    // guard, but trusting the stale snapshot would mislabel that terminal
+    // refusal as a benign duplicate: followed/route.ts turns
+    // alreadyFollowed:true into a 200 {ok:true}, and InWorksSection.tsx's
+    // act() moveGroups any 200 into "awaiting" — a phantom client-side move
+    // for a row that is really terminal server-side, invisible until reload.
+    // Re-read the row's CURRENT state instead of trusting the snapshot.
+    // priorStateOf already fails safe here: it returns undefined on "row not
+    // found" AND on a read error (it only inspects `data`, never `error`), so
+    // an erroring or empty re-read falls straight into the generic refusal
+    // below and never claims alreadyFollowed.
+    const current = await priorStateOf(sb, itemId);
+    const stillLegalStatus = current?.status === 'unresponded' || current?.status === 'handled';
+    if (!allowRestamp && stillLegalStatus && current?.wasFollowed) {
+      // Genuine duplicate: the row is STILL a legal source status right now
+      // (not terminal) and is already followed — a real duplicate click or
+      // lost race, not a terminal-status guard block wearing a stale label.
+      const msg = 'Already marked followed';
+      await recordActionFailed(itemId, operatorId, 'followed', msg);
+      return { ok: false, error: msg, alreadyFollowed: true };
+    }
+    const msg = 'Item is completed or dismissed; cannot mark followed';
+    await recordActionFailed(itemId, operatorId, 'followed', msg);
+    return { ok: false, error: msg };
+  }
   await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'followed', inbox_item_id: itemId, detail: { from } });
   return { ok: true };
 }
@@ -2193,8 +2321,15 @@ export async function markItemCompleted(
     .in('status', ['unresponded', 'handled'])
     .select('id')
     .maybeSingle();
-  if (error) return { ok: false, error: error.message };
-  if (!data) return { ok: false, error: 'Item not found, already completed, or dismissed' };
+  if (error) {
+    await recordActionFailed(itemId, operatorId, 'completed', error.message);
+    return { ok: false, error: error.message };
+  }
+  if (!data) {
+    const msg = 'Item not found, already completed, or dismissed';
+    await recordActionFailed(itemId, operatorId, 'completed', msg);
+    return { ok: false, error: msg };
+  }
   await sb.from('dashboard_activity').insert({
     actor: operatorId,
     action: 'completed',
@@ -2263,6 +2398,14 @@ export type ActivityRow = {
   customerName: string | null;
   at: string | null;
   reversible: boolean;
+  /** Row 311 fix-round FIX 2: only meaningful when action === 'action_failed'
+   *  — `{ action: <the verb that failed>, error: <message> }`, the same shape
+   *  recordActionFailed writes (above). Every other action's own `detail`
+   *  (e.g. `{ from }`) is not surfaced through this field — ActivityLog has no
+   *  use for it. Optional/nullable so the pre-existing synthetic 'reversed'
+   *  row ActivityLog.tsx builds client-side (which never had a detail) still
+   *  satisfies this type unchanged. */
+  detail?: { action?: string; error?: string } | null;
 };
 export type ActivityResult = { ok: true; rows: ActivityRow[] } | { ok: false; error: string };
 
@@ -2306,8 +2449,10 @@ export async function listActivity(limit = 100): Promise<ActivityResult> {
       // Show operator DECISIONS, not the system firehose: 'ingested' (one row per
       // reconcile touch — thousands) and 'escalated' would otherwise bury the
       // handled/dismissed/followed/completed rows (and their Reverse buttons).
-      // `detail` added (row 312 fix-round FIX 3) — isReversibleActivity needs it
-      // to tell the two 'reclassified' populations apart.
+      // `detail` is needed twice over: isReversibleActivity (row 312 fix round)
+      // uses it to tell the two 'reclassified' populations apart, and an
+      // 'action_failed' row (row 311 fix round) renders WHICH action failed and
+      // why — see ActivityRow's own doc comment.
       .select(
         'id, action, actor, inbox_item_id, created_at, detail, inbox_items ( dashboard_contacts ( display_name ) )',
       )
@@ -2330,6 +2475,7 @@ export async function listActivity(limit = 100): Promise<ActivityResult> {
       customerName: (item?.dashboard_contacts?.display_name as string | null) ?? null,
       at: (row.created_at as string | null) ?? null,
       reversible: isReversibleActivity(String(row.action), row.detail),
+      detail: (row.detail as { action?: string; error?: string } | null) ?? null,
     };
   });
   return { ok: true, rows };
