@@ -44,6 +44,14 @@ vi.mock('@/lib/integrations/highlevel', () => ({
 }));
 
 import { POST } from './route';
+// Task (c), fix round 5: the concurrency-shaped test at the bottom of this
+// file drives the REAL amend-consent route too, to prove end-to-end that a
+// decline which wins its race against a staff amend cannot later be
+// silently re-accepted. amend-consent/route.ts's own imports (rateLimit,
+// supabase, @/lib/amend, @/lib/quoteStatus) are already satisfied by the
+// mocks/real modules this file already sets up above — no extra mocking
+// needed.
+import { POST as consentPOST } from '../amend-consent/route';
 
 const ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 const AMENDED_AT = '2026-07-18T12:00:00.000Z';
@@ -595,5 +603,68 @@ describe('POST /api/quotes/[id]/amend-decline — staff alert (FIX5)', () => {
     const json = await res.json();
     expect(res.status).toBe(200);
     expect(json.ok).toBe(true);
+  });
+});
+
+// Task (c), fix round 5: the CAS/guard interleaving the brief asked to be
+// covered explicitly. Both /amend (staff) and /amend-decline (customer) can
+// race on the SAME pending amendment — each route's own pre-write checks
+// (latest.amended_at matches, not already accepted/declined) pass against
+// the identical 'pending' snapshot a genuinely concurrent request would also
+// see; only the CAS write a few lines later decides which one lands. This
+// mirrors the existing generic "fails a compare-and-swap race without
+// overwriting consent" test above, but names the actual racer (a staff
+// amend write) instead of leaving it generic, and — for the win case —
+// drives the REAL amend-consent route afterward to prove the declined
+// amendment stays un-acceptable, not just that the guard "exists" in
+// isolation (amend-consent/route.test.ts's own 'already-declined' test
+// covers that guard from a COLD read; this proves it also holds for a
+// decline that just won a LIVE race, using the exact snapshot that decline
+// wrote).
+describe('POST /api/quotes/[id]/amend-decline — concurrency with a racing staff amendment (task c)', () => {
+  const pending: AmendmentTrailEntry = { ...amendment }; // consent: { status: 'pending' }
+
+  it('LOSES the race to a staff amend write that landed first — 409s without overwriting (CAS matched no row, not an earlier guard)', async () => {
+    // updatedRows: [] simulates the staff amend's write having already
+    // changed approval_snapshot underneath this request by the time ITS OWN
+    // update fires. The row this request read (still 'pending') is the same
+    // one a genuinely concurrent staff amend would also have read — so both
+    // requests' own pre-write checks pass; only the CAS decides the loser.
+    const { client, updatePayloads } = makeSb(bookedQuote({ amendments: [pending] }), []);
+    sbRef.current = client;
+
+    const res = await POST(req({ amendedAt: AMENDED_AT }), ctx);
+    const json = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('concurrent-amendment');
+    // The write was ATTEMPTED — proves the pending-check passed cleanly and
+    // the CAS itself is what lost, not an earlier short-circuit.
+    expect(updatePayloads).toHaveLength(1);
+  });
+
+  it('WINS the race — and the amendment it declined then cannot be silently re-accepted (chained through the real amend-consent route)', async () => {
+    const { client, updatePayloads } = makeSb(bookedQuote({ amendments: [pending] }));
+    sbRef.current = client;
+
+    const declineRes = await POST(req({ amendedAt: AMENDED_AT }), ctx);
+    expect(declineRes.status).toBe(200);
+    expect(updatePayloads).toHaveLength(1);
+    const declinedSnapshot = updatePayloads[0]!.approval_snapshot as { amendments: AmendmentTrailEntry[] };
+    expect(declinedSnapshot.amendments[0]!.consent?.status).toBe('declined');
+
+    // A staff operator (or a stale customer tab) then tries to ACCEPT that
+    // same amendment via the REAL amend-consent route, reading the
+    // just-declined snapshot fresh — FIX3's already-declined guard must
+    // refuse it, not silently overwrite the refusal with a signature.
+    const { client: consentClient, updatePayloads: consentWrites } = makeSb(bookedQuote(declinedSnapshot));
+    sbRef.current = consentClient;
+    const consentSignature = { name: 'Jordan Smith', kind: 'typed', value: 'Jordan Smith' };
+    const consentRes = await consentPOST(req({ amendedAt: AMENDED_AT, signature: consentSignature }), ctx);
+    const consentJson = await consentRes.json();
+
+    expect(consentRes.status).toBe(409);
+    expect(consentJson.code).toBe('already-declined');
+    expect(consentWrites).toHaveLength(0);
   });
 });
