@@ -84,6 +84,18 @@ export function requiresCompleteConfirmation(item: Pick<InWorksItem, 'needsLookR
   return item.needsLookReason != null;
 }
 
+// Row 304: the earlier copy said "To undo it you have to go to the Activity
+// Log and hit Reverse", which is true for the item's status but false for the
+// follow-up nag the same sentence warns about — reverseItemState (store.ts)
+// updates inbox_items only and never touches follow_ups, so #798's auto-close
+// stays closed even after a Reverse. Worded honestly instead of promising a
+// re-arm the code doesn't do. Pure + exported so the wording is directly
+// unit-testable (this project has no jsdom — see this file's other pure
+// exports / their own doc comments).
+export function completeConfirmMessage(item: Pick<InWorksItem, 'needsLookReason'>): string {
+  return `${item.needsLookReason} — mark completed anyway?\n\nThis removes it from every inbox list and closes any pending follow-up. Reverse (Activity Log) undoes the status change, but does not re-open the follow-up nag.`;
+}
+
 export function InWorksSection({
   awaiting,
   handled,
@@ -237,9 +249,7 @@ export function InWorksSection({
   // identical to the pre-fix one-click behavior.
   function handleMarkCompleted(item: InWorksItem, group: 'awaiting' | 'handled') {
     if (requiresCompleteConfirmation(item)) {
-      const ok = window.confirm(
-        `${item.needsLookReason} — mark completed anyway?\n\nThis removes it from every inbox list and closes any pending follow-up. To undo it you have to go to the Activity Log and hit Reverse.`,
-      );
+      const ok = window.confirm(completeConfirmMessage(item));
       if (!ok) return;
     }
     act(item, group, '/api/dashboard/completed', 'remove', 'Mark completed');

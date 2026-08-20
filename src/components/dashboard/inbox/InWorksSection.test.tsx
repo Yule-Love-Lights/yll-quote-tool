@@ -22,6 +22,7 @@ import {
   omitKey,
   clearNeedsLookOnMove,
   errorNoteFor,
+  completeConfirmMessage,
 } from './InWorksSection';
 import type { InWorksItem } from '@/lib/dashboard/inbox/store';
 
@@ -227,6 +228,23 @@ describe('requiresCompleteConfirmation (#307 review fix 1 — pure)', () => {
 
   it('is false for a row with no needsLookReason (today\'s one-click behavior is unchanged)', () => {
     expect(requiresCompleteConfirmation({ needsLookReason: null })).toBe(false);
+  });
+});
+
+// Row 304: the confirm copy must not promise Reverse undoes MORE than it does.
+// reverseItemState only ever touches inbox_items — never follow_ups — so the
+// nag #798's auto-close retired stays retired even after a Reverse click.
+describe('completeConfirmMessage (row 304 — no overpromise on the follow-up nag)', () => {
+  it('includes the flagged reason and names Reverse for the status change', () => {
+    const msg = completeConfirmMessage({ needsLookReason: 'Quote unanswered' });
+    expect(msg).toContain('Quote unanswered');
+    expect(msg).toContain('Reverse');
+  });
+
+  it('does NOT claim Reverse undoes the follow-up/nag (the false half of the old copy)', () => {
+    const msg = completeConfirmMessage({ needsLookReason: 'Quote unanswered' });
+    expect(msg).not.toMatch(/undo it/i);
+    expect(msg.toLowerCase()).toContain('does not re-open the follow-up');
   });
 });
 

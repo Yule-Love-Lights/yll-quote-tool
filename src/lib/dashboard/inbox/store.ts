@@ -42,6 +42,55 @@ export type ExistingItem = {
   status: InboxStatus;
   notifiedLevels: number[];
   lastMessageAt: Date | null;
+  /** #316: the rest of the stored row's touch-derived fields. Read ONLY by the
+   *  unresponded-item noop check below (see `noopReingest`'s doc) to catch a
+   *  material change that doesn't move last_message_at — e.g. a still-DRAFT
+   *  quotetool lead's lastMessageAt is pinned to created_at (quotetool.ts's
+   *  normalizeQuoteTouch), so staff editing that draft's total changes
+   *  preview/quote_value with NO timestamp movement at all. All optional:
+   *  findExistingItem always populates them from the real row; a hand-built
+   *  test fixture that omits one just never qualifies for that noop path
+   *  (undefined never `===` a real value — fails safe, never over-skips a
+   *  write it shouldn't).
+   *
+   *  Honesty note on source_message_id specifically (review fix, #316
+   *  follow-up): every live touch-producing path sets it to null —
+   *  normalizeGhlConversation (ghl.ts), normalizeGmailThread (gmail.ts),
+   *  normalizeQuoteTouch (quotetool.ts), parseIngestPayload (ingest.ts). The
+   *  ONLY site that ever populates a real one is gmail.ts's rare lead-forward
+   *  branch (buildLeadForwardTouch). So for essentially all live traffic this
+   *  field compares null===null and contributes zero discriminating power
+   *  today; it stays in the comparison for future-proofing (a real
+   *  per-message id eventually reaching more sources) and to catch that one
+   *  lead-forward case — not because it's doing real work today. The fields
+   *  that actually discriminate live traffic are last_message_at (compared
+   *  separately, above) plus direction/channel/preview/subject/lead_kind/
+   *  quote_value here. */
+  direction?: string | null;
+  channel?: string | null;
+  preview?: string | null;
+  subject?: string | null;
+  sourceMessageId?: string | null;
+  leadKind?: string | null;
+  quoteValue?: number | null;
+  /** #316 follow-up (review FIX 2): the two raw-JSON fields getItemForReply
+   *  falls back to when the joined dashboard_contacts row lacks them (see
+   *  getItemForReply below) — raw.highlevel_contact_id / raw.customer_name.
+   *  Selected narrowly via a PostgREST JSON-path expression (findExistingItem
+   *  below), not by fetching the whole raw blob. Only the quotetool source's
+   *  raw (`raw: q`, a DashboardQuote row) ever carries these keys today —
+   *  ghl.ts/gmail.ts/ingest.ts's raw shapes don't have them, so for those
+   *  sources both sides compare null===null and this pair is inert, same
+   *  fail-safe direction as every other field here. Concrete case this
+   *  closes: a draft quote gets linked to a GHL contact via
+   *  /api/integrations/highlevel/attach (writes quotes.highlevel_contact_id
+   *  only, never dashboard_contacts or inbox_items) — without this pair, if
+   *  none of the OTHER 7 fields changed on the next reconcile tick, the tick
+   *  would noop and inbox_items.raw would stay frozen pre-attach, leaving
+   *  getItemForReply's fallback showing "no GHL contact" on an item that IS
+   *  linked. */
+  rawHighlevelContactId?: string | null;
+  rawCustomerName?: string | null;
 };
 
 export type ContactOp =
@@ -91,11 +140,32 @@ export type IngestPlan = {
    *  reason-1 cold-outbound skip, not a #252 reason-2 skip, even though
    *  isActivityNoise is true on that touch. */
   skipReason: 'cold-outbound' | 'activity-noise-existing' | null;
-  /** When true, a resolved item (handled/completed/dismissed) is being re-ingested
-   *  with NOTHING to persist — same status, same last_message_at, no reopen /
-   *  auto-resolve / snooze-clear. The reconcile cron re-reads these every minute,
-   *  so writing them anyway floods inbox_items (fresh updated_at) + dashboard_activity
-   *  with dead 'ingested' rows. ingestTouch short-circuits on it (#110 W7-004). */
+  /** When true, an item is being re-ingested with NOTHING to persist — same
+   *  status, same last_message_at, no reopen / auto-resolve / snooze-clear.
+   *  The reconcile cron re-reads these every minute, so writing them anyway
+   *  floods inbox_items (fresh updated_at) + dashboard_activity with dead
+   *  'ingested' rows. ingestTouch short-circuits on it (#110 W7-004). Two
+   *  cases feed this:
+   *    1. A RESOLVED item (handled/completed/dismissed) — the original
+   *       #110 W7-004 case. Same status + same last_message_at is sufficient;
+   *       nothing else about a resolved item's display depends on the touch.
+   *    2. #316: an UNRESOLVED ('unresponded') item whose touch-derived fields
+   *       (direction/channel/preview/subject/source_message_id/lead_kind/
+   *       quote_value, plus the raw.highlevel_contact_id/raw.customer_name
+   *       pair added in the review FIX 2 follow-up — see ExistingItem's doc
+   *       for what each field actually discriminates on live traffic) ALSO
+   *       match the stored row — same status + same last_message_at is not
+   *       enough here, because a still-DRAFT
+   *       quotetool lead's lastMessageAt is pinned to created_at, so an
+   *       edited draft total can change preview/quote_value with the
+   *       timestamp frozen. Deliberately does NOT compare escalation_level —
+   *       that's a pure function of (last_message_at, now), so it changes on
+   *       almost every tick for an aging open item and would defeat this
+   *       noop entirely; the separately-scheduled escalate cron (runEscalation,
+   *       every 10 min, sync.ts) is what keeps the STORED column caught up,
+   *       independent of ingest — skipping the ingest-time write just means
+   *       the displayed level can lag by <=10 minutes after crossing a
+   *       threshold, which is exactly what that cron exists to backstop. */
   noopReingest: boolean;
   contactOp: ContactOp;
   item: ItemRow;
@@ -155,6 +225,20 @@ function tracksOutboundFirstObservation(source: InboxSource, channel: Normalized
   return TRACKS_OUTBOUND_FIRST_OBSERVATION.has(source) || (source === 'ghl' && channel === 'call');
 }
 
+// #316 follow-up (review FIX 2): safely pull one string field out of a
+// touch's `raw` blob — typed `unknown` on NormalizedTouch because every
+// source shapes it differently (a GhlConversation, a GmailThreadLite, a
+// DashboardQuote row, an arbitrary ingest POST body). Only the quotetool
+// source's raw ever carries highlevel_contact_id/customer_name (it IS a
+// DashboardQuote row); every other source's raw lacks both keys, so this
+// returns null for them — same null===null fail-safe direction as every
+// other unrespondedNoContentChange comparison below.
+function rawStringField(raw: unknown, key: string): string | null {
+  if (raw === null || typeof raw !== 'object') return null;
+  const v = (raw as Record<string, unknown>)[key];
+  return typeof v === 'string' ? v : null;
+}
+
 /**
  * Decide what an inbound/outbound touch should do, given the matching contact
  * candidates and the existing item (if any). PURE — no I/O.
@@ -209,23 +293,62 @@ export function planIngest(input: {
   // skip that escalation email.
   const notifiedLevels = decision.reopened ? [] : (existing?.notifiedLevels ?? []);
 
-  // #110 W7-004: a resolved item re-ingested with nothing to persist is a no-op.
-  // Restricted to resolved statuses (escalation_level is fixed at 0, so skipping
-  // never freezes an aging unresponded item's display colour) AND an unchanged
-  // last_message_at (our own outbound reply re-read every reconcile is the common
-  // case). Everything that actually changes state — reopen, auto-resolve,
-  // snooze-clear, a newer message — falls through and writes normally.
-  const isResolvedStatus =
-    decision.status === 'handled' || decision.status === 'completed' || decision.status === 'dismissed';
-  const noopReingest =
+  // #110 W7-004 / #316: an item re-ingested with nothing to persist is a no-op.
+  // Shared preconditions for EITHER case below: an existing item, no state
+  // transition the reducer made (no auto-resolve / reopen / snooze-clear), same
+  // status, and an unchanged last_message_at (our own outbound reply re-read
+  // every reconcile, or a still-open conversation nobody has touched, are both
+  // the common case). Everything that actually changes state — reopen,
+  // auto-resolve, snooze-clear, a newer message — falls through and writes
+  // normally, for both cases.
+  const commonNoopPreconditions =
     !!existing &&
     !decision.autoResolved &&
     !decision.reopened &&
     !clearFollowedUp &&
-    isResolvedStatus &&
     decision.status === existing.status &&
     existing.lastMessageAt != null &&
     touch.lastMessageAt.getTime() === existing.lastMessageAt.getTime();
+
+  // Case 1 (#110 W7-004): a RESOLVED item (handled/completed/dismissed).
+  // Nothing else about a resolved item's display depends on the touch, so the
+  // shared preconditions alone are sufficient.
+  const isResolvedStatus =
+    decision.status === 'handled' || decision.status === 'completed' || decision.status === 'dismissed';
+
+  // Case 2 (#316): an UNRESOLVED ('unresponded') item ALSO needs its
+  // touch-derived fields to match the stored row before it's a true no-op —
+  // unlike a resolved item, an unresponded item's last_message_at can be
+  // pinned (a still-DRAFT quotetool lead pins it to created_at; see
+  // quotetool.ts's normalizeQuoteTouch) while a real edit changes what's
+  // shown (a draft's total → preview + quote_value). Compares every
+  // touch-derived field the upsert writes that could plausibly change without
+  // moving last_message_at, plus (review FIX 2, #316 follow-up) the
+  // raw.highlevel_contact_id/raw.customer_name pair getItemForReply falls
+  // back to. Not every field pulls equal weight on live traffic today:
+  // source_message_id is null on every path except gmail.ts's rare
+  // lead-forward branch, and the raw pair is only ever non-null for the
+  // quotetool source — both stay in the comparison for future-proofing and
+  // fail-safe symmetry with the rest, not because they discriminate most
+  // traffic (see ExistingItem's doc for the honest breakdown). Deliberately
+  // EXCLUDES escalation_level (see the IngestPlan.noopReingest doc above —
+  // it's a pure function of elapsed time, not of the touch, and the escalate
+  // cron owns keeping it current independent of ingest) and notified_levels
+  // (already byte-identical to `existing` here by construction — see
+  // `notifiedLevels` above, `reopened` is false whenever this runs).
+  const unrespondedNoContentChange =
+    decision.status === 'unresponded' &&
+    (touch.direction ?? null) === existing?.direction &&
+    (touch.channel ?? null) === existing?.channel &&
+    (touch.preview ?? null) === existing?.preview &&
+    (touch.subject ?? null) === existing?.subject &&
+    (touch.sourceMessageId ?? null) === existing?.sourceMessageId &&
+    (touch.leadKind ?? 'lead') === existing?.leadKind &&
+    (touch.quoteValue ?? null) === existing?.quoteValue &&
+    rawStringField(touch.raw, 'highlevel_contact_id') === existing?.rawHighlevelContactId &&
+    rawStringField(touch.raw, 'customer_name') === existing?.rawCustomerName;
+
+  const noopReingest = commonNoopPreconditions && (isResolvedStatus || unrespondedNoContentChange);
 
   const item: ItemRow = {
     source: touch.source,
@@ -313,9 +436,17 @@ async function findCandidates(identity: ContactIdentity): Promise<StoredContact[
 async function findExistingItem(source: InboxSource, externalId: string): Promise<ExistingItem | null> {
   const sb = getSupabaseServiceClient();
   if (!sb) return null;
+  // #316: also selects the touch-derived columns planIngest's unresponded-item
+  // noop check compares (see ExistingItem's doc) — direction/channel/preview/
+  // subject/source_message_id/lead_kind/quote_value — plus (review FIX 2) the
+  // raw.highlevel_contact_id/raw.customer_name pair, pulled narrowly via a
+  // PostgREST JSON-path select (raw->>key, aliased) rather than fetching the
+  // whole raw blob per row.
   const { data } = await sb
     .from('inbox_items')
-    .select('id, contact_id, status, notified_levels, last_message_at')
+    .select(
+      'id, contact_id, status, notified_levels, last_message_at, direction, channel, preview, subject, source_message_id, lead_kind, quote_value, raw_highlevel_contact_id:raw->>highlevel_contact_id, raw_customer_name:raw->>customer_name',
+    )
     .eq('source', source)
     .eq('external_id', externalId)
     .maybeSingle();
@@ -327,6 +458,15 @@ async function findExistingItem(source: InboxSource, externalId: string): Promis
     status: row.status as InboxStatus,
     notifiedLevels: (row.notified_levels as number[] | null) ?? [],
     lastMessageAt: row.last_message_at ? new Date(row.last_message_at as string) : null,
+    direction: (row.direction as string | null) ?? null,
+    channel: (row.channel as string | null) ?? null,
+    preview: (row.preview as string | null) ?? null,
+    subject: (row.subject as string | null) ?? null,
+    sourceMessageId: (row.source_message_id as string | null) ?? null,
+    leadKind: (row.lead_kind as string | null) ?? null,
+    quoteValue: (row.quote_value as number | null) ?? null,
+    rawHighlevelContactId: (row.raw_highlevel_contact_id as string | null) ?? null,
+    rawCustomerName: (row.raw_customer_name as string | null) ?? null,
   };
 }
 
@@ -377,9 +517,10 @@ export async function ingestTouch(touch: NormalizedTouch, now: Date): Promise<In
     return { ok: true, skipped: true, itemId: null, contactId: null, autoResolved: false, reopened: false, ambiguous: false, skipReason: plan.skipReason };
   }
 
-  // #110 W7-004: a resolved item re-ingested with nothing to persist — skip the
-  // item upsert AND the 'ingested' activity insert so the every-minute reconcile
-  // cron stops flooding both tables with no-change writes. `existing` is non-null
+  // #110 W7-004 / #316: an item (resolved OR unresponded — see noopReingest's
+  // doc) re-ingested with nothing to persist — skip the item upsert AND the
+  // 'ingested' activity insert so the every-minute reconcile cron stops
+  // flooding both tables with no-change writes. `existing` is non-null
   // whenever noopReingest is true. Not a plan.skip reason, so skipReason is null.
   if (plan.noopReingest) {
     return { ok: true, skipped: true, itemId: existing?.id ?? null, contactId: existing?.contactId ?? null, autoResolved: false, reopened: false, ambiguous: false, skipReason: null };
@@ -2217,7 +2358,11 @@ export type ReplyItem = {
 /**
  * Resolve the send-target coordinates for a reply action: source, channel,
  * external ID, GHL contact ID, customer name, and quote total. The GHL contact
- * ID and customer name fall back to the raw payload if the contact row is absent.
+ * ID and customer name fall back to the raw payload if the contact row is
+ * absent — #316 follow-up (review FIX 2): planIngest's noop check now
+ * compares raw.highlevel_contact_id/raw.customer_name (see ExistingItem's
+ * doc), so a later attach that changes either un-noops the next reconcile
+ * tick and refreshes `raw` instead of leaving this fallback frozen stale.
  */
 export async function getItemForReply(itemId: string): Promise<ReplyItem | null> {
   const sb = getSupabaseServiceClient();
@@ -2264,7 +2409,31 @@ export type ActivityRow = {
 };
 export type ActivityResult = { ok: true; rows: ActivityRow[] } | { ok: false; error: string };
 
-const REVERSIBLE_ACTIONS = new Set(['handled', 'followed', 'completed', 'dismissed']);
+// row 312: 'reclassified' added — the 26 S41 data-op rows say "reversible by
+// setting followed_up_at back to null" in their own detail text; it belongs
+// here so /inbox/activity actually renders the Reverse button that wording
+// promises (see inverseOf's 'reclassified' case, lifecycle.ts).
+const REVERSIBLE_ACTIONS = new Set(['handled', 'followed', 'completed', 'dismissed', 'reclassified']);
+
+/**
+ * row 312 fix-round FIX 3 (MED, admin lens, prod-verified): the bare action
+ * string 'reclassified' covers TWO populations in prod (confirmed via a direct
+ * query, 2026-08-20) — 26 S41 bucket-refile rows (`actor: 'system'`, detail
+ * carries `followedUpAtSetTo`/`from`/`to`; inverseOf('reclassified')'s premise
+ * — "only ever set followed_up_at" — holds) and 8 `actor:
+ * 'assistant-backfill-268'` rows (2026-08-14, a lead_kind/contact repoint;
+ * detail carries `reason`/`customer`/`from_contact` and NONE of the 8 carry
+ * followedUpAtSetTo — the inverse's premise is false for them). Today the 8 are
+ * refused only by the emergent luck of their item's current followed_up_at
+ * reading null — gate on the PAYLOAD shape instead of the bare action string so
+ * that holds by construction. Non-'reclassified' actions are unaffected (their
+ * detail shape has never split into two populations).
+ */
+export function isReversibleActivity(action: string, detail: unknown): boolean {
+  if (!REVERSIBLE_ACTIONS.has(action)) return false;
+  if (action !== 'reclassified') return true;
+  return !!(detail && typeof detail === 'object' && 'followedUpAtSetTo' in (detail as Record<string, unknown>));
+}
 
 /** Paginated, newest-first read of dashboard_activity, joined to the customer
  *  display name via inbox_item → dashboard_contact. actorName resolves the raw
@@ -2280,9 +2449,13 @@ export async function listActivity(limit = 100): Promise<ActivityResult> {
       // Show operator DECISIONS, not the system firehose: 'ingested' (one row per
       // reconcile touch — thousands) and 'escalated' would otherwise bury the
       // handled/dismissed/followed/completed rows (and their Reverse buttons).
-      // Row 311 fix-round FIX 2: `detail` added so an 'action_failed' row can
-      // render WHICH action failed and why — see ActivityRow's own doc comment.
-      .select('id, action, actor, inbox_item_id, created_at, detail, inbox_items ( dashboard_contacts ( display_name ) )')
+      // `detail` is needed twice over: isReversibleActivity (row 312 fix round)
+      // uses it to tell the two 'reclassified' populations apart, and an
+      // 'action_failed' row (row 311 fix round) renders WHICH action failed and
+      // why — see ActivityRow's own doc comment.
+      .select(
+        'id, action, actor, inbox_item_id, created_at, detail, inbox_items ( dashboard_contacts ( display_name ) )',
+      )
       .not('action', 'in', '(ingested,escalated)')
       .order('created_at', { ascending: false })
       .limit(limit),
@@ -2301,7 +2474,7 @@ export async function listActivity(limit = 100): Promise<ActivityResult> {
       itemId: (row.inbox_item_id as string | null) ?? null,
       customerName: (item?.dashboard_contacts?.display_name as string | null) ?? null,
       at: (row.created_at as string | null) ?? null,
-      reversible: REVERSIBLE_ACTIONS.has(String(row.action)),
+      reversible: isReversibleActivity(String(row.action), row.detail),
       detail: (row.detail as { action?: string; error?: string } | null) ?? null,
     };
   });
@@ -2336,15 +2509,74 @@ export async function reverseItemState(
   };
   if (!a.inbox_item_id) return { ok: false, error: 'Entry has no item to reverse' };
 
-  const reversible: ReverseAction[] = ['handled', 'followed', 'completed', 'dismissed'];
-  if (!reversible.includes(a.action as ReverseAction)) {
+  const reversible: ReverseAction[] = ['handled', 'followed', 'completed', 'dismissed', 'reclassified'];
+  // row 312 fix-round FIX 3 (MED): the bare action-string check above is
+  // necessary but not sufficient for 'reclassified' — see isReversibleActivity's
+  // doc (two prod populations share the action string; only one's inverse
+  // premise holds). A direct POST naming an unreversible-by-payload row is
+  // refused here with the same message a genuinely-unreversible action gets.
+  if (!reversible.includes(a.action as ReverseAction) || !isReversibleActivity(a.action, a.detail)) {
     return { ok: false, error: 'This entry cannot be reversed' };
   }
   const action = a.action as ReverseAction;
 
+  // row 312(c) wrong-occurrence guard: stillMatches (below) only checks that the
+  // CURRENT state happens to equal what this action would have produced — it
+  // can't tell that state apart from an unrelated LATER action that coincidentally
+  // landed the item back in the same state (e.g. a later Reverse restores
+  // status='handled', which then also matches a much-older, unrelated 'handled'
+  // row for the same item). Require this row to actually be the most recent
+  // state-changing row for the item before trusting stillMatches at all.
+  // row 312 fix-round FIX 5(b) (LOW, hardening): 'reopened' added to the tracked
+  // action set. A reopen (ingestTouch, on a genuinely-newer inbound) sets status
+  // back to 'unresponded' — a real state change this guard should know about.
+  // Verified NON-exploitable today without this: if a 'reopened' row landed
+  // after the row being reversed, stillMatches (below) already catches the
+  // divergence (curRow.status would read 'unresponded', not the action's
+  // expected value) and refuses independently. Added anyway so this guard's own
+  // action list stays self-documenting/complete rather than relying on a
+  // different check to cover the gap.
+  const { data: latest, error: latestErr } = await sb
+    .from('dashboard_activity')
+    .select('id')
+    .eq('inbox_item_id', a.inbox_item_id)
+    .in('action', [...reversible, 'reversed', 'reopened'])
+    .order('created_at', { ascending: false })
+    // row 312 fix-round FIX 5(a) (LOW, hardening): secondary tiebreaker so two
+    // rows sharing an identical created_at (e.g. a batch data-op script that
+    // stamps the same timestamp across many inserts) resolve deterministically
+    // instead of depending on whatever order Postgres happens to return ties
+    // in. `id` is a random uuid (gen_random_uuid()), not chronological, so this
+    // doesn't recover true insertion order on a real tie — it only guarantees
+    // the SAME row wins every time this query runs, mirroring the #185
+    // determinism comment elsewhere in this file (listOpenItems' `returning`
+    // count).
+    .order('id', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  // row 312 fix-round FIX 2 (MED, technical + staff converged): the prior code
+  // destructured only `{ data: latest }` — a query ERROR left `latest` null/
+  // undefined and the `if (latest && ...)` guard below read that as "no later
+  // row exists," silently PASSING the wrong-occurrence check on a failed read
+  // (fails OPEN). Opposite of this function's other two reads (the `act` and
+  // `cur` lookups above/below), which both fail CLOSED today — a query error on
+  // either one leaves their `data` null too, and `if (!data) return { ok: false,
+  // ... }` refuses regardless of whether the null came from a real error or a
+  // genuine not-found. Fail closed here too: a query error is NOT proof no later
+  // action exists, and Reverse is exactly the wrong feature to fail open on.
+  if (latestErr) {
+    return { ok: false, error: 'Could not verify this is the latest action for this item — try again' };
+  }
+  if (latest && String((latest as { id: string }).id) !== activityId) {
+    return { ok: false, error: 'A later action already changed this item; nothing to reverse from here' };
+  }
+
   // Only reverse if the item is STILL in the state this action produced — otherwise
-  // a later action superseded it and reversing now would clobber the newer state
-  // (this also de-dupes a double-clicked reverse).
+  // a later action superseded it and reversing now would clobber the newer state.
+  // This is a fast, friendly pre-check only — it does NOT by itself de-dupe a
+  // double-clicked reverse (a read-check-then-act has a race window between this
+  // read and the write below); the atomic CAS on the update IS what de-dupes it,
+  // see the fix-round comment there.
   const { data: cur } = await sb
     .from('inbox_items')
     .select('status, followed_up_at')
@@ -2352,7 +2584,10 @@ export async function reverseItemState(
     .maybeSingle();
   if (!cur) return { ok: false, error: 'Item not found' };
   const curRow = cur as { status: string; followed_up_at: string | null };
-  const stillMatches = action === 'followed' ? curRow.followed_up_at != null : curRow.status === action;
+  // 'reclassified', like 'followed', only ever sets followed_up_at — never
+  // status — so its match check is the same shape (see inverseOf's doc).
+  const stillMatches =
+    action === 'followed' || action === 'reclassified' ? curRow.followed_up_at != null : curRow.status === action;
   if (!stillMatches) return { ok: false, error: 'Item state has changed since this action; nothing to reverse' };
 
   const t = inverseOf(action, a.detail?.from as { status?: InboxStatus; wasFollowed?: boolean } | undefined);
@@ -2362,8 +2597,28 @@ export async function reverseItemState(
   if (t.clearFollowed) upd.followed_up_at = null;
   if (t.setFollowed) upd.followed_up_at = now.toISOString();
 
-  const { error } = await sb.from('inbox_items').update(upd).eq('id', a.inbox_item_id);
+  // row 312 fix-round HIGH (technical lens, sibling-parity class): re-encode the
+  // SAME condition `stillMatches` just checked, atomically, IN the update's WHERE
+  // — mirrors markItemHandledLocal / dismissItem's sibling CAS idiom in this same
+  // file (`.eq('id').neq('status', target).select().maybeSingle()`, no-row-
+  // matched = refused). Without this the read above and this write are two
+  // separate round-trips: a concurrent write (e.g. another operator's Mark
+  // handled) landing in that window would be silently clobbered by an
+  // unconditional update, and a double-clicked Reverse would double-apply (the
+  // OLD comment here claimed the read-check alone "de-dupes" that — false, since
+  // read-check-then-act has no such property on its own). The CAS closes both:
+  // after the first write succeeds the row's status/followed_up_at no longer
+  // matches `action`'s condition, so a second concurrent call's WHERE matches
+  // zero rows and it gets the same honest refusal as the wrong-occurrence guard
+  // above, instead of clobbering the first call's result.
+  let casQuery = sb.from('inbox_items').update(upd).eq('id', a.inbox_item_id);
+  casQuery =
+    action === 'followed' || action === 'reclassified'
+      ? casQuery.not('followed_up_at', 'is', null)
+      : casQuery.eq('status', action);
+  const { data: casRow, error } = await casQuery.select('id').maybeSingle();
   if (error) return { ok: false, error: error.message };
+  if (!casRow) return { ok: false, error: 'Item state has changed since this action; nothing to reverse' };
 
   if (t.unsuppress) {
     const { data: c } = await sb
@@ -2377,11 +2632,23 @@ export async function reverseItemState(
     if (dc) await removeSuppressedSenders([dc.primary_email ?? null, dc.primary_phone ?? null]);
   }
 
+  // row 312 fix-round FIX 4 (MED, admin lens): carry the reversed row's own id
+  // + the prior values this reverse is clearing/restoring, mirroring the
+  // `detail: { from }` shape the forward siblings (markItemHandledLocal,
+  // dismissItem, markItemCompleted) already write. `curRow` and `activityId`
+  // are already in scope — without this, a 'reversed' row told you WHAT action
+  // got undone but not WHICH activity row or what state it undid, so the audit
+  // trail couldn't answer "what did this reverse actually change" without
+  // cross-referencing the original row by hand.
   await sb.from('dashboard_activity').insert({
     actor: operatorId,
     action: 'reversed',
     inbox_item_id: a.inbox_item_id,
-    detail: { reversed_action: a.action },
+    detail: {
+      reversed_action: a.action,
+      reversedActivityId: activityId,
+      from: { status: curRow.status, followedUpAt: curRow.followed_up_at },
+    },
   });
 
   return { ok: true };

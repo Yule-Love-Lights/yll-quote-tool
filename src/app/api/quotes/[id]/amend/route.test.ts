@@ -5,6 +5,13 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
+// Integration-shaped test (delta-verify HIGH, fix round 3): the portal READ
+// path, run for real (not mocked) against the EXACT snapshot this route
+// persists — proves the card, not just the SMS/email, agrees with what got
+// billed. See the describe block at the bottom of this file.
+import { quoteRowToPortalQuote, type QuoteRowForPortal } from '@/lib/portal/adapter';
+import type { PortalPhotos } from '@/lib/portal/photos';
+import { calculateQuote, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 
 const {
   sbRef,
@@ -505,6 +512,15 @@ describe('POST /api/quotes/[id]/amend', () => {
       balance: 2500,
       status: 'draft',
       tax_overridden: true,
+      // FIX A (fix round 4): a real InvoiceRow.total is NOT NULL — give this
+      // fixture one (a real prior invoice total), matching how the
+      // pre-write invoice_basis stamp reads it. Without it the route can't
+      // stamp previous_total, so resolveAmendmentBasis (shared by the trail
+      // stamp, the SMS/email, and the portal card as of fix round 4) falls
+      // back to the TRAIL basis for total/balance/delta together — which
+      // would make this test assert the trail balance and stop testing what
+      // its own name claims.
+      total: 5000,
     });
 
     const res = await POST(req({ reason: 'post-install add-on', notifyCustomer: true }), ctx());
@@ -518,6 +534,233 @@ describe('POST /api/quotes/[id]/amend', () => {
     expect(billed).not.toBe(json.amendment.new_balance);
     expect(sentSmsMessage()).toContain(usdText(billed));
     expect(sentSmsMessage()).not.toContain(usdText(json.amendment.new_balance));
+  });
+
+  // FIX4 (review HIGH, money): the SMS/email must state a delta that
+  // reconciles with newTotalUsd — a reader computing "newTotalUsd − deltaUsd"
+  // must land on the REAL prior invoiced total, not an arbitrary number.
+  // Before this fix, deltaUsd was unconditionally the TRAIL delta while
+  // newTotalUsd was the INVOICE-basis total — different bases, so the two
+  // numbers in the same sentence didn't add up to anything real.
+  it('states a delta that reconciles with the invoice-basis total on a tax-overridden invoice', async () => {
+    // Full quote 5600 (450 tax on a 5150 subtotal). Approval: agreed $5,000 of
+    // that $5,600 full total (a diverged selection) — approval-time full total
+    // frozen at snap.pricing.total 5000. This amendment brings the full total
+    // to $5,600 (no builder edit — BOOKED_QUOTE.result IS already 5600), so
+    // the AGREED total also rises to $5,600 (trail: previous 5000 → new 5600,
+    // delta +600).
+    //
+    // The invoice was created earlier at the ORIGINAL $5,000 agreed total,
+    // tax-scaled: scaledTax = round2(450 × 5000/5600) = 401.79,
+    // invoice.total = 5000 − 401.79 = 4598.21 (the PRE-resync figure below).
+    // After this amendment resyncs it to the new $5,600 agreed total:
+    // scaledTax = round2(450 × 5600/5600) = 450.00, invoice.total =
+    // 5600 − 450.00 = 5150.00. Invoice-basis delta = 5150.00 − 4598.21 =
+    // 551.79 — NOT the trail's 600.00, and NOT reconstructable by subtracting
+    // the whole $450 tax either (the two invoices don't share a tax basis).
+    const TAXED = {
+      ...BOOKED_QUOTE,
+      result: { subtotalBeforeDiscount: 5150, discountAmount: 0, taxAmount: 450, total: 5600 },
+    };
+    sbRef.current = makeSb(TAXED).client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+    getInvoiceByJobMock.mockResolvedValue({
+      id: 'inv-1',
+      balance: 2500,
+      status: 'draft',
+      tax_overridden: true,
+      total: 4598.21, // the invoice's total BEFORE this amendment's resync
+    });
+
+    const res = await POST(req({ reason: 'post-install add-on', notifyCustomer: true }), ctx());
+    expect(res.status).toBe(200);
+
+    const sms = sentSmsMessage();
+    // The message states the invoice-basis new total (5150.00) and MUST pair
+    // it with the invoice-basis delta (551.79) — not the trail's 600.00.
+    expect(sms).toContain(usdText(5150));
+    expect(sms).toContain(usdText(551.79));
+    expect(sms).not.toContain(usdText(600));
+    // Prove it reconciles: newTotalUsd − deltaUsd must equal the REAL prior
+    // invoiced total (4598.21), the number a reader would infer.
+    expect(Math.round((5150 - 551.79) * 100) / 100).toBe(4598.21);
+
+    const emailCall = sendEmailMock.mock.calls[0] as unknown as [{ html: string }] | undefined;
+    const emailHtml = emailCall?.[0]?.html ?? '';
+    expect(emailHtml).toContain(usdText(5150));
+    expect(emailHtml).toContain(usdText(551.79));
+    expect(emailHtml).not.toContain(usdText(600));
+  });
+
+  // FIX A / FIX E (fix round 4): the residual case the brief asked to be
+  // reasoned about explicitly — the invoice re-sync fails AFTER the
+  // amendment (with its invoice_basis already stamped, pre-write) is
+  // durably recorded. Simulated here via a concurrent CANCELLATION of the
+  // invoice landing AFTER the pre-basis re-read (task (a), fix round 5 — see
+  // below) but before the re-sync's own fresh re-read (which bails out on a
+  // cancelled invoice without writing anything — resyncInvoiceToAgreedTotal's
+  // first guard). Before FIX A, the SMS would have used the (never-happened)
+  // real resync outcome — null, falling back to the TRAIL balance — while any
+  // comparable stamp would've been skipped by the same nullness. After FIX A,
+  // the SMS and the stamped trail entry both read the SAME pre-computed
+  // `amendment.invoice_basis`, so they still agree with each other; only the
+  // invoices TABLE itself is left stale (a pre-existing, separately-known
+  // best-effort characteristic of the re-sync, not something this fix changes).
+  it('when the invoice re-sync fails after the amendment is recorded, the SMS and the stamped trail entry still agree with each other', async () => {
+    const TAXED = {
+      ...BOOKED_QUOTE,
+      result: { subtotalBeforeDiscount: 5150, discountAmount: 0, taxAmount: 450, total: 5600 },
+    };
+    const sb = makeSb(TAXED);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+    const liveInvoice = {
+      id: 'inv-1',
+      balance: 2500,
+      status: 'draft' as const,
+      tax_overridden: true,
+      total: 4598.21,
+    };
+    // getInvoiceByJob is now called THREE times: (1) the route's own early
+    // read, (2) task (a)'s pre-basis re-read (right before the invoice_basis
+    // stamp is computed — still sees the live, non-cancelled invoice, so the
+    // stamp is unaffected here), (3) resyncInvoiceToAgreedTotal's own fresh
+    // re-read (B10) — simulate the concurrent cancellation landing in THAT
+    // gap, between (2) and (3), same as this test originally modeled between
+    // (1) and (2) before task (a) added the middle read.
+    getInvoiceByJobMock
+      .mockResolvedValueOnce(liveInvoice)
+      .mockResolvedValueOnce(liveInvoice)
+      .mockResolvedValueOnce({ ...liveInvoice, status: 'cancelled' as const });
+
+    const res = await POST(req({ reason: 'post-install add-on', notifyCustomer: true }), ctx());
+    expect(res.status).toBe(200);
+
+    // The invoices table was never actually written (resync bailed early).
+    expect(sb.updates.invoices).toHaveLength(0);
+
+    // The trail entry still carries the invoice-basis figures computed
+    // BEFORE the resync ran.
+    const quoteWrite = sb.updates.quotes[0];
+    const snap = quoteWrite.approval_snapshot as { amendments?: Array<{ invoice_basis?: unknown }> };
+    const persisted = snap.amendments?.[snap.amendments.length - 1];
+    expect(persisted?.invoice_basis).toEqual({ previous_total: 4598.21, new_total: 5150, delta: 551.79 });
+
+    // The SMS agrees with that SAME stamp — not with the trail basis (5600 /
+    // 600.00), which is what a resync-outcome-driven notify would have sent
+    // once the (never-happened) resync reported null.
+    const sms = sentSmsMessage();
+    expect(sms).toContain(usdText(5150));
+    expect(sms).toContain(usdText(551.79));
+    expect(sms).not.toContain(usdText(5600));
+  });
+
+  // Task (a), fix round 5: proves the invoice_basis STAMP is computed from a
+  // FRESH invoice re-read taken immediately before the stamp, not from the
+  // `invoice` loaded earlier in the request (before computeAmendment / the
+  // no-change guard ran). Two DIFFERENT invoice reads simulate a concurrent
+  // invoice change (e.g. a manual edit or a partial-payment webhook) landing
+  // in that window: the first (route's initial load) returns total 5000, the
+  // second (this fix's pre-basis re-read) returns total 4900. Had the stamp
+  // still used the stale first read, previous_total/delta would read
+  // 5000/600 instead of 4900/700.
+  it('stamps invoice_basis from a FRESH invoice re-read, not the one loaded earlier in the request', async () => {
+    const sb = makeSb(BOOKED_QUOTE);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1' });
+    const staleInvoice = { id: 'inv-1', balance: 2500, status: 'draft' as const, tax_overridden: false, total: 5000 };
+    const freshInvoice = { id: 'inv-1', balance: 2400, status: 'draft' as const, tax_overridden: false, total: 4900 };
+    // 1st call = the route's initial read; 2nd call = task (a)'s pre-basis
+    // re-read; every call after that (resync's own B10 re-read) gets the
+    // SAME fresh value, so the actual invoice write agrees with the stamp.
+    getInvoiceByJobMock
+      .mockResolvedValueOnce(staleInvoice)
+      .mockResolvedValueOnce(freshInvoice)
+      .mockResolvedValue(freshInvoice);
+
+    const res = await POST(req({ reason: 'concurrent invoice edit' }), ctx());
+    expect(res.status).toBe(200);
+
+    const quoteUpdate = sb.updates.quotes[0];
+    const snap = quoteUpdate.approval_snapshot as {
+      amendments?: Array<{ invoice_basis?: { previous_total: number; new_total: number; delta: number } }>;
+    };
+    const persisted = snap.amendments?.[snap.amendments!.length - 1];
+    expect(persisted?.invoice_basis).toEqual({ previous_total: 4900, new_total: 5600, delta: 700 });
+  });
+
+  // Delta-verify MEDIUM-HIGH (fix round 5): a null→non-null transition across
+  // the two getInvoiceByJob calls — the route's initial read (line ~185) sees
+  // no invoice yet (the job hasn't been completed), but a concurrent
+  // job-completion creates one before task (a)'s fresh re-read runs. Before
+  // this fix, the stamp block (gated on the fresh `invoiceForBasis`) would
+  // stamp invoice_basis while the re-sync block (still gated on the stale,
+  // null `invoice`) silently skipped resyncInvoiceToAgreedTotal entirely —
+  // the stamp and the invoices table would diverge indefinitely. Both blocks
+  // now share the same fresh read, so BOTH fire together.
+  it('stamps invoice_basis AND runs the invoice re-sync when the invoice appears only on the fresh re-read (null→non-null)', async () => {
+    const sb = makeSb(BOOKED_QUOTE);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1' });
+    const freshInvoice = { id: 'inv-1', balance: 2100, status: 'draft' as const, tax_overridden: false, total: 4000 };
+    // 1st call = the route's initial read — no invoice yet (job not
+    // completed at that point). 2nd call = task (a)'s pre-basis re-read — the
+    // job completed concurrently, so the invoice now exists. Every call
+    // after that (resync's own B10 re-read) gets the same fresh invoice.
+    getInvoiceByJobMock.mockResolvedValueOnce(null).mockResolvedValueOnce(freshInvoice).mockResolvedValue(freshInvoice);
+
+    const res = await POST(req({ reason: 'job completed mid-amend' }), ctx());
+    expect(res.status).toBe(200);
+
+    // The stamp fired.
+    const quoteUpdate = sb.updates.quotes[0];
+    const snap = quoteUpdate.approval_snapshot as {
+      amendments?: Array<{ invoice_basis?: { previous_total: number; new_total: number; delta: number } }>;
+    };
+    const persisted = snap.amendments?.[snap.amendments!.length - 1];
+    expect(persisted?.invoice_basis).toEqual({ previous_total: 4000, new_total: 5600, delta: 1600 });
+
+    // The re-sync ALSO fired — not skipped on the stale (null) initial read.
+    expect(sb.updates.invoices).toHaveLength(1);
+    expect(sb.updates.invoices[0]).toMatchObject({ total: 5600, balance: 3100, status: 'draft' });
+  });
+
+  // Delta-verify's stated inverse shape (non-null→null): the invoice EXISTS
+  // at the initial read, but the fresh re-read at task (a)'s re-read point
+  // fails/nulls (a transient read error — getInvoiceByJob swallows its own
+  // errors and returns null, same contract as every other read in this
+  // module). `invoiceForBasis = freshRead ?? invoice` falls back to the
+  // ORIGINAL non-null read, so neither block is skipped: the stamp still
+  // fires (using the original invoice's figures) and the re-sync still runs
+  // (on that same original invoice) — this is the fail-SAFE side of the `??`
+  // fallback the FIX B comment already documents.
+  it('falls back to the ORIGINAL invoice (still stamps + re-syncs) when the fresh re-read fails (non-null→null)', async () => {
+    const sb = makeSb(BOOKED_QUOTE);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1' });
+    const originalInvoice = {
+      id: 'inv-1', balance: 2500, status: 'draft' as const, tax_overridden: false, total: 5000,
+    };
+    // 1st call = the route's initial read — invoice exists. 2nd call =
+    // task (a)'s pre-basis re-read — fails/nulls (transient read error).
+    // Every call after that (resync's own B10 re-read) ALSO nulls, so the
+    // resync's own internal fallback lands on the SAME originalInvoice too.
+    getInvoiceByJobMock.mockResolvedValueOnce(originalInvoice).mockResolvedValue(null);
+
+    const res = await POST(req({ reason: 'transient read hiccup' }), ctx());
+    expect(res.status).toBe(200);
+
+    const quoteUpdate = sb.updates.quotes[0];
+    const snap = quoteUpdate.approval_snapshot as {
+      amendments?: Array<{ invoice_basis?: { previous_total: number; new_total: number; delta: number } }>;
+    };
+    const persisted = snap.amendments?.[snap.amendments!.length - 1];
+    // Stamped from the ORIGINAL read (5000), not silently dropped.
+    expect(persisted?.invoice_basis).toEqual({ previous_total: 5000, new_total: 5600, delta: 600 });
+    // Re-sync also ran (not skipped) — resyncInvoiceToAgreedTotal's own
+    // internal fallback (freshInvoice ?? invoice) used the SAME originalInvoice.
+    expect(sb.updates.invoices).toHaveLength(1);
+    expect(sb.updates.invoices[0]).toMatchObject({ total: 5600, balance: 3100, status: 'draft' });
   });
 
   it('falls back to the trail balance when there is no invoice yet', async () => {
@@ -696,5 +939,146 @@ describe('POST /api/quotes/[id]/amend', () => {
     const invUpdate = sb.updates.invoices[0];
     expect(invUpdate.status).toBe('awaiting_payment');
     expect(appendRetiredTxnMock).not.toHaveBeenCalled();
+  });
+});
+
+// Delta-verify HIGH (fix round 3): the previous round's portal card
+// RECONSTRUCTED previousTotalUsd/newTotalUsd by scaling the trail figures
+// through the row's CURRENT full-quote pricing — correct for new_total (the
+// current state produced it) but wrong for previous_total (priced against
+// an earlier state), so the card could show numbers that disagreed with
+// what the SMS/email actually said and what the invoice actually billed.
+//
+// This is an INTEGRATION-shaped test, not another adapter unit test: it
+// drives the REAL route handler (POST), reads the EXACT approval_snapshot
+// the route persisted to Supabase (via the sb fake below) straight back out
+// through the REAL, un-mocked `quoteRowToPortalQuote` — the same function
+// the portal page calls — and checks the resulting card figures against the
+// SAME SMS text the route sent. The existing adapter unit tests (in
+// adapter.test.ts) construct one static `result` and feed it to both the
+// "previous" and "current" side of the math, which can only prove a formula
+// is applied consistently — never that it matches what actually happened,
+// which is exactly why the round-2 bug shipped past them.
+describe('POST /api/quotes/[id]/amend → portal read path — card/SMS/email money-basis agreement (delta-verify HIGH)', () => {
+  const PHOTOS: PortalPhotos = { beforeUrl: null, afterUrl: null, alt: null };
+  const usdText = (n: number): string =>
+    n.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  it('the portal card, the SMS, and the invoice all agree — on a tax-overridden invoice where the PRIOR pricing state genuinely differs from the current one', async () => {
+    // Full quote 5600 (450 tax on a 5150 subtotal) — this IS the row's
+    // CURRENT full-quote pricing (quote.result), the exact thing the broken
+    // reconstruction would have scaled previous_total through.
+    const TAXED = {
+      ...BOOKED_QUOTE,
+      result: { subtotalBeforeDiscount: 5150, discountAmount: 0, taxAmount: 450, total: 5600 },
+    };
+    const sb = makeSb(TAXED);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1', status: 'requires_invoicing' });
+    // The invoice was created EARLIER, at a DIFFERENT (lower) agreed total —
+    // a genuinely prior pricing state, not derivable from TAXED.result at all.
+    getInvoiceByJobMock.mockResolvedValue({
+      id: 'inv-1',
+      balance: 2500,
+      status: 'draft',
+      tax_overridden: true,
+      total: 4598.21, // the invoice's total BEFORE this amendment's resync
+    });
+
+    const res = await POST(req({ reason: 'post-install add-on', notifyCustomer: true }), ctx());
+    expect(res.status).toBe(200);
+
+    // 1) The SMS states the invoice-basis figures (same math the sibling
+    // test above verifies in detail: previous 4598.21 → new 5150.00, delta
+    // 551.79 — NOT the trail's previous 5000 / new 5600 / delta 600).
+    const smsCall = sendSmsMock.mock.calls[0] as unknown as [{ message: string }] | undefined;
+    const sms = smsCall?.[0]?.message ?? '';
+    expect(sms).toContain(usdText(5150));
+    expect(sms).toContain(usdText(551.79));
+
+    // 2) The invoice was actually billed 5150.00.
+    expect(sb.updates.invoices[0]).toMatchObject({ total: 5150, balance: 2650 });
+
+    // 3) FIX A (fix round 4): invoice_basis rides in on the SAME write that
+    // records the amendment — pin the atomicity (this was TWO writes to
+    // 'quotes' before fix round 4; a lost race on the second could leave the
+    // trail entry without invoice_basis even though the SMS already sent
+    // invoice-basis figures — the HIGH this fix eliminates).
+    expect(sb.updates.quotes).toHaveLength(1);
+    const lastQuoteWrite = sb.updates.quotes[sb.updates.quotes.length - 1];
+    // Cast from `unknown` (the mock's Row type) straight to the REAL
+    // approval_snapshot type — no hand-rolled narrow shape to drift from
+    // amend.ts's actual AmendmentTrailEntry.
+    const persistedSnapshot = lastQuoteWrite.approval_snapshot as QuoteRowForPortal['approval_snapshot'];
+    const persistedAmendments = persistedSnapshot?.amendments ?? [];
+    const persistedAmendment = persistedAmendments[persistedAmendments.length - 1];
+    expect(persistedAmendment?.invoice_basis).toEqual({
+      previous_total: 4598.21,
+      new_total: 5150,
+      delta: 551.79,
+    });
+
+    // 4) Feed that EXACT persisted row back through the REAL portal read
+    // path (quoteRowToPortalQuote, un-mocked) — the same function
+    // loadPortalQuote calls — and confirm the card shows the SAME numbers
+    // as the SMS above, not a reconstruction from TAXED.result.
+    //
+    // buildApproval's pendingAmendment branch only reads amendment.invoice_basis
+    // (or the raw trail fields as fallback) — never row.result — so a real,
+    // fully-shaped QuoteResult with the SAME totals TAXED.result carried is
+    // built via calculateQuote (matching adapter.test.ts's own pattern)
+    // rather than a hand-built partial object, which wouldn't satisfy the
+    // QuoteResult type the adapter's line-item rendering expects.
+    const zeroInputs: QuoteInputs = {
+      santasFootage: 0,
+      santasDifficulty: 'medium',
+      gingerbreadFootage: 0,
+      gingerbreadDifficulty: 'medium',
+      winterWonderlandFootage: 0,
+      winterWonderlandDifficulty: 'medium',
+      stakeLightingFootage: 0,
+      stakeLightingDifficulty: 'medium',
+      miniLightItems: [],
+      spritzers: [],
+      wreaths: [],
+      garland: [],
+      takedown: 'included',
+      rushFee: false,
+    };
+    const portalResult = {
+      ...calculateQuote(zeroInputs),
+      ...TAXED.result, // land on the SAME subtotal/tax/total the route actually used
+    };
+    const row: QuoteRowForPortal = {
+      id: TAXED.id,
+      customer_name: TAXED.customer_name,
+      customer_address: null,
+      customer_phone: null,
+      customer_email: null,
+      result: portalResult,
+      inputs: null,
+      total: portalResult.total,
+      video_kind: null,
+      video_src: null,
+      video_poster: null,
+      video_title: null,
+      video_duration_sec: null,
+      customer_approved_at: '2026-01-01T00:00:00Z',
+      approval_snapshot: persistedSnapshot,
+      deposit_paid_at: TAXED.deposit_paid_at,
+      status: 'booked',
+    };
+    const portal = quoteRowToPortalQuote({ row, photos: PHOTOS });
+    const pending = portal?.approval?.pendingAmendment;
+    expect(pending).toBeDefined();
+    expect(pending!.previousTotalUsd).toBe(4598.21);
+    expect(pending!.newTotalUsd).toBe(5150);
+    expect(pending!.deltaUsd).toBe(551.79);
+    // Byte-for-byte agreement with what the SMS actually said, and with what
+    // the invoice actually billed — the whole point of the fix.
+    expect(usdText(pending!.newTotalUsd)).toBe(usdText(5150));
+    expect(sms).toContain(usdText(pending!.newTotalUsd));
+    expect(sms).toContain(usdText(pending!.deltaUsd));
+    expect(pending!.newTotalUsd).toBe(sb.updates.invoices[0].total);
   });
 });
