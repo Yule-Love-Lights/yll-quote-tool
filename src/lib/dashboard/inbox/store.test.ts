@@ -1003,6 +1003,69 @@ describe('listInWorks — parallel fetch (#185)', () => {
     expect(router.calls.quotes).toBeUndefined();
   });
 
+  // #307 review fix 3 (admin lens): nothing previously tied the awaiting/
+  // handled Promise.all array positions to the correct QueryBucket literal —
+  // a future swap of 'awaiting_reply'/'handled' between the two applyBucketFilter
+  // calls in store.ts would pass tsc, the applyBucketFilter<->bucketOf drift
+  // test in lifecycle.test.ts, and every other existing test here, while
+  // silently swapping the two In-the-works sections' contents system-wide.
+  // Pins the exact recorded filter-chain args per query, mirroring the
+  // listOpenItems .is("followed_up_at", null) assertion (line ~798 above) and
+  // the listEscalatableItems .or(...) assertion (line ~2730 below).
+  it("wires the awaiting query to applyBucketFilter(..., 'awaiting_reply') and the handled query to applyBucketFilter(..., 'handled') -- not swapped", async () => {
+    let inboxCallIndex = 0;
+    const inboxCalls: { method: string; args: unknown[] }[][] = [];
+    const router = makeTableRouter({
+      quotes: { data: [], error: null },
+      follow_ups: { data: [], error: null },
+    });
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'inbox_items') {
+          const idx = inboxCallIndex;
+          inboxCallIndex += 1;
+          const { builder, calls } = makeBuilder({ data: [], error: null });
+          inboxCalls[idx] = calls;
+          return builder;
+        }
+        return router.from(table);
+      },
+    };
+
+    const result = await listInWorks(200);
+    expect(result.ok).toBe(true);
+    // The array-literal order in store.ts's Promise.all is [awaiting, handled]
+    // (see the #185 comment above this describe block) -- call index 0 is the
+    // awaiting query, index 1 is the handled query.
+    expect(inboxCallIndex).toBe(2);
+
+    const awaitingCalls = inboxCalls[0];
+    expect(
+      awaitingCalls.some(
+        (c) => c.method === 'not' && c.args[0] === 'followed_up_at' && c.args[1] === 'is' && c.args[2] === null,
+      ),
+    ).toBe(true);
+    expect(
+      awaitingCalls.some(
+        (c) => c.method === 'not' && c.args[0] === 'status' && c.args[1] === 'in' && c.args[2] === '(completed,dismissed)',
+      ),
+    ).toBe(true);
+    // Not the 'handled' bucket's predicate.
+    expect(awaitingCalls.some((c) => c.method === 'eq' && c.args[0] === 'status' && c.args[1] === 'handled')).toBe(
+      false,
+    );
+
+    const handledCalls = inboxCalls[1];
+    expect(handledCalls.some((c) => c.method === 'eq' && c.args[0] === 'status' && c.args[1] === 'handled')).toBe(
+      true,
+    );
+    expect(
+      handledCalls.some((c) => c.method === 'is' && c.args[0] === 'followed_up_at' && c.args[1] === null),
+    ).toBe(true);
+    // Not the 'awaiting_reply' bucket's predicate.
+    expect(handledCalls.some((c) => c.method === 'not' && c.args[0] === 'followed_up_at')).toBe(false);
+  });
+
   it('flags a handled quotetool row whose quote is sent-but-unanswered as "Quote unanswered", batching the quote lookup in ONE query', async () => {
     // #183 BUG 1: quoteIdPrefix/isUuid means the id must be genuinely
     // UUID-shaped once the :color-request suffix is stripped, or the batch
