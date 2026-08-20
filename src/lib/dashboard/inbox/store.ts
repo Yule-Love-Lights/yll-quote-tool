@@ -30,7 +30,7 @@ import { isAnsweredByDirection } from './escalation';
 import { FOLLOWUP_REASONS, isDueToday, quoteSentNoReplyFollowUp } from './followups';
 import type { MetricItem, WindowKey, ReopenCounts } from './responseMetrics';
 import { addSuppressedSenders, removeSuppressedSenders } from './suppression';
-import { applyBucketFilter, bucketOf, inverseOf, type ReverseAction } from './lifecycle';
+import { applyBucketFilter, inverseOf, type ReverseAction } from './lifecycle';
 import { listOperatorAccounts } from '@/lib/auth/adminUsers';
 import { deriveStatus, isParkedLegacyRebookDraft, type QuoteStatus } from '@/lib/quoteStatus';
 
@@ -1484,10 +1484,28 @@ export async function closeQuoteInboxNoise(quoteId: string, operatorId: string |
 // THE HARD CONSTRAINT (a lens HIGH on #317, pre-merge): never complete a row
 // CURRENTLY in the needs_reply bucket (an unanswered inbound) — the live case
 // is Susan Pace-Burke's `:color-request` item, unanswered, on a BOOKED quote.
-// bucketOf (lifecycle.ts) is the ONE existing definition of that bucket;
-// eligibility below is a POSITIVE allowlist of the other two non-terminal
-// buckets (awaiting_reply, handled) — needs_reply and the two already-terminal
-// buckets (completed, dismissed) are left untouched by construction, not by a
+//
+// FIX 1 (row 317 fix-round, customer MED + technical HIGH, one fix):
+// eligibility is narrower than "not needs_reply" — it is POSITIVELY
+// `status === 'handled'`, nothing else. bucketOf's 'awaiting_reply' bucket
+// (lifecycle.ts) also admits status='unresponded' rows with followed_up_at
+// set: that is the SNOOZE case (staff clicked Followed on an inbound without
+// ever replying to it) — Jason's ruling's own literal exception, "they sent
+// us a message and we didn't reply" — so it must never auto-complete, same as
+// needs_reply. A prior version of this eligibility check used bucketOf() and
+// admitted 'awaiting_reply' wholesale, which silently swept the snooze case in
+// too (0 live rows affected — verified by lens SQL, every current awaiting row
+// is handled+followed, not unresponded+followed — but the shape was wrong by
+// construction). Restricting to the raw `status` column also closes a timing
+// hole the bucketOf-based check left open: the SELECT above and the UPDATE
+// below are two round-trips, and a genuinely-new inbound landing in that
+// window (ingestTouch's reducer reopens the row to status='unresponded' —
+// needs_reply) would still have matched the old two-value CAS
+// (`.in('status', ['unresponded','handled'])`) on the UPDATE even though the
+// row no longer belongs in any eligible bucket by the time the write lands.
+// Eligibility below is a POSITIVE allowlist of exactly one status value —
+// needs_reply, the snooze case, and the two already-terminal buckets
+// (completed, dismissed) are all left untouched by construction, not by a
 // negative exclusion (AGENTS.md Pitfalls' positive-seam-gate convention).
 //
 // Bypasses ingestTouch/planIngest entirely (a direct read-then-guarded-write,
@@ -1537,13 +1555,11 @@ export async function completeTerminalQuoteItems(quoteId: string, now: Date): Pr
     const rows = (data ?? []) as { id: string; status: InboxStatus; followed_up_at: string | null }[];
     if (!rows.length) return 0;
 
-    // Positive allowlist: only awaiting_reply or handled are eligible. Skips
-    // needs_reply (the hard constraint) and completed/dismissed (nothing to do)
-    // by construction — never a negative exclusion.
-    const eligible = rows.filter((r) => {
-      const bucket = bucketOf({ status: r.status, followedUpAt: r.followed_up_at });
-      return bucket === 'awaiting_reply' || bucket === 'handled';
-    });
+    // FIX 1 (row 317 fix-round): status === 'handled' is the ONLY eligible
+    // shape — see the doc above. Deliberately NOT bucketOf(): bucketOf's
+    // 'awaiting_reply' bucket also covers the snooze case (unresponded +
+    // followed_up_at set), which this must exclude.
+    const eligible = rows.filter((r) => r.status === 'handled');
     if (!eligible.length) return 0;
 
     const nowIso = now.toISOString();
@@ -1551,11 +1567,15 @@ export async function completeTerminalQuoteItems(quoteId: string, now: Date): Pr
       .from('inbox_items')
       .update({ status: 'completed', followed_up_at: null, handled_by: null, handled_at: nowIso, updated_at: nowIso })
       .in('id', eligible.map((r) => r.id))
-      // Status guard mirrors markItemCompleted's #224 CAS-lite protection — if
-      // a row raced to some other state between our SELECT and this UPDATE
-      // (e.g. a genuinely-new inbound flipped it), this simply excludes it
-      // from `updated` below rather than clobbering it.
-      .in('status', ['unresponded', 'handled'])
+      // FIX 1 (row 317 fix-round): narrowed from a two-value
+      // `.in('status', ['unresponded', 'handled'])` CAS to a single-value
+      // `.eq('status', 'handled')` CAS, matching the eligibility narrowing
+      // above — a concurrent reopen (ingestTouch flips status to
+      // 'unresponded' on a genuinely-new inbound landing between the SELECT
+      // above and this UPDATE) now falls OUTSIDE the guard and is silently
+      // excluded from `updated` below, closing the timing hole the old
+      // two-value CAS left open (see the doc above this function).
+      .eq('status', 'handled')
       .select('id');
     if (updErr) {
       console.warn('[inbox] terminal-quote auto-complete: item resolve failed (non-fatal):', updErr.message);

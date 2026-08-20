@@ -4044,8 +4044,11 @@ describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', (
     });
     const idInCall = itemsUpdateCalls.find((c) => c.method === 'in' && c.args[0] === 'id');
     expect(idInCall!.args).toEqual(['id', ['item-bare']]);
-    const statusInCall = itemsUpdateCalls.find((c) => c.method === 'in' && c.args[0] === 'status');
-    expect(statusInCall!.args).toEqual(['status', ['unresponded', 'handled']]);
+    // FIX 1 (row 317 fix-round): CAS narrowed from a two-value .in(['unresponded',
+    // 'handled']) to a single-value .eq('status','handled') — see the doc on
+    // completeTerminalQuoteItems.
+    const statusEqCall = itemsUpdateCalls.find((c) => c.method === 'eq' && c.args[0] === 'status');
+    expect(statusEqCall!.args).toEqual(['status', 'handled']);
 
     const insertCall = activityCalls.find((c) => c.method === 'insert');
     expect(insertCall!.args[0]).toEqual([
@@ -4099,21 +4102,30 @@ describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', (
     ]);
   });
 
-  it('a color-request item DOES complete once it is no longer needs_reply (awaiting_reply — staff replied, never applied/dismissed)', async () => {
-    const { from, itemsUpdateCalls } = makeSbForComplete({
+  // row 317 fix-round FIX 1 (customer MED + technical HIGH): renamed from "a
+  // color-request item DOES complete once it is no longer needs_reply
+  // (awaiting_reply — staff replied, never applied/dismissed)" — that name was
+  // WRONG. The fixture (status: 'unresponded', followed_up_at SET) is not "staff
+  // replied": it's the SNOOZE shape — staff clicked Followed on an inbound
+  // without ever replying to it. bucketOf reads that as 'awaiting_reply' too,
+  // which is exactly why the OLD bucketOf-based eligibility wrongly admitted
+  // it. Jason's ruling's own literal exception ("they sent us a message and we
+  // didn't reply") means this must NOT auto-complete. Flipped to assert the
+  // correct (non-)outcome under FIX 1's status==='handled' gate.
+  it('does NOT complete a merely-snoozed item (unresponded + followed_up_at set, staff never replied) — Jason\'s literal exception', async () => {
+    const { from, itemsUpdateCalls, activityCalls } = makeSbForComplete({
       itemsSelect: {
         data: [{ id: 'item-color-request', status: 'unresponded', followed_up_at: '2026-08-18T00:00:00Z' }],
         error: null,
       },
-      itemsUpdate: { data: [{ id: 'item-color-request' }], error: null },
     });
     sbRef.current = { from };
 
     const n = await completeTerminalQuoteItems(QUOTE_ID, NOW);
 
-    expect(n).toBe(1);
-    const idInCall = itemsUpdateCalls.find((c) => c.method === 'in' && c.args[0] === 'id');
-    expect(idInCall!.args).toEqual(['id', ['item-color-request']]);
+    expect(n).toBe(0);
+    expect(itemsUpdateCalls.some((c) => c.method === 'update')).toBe(false);
+    expect(activityCalls.some((c) => c.method === 'insert')).toBe(false);
   });
 
   it('never touches an already-completed or dismissed item, and writes nothing', async () => {
