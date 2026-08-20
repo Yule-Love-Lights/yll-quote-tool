@@ -154,9 +154,16 @@ export default function DesignCanvas({ scene, photoUrl, photoW, photoH, classNam
   }, [scene, photoUrl, photoW, photoH]);
 
   // Live toggle filter — re-render the draw layer only (no remount/flicker).
+  // `ready` is a dep for the same reason as the color effect below: the initial
+  // hiddenIds seed is safe (resolved server-side, no client fetch to race), but
+  // a LIVE toggle during the pre-ready mount window would fire against a null
+  // ctrl and be silently dropped — the render keeps `hidden` as its own mutable
+  // state, so nothing self-corrects until the next toggle. The ready flip
+  // re-applies the latest value.
   useEffect(() => {
+    if (!ready) return;
     ctrlRef.current?.setHidden(hiddenIds ?? null);
-  }, [hiddenIds]);
+  }, [hiddenIds, ready]);
 
   // Live color override (#10/#92) — re-render the draw layer only (no remount).
   // colorMap (memoized) changes only when the scheme, scene, or offered-colors
@@ -168,9 +175,12 @@ export default function DesignCanvas({ scene, photoUrl, photoW, photoH, classNam
   // rests on the stale null the mount closure captured until the customer
   // manually switches schemes. The animation effect below already carries
   // `ready` for the same reason. setColorOverride is idempotent, so the extra
-  // ready-flip invocation is a cheap re-apply of the same value.
+  // ready-flip invocation is a cheap re-apply of the same value. (During a
+  // scene/photo REMOUNT there is a brief stale-ready window where ctrlRef is
+  // already null; the pre-existing optional chaining is what covers that, not
+  // this guard — the guard's job is only the initial-mount ordering.)
   useEffect(() => {
-    if (!ready) return; // pre-ready, ctrlRef is null anyway — the ready flip re-runs this with the latest colorMap
+    if (!ready) return; // pre-ready, the ready flip re-runs this with the latest colorMap
     ctrlRef.current?.setColorOverride(colorMap);
   }, [colorMap, ready]);
 
