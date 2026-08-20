@@ -195,7 +195,10 @@ describe('POST /api/quotes/[id]/color-change-request', () => {
       expect(call.subject.toLowerCase()).toContain('colour change requested');
       expect(call.html).toContain('Test Person');
       expect(call.html).toContain('Custom pattern (2 colours)');
-      expect(call.html).toContain(`/quote/${ID}`); // searchable link back to the quote
+      // Links to the admin quote detail page — the only page ColorRequestPanel
+      // (the actual apply/dismiss UI) renders on. The general quote builder
+      // (/quote/<id>) has no awareness of pendingColorRequest at all.
+      expect(call.html).toContain(`/admin/quotes/${ID}`);
     });
 
     it('does NOT fire the email on a validation failure (order not booked)', async () => {

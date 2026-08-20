@@ -224,7 +224,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           email: quote.customer_email,
           label,
           portalUrl: `${baseUrl}/portal/${id}`,
-          adminUrl: `${baseUrl}/quote/${id}`,
+          // The general quote builder (/quote/<id>) has zero awareness of
+          // pendingColorRequest — ColorRequestPanel (the actual apply/dismiss UI)
+          // renders only on the admin quote detail page. Point the email there.
+          adminUrl: `${baseUrl}/admin/quotes/${id}`,
         }),
         emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
       });
