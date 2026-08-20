@@ -1795,7 +1795,14 @@ describe('quoteRowToPortalQuote — amendment consent card money basis (delta-ve
 
   function amendedPortalWithBasis(
     invoiceBasis: { previous_total: number; new_total: number; delta: number } | undefined,
-    consent: { status: 'pending' } | { status: 'declined'; declined_at: string; ip: null } = { status: 'pending' },
+    consent:
+      | { status: 'pending' }
+      | { status: 'declined'; declined_at: string; ip: null }
+      | {
+          status: 'accepted';
+          accepted_at: string;
+          signature: { name: string; kind: 'typed' | 'drawn'; value: string; signed_at: string; ip: string | null };
+        } = { status: 'pending' },
   ) {
     const row = rowWith(result, inputs);
     row.customer_approved_at = '2026-07-01T00:00:00.000Z';
@@ -1915,6 +1922,51 @@ describe('quoteRowToPortalQuote — amendment consent card money basis (delta-ve
       deltaUsd: 400,
       newBalanceUsd: 1400,
     });
+  });
+
+  // Row 315(b): buildApproval's ACCEPTED branch used to read
+  // acceptedAmendment.new_total (the raw trail figure) directly, bypassing
+  // resolveAmendmentBasis entirely — so a customer who signed the pending
+  // card's invoice-basis total (this exact fixture: $5,446.81) would see a
+  // DIFFERENT number ($2,400, the trail figure) the moment the page
+  // refreshed post-signature. approval.totalUsd also feeds the Quote PDF
+  // (docModels.ts) as its only load-bearing total, so the mismatch reached
+  // that document too. Prod check before this fix shipped: zero live
+  // accepted amendments carried an invoice_basis at all (chhntsbnbofyqrpivuog,
+  // row 315) — purely forward-safe, no already-shown figure changes.
+  const acceptedConsent = {
+    status: 'accepted' as const,
+    accepted_at: '2026-07-18T12:05:00.000Z',
+    signature: {
+      name: 'Jordan Smith',
+      kind: 'typed' as const,
+      value: 'Jordan Smith',
+      signed_at: '2026-07-18T12:05:00.000Z',
+      ip: null,
+    },
+  };
+
+  it('an ACCEPTED amendment with a stored invoice_basis shows the invoice-basis total, not the raw trail total', () => {
+    const approval = amendedPortalWithBasis(
+      { previous_total: 4608.33, new_total: 5446.81, delta: 838.48 },
+      acceptedConsent,
+    ).approval;
+    expect(approval?.pendingAmendment).toBeUndefined(); // accepted — no pending card
+    expect(approval?.totalUsd).toBe(5446.81); // invoice-basis, not the trail's 2400
+    expect(approval?.totalUsd).not.toBe(2400);
+  });
+
+  it('an ACCEPTED amendment with NO stored invoice_basis still falls back to the raw trail total (unchanged behavior)', () => {
+    const approval = amendedPortalWithBasis(undefined, acceptedConsent).approval;
+    expect(approval?.totalUsd).toBe(2400);
+  });
+
+  it('deposit stays basis-independent on the accepted branch too (deposit_applied is immutable, echoed unchanged)', () => {
+    const approval = amendedPortalWithBasis(
+      { previous_total: 4608.33, new_total: 5446.81, delta: 838.48 },
+      acceptedConsent,
+    ).approval;
+    expect(approval?.depositUsd).toBe(1000);
   });
 });
 

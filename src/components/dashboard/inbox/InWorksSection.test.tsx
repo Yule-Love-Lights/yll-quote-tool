@@ -19,6 +19,9 @@ import {
   withRowFlagSet,
   withRowFlagCleared,
   requiresCompleteConfirmation,
+  omitKey,
+  clearNeedsLookOnMove,
+  errorNoteFor,
   completeConfirmMessage,
 } from './InWorksSection';
 import type { InWorksItem } from '@/lib/dashboard/inbox/store';
@@ -98,6 +101,19 @@ describe('InWorksSection (row 291 — initial render)', () => {
     );
     expect(html).not.toContain('Something went wrong');
     expect(html).not.toContain('Saving…');
+  });
+
+  // Row 311: unreachableActions (the lock state) always starts empty, same as
+  // busyIds/errorIds above — a fresh render never shows a row locked to a
+  // prior attempted action.
+  it('a fresh render never shows a locked-button tooltip — unreachableActions always starts empty', () => {
+    const handled: InWorksItem[] = [
+      { ...baseItem, id: 'h1', customerName: 'Flagged Customer', needsLookReason: 'They wrote last' },
+    ];
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={[]} handled={handled} followUpDays={3} nowMs={now} />,
+    );
+    expect(html).not.toContain('Locked until');
   });
 });
 
@@ -298,5 +314,74 @@ describe('InWorksSection (#307 review fix 3 — Handled toggle label feedback)',
     );
     expect(html).toContain('Show Handled (1)');
     expect(html).not.toContain('Hide Handled');
+  });
+});
+
+// Row 311 (10th sibling-parity instance — the LOCK half of #806/#302 that this
+// file never got): a local copy of InboxList.tsx's own omitKey (#302), used to
+// clear a row's recorded unreachableActions entry. Mirrors
+// InboxList.test.tsx's own omitKey coverage.
+describe('omitKey (row 311 — clearing the recorded unreachable action)', () => {
+  it('removes only the named key', () => {
+    expect(omitKey({ a: 'Followed', b: 'Mark completed' }, 'a')).toEqual({ b: 'Mark completed' });
+  });
+
+  it('returns the SAME reference when the key is absent, so an unaffected row does not re-render', () => {
+    const map = { a: 'Followed' };
+    expect(omitKey(map, 'missing')).toBe(map);
+  });
+
+  it('does not mutate the input map', () => {
+    const map = { a: 'Followed', b: 'Mark completed' };
+    omitKey(map, 'a');
+    expect(map).toEqual({ a: 'Followed', b: 'Mark completed' });
+  });
+
+  it('leaves an empty map alone, same reference', () => {
+    const map: Record<string, string> = {};
+    expect(omitKey(map, 'a')).toBe(map);
+  });
+});
+
+// Row 311 fold-in (LOW): moveGroup applies this transform to a row on the way
+// into its new bucket — see clearNeedsLookOnMove's own doc comment in
+// InWorksSection.tsx for why a genuine client-side transition always resolves
+// the flag.
+describe('clearNeedsLookOnMove (row 311 fold-in — LOW)', () => {
+  it('clears a set needsLookReason', () => {
+    const item = { id: 'h1', needsLookReason: 'Quote unanswered' };
+    expect(clearNeedsLookOnMove(item)).toEqual({ id: 'h1', needsLookReason: null });
+  });
+
+  it('is a no-op (same reference) when needsLookReason is already null', () => {
+    const item = { id: 'a1', needsLookReason: null };
+    expect(clearNeedsLookOnMove(item)).toBe(item);
+  });
+
+  it('leaves every other field on the item untouched', () => {
+    const item = { id: 'h1', customerName: 'Flagged Customer', needsLookReason: 'They wrote last' };
+    expect(clearNeedsLookOnMove(item)).toEqual({
+      id: 'h1',
+      customerName: 'Flagged Customer',
+      needsLookReason: null,
+    });
+  });
+});
+
+// Row 311 fix-round FIX 3: a local copy of InboxList.tsx's own errorNoteFor —
+// before this, a definite server rejection's own `data.error` was discarded.
+describe('errorNoteFor (row 311 fix-round FIX 3)', () => {
+  it('a thrown fetch always wins, regardless of any rejection error also present', () => {
+    expect(errorNoteFor('Followed', 'Already marked followed')).toBe(
+      "Couldn't reach the server — this may or may not have gone through. Click Followed again to confirm.",
+    );
+  });
+
+  it('a definite rejection with an error renders that error, not the generic fallback', () => {
+    expect(errorNoteFor(undefined, 'Already marked followed')).toBe('Already marked followed');
+  });
+
+  it('a definite rejection with no error falls back to the generic copy', () => {
+    expect(errorNoteFor(undefined, undefined)).toBe('Something went wrong — try again.');
   });
 });
