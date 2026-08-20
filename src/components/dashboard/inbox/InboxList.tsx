@@ -62,7 +62,14 @@ type RowActions = {
   // previously the ONLY ways to clear one were retrying that exact row or
   // the accidental cross-row steal above.
   dismissError: (id: string) => void;
-  claimBusy: string | null;
+  // Row 305: was a single global slot (`string | null`, keyed by contactId) —
+  // claiming contact A (in flight), then claiming contact B before A settled,
+  // re-enabled A's claim/release control mid-flight (the slot now held B's
+  // id) and a second concurrent POST to /api/dashboard/claim for A was only
+  // one more click away. Same shape as row 291's busyIds/errorIds fix, now
+  // applied to this file's other single-slot holdout — per-contact record,
+  // read/written with this file's own withRowFlagSet/withRowFlagCleared.
+  claimBusyIds: Record<string, boolean>;
   composerFor: string | null;
   currentOperatorId: string | null;
   act: (id: string, path: string, label: string) => void;
@@ -84,7 +91,7 @@ type RowActions = {
 // "call/text directly" affordance instead, see the source==='gmail' branch
 // below) with its ReplyComposer.
 function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }) {
-  const { now, busyIds, errorIds, unreachableActions, rejectionErrors, dismissError, claimBusy, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent } = actions;
+  const { now, busyIds, errorIds, unreachableActions, rejectionErrors, dismissError, claimBusyIds, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent } = actions;
   const esc = escalation(item.escalationLevel);
   const waiting = item.lastMessageAt ? formatWaiting(now - new Date(item.lastMessageAt).getTime()) : '';
   const cs = claimState(item.assignedTo, currentOperatorId);
@@ -156,7 +163,7 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
                   ✓ You’ve got this ·{' '}
                   <button
                     type="button"
-                    disabled={claimBusy === cid}
+                    disabled={!!claimBusyIds[cid]}
                     onClick={() => claim(cid, 'release')}
                     className="underline disabled:opacity-50"
                     style={{ color: 'var(--op-text-2)' }}
@@ -169,7 +176,7 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
                   Claimed ·{' '}
                   <button
                     type="button"
-                    disabled={claimBusy === cid}
+                    disabled={!!claimBusyIds[cid]}
                     onClick={() => claim(cid, 'claim')}
                     className="underline disabled:opacity-50"
                     style={{ color: 'var(--op-text-2)' }}
@@ -180,7 +187,7 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
               ) : (
                 <button
                   type="button"
-                  disabled={claimBusy === cid}
+                  disabled={!!claimBusyIds[cid]}
                   onClick={() => claim(cid, 'claim')}
                   className="underline disabled:opacity-50"
                   style={{ color: 'var(--brand-evergreen-3)' }}
@@ -664,7 +671,10 @@ export function InboxList({
   // Row 311 fix-round FIX 3: parallel to errorIds/unreachableActions, always
   // cleared alongside them — see errorNoteFor's own doc comment above.
   const [rejectionErrors, setRejectionErrors] = useState<Record<string, string>>({});
-  const [claimBusy, setClaimBusy] = useState<string | null>(null);
+  // Row 305: was a single global slot (`string | null`) — see RowActions'
+  // claimBusyIds doc comment above for the exact race this per-contact record
+  // fixes, mirroring row 291's busyIds/errorIds treatment on this same file.
+  const [claimBusyIds, setClaimBusyIds] = useState<Record<string, boolean>>({});
   const [composerFor, setComposerFor] = useState<string | null>(null);
   // `now` is seeded from the server render (stable across hydration) and ticked
   // from an interval callback, so render stays pure and "waiting Xm" stays live.
@@ -831,7 +841,7 @@ export function InboxList({
 
   const claim = useCallback(
     async (contactId: string, action: 'claim' | 'release') => {
-      setClaimBusy(contactId);
+      setClaimBusyIds((prev) => withRowFlagSet(prev, contactId));
       // Optimistic: assignment is per-contact, so update every item for it.
       setItems((prev) =>
         prev.map((i) =>
@@ -848,7 +858,7 @@ export function InboxList({
       } catch {
         await refresh();
       } finally {
-        setClaimBusy(null);
+        setClaimBusyIds((prev) => withRowFlagCleared(prev, contactId));
       }
     },
     [currentOperatorId, refresh],
@@ -878,7 +888,7 @@ export function InboxList({
   // place; there's no empty group to separately prune.
   const groups = groupInboxItems(visibleItems);
   const rowActions: RowActions = {
-    now, busyIds, errorIds, unreachableActions, rejectionErrors, dismissError, claimBusy, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent,
+    now, busyIds, errorIds, unreachableActions, rejectionErrors, dismissError, claimBusyIds, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent,
   };
 
   if (items.length === 0) {

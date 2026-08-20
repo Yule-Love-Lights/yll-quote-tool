@@ -7,12 +7,31 @@ const REASON_LABEL: Record<string, string> = {
   quote_sent_no_reply: 'Quote sent — no reply',
 };
 
+// Row 305 (WRAP TECHNICAL LENS widening): a local copy of InboxList.tsx's own
+// withRowFlagSet/withRowFlagCleared (kept deliberately un-shared, matching
+// this directory's other per-file copies). Fixes this file's single-slot
+// `busyId`: marking follow-up A done (in flight), then clicking Done on B
+// before A settles, re-enabled A's button mid-flight (the slot now held B's
+// id) — markFollowUpDone (store.ts) has no server-side guard, so a second
+// concurrent POST for A was one more click away (worst case: a duplicate
+// activity row). Per-row record, same shape as row 291's fix.
+export function withRowFlagSet(map: Record<string, boolean>, id: string): Record<string, boolean> {
+  return { ...map, [id]: true };
+}
+
+export function withRowFlagCleared(map: Record<string, boolean>, id: string): Record<string, boolean> {
+  if (!map[id]) return map;
+  const next = { ...map };
+  delete next[id];
+  return next;
+}
+
 export function FollowUpStrip({ initialItems }: { initialItems: DueFollowUp[] }) {
   const [items, setItems] = useState<DueFollowUp[]>(initialItems);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  const [busyIds, setBusyIds] = useState<Record<string, boolean>>({});
 
   const markDone = useCallback(async (item: DueFollowUp) => {
-    setBusyId(item.id);
+    setBusyIds((prev) => withRowFlagSet(prev, item.id));
     setItems((prev) => prev.filter((i) => i.id !== item.id)); // optimistic
     try {
       const res = await fetch('/api/dashboard/followup', {
@@ -26,7 +45,7 @@ export function FollowUpStrip({ initialItems }: { initialItems: DueFollowUp[] })
     } catch {
       setItems((prev) => [item, ...prev]);
     } finally {
-      setBusyId(null);
+      setBusyIds((prev) => withRowFlagCleared(prev, item.id));
     }
   }, []);
 
@@ -49,7 +68,7 @@ export function FollowUpStrip({ initialItems }: { initialItems: DueFollowUp[] })
             </span>
             <button
               type="button"
-              disabled={busyId === f.id}
+              disabled={!!busyIds[f.id]}
               onClick={() => markDone(f)}
               className="px-3 py-1 rounded-md text-sm disabled:opacity-50"
               style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
