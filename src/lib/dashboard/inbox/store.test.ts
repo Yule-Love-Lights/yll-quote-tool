@@ -4283,19 +4283,32 @@ describe('markItemFollowed — status guard (row 306)', () => {
    *  always hard-codes `{data: null, error: null}`, i.e. priorStateOf finds
    *  nothing) — these tests need priorStateOf to see a real followed_up_at so
    *  the "already followed" vs "guard blocked for another reason" distinction
-   *  is actually exercised, not vacuously true. */
+   *  is actually exercised, not vacuously true.
+   *
+   *  Row 311 fix-round 2: the code now issues a THIRD `.from('inbox_items')`
+   *  call — a re-read via priorStateOf — whenever the UPDATE matches 0 rows,
+   *  to derive the refusal cause from CURRENT state rather than the stale
+   *  pre-update snapshot. `rereadResult` mocks that call; when omitted it
+   *  defaults to `priorResult` (nothing changed between snapshot and
+   *  re-read), which keeps every pre-existing call site here correct without
+   *  edits. Pass an explicit `rereadResult` to exercise the race — a snapshot
+   *  that no longer matches what the re-read finds. */
   function makeSbForWithPrior(
     priorResult: { data: unknown; error: null | { message: string } },
     itemUpdateResult: { data: unknown; error: null | { message: string } },
+    rereadResult?: { data: unknown; error: null | { message: string } },
   ) {
     const { builder: priorBuilder } = makeBuilder(priorResult);
     const { builder: updateBuilder, calls: updateCalls } = makeBuilder(itemUpdateResult);
+    const { builder: rereadBuilder } = makeBuilder(rereadResult ?? priorResult);
     const { builder: activityBuilder, calls: activityCalls } = makeBuilder({ data: null, error: null });
     let inboxCallCount = 0;
     const from = (table: string) => {
       if (table === 'inbox_items') {
         inboxCallCount += 1;
-        return inboxCallCount === 1 ? priorBuilder : updateBuilder;
+        if (inboxCallCount === 1) return priorBuilder;
+        if (inboxCallCount === 2) return updateBuilder;
+        return rereadBuilder;
       }
       if (table === 'dashboard_activity') return activityBuilder;
       throw new Error(`unexpected table: ${table}`);
@@ -4331,6 +4344,77 @@ describe('markItemFollowed — status guard (row 306)', () => {
         args: [expect.objectContaining({ action: 'action_failed', inbox_item_id: ITEM_ID, detail: { action: 'followed', error: 'Already marked followed' } })],
       }),
     );
+  });
+
+  // Row 311 fix-round 2 (delta-verify MED — the TOCTOU the "already followed"
+  // path above was itself exposed to): the SNAPSHOT (priorStateOf, taken
+  // before the UPDATE) can go stale between the snapshot and the guarded
+  // UPDATE. A row that looked already-followed at snapshot time can be marked
+  // completed/dismissed by another operator before the UPDATE runs — the
+  // UPDATE then fails on the STATUS guard, not the followed_up_at guard, and
+  // the OLD code (trusting only the snapshot) mislabeled that terminal
+  // refusal as alreadyFollowed:true, which followed/route.ts turns into a 200
+  // that InWorksSection.tsx's act() uses to moveGroup a phantom row into
+  // "awaiting" — the row is really terminal server-side. The fix re-reads
+  // CURRENT state after a failed UPDATE and derives the cause from that.
+  it('a stale wasFollowed=true snapshot does NOT win when the re-read shows the row went terminal in the meantime (the TOCTOU race)', async () => {
+    const staleSnapshot = { status: 'handled', followed_up_at: '2026-08-19T00:00:00Z' };
+    const currentAfterRace = { status: 'completed', followed_up_at: '2026-08-19T00:00:00Z' };
+    const { from, activityCalls } = makeSbForWithPrior(
+      { data: staleSnapshot, error: null },
+      { data: null, error: null },
+      { data: currentAfterRace, error: null },
+    );
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toBe('Item is completed or dismissed; cannot mark followed');
+      expect(res.alreadyFollowed).toBeUndefined();
+    }
+    const insertCalls = activityCalls.filter((c) => c.method === 'insert');
+    expect(insertCalls.some((c) => (c.args[0] as { action?: string }).action === 'followed')).toBe(false);
+  });
+
+  it('the re-read confirms a GENUINE duplicate (row still legal status, still followed) and keeps alreadyFollowed:true', async () => {
+    const staleSnapshot = { status: 'handled', followed_up_at: '2026-08-19T00:00:00Z' };
+    const currentStillFollowed = { status: 'handled', followed_up_at: '2026-08-19T00:00:00Z' };
+    const { from } = makeSbForWithPrior(
+      { data: staleSnapshot, error: null },
+      { data: null, error: null },
+      { data: currentStillFollowed, error: null },
+    );
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toBe('Already marked followed');
+      expect(res.alreadyFollowed).toBe(true);
+    }
+  });
+
+  it('a re-read that errors fails SAFE — plain refusal, never alreadyFollowed', async () => {
+    const staleSnapshot = { status: 'handled', followed_up_at: '2026-08-19T00:00:00Z' };
+    const { from } = makeSbForWithPrior(
+      { data: staleSnapshot, error: null },
+      { data: null, error: null },
+      // priorStateOf only inspects `data`, never `error` — this mirrors what
+      // a real Supabase error response looks like (data null, error set).
+      { data: null, error: { message: 'read timeout' } },
+    );
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toBe('Item is completed or dismissed; cannot mark followed');
+      expect(res.alreadyFollowed).toBeUndefined();
+    }
   });
 
   it('a guard block NOT explained by wasFollowed (e.g. status changed concurrently) keeps the generic message and never sets alreadyFollowed', async () => {

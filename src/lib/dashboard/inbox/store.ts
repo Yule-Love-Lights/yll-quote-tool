@@ -995,12 +995,27 @@ export async function markItemFollowed(
     return { ok: false, error: error.message };
   }
   if (!data) {
-    // Row 311 fix-round: `from` is the pre-update snapshot (priorStateOf,
-    // above) — best-effort, not atomic with the guard itself, but good enough
-    // to word the refusal honestly. wasFollowed only means anything when the
-    // followed_up_at guard was actually in play (allowRestamp false); on the
-    // allowRestamp:true path the status guard is the only way to land here.
-    if (!allowRestamp && from?.wasFollowed) {
+    // Row 311 fix-round 2 (delta-verify MED): `from` above is only the
+    // PRE-update snapshot, and TOCTOU makes it stale — a row whose snapshot
+    // showed wasFollowed=true can go TERMINAL (completed/dismissed by another
+    // operator) between the snapshot and this guarded UPDATE. The UPDATE then
+    // matches 0 rows because of the STATUS guard, not the followed_up_at
+    // guard, but trusting the stale snapshot would mislabel that terminal
+    // refusal as a benign duplicate: followed/route.ts turns
+    // alreadyFollowed:true into a 200 {ok:true}, and InWorksSection.tsx's
+    // act() moveGroups any 200 into "awaiting" — a phantom client-side move
+    // for a row that is really terminal server-side, invisible until reload.
+    // Re-read the row's CURRENT state instead of trusting the snapshot.
+    // priorStateOf already fails safe here: it returns undefined on "row not
+    // found" AND on a read error (it only inspects `data`, never `error`), so
+    // an erroring or empty re-read falls straight into the generic refusal
+    // below and never claims alreadyFollowed.
+    const current = await priorStateOf(sb, itemId);
+    const stillLegalStatus = current?.status === 'unresponded' || current?.status === 'handled';
+    if (!allowRestamp && stillLegalStatus && current?.wasFollowed) {
+      // Genuine duplicate: the row is STILL a legal source status right now
+      // (not terminal) and is already followed — a real duplicate click or
+      // lost race, not a terminal-status guard block wearing a stale label.
       const msg = 'Already marked followed';
       await recordActionFailed(itemId, operatorId, 'followed', msg);
       return { ok: false, error: msg, alreadyFollowed: true };
