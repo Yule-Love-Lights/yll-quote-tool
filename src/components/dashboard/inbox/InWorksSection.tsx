@@ -34,6 +34,31 @@ export function withRowFlagCleared(map: Record<string, boolean>, id: string): Re
   return next;
 }
 
+/** Row 311: withRowFlagCleared's sibling for the string-valued unreachableActions
+ *  map (it records WHICH action was attempted, not merely that one was) — a
+ *  local copy of InboxList.tsx's own `omitKey` (#302), kept deliberately
+ *  un-shared like the rest of this file's helpers. Same contract: returns the
+ *  SAME reference when the key is absent, so clearing on an unaffected row
+ *  never forces a needless re-render. */
+export function omitKey<T>(map: Record<string, T>, id: string): Record<string, T> {
+  if (!(id in map)) return map;
+  const next = { ...map };
+  delete next[id];
+  return next;
+}
+
+/** Row 311 fold-in (LOW): a row moved client-side by moveGroup carries its OLD
+ *  needsLookReason along with it unless cleared — moveGroup only ever fires as
+ *  the RESULT of a real operator action (a "Followed" click, or a sent reply),
+ *  both of which resolve the flag: the operator has just looked at and acted
+ *  on the row. Without this, the "Needs a look" badge (and
+ *  requiresCompleteConfirmation's confirm gate) stay stamped on a row now
+ *  sitting in a different bucket until the next full page load re-derives it
+ *  from the server. Pure so the transform is directly unit-testable. */
+export function clearNeedsLookOnMove<T extends { needsLookReason: string | null }>(item: T): T {
+  return item.needsLookReason == null ? item : { ...item, needsLookReason: null };
+}
+
 // #307 review fix 1: a flagged row ("Needs a look") is exactly the case
 // "Mark completed" must not silently one-click through — completing is
 // terminal (store.ts markItemCompleted sets status='completed', which no
@@ -70,6 +95,10 @@ export function InWorksSection({
   // id, mirroring InboxList.tsx's own fix for this identical pattern.
   const [busyIds, setBusyIds] = useState<Record<string, boolean>>({});
   const [errorIds, setErrorIds] = useState<Record<string, boolean>>({});
+  // Row 311: the LABEL of the action attempted when a fetch THROWS (no answer
+  // received, unlike a server rejection) — mirrors InboxList.tsx's own
+  // unreachableActions (#302). Drives both the error copy and the lock below.
+  const [unreachableActions, setUnreachableActions] = useState<Record<string, string>>({});
   const [composerFor, setComposerFor] = useState<string | null>(null);
   // #307: "Handled" starts collapsed; "Needs a look" always renders expanded
   // (there's no toggle for it). Both are views over the SAME handledItems
@@ -102,10 +131,13 @@ export function InWorksSection({
     } else {
       setHandledItems((prev) => prev.filter((i) => i.id !== itemId));
     }
+    // Row 311 fold-in (LOW): clear a stale needsLookReason on the way in — see
+    // clearNeedsLookOnMove's own doc comment above.
+    const moved = clearNeedsLookOnMove(item);
     if (to === 'awaiting') {
-      setAwaitingItems((prev) => [...prev, item]);
+      setAwaitingItems((prev) => [...prev, moved]);
     } else {
-      setHandledItems((prev) => [...prev, item]);
+      setHandledItems((prev) => [...prev, moved]);
     }
   }
 
@@ -114,35 +146,52 @@ export function InWorksSection({
   // (leaves both groups), or the group it now belongs in otherwise — e.g. a
   // "Followed" handled row gets followed_up_at stamped, which flips it into
   // "awaiting" rather than dropping it from the section.
+  //
+  // Row 311 (10th sibling-parity instance — the LOCK half of #806/#302 that
+  // InboxList.tsx got but this file never did): a THROWN fetch means no answer
+  // was received, so the write may or may not have landed server-side. Every
+  // OTHER action button on this row staying enabled is not harmless — concrete
+  // harm: Mark completed throws (the write lands), operator clicks Followed
+  // instead, and (pre-row-306) markItemFollowed would silently stamp
+  // followed_up_at on a really-completed row; row 306 now guards the store
+  // side too, but this lock is the first line of defense, mirroring
+  // InboxList.tsx's ItemRow lockedOut. `label` is the button's own visible
+  // text ('Followed' / 'Mark completed'), recorded in unreachableActions so
+  // the row can be locked to retrying THAT one action.
   async function act(
     item: InWorksItem,
     group: 'awaiting' | 'handled',
     path: string,
     outcome: 'awaiting' | 'handled' | 'remove',
+    label: string,
   ) {
     setBusyIds((prev) => withRowFlagSet(prev, item.id));
     // Row 291 fix: clear only THIS row's own error, never every row's — the
     // old setErrorId(null) here was the single-slot steal (acting on row B
     // silently erased row A's still-true failure note).
     setErrorIds((prev) => withRowFlagCleared(prev, item.id));
+    setUnreachableActions((prev) => omitKey(prev, item.id));
     try {
       const res = await fetch(path, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ itemId: item.id }),
       });
-      const data = (await res.json()) as { ok?: boolean };
-      if (data.ok) {
+      const data = (await res.json().catch(() => null)) as { ok?: boolean } | null;
+      if (data?.ok) {
         if (outcome === 'remove') {
           removeFromGroup(item.id, group);
         } else {
           moveGroup(item.id, group, outcome);
         }
       } else {
+        // A definite server answer (a rejection, not a throw) — the write is
+        // known NOT to have happened, so no lock: every button stays usable.
         setErrorIds((prev) => withRowFlagSet(prev, item.id));
       }
     } catch {
       setErrorIds((prev) => withRowFlagSet(prev, item.id));
+      setUnreachableActions((prev) => ({ ...prev, [item.id]: label }));
     } finally {
       setBusyIds((prev) => withRowFlagCleared(prev, item.id));
     }
@@ -150,9 +199,11 @@ export function InWorksSection({
 
   // Row 291 fix: explicit acknowledge control for the error note. Previously
   // the only ways to clear a row's error were retrying that exact row (via
-  // act()) or the accidental cross-row steal this fix removes.
+  // act()) or the accidental cross-row steal this fix removes. Row 311: also
+  // clears the lock, matching InboxList.tsx's dismissError.
   function dismissError(itemId: string) {
     setErrorIds((prev) => withRowFlagCleared(prev, itemId));
+    setUnreachableActions((prev) => omitKey(prev, itemId));
   }
 
   // #307 review fix 1: the "Mark completed" click handler. For a flagged row,
@@ -168,7 +219,7 @@ export function InWorksSection({
       );
       if (!ok) return;
     }
-    act(item, group, '/api/dashboard/completed', 'remove');
+    act(item, group, '/api/dashboard/completed', 'remove', 'Mark completed');
   }
 
   function renderRow(item: InWorksItem, group: 'awaiting' | 'handled') {
@@ -179,6 +230,10 @@ export function InWorksSection({
       item.lastActivityAt != null
         ? Math.floor((nowMs - new Date(item.lastActivityAt).getTime()) / 86_400_000)
         : 0;
+    // Row 311: mirrors InboxList.tsx's ItemRow lockedTo/lockedOut — after a
+    // thrown fetch, every button OTHER than the one attempted is locked.
+    const lockedTo = unreachableActions[item.id] ?? null;
+    const lockedOut = (label: string) => lockedTo !== null && lockedTo !== label;
 
     return (
       <li
@@ -230,7 +285,14 @@ export function InWorksSection({
             )}
             {errorIds[item.id] && (
               <p className="text-xs mt-0.5 flex items-center gap-2" style={{ color: '#dc2626' }}>
-                <span>Something went wrong — try again.</span>
+                {/* Row 311: mirrors InboxList.tsx's two-kind failure copy — a
+                    THROWN fetch (no answer received) is not the same claim as
+                    a server REJECTION (a definite answer that nothing wrote). */}
+                <span>
+                  {unreachableActions[item.id]
+                    ? `Couldn't reach the server — this may or may not have gone through. Click ${unreachableActions[item.id]} again to confirm.`
+                    : 'Something went wrong — try again.'}
+                </span>
                 <button
                   type="button"
                   onClick={() => dismissError(item.id)}
@@ -277,9 +339,9 @@ export function InWorksSection({
             {group === 'handled' && (
               <button
                 type="button"
-                disabled={!!busyIds[item.id]}
-                onClick={() => act(item, group, '/api/dashboard/followed', 'awaiting')}
-                title="I followed up — snooze until they reply"
+                disabled={!!busyIds[item.id] || lockedOut('Followed')}
+                onClick={() => act(item, group, '/api/dashboard/followed', 'awaiting', 'Followed')}
+                title={lockedOut('Followed') ? `Locked until the ${lockedTo} attempt is confirmed` : 'I followed up — snooze until they reply'}
                 className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
                 style={{ border: '1px solid var(--op-border)', color: 'var(--op-text-2)' }}
               >
@@ -288,8 +350,9 @@ export function InWorksSection({
             )}
             <button
               type="button"
-              disabled={!!busyIds[item.id]}
+              disabled={!!busyIds[item.id] || lockedOut('Mark completed')}
               onClick={() => handleMarkCompleted(item, group)}
+              title={lockedOut('Mark completed') ? `Locked until the ${lockedTo} attempt is confirmed` : undefined}
               className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
               style={{ border: '1px solid var(--op-border)', color: 'var(--op-text-2)' }}
             >
