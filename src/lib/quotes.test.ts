@@ -753,6 +753,60 @@ describe('updateQuote — #214 identity verify-or-reattach', () => {
     expect(res).toMatchObject({ identityFrozen: true });
   });
 
+  // #251 (Jason's ruling 2026-08-20 — identity is ATOMIC past approval). The
+  // delta-verify's HIGH: the freeze above only ever gated attachQuoteToCustomer
+  // (customer_id), while the quote row's OWN denormalized customer_* columns —
+  // what every staff screen displays and what the send route emails — were
+  // written unconditionally. A frozen save therefore showed/emailed the newly
+  // picked person while billing the original: the incident's split, inverted.
+  // NOTE the fixture: the lifecycle stamps must sit on the STORED pre-read row
+  // (not just the update's return row) because the gate is evaluated BEFORE the
+  // write. A fixture that only stamps the return row cannot reach this guard at
+  // all — it would pass with the fix reverted.
+  it("freezes the quote row's OWN customer_* columns too, not just the customers link (#251 atomic identity)", async () => {
+    const fake = makeIdentityFake(
+      { ...STORED, customer_approved_at: '2026-08-10T00:00:00Z', deposit_paid_at: null, is_test: false },
+      { customer_approved_at: '2026-08-10T00:00:00Z', customer_id: 'cust-1' },
+    );
+    serviceRef.current = fake.client;
+
+    await updateQuote(
+      'q1', INPUTS, RESULT,
+      { ...CUSTOMER, name: 'Edited After Approval', email: 'new@x.com' },
+      'holiday', undefined, undefined, undefined, undefined,
+    );
+
+    const written = fake.updates.find((u) => 'inputs' in u)!;
+    expect(written).toBeDefined();
+    // The pricing half of the save still lands — only identity is frozen.
+    expect(written.result).toBeDefined();
+    // ...and none of the identity columns moved.
+    expect(written).not.toHaveProperty('customer_name');
+    expect(written).not.toHaveProperty('customer_email');
+    expect(written).not.toHaveProperty('customer_phone');
+    expect(written).not.toHaveProperty('customer_address');
+  });
+
+  // The same write on an UNAPPROVED quote must still carry the customer_*
+  // columns — proving the gate above is scoped, not a blanket stop.
+  it('still writes the customer_* columns on a draft/sent quote (the freeze is scoped)', async () => {
+    attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'cust-fresh', propertyId: 'p1' });
+    const fake = makeIdentityFake(
+      { ...STORED, customer_approved_at: null, deposit_paid_at: null, is_test: false },
+      { customer_id: 'cust-fresh' },
+    );
+    serviceRef.current = fake.client;
+
+    await updateQuote(
+      'q1', INPUTS, RESULT,
+      { ...CUSTOMER, name: 'Edited Before Approval' },
+      'holiday', undefined, undefined, undefined, undefined,
+    );
+
+    const written = fake.updates.find((u) => 'inputs' in u)!;
+    expect(written.customer_name).toBe('Edited Before Approval');
+  });
+
   // Boundary check: a DRAFT/SENT quote (neither approved nor booked) must stay
   // fully free to re-attach — the #251 widening must not creep past its two
   // named triggers.

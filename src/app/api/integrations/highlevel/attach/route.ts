@@ -98,6 +98,24 @@ export async function POST(req: NextRequest) {
   // behind the client's serialized queue). Clears the LOCAL link only; the
   // GHL card itself is untouched.
   if (body.detach === true) {
+    // #251 (Jason's ruling 2026-08-20 — identity is ATOMIC past approval):
+    // Clear is an identity change like any other. Unlinking the HighLevel
+    // contact on an approved/booked quote would fork the record exactly the
+    // way a re-pick would, so it is refused here for the same reason and with
+    // the same shape. This read is the route's only pre-detach round trip;
+    // a read failure fails OPEN (matching the attach path's posture below)
+    // rather than blocking a legitimate clear on an unapproved quote.
+    const { data: detachRow } = await getSupabaseServiceClient()!
+      .from('quotes')
+      .select('is_test, deposit_paid_at, customer_approved_at')
+      .eq('id', body.quoteId)
+      .maybeSingle<{ is_test: boolean; deposit_paid_at: string | null; customer_approved_at: string | null }>();
+    if (detachRow && !detachRow.is_test && (detachRow.deposit_paid_at || detachRow.customer_approved_at)) {
+      console.warn(
+        `[api/integrations/highlevel/attach] #251 identity freeze — quote ${body.quoteId} is approved/booked; refused a detach.`,
+      );
+      return NextResponse.json({ detached: false, identityFrozen: true });
+    }
     const { error: detachErr } = await getSupabaseServiceClient()!
       .from('quotes')
       .update({ highlevel_contact_id: null, highlevel_opportunity_id: null })
@@ -144,6 +162,22 @@ export async function POST(req: NextRequest) {
       quoteErr.message,
     );
   }
+  // #251 (Jason's ruling 2026-08-20 — identity is ATOMIC past approval): bail
+  // BEFORE any GHL card is found/created. The customers re-resolution further
+  // down already refuses on an approved/booked quote, and the ruling extends
+  // that to this route's own highlevel_contact_id/highlevel_opportunity_id
+  // write — so the whole endpoint is a no-op past approval and corrections go
+  // through the amend flow. Placed here, not at the write site, so a frozen
+  // quote never leaves an orphaned card on GHL's side that our row won't
+  // reference. Fails OPEN when the pre-read failed (quoteRow null): a read
+  // hiccup must not block a legitimate link on an unapproved quote, matching
+  // the service_type fallback's posture directly above.
+  if (quoteRow && !quoteRow.is_test && (quoteRow.deposit_paid_at || quoteRow.customer_approved_at)) {
+    console.warn(
+      `[api/integrations/highlevel/attach] #251 identity freeze — quote ${body.quoteId} is approved/booked; refused a contact re-link (contact ${body.contactId}).`,
+    );
+    return NextResponse.json({ linked: false, identityFrozen: true });
+  }
   // Legacy rebook (#156): legacy_rebook wins regardless of service_type,
   // routing to the Neighbors pipeline instead of Christmas Lights — a staff
   // member manually attaching a migrated quote to a GHL contact must never
@@ -188,27 +222,12 @@ export async function POST(req: NextRequest) {
     // surface "card created but not linked — retry safe" (a retry re-finds the
     // same open card and re-attaches, so no hard 500 is needed).
     //
-    // #839 fix-round DESIGN QUESTION (deliberately left open, not decided
-    // here): this write is UNCONDITIONAL — unlike the customers re-resolution
-    // below (which the #251/#839 freeze now blocks on an approved/booked
-    // quote), highlevel_contact_id/highlevel_opportunity_id keep moving to
-    // whatever contact was just picked, no matter the quote's lifecycle
-    // stage. That is the pre-existing booked-era behavior (unchanged by this
-    // fix round) and it means a CONFIRMED re-pick on an approved-but-unpaid
-    // quote now produces a deliberately SPLIT identity state: the quote's
-    // HighLevel card/contact link moves to the new contact, while
-    // quotes.customer_id (billing, jobs, invoices, tenure) stays frozen on
-    // the original customer. The stated rationale for "the GHL card
-    // representation can move; the customer link can't" is that the GHL side
-    // is a lighter-weight, correctable pointer (re-picking again, or Clear +
-    // re-pick, fixes it) whereas customer_id drives money/reporting that
-    // must never silently fork across two people. Whether that split is
-    // actually the right call — vs. also freezing this write once approved,
-    // which would make the whole endpoint a no-op past approval and push
-    // corrections through the amend flow instead — is a real design
-    // question for Jason, not resolved by this comment. See the #251/#839
-    // PR notes for the client-side confirm (contactRelinkConfirmMessage)
-    // that now discloses this split before staff can trigger it.
+    // #251 RESOLVED (Jason, 2026-08-20): this write used to be unconditional,
+    // producing a SPLIT identity on an approved quote — the HighLevel card
+    // link moved to the newly-picked contact while quotes.customer_id stayed
+    // on the original. Jason's ruling made identity atomic past approval, so
+    // the early return added above means this line is now unreachable for an
+    // approved/booked quote and the split can no longer occur.
     const { error: updateErr } = await sb
       .from('quotes')
       .update({

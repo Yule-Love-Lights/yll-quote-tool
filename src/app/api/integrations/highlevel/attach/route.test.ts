@@ -311,9 +311,10 @@ describe('HighLevel attach — post-link customers re-resolution (#214)', () => 
 
   // Round-3 delta-verify HIGH (sibling-guard parity with updateQuote's
   // booked-freeze): jobs/invoices/GHL tenure snapshot the customers link at
-  // booking and never resync — a post-booking contact re-pick must update
-  // the GHL card link only, never relink the customers row.
-  it('never re-resolves a BOOKED quote (deposit paid) — the GHL link still updates, the customers link is frozen', async () => {
+  // booking and never resync. SUPERSEDED by Jason's 2026-08-20 ruling —
+  // identity is ATOMIC past approval, so the GHL card link no longer moves
+  // either: the whole endpoint is a no-op and corrections go through amend.
+  it('refuses the WHOLE re-link on a BOOKED quote (deposit paid) — GHL link and customers link both frozen', async () => {
     sbRef.current = makeSb(
       { ...HOLIDAY_QUOTE, is_test: false, deposit_paid_at: '2026-08-01T00:00:00Z', customer_id: 'cust-frozen' },
       null,
@@ -322,7 +323,8 @@ describe('HighLevel attach — post-link customers re-resolution (#214)', () => 
     const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1', ...CONTACT_FIELDS }));
     const json = await res.json();
     expect(res.status).toBe(200);
-    expect(json.linked).toBe(true); // the route's own job still happened
+    expect(json.linked).toBe(false); // #251 atomic identity — no GHL write either
+    expect(json.identityFrozen).toBe(true);
     expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
   });
 
@@ -332,7 +334,7 @@ describe('HighLevel attach — post-link customers re-resolution (#214)', () => 
   // updateQuote's own #251 freeze. An approved-but-unpaid quote must be
   // frozen HERE too, exactly like the booked case above — parity with
   // quotes.ts's identical widening (~line 564).
-  it('never re-resolves an APPROVED-but-unpaid quote (customer_approved_at set) — the GHL link still updates, the customers link is frozen', async () => {
+  it('refuses the WHOLE re-link on an APPROVED-but-unpaid quote — GHL link and customers link both frozen', async () => {
     sbRef.current = makeSb(
       {
         ...HOLIDAY_QUOTE,
@@ -346,7 +348,8 @@ describe('HighLevel attach — post-link customers re-resolution (#214)', () => 
     const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1', ...CONTACT_FIELDS }));
     const json = await res.json();
     expect(res.status).toBe(200);
-    expect(json.linked).toBe(true); // the route's own GHL-card job still happened
+    expect(json.linked).toBe(false); // #251 atomic identity — no GHL write either
+    expect(json.identityFrozen).toBe(true);
     expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
   });
 

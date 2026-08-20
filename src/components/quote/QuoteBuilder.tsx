@@ -6456,9 +6456,9 @@ export default function QuoteBuilder({
                 current chip. */}
             {identityFrozenNotice && (
               <p className="mb-3 text-xs text-amber-700">
-                This quote is approved or booked, so its customer link stayed put — a contact/identity change on
-                this save was not applied to who the quote belongs to. Use the amend flow to change the linked
-                customer.
+                This quote is approved or booked, so its customer stayed put — the name, contact details and
+                HighLevel link on this quote were left exactly as the customer approved them, and nothing on this
+                save changed who the quote belongs to. Use the amend flow to move it to a different customer.
               </p>
             )}
 

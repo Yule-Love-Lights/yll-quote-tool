@@ -442,6 +442,13 @@ export async function updateQuote(
     highlevel_contact_id: string | null;
     customer_id: string | null;
     inputs: Partial<QuoteInputs> | null;
+    // #251 (Jason's ruling 2026-08-20 — identity is ATOMIC past approval):
+    // read the lifecycle stamps BEFORE the write, not just off the write's
+    // own response, so the freeze can gate the denormalized customer_* write
+    // below instead of only the customers-table reattach further down.
+    customer_approved_at: string | null;
+    deposit_paid_at: string | null;
+    is_test: boolean | null;
   };
   let stored: StoredIdentityRow | null = null;
   let clearGhlLink = false;
@@ -449,7 +456,7 @@ export async function updateQuote(
     const { data: existing, error: readErr } = await supabase
       .from('quotes')
       .select(
-        'service_type, customer_name, customer_email, customer_phone, customer_address, highlevel_contact_id, customer_id, inputs',
+        'service_type, customer_name, customer_email, customer_phone, customer_address, highlevel_contact_id, customer_id, inputs, customer_approved_at, deposit_paid_at, is_test',
       )
       .eq('id', id)
       .maybeSingle<StoredIdentityRow>();
@@ -464,6 +471,19 @@ export async function updateQuote(
     }
   }
 
+  // #251 (Jason's ruling 2026-08-20): a quote's IDENTITY is ATOMIC once the
+  // customer has approved. Before this, the freeze further down protected only
+  // customer_id (billing/jobs/invoices/tenure) while these denormalized
+  // customer_* columns — what every staff screen DISPLAYS and what the send
+  // route emails — moved freely with whatever contact was last picked. That
+  // split is precisely the shape of the 2026-08-11 incident (displayed fields
+  // said one person, customer_id said another, so it was invisible on every
+  // screen); this round just inverted which half lied. Freezing them together
+  // means a post-approval identity is either wholly unchanged or wholly moved,
+  // never half. is_test is exempt (same carve-out the reattach freeze uses).
+  const identityLocked =
+    !stored?.is_test && (!!stored?.customer_approved_at || !!stored?.deposit_paid_at);
+
   const { data, error } = await supabase
     .from('quotes')
     .update({
@@ -472,7 +492,9 @@ export async function updateQuote(
       total: result.total,
       ...(serviceType ? { service_type: serviceType } : {}),
       ...(clearGhlLink ? { highlevel_opportunity_id: null, ghl_stage_synced_at: null } : {}),
-      ...(customer
+      // Gated on identityLocked (#251): see its comment above. A frozen quote
+      // keeps the name/address/phone/email it carried at approval.
+      ...(customer && !identityLocked
         ? {
             customer_name: blankToNull(customer.name) ?? 'Anonymous',
             customer_address: blankToNull(customer.address) ?? '(no address)',
