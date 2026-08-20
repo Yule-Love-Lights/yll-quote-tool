@@ -30,6 +30,7 @@ import {
   clearNceOrNeighborOnServiceTypeSwitch,
   legacyRebookConfirmMessage,
   nceConfirmMessage,
+  contactRelinkConfirmMessage,
   initialNceDepositProvenance,
 } from '@/lib/quoteForm';
 import type { CrmContact } from '@/lib/integrations/types';
@@ -2865,8 +2866,25 @@ export default function QuoteBuilder({
   // silently ignore HL's data because a prior value (including browser
   // autofill or a stray keystroke) was sitting in the field.
   const pickHighLevelContact = (c: CrmContact) => {
-    setHighLevelContact(c);
     const hlName = c.fullName || [c.firstName, c.lastName].filter(Boolean).join(' ');
+    // #251 (live incident, 2026-08-11): confirm BEFORE any state changes when
+    // this quote is already linked to a DIFFERENT contact — see
+    // contactRelinkConfirmMessage's own doc for why highlevelContact?.id is
+    // preferred over the persisted dbLinked/initialQuote fallback, and why
+    // both are in scope. window.confirm is synchronous, so returning here
+    // happens before setHighLevelContact, before attachSeqRef is bumped, and
+    // before the tag-lookup fetch below ever fires — a decline is a true
+    // no-op, not just a skipped final step.
+    const currentContactId =
+      highlevelContact?.id ?? (dbLinked ? (initialQuote?.highlevelContactId ?? null) : null);
+    const confirmMsg = contactRelinkConfirmMessage(
+      c.id,
+      hlName || 'this contact',
+      currentContactId,
+      !!initialQuote?.approvedAt,
+    );
+    if (confirmMsg && !window.confirm(confirmMsg)) return;
+    setHighLevelContact(c);
     const hlAddress = [c.address1, c.city, c.state, c.postalCode].filter(Boolean).join(', ');
     setForm(f => ({
       ...f,

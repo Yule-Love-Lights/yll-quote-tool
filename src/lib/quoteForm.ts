@@ -498,6 +498,51 @@ export function nceConfirmMessage(
 }
 
 /**
+ * #251 (live incident, 2026-08-11): window.confirm copy for pickHighLevelContact
+ * re-linking a quote that's already linked to a HighLevel contact — mirrors
+ * legacyRebookConfirmMessage/nceConfirmMessage's shape (a pure, unit-testable
+ * message builder, since QuoteBuilder has no render harness — see
+ * initialNceDepositProvenance's doc below for that same convention).
+ *
+ * Returns null when no confirm is warranted:
+ *   - nothing is linked yet (currentContactId is null — a genuine first-time
+ *     pick), or
+ *   - the newly-picked contact IS the one already linked (a same-contact
+ *     no-op re-pick) — mirrors the server-side #251 freeze's own rule that a
+ *     same-id re-pick is never blocked (quotes.ts's identityChanged/hlChanged
+ *     compare, ~line 564).
+ *
+ * currentContactId is the CALLER's job to resolve with the right precedence:
+ * the session's own live pick (highlevelContact?.id) when one exists, else
+ * the persisted DB link (dbLinked ? initialQuote?.highlevelContactId : null).
+ * That fallback matters — a REOPENED quote can have dbLinked true with NO
+ * highlevelContact object ever hydrated (#172: the autocomplete chip isn't
+ * refetched on open), which is exactly the live incident's starting state
+ * (Sharon McDonough's approved #1173 was already HL-linked when a stale pick
+ * on a different quote's tab re-pointed it, invisible on every screen).
+ */
+export function contactRelinkConfirmMessage(
+  newContactId: string,
+  newContactLabel: string,
+  currentContactId: string | null,
+  isApproved: boolean,
+): string | null {
+  if (!currentContactId || currentContactId === newContactId) return null;
+  const lines = [
+    `Link this quote to ${newContactLabel}?`,
+    '',
+    'This quote is currently linked to a DIFFERENT HighLevel contact — re-linking it changes which customer this quote (and its billing/GHL history) belongs to.',
+  ];
+  if (isApproved) {
+    lines.push(
+      '',
+      'This quote has already been approved by the customer — re-linking it risks attributing their approved price and signed terms to the wrong person.',
+    );
+  }
+  return lines.join('\n');
+}
+
+/**
  * #199 delta-verify (MED): seeds nceDepositSetByRuleRef's value on MOUNT —
  * whether QuoteBuilder's CURRENT depositPercent is a value the NCE rule
  * itself would have written, so a chip turn-OFF later knows whether it's

@@ -11,6 +11,7 @@ import {
   clearNceOrNeighborOnServiceTypeSwitch,
   legacyRebookConfirmMessage,
   nceConfirmMessage,
+  contactRelinkConfirmMessage,
   initialNceDepositProvenance,
 } from './quoteForm';
 import type { QuoteInputs } from './pricing/pricingEngine';
@@ -817,6 +818,37 @@ describe('nceConfirmMessage (#215 builder chip confirm)', () => {
         expect(msg).toContain('propagation is one-way');
       });
     });
+  });
+});
+
+// #251 (live incident, 2026-08-11): contactRelinkConfirmMessage is the copy
+// behind pickHighLevelContact's new window.confirm — a stale/mistaken
+// contact re-pick on an already-linked quote silently re-pointed an APPROVED
+// quote's customer_id + highlevel_contact_id to a different real customer.
+describe('contactRelinkConfirmMessage (#251 builder contact-pick confirm)', () => {
+  it('returns null when nothing is linked yet (first-time pick)', () => {
+    expect(contactRelinkConfirmMessage('hl-new', 'Richard Arroyo', null, false)).toBeNull();
+  });
+
+  it('returns null on a same-contact no-op re-pick (currentContactId === newContactId)', () => {
+    expect(contactRelinkConfirmMessage('hl-1', 'Jane Doe', 'hl-1', false)).toBeNull();
+    expect(contactRelinkConfirmMessage('hl-1', 'Jane Doe', 'hl-1', true)).toBeNull();
+  });
+
+  it('returns a confirm message when a DIFFERENT contact is already linked', () => {
+    const msg = contactRelinkConfirmMessage('hl-new', 'Richard Arroyo', 'hl-old', false);
+    expect(msg).not.toBeNull();
+    expect(msg).toContain('Richard Arroyo');
+    expect(msg).toContain('DIFFERENT HighLevel contact');
+    expect(msg).toContain('changes which customer this quote');
+  });
+
+  it('adds the stronger approved-quote line only when isApproved is true', () => {
+    const unapproved = contactRelinkConfirmMessage('hl-new', 'Richard Arroyo', 'hl-old', false)!;
+    const approved = contactRelinkConfirmMessage('hl-new', 'Richard Arroyo', 'hl-old', true)!;
+    expect(unapproved).not.toContain('already been approved');
+    expect(approved).toContain('already been approved');
+    expect(approved).toContain('signed terms');
   });
 });
 
