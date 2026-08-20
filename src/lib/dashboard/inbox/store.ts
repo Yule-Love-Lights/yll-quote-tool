@@ -1033,7 +1033,15 @@ export async function setSyncCursor(source: string, cursor: Record<string, unkno
  *  is stable, so a prior follow-up marked 'done' must NOT block a fresh nudge
  *  (e.g. a second "quote sent, no reply" cycle weeks later on the same
  *  still-unapproved item). Without the status scope, clicking Done once
- *  permanently killed the nudge for that item+reason forever. */
+ *  permanently killed the nudge for that item+reason forever.
+ *
+ *  Returns 'created' on an actual write, 'skipped' for a legitimate no-op (a
+ *  pending row already exists, or the anchored item is already resolved —
+ *  see the churn-gate comment below), or 'failed' when a read errored/threw.
+ *  #310 fix-round: a plain boolean collapsed 'skipped' and 'failed' into the
+ *  same `false`, so the caller (runQuoteToolReconcile, sync.ts) had no way to
+ *  count a degraded tick separately from an ordinary one — see its
+ *  `followUpErrors` field. */
 export async function ensureFollowUp(input: {
   inboxItemId: string;
   contactId: string | null;
@@ -1042,9 +1050,9 @@ export async function ensureFollowUp(input: {
   // WT-44: cadence override so the "Follow-up reminder (days)" setting can
   // drive when the strip nudge is due; falls back to DEFAULT_FOLLOW_UP_DAYS.
   afterDays?: number;
-}): Promise<boolean> {
+}): Promise<'created' | 'skipped' | 'failed'> {
   const sb = getSupabaseServiceClient();
-  if (!sb) return false;
+  if (!sb) return 'skipped';
   // #310: this whole body used to run unguarded — a throw from either read
   // below (or the upsert) escaped straight into runQuoteToolReconcile's single
   // top-level try/catch (sync.ts), aborting the WHOLE reconcile tick (zeroing
@@ -1063,9 +1071,9 @@ export async function ensureFollowUp(input: {
       .limit(1);
     if (pendingErr) {
       console.error('[inbox] ensureFollowUp: pending lookup failed (skipping item):', pendingErr.message);
-      return false;
+      return 'failed';
     }
-    if (data && data.length > 0) return false; // a pending one already exists — don't duplicate
+    if (data && data.length > 0) return 'skipped'; // a pending one already exists — don't duplicate
 
     // #252 churn gate: quoteFollowUpDecision (quotetool.ts) derives kind:'create'
     // from the QUOTE's own fields alone — never the anchored item's status — so
@@ -1082,10 +1090,10 @@ export async function ensureFollowUp(input: {
     const { data: item, error: itemErr } = await sb.from('inbox_items').select('status').eq('id', input.inboxItemId).maybeSingle();
     if (itemErr) {
       console.error('[inbox] ensureFollowUp: item status lookup failed (skipping item):', itemErr.message);
-      return false;
+      return 'failed';
     }
     const itemStatus = (item as { status: string } | null)?.status ?? null;
-    if (itemStatus === 'completed' || itemStatus === 'dismissed') return false;
+    if (itemStatus === 'completed' || itemStatus === 'dismissed') return 'skipped';
     const fu = quoteSentNoReplyFollowUp({ contactId: input.contactId, inboxItemId: input.inboxItemId, sentAt: input.sentAt, afterDays: input.afterDays });
     // WT-43: UPSERT, not insert. The table has `unique (inbox_item_id, reason)`
     // with no status predicate, so once a prior nudge is marked 'done' a plain
@@ -1105,10 +1113,10 @@ export async function ensureFollowUp(input: {
       },
       { onConflict: 'inbox_item_id,reason' },
     );
-    return true;
+    return 'created';
   } catch (e) {
     console.error('[inbox] ensureFollowUp failed (skipping item):', e);
-    return false;
+    return 'failed';
   }
 }
 

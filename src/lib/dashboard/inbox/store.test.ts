@@ -1951,6 +1951,10 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
         return self;
       };
       self.limit = () => self;
+      // #310: sweepResolvedItemFollowUps' pending-follow_ups select now chains
+      // .order() before .limit() — a no-op here, this fake doesn't model sort
+      // order, but it must exist on the chain or the real call throws.
+      self.order = () => self;
       self.insert = (row: Record<string, unknown>) => {
         mode = 'insert';
         insertRow = row;
@@ -2282,7 +2286,7 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
       };
     }
 
-    it('returns false and leaves a done row done when the item is completed', async () => {
+    it('returns skipped and leaves a done row done when the item is completed', async () => {
       const fake = makeFollowUpsFake([
         { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'done' },
       ]);
@@ -2290,11 +2294,11 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
 
       const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
 
-      expect(created).toBe(false);
+      expect(created).toBe('skipped');
       expect(fake.rows[0].status).toBe('done');
     });
 
-    it('returns false and leaves a done row done when the item is dismissed', async () => {
+    it('returns skipped and leaves a done row done when the item is dismissed', async () => {
       const fake = makeFollowUpsFake([
         { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'done' },
       ]);
@@ -2302,7 +2306,7 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
 
       const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
 
-      expect(created).toBe(false);
+      expect(created).toBe('skipped');
       expect(fake.rows[0].status).toBe('done');
     });
 
@@ -2316,7 +2320,7 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
 
       const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
 
-      expect(created).toBe(true);
+      expect(created).toBe('created');
       expect(fake.rows[0].status).toBe('pending');
     });
 
@@ -2328,11 +2332,11 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
 
       const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
 
-      expect(created).toBe(true);
+      expect(created).toBe('created');
       expect(fake.rows[0].status).toBe('pending');
     });
 
-    it('returns false without a second write when a pending row already exists (the pre-existing early return still wins)', async () => {
+    it('returns skipped without a second write when a pending row already exists (the pre-existing early return still wins)', async () => {
       const fake = makeFollowUpsFake([
         { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'pending' },
       ]);
@@ -2340,7 +2344,7 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
 
       const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
 
-      expect(created).toBe(false);
+      expect(created).toBe('skipped');
       expect(fake.rows).toHaveLength(1);
     });
   });
@@ -2349,7 +2353,9 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
   // genuine throw (network blip) propagated straight out of ensureFollowUp into
   // runQuoteToolReconcile's single top-level catch, aborting the WHOLE reconcile
   // tick (zeroing every counter, skipping both tail sweeps) over one bad read on
-  // one quote. Guarded to fail open: skip just this item, log, return false.
+  // one quote. Guarded to fail open: skip just this item, log, return 'failed'
+  // (distinct from a legitimate 'skipped' no-op — see the fix-round doc on
+  // ensureFollowUp and QuoteReconcileSummary.followUpErrors).
   describe('ensureFollowUp — guards its reads so one failure skips the item, not the whole tick (#310)', () => {
     /** follow_ups fake whose pending-lookup chain resolves to a fixed {data, error}. */
     function makePendingLookupFake(result: { data: unknown; error: { message: string } | null }) {
@@ -2375,7 +2381,7 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
       };
     }
 
-    it('returns false and never reaches the write when the pending lookup errors', async () => {
+    it('returns failed and never reaches the write when the pending lookup errors', async () => {
       const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       try {
         sbRef.current = {
@@ -2387,7 +2393,7 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
 
         const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
 
-        expect(created).toBe(false);
+        expect(created).toBe('failed');
         expect(consoleErrorSpy).toHaveBeenCalledWith(
           '[inbox] ensureFollowUp: pending lookup failed (skipping item):',
           'connection reset',
@@ -2397,7 +2403,7 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
       }
     });
 
-    it('returns false and never reaches the write when the item-status (churn-gate) lookup errors', async () => {
+    it('returns failed and never reaches the write when the item-status (churn-gate) lookup errors', async () => {
       const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       try {
         sbRef.current = {
@@ -2410,7 +2416,7 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
 
         const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
 
-        expect(created).toBe(false);
+        expect(created).toBe('failed');
         expect(consoleErrorSpy).toHaveBeenCalledWith(
           '[inbox] ensureFollowUp: item status lookup failed (skipping item):',
           'timeout',
@@ -2420,7 +2426,7 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
       }
     });
 
-    it('catches a thrown exception from a read and returns false instead of propagating (would otherwise abort the whole reconcile tick)', async () => {
+    it('catches a thrown exception from a read and returns failed instead of propagating (would otherwise abort the whole reconcile tick)', async () => {
       const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
       try {
         sbRef.current = {
@@ -2446,7 +2452,7 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
 
         await expect(
           ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() }),
-        ).resolves.toBe(false);
+        ).resolves.toBe('failed');
         expect(consoleErrorSpy).toHaveBeenCalledWith(
           '[inbox] ensureFollowUp failed (skipping item):',
           expect.any(Error),
