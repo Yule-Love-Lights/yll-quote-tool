@@ -686,9 +686,15 @@ export function InboxList({
   // sibling-parity class between act()'s two callers): this used to fire the
   // POST and never read res.status or the JSON body — only a network throw
   // was caught. #224's new status guard on markItemCompleted makes ok:false a
-  // DESIGNED outcome (a two-operator/two-tab race the guard exists to catch),
-  // and every other /api/dashboard/* route here CAN 200 with a logical
-  // failure the same way (handled/dismiss already carry their own guards).
+  // DESIGNED outcome (a two-operator/two-tab race the guard exists to catch).
+  // Row 308 correction: NOT because any of these routes can 200 with a
+  // logical failure — verified none does. handled/route.ts turns a store
+  // ok:false into a 409; dismiss/followed/completed/route.ts each turn it into
+  // a 503; nothing here ever pairs a 200 with an ok:false body, so `!data?.ok`
+  // below is defensive-only against a route that doesn't exist today (kept in
+  // case a future one pairs 200 with a logical failure — `!res.ok` alone
+  // already catches every CURRENT case).
+  //
   // Before this fix, that response was silently discarded: the optimistic
   // removal above had already taken the row off screen, with no toast, no
   // re-insertion, nothing — a silent no-op on this page (the PRIMARY inbox

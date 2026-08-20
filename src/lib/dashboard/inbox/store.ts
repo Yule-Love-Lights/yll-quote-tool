@@ -812,6 +812,40 @@ async function priorStateOf(
   return { status: row.status, wasFollowed: !!row.followed_up_at };
 }
 
+/** Row 308: best-effort trace for the FAILURE branch of the four action
+ *  functions below (markItemHandledLocal / dismissItem / markItemFollowed /
+ *  markItemCompleted). Before this, dashboard_activity only ever got a row on
+ *  the SUCCESS path of those four — so a systemic "our writes are failing"
+ *  pattern (a lost race, an RLS misconfiguration, a genuine DB error) left no
+ *  durable trace; prod confirmed zero failure-type actions in ~1.13M rows.
+ *  The action-column value is always the literal 'action_failed' (never one
+ *  of the four verbs); `action` names WHICH of the four attempts failed
+ *  inside `detail`, alongside the same `error` string the caller is already
+ *  returning to its own caller. Mirrors recordSuppressedFollowUp's (#230a)
+ *  fire-and-forget shape: never blocks or throws, so an audit-write failure
+ *  can never turn an already-failed action into a doubly-failed request.
+ *  Renders on /inbox/activity like every other row — listActivity's own
+ *  filter excludes only 'ingested'/'escalated'. */
+async function recordActionFailed(
+  inboxItemId: string,
+  actor: string | null,
+  action: string,
+  error: string,
+): Promise<void> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return;
+  try {
+    await sb.from('dashboard_activity').insert({
+      actor,
+      action: 'action_failed',
+      inbox_item_id: inboxItemId,
+      detail: { action, error },
+    });
+  } catch (e) {
+    console.warn('[inbox] action-failure audit write failed (non-fatal):', e);
+  }
+}
+
 export type HandledTarget = {
   source: InboxSource;
   externalId: string;
@@ -840,8 +874,14 @@ export async function markItemHandledLocal(itemId: string, operatorId: string | 
     .neq('status', 'handled')
     .select('source, external_id, source_message_id, dashboard_contacts ( ghl_contact_id, display_name )')
     .maybeSingle();
-  if (error) return { ok: false, error: error.message };
-  if (!data) return { ok: false, error: 'Item not found or already handled' };
+  if (error) {
+    await recordActionFailed(itemId, operatorId, 'handled', error.message);
+    return { ok: false, error: error.message };
+  }
+  if (!data) {
+    await recordActionFailed(itemId, operatorId, 'handled', 'Item not found or already handled');
+    return { ok: false, error: 'Item not found or already handled' };
+  }
   const row = data as unknown as Record<string, unknown>;
   const c = (row.dashboard_contacts as Record<string, unknown> | null) ?? null;
   await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'handled', inbox_item_id: itemId, detail: { from } });
@@ -870,7 +910,10 @@ export async function dismissItem(itemId: string, operatorId: string | null, now
     .neq('status', 'dismissed')
     .select('dashboard_contacts ( primary_email, primary_phone )')
     .maybeSingle();
-  if (error) return { ok: false, error: error.message };
+  if (error) {
+    await recordActionFailed(itemId, operatorId, 'dismissed', error.message);
+    return { ok: false, error: error.message };
+  }
   // Already dismissed → no-op: don't log a duplicate reversible row or re-suppress
   // (a stray reverse of that row would un-suppress a still-dismissed sender).
   if (!data) return { ok: true };
@@ -919,8 +962,15 @@ export async function markItemFollowed(itemId: string, operatorId: string, now: 
     .in('status', ['unresponded', 'handled'])
     .select('id')
     .maybeSingle();
-  if (error) return { ok: false, error: error.message };
-  if (!data) return { ok: false, error: 'Item is completed or dismissed; cannot mark followed' };
+  if (error) {
+    await recordActionFailed(itemId, operatorId, 'followed', error.message);
+    return { ok: false, error: error.message };
+  }
+  if (!data) {
+    const msg = 'Item is completed or dismissed; cannot mark followed';
+    await recordActionFailed(itemId, operatorId, 'followed', msg);
+    return { ok: false, error: msg };
+  }
   await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'followed', inbox_item_id: itemId, detail: { from } });
   return { ok: true };
 }
@@ -2077,8 +2127,15 @@ export async function markItemCompleted(
     .in('status', ['unresponded', 'handled'])
     .select('id')
     .maybeSingle();
-  if (error) return { ok: false, error: error.message };
-  if (!data) return { ok: false, error: 'Item not found, already completed, or dismissed' };
+  if (error) {
+    await recordActionFailed(itemId, operatorId, 'completed', error.message);
+    return { ok: false, error: error.message };
+  }
+  if (!data) {
+    const msg = 'Item not found, already completed, or dismissed';
+    await recordActionFailed(itemId, operatorId, 'completed', msg);
+    return { ok: false, error: msg };
+  }
   await sb.from('dashboard_activity').insert({
     actor: operatorId,
     action: 'completed',

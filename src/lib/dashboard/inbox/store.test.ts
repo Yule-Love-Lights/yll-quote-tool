@@ -4115,7 +4115,7 @@ describe('markItemCompleted — status guard (#224)', () => {
     return { from, updateCalls, activityCalls };
   }
 
-  it('blocks re-completing an item the guard excluded (already dismissed or already completed), and does not log activity', async () => {
+  it('blocks re-completing an item the guard excluded (already dismissed or already completed), and never logs a false "completed" row', async () => {
     // maybeSingle() returns null when the guarded UPDATE...WHERE matched zero
     // rows (status was 'dismissed' or 'completed') — no DB error, just nothing
     // to update.
@@ -4128,7 +4128,16 @@ describe('markItemCompleted — status guard (#224)', () => {
     if (!res.ok) expect(res.error).toMatch(/dismissed|completed/i);
     // The logically-wrong-200 the ticket calls out: a blocked guard must not
     // ALSO write a false activity trail claiming the action happened.
-    expect(activityCalls.some((c) => c.method === 'insert')).toBe(false);
+    const insertCalls = activityCalls.filter((c) => c.method === 'insert');
+    expect(insertCalls.some((c) => (c.args[0] as { action?: string }).action === 'completed')).toBe(false);
+    // Row 308: the guard refusal itself now DOES get a durable trace — an
+    // 'action_failed' row (never the literal 'completed' verb), so a
+    // systemic write-failure pattern is no longer invisible.
+    expect(insertCalls).toContainEqual(
+      expect.objectContaining({
+        args: [expect.objectContaining({ action: 'action_failed', inbox_item_id: ITEM_ID, detail: { action: 'completed', error: 'Item not found, already completed, or dismissed' } })],
+      }),
+    );
   });
 
   it('the update chain is a POSITIVE match on the two legal source statuses (the actual guard, not just the observed outcome)', async () => {
@@ -4199,7 +4208,15 @@ describe('markItemFollowed — status guard (row 306)', () => {
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toMatch(/completed|dismissed/i);
     // A blocked guard must not ALSO write a false 'followed' activity trail.
-    expect(activityCalls.some((c) => c.method === 'insert')).toBe(false);
+    const insertCalls = activityCalls.filter((c) => c.method === 'insert');
+    expect(insertCalls.some((c) => (c.args[0] as { action?: string }).action === 'followed')).toBe(false);
+    // Row 308: the guard refusal itself now DOES get a durable trace — an
+    // 'action_failed' row (never the literal 'followed' verb).
+    expect(insertCalls).toContainEqual(
+      expect.objectContaining({
+        args: [expect.objectContaining({ action: 'action_failed', inbox_item_id: ITEM_ID, detail: { action: 'followed', error: 'Item is completed or dismissed; cannot mark followed' } })],
+      }),
+    );
   });
 
   it('the update chain is a POSITIVE match on the two legal source statuses (AGENTS.md positive-seam-gate convention, mirroring markItemCompleted)', async () => {
@@ -4243,6 +4260,148 @@ describe('markItemFollowed — status guard (row 306)', () => {
     const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toBe('connection reset');
+  });
+});
+
+// Row 308: before this, dashboard_activity only ever got a row on the SUCCESS
+// path of markItemHandledLocal/dismissItem/markItemFollowed/markItemCompleted
+// — prod confirmed zero failure-type actions in ~1.13M rows. recordActionFailed
+// (private, exercised only through these four callers — mirrors
+// recordAutoClosedFollowUps' own untested-in-isolation convention in this same
+// file) now writes a best-effort 'action_failed' row on each function's real
+// FAILURE branch, never on a reported-success no-op (dismissItem's
+// already-dismissed !data path still returns {ok:true} and logs nothing).
+describe('recordActionFailed — row 308 (failure-branch activity trace)', () => {
+  const ITEM_ID = 'item-42';
+  const OPERATOR_ID = '11111111-2222-3333-4444-555555555555';
+  const NOW = new Date('2026-08-20T12:00:00Z');
+
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  /** Mirrors the sibling describe blocks' own makeSbFor above. */
+  function makeSbFor(itemUpdateResult: { data: unknown; error: null | { message: string } }) {
+    const { builder: priorBuilder } = makeBuilder({ data: null, error: null });
+    const { builder: updateBuilder } = makeBuilder(itemUpdateResult);
+    const { builder: activityBuilder, calls: activityCalls } = makeBuilder({ data: null, error: null });
+    let inboxCallCount = 0;
+    const from = (table: string) => {
+      if (table === 'inbox_items') {
+        inboxCallCount += 1;
+        return inboxCallCount === 1 ? priorBuilder : updateBuilder;
+      }
+      if (table === 'dashboard_activity') return activityBuilder;
+      throw new Error(`unexpected table: ${table}`);
+    };
+    return { from, activityCalls };
+  }
+
+  function actionFailedRow(activityCalls: { method: string; args: unknown[] }[]) {
+    return activityCalls
+      .filter((c) => c.method === 'insert')
+      .map((c) => c.args[0] as { actor?: unknown; action?: string; inbox_item_id?: string; detail?: unknown })
+      .find((row) => row.action === 'action_failed');
+  }
+
+  it('markItemHandledLocal: a real DB error logs action_failed with detail {action, error}, actor = the operator', async () => {
+    const { from, activityCalls } = makeSbFor({ data: null, error: { message: 'connection reset' } });
+    sbRef.current = { from };
+
+    await markItemHandledLocal(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(actionFailedRow(activityCalls)).toMatchObject({
+      actor: OPERATOR_ID,
+      inbox_item_id: ITEM_ID,
+      detail: { action: 'handled', error: 'connection reset' },
+    });
+  });
+
+  it('markItemHandledLocal: the guard refusal (already handled) also logs action_failed', async () => {
+    const { from, activityCalls } = makeSbFor({ data: null, error: null });
+    sbRef.current = { from };
+
+    await markItemHandledLocal(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(actionFailedRow(activityCalls)).toMatchObject({
+      detail: { action: 'handled', error: 'Item not found or already handled' },
+    });
+  });
+
+  it('dismissItem: a real DB error logs action_failed with detail {action, error}', async () => {
+    const { from, activityCalls } = makeSbFor({ data: null, error: { message: 'connection reset' } });
+    sbRef.current = { from };
+
+    await dismissItem(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(actionFailedRow(activityCalls)).toMatchObject({
+      actor: OPERATOR_ID,
+      inbox_item_id: ITEM_ID,
+      detail: { action: 'dismissed', error: 'connection reset' },
+    });
+  });
+
+  it('dismissItem: the already-dismissed no-op (!data, reported ok:true) logs NO action_failed row — it is not a failure', async () => {
+    const { from, activityCalls } = makeSbFor({ data: null, error: null });
+    sbRef.current = { from };
+
+    const res = await dismissItem(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+    expect(actionFailedRow(activityCalls)).toBeUndefined();
+  });
+
+  it('markItemCompleted: a real DB error logs action_failed with detail {action, error}', async () => {
+    const { from, activityCalls } = makeSbFor({ data: null, error: { message: 'connection reset' } });
+    sbRef.current = { from };
+
+    await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(actionFailedRow(activityCalls)).toMatchObject({
+      actor: OPERATOR_ID,
+      inbox_item_id: ITEM_ID,
+      detail: { action: 'completed', error: 'connection reset' },
+    });
+  });
+
+  it('markItemFollowed: a real DB error logs action_failed with detail {action, error}', async () => {
+    const { from, activityCalls } = makeSbFor({ data: null, error: { message: 'connection reset' } });
+    sbRef.current = { from };
+
+    await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(actionFailedRow(activityCalls)).toMatchObject({
+      actor: OPERATOR_ID,
+      inbox_item_id: ITEM_ID,
+      detail: { action: 'followed', error: 'connection reset' },
+    });
+  });
+
+  it('an audit-write failure while logging action_failed never turns the caller\'s own response into a throw (fire-and-forget, mirrors recordSuppressedFollowUp)', async () => {
+    const { builder: priorBuilder } = makeBuilder({ data: null, error: null });
+    const { builder: updateBuilder } = makeBuilder({ data: null, error: { message: 'connection reset' } });
+    const throwingActivityBuilder = {
+      insert: () => {
+        throw new Error('activity table unreachable');
+      },
+    };
+    let inboxCallCount = 0;
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'inbox_items') {
+          inboxCallCount += 1;
+          return inboxCallCount === 1 ? priorBuilder : updateBuilder;
+        }
+        if (table === 'dashboard_activity') return throwingActivityBuilder;
+        throw new Error(`unexpected table: ${table}`);
+      },
+    };
+
+    // markItemCompleted's own {ok:false, error} return must still resolve normally.
+    await expect(markItemCompleted(ITEM_ID, OPERATOR_ID, NOW)).resolves.toEqual({
+      ok: false,
+      error: 'connection reset',
+    });
   });
 });
 
