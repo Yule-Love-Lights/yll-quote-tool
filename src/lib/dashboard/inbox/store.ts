@@ -879,8 +879,12 @@ export async function markItemHandledLocal(itemId: string, operatorId: string | 
     return { ok: false, error: error.message };
   }
   if (!data) {
-    await recordActionFailed(itemId, operatorId, 'handled', 'Item not found or already handled');
-    return { ok: false, error: 'Item not found or already handled' };
+    // Row 311 fix-round FIX 4: hoisted, mirroring the sibling guard functions'
+    // own `const msg = '...'` pattern (markItemFollowed / markItemCompleted) —
+    // this repeated the literal twice.
+    const msg = 'Item not found or already handled';
+    await recordActionFailed(itemId, operatorId, 'handled', msg);
+    return { ok: false, error: msg };
   }
   const row = data as unknown as Record<string, unknown>;
   const c = (row.dashboard_contacts as Record<string, unknown> | null) ?? null;
