@@ -925,3 +925,41 @@ export function colorChangeAppliedEmailHtml(firstName: string, label: string): s
     `<p>Warm wishes,<br>Yule Love Lights team</p>`,
   ].join('\n');
 }
+
+// ─── Colour change REQUESTED — internal staff alert (ledger row 319) ────────
+// Fired (best-effort) when a customer requests a colour change on a booked
+// order (color-change-request/route.ts). Before this, the only record was an
+// /inbox row — Susan Pace-Burke's request sat unanswered 3 days and Kristie
+// Tibbetts' was dismissed same-day with no email ever firing. Mirrors
+// internalChangesRequestedEmail* exactly (same request shape: a customer
+// portal action on an existing quote that needs a staff look).
+
+export function internalColorChangeRequestedEmailSubject(customerName: string | null): string {
+  const who = customerName?.replace(/[\r\n]+/g, ' ').trim() || 'A customer';
+  return `🎨 Colour change requested: ${who}`;
+}
+
+export function internalColorChangeRequestedEmailHtml(input: {
+  customerName: string | null;
+  address: string | null;
+  phone: string | null;
+  email: string | null;
+  label: string;
+  portalUrl: string;
+  adminUrl: string;
+}): string {
+  const name = escapeHtml(input.customerName?.trim() || 'Unknown');
+  const row = (label: string, value: string) =>
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
+  return [
+    `<p><strong>${name}</strong> requested a colour change on their booked order.</p>`,
+    `<p><strong>Requested colour:</strong> ${escapeHtml(input.label)}</p>`,
+    `<table style="border-collapse:collapse;font-size:14px;">`,
+    row('Customer', name),
+    row('Phone', escapeHtml(input.phone || '—')),
+    row('Email', escapeHtml(input.email || '—')),
+    row('Address', escapeHtml(input.address || '—')),
+    `</table>`,
+    `<p><a href="${input.adminUrl}">Open in quote tool to apply →</a> &nbsp;|&nbsp; <a href="${input.portalUrl}">Customer portal →</a></p>`,
+  ].join('\n');
+}
