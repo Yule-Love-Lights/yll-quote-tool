@@ -1034,9 +1034,13 @@ describe('listInWorks — parallel fetch (#185)', () => {
 
     const result = await listInWorks(200);
     expect(result.ok).toBe(true);
-    // The array-literal order in store.ts's Promise.all is [awaiting, handled]
-    // (see the #185 comment above this describe block) -- call index 0 is the
-    // awaiting query, index 1 is the handled query.
+    // Call index 0 = awaiting, index 1 = handled — attribution follows the
+    // CONST-DECLARATION order of the two base queries in listInWorks (each
+    // `sb.from('inbox_items')` fires when its const line evaluates, before the
+    // Promise.all array is even built), NOT the Promise.all array positions.
+    // A cosmetic reorder of those two const lines would flip these indexes and
+    // fail this test spuriously — if that happens, swap the indexes here; the
+    // per-bucket predicate assertions below are what this test is really for.
     expect(inboxCallIndex).toBe(2);
 
     const awaitingCalls = inboxCalls[0];
