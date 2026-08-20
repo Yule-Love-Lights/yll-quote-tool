@@ -57,18 +57,40 @@ function addDays(dayKey: string, days: number): string {
  * The instant of ET midnight that ENDS the ET day containing `instant` — that is,
  * 00:00 ET on the following calendar day.
  *
- * DST is handled by probing the offset at NOON of the target day rather than at
- * midnight itself. A spring-forward transition happens at 02:00 local, so noon is
- * safely past it and yields the offset that actually applies to that day;
- * probing at the boundary can land inside the discontinuity.
+ * ⚠️ DST, and why the obvious approach is WRONG. An earlier version probed the
+ * offset at NOON of the target day and used it to compute that day's midnight.
+ * That is correct on ordinary days and wrong on the two days a year when the
+ * target day IS the transition day, because midnight (before 02:00) and noon
+ * (after 02:00) sit on OPPOSITE sides of the change and have different offsets:
+ *
+ *   spring forward 2026-03-08 — returned 04:00Z, i.e. 23:00 ET on Mar 7. An hour
+ *     EARLY, so a forgotten shift was capped an hour short: UNDERPAY.
+ *   fall back 2026-11-01 — returned 05:00Z, i.e. 01:00 ET. An hour LATE, so an
+ *     hour belonging to the next day was credited: OVERPAY.
+ *
+ * The fix is to converge: take a first guess, then re-probe the offset AT that
+ * guess and recompute. On an ordinary day the first guess is already right and
+ * this settles immediately; on a transition day the first guess lands on the
+ * wrong side and exactly one correction fixes it. Bounded to a few iterations so
+ * it can never spin.
+ *
+ * Caught by the S58 wrap review's money lens. The previous test named
+ * "handles the spring-forward day" computed the midnight AFTER that day — an
+ * ordinary day — so it passed while the real case was broken.
  */
 export function etMidnightAfter(instant: Date): Date {
   const nextDay = addDays(etDayKey(instant), 1);
-  const noonProbe = new Date(`${nextDay}T12:00:00Z`);
-  const offset = etOffsetMinutes(noonProbe);
+  const midnightUtc = Date.parse(`${nextDay}T00:00:00Z`);
 
-  // Midnight ET expressed as UTC = 00:00 on that date minus the ET offset.
-  return new Date(Date.parse(`${nextDay}T00:00:00Z`) - offset * 60_000);
+  // First guess from the day's noon offset, then converge on the offset that is
+  // actually in force at the resulting instant.
+  let guess = new Date(midnightUtc - etOffsetMinutes(new Date(`${nextDay}T12:00:00Z`)) * 60_000);
+  for (let i = 0; i < 4; i += 1) {
+    const corrected = new Date(midnightUtc - etOffsetMinutes(guess) * 60_000);
+    if (corrected.getTime() === guess.getTime()) break;
+    guess = corrected;
+  }
+  return guess;
 }
 
 /** True when `clockInAt` falls on an ET calendar day EARLIER than `now`'s. */

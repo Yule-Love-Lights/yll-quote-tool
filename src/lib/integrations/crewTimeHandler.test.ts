@@ -113,6 +113,7 @@ describe('identity comes from the sender', () => {
     state.current.crew = null;
     const out = await say('in');
     expect(out).toMatchObject({ handled: true });
+    expect(out.handled).toBe(true);
     if (out.handled) expect(out.reply).toContain('do not have you set up');
     expect(state.current.calls).toEqual([]);
   });
@@ -120,6 +121,7 @@ describe('identity comes from the sender', () => {
   it('refuses an inactive crew member', async () => {
     state.current.crew = { id: 'crew-1', displayName: 'X', active: false };
     const out = await say('in');
+    expect(out.handled).toBe(true);
     if (out.handled) expect(out.reply).toContain('not active');
     expect(state.current.calls).toEqual([]);
   });
@@ -129,6 +131,7 @@ describe('clock in / out', () => {
   it('clocks in and confirms the time', async () => {
     const out = await say('in');
     expect(state.current.calls).toContain('clockIn');
+    expect(out.handled).toBe(true);
     if (out.handled) expect(out.reply).toMatch(/Clocked in at/);
   });
 
@@ -136,12 +139,14 @@ describe('clock in / out', () => {
     state.current.shift = { id: 's1', clockInAt: '2026-08-18T12:00:00Z', clockOutAt: null };
     const out = await say('in');
     expect(state.current.calls).not.toContain('clockIn');
+    expect(out.handled).toBe(true);
     if (out.handled) expect(out.reply).toContain('Already clocked in');
   });
 
   it('refuses clock out when not clocked in', async () => {
     const out = await say('out');
     expect(state.current.calls).not.toContain('clockOut');
+    expect(out.handled).toBe(true);
     if (out.handled) expect(out.reply).toBe('You are not clocked in.');
   });
 
@@ -161,6 +166,7 @@ describe('breaks', () => {
   it('requires a clock-in first', async () => {
     const out = await say('break');
     expect(state.current.calls).not.toContain('startBreak');
+    expect(out.handled).toBe(true);
     if (out.handled) expect(out.reply).toContain('Clock in first');
   });
 
@@ -168,6 +174,7 @@ describe('breaks', () => {
     state.current.shift = { id: 's1', clockInAt: '2026-08-18T12:00:00Z', clockOutAt: null };
     const out = await say('lunch');
     expect(state.current.calls).toContain('startBreak');
+    expect(out.handled).toBe(true);
     if (out.handled) expect(out.reply).toContain('unpaid');
   });
 
@@ -176,6 +183,7 @@ describe('breaks', () => {
     state.current.brk = { id: 'b1', startedAt: '2026-08-18T16:00:00Z', endedAt: null };
     const out = await say('break');
     expect(state.current.calls).not.toContain('startBreak');
+    expect(out.handled).toBe(true);
     if (out.handled) expect(out.reply).toContain('Already on break');
   });
 
@@ -199,6 +207,7 @@ describe('arrive / depart / done', () => {
     state.current.brk = { id: 'b1', startedAt: '2026-08-18T16:00:00Z', endedAt: null };
     const out = await say('arrive 1042');
     expect(state.current.calls).not.toContain('arriveAtJob');
+    expect(out.handled).toBe(true);
     if (out.handled) expect(out.reply).toContain('on a break');
   });
 
@@ -206,12 +215,14 @@ describe('arrive / depart / done', () => {
     state.current.job = null;
     const out = await say('arrive 9999');
     expect(state.current.calls).not.toContain('arriveAtJob');
+    expect(out.handled).toBe(true);
     if (out.handled) expect(out.reply).toContain('cannot find job #9999');
   });
 
   it('arrives at a real job', async () => {
     const out = await say('arrive 1042');
     expect(state.current.calls).toContain('arriveAtJob');
+    expect(out.handled).toBe(true);
     if (out.handled) expect(out.reply).toContain('#1042');
   });
 
@@ -220,12 +231,14 @@ describe('arrive / depart / done', () => {
     const out = await say('depart rain');
     expect(state.current.calls).toContain('departFromJob:weather');
     expect(state.current.statusSet).toEqual([]);
+    expect(out.handled).toBe(true);
     if (out.handled) expect(out.reply).toContain('Not marked finished');
   });
 
   it('coaches a depart with no reason instead of guessing one', async () => {
     const out = await say('depart');
     expect(state.current.calls).toEqual([]);
+    expect(out.handled).toBe(true);
     if (out.handled) expect(out.reply).toContain('Which reason?');
   });
 
@@ -234,6 +247,7 @@ describe('arrive / depart / done', () => {
     const out = await say('done');
     expect(state.current.calls).toContain('departFromJob:completed');
     expect(state.current.statusSet).toEqual(['installed']);
+    expect(out.handled).toBe(true);
     if (out.handled) expect(out.reply).toContain('marked installed');
   });
 
@@ -244,6 +258,7 @@ describe('arrive / depart / done', () => {
     const out = await say('done');
     expect(state.current.calls).toContain('departFromJob:completed');
     expect(state.current.statusSet).toEqual([]);
+    expect(out.handled).toBe(true);
     if (out.handled) expect(out.reply).toContain('Time recorded');
   });
 
@@ -252,6 +267,7 @@ describe('arrive / depart / done', () => {
     state.current.job = { id: 'job-uuid', job_number: 1042, status: 'installed' };
     const out = await say('done');
     expect(state.current.statusSet).toEqual([]);
+    expect(out.handled).toBe(true);
     if (out.handled) expect(out.reply).toContain('Already marked installed');
   });
 });
@@ -259,6 +275,7 @@ describe('arrive / depart / done', () => {
 describe('status', () => {
   it('says plainly when not clocked in', async () => {
     const out = await say('status');
+    expect(out.handled).toBe(true);
     if (out.handled) expect(out.reply).toBe('Not clocked in.');
   });
 
@@ -272,6 +289,33 @@ describe('status', () => {
       expect(out.reply).toContain('On break since');
       expect(out.reply).toContain('#1042');
     }
+  });
+});
+
+describe('unaddressed group messages do not get replied to', () => {
+  // A crew group is full of people saying "done" and "back" to each other. The
+  // bot answers ONLY when spoken to; replying to a non-crew member's chatter
+  // broke that contract and spammed the group.
+  it('stays silent for a NON-crew sender who did not address the bot', async () => {
+    state.current.crew = null;
+    const out = await handleCrewTimeMessage('tg-stranger', 'done', { addressed: false });
+    expect(out).toEqual({ handled: false });
+  });
+
+  it('DOES explain itself when a non-crew sender addresses the bot directly', async () => {
+    // A real crew member whose Telegram is unlinked deserves to be told why.
+    state.current.crew = null;
+    const out = await handleCrewTimeMessage('tg-stranger', 'done', { addressed: true });
+    expect(out.handled).toBe(true);
+    if (out.handled) expect(out.reply).toContain('do not have you set up');
+  });
+
+  it('still works for a real crew member who did not address the bot', async () => {
+    // The whole reason capture runs ahead of the gate: "in" is how crew talk.
+    state.current.shift = null;
+    const out = await handleCrewTimeMessage('tg-1', 'in', { addressed: false });
+    expect(out.handled).toBe(true);
+    expect(state.current.calls).toContain('clockIn');
   });
 });
 
