@@ -2412,6 +2412,19 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
       expect(closed).toBe(0);
       expect(inboxItemsQueried).toBe(false);
     });
+
+    // #310: sibling-parity fix to the sweepOrphanedFollowUps bound above — same
+    // unbounded pending-follow_ups select, same silent-truncation risk.
+    it('bounds the pending-follow_ups lookup with an explicit .limit() (#310)', async () => {
+      const { builder: pendingBuilder, calls } = makeBuilder({ data: [], error: null });
+      sbRef.current = { from: (_table: string) => pendingBuilder };
+
+      await sweepResolvedItemFollowUps();
+
+      const limitCall = calls.find((c) => c.method === 'limit');
+      expect(limitCall).toBeDefined();
+      expect(limitCall!.args[0]).toBeGreaterThanOrEqual(1000);
+    });
   });
 });
 
@@ -3235,6 +3248,21 @@ describe('sweepOrphanedFollowUps — I/O wiring (#183 BUG 3)', () => {
     const closed = await sweepOrphanedFollowUps(REASON);
     expect(closed).toBe(0);
     expect(fromCalls).toBe(1); // only the pending-follow_ups query fired
+  });
+
+  // #310: was unbounded — PostgREST silently truncates at its 1000-row default,
+  // so past that this sweep would stop covering rows with no error and no
+  // signal. Pins that the pending-follow_ups lookup carries an explicit bound
+  // with real headroom over the current ~57-row table.
+  it('bounds the pending-follow_ups lookup with an explicit .limit() (#310)', async () => {
+    const { builder: pendingBuilder, calls } = makeBuilder({ data: [], error: null });
+    sbRef.current = { from: (_table: string) => pendingBuilder };
+
+    await sweepOrphanedFollowUps(REASON);
+
+    const limitCall = calls.find((c) => c.method === 'limit');
+    expect(limitCall).toBeDefined();
+    expect(limitCall!.args[0]).toBeGreaterThanOrEqual(1000);
   });
 
   it('fails open (closes nothing) and logs when the pending-follow_ups lookup errors', async () => {

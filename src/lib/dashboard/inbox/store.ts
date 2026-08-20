@@ -1373,7 +1373,14 @@ export async function sweepOrphanedFollowUps(reason: string): Promise<number> {
     .from('follow_ups')
     .select('id, inbox_item_id')
     .eq('reason', reason)
-    .eq('status', 'pending');
+    .eq('status', 'pending')
+    // #310: was unbounded — PostgREST silently truncates at its 1000-row
+    // default, so past that this sweep would stop covering rows with no
+    // error and no signal. follow_ups holds 57 today; 5000 mirrors the cap
+    // already used a few times in this file (getReopenCounts' distinct(),
+    // the returning-contact tally above) for the same "generous headroom,
+    // bound the pathological case" reasoning.
+    .limit(5000);
   if (pendingErr) {
     console.error('[inbox] orphan follow-up sweep: pending lookup failed:', pendingErr.message);
     return 0;
@@ -1445,7 +1452,13 @@ export async function sweepResolvedItemFollowUps(): Promise<number> {
   const sb = getSupabaseServiceClient();
   if (!sb) return 0;
 
-  const { data: pending, error: pendingErr } = await sb.from('follow_ups').select('id, inbox_item_id').eq('status', 'pending');
+  // #310: was unbounded — same PostgREST 1000-row default-truncation risk as
+  // sweepOrphanedFollowUps' pending lookup above (sibling-parity fix, one pass).
+  const { data: pending, error: pendingErr } = await sb
+    .from('follow_ups')
+    .select('id, inbox_item_id')
+    .eq('status', 'pending')
+    .limit(5000);
   if (pendingErr) {
     console.error('[inbox] resolved-item follow-up sweep: pending lookup failed:', pendingErr.message);
     return 0;
