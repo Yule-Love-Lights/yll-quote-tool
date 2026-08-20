@@ -2068,7 +2068,11 @@ export type ActivityRow = {
 };
 export type ActivityResult = { ok: true; rows: ActivityRow[] } | { ok: false; error: string };
 
-const REVERSIBLE_ACTIONS = new Set(['handled', 'followed', 'completed', 'dismissed']);
+// row 312: 'reclassified' added — the 26 S41 data-op rows say "reversible by
+// setting followed_up_at back to null" in their own detail text; it belongs
+// here so /inbox/activity actually renders the Reverse button that wording
+// promises (see inverseOf's 'reclassified' case, lifecycle.ts).
+const REVERSIBLE_ACTIONS = new Set(['handled', 'followed', 'completed', 'dismissed', 'reclassified']);
 
 /** Paginated, newest-first read of dashboard_activity, joined to the customer
  *  display name via inbox_item → dashboard_contact. actorName resolves the raw
@@ -2137,11 +2141,30 @@ export async function reverseItemState(
   };
   if (!a.inbox_item_id) return { ok: false, error: 'Entry has no item to reverse' };
 
-  const reversible: ReverseAction[] = ['handled', 'followed', 'completed', 'dismissed'];
+  const reversible: ReverseAction[] = ['handled', 'followed', 'completed', 'dismissed', 'reclassified'];
   if (!reversible.includes(a.action as ReverseAction)) {
     return { ok: false, error: 'This entry cannot be reversed' };
   }
   const action = a.action as ReverseAction;
+
+  // row 312(c) wrong-occurrence guard: stillMatches (below) only checks that the
+  // CURRENT state happens to equal what this action would have produced — it
+  // can't tell that state apart from an unrelated LATER action that coincidentally
+  // landed the item back in the same state (e.g. a later Reverse restores
+  // status='handled', which then also matches a much-older, unrelated 'handled'
+  // row for the same item). Require this row to actually be the most recent
+  // state-changing row for the item before trusting stillMatches at all.
+  const { data: latest } = await sb
+    .from('dashboard_activity')
+    .select('id')
+    .eq('inbox_item_id', a.inbox_item_id)
+    .in('action', [...reversible, 'reversed'])
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (latest && String((latest as { id: string }).id) !== activityId) {
+    return { ok: false, error: 'A later action already changed this item; nothing to reverse from here' };
+  }
 
   // Only reverse if the item is STILL in the state this action produced — otherwise
   // a later action superseded it and reversing now would clobber the newer state
@@ -2153,7 +2176,10 @@ export async function reverseItemState(
     .maybeSingle();
   if (!cur) return { ok: false, error: 'Item not found' };
   const curRow = cur as { status: string; followed_up_at: string | null };
-  const stillMatches = action === 'followed' ? curRow.followed_up_at != null : curRow.status === action;
+  // 'reclassified', like 'followed', only ever sets followed_up_at — never
+  // status — so its match check is the same shape (see inverseOf's doc).
+  const stillMatches =
+    action === 'followed' || action === 'reclassified' ? curRow.followed_up_at != null : curRow.status === action;
   if (!stillMatches) return { ok: false, error: 'Item state has changed since this action; nothing to reverse' };
 
   const t = inverseOf(action, a.detail?.from as { status?: InboxStatus; wasFollowed?: boolean } | undefined);

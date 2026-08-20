@@ -10,6 +10,9 @@ const ACTION_LABEL: Record<string, string> = {
   dismissed: 'Not a lead',
   reopened: 'Reopened',
   reversed: 'Reversed',
+  // row 312(b): the S41 bulk data op re-filed 26 sent-but-unanswered quotes
+  // into Awaiting reply — was rendering as the raw 'reclassified' string.
+  reclassified: 'Reclassified',
   ingested: 'New message',
   // #230(a): a #220 internal-domain follow-up suppression — see
   // recordSuppressedFollowUp's doc (store.ts).
@@ -20,7 +23,11 @@ const ACTION_LABEL: Record<string, string> = {
   followup_autoclosed: 'Follow-up closed (conversation resolved)',
 };
 
-function friendlyAction(action: string): string {
+// Exported only so ACTION_LABEL coverage (every action listActivity can
+// return) is directly unit-testable without jsdom (mirrors the pure-helper
+// export pattern used across the inbox components, e.g. InWorksSection's
+// requiresCompleteConfirmation).
+export function friendlyAction(action: string): string {
   return ACTION_LABEL[action] ?? action;
 }
 

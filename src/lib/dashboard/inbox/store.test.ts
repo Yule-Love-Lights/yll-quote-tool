@@ -343,6 +343,7 @@ import {
   findViewOnlyFollowUpItems,
   getReopenCounts,
   isHiddenLegacyRebookQuote,
+  listActivity,
   listDueFollowUps,
   listInWorks,
   listOpenItems,
@@ -353,6 +354,7 @@ import {
   needsLookReason,
   quoteIdPrefix,
   recordSuppressedFollowUp,
+  reverseItemState,
   sweepOrphanedFollowUps,
   sweepResolvedItemFollowUps,
 } from './store';
@@ -3900,5 +3902,183 @@ describe('recordSuppressedFollowUp (#230a — suppression visibility)', () => {
   it('no-ops (no throw) when the service client is not configured', async () => {
     sbRef.current = null;
     await expect(recordSuppressedFollowUp('item-99', {})).resolves.toBeUndefined();
+  });
+});
+
+// row 312a: /inbox/activity's Reverse button is driven by listActivity's
+// `reversible` flag (REVERSIBLE_ACTIONS, store.ts) — a 'reclassified' row must
+// flip it true, or the button never renders regardless of what reverseItemState
+// itself accepts.
+describe('listActivity — reversible flag (row 312a)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('marks a reclassified row reversible: true', async () => {
+    const { builder } = makeBuilder({
+      data: [
+        {
+          id: 'a1',
+          action: 'reclassified',
+          actor: 'system',
+          inbox_item_id: 'i1',
+          created_at: '2026-08-19T00:00:00Z',
+          inbox_items: null,
+        },
+      ],
+      error: null,
+    });
+    sbRef.current = { from: () => builder };
+
+    const res = await listActivity(10);
+
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.rows).toHaveLength(1);
+      expect(res.rows[0]).toMatchObject({ action: 'reclassified', reversible: true });
+    }
+  });
+});
+
+// row 312: reverseItemState — 'reclassified' reversibility + the wrong-occurrence
+// guard (312c). Sequence of sb.from() calls: dashboard_activity (act lookup) ->
+// dashboard_activity (latest-row guard) -> inbox_items (current state) ->
+// inbox_items (update) -> [inbox_items (unsuppress lookup), dismissed only] ->
+// dashboard_activity (insert the 'reversed' row).
+describe('reverseItemState (row 312 — reclassified + wrong-occurrence guard)', () => {
+  const OPERATOR_ID = '11111111-2222-3333-4444-555555555555';
+  const NOW = new Date('2026-08-20T12:00:00Z');
+  const ITEM_ID = 'item-1';
+  const ACTIVITY_ID = 'act-1';
+
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  function makeSbForReverse(opts: {
+    activityRow: { data: unknown; error?: null | { message: string } };
+    latestRow: { data: unknown; error?: null | { message: string } };
+    curItem?: { data: unknown; error?: null | { message: string } };
+    updateResult?: { data: unknown; error: null | { message: string } };
+    unsuppressRow?: { data: unknown; error?: null | { message: string } };
+  }) {
+    const { builder: activityLookupBuilder } = makeBuilder({
+      data: opts.activityRow.data,
+      error: opts.activityRow.error ?? null,
+    });
+    const { builder: latestBuilder, calls: latestCalls } = makeBuilder({
+      data: opts.latestRow.data,
+      error: opts.latestRow.error ?? null,
+    });
+    const { builder: curBuilder } = makeBuilder({
+      data: opts.curItem?.data ?? null,
+      error: opts.curItem?.error ?? null,
+    });
+    const { builder: updateBuilder, calls: updateCalls } = makeBuilder(opts.updateResult ?? { data: null, error: null });
+    const { builder: unsuppressBuilder } = makeBuilder({
+      data: opts.unsuppressRow?.data ?? null,
+      error: opts.unsuppressRow?.error ?? null,
+    });
+    const { builder: insertBuilder, calls: insertCalls } = makeBuilder({ data: null, error: null });
+
+    let activityCallCount = 0;
+    let inboxCallCount = 0;
+    const from = (table: string) => {
+      if (table === 'dashboard_activity') {
+        activityCallCount += 1;
+        if (activityCallCount === 1) return activityLookupBuilder;
+        if (activityCallCount === 2) return latestBuilder;
+        return insertBuilder;
+      }
+      if (table === 'inbox_items') {
+        inboxCallCount += 1;
+        if (inboxCallCount === 1) return curBuilder;
+        if (inboxCallCount === 2) return updateBuilder;
+        return unsuppressBuilder;
+      }
+      throw new Error(`unexpected table: ${table}`);
+    };
+    return { from, latestCalls, updateCalls, insertCalls };
+  }
+
+  it("reverses a 'reclassified' row: clears followed_up_at only, status untouched", async () => {
+    const { from, updateCalls, insertCalls } = makeSbForReverse({
+      activityRow: { data: { action: 'reclassified', inbox_item_id: ITEM_ID, detail: null } },
+      latestRow: { data: { id: ACTIVITY_ID } }, // this row IS the latest — passes 312c
+      curItem: { data: { status: 'handled', followed_up_at: '2026-08-01T00:00:00Z' } },
+    });
+    sbRef.current = { from };
+
+    const res = await reverseItemState(ACTIVITY_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+    const updateCall = updateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ followed_up_at: null });
+    expect(updateCall!.args[0]).not.toHaveProperty('status'); // inverseOf('reclassified') never sets status
+    const insertCall = insertCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toMatchObject({ action: 'reversed', detail: { reversed_action: 'reclassified' } });
+  });
+
+  it("refuses a 'reclassified' row whose item is no longer awaiting reply (followed_up_at already cleared)", async () => {
+    const { from, updateCalls } = makeSbForReverse({
+      activityRow: { data: { action: 'reclassified', inbox_item_id: ITEM_ID, detail: null } },
+      latestRow: { data: { id: ACTIVITY_ID } },
+      curItem: { data: { status: 'handled', followed_up_at: null } },
+    });
+    sbRef.current = { from };
+
+    const res = await reverseItemState(ACTIVITY_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/state has changed/i);
+    expect(updateCalls.some((c) => c.method === 'update')).toBe(false);
+  });
+
+  it('312c: refuses when a LATER state-changing row exists for the same item (wrong-occurrence guard)', async () => {
+    const { from, updateCalls } = makeSbForReverse({
+      activityRow: { data: { action: 'handled', inbox_item_id: ITEM_ID, detail: null } },
+      latestRow: { data: { id: 'act-later-999' } }, // some other, more recent row
+      curItem: { data: { status: 'handled', followed_up_at: null } }, // would otherwise "stillMatch"
+    });
+    sbRef.current = { from };
+
+    const res = await reverseItemState(ACTIVITY_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/later action/i);
+    // Short-circuits before ever reading current state or writing anything.
+    expect(updateCalls.length).toBe(0);
+  });
+
+  it('312c: proceeds normally when no later row exists at all (this IS the only row for the item)', async () => {
+    const { from, updateCalls } = makeSbForReverse({
+      activityRow: { data: { action: 'handled', inbox_item_id: ITEM_ID, detail: null } },
+      latestRow: { data: null }, // no row found (maybeSingle null) — nothing later
+      curItem: { data: { status: 'handled', followed_up_at: null } },
+    });
+    sbRef.current = { from };
+
+    const res = await reverseItemState(ACTIVITY_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+    expect(updateCalls.some((c) => c.method === 'update')).toBe(true);
+  });
+
+  it("312c: the latest-row query's action set covers every reversible action plus 'reversed'", async () => {
+    const { from, latestCalls } = makeSbForReverse({
+      activityRow: { data: { action: 'dismissed', inbox_item_id: ITEM_ID, detail: { from: { status: 'unresponded' } } } },
+      latestRow: { data: { id: ACTIVITY_ID } },
+      curItem: { data: { status: 'dismissed', followed_up_at: null } },
+      unsuppressRow: { data: null },
+    });
+    sbRef.current = { from };
+
+    await reverseItemState(ACTIVITY_ID, OPERATOR_ID, NOW);
+
+    const inCall = latestCalls.find((c) => c.method === 'in');
+    const [, actionSet] = inCall!.args as [string, string[]];
+    expect(actionSet).toEqual(
+      expect.arrayContaining(['handled', 'followed', 'completed', 'dismissed', 'reclassified', 'reversed']),
+    );
   });
 });

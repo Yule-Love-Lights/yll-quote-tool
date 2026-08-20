@@ -17,7 +17,7 @@ export function isStale(lastActivityIso: string | null, days: number, now: Date)
   return now.getTime() - new Date(lastActivityIso).getTime() > days * 86_400_000;
 }
 
-export type ReverseAction = 'handled' | 'followed' | 'completed' | 'dismissed';
+export type ReverseAction = 'handled' | 'followed' | 'completed' | 'dismissed' | 'reclassified';
 export type ReverseTarget = { status: InboxStatus | null; clearFollowed: boolean; setFollowed: boolean; unsuppress: boolean };
 
 export function inverseOf(action: ReverseAction, from?: { status?: InboxStatus; wasFollowed?: boolean }): ReverseTarget {
@@ -31,6 +31,12 @@ export function inverseOf(action: ReverseAction, from?: { status?: InboxStatus; 
     case 'handled':
       return { status: 'unresponded', clearFollowed: false, setFollowed: false, unsuppress: false };
     case 'followed':
+    // row 312: the S41 'reclassified' data op only ever SET followed_up_at (to
+    // quote_sent_at) on an already-handled row — it never touched status — so
+    // its inverse is identical to 'followed': clear the flag, leave status
+    // alone. No detail.from restore needed; the audit rows' own wording
+    // ("reversible by setting followed_up_at back to null") already says this.
+    case 'reclassified':
       return { status: null, clearFollowed: true, setFollowed: false, unsuppress: false };
   }
 }
