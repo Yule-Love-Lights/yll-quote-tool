@@ -195,4 +195,123 @@ describe('POST /api/quotes/[id]/amend-consent', () => {
     expect(res.status).toBe(409);
     expect((await res.json()).code).toBe('concurrent-amendment');
   });
+
+  it('is idempotent: signing an already-ACCEPTED amendment succeeds without a second write', async () => {
+    const accepted: AmendmentTrailEntry = {
+      ...amendment,
+      consent: {
+        status: 'accepted',
+        accepted_at: '2026-07-18T13:00:00.000Z',
+        signature: { name: 'Jordan Smith', kind: 'typed', value: 'Jordan Smith', signed_at: '2026-07-18T13:00:00.000Z', ip: null },
+      },
+    };
+    const { client, updatePayloads } = makeSb({
+      id: ID,
+      status: 'booked',
+      quote_sent_at: '2026-06-20T00:00:00.000Z',
+      customer_approved_at: '2026-06-25T00:00:00.000Z',
+      deposit_paid_at: '2026-07-01T00:00:00.000Z',
+      approval_snapshot: { amendments: [accepted] },
+    });
+    sbRef.current = client;
+    const res = await POST(req({ amendedAt: AMENDED_AT, signature }), ctx);
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.alreadyConsented).toBe(true);
+    expect(updatePayloads).toHaveLength(0);
+  });
+
+  // FIX3 (review HIGH, real live risk): isAmendmentConsentPending treats a
+  // DECLINED entry the same as PENDING ("not accepted") — by DESIGN, for the
+  // settlement gate — so without an explicit check here the route would fall
+  // through and silently overwrite a real customer refusal with an
+  // acceptance on nothing more than a stale tab or the back button,
+  // destroying declined_at/reason/ip and unblocking settlement.
+  describe('refuses to accept an amendment the customer already DECLINED', () => {
+    const declined: AmendmentTrailEntry = {
+      ...amendment,
+      consent: { status: 'declined', declined_at: '2026-07-19T09:00:00.000Z', reason: 'too pricey', ip: '203.0.113.7' },
+    };
+
+    it('409s with a distinct code and does not write', async () => {
+      const { client, updatePayloads } = makeSb({
+        id: ID,
+        status: 'booked',
+        quote_sent_at: '2026-06-20T00:00:00.000Z',
+        customer_approved_at: '2026-06-25T00:00:00.000Z',
+        deposit_paid_at: '2026-07-01T00:00:00.000Z',
+        approval_snapshot: { amendments: [declined] },
+      });
+      sbRef.current = client;
+      const res = await POST(req({ amendedAt: AMENDED_AT, signature }), ctx);
+      const json = await res.json();
+      expect(res.status).toBe(409);
+      expect(json.code).toBe('already-declined');
+      expect(updatePayloads).toHaveLength(0);
+    });
+
+    it('never reports alreadyConsented:true for a decline (that would read as a success)', async () => {
+      const { client } = makeSb({
+        id: ID,
+        status: 'booked',
+        quote_sent_at: '2026-06-20T00:00:00.000Z',
+        customer_approved_at: '2026-06-25T00:00:00.000Z',
+        deposit_paid_at: '2026-07-01T00:00:00.000Z',
+        approval_snapshot: { amendments: [declined] },
+      });
+      sbRef.current = client;
+      const res = await POST(req({ amendedAt: AMENDED_AT, signature }), ctx);
+      const json = await res.json();
+      expect(json.ok).not.toBe(true);
+      expect(json.alreadyConsented).not.toBe(true);
+    });
+  });
+
+  // Row 315(b): the response used to echo latest.new_total/new_balance (the
+  // raw trail figures) even when the entry carried a stored invoice_basis —
+  // disagreeing with resolveAmendmentBasis, the same function the pending
+  // card, the accepted portal total, and the customer notice all read.
+  // AmendmentConsentCard discards this response body on success today (it
+  // just calls router.refresh()), but the response is still a real API
+  // contract and should never assert a different total than every other
+  // surface agrees on.
+  describe('response money basis (row 315b)', () => {
+    it('reports resolveAmendmentBasis figures, not the raw trail, when invoice_basis is stored', async () => {
+      const withBasis: AmendmentTrailEntry = {
+        ...amendment,
+        invoice_basis: { previous_total: 4608.33, new_total: 5446.81, delta: 838.48 },
+      };
+      const { client } = makeSb({
+        id: ID,
+        status: 'booked',
+        quote_sent_at: '2026-06-20T00:00:00.000Z',
+        customer_approved_at: '2026-06-25T00:00:00.000Z',
+        deposit_paid_at: '2026-07-01T00:00:00.000Z',
+        approval_snapshot: { amendments: [withBasis] },
+      });
+      sbRef.current = client;
+      const res = await POST(req({ amendedAt: AMENDED_AT, signature }), ctx);
+      const json = await res.json();
+      expect(res.status).toBe(200);
+      expect(json.newTotalUsd).toBe(5446.81); // invoice-basis, not the trail's 2400
+      expect(json.newBalanceUsd).toBe(4446.81); // 5446.81 - 1000 deposit
+      expect(json.newTotalUsd).not.toBe(2400);
+    });
+
+    it('falls back to the raw trail figures when no invoice_basis is stored (unchanged behavior)', async () => {
+      const { client } = makeSb({
+        id: ID,
+        status: 'booked',
+        quote_sent_at: '2026-06-20T00:00:00.000Z',
+        customer_approved_at: '2026-06-25T00:00:00.000Z',
+        deposit_paid_at: '2026-07-01T00:00:00.000Z',
+        approval_snapshot: { amendments: [amendment] },
+      });
+      sbRef.current = client;
+      const res = await POST(req({ amendedAt: AMENDED_AT, signature }), ctx);
+      const json = await res.json();
+      expect(json.newTotalUsd).toBe(2400);
+      expect(json.newBalanceUsd).toBe(1400);
+    });
+  });
 });

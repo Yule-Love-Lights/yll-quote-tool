@@ -8,7 +8,7 @@ import type {
   CustomLineItem,
   RooflineChoice,
 } from '@/lib/pricing/pricingEngine';
-import { BUSINESS_RULES } from '@/lib/pricing/pricingEngine';
+import { BUSINESS_RULES, resolveLineItemLabel } from '@/lib/pricing/pricingEngine';
 import { buildPortalLineItems, BILLED_ROOFLINE_IDS, PERMANENT_RECOMMEND_FIELDS } from '@/lib/portal/adapter';
 import { attachSceneLinks } from '@/lib/portal/sceneLinks';
 import { extraPhotoLabels, photoLabelForLine } from '@/lib/design/photoLabels';
@@ -39,7 +39,7 @@ import {
   SERVICE_TYPE_LABELS,
   canCarryNceOrYllNeighborTag,
 } from '@/lib/serviceType';
-import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
+import { deriveStatus, APPROVED_DISPLAYS_AS, type QuoteStatus } from '@/lib/quoteStatus';
 import { EventSection } from './EventSection';
 import { OperatorShell } from '@/components/OperatorShell';
 import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
@@ -210,6 +210,118 @@ function EditablePrice({
         }`}
       >
         {usd(amount)}
+      </button>
+    </span>
+  );
+}
+
+// item-numbering-rename: click-to-rename a breakdown line's DISPLAY label
+// (per-quote override). Mirrors EditablePrice's idiom — shows the current
+// label as a button; click → inline text field; Enter/blur commits, Esc
+// cancels. Clearing the field (blank/whitespace) resets instead of
+// committing an empty override. When overridden, a "custom · was "X" ✕" chip
+// shows the baseline + resets — same idiom, price parity (staff-lens MED).
+// stopPropagation/preventDefault so it never toggles a recommendable row's
+// <label> (same reason as EditablePrice).
+//
+// `baseLabel` is the ENGINE's current default (item.label, pre-resolution —
+// the caller passes it straight from the closure, unlike EditablePrice's
+// baseAmount which needs a separate overrides-stripped recompute
+// (baselineResult) because price has no cheaper source of truth). Unlike
+// price, this is never stale/reopen-seeded: item.label is recomputed by
+// calculateQuote on every render from the CURRENT scene, so if a sibling
+// duplicate was renamed away and this item un-numbered (Jason's numbering-
+// interplay ruling), the "was" chip already shows the NEW bare label reset
+// would actually produce right now — not a frozen historical string.
+function EditableLabel({
+  label,
+  baseLabel,
+  overridden,
+  disabled,
+  onCommit,
+  onReset,
+}: {
+  label: string;
+  baseLabel: string;
+  overridden: boolean;
+  disabled: boolean;
+  onCommit: (s: string) => void;
+  onReset: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState('');
+  const start = () => {
+    if (disabled) return;
+    setVal(label);
+    setEditing(true);
+  };
+  const commit = () => {
+    setEditing(false);
+    const trimmed = val.trim();
+    if (trimmed.length === 0) {
+      if (overridden) onReset();
+      return;
+    }
+    if (trimmed !== label) onCommit(trimmed);
+  };
+  if (editing) {
+    return (
+      <span className="inline-flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+        <input
+          autoFocus
+          type="text"
+          maxLength={200}
+          className="min-w-[8rem] border border-green-400 rounded px-1.5 py-0.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-500"
+          value={val}
+          onChange={(e) => setVal(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commit();
+            if (e.key === 'Escape') setEditing(false);
+          }}
+        />
+      </span>
+    );
+  }
+  // Only claim a "was X" when we have a DISTINCT baseline — mirrors
+  // EditablePrice's showBase guard exactly (same reasoning: if label already
+  // equals baseLabel there's nothing to contrast, show a plain "custom" chip).
+  const showBase = baseLabel !== label;
+  return (
+    <span className="inline-flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+      {overridden && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onReset();
+          }}
+          disabled={disabled}
+          title={
+            showBase
+              ? `Custom name for this quote — reset to "${baseLabel}"`
+              : 'Custom name for this quote — reset'
+          }
+          className="text-[10px] font-semibold uppercase tracking-wide text-amber-600 hover:text-amber-800 disabled:opacity-40 cursor-pointer"
+        >
+          custom{showBase ? ` · was "${baseLabel}"` : ''} ✕
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          start();
+        }}
+        disabled={disabled}
+        title="Click to rename this item for this quote"
+        className={`rounded px-1 -mx-1 hover:bg-green-50 disabled:cursor-not-allowed cursor-text ${
+          overridden ? 'text-amber-700 font-medium' : ''
+        }`}
+      >
+        {label}
       </button>
     </span>
   );
@@ -441,11 +553,20 @@ export type QuoteBuilderInitial = {
 // Header status pill (BUG-1, S22): the saved quote's canonical lifecycle status
 // so a declined/cancelled quote badges correctly instead of the old
 // approvedAt/sentAt-only 'Approved'/'Sent'. Mirrors the admin quotes list palette.
+// Row 242 (Jason's ruling — no third stage): 'approved' reads + colors
+// IDENTICALLY to 'sent' (APPROVED_DISPLAYS_AS === 'Sent') — see quoteStatus.ts
+// for the rationale. deriveStatus/canTransition/money guards are unaffected;
+// this is presentation only. This is a THIRD copy of the same status->label
+// map (alongside the two admin quote pages) that ledger row 242's original
+// recon didn't enumerate — reconciled here since it's a real "pipeline/stage
+// chip on a quote surface" (the builder's own header pill), same as the
+// other two.
 const STATUS_BADGE: Record<QuoteStatus, { label: string; cls: string }> = {
   draft: { label: 'Draft', cls: 'bg-amber-100 text-amber-700' },
   sent: { label: 'Sent', cls: 'bg-blue-100 text-blue-700' },
   viewed: { label: 'Viewed', cls: 'bg-purple-100 text-purple-700' },
-  approved: { label: 'Approved', cls: 'bg-green-100 text-green-700' },
+  // Row 242: no distinct color/label for approved — takes sent's exact style.
+  approved: { label: APPROVED_DISPLAYS_AS, cls: 'bg-blue-100 text-blue-700' },
   booked: { label: 'Booked', cls: 'bg-emerald-100 text-emerald-700' },
   changes_requested: { label: 'Changes', cls: 'bg-orange-100 text-orange-700' },
   declined: { label: 'Declined', cls: 'bg-red-100 text-red-700' },
@@ -2850,6 +2971,24 @@ export default function QuoteBuilder({
     const overrides = { ...form.lineItemPriceOverrides };
     delete overrides[id];
     const finalForm: QuoteFormData = { ...form, lineItemPriceOverrides: overrides };
+    setForm(finalForm);
+    void runQuote(undefined, finalForm);
+  };
+
+  // item-numbering-rename: click-to-rename a breakdown line's label (per-quote
+  // override) — mirrors commitLinePrice/resetLinePrice exactly.
+  const commitLineLabel = (id: string, label: string) => {
+    const finalForm: QuoteFormData = {
+      ...form,
+      labelOverrides: { ...form.labelOverrides, [id]: label },
+    };
+    setForm(finalForm);
+    void runQuote(undefined, finalForm);
+  };
+  const resetLineLabel = (id: string) => {
+    const overrides = { ...form.labelOverrides };
+    delete overrides[id];
+    const finalForm: QuoteFormData = { ...form, labelOverrides: overrides };
     setForm(finalForm);
     void runQuote(undefined, finalForm);
   };
@@ -6137,6 +6276,11 @@ export default function QuoteBuilder({
                 return rows.map((item, i) => {
                   const linked = breakdownLinked[i];
                   const sceneItemIds = linked?.sceneItemIds;
+                  // item-numbering-rename: resolved once per row, up front, so
+                  // the checkbox aria-labels below and the row's own display
+                  // text (rowInner, further down) always agree on the name a
+                  // renamed item goes by.
+                  const resolvedLabel = resolveLineItemLabel(item.id, item.label, form.labelOverrides);
                   let checkbox: React.ReactNode = null;
                   if (designId && sceneItemIds && sceneItemIds.length > 0 && linked && RECOMMENDABLE_KINDS.has(linked.kind)) {
                     // Design-driven per-unit row (incl. strand-drawn WW/Stake) →
@@ -6149,7 +6293,7 @@ export default function QuoteBuilder({
                         checked={checked}
                         disabled={recommendBusy}
                         onChange={() => void toggleDesignItemRecommended(sceneItemIds, !checked)}
-                        aria-label={`Recommend ${item.label}`}
+                        aria-label={`Recommend ${resolvedLabel.label}`}
                         title="Recommend this item to the customer"
                       />
                     );
@@ -6237,11 +6381,31 @@ export default function QuoteBuilder({
                     breakdownScene?.items ?? [],
                     breakdownPhotoLabels,
                   );
+                  // item-numbering-rename: only the per-unit categories the
+                  // design projects one-instance-per-drawn-item (mini/spritzer/
+                  // wreath/garland/bow — the SAME ids projectScene stamps, and
+                  // the only ones duplicate-numbering ever applies to) get the
+                  // inline rename control. Roofline/WW/Stake/permanent/custom
+                  // rows keep their plain label — each already has its own
+                  // dedicated editing surface (footage inputs, the custom-item
+                  // form) and duplicate numbering never applies to them.
+                  const renameable = !!item.id && /^(mini|spritzer|wreath|garland|bow)-/.test(item.id);
                   const rowInner = (
                     <>
                       <span className="flex items-center gap-2 text-gray-700">
                         {checkbox}
-                        {item.label}
+                        {renameable ? (
+                          <EditableLabel
+                            label={resolvedLabel.label}
+                            baseLabel={item.label}
+                            overridden={resolvedLabel.overridden}
+                            disabled={loading}
+                            onCommit={(s) => commitLineLabel(item.id!, s)}
+                            onReset={() => resetLineLabel(item.id!)}
+                          />
+                        ) : (
+                          item.label
+                        )}
                         {photoTag && (
                           <span className="rounded bg-gray-200 text-gray-600 px-1 py-0.5 text-[10px] font-medium">
                             {photoTag}

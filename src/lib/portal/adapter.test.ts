@@ -15,6 +15,8 @@ import { DEFAULT_PERMANENT_BISTRO_RATES } from '@/lib/permanentBistro/types';
 import { calculateEventQuote } from '@/lib/event/pricing';
 import type { ServiceType } from '@/lib/serviceType';
 import type { PortalPhotos } from './photos';
+import type { PortalQuote } from '@/components/portal/types';
+import { resolveAgreedLineItems } from '@/lib/pdf/docModels';
 
 // ── Test scaffolding ──────────────────────────────────────────────────────
 
@@ -469,6 +471,219 @@ describe('quoteRowToPortalQuote — Stake Lighting + mini-light label detail str
     expect(custom).toBeDefined(); // label untouched — not stripped down to "Special garland"
     expect(custom!.kind).toBe('garland'); // parseLineItem's own classification, unrelated to this fix
     expect(custom!.price).toBe(75);
+  });
+});
+
+// ── item-numbering-rename: duplicate-label numbering survives the portal's
+// bare-name strip, and a staff rename replaces + un-numbers the survivor ────
+
+describe('quoteRowToPortalQuote — item-numbering-rename (duplicate numbering + label overrides)', () => {
+  it('two identical trees number "Tree 1"/"Tree 2" on the engine AND the stripped portal label', () => {
+    const inputs = emptyInputs({
+      miniLightItems: [
+        { type: 'tree', wrapStyle: 'canopy', stringCount: 1, id: 'mini-a' },
+        { type: 'tree', wrapStyle: 'canopy', stringCount: 1, id: 'mini-b' },
+      ],
+    });
+    const result = calculateQuote(inputs);
+    expect(result.lineItems.map((li) => li.label)).toEqual([
+      'Tree 1 – canopy wrap, 1 string',
+      'Tree 2 – canopy wrap, 1 string',
+    ]);
+    const portal = portalFrom(result, inputs)!;
+    const trees = portal.lineItems.filter((li) => li.kind === 'tree');
+    expect(trees.map((t) => t.label)).toEqual(['Tree 1', 'Tree 2']);
+    expect(trees.every((t) => t.detail === '')).toBe(true);
+  });
+
+  it('a renamed tree shows the override on the portal, is flagged labelOverridden, and keeps kind "tree"', () => {
+    const inputs = emptyInputs({
+      miniLightItems: [{ type: 'tree', wrapStyle: 'canopy', stringCount: 1, id: 'mini-a' }],
+      labelOverrides: { 'mini-a': 'Front Left Tree' },
+    });
+    const result = calculateQuote(inputs);
+    // The engine's OWN label is never the override text (kind classification
+    // must never see freeform staff text) — only the portal/display layer swaps it.
+    expect(result.lineItems[0].label).toBe('Tree – canopy wrap, 1 string');
+    const portal = portalFrom(result, inputs)!;
+    const tree = portal.lineItems.find((li) => li.kind === 'tree')!;
+    expect(tree.label).toBe('Front Left Tree');
+    expect(tree.labelOverridden).toBe(true);
+  });
+
+  it('renaming ONE of two duplicate trees un-numbers the other back to bare "Tree" (Jason\'s ruling)', () => {
+    const inputs = emptyInputs({
+      miniLightItems: [
+        { type: 'tree', wrapStyle: 'canopy', stringCount: 1, id: 'mini-a' },
+        { type: 'tree', wrapStyle: 'canopy', stringCount: 1, id: 'mini-b' },
+      ],
+      labelOverrides: { 'mini-b': 'Front Left Tree' },
+    });
+    const result = calculateQuote(inputs);
+    const portal = portalFrom(result, inputs)!;
+    const trees = portal.lineItems.filter((li) => li.kind === 'tree');
+    expect(trees.map((t) => ({ label: t.label, overridden: !!t.labelOverridden }))).toEqual([
+      { label: 'Tree', overridden: false }, // no longer ambiguous — the sibling was renamed away
+      { label: 'Front Left Tree', overridden: true },
+    ]);
+  });
+
+  it('numbers duplicate spritzers/bows at the end of the full label (no separable prefix, no tier-detail regex to contaminate)', () => {
+    const inputs = emptyInputs({
+      spritzers: [{ size: '24', quantity: 1, id: 'spritzer-s1' }, { size: '24', quantity: 1, id: 'spritzer-s2' }],
+      bows: [{ quantity: 1, id: 'bow-b1' }, { quantity: 1, id: 'bow-b2' }],
+    });
+    const result = calculateQuote(inputs);
+    const spritzerLabels = result.lineItems.filter((li) => li.id?.startsWith('spritzer-')).map((li) => li.label);
+    expect(spritzerLabels).toEqual(['24" Spritzer 1', '24" Spritzer 2']);
+    const bowLabels = result.lineItems.filter((li) => li.id?.startsWith('bow-')).map((li) => li.label);
+    expect(bowLabels).toEqual(['Bow 1', 'Bow 2']);
+  });
+
+  // Fix round (technical-lens MED): wreaths/garland number BEFORE the " – tier"
+  // suffix (mirroring the mini prefix insertion), not at the label's end.
+  // Appending at the end put the digit inside the real portal parser's
+  // extractDecorDetail tier capture (lineItemKind.ts's tierM regex has no "×"
+  // terminator when qty===1, so it swallowed a trailing digit straight into
+  // `detail` — "Non-Decorated 1" — which prints VERBATIM on the customer
+  // Quote/Invoice/Receipt PDFs; wreath/garland skip the wrapped-mini
+  // aggregation that would otherwise have hidden it). These tests run the
+  // REAL pipeline (calculateQuote -> quoteRowToPortalQuote's real
+  // parseLineItem -> docModels' resolveAgreedLineItems), not a hand-built
+  // PortalLineItem, so a regression in the real regex would actually fail
+  // here (a prior version of this test hand-constructed the PortalLineItem
+  // and would have passed even with the bug).
+  it('a duplicate WREATH keeps a clean tier `detail` through the real parseLineItem + docModels pipeline (scene→engine→adapter→docModels)', () => {
+    const inputs = emptyInputs({
+      wreaths: [
+        { size: '36noble', tier: 'bow', quantity: 1, id: 'wreath-w1' },
+        { size: '36noble', tier: 'bow', quantity: 1, id: 'wreath-w2' },
+      ],
+    });
+    const result = calculateQuote(inputs);
+    // Engine: the number lands before " – tier", not appended at the end.
+    expect(result.lineItems.map((li) => li.label)).toEqual([
+      '36" Noble Wreath 1 – Non-Decorated',
+      '36" Noble Wreath 2 – Non-Decorated',
+    ]);
+    const portal = portalFrom(result, inputs)!;
+    const wreaths = portal.lineItems.filter((li) => li.kind === 'wreath');
+    expect(wreaths.map((w) => w.label)).toEqual([
+      '36" Noble Wreath 1 – Non-Decorated',
+      '36" Noble Wreath 2 – Non-Decorated',
+    ]);
+    // The REAL extractDecorDetail output — clean tier text, no leaked digit.
+    expect(wreaths.map((w) => w.detail)).toEqual(['Non-Decorated', 'Non-Decorated']);
+
+    // ...→docModels: the customer PDF prints `detail` verbatim for a
+    // non-wrapped kind (wreath isn't in WRAPPED_MINI_KINDS, so it's never
+    // aggregated away) — prove the full chain, not just the adapter's output.
+    const approved: PortalQuote = {
+      ...portal,
+      approval: {
+        approvedAt: '2026-01-01T00:00:00Z',
+        packageId: 'D',
+        packageName: 'Build Your Own',
+        totalUsd: portal.lineItems.reduce((s, li) => s + li.price, 0),
+        depositUsd: 0,
+        selectedItemCount: wreaths.length,
+        selectedItemIds: wreaths.map((w) => w.id),
+        installTiming: 'none',
+        rushSelected: false,
+        takedownSelected: false,
+      },
+    };
+    const agreed = resolveAgreedLineItems(approved)!;
+    expect(agreed.items.map((i) => i.detail)).toEqual(['Non-Decorated', 'Non-Decorated']);
+  });
+
+  it('a duplicate GARLAND keeps a clean tier `detail` through the real parseLineItem + docModels pipeline (scene→engine→adapter→docModels)', () => {
+    const inputs = emptyInputs({
+      garland: [
+        { length: '9ft', type: 'noble', tier: 'fullDecor', quantity: 1, id: 'garland-g1' },
+        { length: '9ft', type: 'noble', tier: 'fullDecor', quantity: 1, id: 'garland-g2' },
+      ],
+    });
+    const result = calculateQuote(inputs);
+    expect(result.lineItems.map((li) => li.label)).toEqual([
+      '9ft Noble Garland 1 – Decorated',
+      '9ft Noble Garland 2 – Decorated',
+    ]);
+    const portal = portalFrom(result, inputs)!;
+    const garlands = portal.lineItems.filter((li) => li.kind === 'garland');
+    expect(garlands.map((g) => g.label)).toEqual([
+      '9ft Noble Garland 1 – Decorated',
+      '9ft Noble Garland 2 – Decorated',
+    ]);
+    expect(garlands.map((g) => g.detail)).toEqual(['Decorated', 'Decorated']);
+
+    const approved: PortalQuote = {
+      ...portal,
+      approval: {
+        approvedAt: '2026-01-01T00:00:00Z',
+        packageId: 'D',
+        packageName: 'Build Your Own',
+        totalUsd: portal.lineItems.reduce((s, li) => s + li.price, 0),
+        depositUsd: 0,
+        selectedItemCount: garlands.length,
+        selectedItemIds: garlands.map((g) => g.id),
+        installTiming: 'none',
+        rushSelected: false,
+        takedownSelected: false,
+      },
+    };
+    const agreed = resolveAgreedLineItems(approved)!;
+    expect(agreed.items.map((i) => i.detail)).toEqual(['Decorated', 'Decorated']);
+  });
+
+  // Lens LOW: a qty>1 duplicate ("× N" labels) must not produce "× N 1" —
+  // the product-name-segment insertion places the number BEFORE " – tier",
+  // never after the trailing "× qty", so this can't happen structurally.
+  it('a qty>1 duplicate wreath numbers before " – tier", never after "× qty" (no "× 2 1")', () => {
+    const inputs = emptyInputs({
+      wreaths: [
+        { size: '36noble', tier: 'bow', quantity: 2, id: 'wreath-w1' },
+        { size: '36noble', tier: 'bow', quantity: 2, id: 'wreath-w2' },
+      ],
+    });
+    const result = calculateQuote(inputs);
+    expect(result.lineItems.map((li) => li.label)).toEqual([
+      '36" Noble Wreath 1 – Non-Decorated × 2',
+      '36" Noble Wreath 2 – Non-Decorated × 2',
+    ]);
+    const portal = portalFrom(result, inputs)!;
+    const wreaths = portal.lineItems.filter((li) => li.kind === 'wreath');
+    // The real extractDecorDetail still parses the tier + qty correctly.
+    expect(wreaths.map((w) => w.detail)).toEqual(['Non-Decorated × 2', 'Non-Decorated × 2']);
+  });
+
+  it('BOWS keep a clean detail through the real pipeline too (verifying the same class does not apply here)', () => {
+    const inputs = emptyInputs({
+      bows: [{ quantity: 1, id: 'bow-b1' }, { quantity: 1, id: 'bow-b2' }],
+    });
+    const result = calculateQuote(inputs);
+    expect(result.lineItems.map((li) => li.label)).toEqual(['Bow 1', 'Bow 2']);
+    const portal = portalFrom(result, inputs)!;
+    const bows = portal.lineItems.filter((li) => li.kind === 'bow');
+    // extractBowDetail only ever derives qty from a "×" match (defaulting to
+    // 1 bow otherwise) — it never captures-to-end the way the wreath/garland
+    // tier regex does, so appending the number at the label's end never
+    // reaches `detail` here. No fix needed for bows; this locks that in.
+    expect(bows.map((b) => b.detail)).toEqual(['1 bow', '1 bow']);
+  });
+
+  it('SPRITZERS keep a clean detail through the real pipeline too (verifying the same class does not apply here)', () => {
+    const inputs = emptyInputs({
+      spritzers: [{ size: '24', quantity: 1, id: 'spritzer-s1' }, { size: '24', quantity: 1, id: 'spritzer-s2' }],
+    });
+    const result = calculateQuote(inputs);
+    expect(result.lineItems.map((li) => li.label)).toEqual(['24" Spritzer 1', '24" Spritzer 2']);
+    const portal = portalFrom(result, inputs)!;
+    const spritzers = portal.lineItems.filter((li) => li.kind === 'spritzer');
+    // extractSpritzerDetail CONSTRUCTS its output from captured size + qty
+    // pieces (never captures-to-end), so the trailing number never reaches
+    // `detail` here either. No fix needed for spritzers; this locks that in.
+    expect(spritzers.map((s) => s.detail)).toEqual(['1 × 24"', '1 × 24"']);
   });
 });
 
@@ -1621,7 +1836,13 @@ describe('staff-approved portal selection seeds non-empty (PS-C1/WT-L1)', () => 
 
 
 describe('quoteRowToPortalQuote — pending booked amendment consent', () => {
-  function amendedPortal(consent: { status: 'pending' } | { status: 'accepted'; accepted_at: string; signature: { name: string; kind: 'typed'; value: string; signed_at: string; ip: null } }, trailingCosmetic = false) {
+  function amendedPortal(
+    consent:
+      | { status: 'pending' }
+      | { status: 'accepted'; accepted_at: string; signature: { name: string; kind: 'typed'; value: string; signed_at: string; ip: null } }
+      | { status: 'declined'; declined_at: string; reason?: string; ip: string | null },
+    trailingCosmetic = false,
+  ) {
     const inputs = emptyInputs({ customLineItems: [{ label: 'Lighting', amount: 2400 }] });
     const result = calculateQuote(inputs);
     const row = rowWith(result, inputs);
@@ -1677,7 +1898,56 @@ describe('quoteRowToPortalQuote — pending booked amendment consent', () => {
       deltaUsd: 400,
       depositAppliedUsd: 1000,
       newBalanceUsd: 1400,
+      consentStatus: 'pending',
     });
+  });
+
+  // Ledger #83 follow-up: a decline is NOT acceptance — the portal must keep
+  // showing the same card population (isAmendmentConsentPending is true for
+  // both 'pending' and 'declined'), just with the customer's own answer
+  // instead of the ask. The durable booked total stays at the ORIGINAL
+  // pre-amendment figure, same as pending — only 'accepted' promotes it.
+  it('surfaces a DECLINED amendment as a distinct consentStatus, not as still-pending', () => {
+    const approval = amendedPortal({
+      status: 'declined',
+      declined_at: '2026-07-19T09:00:00.000Z',
+      reason: 'too expensive, please remove the wreath',
+      ip: '203.0.113.7',
+    }).approval;
+    expect(approval?.totalUsd).toBe(2000); // NOT the declined amendment's new_total
+    expect(approval?.depositUsd).toBe(1000);
+    expect(approval?.pendingAmendment).toEqual({
+      amendedAt: '2026-07-18T12:00:00.000Z',
+      reason: 'Added front wreaths',
+      previousTotalUsd: 2000,
+      newTotalUsd: 2400,
+      deltaUsd: 400,
+      depositAppliedUsd: 1000,
+      newBalanceUsd: 1400,
+      consentStatus: 'declined',
+      declinedReason: 'too expensive, please remove the wreath',
+      declinedAt: '2026-07-19T09:00:00.000Z',
+    });
+  });
+
+  it('omits declinedReason when the customer left no reason', () => {
+    const approval = amendedPortal({
+      status: 'declined',
+      declined_at: '2026-07-19T09:00:00.000Z',
+      ip: null,
+    }).approval;
+    expect(approval?.pendingAmendment?.consentStatus).toBe('declined');
+    expect(approval?.pendingAmendment).not.toHaveProperty('declinedReason');
+  });
+
+  it('keeps a declined amendment visible after a later zero-dollar edit (same as pending)', () => {
+    const approval = amendedPortal(
+      { status: 'declined', declined_at: '2026-07-19T09:00:00.000Z', ip: null },
+      true,
+    ).approval;
+    expect(approval?.pendingAmendment?.consentStatus).toBe('declined');
+    expect(approval?.pendingAmendment?.amendedAt).toBe('2026-07-18T12:00:00.000Z');
+    expect(approval?.totalUsd).toBe(2000);
   });
 
   it('uses the accepted amendment as the durable booked total', () => {
@@ -1718,6 +1988,199 @@ describe('quoteRowToPortalQuote — pending booked amendment consent', () => {
     }, true).approval;
     expect(approval?.pendingAmendment).toBeUndefined();
     expect(approval?.totalUsd).toBe(2400);
+    expect(approval?.depositUsd).toBe(1000);
+  });
+});
+
+// Delta-verify HIGH (fix round 3): the previous round's `invoiceBasisTotal`
+// reconstruction is GONE — it scaled a trail figure by a ratio taken from
+// the row's CURRENT full-quote pricing, which is only valid for the entry
+// that produced that current state. `previous_total` was always priced
+// against an EARLIER state, so the reconstruction silently drifted the
+// moment a later amendment re-priced the quote again (the delta-verify's
+// own worked example: card showed previous $4,615.94 / +$830.87 against a
+// real invoice of $4,608.33 / +$838.48). The fix persists the real
+// invoice-basis figures on the trail entry at amend time (amend.ts's
+// AmendmentTrailEntry.invoice_basis) and the adapter now just reads them.
+describe('quoteRowToPortalQuote — amendment consent card money basis (delta-verify HIGH fix)', () => {
+  // Real engine output so the fixture is genuine — same shape as the
+  // "pending booked amendment consent" describe above (a $2,400 custom item).
+  const inputs = emptyInputs({ customLineItems: [{ label: 'Lighting', amount: 2400 }] });
+  const result = calculateQuote(inputs);
+
+  function amendedPortalWithBasis(
+    invoiceBasis: { previous_total: number; new_total: number; delta: number } | undefined,
+    consent:
+      | { status: 'pending' }
+      | { status: 'declined'; declined_at: string; ip: null }
+      | {
+          status: 'accepted';
+          accepted_at: string;
+          signature: { name: string; kind: 'typed' | 'drawn'; value: string; signed_at: string; ip: string | null };
+        } = { status: 'pending' },
+  ) {
+    const row = rowWith(result, inputs);
+    row.customer_approved_at = '2026-07-01T00:00:00.000Z';
+    row.deposit_paid_at = '2026-07-01T00:10:00.000Z';
+    row.status = 'booked';
+    row.approval_snapshot = {
+      approvedAt: '2026-07-01T00:00:00.000Z',
+      customerSelection: {
+        packageId: 'A',
+        activeName: 'Original order',
+        selectedItemIds: ['custom-0'],
+        currentTotalUsd: 2000,
+        currentDepositUsd: 1000,
+      },
+      amendments: [
+        {
+          amended_at: '2026-07-18T12:00:00.000Z',
+          by: 'staff:ops',
+          reason: 'Added front wreaths',
+          previous_total: 2000,
+          new_total: 2400,
+          previous_balance: 1000,
+          new_balance: 1400,
+          deposit_applied: 1000,
+          delta: 400,
+          line_item_changes: [],
+          consent,
+          ...(invoiceBasis ? { invoice_basis: invoiceBasis } : {}),
+        },
+      ],
+    };
+    return quoteRowToPortalQuote({ row, photos: PHOTOS })!;
+  }
+
+  it('no stored invoice_basis (pre-fix entry, or no linked invoice at amend time) — falls back to the raw trail figures', () => {
+    const approval = amendedPortalWithBasis(undefined).approval;
+    expect(approval?.pendingAmendment).toMatchObject({
+      previousTotalUsd: 2000,
+      newTotalUsd: 2400,
+      deltaUsd: 400,
+      newBalanceUsd: 1400,
+    });
+  });
+
+  it('a stored invoice_basis is read DIRECTLY, byte-for-byte — never re-derived from the row\'s current full-quote pricing', () => {
+    // These figures are deliberately UNRELATED to the fixture's own `result`
+    // (a $2,400 custom item) — proving the adapter does no ratio math against
+    // row.result at all anymore. Numbers from the delta-verify's own worked
+    // example: a real invoice basis of $4,608.33 → $5,446.81 (+$838.48),
+    // which the broken reconstruction turned into $4,615.94 / +$830.87.
+    const approval = amendedPortalWithBasis({
+      previous_total: 4608.33,
+      new_total: 5446.81,
+      delta: 838.48,
+    }).approval;
+    expect(approval?.pendingAmendment).toMatchObject({
+      previousTotalUsd: 4608.33,
+      newTotalUsd: 5446.81,
+      deltaUsd: 838.48,
+    });
+    // Internal consistency still holds — trivially, since all three now come
+    // from ONE recorded object instead of being independently re-derived.
+    expect(approval!.pendingAmendment!.newTotalUsd - approval!.pendingAmendment!.deltaUsd).toBeCloseTo(
+      approval!.pendingAmendment!.previousTotalUsd,
+      2,
+    );
+    // The balance still derives from the (invoice-basis) new total, per the
+    // unchanged newBalanceUsd formula (5446.81 − 1000 deposit).
+    expect(approval!.pendingAmendment!.newBalanceUsd).toBe(4446.81);
+  });
+
+  it('a DECLINED entry with a stored invoice_basis also reads previousTotalUsd from it (the field the card actually renders)', () => {
+    // AmendmentConsentCard's declined branch renders ONLY previousTotalUsd —
+    // proving it independently since it shares the same computation path as
+    // the pending branch's fuller field set, not assuming parity.
+    const declinedConsent = { status: 'declined' as const, declined_at: '2026-07-19T09:00:00.000Z', ip: null };
+    const trailBasis = amendedPortalWithBasis(undefined, declinedConsent).approval!.pendingAmendment!;
+    const invoiceBasis = amendedPortalWithBasis(
+      { previous_total: 4608.33, new_total: 5446.81, delta: 838.48 },
+      declinedConsent,
+    ).approval!.pendingAmendment!;
+    expect(trailBasis.consentStatus).toBe('declined');
+    expect(trailBasis.previousTotalUsd).toBe(2000); // no stored basis — trail figure
+    expect(invoiceBasis.consentStatus).toBe('declined');
+    expect(invoiceBasis.previousTotalUsd).toBe(4608.33);
+  });
+
+  it('the deposit-already-paid figure stays basis-independent (the real dollar amount charged)', () => {
+    const trailBasis = amendedPortalWithBasis(undefined).approval!.pendingAmendment!;
+    const invoiceBasis = amendedPortalWithBasis({
+      previous_total: 4608.33,
+      new_total: 5446.81,
+      delta: 838.48,
+    }).approval!.pendingAmendment!;
+    expect(trailBasis.depositAppliedUsd).toBe(1000);
+    expect(invoiceBasis.depositAppliedUsd).toBe(1000);
+  });
+
+  // FIX C (fix round 4): a malformed invoice_basis — not reachable through
+  // any current write path (the amend route only ever stamps all three
+  // fields together, as finite numbers, or omits the field entirely) — must
+  // render the trail figures, never undefined/NaN. Exercises
+  // resolveAmendmentBasis's shape guard through the real adapter, not just
+  // amend.test.ts's direct unit tests of the function.
+  it('a malformed invoice_basis (bad shape, not reachable through any current write path) falls back to the trail figures', () => {
+    const approval = amendedPortalWithBasis(
+      // `as any` — this shape can never come from the amend route.
+      { previous_total: '4608.33', new_total: 5446.81 } as unknown as {
+        previous_total: number;
+        new_total: number;
+        delta: number;
+      },
+    ).approval;
+    expect(approval?.pendingAmendment).toMatchObject({
+      previousTotalUsd: 2000,
+      newTotalUsd: 2400,
+      deltaUsd: 400,
+      newBalanceUsd: 1400,
+    });
+  });
+
+  // Row 315(b): buildApproval's ACCEPTED branch used to read
+  // acceptedAmendment.new_total (the raw trail figure) directly, bypassing
+  // resolveAmendmentBasis entirely — so a customer who signed the pending
+  // card's invoice-basis total (this exact fixture: $5,446.81) would see a
+  // DIFFERENT number ($2,400, the trail figure) the moment the page
+  // refreshed post-signature. approval.totalUsd also feeds the Quote PDF
+  // (docModels.ts) as its only load-bearing total, so the mismatch reached
+  // that document too. Prod check before this fix shipped: zero live
+  // accepted amendments carried an invoice_basis at all (chhntsbnbofyqrpivuog,
+  // row 315) — purely forward-safe, no already-shown figure changes.
+  const acceptedConsent = {
+    status: 'accepted' as const,
+    accepted_at: '2026-07-18T12:05:00.000Z',
+    signature: {
+      name: 'Jordan Smith',
+      kind: 'typed' as const,
+      value: 'Jordan Smith',
+      signed_at: '2026-07-18T12:05:00.000Z',
+      ip: null,
+    },
+  };
+
+  it('an ACCEPTED amendment with a stored invoice_basis shows the invoice-basis total, not the raw trail total', () => {
+    const approval = amendedPortalWithBasis(
+      { previous_total: 4608.33, new_total: 5446.81, delta: 838.48 },
+      acceptedConsent,
+    ).approval;
+    expect(approval?.pendingAmendment).toBeUndefined(); // accepted — no pending card
+    expect(approval?.totalUsd).toBe(5446.81); // invoice-basis, not the trail's 2400
+    expect(approval?.totalUsd).not.toBe(2400);
+  });
+
+  it('an ACCEPTED amendment with NO stored invoice_basis still falls back to the raw trail total (unchanged behavior)', () => {
+    const approval = amendedPortalWithBasis(undefined, acceptedConsent).approval;
+    expect(approval?.totalUsd).toBe(2400);
+  });
+
+  it('deposit stays basis-independent on the accepted branch too (deposit_applied is immutable, echoed unchanged)', () => {
+    const approval = amendedPortalWithBasis(
+      { previous_total: 4608.33, new_total: 5446.81, delta: 838.48 },
+      acceptedConsent,
+    ).approval;
     expect(approval?.depositUsd).toBe(1000);
   });
 });

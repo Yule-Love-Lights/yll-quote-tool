@@ -21,9 +21,15 @@
 // the latest pending booked amendment; the route validates the quote and compare-
 // and-swaps the snapshot. simulate-deposit itself re-verifies is_test===true
 // before doing anything, so allowlisting it here only ever affects test rows.
+// 'amend-decline' (ledger #83 follow-up) is amend-consent's sibling: the
+// customer refusing a booked-order price change instead of signing it. Same
+// capability-token model, same CAS-guarded write, distinct from the plain
+// 'decline' below (that one is the pre-booking QuoteResponseModal decline on
+// a sent/viewed quote — a different lifecycle stage, different route).
 const PUBLIC_QUOTE_SUBROUTES = new Set([
   'approve',
   'amend-consent',
+  'amend-decline',
   'pay',
   'pay-balance', // customer pays the remaining 50% balance (#83 pay-link)
   'view',
@@ -48,6 +54,10 @@ const PUBLIC_QUOTE_SUBROUTES_BY_METHOD: Record<string, string> = {
   // The portal colour picker's request against a BOOKED order (#163) — per its
   // route header, the only path to change a booked order's colours.
   'color-change-request': 'POST',
+  // Ledger row 236 — the "Want to reopen your quote? Let us know!" ask on a
+  // declined/abandoned quote's read-only portal (StickyBottomBar's
+  // terminalBrowse branch). POST only; no separate operator gate of its own.
+  'reopen-request': 'POST',
 };
 
 // Public, empty-form pages listed one by one rather than by prefix, so

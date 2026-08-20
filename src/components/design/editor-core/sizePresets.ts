@@ -38,6 +38,21 @@ export const GARLAND_SIZES = [6, 12, 24]; // was [6, 9, 12, 18, 24]; 12 = unchan
 export const SPRITZER_SIZES = [16, 24, 48]; // was [16, 24, 36, 48]; 24 = unchanged tool default (Medium)
 export const POLE_HEIGHTS = [96, 120, 180] as const; // was [96, 120, 144, 180] as const; 120 = unchanged tool default (Medium)
 
+// Light-SPACING presets (#248, row 248) — same 3-value trim as the decor
+// sizes above, but for the c9/mini/bistro entries of editor.ts's SPACINGS
+// record (spacing between bulbs on a drawn strand, not an item's own size).
+// Jason picked these exact values (2026-08-20) rather than preserving the
+// prior tool-default number the way #202 did for decor -- none of the 3 kept
+// values here is guaranteed to equal the old shared default, so callers that
+// seed a brand-new strand's spacingIn should derive it from this array (its
+// middle/Medium value), not from a separate hardcoded literal. Permanent
+// stays a single fixed 8" option ([8], #88 BOM lockdown) — degenerate for
+// S/M/L, so it isn't listed here; it stays a local literal in editor.ts and
+// toolDefaults.ts, excluded from the sizePresetLabel/sizeButtons treatment.
+export const C9_SPACINGS = [9, 15, 24]; // was [6,9,12,15,18,24,36]
+export const MINI_SPACINGS = [6, 9, 12]; // was [4,6,9,12,18]
+export const BISTRO_SPACINGS = [9, 18, 24]; // was [9,12,15,18,24,36]
+
 const TIER_LABELS = ["Small", "Medium", "Large"] as const;
 
 // The Small/Medium/Large label for `value` within `options` (position-based:

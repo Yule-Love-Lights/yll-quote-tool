@@ -42,7 +42,7 @@ import { getOperator, requireOperator } from '@/lib/auth/supabaseServer';
 import { getJob, setJobStatus, type JobRow } from '@/lib/jobs';
 import { getInvoiceByJob, markInvoicePaidManually, InvoiceSettleError } from '@/lib/invoices';
 import { moveQuoteCardToInstalled } from '@/lib/integrations/ghlQuoteCard';
-import { latestConsentAmendment, blocksSettlement, amendedQuoteStatus, type AmendmentTrailEntry } from '@/lib/amend';
+import { latestConsentAmendment, blocksSettlement, amendedQuoteStatus, reconsentRequiredClause, type AmendmentTrailEntry } from '@/lib/amend';
 import type { QuoteStatus } from '@/lib/quoteStatus';
 
 export const runtime = 'nodejs';
@@ -118,8 +118,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         );
         return NextResponse.json(
           {
-            error:
-              'This order has a price increase awaiting customer re-approval. Pass an operator override to close anyway.',
+            // FIX7 (review MED): distinguish "no answer yet" from "customer
+            // said no" — an operator about to override deserves to know which.
+            error: `${reconsentRequiredClause(latest)} Pass an operator override to close anyway.`,
             code: 'reconsent-required',
           },
           { status: 409 },

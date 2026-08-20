@@ -14,6 +14,9 @@ const sp = (id: string, colors: string[], size: QuoteSpritzerSize = '24'): Scene
 const mini = (id: string, colors: string[], surface = 'bush'): SceneItem =>
   ({ kind: 'strand', id, surface, colorPattern: colors, stringCount: 1, points: [0, 0, 1, 1], bulbType: 'mini', spacingIn: 6, drawingStyle: 'solid', yardstickId: null }) as unknown as SceneItem;
 
+const area = (id: string, colors: string[], surface = 'bush', groupId?: string): SceneItem =>
+  ({ kind: 'miniArea', id, surface, shape: 'box', colorPattern: colors, stringCount: 1, groupId, yardstickId: null }) as unknown as SceneItem;
+
 // build OfferedColors directly for resolver tests
 const offered = (minis: string[], spritzers: Partial<Record<QuoteSpritzerSize, string[]>>): OfferedColors => ({
   miniHas: (id) => minis.includes(id),
@@ -74,6 +77,37 @@ describe('resolveInstalls — strand path', () => {
     const o = offered(ALL_MINI, { '24': SPRITZER_24 });
     const got = resolveInstalls([mini('b1', ['red', 'green', 'cool-white'])], null, o);
     expect(got.get('b1')).toMatchObject({ kind: 'strand', sku: '43346' });
+  });
+});
+
+// #840 review fix: colorables() skipped a grouped STRAND (`if (item.groupId)
+// continue`) but had no such guard for a grouped scattershot (miniArea) —
+// letting one leak into the resolver's output, and (worse) consume a
+// round-robin cursor slot meant for a real, ungrouped item.
+describe('resolveInstalls — scattershot, incl. grouped (#240)', () => {
+  it('an ungrouped scattershot resolves like a strand', () => {
+    const o = offered(ALL_MINI, { '24': SPRITZER_24 });
+    const got = resolveInstalls([area('a1', ['red', 'green', 'cool-white'])], null, o); // = Grinch
+    expect(got.get('a1')).toMatchObject({ kind: 'strand', sku: '43346' });
+  });
+
+  it('a GROUPED scattershot gets NO entry at all — it is priced via its MiniGroupItem, not resolved individually', () => {
+    const o = offered(ALL_MINI, { '24': SPRITZER_24 });
+    const got = resolveInstalls([area('a1', ['red'], 'bush', 'grp1')], null, o);
+    expect(got.has('a1')).toBe(false);
+  });
+
+  it('a grouped scattershot does NOT consume a round-robin slot meant for real items', () => {
+    const o = offered(ALL_MINI, { '24': SPRITZER_24 });
+    // Without the guard, the grouped area would burn cursor index 0 (→ 'red'),
+    // shifting b1/b2 to 'blue'/'red' instead of their correct 'red'/'blue'.
+    const got = resolveInstalls(
+      [area('a1', [], 'bush', 'grp1'), mini('b1', []), mini('b2', [])],
+      ['red', 'blue'],
+      o,
+    );
+    expect(got.get('b1')).toEqual({ kind: 'solid', colorId: 'red' });
+    expect(got.get('b2')).toEqual({ kind: 'solid', colorId: 'blue' });
   });
 });
 

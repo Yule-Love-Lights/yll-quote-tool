@@ -79,6 +79,11 @@ export type QuoteFormData = {
   // #104: per-quote line-item TOTAL overrides, keyed by stable line id. Edited via
   // the breakdown's click-to-edit price; `{}` = none. Rides the inputs jsonb.
   lineItemPriceOverrides: Record<string, { amount: number; reason?: string }>;
+  // item-numbering-rename: per-quote staff RENAME of a mini/spritzer/wreath/
+  // garland/bow line's default (auto-numbered) label, keyed by the SAME
+  // stable line id as lineItemPriceOverrides above. Edited via the
+  // breakdown's inline rename control; `{}` = none. Rides the inputs jsonb.
+  labelOverrides: Record<string, string>;
   // Staff "recommend" flags (#12) for the manual-footage Winter Wonderland + Stake
   // lines (no scene item to hold the flag). Toggled on the breakdown; ride inputs.
   winterWonderlandRecommended: boolean;
@@ -156,6 +161,7 @@ export const initialFormData: QuoteFormData = {
   depositPercent: 0,
   installTiming: 'none',
   lineItemPriceOverrides: {},
+  labelOverrides: {},
   winterWonderlandRecommended: false,
   stakeLightingRecommended: false,
   event: { barrelBoxes: 0, installDate: '', eventDate: '', takedownDate: '' },
@@ -656,6 +662,11 @@ export function buildQuoteInputs(
     ...(Object.keys(form.lineItemPriceOverrides).length > 0
       ? { lineItemPriceOverrides: form.lineItemPriceOverrides }
       : {}),
+    // item-numbering-rename: per-quote label renames — only sent when at
+    // least one is set, so legacy quotes stay clean in the inputs jsonb.
+    ...(Object.keys(form.labelOverrides).length > 0
+      ? { labelOverrides: form.labelOverrides }
+      : {}),
     // #12: WW/Stake recommend flags — only sent when set (legacy-clean).
     ...(form.winterWonderlandRecommended ? { winterWonderlandRecommended: true } : {}),
     ...(form.stakeLightingRecommended ? { stakeLightingRecommended: true } : {}),
@@ -784,6 +795,8 @@ export function inputsToFormData(
     installTiming: effectiveInstallTiming,
     // #104: hydrate the per-quote overrides map (legacy quotes → {}).
     lineItemPriceOverrides: i.lineItemPriceOverrides ?? {},
+    // item-numbering-rename: hydrate the per-quote rename map (legacy quotes → {}).
+    labelOverrides: i.labelOverrides ?? {},
     winterWonderlandRecommended: i.winterWonderlandRecommended ?? false,
     stakeLightingRecommended: i.stakeLightingRecommended ?? false,
     // Event Lighting (#96) — hydrate the event block (barrels + dates); bistro is

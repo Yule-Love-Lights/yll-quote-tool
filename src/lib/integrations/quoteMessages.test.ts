@@ -22,6 +22,14 @@ import {
   internalDepositDeclinedEmailHtml,
   amendmentSmsBody,
   amendmentEmailHtml,
+  amendmentDeclinedInternalEmailSubject,
+  amendmentDeclinedInternalEmailHtml,
+  internalReopenRequestedEmailSubject,
+  internalReopenRequestedEmailHtml,
+  receiptSmsBody,
+  receiptEmailHtml,
+  referralLinkEmailHtml,
+  colorChangeAppliedEmailHtml,
 } from './quoteMessages';
 
 describe('quote-ready notifications, per service type (S26)', () => {
@@ -514,16 +522,111 @@ describe('declined deposit/balance staff alert (#175)', () => {
 // whole dollars, the email printed exact cents — and neither said WHEN the
 // balance is due. Both now round and both say "after installation". The
 // greeting is also cased, because customer_name is stored as staff typed it.
-describe('amendment notice copy (Jason 2026-08-19)', () => {
+//
+// REWRITE (Jason 2026-08-19, same day, a real live send): the SMS above still
+// shipped with no portal link, no mention that anything changed, and no
+// indication the customer needed to do anything — she had to phone in to
+// decline verbally because there was no decline path either. Both messages now
+// carry the portal link, state the signed direction/size of the change, and
+// say plainly that approval is needed (worded calmer for a decrease — see the
+// "no rush" tests below).
+describe('amendment notice copy (Jason 2026-08-19, portal link + direction/size)', () => {
   const phone = '(631) 517-0186';
+  const portalUrl = 'https://quote.yulelovelights.com/portal/1';
 
-  // Named for what the string ACTUALLY says: the SMS places the balance "after
-  // installation" but never uses the word "due" (the email label does).
-  it('the SMS states the balance and places it after installation', () => {
-    const sms = amendmentSmsBody('susan', 1056.64, phone, true);
-    expect(sms).toBe(
-      "Hi Susan! Your Yule Love Lights order was updated, your remaining balance is now $1,056.64 after installation. We'll confirm the details with you. Questions? Call or text (631) 517-0186.",
+  // The brief's own worked example: $1,428.16 → $1,770.72 (deposit $714.08,
+  // balance $1,056.64) for an INCREASE; the reverse for a DECREASE.
+  const smsIncrease = () =>
+    amendmentSmsBody({
+      firstName: 'susan',
+      newBalanceUsd: 1056.64,
+      phone,
+      dueAfterInstall: true,
+      portalUrl,
+      deltaUsd: 342.56,
+      newTotalUsd: 1770.72,
+    });
+  const smsDecrease = () =>
+    amendmentSmsBody({
+      firstName: 'susan',
+      newBalanceUsd: 714.08,
+      phone,
+      dueAfterInstall: true,
+      portalUrl,
+      deltaUsd: -342.56,
+      newTotalUsd: 1428.16,
+    });
+  const htmlIncrease = (dueAfterInstall: boolean) =>
+    amendmentEmailHtml({
+      firstName: 'susan',
+      newTotalUsd: 1770.72,
+      newBalanceUsd: 1056.64,
+      portalUrl,
+      phone,
+      dueAfterInstall,
+      deltaUsd: 342.56,
+    });
+  const htmlDecrease = () =>
+    amendmentEmailHtml({
+      firstName: 'susan',
+      newTotalUsd: 1428.16,
+      newBalanceUsd: 714.08,
+      portalUrl,
+      phone,
+      dueAfterInstall: true,
+      deltaUsd: -342.56,
+    });
+
+  it('the increase SMS is the exact copy: direction, size, link, approval-needed', () => {
+    // FIX8 (review MED): the order total and the balance owed are now
+    // explicitly labeled ("a new order total of X" / "You'll owe Y"),
+    // replacing the old unlabeled "to X (balance Y)" pairing.
+    expect(smsIncrease()).toBe(
+      "Hi Susan! Your Yule Love Lights order was changed — the total went up by $342.56 to a new order total of $1,770.72. You'll owe $1,056.64 after installation. This needs your approval before we charge anything at the new amount — nothing changes until you approve it. Review & respond: https://quote.yulelovelights.com/portal/1 Questions? Call or text (631) 517-0186.",
     );
+  });
+
+  it('the decrease SMS is the exact copy: calm, no urgency, still links the portal', () => {
+    expect(smsDecrease()).toBe(
+      "Hi Susan! Good news — your Yule Love Lights order was changed and the total went down by $342.56 to a new order total of $1,428.16. You'll owe $714.08 after installation. Nothing you owe is going up. Please confirm on your portal whenever it's convenient, no rush: https://quote.yulelovelights.com/portal/1 Questions? Call or text (631) 517-0186.",
+    );
+  });
+
+  it('the SMS includes the portal link (the live-incident gap — email had one, SMS did not)', () => {
+    expect(smsIncrease()).toContain(portalUrl);
+    expect(smsDecrease()).toContain(portalUrl);
+  });
+
+  it('an increase demands approval before charging; a decrease never uses urgency language', () => {
+    const inc = smsIncrease();
+    const dec = smsDecrease();
+    expect(inc).toContain('This needs your approval');
+    expect(dec).not.toMatch(/needs your approval|before we charge/i);
+    expect(dec).not.toMatch(/urgent|hurry|act now|right away|as soon as possible/i);
+    expect(dec).toContain('no rush');
+  });
+
+  it('the email mirrors the SMS tone: approval-needed for an increase, no-rush for a decrease', () => {
+    const incHtml = htmlIncrease(true);
+    const decHtml = htmlDecrease();
+    expect(incHtml).toContain('This needs your approval');
+    expect(incHtml).not.toContain('no rush');
+    expect(decHtml).not.toContain('This needs your approval');
+    expect(decHtml).toContain('no rush');
+    expect(decHtml).toContain('Nothing you owe is going up');
+    expect(decHtml).toContain('$1,428.16');
+    expect(decHtml).toContain('$714.08');
+  });
+
+  // FIX8 (review MED): "to $1,770.72 (balance $1,056.64...)" ran two
+  // unlabeled dollar figures together — nothing distinguished the order
+  // total from what's actually owed.
+  it('labels the order total and the balance owed distinctly (not two unlabeled figures)', () => {
+    const sms = smsIncrease();
+    expect(sms).toContain('a new order total of $1,770.72');
+    expect(sms).toContain("You'll owe $1,056.64");
+    // The old unlabeled pairing is gone.
+    expect(sms).not.toContain('to $1,770.72 (balance');
   });
 
   it('quotes cents, matching the portal card and the invoice rather than rounding', () => {
@@ -531,16 +634,8 @@ describe('amendment notice copy (Jason 2026-08-19)', () => {
     // email agree with each other but DISAGREE with the portal's
     // AmendmentConsentCard (its own 2-decimal formatter) that the email links
     // to for signing, and with the exact-cents invoice.
-    const balance = 1056.64;
-    const sms = amendmentSmsBody('susan', balance, phone, true);
-    const html = amendmentEmailHtml({
-      firstName: 'susan',
-      newTotalUsd: 1770.72,
-      newBalanceUsd: balance,
-      portalUrl: 'https://x/portal/1',
-      phone,
-      dueAfterInstall: true,
-    });
+    const sms = smsIncrease();
+    const html = htmlIncrease(true);
     expect(sms).toContain('$1,056.64');
     expect(html).toContain('$1,056.64');
     expect(html).toContain('$1,770.72');
@@ -551,61 +646,116 @@ describe('amendment notice copy (Jason 2026-08-19)', () => {
   it('a balance whose cents would round DOWN still quotes the real figure', () => {
     // usd() rounding is not monotonic in the customer's favour: $842.10 would
     // render "$842", i.e. 10c LESS than what is actually billed.
-    expect(amendmentSmsBody('susan', 842.1, phone, true)).toContain('$842.10');
+    const sms = amendmentSmsBody({
+      firstName: 'susan',
+      newBalanceUsd: 842.1,
+      phone,
+      dueAfterInstall: true,
+      portalUrl,
+      deltaUsd: 342.56,
+      newTotalUsd: 1770.72,
+    });
+    expect(sms).toContain('$842.10');
   });
 
   it('the email labels the balance as due after installation and cases the greeting', () => {
-    const html = amendmentEmailHtml({
-      firstName: 'susan',
-      newTotalUsd: 1770.72,
-      newBalanceUsd: 1056.64,
-      portalUrl: 'https://x/portal/1',
-      phone,
-      dueAfterInstall: true,
-    });
+    const html = htmlIncrease(true);
     expect(html).toContain('Remaining balance (due after installation)');
     expect(html).toContain('Hi Susan,');
   });
 
   it('leaves an already-capitalised name alone and does not re-case the rest of it', () => {
-    expect(amendmentSmsBody('McDonough', 100, phone, true)).toContain('Hi McDonough!');
-    expect(amendmentSmsBody("O'Brien", 100, phone, true)).toContain("Hi O'Brien!");
+    expect(
+      amendmentSmsBody({
+        firstName: 'McDonough',
+        newBalanceUsd: 100,
+        phone,
+        dueAfterInstall: true,
+        portalUrl,
+        deltaUsd: 50,
+        newTotalUsd: 150,
+      }),
+    ).toContain('Hi McDonough!');
+    expect(
+      amendmentSmsBody({
+        firstName: "O'Brien",
+        newBalanceUsd: 100,
+        phone,
+        dueAfterInstall: true,
+        portalUrl,
+        deltaUsd: 50,
+        newTotalUsd: 150,
+      }),
+    ).toContain("Hi O'Brien!");
   });
 
   it('capitalises the first letter ONLY — it does not fix interior capitals', () => {
     // Documents the real limitation rather than implying a full name-caser.
-    expect(amendmentSmsBody("o'brien", 100, phone, true)).toContain("Hi O'brien!");
-    expect(amendmentSmsBody('mary-jane', 100, phone, true)).toContain('Hi Mary-jane!');
+    expect(
+      amendmentSmsBody({
+        firstName: "o'brien",
+        newBalanceUsd: 100,
+        phone,
+        dueAfterInstall: true,
+        portalUrl,
+        deltaUsd: 50,
+        newTotalUsd: 150,
+      }),
+    ).toContain("Hi O'brien!");
+    expect(
+      amendmentSmsBody({
+        firstName: 'mary-jane',
+        newBalanceUsd: 100,
+        phone,
+        dueAfterInstall: true,
+        portalUrl,
+        deltaUsd: 50,
+        newTotalUsd: 150,
+      }),
+    ).toContain('Hi Mary-jane!');
   });
 
   it('falls back to the existing "there" greeting without throwing on an empty name', () => {
-    expect(amendmentSmsBody('', 100, phone, true)).toContain('Hi !');
-    expect(() => amendmentEmailHtml({
-      firstName: '',
-      newTotalUsd: 1,
-      newBalanceUsd: 1,
-      portalUrl: 'https://x/portal/1',
-      phone,
-      dueAfterInstall: true,
-    })).not.toThrow();
+    expect(
+      amendmentSmsBody({
+        firstName: '',
+        newBalanceUsd: 100,
+        phone,
+        dueAfterInstall: true,
+        portalUrl,
+        deltaUsd: 50,
+        newTotalUsd: 150,
+      }),
+    ).toContain('Hi !');
+    expect(() =>
+      amendmentEmailHtml({
+        firstName: '',
+        newTotalUsd: 1,
+        newBalanceUsd: 1,
+        portalUrl,
+        phone,
+        dueAfterInstall: true,
+        deltaUsd: 1,
+      }),
+    ).not.toThrow();
   });
 
-
-  // Review lens HIGH: amending an ALREADY-INSTALLED, already-invoiced job is an
-  // ordinary case, and "after installation" would tell that customer a balance
-  // they already owe is not due yet.
+  // Review lens HIGH (original): amending an ALREADY-INSTALLED, already-invoiced
+  // job is an ordinary case, and "after installation" would tell that customer
+  // a balance they already owe is not due yet.
   it('drops the after-installation clause once the job is already installed', () => {
-    const sms = amendmentSmsBody('susan', 1056.64, phone, false);
-    expect(sms).toContain('your remaining balance is now $1,056.64.');
-    expect(sms).not.toContain('after installation');
-    const html = amendmentEmailHtml({
+    const sms = amendmentSmsBody({
       firstName: 'susan',
-      newTotalUsd: 1770.72,
       newBalanceUsd: 1056.64,
-      portalUrl: 'https://x/portal/1',
       phone,
       dueAfterInstall: false,
+      portalUrl,
+      deltaUsd: 342.56,
+      newTotalUsd: 1770.72,
     });
+    expect(sms).toContain("You'll owe $1,056.64.");
+    expect(sms).not.toContain('after installation');
+    const html = htmlIncrease(false);
     expect(html).toContain('Remaining balance</td>');
     expect(html).not.toContain('due after installation');
   });
@@ -613,7 +763,17 @@ describe('amendment notice copy (Jason 2026-08-19)', () => {
   it('does not capitalise the no-name fallback greeting', () => {
     // route.ts resolves a blank customer_name to the literal 'there' BEFORE
     // calling, so capitalising would produce "Hi There!".
-    expect(amendmentSmsBody('there', 100, phone, true)).toContain('Hi there!');
+    expect(
+      amendmentSmsBody({
+        firstName: 'there',
+        newBalanceUsd: 100,
+        phone,
+        dueAfterInstall: true,
+        portalUrl,
+        deltaUsd: 50,
+        newTotalUsd: 150,
+      }),
+    ).toContain('Hi there!');
   });
 
   it('escapes HTML in the customer name', () => {
@@ -621,11 +781,255 @@ describe('amendment notice copy (Jason 2026-08-19)', () => {
       firstName: '<script>',
       newTotalUsd: 1,
       newBalanceUsd: 1,
-      portalUrl: 'https://x/portal/1',
+      portalUrl,
       phone,
       dueAfterInstall: true,
+      deltaUsd: 1,
     });
     expect(html).not.toContain('<script>');
     expect(html).toContain('&lt;script&gt;');
+  });
+
+  it('does not repeat the staff-typed reason in either message (portal link carries it)', () => {
+    // Deliberate design choice — see the module-level comment above
+    // amendmentSmsBody/amendmentEmailHtml for why: reason is free text meant
+    // for the portal sign-off card, not a carrier-filtered SMS or a second
+    // unvetted surface.
+    const reasonLikeText = 'added a 36" wreath to the front door';
+    expect(smsIncrease()).not.toContain(reasonLikeText);
+    expect(htmlIncrease(true)).not.toContain(reasonLikeText);
+  });
+});
+
+// FIX5 (review HIGH, ledger #83 follow-up): a decline used to write to the DB
+// and return JSON to the customer's own browser — nothing told staff. Same
+// shape as the Valor webhook's card-declined staff alert (above).
+describe('amendmentDeclinedInternalEmailSubject', () => {
+  it('names the customer, with a fallback', () => {
+    expect(
+      amendmentDeclinedInternalEmailSubject({ customerName: 'Jordan Smith', quoteNumber: 12, refusedTotalUsd: 2400 }),
+    ).toContain('Jordan Smith');
+    expect(
+      amendmentDeclinedInternalEmailSubject({ customerName: null, quoteNumber: null, refusedTotalUsd: 2400 }),
+    ).toContain('A customer');
+  });
+
+  it('includes the quote number when present, omits it when absent', () => {
+    expect(
+      amendmentDeclinedInternalEmailSubject({ customerName: 'Jordan', quoteNumber: 42, refusedTotalUsd: 100 }),
+    ).toContain('quote #42');
+    expect(
+      amendmentDeclinedInternalEmailSubject({ customerName: 'Jordan', quoteNumber: null, refusedTotalUsd: 100 }),
+    ).not.toContain('quote #');
+  });
+
+  it('says DECLINED and states the refused amount', () => {
+    const subject = amendmentDeclinedInternalEmailSubject({
+      customerName: 'Jordan',
+      quoteNumber: 42,
+      refusedTotalUsd: 2400,
+    });
+    expect(subject).toContain('DECLINED');
+    expect(subject).toContain('$2,400.00');
+  });
+});
+
+describe('amendmentDeclinedInternalEmailHtml', () => {
+  const base = {
+    customerName: 'Jordan Smith',
+    quoteNumber: 42,
+    previousTotalUsd: 2000,
+    refusedTotalUsd: 2400,
+    deltaUsd: 400,
+    adminUrl: 'https://quote.yulelovelights.com/admin/quotes/abc',
+    portalUrl: 'https://quote.yulelovelights.com/portal/abc',
+  };
+
+  it('carries the customer, both totals, the signed delta, and both links', () => {
+    const html = amendmentDeclinedInternalEmailHtml(base);
+    expect(html).toContain('Jordan Smith');
+    expect(html).toContain('quote #42');
+    expect(html).toContain('$2,000.00'); // stays-at (previous) total
+    expect(html).toContain('$2,400.00'); // the refused total
+    expect(html).toContain('+$400.00'); // signed delta
+    expect(html).toContain(base.adminUrl);
+    expect(html).toContain(base.portalUrl);
+  });
+
+  it('shows a NEGATIVE sign for a declined price decrease', () => {
+    const html = amendmentDeclinedInternalEmailHtml({ ...base, deltaUsd: -400 });
+    expect(html).toContain('-$400.00');
+    expect(html).not.toContain('+-$400.00');
+  });
+
+  it('includes the customer-typed reason when given, safely HTML-escaped', () => {
+    const html = amendmentDeclinedInternalEmailHtml({
+      ...base,
+      reason: 'too expensive <script>alert(1)</script>',
+    });
+    expect(html).toContain('Their reason');
+    expect(html).toContain('too expensive');
+    expect(html).not.toContain('<script>alert(1)</script>');
+    expect(html).toContain('&lt;script&gt;');
+  });
+
+  it('omits the reason row entirely when no reason was given', () => {
+    const html = amendmentDeclinedInternalEmailHtml(base);
+    expect(html).not.toContain('Their reason');
+  });
+
+  it('falls back to "Unknown" for a null customer name', () => {
+    const html = amendmentDeclinedInternalEmailHtml({ ...base, customerName: null });
+    expect(html).toContain('Unknown');
+  });
+});
+
+// Ledger row 236, fix round (four-lens LOW) — the quote number is threaded
+// through in the SAME subject/body format as the money-alert siblings above
+// (amendmentDeclinedInternalEmail*/internalDepositDeclinedEmail*).
+describe('internalReopenRequestedEmailSubject (row 236)', () => {
+  it('names the customer, with a fallback', () => {
+    expect(internalReopenRequestedEmailSubject({ customerName: 'Jordan Smith', quoteNumber: 12 })).toContain(
+      'Jordan Smith',
+    );
+    expect(internalReopenRequestedEmailSubject({ customerName: null, quoteNumber: null })).toContain('A customer');
+  });
+
+  it('includes the quote number when present, omits it when absent', () => {
+    expect(internalReopenRequestedEmailSubject({ customerName: 'Jordan', quoteNumber: 42 })).toContain('quote #42');
+    expect(internalReopenRequestedEmailSubject({ customerName: 'Jordan', quoteNumber: null })).not.toContain(
+      'quote #',
+    );
+  });
+});
+
+describe('internalReopenRequestedEmailHtml (row 236)', () => {
+  const base = {
+    customerName: 'Jordan Smith',
+    quoteNumber: 42,
+    address: '1 Main St',
+    phone: '+15555550123',
+    email: 'jordan@example.com',
+    status: 'declined',
+    portalUrl: 'https://quote.yulelovelights.com/portal/abc',
+    adminUrl: 'https://quote.yulelovelights.com/quote/abc',
+  };
+
+  it('carries the customer, quote number, status, and both links', () => {
+    const html = internalReopenRequestedEmailHtml(base);
+    expect(html).toContain('Jordan Smith');
+    expect(html).toContain('(quote #42)');
+    expect(html).toContain('declined');
+    expect(html).toContain('href="https://quote.yulelovelights.com/quote/abc"');
+    expect(html).toContain('href="https://quote.yulelovelights.com/portal/abc"');
+  });
+
+  it('omits the quote-number label entirely when quoteNumber is null', () => {
+    const html = internalReopenRequestedEmailHtml({ ...base, quoteNumber: null });
+    expect(html).not.toContain('(quote #');
+  });
+
+  it('shows "Unknown" for a missing name and reflects an abandoned status', () => {
+    const html = internalReopenRequestedEmailHtml({ ...base, customerName: null, status: 'abandoned' });
+    expect(html).toContain('Unknown');
+    expect(html).toContain('abandoned');
+  });
+
+  it('escapes HTML in the customer name', () => {
+    const html = internalReopenRequestedEmailHtml({ ...base, customerName: '<script>' });
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('&lt;script&gt;');
+  });
+});
+
+// Row 315: greetingName (the first-letter-only casing helper, shipped #805)
+// was wired into ONLY the amendment SMS/email — every other customer greeting
+// still rendered the raw stored name, so one customer could read "Hi susan!"
+// on the quote-ready text and "Hi Susan!" on the amendment text in the same
+// thread. Every customer-greeting builder below now routes through the same
+// helper. Each function gets BOTH directions: a lowercase name gets
+// capitalised, and an already-capitalised name is byte-identical to before
+// (greetingName only ever touches the first character).
+describe('greeting casing sweep (row 315): every customer greeting routes through greetingName', () => {
+  it('quoteSmsBody capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    expect(quoteSmsBody('susan', 'https://x/portal/1', 'holiday')).toContain('Hi Susan!');
+    expect(quoteSmsBody('Susan', 'https://x/portal/1', 'holiday')).toContain('Hi Susan!');
+  });
+
+  it("the literal 'there' fallback passes through every swept builder uncapitalised (value-based exemption)", () => {
+    expect(quoteSmsBody('there', 'https://x/portal/1', 'holiday')).toContain('Hi there!');
+    expect(quoteEmailHtml('there', 'https://x/portal/1', 'holiday')).toContain('Hi there,');
+    expect(approvalSmsBody('there', 2700, '(631) 517-0186', 50)).toContain('Hi there!');
+  });
+
+  it('quoteEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    expect(quoteEmailHtml('susan', 'https://x/portal/1', 'holiday')).toContain('Hi Susan,');
+    expect(quoteEmailHtml('Susan', 'https://x/portal/1', 'holiday')).toContain('Hi Susan,');
+  });
+
+  it('approvalSmsBody capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    expect(approvalSmsBody('susan', 2700, '(631) 517-0186', 50)).toContain('Hi Susan!');
+    expect(approvalSmsBody('Susan', 2700, '(631) 517-0186', 50)).toContain('Hi Susan!');
+  });
+
+  it('approvalEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    expect(approvalEmailHtml('susan', 2700, 'https://x/portal/1', '(631) 517-0186', 50)).toContain('Hi Susan,');
+    expect(approvalEmailHtml('Susan', 2700, 'https://x/portal/1', '(631) 517-0186', 50)).toContain('Hi Susan,');
+  });
+
+  it('balanceLinkSmsBody capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    expect(balanceLinkSmsBody('susan', 551.91, 'https://x/portal/1/pay-balance', '(631) 517-0186')).toContain('Hi Susan!');
+    expect(balanceLinkSmsBody('Susan', 551.91, 'https://x/portal/1/pay-balance', '(631) 517-0186')).toContain('Hi Susan!');
+  });
+
+  it('balanceLinkEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    const args = (firstName: string) => ({
+      firstName,
+      balanceUsd: 551.91,
+      payUrl: 'https://x/portal/1/pay-balance',
+      phone: '(631) 517-0186',
+    });
+    expect(balanceLinkEmailHtml(args('susan'))).toContain('Hi Susan,');
+    expect(balanceLinkEmailHtml(args('Susan'))).toContain('Hi Susan,');
+  });
+
+  it('receiptSmsBody capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    expect(receiptSmsBody('susan', 2700, '(631) 517-0186')).toContain('Hi Susan!');
+    expect(receiptSmsBody('Susan', 2700, '(631) 517-0186')).toContain('Hi Susan!');
+  });
+
+  it('receiptEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    const args = (firstName: string) => ({
+      firstName,
+      depositUsd: 2700,
+      totalUsd: 5400,
+      receiptUrl: null,
+      confirmationUrl: 'https://x/portal/1',
+      phone: '(631) 517-0186',
+    });
+    expect(receiptEmailHtml(args('susan'))).toContain('Hi Susan,');
+    expect(receiptEmailHtml(args('Susan'))).toContain('Hi Susan,');
+  });
+
+  it('referralLinkEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    const referralUrl = 'https://x/refer/abc';
+    expect(referralLinkEmailHtml({ firstName: 'susan', referralUrl })).toContain('Hi Susan,');
+    expect(referralLinkEmailHtml({ firstName: 'Susan', referralUrl })).toContain('Hi Susan,');
+  });
+
+  it("referralLinkEmailHtml still falls back to 'there' (unchanged) for a missing/blank name", () => {
+    const referralUrl = 'https://x/refer/abc';
+    expect(referralLinkEmailHtml({ firstName: null, referralUrl })).toContain('Hi there,');
+    expect(referralLinkEmailHtml({ firstName: '   ', referralUrl })).toContain('Hi there,');
+  });
+
+  it('colorChangeAppliedEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    expect(colorChangeAppliedEmailHtml('susan', 'Warm White')).toContain('Hi Susan,');
+    expect(colorChangeAppliedEmailHtml('Susan', 'Warm White')).toContain('Hi Susan,');
+  });
+
+  it('never fixes interior capitals (documents the shared limitation, not a full name-caser)', () => {
+    expect(quoteSmsBody("o'brien", 'https://x/portal/1', 'holiday')).toContain("Hi O'brien!");
+    expect(receiptSmsBody("o'brien", 2700, '(631) 517-0186')).toContain("Hi O'brien!");
   });
 });

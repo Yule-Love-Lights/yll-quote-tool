@@ -3,9 +3,12 @@ import {
   deriveStatus,
   canTransition,
   canRevive,
+  isTerminalBrowseStatus,
   isQuoteStatus,
   isPortalActionable,
   QUOTE_STATUSES,
+  APPROVED_DISPLAYS_AS,
+  statusMatchesFilter,
   type QuoteStatus,
   type QuoteStatusRow,
 } from './quoteStatus';
@@ -196,6 +199,80 @@ describe('isPortalActionable — customer approve+pay UI gate (Bug 3)', () => {
   });
 });
 
+describe('APPROVED_DISPLAYS_AS / statusMatchesFilter — row 242 (no third stage; Jason\'s ruling)', () => {
+  it('is not the bare word "Approved" — no surface should badge it as a standalone stage', () => {
+    expect(APPROVED_DISPLAYS_AS).not.toBe('Approved');
+    expect(APPROVED_DISPLAYS_AS.toLowerCase()).not.toBe('approved');
+  });
+
+  it('presents identically to Sent, per Jason\'s ruling (sent -> booked, or -> declined; nothing in between)', () => {
+    expect(APPROVED_DISPLAYS_AS).toBe('Sent');
+  });
+
+  it('a sent-then-approved-but-unpaid quote still derives the approved CODE, which every quote-lane surface then renders under the Sent label — the mechanism (deriveStatus) and the presentation are independently verifiable and stay in sync', () => {
+    const approvedUnpaid = ts({
+      quote_sent_at: '2026-06-02T00:00:00Z',
+      viewed_at: '2026-06-02T01:00:00Z',
+      customer_approved_at: '2026-06-03T00:00:00Z',
+      // deposit_paid_at stays null — approved, not yet booked.
+    });
+    const code = deriveStatus(approvedUnpaid);
+    expect(code).toBe('approved'); // the real status code — untouched by this row
+    // The 3 quote-lane display surfaces (admin list, admin detail, quote
+    // builder header pill) all map STATUS_LABELS/STATUS_BADGE[code] through
+    // this same constant for the 'approved' key — asserting the constant's
+    // value here is the shared assertion point for all three, since none of
+    // them export their local maps for direct import (see the PR body for
+    // why: importing a route's page.tsx / a huge client component into a
+    // unit test to grab one constant would drag in their whole module graph
+    // for no real safety gain over testing the single shared source).
+    const displayLabelForCode: Record<QuoteStatus, string> = {
+      draft: 'Draft',
+      sent: 'Sent',
+      viewed: 'Viewed',
+      approved: APPROVED_DISPLAYS_AS,
+      booked: 'Booked',
+      changes_requested: 'Changes',
+      declined: 'Declined',
+      cancelled: 'Cancelled',
+      abandoned: 'Abandoned',
+    };
+    expect(displayLabelForCode[code]).toBe('Sent');
+  });
+
+  it('canTransition still treats approved as a full, real status (the mechanism is untouched by the display change)', () => {
+    expect(canTransition('approved', 'booked')).toBe(true);
+    expect(canTransition('approved', 'declined')).toBe(true);
+    expect(canTransition('approved', 'cancelled')).toBe(true);
+  });
+
+  it('statusMatchesFilter: an approved-unpaid quote appears under the Sent filter and (per the badge maps above) shows the Sent badge', () => {
+    // The /admin/quotes Stage row has no separate Approved chip any more —
+    // this is the predicate that keeps an approved-unpaid quote from being
+    // silently orphaned from every filter except "All".
+    expect(statusMatchesFilter('approved', 'sent')).toBe(true);
+    // And it must NOT double-match some other chip a filter click didn't ask for.
+    expect(statusMatchesFilter('approved', 'viewed')).toBe(false);
+    expect(statusMatchesFilter('approved', 'booked')).toBe(false);
+    expect(statusMatchesFilter('approved', 'draft')).toBe(false);
+  });
+
+  it('statusMatchesFilter: every other status still matches only itself (the sent<-approved fold is the ONE exception)', () => {
+    for (const s of QUOTE_STATUSES) {
+      if (s === 'approved') continue; // covered above
+      expect(statusMatchesFilter(s, s)).toBe(true);
+      for (const other of QUOTE_STATUSES) {
+        if (other === s) continue;
+        expect(statusMatchesFilter(s, other)).toBe(false);
+      }
+    }
+  });
+
+  it('statusMatchesFilter: sent does not reverse-match approved (the fold is filter-direction-specific: code=approved,filter=sent, not the other way)', () => {
+    expect(statusMatchesFilter('sent', 'approved')).toBe(false);
+  });
+});
+
 describe('canRevive — #116 re-send half (revive a dead quote in place)', () => {
   it('is true only for declined and abandoned', () => {
     expect(canRevive('declined')).toBe(true);
@@ -210,6 +287,31 @@ describe('canRevive — #116 re-send half (revive a dead quote in place)', () =>
     for (const s of ['draft', 'sent', 'viewed', 'approved', 'booked', 'changes_requested'] as const) {
       expect(canRevive(s)).toBe(false);
     }
+  });
+});
+
+// Ledger row 236, fix round (four-lens MED) — same declined/abandoned set as
+// canRevive above, loose-typed for display components (StickyBottomBar's
+// terminalBrowse branch, FinancingSection's eligibility gate) that carry
+// quoteStatus as a bare string prop.
+describe('isTerminalBrowseStatus (row 236)', () => {
+  it('is true for declined and abandoned', () => {
+    expect(isTerminalBrowseStatus('declined')).toBe(true);
+    expect(isTerminalBrowseStatus('abandoned')).toBe(true);
+  });
+
+  it('is false for every other status, including the other two non-actionable ones', () => {
+    expect(isTerminalBrowseStatus('cancelled')).toBe(false);
+    expect(isTerminalBrowseStatus('changes_requested')).toBe(false);
+    expect(isTerminalBrowseStatus('sent')).toBe(false);
+    expect(isTerminalBrowseStatus('viewed')).toBe(false);
+    expect(isTerminalBrowseStatus('approved')).toBe(false);
+    expect(isTerminalBrowseStatus('booked')).toBe(false);
+  });
+
+  it('is false for null/undefined (fail toward showing normal UI)', () => {
+    expect(isTerminalBrowseStatus(null)).toBe(false);
+    expect(isTerminalBrowseStatus(undefined)).toBe(false);
   });
 });
 

@@ -75,8 +75,8 @@ const SP = (id: string, quoteSize?: string, colorPattern?: string[]): SceneItem 
   ({ kind: 'spritzer', id, quoteSize, colorPattern, included: true }) as unknown as SceneItem;
 const MINI = (id: string, surface?: string, stringCount?: number, colorPattern?: string[], groupId?: string): SceneItem =>
   ({ kind: 'strand', id, surface, stringCount, colorPattern, groupId, included: true }) as unknown as SceneItem;
-const AREA = (id: string, surface: string, stringCount: number, colorPattern: string[]): SceneItem =>
-  ({ kind: 'miniArea', id, surface, stringCount, colorPattern, included: true }) as unknown as SceneItem;
+const AREA = (id: string, surface: string, stringCount: number, colorPattern: string[], groupId?: string): SceneItem =>
+  ({ kind: 'miniArea', id, surface, stringCount, colorPattern, groupId, included: true }) as unknown as SceneItem;
 const GROUP = (id: string, surface: string, stringCount: number): SceneItem =>
   ({ kind: 'miniGroup', id, surface, stringCount, memberIds: [], included: true }) as unknown as SceneItem;
 const ROOF = (id: string, surface?: string): SceneItem =>
@@ -195,6 +195,27 @@ describe('projectMaterials — skips', () => {
     const grouped = MINI('m1', 'tree', 2, ['warm-white'], 'grp1');
     expect(projectMaterials(scene([excluded, grouped]), B)).toEqual([]);
   });
+  // #840 review fix: a grouped scattershot (mixed-group member) must be
+  // skipped here too — it's projected via its MiniGroupItem, same as a
+  // grouped strand just above. Before this fix a grouped scattershot would
+  // bill BOTH its own individual line AND the group's line.
+  it('skips a grouped scattershot (projected via its MiniGroupItem, not doubled)', () => {
+    const groupedArea = AREA('a1', 'bush', 2, ['warm-white'], 'grp1');
+    expect(projectMaterials(scene([groupedArea]), B)).toEqual([]);
+  });
+  it('a mixed group (grouped strand + grouped scattershot) bills ONLY the group line, not either member', () => {
+    const lines = projectMaterials(
+      scene([
+        MINI('m1', 'bush', 1, ['warm-white'], 'grp1'),
+        AREA('a1', 'bush', 1, ['warm-white'], 'grp1'),
+        GROUP('grp1', 'bush', 5),
+      ]),
+      B,
+    );
+    expect(lines).toEqual([
+      { sku: 'MINIWW', qty: 5, category: 'mini', conceptKey: 'mini:Warm White', label: 'Warm White mini (bush) × 5', sceneItemId: 'grp1' },
+    ]);
+  });
   it('skips roofline strands with no bulbType or geometry, and unmapped strands', () => {
     // r1: santas-roofline but no bulbType/points → not a complete c9 run.
     // r2: no surface at all → unmapped.
@@ -265,10 +286,12 @@ describe('projectMaterials — roofline c9 (Slice 2b)', () => {
     expect(bulbs.map((l) => [l.sku, l.qty])).toEqual([['R', 5], ['G', 5]]); // 10 bulbs / 2 colors
   });
 
-  it('bulb spacing drives the count (6" spacing → double)', () => {
+  it('drawn spacing is IGNORED — bulbs order at the 12" install standard (Jason ruling 2026-08-20)', () => {
+    // spacingIn is design-only aesthetics; crews install every job at 12".
+    // A run drawn dense (6") must NOT double the order.
     const bulb = projectMaterials(sc([C9({ spacingIn: 6, roofFeature: 'gutter' })]), { 'bulb:warm-white:c9': 'C9WW' }, CR)
       .find((l) => l.category === 'bulb')!;
-    expect(bulb.qty).toBe(20); // 10ft × 12/6
+    expect(bulb.qty).toBe(10); // 10ft × 12/12 — not 20
   });
 
   it('excluded roofline run is skipped', () => {

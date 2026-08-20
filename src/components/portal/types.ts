@@ -60,6 +60,12 @@ export type PortalLineItem = {
   // pre-selected and shows a "Recommended" label on each. NEVER set on roofline
   // option items (roofline keeps its own recommend mechanism — PortalRoofline).
   recommended?: boolean;
+  // item-numbering-rename: true when `label` is a staff-typed override
+  // (inputs.labelOverrides), not the engine's auto-generated default. Lets a
+  // consumer that otherwise groups/aggregates by `kind` (docModels.ts's PDF
+  // wrapped-mini collapse) recognize a renamed item and break it out into its
+  // own row instead of folding it into a generic "Trees"-style summary line.
+  labelOverridden?: boolean;
 };
 
 // The mutually-exclusive roofline group for the portal (#17 Phase 2). Present
@@ -109,6 +115,17 @@ export type PortalPendingAmendment = {
   deltaUsd: number;
   depositAppliedUsd: number;
   newBalanceUsd: number;
+  // Ledger #83 follow-up: 'pending' still needs the customer's answer;
+  // 'declined' means they already answered NO. The field name
+  // "pendingAmendment" predates the decline path and stays — it means "the
+  // latest amendment the customer hasn't ACCEPTED", not literally "pending" —
+  // renaming it would ripple through the portal page + this type for no
+  // behavior change. Read consentStatus to pick which card to render.
+  consentStatus: 'pending' | 'declined';
+  // Set only when consentStatus is 'declined' AND the customer typed one.
+  declinedReason?: string;
+  // Set only when consentStatus is 'declined'.
+  declinedAt?: string;
 };
 
 export type PortalApproval = {

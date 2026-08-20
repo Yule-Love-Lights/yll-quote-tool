@@ -3,7 +3,7 @@
 -- Paste into the Supabase SQL Editor and click Run.
 --
 -- GENERATED (audit #110 wave 2, finding W2-007): this file is produced by
--- reconciling ALL 82 dated migrations/*.sql files IN DATE ORDER (creates,
+-- reconciling ALL 83 dated migrations/*.sql files IN DATE ORDER (creates,
 -- alters, drops, RLS enable/disable applied in sequence) into one canonical
 -- end-state schema. It supersedes running db/schema.sql + the individual
 -- dated migrations separately (CREATE ... IF NOT EXISTS on a fresh DB; the
@@ -18,6 +18,12 @@
 -- 82, i.e. the exact hand-patch-without-updating-the-changelog drift row 282
 -- existed to end. The counts on line 6 and the roster below are the numbers to
 -- trust; re-derive them rather than incrementing by hand.
+-- 2026-08-19-quotes-browsing-selection.sql (ledger row 239) folded in the
+-- SAME PR that added the migration (83 files, still 38 live tables — an
+-- ADD COLUMN on the existing quotes table, not a new table). Row 315
+-- verified the header count against a fresh `ls migrations/*.sql` rather
+-- than trusting either number, per the "re-derive, don't hand-increment"
+-- line above.
 -- WHY THIS PASS EXISTED: the S58 post-close six-lens review (mislabelled S59 until the 2026-08-19 correction) found this file no longer was
 -- what its own header claimed. It said "64 dated migrations" and "30 LIVE"
 -- tables while 81 migrations and 37 live tables existed, and TWO tables
