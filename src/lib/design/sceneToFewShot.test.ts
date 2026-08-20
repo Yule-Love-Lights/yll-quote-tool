@@ -20,6 +20,13 @@ function miniStrand(id: string, surface: StrandItem['surface'], points: number[]
   };
 }
 
+function miniArea(id: string, surface: MiniAreaItem['surface'], box: { x: number; y: number; width: number; height: number }, extra?: Partial<MiniAreaItem>): MiniAreaItem {
+  return {
+    id, yardstickId: null, kind: 'miniArea', shape: 'box',
+    x: box.x, y: box.y, width: box.width, height: box.height, surface, included: true, ...extra,
+  };
+}
+
 const scene = (items: Scene['items'], yardsticks: Scene['yardsticks'] = []): Scene => ({ yardsticks, items });
 
 describe('sceneToFewShotPieces', () => {
@@ -73,6 +80,56 @@ describe('sceneToFewShotPieces', () => {
     expect(out.miniLightDetections).toHaveLength(1);
     expect(out.miniLightDetections[0]).toMatchObject({ type: 'railing', stringCount: 4 });
     // box spans both members: x 100→500, y 200 (padded height) → [0.1, …, 0.4, …]
+    expect(out.miniLightDetections[0].box[0]).toBeCloseTo(0.1, 5);
+    expect(out.miniLightDetections[0].box[2]).toBeCloseTo(0.4, 5);
+  });
+
+  // #840 review fix: a grouped scattershot's OWN isMiniArea branch had no
+  // groupId skip, so it leaked into the training data TWICE — once correctly
+  // folded into the group's box, once more on its own with a stale
+  // per-member stringCount. Mirrors the grouped-strand test above.
+  it('skips a GROUPED scattershot\'s own detection (emitted via its group instead)', () => {
+    const out = sceneToFewShotPieces(
+      scene([
+        miniArea('a1', 'bush', { x: 100, y: 400, width: 50, height: 50 }, { groupId: 'grp-1' }), // grouped → skip
+        miniArea('a2', 'tree', { x: 500, y: 100, width: 40, height: 40 }), // ungrouped → still taught
+      ]),
+      W, H,
+    );
+    expect(out.miniLightDetections).toHaveLength(1);
+    expect(out.miniLightDetections[0]).toMatchObject({ type: 'tree' });
+  });
+
+  // #240: a mini-light group's members can be strands AND/OR scattershots.
+  // The group's ONE emitted box must span BOTH kinds of member, not just
+  // strands (this is the memberPixelPoints fix, distinct from the skip above).
+  it('emits ONE railing detection boxing a MIXED group (strand + scattershot members)', () => {
+    const out = sceneToFewShotPieces(
+      scene([
+        miniStrand('rm1', 'railing', [100, 200, 300, 200], { groupId: 'rg' }),
+        miniArea('am1', 'railing', { x: 400, y: 150, width: 100, height: 100 }, { groupId: 'rg' }),
+        { id: 'rg', yardstickId: null, kind: 'miniGroup', surface: 'railing', stringCount: 6, memberIds: ['rm1', 'am1'] },
+      ]),
+      W, H,
+    );
+    expect(out.miniLightDetections).toHaveLength(1);
+    expect(out.miniLightDetections[0]).toMatchObject({ type: 'railing', stringCount: 6 });
+    // box spans the strand (x 100→300) AND the scattershot (x 400→500): 100→500.
+    expect(out.miniLightDetections[0].box[0]).toBeCloseTo(0.1, 5);
+    expect(out.miniLightDetections[0].box[2]).toBeCloseTo(0.4, 5);
+  });
+
+  it('emits a railing detection via memberIds fallback with a scattershot member (#110 W5-006 x #240)', () => {
+    const out = sceneToFewShotPieces(
+      scene([
+        miniStrand('rm1', 'railing', [100, 200, 300, 200], { groupId: 'stale-group-id' }),
+        miniArea('am1', 'railing', { x: 400, y: 150, width: 100, height: 100 }, { groupId: 'stale-group-id' }),
+        { id: 'rg', yardstickId: null, kind: 'miniGroup', surface: 'railing', stringCount: 6, memberIds: ['rm1', 'am1'] },
+      ]),
+      W, H,
+    );
+    expect(out.miniLightDetections).toHaveLength(1);
+    expect(out.miniLightDetections[0]).toMatchObject({ type: 'railing', stringCount: 6 });
     expect(out.miniLightDetections[0].box[0]).toBeCloseTo(0.1, 5);
     expect(out.miniLightDetections[0].box[2]).toBeCloseTo(0.4, 5);
   });
