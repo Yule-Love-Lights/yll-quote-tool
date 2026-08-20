@@ -231,16 +231,29 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // to approval_snapshot in that gap made the second CAS match 0 rows with
   // no error at all).
   //
-  // previousInvoicedTotal is simply the invoice's CURRENT total — readable
-  // right now, before anything moves. The new invoice-basis total is a PURE
-  // computation (computeInvoiceResyncTotals, from quoteAmendInvoiceSync.ts —
-  // the SAME function the re-sync below calls on these SAME inputs, so the
-  // two can't drift into different numbers). Guarded identically to the
-  // re-sync call below (invoice exists, not cancelled, quote.result present);
-  // absent a concurrent change to THIS invoice between here and the re-sync
-  // a few lines down (the invoices table is otherwise untouched by this
-  // route until then), these are exactly the figures the re-sync is about to
-  // write.
+  // FIX B (task (a), fix round 5): re-read the invoice HERE, immediately
+  // before computing the basis payload below, instead of reusing the `invoice`
+  // fetched near the top of this handler (before computeAmendment / the
+  // no-change guard ran). That earlier read left a stale-invoice window open —
+  // a concurrent re-sync, mark-paid, or tax-override edit landing between the
+  // two could persist a basis computed from an invoice.total/tax_overridden
+  // that's already wrong by the time this stamp lands in the write below.
+  // Same fallback idiom as resyncInvoiceToAgreedTotal's own B10 re-read
+  // (quoteAmendInvoiceSync.ts): getInvoiceByJob swallows its own read errors
+  // and returns null, so `?? invoice` falls back to the earlier read rather
+  // than silently dropping the stamp on a transient failure. This narrows,
+  // but (short of a Postgres RPC) cannot fully eliminate, the window — the
+  // remaining gap is between this re-read and the CAS write a few lines
+  // below, not the whole handler.
+  //
+  // previousInvoicedTotal is that freshly re-read invoice's CURRENT total.
+  // The new invoice-basis total is a PURE computation (computeInvoiceResyncTotals,
+  // from quoteAmendInvoiceSync.ts — the SAME function the re-sync below calls
+  // on these SAME inputs, so the two can't drift into different numbers).
+  // Guarded identically to the re-sync call below (invoice exists, not
+  // cancelled, quote.result present) — the re-sync call itself does its OWN
+  // independent fresh re-read (B10), so it stays correct even if this read
+  // and that one land on different snapshots of the invoice.
   //
   // If the re-sync below still fails for any reason (a genuine DB error, or
   // a concurrent change this read couldn't see), the amendment trail entry
@@ -251,14 +264,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // the SECOND write ungated on anything (it ran only when the re-sync
   // reported success), so this exact failure mode couldn't yet produce a
   // stamped-but-unsent-to-invoice figure — but a LOST CAS RACE on a
-  // *successful* re-sync could, and silently, which is the bug this fixes.
-  if (invoice && invoice.status !== 'cancelled' && quote.result) {
-    const planned = computeInvoiceResyncTotals(quote.result, depositPaid, newTotal, invoice.tax_overridden);
-    if (typeof invoice.total === 'number' && Number.isFinite(invoice.total)) {
+  // *successful* re-sync could, and silently, which is the bug FIX A fixed.
+  const invoiceForBasis = (job ? await getInvoiceByJob(job.id) : null) ?? invoice;
+  if (invoiceForBasis && invoiceForBasis.status !== 'cancelled' && quote.result) {
+    const planned = computeInvoiceResyncTotals(
+      quote.result,
+      depositPaid,
+      newTotal,
+      invoiceForBasis.tax_overridden,
+    );
+    if (typeof invoiceForBasis.total === 'number' && Number.isFinite(invoiceForBasis.total)) {
       amendment.invoice_basis = {
-        previous_total: invoice.total,
+        previous_total: invoiceForBasis.total,
         new_total: planned.total,
-        delta: round2(planned.total - invoice.total),
+        delta: round2(planned.total - invoiceForBasis.total),
       };
     }
   }

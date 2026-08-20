@@ -596,17 +596,16 @@ describe('POST /api/quotes/[id]/amend', () => {
   // reasoned about explicitly — the invoice re-sync fails AFTER the
   // amendment (with its invoice_basis already stamped, pre-write) is
   // durably recorded. Simulated here via a concurrent CANCELLATION of the
-  // invoice between the route's initial read (used for the pre-write stamp)
-  // and the re-sync's own fresh re-read (which bails out on a cancelled
-  // invoice without writing anything — resyncInvoiceToAgreedTotal's first
-  // guard). Before this fix, the SMS would have used the (never-happened)
-  // real resync outcome — null, falling back to the TRAIL balance — while
-  // any comparable stamp would've been skipped by the same nullness. After
-  // this fix, the SMS and the stamped trail entry both read the SAME
-  // pre-computed `amendment.invoice_basis`, so they still agree with each
-  // other; only the invoices TABLE itself is left stale (a pre-existing,
-  // separately-known best-effort characteristic of the re-sync, not
-  // something this fix changes).
+  // invoice landing AFTER the pre-basis re-read (task (a), fix round 5 — see
+  // below) but before the re-sync's own fresh re-read (which bails out on a
+  // cancelled invoice without writing anything — resyncInvoiceToAgreedTotal's
+  // first guard). Before FIX A, the SMS would have used the (never-happened)
+  // real resync outcome — null, falling back to the TRAIL balance — while any
+  // comparable stamp would've been skipped by the same nullness. After FIX A,
+  // the SMS and the stamped trail entry both read the SAME pre-computed
+  // `amendment.invoice_basis`, so they still agree with each other; only the
+  // invoices TABLE itself is left stale (a pre-existing, separately-known
+  // best-effort characteristic of the re-sync, not something this fix changes).
   it('when the invoice re-sync fails after the amendment is recorded, the SMS and the stamped trail entry still agree with each other', async () => {
     const TAXED = {
       ...BOOKED_QUOTE,
@@ -622,13 +621,17 @@ describe('POST /api/quotes/[id]/amend', () => {
       tax_overridden: true,
       total: 4598.21,
     };
-    // First call: the route's own early read (feeds the pre-write stamp).
-    // Second call: resyncInvoiceToAgreedTotal's own fresh re-read (B10) —
-    // simulate a concurrent decline/cancellation landing in between.
-    getInvoiceByJobMock.mockResolvedValueOnce(liveInvoice).mockResolvedValueOnce({
-      ...liveInvoice,
-      status: 'cancelled' as const,
-    });
+    // getInvoiceByJob is now called THREE times: (1) the route's own early
+    // read, (2) task (a)'s pre-basis re-read (right before the invoice_basis
+    // stamp is computed — still sees the live, non-cancelled invoice, so the
+    // stamp is unaffected here), (3) resyncInvoiceToAgreedTotal's own fresh
+    // re-read (B10) — simulate the concurrent cancellation landing in THAT
+    // gap, between (2) and (3), same as this test originally modeled between
+    // (1) and (2) before task (a) added the middle read.
+    getInvoiceByJobMock
+      .mockResolvedValueOnce(liveInvoice)
+      .mockResolvedValueOnce(liveInvoice)
+      .mockResolvedValueOnce({ ...liveInvoice, status: 'cancelled' as const });
 
     const res = await POST(req({ reason: 'post-install add-on', notifyCustomer: true }), ctx());
     expect(res.status).toBe(200);
@@ -650,6 +653,40 @@ describe('POST /api/quotes/[id]/amend', () => {
     expect(sms).toContain(usdText(5150));
     expect(sms).toContain(usdText(551.79));
     expect(sms).not.toContain(usdText(5600));
+  });
+
+  // Task (a), fix round 5: proves the invoice_basis STAMP is computed from a
+  // FRESH invoice re-read taken immediately before the stamp, not from the
+  // `invoice` loaded earlier in the request (before computeAmendment / the
+  // no-change guard ran). Two DIFFERENT invoice reads simulate a concurrent
+  // invoice change (e.g. a manual edit or a partial-payment webhook) landing
+  // in that window: the first (route's initial load) returns total 5000, the
+  // second (this fix's pre-basis re-read) returns total 4900. Had the stamp
+  // still used the stale first read, previous_total/delta would read
+  // 5000/600 instead of 4900/700.
+  it('stamps invoice_basis from a FRESH invoice re-read, not the one loaded earlier in the request', async () => {
+    const sb = makeSb(BOOKED_QUOTE);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1' });
+    const staleInvoice = { id: 'inv-1', balance: 2500, status: 'draft' as const, tax_overridden: false, total: 5000 };
+    const freshInvoice = { id: 'inv-1', balance: 2400, status: 'draft' as const, tax_overridden: false, total: 4900 };
+    // 1st call = the route's initial read; 2nd call = task (a)'s pre-basis
+    // re-read; every call after that (resync's own B10 re-read) gets the
+    // SAME fresh value, so the actual invoice write agrees with the stamp.
+    getInvoiceByJobMock
+      .mockResolvedValueOnce(staleInvoice)
+      .mockResolvedValueOnce(freshInvoice)
+      .mockResolvedValue(freshInvoice);
+
+    const res = await POST(req({ reason: 'concurrent invoice edit' }), ctx());
+    expect(res.status).toBe(200);
+
+    const quoteUpdate = sb.updates.quotes[0];
+    const snap = quoteUpdate.approval_snapshot as {
+      amendments?: Array<{ invoice_basis?: { previous_total: number; new_total: number; delta: number } }>;
+    };
+    const persisted = snap.amendments?.[snap.amendments!.length - 1];
+    expect(persisted?.invoice_basis).toEqual({ previous_total: 4900, new_total: 5600, delta: 700 });
   });
 
   it('falls back to the trail balance when there is no invoice yet', async () => {
