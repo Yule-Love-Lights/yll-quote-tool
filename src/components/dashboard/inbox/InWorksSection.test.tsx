@@ -57,6 +57,23 @@ describe('InWorksSection (row 291 — initial render)', () => {
     expect(html).toContain('Needs a look (1)');
   });
 
+  // #252 slice H: "Awaiting their reply" and the main "Open leads" queue both
+  // read as "awaiting reply" at a glance — this sub-copy spells out who owes
+  // whom, and only appears alongside the bucket it describes.
+  it('clarifies "Awaiting their reply" as ball-in-their-court sub-copy, only when that bucket has items', () => {
+    const awaiting: InWorksItem[] = [{ ...baseItem, id: 'a1', customerName: 'Awaiting Customer' }];
+    const withAwaiting = renderToStaticMarkup(
+      <InWorksSection awaiting={awaiting} handled={[]} followUpDays={3} nowMs={now} />,
+    );
+    expect(withAwaiting).toContain('nothing to do until they write back');
+
+    const handled: InWorksItem[] = [{ ...baseItem, id: 'h1', customerName: 'Handled Customer' }];
+    const noAwaiting = renderToStaticMarkup(
+      <InWorksSection awaiting={[]} handled={handled} followUpDays={3} nowMs={now} />,
+    );
+    expect(noAwaiting).not.toContain('nothing to do until they write back');
+  });
+
   it('renders nothing when both buckets are empty', () => {
     const html = renderToStaticMarkup(
       <InWorksSection awaiting={[]} handled={[]} followUpDays={3} nowMs={now} />,
