@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { ChevronDown } from 'lucide-react';
 import type { OpenInboxItem } from '@/lib/dashboard/inbox/types';
 import { parseLeadForwardDisplay } from '@/lib/dashboard/inbox/leadForward';
@@ -373,6 +374,20 @@ export function errorNoteFor(unreachableAction: string | undefined, rejectionErr
   return rejectionError || 'Something went wrong — try again.';
 }
 
+/** Row 309: only 'Not a lead' (dismiss) and 'Mark completed' can retire a
+ *  pending "due today" follow-up — closeFollowUpsForResolvedItem (store.ts)
+ *  is called ONLY from dismissItem and markItemCompleted (its own doc: "a
+ *  'handled' item is NOT terminal"), never from markItemHandled or
+ *  markItemFollowed. router.refresh() re-renders the whole InboxPage server
+ *  component (every one of its sub-fetches, not just listDueFollowUps), so
+ *  gating it to just these two actions — rather than firing it after every
+ *  successful act() — keeps a Handled/Followed click from paying that cost
+ *  for a follow-up it structurally cannot have touched. Pure and exported so
+ *  this is directly unit-testable without rendering. */
+export function retiresFollowUp(path: string): boolean {
+  return path === '/api/dashboard/dismiss' || path === '/api/dashboard/completed';
+}
+
 // #302 fix: pure helper mirroring withRowFlagSet/withRowFlagCleared's own
 // pattern above — restores a row act() optimistically removed from `items`,
 // used by act()'s catch (a thrown fetch: network down, DNS failure, a
@@ -657,6 +672,7 @@ export function InboxList({
   nowMs: number;
   currentOperatorId?: string | null;
 }) {
+  const router = useRouter();
   const [items, setItems] = useState<OpenInboxItem[]>(initialItems);
   // Row 291 fix: busyId/errorId were single global slots (string | null) —
   // acting on one row stole another row's busy pin, and worse, silently
@@ -815,6 +831,14 @@ export function InboxList({
         // "Already marked followed") instead of only the generic fallback.
         setRejectionErrors((prev) => (data?.error ? { ...prev, [id]: data.error } : omitKey(prev, id)));
         await refresh();
+      } else if (retiresFollowUp(path)) {
+        // Row 309: this row's own optimistic removal above already keeps
+        // THIS list correct — router.refresh() exists purely to reach the
+        // sibling FollowUpStrip, whose initialItems prop is otherwise only
+        // ever read once (useState's initializer is mount-only, see
+        // FollowUpStrip's own reconcile effect). See retiresFollowUp's doc
+        // comment for why this is scoped to dismiss/completed only.
+        router.refresh();
       }
     } catch {
       // #302 fix: restore the optimistically-removed row (if it isn't
@@ -828,7 +852,7 @@ export function InboxList({
     } finally {
       setBusyIds((prev) => withRowFlagCleared(prev, id));
     }
-  }, [refresh, items]);
+  }, [refresh, items, router]);
 
   // Row 291 fix: explicit acknowledge control for the error note. Previously
   // the only ways to clear a row's error were retrying that exact row (via

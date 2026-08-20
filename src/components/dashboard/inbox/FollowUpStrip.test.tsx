@@ -10,7 +10,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { FollowUpStrip, withRowFlagSet, withRowFlagCleared } from './FollowUpStrip';
+import { FollowUpStrip, withRowFlagSet, withRowFlagCleared, reconcileDueFollowUps } from './FollowUpStrip';
 import type { DueFollowUp } from '@/lib/dashboard/inbox/types';
 
 const baseItem: DueFollowUp = {
@@ -73,5 +73,40 @@ describe('withRowFlagSet / withRowFlagCleared (row 305 — per-row busy map)', (
   it('clearing a flag for an id that was never set is a no-op that returns the SAME object reference', () => {
     const busyIds: Record<string, boolean> = { f1: true };
     expect(withRowFlagCleared(busyIds, 'f2')).toBe(busyIds);
+  });
+});
+
+const f2: DueFollowUp = { ...baseItem, id: 'f2', contactName: 'John Smith' };
+
+// Row 309: reconcileDueFollowUps is the exact pure primitive the mount-time-
+// only useState(initialItems) needed to become reactive to a fresh
+// router.refresh()-driven prop without resurrecting a row this component is
+// still actively submitting — see its own doc comment in FollowUpStrip.tsx
+// for the full race trace (an unrelated action's refresh landing while THIS
+// component's own markDone is still in flight for a different row).
+describe('reconcileDueFollowUps (row 309 — reacting to a fresh initialItems without resurrecting a busy row)', () => {
+  it('passes through a fresh list unchanged when nothing is busy', () => {
+    expect(reconcileDueFollowUps([baseItem, f2], {})).toEqual([baseItem, f2]);
+  });
+
+  it('drops a row that is no longer in the fresh list — the actual staleness fix: a retired follow-up disappears', () => {
+    // Server truth after a sibling action's router.refresh(): f1 retired (its
+    // conversation reached completed/dismissed), f2 still due.
+    expect(reconcileDueFollowUps([f2], {})).toEqual([f2]);
+  });
+
+  it('picks up a NEW row that became due since mount — the "additive" half', () => {
+    const brandNew: DueFollowUp = { ...baseItem, id: 'f3', contactName: 'New Since Mount' };
+    expect(reconcileDueFollowUps([baseItem, brandNew], {})).toEqual([baseItem, brandNew]);
+  });
+
+  it('excludes a row that is currently busy even though the fresh list still includes it — THE resurrection this fix prevents', () => {
+    // f1's own markDone POST hasn't resolved server-side yet, so the fresh
+    // follow_ups query can legitimately still return it.
+    expect(reconcileDueFollowUps([baseItem, f2], { f1: true })).toEqual([f2]);
+  });
+
+  it('a row busy in a PRIOR render but no longer in busyIds is no longer excluded', () => {
+    expect(reconcileDueFollowUps([baseItem, f2], {})).toEqual([baseItem, f2]);
   });
 });

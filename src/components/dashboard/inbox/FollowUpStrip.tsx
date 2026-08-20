@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DueFollowUp } from '@/lib/dashboard/inbox/types';
 
 const REASON_LABEL: Record<string, string> = {
@@ -26,9 +26,52 @@ export function withRowFlagCleared(map: Record<string, boolean>, id: string): Re
   return next;
 }
 
+/** Row 309: this component is seeded ONCE server-side (initialItems) with no
+ *  poll of its own — the moment a follow-up auto-closes (#798) or an item
+ *  moves buckets, a nag for a finished conversation stayed on screen until
+ *  the operator navigated. InboxList.tsx/InWorksSection.tsx's act() now call
+ *  router.refresh() after a dismiss/complete that retires a follow-up (see
+ *  each file's own retiresFollowUp), which re-renders InboxPage's server
+ *  component and hands this component a FRESH initialItems array — but
+ *  useState's initializer only runs on mount, so reacting to that fresh prop
+ *  needs an explicit effect (below).
+ *
+ *  A bare "resync items to initialItems on every change" would NOT be safe
+ *  on its own: a refresh fired by an UNRELATED action elsewhere in the inbox
+ *  can land while THIS component's own markDone is still mid-flight for a
+ *  DIFFERENT row, and the server's follow_ups row for that in-flight write
+ *  may not have committed yet — the fresh list can still legitimately
+ *  include it, and resurrecting it would contradict the optimistic removal
+ *  markDone already did. Filtering the fresh list against the ids THIS
+ *  component currently has busy keeps the refresh additive (a new/still-due
+ *  row shows up; a genuinely retired row drops out) without resurrecting a
+ *  row the operator just asked to close. Once that write actually settles
+ *  (success or failure), busyIds clears and this component's own state is
+ *  already consistent with the fresh truth either way. Pure and exported so
+ *  this is directly unit-testable without rendering. */
+export function reconcileDueFollowUps(
+  freshItems: DueFollowUp[],
+  busyIds: Record<string, boolean>,
+): DueFollowUp[] {
+  return freshItems.filter((f) => !busyIds[f.id]);
+}
+
 export function FollowUpStrip({ initialItems }: { initialItems: DueFollowUp[] }) {
   const [items, setItems] = useState<DueFollowUp[]>(initialItems);
   const [busyIds, setBusyIds] = useState<Record<string, boolean>>({});
+  // Mirrors busyIds for the reconcile effect below, which must fire ONLY when
+  // initialItems itself changes (a real server refresh) — not on every
+  // busyIds change, or a row's own in-flight markDone completing would
+  // re-derive `items` from the stale mount-time initialItems the instant its
+  // busy flag clears, undoing its own optimistic removal.
+  const busyIdsRef = useRef(busyIds);
+  useEffect(() => {
+    busyIdsRef.current = busyIds;
+  }, [busyIds]);
+
+  useEffect(() => {
+    setItems(reconcileDueFollowUps(initialItems, busyIdsRef.current));
+  }, [initialItems]);
 
   const markDone = useCallback(async (item: DueFollowUp) => {
     setBusyIds((prev) => withRowFlagSet(prev, item.id));
