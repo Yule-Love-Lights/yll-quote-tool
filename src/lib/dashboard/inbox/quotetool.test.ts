@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeQuoteTouch, quoteFollowUpDecision } from './quotetool';
+import { isAutoCompleteTerminalQuote, normalizeQuoteTouch, quoteFollowUpDecision } from './quotetool';
 import { FOLLOWUP_REASONS } from './followups';
 import type { DashboardQuote } from '@/lib/dashboard/types';
 
@@ -140,6 +140,50 @@ describe('normalizeQuoteTouch — dead statuses (#266)', () => {
     const q = quote({ status: 'declined', quote_sent_at: null, customer_approved_at: null });
     expect(mustTouch(normalizeQuoteTouch(q)).direction).toBe('outbound');
     expect(quoteFollowUpDecision(q).kind).toBe('close');
+  });
+});
+
+// #317: the terminal-quote auto-complete allowlist. booked/declined/abandoned
+// (only) → true; every other status, including the sibling 'cancelled' Jason
+// deliberately left out, → false.
+describe('isAutoCompleteTerminalQuote (#317)', () => {
+  it('is true for a booked quote (deposit paid)', () => {
+    expect(
+      isAutoCompleteTerminalQuote(
+        quote({ status: 'booked', deposit_paid_at: '2026-08-01T00:00:00Z', customer_approved_at: '2026-07-30T00:00:00Z' }),
+      ),
+    ).toBe(true);
+  });
+  it('is true for a declined quote', () => {
+    expect(isAutoCompleteTerminalQuote(quote({ status: 'declined' }))).toBe(true);
+  });
+  it('is true for an abandoned quote', () => {
+    expect(isAutoCompleteTerminalQuote(quote({ status: 'abandoned' }))).toBe(true);
+  });
+
+  it('is false for a cancelled quote — Jason named booked/declined/abandoned only, twice; cancelled fails safe', () => {
+    expect(isAutoCompleteTerminalQuote(quote({ status: 'cancelled' }))).toBe(false);
+  });
+  it('is false for an untouched draft', () => {
+    expect(isAutoCompleteTerminalQuote(quote())).toBe(false);
+  });
+  it('is false for a sent-but-unanswered quote', () => {
+    expect(isAutoCompleteTerminalQuote(quote({ status: 'sent', quote_sent_at: '2026-08-01T00:00:00Z' }))).toBe(false);
+  });
+  it('is false for a viewed quote', () => {
+    expect(
+      isAutoCompleteTerminalQuote(
+        quote({ status: 'viewed', quote_sent_at: '2026-08-01T00:00:00Z', viewed_at: '2026-08-02T00:00:00Z' }),
+      ),
+    ).toBe(false);
+  });
+  it('is false for an approved-but-not-booked quote', () => {
+    expect(isAutoCompleteTerminalQuote(quote({ status: 'approved', customer_approved_at: '2026-08-01T00:00:00Z' }))).toBe(
+      false,
+    );
+  });
+  it('is false for changes_requested — still being revised, not closed', () => {
+    expect(isAutoCompleteTerminalQuote(quote({ status: 'changes_requested' }))).toBe(false);
   });
 });
 

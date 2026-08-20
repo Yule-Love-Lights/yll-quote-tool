@@ -491,6 +491,7 @@ vi.mock('@/lib/supabase', () => ({
 import {
   closeFollowUpsForResolvedItem,
   closeQuoteInboxNoise,
+  completeTerminalQuoteItems,
   dismissItem,
   ensureFollowUp,
   EXCLUDE_LEGACY_REBOOK_FROM_INBOX,
@@ -3969,6 +3970,383 @@ describe('closeQuoteInboxNoise — I/O wiring (#187a)', () => {
   });
 });
 
+// ─── completeTerminalQuoteItems — I/O wiring (#317) ─────────────────────────
+describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  const QUOTE_ID = '99999999-9999-9999-9999-999999999999';
+  const NOW = new Date('2026-08-20T12:00:00Z');
+
+  /** Dispatch `from()` by table: 1st `inbox_items` call = the SELECT lookup,
+   *  2nd = the UPDATE; `follow_ups` gets its own builder (shared across
+   *  closeFollowUpsForResolvedItem's own calls, which this function invokes
+   *  once per completed row). `dashboard_activity` is dispatched by call count
+   *  too (row 317 fix-round FIX 2 added a SELECT ahead of the pre-existing
+   *  INSERT(s)): 1st call = the FIX-2 reversed-row lookup, 2nd+ = the
+   *  completion insert + any followup_autoclosed insert(s) from
+   *  closeFollowUpsForResolvedItem, sharing one builder same as before. */
+  function makeSbForComplete(opts: {
+    itemsSelect: { data: unknown; error: null | { message: string } };
+    itemsUpdate?: { data: unknown; error: null | { message: string } };
+    followUpsUpdate?: { data: unknown; error: null | { message: string } };
+    reversedLookup?: { data: unknown; error: null | { message: string } };
+    activityInsert?: { data: unknown; error: null | { message: string } };
+  }) {
+    const { builder: itemsSelectBuilder, calls: itemsSelectCalls } = makeBuilder(opts.itemsSelect);
+    const { builder: itemsUpdateBuilder, calls: itemsUpdateCalls } = makeBuilder(
+      opts.itemsUpdate ?? { data: [], error: null },
+    );
+    const { builder: fuBuilder, calls: fuCalls } = makeBuilder(opts.followUpsUpdate ?? { data: [], error: null });
+    // Default: nobody reversed anything — the safe default for every test that
+    // isn't specifically exercising FIX 2.
+    const { builder: reversedLookupBuilder, calls: reversedLookupCalls } = makeBuilder(
+      opts.reversedLookup ?? { data: [], error: null },
+    );
+    const { builder: activityBuilder, calls: activityCalls } = makeBuilder(
+      opts.activityInsert ?? { data: null, error: null },
+    );
+    let inboxItemsCallCount = 0;
+    let activityCallCount = 0;
+    const from = (table: string) => {
+      if (table === 'inbox_items') {
+        inboxItemsCallCount += 1;
+        return inboxItemsCallCount === 1 ? itemsSelectBuilder : itemsUpdateBuilder;
+      }
+      if (table === 'follow_ups') return fuBuilder;
+      if (table === 'dashboard_activity') {
+        activityCallCount += 1;
+        return activityCallCount === 1 ? reversedLookupBuilder : activityBuilder;
+      }
+      throw new Error(`unexpected table: ${table}`);
+    };
+    return { from, itemsSelectCalls, itemsUpdateCalls, fuCalls, reversedLookupCalls, activityCalls };
+  }
+
+  it('looks up BOTH the bare quote id and its :color-request sibling', async () => {
+    const { from, itemsSelectCalls } = makeSbForComplete({ itemsSelect: { data: [], error: null } });
+    sbRef.current = { from };
+
+    await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+    const sourceEqCall = itemsSelectCalls.find((c) => c.method === 'eq' && c.args[0] === 'source');
+    expect(sourceEqCall!.args).toEqual(['source', 'quotetool']);
+    const inCall = itemsSelectCalls.find((c) => c.method === 'in' && c.args[0] === 'external_id');
+    expect(inCall!.args).toEqual(['external_id', [QUOTE_ID, `${QUOTE_ID}:color-request`]]);
+  });
+
+  it('completes an awaiting-reply bare item (followed_up_at set) — the live "2 declined" self-heal shape', async () => {
+    const { from, itemsUpdateCalls, activityCalls } = makeSbForComplete({
+      itemsSelect: {
+        data: [{ id: 'item-bare', status: 'handled', followed_up_at: '2026-08-10T00:00:00Z' }],
+        error: null,
+      },
+      itemsUpdate: { data: [{ id: 'item-bare' }], error: null },
+    });
+    sbRef.current = { from };
+
+    const { completed: n } = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+    expect(n).toBe(1);
+    const updateCall = itemsUpdateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toEqual({
+      status: 'completed',
+      followed_up_at: null,
+      handled_by: null,
+      handled_at: NOW.toISOString(),
+      updated_at: NOW.toISOString(),
+    });
+    const idInCall = itemsUpdateCalls.find((c) => c.method === 'in' && c.args[0] === 'id');
+    expect(idInCall!.args).toEqual(['id', ['item-bare']]);
+    // FIX 1 (row 317 fix-round): CAS narrowed from a two-value .in(['unresponded',
+    // 'handled']) to a single-value .eq('status','handled') — see the doc on
+    // completeTerminalQuoteItems.
+    const statusEqCall = itemsUpdateCalls.find((c) => c.method === 'eq' && c.args[0] === 'status');
+    expect(statusEqCall!.args).toEqual(['status', 'handled']);
+
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toEqual([
+      {
+        actor: 'system',
+        action: 'completed',
+        inbox_item_id: 'item-bare',
+        detail: { auto: true, reason: 'quote_terminal', from: { status: 'handled', wasFollowed: true } },
+      },
+    ]);
+  });
+
+  it('completes a plain handled item (no follow-up flag)', async () => {
+    const { from, itemsUpdateCalls } = makeSbForComplete({
+      itemsSelect: { data: [{ id: 'item-bare', status: 'handled', followed_up_at: null }], error: null },
+      itemsUpdate: { data: [{ id: 'item-bare' }], error: null },
+    });
+    sbRef.current = { from };
+
+    const { completed: n } = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+    expect(n).toBe(1);
+    const updateCall = itemsUpdateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ status: 'completed' });
+  });
+
+  // THE HARD CONSTRAINT (#317, a lens HIGH) — Susan Pace-Burke's live shape:
+  // an UNRESPONDED :color-request item with NO follow flag on a BOOKED quote.
+  // Must be left alone, completely untouched — no update, no activity row.
+  it('NEVER completes a needs_reply item (unresponded, no follow-up flag) — the hard constraint', async () => {
+    const { from, itemsUpdateCalls, activityCalls } = makeSbForComplete({
+      itemsSelect: {
+        data: [
+          { id: 'item-bare', status: 'handled', followed_up_at: null },
+          { id: 'item-color-request', status: 'unresponded', followed_up_at: null },
+        ],
+        error: null,
+      },
+      itemsUpdate: { data: [{ id: 'item-bare' }], error: null },
+    });
+    sbRef.current = { from };
+
+    const { completed: n } = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+    expect(n).toBe(1); // only the bare item
+    const idInCall = itemsUpdateCalls.find((c) => c.method === 'in' && c.args[0] === 'id');
+    expect(idInCall!.args).toEqual(['id', ['item-bare']]); // color-request excluded from the write entirely
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect((insertCall!.args[0] as unknown[]).map((r) => (r as { inbox_item_id: string }).inbox_item_id)).toEqual([
+      'item-bare',
+    ]);
+  });
+
+  // row 317 fix-round FIX 1 (customer MED + technical HIGH): renamed from "a
+  // color-request item DOES complete once it is no longer needs_reply
+  // (awaiting_reply — staff replied, never applied/dismissed)" — that name was
+  // WRONG. The fixture (status: 'unresponded', followed_up_at SET) is not "staff
+  // replied": it's the SNOOZE shape — staff clicked Followed on an inbound
+  // without ever replying to it. bucketOf reads that as 'awaiting_reply' too,
+  // which is exactly why the OLD bucketOf-based eligibility wrongly admitted
+  // it. Jason's ruling's own literal exception ("they sent us a message and we
+  // didn't reply") means this must NOT auto-complete. Flipped to assert the
+  // correct (non-)outcome under FIX 1's status==='handled' gate.
+  it('does NOT complete a merely-snoozed item (unresponded + followed_up_at set, staff never replied) — Jason\'s literal exception', async () => {
+    const { from, itemsUpdateCalls, activityCalls } = makeSbForComplete({
+      itemsSelect: {
+        data: [{ id: 'item-color-request', status: 'unresponded', followed_up_at: '2026-08-18T00:00:00Z' }],
+        error: null,
+      },
+    });
+    sbRef.current = { from };
+
+    const { completed: n } = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+    expect(n).toBe(0);
+    expect(itemsUpdateCalls.some((c) => c.method === 'update')).toBe(false);
+    expect(activityCalls.some((c) => c.method === 'insert')).toBe(false);
+  });
+
+  it('never touches an already-completed or dismissed item, and writes nothing', async () => {
+    const { from, itemsUpdateCalls, activityCalls } = makeSbForComplete({
+      itemsSelect: {
+        data: [
+          { id: 'item-done', status: 'completed', followed_up_at: null },
+          { id: 'item-spam', status: 'dismissed', followed_up_at: null },
+        ],
+        error: null,
+      },
+    });
+    sbRef.current = { from };
+
+    const { completed: n } = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+    expect(n).toBe(0);
+    expect(itemsUpdateCalls.some((c) => c.method === 'update')).toBe(false);
+    expect(activityCalls.some((c) => c.method === 'insert')).toBe(false);
+  });
+
+  it('does nothing when neither the bare nor the color-request id has an inbox item', async () => {
+    const { from } = makeSbForComplete({ itemsSelect: { data: [], error: null } });
+    sbRef.current = { from };
+
+    const { completed: n } = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+    expect(n).toBe(0);
+  });
+
+  it('closes any pending follow-up anchored to a completed item (#252 follow-up-autoclose, extended here)', async () => {
+    const { from, fuCalls } = makeSbForComplete({
+      itemsSelect: { data: [{ id: 'item-bare', status: 'handled', followed_up_at: null }], error: null },
+      itemsUpdate: { data: [{ id: 'item-bare' }], error: null },
+      followUpsUpdate: { data: [{ id: 'fu-1' }], error: null },
+    });
+    sbRef.current = { from };
+
+    await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+    const fuUpdateCall = fuCalls.find((c) => c.method === 'update');
+    expect(fuUpdateCall!.args[0]).toEqual({ status: 'done' });
+    const fuInboxItemEq = fuCalls.find((c) => c.method === 'eq' && c.args[0] === 'inbox_item_id');
+    expect(fuInboxItemEq!.args).toEqual(['inbox_item_id', 'item-bare']);
+  });
+
+  it('is non-fatal (warns) when the lookup fails — never throws, never blocks the reconcile tick', async () => {
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { from } = makeSbForComplete({ itemsSelect: { data: null, error: { message: 'db down' } } });
+      sbRef.current = { from };
+
+      await expect(completeTerminalQuoteItems(QUOTE_ID, NOW)).resolves.toEqual({ completed: 0, failed: true });
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        '[inbox] terminal-quote auto-complete: item lookup failed (non-fatal):',
+        'db down',
+      );
+    } finally {
+      consoleWarnSpy.mockRestore();
+    }
+  });
+
+  it('is non-fatal (warns) when the item write fails', async () => {
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { from } = makeSbForComplete({
+        itemsSelect: { data: [{ id: 'item-bare', status: 'handled', followed_up_at: null }], error: null },
+        itemsUpdate: { data: null, error: { message: 'write failed' } },
+      });
+      sbRef.current = { from };
+
+      await expect(completeTerminalQuoteItems(QUOTE_ID, NOW)).resolves.toEqual({ completed: 0, failed: true });
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        '[inbox] terminal-quote auto-complete: item resolve failed (non-fatal):',
+        'write failed',
+      );
+    } finally {
+      consoleWarnSpy.mockRestore();
+    }
+  });
+
+  it('no-ops (no throw) when the service client is not configured', async () => {
+    sbRef.current = null;
+    await expect(completeTerminalQuoteItems(QUOTE_ID, NOW)).resolves.toEqual({ completed: 0, failed: false });
+  });
+
+  // ─── FIX 2 (row 317 fix-round, staff HIGH + admin MED converged) ───────────
+  // The reversed-row skip: an item an operator explicitly Reversed must not
+  // re-complete on the next tick.
+  describe('reversed-row skip (FIX 2)', () => {
+    it('does NOT re-complete an item whose most recent state-changing activity row is "reversed"', async () => {
+      const { from, itemsUpdateCalls, activityCalls, reversedLookupCalls } = makeSbForComplete({
+        itemsSelect: { data: [{ id: 'item-bare', status: 'handled', followed_up_at: null }], error: null },
+        reversedLookup: { data: [{ inbox_item_id: 'item-bare', action: 'reversed' }], error: null },
+      });
+      sbRef.current = { from };
+
+      const { completed } = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+      expect(completed).toBe(0);
+      expect(itemsUpdateCalls.some((c) => c.method === 'update')).toBe(false);
+      expect(activityCalls.some((c) => c.method === 'insert')).toBe(false);
+      // Batched: one lookup query covering every candidate id, never a per-row
+      // query (mirrors the #307/#814 batched-lookup pattern above).
+      const inItemIdsCall = reversedLookupCalls.find((c) => c.method === 'in' && c.args[0] === 'inbox_item_id');
+      expect(inItemIdsCall!.args).toEqual(['inbox_item_id', ['item-bare']]);
+    });
+
+    it('a fresh item with no activity history still completes (empty reversed lookup does not block it)', async () => {
+      const { from, itemsUpdateCalls } = makeSbForComplete({
+        itemsSelect: { data: [{ id: 'item-bare', status: 'handled', followed_up_at: null }], error: null },
+        itemsUpdate: { data: [{ id: 'item-bare' }], error: null },
+        reversedLookup: { data: [], error: null },
+      });
+      sbRef.current = { from };
+
+      const { completed } = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+      expect(completed).toBe(1);
+      expect(itemsUpdateCalls.some((c) => c.method === 'update')).toBe(true);
+    });
+
+    it('excludes only the specific reversed item, not a sibling on the same quote', async () => {
+      const { from, itemsUpdateCalls } = makeSbForComplete({
+        itemsSelect: {
+          data: [
+            { id: 'item-bare', status: 'handled', followed_up_at: null },
+            { id: 'item-color-request', status: 'handled', followed_up_at: null },
+          ],
+          error: null,
+        },
+        itemsUpdate: { data: [{ id: 'item-color-request' }], error: null },
+        reversedLookup: { data: [{ inbox_item_id: 'item-bare', action: 'reversed' }], error: null },
+      });
+      sbRef.current = { from };
+
+      const { completed } = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+      expect(completed).toBe(1);
+      const idInCall = itemsUpdateCalls.find((c) => c.method === 'in' && c.args[0] === 'id');
+      expect(idInCall!.args).toEqual(['id', ['item-color-request']]);
+    });
+
+    it('the MOST RECENT row wins — an older "reversed" row followed by a newer "handled" row does not block completion', async () => {
+      const { from, itemsUpdateCalls } = makeSbForComplete({
+        itemsSelect: { data: [{ id: 'item-bare', status: 'handled', followed_up_at: null }], error: null },
+        itemsUpdate: { data: [{ id: 'item-bare' }], error: null },
+        // Rows arrive newest-first (per the query's own ORDER) — the first
+        // occurrence of an id is its latest action.
+        reversedLookup: {
+          data: [
+            { inbox_item_id: 'item-bare', action: 'handled' },
+            { inbox_item_id: 'item-bare', action: 'reversed' },
+          ],
+          error: null,
+        },
+      });
+      sbRef.current = { from };
+
+      const { completed } = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+      expect(completed).toBe(1);
+      expect(itemsUpdateCalls.some((c) => c.method === 'update')).toBe(true);
+    });
+
+    it('uses the SAME state-changing action set as reverseItemState\'s wrong-occurrence guard', async () => {
+      const { from, reversedLookupCalls } = makeSbForComplete({
+        itemsSelect: { data: [{ id: 'item-bare', status: 'handled', followed_up_at: null }], error: null },
+        itemsUpdate: { data: [{ id: 'item-bare' }], error: null },
+      });
+      sbRef.current = { from };
+
+      await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+      const actionInCall = reversedLookupCalls.find((c) => c.method === 'in' && c.args[0] === 'action');
+      expect(actionInCall!.args).toEqual([
+        'action',
+        ['handled', 'followed', 'completed', 'dismissed', 'reclassified', 'reversed', 'reopened'],
+      ]);
+    });
+
+    // row 317 fix-round FIX 3: failed:true now meaningful (was always false
+    // before FIX 3 landed) — asserts the full { completed, failed } shape.
+    it('fails CLOSED (never completes) and reports failed:true when the reversed-row lookup errors', async () => {
+      const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const { from, itemsUpdateCalls } = makeSbForComplete({
+          itemsSelect: { data: [{ id: 'item-bare', status: 'handled', followed_up_at: null }], error: null },
+          reversedLookup: { data: null, error: { message: 'db down' } },
+        });
+        sbRef.current = { from };
+
+        const result = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+        expect(result).toEqual({ completed: 0, failed: true });
+        expect(itemsUpdateCalls.some((c) => c.method === 'update')).toBe(false);
+        expect(consoleWarnSpy).toHaveBeenCalledWith(
+          '[inbox] terminal-quote auto-complete: reversed-row lookup failed (non-fatal):',
+          'db down',
+        );
+      } finally {
+        consoleWarnSpy.mockRestore();
+      }
+    });
+  });
+});
+
 // #208: inbox_items.handled_by is a `uuid references auth.users(id)` column.
 // The route callers used to fall back to the literal string 'system' when no
 // operator resolved (operator?.id ?? 'system') — a non-uuid string a uuid
@@ -4855,6 +5233,55 @@ describe('listActivity — reversible flag (row 312a / row 312 fix-round FIX 3)'
 
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.rows[0]).toMatchObject({ action: 'dismissed', reversible: true });
+  });
+
+  // row 317 fix-round FIX 4 (staff LOW): autoReason threads detail.reason
+  // through only when detail.auto is true — the shape completeTerminalQuoteItems
+  // writes (store.ts).
+  it('surfaces detail.reason as autoReason when detail.auto is true', async () => {
+    const { builder } = makeBuilder({
+      data: [
+        {
+          id: 'a4',
+          action: 'completed',
+          actor: 'system',
+          inbox_item_id: 'i4',
+          created_at: '2026-08-20T12:00:00Z',
+          detail: { auto: true, reason: 'quote_terminal', from: { status: 'handled', wasFollowed: false } },
+          inbox_items: null,
+        },
+      ],
+      error: null,
+    });
+    sbRef.current = { from: () => builder };
+
+    const res = await listActivity(10);
+
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.rows[0]).toMatchObject({ action: 'completed', autoReason: 'quote_terminal' });
+  });
+
+  it('autoReason is null for an operator-driven row (detail.auto absent)', async () => {
+    const { builder } = makeBuilder({
+      data: [
+        {
+          id: 'a5',
+          action: 'completed',
+          actor: 'op-1',
+          inbox_item_id: 'i5',
+          created_at: '2026-08-20T12:00:00Z',
+          detail: { from: { status: 'handled', wasFollowed: false } },
+          inbox_items: null,
+        },
+      ],
+      error: null,
+    });
+    sbRef.current = { from: () => builder };
+
+    const res = await listActivity(10);
+
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.rows[0]).toMatchObject({ action: 'completed', autoReason: null });
   });
 });
 

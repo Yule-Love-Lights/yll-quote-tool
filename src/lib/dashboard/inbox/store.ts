@@ -1593,6 +1593,223 @@ export async function closeQuoteInboxNoise(quoteId: string, operatorId: string |
   }
 }
 
+// row 317 fix-round FIX 2: batched lookup of which of `itemIds` were most
+// recently REVERSED — mirrors fetchQuoteStatusesById/fetchPendingFollowUpItemIds's
+// pattern above (#307: ONE query for every candidate id, never a per-row
+// query — same discipline #814's batched lookups follow). Uses the SAME
+// state-changing action set as reverseItemState's wrong-occurrence guard
+// (below, row 312 fix-round FIX 5(b)): REVERSIBLE_ACTIONS (module-scope
+// const declared further down this file — referencing it here is safe, this
+// function's body only runs once the module has fully loaded) plus 'reversed'
+// itself (what this is looking for) and 'reopened' (a genuinely-new inbound
+// that supersedes an older reversed/completed row) — same tie-break order too
+// (created_at desc, then id desc, for the same determinism reason row 312
+// fix-round FIX 5(a) documents on reverseItemState's own query).
+//
+// Fails CLOSED, like #827's wrong-occurrence guard does on its own query
+// error: a query error is NOT proof nothing was reversed, and silently
+// re-completing an item an operator explicitly reversed is exactly the wrong
+// thing to fail open on. `failed` lets the caller (completeTerminalQuoteItems)
+// count this as a genuine auto-complete error (FIX 3, below) rather
+// than a quiet "nothing eligible" no-op.
+async function fetchReversedItemIds(
+  sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  itemIds: readonly string[],
+): Promise<{ reversedIds: Set<string>; failed: boolean }> {
+  if (itemIds.length === 0) return { reversedIds: new Set(), failed: false };
+  const { data, error } = await sb
+    .from('dashboard_activity')
+    .select('inbox_item_id, action')
+    .in('inbox_item_id', itemIds)
+    .in('action', [...REVERSIBLE_ACTIONS, 'reversed', 'reopened'])
+    .order('created_at', { ascending: false })
+    .order('id', { ascending: false });
+  if (error) {
+    console.warn('[inbox] terminal-quote auto-complete: reversed-row lookup failed (non-fatal):', error.message);
+    return { reversedIds: new Set(), failed: true };
+  }
+  // Rows arrive newest-first (per the ORDER above) — the FIRST occurrence of
+  // each inbox_item_id in iteration order is its most recent state-changing
+  // action; later occurrences of the same id are older and ignored.
+  const latestActionByItem = new Map<string, string>();
+  for (const row of (data ?? []) as { inbox_item_id: string | null; action: string }[]) {
+    if (!row.inbox_item_id || latestActionByItem.has(row.inbox_item_id)) continue;
+    latestActionByItem.set(row.inbox_item_id, row.action);
+  }
+  const reversedIds = new Set<string>();
+  for (const [itemId, action] of latestActionByItem) {
+    if (action === 'reversed') reversedIds.add(itemId);
+  }
+  return { reversedIds, failed: false };
+}
+
+// ─── Terminal-quote auto-complete (#317) ────────────────────────────────────
+// Jason's ruling (ledger #317, 2026-08-20, quoted verbatim in the row): once a
+// quote's own status derives (deriveStatus) into booked/declined/abandoned
+// (quotetool.ts's isAutoCompleteTerminalQuote), the customer "should not show
+// up in inbox anymore" — every quotetool item tied to that quote (the bare
+// "quote sent" item, external_id === quoteId, AND a `${quoteId}:color-request`
+// sibling if one exists — quoteIdPrefix's suffix) is treated as if staff
+// clicked Mark completed. Extends #756's isDeadQuote-into-`answered` seam
+// (normalizeQuoteTouch, quotetool.ts) one step further: that seam already
+// drives the BARE item's touch to 'outbound' for a terminal quote, which the
+// reducer (already-shipped, unchanged here) resolves to 'handled' — this
+// function is the separate step that finishes the job to 'completed' AND
+// reaches the color-request sibling the per-quote reconcile touch structurally
+// never can (a different external_id — see normalizeQuoteTouch/ingestTouch,
+// which only ever look up `external_id === q.id` exactly).
+//
+// THE HARD CONSTRAINT (a lens HIGH on #317, pre-merge): never complete a row
+// CURRENTLY in the needs_reply bucket (an unanswered inbound) — the live case
+// is Susan Pace-Burke's `:color-request` item, unanswered, on a BOOKED quote.
+//
+// FIX 1 (row 317 fix-round, customer MED + technical HIGH, one fix):
+// eligibility is narrower than "not needs_reply" — it is POSITIVELY
+// `status === 'handled'`, nothing else. bucketOf's 'awaiting_reply' bucket
+// (lifecycle.ts) also admits status='unresponded' rows with followed_up_at
+// set: that is the SNOOZE case (staff clicked Followed on an inbound without
+// ever replying to it) — Jason's ruling's own literal exception, "they sent
+// us a message and we didn't reply" — so it must never auto-complete, same as
+// needs_reply. A prior version of this eligibility check used bucketOf() and
+// admitted 'awaiting_reply' wholesale, which silently swept the snooze case in
+// too (0 live rows affected — verified by lens SQL, every current awaiting row
+// is handled+followed, not unresponded+followed — but the shape was wrong by
+// construction). Restricting to the raw `status` column also closes a timing
+// hole the bucketOf-based check left open: the SELECT above and the UPDATE
+// below are two round-trips, and a genuinely-new inbound landing in that
+// window (ingestTouch's reducer reopens the row to status='unresponded' —
+// needs_reply) would still have matched the old two-value CAS
+// (`.in('status', ['unresponded','handled'])`) on the UPDATE even though the
+// row no longer belongs in any eligible bucket by the time the write lands.
+// Eligibility below is a POSITIVE allowlist of exactly one status value —
+// needs_reply, the snooze case, and the two already-terminal buckets
+// (completed, dismissed) are all left untouched by construction, not by a
+// negative exclusion (AGENTS.md Pitfalls' positive-seam-gate convention).
+//
+// Bypasses ingestTouch/planIngest entirely (a direct read-then-guarded-write,
+// mirroring closeQuoteInboxNoise/markItemCompleted) rather than teaching the
+// reducer a quote-specific status — matching the SAME design call the #222
+// TRACKS_OUTBOUND_FIRST_OBSERVATION comment already made ("the alternative,
+// teaching this pure, source-generic reducer about a quote-specific flag, is
+// worse"). One consequence worth being explicit about: because this never
+// calls ingestTouch a second time, #826's noopReingest (which only ever
+// short-circuits ingestTouch's OWN upsert) cannot swallow this write — this
+// function's UPDATE runs independently of whatever ingestTouch decided this
+// tick, including a noop.
+//
+// Unlike closeQuoteInboxNoise (the view-only-toggle cleanup, #187 FIX 1),
+// this DELIBERATELY DOES reach the `:color-request` sibling: view-only is not
+// "the customer is done" (a pending colour request stays actionable on a
+// view-only quote — see closeQuoteInboxNoise's own doc), but
+// booked/declined/abandoned genuinely is, per Jason's ruling, except for the
+// needs_reply carve-out above.
+//
+// Reversible for free: writes the SAME `action: 'completed'` + `detail.from`
+// shape markItemCompleted does (REVERSIBLE_ACTIONS already includes
+// 'completed'), so the existing reverseItemState stillMatches/CAS path
+// (#827-style: re-reads the row, only reverses if it's still in the state
+// this action produced) covers these rows with zero new code — distinguished
+// from a staff completion via `actor: 'system'` (renders "System" in
+// ActivityLog, the established convention) and `detail.auto`/`detail.reason`,
+// not a new `action` string (which would need REVERSIBLE_ACTIONS + UI
+// changes for no benefit).
+//
+// Best-effort — never throws (mirrors closeQuoteInboxNoise's non-fatal
+// contract; a lookup/write hiccup here must never abort the reconcile tick).
+// Returns how many items were actually completed, plus `failed` (row 317
+// fix-round FIX 3, mirrors runQuoteToolReconcile's existing followUpErrors
+// convention, sync.ts — see QuoteReconcileSummary's own doc): true when a
+// Supabase read/write inside this call genuinely errored, so the caller can
+// count a degraded tick instead of it reading identically to "0 eligible
+// rows this time", which is a legitimate, non-degraded outcome.
+export async function completeTerminalQuoteItems(
+  quoteId: string,
+  now: Date,
+): Promise<{ completed: number; failed: boolean }> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { completed: 0, failed: false };
+  try {
+    const { data, error } = await sb
+      .from('inbox_items')
+      .select('id, status, followed_up_at')
+      .eq('source', 'quotetool')
+      .in('external_id', [quoteId, `${quoteId}:color-request`]);
+    if (error) {
+      console.warn('[inbox] terminal-quote auto-complete: item lookup failed (non-fatal):', error.message);
+      return { completed: 0, failed: true };
+    }
+    const rows = (data ?? []) as { id: string; status: InboxStatus; followed_up_at: string | null }[];
+    if (!rows.length) return { completed: 0, failed: false };
+
+    // FIX 1 (row 317 fix-round): status === 'handled' is the ONLY eligible
+    // shape — see the doc above. Deliberately NOT bucketOf(): bucketOf's
+    // 'awaiting_reply' bucket also covers the snooze case (unresponded +
+    // followed_up_at set), which this must exclude.
+    const eligibleByStatus = rows.filter((r) => r.status === 'handled');
+    if (!eligibleByStatus.length) return { completed: 0, failed: false };
+
+    // FIX 2 (row 317 fix-round, staff HIGH + admin MED converged): a row an
+    // operator explicitly Reversed is a deliberate human override of the auto
+    // rule for THAT item — without this, eligibility has no memory of that
+    // override and the very next reconcile tick (≤5 min later) re-completes
+    // it, forever. See fetchReversedItemIds' own doc for the exact
+    // action-set convention (mirrors reverseItemState's wrong-occurrence
+    // guard below) and the fail-closed rationale. A NEW inbound after the
+    // reverse still reopens the item to needs_reply via ingestTouch — FIX 1's
+    // status==='handled' gate above already excludes that shape on its own,
+    // so this skip never blocks a genuinely new touch from resolving normally.
+    const { reversedIds, failed: reversedLookupFailed } = await fetchReversedItemIds(
+      sb,
+      eligibleByStatus.map((r) => r.id),
+    );
+    if (reversedLookupFailed) return { completed: 0, failed: true };
+    const eligible = eligibleByStatus.filter((r) => !reversedIds.has(r.id));
+    if (!eligible.length) return { completed: 0, failed: false };
+
+    const nowIso = now.toISOString();
+    const { data: updated, error: updErr } = await sb
+      .from('inbox_items')
+      .update({ status: 'completed', followed_up_at: null, handled_by: null, handled_at: nowIso, updated_at: nowIso })
+      .in('id', eligible.map((r) => r.id))
+      // FIX 1 (row 317 fix-round): narrowed from a two-value
+      // `.in('status', ['unresponded', 'handled'])` CAS to a single-value
+      // `.eq('status', 'handled')` CAS, matching the eligibility narrowing
+      // above — a concurrent reopen (ingestTouch flips status to
+      // 'unresponded' on a genuinely-new inbound landing between the SELECT
+      // above and this UPDATE) now falls OUTSIDE the guard and is silently
+      // excluded from `updated` below, closing the timing hole the old
+      // two-value CAS left open (see the doc above this function).
+      .eq('status', 'handled')
+      .select('id');
+    if (updErr) {
+      console.warn('[inbox] terminal-quote auto-complete: item resolve failed (non-fatal):', updErr.message);
+      return { completed: 0, failed: true };
+    }
+
+    const updatedIds = new Set(((updated ?? []) as { id: string }[]).map((r) => r.id));
+    const completedRows = eligible.filter((r) => updatedIds.has(r.id));
+    if (!completedRows.length) return { completed: 0, failed: false };
+
+    await sb.from('dashboard_activity').insert(
+      completedRows.map((r) => ({
+        actor: 'system',
+        action: 'completed',
+        inbox_item_id: r.id,
+        detail: {
+          auto: true,
+          reason: 'quote_terminal',
+          from: { status: r.status, wasFollowed: !!r.followed_up_at },
+        },
+      })),
+    );
+    await Promise.all(completedRows.map((r) => closeFollowUpsForResolvedItem(r.id, 'completed')));
+    return { completed: completedRows.length, failed: false };
+  } catch (e) {
+    console.warn('[inbox] terminal-quote auto-complete failed (non-fatal):', e);
+    return { completed: 0, failed: true };
+  }
+}
+
 // ─── Orphaned + view-only follow-up sweep (#183 BUG 3, #187 review FIX 2) ───
 // runQuoteToolReconcile's main loop (sync.ts) only walks quotes returned by
 // listQuotesForDashboard — a quote row that's been DELETED entirely is never
@@ -2398,6 +2615,13 @@ export type ActivityRow = {
   customerName: string | null;
   at: string | null;
   reversible: boolean;
+  /** row 317 fix-round FIX 4 (staff LOW): non-null only when this row's own
+   *  `detail.auto` is true (currently only completeTerminalQuoteItems's
+   *  'completed' rows) — carries `detail.reason` so ActivityLog can render WHY
+   *  an action was automatic, not just THAT it was (friendlyActor already
+   *  covers the THAT-it-was-System half). null for every operator-driven row,
+   *  including 'system'-actor rows that aren't auto (e.g. setEscalation). */
+  autoReason: string | null;
   /** Row 311 fix-round FIX 2: only meaningful when action === 'action_failed'
    *  — `{ action: <the verb that failed>, error: <message> }`, the same shape
    *  recordActionFailed writes (above). Every other action's own `detail`
@@ -2466,6 +2690,10 @@ export async function listActivity(limit = 100): Promise<ActivityResult> {
     const row = r as Record<string, unknown>;
     const item = (row.inbox_items as { dashboard_contacts?: { display_name?: string | null } | null } | null) ?? null;
     const actor = (row.actor as string | null) ?? null;
+    // row 317 fix-round FIX 4: only ever non-null when the row's own writer
+    // set `detail.auto === true` (completeTerminalQuoteItems, above) — an
+    // operator-driven row's detail never carries that shape.
+    const detail = row.detail as { auto?: boolean; reason?: string } | null;
     return {
       id: String(row.id),
       action: String(row.action),
@@ -2475,6 +2703,7 @@ export async function listActivity(limit = 100): Promise<ActivityResult> {
       customerName: (item?.dashboard_contacts?.display_name as string | null) ?? null,
       at: (row.created_at as string | null) ?? null,
       reversible: isReversibleActivity(String(row.action), row.detail),
+      autoReason: detail?.auto ? (detail.reason ?? null) : null,
       detail: (row.detail as { action?: string; error?: string } | null) ?? null,
     };
   });
