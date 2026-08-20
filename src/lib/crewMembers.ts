@@ -50,6 +50,28 @@ function isDisplayNameUniqueViolation(error: { code?: string; message?: string }
   return error?.code === '23505' && error.message?.includes('crew_members_display_name_key') === true;
 }
 
+/**
+ * The OTHER unique index on this table (`crew_members_telegram_user_id_key`,
+ * partial: `where telegram_user_id is not null`).
+ *
+ * Sibling-guard parity with the display-name check above. Linking a Telegram
+ * account that already belongs to a DIFFERENT crew member is a real conflict,
+ * and the caller has to be able to tell it apart from a generic write failure —
+ * "that Telegram account is already linked to someone else" is fixable by the
+ * office, "update failed" is not.
+ */
+function isTelegramUserIdUniqueViolation(error: { code?: string; message?: string } | null): boolean {
+  return error?.code === '23505' && error.message?.includes('crew_members_telegram_user_id_key') === true;
+}
+
+/** Thrown when a patch would give one Telegram account to two crew members. */
+export class TelegramUserIdTakenError extends Error {
+  constructor(telegramUserId: string) {
+    super(`Telegram account ${telegramUserId} is already linked to another crew member`);
+    this.name = 'TelegramUserIdTakenError';
+  }
+}
+
 function buildCrewMemberInsertPayload(input: NewCrewMemberInput): Record<string, unknown> {
   const payload: Record<string, unknown> = {
     display_name: input.displayName.trim(),
@@ -182,6 +204,9 @@ export async function updateCrewMember(
       throw new Error(
         `updateCrewMember: display name "${String(payload.display_name)}" is already in use by another crew member`,
       );
+    }
+    if (isTelegramUserIdUniqueViolation(error as { code?: string; message?: string })) {
+      throw new TelegramUserIdTakenError(String(payload.telegram_user_id));
     }
     throw new Error(`updateCrewMember: ${error.message}`);
   }
