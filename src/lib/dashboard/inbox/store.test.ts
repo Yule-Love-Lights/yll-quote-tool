@@ -2345,6 +2345,118 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
     });
   });
 
+  // #310: both reads used to destructure only `data` — an {error} response or a
+  // genuine throw (network blip) propagated straight out of ensureFollowUp into
+  // runQuoteToolReconcile's single top-level catch, aborting the WHOLE reconcile
+  // tick (zeroing every counter, skipping both tail sweeps) over one bad read on
+  // one quote. Guarded to fail open: skip just this item, log, return false.
+  describe('ensureFollowUp — guards its reads so one failure skips the item, not the whole tick (#310)', () => {
+    /** follow_ups fake whose pending-lookup chain resolves to a fixed {data, error}. */
+    function makePendingLookupFake(result: { data: unknown; error: { message: string } | null }) {
+      const self: Record<string, unknown> = {};
+      self.select = () => self;
+      self.eq = () => self;
+      self.limit = () => self;
+      self.upsert = () => {
+        throw new Error('upsert must not be called when a read fails open');
+      };
+      self.then = (resolve: (v: unknown) => void) => resolve(result);
+      return self;
+    }
+
+    /** inbox_items fake for the churn-gate `.select('status').eq('id').maybeSingle()` read. */
+    function makeItemStatusLookupFake(result: { data: unknown; error: { message: string } | null }) {
+      return {
+        select: () => ({
+          eq: () => ({
+            maybeSingle: () => Promise.resolve(result),
+          }),
+        }),
+      };
+    }
+
+    it('returns false and never reaches the write when the pending lookup errors', async () => {
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        sbRef.current = {
+          from: (table: string) =>
+            table === 'follow_ups'
+              ? makePendingLookupFake({ data: null, error: { message: 'connection reset' } })
+              : genericTable(),
+        };
+
+        const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
+
+        expect(created).toBe(false);
+        expect(consoleErrorSpy).toHaveBeenCalledWith(
+          '[inbox] ensureFollowUp: pending lookup failed (skipping item):',
+          'connection reset',
+        );
+      } finally {
+        consoleErrorSpy.mockRestore();
+      }
+    });
+
+    it('returns false and never reaches the write when the item-status (churn-gate) lookup errors', async () => {
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        sbRef.current = {
+          from: (table: string) => {
+            if (table === 'follow_ups') return makePendingLookupFake({ data: [], error: null });
+            if (table === 'inbox_items') return makeItemStatusLookupFake({ data: null, error: { message: 'timeout' } });
+            return genericTable();
+          },
+        };
+
+        const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
+
+        expect(created).toBe(false);
+        expect(consoleErrorSpy).toHaveBeenCalledWith(
+          '[inbox] ensureFollowUp: item status lookup failed (skipping item):',
+          'timeout',
+        );
+      } finally {
+        consoleErrorSpy.mockRestore();
+      }
+    });
+
+    it('catches a thrown exception from a read and returns false instead of propagating (would otherwise abort the whole reconcile tick)', async () => {
+      const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        sbRef.current = {
+          from: (table: string) => {
+            if (table === 'follow_ups') {
+              return {
+                select: () => ({
+                  eq: () => ({
+                    eq: () => ({
+                      eq: () => ({
+                        limit: () => {
+                          throw new Error('socket hang up');
+                        },
+                      }),
+                    }),
+                  }),
+                }),
+              };
+            }
+            return genericTable();
+          },
+        };
+
+        await expect(
+          ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() }),
+        ).resolves.toBe(false);
+        expect(consoleErrorSpy).toHaveBeenCalledWith(
+          '[inbox] ensureFollowUp failed (skipping item):',
+          expect.any(Error),
+        );
+      } finally {
+        consoleErrorSpy.mockRestore();
+      }
+    });
+  });
+
   describe('sweepResolvedItemFollowUps — backlog self-heal for items already terminal before the write-site fix (#252)', () => {
     /** Minimal fixed-response fake for inbox_items' single `.select().in()` lookup. */
     function makeItemsFake(items: { id: string; status: string }[]) {
