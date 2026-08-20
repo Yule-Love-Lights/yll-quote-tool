@@ -2183,7 +2183,7 @@ export async function reverseItemState(
   // status='handled', which then also matches a much-older, unrelated 'handled'
   // row for the same item). Require this row to actually be the most recent
   // state-changing row for the item before trusting stillMatches at all.
-  const { data: latest } = await sb
+  const { data: latest, error: latestErr } = await sb
     .from('dashboard_activity')
     .select('id')
     .eq('inbox_item_id', a.inbox_item_id)
@@ -2191,6 +2191,19 @@ export async function reverseItemState(
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
+  // row 312 fix-round FIX 2 (MED, technical + staff converged): the prior code
+  // destructured only `{ data: latest }` — a query ERROR left `latest` null/
+  // undefined and the `if (latest && ...)` guard below read that as "no later
+  // row exists," silently PASSING the wrong-occurrence check on a failed read
+  // (fails OPEN). Opposite of this function's other two reads (the `act` and
+  // `cur` lookups above/below), which both fail CLOSED today — a query error on
+  // either one leaves their `data` null too, and `if (!data) return { ok: false,
+  // ... }` refuses regardless of whether the null came from a real error or a
+  // genuine not-found. Fail closed here too: a query error is NOT proof no later
+  // action exists, and Reverse is exactly the wrong feature to fail open on.
+  if (latestErr) {
+    return { ok: false, error: 'Could not verify this is the latest action for this item — try again' };
+  }
   if (latest && String((latest as { id: string }).id) !== activityId) {
     return { ok: false, error: 'A later action already changed this item; nothing to reverse from here' };
   }

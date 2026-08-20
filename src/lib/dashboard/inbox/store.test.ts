@@ -4150,6 +4150,24 @@ describe('reverseItemState (row 312 — reclassified + wrong-occurrence guard)',
     expect(updateCalls.length).toBe(0);
   });
 
+  // row 312 fix-round FIX 2: a query ERROR on the wrong-occurrence guard must
+  // fail CLOSED (refuse), not read as "no later row exists" and proceed.
+  it('FIX 2: fails closed when the wrong-occurrence guard query itself errors', async () => {
+    const { from, updateCalls } = makeSbForReverse({
+      activityRow: { data: { action: 'handled', inbox_item_id: ITEM_ID, detail: null } },
+      latestRow: { data: null, error: { message: 'connection reset' } },
+      curItem: { data: { status: 'handled', followed_up_at: null } },
+    });
+    sbRef.current = { from };
+
+    const res = await reverseItemState(ACTIVITY_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/try again/i);
+    // Never reaches the write on a failed guard read.
+    expect(updateCalls.length).toBe(0);
+  });
+
   it('312c: proceeds normally when no later row exists at all (this IS the only row for the item)', async () => {
     const { from, updateCalls } = makeSbForReverse({
       activityRow: { data: { action: 'handled', inbox_item_id: ITEM_ID, detail: null } },
