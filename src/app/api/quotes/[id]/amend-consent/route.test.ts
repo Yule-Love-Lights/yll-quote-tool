@@ -266,4 +266,52 @@ describe('POST /api/quotes/[id]/amend-consent', () => {
       expect(json.alreadyConsented).not.toBe(true);
     });
   });
+
+  // Row 315(b): the response used to echo latest.new_total/new_balance (the
+  // raw trail figures) even when the entry carried a stored invoice_basis —
+  // disagreeing with resolveAmendmentBasis, the same function the pending
+  // card, the accepted portal total, and the customer notice all read.
+  // AmendmentConsentCard discards this response body on success today (it
+  // just calls router.refresh()), but the response is still a real API
+  // contract and should never assert a different total than every other
+  // surface agrees on.
+  describe('response money basis (row 315b)', () => {
+    it('reports resolveAmendmentBasis figures, not the raw trail, when invoice_basis is stored', async () => {
+      const withBasis: AmendmentTrailEntry = {
+        ...amendment,
+        invoice_basis: { previous_total: 4608.33, new_total: 5446.81, delta: 838.48 },
+      };
+      const { client } = makeSb({
+        id: ID,
+        status: 'booked',
+        quote_sent_at: '2026-06-20T00:00:00.000Z',
+        customer_approved_at: '2026-06-25T00:00:00.000Z',
+        deposit_paid_at: '2026-07-01T00:00:00.000Z',
+        approval_snapshot: { amendments: [withBasis] },
+      });
+      sbRef.current = client;
+      const res = await POST(req({ amendedAt: AMENDED_AT, signature }), ctx);
+      const json = await res.json();
+      expect(res.status).toBe(200);
+      expect(json.newTotalUsd).toBe(5446.81); // invoice-basis, not the trail's 2400
+      expect(json.newBalanceUsd).toBe(4446.81); // 5446.81 - 1000 deposit
+      expect(json.newTotalUsd).not.toBe(2400);
+    });
+
+    it('falls back to the raw trail figures when no invoice_basis is stored (unchanged behavior)', async () => {
+      const { client } = makeSb({
+        id: ID,
+        status: 'booked',
+        quote_sent_at: '2026-06-20T00:00:00.000Z',
+        customer_approved_at: '2026-06-25T00:00:00.000Z',
+        deposit_paid_at: '2026-07-01T00:00:00.000Z',
+        approval_snapshot: { amendments: [amendment] },
+      });
+      sbRef.current = client;
+      const res = await POST(req({ amendedAt: AMENDED_AT, signature }), ctx);
+      const json = await res.json();
+      expect(json.newTotalUsd).toBe(2400);
+      expect(json.newBalanceUsd).toBe(1400);
+    });
+  });
 });

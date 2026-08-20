@@ -118,8 +118,12 @@ export async function POST(req: NextRequest) {
   }
 
   // Sent in-tool → snooze as "Followed" (awaiting their reply). Best-effort: a
-  // failure here must not unsend or fail the request.
-  await markItemFollowed(itemId, operator.id, new Date());
+  // failure here must not unsend or fail the request. Row 311 fix-round FIX 1:
+  // allowRestamp:true — a real send just happened, so re-stamping
+  // followed_up_at even if the item was already snoozed is correct (the
+  // customer's waiting clock restarts because we genuinely just wrote to
+  // them). See markItemFollowed's own doc comment for the full A/B split.
+  await markItemFollowed(itemId, operator.id, new Date(), { allowRestamp: true });
 
   return NextResponse.json({ ok: true });
 }

@@ -10,6 +10,7 @@ import {
   isAmendmentConsentPending,
   latestConsentAmendment,
   requiresReconsent,
+  resolveAmendmentBasis,
   type AmendmentConsentSignature,
   type AmendmentTrailEntry,
 } from '@/lib/amend';
@@ -189,11 +190,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
+  // Row 315(b): read the SAME basis the pending card showed (and the customer
+  // signed) rather than the raw trail figures — resolveAmendmentBasis prefers
+  // the recorded invoice_basis when present, exactly like adapter.ts's
+  // buildApproval and the amend route's own customer notice. `latest` here is
+  // the pre-consent entry (consent status doesn't feed resolveAmendmentBasis's
+  // math), so this is safe to compute before the write above.
+  const { newTotalUsd, newBalanceUsd } = resolveAmendmentBasis(latest);
   return NextResponse.json({
     ok: true,
     acceptedAt,
     amendedAt,
-    newTotalUsd: latest.new_total,
-    newBalanceUsd: latest.new_balance,
+    newTotalUsd,
+    newBalanceUsd,
   });
 }

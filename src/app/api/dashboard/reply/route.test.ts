@@ -158,6 +158,9 @@ describe('POST /api/dashboard/reply — success', () => {
     expect(sendSmsMock).toHaveBeenCalledTimes(1);
     expect(markItemHandledLocalMock).toHaveBeenCalledTimes(1);
     expect(markItemFollowedMock).toHaveBeenCalledTimes(1);
+    // Row 311 fix-round FIX 1: a real send must pass allowRestamp:true, or the
+    // caller-differentiation fix is inert — see markItemFollowed's doc comment.
+    expect(markItemFollowedMock).toHaveBeenCalledWith(ITEM_ID, 'op-1', expect.any(Date), { allowRestamp: true });
     // The pre-send claim wrote a claim timestamp before any send happened.
     expect(updateCalls.length).toBeGreaterThanOrEqual(1);
     expect(updateCalls[0]).toHaveProperty('reply_claimed_at');

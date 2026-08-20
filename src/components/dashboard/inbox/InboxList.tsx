@@ -51,6 +51,13 @@ type RowActions = {
    *  server rejection), the LABEL of the action that was attempted — e.g.
    *  'Handled'. Drives both the wording and the lock below. */
   unreachableActions: Record<string, string>;
+  /** Row 311 fix-round FIX 3: for a definite server REJECTION (a real answer,
+   *  never a throw), the route's own `data.error` text — e.g. "Already marked
+   *  followed". Before this, act() read `data?.ok` but discarded the rest of
+   *  the body, so the specific reason (a guard refusal vs. a generic failure)
+   *  never reached the operator. See errorNoteFor's own doc comment below for
+   *  how this and unreachableActions combine into one note. */
+  rejectionErrors: Record<string, string>;
   // Row 291 fix: explicit acknowledge control for a persistent error note —
   // previously the ONLY ways to clear one were retrying that exact row or
   // the accidental cross-row steal above.
@@ -77,7 +84,7 @@ type RowActions = {
 // "call/text directly" affordance instead, see the source==='gmail' branch
 // below) with its ReplyComposer.
 function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }) {
-  const { now, busyIds, errorIds, unreachableActions, dismissError, claimBusy, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent } = actions;
+  const { now, busyIds, errorIds, unreachableActions, rejectionErrors, dismissError, claimBusy, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent } = actions;
   const esc = escalation(item.escalationLevel);
   const waiting = item.lastMessageAt ? formatWaiting(now - new Date(item.lastMessageAt).getTime()) : '';
   const cs = claimState(item.assignedTo, currentOperatorId);
@@ -195,11 +202,10 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
                   idempotent — it re-stamps followed_up_at and resets the
                   customer's waiting clock — which is why this wording
                   matters rather than being cosmetic.) */}
-              <span>
-                {unreachableActions[item.id]
-                  ? `Couldn't reach the server — this may or may not have gone through. Click ${unreachableActions[item.id]} again to confirm.`
-                  : 'Something went wrong — try again.'}
-              </span>
+              {/* Row 311 fix-round FIX 3: a rejection's own `data.error` (e.g.
+                  "Already marked followed") is more specific than the generic
+                  fallback and now renders when present — see errorNoteFor. */}
+              <span>{errorNoteFor(unreachableActions[item.id], rejectionErrors[item.id])}</span>
               <button
                 type="button"
                 onClick={() => dismissError(item.id)}
@@ -342,6 +348,22 @@ export function omitKey<T>(map: Record<string, T>, id: string): Record<string, T
   const next = { ...map };
   delete next[id];
   return next;
+}
+
+/** Row 311 fix-round FIX 3: picks the error note's text. A thrown fetch (no
+ *  answer received) takes priority — its copy is unchanged by this fix, and
+ *  it's the more consequential case (drives the row's action lock above). A
+ *  definite server rejection's own `data.error` is more specific than the
+ *  generic fallback (e.g. "Already marked followed" vs. "Something went
+ *  wrong") and now renders when the route provided one; the generic copy only
+ *  shows for a rejection that carried no error text. Pure and exported so
+ *  this is directly unit-testable without rendering, mirroring this file's
+ *  other exported pure helpers. */
+export function errorNoteFor(unreachableAction: string | undefined, rejectionError: string | undefined): string {
+  if (unreachableAction) {
+    return `Couldn't reach the server — this may or may not have gone through. Click ${unreachableAction} again to confirm.`;
+  }
+  return rejectionError || 'Something went wrong — try again.';
 }
 
 // #302 fix: pure helper mirroring withRowFlagSet/withRowFlagCleared's own
@@ -639,6 +661,9 @@ export function InboxList({
   const [errorIds, setErrorIds] = useState<Record<string, boolean>>({});
   // #302: parallel to errorIds and always cleared with it — see the note copy.
   const [unreachableActions, setUnreachableActions] = useState<Record<string, string>>({});
+  // Row 311 fix-round FIX 3: parallel to errorIds/unreachableActions, always
+  // cleared alongside them — see errorNoteFor's own doc comment above.
+  const [rejectionErrors, setRejectionErrors] = useState<Record<string, string>>({});
   const [claimBusy, setClaimBusy] = useState<string | null>(null);
   const [composerFor, setComposerFor] = useState<string | null>(null);
   // `now` is seeded from the server render (stable across hydration) and ticked
@@ -686,9 +711,15 @@ export function InboxList({
   // sibling-parity class between act()'s two callers): this used to fire the
   // POST and never read res.status or the JSON body — only a network throw
   // was caught. #224's new status guard on markItemCompleted makes ok:false a
-  // DESIGNED outcome (a two-operator/two-tab race the guard exists to catch),
-  // and every other /api/dashboard/* route here CAN 200 with a logical
-  // failure the same way (handled/dismiss already carry their own guards).
+  // DESIGNED outcome (a two-operator/two-tab race the guard exists to catch).
+  // Row 308 correction: NOT because any of these routes can 200 with a
+  // logical failure — verified none does. handled/route.ts turns a store
+  // ok:false into a 409; dismiss/followed/completed/route.ts each turn it into
+  // a 503; nothing here ever pairs a 200 with an ok:false body, so `!data?.ok`
+  // below is defensive-only against a route that doesn't exist today (kept in
+  // case a future one pairs 200 with a logical failure — `!res.ok` alone
+  // already catches every CURRENT case).
+  //
   // Before this fix, that response was silently discarded: the optimistic
   // removal above had already taken the row off screen, with no toast, no
   // re-insertion, nothing — a silent no-op on this page (the PRIMARY inbox
@@ -757,6 +788,7 @@ export function InboxList({
     // silently erased row A's still-true failure note).
     setErrorIds((prev) => withRowFlagCleared(prev, id));
     setUnreachableActions((prev) => omitKey(prev, id));
+    setRejectionErrors((prev) => omitKey(prev, id));
     const removedItem = items.find((i) => i.id === id);
     setItems((prev) => prev.filter((i) => i.id !== id)); // optimistic removal
     try {
@@ -765,10 +797,13 @@ export function InboxList({
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ itemId: id }),
       });
-      const data = (await res.json().catch(() => null)) as { ok?: boolean } | null;
+      const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
       if (!res.ok || !data?.ok) {
         setErrorIds((prev) => withRowFlagSet(prev, id));
         setUnreachableActions((prev) => omitKey(prev, id));
+        // Row 311 fix-round FIX 3: surface the route's own error text (e.g.
+        // "Already marked followed") instead of only the generic fallback.
+        setRejectionErrors((prev) => (data?.error ? { ...prev, [id]: data.error } : omitKey(prev, id)));
         await refresh();
       }
     } catch {
@@ -791,6 +826,7 @@ export function InboxList({
   const dismissError = useCallback((id: string) => {
     setErrorIds((prev) => withRowFlagCleared(prev, id));
     setUnreachableActions((prev) => omitKey(prev, id));
+    setRejectionErrors((prev) => omitKey(prev, id));
   }, []);
 
   const claim = useCallback(
@@ -842,7 +878,7 @@ export function InboxList({
   // place; there's no empty group to separately prune.
   const groups = groupInboxItems(visibleItems);
   const rowActions: RowActions = {
-    now, busyIds, errorIds, unreachableActions, dismissError, claimBusy, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent,
+    now, busyIds, errorIds, unreachableActions, rejectionErrors, dismissError, claimBusy, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent,
   };
 
   if (items.length === 0) {

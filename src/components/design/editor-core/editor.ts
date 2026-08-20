@@ -4,7 +4,7 @@ import Konva from "konva";
 // storage connector (createEditorApi, below), and the sibling renderers live in
 // THIS folder (./). Everything else in this file is byte-identical with the
 // design tool's canonical editor.ts — keep it that way.
-import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, isItemOnPhoto, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type SideOfHouse, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, pruneOrphanedMiniGroups, removeItemsForPhoto, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
+import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, isItemOnPhoto, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type SideOfHouse, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, isMiniGroupable, pruneOrphanedMiniGroups, removeItemsForPhoto, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
 import { createEditorApi } from "./storage";
 import { COLORS, setPalette } from "./colors";
 import { renderStrand, strandLengthPx } from "./strand";
@@ -255,7 +255,11 @@ export async function renderEditor(
   const MINI_WRAP_SURFACES = new Set<string>(["bush", "tree", "column", "railing", "curtain"]);
   const isStampableCanonical = (i: SceneItem): boolean =>
     !i.linkedToId &&
-    (isWreath(i) || isBow(i) || isGarland(i) || isSpritzer(i) || isMiniArea(i) ||
+    (isWreath(i) || isBow(i) || isGarland(i) || isSpritzer(i) ||
+      // #240: a GROUPED scattershot is excluded too, same reason as the
+      // grouped-strand exclusion just below — its extent is the group's, so
+      // stamping just this one member alone wouldn't reflect the whole unit.
+      (isMiniArea(i) && !i.groupId) ||
       (isStrand(i) && !i.groupId && MINI_WRAP_SURFACES.has(i.surface ?? "")) ||
       // #88 (S23): permanent roofline runs DO twin across photos (unlike holiday
       // roofline, which staff re-draw per photo) so a portal package toggle
@@ -2702,6 +2706,24 @@ export async function renderEditor(
     const poleSel = selectedItems.filter(isPole);
     const miniAreaSel = selectedItems.filter(isMiniArea);
 
+    // #240: a mini-light group can now mix strand + scattershot members. Any
+    // selection drawn ENTIRELY from those two kinds (pure strand, pure
+    // scattershot, or a mix) checks group membership FIRST, before any
+    // kind-specific panel below, so selecting a mixed group's members always
+    // opens the group editor — the same thing the old strand-only check did,
+    // just widened to cover scattershot members too.
+    const miniCandidates: (StrandItem | MiniAreaItem)[] = [...strandSel, ...miniAreaSel];
+    if (miniCandidates.length > 0 && miniCandidates.length === selectedItems.length) {
+      const gid = miniCandidates[0].groupId;
+      if (gid && miniCandidates.every((m) => m.groupId === gid)) {
+        const grp = scene.items.find((i) => isMiniGroup(i) && i.id === gid);
+        if (grp && isMiniGroup(grp)) {
+          renderSelectedMiniGroupSidebar(sb, grp);
+          return;
+        }
+      }
+    }
+
     // All-of-one-kind → dedicated edit panel.
     if (wreathSel.length === selectedItems.length) {
       renderSelectedWreathSidebar(sb, wreathSel);
@@ -2736,19 +2758,38 @@ export async function renderEditor(
       return;
     }
     if (strandSel.length === selectedItems.length) {
-      // If the selected strands all belong to ONE mini group, edit the GROUP
-      // (its billed attrs + Ungroup) rather than the individual strands.
-      const gid = strandSel[0].groupId;
-      if (gid && strandSel.every((s) => s.groupId === gid)) {
-        const grp = scene.items.find((i) => isMiniGroup(i) && i.id === gid);
-        if (grp && isMiniGroup(grp)) {
-          renderSelectedMiniGroupSidebar(sb, grp);
-          return;
-        }
+      // Pure-strand selection, no shared group matched above — falls through
+      // to the strand panel below.
+    } else if (strandSel.length > 0 && miniAreaSel.length > 0 && miniCandidates.length === selectedItems.length) {
+      // #240: a mixed strand + scattershot selection (no shared group, or the
+      // check above would already have returned) — offer to group them into
+      // one billed unit, same affordance the strand-only panel has.
+      const canGroup = opts.showQuoteBinding && miniCandidates.length >= 2 && miniCandidates.every(isMiniGroupable);
+      sb.innerHTML = `
+        <section>
+          <h3>Mixed selection</h3>
+          <div style="color:var(--text-dim);font-size:12px;margin-bottom:8px">
+            ${strandSel.length} strand${strandSel.length === 1 ? "" : "s"} + ${miniAreaSel.length} scattershot${miniAreaSel.length === 1 ? "" : "s"} selected.
+            ${canGroup ? "Group them as one billed unit, or delete." : "Delete, or select only strands / only scattershots to edit them."}
+          </div>
+        </section>
+        ${canGroup ? `
+        <section>
+          <button id="sel-group-mini-mixed" style="width:100%">Group as one quote unit</button>
+          <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Bills these ${miniCandidates.length} items as a single unit (e.g. a railing).</div>
+        </section>
+        ` : ""}
+        <section><button class="danger" id="sel-delete" style="width:100%">Delete all selected</button></section>
+      `;
+      sb.querySelector("#sel-delete")?.addEventListener("click", deleteSelected);
+      if (canGroup) {
+        sb.querySelector("#sel-group-mini-mixed")?.addEventListener("click", () => {
+          groupSelectedMini(miniCandidates, miniCandidates[0].surface ?? "bush", miniCandidates[0].stringCount ?? 1);
+        });
       }
-      // else: falls through to the strand panel below.
+      return;
     } else {
-      // Mixed selection — just offer delete.
+      // Mixed selection across other kinds — just offer delete.
       const counts: string[] = [];
       if (strandSel.length) counts.push(`${strandSel.length} strand${strandSel.length === 1 ? "" : "s"}`);
       if (garlandSel.length) counts.push(`${garlandSel.length} garland${garlandSel.length === 1 ? "" : "s"}`);
@@ -2879,7 +2920,7 @@ export async function renderEditor(
       </section>
       ` : ""}
 
-      ${opts.showQuoteBinding && sel.length >= 2 && sel.every((s) => s.bulbType === "mini" && !s.groupId && !s.linkedToId) ? `
+      ${opts.showQuoteBinding && sel.length >= 2 && sel.every(isMiniGroupable) ? `
       <section>
         <button id="sel-group-mini" style="width:100%">Group as one quote unit</button>
         <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Bills these ${sel.length} mini strands as a single unit (e.g. a railing).</div>
@@ -3101,38 +3142,6 @@ export async function renderEditor(
       commit();
       redrawScene();
     });
-    // Group the selected (mini, ungrouped) strands into ONE billed unit: a
-    // MiniGroupItem owning the billed attrs; members get groupId and are
-    // skipped by the quote's projection.
-    const groupSelectedMini = (surface: Surface, stringCount: number) => {
-      // #227 FIX 2 belt-and-braces: both call sites already gate on `!s.linkedToId`,
-      // but guard here too (mirrors the projectScene defensive re-guard for the
-      // same bug) so a future third caller can't reintroduce the stale-autosave
-      // resurrection bug described above the surfSel handler.
-      if (sel.some((s) => s.linkedToId)) return;
-      const memberIds = sel.map((s) => s.id);
-      const groupId = cryptoId();
-      const grp: MiniGroupItem = {
-        id: groupId,
-        kind: "miniGroup",
-        memberIds,
-        yardstickId: null,
-        surface,
-        wrapStyle: sel[0].wrapStyle ?? "canopy",
-        stringCount,
-        included: true,
-      };
-      scene = {
-        ...scene,
-        items: [
-          ...scene.items.map((i) => (isStrand(i) && memberIds.includes(i.id) ? { ...i, groupId } : i)),
-          stampPhoto(grp),
-        ],
-      };
-      scheduleSave();
-      commit();
-      redrawScene();
-    };
     if (opts.showQuoteBinding) {
       const surfSel = sb.querySelector("#sel-surface") as HTMLSelectElement | null;
       surfSel?.addEventListener("change", () => {
@@ -3149,8 +3158,8 @@ export async function renderEditor(
         // billing) group. Twins never bill on their own (projectScene skips
         // `linkedToId` items), so falling through to a plain surface tag below is
         // harmless — it just doesn't create a group to resurrect.
-        if ((v === "railing" || v === "curtain") && sel.length >= 2 && sel.every((s) => s.bulbType === "mini" && !s.groupId && !s.linkedToId)) {
-          groupSelectedMini(v, sel.length);
+        if ((v === "railing" || v === "curtain") && sel.length >= 2 && sel.every(isMiniGroupable)) {
+          groupSelectedMini(sel, v, sel.length);
           return;
         }
         updateSelected((s) => ({ ...s, surface: v ? (v as Surface) : null }));
@@ -3188,7 +3197,7 @@ export async function renderEditor(
       });
     }
     sb.querySelector("#sel-group-mini")?.addEventListener("click", () => {
-      groupSelectedMini(sel[0].surface ?? "bush", sel[0].stringCount ?? 1);
+      groupSelectedMini(sel, sel[0].surface ?? "bush", sel[0].stringCount ?? 1);
     });
     sb.querySelector("#sel-delete")!.addEventListener("click", deleteSelected);
   }
@@ -3767,6 +3776,12 @@ export async function renderEditor(
         </div>`}
       </section>`;
       })()}
+      ${opts.showQuoteBinding && sel.length >= 2 && sel.every(isMiniGroupable) ? `
+      <section>
+        <button id="sel-group-mini-area" style="width:100%">Group as one quote unit</button>
+        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Bills these ${sel.length} scattershots as a single unit (e.g. a railing).</div>
+      </section>
+      ` : ""}
       ${opts.showQuoteBinding ? `
       <section>
         <h3>Quote binding</h3>
@@ -3884,10 +3899,20 @@ export async function renderEditor(
       });
     }
 
+    sb.querySelector("#sel-group-mini-area")?.addEventListener("click", () => {
+      groupSelectedMini(sel, sel[0].surface ?? "bush", sel[0].stringCount ?? 1);
+    });
+
     sb.querySelector("#sel-ma-duplicate")?.addEventListener("click", () => {
       const dupes = sel.map((a) => ({
         ...a,
         id: cryptoId(),
+        // #240: a duplicate is a NEW item, not a member of the source's group
+        // — mirrors the strand panel's duplicate handler. Without this, the
+        // copy would inherit a stale groupId pointing at a group it isn't
+        // actually a member of, and silently stop billing (projectScene skips
+        // any grouped item).
+        groupId: undefined,
         ...(a.shape === "polygon" && a.points
           ? { points: a.points.map((p) => p + 20) }
           : { x: (a.x ?? 0) + 20, y: (a.y ?? 0) + 20 }),
@@ -3901,22 +3926,78 @@ export async function renderEditor(
     sb.querySelector("#sel-ma-delete")?.addEventListener("click", deleteSelected);
   }
 
+  // Group the selected (mini, ungrouped) strands and/or scattershots into ONE
+  // billed unit: a MiniGroupItem owning the billed attrs; members get groupId
+  // and are skipped by the quote's own per-item projection (#240: a group can
+  // mix strand + miniArea members, not just strands). A `function` (not a
+  // `const`) so it's hoisted — every sidebar panel that offers "Group as one
+  // quote unit" (strand-only, scattershot-only, mixed) calls this same one.
+  function groupSelectedMini(members: (StrandItem | MiniAreaItem)[], surface: Surface, stringCount: number) {
+    // #227 FIX 2 belt-and-braces: every call site already filters to
+    // isMiniGroupable (which excludes linkedToId), but guard here too
+    // (mirrors the projectScene defensive re-guard for the same bug) so a
+    // future caller can't reintroduce the stale-autosave resurrection bug
+    // described above the surfSel handler.
+    if (members.some((m) => m.linkedToId)) return;
+    const memberIds = members.map((m) => m.id);
+    const groupId = cryptoId();
+    const grp: MiniGroupItem = {
+      id: groupId,
+      kind: "miniGroup",
+      memberIds,
+      yardstickId: null,
+      surface,
+      wrapStyle: members[0].wrapStyle ?? "canopy",
+      stringCount,
+      included: true,
+    };
+    scene = {
+      ...scene,
+      items: [
+        ...scene.items.map((i) =>
+          (isStrand(i) || isMiniArea(i)) && memberIds.includes(i.id) ? { ...i, groupId } : i,
+        ),
+        stampPhoto(grp),
+      ],
+    };
+    scheduleSave();
+    commit();
+    redrawScene();
+  }
+
   // ============================================================
   // Sidebar — edit panel for a mini-light GROUP (surfaced when the selected
-  // strands all share one groupId). The group is geometry-less; the member
-  // strands still render/move individually.
+  // strands and/or scattershots all share one groupId). The group is
+  // geometry-less; its members still render/move individually.
   // ============================================================
   function renderSelectedMiniGroupSidebar(sb: HTMLElement, group: MiniGroupItem) {
     const sSurface = group.surface ?? "";
     const sWrap = group.wrapStyle ?? "canopy";
     const sCount = group.stringCount ?? 1;
     const inc = group.included ?? true;
+    // #240: member-kind-accurate copy — a group can now hold strands,
+    // scattershots, or a mix of both. Resolve the live members (not just the
+    // id count) so the label always matches what's actually in the group.
+    const liveMembers = scene.items.filter(
+      (i): i is StrandItem | MiniAreaItem => group.memberIds.includes(i.id) && (isStrand(i) || isMiniArea(i)),
+    );
+    const strandCount = liveMembers.filter(isStrand).length;
+    const areaCount = liveMembers.filter(isMiniArea).length;
+    const memberLabel = (() => {
+      const parts: string[] = [];
+      if (strandCount) parts.push(`${strandCount} strand${strandCount === 1 ? "" : "s"}`);
+      if (areaCount) parts.push(`${areaCount} scattershot${areaCount === 1 ? "" : "s"}`);
+      // A #227 fully/partially orphaned group can have fewer live members than
+      // memberIds (or none at all) — fall back to the raw id count so the
+      // copy never reads "0 strands billed as one mini-light unit".
+      return parts.length > 0 ? parts.join(" + ") : `${group.memberIds.length} member${group.memberIds.length === 1 ? "" : "s"}`;
+    })();
 
     sb.innerHTML = `
       <section>
         <h3>Mini-light group</h3>
         <div style="color:var(--text-dim);font-size:12px;margin-bottom:4px">
-          ${group.memberIds.length} strands billed as one mini-light unit. Edit the billed attributes here, or ungroup to bill them separately.
+          ${memberLabel} billed as one mini-light unit. Edit the billed attributes here, or ungroup to bill them separately.
         </div>
       </section>
       ${opts.showQuoteBinding ? `
@@ -3981,9 +4062,11 @@ export async function renderEditor(
         ...scene,
         items: scene.items
           .filter((i) => i.id !== group.id)
-          .map((i) => (isStrand(i) && memberIds.includes(i.id) ? { ...i, groupId: undefined } : i)),
+          // #240: a member can be a strand OR a scattershot — clear groupId on
+          // either kind (mirrors groupSelectedMini's own kind check).
+          .map((i) => ((isStrand(i) || isMiniArea(i)) && memberIds.includes(i.id) ? { ...i, groupId: undefined } : i)),
       };
-      selectedIds = new Set(memberIds); // keep members selected → strand panel returns
+      selectedIds = new Set(memberIds); // keep members selected → the right panel returns
       scheduleSave();
       commit();
       redrawScene();

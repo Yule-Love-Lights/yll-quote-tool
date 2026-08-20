@@ -221,7 +221,7 @@ export function projectMaterials(
       continue;
     }
 
-    // Mini-light wrap — strand (skip group members), area fill, or grouped railing.
+    // Mini-light wrap — strand or area fill (skip group members either way), or grouped railing.
     let surface: MiniSurface | null = null;
     let stringCount = 1;
     let paletteId = DEFAULT_PALETTE;
@@ -231,6 +231,10 @@ export function projectMaterials(
       stringCount = intAtLeast1(item.stringCount);
       paletteId = item.colorPattern?.[0] ?? DEFAULT_PALETTE;
     } else if (isMiniArea(item)) {
+      // #240 fix: a grouped scattershot (mixed-group member) is projected via
+      // its MiniGroupItem — mirrors the isStrand skip above so it isn't
+      // double-counted (own line AND the group's line).
+      if (item.groupId) continue;
       surface = asMiniSurface(item.surface);
       stringCount = intAtLeast1(item.stringCount);
       paletteId = item.colorPattern?.[0] ?? DEFAULT_PALETTE;
