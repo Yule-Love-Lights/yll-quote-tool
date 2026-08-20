@@ -445,6 +445,33 @@ export function supplierOrderEmailHtml(input: { lines: SupplierOrderLine[]; jobC
 // email links to. Two review lenses found that independently. usd()'s rounding
 // is also NOT monotonic in the customer's favour — a balance ending under 50c
 // rounds DOWN, quoting a number LOWER than what is actually billed.
+//
+// REWRITE (Jason 2026-08-19, real incident): a customer got the old SMS below
+// — a bare new balance, no link, no mention that anything was ADDED, no
+// indication she needed to do anything — and had to phone in to say no,
+// because there was no decline path either. Fixed here + the portal card
+// (AmendmentConsentCard) gaining a decline button. This version:
+//   - includes the portal link in the SMS (previously email-only)
+//   - states the DIRECTION and SIZE of the change (deltaUsd, signed) and says
+//     plainly that approval is needed before anything is charged at the new
+//     amount — the previous total is what's actually collectible until then
+//     (WT-18 blocksSettlement enforces exactly this for an increase)
+//   - a DECREASE gets calmer, non-urgent phrasing ("no rush") — the customer
+//     owes less either way, so there is nothing to hurry them into
+// Deliberately does NOT repeat the staff-typed `reason` here (the portal card
+// already shows it verbatim once they click through). `reason` is free text
+// an operator types for a *different* surface (the sign-off card) with no
+// preview step; duplicating it into a carrier-filtered SMS risks a garbled or
+// overlong message for no gain the structured delta+link don't already cover,
+// and keeps the two channels' assertions limited to numbers this module can
+// verify against the trail. amend-decline's sibling route records a
+// DIFFERENT `reason` — the customer's own optional decline text. FIX10
+// (review MED, corrected 2026-08-19): this used to say that one was also
+// "staff-facing only, never echoed back into a notice" — false as written.
+// It never rides these SMS/email NOTICES (same reasoning as above), but the
+// portal's AmendmentConsentCard DOES render it back to the customer as "What
+// you told us:" — their own text, shown to them, not a leak, just not what
+// "never echoed back" claimed.
 export const AMENDMENT_EMAIL_SUBJECT = 'Your Yule Love Lights order was updated';
 
 // `dueAfterInstall` — whether the balance is genuinely still ahead of the
@@ -455,14 +482,49 @@ export const AMENDMENT_EMAIL_SUBJECT = 'Your Yule Love Lights order was updated'
 // is — which delays collection. The clause is therefore stated only when it is
 // true; a post-install amendment falls back to the plain balance sentence and
 // makes no timing claim at all, rather than inventing one.
-export function amendmentSmsBody(
-  firstName: string,
-  newBalanceUsd: number,
-  phone: string,
-  dueAfterInstall: boolean,
-): string {
+export function amendmentSmsBody(input: {
+  firstName: string;
+  newBalanceUsd: number;
+  phone: string;
+  dueAfterInstall: boolean;
+  portalUrl: string;
+  // Signed change amount for "went up/down by X to newTotalUsd". FIX4 (review
+  // HIGH, money — corrected 2026-08-19): this used to be documented as always
+  // reading off the trail's own `delta` (new_total − previous_total, tax
+  // included) regardless of newTotalUsd's basis, on the premise that "the
+  // direction/size of the underlying change is the same real-world fact
+  // either way" — that premise was WRONG. On a tax-overridden invoice, the
+  // invoice-basis total differs from the trail total by the (scaled) tax
+  // line, so the invoice-basis PREVIOUS total differs from the trail's
+  // previous_total by a DIFFERENT tax amount than the invoice-basis NEW total
+  // does — the two don't cancel, and "went up by $217.50 to $2,135.00" could
+  // describe a prior total that was never $1,917.50 on ANY basis. The caller
+  // now derives this on the SAME basis as newTotalUsd (invoice basis
+  // whenever an invoice exists, trail basis only when there is no invoice
+  // yet) — see amend/route.ts's notifiedDelta.
+  deltaUsd: number;
+  newTotalUsd: number;
+}): string {
+  const { firstName, newBalanceUsd, phone, dueAfterInstall, portalUrl, deltaUsd, newTotalUsd } = input;
   const timing = dueAfterInstall ? ' after installation' : '';
-  return `Hi ${greetingName(firstName)}! Your Yule Love Lights order was updated, your remaining balance is now ${usdExact(newBalanceUsd)}${timing}. We'll confirm the details with you. Questions? Call or text ${phone}.`;
+  // FIX8 (review MED): "to $1,770.72 (balance $1,056.64...)" runs two
+  // unlabeled dollar figures together — nothing marks which is the order
+  // total and which is what's actually owed. Explicitly label both: "a new
+  // order total of $X" / "You'll owe $Y". The email already solves this with
+  // a labeled table (New order total / Remaining balance below); this is the
+  // SMS equivalent that doesn't need a second sentence-structure change to
+  // stay unambiguous without materially growing the message (it's already
+  // ~3 SMS segments).
+  const owesClause = `You'll owe ${usdExact(newBalanceUsd)}${timing}.`;
+  // `>= 0` reads a true zero as an "increase" ("went up by $0.00") — harmless
+  // in practice, not exercised: the route rejects |delta| < 1 cent (code
+  // 'no-change') before a notice is ever built, so this function is never
+  // called with a real zero. Not re-guarded here to avoid a third silent
+  // branch this module can't verify against anything.
+  if (deltaUsd >= 0) {
+    return `Hi ${greetingName(firstName)}! Your Yule Love Lights order was changed — the total went up by ${usdExact(deltaUsd)} to a new order total of ${usdExact(newTotalUsd)}. ${owesClause} This needs your approval before we charge anything at the new amount — nothing changes until you approve it. Review & respond: ${portalUrl} Questions? Call or text ${phone}.`;
+  }
+  return `Hi ${greetingName(firstName)}! Good news — your Yule Love Lights order was changed and the total went down by ${usdExact(Math.abs(deltaUsd))} to a new order total of ${usdExact(newTotalUsd)}. ${owesClause} Nothing you owe is going up. Please confirm on your portal whenever it's convenient, no rush: ${portalUrl} Questions? Call or text ${phone}.`;
 }
 
 export function amendmentEmailHtml(input: {
@@ -473,19 +535,92 @@ export function amendmentEmailHtml(input: {
   phone: string;
   // See amendmentSmsBody above for why this is conditional.
   dueAfterInstall: boolean;
+  // See amendmentSmsBody above (FIX4) — must be on the SAME basis as
+  // newTotalUsd, not unconditionally the trail's delta.
+  deltaUsd: number;
 }): string {
   const name = escapeHtml(greetingName(input.firstName));
+  const increased = input.deltaUsd >= 0;
+  const changeSentence = increased
+    ? `Your order was changed — the total went up by <strong>${usdExact(input.deltaUsd)}</strong>.`
+    : `Your order was changed — the total went down by <strong>${usdExact(Math.abs(input.deltaUsd))}</strong>. Nothing you owe is going up.`;
+  const approvalSentence = increased
+    ? `This needs your approval before we charge anything at the new amount — nothing changes until you approve it.`
+    : `Please take a look and confirm it whenever it's convenient — no rush.`;
   return [
     `<p>Hi ${name},</p>`,
-    `<p>We've updated your holiday lighting order. Here are the new figures:</p>`,
+    `<p>${changeSentence}</p>`,
     `<table style="border-collapse:collapse;font-size:14px;margin:12px 0;">`,
     `<tr><td style="padding:2px 14px 2px 0;color:#666;">New order total</td><td style="padding:2px 0;"><strong>${usdExact(input.newTotalUsd)}</strong></td></tr>`,
     `<tr><td style="padding:2px 14px 2px 0;color:#666;">Remaining balance${input.dueAfterInstall ? ' (due after installation)' : ''}</td><td style="padding:2px 0;"><strong>${usdExact(input.newBalanceUsd)}</strong></td></tr>`,
     `</table>`,
-    `<p>You can review your order here: <a href="${escapeHtml(input.portalUrl)}">${escapeHtml(input.portalUrl)}</a></p>`,
+    `<p>${approvalSentence}</p>`,
+    `<p>Review and respond here: <a href="${escapeHtml(input.portalUrl)}">${escapeHtml(input.portalUrl)}</a></p>`,
     `<p>Questions? Call or text ${escapeHtml(input.phone)}.</p>`,
     `<p>— Yule Love Lights</p>`,
   ].join('');
+}
+
+// ─── Amendment DECLINED — staff alert (FIX5, ledger #83 follow-up) ──────────
+// A customer declining a price change writes to the DB and returns JSON to
+// their own browser — nothing told staff. Direct precedent in this repo: the
+// Valor webhook's card-declined staff alert (internalDepositDeclinedEmailSubject/
+// Html above) exists for exactly this reason — "staff discovered a decline a
+// day later on the Valor dashboard while the quote sat approved-but-unpaid
+// with zero explanation" (see that section's own comment). Same shape here: a
+// HighLevel email to the internal staff contact (HIGHLEVEL_INTERNAL_CONTACT_ID),
+// fired by amend-decline/route.ts, best-effort.
+//
+// Money figures are the TRAIL basis (the just-recorded amendment's own
+// previous_total/new_total/delta) — this is a STAFF-facing alert, not the
+// customer notice FIX4 governs; staff can cross-reference the invoice via the
+// admin link. Not throttled (unlike the Valor alert, which guards against
+// webhook REDELIVERY): amend-decline's compare-and-swap write only succeeds
+// once per decline, and a retry/double-submit hits the idempotent
+// alreadyDeclined short-circuit before this is ever reached, so a second
+// alert for the same decline is structurally not possible.
+export function amendmentDeclinedInternalEmailSubject(input: {
+  customerName: string | null;
+  quoteNumber: number | null;
+  refusedTotalUsd: number;
+}): string {
+  const who = input.customerName?.replace(/[\r\n]+/g, ' ').trim() || 'A customer';
+  const quoteLabel = input.quoteNumber != null ? ` quote #${input.quoteNumber}` : '';
+  return `🔴 Price change DECLINED — ${who}${quoteLabel} (${usdExact(input.refusedTotalUsd)})`;
+}
+
+export function amendmentDeclinedInternalEmailHtml(input: {
+  customerName: string | null;
+  quoteNumber: number | null;
+  previousTotalUsd: number;
+  refusedTotalUsd: number;
+  deltaUsd: number;
+  // The customer's own optional free text — safe to relay to STAFF (an
+  // internal alert), distinct from the customer-facing SMS/email, which
+  // deliberately never echoes it back (see amend-decline/route.ts).
+  reason?: string;
+  adminUrl: string;
+  portalUrl: string;
+}): string {
+  const name = escapeHtml(input.customerName?.trim() || 'Unknown');
+  const quoteLabel = input.quoteNumber != null ? ` (quote #${input.quoteNumber})` : '';
+  const signedDelta = `${input.deltaUsd >= 0 ? '+' : ''}${usdExact(input.deltaUsd)}`;
+  const row = (labelText: string, value: string) =>
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">${labelText}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
+  return [
+    `<p><strong>${name}</strong>${quoteLabel} DECLINED a price change — they said no to ${usdExact(
+      input.refusedTotalUsd,
+    )} (${signedDelta}). Their order stays at ${usdExact(input.previousTotalUsd)}; nothing was charged.</p>`,
+    `<table style="border-collapse:collapse;font-size:14px;">`,
+    row('Customer', name),
+    row('Order stays at', usdExact(input.previousTotalUsd)),
+    row('They declined', usdExact(input.refusedTotalUsd)),
+    row('Change', signedDelta),
+    ...(input.reason ? [row('Their reason', escapeHtml(input.reason))] : []),
+    `</table>`,
+    `<p>We'll be in touch to sort out the details — the customer's own portal already tells them this.</p>`,
+    `<p><a href="${input.adminUrl}">Open in quote tool →</a> &nbsp;|&nbsp; <a href="${input.portalUrl}">Customer portal →</a></p>`,
+  ].join('\n');
 }
 
 // ── Balance pay-link (ledger #83) ───────────────────────────────────────────
@@ -923,5 +1058,43 @@ export function colorChangeAppliedEmailHtml(firstName: string, label: string): s
     `<p>Your light colour change to <strong>${safeLabel}</strong> is confirmed! It will be reflected on your install.</p>`,
     `<p>Questions? Just reply here or text/call us at (631) 517-0186, we're happy to help!</p>`,
     `<p>Warm wishes,<br>Yule Love Lights team</p>`,
+  ].join('\n');
+}
+
+// ─── Colour change REQUESTED — internal staff alert (ledger row 319) ────────
+// Fired (best-effort) when a customer requests a colour change on a booked
+// order (color-change-request/route.ts). Before this, the only record was an
+// /inbox row — Susan Pace-Burke's request sat unanswered 3 days and Kristie
+// Tibbetts' was dismissed same-day with no email ever firing. Mirrors
+// internalChangesRequestedEmail* exactly (same request shape: a customer
+// portal action on an existing quote that needs a staff look).
+
+export function internalColorChangeRequestedEmailSubject(customerName: string | null): string {
+  const who = customerName?.replace(/[\r\n]+/g, ' ').trim() || 'A customer';
+  return `🎨 Colour change requested: ${who}`;
+}
+
+export function internalColorChangeRequestedEmailHtml(input: {
+  customerName: string | null;
+  address: string | null;
+  phone: string | null;
+  email: string | null;
+  label: string;
+  portalUrl: string;
+  adminUrl: string;
+}): string {
+  const name = escapeHtml(input.customerName?.trim() || 'Unknown');
+  const row = (label: string, value: string) =>
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
+  return [
+    `<p><strong>${name}</strong> requested a colour change on their booked order.</p>`,
+    `<p><strong>Requested colour:</strong> ${escapeHtml(input.label)}</p>`,
+    `<table style="border-collapse:collapse;font-size:14px;">`,
+    row('Customer', name),
+    row('Phone', escapeHtml(input.phone || '—')),
+    row('Email', escapeHtml(input.email || '—')),
+    row('Address', escapeHtml(input.address || '—')),
+    `</table>`,
+    `<p><a href="${input.adminUrl}">Open in quote tool to apply →</a> &nbsp;|&nbsp; <a href="${input.portalUrl}">Customer portal →</a></p>`,
   ].join('\n');
 }

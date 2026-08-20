@@ -499,6 +499,8 @@ import {
   findViewOnlyFollowUpItems,
   getReopenCounts,
   isHiddenLegacyRebookQuote,
+  isReversibleActivity,
+  listActivity,
   listDueFollowUps,
   listInWorks,
   listOpenItems,
@@ -509,6 +511,7 @@ import {
   needsLookReason,
   quoteIdPrefix,
   recordSuppressedFollowUp,
+  reverseItemState,
   sweepOrphanedFollowUps,
   sweepResolvedItemFollowUps,
 } from './store';
@@ -4336,5 +4339,345 @@ describe('recordSuppressedFollowUp (#230a — suppression visibility)', () => {
   it('no-ops (no throw) when the service client is not configured', async () => {
     sbRef.current = null;
     await expect(recordSuppressedFollowUp('item-99', {})).resolves.toBeUndefined();
+  });
+});
+
+// row 312a: /inbox/activity's Reverse button is driven by listActivity's
+// `reversible` flag (REVERSIBLE_ACTIONS, store.ts) — a 'reclassified' row must
+// flip it true, or the button never renders regardless of what reverseItemState
+// itself accepts.
+//
+// row 312 fix-round FIX 3: the bare action string 'reclassified' now ISN'T
+// enough on its own — confirmed against prod (2026-08-20, execute_sql) that 34
+// 'reclassified' rows split into two real populations: 26 `actor: 'system'`
+// S41 rows all carrying `detail.followedUpAtSetTo`, and 8 `actor:
+// 'assistant-backfill-268'` rows where NONE carry it (their detail is
+// `reason`/`customer`/`from_contact` — a lead_kind/contact repoint that never
+// touched followed_up_at). isReversibleActivity gates on that key's presence.
+describe('listActivity — reversible flag (row 312a / row 312 fix-round FIX 3)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('marks an S41-shaped reclassified row (detail carries followedUpAtSetTo) reversible: true', async () => {
+    const { builder } = makeBuilder({
+      data: [
+        {
+          id: 'a1',
+          action: 'reclassified',
+          actor: 'system',
+          inbox_item_id: 'i1',
+          created_at: '2026-08-19T00:00:00Z',
+          detail: { op: 're-file', to: 'awaiting_reply', from: 'handled', followedUpAtSetTo: '2026-08-06T16:33:02.701Z' },
+          inbox_items: null,
+        },
+      ],
+      error: null,
+    });
+    sbRef.current = { from: () => builder };
+
+    const res = await listActivity(10);
+
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.rows).toHaveLength(1);
+      expect(res.rows[0]).toMatchObject({ action: 'reclassified', reversible: true });
+    }
+  });
+
+  it('marks a #268-backfill-shaped reclassified row (no followedUpAtSetTo) reversible: false', async () => {
+    const { builder } = makeBuilder({
+      data: [
+        {
+          id: 'a2',
+          action: 'reclassified',
+          actor: 'assistant-backfill-268',
+          inbox_item_id: 'i2',
+          created_at: '2026-08-14T00:00:00Z',
+          detail: { reason: 'row 268 backfill', customer: 'Chris Hughes', lead_kind: 'automated -> lead', from_contact: 'c1' },
+          inbox_items: null,
+        },
+      ],
+      error: null,
+    });
+    sbRef.current = { from: () => builder };
+
+    const res = await listActivity(10);
+
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.rows).toHaveLength(1);
+      expect(res.rows[0]).toMatchObject({ action: 'reclassified', reversible: false });
+    }
+  });
+
+  it('a non-reclassified reversible action (e.g. dismissed) stays reversible: true regardless of detail shape', async () => {
+    const { builder } = makeBuilder({
+      data: [
+        { id: 'a3', action: 'dismissed', actor: 'op-1', inbox_item_id: 'i3', created_at: '2026-08-19T00:00:00Z', detail: null, inbox_items: null },
+      ],
+      error: null,
+    });
+    sbRef.current = { from: () => builder };
+
+    const res = await listActivity(10);
+
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.rows[0]).toMatchObject({ action: 'dismissed', reversible: true });
+  });
+});
+
+// row 312 fix-round FIX 3: isReversibleActivity is the pure predicate driving
+// both listActivity's flag and reverseItemState's guard — direct tests here
+// pin the exact boundary against the real prod payload shapes queried above.
+describe('isReversibleActivity (pure, row 312 fix-round FIX 3)', () => {
+  it('rejects an action outside REVERSIBLE_ACTIONS regardless of detail', () => {
+    expect(isReversibleActivity('ingested', { followedUpAtSetTo: 'x' })).toBe(false);
+  });
+  it('accepts every non-reclassified reversible action with any detail (incl. null)', () => {
+    for (const action of ['handled', 'followed', 'completed', 'dismissed']) {
+      expect(isReversibleActivity(action, null)).toBe(true);
+    }
+  });
+  it("accepts 'reclassified' only when detail carries followedUpAtSetTo", () => {
+    expect(isReversibleActivity('reclassified', { followedUpAtSetTo: '2026-08-06T16:33:02.701Z' })).toBe(true);
+    expect(isReversibleActivity('reclassified', { reason: 'row 268 backfill', from_contact: 'c1' })).toBe(false);
+    expect(isReversibleActivity('reclassified', null)).toBe(false);
+    expect(isReversibleActivity('reclassified', undefined)).toBe(false);
+  });
+});
+
+// row 312: reverseItemState — 'reclassified' reversibility + the wrong-occurrence
+// guard (312c). Sequence of sb.from() calls: dashboard_activity (act lookup) ->
+// dashboard_activity (latest-row guard) -> inbox_items (current state) ->
+// inbox_items (update) -> [inbox_items (unsuppress lookup), dismissed only] ->
+// dashboard_activity (insert the 'reversed' row).
+describe('reverseItemState (row 312 — reclassified + wrong-occurrence guard)', () => {
+  const OPERATOR_ID = '11111111-2222-3333-4444-555555555555';
+  const NOW = new Date('2026-08-20T12:00:00Z');
+  const ITEM_ID = 'item-1';
+  const ACTIVITY_ID = 'act-1';
+
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  function makeSbForReverse(opts: {
+    activityRow: { data: unknown; error?: null | { message: string } };
+    latestRow: { data: unknown; error?: null | { message: string } };
+    curItem?: { data: unknown; error?: null | { message: string } };
+    updateResult?: { data: unknown; error: null | { message: string } };
+    unsuppressRow?: { data: unknown; error?: null | { message: string } };
+  }) {
+    const { builder: activityLookupBuilder } = makeBuilder({
+      data: opts.activityRow.data,
+      error: opts.activityRow.error ?? null,
+    });
+    const { builder: latestBuilder, calls: latestCalls } = makeBuilder({
+      data: opts.latestRow.data,
+      error: opts.latestRow.error ?? null,
+    });
+    const { builder: curBuilder } = makeBuilder({
+      data: opts.curItem?.data ?? null,
+      error: opts.curItem?.error ?? null,
+    });
+    const { builder: updateBuilder, calls: updateCalls } = makeBuilder(opts.updateResult ?? { data: null, error: null });
+    const { builder: unsuppressBuilder } = makeBuilder({
+      data: opts.unsuppressRow?.data ?? null,
+      error: opts.unsuppressRow?.error ?? null,
+    });
+    const { builder: insertBuilder, calls: insertCalls } = makeBuilder({ data: null, error: null });
+
+    let activityCallCount = 0;
+    let inboxCallCount = 0;
+    const from = (table: string) => {
+      if (table === 'dashboard_activity') {
+        activityCallCount += 1;
+        if (activityCallCount === 1) return activityLookupBuilder;
+        if (activityCallCount === 2) return latestBuilder;
+        return insertBuilder;
+      }
+      if (table === 'inbox_items') {
+        inboxCallCount += 1;
+        if (inboxCallCount === 1) return curBuilder;
+        if (inboxCallCount === 2) return updateBuilder;
+        return unsuppressBuilder;
+      }
+      throw new Error(`unexpected table: ${table}`);
+    };
+    return { from, latestCalls, updateCalls, insertCalls };
+  }
+
+  // row 312 fix-round FIX 3: an S41-shaped 'reclassified' row must carry
+  // detail.followedUpAtSetTo to pass the payload-shape gate before any of these
+  // tests can reach the wrong-occurrence guard / stillMatches logic below — a
+  // bare `detail: null` (the pre-fix-round fixture shape) is now refused
+  // immediately as a #268-backfill-shaped row would be. See the dedicated FIX 3
+  // refusal test further down for that path itself.
+  const RECLASSIFIED_DETAIL = { op: 're-file', to: 'awaiting_reply', from: 'handled', followedUpAtSetTo: '2026-08-06T16:33:02.701Z' };
+
+  it("reverses a 'reclassified' row: clears followed_up_at only, status untouched, CASing on followed_up_at IS NOT NULL (FIX 1)", async () => {
+    const { from, updateCalls, insertCalls } = makeSbForReverse({
+      activityRow: { data: { action: 'reclassified', inbox_item_id: ITEM_ID, detail: RECLASSIFIED_DETAIL } },
+      latestRow: { data: { id: ACTIVITY_ID } }, // this row IS the latest — passes 312c
+      curItem: { data: { status: 'handled', followed_up_at: '2026-08-01T00:00:00Z' } },
+      updateResult: { data: { id: ITEM_ID }, error: null }, // FIX 1: CAS matched a row
+    });
+    sbRef.current = { from };
+
+    const res = await reverseItemState(ACTIVITY_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+    const updateCall = updateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ followed_up_at: null });
+    expect(updateCall!.args[0]).not.toHaveProperty('status'); // inverseOf('reclassified') never sets status
+    // FIX 1: 'reclassified' CASes on followed_up_at IS NOT NULL, not on status.
+    const casNotCall = updateCalls.find((c) => c.method === 'not');
+    expect(casNotCall!.args).toEqual(['followed_up_at', 'is', null]);
+    expect(updateCalls.some((c) => c.method === 'eq' && c.args[0] === 'status')).toBe(false);
+    // FIX 4: the 'reversed' audit row now carries the reversed activity's own
+    // id + the prior values it cleared/restored.
+    const insertCall = insertCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toMatchObject({
+      action: 'reversed',
+      detail: {
+        reversed_action: 'reclassified',
+        reversedActivityId: ACTIVITY_ID,
+        from: { status: 'handled', followedUpAt: '2026-08-01T00:00:00Z' },
+      },
+    });
+  });
+
+  // row 312 fix-round FIX 1 (HIGH): the CAS on the update — not the earlier
+  // read — is what actually closes the race/double-click window. Simulated
+  // here by having the pre-check (curItem) pass stillMatches while the update
+  // itself matches zero rows (updateResult.data: null) — exactly what a
+  // concurrent write landing between the read and the write would produce.
+  it('FIX 1: refuses (lost race) when the CAS update matches no row even though the pre-check read passed', async () => {
+    const { from, insertCalls } = makeSbForReverse({
+      activityRow: { data: { action: 'handled', inbox_item_id: ITEM_ID, detail: null } },
+      latestRow: { data: { id: ACTIVITY_ID } },
+      curItem: { data: { status: 'handled', followed_up_at: null } }, // stillMatches passes
+      updateResult: { data: null, error: null }, // but the CAS itself matches nothing (lost race)
+    });
+    sbRef.current = { from };
+
+    const res = await reverseItemState(ACTIVITY_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/state has changed/i);
+    // No 'reversed' audit row gets written for a lost-race refusal.
+    expect(insertCalls.some((c) => c.method === 'insert')).toBe(false);
+  });
+
+  it("refuses a 'reclassified' row whose item is no longer awaiting reply (followed_up_at already cleared)", async () => {
+    const { from, updateCalls } = makeSbForReverse({
+      activityRow: { data: { action: 'reclassified', inbox_item_id: ITEM_ID, detail: RECLASSIFIED_DETAIL } },
+      latestRow: { data: { id: ACTIVITY_ID } },
+      curItem: { data: { status: 'handled', followed_up_at: null } },
+    });
+    sbRef.current = { from };
+
+    const res = await reverseItemState(ACTIVITY_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/state has changed/i);
+    expect(updateCalls.some((c) => c.method === 'update')).toBe(false);
+  });
+
+  // row 312 fix-round FIX 3: the payload-shape gate applies to a direct POST
+  // too, not just listActivity's rendered button — a #268-backfill-shaped row
+  // (no followedUpAtSetTo) is refused before ever running the wrong-occurrence
+  // query, exactly like a genuinely-unreversible action string.
+  it("FIX 3: refuses a 'reclassified' row shaped like the #268 backfill (no followedUpAtSetTo in detail)", async () => {
+    const backfillDetail = { reason: 'row 268 backfill', customer: 'Chris Hughes', lead_kind: 'automated -> lead', from_contact: 'c1' };
+    const { from, latestCalls, updateCalls } = makeSbForReverse({
+      activityRow: { data: { action: 'reclassified', inbox_item_id: ITEM_ID, detail: backfillDetail } },
+      latestRow: { data: { id: ACTIVITY_ID } },
+    });
+    sbRef.current = { from };
+
+    const res = await reverseItemState(ACTIVITY_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toBe('This entry cannot be reversed');
+    // Short-circuits before the wrong-occurrence query or any write.
+    expect(latestCalls.length).toBe(0);
+    expect(updateCalls.length).toBe(0);
+  });
+
+  it('312c: refuses when a LATER state-changing row exists for the same item (wrong-occurrence guard)', async () => {
+    const { from, updateCalls } = makeSbForReverse({
+      activityRow: { data: { action: 'handled', inbox_item_id: ITEM_ID, detail: null } },
+      latestRow: { data: { id: 'act-later-999' } }, // some other, more recent row
+      curItem: { data: { status: 'handled', followed_up_at: null } }, // would otherwise "stillMatch"
+    });
+    sbRef.current = { from };
+
+    const res = await reverseItemState(ACTIVITY_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/later action/i);
+    // Short-circuits before ever reading current state or writing anything.
+    expect(updateCalls.length).toBe(0);
+  });
+
+  // row 312 fix-round FIX 2: a query ERROR on the wrong-occurrence guard must
+  // fail CLOSED (refuse), not read as "no later row exists" and proceed.
+  it('FIX 2: fails closed when the wrong-occurrence guard query itself errors', async () => {
+    const { from, updateCalls } = makeSbForReverse({
+      activityRow: { data: { action: 'handled', inbox_item_id: ITEM_ID, detail: null } },
+      latestRow: { data: null, error: { message: 'connection reset' } },
+      curItem: { data: { status: 'handled', followed_up_at: null } },
+    });
+    sbRef.current = { from };
+
+    const res = await reverseItemState(ACTIVITY_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/try again/i);
+    // Never reaches the write on a failed guard read.
+    expect(updateCalls.length).toBe(0);
+  });
+
+  it('312c: proceeds normally when no later row exists at all (this IS the only row for the item)', async () => {
+    const { from, updateCalls } = makeSbForReverse({
+      activityRow: { data: { action: 'handled', inbox_item_id: ITEM_ID, detail: null } },
+      latestRow: { data: null }, // no row found (maybeSingle null) — nothing later
+      curItem: { data: { status: 'handled', followed_up_at: null } },
+      updateResult: { data: { id: ITEM_ID }, error: null }, // FIX 1: CAS matched a row
+    });
+    sbRef.current = { from };
+
+    const res = await reverseItemState(ACTIVITY_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+    expect(updateCalls.some((c) => c.method === 'update')).toBe(true);
+    // FIX 1: non-followed/reclassified actions CAS on status, not followed_up_at.
+    expect(updateCalls.some((c) => c.method === 'eq' && c.args[0] === 'status' && c.args[1] === 'handled')).toBe(true);
+  });
+
+  it("312c: the latest-row query's action set covers every reversible action plus 'reversed'/'reopened', ordered with an id tiebreaker (FIX 5a/5b)", async () => {
+    const { from, latestCalls } = makeSbForReverse({
+      activityRow: { data: { action: 'dismissed', inbox_item_id: ITEM_ID, detail: { from: { status: 'unresponded' } } } },
+      latestRow: { data: { id: ACTIVITY_ID } },
+      curItem: { data: { status: 'dismissed', followed_up_at: null } },
+      unsuppressRow: { data: null },
+    });
+    sbRef.current = { from };
+
+    await reverseItemState(ACTIVITY_ID, OPERATOR_ID, NOW);
+
+    const inCall = latestCalls.find((c) => c.method === 'in');
+    const [, actionSet] = inCall!.args as [string, string[]];
+    expect(actionSet).toEqual(
+      expect.arrayContaining(['handled', 'followed', 'completed', 'dismissed', 'reclassified', 'reversed', 'reopened']),
+    );
+    // FIX 5(a): secondary deterministic tiebreaker on id, after the created_at order.
+    const orderCalls = latestCalls.filter((c) => c.method === 'order');
+    expect(orderCalls).toEqual([
+      { method: 'order', args: ['created_at', { ascending: false }] },
+      { method: 'order', args: ['id', { ascending: false }] },
+    ]);
   });
 });
