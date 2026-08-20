@@ -67,7 +67,9 @@ export async function loadPortalQuote(id: string): Promise<PortalQuote | null> {
           // variant (LightColorPicker copy/toggle + WhatsIncluded read-only items).
           // #176: added view_only so the portal can show the browsing-only
           // sticky bar and skip mounting the approve/pay/decline machinery.
-          'id, customer_id, customer_name, customer_address, customer_phone, customer_email, result, inputs, total, video_kind, video_src, video_poster, video_title, video_duration_sec, customer_approved_at, approval_snapshot, deposit_paid_at, status, decline_reason, quote_sent_at, viewed_at, is_test, service_type, legacy_rebook, view_only',
+          // Ledger row 239: added browsing_selection + browsing_selection_updated_at
+          // so an unapproved quote can restore the customer's last saved pick.
+          'id, customer_id, customer_name, customer_address, customer_phone, customer_email, result, inputs, total, video_kind, video_src, video_poster, video_title, video_duration_sec, customer_approved_at, approval_snapshot, deposit_paid_at, status, decline_reason, quote_sent_at, viewed_at, is_test, service_type, legacy_rebook, view_only, browsing_selection, browsing_selection_updated_at',
         )
         .eq('id', id)
         .maybeSingle<QuoteRowForPortal>(),
