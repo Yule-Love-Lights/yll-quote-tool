@@ -5,7 +5,6 @@
 // dashboard tables migration is applied.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { safeEqual } from '@/lib/security';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { runQuoteToolReconcile } from '@/lib/dashboard/inbox/sync';
 import { cronDenial } from '@/lib/auth/cronAuth';

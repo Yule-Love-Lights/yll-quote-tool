@@ -1,4 +1,5 @@
-// Self-serve referral link request (naldo/referral-self-serve).
+// Self-serve referral link request (naldo/referral-self-serve +
+// naldo/referral-link-personalized).
 //
 // Public page: quote.yulelovelights.com/referral-link. The owner is emailing
 // his whole GHL list an invitation to generate their own referral link.
@@ -12,6 +13,18 @@
 // Review fix 2: flag-gated (REFERRAL_SELF_SERVE_ENABLED, ships OFF), same
 // notFound()-when-off pattern as src/app/estimate/page.tsx. This is the
 // feature's rollback lever, see referralSelfServeFlag.ts.
+//
+// naldo/referral-link-personalized: optional ?c=<ghl-contact-id>, set by a
+// GoHighLevel merge field in the owner's campaign link so each recipient's
+// own contact id rides along, no typing required. CRITICAL: this component
+// makes NO GoHighLevel call and NO write on load, on purpose: email clients
+// and security appliances prefetch links, and if merely loading this page
+// minted a code or stamped a CRM field, every recipient would be enrolled
+// without ever clicking anything. `c` is only read and handed down as a
+// plain string prop; all work happens later, from an explicit click, inside
+// the API route. Mirrors src/app/quote/new/page.tsx's own ghlContactId
+// param: "raw and unvalidated here", the client form and the route do the
+// sanitizing.
 
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
@@ -27,8 +40,14 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
-export default function ReferralLinkPage() {
+export default async function ReferralLinkPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ c?: string }>;
+}) {
   if (!isReferralSelfServeEnabled()) notFound();
+  const { c } = await searchParams;
+  const contactId = c?.trim() || undefined;
   return (
     <main className="relative min-h-screen w-full bg-[#060B0F] flex items-center justify-center px-4 py-16">
       <div className="w-full max-w-lg">
@@ -44,7 +63,7 @@ export default function ReferralLinkPage() {
             16&quot; spritzers.
           </p>
         </div>
-        <ReferralLinkForm />
+        <ReferralLinkForm contactId={contactId} />
       </div>
     </main>
   );

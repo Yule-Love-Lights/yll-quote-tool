@@ -894,6 +894,218 @@ describe('POST /api/quote — NCE + YLL Neighbor tags (#198)', () => {
   });
 });
 
+describe('POST /api/quote — NCE/YLL Neighbor holiday-only gate (#243)', () => {
+  it('clamps an explicit true legacyRebook/isNce to false on a NEW permanent-service-type save', async () => {
+    const res = await POST(
+      makeReq({ serviceType: 'permanent', inputs: permInputs(100), legacyRebook: true, isNce: true }),
+    );
+    expect(res.status).toBe(200);
+    const saveArgs = save.mock.calls[0] as unknown[];
+    expect(saveArgs[8]).toBe(false); // legacyRebook — clamped
+    expect(saveArgs[9]).toBe(false); // isNce — clamped
+  });
+
+  it.each([['event'], ['permanent_bistro']])(
+    'clamps an explicit true legacyRebook/isNce to false on a NEW %s save too',
+    async (st) => {
+      const res = await POST(
+        makeReq({ serviceType: st, inputs: validInputs(), legacyRebook: true, isNce: true }),
+      );
+      expect(res.status).toBe(200);
+      const saveArgs = save.mock.calls[0] as unknown[];
+      expect(saveArgs[8]).toBe(false);
+      expect(saveArgs[9]).toBe(false);
+    },
+  );
+
+  it('still honors an explicit true legacyRebook/isNce on a NEW holiday save (regression)', async () => {
+    const res = await POST(
+      makeReq({ serviceType: 'holiday', inputs: validInputs(), legacyRebook: true, isNce: true }),
+    );
+    expect(res.status).toBe(200);
+    const saveArgs = save.mock.calls[0] as unknown[];
+    expect(saveArgs[8]).toBe(true);
+    expect(saveArgs[9]).toBe(true);
+  });
+
+  it('clamps an explicit true legacyRebook/isNce to false on an UPDATE of an existing permanent quote', async () => {
+    rawRef.current!.service_type = 'permanent';
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, inputs: permInputs(100), legacyRebook: true, isNce: true }),
+    );
+    expect(res.status).toBe(200);
+    const updateArgs = update.mock.calls[0] as unknown[];
+    expect(updateArgs[6]).toBe(false); // legacyRebook — clamped
+    expect(updateArgs[7]).toBe(false); // isNce — clamped
+  });
+
+  // The gate must NEVER touch an OMITTED tag — an untouched chip already
+  // means "leave the stored value alone" (resolveTagPayload), and clamping
+  // `undefined` to `false` here would silently correct an EXISTING violating
+  // row's tag as a side effect of an unrelated save (exactly what the ledger
+  // row's "do not silently mutate existing rows" instruction forbids).
+  it('does NOT clamp an OMITTED (undefined) legacyRebook/isNce on an update of an existing permanent quote', async () => {
+    rawRef.current!.service_type = 'permanent';
+    const res = await POST(makeReq({ quoteId: REAL_UUID, inputs: permInputs(100) }));
+    expect(res.status).toBe(200);
+    const updateArgs = update.mock.calls[0] as unknown[];
+    expect(updateArgs[6]).toBeUndefined();
+    expect(updateArgs[7]).toBeUndefined();
+  });
+
+  it('does NOT clamp an explicit FALSE legacyRebook/isNce on an update of an existing permanent quote — turning OFF is never gated', async () => {
+    rawRef.current!.service_type = 'permanent';
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, inputs: permInputs(100), legacyRebook: false, isNce: false }),
+    );
+    expect(res.status).toBe(200);
+    const updateArgs = update.mock.calls[0] as unknown[];
+    expect(updateArgs[6]).toBe(false);
+    expect(updateArgs[7]).toBe(false);
+  });
+});
+
+// Fix-round HIGH (two lenses converged): the #243 gate above clamps the
+// is_nce COLUMN but previously left quoteInputs.depositPercent — the field
+// effectiveDepositRate actually prices off — untouched, so a clamped-tag
+// permanent/event/bistro quote could still persist depositPercent:40 with no
+// tag left to explain it. Mirrors rebook.ts's buildRebookInsert/
+// applyNceDepositDefault gateForcedNceOff semantics: reset ONLY an exact 40,
+// ONLY when the tag gate itself is what forced isNce off.
+describe('POST /api/quote — NCE-gated deposit-rate reset (#243 fix round)', () => {
+  it('resets a carried depositPercent=40 to 0 when the gate clamps isNce off on a NEW permanent save', async () => {
+    const res = await POST(
+      makeReq({
+        serviceType: 'permanent',
+        inputs: { ...permInputs(100), depositPercent: 40 },
+        isNce: true,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const saveArgs = save.mock.calls[0] as unknown[];
+    expect(saveArgs[9]).toBe(false); // isNce — clamped (existing #243 behavior)
+    const savedInputs = saveArgs[1] as { depositPercent?: number };
+    expect(savedInputs.depositPercent).toBe(0); // NEW: deposit rate reset too
+    // Prices off the corrected 0 (⇒ "no override" ⇒ the 50% default), not a
+    // stale 40% — proves the reset lands BEFORE pricing, not just on the
+    // saved row.
+    const savedResultArg = saveArgs[2] as { depositRate: number };
+    expect(savedResultArg.depositRate).toBe(0.5);
+  });
+
+  it('does NOT touch a hand-typed depositPercent that is not exactly 40, even when the gate clamps isNce off', async () => {
+    const res = await POST(
+      makeReq({
+        serviceType: 'permanent',
+        inputs: { ...permInputs(100), depositPercent: 25 },
+        isNce: true,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const saveArgs = save.mock.calls[0] as unknown[];
+    expect(saveArgs[9]).toBe(false); // isNce still clamped
+    const savedInputs = saveArgs[1] as { depositPercent?: number };
+    expect(savedInputs.depositPercent).toBe(25); // untouched — a legit staff override
+  });
+
+  it('does NOT reset depositPercent=40 when isNce is omitted (no explicit true ⇒ gate never fires) — a genuinely hand-typed 40% survives', async () => {
+    const res = await POST(
+      makeReq({
+        serviceType: 'permanent',
+        inputs: { ...permInputs(100), depositPercent: 40 },
+        // isNce intentionally omitted
+      }),
+    );
+    expect(res.status).toBe(200);
+    const saveArgs = save.mock.calls[0] as unknown[];
+    expect(saveArgs[9]).toBeUndefined(); // untouched, not clamped
+    const savedInputs = saveArgs[1] as { depositPercent?: number };
+    expect(savedInputs.depositPercent).toBe(40); // left alone
+  });
+
+  it('does NOT reset depositPercent=40 on an eligible (holiday) save even with isNce:true — the gate never fires', async () => {
+    const res = await POST(
+      makeReq({
+        serviceType: 'holiday',
+        inputs: { ...validInputs(), depositPercent: 40 },
+        isNce: true,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const saveArgs = save.mock.calls[0] as unknown[];
+    expect(saveArgs[9]).toBe(true); // NCE legitimately on
+    const savedInputs = saveArgs[1] as { depositPercent?: number };
+    expect(savedInputs.depositPercent).toBe(40); // this IS the NCE rate — untouched
+  });
+
+  it('resets a carried depositPercent=40 to 0 on an UPDATE of an existing permanent quote too', async () => {
+    rawRef.current!.service_type = 'permanent';
+    const res = await POST(
+      makeReq({
+        quoteId: REAL_UUID,
+        inputs: { ...permInputs(100), depositPercent: 40 },
+        isNce: true,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const updateArgs = update.mock.calls[0] as unknown[];
+    expect(updateArgs[7]).toBe(false); // isNce — clamped
+    const updatedInputs = updateArgs[1] as { depositPercent?: number };
+    expect(updatedInputs.depositPercent).toBe(0);
+  });
+
+  // Delta-verify MED (sibling-guard parity): the #177 freeze above only 409s
+  // when the INCOMING depositPercent DIFFERS from the stored one, so a plain
+  // reopen-and-resave of an already-approved quote carrying a pre-existing
+  // violation sails past it. Without the approval guard the reset would then
+  // silently move an APPROVED customer's deposit from 40% to the 50% default.
+  it('does NOT reset the deposit on an already-APPROVED quote — the #177 freeze owns it', async () => {
+    rawRef.current!.service_type = 'permanent';
+    rawRef.current!.customer_approved_at = '2026-01-02T00:00:00Z';
+    // The stored deposit must ALSO be 40 — that is what makes this the real
+    // scenario: the #177 freeze compares incoming vs stored and only 409s on a
+    // DIFFERENCE, so a reopen-and-resave of the same hydrated values passes it
+    // and reaches the reset. With a differing stored value the freeze 409s
+    // first and the reset is never reached (verified: this test failed with a
+    // 409 until the stored value matched).
+    rawRef.current!.inputs = { depositPercent: 40 };
+    const res = await POST(
+      makeReq({
+        quoteId: REAL_UUID,
+        inputs: { ...permInputs(100), depositPercent: 40 },
+        isNce: true,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const updateArgs = update.mock.calls[0] as unknown[];
+    // The TAG is still clamped — that half is not deposit money and stays correct.
+    expect(updateArgs[7]).toBe(false);
+    // The DEPOSIT is left exactly as the approved customer agreed to it.
+    const updatedInputs = updateArgs[1] as { depositPercent?: number };
+    expect(updatedInputs.depositPercent).toBe(40);
+  });
+
+  it('warns via console.warn when the deposit reset fires, naming the quoteId', async () => {
+    rawRef.current!.service_type = 'permanent';
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const res = await POST(
+      makeReq({
+        quoteId: REAL_UUID,
+        inputs: { ...permInputs(100), depositPercent: 40 },
+        isNce: true,
+      }),
+    );
+    expect(res.status).toBe(200);
+    // Not asserting the exact wording (a report, not a contract) — just that
+    // a trace exists and names the affected quote, per the brief's "today
+    // the clamp leaves no trace anywhere" concern.
+    expect(warnSpy).toHaveBeenCalled();
+    const warnedText = warnSpy.mock.calls.map((c) => String(c[0])).join(' ');
+    expect(warnedText).toContain(REAL_UUID);
+    warnSpy.mockRestore();
+  });
+});
+
 describe('POST /api/quote — Test Quote flag (#93)', () => {
   it('threads isTest=true into the NEW-save path (saveQuote 5th arg)', async () => {
     const res = await POST(makeReq({ inputs: validInputs(), isTest: true }));

@@ -246,13 +246,21 @@ describe('buildRebookInsert', () => {
   // #198: legacy_rebook/is_nce carry through from the source (same
   // clone-field posture as is_test above) — this is the plain default;
   // rebookLastSeason overrides these with the CUSTOMER's current tags before
-  // calling buildRebookInsert (see its own describe block below).
-  it('carries legacy_rebook/is_nce through from the source', () => {
-    expect(buildRebookInsert({ ...src, legacy_rebook: true, is_nce: true })).toMatchObject({
+  // calling buildRebookInsert (see its own describe block below). service_type
+  // overridden to 'holiday' here (#243) — the shared `src` fixture is
+  // 'permanent', which the #243 gate below now correctly suppresses; this
+  // test is about the carry-through default, not the gate, so it needs an
+  // eligible service type to demonstrate that "carries through" honestly.
+  it('carries legacy_rebook/is_nce through from the source (on a holiday-eligible quote)', () => {
+    expect(
+      buildRebookInsert({ ...src, service_type: 'holiday', legacy_rebook: true, is_nce: true }),
+    ).toMatchObject({
       legacy_rebook: true,
       is_nce: true,
     });
-    expect(buildRebookInsert({ ...src, legacy_rebook: false, is_nce: false })).toMatchObject({
+    expect(
+      buildRebookInsert({ ...src, service_type: 'holiday', legacy_rebook: false, is_nce: false }),
+    ).toMatchObject({
       legacy_rebook: false,
       is_nce: false,
     });
@@ -289,19 +297,34 @@ describe('buildRebookInsert', () => {
   // #199: the clone's NCE 40% deposit default — piggybacks on whichever
   // is_nce this SAME call resolved (src.is_nce here; rebookLastSeason's
   // customer-tag override is exercised in its own describe block below).
+  // Every `is_nce: true` case below overrides service_type to 'holiday'
+  // (#243) — the shared `src` fixture is 'permanent', which the #243 gate
+  // would otherwise suppress; these tests are about the deposit-default
+  // MECHANISM given a resolved NCE=true, not the gate itself (that has its
+  // own describe block below).
   describe('NCE 40% deposit default (#199)', () => {
     it('sets depositPercent=40 when the clone resolves NCE=true and the source had none', () => {
-      const row = buildRebookInsert({ ...src, is_nce: true, inputs: { a: 1 } });
+      const row = buildRebookInsert({ ...src, service_type: 'holiday', is_nce: true, inputs: { a: 1 } });
       expect(row.inputs).toEqual({ a: 1, depositPercent: 40 });
     });
 
     it('sets depositPercent=40 when the source explicitly stored 0', () => {
-      const row = buildRebookInsert({ ...src, is_nce: true, inputs: { depositPercent: 0 } });
+      const row = buildRebookInsert({
+        ...src,
+        service_type: 'holiday',
+        is_nce: true,
+        inputs: { depositPercent: 0 },
+      });
       expect((row.inputs as Record<string, unknown>).depositPercent).toBe(40);
     });
 
     it('keeps an explicit staff-set depositPercent from the source (hand-set last season)', () => {
-      const row = buildRebookInsert({ ...src, is_nce: true, inputs: { depositPercent: 25 } });
+      const row = buildRebookInsert({
+        ...src,
+        service_type: 'holiday',
+        is_nce: true,
+        inputs: { depositPercent: 25 },
+      });
       expect((row.inputs as Record<string, unknown>).depositPercent).toBe(25);
     });
 
@@ -350,6 +373,84 @@ describe('buildRebookInsert', () => {
       const row = buildRebookInsert({ ...src, is_nce: false, inputs: { depositPercent: 40, a: 1 } });
       expect((row.inputs as Record<string, unknown>).depositPercent).toBe(40);
       expect((row.inputs as Record<string, unknown>).a).toBe(1);
+    });
+  });
+
+  // #243 (domain rule locked 2026-08-11): permanent/event/bistro quotes can
+  // never carry either tag — this is the ONE gate point both rebook paths
+  // (rebookLastSeason's customer-tag resolution + rebookFromQuote's
+  // exact-quote revive) funnel through, so it's exercised here directly
+  // rather than duplicated in each DB-level describe block below (those add
+  // one closing-the-loop test each instead — see their own #243 notes).
+  describe('service-type gate (#243)', () => {
+    it.each([['permanent'], ['event'], ['permanent_bistro']])(
+      'forces legacy_rebook/is_nce to false for a %s clone, even when the source/customer resolved both true',
+      (serviceType) => {
+        const row = buildRebookInsert({
+          ...src,
+          service_type: serviceType,
+          legacy_rebook: true,
+          is_nce: true,
+        });
+        expect(row.legacy_rebook).toBe(false);
+        expect(row.is_nce).toBe(false);
+      },
+    );
+
+    it.each([['holiday'], [null], [undefined]])(
+      'still carries both tags through for a holiday (or un-categorized) clone — service_type %p',
+      (serviceType) => {
+        const row = buildRebookInsert({
+          ...src,
+          service_type: serviceType as string | null | undefined,
+          legacy_rebook: true,
+          is_nce: true,
+        });
+        expect(row.legacy_rebook).toBe(true);
+        expect(row.is_nce).toBe(true);
+      },
+    );
+
+    // Money protection: forcing is_nce off is itself a signal the prior NCE
+    // state was invalid (a domain-rule violation, stronger than the
+    // customer-untagged case resetNceDepositOnOff already resets for) — so a
+    // stale 40% deposit carried over from the source gets reset too, even
+    // though the caller (rebookFromQuote's default shape) didn't opt into
+    // resetNceDepositOnOff itself. Without this, a permanent clone could
+    // resolve is_nce=false (correctly gated) while still CHARGING the 40%
+    // NCE rate via a leftover inputs.depositPercent=40.
+    it('resets a carried-over depositPercent=40 to 0 when the gate forces is_nce off, even though resetNceDepositOnOff was NOT passed', () => {
+      const row = buildRebookInsert({
+        ...src,
+        service_type: 'permanent',
+        is_nce: true,
+        inputs: { depositPercent: 40, a: 1 },
+      });
+      expect(row.is_nce).toBe(false);
+      expect((row.inputs as Record<string, unknown>).depositPercent).toBe(0);
+      expect((row.inputs as Record<string, unknown>).a).toBe(1);
+    });
+
+    it('leaves a non-40 depositPercent untouched even when the gate forces is_nce off', () => {
+      const row = buildRebookInsert({
+        ...src,
+        service_type: 'permanent',
+        is_nce: true,
+        inputs: { depositPercent: 25 },
+      });
+      expect(row.is_nce).toBe(false);
+      expect((row.inputs as Record<string, unknown>).depositPercent).toBe(25);
+    });
+
+    it('does not touch the deposit at all when the source was never NCE (gate has nothing to force off)', () => {
+      const row = buildRebookInsert({
+        ...src,
+        service_type: 'permanent',
+        is_nce: false,
+        inputs: { a: 1 },
+      });
+      expect(row.is_nce).toBe(false);
+      expect(row.inputs).toEqual({ a: 1 });
     });
   });
 });
@@ -520,6 +621,35 @@ describe('rebookLastSeason', () => {
       const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
       expect(created.legacy_rebook).toBe(false);
       expect(created.is_nce).toBe(false);
+    });
+
+    // #243 closing-the-loop: rebookLastSeason resolves its source quote by
+    // "most recent APPROVED", NOT filtered by service_type (see its own
+    // comment above the query) — so a customer whose CURRENT tag is NCE, but
+    // whose most recent approved quote happens to be a permanent one, is
+    // exactly the violation the #243 gate (inside buildRebookInsert) exists
+    // to close. Exercised end-to-end here through the real orchestration,
+    // not just the pure buildRebookInsert unit tests above.
+    it("does NOT inherit the customer's NCE/Neighbor tag onto a clone of a non-holiday source quote (#243)", async () => {
+      const fake = makeFakeSupabase({
+        quotes: [
+          {
+            id: 'a',
+            customer_id: 'c1',
+            customer_approved_at: '2025-01-01',
+            service_type: 'permanent',
+            inputs: {},
+            result: { total: 5 },
+          },
+        ],
+        customers: [{ id: 'c1', is_nce: true, is_yll_neighbor: true }],
+      });
+      sbRef.current = fake.client;
+      const res = await rebookLastSeason('c1');
+      const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+      expect(created.service_type).toBe('permanent');
+      expect(created.is_nce).toBe(false);
+      expect(created.legacy_rebook).toBe(false);
     });
   });
 
@@ -779,6 +909,34 @@ describe('rebookFromQuote', () => {
     const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
     expect(created.legacy_rebook).toBe(true);
     expect(created.is_nce).toBe(true);
+  });
+
+  // #243 closing-the-loop: rebookFromQuote can revive ANY quote by id,
+  // including a violating row that predates this gate (a non-holiday quote
+  // that was somehow tagged before #243 shipped) — the revived clone must
+  // not carry the violation forward, even though this path otherwise always
+  // preserves the source quote's own tags exactly (the test just above).
+  it('does NOT carry a non-holiday source quote\'s NCE/Neighbor tags forward, even though it otherwise preserves the source\'s own tags exactly (#243)', async () => {
+    const fake = makeFakeSupabase({
+      quotes: [
+        {
+          id: 'a',
+          customer_id: 'c1',
+          status: 'declined',
+          service_type: 'event',
+          inputs: {},
+          result: { total: 5 },
+          legacy_rebook: true,
+          is_nce: true,
+        },
+      ],
+    });
+    sbRef.current = fake.client;
+    const res = await rebookFromQuote('a');
+    const created = fake.tables.quotes.find((q) => q.id === res!.quoteId)!;
+    expect(created.service_type).toBe('event');
+    expect(created.is_nce).toBe(false);
+    expect(created.legacy_rebook).toBe(false);
   });
 
   // #199: same buildRebookInsert plumbing as rebookLastSeason above, exercised

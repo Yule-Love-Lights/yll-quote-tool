@@ -14,6 +14,7 @@ import type { NormalizedTouch } from '@/lib/dashboard/inbox/types';
 
 const {
   searchContacts,
+  getContact,
   sendEmail,
   upsertContactCustomField,
   findOrCreateCustomer,
@@ -27,6 +28,13 @@ const {
   afterTasks,
 } = vi.hoisted(() => ({
   searchContacts: vi.fn(async (_query: string, _limit?: number) => [] as CrmContact[]),
+  // naldo/referral-link-personalized: default REJECTS, mirroring
+  // searchContacts' default empty-array "no match" above: a test must
+  // opt in to a resolving contact rather than accidentally exercising the
+  // mint chain.
+  getContact: vi.fn(async (_id: string): Promise<CrmContact> => {
+    throw new Error('not found');
+  }),
   sendEmail: vi.fn(async (_input: unknown) => ({}) as unknown),
   upsertContactCustomField: vi.fn(async (_id: string, _field: string, _value: string | string[]) => undefined),
   findOrCreateCustomer: vi.fn(async (_identity: unknown) => ({ id: 'cust-1' }) as { id: string } | null),
@@ -83,11 +91,17 @@ vi.mock('@/lib/rateLimit', () => ({
     emailCooldownSeen.add(key);
     return { ok: true, remaining: 0, resetMs: 3_600_000 };
   },
+  // Review fix 4b (this round): mirrors the real releaseRateLimitByKey's
+  // undo-the-check semantics against this mock's own Set-based model, so a
+  // test can prove a failed send frees the slot for a later retry.
+  releaseRateLimitByKey: (key: string, _opts: unknown) => {
+    emailCooldownSeen.delete(key);
+  },
   // Delta-verify fix A: the per-IP ingest ceiling. checkRateLimit itself is
   // the hoisted vi.fn() above, so a test can assert on calls to it.
   checkRateLimit,
 }));
-vi.mock('@/lib/integrations/highlevel', () => ({ searchContacts, sendEmail, upsertContactCustomField }));
+vi.mock('@/lib/integrations/highlevel', () => ({ searchContacts, getContact, sendEmail, upsertContactCustomField }));
 vi.mock('@/lib/customers', () => ({ findOrCreateCustomer }));
 vi.mock('@/lib/referrals', () => ({ ensureReferralCode, hasReferralCode }));
 vi.mock('@/lib/integrations/telegramNotify', () => ({ appBaseUrl: () => 'https://quote.example.com' }));
@@ -113,6 +127,19 @@ const MATCHING_CONTACT: CrmContact = {
   phone: '6315550100',
 };
 
+// naldo/referral-link-personalized: the contact-id path's fixture. A
+// separate id/name from MATCHING_CONTACT above so a test can tell the two
+// paths' calls apart at a glance.
+const RESOLVED_CONTACT: CrmContact = {
+  id: 'ijusgE2q5QhlYjBZ6RG9',
+  source: 'highlevel',
+  firstName: 'Riley',
+  lastName: 'Nguyen',
+  fullName: 'Riley Nguyen',
+  email: 'riley@example.com',
+  phone: '6315550111',
+};
+
 async function drainAfterTasks() {
   const tasks = afterTasks.splice(0, afterTasks.length);
   for (const t of tasks) await t();
@@ -130,6 +157,7 @@ beforeEach(() => {
   // further down, which sets this explicitly per test.
   process.env.REFERRAL_SELF_SERVE_ENABLED = 'true';
   searchContacts.mockResolvedValue([]);
+  getContact.mockRejectedValue(new Error('not found'));
   sendEmail.mockResolvedValue({});
   upsertContactCustomField.mockResolvedValue(undefined);
   findOrCreateCustomer.mockResolvedValue({ id: 'cust-1' });
@@ -162,6 +190,17 @@ describe('REFERRAL_SELF_SERVE_ENABLED flag (review fix 2)', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
     expect(afterTasks).toHaveLength(1);
+  });
+
+  // naldo/referral-link-personalized bar item: "The flag off still 404s
+  // both paths."
+  it('404s the contact-id path too when the flag is unset, before any GHL call', async () => {
+    delete process.env.REFERRAL_SELF_SERVE_ENABLED;
+    getContact.mockResolvedValue(RESOLVED_CONTACT);
+    const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+    expect(res.status).toBe(404);
+    expect(getContact).not.toHaveBeenCalled();
+    expect(findOrCreateCustomer).not.toHaveBeenCalled();
   });
 });
 
@@ -211,14 +250,58 @@ describe('POST /api/referrals/request-link', () => {
     searchContacts.mockResolvedValueOnce([MATCHING_CONTACT]);
     const matchRes = await POST(req({ email: 'jamie@example.com' }));
     const matchBody = await matchRes.json();
+    // Pre-existing test-isolation bug fixed this round: without draining,
+    // this test's TWO mockResolvedValueOnce queue entries on searchContacts
+    // are never consumed (they only get consumed when the deferred after()
+    // task actually calls searchContacts), so vi.clearAllMocks() in the
+    // NEXT test's beforeEach does NOT clear them (clearAllMocks resets call
+    // history, never a pending mockImplementationOnce/mockResolvedValueOnce
+    // queue, only resetAllMocks does that) and they silently bleed into
+    // whichever test runs next. Invisible when the whole file runs in its
+    // usual order (later tests happen to absorb the leftover queue), but
+    // reproducible with `vitest -t` against a subset that includes this
+    // test: confirmed it broke an unrelated later test's findOrCreateCustomer
+    // call count purely from this leak, with zero relation between the two
+    // tests otherwise.
+    await drainAfterTasks();
 
     searchContacts.mockResolvedValueOnce([]);
     const noMatchRes = await POST(req({ email: 'nobody@example.com' }));
     const noMatchBody = await noMatchRes.json();
+    await drainAfterTasks();
 
     expect(matchRes.status).toBe(noMatchRes.status);
     expect(matchBody).toEqual(noMatchBody);
     expect(matchBody).toEqual({ ok: true });
+  });
+
+  // naldo/referral-link-personalized: the load-bearing cross-path isolation
+  // check. mintAndSendReferralLink is now shared code, so this proves the
+  // email path stays byte-identical (same status, same body, and never
+  // touches getContact at all) even with a contact-id lookup primed to
+  // succeed right alongside it.
+  it('stays byte-identical even with a contact-id mock primed to succeed, and never calls getContact', async () => {
+    getContact.mockResolvedValue(RESOLVED_CONTACT);
+
+    searchContacts.mockResolvedValueOnce([MATCHING_CONTACT]);
+    const matchRes = await POST(req({ email: 'jamie@example.com' }));
+    const matchBody = await matchRes.json();
+    await drainAfterTasks();
+
+    searchContacts.mockResolvedValueOnce([]);
+    const noMatchRes = await POST(req({ email: 'nobody@example.com' }));
+    const noMatchBody = await noMatchRes.json();
+    await drainAfterTasks();
+
+    expect(matchRes.status).toBe(noMatchRes.status);
+    expect(matchBody).toEqual(noMatchBody);
+    expect(matchBody).toEqual({ ok: true });
+    // Proven AFTER draining the deferred work too, not just on the
+    // immediate response: the email path's mint-and-send chain genuinely
+    // never reaches getContact, even though the two paths now share
+    // mintAndSendReferralLink underneath.
+    expect(getContact).not.toHaveBeenCalled();
+    expect(sendEmail).toHaveBeenCalledTimes(1); // only the matched email above, the no-match sends nothing
   });
 
   it('no match: writes nothing once the scheduled task runs', async () => {
@@ -271,14 +354,20 @@ describe('POST /api/referrals/request-link', () => {
     await drainAfterTasks();
     expect(sendEmail).toHaveBeenCalledTimes(1);
 
-    // Different case/whitespace, same normalized email: proves the cooldown
-    // key is normalized the same way the exact-match check is.
+    // Different case/whitespace, same normalized email: resolves to the
+    // SAME GHL contact (MATCHING_CONTACT), so the cooldown (keyed on
+    // match.id, review fix 4c this round) still catches it even though the
+    // key is no longer derived from the email string itself.
     const second = await POST(req({ email: '  Jamie@Example.com  ' }));
     const secondBody = await second.json();
     await drainAfterTasks();
 
     expect(sendEmail).toHaveBeenCalledTimes(1); // still just once
-    expect(findOrCreateCustomer).toHaveBeenCalledTimes(1); // no wasted work either
+    // Review fix 4a (this round): the cooldown gates the SEND only, not the
+    // mint, so findOrCreateCustomer runs again on the second submission
+    // (findOrCreateCustomer/ensureReferralCode are both idempotent
+    // fetch-or-create, so this is a cheap repeat read, not wasted writes).
+    expect(findOrCreateCustomer).toHaveBeenCalledTimes(2);
     expect(second.status).toBe(first.status);
     expect(secondBody).toEqual(firstBody);
   });
@@ -470,5 +559,354 @@ describe('POST /api/referrals/request-link', () => {
       await expect(drainAfterTasks()).resolves.toBeUndefined();
       expect(sendEmail).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+// naldo/referral-link-personalized: the contact-id path. Only the lookup
+// and the code mint are awaited inline (the response depends on them), so
+// assertions about the RESPONSE (status, referralUrl) read straight off
+// the POST call with no draining needed. Review fix 2 (staff record) and
+// review fix 7 (send + Brand Ambassador stamps), both this round, defer
+// the rest with after(): a test that asserts on sendEmail/
+// upsertContactCustomField/ingestTouch needs drainAfterTasks() first.
+describe('POST /api/referrals/request-link (contact-id path)', () => {
+  it('review fix 7: a mid-chain kill after the response is built cannot leave the mint applied with no response delivered, because the mint IS the response', async () => {
+    // Regression guard for the maxDuration risk fix 7 addresses: proves the
+    // referralUrl in the response was produced by the SAME inline mint
+    // that a caller could observe, not by a deferred step that might never
+    // run. If this ever regressed to awaiting sendEmail inline again, this
+    // test would still pass, so it is deliberately paired with the
+    // "queued via after()" test below, which is the one that would catch
+    // that regression.
+    getContact.mockResolvedValue(RESOLVED_CONTACT);
+    ensureReferralCode.mockResolvedValue('DEADLINE1');
+    const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+    expect((await res.json()).referralUrl).toBe('https://quote.example.com/refer/DEADLINE1');
+  });
+
+  it('a contact id that resolves mints the code, sends the email, and returns the link in the body', async () => {
+    getContact.mockResolvedValue(RESOLVED_CONTACT);
+    const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { ok: boolean; referralUrl?: string };
+    expect(json.ok).toBe(true);
+    expect(json.referralUrl).toBe('https://quote.example.com/refer/CODE1234');
+
+    expect(getContact).toHaveBeenCalledWith('ijusgE2q5QhlYjBZ6RG9');
+    expect(findOrCreateCustomer).toHaveBeenCalledWith(
+      {
+        hl_contact_id: 'ijusgE2q5QhlYjBZ6RG9',
+        email: 'riley@example.com',
+        name: 'Riley Nguyen',
+        phone: '6315550111',
+      },
+      { skipIdentityRefresh: true },
+    );
+    expect(ensureReferralCode).toHaveBeenCalledWith('cust-1');
+
+    // Review fix 7 (this round): the send is now deferred with after(), so
+    // it hasn't run yet at this point, only after draining.
+    expect(sendEmail).not.toHaveBeenCalled();
+    await drainAfterTasks();
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    const sendArgs = sendEmail.mock.calls[0]![0] as { contactId: string; html: string };
+    expect(sendArgs.contactId).toBe('ijusgE2q5QhlYjBZ6RG9');
+    expect(sendArgs.html).toContain('https://quote.example.com/refer/CODE1234');
+  });
+
+  it('the lookup and mint resolve inline: the response already carries the link, with send + stamps still queued via after()', async () => {
+    getContact.mockResolvedValue(RESOLVED_CONTACT);
+    const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+    expect((await res.json()).referralUrl).toBeTruthy();
+    expect(sendEmail).not.toHaveBeenCalled();
+    // Review fix 2 + review fix 7: two deferred tasks by the time the
+    // response is built, the staff-record write and the send+stamp tail.
+    expect(afterTasks).toHaveLength(2);
+    await drainAfterTasks();
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it('a contact id that does not resolve (getContact throws) returns the generic response with no link, and writes nothing', async () => {
+    // A validly-formatted id (passes CONTACT_ID_RE, review fix 9) that GHL
+    // simply doesn't recognize, distinct from RESOLVED_CONTACT's own id, so
+    // this exercises the getContact-throws branch specifically rather than
+    // the format guard covered in its own describe block below.
+    getContact.mockRejectedValue(new Error('HighLevel GET /contacts/GveMd2lybT1rfkBdReTD -> 404'));
+    const res = await POST(req({ contactId: 'GveMd2lybT1rfkBdReTD' }));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(getContact).toHaveBeenCalledWith('GveMd2lybT1rfkBdReTD');
+    expect(findOrCreateCustomer).not.toHaveBeenCalled();
+    expect(ensureReferralCode).not.toHaveBeenCalled();
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('never sends when findOrCreateCustomer resolves null', async () => {
+    getContact.mockResolvedValue(RESOLVED_CONTACT);
+    findOrCreateCustomer.mockResolvedValue(null);
+    const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+    expect(await res.json()).toEqual({ ok: true });
+    expect(ensureReferralCode).not.toHaveBeenCalled();
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('never sends when ensureReferralCode resolves null', async () => {
+    getContact.mockResolvedValue(RESOLVED_CONTACT);
+    ensureReferralCode.mockResolvedValue(null);
+    const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+    expect(await res.json()).toEqual({ ok: true });
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('clicking twice does not send two emails, but the link still comes back both times (review fix 4a, this round)', async () => {
+    getContact.mockResolvedValue(RESOLVED_CONTACT);
+
+    const first = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+    const firstJson = (await first.json()) as { referralUrl?: string };
+    await drainAfterTasks();
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    expect(firstJson.referralUrl).toBeTruthy();
+
+    const second = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+    const secondJson = (await second.json()) as { referralUrl?: string };
+    await drainAfterTasks();
+    expect(sendEmail).toHaveBeenCalledTimes(1); // still just once, the cooldown gated the SEND
+    // Review fix 4a: the cooldown no longer blocks the mint, so the second
+    // click still gets the (already-minted, safe-to-redisplay) link back,
+    // instead of falling through to the generic no-link screen.
+    expect(secondJson.referralUrl).toBe(firstJson.referralUrl);
+    // And the mint genuinely ran again (an idempotent fetch-or-create, not
+    // wasted writes), it wasn't short-circuited by the cooldown.
+    expect(findOrCreateCustomer).toHaveBeenCalledTimes(2);
+  });
+
+  it('review fix 4b: a failed send releases the cooldown slot, so a later click in the same hour can still succeed', async () => {
+    getContact.mockResolvedValue(RESOLVED_CONTACT);
+    sendEmail.mockRejectedValueOnce(new Error('HighLevel 500'));
+
+    await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+    // The failed send is caught inside findAndSendForContactId's own
+    // after() wrapper, so draining must not reject.
+    await expect(drainAfterTasks()).resolves.toBeUndefined();
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+
+    await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+    await drainAfterTasks();
+    // Released, not spent: the retry could send.
+    expect(sendEmail).toHaveBeenCalledTimes(2);
+  });
+
+  it('review fix 4b: a failed send skips the Brand Ambassador stamps too, same coupling as before the fix 7 split', async () => {
+    process.env.HIGHLEVEL_CONTACT_FIELD_BRAND_AMBASSADOR_STATUS = 'field-status-id';
+    getContact.mockResolvedValue(RESOLVED_CONTACT);
+    sendEmail.mockRejectedValueOnce(new Error('HighLevel 500'));
+
+    await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+    await drainAfterTasks();
+    expect(upsertContactCustomField).not.toHaveBeenCalled();
+  });
+
+  it('review fix 4c: the email and contact-id paths share one cooldown when they resolve to the same GHL contact', async () => {
+    // Both paths resolve to a contact sharing the SAME id, the way the
+    // same real person could show up through either channel.
+    searchContacts.mockResolvedValue([MATCHING_CONTACT]);
+    getContact.mockResolvedValue({ ...RESOLVED_CONTACT, id: MATCHING_CONTACT.id });
+
+    await POST(req({ email: 'jamie@example.com' }));
+    await drainAfterTasks();
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+
+    const second = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+    const secondJson = (await second.json()) as { referralUrl?: string };
+    await drainAfterTasks();
+    // Still just once: the SAME hourly budget covered both channels.
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    // The contact-id path still gets its link back either way (fix 4a).
+    expect(secondJson.referralUrl).toBeTruthy();
+  });
+
+  it('honeypot tripped: generic response, no lookup at all', async () => {
+    const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9', company: 'a bot filled this' }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(getContact).not.toHaveBeenCalled();
+  });
+
+  it('applies the same Brand Ambassador stamps as the email path', async () => {
+    process.env.HIGHLEVEL_CONTACT_FIELD_BRAND_AMBASSADOR_STATUS = 'field-status-id';
+    process.env.HIGHLEVEL_CONTACT_FIELD_BRAND_AMBASSADOR_ENROLLMENT_DATE = 'field-date-id';
+    getContact.mockResolvedValue(RESOLVED_CONTACT);
+    await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+    // Review fix 7: the stamps are deferred along with the send now.
+    await drainAfterTasks();
+    expect(upsertContactCustomField).toHaveBeenCalledWith('ijusgE2q5QhlYjBZ6RG9', 'field-status-id', 'Active');
+    expect(upsertContactCustomField).toHaveBeenCalledWith('ijusgE2q5QhlYjBZ6RG9', 'field-date-id', expect.any(String));
+  });
+
+  it('a contact with no email on file still mints and sends, keyed on the id alone', async () => {
+    getContact.mockResolvedValue({ ...RESOLVED_CONTACT, email: undefined });
+    const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+    expect((await res.json()).referralUrl).toBeTruthy();
+    expect(findOrCreateCustomer).toHaveBeenCalledWith(
+      expect.objectContaining({ email: null }),
+      { skipIdentityRefresh: true },
+    );
+  });
+
+  describe('firstName in the response (review fix 1, this round)', () => {
+    it('includes the resolved contact first name alongside the link', async () => {
+      getContact.mockResolvedValue(RESOLVED_CONTACT);
+      const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+      const json = (await res.json()) as { firstName?: string | null };
+      expect(json.firstName).toBe('Riley');
+    });
+
+    it('is null when the contact has no first name on file', async () => {
+      getContact.mockResolvedValue({ ...RESOLVED_CONTACT, firstName: undefined });
+      const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+      const json = (await res.json()) as { firstName?: string | null; referralUrl?: string };
+      expect(json.referralUrl).toBeTruthy(); // still mints and returns the link
+      expect(json.firstName).toBeNull();
+    });
+
+    it('the email path response never carries a firstName field (uniform response, unchanged)', async () => {
+      searchContacts.mockResolvedValue([MATCHING_CONTACT]);
+      const res = await POST(req({ email: 'jamie@example.com' }));
+      const json = await res.json();
+      expect(json).toEqual({ ok: true });
+      expect(Object.keys(json)).not.toContain('firstName');
+    });
+  });
+
+  describe('staff inbox record (review fix 2, this round)', () => {
+    it('records an automated touch, deferred, once a contact id resolves', async () => {
+      getContact.mockResolvedValue(RESOLVED_CONTACT);
+      const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+      // Not written yet: it's scheduled, not run, before the response.
+      expect(ingestTouch).not.toHaveBeenCalled();
+      expect((await res.json()).referralUrl).toBeTruthy();
+
+      await drainAfterTasks();
+      expect(ingestTouch).toHaveBeenCalledTimes(1);
+      const [touch] = ingestTouch.mock.calls[0]!;
+      expect(touch.source).toBe('quotetool');
+      expect(touch.leadKind).toBe('automated');
+      expect(touch.identity.ghlContactId).toBe('ijusgE2q5QhlYjBZ6RG9');
+      expect(touch.identity.emails).toEqual(['riley@example.com']);
+    });
+
+    it('records even when the mint/send chain later fails, so a cooldown or a dead customer lookup still leaves a trace', async () => {
+      getContact.mockResolvedValue(RESOLVED_CONTACT);
+      findOrCreateCustomer.mockResolvedValue(null);
+      await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+      await drainAfterTasks();
+      expect(ingestTouch).toHaveBeenCalledTimes(1);
+    });
+
+    it('records nothing for a contact id that never resolves (no reliable signal a real person did anything)', async () => {
+      getContact.mockRejectedValue(new Error('HighLevel GET /contacts/GveMd2lybT1rfkBdReTD -> 404'));
+      await POST(req({ contactId: 'GveMd2lybT1rfkBdReTD' }));
+      await drainAfterTasks();
+      expect(ingestTouch).not.toHaveBeenCalled();
+    });
+
+    it('records nothing for a format-rejected id (review fix 9) or a honeypot trip', async () => {
+      await POST(req({ contactId: 'not-a-real-id!' }));
+      await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9', company: 'a bot filled this' }));
+      await drainAfterTasks();
+      expect(ingestTouch).not.toHaveBeenCalled();
+    });
+
+    it('a rejected ingestTouch never rejects the scheduled task or affects the already-sent response', async () => {
+      getContact.mockResolvedValue(RESOLVED_CONTACT);
+      ingestTouch.mockRejectedValueOnce(new Error('inbox table missing'));
+      const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+      expect((await res.json()).referralUrl).toBeTruthy();
+      await expect(drainAfterTasks()).resolves.toBeUndefined();
+    });
+
+    it('never inflates totalLeads or fires an escalation: leadKind is automated, matching store.ts own exclusion filters', async () => {
+      getContact.mockResolvedValue(RESOLVED_CONTACT);
+      await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+      await drainAfterTasks();
+      const [touch] = ingestTouch.mock.calls[0]!;
+      // store.ts: totalLeads subtracts lead_kind='automated' rows, and
+      // listEscalatableItems' own `.or('lead_kind.is.null,lead_kind.neq.automated')`
+      // filter excludes them outright (verified by reading store.ts directly,
+      // this round). A wrong leadKind here would silently bury real leads or
+      // fire false escalations under campaign-blast volume.
+      expect(touch.leadKind).toBe('automated');
+    });
+  });
+
+  it('the outer per-IP rate limit still applies to the contact-id path', async () => {
+    rateLimitedRef.current = true;
+    const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+    expect(res.status).toBe(429);
+    expect(getContact).not.toHaveBeenCalled();
+  });
+});
+
+// naldo/referral-link-personalized bar items: "A body with both email and
+// contactId is rejected" / "A body with neither is rejected."
+describe('POST /api/referrals/request-link (body validation: email vs contactId)', () => {
+  it('rejects a body carrying both email and contactId, before either path runs', async () => {
+    const res = await POST(req({ email: 'jamie@example.com', contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+    expect(res.status).toBe(400);
+    expect(getContact).not.toHaveBeenCalled();
+    expect(searchContacts).not.toHaveBeenCalled();
+  });
+
+  it('rejects an empty body (neither field present)', async () => {
+    const res = await POST(req({}));
+    expect(res.status).toBe(400);
+    expect(getContact).not.toHaveBeenCalled();
+  });
+
+  it('rejects a body with an unrelated field but neither email nor contactId', async () => {
+    const res = await POST(req({ company: '' }));
+    expect(res.status).toBe(400);
+    expect(getContact).not.toHaveBeenCalled();
+  });
+
+  it('an empty-string contactId is treated as not provided, falling through to the email validation', async () => {
+    const res = await POST(req({ contactId: '' }));
+    expect(res.status).toBe(400);
+    expect(getContact).not.toHaveBeenCalled();
+  });
+});
+
+// Review fix 9: the CONTACT_ID_RE format guard. A rejected id must look
+// identical to a failed lookup from the outside (generic 200, no link), and
+// must never reach GHL at all.
+describe('POST /api/referrals/request-link (contact-id format guard, review fix 9)', () => {
+  it('rejects an id with non-alphanumeric characters before calling getContact', async () => {
+    const res = await POST(req({ contactId: 'not-a-real-ghl-id!' }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(getContact).not.toHaveBeenCalled();
+  });
+
+  it('rejects an id shorter than the tolerance window', async () => {
+    const res = await POST(req({ contactId: 'tooShort123' }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(getContact).not.toHaveBeenCalled();
+  });
+
+  it('rejects an id longer than the tolerance window', async () => {
+    const res = await POST(req({ contactId: 'a'.repeat(40) }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(getContact).not.toHaveBeenCalled();
+  });
+
+  it('accepts the measured real-world length (20 chars, mixed-case alphanumeric)', async () => {
+    getContact.mockResolvedValue(RESOLVED_CONTACT);
+    const res = await POST(req({ contactId: 'ijusgE2q5QhlYjBZ6RG9' }));
+    expect(await res.json()).toMatchObject({ ok: true, referralUrl: expect.any(String) });
+    expect(getContact).toHaveBeenCalledWith('ijusgE2q5QhlYjBZ6RG9');
   });
 });

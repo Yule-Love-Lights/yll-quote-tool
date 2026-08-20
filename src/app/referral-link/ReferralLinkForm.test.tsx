@@ -1,22 +1,35 @@
-// naldo/referral-self-serve: the self-serve referral link request page's
-// post-submit confirmation and error copy. Renders with react-dom/server,
-// same approach as src/app/refer/[code]/ReferralForm.test.tsx, no jsdom
-// needed for a pure-render component.
+// naldo/referral-self-serve + naldo/referral-link-personalized: the
+// self-serve referral link request page's post-submit confirmation and
+// error copy. Renders with react-dom/server, same approach as
+// src/app/refer/[code]/ReferralForm.test.tsx, no jsdom needed for a
+// pure-render component.
 //
 // The confirmation copy is fixed, from the brief, and must render verbatim
-// regardless of whether the typed email matched a real GHL contact (this
-// component takes no props, exactly because there is nothing it is allowed
-// to vary on).
+// regardless of whether the typed email matched a real GHL contact
+// (ReferralLinkSuccess takes no props, exactly because there is nothing it
+// is allowed to vary on).
 //
-// ReferralLinkForm itself (the stateful <form>) is NOT rendered here: this
-// repo's test setup has no jsdom/testing-library, so every component test
-// in this codebase covers copy via a pure-render sub-component instead (see
-// ReferralHeroBadge.test.tsx for the same approach). ReferralLinkErrorMessage
-// is that extraction for the error state, review fix 1.
-
+// ReferralLinkForm's INTERACTIVE behavior (typing, submitting, the fetch
+// round-trip) is NOT exercised here: this repo's test setup has no
+// jsdom/testing-library, so every component test in this codebase covers
+// copy via a pure-render sub-component instead (see ReferralHeroBadge.
+// test.tsx for the same approach). ReferralLinkErrorMessage is that
+// extraction for the error state, review fix 1, and ReferralLinkReady is
+// the equivalent for the contact-id path's "here is your link" state.
+//
+// ReferralLinkForm itself IS rendered below, but only for its INITIAL,
+// pre-interaction static markup (renderToStaticMarkup never fires an
+// onSubmit/onChange handler), to prove which fields a given `contactId`
+// prop shows or hides. That is a one-shot render, not an interaction test.
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ReferralLinkSuccess, ReferralLinkErrorMessage } from './ReferralLinkForm';
+import {
+  ReferralLinkSuccess,
+  ReferralLinkErrorMessage,
+  ReferralLinkReady,
+  ReferralLinkContactIdFailed,
+  ReferralLinkForm,
+} from './ReferralLinkForm';
 
 describe('ReferralLinkSuccess', () => {
   it('shows the exact confirmation copy from the brief, verbatim, with a tappable phone link', () => {
@@ -62,5 +75,128 @@ describe('ReferralLinkErrorMessage (review fix 1)', () => {
   it('never uses an em dash', () => {
     const html = renderToStaticMarkup(<ReferralLinkErrorMessage serverError={null} />);
     expect(html).not.toContain('—');
+  });
+});
+
+describe('ReferralLinkReady (naldo/referral-link-personalized, review fix 1 this round)', () => {
+  const LINK = 'https://quote.yulelovelights.com/refer/CODE1234';
+
+  it('shows the link and an obvious way to copy it', () => {
+    const html = renderToStaticMarkup(<ReferralLinkReady link={LINK} name="Riley" />);
+    expect(html).toContain(LINK);
+    // ReferralLinkCopy's own copy button, reused here rather than rebuilt.
+    expect(html).toContain('Copy link');
+  });
+
+  it('names the person in the heading when a name is available', () => {
+    const html = renderToStaticMarkup(<ReferralLinkReady link={LINK} name="Riley" />);
+    // React escapes ' to &#x27; in serialized text content.
+    expect(html).toContain('Riley&#x27;s referral link is ready.');
+    expect(html).not.toContain('>Your link is ready.<');
+  });
+
+  it('falls back to a neutral, non-possessive heading when no name is available', () => {
+    const html = renderToStaticMarkup(<ReferralLinkReady link={LINK} name={null} />);
+    expect(html).toContain('This referral link is ready.');
+    // Never claims ownership ("Your link") when there is nobody to name.
+    expect(html).not.toContain('Your link is ready.');
+  });
+
+  it('never claims the visitor was emailed a copy (review fix 1: that claim is false for a forwarded viewer)', () => {
+    const html = renderToStaticMarkup(<ReferralLinkReady link={LINK} name="Riley" />);
+    expect(html).not.toContain('emailed you');
+  });
+
+  it('gives a forwarded viewer an obvious escape hatch to their own link', () => {
+    const html = renderToStaticMarkup(<ReferralLinkReady link={LINK} name="Riley" />);
+    expect(html).toContain('Forwarded to you?');
+    expect(html).toContain('Riley');
+    expect(html).toContain('href="/referral-link"');
+    expect(html).toContain('Get your own referral link');
+    // The escape hatch itself must carry no query string, so it lands on
+    // the typed-email form, never re-resolving the same forwarded id.
+    expect(html).not.toContain('href="/referral-link?');
+  });
+
+  it('the escape hatch still reads sensibly with no name available', () => {
+    const html = renderToStaticMarkup(<ReferralLinkReady link={LINK} name={null} />);
+    expect(html).toContain('someone else');
+    expect(html).toContain('href="/referral-link"');
+  });
+
+  it('never uses an em dash and never uses the banned words', () => {
+    for (const name of ['Riley', null]) {
+      const html = renderToStaticMarkup(<ReferralLinkReady link={LINK} name={name} />);
+      expect(html).not.toContain('—');
+      for (const banned of ['unlock', 'leverage', 'delve']) {
+        expect(html.toLowerCase()).not.toContain(banned);
+      }
+    }
+  });
+});
+
+describe('ReferralLinkContactIdFailed (review fix 3, this round)', () => {
+  it('says plainly the link could not be pulled up, with no inbox language at all', () => {
+    const html = renderToStaticMarkup(<ReferralLinkContactIdFailed />);
+    expect(html).toContain('We could not pull up your link.');
+    expect(html).not.toContain('inbox');
+    expect(html).not.toContain('email');
+  });
+
+  it('gives the phone number as a tappable tel: link, matching the error state', () => {
+    const html = renderToStaticMarkup(<ReferralLinkContactIdFailed />);
+    expect(html).toContain('href="tel:6315170186"');
+    expect(html).toContain('>(631) 517-0186</a>');
+  });
+
+  it('never uses an em dash', () => {
+    const html = renderToStaticMarkup(<ReferralLinkContactIdFailed />);
+    expect(html).not.toContain('—');
+  });
+});
+
+describe('ReferralLinkForm initial render (naldo/referral-link-personalized)', () => {
+  // Bar item: "The page with no c still renders the email form." page.tsx
+  // hands contactId=undefined down whenever ?c= is absent or blank, so this
+  // is that exact case at the point where the behavior actually lives.
+  it('with no contactId: renders the typed-email form, unchanged', () => {
+    const html = renderToStaticMarkup(<ReferralLinkForm />);
+    expect(html).toContain('id="referral-link-email"');
+    expect(html).toContain('type="email"');
+    expect(html).toContain('Send me my link');
+    expect(html).not.toContain('Get my referral link');
+  });
+
+  it('with a contactId: hides the email input and shows a single button', () => {
+    const html = renderToStaticMarkup(<ReferralLinkForm contactId="ghl-contact-xyz" />);
+    expect(html).not.toContain('id="referral-link-email"');
+    expect(html).not.toContain('type="email"');
+    expect(html).toContain('Get my referral link');
+    expect(html).not.toContain('Send me my link');
+  });
+
+  it('the honeypot field is present in both modes', () => {
+    const withoutContactId = renderToStaticMarkup(<ReferralLinkForm />);
+    const withContactId = renderToStaticMarkup(<ReferralLinkForm contactId="ghl-contact-xyz" />);
+    expect(withoutContactId).toContain('name="company"');
+    expect(withContactId).toContain('name="company"');
+  });
+
+  it('never uses an em dash in either mode', () => {
+    expect(renderToStaticMarkup(<ReferralLinkForm />)).not.toContain('—');
+    expect(renderToStaticMarkup(<ReferralLinkForm contactId="ghl-contact-xyz" />)).not.toContain('—');
+  });
+
+  // Review fix 8 (this round): the in-flight reassurance line is gated on
+  // status === 'submitting', which the INITIAL (idle) render this file's
+  // convention exercises never reaches (renderToStaticMarkup never fires
+  // onSubmit; see the file header for why this repo tests it this way).
+  // This only proves the line is absent before any submit, not that it
+  // appears during one; that leg was checked in the browser.
+  it('the in-flight reassurance line is absent before any submit', () => {
+    expect(renderToStaticMarkup(<ReferralLinkForm />)).not.toContain('This can take a few seconds.');
+    expect(renderToStaticMarkup(<ReferralLinkForm contactId="ghl-contact-xyz" />)).not.toContain(
+      'This can take a few seconds.',
+    );
   });
 });

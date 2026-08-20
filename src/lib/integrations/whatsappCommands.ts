@@ -93,5 +93,17 @@ export const WHATSAPP_HELP = [
   'Finished an install? Say it however you like:',
   '  "job 142 done, used 2 boxes C9 and 30 clips"',
   'Send photos with it, or record a voice note instead of typing.',
+  '',
+  // Crew time clock. Listed HERE rather than behind its own 'help' word: the
+  // crew parser used to claim 'help'/'commands'/'?' and so served this text to
+  // everyone in place of the real help. It released those words; this is where
+  // crew discover the commands now (S58 wrap review, technical lens).
+  'Time clock (crew):',
+  '  in / out — clock in and out for the day',
+  '  break / back — start and end an unpaid break',
+  '  arrive 1042 — arrive at job #1042',
+  '  done — finished the job (marks it installed)',
+  '  depart weather|access|materials|other — left without finishing',
+  '  status — what am I on right now',
   'You get a summary back first — nothing is saved until you reply yes.',
 ].join('\n');

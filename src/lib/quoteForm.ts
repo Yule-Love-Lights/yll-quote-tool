@@ -11,7 +11,7 @@ import type {
   Takedown,
   EarlyInstallTiming,
 } from './pricing/pricingEngine';
-import { ServiceType, DEFAULT_SERVICE_TYPE, asServiceType } from './serviceType';
+import { ServiceType, DEFAULT_SERVICE_TYPE, asServiceType, canCarryNceOrYllNeighborTag } from './serviceType';
 import type { EventInputFields } from './event/types';
 import { type PermanentQuoteFields, makeDefaultPermanentFields } from './permanent/types';
 import type { PermanentBistroInputFields } from './permanentBistro/types';
@@ -308,6 +308,35 @@ export function clearHolidayOnlyDiscountState(
 ): Partial<QuoteFormData> {
   if (newServiceType === 'holiday' || form.installTiming === 'none') return {};
   return { installTiming: 'none', discountEnabled: false, discountAmount: 0 };
+}
+
+/**
+ * #243 (domain rule locked 2026-08-11): what to clear when staff switch the
+ * service type AWAY from one that can carry the NCE/YLL Neighbor tag — same
+ * call site, same "what needs clearing on this switch" question as
+ * clearHolidayOnlyDiscountState above, kept as its own function (not folded
+ * in) because the two clear DIFFERENT state — this one drives applyIsNce/
+ * applyLegacyRebook calls (which live outside `form`, as their own useState
+ * pair — see QuoteBuilder's own comment on why), not a form-field patch.
+ *
+ * Pure so it's unit-testable without a React render harness (QuoteBuilder
+ * has none — same convention as every other function in this file). Only
+ * reports a clear for a chip that's ACTUALLY true and would become
+ * ineligible — switching into an eligible type, or a chip that's already
+ * false, is always a no-op; the caller is expected to skip the corresponding
+ * apply call entirely when its flag here is false (mirrors
+ * resolveNceDepositPercent's own "callers skip calling on a no-op" contract).
+ */
+export function clearNceOrNeighborOnServiceTypeSwitch(
+  newServiceType: ServiceType,
+  isNce: boolean,
+  legacyRebook: boolean,
+): { clearIsNce: boolean; clearLegacyRebook: boolean } {
+  const eligible = canCarryNceOrYllNeighborTag(newServiceType);
+  return {
+    clearIsNce: !eligible && isNce,
+    clearLegacyRebook: !eligible && legacyRebook,
+  };
 }
 
 /**

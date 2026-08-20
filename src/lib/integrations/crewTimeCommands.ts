@@ -38,7 +38,11 @@ const CLOCK_OUT = new Set(['out', 'clockout', 'clock out', 'end', 'off', 'home']
 const BREAK_START = new Set(['break', 'lunch', 'break start', 'startbreak', 'start break']);
 const BREAK_END = new Set(['back', 'endbreak', 'end break', 'break end', 'resume', '返回']);
 const STATUS = new Set(['status', 'me', 'where', 'whereami', 'where am i']);
-const HELP = new Set(['help', 'commands', '?']);
+// NOTE: 'help' / 'commands' / '?' are deliberately NOT claimed here. They are
+// the EXISTING bot's help words (see whatsappCommands.ts), and claiming them made
+// every user in every chat get crew time-clock help instead of the real help.
+// The crew commands are appended to that shared help text instead. Caught by the
+// S58 wrap review's technical lens.
 const COMPLETE = new Set(['done', 'complete', 'finished', 'completed']);
 
 /**
@@ -85,7 +89,6 @@ export function parseCrewTimeCommand(rawText: string): CrewTimeCommand | null {
   if (BREAK_START.has(text)) return { kind: 'break_start' };
   if (BREAK_END.has(text)) return { kind: 'break_end' };
   if (STATUS.has(text)) return { kind: 'status' };
-  if (HELP.has(text)) return { kind: 'help' };
   if (COMPLETE.has(text)) return { kind: 'complete' };
 
   // arrive <job number> — "arrive 1042", "at 1042", "job 1042"

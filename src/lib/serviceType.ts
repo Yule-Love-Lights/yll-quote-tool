@@ -49,3 +49,20 @@ export function canCustomerRecolor(serviceType: ServiceType | null | undefined):
     serviceType === 'event'
   );
 }
+
+/** Whether a quote of this service type may carry the NCE tag (the
+ *  barter/trade network) or the YLL Neighbor tag (#243). Domain rule locked
+ *  2026-08-11: permanent lighting is always real money, never trade —
+ *  permanent, event, and permanent_bistro quotes can carry NEITHER tag.
+ *  HOLIDAY-ONLY, a POSITIVE match (`=== 'holiday'`) per the repo convention
+ *  — a negative gate would silently hand every FUTURE vertical the old
+ *  (wrong) behavior. null/undefined reads as holiday, matching
+ *  DEFAULT_SERVICE_TYPE/the migration backfill, so an un-categorized legacy
+ *  row is still eligible. Single source of truth: every set/inherit site
+ *  (the builder chips, the nce/legacy-rebook admin toggle routes, the main
+ *  quote save route, lead-prefill, contact-pick inheritance, and rebook)
+ *  calls this instead of carrying its own `=== 'holiday'` copy, so they can
+ *  never drift apart (mirrors canCustomerRecolor's own doc, #245). */
+export function canCarryNceOrYllNeighborTag(serviceType: ServiceType | null | undefined): boolean {
+  return serviceType == null || serviceType === 'holiday';
+}
