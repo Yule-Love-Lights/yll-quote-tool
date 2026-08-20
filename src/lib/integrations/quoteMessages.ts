@@ -1098,3 +1098,45 @@ export function internalColorChangeRequestedEmailHtml(input: {
     `<p><a href="${input.adminUrl}">Open in quote tool to apply →</a> &nbsp;|&nbsp; <a href="${input.portalUrl}">Customer portal →</a></p>`,
   ].join('\n');
 }
+
+// ─── Reopen requested — internal staff alert (ledger row 236) ───────────────
+// Fired (best-effort) when a customer on a DECLINED or ABANDONED quote's
+// read-only portal taps "Want to reopen your quote? Let us know!"
+// (reopen-request/route.ts). Mirrors internalChangesRequestedEmail* /
+// internalColorChangeRequestedEmail* exactly (same request shape: a customer
+// portal action on an existing quote that needs a staff look) — this one has
+// no customer-typed note, since the affordance is a single button, not a form.
+
+export function internalReopenRequestedEmailSubject(customerName: string | null): string {
+  const who = customerName?.replace(/[\r\n]+/g, ' ').trim() || 'A customer';
+  return `🔓 Reopen requested: ${who}`;
+}
+
+export function internalReopenRequestedEmailHtml(input: {
+  customerName: string | null;
+  address: string | null;
+  phone: string | null;
+  email: string | null;
+  // The quote's derived lifecycle status ('declined' | 'abandoned' in
+  // practice — the caller only reaches this after canRevive(current) passed
+  // — typed as string so the caller can pass deriveStatus's QuoteStatus
+  // return value straight through without a narrowing cast).
+  status: string;
+  portalUrl: string;
+  adminUrl: string;
+}): string {
+  const name = escapeHtml(input.customerName?.trim() || 'Unknown');
+  const row = (label: string, value: string) =>
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
+  return [
+    `<p><strong>${name}</strong>'s ${input.status} quote — they'd like us to reopen it.</p>`,
+    `<p><strong>Action:</strong> reach out, and if it's still a fit, re-send the quote to bring them back in.</p>`,
+    `<table style="border-collapse:collapse;font-size:14px;">`,
+    row('Customer', name),
+    row('Phone', escapeHtml(input.phone || '—')),
+    row('Email', escapeHtml(input.email || '—')),
+    row('Address', escapeHtml(input.address || '—')),
+    `</table>`,
+    `<p><a href="${input.adminUrl}">Open in quote tool →</a> &nbsp;|&nbsp; <a href="${input.portalUrl}">Customer portal →</a></p>`,
+  ].join('\n');
+}
