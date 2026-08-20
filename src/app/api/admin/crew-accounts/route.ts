@@ -29,6 +29,15 @@ export const runtime = 'nodejs';
  * change that. Linking is an office task, so it lives on the office's screen
  * instead of in a hand-written SQL UPDATE.
  *
+ * ⚠️ LINKING IS NECESSARY BUT NOT SUFFICIENT. The Telegram webhook drops any
+ * message whose CHAT is not in `TELEGRAM_ALLOWED_CHATS` (`isAllowedChat`, in
+ * src/app/api/integrations/telegram/webhook/route.ts) BEFORE the dispatcher —
+ * and so before any of this — ever runs. A linked crew member texting in an
+ * already-allowlisted crew group therefore works with no further setup, but a
+ * 1:1 DM does NOT until their own id is added to that env var, because in a
+ * private chat `chat.id` equals `from.id`. What they get is silence, not an
+ * error. The Settings copy says so; do not soften it without changing the gate.
+ *
  * ADMIN ONLY, and never dormancy-bypassed: `requireAdmin` fails closed. Creating
  * a login is exactly the kind of thing that must not be reachable anonymously.
  *
@@ -47,11 +56,15 @@ type CrewRow = {
 };
 
 /**
- * Telegram user ids are numeric. Accepting only digits keeps a pasted @handle
- * ("@sonson") — which would silently never match an inbound message, because
- * Telegram sends the numeric id — from being stored as if it were a link.
+ * Telegram user ids are positive integers. Digits-only keeps a pasted @handle
+ * ("@sonson") from being stored as a link that can never match, because the
+ * webhook resolves the sender from `String(msg.from.id)`.
+ *
+ * A LEADING ZERO is rejected for the same reason: `String(Number)` never
+ * produces one, so "0123456789" is a typo that would store cleanly and then
+ * silently never match a single inbound message.
  */
-const TELEGRAM_USER_ID_RE = /^\d{1,20}$/;
+const TELEGRAM_USER_ID_RE = /^[1-9]\d{0,19}$/;
 
 export async function GET() {
   const auth = await requireAdmin();

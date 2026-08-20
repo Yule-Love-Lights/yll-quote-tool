@@ -130,7 +130,8 @@ export function CrewLogins() {
       <h2 className="text-base font-semibold text-gray-900">Crew logins</h2>
       <p className="text-sm text-gray-500 mt-1">
         One login per crew member, used for both the Quote Tool and the Operations Hub. A crew
-        login can only reach the crew time-clock screens — never customer records.
+        login reaches the crew job routes only — never customer records. It does NOT cover the
+        Telegram time clock, which is a separate link set up further down this page.
       </p>
 
       {loading ? (
@@ -154,7 +155,19 @@ export function CrewLogins() {
                       <button
                         type="button"
                         disabled={tgBusy}
-                        onClick={() => void saveTelegram(c.id, null)}
+                        onClick={() => {
+                          // Destructive and SILENT for the crew member — their
+                          // texts simply stop clocking them in, with no error on
+                          // their end. AccountsManager confirms before removing an
+                          // account; this matches that.
+                          if (
+                            window.confirm(
+                              `Unlink ${c.displayName}'s Telegram? Their texts will stop clocking them in until it is linked again.`,
+                            )
+                          ) {
+                            void saveTelegram(c.id, null);
+                          }
+                        }}
                         className="text-xs text-gray-500 underline disabled:opacity-50"
                       >
                         Unlink
@@ -246,9 +259,16 @@ export function CrewLogins() {
             <div>
               <h3 className="text-sm font-semibold text-gray-900">Telegram time clock</h3>
               <p className="text-xs text-gray-500 mt-1">
-                Separate from the login above. The bot recognises a crew member by their Telegram
-                account, so until this is linked their &quot;in&quot; and &quot;out&quot; texts do
-                nothing. They can get their id by messaging @userinfobot.
+                Separate from the login above — a login does not cover texting. The bot
+                recognises a crew member by their Telegram account, so until this is linked their
+                &quot;in&quot; and &quot;out&quot; texts do nothing at all. They can get their id
+                by messaging @userinfobot.
+              </p>
+              <p className="text-xs text-gray-500 mt-2">
+                Linking is necessary but not sufficient: the bot only reads chats on its allow
+                list. Once linked they can clock in from a crew group the bot is already in. A
+                one-to-one chat with the bot also needs that same id added to
+                TELEGRAM_ALLOWED_CHATS, or their texts are silently ignored.
               </p>
             </div>
 
