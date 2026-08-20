@@ -47,7 +47,10 @@ const ROOFLINE_SURFACES: ReadonlySet<string> = new Set([
 
 // The editor's C9 creation defaults (editor.ts tool defaults) so seeded strands
 // look exactly like hand-drawn ones and stay fully editable.
-const C9_SPACING_IN = 12;
+// Jason 2026-08-20: 15" = the Medium preset after the row-248 trim (12 is no
+// longer a selectable preset; drawn spacing is design-only aesthetics — the
+// materials projection pins real orders to the 12" install standard, #834).
+const C9_SPACING_IN = 15;
 const C9_COLOR_PATTERN = ['warm-white'];
 
 // Valid physical roof features (the full RoofFeature union). The AI emits the
