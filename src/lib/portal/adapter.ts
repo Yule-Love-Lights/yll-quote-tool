@@ -9,7 +9,7 @@
 // If the DB schema or pricing engine output ever changes shape, fix the
 // mapping here, not in components. This is the contract.
 
-import { effectiveDepositRate, type CustomLineItem, type QuoteInputs, type QuoteResult } from '@/lib/pricing/pricingEngine';
+import { effectiveDepositRate, resolveLineItemLabel, type CustomLineItem, type QuoteInputs, type QuoteResult } from '@/lib/pricing/pricingEngine';
 import type { PermanentWarranty } from '@/lib/permanent/types';
 import type {
   InstallTiming,
@@ -433,6 +433,16 @@ function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null):
       // attachSceneLinks preserves this (it spreads ...li in the WW/Stake branch).
       if (raw.id === 'winter-wonderland' && inputs?.winterWonderlandRecommended) item.recommended = true;
       if (raw.id === 'stake-lighting' && inputs?.stakeLightingRecommended) item.recommended = true;
+      // item-numbering-rename: a staff rename (inputs.labelOverrides, keyed by
+      // the SAME stable id as raw.id/stableId above) wins over any auto label —
+      // applied LAST, after kind classification + every strip transform above,
+      // so a freeform override can never confuse parseLineItem (which only
+      // ever saw the un-overridden raw.label).
+      const overrideResolved = resolveLineItemLabel(raw.id, item.label, inputs?.labelOverrides);
+      if (overrideResolved.overridden) {
+        item.label = overrideResolved.label;
+        item.labelOverridden = true;
+      }
       return item;
     });
 }

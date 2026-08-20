@@ -472,6 +472,76 @@ describe('quoteRowToPortalQuote — Stake Lighting + mini-light label detail str
   });
 });
 
+// ── item-numbering-rename: duplicate-label numbering survives the portal's
+// bare-name strip, and a staff rename replaces + un-numbers the survivor ────
+
+describe('quoteRowToPortalQuote — item-numbering-rename (duplicate numbering + label overrides)', () => {
+  it('two identical trees number "Tree 1"/"Tree 2" on the engine AND the stripped portal label', () => {
+    const inputs = emptyInputs({
+      miniLightItems: [
+        { type: 'tree', wrapStyle: 'canopy', stringCount: 1, id: 'mini-a' },
+        { type: 'tree', wrapStyle: 'canopy', stringCount: 1, id: 'mini-b' },
+      ],
+    });
+    const result = calculateQuote(inputs);
+    expect(result.lineItems.map((li) => li.label)).toEqual([
+      'Tree 1 – canopy wrap, 1 string',
+      'Tree 2 – canopy wrap, 1 string',
+    ]);
+    const portal = portalFrom(result, inputs)!;
+    const trees = portal.lineItems.filter((li) => li.kind === 'tree');
+    expect(trees.map((t) => t.label)).toEqual(['Tree 1', 'Tree 2']);
+    expect(trees.every((t) => t.detail === '')).toBe(true);
+  });
+
+  it('a renamed tree shows the override on the portal, is flagged labelOverridden, and keeps kind "tree"', () => {
+    const inputs = emptyInputs({
+      miniLightItems: [{ type: 'tree', wrapStyle: 'canopy', stringCount: 1, id: 'mini-a' }],
+      labelOverrides: { 'mini-a': 'Front Left Tree' },
+    });
+    const result = calculateQuote(inputs);
+    // The engine's OWN label is never the override text (kind classification
+    // must never see freeform staff text) — only the portal/display layer swaps it.
+    expect(result.lineItems[0].label).toBe('Tree – canopy wrap, 1 string');
+    const portal = portalFrom(result, inputs)!;
+    const tree = portal.lineItems.find((li) => li.kind === 'tree')!;
+    expect(tree.label).toBe('Front Left Tree');
+    expect(tree.labelOverridden).toBe(true);
+  });
+
+  it('renaming ONE of two duplicate trees un-numbers the other back to bare "Tree" (Jason\'s ruling)', () => {
+    const inputs = emptyInputs({
+      miniLightItems: [
+        { type: 'tree', wrapStyle: 'canopy', stringCount: 1, id: 'mini-a' },
+        { type: 'tree', wrapStyle: 'canopy', stringCount: 1, id: 'mini-b' },
+      ],
+      labelOverrides: { 'mini-b': 'Front Left Tree' },
+    });
+    const result = calculateQuote(inputs);
+    const portal = portalFrom(result, inputs)!;
+    const trees = portal.lineItems.filter((li) => li.kind === 'tree');
+    expect(trees.map((t) => ({ label: t.label, overridden: !!t.labelOverridden }))).toEqual([
+      { label: 'Tree', overridden: false }, // no longer ambiguous — the sibling was renamed away
+      { label: 'Front Left Tree', overridden: true },
+    ]);
+  });
+
+  it('numbers duplicate wreaths/spritzers/garland/bows at the end of the full label (no separable prefix)', () => {
+    const inputs = emptyInputs({
+      wreaths: [
+        { size: '36noble', tier: 'bow', quantity: 1, id: 'wreath-w1' },
+        { size: '36noble', tier: 'bow', quantity: 1, id: 'wreath-w2' },
+      ],
+      bows: [{ quantity: 1, id: 'bow-b1' }, { quantity: 1, id: 'bow-b2' }],
+    });
+    const result = calculateQuote(inputs);
+    const wreathLabels = result.lineItems.filter((li) => li.id?.startsWith('wreath-')).map((li) => li.label);
+    expect(wreathLabels).toEqual(['36" Noble Wreath – Non-Decorated 1', '36" Noble Wreath – Non-Decorated 2']);
+    const bowLabels = result.lineItems.filter((li) => li.id?.startsWith('bow-')).map((li) => li.label);
+    expect(bowLabels).toEqual(['Bow 1', 'Bow 2']);
+  });
+});
+
 // ── Per-item `recommended` flag on portal line items (#12) ─────────────────
 
 describe('quoteRowToPortalQuote — recommended flag on custom line items (#12)', () => {

@@ -60,6 +60,12 @@ export type PortalLineItem = {
   // pre-selected and shows a "Recommended" label on each. NEVER set on roofline
   // option items (roofline keeps its own recommend mechanism — PortalRoofline).
   recommended?: boolean;
+  // item-numbering-rename: true when `label` is a staff-typed override
+  // (inputs.labelOverrides), not the engine's auto-generated default. Lets a
+  // consumer that otherwise groups/aggregates by `kind` (docModels.ts's PDF
+  // wrapped-mini collapse) recognize a renamed item and break it out into its
+  // own row instead of folding it into a generic "Trees"-style summary line.
+  labelOverridden?: boolean;
 };
 
 // The mutually-exclusive roofline group for the portal (#17 Phase 2). Present
