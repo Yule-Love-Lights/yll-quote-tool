@@ -30,7 +30,7 @@ import { resolveColorChoice } from '@/lib/inventory/resolveInstalls';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { ingestTouch } from '@/lib/dashboard/inbox/store';
 import type { NormalizedTouch } from '@/lib/dashboard/inbox/types';
-import { sendEmail, isHighLevelConfigured } from '@/lib/integrations/highlevel';
+import { sendEmail, isHighLevelConfigured, HighLevelError } from '@/lib/integrations/highlevel';
 import {
   internalColorChangeRequestedEmailSubject,
   internalColorChangeRequestedEmailHtml,
@@ -39,6 +39,16 @@ import {
 export const runtime = 'nodejs';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Mirrors request-changes/route.ts's helper: extract the real HighLevel error
+// message rather than logging the raw error object.
+function hlErrorMessage(err: unknown): string {
+  return err instanceof HighLevelError
+    ? err.message
+    : err instanceof Error
+      ? err.message
+      : 'Unknown HighLevel error';
+}
 
 type QuoteRow = {
   id: string;
@@ -232,7 +242,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         emailFrom: process.env.HIGHLEVEL_EMAIL_FROM || undefined,
       });
     } catch (err) {
-      console.error('[api/quotes/:id/color-change-request] staff email failed (request still saved):', err);
+      console.error('[api/quotes/:id/color-change-request] staff email failed (request still saved):', hlErrorMessage(err));
     }
   }
 
