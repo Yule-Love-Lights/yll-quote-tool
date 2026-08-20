@@ -689,6 +689,80 @@ describe('POST /api/quotes/[id]/amend', () => {
     expect(persisted?.invoice_basis).toEqual({ previous_total: 4900, new_total: 5600, delta: 700 });
   });
 
+  // Delta-verify MEDIUM-HIGH (fix round 5): a null→non-null transition across
+  // the two getInvoiceByJob calls — the route's initial read (line ~185) sees
+  // no invoice yet (the job hasn't been completed), but a concurrent
+  // job-completion creates one before task (a)'s fresh re-read runs. Before
+  // this fix, the stamp block (gated on the fresh `invoiceForBasis`) would
+  // stamp invoice_basis while the re-sync block (still gated on the stale,
+  // null `invoice`) silently skipped resyncInvoiceToAgreedTotal entirely —
+  // the stamp and the invoices table would diverge indefinitely. Both blocks
+  // now share the same fresh read, so BOTH fire together.
+  it('stamps invoice_basis AND runs the invoice re-sync when the invoice appears only on the fresh re-read (null→non-null)', async () => {
+    const sb = makeSb(BOOKED_QUOTE);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1' });
+    const freshInvoice = { id: 'inv-1', balance: 2100, status: 'draft' as const, tax_overridden: false, total: 4000 };
+    // 1st call = the route's initial read — no invoice yet (job not
+    // completed at that point). 2nd call = task (a)'s pre-basis re-read — the
+    // job completed concurrently, so the invoice now exists. Every call
+    // after that (resync's own B10 re-read) gets the same fresh invoice.
+    getInvoiceByJobMock.mockResolvedValueOnce(null).mockResolvedValueOnce(freshInvoice).mockResolvedValue(freshInvoice);
+
+    const res = await POST(req({ reason: 'job completed mid-amend' }), ctx());
+    expect(res.status).toBe(200);
+
+    // The stamp fired.
+    const quoteUpdate = sb.updates.quotes[0];
+    const snap = quoteUpdate.approval_snapshot as {
+      amendments?: Array<{ invoice_basis?: { previous_total: number; new_total: number; delta: number } }>;
+    };
+    const persisted = snap.amendments?.[snap.amendments!.length - 1];
+    expect(persisted?.invoice_basis).toEqual({ previous_total: 4000, new_total: 5600, delta: 1600 });
+
+    // The re-sync ALSO fired — not skipped on the stale (null) initial read.
+    expect(sb.updates.invoices).toHaveLength(1);
+    expect(sb.updates.invoices[0]).toMatchObject({ total: 5600, balance: 3100, status: 'draft' });
+  });
+
+  // Delta-verify's stated inverse shape (non-null→null): the invoice EXISTS
+  // at the initial read, but the fresh re-read at task (a)'s re-read point
+  // fails/nulls (a transient read error — getInvoiceByJob swallows its own
+  // errors and returns null, same contract as every other read in this
+  // module). `invoiceForBasis = freshRead ?? invoice` falls back to the
+  // ORIGINAL non-null read, so neither block is skipped: the stamp still
+  // fires (using the original invoice's figures) and the re-sync still runs
+  // (on that same original invoice) — this is the fail-SAFE side of the `??`
+  // fallback the FIX B comment already documents.
+  it('falls back to the ORIGINAL invoice (still stamps + re-syncs) when the fresh re-read fails (non-null→null)', async () => {
+    const sb = makeSb(BOOKED_QUOTE);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1' });
+    const originalInvoice = {
+      id: 'inv-1', balance: 2500, status: 'draft' as const, tax_overridden: false, total: 5000,
+    };
+    // 1st call = the route's initial read — invoice exists. 2nd call =
+    // task (a)'s pre-basis re-read — fails/nulls (transient read error).
+    // Every call after that (resync's own B10 re-read) ALSO nulls, so the
+    // resync's own internal fallback lands on the SAME originalInvoice too.
+    getInvoiceByJobMock.mockResolvedValueOnce(originalInvoice).mockResolvedValue(null);
+
+    const res = await POST(req({ reason: 'transient read hiccup' }), ctx());
+    expect(res.status).toBe(200);
+
+    const quoteUpdate = sb.updates.quotes[0];
+    const snap = quoteUpdate.approval_snapshot as {
+      amendments?: Array<{ invoice_basis?: { previous_total: number; new_total: number; delta: number } }>;
+    };
+    const persisted = snap.amendments?.[snap.amendments!.length - 1];
+    // Stamped from the ORIGINAL read (5000), not silently dropped.
+    expect(persisted?.invoice_basis).toEqual({ previous_total: 5000, new_total: 5600, delta: 600 });
+    // Re-sync also ran (not skipped) — resyncInvoiceToAgreedTotal's own
+    // internal fallback (freshInvoice ?? invoice) used the SAME originalInvoice.
+    expect(sb.updates.invoices).toHaveLength(1);
+    expect(sb.updates.invoices[0]).toMatchObject({ total: 5600, balance: 3100, status: 'draft' });
+  });
+
   it('falls back to the trail balance when there is no invoice yet', async () => {
     sbRef.current = makeSb(BOOKED_QUOTE).client;
     getJobByQuoteMock.mockResolvedValue({ id: 'job-1', status: 'to_schedule' });

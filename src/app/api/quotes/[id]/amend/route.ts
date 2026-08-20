@@ -250,10 +250,23 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // The new invoice-basis total is a PURE computation (computeInvoiceResyncTotals,
   // from quoteAmendInvoiceSync.ts — the SAME function the re-sync below calls
   // on these SAME inputs, so the two can't drift into different numbers).
-  // Guarded identically to the re-sync call below (invoice exists, not
-  // cancelled, quote.result present) — the re-sync call itself does its OWN
-  // independent fresh re-read (B10), so it stays correct even if this read
-  // and that one land on different snapshots of the invoice.
+  //
+  // Delta-verify MEDIUM-HIGH (fix round 5, gap in FIX B): the re-sync block
+  // below now gates on this EXACT `invoiceForBasis` value, not a second,
+  // independently-stale `invoice` read — one fresh read feeds both gates.
+  // Before this, the two blocks could disagree: `invoice` (line ~185) is
+  // null when the job hasn't been completed yet; if a concurrent
+  // job-completion created the invoice between that read and this one,
+  // `invoiceForBasis` would see it (non-null) and stamp invoice_basis, while
+  // the OLD resync gate — still reading the stale null `invoice` — would
+  // never call resyncInvoiceToAgreedTotal at all. The stamp and the invoices
+  // table would then disagree indefinitely (every surface downstream prefers
+  // invoice_basis once it's stamped, per resolveAmendmentBasis). Sharing the
+  // SAME `invoiceForBasis` for both gates makes that divergence structurally
+  // impossible — either both blocks act on this invoice, or neither does.
+  // The re-sync call itself still does its OWN independent fresh re-read
+  // (B10) before it writes, so it stays correct even if that later read
+  // lands on a newer snapshot than this one.
   //
   // If the re-sync below still fails for any reason (a genuine DB error, or
   // a concurrent change this read couldn't see), the amendment trail entry
@@ -341,10 +354,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // comment above the pre-write computation for why the two can't diverge in
   // the case that matters (a successful re-sync), and what happens when they
   // theoretically could (an unsuccessful one).
-  if (invoice && invoice.status !== 'cancelled' && quote.result) {
+  //
+  // Delta-verify MEDIUM-HIGH (fix round 5): gates on `invoiceForBasis` — the
+  // SAME fresh read the invoice_basis stamp above used — not a separately
+  // stale `invoice`. See that read's own comment for why sharing it matters.
+  if (invoiceForBasis && invoiceForBasis.status !== 'cancelled' && quote.result) {
     await resyncInvoiceToAgreedTotal({
       jobId: job ? job.id : null,
-      invoice,
+      invoice: invoiceForBasis,
       result: quote.result,
       depositPaid,
       newTotal,
