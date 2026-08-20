@@ -2238,6 +2238,14 @@ export type ActivityRow = {
   customerName: string | null;
   at: string | null;
   reversible: boolean;
+  /** Row 311 fix-round FIX 2: only meaningful when action === 'action_failed'
+   *  — `{ action: <the verb that failed>, error: <message> }`, the same shape
+   *  recordActionFailed writes (above). Every other action's own `detail`
+   *  (e.g. `{ from }`) is not surfaced through this field — ActivityLog has no
+   *  use for it. Optional/nullable so the pre-existing synthetic 'reversed'
+   *  row ActivityLog.tsx builds client-side (which never had a detail) still
+   *  satisfies this type unchanged. */
+  detail?: { action?: string; error?: string } | null;
 };
 export type ActivityResult = { ok: true; rows: ActivityRow[] } | { ok: false; error: string };
 
@@ -2257,7 +2265,9 @@ export async function listActivity(limit = 100): Promise<ActivityResult> {
       // Show operator DECISIONS, not the system firehose: 'ingested' (one row per
       // reconcile touch — thousands) and 'escalated' would otherwise bury the
       // handled/dismissed/followed/completed rows (and their Reverse buttons).
-      .select('id, action, actor, inbox_item_id, created_at, inbox_items ( dashboard_contacts ( display_name ) )')
+      // Row 311 fix-round FIX 2: `detail` added so an 'action_failed' row can
+      // render WHICH action failed and why — see ActivityRow's own doc comment.
+      .select('id, action, actor, inbox_item_id, created_at, detail, inbox_items ( dashboard_contacts ( display_name ) )')
       .not('action', 'in', '(ingested,escalated)')
       .order('created_at', { ascending: false })
       .limit(limit),
@@ -2277,6 +2287,7 @@ export async function listActivity(limit = 100): Promise<ActivityResult> {
       customerName: (item?.dashboard_contacts?.display_name as string | null) ?? null,
       at: (row.created_at as string | null) ?? null,
       reversible: REVERSIBLE_ACTIONS.has(String(row.action)),
+      detail: (row.detail as { action?: string; error?: string } | null) ?? null,
     };
   });
   return { ok: true, rows };
