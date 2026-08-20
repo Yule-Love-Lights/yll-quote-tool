@@ -95,4 +95,22 @@ describe('computeSelfServeMetrics', () => {
     ]);
     expect(m.medianMissPct).toBeCloseTo(0.14, 10);
   });
+
+  it('clamps a pre-fix sub-minimum low up to the job floor before scoring (default minimum = $1,000)', () => {
+    // A $1,000 home stored a $900 low before the S47 fix (a low it could never be
+    // charged). Staff re-priced to $1,050. Scored against the CLAMPED range
+    // [1000, 1100], midpoint 1050 ⇒ 0% miss, in range — matching what a post-fix
+    // row would store, so the go/no-go tile no longer mixes pre/post-fix eras.
+    const r = row({ low: 900, high: 1100, estimateTotal: 1000, total: 1050 });
+    const clamped = computeSelfServeMetrics([r]);
+    expect(clamped.medianMissPct).toBeCloseTo(0, 10);
+    expect(clamped.inRangeRate).toBe(1);
+
+    // With the floor disabled (minimum = 0) the stored $900 low is used as-is:
+    // midpoint 1000 ⇒ a 5% miss. That gap between the two is exactly the pre-fix
+    // inconsistency the clamp removes (and it proves the default is the $1,000 floor,
+    // not 0).
+    const raw = computeSelfServeMetrics([r], 0);
+    expect(raw.medianMissPct).toBeCloseTo(0.05, 10);
+  });
 });

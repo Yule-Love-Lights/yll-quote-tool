@@ -8,7 +8,7 @@
 > This file is the complete normative contract. Historical Hub plans,
 > proposals, and decision logs are provenance only. Implementations may
 > additionally consume only the OpenAPI and JSON Schema artifacts explicitly
-> generated from this file. The draft becomes `v1.3.0` only through the paired
+> generated from this file. The draft becomes `v1.4.0` only through the paired
 > review and human-approval process in section 10; it is never renumbered
 > downward to `v1.0.0`.
 
@@ -109,6 +109,9 @@ entity_version                non-negative integer
 review_flag                   none | needs_review | quarantined
 error_code                    error_code | null
 duplicate_of_command_id       UUID | null
+contract_version              string
+schema_version                string
+client_version                string; echoed from the request
 correlation_id                UUID
 ```
 
@@ -148,12 +151,133 @@ pay_period_locked
 `GET /api/ops/v1/commands/{command_id}` returns this same response shape so a
 caller can resolve a timeout, offline retry, or Telegram interim reply.
 
+### 1.3 Canonical event envelope
+
+Every cross-repository event carries this complete envelope in addition to its
+event-specific payload. `aggregate_id` is an opaque non-empty string because
+some aggregates use internal UUIDs while others preserve an external system's
+stable identifier. Consumers must not infer its type from the event name.
+
+```text
+event_id                      UUID
+event_type                    non-empty string
+aggregate_id                  non-empty string
+entity_version                non-negative integer
+occurred_at                   RFC3339 timestamp
+effective_at                  RFC3339 timestamp
+accepted_at                   RFC3339 server timestamp
+actor_employee_id             UUID | null
+source                        hub_pwa | telegram | office | admin | system
+contract_version              string
+schema_version                string
+client_version                string
+correlation_id                UUID
+causation_id                  UUID | null
+idempotency_key               non-empty string
+```
+
+`actor_employee_id` may be `null` only when `source = system`; every other
+source requires the employee UUID. A system-produced event may retain a
+non-null employee actor when the event was caused on that employee's behalf.
+For a system-produced event, `client_version` is the emitting service's build
+identifier. `causation_id` is the preceding command or event id when one exists,
+otherwise it is explicitly `null`.
+
+### 1.4 Machine request authentication
+
+Every server-to-server request uses a direction- and environment-specific key.
+The sender includes:
+
+```text
+X-YLL-Key-Id                  active rotation identifier
+X-YLL-Timestamp               Unix epoch seconds
+X-YLL-Nonce                   unpadded base64url, at least 128 random bits
+X-YLL-Contract-Version        contract version sent by the caller
+X-YLL-Schema-Version          independent schema version sent by the caller
+X-YLL-Client-Version          caller build identifier
+X-YLL-Signature               v1=<lowercase HMAC-SHA256 hex>
+```
+
+The HMAC input is UTF-8 bytes of this canonical string, with exactly one line
+feed between fields and no trailing line feed:
+
+```text
+v1
+<UPPERCASE HTTP METHOD>
+<canonical path and query>
+<X-YLL-Timestamp>
+<X-YLL-Nonce>
+<X-YLL-Contract-Version>
+<X-YLL-Schema-Version>
+<X-YLL-Client-Version>
+<lowercase SHA-256 hex of the exact request-body bytes>
+```
+
+The canonical target is reconstructed from the untouched raw request target,
+never from a framework-normalized URL. The sender and receiver apply this
+byte-level algorithm and reject a raw target that is not already in canonical
+form:
+
+1. Split at the first `?`; fragments, control bytes, backslashes, malformed
+   percent escapes, and non-UTF-8 escaped bytes are invalid. The path starts
+   with `/`.
+2. Remove exactly one required leading `/`. If nothing remains, the path is
+   `/`. Otherwise split the remainder on literal `/`; empty segments, including
+   a trailing empty segment, are invalid. Percent-decode each segment as UTF-8,
+   reject `.` and `..` segments, decoded control bytes, and any decoded `/` or
+   backslash, then RFC 3986 encode every byte except
+   `ALPHA / DIGIT / -._~`. Percent hex is uppercase. Prefix `/` and rejoin the
+   encoded segments with literal `/`.
+3. Split a non-empty query only on literal `&`. Every pair contains `=` even
+   for an empty value; empty pairs and literal `+` are invalid. Split each pair
+   at its first `=`, percent-decode key and value as UTF-8, reject decoded
+   control bytes U+0000 through U+001F and U+007F, and encode them with the same
+   unreserved-byte rule. Sort by encoded key and then encoded value, preserving
+   duplicate pairs, and join with `&`.
+4. The signed target is the canonical path plus `?` and the canonical query
+   when pairs exist. The receiver rejects the request unless this value is
+   byte-identical to the raw request target.
+
+Examples: `/api/ops/v1/commitment-events?limit=100&since=abc%2Fdef` is
+canonical; the same pairs in reverse order are not. A literal `+`, lowercase
+`%2f`, an encoded unreserved byte such as `%61`, a missing `=`, a dot segment,
+double slash, or trailing slash is rejected. A request with no body uses the
+SHA-256 digest of zero bytes. The OpenAPI security component carries public,
+complete conformance vectors containing method, target, timestamp, nonce,
+exact UTF-8 body, body digest, canonical multiline input, test-only key, and
+expected signature. Both implementations run those vectors in their HMAC
+tests before enabling a machine route.
+
+All three version headers are part of the signed canonical input. The receiver
+validates them before invoking the business handler and rejects incompatible
+contract or schema versions with HTTP 409 and the typed, versioned
+`contract_version_unsupported` or `schema_version_unsupported` error. A
+request-header schema accepts any syntactically valid version so an unsupported
+version reaches this comparison instead of failing as an untyped parse error. A
+successful or business-level error response
+echoes the caller's `client_version` and carries the receiver's
+`contract_version` and `schema_version`. HTTP 401 is the sole exception to the
+section 9b P1 response-version rule: authentication failed before the receiver
+could trust or echo caller-controlled version fields, so it returns only a
+generic unversioned authentication error.
+
+The receiver resolves `X-YLL-Key-Id` only inside the request's environment and
+direction, compares the signature in constant time, accepts timestamps within
+plus or minus five minutes, and atomically rejects a reused nonce. Nonces are
+scoped to environment, direction, and key id and retained for at least ten
+minutes. Rotation may overlap active and previous key ids, but a key is never
+shared across environments or directions. Missing, malformed, stale, unknown-
+key, replayed, or invalid requests fail before business handlers run and return
+only a generic authentication error.
+
 - **One shared schema artifact.** The envelope, enums, and event shapes are
   published as a versioned JSON Schema (generated from the OpenAPI
   fragments); BOTH repos validate requests and responses against the same
   schema file in their own CI. Neither side hand-implements the envelope
   twice. A CI check in each repo fails on any byte diff between the
   canonical contract and the mirror, version string included.
+  The initial independent `schema_version` is `1.0.0-draft`; it does not inherit
+  or mirror the contract version.
 - **Deploy skew guard:** each side's deploy runs a staging smoke against
   every `/api/ops/v1` endpoint and fails on `contract_version` disagreement.
   The two repos auto-deploy independently; this is the only gate.
@@ -443,22 +567,48 @@ home wins.
 
 ### Events
 
-Three event types. Each carries the FULL §1 envelope: `idempotency_key`,
-`source`, `entity_version`, `correlation_id` + `causation_id`, accepted server
-time, and `contract_version`. A bare contact-keyed stream is explicitly NOT the
-shape.
+Three event types. Each carries the full section 1.3 envelope, including
+`idempotency_key`, `source`, `entity_version`, `correlation_id`, `causation_id`,
+`accepted_at`, and all three version fields. A bare contact-keyed stream is
+explicitly NOT the shape.
 
 | Event | Emitted when | Carries |
 |---|---|---|
-| `QuoteSent` | `quotes.quote_sent_at` transitions null -> non-null | quote id, quote_number, contact ref, sending rep identity, sent-at, total in integer cents |
-| `OutboundMessageSent` | an outbound SMS or email to a contact is mirrored | contact ref, channel, sent-at, `has_media`, `has_portal_link` |
-| `CallAttempted` | a call attempt is logged | contact ref, direction, duration seconds, `connected`, attempted-at |
+| `QuoteSent` | `quotes.quote_sent_at` transitions null -> non-null | quote id, quote_number, contact identity, sending rep identity, sent-at, total in integer cents |
+| `OutboundMessageSent` | an outbound SMS or email to a contact is mirrored | outbound delivery id, contact identity, performing identity, channel, sent-at, `has_media`, `has_portal_link` |
+| `CallAttempted` | a call attempt is logged | call attempt id, contact identity, performing identity, direction, duration seconds, `connected`, attempted-at |
 
 `OutboundMessageSent` deliberately carries BOOLEAN content signals, never the
-message body. The clearing rules need to know whether an outbound contained
-media or a portal link; that is answerable without shipping customer message text
-across a service boundary. Least data that satisfies the rule (and it keeps this
-flow out of scope for the retention question in ledger #226).
+message body. `contact_identity.resolution=resolved` carries an opaque internal
+`contact_ref`, never a phone number or email address. When QT cannot resolve a
+safe identifier, `resolution=manual_only` and `contact_ref=null`; the event is
+still delivered but cannot auto-clear a commitment. The clearing rules need to
+know whether an outbound contained media or a portal link; that is answerable
+without shipping customer message text across a service boundary. This
+metadata remains customer-linked operational data. Before Flow H is enabled,
+its implementation PR must pin the
+permitted reader roles, retention/deletion period, and audit/export behavior;
+the independent kill switch remains off until those rules are approved.
+
+`performed_by.kind=employee` requires the employee UUID and is used whenever a
+human caused the action, including when a system worker emitted the event on
+that employee's behalf. `kind=system` requires a non-empty autonomous principal
+name and is reserved for actions with no human performer. It is never valid to
+drop a known employee merely because the event source is `system`.
+For an employee performer, `performed_by.employee_id` equals the envelope's
+`actor_employee_id`, including when `source=system`. For an autonomous system
+performer, the envelope's `actor_employee_id` is `null`. Producer tests enforce
+these sibling-field relationships because portable JSON Schema cannot compare
+their values.
+
+Aggregate identity is fixed per event type. For `QuoteSent`, `aggregate_id` is
+the canonical string form of `quote_id` and `entity_version` is the committed
+quote-row version after the send transition. For `OutboundMessageSent`,
+`aggregate_id` is `outbound_delivery_id`; for `CallAttempted`, it is
+`call_attempt_id`. Those two immutable evidence records start at
+`entity_version=1`; a correction increments the same record's version rather
+than minting a second aggregate. Producer tests enforce field equality because
+portable JSON Schema cannot compare the values of two sibling fields.
 
 ### Transport
 
@@ -467,16 +617,26 @@ flow out of scope for the retention question in ledger #226).
   different payload is rejected as `conflict_idempotency`.
 - PULL, not push, for v1:
   `GET /api/ops/v1/commitment-events?since=<cursor>&limit=<n>`, cursor-paginated
-  per §1's pagination rule. A pull feed means a consumer outage costs latency,
-  never lost evidence, and it needs no inbound credential on the copilot side.
+  per §1's pagination rule. `limit` is 1 through 500 and defaults to 100. A
+  request includes all three signed version headers from §1.4. A
+  page with `has_more=true` always carries a non-empty `next_cursor`; a terminal
+  page may carry either its next polling checkpoint or `null`. A pull feed does
+  not lose evidence merely because the consumer is temporarily unavailable.
+  Before enablement, the implementation PR pins cursor retention and expiry. An
+  expired cursor returns HTTP 410 with the typed, versioned
+  `cursor_expired` error and forces an audited admin reconciliation; it never
+  silently resumes from a newer cursor.
 - **Authentication is stated explicitly here because the §1 envelope does NOT
   provide it.** Idempotency keys and outbox/inbox dedup solve duplicate delivery;
   they authenticate nothing. Flow H uses the §1 environment-scoped machine
-  credential for the QT->consumer direction, with signed timestamp + nonce replay
-  protection. (An S54 review of the #217 plan caught that plan citing the
+  credential for the consumer->QT direction because the consumer sends this
+  HTTP request and QT receives it, with signed timestamp + nonce replay
+  protection. A future QT-initiated push would use a distinct QT->consumer
+  credential. (An S54 review of the #217 plan caught that plan citing the
   envelope as if it covered auth. It does not.)
 - Kill switch `COMMITMENT_EVENTS_ENABLED`, independent per §1. Switched off the
-  endpoint returns `kill_switched` — never a silent empty page, which is
+  endpoint returns HTTP 503 with the typed, versioned `kill_switched` error —
+  never a silent empty page, which is
   indistinguishable from "nothing happened" and would stall every open commitment
   into expiry while looking healthy.
 - The route enters `operatorGate`'s allowlist in the SAME PR that builds it,
@@ -497,16 +657,21 @@ Binding, from the #217 plan's own acceptance criteria:
   and routed to a no-match review lane — never left to age into expiry looking
   ignored, which is the false-OPEN mirror of a false-clear.
 - A clear by a DIFFERENT rep than the promising rep closes the item VISIBLY
-  ("done by <rep>"), never silently.
+  ("done by <rep>"), never silently. An autonomous action is shown as
+  "done by automation (<principal>)" rather than being attributed to a person.
 
 ### Open dependency: customer identity
 
 §2's Flow I maps STAFF only (`employee_id` <-> `crew_members.id` <-> phone <->
 `telegram_user_id`). There is no canonical CUSTOMER identity mapping, and
 `quotes.highlevel_contact_id` is nullable with a demonstrated ~99% null rate on
-one backfill class (166 of 168). Flow H therefore carries the contact reference
-AS IS and does not pretend to resolve it; the digits-suffix phone fallback
-matcher and the no-match review lane are #217's own work, not this contract's.
+one backfill class (166 of 168). Flow H therefore models identity resolution
+explicitly. QT may emit a resolved opaque identifier only after its own trusted
+mapping succeeds; otherwise it emits `manual_only` with a null reference. Phone
+digits and email addresses never cross this service boundary. Any local
+digits-suffix fallback matcher may help a human review the event inside its
+source system, but it cannot convert the event to auto-clearable without a
+trusted opaque mapping. The no-match review lane is #217's own work.
 
 Separately, the copilot's `rep_email` / `ghl_user_id` do NOT appear in Flow I's
 mapping at all. Attributing a commitment to a hub `employee_id` requires adding
@@ -673,13 +838,11 @@ differ, this section wins; semantics merge and never weaken.
   `dead_letter_commands[]`, and `identity_links[]`. Retained final-pay and
   audit records are never deleted.
 - **P10 placement events:** event types are `PlacementAccepted`,
-  `PlacementReversed`, and `PlacementAcceptanceCorrected`. Every event carries:
+  `PlacementReversed`, and `PlacementAcceptanceCorrected`. Every event carries
+  the full section 1.3 envelope plus:
 
   ```text
-  event_id
-  event_type
   placement_id
-  placement_entity_version
   employee_id
   identity_link_version
   membership_version_at_capture
@@ -688,16 +851,15 @@ differ, this section wins; semantics merge and never weaken.
   campaign_id
   unit_type
   business_date
-  effective_at
   captured_at
   hub_received_at
   reviewer_employee_id | null
   reason_code | null
   inventory_event_id | null
-  contract_version
-  schema_version
-  correlation_id
   ```
+
+  The envelope uses `aggregate_id = placement_id` and its `entity_version` is
+  the placement entity version.
 
   `PlacementReversed` carries `reverses_event_id` referencing the original
   accepted event. `PlacementAcceptanceCorrected` carries `corrects_event_id`,
@@ -728,15 +890,13 @@ differ, this section wins; semantics merge and never weaken.
   `submitted_for_reconciliation` -> `ready_to_close` -> `closed` ->
   `adjusted`. Close blocks on `placement_events_unacknowledged`,
   `identity_link_unresolved`, or `inventory_reconciliation_incomplete`.
-  `AdvertisingWeekClosed` carries:
+  `AdvertisingWeekClosed` carries the full section 1.3 envelope plus:
 
   ```text
-  event_id
   employee_id
   week_start
   week_end
   timezone
-  entity_version
   closed_by_employee_id
   closed_at
   approved_by_employee_id
@@ -756,10 +916,10 @@ differ, this section wins; semantics merge and never weaken.
   variance
   source_event_high_water_marks[]
   reconciliation_status
-  contract_version
-  schema_version
-  correlation_id
   ```
+
+  The envelope `aggregate_id` is the advertising-week id and its
+  `entity_version` is the advertising-week entity version.
 
   Each campaign/unit item carries `campaign_id`, `unit_type`, accepted count,
   reversed count, and net pay count. Those aggregate counts are reconciliation
@@ -890,10 +1050,11 @@ These values are intentionally absent and disable only their named behavior:
 An unresolved configuration disables only its affected behavior. Clients must
 not infer a value, silently choose a default, or weaken a safety gate.
 
-**Shared schema artifact path (planned, Phase 0):**
+**Shared schema artifact path (Phase 0):**
 `yll-quote-tool/docs/context/ops-contract-schema/` (generated from the
-OpenAPI fragments; `schema_version` lives in its manifest; both CIs validate
-against it and the Hub vendors the same files byte-identically).
+OpenAPI fragments; the manifest starts at independent
+`schema_version = 1.0.0-draft`; both CIs validate against it and the Hub vendors
+the same files byte-identically).
 
 ## 10. Change process
 
