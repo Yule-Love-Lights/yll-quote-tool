@@ -391,9 +391,14 @@ export function errorNoteFor(unreachableAction: string | undefined, rejectionErr
  *  deliberately un-shared like this file's other duplicated helpers (see
  *  omitKey's own doc above). Does NOT hard-block — the operator may
  *  legitimately have already handled this by phone; it just names what's
- *  outstanding before either button proceeds. */
+ *  outstanding before either button proceeds.
+ *
+ *  Row 321 fix-round FIX 3 (staff LOW): named "(Colour request panel)" —
+ *  ColorRequestPanel.tsx has no such label anywhere; its real on-page heading
+ *  is "Colour change requested" (pre-apply) / "Colour change applied"
+ *  (post-apply). Fixed to name what staff will actually see. */
 export function colorRequestConfirmMessage(): string {
-  return "This customer is waiting on a colour change — mark it handled anyway?\n\nThe requested colour is still pending on the quote. Review or apply it from the quote's admin page (Colour request panel) first, or Cancel and do that now.";
+  return "This customer is waiting on a colour change — mark it handled anyway?\n\nThe requested colour is still pending on the quote. Review or apply it from the quote's admin page (the \"Colour change requested\" section) first, or Cancel and do that now.";
 }
 
 // #302 fix: pure helper mirroring withRowFlagSet/withRowFlagCleared's own

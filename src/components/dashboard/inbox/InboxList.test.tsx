@@ -621,6 +621,10 @@ describe('colorRequestConfirmMessage (row 321 — pure)', () => {
   it('names what is outstanding and points to the quote admin page', () => {
     const msg = colorRequestConfirmMessage();
     expect(msg).toContain('This customer is waiting on a colour change — mark it handled anyway?');
-    expect(msg).toContain('Colour request panel');
+    // Row 321 fix-round FIX 3: names the REAL on-page heading
+    // (ColorRequestPanel.tsx's pre-apply h2), never the nonexistent
+    // "Colour request panel" label the original copy invented.
+    expect(msg).toContain('Colour change requested');
+    expect(msg).not.toContain('Colour request panel');
   });
 });
