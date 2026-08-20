@@ -696,6 +696,66 @@ describe('getJobDetail', () => {
     expect(detail?.isNce).toBe(false);
   });
 
+  // Ledger #83 follow-up (a real live incident): the job page previously had
+  // NO visibility into the amendment trail at all — a customer could decline
+  // a price change and the operator on THIS page would never know.
+  it('carries the linked quote\'s amendment trail, including a declined entry', async () => {
+    const { client } = makeSb({
+      jobs: { read: { id: 'j1', quote_id: 'q1', status: 'to_schedule' } },
+      quotes: {
+        read: {
+          customer_name: 'Frank',
+          approval_snapshot: {
+            amendments: [
+              {
+                amended_at: '2026-08-18T12:00:00.000Z',
+                by: 'staff:ops',
+                reason: 'Added a wreath',
+                previous_total: 1428.16,
+                new_total: 1770.72,
+                previous_balance: 714.08,
+                new_balance: 1056.64,
+                deposit_applied: 714.08,
+                delta: 342.56,
+                line_item_changes: [],
+                consent: { status: 'declined', declined_at: '2026-08-19T09:00:00.000Z', ip: null },
+              },
+            ],
+          },
+        },
+      },
+      invoices: { read: null },
+    });
+    sbRef.current = client;
+
+    const detail = await getJobDetail('j1');
+    expect(detail?.amendments).toHaveLength(1);
+    expect(detail?.amendments[0].consent).toMatchObject({ status: 'declined' });
+  });
+
+  it('defaults amendments to an empty array when the quote has never been amended', async () => {
+    const { client } = makeSb({
+      jobs: { read: { id: 'j1', quote_id: 'q1', status: 'to_schedule' } },
+      quotes: { read: { customer_name: 'Grace' } },
+      invoices: { read: null },
+    });
+    sbRef.current = client;
+
+    const detail = await getJobDetail('j1');
+    expect(detail?.amendments).toEqual([]);
+  });
+
+  it('defaults amendments to an empty array when the job has no linked quote', async () => {
+    const { client } = makeSb({
+      jobs: { read: { id: 'j1', quote_id: null, status: 'to_schedule' } },
+      invoices: { read: null },
+    });
+    sbRef.current = client;
+
+    const detail = await getJobDetail('j1');
+    expect(detail?.amendments).toEqual([]);
+  });
+
   it('returns null when the job does not exist', async () => {
     const { client } = makeSb({ jobs: { read: null } });
     sbRef.current = client;

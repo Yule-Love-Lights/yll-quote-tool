@@ -136,6 +136,23 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       { status: 409 },
     );
   }
+  // FIX3 (review HIGH): a DECLINED entry is still "pending" by
+  // isAmendmentConsentPending (declined counts as "not accepted", same as
+  // pending — see amend.ts) — so without this explicit check the guard below
+  // would silently fall through and overwrite the refusal with an acceptance,
+  // destroying declined_at/reason/ip and unblocking settlement. A stale tab
+  // or the back button is enough to reach this route with a declined latest.
+  // Refuse rather than overwrite — mirrors amend-decline's own already-
+  // accepted guard, in reverse: reaching here means a replay, not a genuine
+  // change of mind. Reversing a real refusal goes through staff as a NEW
+  // amendment (computeAmendment again), never a second consent write on the
+  // SAME entry.
+  if (latest.consent?.status === 'declined') {
+    return NextResponse.json(
+      { error: 'This amendment was already declined', code: 'already-declined' },
+      { status: 409 },
+    );
+  }
   if (!isAmendmentConsentPending(latest)) {
     return NextResponse.json({ ok: true, alreadyConsented: true });
   }
