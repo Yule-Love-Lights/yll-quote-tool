@@ -193,7 +193,11 @@ function blankToNull(v: string | undefined): string | null {
 // sets it (a brand-new insert has no "prior" row) — only updateQuote
 // populates it, from its own late pre-read (see `stored` below), taken
 // immediately before the write rather than route.ts's much-earlier snapshot.
-export type SaveQuoteResult = { id: string; priorInputs?: Partial<QuoteInputs> | null };
+// identityFrozen (#839 fix-round MED): true only when updateQuote's #251
+// freeze actually refused a would-be reattach on this call (see its own
+// comment above `identityFrozen` in updateQuote) — absent/false otherwise,
+// including on a brand-new insert (saveQuote never sets it).
+export type SaveQuoteResult = { id: string; priorInputs?: Partial<QuoteInputs> | null; identityFrozen?: boolean };
 
 export async function saveQuote(
   customer: Customer,
@@ -561,7 +565,20 @@ export async function updateQuote(
       ? (stored?.highlevel_contact_id ?? null)
       : (hlContactId?.trim() || null);
   let reattached: { customerId: string } | null | undefined;
-  if (!data.is_test && !data.deposit_paid_at && !data.customer_approved_at && stored) {
+  // #839 fix-round MED (staff+technical lenses, delta-verify on #251): the
+  // freeze above used to be fully silent even when it actually BLOCKED a
+  // would-be reattach — nothing told the caller/builder a real identity
+  // change was refused, only a console.warn buried in server logs.
+  // identityFrozen is set ONLY when the freeze is the reason nothing ran
+  // (identityChanged/hlChanged/never-linked would have fired a reattach, and
+  // the quote is approved or booked) — an unrelated field edit on an
+  // approved/booked quote, or a same-id no-op re-pick, never sets it.
+  // is_test / no-`stored` still short-circuit the whole block silently, same
+  // as before — those are "not applicable," not "blocked." Surfaced on
+  // SaveQuoteResult so /api/quote/route.ts and the builder can show a small
+  // notice instead of this being log-only.
+  let identityFrozen = false;
+  if (!data.is_test && stored) {
     const written = customer
       ? {
           customer_name: blankToNull(customer.name) ?? 'Anonymous',
@@ -578,7 +595,14 @@ export async function updateQuote(
         written.customer_address !== stored.customer_address);
     const hlChanged =
       hlContactId !== undefined && effectiveHl !== (stored.highlevel_contact_id?.trim() || null);
-    if (identityChanged || hlChanged || stored.customer_id == null) {
+    const wouldReattach = identityChanged || hlChanged || stored.customer_id == null;
+    const frozen = !!data.deposit_paid_at || !!data.customer_approved_at;
+    if (wouldReattach && frozen) {
+      identityFrozen = true;
+      console.warn(
+        `updateQuote: #251 identity freeze — quote ${id} is approved/booked; refused a would-be reattach (identityChanged=${identityChanged}, hlChanged=${hlChanged}). Use the amend flow to change the linked customer.`,
+      );
+    } else if (wouldReattach) {
       try {
         reattached = await attachQuoteToCustomer(
           // Stored halves go through the sentinel translation
@@ -693,7 +717,7 @@ export async function updateQuote(
   // column itself read back empty) — both mean "nothing to report" to
   // route.ts's fallback (`saved.priorInputs ?? existing.inputs`), but only
   // the former is truly "we never looked."
-  return { id: data.id, priorInputs: stored?.inputs };
+  return { id: data.id, priorInputs: stored?.inputs, ...(identityFrozen ? { identityFrozen: true } : {}) };
 }
 
 // The raw row the EDIT flow needs (/quote/[id], #31): stored customer columns +

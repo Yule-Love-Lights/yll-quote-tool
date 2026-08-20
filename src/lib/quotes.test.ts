@@ -707,7 +707,7 @@ describe('updateQuote — #214 identity verify-or-reattach', () => {
     serviceRef.current = fake.client;
 
     // Identity edit + hl change — both triggers present, both must be inert.
-    await updateQuote(
+    const res = await updateQuote(
       'q1', INPUTS, RESULT,
       { ...CUSTOMER, name: 'Edited Mid-Amend' },
       'holiday', undefined, undefined, true, 'hl-NEW',
@@ -719,6 +719,8 @@ describe('updateQuote — #214 identity verify-or-reattach', () => {
       isNce: true,
       isYllNeighbor: undefined,
     });
+    // #839 fix-round MED: the caller learns a would-be reattach was refused.
+    expect(res).toMatchObject({ identityFrozen: true });
   });
 
   // #251 widening: an APPROVED-but-not-yet-booked quote (customer_approved_at
@@ -735,7 +737,7 @@ describe('updateQuote — #214 identity verify-or-reattach', () => {
     serviceRef.current = fake.client;
 
     // Identity edit + hl change — both triggers present, both must be inert.
-    await updateQuote(
+    const res = await updateQuote(
       'q1', INPUTS, RESULT,
       { ...CUSTOMER, name: 'Edited After Approval' },
       'holiday', undefined, undefined, true, 'hl-NEW',
@@ -747,6 +749,8 @@ describe('updateQuote — #214 identity verify-or-reattach', () => {
       isNce: true,
       isYllNeighbor: undefined,
     });
+    // #839 fix-round MED: the caller learns a would-be reattach was refused.
+    expect(res).toMatchObject({ identityFrozen: true });
   });
 
   // Boundary check: a DRAFT/SENT quote (neither approved nor booked) must stay
@@ -760,13 +764,15 @@ describe('updateQuote — #214 identity verify-or-reattach', () => {
     });
     serviceRef.current = fake.client;
 
-    await updateQuote(
+    const res = await updateQuote(
       'q1', INPUTS, RESULT,
       { ...CUSTOMER, name: 'Edited Pre-Approval' },
       'holiday', undefined, undefined, true, 'hl-NEW',
     );
 
     expect(attachQuoteToCustomerMock).toHaveBeenCalled();
+    // Not frozen — the reattach actually ran, so identityFrozen is never set.
+    expect(res?.identityFrozen).toBeUndefined();
   });
 
   // is_test exemption must still win even when the quote is approved —
@@ -806,6 +812,8 @@ describe('updateQuote — #214 identity verify-or-reattach', () => {
     );
 
     expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+    // Frozen (approved) but nothing actually changed → wouldReattach is
+    // false → identityFrozen must stay unset too, not just the reattach call.
     expect(res).toEqual({ id: 'q1' });
   });
 
