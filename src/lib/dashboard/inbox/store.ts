@@ -32,7 +32,7 @@ import type { MetricItem, WindowKey, ReopenCounts } from './responseMetrics';
 import { addSuppressedSenders, removeSuppressedSenders } from './suppression';
 import { inverseOf, type ReverseAction } from './lifecycle';
 import { listOperatorAccounts } from '@/lib/auth/adminUsers';
-import { isParkedLegacyRebookDraft, type QuoteStatus } from '@/lib/quoteStatus';
+import { deriveStatus, isParkedLegacyRebookDraft, type QuoteStatus } from '@/lib/quoteStatus';
 
 // ─── Pure ingest planner ────────────────────────────────────────────────────
 
@@ -1723,15 +1723,39 @@ export type InWorksItem = {
   preview: string | null;
   customerName: string | null;
   lastActivityAt: string | null;
+  // #307: null for every 'awaiting' row (the rule set below only evaluates the
+  // 'handled' bucket) and for a 'handled' row where none of the three signals
+  // fire. Non-null is the single displayed reason — see needsLookReason's own
+  // doc comment for why only one shows when a row trips more than one rule.
+  needsLookReason: string | null;
 };
 export type InWorksResult =
-  | { ok: true; awaiting: InWorksItem[]; handled: InWorksItem[] }
+  | {
+      ok: true;
+      awaiting: InWorksItem[];
+      handled: InWorksItem[];
+      // #307 review fix 2: true when either of the two needsLookReason evidence
+      // lookups (quote status, pending follow-up) failed and fell back to an
+      // empty result — meaning some 'handled' row may be missing its reason
+      // and reads as settled when the evidence for that couldn't be checked.
+      evidenceIncomplete: boolean;
+    }
   | { ok: false; error: string };
 
 const IN_WORKS_SELECT =
   'id, source, channel, preview, followed_up_at, handled_at, status, dashboard_contacts ( display_name )';
 
-function mapInWorksRow(rows: unknown[], tsKey: 'followed_up_at' | 'handled_at'): InWorksItem[] {
+// #307: the 'handled' bucket alone also needs external_id (to derive the
+// backing quote id, quoteIdPrefix) and direction (rule b) to compute "Needs a
+// look" — the 'awaiting' bucket's query stays on the narrower IN_WORKS_SELECT
+// since none of the three rules apply there (out of scope for this change).
+const IN_WORKS_HANDLED_SELECT = IN_WORKS_SELECT + ', external_id, direction';
+
+function mapInWorksRow(
+  rows: unknown[],
+  tsKey: 'followed_up_at' | 'handled_at',
+  reasonFor?: (row: Record<string, unknown>) => string | null,
+): InWorksItem[] {
   return (rows ?? []).map((r) => {
     const row = r as Record<string, unknown>;
     const c = (row.dashboard_contacts as { display_name?: string | null } | null) ?? null;
@@ -1742,13 +1766,135 @@ function mapInWorksRow(rows: unknown[], tsKey: 'followed_up_at' | 'handled_at'):
       preview: (row.preview as string | null) ?? null,
       customerName: (c?.display_name as string | null) ?? null,
       lastActivityAt: (row[tsKey] as string | null) ?? null,
+      needsLookReason: reasonFor ? reasonFor(row) : null,
     };
   });
 }
 
+/**
+ * #307: pure "does the evidence contradict Handled" decision for one handled
+ * row. Order is the deliberate single-reason priority when a row trips more
+ * than one rule — most concrete/actionable evidence wins:
+ *   1. quoteStatus unanswered — a real quote is sitting sent-but-not-approved;
+ *      the most concrete, money-bearing evidence a "finished" row is wrong.
+ *   2. direction === 'inbound' — the customer's message is the newest thing on
+ *      the thread. Weaker signal (a call-closed conversation can still read
+ *      this way — see the brief's accepted false-positive note), so it only
+ *      shows when rule 1 didn't already give a sharper reason.
+ *   3. followUpPending — our own follow-up system already flagged this item;
+ *      shown last since today's only follow-up reason (quote_sent_no_reply)
+ *      usually already surfaces via rule 1 on the same row.
+ * Pure — no I/O — so it's directly unit-testable without a DB.
+ */
+export function needsLookReason(evidence: {
+  direction: string | null;
+  quoteStatus: QuoteStatus | null;
+  followUpPending: boolean;
+}): string | null {
+  if (evidence.quoteStatus != null && QUOTE_UNANSWERED_STATUSES.has(evidence.quoteStatus)) {
+    return 'Quote unanswered';
+  }
+  if (evidence.direction === 'inbound') {
+    return 'They wrote last';
+  }
+  if (evidence.followUpPending) {
+    return 'Follow-up due';
+  }
+  return null;
+}
+
+// #307 rule (a): a quote is "sent but not approved, not dead" when its derived
+// status is one of these three. Deliberately derived via deriveStatus (the
+// canonical lifecycle read, per its own doc comment) rather than a raw
+// `quote_sent_at != null && customer_approved_at == null` column check — a
+// booked-but-somehow-missing-customer_approved_at row would otherwise
+// misfire here; deriveStatus's deposit_paid_at-wins precedence correctly
+// reads that as 'booked' (approved, not flagged) instead. 'changes_requested'
+// is included: the quote was sent, is not approved, and is not in the dead
+// set (declined/cancelled/abandoned) — it's an active back-and-forth, not a
+// finished one.
+const QUOTE_UNANSWERED_STATUSES: ReadonlySet<QuoteStatus> = new Set(['sent', 'viewed', 'changes_requested']);
+
+/**
+ * #307: batch-fetches the derived QuoteStatus for every id in `quoteIds` in
+ * ONE query (mirrors fetchHiddenLegacyRebookQuoteIds's pattern above — never a
+ * per-row query in a loop). On a lookup error this still fails OPEN (returns
+ * an empty map rather than throwing — a transient read failure must not crash
+ * the page), but unlike fetchHiddenLegacyRebookQuoteIds's fail-open (which is
+ * SAFE — an empty result there means "hide nothing"), an empty map here is
+ * UNSAFE — it means "no handled row reads as quote-unanswered", which can
+ * silently under-populate the one list whose entire premise is that evidence
+ * must not go missing. `failed` carries that distinction to the caller so
+ * listInWorks can surface it instead of only logging it server-side (#307
+ * review fix 2).
+ */
+async function fetchQuoteStatusesById(
+  sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  quoteIds: readonly string[],
+): Promise<{ statuses: Map<string, QuoteStatus>; failed: boolean }> {
+  if (quoteIds.length === 0) return { statuses: new Map(), failed: false };
+  const { data, error } = await sb
+    .from('quotes')
+    .select('id, status, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at')
+    .in('id', quoteIds);
+  if (error) {
+    console.error('[inbox] needs-a-look quote status lookup failed:', error.message);
+    return { statuses: new Map(), failed: true };
+  }
+  const map = new Map<string, QuoteStatus>();
+  for (const q of (data ?? []) as {
+    id: string;
+    status: QuoteStatus | null;
+    quote_sent_at: string | null;
+    customer_approved_at: string | null;
+    deposit_paid_at: string | null;
+    viewed_at: string | null;
+  }[]) {
+    map.set(String(q.id), deriveStatus(q));
+  }
+  return { statuses: map, failed: false };
+}
+
+/**
+ * #307 rule (c): batch-fetches which of `itemIds` has at least one still-
+ * pending follow_ups row, in ONE query (`.in('inbox_item_id', itemIds)`) —
+ * never a per-row query. Same fail-open-but-report-it convention as its
+ * sibling above: `failed` tells listInWorks this specific lookup didn't
+ * complete, rather than being indistinguishable from "nothing pending".
+ */
+async function fetchPendingFollowUpItemIds(
+  sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  itemIds: readonly string[],
+): Promise<{ ids: Set<string>; failed: boolean }> {
+  if (itemIds.length === 0) return { ids: new Set(), failed: false };
+  const { data, error } = await sb
+    .from('follow_ups')
+    .select('inbox_item_id')
+    .eq('status', 'pending')
+    .in('inbox_item_id', itemIds);
+  if (error) {
+    console.error('[inbox] needs-a-look pending follow-up lookup failed:', error.message);
+    return { ids: new Set(), failed: true };
+  }
+  return {
+    ids: new Set(
+      ((data ?? []) as { inbox_item_id: string | null }[])
+        .map((r) => r.inbox_item_id)
+        .filter((v): v is string => !!v),
+    ),
+    failed: false,
+  };
+}
+
 /** Two-group In-Works list: items being actively followed up (awaiting) + locally
  *  handled items that aren't yet dismissed or completed (handled). Both sorted
- *  stalest-first so the longest-waiting surface at the top. */
+ *  stalest-first so the longest-waiting surface at the top. Every 'handled' row
+ *  also carries needsLookReason (#307) — computed from two BATCHED lookups (a
+ *  quote-status map + a pending-follow-up set), never a per-row query.
+ *  `evidenceIncomplete` (#307 review fix 2) is true when either of those two
+ *  lookups failed and fell back to empty — the caller renders that as a
+ *  visible note rather than only the server-side console.error already inside
+ *  each lookup. */
 export async function listInWorks(limit = 200): Promise<InWorksResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
@@ -1765,7 +1911,7 @@ export async function listInWorks(limit = 200): Promise<InWorksResult> {
       .limit(limit),
     sb
       .from('inbox_items')
-      .select(IN_WORKS_SELECT)
+      .select(IN_WORKS_HANDLED_SELECT)
       .eq('status', 'handled')
       .is('followed_up_at', null)
       .order('handled_at', { ascending: true })
@@ -1773,10 +1919,43 @@ export async function listInWorks(limit = 200): Promise<InWorksResult> {
   ]);
   if (aw.error) return { ok: false, error: aw.error.message };
   if (hd.error) return { ok: false, error: hd.error.message };
+
+  const handledRows = (hd.data ?? []) as unknown as Record<string, unknown>[];
+  const handledIds = handledRows.map((r) => String(r.id));
+  // #307: only a 'quotetool' item's external_id backs a quote id — same gate
+  // excludeLegacyRebookItems/fetchHiddenLegacyRebookQuoteIds use above.
+  const quotetoolQuoteIds = [
+    ...new Set(
+      handledRows
+        .filter((r) => r.source === 'quotetool')
+        .map((r) => quoteIdPrefix(String(r.external_id)))
+        .filter(isUuid),
+    ),
+  ];
+  const [quoteStatusResult, pendingFollowUpResult] = await Promise.all([
+    fetchQuoteStatusesById(sb, quotetoolQuoteIds),
+    fetchPendingFollowUpItemIds(sb, handledIds),
+  ]);
+  const quoteStatusById = quoteStatusResult.statuses;
+  const pendingFollowUpItemIds = pendingFollowUpResult.ids;
+
+  const handled = mapInWorksRow(handledRows, 'handled_at', (row) => {
+    const quoteStatus =
+      row.source === 'quotetool'
+        ? (quoteStatusById.get(quoteIdPrefix(String(row.external_id))) ?? null)
+        : null;
+    return needsLookReason({
+      direction: (row.direction as string | null) ?? null,
+      quoteStatus,
+      followUpPending: pendingFollowUpItemIds.has(String(row.id)),
+    });
+  });
+
   return {
     ok: true,
     awaiting: mapInWorksRow(aw.data ?? [], 'followed_up_at'),
-    handled: mapInWorksRow(hd.data ?? [], 'handled_at'),
+    handled,
+    evidenceIncomplete: quoteStatusResult.failed || pendingFollowUpResult.failed,
   };
 }
 

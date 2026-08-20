@@ -19,6 +19,7 @@
 // direction for a go/no-go gate.
 
 import { getSupabaseServiceClient, getSupabaseClient } from '@/lib/supabase';
+import { BUSINESS_RULES } from '@/lib/pricing/pricingEngine';
 
 /** One estimate joined to its quote's live total + status. */
 export type SelfServeMetricsRow = {
@@ -74,8 +75,21 @@ export function isVerified(r: SelfServeMetricsRow): boolean {
 
 /**
  * Pure compute: in-range accuracy + median miss over the VERIFIED rows. No I/O.
+ *
+ * `minimum` is the customer-facing job floor (BUSINESS_RULES.minimumQuoteAmount).
+ * The shown low is clamped up to it before scoring. Reason: the S47 fix floors the
+ * shown low at this minimum (customerEstimateRange), but a handful of PRE-fix rows
+ * were stored with a sub-minimum low (a $1,000 home showed a $900 low it could never
+ * be charged). Clamping here scores every row against the range CURRENT logic would
+ * show, so the go/no-go tile doesn't mix pre/post-fix eras — WITHOUT rewriting what
+ * each row stored (the stored low still records what that customer was actually
+ * shown). Only the low was ever sub-minimum; the high is always >= the minimum by
+ * construction, so this can never invert the band.
  */
-export function computeSelfServeMetrics(rows: SelfServeMetricsRow[]): SelfServeMetrics {
+export function computeSelfServeMetrics(
+  rows: SelfServeMetricsRow[],
+  minimum: number = BUSINESS_RULES.minimumQuoteAmount,
+): SelfServeMetrics {
   const totalEstimates = rows.length;
   if (totalEstimates === 0) return EMPTY_METRICS;
 
@@ -85,10 +99,12 @@ export function computeSelfServeMetrics(rows: SelfServeMetricsRow[]): SelfServeM
     return { totalEstimates, verifiedCount: 0, inRangeRate: null, medianMissPct: null };
   }
 
-  const inRange = verified.filter((r) => r.total! >= r.low && r.total! <= r.high).length;
+  // Clamp the shown low to the customer-facing floor (see doc above).
+  const shownLow = (r: SelfServeMetricsRow) => Math.max(r.low, minimum);
+  const inRange = verified.filter((r) => r.total! >= shownLow(r) && r.total! <= r.high).length;
   const misses = verified
     .map((r) => {
-      const mid = (r.low + r.high) / 2;
+      const mid = (shownLow(r) + r.high) / 2;
       return mid > 0 ? Math.abs(r.total! - mid) / mid : 0;
     })
     .sort((a, b) => a - b);

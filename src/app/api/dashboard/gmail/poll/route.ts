@@ -5,7 +5,6 @@
 // set (GMAIL_CLIENT_ID/SECRET/REFRESH_TOKEN/USER) and the migration is applied.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { safeEqual } from '@/lib/security';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { isGmailConfigured } from '@/lib/integrations/gmail';
 import { runGmailPoll } from '@/lib/dashboard/inbox/sync';

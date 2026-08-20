@@ -1,0 +1,7 @@
+{
+  "schema_version": "1.0.0-draft",
+  "contract_version": "1.4.0-draft",
+  "openapi_file": "common.openapi.json",
+  "json_schema_file": "common.schema.json",
+  "canonical_contract": "../OPERATIONS_HUB_CONTRACT.md"
+}

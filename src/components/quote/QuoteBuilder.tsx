@@ -27,12 +27,18 @@ import {
   resolveTagPayload,
   resolveNceDepositPercent,
   clearHolidayOnlyDiscountState,
+  clearNceOrNeighborOnServiceTypeSwitch,
   legacyRebookConfirmMessage,
   nceConfirmMessage,
   initialNceDepositProvenance,
 } from '@/lib/quoteForm';
 import type { CrmContact } from '@/lib/integrations/types';
-import { type ServiceType, SERVICE_TYPES, SERVICE_TYPE_LABELS } from '@/lib/serviceType';
+import {
+  type ServiceType,
+  SERVICE_TYPES,
+  SERVICE_TYPE_LABELS,
+  canCarryNceOrYllNeighborTag,
+} from '@/lib/serviceType';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { EventSection } from './EventSection';
 import { OperatorShell } from '@/components/OperatorShell';
@@ -593,6 +599,27 @@ export default function QuoteBuilder({
           ...(prefill?.isNce ? { depositPercent: 40 } : {}),
         },
   );
+  // Fix-round HIGH (staff lens, #243 gate): a ref mirror of `form.serviceType`,
+  // same never-stale idiom as isNceRef/legacyRebookRef above — but unlike those
+  // two, serviceType has no single "apply" function every change funnels
+  // through (the type button below, and the draft-restore effect, both call
+  // setForm directly), so this stays current via the effect right below instead
+  // of an inline write at one call site. Exists specifically for
+  // pickHighLevelContact's async tag-lookup .then() (a few hundred lines down):
+  // that closure used to read `form.serviceType` directly — the value captured
+  // when the contact was CLICKED, not when the fetch resolves. Sequence: staff
+  // start a quote as holiday, pick an NCE-tagged contact, then click "permanent"
+  // before the ~200ms fetch returns (an ordinary correction) — the type-switch
+  // handler sees no tag yet (nothing to clear), the fetch then resolves against
+  // the STALE holiday closure and calls applyIsNce(true), setting
+  // depositPercent=40 on what is now a permanent quote. The chip strip is
+  // already hidden (service type is permanent), so the wrong state is invisible
+  // in the UI. The #243 server-side gate (route.ts) is a backstop for exactly
+  // this, but the client shouldn't manufacture the bad request to begin with.
+  const serviceTypeRef = useRef(form.serviceType);
+  useEffect(() => {
+    serviceTypeRef.current = form.serviceType;
+  }, [form.serviceType]);
   // In edit mode the saved result hydrates too, so the operator sees the
   // current price breakdown (and the portal/send buttons) without recalculating.
   const [result, setResult] = useState<QuoteResult | null>(initialQuote?.result ?? null);
@@ -2882,11 +2909,26 @@ export default function QuoteBuilder({
       .then((data: { customers?: Array<{ is_nce?: boolean; is_yll_neighbor?: boolean }> }) => {
         if (tagLookupSeq !== attachSeqRef.current) return; // superseded by a later pick
         const tags = data.customers?.[0];
-        if (!legacyRebookTouchedRef.current) applyLegacyRebook(tags?.is_yll_neighbor ?? false);
+        // #243 (domain rule locked 2026-08-11): never sync a tag to true on a
+        // quote whose service type can't carry it — this quote's OWN type
+        // decides, not the picked contact's. `false` still syncs normally
+        // (matches an untagged/mismatched pick exactly as before); only the
+        // `true` case is gated. canCarryNceOrYllNeighborTag is the single
+        // source of truth every set/inherit site shares (serviceType.ts).
+        // Fix-round HIGH: reads serviceTypeRef.current, NOT the render-closure
+        // `form.serviceType` — see serviceTypeRef's own declaration for why a
+        // direct read here is stale the instant staff switch service type
+        // between the contact click and this fetch resolving.
+        const eligibleForTags = canCarryNceOrYllNeighborTag(serviceTypeRef.current);
+        if (!legacyRebookTouchedRef.current) {
+          applyLegacyRebook(eligibleForTags && (tags?.is_yll_neighbor ?? false));
+        }
         // #199: routed through applyIsNce (not a bare setIsNce) so an
         // inherited NCE tag also seeds the 40% deposit default, same as a
         // manual chip click.
-        if (!isNceTouchedRef.current) applyIsNce(tags?.is_nce ?? false);
+        if (!isNceTouchedRef.current) {
+          applyIsNce(eligibleForTags && (tags?.is_nce ?? false));
+        }
       })
       // Network error or non-OK response: leave chips exactly as they are —
       // "couldn't check" is not the same signal as "checked, no tags".
@@ -4025,7 +4067,18 @@ export default function QuoteBuilder({
               mount-hydrate useState above) call applyLegacyRebook/applyIsNce
               directly and never prompt. Declining leaves the tag, deposit,
               and touched-ref exactly as they were — the touched-ref is set
-              AFTER the confirm returns true, never before. */}
+              AFTER the confirm returns true, never before.
+              #243 (domain rule locked 2026-08-11): the whole strip is HIDDEN
+              on a non-holiday quote — permanent/event/bistro can carry
+              neither tag, and the locked design is "silently do not inherit,
+              no disabled-with-reason UI" (no tooltip-explains-why chip). The
+              service-type switch handler a few hundred lines down clears any
+              already-true tag the instant staff switch AWAY from holiday, so
+              there's never a true-but-hidden tag left dangling from this UI
+              alone (a REOPENED quote that was already tagged before this
+              gate shipped is a separate, deliberately untouched case — see
+              that handler's own comment). */}
+          {canCarryNceOrYllNeighborTag(form.serviceType) && (
           <div className="flex items-center gap-2 mt-2">
             <button
               type="button"
@@ -4086,6 +4139,7 @@ export default function QuoteBuilder({
               NCE
             </button>
           </div>
+          )}
           {editMode && (
             <p className="text-xs text-gray-500 mt-1">
               Editing saved quote <span className="font-mono">{quoteNumber != null ? `#${quoteNumber}` : initialQuote?.quoteId.slice(0, 8)}</span> —
@@ -4221,21 +4275,109 @@ export default function QuoteBuilder({
                       type="button"
                       role="radio"
                       aria-checked={selected}
-                      onClick={() => setForm(f => ({
-                        ...f,
-                        serviceType: st,
-                        // #212: September/October early-install is a holiday-seasonal
-                        // pick — leaving it set while switching to a non-holiday type
-                        // would silently block buildQuoteInputs's `discount` field
-                        // (guarded on installTiming === 'none') while the builder's
-                        // discount checkbox still LOOKED applied. clearHolidayOnlyDiscountState
-                        // (quoteForm.ts) clears installTiming AND brings
-                        // discountEnabled/discountAmount to a coherent rest state along
-                        // with it — a no-op for a same-type click, a switch INTO holiday,
-                        // or when installTiming was already 'none' (a genuine typed
-                        // manual discount survives untouched; see that function's doc).
-                        ...clearHolidayOnlyDiscountState(st, f),
-                      }))}
+                      onClick={() => {
+                        // Fix-round LOW-MED: a no-op re-click on the ALREADY-
+                        // selected type must do nothing. Without this, the
+                        // comment two blocks down ("this only fires when staff
+                        // actually click a service-type button") was false —
+                        // clicking the currently-selected button on a reopened
+                        // quote holding a stale is_nce=true (e.g. from before
+                        // this gate shipped) would still run
+                        // clearNceOrNeighborOnServiceTypeSwitch, mark the tag
+                        // TOUCHED, and write `false` on the next save. That only
+                        // ever pushes toward the correct end state, but it's an
+                        // unintended side effect of a click that changed nothing.
+                        if (st === form.serviceType) return;
+                        // #243 (domain rule locked 2026-08-11): switching AWAY
+                        // from a type that can carry NCE/YLL Neighbor silently
+                        // clears any currently-true chip — this ENFORCES the
+                        // domain rule (same "silently, no disabled-with-reason
+                        // UI" posture as the chip strip's own visibility gate
+                        // above), it isn't offering staff a discretionary keep-
+                        // or-drop choice. Reuses applyIsNce/applyLegacyRebook
+                        // (not a hand-rolled clear) so the SAME deposit-revert +
+                        // ref-sync a manual chip-off click gets also runs here —
+                        // including staying a no-op on the deposit once the
+                        // #177 freeze locks it (resolveNceDepositPercent's own
+                        // `locked` branch; applyIsNce still flips the tag).
+                        // Marks both touched-refs true so the correction
+                        // actually PERSISTS on the next Calculate/Save — an
+                        // UNTOUCHED chip sends `undefined` on an update ("leave
+                        // the stored value alone"), which would otherwise leave
+                        // this exact correction inert. A REOPENED quote that
+                        // already carries a violating tag from before this
+                        // gate shipped and is never re-typed here at all stays
+                        // untouched by design (resolveTagPayload's own
+                        // touched-gating protects it) — this only fires when
+                        // staff actually click a DIFFERENT service-type button
+                        // (the no-op re-click guard just above).
+                        const { clearIsNce, clearLegacyRebook } =
+                          clearNceOrNeighborOnServiceTypeSwitch(st, isNceRef.current, legacyRebookRef.current);
+                        // Fix-round MED: this auto-clear reverts a MONEY setting
+                        // (isNce's 40% deposit) with none of the disclosure the
+                        // manual chip-off click a few hundred lines up gives —
+                        // same end state, one path silent. Reuses the identical
+                        // legacyRebookConfirmMessage/nceConfirmMessage(turningOn:
+                        // false, ...) builders the manual click calls, so the
+                        // copy can never drift between the two paths — a staff
+                        // member sees the SAME "reverts your deposit from X% to
+                        // blank" / "won't move any existing GHL card" bullets
+                        // either way. Decision: confirm BEFORE, not a notice
+                        // after — this is a money revert, and the manual OFF
+                        // path already sets that bar. Declining aborts the WHOLE
+                        // type switch (return before any apply/setForm below),
+                        // never a partial state, because the #243 domain rule
+                        // above is non-discretionary — there is no "switch type
+                        // but keep the ineligible tag" outcome to decline into.
+                        // Silent when clearIsNce/clearLegacyRebook are both
+                        // false (nothing to disclose) or when nceConfirmMessage
+                        // itself has nothing to disclose (deposit unaffected,
+                        // never left draft) — exactly mirrors the manual click's
+                        // own `confirmMsg && !window.confirm(...)` gate.
+                        const clearMessages = [
+                          clearLegacyRebook ? legacyRebookConfirmMessage(false, quoteLeftDraft) : null,
+                          clearIsNce
+                            ? nceConfirmMessage(
+                                false,
+                                form.depositPercent,
+                                nceDepositLocked,
+                                nceDepositSetByRuleRef.current,
+                                quoteLeftDraft,
+                              )
+                            : null,
+                        ].filter((m): m is string => m != null);
+                        if (clearMessages.length > 0) {
+                          const switchConfirmMsg = [
+                            `Switching to ${SERVICE_TYPE_LABELS[st]} clears the tag(s) below — ${SERVICE_TYPE_LABELS[st]} can never carry NCE or YLL Neighbor:`,
+                            '',
+                            clearMessages.join('\n\n'),
+                          ].join('\n');
+                          if (!window.confirm(switchConfirmMsg)) return;
+                        }
+                        if (clearIsNce) {
+                          isNceTouchedRef.current = true;
+                          applyIsNce(false);
+                        }
+                        if (clearLegacyRebook) {
+                          legacyRebookTouchedRef.current = true;
+                          applyLegacyRebook(false);
+                        }
+                        setForm(f => ({
+                          ...f,
+                          serviceType: st,
+                          // #212: September/October early-install is a holiday-seasonal
+                          // pick — leaving it set while switching to a non-holiday type
+                          // would silently block buildQuoteInputs's `discount` field
+                          // (guarded on installTiming === 'none') while the builder's
+                          // discount checkbox still LOOKED applied. clearHolidayOnlyDiscountState
+                          // (quoteForm.ts) clears installTiming AND brings
+                          // discountEnabled/discountAmount to a coherent rest state along
+                          // with it — a no-op for a same-type click, a switch INTO holiday,
+                          // or when installTiming was already 'none' (a genuine typed
+                          // manual discount survives untouched; see that function's doc).
+                          ...clearHolidayOnlyDiscountState(st, f),
+                        }));
+                      }}
                       className={`px-3 py-1.5 rounded-md border text-sm font-medium transition-colors ${
                         selected
                           ? 'bg-blue-600 border-blue-600 text-white'

@@ -13,7 +13,7 @@
 // as a 500 leaking the library name instead of a clean 404.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAdmin, roleOf, type OperatorRole } from '@/lib/auth/supabaseServer';
+import { isCrewAccount, requireAdmin, roleOf, type OperatorRole } from '@/lib/auth/supabaseServer';
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import { listOperatorAccounts, countAdmins, toOperatorAccount } from '@/lib/auth/adminUsers';
 import { canChangeRole, canDeleteUser } from '@/lib/auth/accountGuards';
@@ -69,6 +69,23 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     if (getErr || !target?.user) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 });
     }
+    // ⚠️ CREW LOGINS ARE NOT MANAGEABLE THROUGH THIS DOOR.
+    //
+    // Crew and operators share one auth store (row 279), and `roleOf` collapses
+    // ANY non-admin role — including 'crew' — to 'operator'. Without this check
+    // a PATCH of { role: 'admin' } read the target as an operator, passed
+    // canChangeRole, and then overwrote the `role: 'crew'` marker via the
+    // spread below. The account became a real admin with access to /customers
+    // and every PII surface, while crew_members.auth_user_id still pointed at
+    // it as someone's pay identity. Found by the S58 wrap review's security
+    // lens; there was no test covering a crew target here.
+    if (isCrewAccount(target.user.app_metadata)) {
+      return NextResponse.json(
+        { error: 'This is a crew login. Manage it under Settings → Accounts → Crew logins.' },
+        { status: 403 },
+      );
+    }
+
     const currentRole = roleOf(target.user.app_metadata);
 
     const updates: { password?: string; app_metadata?: Record<string, unknown> } = {};

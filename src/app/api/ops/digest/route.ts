@@ -8,7 +8,6 @@
 // means broken, never "nothing on the board".
 
 import { NextRequest, NextResponse } from 'next/server';
-import { safeEqual } from '@/lib/security';
 import { isTelegramBotEnabled, isTelegramConfigured } from '@/lib/integrations/telegram';
 import { appBaseUrl } from '@/lib/integrations/telegramNotify';
 import { notifyTelegramAudience } from '@/lib/integrations/telegramRouting';

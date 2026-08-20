@@ -59,3 +59,10 @@ graphify-out/
 
 # legacy Jobber migration working data (PII: manifest, photos, state) — never commit
 scripts/legacy-migration-data/
+
+# python bytecode from the video skill's transcript scripts
+__pycache__/
+*.pyc
+
+# video transcripts (third-party content; the skill writes these to a scratchpad)
+video-transcripts/
