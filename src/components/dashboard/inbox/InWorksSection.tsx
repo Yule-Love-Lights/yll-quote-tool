@@ -345,6 +345,12 @@ export function InWorksSection({
           <p className="text-xs font-medium uppercase tracking-wide mb-2" style={{ color: 'var(--op-text-2)' }}>
             Awaiting their reply ({awaitingItems.length})
           </p>
+          {/* #252 slice H: this list and the main "Open leads" queue above both
+              read as "awaiting reply" at a glance — spell out who owes whom so
+              they're unambiguous side by side. */}
+          <p className="text-xs mb-2" style={{ color: 'var(--op-text-2)' }}>
+            You’ve followed up on these — nothing to do until they write back.
+          </p>
           <ul className="space-y-2">
             {awaitingItems.map((item) => renderRow(item, 'awaiting'))}
           </ul>

@@ -400,7 +400,9 @@ describe('runQuoteToolReconcile — orphan follow-up sweep wiring (#183 BUG 3)',
     vi.clearAllMocks();
     // #252: ensureFollowUp now returns whether it actually wrote — the reconcile
     // counts followUpsCreated off that, so the default here must be a real create.
-    ensureFollowUpMock.mockResolvedValue(true);
+    // #310 fix-round: ensureFollowUp's return widened from boolean to
+    // 'created' | 'skipped' | 'failed' (see store.ts's own doc).
+    ensureFollowUpMock.mockResolvedValue('created');
     recordSyncRunMock.mockResolvedValue(undefined);
     recordSuppressedFollowUpMock.mockResolvedValue(undefined);
     getFollowUpDaysMock.mockResolvedValue(3);
@@ -701,12 +703,42 @@ describe('runQuoteToolReconcile — orphan follow-up sweep wiring (#183 BUG 3)',
     ]);
     ingestTouchMock.mockResolvedValue(OK_RESULT);
     sweepOrphanedFollowUpsMock.mockResolvedValue(0);
-    ensureFollowUpMock.mockResolvedValue(false); // item already resolved
+    ensureFollowUpMock.mockResolvedValue('skipped'); // item already resolved
 
     const summary = await runQuoteToolReconcile(new Date('2026-08-10T12:00:00Z'));
 
     expect(ensureFollowUpMock).toHaveBeenCalledTimes(1); // still asked
     expect(summary.followUpsCreated).toBe(0); // but nothing was written
+    expect(summary.followUpErrors).toBe(0); // a legitimate no-op, not a failure
+  });
+
+  // #310 fix-round: ensureFollowUp's fail-open used to be invisible — 'failed'
+  // (a genuine read error) collapsed into the same `false` as a legitimate
+  // no-op, so a degraded tick still reported `ok: true` / recordSyncRun 'ok' /
+  // an HTTP 200 from the cron route. Pins that a 'failed' result surfaces on
+  // the summary (followUpErrors, ok:false) and on recordSyncRun — the route's
+  // own 200-vs-500 decision (a thin `summary.ok ? 200 : 500` in route.ts) then
+  // follows `ok` automatically.
+  it('surfaces a followUp read failure on the summary and recordSyncRun instead of reporting a clean tick', async () => {
+    listQuotesForDashboardMock.mockResolvedValue([
+      {
+        id: 'q1',
+        quote_sent_at: '2026-08-06T11:00:00Z',
+        customer_approved_at: null,
+        customer_email: 'real@customer.com',
+        status: 'sent',
+      },
+    ]);
+    ingestTouchMock.mockResolvedValue(OK_RESULT);
+    sweepOrphanedFollowUpsMock.mockResolvedValue(0);
+    ensureFollowUpMock.mockResolvedValue('failed');
+
+    const summary = await runQuoteToolReconcile(new Date('2026-08-10T12:00:00Z'));
+
+    expect(summary.followUpsCreated).toBe(0);
+    expect(summary.followUpErrors).toBe(1);
+    expect(summary.ok).toBe(false); // the route's 200-vs-500 decision reads this
+    expect(recordSyncRunMock).toHaveBeenCalledWith('quotetool', 'error', expect.stringContaining('1 follow-up error(s)'));
   });
 });
 
