@@ -25,6 +25,9 @@ import {
   GARLAND_SIZES,
   SPRITZER_SIZES,
   POLE_HEIGHTS,
+  C9_SPACINGS,
+  MINI_SPACINGS,
+  BISTRO_SPACINGS,
   sizePresetLabel,
   formatRawSize,
   offPresetSizeSuffix,
@@ -68,6 +71,33 @@ function sizeButtons(options: readonly number[], values: number[], attr: "data-s
   return preset + `<button ${attr}="${values[0]}" class="active" title="${raw}">${raw}</button>`;
 }
 
+// Renders the whole "Spacing" quick-pick row (#248): the <h3> + the button
+// row, for the new-tool draw panel (#spacings) and the select/bulk-edit
+// panel (#sel-spacings) alike, so the two render sites can't drift apart.
+// c9/mini/bistro get the S/M/L treatment (sizeButtons/offPresetSizeSuffix —
+// the same #202 decor pattern, including its off-preset 4th "you are here"
+// button for a legacy stored spacing the trim dropped, e.g. an old 36" c9
+// strand). Permanent is explicitly excluded — S/M/L is degenerate for its
+// single fixed option — and keeps the exact pre-#248 raw-inch rendering.
+// `values` mirrors sizeButtons' contract: [tool.spacingIn] for the new-tool
+// panel, or the bulk-edit panel's uniq'd `sharedSpacing` (mixed selections
+// get no active button / no 4th button, same as decor's mixed-size case).
+function spacingRowHtml(isPermanentType: boolean, options: number[], values: number[], containerId: string): string {
+  if (isPermanentType) {
+    const isActive = (v: number) => values.length === 1 && values[0] === v;
+    return `
+        <h3>Spacing (in)</h3>
+        <div class="spacing-row" id="${containerId}">
+          ${options.map((s) => `<button data-s="${s}" class="${isActive(s) ? "active" : ""}">${s}"</button>`).join("")}
+        </div>`;
+  }
+  return `
+        <h3>Spacing${offPresetSizeSuffix(options, values)}</h3>
+        <div class="spacing-row" id="${containerId}">
+          ${sizeButtons(options, values, "data-s")}
+        </div>`;
+}
+
 const BULB_TYPES: { id: BulbType; label: string }[] = [
   { id: "c9", label: "C9" },
   { id: "permanent", label: "Permanent" },
@@ -75,14 +105,18 @@ const BULB_TYPES: { id: BulbType; label: string }[] = [
   { id: "bistro", label: "Bistro" },
 ];
 
+// #248: trimmed to 3 values per type (Jason's picks), same shape as the
+// decor size presets in sizePresets.ts. c9/mini/bistro get the S/M/L
+// relabel (sizeButtons/offPresetSizeSuffix, below); permanent is excluded —
+// a single fixed option has no small/medium/large to show — and stays a
+// local literal here.
 const SPACINGS: Record<BulbType, number[]> = {
-  c9: [6, 9, 12, 15, 18, 24, 36],
-  mini: [4, 6, 9, 12, 18],
+  c9: C9_SPACINGS,
+  mini: MINI_SPACINGS,
   // #88: permanent pucks ship 8" on-center ONLY — no other spacing is offered
   // (the BOM math already assumes 8"). Single fixed option.
   permanent: [8],
-  // Bistro spacing typical real-world range: 12"–24" between bulbs.
-  bistro: [9, 12, 15, 18, 24, 36],
+  bistro: BISTRO_SPACINGS,
 };
 
 const STYLES: { id: DrawingStyle; label: string }[] = [
@@ -322,14 +356,21 @@ export async function renderEditor(
 
   // --- State ---
   let scene: Scene = { ...design.scene, brightness: design.scene.brightness ?? 50 };
+  // #88/#117: a permanent (or permanent-bistro) quote's design is locked to
+  // one bulb type so the operator only ever draws that type's runs.
+  const initialBulbType: BulbType = opts.permanentOnly ? "permanent" : opts.bistroOnly ? "bistro" : "c9";
+  // #248: the old shared "12" literal happened to sit inside all three
+  // pre-trim SPACINGS lists; it isn't in c9's or bistro's trimmed lists
+  // ([9,15,24] / [9,18,24]), so seed from SPACINGS' own middle (Medium)
+  // value instead — mirrors the bulb-type click handler's clamp below and
+  // keeps a freshly-opened tool showing a real preset active, never the
+  // off-preset 4th button, matching the decor ToolState defaults' convention
+  // of seeding the array's middle value.
+  const initialSpacings = SPACINGS[initialBulbType];
   const tool: ToolState = {
     category: "lights",
-    // #88: a permanent quote's design is locked to permanent pucks — seed the
-    // bulb type + spacing to permanent so the operator only ever draws permanent
-    // roofline runs (no holiday bulb types / decor on a permanent quote).
-    // #117: a permanent-bistro quote is locked to bistro strands the same way.
-    bulbType: opts.permanentOnly ? "permanent" : opts.bistroOnly ? "bistro" : "c9",
-    spacingIn: opts.permanentOnly ? 8 : 12,
+    bulbType: initialBulbType,
+    spacingIn: initialSpacings[Math.floor(initialSpacings.length / 2)],
     drawingStyle: "strand",
     scattershot: false,
     colorPattern: ["warm-white"],
@@ -1851,10 +1892,7 @@ export async function renderEditor(
       </section>
       ${tool.scattershot ? "" : `
       <section>
-        <h3>Spacing (in)</h3>
-        <div class="spacing-row" id="spacings">
-          ${SPACINGS[tool.bulbType].map((s) => `<button data-s="${s}" class="${tool.spacingIn === s ? "active" : ""}">${s}"</button>`).join("")}
-        </div>
+        ${spacingRowHtml(tool.bulbType === "permanent", SPACINGS[tool.bulbType], [tool.spacingIn], "spacings")}
       </section>
       `}
       <section>
@@ -2814,10 +2852,7 @@ export async function renderEditor(
       </section>
 
       <section>
-        <h3>Spacing (in)</h3>
-        <div class="spacing-row" id="sel-spacings">
-          ${spacingOptions.map((s) => `<button data-s="${s}" class="${sharedSpacing.length === 1 && sharedSpacing[0] === s ? "active" : ""}">${s}"</button>`).join("")}
-        </div>
+        ${spacingRowHtml(isPerm, spacingOptions, sharedSpacing, "sel-spacings")}
       </section>
 
       <section>
