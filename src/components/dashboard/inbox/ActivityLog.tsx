@@ -21,6 +21,12 @@ const ACTION_LABEL: Record<string, string> = {
   // see recordAutoClosedFollowUps' doc (store.ts). Unlabelled actions already
   // fall through to the raw string below; this just reads properly on the page.
   followup_autoclosed: 'Follow-up closed (conversation resolved)',
+  // Row 311 fix-round FIX 2: before this, an 'action_failed' row (row 308)
+  // rendered as the raw literal string 'action_failed' — no verb, no detail.
+  action_failed: 'Action failed',
+  // Row 308 family: a colour-change-request staff email that failed to send —
+  // see color-change-request/route.ts's catch branch.
+  color_request_email_failed: 'Colour-change staff email failed',
 };
 
 // Exported only so ACTION_LABEL coverage (every action listActivity can
@@ -167,6 +173,16 @@ export function ActivityLog({ initialRows }: { initialRows: ActivityRow[] }) {
                 <p className="text-xs" style={{ color: 'var(--op-text-2)' }}>
                   {when} · {friendlyActor(row.actor, row.actorName)}
                 </p>
+                {/* Row 311 fix-round FIX 2: the row's own failure detail — which
+                    action failed and why (a guard refusal reads as one, e.g.
+                    "Item is completed or dismissed…"; a real DB error reads as
+                    the other) — the two error strings already differ, so no
+                    separate classifier is needed to tell them apart at a glance. */}
+                {row.action === 'action_failed' && row.detail && (
+                  <p className="text-xs mt-1" style={{ color: '#dc2626' }}>
+                    {friendlyAction(row.detail.action ?? '')} failed: {row.detail.error ?? 'unknown error'}
+                  </p>
+                )}
                 {rowError && (
                   <p className="text-xs mt-1" style={{ color: '#dc2626' }}>
                     {rowError}

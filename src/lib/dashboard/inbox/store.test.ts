@@ -508,6 +508,7 @@ import {
   listEscalatableItems,
   markFollowUpDone,
   markItemCompleted,
+  markItemFollowed,
   markItemHandledLocal,
   needsLookReason,
   quoteIdPrefix,
@@ -4651,7 +4652,7 @@ describe('markItemCompleted — status guard (#224)', () => {
     return { from, updateCalls, activityCalls };
   }
 
-  it('blocks re-completing an item the guard excluded (already dismissed or already completed), and does not log activity', async () => {
+  it('blocks re-completing an item the guard excluded (already dismissed or already completed), and never logs a false "completed" row', async () => {
     // maybeSingle() returns null when the guarded UPDATE...WHERE matched zero
     // rows (status was 'dismissed' or 'completed') — no DB error, just nothing
     // to update.
@@ -4664,7 +4665,16 @@ describe('markItemCompleted — status guard (#224)', () => {
     if (!res.ok) expect(res.error).toMatch(/dismissed|completed/i);
     // The logically-wrong-200 the ticket calls out: a blocked guard must not
     // ALSO write a false activity trail claiming the action happened.
-    expect(activityCalls.some((c) => c.method === 'insert')).toBe(false);
+    const insertCalls = activityCalls.filter((c) => c.method === 'insert');
+    expect(insertCalls.some((c) => (c.args[0] as { action?: string }).action === 'completed')).toBe(false);
+    // Row 308: the guard refusal itself now DOES get a durable trace — an
+    // 'action_failed' row (never the literal 'completed' verb), so a
+    // systemic write-failure pattern is no longer invisible.
+    expect(insertCalls).toContainEqual(
+      expect.objectContaining({
+        args: [expect.objectContaining({ action: 'action_failed', inbox_item_id: ITEM_ID, detail: { action: 'completed', error: 'Item not found, already completed, or dismissed' } })],
+      }),
+    );
   });
 
   it('the update chain is a POSITIVE match on the two legal source statuses (the actual guard, not just the observed outcome)', async () => {
@@ -4689,6 +4699,427 @@ describe('markItemCompleted — status guard (#224)', () => {
     expect(res.ok).toBe(true);
     const insertCall = activityCalls.find((c) => c.method === 'insert');
     expect(insertCall!.args[0]).toMatchObject({ actor: OPERATOR_ID, action: 'completed' });
+  });
+});
+
+// Row 306 (10th sibling-parity instance): markItemFollowed used to be a bare
+// `.update({followed_up_at}).eq('id', itemId)` with NO status guard at all —
+// unlike ALL three siblings. Guarded the same positive-match way as
+// markItemCompleted's own describe block above (mirrors its makeSbFor).
+describe('markItemFollowed — status guard (row 306)', () => {
+  const ITEM_ID = 'item-42';
+  const OPERATOR_ID = '11111111-2222-3333-4444-555555555555';
+  const NOW = new Date('2026-08-20T12:00:00Z');
+
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  /** Mirrors markItemCompleted's own makeSbFor: 1st .from('inbox_items') call is
+   *  priorStateOf's SELECT, 2nd is the update chain under test. */
+  function makeSbFor(itemUpdateResult: { data: unknown; error: null | { message: string } }) {
+    const { builder: priorBuilder } = makeBuilder({ data: null, error: null });
+    const { builder: updateBuilder, calls: updateCalls } = makeBuilder(itemUpdateResult);
+    const { builder: activityBuilder, calls: activityCalls } = makeBuilder({ data: null, error: null });
+    let inboxCallCount = 0;
+    const from = (table: string) => {
+      if (table === 'inbox_items') {
+        inboxCallCount += 1;
+        return inboxCallCount === 1 ? priorBuilder : updateBuilder;
+      }
+      if (table === 'dashboard_activity') return activityBuilder;
+      throw new Error(`unexpected table: ${table}`);
+    };
+    return { from, updateCalls, activityCalls };
+  }
+
+  it('blocks stamping followed_up_at on a row the guard excluded (already completed or dismissed) — the row-311 harm path', async () => {
+    // maybeSingle() returns null when the guarded UPDATE...WHERE matched zero
+    // rows (status was 'completed' or 'dismissed') — no DB error, just nothing
+    // to update.
+    const { from, activityCalls } = makeSbFor({ data: null, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/completed|dismissed/i);
+    // A blocked guard must not ALSO write a false 'followed' activity trail.
+    const insertCalls = activityCalls.filter((c) => c.method === 'insert');
+    expect(insertCalls.some((c) => (c.args[0] as { action?: string }).action === 'followed')).toBe(false);
+    // Row 308: the guard refusal itself now DOES get a durable trace — an
+    // 'action_failed' row (never the literal 'followed' verb).
+    expect(insertCalls).toContainEqual(
+      expect.objectContaining({
+        args: [expect.objectContaining({ action: 'action_failed', inbox_item_id: ITEM_ID, detail: { action: 'followed', error: 'Item is completed or dismissed; cannot mark followed' } })],
+      }),
+    );
+  });
+
+  it('the update chain is a POSITIVE match on the two legal source statuses (AGENTS.md positive-seam-gate convention, mirroring markItemCompleted)', async () => {
+    const { from, updateCalls } = makeSbFor({ data: { id: ITEM_ID }, error: null });
+    sbRef.current = { from };
+
+    await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    const inCalls = updateCalls.filter((c) => c.method === 'in').map((c) => c.args);
+    expect(inCalls).toContainEqual(['status', ['unresponded', 'handled']]);
+  });
+
+  it('still allows a Follow on a legal source status (unresponded/handled), and logs activity', async () => {
+    const { from, activityCalls } = makeSbFor({ data: { id: ITEM_ID }, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toMatchObject({ actor: OPERATOR_ID, action: 'followed' });
+  });
+
+  // Row 311 fix-round FIX 1 correction: this test used to assert the guard
+  // predicate NEVER touches followed_up_at — true before FIX 1, and no longer
+  // true for the default (allowRestamp:false) path, on purpose: that's exactly
+  // what closes row 306's headline harm (a retry could previously re-stamp
+  // followed_up_at silently, resetting the customer's waiting clock — see the
+  // dedicated "Already marked followed" tests below for the refusal case). A
+  // genuine re-Follow on a row where followed_up_at is already null (a fresh
+  // inbound cleared it, or it was never set) still passes the new guard and
+  // gets stamped, exactly as before.
+  it('still stamps followed_up_at on a genuine re-Follow (followed_up_at null), now via an explicit IS NULL guard alongside the status guard', async () => {
+    const { from, updateCalls } = makeSbFor({ data: { id: ITEM_ID }, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+    const updateCall = updateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ followed_up_at: NOW.toISOString() });
+    const isCalls = updateCalls.filter((c) => c.method === 'is').map((c) => c.args);
+    expect(isCalls).toContainEqual(['followed_up_at', null]);
+  });
+
+  it('still surfaces a real DB error (never silently swallowed)', async () => {
+    const { from } = makeSbFor({ data: null, error: { message: 'connection reset' } });
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toBe('connection reset');
+  });
+
+  // Row 311 fix-round FIX 1: the status guard above blocks the row-311 harm
+  // (stamping a terminal row) but NOT the row-306 headline harm — a RETRY can
+  // still re-stamp followed_up_at on a row that's already followed, resetting
+  // the customer's waiting clock, because this function never changes status.
+  // opts.allowRestamp differentiates the reply route's real-send re-stamp
+  // (correct) from the standalone Followed button's duplicate-click re-stamp
+  // (wrong) — see markItemFollowed's own doc comment for the full design.
+
+  /** Like makeSbFor above, but with a configurable prior-state row (makeSbFor
+   *  always hard-codes `{data: null, error: null}`, i.e. priorStateOf finds
+   *  nothing) — these tests need priorStateOf to see a real followed_up_at so
+   *  the "already followed" vs "guard blocked for another reason" distinction
+   *  is actually exercised, not vacuously true.
+   *
+   *  Row 311 fix-round 2: the code now issues a THIRD `.from('inbox_items')`
+   *  call — a re-read via priorStateOf — whenever the UPDATE matches 0 rows,
+   *  to derive the refusal cause from CURRENT state rather than the stale
+   *  pre-update snapshot. `rereadResult` mocks that call; when omitted it
+   *  defaults to `priorResult` (nothing changed between snapshot and
+   *  re-read), which keeps every pre-existing call site here correct without
+   *  edits. Pass an explicit `rereadResult` to exercise the race — a snapshot
+   *  that no longer matches what the re-read finds. */
+  function makeSbForWithPrior(
+    priorResult: { data: unknown; error: null | { message: string } },
+    itemUpdateResult: { data: unknown; error: null | { message: string } },
+    rereadResult?: { data: unknown; error: null | { message: string } },
+  ) {
+    const { builder: priorBuilder } = makeBuilder(priorResult);
+    const { builder: updateBuilder, calls: updateCalls } = makeBuilder(itemUpdateResult);
+    const { builder: rereadBuilder } = makeBuilder(rereadResult ?? priorResult);
+    const { builder: activityBuilder, calls: activityCalls } = makeBuilder({ data: null, error: null });
+    let inboxCallCount = 0;
+    const from = (table: string) => {
+      if (table === 'inbox_items') {
+        inboxCallCount += 1;
+        if (inboxCallCount === 1) return priorBuilder;
+        if (inboxCallCount === 2) return updateBuilder;
+        return rereadBuilder;
+      }
+      if (table === 'dashboard_activity') return activityBuilder;
+      throw new Error(`unexpected table: ${table}`);
+    };
+    return { from, updateCalls, activityCalls };
+  }
+
+  it('allowRestamp:true (the reply-route caller) skips the followed_up_at guard entirely', async () => {
+    const { from, updateCalls } = makeSbFor({ data: { id: ITEM_ID }, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW, { allowRestamp: true });
+
+    expect(res.ok).toBe(true);
+    expect(updateCalls.some((c) => c.method === 'is')).toBe(false);
+  });
+
+  it('refuses a restamp of an already-followed row with "Already marked followed" (alreadyFollowed:true)', async () => {
+    const priorRow = { status: 'handled', followed_up_at: '2026-08-19T00:00:00Z' };
+    const { from, activityCalls } = makeSbForWithPrior({ data: priorRow, error: null }, { data: null, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toBe('Already marked followed');
+      expect(res.alreadyFollowed).toBe(true);
+    }
+    const insertCalls = activityCalls.filter((c) => c.method === 'insert');
+    expect(insertCalls).toContainEqual(
+      expect.objectContaining({
+        args: [expect.objectContaining({ action: 'action_failed', inbox_item_id: ITEM_ID, detail: { action: 'followed', error: 'Already marked followed' } })],
+      }),
+    );
+  });
+
+  // Row 311 fix-round 2 (delta-verify MED — the TOCTOU the "already followed"
+  // path above was itself exposed to): the SNAPSHOT (priorStateOf, taken
+  // before the UPDATE) can go stale between the snapshot and the guarded
+  // UPDATE. A row that looked already-followed at snapshot time can be marked
+  // completed/dismissed by another operator before the UPDATE runs — the
+  // UPDATE then fails on the STATUS guard, not the followed_up_at guard, and
+  // the OLD code (trusting only the snapshot) mislabeled that terminal
+  // refusal as alreadyFollowed:true, which followed/route.ts turns into a 200
+  // that InWorksSection.tsx's act() uses to moveGroup a phantom row into
+  // "awaiting" — the row is really terminal server-side. The fix re-reads
+  // CURRENT state after a failed UPDATE and derives the cause from that.
+  it('a stale wasFollowed=true snapshot does NOT win when the re-read shows the row went terminal in the meantime (the TOCTOU race)', async () => {
+    const staleSnapshot = { status: 'handled', followed_up_at: '2026-08-19T00:00:00Z' };
+    const currentAfterRace = { status: 'completed', followed_up_at: '2026-08-19T00:00:00Z' };
+    const { from, activityCalls } = makeSbForWithPrior(
+      { data: staleSnapshot, error: null },
+      { data: null, error: null },
+      { data: currentAfterRace, error: null },
+    );
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toBe('Item is completed or dismissed; cannot mark followed');
+      expect(res.alreadyFollowed).toBeUndefined();
+    }
+    const insertCalls = activityCalls.filter((c) => c.method === 'insert');
+    expect(insertCalls.some((c) => (c.args[0] as { action?: string }).action === 'followed')).toBe(false);
+  });
+
+  it('the re-read confirms a GENUINE duplicate (row still legal status, still followed) and keeps alreadyFollowed:true', async () => {
+    const staleSnapshot = { status: 'handled', followed_up_at: '2026-08-19T00:00:00Z' };
+    const currentStillFollowed = { status: 'handled', followed_up_at: '2026-08-19T00:00:00Z' };
+    const { from } = makeSbForWithPrior(
+      { data: staleSnapshot, error: null },
+      { data: null, error: null },
+      { data: currentStillFollowed, error: null },
+    );
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toBe('Already marked followed');
+      expect(res.alreadyFollowed).toBe(true);
+    }
+  });
+
+  it('a re-read that errors fails SAFE — plain refusal, never alreadyFollowed', async () => {
+    const staleSnapshot = { status: 'handled', followed_up_at: '2026-08-19T00:00:00Z' };
+    const { from } = makeSbForWithPrior(
+      { data: staleSnapshot, error: null },
+      { data: null, error: null },
+      // priorStateOf only inspects `data`, never `error` — this mirrors what
+      // a real Supabase error response looks like (data null, error set).
+      { data: null, error: { message: 'read timeout' } },
+    );
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toBe('Item is completed or dismissed; cannot mark followed');
+      expect(res.alreadyFollowed).toBeUndefined();
+    }
+  });
+
+  it('a guard block NOT explained by wasFollowed (e.g. status changed concurrently) keeps the generic message and never sets alreadyFollowed', async () => {
+    const priorRow = { status: 'unresponded', followed_up_at: null };
+    const { from } = makeSbForWithPrior({ data: priorRow, error: null }, { data: null, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toBe('Item is completed or dismissed; cannot mark followed');
+      expect(res.alreadyFollowed).toBeUndefined();
+    }
+  });
+
+  it('allowRestamp:true succeeds and restamps even when the row is already followed', async () => {
+    const priorRow = { status: 'handled', followed_up_at: '2026-08-19T00:00:00Z' };
+    const { from, updateCalls } = makeSbForWithPrior({ data: priorRow, error: null }, { data: { id: ITEM_ID }, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW, { allowRestamp: true });
+
+    expect(res.ok).toBe(true);
+    const updateCall = updateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ followed_up_at: NOW.toISOString() });
+  });
+});
+
+// Row 308: before this, dashboard_activity only ever got a row on the SUCCESS
+// path of markItemHandledLocal/dismissItem/markItemFollowed/markItemCompleted
+// — prod confirmed zero failure-type actions in ~1.13M rows. recordActionFailed
+// (private, exercised only through these four callers — mirrors
+// recordAutoClosedFollowUps' own untested-in-isolation convention in this same
+// file) now writes a best-effort 'action_failed' row on each function's real
+// FAILURE branch, never on a reported-success no-op (dismissItem's
+// already-dismissed !data path still returns {ok:true} and logs nothing).
+describe('recordActionFailed — row 308 (failure-branch activity trace)', () => {
+  const ITEM_ID = 'item-42';
+  const OPERATOR_ID = '11111111-2222-3333-4444-555555555555';
+  const NOW = new Date('2026-08-20T12:00:00Z');
+
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  /** Mirrors the sibling describe blocks' own makeSbFor above. */
+  function makeSbFor(itemUpdateResult: { data: unknown; error: null | { message: string } }) {
+    const { builder: priorBuilder } = makeBuilder({ data: null, error: null });
+    const { builder: updateBuilder } = makeBuilder(itemUpdateResult);
+    const { builder: activityBuilder, calls: activityCalls } = makeBuilder({ data: null, error: null });
+    let inboxCallCount = 0;
+    const from = (table: string) => {
+      if (table === 'inbox_items') {
+        inboxCallCount += 1;
+        return inboxCallCount === 1 ? priorBuilder : updateBuilder;
+      }
+      if (table === 'dashboard_activity') return activityBuilder;
+      throw new Error(`unexpected table: ${table}`);
+    };
+    return { from, activityCalls };
+  }
+
+  function actionFailedRow(activityCalls: { method: string; args: unknown[] }[]) {
+    return activityCalls
+      .filter((c) => c.method === 'insert')
+      .map((c) => c.args[0] as { actor?: unknown; action?: string; inbox_item_id?: string; detail?: unknown })
+      .find((row) => row.action === 'action_failed');
+  }
+
+  it('markItemHandledLocal: a real DB error logs action_failed with detail {action, error}, actor = the operator', async () => {
+    const { from, activityCalls } = makeSbFor({ data: null, error: { message: 'connection reset' } });
+    sbRef.current = { from };
+
+    await markItemHandledLocal(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(actionFailedRow(activityCalls)).toMatchObject({
+      actor: OPERATOR_ID,
+      inbox_item_id: ITEM_ID,
+      detail: { action: 'handled', error: 'connection reset' },
+    });
+  });
+
+  it('markItemHandledLocal: the guard refusal (already handled) also logs action_failed', async () => {
+    const { from, activityCalls } = makeSbFor({ data: null, error: null });
+    sbRef.current = { from };
+
+    await markItemHandledLocal(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(actionFailedRow(activityCalls)).toMatchObject({
+      detail: { action: 'handled', error: 'Item not found or already handled' },
+    });
+  });
+
+  it('dismissItem: a real DB error logs action_failed with detail {action, error}', async () => {
+    const { from, activityCalls } = makeSbFor({ data: null, error: { message: 'connection reset' } });
+    sbRef.current = { from };
+
+    await dismissItem(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(actionFailedRow(activityCalls)).toMatchObject({
+      actor: OPERATOR_ID,
+      inbox_item_id: ITEM_ID,
+      detail: { action: 'dismissed', error: 'connection reset' },
+    });
+  });
+
+  it('dismissItem: the already-dismissed no-op (!data, reported ok:true) logs NO action_failed row — it is not a failure', async () => {
+    const { from, activityCalls } = makeSbFor({ data: null, error: null });
+    sbRef.current = { from };
+
+    const res = await dismissItem(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+    expect(actionFailedRow(activityCalls)).toBeUndefined();
+  });
+
+  it('markItemCompleted: a real DB error logs action_failed with detail {action, error}', async () => {
+    const { from, activityCalls } = makeSbFor({ data: null, error: { message: 'connection reset' } });
+    sbRef.current = { from };
+
+    await markItemCompleted(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(actionFailedRow(activityCalls)).toMatchObject({
+      actor: OPERATOR_ID,
+      inbox_item_id: ITEM_ID,
+      detail: { action: 'completed', error: 'connection reset' },
+    });
+  });
+
+  it('markItemFollowed: a real DB error logs action_failed with detail {action, error}', async () => {
+    const { from, activityCalls } = makeSbFor({ data: null, error: { message: 'connection reset' } });
+    sbRef.current = { from };
+
+    await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(actionFailedRow(activityCalls)).toMatchObject({
+      actor: OPERATOR_ID,
+      inbox_item_id: ITEM_ID,
+      detail: { action: 'followed', error: 'connection reset' },
+    });
+  });
+
+  it('an audit-write failure while logging action_failed never turns the caller\'s own response into a throw (fire-and-forget, mirrors recordSuppressedFollowUp)', async () => {
+    const { builder: priorBuilder } = makeBuilder({ data: null, error: null });
+    const { builder: updateBuilder } = makeBuilder({ data: null, error: { message: 'connection reset' } });
+    const throwingActivityBuilder = {
+      insert: () => {
+        throw new Error('activity table unreachable');
+      },
+    };
+    let inboxCallCount = 0;
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'inbox_items') {
+          inboxCallCount += 1;
+          return inboxCallCount === 1 ? priorBuilder : updateBuilder;
+        }
+        if (table === 'dashboard_activity') return throwingActivityBuilder;
+        throw new Error(`unexpected table: ${table}`);
+      },
+    };
+
+    // markItemCompleted's own {ok:false, error} return must still resolve normally.
+    await expect(markItemCompleted(ITEM_ID, OPERATOR_ID, NOW)).resolves.toEqual({
+      ok: false,
+      error: 'connection reset',
+    });
   });
 });
 

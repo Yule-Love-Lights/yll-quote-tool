@@ -265,10 +265,12 @@ describe('projectMaterials — roofline c9 (Slice 2b)', () => {
     expect(bulbs.map((l) => [l.sku, l.qty])).toEqual([['R', 5], ['G', 5]]); // 10 bulbs / 2 colors
   });
 
-  it('bulb spacing drives the count (6" spacing → double)', () => {
+  it('drawn spacing is IGNORED — bulbs order at the 12" install standard (Jason ruling 2026-08-20)', () => {
+    // spacingIn is design-only aesthetics; crews install every job at 12".
+    // A run drawn dense (6") must NOT double the order.
     const bulb = projectMaterials(sc([C9({ spacingIn: 6, roofFeature: 'gutter' })]), { 'bulb:warm-white:c9': 'C9WW' }, CR)
       .find((l) => l.category === 'bulb')!;
-    expect(bulb.qty).toBe(20); // 10ft × 12/6
+    expect(bulb.qty).toBe(10); // 10ft × 12/12 — not 20
   });
 
   it('excluded roofline run is skipped', () => {

@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { InboxList, isGroupExpanded, canToggleGroup, withRowFlagSet, withRowFlagCleared, withItemRestored, omitKey } from './InboxList';
+import { InboxList, isGroupExpanded, canToggleGroup, withRowFlagSet, withRowFlagCleared, withItemRestored, omitKey, errorNoteFor } from './InboxList';
 import type { OpenInboxItem } from '@/lib/dashboard/inbox/types';
 import type { InboxGroup } from '@/lib/dashboard/inbox/groupInboxItems';
 
@@ -569,5 +569,25 @@ describe('the unreachable-action lock (#302)', () => {
     for (const label of ['Handled', 'Not a lead', 'Followed', 'Mark completed']) {
       expect(lockedOut(null, label)).toBe(false);
     }
+  });
+});
+
+// Row 311 fix-round FIX 3: before this, a definite server rejection's own
+// `data.error` was discarded — only the generic "Something went wrong" note
+// ever rendered. errorNoteFor picks the right text; the thrown-fetch case
+// (unreachableAction set) is unchanged.
+describe('errorNoteFor (row 311 fix-round FIX 3)', () => {
+  it('a thrown fetch always wins, regardless of any rejection error also present', () => {
+    expect(errorNoteFor('Followed', 'Already marked followed')).toBe(
+      "Couldn't reach the server — this may or may not have gone through. Click Followed again to confirm.",
+    );
+  });
+
+  it('a definite rejection with an error renders that error, not the generic fallback', () => {
+    expect(errorNoteFor(undefined, 'Already marked followed')).toBe('Already marked followed');
+  });
+
+  it('a definite rejection with no error falls back to the generic copy', () => {
+    expect(errorNoteFor(undefined, undefined)).toBe('Something went wrong — try again.');
   });
 });
