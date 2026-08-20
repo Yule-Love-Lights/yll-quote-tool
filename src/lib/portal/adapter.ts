@@ -12,8 +12,10 @@
 import { effectiveDepositRate, type CustomLineItem, type QuoteInputs, type QuoteResult } from '@/lib/pricing/pricingEngine';
 import type { PermanentWarranty } from '@/lib/permanent/types';
 import type {
+  InstallTiming,
   PackageId,
   PortalApproval,
+  PortalBrowsingSelection,
   PortalLineItem,
   PortalLineItemKind,
   PortalPackage,
@@ -30,6 +32,7 @@ import { derivePackagesPermanentBistro } from '@/lib/permanentBistro/packages';
 import type { PortalPhotos } from './photos';
 import { deriveStatus, isPortalActionable, type QuoteStatus } from '@/lib/quoteStatus';
 import { isAmendmentConsentPending, latestConsentAmendment, type AmendmentTrailEntry } from '@/lib/amend';
+import { isPermanentEffect } from '@/lib/design/permanentScenes';
 
 // Frozen-snapshot shape stored in the `approval_snapshot` jsonb column.
 // Mirrors what /api/quotes/[id]/approve writes — kept here as a narrow
@@ -70,6 +73,25 @@ type ApprovalSnapshotJson = {
     version?: number;
   };
   amendments?: AmendmentTrailEntry[];
+};
+
+// Ledger row 239 — shape stored in the `browsing_selection` jsonb column by
+// /api/quotes/[id]/selection: the customer's LIVE, still-editable pick.
+// Optional/defensive throughout, same convention as ApprovalSnapshotJson
+// above — this is read back on every portal load, so a future schema change
+// or a hand-edited row must never crash the page. Unlike ApprovalSnapshotJson
+// this is NOT nested under a `customerSelection` key — the route writes it
+// flat, since there's no separate "envelope" metadata (version/approvedAt) to
+// wrap it in.
+type BrowsingSelectionJson = {
+  packageId?: 'A' | 'B' | 'C' | 'D';
+  selectedItemIds?: string[];
+  rushSelected?: boolean;
+  takedownSelected?: boolean;
+  installTiming?: 'none' | 'september' | 'october';
+  colorSchemeId?: string;
+  customPattern?: string[];
+  permanentEffect?: string;
 };
 
 // Shape of a `quotes` row pulled with the columns the portal needs.
@@ -124,6 +146,11 @@ export type QuoteRowForPortal = {
   // bar shows a neutral "just browsing" strip instead of approve/pay/decline.
   // Optional/back-compat — undefined/null reads as false (normal quote).
   view_only?: boolean | null;
+  // Ledger row 239 — the customer's live, unapproved browsing selection (see
+  // BrowsingSelectionJson) and when it was last saved. Optional — most rows
+  // (never opened, or opened before this shipped) have neither.
+  browsing_selection?: BrowsingSelectionJson | null;
+  browsing_selection_updated_at?: string | null;
 };
 
 function deriveFirstName(fullName: string | null): string {
@@ -561,6 +588,40 @@ function frozenWarranty(
   };
 }
 
+// Ledger row 239 — translate the raw `browsing_selection` jsonb into a
+// PortalBrowsingSelection, or undefined when there isn't one / it's
+// unparsable. Deliberately does NOT check row.customer_approved_at here (the
+// write route already refuses to save once approved, so an approved row
+// simply has no fresher browsing_selection than its last pre-approval save) —
+// the precedence that keeps a frozen approval from ever being shadowed lives
+// at the SEED call site (resolveApprovalSelectionSeed always wins when
+// `approval` is present; see quoteRowToPortalQuote's `installTiming` field
+// and page.tsx's seed chain), not here. This function only decodes; it never
+// reconciles against live packages/lineItems — that's resolveBrowsingSelectionSeed's job.
+function buildBrowsingSelection(row: QuoteRowForPortal): PortalBrowsingSelection | undefined {
+  const raw = row.browsing_selection;
+  if (!raw || typeof raw !== 'object') return undefined;
+  const packageId = raw.packageId;
+  if (packageId !== 'A' && packageId !== 'B' && packageId !== 'C' && packageId !== 'D') return undefined;
+  const installTiming: InstallTiming =
+    raw.installTiming === 'september' || raw.installTiming === 'october' ? raw.installTiming : 'none';
+  return {
+    packageId,
+    selectedItemIds: Array.isArray(raw.selectedItemIds)
+      ? raw.selectedItemIds.filter((x): x is string => typeof x === 'string')
+      : [],
+    rushSelected: raw.rushSelected === true,
+    takedownSelected: raw.takedownSelected === true,
+    installTiming,
+    ...(typeof raw.colorSchemeId === 'string' ? { colorSchemeId: raw.colorSchemeId } : {}),
+    ...(Array.isArray(raw.customPattern)
+      ? { customPattern: raw.customPattern.filter((x): x is string => typeof x === 'string') }
+      : {}),
+    ...(isPermanentEffect(raw.permanentEffect) ? { permanentEffect: raw.permanentEffect } : {}),
+    savedAt: row.browsing_selection_updated_at ?? '',
+  };
+}
+
 function buildApproval(row: QuoteRowForPortal, packages: PortalPackage[]): PortalApproval | undefined {
   if (!row.customer_approved_at) return undefined;
   const snap = row.approval_snapshot;
@@ -696,6 +757,45 @@ export function resolveApprovalSelectionSeed(
     return { initialPackageId: 'D', initialSelectedItemIds: approval.selectedItemIds };
   }
   return { initialPackageId: approval.packageId, initialSelectedItemIds: undefined };
+}
+
+// Ledger row 239 — seed the SelectionProvider package/item selection from a
+// saved BROWSING selection (never the frozen approval — callers run this
+// FIRST and feed its result in as resolveApprovalSelectionSeed's fallback, so
+// an approval, when present, always wins; see page.tsx's seed chain).
+//
+// A quote can be re-Calculated between the customer's visits, so a saved
+// packageId/selectedItemIds can reference a tier or line item that no longer
+// exists. Restoring it blindly would silently show the customer a selection
+// that doesn't match what's actually billable — not a direct money bug (the
+// server always recomputes the real charge at approve time, same as the
+// approval-seed path), but a confusing/wrong-looking one. Reconcile against
+// the quote's CURRENT catalog:
+//   - packageId 'D' (custom): keep only the ids that still exist. If NONE do
+//     (the saved custom set went entirely stale), fall back to the caller's
+//     staff-computed default rather than seed an empty "Build Your Own" —
+//     an empty selection is a worse restore than the staff pick, and it's
+//     also the AGENTS.md money-bug shape (a restored selection that silently
+//     drops every item). A PARTIAL match (some ids still valid) is coherent
+//     and is restored as-is, same tolerance approve/route.ts's own realIds
+//     filter gives a stale approval submission.
+//   - a lettered tier (A/B/C): only restored if that id still exists among
+//     this quote's current packages (a re-Calculate can change which tiers a
+//     quote even offers, e.g. switching service type) — otherwise fall back.
+export function resolveBrowsingSelectionSeed(
+  browsing: Pick<PortalBrowsingSelection, 'packageId' | 'selectedItemIds'> | undefined,
+  fallback: { initialPackageId: PackageId; initialSelectedItemIds: string[] | undefined },
+  validPackageIds: ReadonlySet<PackageId>,
+  realItemIds: ReadonlySet<string>,
+): { initialPackageId: PackageId; initialSelectedItemIds: string[] | undefined } {
+  if (!browsing) return fallback;
+  if (browsing.packageId === 'D') {
+    const validIds = browsing.selectedItemIds.filter((id) => realItemIds.has(id));
+    if (validIds.length === 0) return fallback;
+    return { initialPackageId: 'D', initialSelectedItemIds: validIds };
+  }
+  if (!validPackageIds.has(browsing.packageId)) return fallback;
+  return { initialPackageId: browsing.packageId, initialSelectedItemIds: undefined };
 }
 
 function buildVideo(row: QuoteRowForPortal): PortalVideo | undefined {
@@ -884,6 +984,16 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
   // locked, approved portal could show a price based on the staff's offer rather
   // than what the customer actually confirmed.
   const approval = buildApproval(row, packages);
+  // Ledger row 239 — the customer's saved (unapproved) browsing selection, RAW
+  // (not yet reconciled against packages/lineItems — that happens at the
+  // page.tsx seed call site via resolveBrowsingSelectionSeed). Only surfaced
+  // pre-approval: once `approval` exists it is the durable record and always
+  // wins at every seed site below, so a browsing selection saved before
+  // approval (and never overwritten again, since the write route refuses once
+  // approved) would otherwise sit here stale and unused — dropping it keeps
+  // `quote.browsingSelection` meaning exactly one thing: "what to consider
+  // restoring because they haven't approved yet."
+  const browsingSelection = approval ? undefined : buildBrowsingSelection(row);
   // Staff "Apply discount" from the builder → flowed to the live portal price so
   // the customer sees + gets it. Percentage rides as a fraction off the subtotal;
   // flat as dollars. Mutually exclusive with the early-install promo (one per quote).
@@ -937,15 +1047,19 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
     // The approval gate threshold — see `approvalGate` above (hoisted so the
     // #134 package filter and this gate can never disagree).
     minimumOrderSubtotal: approvalGate,
-    // Seeds the portal's install-timing (#40): the customer's APPROVED choice on a
-    // booked quote, else the staff-set default so an active quote opens with the
-    // Sep/Oct discount pre-selected (the customer can still change it).
+    // Seeds the portal's install-timing (#40): the customer's APPROVED choice on
+    // a booked quote; else their last SAVED browsing pick (ledger row 239); else
+    // the staff-set default so a never-opened quote opens with the Sep/Oct
+    // discount pre-selected (the customer can still change any of these).
     installTiming: approval
       ? approval.installTiming
-      : row.inputs?.installTiming === 'september' || row.inputs?.installTiming === 'october'
-        ? row.inputs.installTiming
-        : 'none',
+      : browsingSelection
+        ? browsingSelection.installTiming
+        : row.inputs?.installTiming === 'september' || row.inputs?.installTiming === 'october'
+          ? row.inputs.installTiming
+          : 'none',
     approval,
+    ...(browsingSelection ? { browsingSelection } : {}),
     // Test Quote (ledger #93): the portal pay button becomes "Simulate deposit
     // paid" (→ /simulate-deposit) when this is a test quote.
     isTest: row.is_test ?? false,

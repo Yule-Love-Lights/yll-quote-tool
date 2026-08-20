@@ -2,6 +2,7 @@ import { getSupabaseClient, getSupabaseServiceClient } from './supabase';
 import { cloneDesignToNewQuote } from './designs';
 import { allocateNumber } from './displayId';
 import { getCustomer, unarchiveProperty } from './customers';
+import { asServiceType, canCarryNceOrYllNeighborTag, DEFAULT_SERVICE_TYPE } from './serviceType';
 
 // "Rebook last season" (ledger #83, Phase 5). One click clones a customer/
 // property's last APPROVED quote — its priced inputs/result + its design (scene
@@ -158,11 +159,37 @@ function applyNceDepositDefault(inputs: unknown, isNce: boolean, resetOnOff: boo
   return inputs;
 }
 
+// #243 (domain rule locked 2026-08-11): permanent/event/bistro quotes can
+// never carry the NCE or YLL Neighbor tag. This is the ONE place both rebook
+// paths (rebookLastSeason's customer-tag resolution + rebookFromQuote's
+// exact-quote revive) funnel their resolved is_nce/legacy_rebook through —
+// gating here closes both without duplicating the check at each call site.
+// The CLONE's own service_type (carried from src.service_type a few lines
+// below, unrelated to the caller's resetNceDepositOnOff intent) decides
+// eligibility; canCarryNceOrYllNeighborTag (serviceType.ts) is the single
+// source of truth every set/inherit site shares, so this can't drift from
+// the builder chips'/admin routes' own gate. Without this, e.g.
+// rebookLastSeason resolving is_nce=true from a customer's CURRENT tag while
+// their last APPROVED quote happens to be a permanent one (rebookLastSeason
+// doesn't filter its source query by service_type — see its own comment)
+// would carry the trade tag onto a real-money clone.
 export function buildRebookInsert(
   src: RebookSource,
   opts: { resetNceDepositOnOff?: boolean } = {},
 ): Record<string, unknown> {
-  const isNce = src.is_nce ?? false;
+  const srcIsNce = src.is_nce ?? false;
+  const eligibleForTags = canCarryNceOrYllNeighborTag(
+    asServiceType(src.service_type) ?? DEFAULT_SERVICE_TYPE,
+  );
+  const isNce = eligibleForTags && srcIsNce;
+  // The gate forcing is_nce off is itself an "this NCE state is invalid"
+  // signal at least as strong as rebookLastSeason's own customer-untagged
+  // case (which already opts into resetOnOff below) — so suppressing the tag
+  // also resets a stale 40% deposit the same way, regardless of what the
+  // caller passed. Never fires unless the gate actually changed something
+  // (srcIsNce was true and got suppressed) — a source that was never NCE, or
+  // a holiday-eligible clone, is unaffected.
+  const gateForcedNceOff = srcIsNce && !isNce;
   return {
     customer_name: src.customer_name ?? 'Anonymous',
     customer_address: src.customer_address ?? '(no address)',
@@ -174,7 +201,7 @@ export function buildRebookInsert(
     inputs: applyNceDepositDefault(
       stripDiscountAndReferralCredit(src.inputs),
       isNce,
-      opts.resetNceDepositOnOff ?? false,
+      (opts.resetNceDepositOnOff ?? false) || gateForcedNceOff,
     ),
     result: stripRatesSnapshots(src.result),
     total: src.result?.total ?? 0,
@@ -186,8 +213,10 @@ export function buildRebookInsert(
     // boundary (#93).
     is_test: src.is_test ?? false,
     // NCE + YLL Neighbor tags (#198) — see the RebookSource field comments
-    // above for which value each caller passes in.
-    legacy_rebook: src.legacy_rebook ?? false,
+    // above for which value each caller passes in. #243: both gated by
+    // eligibleForTags above — a permanent/event/bistro clone can never carry
+    // either tag, no matter what the source quote or customer resolved.
+    legacy_rebook: eligibleForTags && (src.legacy_rebook ?? false),
     is_nce: isNce,
   };
 }

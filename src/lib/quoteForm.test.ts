@@ -8,6 +8,7 @@ import {
   resolveTagPayload,
   resolveNceDepositPercent,
   clearHolidayOnlyDiscountState,
+  clearNceOrNeighborOnServiceTypeSwitch,
   legacyRebookConfirmMessage,
   nceConfirmMessage,
   initialNceDepositProvenance,
@@ -607,6 +608,45 @@ describe('clearHolidayOnlyDiscountState (#212 fix round, finding 1)', () => {
       expect(
         clearHolidayOnlyDiscountState(st, { installTiming: 'none', discountEnabled: false, discountAmount: 0 }),
       ).toEqual({});
+    }
+  });
+});
+
+describe('clearNceOrNeighborOnServiceTypeSwitch (#243)', () => {
+  it.each([['permanent'], ['event'], ['permanent_bistro']])(
+    'reports both tags for clearing when switching to %s with both chips currently true',
+    (st) => {
+      expect(clearNceOrNeighborOnServiceTypeSwitch(st as never, true, true)).toEqual({
+        clearIsNce: true,
+        clearLegacyRebook: true,
+      });
+    },
+  );
+
+  it('reports only the chip that is actually true — the other stays a no-op', () => {
+    expect(clearNceOrNeighborOnServiceTypeSwitch('permanent', true, false)).toEqual({
+      clearIsNce: true,
+      clearLegacyRebook: false,
+    });
+    expect(clearNceOrNeighborOnServiceTypeSwitch('permanent', false, true)).toEqual({
+      clearIsNce: false,
+      clearLegacyRebook: true,
+    });
+  });
+
+  it('is a no-op switching INTO holiday, regardless of the chips', () => {
+    expect(clearNceOrNeighborOnServiceTypeSwitch('holiday', true, true)).toEqual({
+      clearIsNce: false,
+      clearLegacyRebook: false,
+    });
+  });
+
+  it('is a no-op for any non-holiday target when both chips are already false', () => {
+    for (const st of ['event', 'permanent', 'permanent_bistro'] as const) {
+      expect(clearNceOrNeighborOnServiceTypeSwitch(st, false, false)).toEqual({
+        clearIsNce: false,
+        clearLegacyRebook: false,
+      });
     }
   });
 });
