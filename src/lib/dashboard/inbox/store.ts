@@ -2241,6 +2241,14 @@ export type PendingColorRequestsResult =
  * 'is', null)` filters server-side (confirmed against prod: matches exactly
  * the 2 live requests, `EXPLAIN` shows one Seq Scan over the ~190-row quotes
  * table — no per-row fetch, no N+1).
+ *
+ * Row 321 fix-round FIX 5 (customer LOW): `.order('id', ...)` paired with
+ * `.limit()` — this repo's established convention (the #185 precedent, e.g.
+ * the returning-proxy count query above) — so the capped subset is
+ * DETERMINISTIC. Without it, the in-memory oldest-first sort below only holds
+ * within an ARBITRARY (unordered-query) subset once the live population ever
+ * exceeds `limit`; a request could nondeterministically drop off the list
+ * between loads.
  */
 export async function listPendingColorRequests(limit = 200): Promise<PendingColorRequestsResult> {
   const sb = getSupabaseServiceClient();
@@ -2251,6 +2259,7 @@ export async function listPendingColorRequests(limit = 200): Promise<PendingColo
     .eq('is_test', false)
     .eq('view_only', false)
     .not('approval_snapshot->pendingColorRequest', 'is', null)
+    .order('id', { ascending: true })
     .limit(limit);
   if (error) return { ok: false, error: error.message };
   const items = ((data ?? []) as {

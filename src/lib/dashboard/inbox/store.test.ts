@@ -2448,6 +2448,15 @@ describe('listPendingColorRequests (row 321 — the unsuppressible surface)', ()
     expect(notCall!.args).toEqual(['approval_snapshot->pendingColorRequest', 'is', null]);
     expect(calls.some((c) => c.method === 'eq' && c.args[0] === 'is_test' && c.args[1] === false)).toBe(true);
     expect(calls.some((c) => c.method === 'eq' && c.args[0] === 'view_only' && c.args[1] === false)).toBe(true);
+    // Row 321 fix-round FIX 5: `.order()` paired with `.limit()` (the #185
+    // convention) so the capped subset is deterministic.
+    const orderCall = calls.find((c) => c.method === 'order');
+    expect(orderCall!.args).toEqual(['id', { ascending: true }]);
+    const limitCall = calls.find((c) => c.method === 'limit');
+    expect(limitCall).toBeDefined();
+    // .order() must be chained BEFORE .limit() — the ORDER a Postgrest query
+    // is built in is the order it executes server-side.
+    expect(calls.indexOf(orderCall!)).toBeLessThan(calls.indexOf(limitCall!));
   });
 
   it('sorts oldest request first', async () => {
