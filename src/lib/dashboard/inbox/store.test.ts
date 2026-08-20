@@ -2505,6 +2505,60 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
       expect(fake.rows[0].status).toBe('pending');
     });
 
+    // #310: the only tests above ever seed a SINGLE terminal status per run.
+    // sweepResolvedItemFollowUps derives each item's OWN status via a
+    // type-narrowing filter (`r.status === 'completed' || r.status === 'dismissed'`)
+    // then loops `closeFollowUpsForResolvedItem(item.id, item.status)` per item —
+    // correct today, but nothing pinned that a MIX of completed + dismissed items
+    // in one run each get closed under their OWN status rather than, say, every
+    // audit row silently inheriting the first item's status. A non-terminal
+    // 'handled' item is mixed in too, to prove it stays untouched alongside the
+    // two that close.
+    it('closes a MIX of completed and dismissed items in one run, each audit row carrying its OWN terminalStatus', async () => {
+      const fake = makeFollowUpsFake([
+        { id: 'fu-completed', inbox_item_id: 'item-completed', reason: 'quote_sent_no_reply', status: 'pending' },
+        { id: 'fu-dismissed', inbox_item_id: 'item-dismissed', reason: 'quote_sent_no_reply', status: 'pending' },
+        { id: 'fu-handled', inbox_item_id: 'item-handled', reason: 'quote_sent_no_reply', status: 'pending' },
+      ]);
+      const itemsFake = makeItemsFake([
+        { id: 'item-completed', status: 'completed' },
+        { id: 'item-dismissed', status: 'dismissed' },
+        { id: 'item-handled', status: 'handled' },
+      ]);
+      const activityInserts: Record<string, unknown>[] = [];
+      sbRef.current = {
+        from: (table: string) => {
+          if (table === 'follow_ups') return fake.table();
+          if (table === 'inbox_items') return itemsFake;
+          if (table === 'dashboard_activity') {
+            return {
+              insert: (rows: Record<string, unknown>[]) => {
+                activityInserts.push(...rows);
+                return Promise.resolve({ data: null, error: null });
+              },
+            };
+          }
+          return genericTable();
+        },
+      };
+
+      const closed = await sweepResolvedItemFollowUps();
+
+      expect(closed).toBe(2); // completed + dismissed close; handled stays untouched
+      expect(fake.rows.find((r) => r.id === 'fu-completed')!.status).toBe('done');
+      expect(fake.rows.find((r) => r.id === 'fu-dismissed')!.status).toBe('done');
+      expect(fake.rows.find((r) => r.id === 'fu-handled')!.status).toBe('pending');
+
+      expect(activityInserts).toHaveLength(2); // one per closed item; the untouched 'handled' item gets none
+      const completedActivity = activityInserts.find((r) => r.inbox_item_id === 'item-completed');
+      const dismissedActivity = activityInserts.find((r) => r.inbox_item_id === 'item-dismissed');
+      expect(completedActivity).toMatchObject({ detail: { followUpId: 'fu-completed', terminalStatus: 'completed' } });
+      expect(dismissedActivity).toMatchObject({ detail: { followUpId: 'fu-dismissed', terminalStatus: 'dismissed' } });
+      // The failure mode this test guards: neither row inherits the OTHER item's status.
+      expect((completedActivity!.detail as { terminalStatus: string }).terminalStatus).not.toBe('dismissed');
+      expect((dismissedActivity!.detail as { terminalStatus: string }).terminalStatus).not.toBe('completed');
+    });
+
     it('returns 0 without querying inbox_items when there are no pending follow-ups', async () => {
       const fake = makeFollowUpsFake([]);
       let inboxItemsQueried = false;
