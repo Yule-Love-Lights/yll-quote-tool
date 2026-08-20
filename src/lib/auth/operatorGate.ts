@@ -54,6 +54,10 @@ const PUBLIC_QUOTE_SUBROUTES_BY_METHOD: Record<string, string> = {
   // The portal colour picker's request against a BOOKED order (#163) — per its
   // route header, the only path to change a booked order's colours.
   'color-change-request': 'POST',
+  // Ledger row 236 — the "Want to reopen your quote? Let us know!" ask on a
+  // declined/abandoned quote's read-only portal (StickyBottomBar's
+  // terminalBrowse branch). POST only; no separate operator gate of its own.
+  'reopen-request': 'POST',
 };
 
 // Public, empty-form pages listed one by one rather than by prefix, so

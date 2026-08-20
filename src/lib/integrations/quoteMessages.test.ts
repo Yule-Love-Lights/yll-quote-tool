@@ -24,6 +24,8 @@ import {
   amendmentEmailHtml,
   amendmentDeclinedInternalEmailSubject,
   amendmentDeclinedInternalEmailHtml,
+  internalReopenRequestedEmailSubject,
+  internalReopenRequestedEmailHtml,
   receiptSmsBody,
   receiptEmailHtml,
   referralLinkEmailHtml,
@@ -879,6 +881,64 @@ describe('amendmentDeclinedInternalEmailHtml', () => {
   it('falls back to "Unknown" for a null customer name', () => {
     const html = amendmentDeclinedInternalEmailHtml({ ...base, customerName: null });
     expect(html).toContain('Unknown');
+  });
+});
+
+// Ledger row 236, fix round (four-lens LOW) — the quote number is threaded
+// through in the SAME subject/body format as the money-alert siblings above
+// (amendmentDeclinedInternalEmail*/internalDepositDeclinedEmail*).
+describe('internalReopenRequestedEmailSubject (row 236)', () => {
+  it('names the customer, with a fallback', () => {
+    expect(internalReopenRequestedEmailSubject({ customerName: 'Jordan Smith', quoteNumber: 12 })).toContain(
+      'Jordan Smith',
+    );
+    expect(internalReopenRequestedEmailSubject({ customerName: null, quoteNumber: null })).toContain('A customer');
+  });
+
+  it('includes the quote number when present, omits it when absent', () => {
+    expect(internalReopenRequestedEmailSubject({ customerName: 'Jordan', quoteNumber: 42 })).toContain('quote #42');
+    expect(internalReopenRequestedEmailSubject({ customerName: 'Jordan', quoteNumber: null })).not.toContain(
+      'quote #',
+    );
+  });
+});
+
+describe('internalReopenRequestedEmailHtml (row 236)', () => {
+  const base = {
+    customerName: 'Jordan Smith',
+    quoteNumber: 42,
+    address: '1 Main St',
+    phone: '+15555550123',
+    email: 'jordan@example.com',
+    status: 'declined',
+    portalUrl: 'https://quote.yulelovelights.com/portal/abc',
+    adminUrl: 'https://quote.yulelovelights.com/quote/abc',
+  };
+
+  it('carries the customer, quote number, status, and both links', () => {
+    const html = internalReopenRequestedEmailHtml(base);
+    expect(html).toContain('Jordan Smith');
+    expect(html).toContain('(quote #42)');
+    expect(html).toContain('declined');
+    expect(html).toContain('href="https://quote.yulelovelights.com/quote/abc"');
+    expect(html).toContain('href="https://quote.yulelovelights.com/portal/abc"');
+  });
+
+  it('omits the quote-number label entirely when quoteNumber is null', () => {
+    const html = internalReopenRequestedEmailHtml({ ...base, quoteNumber: null });
+    expect(html).not.toContain('(quote #');
+  });
+
+  it('shows "Unknown" for a missing name and reflects an abandoned status', () => {
+    const html = internalReopenRequestedEmailHtml({ ...base, customerName: null, status: 'abandoned' });
+    expect(html).toContain('Unknown');
+    expect(html).toContain('abandoned');
+  });
+
+  it('escapes HTML in the customer name', () => {
+    const html = internalReopenRequestedEmailHtml({ ...base, customerName: '<script>' });
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('&lt;script&gt;');
   });
 });
 

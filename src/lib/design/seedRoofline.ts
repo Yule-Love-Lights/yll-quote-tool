@@ -18,6 +18,15 @@
 
 import type { Scene, SceneItem, StrandItem, Surface, RoofFeature } from './sceneTypes';
 import { isStrand } from './sceneTypes';
+// #843 fix 2: derived (not a fresh literal) so a future spacing trim moves
+// this automatically instead of orphaning it again -- row 248 originally
+// shipped C9_SPACING_IN as a hand literal (12) that immediately drifted
+// off-preset the moment the row-248 trim landed (#834 caught it). The
+// editor-core -> src/lib import direction is already established (this
+// same module's sizePresets.ts is imported by toolDefaults.ts; colors.ts /
+// yardstick-scale.ts are imported the same way by materialsProjection.ts
+// and others), so this crosses no boundary the repo avoids.
+import { C9_SPACINGS } from '@/components/design/editor-core/sizePresets';
 
 export type NormalizedPoint = [number, number];
 export type NormalizedPolyline = NormalizedPoint[];
@@ -47,7 +56,12 @@ const ROOFLINE_SURFACES: ReadonlySet<string> = new Set([
 
 // The editor's C9 creation defaults (editor.ts tool defaults) so seeded strands
 // look exactly like hand-drawn ones and stay fully editable.
-const C9_SPACING_IN = 12;
+// Jason 2026-08-20: the Medium preset after the row-248 trim (12 is no
+// longer a selectable preset; drawn spacing is design-only aesthetics — the
+// materials projection pins real orders to the 12" install standard, #834).
+// Derived from C9_SPACINGS' own middle entry (not a fresh literal) so a
+// future trim can't orphan this again the way it did on the first pass.
+const C9_SPACING_IN = C9_SPACINGS[Math.floor(C9_SPACINGS.length / 2)];
 const C9_COLOR_PATTERN = ['warm-white'];
 
 // Valid physical roof features (the full RoofFeature union). The AI emits the

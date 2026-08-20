@@ -229,6 +229,58 @@ describe('seedSceneFromAnalysis — replacement rules', () => {
     // Exactly one strand with this id — no accidental duplicate.
     expect(out.items.filter((i) => i.id === memberId)).toHaveLength(1);
   });
+
+  // #240: a mini-light group can now hold scattershot (miniArea) members too,
+  // and detectionItems seeds a DIFFERENT item kind depending on the detected
+  // type (strand for column/railing, miniArea for bush/tree — see the branch
+  // above `${SEED_PREFIX}mini-${i + 1}`). A re-analyze that redetects the
+  // SAME index as a different type (railing → bush) must still reattach the
+  // group's groupId onto the fresh item, even though its kind changed from
+  // strand to miniArea, or the #227 double-bill guard's protection silently
+  // stops applying the moment a scattershot is involved.
+  it('reattaches groupId across a strand→miniArea kind change at the same seed-mini-N id (#240)', () => {
+    const seeded = seedSceneFromAnalysis(emptyScene(), {
+      detections: { miniLights: [
+        { type: 'railing', wrapStyle: 'canopy', stringCount: 2, box: [0.1, 0.4, 0.3, 0.02] },
+      ] },
+    }, W, H);
+    const memberId = (seeded.items.find(isStrand) as StrandItem).id;
+    expect(memberId).toBe('seed-mini-1');
+    const grp: MiniGroupItem = {
+      id: 'staff-group-1',
+      kind: 'miniGroup',
+      memberIds: [memberId],
+      yardstickId: null,
+      surface: 'railing',
+      wrapStyle: 'canopy',
+      stringCount: 2,
+      included: true,
+    };
+    const grouped: Scene = {
+      ...seeded,
+      items: [
+        ...seeded.items.map((i) => (i.id === memberId ? { ...(i as StrandItem), groupId: grp.id } : i)),
+        grp,
+      ],
+    };
+
+    // Re-analyze at the SAME index, but this time detected as a bush — the
+    // fresh item is a MiniAreaItem with the SAME id (seed-mini-1), not a
+    // StrandItem.
+    const out = seedSceneFromAnalysis(grouped, {
+      detections: { miniLights: [
+        { type: 'bush', wrapStyle: 'canopy', stringCount: 2, box: [0.1, 0.4, 0.3, 0.2] },
+      ] },
+    }, W, H);
+
+    const group = out.items.find(isMiniGroup) as MiniGroupItem;
+    expect(group).toBeTruthy(); // not orphaned — the id is present (now as a scattershot)
+    const member = out.items.find((i) => i.id === memberId);
+    expect(member && isMiniArea(member)).toBe(true); // the fresh item really is a miniArea now
+    expect((member as MiniAreaItem).groupId).toBe(grp.id); // reattached across the kind change
+    // Exactly one item with this id — no accidental duplicate, no double-bill.
+    expect(out.items.filter((i) => i.id === memberId)).toHaveLength(1);
+  });
 });
 
 describe('seedSceneFromAnalysis — scale yardstick', () => {

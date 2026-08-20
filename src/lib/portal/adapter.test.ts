@@ -15,6 +15,8 @@ import { DEFAULT_PERMANENT_BISTRO_RATES } from '@/lib/permanentBistro/types';
 import { calculateEventQuote } from '@/lib/event/pricing';
 import type { ServiceType } from '@/lib/serviceType';
 import type { PortalPhotos } from './photos';
+import type { PortalQuote } from '@/components/portal/types';
+import { resolveAgreedLineItems } from '@/lib/pdf/docModels';
 
 // ── Test scaffolding ──────────────────────────────────────────────────────
 
@@ -469,6 +471,219 @@ describe('quoteRowToPortalQuote — Stake Lighting + mini-light label detail str
     expect(custom).toBeDefined(); // label untouched — not stripped down to "Special garland"
     expect(custom!.kind).toBe('garland'); // parseLineItem's own classification, unrelated to this fix
     expect(custom!.price).toBe(75);
+  });
+});
+
+// ── item-numbering-rename: duplicate-label numbering survives the portal's
+// bare-name strip, and a staff rename replaces + un-numbers the survivor ────
+
+describe('quoteRowToPortalQuote — item-numbering-rename (duplicate numbering + label overrides)', () => {
+  it('two identical trees number "Tree 1"/"Tree 2" on the engine AND the stripped portal label', () => {
+    const inputs = emptyInputs({
+      miniLightItems: [
+        { type: 'tree', wrapStyle: 'canopy', stringCount: 1, id: 'mini-a' },
+        { type: 'tree', wrapStyle: 'canopy', stringCount: 1, id: 'mini-b' },
+      ],
+    });
+    const result = calculateQuote(inputs);
+    expect(result.lineItems.map((li) => li.label)).toEqual([
+      'Tree 1 – canopy wrap, 1 string',
+      'Tree 2 – canopy wrap, 1 string',
+    ]);
+    const portal = portalFrom(result, inputs)!;
+    const trees = portal.lineItems.filter((li) => li.kind === 'tree');
+    expect(trees.map((t) => t.label)).toEqual(['Tree 1', 'Tree 2']);
+    expect(trees.every((t) => t.detail === '')).toBe(true);
+  });
+
+  it('a renamed tree shows the override on the portal, is flagged labelOverridden, and keeps kind "tree"', () => {
+    const inputs = emptyInputs({
+      miniLightItems: [{ type: 'tree', wrapStyle: 'canopy', stringCount: 1, id: 'mini-a' }],
+      labelOverrides: { 'mini-a': 'Front Left Tree' },
+    });
+    const result = calculateQuote(inputs);
+    // The engine's OWN label is never the override text (kind classification
+    // must never see freeform staff text) — only the portal/display layer swaps it.
+    expect(result.lineItems[0].label).toBe('Tree – canopy wrap, 1 string');
+    const portal = portalFrom(result, inputs)!;
+    const tree = portal.lineItems.find((li) => li.kind === 'tree')!;
+    expect(tree.label).toBe('Front Left Tree');
+    expect(tree.labelOverridden).toBe(true);
+  });
+
+  it('renaming ONE of two duplicate trees un-numbers the other back to bare "Tree" (Jason\'s ruling)', () => {
+    const inputs = emptyInputs({
+      miniLightItems: [
+        { type: 'tree', wrapStyle: 'canopy', stringCount: 1, id: 'mini-a' },
+        { type: 'tree', wrapStyle: 'canopy', stringCount: 1, id: 'mini-b' },
+      ],
+      labelOverrides: { 'mini-b': 'Front Left Tree' },
+    });
+    const result = calculateQuote(inputs);
+    const portal = portalFrom(result, inputs)!;
+    const trees = portal.lineItems.filter((li) => li.kind === 'tree');
+    expect(trees.map((t) => ({ label: t.label, overridden: !!t.labelOverridden }))).toEqual([
+      { label: 'Tree', overridden: false }, // no longer ambiguous — the sibling was renamed away
+      { label: 'Front Left Tree', overridden: true },
+    ]);
+  });
+
+  it('numbers duplicate spritzers/bows at the end of the full label (no separable prefix, no tier-detail regex to contaminate)', () => {
+    const inputs = emptyInputs({
+      spritzers: [{ size: '24', quantity: 1, id: 'spritzer-s1' }, { size: '24', quantity: 1, id: 'spritzer-s2' }],
+      bows: [{ quantity: 1, id: 'bow-b1' }, { quantity: 1, id: 'bow-b2' }],
+    });
+    const result = calculateQuote(inputs);
+    const spritzerLabels = result.lineItems.filter((li) => li.id?.startsWith('spritzer-')).map((li) => li.label);
+    expect(spritzerLabels).toEqual(['24" Spritzer 1', '24" Spritzer 2']);
+    const bowLabels = result.lineItems.filter((li) => li.id?.startsWith('bow-')).map((li) => li.label);
+    expect(bowLabels).toEqual(['Bow 1', 'Bow 2']);
+  });
+
+  // Fix round (technical-lens MED): wreaths/garland number BEFORE the " – tier"
+  // suffix (mirroring the mini prefix insertion), not at the label's end.
+  // Appending at the end put the digit inside the real portal parser's
+  // extractDecorDetail tier capture (lineItemKind.ts's tierM regex has no "×"
+  // terminator when qty===1, so it swallowed a trailing digit straight into
+  // `detail` — "Non-Decorated 1" — which prints VERBATIM on the customer
+  // Quote/Invoice/Receipt PDFs; wreath/garland skip the wrapped-mini
+  // aggregation that would otherwise have hidden it). These tests run the
+  // REAL pipeline (calculateQuote -> quoteRowToPortalQuote's real
+  // parseLineItem -> docModels' resolveAgreedLineItems), not a hand-built
+  // PortalLineItem, so a regression in the real regex would actually fail
+  // here (a prior version of this test hand-constructed the PortalLineItem
+  // and would have passed even with the bug).
+  it('a duplicate WREATH keeps a clean tier `detail` through the real parseLineItem + docModels pipeline (scene→engine→adapter→docModels)', () => {
+    const inputs = emptyInputs({
+      wreaths: [
+        { size: '36noble', tier: 'bow', quantity: 1, id: 'wreath-w1' },
+        { size: '36noble', tier: 'bow', quantity: 1, id: 'wreath-w2' },
+      ],
+    });
+    const result = calculateQuote(inputs);
+    // Engine: the number lands before " – tier", not appended at the end.
+    expect(result.lineItems.map((li) => li.label)).toEqual([
+      '36" Noble Wreath 1 – Non-Decorated',
+      '36" Noble Wreath 2 – Non-Decorated',
+    ]);
+    const portal = portalFrom(result, inputs)!;
+    const wreaths = portal.lineItems.filter((li) => li.kind === 'wreath');
+    expect(wreaths.map((w) => w.label)).toEqual([
+      '36" Noble Wreath 1 – Non-Decorated',
+      '36" Noble Wreath 2 – Non-Decorated',
+    ]);
+    // The REAL extractDecorDetail output — clean tier text, no leaked digit.
+    expect(wreaths.map((w) => w.detail)).toEqual(['Non-Decorated', 'Non-Decorated']);
+
+    // ...→docModels: the customer PDF prints `detail` verbatim for a
+    // non-wrapped kind (wreath isn't in WRAPPED_MINI_KINDS, so it's never
+    // aggregated away) — prove the full chain, not just the adapter's output.
+    const approved: PortalQuote = {
+      ...portal,
+      approval: {
+        approvedAt: '2026-01-01T00:00:00Z',
+        packageId: 'D',
+        packageName: 'Build Your Own',
+        totalUsd: portal.lineItems.reduce((s, li) => s + li.price, 0),
+        depositUsd: 0,
+        selectedItemCount: wreaths.length,
+        selectedItemIds: wreaths.map((w) => w.id),
+        installTiming: 'none',
+        rushSelected: false,
+        takedownSelected: false,
+      },
+    };
+    const agreed = resolveAgreedLineItems(approved)!;
+    expect(agreed.items.map((i) => i.detail)).toEqual(['Non-Decorated', 'Non-Decorated']);
+  });
+
+  it('a duplicate GARLAND keeps a clean tier `detail` through the real parseLineItem + docModels pipeline (scene→engine→adapter→docModels)', () => {
+    const inputs = emptyInputs({
+      garland: [
+        { length: '9ft', type: 'noble', tier: 'fullDecor', quantity: 1, id: 'garland-g1' },
+        { length: '9ft', type: 'noble', tier: 'fullDecor', quantity: 1, id: 'garland-g2' },
+      ],
+    });
+    const result = calculateQuote(inputs);
+    expect(result.lineItems.map((li) => li.label)).toEqual([
+      '9ft Noble Garland 1 – Decorated',
+      '9ft Noble Garland 2 – Decorated',
+    ]);
+    const portal = portalFrom(result, inputs)!;
+    const garlands = portal.lineItems.filter((li) => li.kind === 'garland');
+    expect(garlands.map((g) => g.label)).toEqual([
+      '9ft Noble Garland 1 – Decorated',
+      '9ft Noble Garland 2 – Decorated',
+    ]);
+    expect(garlands.map((g) => g.detail)).toEqual(['Decorated', 'Decorated']);
+
+    const approved: PortalQuote = {
+      ...portal,
+      approval: {
+        approvedAt: '2026-01-01T00:00:00Z',
+        packageId: 'D',
+        packageName: 'Build Your Own',
+        totalUsd: portal.lineItems.reduce((s, li) => s + li.price, 0),
+        depositUsd: 0,
+        selectedItemCount: garlands.length,
+        selectedItemIds: garlands.map((g) => g.id),
+        installTiming: 'none',
+        rushSelected: false,
+        takedownSelected: false,
+      },
+    };
+    const agreed = resolveAgreedLineItems(approved)!;
+    expect(agreed.items.map((i) => i.detail)).toEqual(['Decorated', 'Decorated']);
+  });
+
+  // Lens LOW: a qty>1 duplicate ("× N" labels) must not produce "× N 1" —
+  // the product-name-segment insertion places the number BEFORE " – tier",
+  // never after the trailing "× qty", so this can't happen structurally.
+  it('a qty>1 duplicate wreath numbers before " – tier", never after "× qty" (no "× 2 1")', () => {
+    const inputs = emptyInputs({
+      wreaths: [
+        { size: '36noble', tier: 'bow', quantity: 2, id: 'wreath-w1' },
+        { size: '36noble', tier: 'bow', quantity: 2, id: 'wreath-w2' },
+      ],
+    });
+    const result = calculateQuote(inputs);
+    expect(result.lineItems.map((li) => li.label)).toEqual([
+      '36" Noble Wreath 1 – Non-Decorated × 2',
+      '36" Noble Wreath 2 – Non-Decorated × 2',
+    ]);
+    const portal = portalFrom(result, inputs)!;
+    const wreaths = portal.lineItems.filter((li) => li.kind === 'wreath');
+    // The real extractDecorDetail still parses the tier + qty correctly.
+    expect(wreaths.map((w) => w.detail)).toEqual(['Non-Decorated × 2', 'Non-Decorated × 2']);
+  });
+
+  it('BOWS keep a clean detail through the real pipeline too (verifying the same class does not apply here)', () => {
+    const inputs = emptyInputs({
+      bows: [{ quantity: 1, id: 'bow-b1' }, { quantity: 1, id: 'bow-b2' }],
+    });
+    const result = calculateQuote(inputs);
+    expect(result.lineItems.map((li) => li.label)).toEqual(['Bow 1', 'Bow 2']);
+    const portal = portalFrom(result, inputs)!;
+    const bows = portal.lineItems.filter((li) => li.kind === 'bow');
+    // extractBowDetail only ever derives qty from a "×" match (defaulting to
+    // 1 bow otherwise) — it never captures-to-end the way the wreath/garland
+    // tier regex does, so appending the number at the label's end never
+    // reaches `detail` here. No fix needed for bows; this locks that in.
+    expect(bows.map((b) => b.detail)).toEqual(['1 bow', '1 bow']);
+  });
+
+  it('SPRITZERS keep a clean detail through the real pipeline too (verifying the same class does not apply here)', () => {
+    const inputs = emptyInputs({
+      spritzers: [{ size: '24', quantity: 1, id: 'spritzer-s1' }, { size: '24', quantity: 1, id: 'spritzer-s2' }],
+    });
+    const result = calculateQuote(inputs);
+    expect(result.lineItems.map((li) => li.label)).toEqual(['24" Spritzer 1', '24" Spritzer 2']);
+    const portal = portalFrom(result, inputs)!;
+    const spritzers = portal.lineItems.filter((li) => li.kind === 'spritzer');
+    // extractSpritzerDetail CONSTRUCTS its output from captured size + qty
+    // pieces (never captures-to-end), so the trailing number never reaches
+    // `detail` here either. No fix needed for spritzers; this locks that in.
+    expect(spritzers.map((s) => s.detail)).toEqual(['1 × 24"', '1 × 24"']);
   });
 });
 
