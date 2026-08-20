@@ -18,6 +18,8 @@ import {
   isAlreadyApprovedCode,
   isViewOnlyCode,
   viewOnlyBrowsingCopy,
+  isTerminalBrowseStatus,
+  reopenAskCopy,
 } from './StickyBottomBar';
 import type { CapturedSignature } from './SignaturePad';
 
@@ -89,6 +91,58 @@ describe('viewOnlyBrowsingCopy (#176)', () => {
 
   it('preserves a leading +country code in the tel href', () => {
     expect(viewOnlyBrowsingCopy('+1 631-517-0186').telHref).toBe('tel:+16315170186');
+  });
+});
+
+// Ledger row 236 — declined/abandoned quotes stay browsable but show the
+// reopen-ask strip instead of the live approve/decline bar; every other
+// status (including the two OTHER non-actionable ones, cancelled and
+// changes_requested — page.tsx still hard-blocks those before this component
+// ever mounts) keeps its existing behavior unchanged.
+describe('isTerminalBrowseStatus (row 236)', () => {
+  it('is true for declined and abandoned', () => {
+    expect(isTerminalBrowseStatus('declined')).toBe(true);
+    expect(isTerminalBrowseStatus('abandoned')).toBe(true);
+  });
+
+  it('is false for every other status, including the other two non-actionable ones', () => {
+    expect(isTerminalBrowseStatus('cancelled')).toBe(false);
+    expect(isTerminalBrowseStatus('changes_requested')).toBe(false);
+    expect(isTerminalBrowseStatus('sent')).toBe(false);
+    expect(isTerminalBrowseStatus('viewed')).toBe(false);
+    expect(isTerminalBrowseStatus('approved')).toBe(false);
+    expect(isTerminalBrowseStatus('booked')).toBe(false);
+  });
+
+  it('is false for null/undefined (fail toward the normal bar, not the reopen strip)', () => {
+    expect(isTerminalBrowseStatus(null)).toBe(false);
+    expect(isTerminalBrowseStatus(undefined)).toBe(false);
+  });
+});
+
+// Ledger row 236 — the reopen-ask strip's contact links. Mirrors
+// viewOnlyBrowsingCopy's tel: normalization; email is the new part —
+// NEXT_PUBLIC_PORTAL_EMAIL is unset in prod today, and the caller must
+// render no email line at all when it's absent, never a broken mailto:.
+describe('reopenAskCopy (row 236)', () => {
+  it('builds a tel: href and omits email/mailtoHref when no email is given', () => {
+    expect(reopenAskCopy('(631) 517-0186')).toEqual({
+      phone: '(631) 517-0186',
+      telHref: 'tel:6315170186',
+    });
+  });
+
+  it('includes email + a mailto: href when an email is given', () => {
+    expect(reopenAskCopy('(631) 517-0186', 'sales@yulelovelights.com')).toEqual({
+      phone: '(631) 517-0186',
+      telHref: 'tel:6315170186',
+      email: 'sales@yulelovelights.com',
+      mailtoHref: 'mailto:sales@yulelovelights.com',
+    });
+  });
+
+  it('preserves a leading +country code in the tel href', () => {
+    expect(reopenAskCopy('+1 631-517-0186').telHref).toBe('tel:+16315170186');
   });
 });
 

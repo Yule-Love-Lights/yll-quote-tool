@@ -131,6 +131,34 @@ export function viewOnlyBrowsingCopy(phone: string): { label: string; phone: str
   };
 }
 
+// Ledger row 236 — true for the two terminal statuses whose portal stays
+// browsable (colors, line-item toggles — see page.tsx's terminal-block gate)
+// but must never show the live approve/pay/decline/request-changes bar
+// again. Mirrors canRevive (@/lib/quoteStatus) exactly — the SAME two
+// statuses the reopen-request route accepts — kept as a tiny local
+// predicate rather than importing canRevive, since this file already takes
+// quoteStatus as a bare `string | null | undefined` prop, not the narrower
+// QuoteStatus type canRevive expects.
+export function isTerminalBrowseStatus(status: string | null | undefined): boolean {
+  return status === 'declined' || status === 'abandoned';
+}
+
+// Ledger row 236 — the reopen-ask strip's tel:/mailto: hrefs, pure for the
+// same reason viewOnlyBrowsingCopy above is: no render-test infra in this
+// file (see StickyBottomBar.test.ts's header note). `email` is omitted
+// (undefined in, undefined out) when NEXT_PUBLIC_PORTAL_EMAIL isn't set —
+// the caller must render no email line at all rather than a broken mailto:.
+export function reopenAskCopy(
+  phone: string,
+  email?: string,
+): { phone: string; telHref: string; email?: string; mailtoHref?: string } {
+  return {
+    phone,
+    telHref: `tel:${phone.replace(/[^0-9+]/g, '')}`,
+    ...(email ? { email, mailtoHref: `mailto:${email}` } : {}),
+  };
+}
+
 export type StickyBottomBarProps = {
   quoteId: string;
   /** #43 — the customer has approved (the snapshot is frozen). When checkout is
@@ -167,7 +195,11 @@ export type StickyBottomBarProps = {
    *  page-level dead-quote gate skips itself once `approved` is true (so a
    *  booked-then-cancelled quote still shows its confirmation), so this is
    *  the only place left to catch "approved, unpaid, then killed". Undefined
-   *  is treated as actionable (fail-open — matches isPortalActionable). */
+   *  is treated as actionable (fail-open — matches isPortalActionable).
+   *  Ledger row 236 — ALSO drives the terminalBrowse strip below: a
+   *  'declined'/'abandoned' quoteStatus renders the reopen-ask instead of the
+   *  live approve/decline bar, independent of `approved`/`checkoutEnabled` —
+   *  see isTerminalBrowseStatus. */
   quoteStatus?: string | null;
   /** PostHog v1 — included on the quote_approved event's properties. */
   serviceType?: ServiceType;
@@ -231,6 +263,11 @@ export function StickyBottomBar({
   const signAbandonGuard = useRef<AbandonGuard>(openAbandonGuard());
   const depositAbandonGuard = useRef<AbandonGuard>(openAbandonGuard());
 
+  // Ledger row 236 — the terminalBrowse reopen-ask button's own state. Never
+  // durable-writes anything on the quote (the server route has no status
+  // transition to make) — just tracks this one click's fetch.
+  const [reopenState, setReopenState] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
+
   // #93 — a test quote ALWAYS uses the deposit-checkout flow (which posts to
   // /simulate-deposit), even when the real Valor checkout is off. For a real
   // quote this is exactly `checkoutEnabled`, so existing behavior is unchanged.
@@ -291,6 +328,88 @@ export function StickyBottomBar({
             {phone}
           </a>
         </span>
+      </div>
+    );
+  }
+
+  // Ledger row 236 — a declined/abandoned quote's read-only "browse" mode:
+  // the customer can still change colors and toggle line items on the rest
+  // of the page (page.tsx keeps <SelectionProvider> mounted — see its
+  // terminal-block gate), but every approve/pay/decline/request-changes
+  // action stays closed — each of those routes independently 409s a
+  // declined/abandoned quote server-side (its own status guard), so this bar
+  // just matches that with a neutral strip instead of controls that would
+  // only ever fail. Checked BEFORE pendingPayment/deadApproval/booked below
+  // so it always wins for these two statuses, independent of `approved` and
+  // `depositFlow` — a quote that was approved and THEN staff-declined (#124
+  // lets staff decline an approved-but-unpaid quote) must show this, not the
+  // live approve bar, even with the online checkout flag off (where the
+  // pre-existing deadApproval branch further down would otherwise miss it —
+  // see that branch's own comment). `!booked` guards the one theoretical
+  // edge the DB write guards should already make unreachable (every decline/
+  // staff-decline route requires deposit_paid_at IS NULL) — a genuinely PAID
+  // quote must always show the booked confirmation, never this strip, no
+  // matter what its status column says.
+  if (!booked && isTerminalBrowseStatus(quoteStatus)) {
+    const phone = process.env.NEXT_PUBLIC_PORTAL_PHONE?.trim() || '(631) 517-0186';
+    // NEXT_PUBLIC_PORTAL_EMAIL is unset in prod today — reopenAskCopy omits
+    // `email`/`mailtoHref` entirely when that's the case, and the markup
+    // below only renders the email link when they're present.
+    const email = process.env.NEXT_PUBLIC_PORTAL_EMAIL?.trim() || undefined;
+    const { telHref, mailtoHref } = reopenAskCopy(phone, email);
+    const onRequestReopen = async () => {
+      if (reopenState === 'sending' || reopenState === 'sent') return;
+      setReopenState('sending');
+      try {
+        const res = await fetch(`/api/quotes/${encodeURIComponent(quoteId)}/reopen-request`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        });
+        if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+        setReopenState('sent');
+      } catch (err) {
+        console.error('reopen request failed', err);
+        setReopenState('error');
+      }
+    };
+    return (
+      <div className="portal-snow-sticky" role="region" aria-label="Reopen your quote">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <span className="text-[13px] md:text-[14px] text-[#A89F87]">
+            {reopenState === 'sent' ? "Thanks — we'll be in touch!" : 'Want to reopen your quote? Let us know!'}
+          </span>
+          {reopenState !== 'sent' && (
+            <button
+              type="button"
+              onClick={onRequestReopen}
+              disabled={reopenState === 'sending'}
+              aria-label="Ask us to reopen your quote"
+              className="inline-flex items-center justify-center min-h-[44px] px-4 py-2 rounded-full bg-[#C8313D] text-[#F4ECD8] font-semibold text-[13px] cursor-pointer transition-colors hover:bg-[#D8434F] disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {reopenState === 'sending' ? 'Sending…' : 'Let us know'}
+            </button>
+          )}
+          {reopenState === 'error' && (
+            <span role="alert" className="text-[12px] text-[#F4ECD8]">
+              Couldn&apos;t send — please call or text us instead.
+            </span>
+          )}
+          <a
+            href={telHref}
+            className="inline-flex min-h-[44px] items-center text-[#FFD07A] font-semibold hover:underline text-[13px] md:text-[14px]"
+          >
+            {phone}
+          </a>
+          {mailtoHref && (
+            <a
+              href={mailtoHref}
+              className="inline-flex min-h-[44px] items-center text-[#FFD07A] font-semibold hover:underline text-[13px] md:text-[14px]"
+            >
+              {email}
+            </a>
+          )}
+        </div>
       </div>
     );
   }
