@@ -2387,7 +2387,31 @@ export type ActivityRow = {
 };
 export type ActivityResult = { ok: true; rows: ActivityRow[] } | { ok: false; error: string };
 
-const REVERSIBLE_ACTIONS = new Set(['handled', 'followed', 'completed', 'dismissed']);
+// row 312: 'reclassified' added — the 26 S41 data-op rows say "reversible by
+// setting followed_up_at back to null" in their own detail text; it belongs
+// here so /inbox/activity actually renders the Reverse button that wording
+// promises (see inverseOf's 'reclassified' case, lifecycle.ts).
+const REVERSIBLE_ACTIONS = new Set(['handled', 'followed', 'completed', 'dismissed', 'reclassified']);
+
+/**
+ * row 312 fix-round FIX 3 (MED, admin lens, prod-verified): the bare action
+ * string 'reclassified' covers TWO populations in prod (confirmed via a direct
+ * query, 2026-08-20) — 26 S41 bucket-refile rows (`actor: 'system'`, detail
+ * carries `followedUpAtSetTo`/`from`/`to`; inverseOf('reclassified')'s premise
+ * — "only ever set followed_up_at" — holds) and 8 `actor:
+ * 'assistant-backfill-268'` rows (2026-08-14, a lead_kind/contact repoint;
+ * detail carries `reason`/`customer`/`from_contact` and NONE of the 8 carry
+ * followedUpAtSetTo — the inverse's premise is false for them). Today the 8 are
+ * refused only by the emergent luck of their item's current followed_up_at
+ * reading null — gate on the PAYLOAD shape instead of the bare action string so
+ * that holds by construction. Non-'reclassified' actions are unaffected (their
+ * detail shape has never split into two populations).
+ */
+export function isReversibleActivity(action: string, detail: unknown): boolean {
+  if (!REVERSIBLE_ACTIONS.has(action)) return false;
+  if (action !== 'reclassified') return true;
+  return !!(detail && typeof detail === 'object' && 'followedUpAtSetTo' in (detail as Record<string, unknown>));
+}
 
 /** Paginated, newest-first read of dashboard_activity, joined to the customer
  *  display name via inbox_item → dashboard_contact. actorName resolves the raw
@@ -2403,7 +2427,11 @@ export async function listActivity(limit = 100): Promise<ActivityResult> {
       // Show operator DECISIONS, not the system firehose: 'ingested' (one row per
       // reconcile touch — thousands) and 'escalated' would otherwise bury the
       // handled/dismissed/followed/completed rows (and their Reverse buttons).
-      .select('id, action, actor, inbox_item_id, created_at, inbox_items ( dashboard_contacts ( display_name ) )')
+      // `detail` added (row 312 fix-round FIX 3) — isReversibleActivity needs it
+      // to tell the two 'reclassified' populations apart.
+      .select(
+        'id, action, actor, inbox_item_id, created_at, detail, inbox_items ( dashboard_contacts ( display_name ) )',
+      )
       .not('action', 'in', '(ingested,escalated)')
       .order('created_at', { ascending: false })
       .limit(limit),
@@ -2422,7 +2450,7 @@ export async function listActivity(limit = 100): Promise<ActivityResult> {
       itemId: (row.inbox_item_id as string | null) ?? null,
       customerName: (item?.dashboard_contacts?.display_name as string | null) ?? null,
       at: (row.created_at as string | null) ?? null,
-      reversible: REVERSIBLE_ACTIONS.has(String(row.action)),
+      reversible: isReversibleActivity(String(row.action), row.detail),
     };
   });
   return { ok: true, rows };
@@ -2456,15 +2484,74 @@ export async function reverseItemState(
   };
   if (!a.inbox_item_id) return { ok: false, error: 'Entry has no item to reverse' };
 
-  const reversible: ReverseAction[] = ['handled', 'followed', 'completed', 'dismissed'];
-  if (!reversible.includes(a.action as ReverseAction)) {
+  const reversible: ReverseAction[] = ['handled', 'followed', 'completed', 'dismissed', 'reclassified'];
+  // row 312 fix-round FIX 3 (MED): the bare action-string check above is
+  // necessary but not sufficient for 'reclassified' — see isReversibleActivity's
+  // doc (two prod populations share the action string; only one's inverse
+  // premise holds). A direct POST naming an unreversible-by-payload row is
+  // refused here with the same message a genuinely-unreversible action gets.
+  if (!reversible.includes(a.action as ReverseAction) || !isReversibleActivity(a.action, a.detail)) {
     return { ok: false, error: 'This entry cannot be reversed' };
   }
   const action = a.action as ReverseAction;
 
+  // row 312(c) wrong-occurrence guard: stillMatches (below) only checks that the
+  // CURRENT state happens to equal what this action would have produced — it
+  // can't tell that state apart from an unrelated LATER action that coincidentally
+  // landed the item back in the same state (e.g. a later Reverse restores
+  // status='handled', which then also matches a much-older, unrelated 'handled'
+  // row for the same item). Require this row to actually be the most recent
+  // state-changing row for the item before trusting stillMatches at all.
+  // row 312 fix-round FIX 5(b) (LOW, hardening): 'reopened' added to the tracked
+  // action set. A reopen (ingestTouch, on a genuinely-newer inbound) sets status
+  // back to 'unresponded' — a real state change this guard should know about.
+  // Verified NON-exploitable today without this: if a 'reopened' row landed
+  // after the row being reversed, stillMatches (below) already catches the
+  // divergence (curRow.status would read 'unresponded', not the action's
+  // expected value) and refuses independently. Added anyway so this guard's own
+  // action list stays self-documenting/complete rather than relying on a
+  // different check to cover the gap.
+  const { data: latest, error: latestErr } = await sb
+    .from('dashboard_activity')
+    .select('id')
+    .eq('inbox_item_id', a.inbox_item_id)
+    .in('action', [...reversible, 'reversed', 'reopened'])
+    .order('created_at', { ascending: false })
+    // row 312 fix-round FIX 5(a) (LOW, hardening): secondary tiebreaker so two
+    // rows sharing an identical created_at (e.g. a batch data-op script that
+    // stamps the same timestamp across many inserts) resolve deterministically
+    // instead of depending on whatever order Postgres happens to return ties
+    // in. `id` is a random uuid (gen_random_uuid()), not chronological, so this
+    // doesn't recover true insertion order on a real tie — it only guarantees
+    // the SAME row wins every time this query runs, mirroring the #185
+    // determinism comment elsewhere in this file (listOpenItems' `returning`
+    // count).
+    .order('id', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  // row 312 fix-round FIX 2 (MED, technical + staff converged): the prior code
+  // destructured only `{ data: latest }` — a query ERROR left `latest` null/
+  // undefined and the `if (latest && ...)` guard below read that as "no later
+  // row exists," silently PASSING the wrong-occurrence check on a failed read
+  // (fails OPEN). Opposite of this function's other two reads (the `act` and
+  // `cur` lookups above/below), which both fail CLOSED today — a query error on
+  // either one leaves their `data` null too, and `if (!data) return { ok: false,
+  // ... }` refuses regardless of whether the null came from a real error or a
+  // genuine not-found. Fail closed here too: a query error is NOT proof no later
+  // action exists, and Reverse is exactly the wrong feature to fail open on.
+  if (latestErr) {
+    return { ok: false, error: 'Could not verify this is the latest action for this item — try again' };
+  }
+  if (latest && String((latest as { id: string }).id) !== activityId) {
+    return { ok: false, error: 'A later action already changed this item; nothing to reverse from here' };
+  }
+
   // Only reverse if the item is STILL in the state this action produced — otherwise
-  // a later action superseded it and reversing now would clobber the newer state
-  // (this also de-dupes a double-clicked reverse).
+  // a later action superseded it and reversing now would clobber the newer state.
+  // This is a fast, friendly pre-check only — it does NOT by itself de-dupe a
+  // double-clicked reverse (a read-check-then-act has a race window between this
+  // read and the write below); the atomic CAS on the update IS what de-dupes it,
+  // see the fix-round comment there.
   const { data: cur } = await sb
     .from('inbox_items')
     .select('status, followed_up_at')
@@ -2472,7 +2559,10 @@ export async function reverseItemState(
     .maybeSingle();
   if (!cur) return { ok: false, error: 'Item not found' };
   const curRow = cur as { status: string; followed_up_at: string | null };
-  const stillMatches = action === 'followed' ? curRow.followed_up_at != null : curRow.status === action;
+  // 'reclassified', like 'followed', only ever sets followed_up_at — never
+  // status — so its match check is the same shape (see inverseOf's doc).
+  const stillMatches =
+    action === 'followed' || action === 'reclassified' ? curRow.followed_up_at != null : curRow.status === action;
   if (!stillMatches) return { ok: false, error: 'Item state has changed since this action; nothing to reverse' };
 
   const t = inverseOf(action, a.detail?.from as { status?: InboxStatus; wasFollowed?: boolean } | undefined);
@@ -2482,8 +2572,28 @@ export async function reverseItemState(
   if (t.clearFollowed) upd.followed_up_at = null;
   if (t.setFollowed) upd.followed_up_at = now.toISOString();
 
-  const { error } = await sb.from('inbox_items').update(upd).eq('id', a.inbox_item_id);
+  // row 312 fix-round HIGH (technical lens, sibling-parity class): re-encode the
+  // SAME condition `stillMatches` just checked, atomically, IN the update's WHERE
+  // — mirrors markItemHandledLocal / dismissItem's sibling CAS idiom in this same
+  // file (`.eq('id').neq('status', target).select().maybeSingle()`, no-row-
+  // matched = refused). Without this the read above and this write are two
+  // separate round-trips: a concurrent write (e.g. another operator's Mark
+  // handled) landing in that window would be silently clobbered by an
+  // unconditional update, and a double-clicked Reverse would double-apply (the
+  // OLD comment here claimed the read-check alone "de-dupes" that — false, since
+  // read-check-then-act has no such property on its own). The CAS closes both:
+  // after the first write succeeds the row's status/followed_up_at no longer
+  // matches `action`'s condition, so a second concurrent call's WHERE matches
+  // zero rows and it gets the same honest refusal as the wrong-occurrence guard
+  // above, instead of clobbering the first call's result.
+  let casQuery = sb.from('inbox_items').update(upd).eq('id', a.inbox_item_id);
+  casQuery =
+    action === 'followed' || action === 'reclassified'
+      ? casQuery.not('followed_up_at', 'is', null)
+      : casQuery.eq('status', action);
+  const { data: casRow, error } = await casQuery.select('id').maybeSingle();
   if (error) return { ok: false, error: error.message };
+  if (!casRow) return { ok: false, error: 'Item state has changed since this action; nothing to reverse' };
 
   if (t.unsuppress) {
     const { data: c } = await sb
@@ -2497,11 +2607,23 @@ export async function reverseItemState(
     if (dc) await removeSuppressedSenders([dc.primary_email ?? null, dc.primary_phone ?? null]);
   }
 
+  // row 312 fix-round FIX 4 (MED, admin lens): carry the reversed row's own id
+  // + the prior values this reverse is clearing/restoring, mirroring the
+  // `detail: { from }` shape the forward siblings (markItemHandledLocal,
+  // dismissItem, markItemCompleted) already write. `curRow` and `activityId`
+  // are already in scope — without this, a 'reversed' row told you WHAT action
+  // got undone but not WHICH activity row or what state it undid, so the audit
+  // trail couldn't answer "what did this reverse actually change" without
+  // cross-referencing the original row by hand.
   await sb.from('dashboard_activity').insert({
     actor: operatorId,
     action: 'reversed',
     inbox_item_id: a.inbox_item_id,
-    detail: { reversed_action: a.action },
+    detail: {
+      reversed_action: a.action,
+      reversedActivityId: activityId,
+      from: { status: curRow.status, followedUpAt: curRow.followed_up_at },
+    },
   });
 
   return { ok: true };
