@@ -4182,7 +4182,7 @@ describe('reverseItemState (row 312 — reclassified + wrong-occurrence guard)',
     expect(updateCalls.some((c) => c.method === 'update')).toBe(true);
   });
 
-  it("312c: the latest-row query's action set covers every reversible action plus 'reversed'", async () => {
+  it("312c: the latest-row query's action set covers every reversible action plus 'reversed'/'reopened', ordered with an id tiebreaker (FIX 5a/5b)", async () => {
     const { from, latestCalls } = makeSbForReverse({
       activityRow: { data: { action: 'dismissed', inbox_item_id: ITEM_ID, detail: { from: { status: 'unresponded' } } } },
       latestRow: { data: { id: ACTIVITY_ID } },
@@ -4196,7 +4196,13 @@ describe('reverseItemState (row 312 — reclassified + wrong-occurrence guard)',
     const inCall = latestCalls.find((c) => c.method === 'in');
     const [, actionSet] = inCall!.args as [string, string[]];
     expect(actionSet).toEqual(
-      expect.arrayContaining(['handled', 'followed', 'completed', 'dismissed', 'reclassified', 'reversed']),
+      expect.arrayContaining(['handled', 'followed', 'completed', 'dismissed', 'reclassified', 'reversed', 'reopened']),
     );
+    // FIX 5(a): secondary deterministic tiebreaker on id, after the created_at order.
+    const orderCalls = latestCalls.filter((c) => c.method === 'order');
+    expect(orderCalls).toEqual([
+      { method: 'order', args: ['created_at', { ascending: false }] },
+      { method: 'order', args: ['id', { ascending: false }] },
+    ]);
   });
 });

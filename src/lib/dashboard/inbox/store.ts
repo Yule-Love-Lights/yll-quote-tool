@@ -2183,12 +2183,31 @@ export async function reverseItemState(
   // status='handled', which then also matches a much-older, unrelated 'handled'
   // row for the same item). Require this row to actually be the most recent
   // state-changing row for the item before trusting stillMatches at all.
+  // row 312 fix-round FIX 5(b) (LOW, hardening): 'reopened' added to the tracked
+  // action set. A reopen (ingestTouch, on a genuinely-newer inbound) sets status
+  // back to 'unresponded' — a real state change this guard should know about.
+  // Verified NON-exploitable today without this: if a 'reopened' row landed
+  // after the row being reversed, stillMatches (below) already catches the
+  // divergence (curRow.status would read 'unresponded', not the action's
+  // expected value) and refuses independently. Added anyway so this guard's own
+  // action list stays self-documenting/complete rather than relying on a
+  // different check to cover the gap.
   const { data: latest, error: latestErr } = await sb
     .from('dashboard_activity')
     .select('id')
     .eq('inbox_item_id', a.inbox_item_id)
-    .in('action', [...reversible, 'reversed'])
+    .in('action', [...reversible, 'reversed', 'reopened'])
     .order('created_at', { ascending: false })
+    // row 312 fix-round FIX 5(a) (LOW, hardening): secondary tiebreaker so two
+    // rows sharing an identical created_at (e.g. a batch data-op script that
+    // stamps the same timestamp across many inserts) resolve deterministically
+    // instead of depending on whatever order Postgres happens to return ties
+    // in. `id` is a random uuid (gen_random_uuid()), not chronological, so this
+    // doesn't recover true insertion order on a real tie — it only guarantees
+    // the SAME row wins every time this query runs, mirroring the #185
+    // determinism comment elsewhere in this file (listOpenItems' `returning`
+    // count).
+    .order('id', { ascending: false })
     .limit(1)
     .maybeSingle();
   // row 312 fix-round FIX 2 (MED, technical + staff converged): the prior code
