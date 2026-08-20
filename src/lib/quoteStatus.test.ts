@@ -6,6 +6,7 @@ import {
   isQuoteStatus,
   isPortalActionable,
   QUOTE_STATUSES,
+  APPROVED_STAGE_DISPLAY_LABEL,
   type QuoteStatus,
   type QuoteStatusRow,
 } from './quoteStatus';
@@ -193,6 +194,54 @@ describe('isPortalActionable — customer approve+pay UI gate (Bug 3)', () => {
     expect(isPortalActionable(null)).toBe(true);
     expect(isPortalActionable(undefined)).toBe(true);
     expect(isPortalActionable('some-future-status')).toBe(true);
+  });
+});
+
+describe('APPROVED_STAGE_DISPLAY_LABEL — row 242 (remove the Approved stage from display)', () => {
+  it('is not the bare word "Approved" — no surface should badge it as a standalone stage', () => {
+    expect(APPROVED_STAGE_DISPLAY_LABEL).not.toBe('Approved');
+    expect(APPROVED_STAGE_DISPLAY_LABEL.toLowerCase()).not.toBe('approved');
+  });
+
+  it('names what a sent-but-unpaid approval is actually waiting on', () => {
+    expect(APPROVED_STAGE_DISPLAY_LABEL).toBe('Awaiting Deposit');
+  });
+
+  it('a sent-then-approved-but-unpaid quote still derives the approved CODE, which every quote-lane surface then renders under this display label — the mechanism (deriveStatus) and the presentation (the label) are independently verifiable and stay in sync', () => {
+    const approvedUnpaid = ts({
+      quote_sent_at: '2026-06-02T00:00:00Z',
+      viewed_at: '2026-06-02T01:00:00Z',
+      customer_approved_at: '2026-06-03T00:00:00Z',
+      // deposit_paid_at stays null — approved, not yet booked.
+    });
+    const code = deriveStatus(approvedUnpaid);
+    expect(code).toBe('approved'); // the real status code — untouched by this row
+    // The 3 quote-lane display surfaces (admin list, admin detail, quote
+    // builder header pill) all map STATUS_LABELS/STATUS_BADGE[code] through
+    // this same constant for the 'approved' key — asserting the constant's
+    // value here is the shared assertion point for all three, since none of
+    // them export their local maps for direct import (see the PR body for
+    // why: importing a route's page.tsx / a huge client component into a
+    // unit test to grab one constant would drag in their whole module graph
+    // for no real safety gain over testing the single shared source).
+    const displayLabelForCode: Record<QuoteStatus, string> = {
+      draft: 'Draft',
+      sent: 'Sent',
+      viewed: 'Viewed',
+      approved: APPROVED_STAGE_DISPLAY_LABEL,
+      booked: 'Booked',
+      changes_requested: 'Changes',
+      declined: 'Declined',
+      cancelled: 'Cancelled',
+      abandoned: 'Abandoned',
+    };
+    expect(displayLabelForCode[code]).toBe('Awaiting Deposit');
+  });
+
+  it('canTransition still treats approved as a full, real status (the mechanism is untouched by the label change)', () => {
+    expect(canTransition('approved', 'booked')).toBe(true);
+    expect(canTransition('approved', 'declined')).toBe(true);
+    expect(canTransition('approved', 'cancelled')).toBe(true);
   });
 });
 

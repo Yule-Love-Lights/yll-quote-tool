@@ -39,7 +39,7 @@ import {
   SERVICE_TYPE_LABELS,
   canCarryNceOrYllNeighborTag,
 } from '@/lib/serviceType';
-import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
+import { deriveStatus, APPROVED_STAGE_DISPLAY_LABEL, type QuoteStatus } from '@/lib/quoteStatus';
 import { EventSection } from './EventSection';
 import { OperatorShell } from '@/components/OperatorShell';
 import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
@@ -441,11 +441,18 @@ export type QuoteBuilderInitial = {
 // Header status pill (BUG-1, S22): the saved quote's canonical lifecycle status
 // so a declined/cancelled quote badges correctly instead of the old
 // approvedAt/sentAt-only 'Approved'/'Sent'. Mirrors the admin quotes list palette.
+// Row 242: 'approved' reads as APPROVED_STAGE_DISPLAY_LABEL, not "Approved" —
+// see quoteStatus.ts for the rationale (no standalone Approved pipeline
+// stage; deriveStatus/canTransition/money guards are unaffected). This is a
+// THIRD copy of the same status->label map (alongside the two admin quote
+// pages) that ledger row 242's original recon didn't enumerate — reconciled
+// here since it's a real "pipeline/stage chip on a quote surface" (the
+// builder's own header pill), same as the other two.
 const STATUS_BADGE: Record<QuoteStatus, { label: string; cls: string }> = {
   draft: { label: 'Draft', cls: 'bg-amber-100 text-amber-700' },
   sent: { label: 'Sent', cls: 'bg-blue-100 text-blue-700' },
   viewed: { label: 'Viewed', cls: 'bg-purple-100 text-purple-700' },
-  approved: { label: 'Approved', cls: 'bg-green-100 text-green-700' },
+  approved: { label: APPROVED_STAGE_DISPLAY_LABEL, cls: 'bg-green-100 text-green-700' },
   booked: { label: 'Booked', cls: 'bg-emerald-100 text-emerald-700' },
   changes_requested: { label: 'Changes', cls: 'bg-orange-100 text-orange-700' },
   declined: { label: 'Declined', cls: 'bg-red-100 text-red-700' },

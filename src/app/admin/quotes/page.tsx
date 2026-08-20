@@ -5,7 +5,7 @@ import Link from 'next/link';
 import type { QuoteListItem } from '@/lib/quotes';
 import { OperatorShell } from '@/components/OperatorShell';
 import { BillingSubNav } from '@/components/admin/BillingSubNav';
-import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
+import { deriveStatus, APPROVED_STAGE_DISPLAY_LABEL, type QuoteStatus } from '@/lib/quoteStatus';
 import { PipelineActionsMenu } from '@/components/admin/PipelineActionsMenu';
 import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
 import { NceBadge } from '@/components/admin/NceBadge';
@@ -38,11 +38,14 @@ function rowStatus(q: QuoteListItem): QuoteStatus {
 }
 
 // Display label + badge style per canonical status. Title-cased for the UI.
+// Row 242: 'approved' reads as APPROVED_STAGE_DISPLAY_LABEL, not "Approved" —
+// see quoteStatus.ts for the rationale (no standalone Approved pipeline
+// stage; deriveStatus/canTransition/money guards are unaffected).
 const STATUS_LABELS: Record<QuoteStatus, string> = {
   draft: 'Draft',
   sent: 'Sent',
   viewed: 'Viewed',
-  approved: 'Approved',
+  approved: APPROVED_STAGE_DISPLAY_LABEL,
   booked: 'Booked',
   changes_requested: 'Changes',
   declined: 'Declined',

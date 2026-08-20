@@ -207,3 +207,26 @@ const NON_ACTIONABLE_PORTAL_STATUSES: ReadonlySet<string> = new Set([
 export function isPortalActionable(status: string | null | undefined): boolean {
   return !status || !NON_ACTIONABLE_PORTAL_STATUSES.has(status);
 }
+
+/**
+ * Ledger row 242 (Jason, 2026-08-11 decision, framing corrected by recon):
+ * `'approved'` stays a real QuoteStatus union member — deriveStatus above
+ * still synthesizes it from `customer_approved_at` whenever `deposit_paid_at`
+ * is null, and it's a full member of ALLOWED_TRANSITIONS — but every quote-
+ * lane surface that used to badge it as a standalone "Approved" pipeline
+ * STAGE now shows this label instead, so the visible progression reads
+ * sent -> viewed -> booked with no separate "Approved" milestone. The chosen
+ * wording ("Awaiting Deposit") names what's actually still outstanding for
+ * this derived state, rather than presenting the approval as a finish line —
+ * a sent-but-unpaid approval is exactly that: awaiting the deposit.
+ *
+ * Single source so the admin quotes list, the quote detail page, and the
+ * quote builder header pill can't drift into three different wordings for
+ * the same derived state (they already had for `changes_requested` before
+ * this — 'Changes' vs 'Changes requested' — a warning sign this scope
+ * creates real drift risk without one shared string). Presentation only:
+ * nothing here touches deriveStatus, canTransition, or any money-guard route
+ * — those all key off the 'approved' CODE + the customer_approved_at
+ * timestamp, both untouched by this label.
+ */
+export const APPROVED_STAGE_DISPLAY_LABEL = 'Awaiting Deposit';

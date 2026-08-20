@@ -15,7 +15,7 @@ import { ColorRequestPanel } from '@/components/admin/ColorRequestPanel';
 import { buildPortalLineItems } from '@/lib/portal/adapter';
 import { BUSINESS_RULES, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { getQuoteRaw } from '@/lib/quotes';
-import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
+import { deriveStatus, APPROVED_STAGE_DISPLAY_LABEL, type QuoteStatus } from '@/lib/quoteStatus';
 import { getJobByQuote } from '@/lib/jobs';
 import { getInvoiceByJob } from '@/lib/invoices';
 import { getDesignByQuote } from '@/lib/designs';
@@ -33,11 +33,16 @@ import { isVaultRegisterEnabled } from '@/lib/integrations/valorVault';
 // Read-only operator detail for a single quote (PR1 of #83 ops console).
 // No action buttons here — those land in PR2's PipelineActionsMenu.
 
+// Row 242: 'approved' reads as APPROVED_STAGE_DISPLAY_LABEL, not "Approved" —
+// see quoteStatus.ts for the rationale (no standalone Approved pipeline
+// stage; deriveStatus/canTransition/money guards are unaffected). Note the
+// "Approved" dt below in the Lifecycle timeline is a DIFFERENT thing (a raw
+// event timestamp — when customer_approved_at was stamped) and is untouched.
 const STATUS_LABELS: Record<QuoteStatus, string> = {
   draft: 'Draft',
   sent: 'Sent',
   viewed: 'Viewed',
-  approved: 'Approved',
+  approved: APPROVED_STAGE_DISPLAY_LABEL,
   booked: 'Booked',
   changes_requested: 'Changes requested',
   declined: 'Declined',
