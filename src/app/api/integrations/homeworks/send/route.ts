@@ -24,7 +24,8 @@ import {
 import type { HomeworksPayload } from '@/lib/integrations/types';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
-import type { QuoteResult } from '@/lib/pricing/pricingEngine';
+import type { QuoteInputs, QuoteResult } from '@/lib/pricing/pricingEngine';
+import { resolveLineItemLabel } from '@/lib/pricing/pricingEngine';
 import { resolveAgreedTotal } from '@/lib/agreedTotal';
 import { roundMoneyGuarded as round2 } from '@/lib/money';
 
@@ -42,6 +43,10 @@ type QuoteRow = {
   customer_email: string | null;
   total: number | null;
   result: QuoteResult | null;
+  // item-numbering-rename: only read for resolveLineItemLabel below (a staff
+  // rename must flow into this outbound e-signature/payment document, same
+  // as the PDF/portal) — nothing else in this route touches inputs.
+  inputs: QuoteInputs | null;
   highlevel_contact_id: string | null;
   homeworks_sent_at: string | null;
   customer_approved_at: string | null;
@@ -101,7 +106,7 @@ export async function POST(req: NextRequest) {
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, total, result, highlevel_contact_id, homeworks_sent_at, customer_approved_at, approval_snapshot',
+      'id, customer_name, customer_address, customer_phone, customer_email, total, result, inputs, highlevel_contact_id, homeworks_sent_at, customer_approved_at, approval_snapshot',
     )
     .eq('id', body.quoteId)
     .single<QuoteRow>();
@@ -162,8 +167,11 @@ export async function POST(req: NextRequest) {
   // pricing breakdown so the Zap's field mapper can reach each value
   // without JavaScript code steps.
   const r = quote.result;
+  // item-numbering-rename: resolve a staff rename the same way the builder/
+  // portal/PDF do, so home.works' estimate shows the name the customer would
+  // see on the portal, not a stale auto label.
   const lineItems = (r?.lineItems ?? []).map(li => ({
-    label: li.label,
+    label: resolveLineItemLabel(li.id, li.label, quote.inputs?.labelOverrides).label,
     amountUsd: li.amount,
   }));
 

@@ -51,6 +51,7 @@ const fullForm: QuoteFormData = {
   depositPercent: 25, // non-default, to exercise the field (#177)
   installTiming: 'none', // manual-discount path; early-install has its own tests
   lineItemPriceOverrides: {},
+  labelOverrides: {},
   winterWonderlandRecommended: false,
   stakeLightingRecommended: false,
   event: { barrelBoxes: 3, installDate: '2026-07-11', eventDate: '2026-07-18', takedownDate: '2026-07-31' },
@@ -223,6 +224,15 @@ describe('buildQuoteInputs', () => {
     expect('lineItemPriceOverrides' in buildQuoteInputs(fullForm)).toBe(false); // empty {} → omitted
     const restored = inputsToFormData(fullForm.customer, inputs, fullForm.serviceType);
     expect(restored.lineItemPriceOverrides).toEqual(ov);
+  });
+
+  it('round-trips labelOverrides; omits the key when empty (item-numbering-rename)', () => {
+    const ov = { 'mini-a': 'Front Left Tree', 'wreath-b': 'Garage Wreath' };
+    const inputs = buildQuoteInputs({ ...fullForm, labelOverrides: ov });
+    expect(inputs.labelOverrides).toEqual(ov);
+    expect('labelOverrides' in buildQuoteInputs(fullForm)).toBe(false); // empty {} → omitted
+    const restored = inputsToFormData(fullForm.customer, inputs, fullForm.serviceType);
+    expect(restored.labelOverrides).toEqual(ov);
   });
 
   it('sends WW/Stake recommend flags only when set; hydrates them back (#12)', () => {

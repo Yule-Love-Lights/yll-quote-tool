@@ -783,14 +783,16 @@ describe('calculateQuote — railing + column mini-lights (no wrap style, #27 A2
 });
 
 describe('calculateQuote — standalone bows (#28; price TBD by Naldo, $0 for now)', () => {
-  it('prices each bow entry as its own line item at the standalone rate', () => {
+  it('prices each bow entry as its own line item at the standalone rate, numbering the duplicate labels (item-numbering-rename)', () => {
     const r = calculateQuote(emptyInputs({ bows: [{ quantity: 1 }, { quantity: 1 }] }));
     // Written against the rule (not a literal $0) so this test survives Naldo
     // setting the real price — only the TODO note + config guard change.
     const each = BUSINESS_RULES.standaloneBowPrice;
+    // Two bows would otherwise both render the identical "Bow" label — numbered
+    // in stable array order (item-numbering-rename).
     expect(r.lineItems).toEqual([
-      { label: 'Bow', amount: each },
-      { label: 'Bow', amount: each },
+      { label: 'Bow 1', amount: each },
+      { label: 'Bow 2', amount: each },
     ]);
   });
 
