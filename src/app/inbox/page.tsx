@@ -71,8 +71,10 @@ export default async function InboxPage() {
             Inbox
           </h1>
           <p className="text-sm mt-1" style={{ color: 'var(--op-text-2)' }}>
-            Every unanswered customer message across channels. Reply from your phone or GHL, then
-            mark it Handled — or it auto-clears when you reply.
+            Every unanswered customer message across channels — these are yours to answer.
+            Reply from your phone or GHL, then mark it Handled — or it auto-clears when you
+            reply. (Conversations you’ve already followed up on — where you’re waiting on
+            THEM — live further down, under “In the works → Awaiting their reply.”)
           </p>
           <div className="flex gap-4 mt-2">
             <Link href="/inbox/duplicates" className="text-sm inline-block" style={{ color: 'var(--brand-evergreen-3)' }}>
