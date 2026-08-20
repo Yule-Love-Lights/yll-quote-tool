@@ -109,8 +109,27 @@ export function requiresColorRequestConfirmation(item: Pick<InWorksItem, 'isColo
   return !!item.isColorRequest;
 }
 
+/** Row 321 fix-round FIX 3 (staff LOW): named "(Colour request panel)" —
+ *  ColorRequestPanel.tsx has no such label anywhere; its real on-page heading
+ *  is "Colour change requested" (pre-apply) / "Colour change applied"
+ *  (post-apply). Fixed to name what staff will actually see. */
 export function colorRequestConfirmMessage(): string {
-  return "This customer is waiting on a colour change — mark it handled anyway?\n\nThe requested colour is still pending on the quote. Review or apply it from the quote's admin page (Colour request panel) first, or Cancel and do that now.";
+  return "This customer is waiting on a colour change — mark it handled anyway?\n\nThe requested colour is still pending on the quote. Review or apply it from the quote's admin page (the \"Colour change requested\" section) first, or Cancel and do that now.";
+}
+
+/** Row 321 fix-round FIX 2 (staff MED): requiresColorRequestConfirmation and
+ *  requiresCompleteConfirmation are independent signals (see the former's own
+ *  doc above) — firing them as two SEQUENTIAL window.confirm() calls stacked
+ *  two native dialogs on one click whenever both applied. This composes both
+ *  concerns into ONE dialog, asked once; handleMarkCompleted below only calls
+ *  this when BOTH gates are true — an item flagged on just one axis still gets
+ *  its existing standalone message, unchanged. */
+export function combinedCompleteConfirmMessage(item: Pick<InWorksItem, 'needsLookReason'>): string {
+  return (
+    `This customer is waiting on a colour change, and this row is also flagged "${item.needsLookReason}" — mark it completed anyway?\n\n` +
+    'The requested colour is still pending on the quote. Review or apply it from the quote\'s admin page (the "Colour change requested" section) first, or Cancel and do that now.\n\n' +
+    'Marking completed also removes this item from every inbox list and closes any pending follow-up. Reverse (Activity Log) undoes the status change, but does not re-open the follow-up nag.'
+  );
 }
 
 export function InWorksSection({
@@ -265,15 +284,19 @@ export function InWorksSection({
   // unflagged row (requiresCompleteConfirmation false) calls act() directly,
   // identical to the pre-fix one-click behavior.
   function handleMarkCompleted(item: InWorksItem, group: 'awaiting' | 'handled') {
-    // Row 321: checked first/independently — see requiresColorRequestConfirmation's
-    // own doc for why this can't just fold into requiresCompleteConfirmation.
-    if (requiresColorRequestConfirmation(item)) {
-      const ok = window.confirm(colorRequestConfirmMessage());
-      if (!ok) return;
-    }
-    if (requiresCompleteConfirmation(item)) {
-      const ok = window.confirm(completeConfirmMessage(item));
-      if (!ok) return;
+    // Row 321 fix-round FIX 2: the two gates are independent (a colour-request
+    // row can read as "settled" on needsLookReason while its quote's
+    // pendingColorRequest is still live, and vice versa) — checked
+    // independently, but fired as exactly ONE window.confirm() when BOTH
+    // apply, instead of stacking two sequential native dialogs on one click.
+    const needsColor = requiresColorRequestConfirmation(item);
+    const needsLook = requiresCompleteConfirmation(item);
+    if (needsColor && needsLook) {
+      if (!window.confirm(combinedCompleteConfirmMessage(item))) return;
+    } else if (needsColor) {
+      if (!window.confirm(colorRequestConfirmMessage())) return;
+    } else if (needsLook) {
+      if (!window.confirm(completeConfirmMessage(item))) return;
     }
     act(item, group, '/api/dashboard/completed', 'remove', 'Mark completed');
   }
