@@ -10,6 +10,9 @@ const ACTION_LABEL: Record<string, string> = {
   dismissed: 'Not a lead',
   reopened: 'Reopened',
   reversed: 'Reversed',
+  // row 312(b): the S41 bulk data op re-filed 26 sent-but-unanswered quotes
+  // into Awaiting reply — was rendering as the raw 'reclassified' string.
+  reclassified: 'Reclassified',
   ingested: 'New message',
   // #230(a): a #220 internal-domain follow-up suppression — see
   // recordSuppressedFollowUp's doc (store.ts).
@@ -20,8 +23,26 @@ const ACTION_LABEL: Record<string, string> = {
   followup_autoclosed: 'Follow-up closed (conversation resolved)',
 };
 
-function friendlyAction(action: string): string {
+// Exported only so ACTION_LABEL coverage (every action listActivity can
+// return) is directly unit-testable without jsdom (mirrors the pure-helper
+// export pattern used across the inbox components, e.g. InWorksSection's
+// requiresCompleteConfirmation).
+export function friendlyAction(action: string): string {
   return ACTION_LABEL[action] ?? action;
+}
+
+// row 312 fix-round FIX 5(c) (LOW, converged): a refusal from the wrong-
+// occurrence guard (312c) or a staleness check (reverseItemState's stillMatches
+// pre-check, or the FIX-1 atomic CAS) means this row can NEVER be reversed
+// again — some other action already moved the item past the state this row
+// produced. Leaving the button live after that just lets the operator click it
+// into the same refusal forever. A genuinely transient failure (network blip,
+// DB hiccup, missing service-role config) should NOT disable the button —
+// those are worth retrying, so this only matches the specific permanent-
+// refusal wording reverseItemState actually returns (store.ts). Exported
+// (mirrors friendlyAction) for pure-function testing without jsdom.
+export function isPermanentReverseRefusal(error: string): boolean {
+  return /later action already changed|state has changed since this action|cannot be reversed/i.test(error);
 }
 
 function friendlyActor(actor: string | null, actorName: string | null): string {
@@ -69,7 +90,15 @@ export function ActivityLog({ initialRows }: { initialRows: ActivityRow[] }) {
           setRows((prev) => [syntheticRow, ...prev]);
         }
       } else {
-        setErrorById((prev) => ({ ...prev, [activityId]: data.error ?? 'Failed to reverse.' }));
+        const message = data.error ?? 'Failed to reverse.';
+        setErrorById((prev) => ({ ...prev, [activityId]: message }));
+        // row 312 fix-round FIX 5(c): a permanent refusal (see
+        // isPermanentReverseRefusal) means retrying will never succeed — hide
+        // the button by flipping this row's local `reversible` false, while the
+        // error text above stays shown once.
+        if (isPermanentReverseRefusal(message)) {
+          setRows((prev) => prev.map((r) => (r.id === activityId ? { ...r, reversible: false } : r)));
+        }
       }
     } catch {
       setErrorById((prev) => ({ ...prev, [activityId]: 'Network error — try again.' }));
