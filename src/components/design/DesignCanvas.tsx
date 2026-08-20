@@ -161,9 +161,18 @@ export default function DesignCanvas({ scene, photoUrl, photoW, photoH, classNam
   // Live color override (#10/#92) — re-render the draw layer only (no remount).
   // colorMap (memoized) changes only when the scheme, scene, or offered-colors
   // change, so this fires when the customer actually switches schemes.
+  // `ready` is a dep because a seeded non-default scheme (a restored browsing
+  // selection, a frozen approval) races the async mount: colorMap resolves
+  // once offered-colors load — usually BEFORE the import+photo render sets
+  // ctrlRef — so a [colorMap]-only effect no-ops on a null ctrl and the canvas
+  // rests on the stale null the mount closure captured until the customer
+  // manually switches schemes. The animation effect below already carries
+  // `ready` for the same reason. setColorOverride is idempotent, so the extra
+  // ready-flip invocation is a cheap re-apply of the same value.
   useEffect(() => {
+    if (!ready) return; // pre-ready, ctrlRef is null anyway — the ready flip re-runs this with the latest colorMap
     ctrlRef.current?.setColorOverride(colorMap);
-  }, [colorMap]);
+  }, [colorMap, ready]);
 
   // #88 P6b-3 — permanent scene ANIMATION. A lightweight stepper (NOT a per-pixel
   // loop): while the canvas is on-screen + reduce-motion is off, advance the
