@@ -16,6 +16,7 @@ import { buildPortalLineItems } from '@/lib/portal/adapter';
 import { BUSINESS_RULES, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { getQuoteRaw } from '@/lib/quotes';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
+import { requiresReconsent, isSupersededPendingAmendment } from '@/lib/amend';
 import { getJobByQuote } from '@/lib/jobs';
 import { getInvoiceByJob } from '@/lib/invoices';
 import { getDesignByQuote } from '@/lib/designs';
@@ -526,16 +527,53 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
               Amendments ({amendments.length})
             </h2>
             <ol className="space-y-3 text-sm">
-              {amendments.map((a, i) => (
-                <li key={i} className="border-t border-gray-100 pt-2 first:border-0 first:pt-0">
-                  <p className="text-gray-800 font-medium">{a.reason}</p>
-                  <p className="text-gray-500 text-xs">
-                    {fmtDate(a.amended_at)} · by {a.by} ·{' '}
-                    {a.delta >= 0 ? '+' : '−'}{money(Math.abs(a.delta))} → new total{' '}
-                    {money(a.new_total)} · balance {money(a.new_balance)}
-                  </p>
-                </li>
-              ))}
+              {amendments.map((a, i) => {
+                // Cosmetic (zero-delta) entries never carry `consent` — only a
+                // total-changing amendment asks for one (requiresReconsent).
+                // A missing `consent` on a REAL price change reads as pending,
+                // matching the backward-compat convention documented on
+                // AmendmentConsent in lib/amend.ts.
+                const rawStatus = requiresReconsent(a) ? (a.consent?.status ?? 'pending') : null;
+                // FIX6: relabel a still-'pending' entry that's been superseded
+                // by a later amendment (no route will ever resolve it — see
+                // isSupersededPendingAmendment's doc comment) so an operator
+                // doesn't read "Pending customer response" as still actionable.
+                const isSuperseded = isSupersededPendingAmendment(a, amendments);
+                const status = isSuperseded ? 'superseded' : rawStatus;
+                const badge =
+                  status === 'declined'
+                    ? { label: 'Declined', cls: 'bg-red-100 text-red-700' }
+                    : status === 'accepted'
+                      ? { label: 'Approved', cls: 'bg-emerald-100 text-emerald-700' }
+                      : status === 'superseded'
+                        ? { label: 'Superseded — see latest', cls: 'bg-gray-100 text-gray-500' }
+                        : status === 'pending'
+                          ? { label: 'Pending customer response', cls: 'bg-amber-100 text-amber-700' }
+                          : null;
+                return (
+                  <li key={i} className="border-t border-gray-100 pt-2 first:border-0 first:pt-0">
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-gray-800 font-medium">{a.reason}</p>
+                      {badge && (
+                        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${badge.cls}`}>
+                          {badge.label}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-gray-500 text-xs">
+                      {fmtDate(a.amended_at)} · by {a.by} ·{' '}
+                      {a.delta >= 0 ? '+' : '−'}{money(Math.abs(a.delta))} → new total{' '}
+                      {money(a.new_total)} · balance {money(a.new_balance)}
+                    </p>
+                    {a.consent?.status === 'declined' && (
+                      <p className="mt-1 text-xs text-red-700">
+                        Customer declined {fmtDate(a.consent.declined_at)}
+                        {a.consent.reason ? `: "${a.consent.reason}"` : ' (no reason given)'}
+                      </p>
+                    )}
+                  </li>
+                );
+              })}
             </ol>
           </div>
         )}
