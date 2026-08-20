@@ -1033,7 +1033,15 @@ export async function setSyncCursor(source: string, cursor: Record<string, unkno
  *  is stable, so a prior follow-up marked 'done' must NOT block a fresh nudge
  *  (e.g. a second "quote sent, no reply" cycle weeks later on the same
  *  still-unapproved item). Without the status scope, clicking Done once
- *  permanently killed the nudge for that item+reason forever. */
+ *  permanently killed the nudge for that item+reason forever.
+ *
+ *  Returns 'created' on an actual write, 'skipped' for a legitimate no-op (a
+ *  pending row already exists, or the anchored item is already resolved —
+ *  see the churn-gate comment below), or 'failed' when a read errored/threw.
+ *  #310 fix-round: a plain boolean collapsed 'skipped' and 'failed' into the
+ *  same `false`, so the caller (runQuoteToolReconcile, sync.ts) had no way to
+ *  count a degraded tick separately from an ordinary one — see its
+ *  `followUpErrors` field. */
 export async function ensureFollowUp(input: {
   inboxItemId: string;
   contactId: string | null;
@@ -1042,53 +1050,74 @@ export async function ensureFollowUp(input: {
   // WT-44: cadence override so the "Follow-up reminder (days)" setting can
   // drive when the strip nudge is due; falls back to DEFAULT_FOLLOW_UP_DAYS.
   afterDays?: number;
-}): Promise<boolean> {
+}): Promise<'created' | 'skipped' | 'failed'> {
   const sb = getSupabaseServiceClient();
-  if (!sb) return false;
-  const { data } = await sb
-    .from('follow_ups')
-    .select('id')
-    .eq('inbox_item_id', input.inboxItemId)
-    .eq('reason', input.reason)
-    .eq('status', 'pending')
-    .limit(1);
-  if (data && data.length > 0) return false; // a pending one already exists — don't duplicate
+  if (!sb) return 'skipped';
+  // #310: this whole body used to run unguarded — a throw from either read
+  // below (or the upsert) escaped straight into runQuoteToolReconcile's single
+  // top-level try/catch (sync.ts), aborting the WHOLE reconcile tick (zeroing
+  // every counter, skipping both tail sweeps) over one bad read on one quote.
+  // Wrapped + each read's own {error} checked, mirroring this file's other
+  // best-effort I/O (closeQuoteInboxNoise, closeFollowUpsForResolvedItem):
+  // fail open by skipping just this item, log, and let the next tick (5 min
+  // later) retry — never let one item's read failure take down the batch.
+  try {
+    const { data, error: pendingErr } = await sb
+      .from('follow_ups')
+      .select('id')
+      .eq('inbox_item_id', input.inboxItemId)
+      .eq('reason', input.reason)
+      .eq('status', 'pending')
+      .limit(1);
+    if (pendingErr) {
+      console.error('[inbox] ensureFollowUp: pending lookup failed (skipping item):', pendingErr.message);
+      return 'failed';
+    }
+    if (data && data.length > 0) return 'skipped'; // a pending one already exists — don't duplicate
 
-  // #252 churn gate: quoteFollowUpDecision (quotetool.ts) derives kind:'create'
-  // from the QUOTE's own fields alone — never the anchored item's status — so
-  // the reconcile asks for a follow-up on EVERY tick for any sent-but-unapproved,
-  // non-dead quote. Once that item is resolved and its nag auto-closed
-  // (closeFollowUpsForResolvedItem), the upsert below would flip the 'done' row
-  // straight back to 'pending' every 5 minutes forever; sweepResolvedItemFollowUps
-  // re-closes it later in the same tick, so the end-of-tick state looks right and
-  // nothing fails — the only visible symptoms are permanent write churn and an
-  // inflated followUpsCreated counter. Same class as the #230(b) gate on the
-  // suppress branch, which exists because decision.kind is recomputed per tick.
-  // Costs one read, and only on the path that would otherwise write: the
-  // early-return above already covers the steady state.
-  const { data: item } = await sb.from('inbox_items').select('status').eq('id', input.inboxItemId).maybeSingle();
-  const itemStatus = (item as { status: string } | null)?.status ?? null;
-  if (itemStatus === 'completed' || itemStatus === 'dismissed') return false;
-  const fu = quoteSentNoReplyFollowUp({ contactId: input.contactId, inboxItemId: input.inboxItemId, sentAt: input.sentAt, afterDays: input.afterDays });
-  // WT-43: UPSERT, not insert. The table has `unique (inbox_item_id, reason)`
-  // with no status predicate, so once a prior nudge is marked 'done' a plain
-  // insert 23505s (swallowed by supabase-js into {error}) and the nudge never
-  // re-arms. Conflict-target the constraint so a 'done' row is flipped back to
-  // 'pending' with a fresh due_at (and no pending row exists here, guaranteed by
-  // the early-return above, so this never resets a live pending nudge).
-  await sb.from('follow_ups').upsert(
-    {
-      contact_id: fu.contactId,
-      inbox_item_id: fu.inboxItemId,
-      due_at: fu.dueAt.toISOString(),
-      reason: fu.reason,
-      status: fu.status,
-      assigned_to: fu.assignedTo,
-      created_by: fu.createdBy,
-    },
-    { onConflict: 'inbox_item_id,reason' },
-  );
-  return true;
+    // #252 churn gate: quoteFollowUpDecision (quotetool.ts) derives kind:'create'
+    // from the QUOTE's own fields alone — never the anchored item's status — so
+    // the reconcile asks for a follow-up on EVERY tick for any sent-but-unapproved,
+    // non-dead quote. Once that item is resolved and its nag auto-closed
+    // (closeFollowUpsForResolvedItem), the upsert below would flip the 'done' row
+    // straight back to 'pending' every 5 minutes forever; sweepResolvedItemFollowUps
+    // re-closes it later in the same tick, so the end-of-tick state looks right and
+    // nothing fails — the only visible symptoms are permanent write churn and an
+    // inflated followUpsCreated counter. Same class as the #230(b) gate on the
+    // suppress branch, which exists because decision.kind is recomputed per tick.
+    // Costs one read, and only on the path that would otherwise write: the
+    // early-return above already covers the steady state.
+    const { data: item, error: itemErr } = await sb.from('inbox_items').select('status').eq('id', input.inboxItemId).maybeSingle();
+    if (itemErr) {
+      console.error('[inbox] ensureFollowUp: item status lookup failed (skipping item):', itemErr.message);
+      return 'failed';
+    }
+    const itemStatus = (item as { status: string } | null)?.status ?? null;
+    if (itemStatus === 'completed' || itemStatus === 'dismissed') return 'skipped';
+    const fu = quoteSentNoReplyFollowUp({ contactId: input.contactId, inboxItemId: input.inboxItemId, sentAt: input.sentAt, afterDays: input.afterDays });
+    // WT-43: UPSERT, not insert. The table has `unique (inbox_item_id, reason)`
+    // with no status predicate, so once a prior nudge is marked 'done' a plain
+    // insert 23505s (swallowed by supabase-js into {error}) and the nudge never
+    // re-arms. Conflict-target the constraint so a 'done' row is flipped back to
+    // 'pending' with a fresh due_at (and no pending row exists here, guaranteed by
+    // the early-return above, so this never resets a live pending nudge).
+    await sb.from('follow_ups').upsert(
+      {
+        contact_id: fu.contactId,
+        inbox_item_id: fu.inboxItemId,
+        due_at: fu.dueAt.toISOString(),
+        reason: fu.reason,
+        status: fu.status,
+        assigned_to: fu.assignedTo,
+        created_by: fu.createdBy,
+      },
+      { onConflict: 'inbox_item_id,reason' },
+    );
+    return 'created';
+  } catch (e) {
+    console.error('[inbox] ensureFollowUp failed (skipping item):', e);
+    return 'failed';
+  }
 }
 
 /** Mark a pending follow-up for an item done (e.g. the quote got approved).
@@ -1373,7 +1402,18 @@ export async function sweepOrphanedFollowUps(reason: string): Promise<number> {
     .from('follow_ups')
     .select('id, inbox_item_id')
     .eq('reason', reason)
-    .eq('status', 'pending');
+    .eq('status', 'pending')
+    // #310: was unbounded — PostgREST silently truncates at its 1000-row
+    // default, so past that this sweep would stop covering rows with no
+    // error and no signal. follow_ups holds 57 today; 5000 mirrors the cap
+    // already used a few times in this file (getReopenCounts' distinct(),
+    // the returning-contact tally above) for the same "generous headroom,
+    // bound the pathological case" reasoning.
+    // Ordered so the capped subset is DETERMINISTIC — without an order, a
+    // table past the cap could nondeterministically flip which rows this
+    // sweep covers on each run (same reasoning as the #185 precedent above).
+    .order('id', { ascending: true })
+    .limit(5000);
   if (pendingErr) {
     console.error('[inbox] orphan follow-up sweep: pending lookup failed:', pendingErr.message);
     return 0;
@@ -1445,7 +1485,16 @@ export async function sweepResolvedItemFollowUps(): Promise<number> {
   const sb = getSupabaseServiceClient();
   if (!sb) return 0;
 
-  const { data: pending, error: pendingErr } = await sb.from('follow_ups').select('id, inbox_item_id').eq('status', 'pending');
+  // #310: was unbounded — same PostgREST 1000-row default-truncation risk as
+  // sweepOrphanedFollowUps' pending lookup above (sibling-parity fix, one pass).
+  // Ordered so the capped subset is DETERMINISTIC — same #185 precedent cited
+  // there.
+  const { data: pending, error: pendingErr } = await sb
+    .from('follow_ups')
+    .select('id, inbox_item_id')
+    .eq('status', 'pending')
+    .order('id', { ascending: true })
+    .limit(5000);
   if (pendingErr) {
     console.error('[inbox] resolved-item follow-up sweep: pending lookup failed:', pendingErr.message);
     return 0;
