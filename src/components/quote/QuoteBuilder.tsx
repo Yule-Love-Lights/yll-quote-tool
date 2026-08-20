@@ -219,17 +219,30 @@ function EditablePrice({
 // (per-quote override). Mirrors EditablePrice's idiom — shows the current
 // label as a button; click → inline text field; Enter/blur commits, Esc
 // cancels. Clearing the field (blank/whitespace) resets instead of
-// committing an empty override. When overridden, a small "✕" chip resets.
+// committing an empty override. When overridden, a "custom · was "X" ✕" chip
+// shows the baseline + resets — same idiom, price parity (staff-lens MED).
 // stopPropagation/preventDefault so it never toggles a recommendable row's
 // <label> (same reason as EditablePrice).
+//
+// `baseLabel` is the ENGINE's current default (item.label, pre-resolution —
+// the caller passes it straight from the closure, unlike EditablePrice's
+// baseAmount which needs a separate overrides-stripped recompute
+// (baselineResult) because price has no cheaper source of truth). Unlike
+// price, this is never stale/reopen-seeded: item.label is recomputed by
+// calculateQuote on every render from the CURRENT scene, so if a sibling
+// duplicate was renamed away and this item un-numbered (Jason's numbering-
+// interplay ruling), the "was" chip already shows the NEW bare label reset
+// would actually produce right now — not a frozen historical string.
 function EditableLabel({
   label,
+  baseLabel,
   overridden,
   disabled,
   onCommit,
   onReset,
 }: {
   label: string;
+  baseLabel: string;
   overridden: boolean;
   disabled: boolean;
   onCommit: (s: string) => void;
@@ -270,23 +283,12 @@ function EditableLabel({
       </span>
     );
   }
+  // Only claim a "was X" when we have a DISTINCT baseline — mirrors
+  // EditablePrice's showBase guard exactly (same reasoning: if label already
+  // equals baseLabel there's nothing to contrast, show a plain "custom" chip).
+  const showBase = baseLabel !== label;
   return (
-    <span className="inline-flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-      <button
-        type="button"
-        onClick={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          start();
-        }}
-        disabled={disabled}
-        title={overridden ? 'Custom name for this quote — click to edit' : 'Click to rename this item for this quote'}
-        className={`rounded px-1 -mx-1 hover:bg-green-50 disabled:cursor-not-allowed cursor-text ${
-          overridden ? 'text-amber-700 font-medium' : ''
-        }`}
-      >
-        {label}
-      </button>
+    <span className="inline-flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
       {overridden && (
         <button
           type="button"
@@ -296,12 +298,31 @@ function EditableLabel({
             onReset();
           }}
           disabled={disabled}
-          title="Reset to the auto label"
+          title={
+            showBase
+              ? `Custom name for this quote — reset to "${baseLabel}"`
+              : 'Custom name for this quote — reset'
+          }
           className="text-[10px] font-semibold uppercase tracking-wide text-amber-600 hover:text-amber-800 disabled:opacity-40 cursor-pointer"
         >
-          ✕
+          custom{showBase ? ` · was "${baseLabel}"` : ''} ✕
         </button>
       )}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          start();
+        }}
+        disabled={disabled}
+        title="Click to rename this item for this quote"
+        className={`rounded px-1 -mx-1 hover:bg-green-50 disabled:cursor-not-allowed cursor-text ${
+          overridden ? 'text-amber-700 font-medium' : ''
+        }`}
+      >
+        {label}
+      </button>
     </span>
   );
 }
@@ -6376,6 +6397,7 @@ export default function QuoteBuilder({
                         {renameable ? (
                           <EditableLabel
                             label={resolvedLabel.label}
+                            baseLabel={item.label}
                             overridden={resolvedLabel.overridden}
                             disabled={loading}
                             onCommit={(s) => commitLineLabel(item.id!, s)}
