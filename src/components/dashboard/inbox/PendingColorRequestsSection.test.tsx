@@ -53,4 +53,43 @@ describe('PendingColorRequestsSection (row 321)', () => {
     expect(html).not.toContain('d ago');
     expect(html).not.toContain('undefined');
   });
+
+  // Row 321 fix-round FIX 4 (staff LOW): the section used to render every row
+  // full-width with no cap or scroll. Caps the render at MAX_VISIBLE (20) and
+  // shows a WT-41-style "more not shown" note for the overflow.
+  describe('cap (row 321 fix-round FIX 4)', () => {
+    // The component trusts its `items` prop is already oldest-first (store.ts
+    // listPendingColorRequests' own sort) and never re-sorts — index 0 here is
+    // deliberately the OLDEST (smallest requestedAt), matching that contract,
+    // so slice(0, MAX_VISIBLE) is provably "the oldest N".
+    function makeItems(n: number): PendingColorRequestItem[] {
+      return Array.from({ length: n }, (_, i) => ({
+        quoteId: `q-${i}`,
+        quoteNumber: i,
+        customerName: `Customer ${i}`,
+        label: 'Champagne',
+        requestedAt: new Date(NOW - (n - i) * 86_400_000).toISOString(),
+      }));
+    }
+
+    it('shows no truncation note when the population is at or below the cap', () => {
+      const html = renderToStaticMarkup(<PendingColorRequestsSection items={makeItems(20)} nowMs={NOW} />);
+      expect(html).toContain('Customer 19');
+      expect(html).not.toContain('more not shown');
+    });
+
+    it('caps the render at 20 rows and names the overflow count', () => {
+      const items = makeItems(25);
+      const html = renderToStaticMarkup(<PendingColorRequestsSection items={items} nowMs={NOW} />);
+      // The first 20 (indices 0-19, the OLDEST 20 per makeItems' construction)
+      // are shown; the 5 newest (indices 20-24) are the overflow.
+      expect(html).toContain('Customer 19');
+      expect(html).not.toContain('Customer 20');
+      expect(html).not.toContain('Customer 24');
+      expect(html).toContain('Showing the oldest 20 of 25');
+      expect(html).toContain('5 more not shown');
+      // The heading count is still the TRUE total, not the capped render count.
+      expect(html).toContain('Pending colour requests (25)');
+    });
+  });
 });

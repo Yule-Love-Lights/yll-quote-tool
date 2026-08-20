@@ -14,6 +14,16 @@ function daysWaiting(requestedAt: string | null, nowMs: number): number | null {
   return Number.isFinite(ms) ? Math.max(0, Math.floor(ms / 86_400_000)) : null;
 }
 
+// Row 321 fix-round FIX 4 (staff LOW): the section had no cap or scroll — it
+// rendered every row full-width above the due-today strip. Caps the RENDER
+// (items is already oldest-first — store.ts listPendingColorRequests' own
+// sort), mirroring the WT-41 truncation-notice convention already used one
+// section down in src/app/inbox/page.tsx ("Showing the oldest N of M ... more
+// not shown yet") rather than introducing a new scroll-container pattern this
+// codebase doesn't otherwise use. Live population is 2 quotes today, so this
+// is headroom for growth, not a fix for a population that exists yet.
+const MAX_VISIBLE = 20;
+
 export function PendingColorRequestsSection({
   items,
   nowMs,
@@ -22,6 +32,8 @@ export function PendingColorRequestsSection({
   nowMs: number;
 }) {
   if (items.length === 0) return null;
+  const shown = items.slice(0, MAX_VISIBLE);
+  const hiddenCount = items.length - shown.length;
 
   return (
     <section
@@ -36,7 +48,7 @@ export function PendingColorRequestsSection({
         completed, or dismissed. Apply or dismiss each from the quote&apos;s admin page.
       </p>
       <ul className="space-y-2">
-        {items.map((item) => {
+        {shown.map((item) => {
           const age = daysWaiting(item.requestedAt, nowMs);
           return (
             <li key={item.quoteId} className="flex items-center justify-between gap-3 text-sm">
@@ -57,6 +69,11 @@ export function PendingColorRequestsSection({
           );
         })}
       </ul>
+      {hiddenCount > 0 && (
+        <p className="text-xs mt-2" style={{ color: '#92400e' }}>
+          Showing the oldest {shown.length} of {items.length} — {hiddenCount} more not shown.
+        </p>
+      )}
     </section>
   );
 }
