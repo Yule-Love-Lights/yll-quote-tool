@@ -410,7 +410,9 @@ describe('runQuoteToolReconcile — orphan follow-up sweep wiring (#183 BUG 3)',
     getFollowUpDaysMock.mockResolvedValue(3);
     listQuotesForDashboardMock.mockResolvedValue([]);
     sweepResolvedItemFollowUpsMock.mockResolvedValue(0);
-    completeTerminalQuoteItemsMock.mockResolvedValue(0);
+    // row 317 fix-round FIX 3: completeTerminalQuoteItems now returns
+    // { completed, failed } instead of a bare count.
+    completeTerminalQuoteItemsMock.mockResolvedValue({ completed: 0, failed: false });
   });
 
   it('calls sweepOrphanedFollowUps once with the quote_sent_no_reply reason and adds its count into followUpsClosed', async () => {
@@ -774,7 +776,7 @@ describe('runQuoteToolReconcile — terminal-quote auto-complete wiring (#317)',
         status: 'booked',
       },
     ]);
-    completeTerminalQuoteItemsMock.mockResolvedValue(2); // bare + color-request both completed
+    completeTerminalQuoteItemsMock.mockResolvedValue({ completed: 2, failed: false }); // bare + color-request both completed
 
     const summary = await runQuoteToolReconcile(new Date('2026-08-20T12:00:00Z'));
 
@@ -787,7 +789,7 @@ describe('runQuoteToolReconcile — terminal-quote auto-complete wiring (#317)',
     listQuotesForDashboardMock.mockResolvedValue([
       { id: 'q-declined', quote_sent_at: '2026-07-01T00:00:00Z', customer_approved_at: null, status: 'declined' },
     ]);
-    completeTerminalQuoteItemsMock.mockResolvedValue(1);
+    completeTerminalQuoteItemsMock.mockResolvedValue({ completed: 1, failed: false });
 
     const summary = await runQuoteToolReconcile(new Date('2026-08-20T12:00:00Z'));
 
@@ -803,7 +805,7 @@ describe('runQuoteToolReconcile — terminal-quote auto-complete wiring (#317)',
     // completeTerminalQuoteItems must still be called; it's a wholly separate
     // write path (see its own doc for why the noop can't reach it).
     ingestTouchMock.mockResolvedValue({ ...OK_RESULT, skipped: true });
-    completeTerminalQuoteItemsMock.mockResolvedValue(1);
+    completeTerminalQuoteItemsMock.mockResolvedValue({ completed: 1, failed: false });
 
     const summary = await runQuoteToolReconcile(new Date('2026-08-20T12:00:00Z'));
 
@@ -839,12 +841,60 @@ describe('runQuoteToolReconcile — terminal-quote auto-complete wiring (#317)',
       { id: 'q-b', quote_sent_at: '2026-07-02T00:00:00Z', customer_approved_at: null, status: 'abandoned' },
       { id: 'q-c', quote_sent_at: '2026-07-03T00:00:00Z', customer_approved_at: null, status: 'sent' }, // not terminal
     ]);
-    completeTerminalQuoteItemsMock.mockResolvedValueOnce(1).mockResolvedValueOnce(2);
+    completeTerminalQuoteItemsMock
+      .mockResolvedValueOnce({ completed: 1, failed: false })
+      .mockResolvedValueOnce({ completed: 2, failed: false });
 
     const summary = await runQuoteToolReconcile(new Date('2026-08-20T12:00:00Z'));
 
     expect(completeTerminalQuoteItemsMock).toHaveBeenCalledTimes(2);
     expect(summary.autoCompleted).toBe(3);
+  });
+
+  // row 317 fix-round FIX 3 (admin LOW, mirrors #825/#310's followUpErrors
+  // precedent above in this file): a completeTerminalQuoteItems failure must
+  // surface on the summary/recordSyncRun instead of only hitting
+  // console.warn inside store.ts.
+  it('surfaces a completeTerminalQuoteItems failure on the summary and recordSyncRun instead of reporting a clean tick', async () => {
+    listQuotesForDashboardMock.mockResolvedValue([
+      {
+        id: 'q-booked',
+        quote_sent_at: '2026-08-01T00:00:00Z',
+        customer_approved_at: '2026-08-02T00:00:00Z',
+        deposit_paid_at: '2026-08-03T00:00:00Z',
+        status: 'booked',
+      },
+    ]);
+    completeTerminalQuoteItemsMock.mockResolvedValue({ completed: 0, failed: true });
+
+    const summary = await runQuoteToolReconcile(new Date('2026-08-20T12:00:00Z'));
+
+    expect(summary.autoCompleted).toBe(0);
+    expect(summary.autoCompleteErrors).toBe(1);
+    expect(summary.ok).toBe(false); // the route's 200-vs-500 decision reads this
+    expect(recordSyncRunMock).toHaveBeenCalledWith(
+      'quotetool',
+      'error',
+      expect.stringContaining('1 auto-complete error(s)'),
+    );
+  });
+
+  it('does not count a failed:false result as an auto-complete error', async () => {
+    listQuotesForDashboardMock.mockResolvedValue([
+      {
+        id: 'q-booked',
+        quote_sent_at: '2026-08-01T00:00:00Z',
+        customer_approved_at: '2026-08-02T00:00:00Z',
+        deposit_paid_at: '2026-08-03T00:00:00Z',
+        status: 'booked',
+      },
+    ]);
+    completeTerminalQuoteItemsMock.mockResolvedValue({ completed: 0, failed: false });
+
+    const summary = await runQuoteToolReconcile(new Date('2026-08-20T12:00:00Z'));
+
+    expect(summary.autoCompleteErrors).toBe(0);
+    expect(summary.ok).toBe(true);
   });
 });
 

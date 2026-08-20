@@ -4045,7 +4045,7 @@ describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', (
     });
     sbRef.current = { from };
 
-    const n = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+    const { completed: n } = await completeTerminalQuoteItems(QUOTE_ID, NOW);
 
     expect(n).toBe(1);
     const updateCall = itemsUpdateCalls.find((c) => c.method === 'update');
@@ -4082,7 +4082,7 @@ describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', (
     });
     sbRef.current = { from };
 
-    const n = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+    const { completed: n } = await completeTerminalQuoteItems(QUOTE_ID, NOW);
 
     expect(n).toBe(1);
     const updateCall = itemsUpdateCalls.find((c) => c.method === 'update');
@@ -4105,7 +4105,7 @@ describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', (
     });
     sbRef.current = { from };
 
-    const n = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+    const { completed: n } = await completeTerminalQuoteItems(QUOTE_ID, NOW);
 
     expect(n).toBe(1); // only the bare item
     const idInCall = itemsUpdateCalls.find((c) => c.method === 'in' && c.args[0] === 'id');
@@ -4135,7 +4135,7 @@ describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', (
     });
     sbRef.current = { from };
 
-    const n = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+    const { completed: n } = await completeTerminalQuoteItems(QUOTE_ID, NOW);
 
     expect(n).toBe(0);
     expect(itemsUpdateCalls.some((c) => c.method === 'update')).toBe(false);
@@ -4154,7 +4154,7 @@ describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', (
     });
     sbRef.current = { from };
 
-    const n = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+    const { completed: n } = await completeTerminalQuoteItems(QUOTE_ID, NOW);
 
     expect(n).toBe(0);
     expect(itemsUpdateCalls.some((c) => c.method === 'update')).toBe(false);
@@ -4165,7 +4165,7 @@ describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', (
     const { from } = makeSbForComplete({ itemsSelect: { data: [], error: null } });
     sbRef.current = { from };
 
-    const n = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+    const { completed: n } = await completeTerminalQuoteItems(QUOTE_ID, NOW);
     expect(n).toBe(0);
   });
 
@@ -4191,7 +4191,7 @@ describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', (
       const { from } = makeSbForComplete({ itemsSelect: { data: null, error: { message: 'db down' } } });
       sbRef.current = { from };
 
-      await expect(completeTerminalQuoteItems(QUOTE_ID, NOW)).resolves.toBe(0);
+      await expect(completeTerminalQuoteItems(QUOTE_ID, NOW)).resolves.toEqual({ completed: 0, failed: true });
       expect(consoleWarnSpy).toHaveBeenCalledWith(
         '[inbox] terminal-quote auto-complete: item lookup failed (non-fatal):',
         'db down',
@@ -4210,7 +4210,7 @@ describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', (
       });
       sbRef.current = { from };
 
-      await expect(completeTerminalQuoteItems(QUOTE_ID, NOW)).resolves.toBe(0);
+      await expect(completeTerminalQuoteItems(QUOTE_ID, NOW)).resolves.toEqual({ completed: 0, failed: true });
       expect(consoleWarnSpy).toHaveBeenCalledWith(
         '[inbox] terminal-quote auto-complete: item resolve failed (non-fatal):',
         'write failed',
@@ -4222,7 +4222,7 @@ describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', (
 
   it('no-ops (no throw) when the service client is not configured', async () => {
     sbRef.current = null;
-    await expect(completeTerminalQuoteItems(QUOTE_ID, NOW)).resolves.toBe(0);
+    await expect(completeTerminalQuoteItems(QUOTE_ID, NOW)).resolves.toEqual({ completed: 0, failed: false });
   });
 
   // ─── FIX 2 (row 317 fix-round, staff HIGH + admin MED converged) ───────────
@@ -4236,7 +4236,7 @@ describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', (
       });
       sbRef.current = { from };
 
-      const completed = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+      const { completed } = await completeTerminalQuoteItems(QUOTE_ID, NOW);
 
       expect(completed).toBe(0);
       expect(itemsUpdateCalls.some((c) => c.method === 'update')).toBe(false);
@@ -4255,7 +4255,7 @@ describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', (
       });
       sbRef.current = { from };
 
-      const completed = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+      const { completed } = await completeTerminalQuoteItems(QUOTE_ID, NOW);
 
       expect(completed).toBe(1);
       expect(itemsUpdateCalls.some((c) => c.method === 'update')).toBe(true);
@@ -4275,7 +4275,7 @@ describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', (
       });
       sbRef.current = { from };
 
-      const completed = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+      const { completed } = await completeTerminalQuoteItems(QUOTE_ID, NOW);
 
       expect(completed).toBe(1);
       const idInCall = itemsUpdateCalls.find((c) => c.method === 'in' && c.args[0] === 'id');
@@ -4298,7 +4298,7 @@ describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', (
       });
       sbRef.current = { from };
 
-      const completed = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+      const { completed } = await completeTerminalQuoteItems(QUOTE_ID, NOW);
 
       expect(completed).toBe(1);
       expect(itemsUpdateCalls.some((c) => c.method === 'update')).toBe(true);
@@ -4320,7 +4320,9 @@ describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', (
       ]);
     });
 
-    it('fails CLOSED (never completes) when the reversed-row lookup errors', async () => {
+    // row 317 fix-round FIX 3: failed:true now meaningful (was always false
+    // before FIX 3 landed) — asserts the full { completed, failed } shape.
+    it('fails CLOSED (never completes) and reports failed:true when the reversed-row lookup errors', async () => {
       const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
         const { from, itemsUpdateCalls } = makeSbForComplete({
@@ -4329,9 +4331,9 @@ describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', (
         });
         sbRef.current = { from };
 
-        const completed = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+        const result = await completeTerminalQuoteItems(QUOTE_ID, NOW);
 
-        expect(completed).toBe(0);
+        expect(result).toEqual({ completed: 0, failed: true });
         expect(itemsUpdateCalls.some((c) => c.method === 'update')).toBe(false);
         expect(consoleWarnSpy).toHaveBeenCalledWith(
           '[inbox] terminal-quote auto-complete: reversed-row lookup failed (non-fatal):',

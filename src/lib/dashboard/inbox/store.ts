@@ -1482,7 +1482,7 @@ export async function closeQuoteInboxNoise(quoteId: string, operatorId: string |
 // error: a query error is NOT proof nothing was reversed, and silently
 // re-completing an item an operator explicitly reversed is exactly the wrong
 // thing to fail open on. `failed` lets the caller (completeTerminalQuoteItems)
-// count this as a genuine auto-complete error (a future fix-round FIX 3) rather
+// count this as a genuine auto-complete error (FIX 3, below) rather
 // than a quiet "nothing eligible" no-op.
 async function fetchReversedItemIds(
   sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
@@ -1588,10 +1588,18 @@ async function fetchReversedItemIds(
 //
 // Best-effort — never throws (mirrors closeQuoteInboxNoise's non-fatal
 // contract; a lookup/write hiccup here must never abort the reconcile tick).
-// Returns how many items were actually completed.
-export async function completeTerminalQuoteItems(quoteId: string, now: Date): Promise<number> {
+// Returns how many items were actually completed, plus `failed` (row 317
+// fix-round FIX 3, mirrors runQuoteToolReconcile's existing followUpErrors
+// convention, sync.ts — see QuoteReconcileSummary's own doc): true when a
+// Supabase read/write inside this call genuinely errored, so the caller can
+// count a degraded tick instead of it reading identically to "0 eligible
+// rows this time", which is a legitimate, non-degraded outcome.
+export async function completeTerminalQuoteItems(
+  quoteId: string,
+  now: Date,
+): Promise<{ completed: number; failed: boolean }> {
   const sb = getSupabaseServiceClient();
-  if (!sb) return 0;
+  if (!sb) return { completed: 0, failed: false };
   try {
     const { data, error } = await sb
       .from('inbox_items')
@@ -1600,17 +1608,17 @@ export async function completeTerminalQuoteItems(quoteId: string, now: Date): Pr
       .in('external_id', [quoteId, `${quoteId}:color-request`]);
     if (error) {
       console.warn('[inbox] terminal-quote auto-complete: item lookup failed (non-fatal):', error.message);
-      return 0;
+      return { completed: 0, failed: true };
     }
     const rows = (data ?? []) as { id: string; status: InboxStatus; followed_up_at: string | null }[];
-    if (!rows.length) return 0;
+    if (!rows.length) return { completed: 0, failed: false };
 
     // FIX 1 (row 317 fix-round): status === 'handled' is the ONLY eligible
     // shape — see the doc above. Deliberately NOT bucketOf(): bucketOf's
     // 'awaiting_reply' bucket also covers the snooze case (unresponded +
     // followed_up_at set), which this must exclude.
     const eligibleByStatus = rows.filter((r) => r.status === 'handled');
-    if (!eligibleByStatus.length) return 0;
+    if (!eligibleByStatus.length) return { completed: 0, failed: false };
 
     // FIX 2 (row 317 fix-round, staff HIGH + admin MED converged): a row an
     // operator explicitly Reversed is a deliberate human override of the auto
@@ -1626,9 +1634,9 @@ export async function completeTerminalQuoteItems(quoteId: string, now: Date): Pr
       sb,
       eligibleByStatus.map((r) => r.id),
     );
-    if (reversedLookupFailed) return 0;
+    if (reversedLookupFailed) return { completed: 0, failed: true };
     const eligible = eligibleByStatus.filter((r) => !reversedIds.has(r.id));
-    if (!eligible.length) return 0;
+    if (!eligible.length) return { completed: 0, failed: false };
 
     const nowIso = now.toISOString();
     const { data: updated, error: updErr } = await sb
@@ -1647,12 +1655,12 @@ export async function completeTerminalQuoteItems(quoteId: string, now: Date): Pr
       .select('id');
     if (updErr) {
       console.warn('[inbox] terminal-quote auto-complete: item resolve failed (non-fatal):', updErr.message);
-      return 0;
+      return { completed: 0, failed: true };
     }
 
     const updatedIds = new Set(((updated ?? []) as { id: string }[]).map((r) => r.id));
     const completedRows = eligible.filter((r) => updatedIds.has(r.id));
-    if (!completedRows.length) return 0;
+    if (!completedRows.length) return { completed: 0, failed: false };
 
     await sb.from('dashboard_activity').insert(
       completedRows.map((r) => ({
@@ -1667,10 +1675,10 @@ export async function completeTerminalQuoteItems(quoteId: string, now: Date): Pr
       })),
     );
     await Promise.all(completedRows.map((r) => closeFollowUpsForResolvedItem(r.id, 'completed')));
-    return completedRows.length;
+    return { completed: completedRows.length, failed: false };
   } catch (e) {
     console.warn('[inbox] terminal-quote auto-complete failed (non-fatal):', e);
-    return 0;
+    return { completed: 0, failed: true };
   }
 }
 
