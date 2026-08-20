@@ -30,7 +30,7 @@ import { isAnsweredByDirection } from './escalation';
 import { FOLLOWUP_REASONS, isDueToday, quoteSentNoReplyFollowUp } from './followups';
 import type { MetricItem, WindowKey, ReopenCounts } from './responseMetrics';
 import { addSuppressedSenders, removeSuppressedSenders } from './suppression';
-import { inverseOf, type ReverseAction } from './lifecycle';
+import { applyBucketFilter, inverseOf, type ReverseAction } from './lifecycle';
 import { listOperatorAccounts } from '@/lib/auth/adminUsers';
 import { deriveStatus, isParkedLegacyRebookDraft, type QuoteStatus } from '@/lib/quoteStatus';
 
@@ -627,15 +627,17 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
   // LEGACY_REBOOK_FETCH_BUFFER above.
   const fetchLimit = EXCLUDE_LEGACY_REBOOK_FROM_INBOX ? limit + LEGACY_REBOOK_FETCH_BUFFER : limit;
 
-  const { data, error, count } = await sb
-    .from('inbox_items')
-    .select(
-      'id, source, external_id, channel, direction, last_message_at, preview, subject, escalation_level, contact_id, lead_kind, quote_value, ' +
-        'dashboard_contacts ( display_name, primary_email, primary_phone, assigned_to )',
-      { count: 'exact' },
-    )
-    .eq('status', 'unresponded')
-    .is('followed_up_at', null)
+  // #252 slice C: the base query is bound to a const BEFORE applyBucketFilter
+  // — inlining the .select(...) call directly as the generic call's argument
+  // hits a real `tsc` "Type instantiation is excessively deep" error (the
+  // nested dashboard_contacts relation in the select string, combined with
+  // bidirectional generic inference on the inline argument).
+  const baseQuery = sb.from('inbox_items').select(
+    'id, source, external_id, channel, direction, last_message_at, preview, subject, escalation_level, contact_id, lead_kind, quote_value, ' +
+      'dashboard_contacts ( display_name, primary_email, primary_phone, assigned_to )',
+    { count: 'exact' },
+  );
+  const { data, error, count } = await applyBucketFilter(baseQuery, 'needs_reply')
     .order('last_message_at', { ascending: true })
     .limit(fetchLimit);
   if (error) return { ok: false, error: error.message };
@@ -920,18 +922,24 @@ export type EscalatableResult = { ok: true; items: EscalatableItem[] } | { ok: f
 export async function listEscalatableItems(): Promise<EscalatableResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
-  const { data, error } = await sb
+  // #110 W7-005: a manually-Followed item (followed_up_at stamped, status still
+  // 'unresponded') must NOT keep firing amber/red alerts + EOD digests — it's
+  // been handled outside the tool. Mirrors listOpenItems' needs_reply bucket;
+  // an inbound clears followed_up_at (planIngest.clearFollowedUp) and re-arms
+  // escalation. #252 slice C: the status/followed_up_at pair below is exactly
+  // the needs_reply bucket, routed through the same applyBucketFilter
+  // listOpenItems uses — the lead_kind .or(...) is an escalation-only
+  // narrowing on TOP of that bucket, not part of the bucket definition itself.
+  // (baseQuery is bound to a const before applyBucketFilter for the same
+  // reason as listOpenItems — see its comment.)
+  const baseQuery = sb
     .from('inbox_items')
     .select(
       'id, source, external_id, last_message_at, notified_levels, escalation_level, preview, dashboard_contacts ( display_name )',
-    )
-    .eq('status', 'unresponded')
-    // #110 W7-005: a manually-Followed item (followed_up_at stamped, status still
-    // 'unresponded') must NOT keep firing amber/red alerts + EOD digests — it's
-    // been handled outside the tool. Mirrors listOpenItems; an inbound clears
-    // followed_up_at (planIngest.clearFollowedUp) and re-arms escalation.
-    .is('followed_up_at', null)
-    .or('lead_kind.is.null,lead_kind.neq.automated');
+    );
+  const { data, error } = await applyBucketFilter(baseQuery, 'needs_reply').or(
+    'lead_kind.is.null,lead_kind.neq.automated',
+  );
   if (error) return { ok: false, error: error.message };
 
   let rows = (data ?? []) as unknown as Record<string, unknown>[];
@@ -1901,19 +1909,15 @@ export async function listInWorks(limit = 200): Promise<InWorksResult> {
   // #185: the two list fetches are independent (different status/followed_up_at
   // predicates on the same table) — no reason for the second to wait on the
   // first's round-trip.
+  // (Each base query is bound to a const before applyBucketFilter for the
+  // same reason as listOpenItems — see its comment.)
+  const awaitingBaseQuery = sb.from('inbox_items').select(IN_WORKS_SELECT);
+  const handledBaseQuery = sb.from('inbox_items').select(IN_WORKS_HANDLED_SELECT);
   const [aw, hd] = await Promise.all([
-    sb
-      .from('inbox_items')
-      .select(IN_WORKS_SELECT)
-      .not('followed_up_at', 'is', null)
-      .not('status', 'in', '(completed,dismissed)')
+    applyBucketFilter(awaitingBaseQuery, 'awaiting_reply')
       .order('followed_up_at', { ascending: true })
       .limit(limit),
-    sb
-      .from('inbox_items')
-      .select(IN_WORKS_HANDLED_SELECT)
-      .eq('status', 'handled')
-      .is('followed_up_at', null)
+    applyBucketFilter(handledBaseQuery, 'handled')
       .order('handled_at', { ascending: true })
       .limit(limit),
   ]);
