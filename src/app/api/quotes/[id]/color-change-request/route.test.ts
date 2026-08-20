@@ -1,16 +1,22 @@
-// Tests for POST /api/quotes/[id]/color-change-request (ledger #163). A booked
-// customer requests a colour change; the route sanitizes the colour, records it
-// on the quote (approval_snapshot.pendingColorRequest), and pings the inbox. It
-// does NOT alter the booked order. Supabase + getAppSettings + ingestTouch are
-// mocked; the colour sanitize helpers run for real.
+// Tests for POST /api/quotes/[id]/color-change-request (ledger #163 + row 319).
+// A booked customer requests a colour change; the route sanitizes the colour,
+// records it on the quote (approval_snapshot.pendingColorRequest), pings the
+// inbox, AND (row 319) fires a best-effort internal staff email so the request
+// is never visible only in /inbox. It does NOT alter the booked order. Supabase
+// + getAppSettings + ingestTouch + HighLevel sendEmail are mocked; the colour
+// sanitize helpers run for real.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { type NextRequest } from 'next/server';
 import { DEFAULT_COLOR_SCHEMES, DEFAULT_BUILDABLE_COLOR_IDS } from '@/lib/design/colorSchemes';
 
-const { sbRef, ingestTouchMock } = vi.hoisted(() => ({
+const { sbRef, ingestTouchMock, hl } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
-  ingestTouchMock: vi.fn(async (_touch: unknown, _now: unknown) => ({ ok: true })),
+  ingestTouchMock: vi.fn(async (_touch: unknown, _now: unknown) => ({ ok: true, itemId: 'inbox-item-1' })),
+  hl: {
+    configured: { value: true },
+    sendEmail: vi.fn(async (_args: { subject: string; html: string; contactId: string }) => ({})),
+  },
 }));
 
 vi.mock('@/lib/supabase', () => ({
@@ -25,6 +31,11 @@ vi.mock('@/lib/appSettings', () => ({
   }),
 }));
 vi.mock('@/lib/dashboard/inbox/store', () => ({ ingestTouch: ingestTouchMock }));
+vi.mock('@/lib/integrations/highlevel', () => ({
+  isHighLevelConfigured: () => hl.configured.value,
+  sendEmail: hl.sendEmail,
+  HighLevelError: class HighLevelError extends Error {},
+}));
 
 import { POST, colorChangeLabel } from './route';
 
@@ -34,10 +45,17 @@ const req = (body: unknown) =>
 const ctx = (id = ID) => ({ params: Promise.resolve({ id }) });
 
 type Row = Record<string, unknown>;
-function makeSb(quote: Row | null, fresh: Row | null = quote, quoteUpdateRows: Row[] = [{ id: ID }]) {
+function makeSb(
+  quote: Row | null,
+  fresh: Row | null = quote,
+  quoteUpdateRows: Row[] = [{ id: ID }],
+  opts: { activityInsertThrows?: boolean } = {},
+) {
   const updates: Row[] = [];
+  const activityInserts: Row[] = [];
   let table = '';
   let updating = false;
+  let inserting = false;
   const b: Record<string, unknown> = {};
   Object.assign(b, {
     from: (t: string) => {
@@ -50,18 +68,38 @@ function makeSb(quote: Row | null, fresh: Row | null = quote, quoteUpdateRows: R
       updates.push(payload);
       return b;
     },
+    // Row 308: the send-failure activity write. Only dashboard_activity inserts
+    // are modeled here (the route's only other write is the quotes CAS update
+    // above); track the payload so FIX-2 tests can assert on it.
+    insert: (payload: Row) => {
+      inserting = true;
+      if (table === 'dashboard_activity') activityInserts.push(payload);
+      return b;
+    },
     eq: () => b,
     single: async () => ({ data: quote, error: quote ? null : { message: 'no rows' } }),
     maybeSingle: async () => ({ data: fresh, error: null }),
     // Models the CAS write: a quotes UPDATE resolves to the rows that matched the
     // .eq('approval_snapshot', ...) filter — [] simulates a lost concurrency race.
-    then: (resolve: (v: unknown) => void) => {
+    // Also models the dashboard_activity insert (row 308): resolves ok, or
+    // rejects when opts.activityInsertThrows simulates the audit write itself
+    // failing — the route's own try/catch around it must swallow that too.
+    then: (resolve: (v: unknown) => void, reject?: (e: unknown) => void) => {
+      if (inserting && table === 'dashboard_activity') {
+        inserting = false;
+        if (opts.activityInsertThrows) {
+          reject?.(new Error('activity insert failed'));
+          return;
+        }
+        resolve({ data: null, error: null });
+        return;
+      }
       const data = updating && table === 'quotes' ? quoteUpdateRows : null;
       updating = false;
       resolve({ data, error: null });
     },
   });
-  return { client: b, updates };
+  return { client: b, updates, activityInserts };
 }
 
 function bookedQuote(overrides: Row = {}) {
@@ -70,6 +108,7 @@ function bookedQuote(overrides: Row = {}) {
     customer_name: 'Test Person',
     customer_email: 'test@example.com',
     customer_phone: '+16315551212',
+    customer_address: '1 Main St',
     service_type: 'holiday',
     highlevel_contact_id: 'hl-1',
     customer_approved_at: '2026-01-01T00:00:00Z',
@@ -85,6 +124,8 @@ function bookedQuote(overrides: Row = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   sbRef.current = null;
+  hl.configured.value = true;
+  delete process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
 });
 
 describe('colorChangeLabel', () => {
@@ -164,5 +205,117 @@ describe('POST /api/quotes/[id]/color-change-request', () => {
     const body = await res.json();
     expect(res.status).toBe(409);
     expect(body.code).toBe('not-editable');
+  });
+
+  // ── row 319: immediate internal staff email ────────────────────────────────
+  describe('internal staff email (row 319)', () => {
+    it('fires a best-effort staff email naming the customer + requested colour on success', async () => {
+      process.env.HIGHLEVEL_INTERNAL_CONTACT_ID = 'internal-1';
+      sbRef.current = makeSb(bookedQuote()).client;
+
+      const res = await POST(req({ colorSchemeId: 'custom', customPattern: ['red', 'green'] }), ctx());
+      expect(res.status).toBe(200);
+      expect(hl.sendEmail).toHaveBeenCalledTimes(1);
+      const call = hl.sendEmail.mock.calls[0][0];
+      expect(call.contactId).toBe('internal-1');
+      expect(call.subject).toContain('Test Person');
+      expect(call.subject.toLowerCase()).toContain('colour change requested');
+      expect(call.html).toContain('Test Person');
+      expect(call.html).toContain('Custom pattern (2 colours)');
+      // Links to the admin quote detail page — the only page ColorRequestPanel
+      // (the actual apply/dismiss UI) renders on. The general quote builder
+      // (/quote/<id>) has no awareness of pendingColorRequest at all.
+      expect(call.html).toContain(`/admin/quotes/${ID}`);
+    });
+
+    it('does NOT fire the email on a validation failure (order not booked)', async () => {
+      process.env.HIGHLEVEL_INTERNAL_CONTACT_ID = 'internal-1';
+      sbRef.current = makeSb(
+        bookedQuote({ customer_approved_at: null, approval_snapshot: null }),
+      ).client;
+
+      const res = await POST(req({ colorSchemeId: 'as-designed' }), ctx());
+      expect(res.status).toBe(409);
+      expect(hl.sendEmail).not.toHaveBeenCalled();
+    });
+
+    it('does NOT fire the email when the CAS write loses the race (request never persisted)', async () => {
+      process.env.HIGHLEVEL_INTERNAL_CONTACT_ID = 'internal-1';
+      const q = bookedQuote();
+      sbRef.current = makeSb(q, q, []).client;
+
+      const res = await POST(req({ colorSchemeId: 'as-designed' }), ctx());
+      expect(res.status).toBe(409);
+      expect(hl.sendEmail).not.toHaveBeenCalled();
+    });
+
+    it('still 200s (request saved) when the staff email throws', async () => {
+      process.env.HIGHLEVEL_INTERNAL_CONTACT_ID = 'internal-1';
+      hl.sendEmail.mockRejectedValueOnce(new Error('GHL down'));
+      const { client, updates } = makeSb(bookedQuote());
+      sbRef.current = client;
+
+      const res = await POST(req({ colorSchemeId: 'as-designed' }), ctx());
+      const body = await res.json();
+      expect(res.status).toBe(200);
+      expect(body.ok).toBe(true);
+      expect(updates).toHaveLength(1); // the request was still recorded
+    });
+
+    // ── row 308: send-failure visibility ─────────────────────────────────────
+    it('logs a dashboard_activity row when the staff email send fails, linked to the inbox item', async () => {
+      process.env.HIGHLEVEL_INTERNAL_CONTACT_ID = 'internal-1';
+      hl.sendEmail.mockRejectedValueOnce(new Error('GHL down'));
+      const { client, activityInserts } = makeSb(bookedQuote());
+      sbRef.current = client;
+
+      const res = await POST(req({ colorSchemeId: 'as-designed' }), ctx());
+      expect(res.status).toBe(200);
+      expect(activityInserts).toHaveLength(1);
+      expect(activityInserts[0].actor).toBe('system');
+      expect(activityInserts[0].action).toBe('color_request_email_failed');
+      // Linked to the same item ingestTouch just created (mocked to return
+      // itemId 'inbox-item-1') so staff can trace the failure back to it.
+      expect(activityInserts[0].inbox_item_id).toBe('inbox-item-1');
+      const detail = activityInserts[0].detail as { quoteId: string; error: string };
+      expect(detail.quoteId).toBe(ID);
+      expect(detail.error).toBe('GHL down'); // hlErrorMessage-extracted, not the raw Error object
+    });
+
+    it('does NOT throw and still 200s when the activity write for the failure ITSELF fails', async () => {
+      process.env.HIGHLEVEL_INTERNAL_CONTACT_ID = 'internal-1';
+      hl.sendEmail.mockRejectedValueOnce(new Error('GHL down'));
+      const { client, updates } = makeSb(bookedQuote(), undefined, undefined, {
+        activityInsertThrows: true,
+      });
+      sbRef.current = client;
+
+      const res = await POST(req({ colorSchemeId: 'as-designed' }), ctx());
+      const body = await res.json();
+      expect(res.status).toBe(200);
+      expect(body.ok).toBe(true);
+      expect(updates).toHaveLength(1); // the request was still recorded
+    });
+
+    it('does NOT write a dashboard_activity row for the unconfigured skip (would spam one row per request)', async () => {
+      hl.configured.value = false;
+      delete process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
+      const { client, activityInserts } = makeSb(bookedQuote());
+      sbRef.current = client;
+
+      const res = await POST(req({ colorSchemeId: 'as-designed' }), ctx());
+      expect(res.status).toBe(200);
+      expect(activityInserts).toHaveLength(0);
+    });
+
+    it('skips the email (no throw) when HighLevel is not configured', async () => {
+      hl.configured.value = false;
+      process.env.HIGHLEVEL_INTERNAL_CONTACT_ID = 'internal-1';
+      sbRef.current = makeSb(bookedQuote()).client;
+
+      const res = await POST(req({ colorSchemeId: 'as-designed' }), ctx());
+      expect(res.status).toBe(200);
+      expect(hl.sendEmail).not.toHaveBeenCalled();
+    });
   });
 });

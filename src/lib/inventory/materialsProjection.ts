@@ -174,8 +174,14 @@ export function projectMaterials(
       const feet = strandFeet(item, scene);
       if (feet > 0) {
         const pattern = item.colorPattern?.length ? item.colorPattern : [DEFAULT_PALETTE];
-        const spacing = item.spacingIn && item.spacingIn > 0 ? item.spacingIn : 12;
-        const bulbCount = Math.round((feet * 12) / spacing);
+        // Jason's ruling (2026-08-20, row 248 follow-up): the drawn spacingIn is
+        // DESIGN-ONLY aesthetics — crews install every real job at the standard
+        // 12" C9 spacing regardless of what the operator drew. Ordering off the
+        // drawn value under- or over-bought bulbs whenever a run was drawn at a
+        // non-12 spacing (24" drawn = half the bulbs the job actually uses), so
+        // the projection deliberately ignores item.spacingIn here.
+        const C9_INSTALL_SPACING_IN = 12;
+        const bulbCount = Math.round((feet * 12) / C9_INSTALL_SPACING_IN);
         if (bulbCount > 0) {
           // Split the run's bulbs across its distinct pattern colors (a single-color
           // roofline is the common case → one line).
