@@ -31,7 +31,12 @@ import { derivePackagesEvent, eventSuggestions } from '@/lib/event/packages';
 import { derivePackagesPermanentBistro } from '@/lib/permanentBistro/packages';
 import type { PortalPhotos } from './photos';
 import { deriveStatus, isPortalActionable, type QuoteStatus } from '@/lib/quoteStatus';
-import { isAmendmentConsentPending, latestConsentAmendment, type AmendmentTrailEntry } from '@/lib/amend';
+import {
+  isAmendmentConsentPending,
+  latestConsentAmendment,
+  resolveAmendmentBasis,
+  type AmendmentTrailEntry,
+} from '@/lib/amend';
 import { isPermanentEffect } from '@/lib/design/permanentScenes';
 
 // Frozen-snapshot shape stored in the `approval_snapshot` jsonb column.
@@ -710,19 +715,56 @@ function buildApproval(row: QuoteRowForPortal, packages: PortalPackage[]): Porta
       : {}),
     permanentWarranty: frozenWarranty(snap?.permanentWarranty),
     ...(() => {
-      return isAmendmentConsentPending(amendment)
-        ? {
-            pendingAmendment: {
-              amendedAt: amendment!.amended_at,
-              reason: amendment!.reason,
-              previousTotalUsd: amendment!.previous_total,
-              newTotalUsd: amendment!.new_total,
-              deltaUsd: amendment!.delta,
-              depositAppliedUsd: amendment!.deposit_applied,
-              newBalanceUsd: amendment!.new_balance,
-            },
-          }
-        : {};
+      // isAmendmentConsentPending is true for BOTH 'pending' and 'declined'
+      // (see amend.ts — a decline is "not accepted", same as never having
+      // answered), which is exactly the population that still needs a card on
+      // the portal: pending asks the question, declined shows the customer
+      // their own answer instead of asking again. Read consent.status
+      // directly here (not a new amend.ts predicate) — this is a pure
+      // display-layer branch, not a money decision.
+      if (!isAmendmentConsentPending(amendment)) return {};
+      const declined = amendment!.consent?.status === 'declined';
+      // Delta-verify HIGH (fix round 3): read the RECORDED invoice-basis
+      // figures (stamped by the amend route BEFORE it persists the trail
+      // entry, as of fix round 4 — see amend/route.ts's pre-write comment —
+      // the same numbers the SMS/email send) instead of reconstructing them
+      // from row.result, the quote's CURRENT full-quote pricing.
+      // Reconstruction was the bug: previous_total was priced against an
+      // EARLIER full-quote state, so scaling it by a ratio taken from the
+      // CURRENT state (which only reflects the state that produced
+      // new_total) silently drifted the moment a later amendment re-priced
+      // the quote again. See amend.ts's AmendmentTrailEntry.invoice_basis.
+      //
+      // resolveAmendmentBasis (amend.ts) is the SAME function the amend
+      // route's own customer notice calls on this SAME amendment object —
+      // absent invoice_basis (no linked invoice existed at amend time, the
+      // pre-write computation couldn't read a previous invoice total, or
+      // this entry predates the field) it falls back to the raw trail
+      // figures, never to a reconstruction, and it validates invoice_basis's
+      // shape (FIX C, fix round 4) rather than trusting the stored JSON
+      // blindly. Genuinely internally consistent now, not just
+      // self-reconciling: because the amend route's SMS/email read the exact
+      // same function on the exact same object, this card can never disagree
+      // with what the customer was already told.
+      const { previousTotalUsd, newTotalUsd, deltaUsd, newBalanceUsd } = resolveAmendmentBasis(amendment!);
+      return {
+        pendingAmendment: {
+          amendedAt: amendment!.amended_at,
+          reason: amendment!.reason,
+          previousTotalUsd,
+          newTotalUsd,
+          deltaUsd,
+          depositAppliedUsd: amendment!.deposit_applied,
+          newBalanceUsd,
+          consentStatus: declined ? 'declined' : 'pending',
+          ...(declined && amendment!.consent?.status === 'declined' && amendment!.consent.reason
+            ? { declinedReason: amendment!.consent.reason }
+            : {}),
+          ...(declined && amendment!.consent?.status === 'declined'
+            ? { declinedAt: amendment!.consent.declined_at }
+            : {}),
+        },
+      };
     })(),
   };
 }

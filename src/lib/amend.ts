@@ -65,9 +65,28 @@ export type AmendmentConsentSignature = {
   ip: string | null;
 };
 
+// 'declined' (ledger #83 follow-up, a real live incident — a customer had no
+// way to say no and had to phone in): the customer explicitly refused this
+// price change. Deliberately NOT a reversion — only staff can un-price a
+// booked order (they re-price it in the builder and record a NEW amendment);
+// this just RECORDS the refusal so it is unmistakable to staff and so
+// settlement stays blocked. `reason` is the customer's own optional free text
+// (distinct from `AmendmentTrailEntry.reason`, which is STAFF's text describing
+// the change). FIX10 (review MED, corrected 2026-08-19): this used to claim
+// `reason` is "never echoed back into a customer-facing notice, staff-only" —
+// false as written. It never rides the SMS/email NOTICE (amendmentSmsBody/
+// amendmentEmailHtml deliberately omit it — see quoteMessages.ts), and it
+// DOES now ride the FIX5 staff alert email, but the portal's own
+// AmendmentConsentCard also renders it back to the customer as "What you
+// told us:" once they decline — their own text, shown to them, not a leak,
+// just not "staff-only."
+// `ip` mirrors the signature's own audit field, captured the same way, for the
+// same reason (a cheap provenance breadcrumb on a public capability-token
+// endpoint) even though there is no signature to attach it to.
 export type AmendmentConsent =
   | { status: 'pending' }
-  | { status: 'accepted'; accepted_at: string; signature: AmendmentConsentSignature };
+  | { status: 'accepted'; accepted_at: string; signature: AmendmentConsentSignature }
+  | { status: 'declined'; declined_at: string; reason?: string; ip: string | null };
 
 export type AmendmentTrailEntry = {
   amended_at: string; // ISO 8601
@@ -89,9 +108,31 @@ export type AmendmentTrailEntry = {
   // Absent on a normal amendment.
   credit_note?: number;
   overpayment?: boolean;
+  // Delta-verify HIGH (fix round 3): the invoice-basis previous/new/delta the
+  // customer was ACTUALLY told (the same invoicedTotal/previousInvoicedTotal/
+  // invoicedDelta the amend route's SMS/email use), stamped by the route right
+  // after the invoice re-sync. Read directly by the portal instead of
+  // reconstructed — a stored figure never goes stale the way a RATIO against
+  // the quote's CURRENT full-quote pricing does once a LATER amendment
+  // re-prices the quote again (the previous round's bug: the ratio was
+  // recomputed at every page load against whatever pricing state happened to
+  // be live, which is only valid for the entry that produced it). Absent when
+  // there was no linked invoice at amend time (the trail basis already IS the
+  // invoice basis in that case — nothing to store separately), when the
+  // re-sync failed (best-effort — the amendment itself is still recorded),
+  // or on any entry written BEFORE this field existed. See adapter.ts's
+  // buildApproval for the read side, which falls back to the raw trail
+  // figures (previous_total/new_total/delta) whenever this is absent — never
+  // to a reconstruction.
+  invoice_basis?: {
+    previous_total: number;
+    new_total: number;
+    delta: number;
+  };
   // Total-changing amendments start pending. The public portal replaces this
-  // with an accepted, server-stamped signature without changing booked status.
-  // Missing on historical entries means pending for backward compatibility.
+  // with an accepted, server-stamped signature — or a declined refusal —
+  // without changing booked status. Missing on historical entries means
+  // pending for backward compatibility.
   consent?: AmendmentConsent;
 };
 
@@ -202,6 +243,54 @@ export function requiresReconsent(amendment: AmendmentTrailEntry): boolean {
 }
 
 /**
+ * Resolve the previous/new/delta/balance figures to show for an amendment on
+ * ONE basis: the recorded invoice-basis figures when present and well-formed,
+ * else the raw trail (agreed-total) figures. Never mixes the two — a reader
+ * computing newTotalUsd − deltaUsd always lands on previousTotalUsd, on
+ * whichever basis was used. newBalanceUsd is always DERIVED from the chosen
+ * newTotalUsd (not read from amendment.new_balance, which is trail-basis
+ * only), mirroring computeInvoiceTotals' own balance formula — see
+ * quoteAmendInvoiceSync.ts's computeInvoiceResyncTotals for the invoice side
+ * of that same formula.
+ *
+ * A malformed invoice_basis (a partial/corrupt object — not reachable through
+ * any current write path, since the amend route only ever stamps all three
+ * fields together or none at all) falls back to the trail basis rather than
+ * rendering undefined/NaN. FIX C (fix round 4).
+ *
+ * Shared by the amend route's own customer notice (SMS/email — so the
+ * message and the recorded trail entry can never disagree), the portal's
+ * pendingAmendment card (adapter.ts), and the amend-decline staff alert.
+ */
+export function resolveAmendmentBasis(amendment: AmendmentTrailEntry): {
+  previousTotalUsd: number;
+  newTotalUsd: number;
+  deltaUsd: number;
+  newBalanceUsd: number;
+} {
+  const raw = amendment.invoice_basis;
+  const basis =
+    raw &&
+    typeof raw.previous_total === 'number' &&
+    Number.isFinite(raw.previous_total) &&
+    typeof raw.new_total === 'number' &&
+    Number.isFinite(raw.new_total) &&
+    typeof raw.delta === 'number' &&
+    Number.isFinite(raw.delta)
+      ? raw
+      : null;
+  const previousTotalUsd = basis ? basis.previous_total : amendment.previous_total;
+  const newTotalUsd = basis ? basis.new_total : amendment.new_total;
+  const deltaUsd = basis ? basis.delta : amendment.delta;
+  return {
+    previousTotalUsd,
+    newTotalUsd,
+    deltaUsd,
+    newBalanceUsd: round2(Math.max(0, newTotalUsd - amendment.deposit_applied)),
+  };
+}
+
+/**
  * The QuoteStatus an amendment resolves to. A total-changing amendment moves the
  * order into the re-consent status (it awaits the customer re-approving the new
  * total); a zero-delta amendment leaves the current status untouched.
@@ -253,6 +342,53 @@ export function latestConsentAmendment(
 }
 
 /**
+ * FIX6 (review MED): only the LATEST total-changing amendment is reachable
+ * via consent/decline — amend-consent and amend-decline both resolve against
+ * latestConsentAmendment and 409 'stale-amendment' on anything else. So once
+ * a SECOND total-changing amendment is recorded, an earlier one that was
+ * still 'pending' can never be answered — no route will ever act on it
+ * again. True when `amendment` requires consent, is structurally still
+ * 'pending' (missing consent or explicitly 'pending'), AND is not the
+ * current latestConsentAmendment(amendments). An earlier entry that already
+ * resolved (accepted or declined) is NOT superseded by this predicate — it
+ * has a real, historically-accurate answer; only an UNANSWERED one is stuck.
+ * Display-only (the admin trail views badge it distinctly); never mutates
+ * stored consent.
+ */
+export function isSupersededPendingAmendment(
+  amendment: AmendmentTrailEntry,
+  amendments: AmendmentTrailEntry[] | null | undefined,
+): boolean {
+  if (!requiresReconsent(amendment)) return false;
+  if ((amendment.consent?.status ?? 'pending') !== 'pending') return false;
+  return amendment !== latestConsentAmendment(amendments);
+}
+
+/**
+ * True whenever the customer has NOT accepted (signed) the latest
+ * total-changing amendment — whether because they haven't answered yet
+ * (`consent` missing/`'pending'`) OR because they explicitly DECLINED it.
+ * Deliberately does not distinguish those two: a decline is a customer
+ * saying no, not a customer saying nothing, but for every caller of this
+ * predicate (the portal's "is there a live ask" gate, and blocksSettlement
+ * below) "not accepted" is the exact question being asked — a decline must
+ * keep blocking settlement exactly as hard as an un-answered pending entry
+ * does, per the review note on blocksSettlement below. Callers that need to
+ * tell pending apart from declined (the portal card's copy, the admin trail
+ * display) read `amendment.consent?.status` directly instead of adding a
+ * second predicate here.
+ */
+export function isAmendmentConsentPending(
+  amendment: AmendmentTrailEntry | null | undefined,
+): boolean {
+  return (
+    !!amendment &&
+    requiresReconsent(amendment) &&
+    amendment.consent?.status !== 'accepted'
+  );
+}
+
+/**
  * WT-18 — the settlement re-consent gate. mark-paid / charge-balance /
  * job-close all call this before moving money, on the quote's LATEST
  * amendment (via latestAmendment).
@@ -266,22 +402,36 @@ export function latestConsentAmendment(
  * decrease can never over-collect, so it must NOT block — gating it would
  * strand a legitimate lower payment behind a re-sign nobody needs.
  *
- * True only when both hold: the delta is a real change (not float dust, via
- * requiresReconsent) AND it is a positive delta (the customer owes MORE than
- * the last total they're on record as having agreed to).
+ * True only when both hold: the delta is a real change and NOT accepted (via
+ * isAmendmentConsentPending — pending OR declined both count) AND it is a
+ * positive delta (the customer owes MORE than the last total they're on
+ * record as having agreed to).
+ *
+ * A DECLINED increase is the money-critical case this must get right: the
+ * customer said no, so the old (lower) total is still what they agreed to —
+ * this must keep blocking exactly as hard as it did while pending, and it
+ * does, because isAmendmentConsentPending reads 'declined' as "not accepted"
+ * same as 'pending'. Only a NEW amendment (staff re-pricing down in the
+ * builder and recording it) or the customer actually ACCEPTING can lift this.
  */
-export function isAmendmentConsentPending(
-  amendment: AmendmentTrailEntry | null | undefined,
-): boolean {
-  return (
-    !!amendment &&
-    requiresReconsent(amendment) &&
-    amendment.consent?.status !== 'accepted'
-  );
-}
-
 export function blocksSettlement(amendment: AmendmentTrailEntry | null | undefined): boolean {
   return !!amendment && isAmendmentConsentPending(amendment) && amendment.delta > 0;
+}
+
+/**
+ * FIX7 (review MED): the settlement-block error clause — one shared home so
+ * charge-balance / mark-paid / jobs-close (each appends its OWN trailing
+ * action verb — "charge anyway" / "settle anyway" / "close anyway") can't
+ * drift on whether a DECLINED amendment reads the same as a merely PENDING
+ * one. blocksSettlement treats a decline the same as pending on PURPOSE (a
+ * decline must keep blocking exactly as hard), but an operator about to
+ * override deserves to know the customer explicitly said no, not just that
+ * nobody's answered yet — those are very different overrides to make.
+ */
+export function reconsentRequiredClause(amendment: AmendmentTrailEntry | null | undefined): string {
+  return amendment?.consent?.status === 'declined'
+    ? 'This order has a price increase the customer explicitly DECLINED.'
+    : 'This order has a price increase awaiting customer re-approval.';
 }
 
 // #83 Phase 4 + #81: the amend route + UI (which wire this lib) are LIVE. The

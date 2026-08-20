@@ -7,6 +7,10 @@ import {
   latestAmendment,
   latestConsentAmendment,
   blocksSettlement,
+  isAmendmentConsentPending,
+  isSupersededPendingAmendment,
+  reconsentRequiredClause,
+  resolveAmendmentBasis,
   type AmendmentTrailEntry,
 } from './amend';
 
@@ -255,6 +259,119 @@ describe('latestConsentAmendment — consent survives cosmetic trail entries', (
   });
 });
 
+// FIX6 (review MED): only the LATEST total-changing amendment is reachable
+// via consent/decline — a real live incident on a real order: +342.56
+// (pending, never resolved) then -342.56 (accepted). The admin trail views
+// (src/app/admin/quotes/[id]/page.tsx, src/app/admin/jobs/[id]/page.tsx) use
+// this to badge the first row "Superseded" instead of "still awaiting the
+// customer" — nothing will ever resolve it, since amend-consent/amend-decline
+// both 409 'stale-amendment' on anything but the current latest.
+describe('isSupersededPendingAmendment', () => {
+  it('an earlier PENDING amendment is superseded once a later one is recorded', () => {
+    const first = computeAmendment({ ...bookedBase(), newTotal: 5343, reason: 'added a wreath' });
+    first.consent = { status: 'pending' };
+    const second = computeAmendment({
+      previousTotal: first.new_total,
+      depositPaid: first.deposit_applied,
+      previousBalance: first.new_balance,
+      newTotal: 5000.44,
+      by: 'staff:naldo',
+      reason: 'removed the wreath (customer changed their mind before answering)',
+    });
+    second.consent = {
+      status: 'accepted',
+      accepted_at: '2026-07-19T00:00:00.000Z',
+      signature: { name: 'Jordan Smith', kind: 'typed', value: 'Jordan Smith', signed_at: '2026-07-19T00:00:00.000Z', ip: null },
+    };
+
+    expect(isSupersededPendingAmendment(first, [first, second])).toBe(true);
+    expect(isSupersededPendingAmendment(second, [first, second])).toBe(false); // the live, actionable one
+  });
+
+  it('the CURRENT latest pending amendment is never superseded', () => {
+    const only = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+    only.consent = { status: 'pending' };
+    expect(isSupersededPendingAmendment(only, [only])).toBe(false);
+  });
+
+  it('an earlier amendment that already resolved (accepted) is NOT superseded — it has a real answer', () => {
+    const first = computeAmendment({ ...bookedBase(), newTotal: 5343 });
+    first.consent = {
+      status: 'accepted',
+      accepted_at: '2026-07-18T00:00:00.000Z',
+      signature: { name: 'Jordan Smith', kind: 'typed', value: 'Jordan Smith', signed_at: '2026-07-18T00:00:00.000Z', ip: null },
+    };
+    const second = computeAmendment({
+      previousTotal: first.new_total,
+      depositPaid: first.deposit_applied,
+      previousBalance: first.new_balance,
+      newTotal: 5700,
+      by: 'staff:naldo',
+      reason: 'added a garland',
+    });
+    second.consent = { status: 'pending' };
+
+    expect(isSupersededPendingAmendment(first, [first, second])).toBe(false);
+  });
+
+  it('an earlier amendment that already resolved (declined) is NOT superseded — it has a real answer', () => {
+    const first = computeAmendment({ ...bookedBase(), newTotal: 5343 });
+    first.consent = { status: 'declined', declined_at: '2026-07-18T00:00:00.000Z', ip: null };
+    const second = computeAmendment({
+      previousTotal: bookedBase().previousTotal, // the decline reverted the total
+      depositPaid: first.deposit_applied,
+      previousBalance: first.previous_balance,
+      newTotal: 5700,
+      by: 'staff:naldo',
+      reason: 'a different change entirely',
+    });
+    second.consent = { status: 'pending' };
+
+    expect(isSupersededPendingAmendment(first, [first, second])).toBe(false);
+  });
+
+  it('a cosmetic (zero-delta) entry is never superseded (requiresReconsent is false)', () => {
+    const cosmetic = computeAmendment({ ...bookedBase(), newTotal: 5000 });
+    const another = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+    another.consent = { status: 'pending' };
+    expect(isSupersededPendingAmendment(cosmetic, [cosmetic, another])).toBe(false);
+  });
+
+  it('a lone amendment with no later entries is not superseded', () => {
+    const only = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+    only.consent = { status: 'pending' };
+    expect(isSupersededPendingAmendment(only, [only])).toBe(false);
+  });
+});
+
+// FIX7 (review MED): charge-balance/mark-paid/jobs-close all say "awaiting
+// customer re-approval" even for a DECLINED amendment — an operator about to
+// override deserves to know the customer explicitly refused, not just that
+// nobody's answered yet.
+describe('reconsentRequiredClause', () => {
+  it('says DECLINED when the customer explicitly refused', () => {
+    const declined = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+    declined.consent = { status: 'declined', declined_at: '2026-07-19T00:00:00.000Z', ip: null };
+    expect(reconsentRequiredClause(declined)).toContain('DECLINED');
+  });
+
+  it('says "awaiting" (not declined) when still pending', () => {
+    const pending = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+    pending.consent = { status: 'pending' };
+    expect(reconsentRequiredClause(pending)).toContain('awaiting');
+    expect(reconsentRequiredClause(pending)).not.toContain('DECLINED');
+  });
+
+  it('says "awaiting" for a missing consent (legacy row, back-compat pending)', () => {
+    const legacy = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+    expect(reconsentRequiredClause(legacy)).toContain('awaiting');
+  });
+
+  it('says "awaiting" for a null amendment (defensive default)', () => {
+    expect(reconsentRequiredClause(null)).toContain('awaiting');
+  });
+});
+
 describe('blocksSettlement — WT-18 re-consent settlement gate', () => {
   it('blocks a price-INCREASING amendment', () => {
     const inc = computeAmendment({ ...bookedBase(), newTotal: 6000 });
@@ -310,6 +427,68 @@ describe('amendment consent — booked re-sign flow', () => {
     expect(blocksSettlement(inc)).toBe(false);
     expect(amendedQuoteStatus(inc, 'booked')).toBe('booked');
   });
+
+  // Ledger #83 follow-up (a real live incident — a customer with no way to say
+  // no had to phone in): the customer can now DECLINE. This is the
+  // money-critical case — a decline must NOT become collectable just because
+  // it is no longer literally "pending".
+  describe('a DECLINED amendment', () => {
+    it('a declined price INCREASE still blocks settlement — declining is not consenting', () => {
+      const inc = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+      inc.consent = { status: 'declined', declined_at: '2026-07-19T09:00:00.000Z', ip: null };
+      expect(blocksSettlement(inc)).toBe(true);
+      expect(isAmendmentConsentPending(inc)).toBe(true);
+      // Still reads as "back in staff/customer hands" — same conceptual state
+      // as pending, never silently re-promoted to booked by a decline.
+      expect(amendedQuoteStatus(inc, 'booked')).toBe('changes_requested');
+    });
+
+    it('a declined price DECREASE still does not block settlement (a decrease never over-collects)', () => {
+      const dec = computeAmendment({ ...bookedBase(), newTotal: 4000 });
+      dec.consent = { status: 'declined', declined_at: '2026-07-19T09:00:00.000Z', ip: null };
+      expect(blocksSettlement(dec)).toBe(false);
+      // But it is still NOT accepted — latestConsentAmendment/portal-adapter
+      // callers must be able to tell "declined" apart from "accepted".
+      expect(isAmendmentConsentPending(dec)).toBe(true);
+    });
+
+    it('carries an optional customer-typed reason and an IP breadcrumb, same shape as a signature', () => {
+      const inc = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+      inc.consent = {
+        status: 'declined',
+        declined_at: '2026-07-19T09:00:00.000Z',
+        reason: 'too expensive, please remove the wreath',
+        ip: '203.0.113.7',
+      };
+      expect(inc.consent.status).toBe('declined');
+      expect(blocksSettlement(inc)).toBe(true);
+    });
+
+    it('a decline reason is optional', () => {
+      const inc = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+      inc.consent = { status: 'declined', declined_at: '2026-07-19T09:00:00.000Z', ip: null };
+      expect(inc.consent).not.toHaveProperty('reason');
+      expect(blocksSettlement(inc)).toBe(true);
+    });
+
+    it('only a FRESH amendment lifts a decline — the decline itself has no undo here', () => {
+      // This module only computes/derives; it never mutates a past entry.
+      // FIX3 (review HIGH, corrected 2026-08-19): "undo" in practice is a NEW
+      // amendment from staff (computeAmendment again) — NOT the customer
+      // re-hitting accept on the SAME declined entry. This comment used to say
+      // the latter was a legitimate path; amend-consent/route.ts now explicitly
+      // REFUSES it (409 'already-declined', mirroring amend-decline's own
+      // already-accepted guard in reverse) because it would silently overwrite
+      // a real refusal — destroying declined_at/reason/ip and unblocking
+      // settlement — on nothing more than a stale tab or the back button.
+      // Enforcing the refusal is the caller's (the route's) job, not this pure
+      // module's; this test only confirms the entry itself stays inert.
+      const inc = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+      inc.consent = { status: 'declined', declined_at: '2026-07-19T09:00:00.000Z', ip: null };
+      const stillDeclined = { ...inc };
+      expect(blocksSettlement(stillDeclined)).toBe(true);
+    });
+  });
 });
 
 describe('repeated amendments — each entry stands alone', () => {
@@ -338,4 +517,67 @@ describe('repeated amendments — each entry stands alone', () => {
     expect(trail).toHaveLength(1);
     expect(Object.isFrozen(first)).toBe(false); // a plain serializable object
   });
+});
+
+// FIX A/C (fix round 4): resolveAmendmentBasis is the SINGLE function every
+// consumer (the amend route's own SMS/email, the portal's pendingAmendment
+// card, the amend-decline staff alert) reads to pick total/balance/delta on
+// ONE basis — never a mix. These tests pin its own contract directly (the
+// call-site tests only prove it end-to-end through one consumer each).
+describe('resolveAmendmentBasis — one basis for total/balance/delta, never mixed', () => {
+  const trailOnly: AmendmentTrailEntry = computeAmendment({ ...bookedBase(), newTotal: 6000 });
+
+  it('no invoice_basis (never stamped, or predates the field) — falls back to the trail figures', () => {
+    const basis = resolveAmendmentBasis(trailOnly);
+    expect(basis).toEqual({
+      previousTotalUsd: 5000,
+      newTotalUsd: 6000,
+      deltaUsd: 1000,
+      newBalanceUsd: 3500, // 6000 − 2500 deposit
+    });
+  });
+
+  it('a well-formed invoice_basis is read directly — total/delta on the invoice basis, balance derived to match', () => {
+    const withBasis: AmendmentTrailEntry = {
+      ...trailOnly,
+      invoice_basis: { previous_total: 4598.21, new_total: 5150, delta: 551.79 },
+    };
+    const basis = resolveAmendmentBasis(withBasis);
+    expect(basis).toEqual({
+      previousTotalUsd: 4598.21,
+      newTotalUsd: 5150,
+      deltaUsd: 551.79,
+      newBalanceUsd: 2650, // 5150 − 2500 deposit — the INVOICE basis, not the trail's 3500
+    });
+    // Reconciles with itself, on the basis actually used.
+    expect(round2ForTest(basis.newTotalUsd - basis.deltaUsd)).toBe(basis.previousTotalUsd);
+  });
+
+  it('a malformed invoice_basis (a bad shape unreachable through any current write path) falls back to the trail — FIX C', () => {
+    const malformed: AmendmentTrailEntry = {
+      ...trailOnly,
+      // `as unknown as` — this shape can never come from the amend route
+      // (which stamps all three fields together or none), only from a
+      // corrupted/hand-edited row.
+      invoice_basis: { previous_total: '4598.21', new_total: 5150 } as unknown as AmendmentTrailEntry['invoice_basis'],
+    };
+    expect(resolveAmendmentBasis(malformed)).toEqual({
+      previousTotalUsd: 5000,
+      newTotalUsd: 6000,
+      deltaUsd: 1000,
+      newBalanceUsd: 3500,
+    });
+  });
+
+  it('a non-finite invoice_basis field (NaN/Infinity) falls back to the trail', () => {
+    const malformed: AmendmentTrailEntry = {
+      ...trailOnly,
+      invoice_basis: { previous_total: NaN, new_total: 5150, delta: 551.79 },
+    };
+    expect(resolveAmendmentBasis(malformed).previousTotalUsd).toBe(5000);
+  });
+
+  function round2ForTest(n: number): number {
+    return Math.round(n * 100) / 100;
+  }
 });

@@ -115,6 +115,17 @@ export type PortalPendingAmendment = {
   deltaUsd: number;
   depositAppliedUsd: number;
   newBalanceUsd: number;
+  // Ledger #83 follow-up: 'pending' still needs the customer's answer;
+  // 'declined' means they already answered NO. The field name
+  // "pendingAmendment" predates the decline path and stays — it means "the
+  // latest amendment the customer hasn't ACCEPTED", not literally "pending" —
+  // renaming it would ripple through the portal page + this type for no
+  // behavior change. Read consentStatus to pick which card to render.
+  consentStatus: 'pending' | 'declined';
+  // Set only when consentStatus is 'declined' AND the customer typed one.
+  declinedReason?: string;
+  // Set only when consentStatus is 'declined'.
+  declinedAt?: string;
 };
 
 export type PortalApproval = {

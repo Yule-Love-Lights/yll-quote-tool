@@ -1691,7 +1691,13 @@ describe('staff-approved portal selection seeds non-empty (PS-C1/WT-L1)', () => 
 
 
 describe('quoteRowToPortalQuote — pending booked amendment consent', () => {
-  function amendedPortal(consent: { status: 'pending' } | { status: 'accepted'; accepted_at: string; signature: { name: string; kind: 'typed'; value: string; signed_at: string; ip: null } }, trailingCosmetic = false) {
+  function amendedPortal(
+    consent:
+      | { status: 'pending' }
+      | { status: 'accepted'; accepted_at: string; signature: { name: string; kind: 'typed'; value: string; signed_at: string; ip: null } }
+      | { status: 'declined'; declined_at: string; reason?: string; ip: string | null },
+    trailingCosmetic = false,
+  ) {
     const inputs = emptyInputs({ customLineItems: [{ label: 'Lighting', amount: 2400 }] });
     const result = calculateQuote(inputs);
     const row = rowWith(result, inputs);
@@ -1747,7 +1753,56 @@ describe('quoteRowToPortalQuote — pending booked amendment consent', () => {
       deltaUsd: 400,
       depositAppliedUsd: 1000,
       newBalanceUsd: 1400,
+      consentStatus: 'pending',
     });
+  });
+
+  // Ledger #83 follow-up: a decline is NOT acceptance — the portal must keep
+  // showing the same card population (isAmendmentConsentPending is true for
+  // both 'pending' and 'declined'), just with the customer's own answer
+  // instead of the ask. The durable booked total stays at the ORIGINAL
+  // pre-amendment figure, same as pending — only 'accepted' promotes it.
+  it('surfaces a DECLINED amendment as a distinct consentStatus, not as still-pending', () => {
+    const approval = amendedPortal({
+      status: 'declined',
+      declined_at: '2026-07-19T09:00:00.000Z',
+      reason: 'too expensive, please remove the wreath',
+      ip: '203.0.113.7',
+    }).approval;
+    expect(approval?.totalUsd).toBe(2000); // NOT the declined amendment's new_total
+    expect(approval?.depositUsd).toBe(1000);
+    expect(approval?.pendingAmendment).toEqual({
+      amendedAt: '2026-07-18T12:00:00.000Z',
+      reason: 'Added front wreaths',
+      previousTotalUsd: 2000,
+      newTotalUsd: 2400,
+      deltaUsd: 400,
+      depositAppliedUsd: 1000,
+      newBalanceUsd: 1400,
+      consentStatus: 'declined',
+      declinedReason: 'too expensive, please remove the wreath',
+      declinedAt: '2026-07-19T09:00:00.000Z',
+    });
+  });
+
+  it('omits declinedReason when the customer left no reason', () => {
+    const approval = amendedPortal({
+      status: 'declined',
+      declined_at: '2026-07-19T09:00:00.000Z',
+      ip: null,
+    }).approval;
+    expect(approval?.pendingAmendment?.consentStatus).toBe('declined');
+    expect(approval?.pendingAmendment).not.toHaveProperty('declinedReason');
+  });
+
+  it('keeps a declined amendment visible after a later zero-dollar edit (same as pending)', () => {
+    const approval = amendedPortal(
+      { status: 'declined', declined_at: '2026-07-19T09:00:00.000Z', ip: null },
+      true,
+    ).approval;
+    expect(approval?.pendingAmendment?.consentStatus).toBe('declined');
+    expect(approval?.pendingAmendment?.amendedAt).toBe('2026-07-18T12:00:00.000Z');
+    expect(approval?.totalUsd).toBe(2000);
   });
 
   it('uses the accepted amendment as the durable booked total', () => {
@@ -1789,6 +1844,147 @@ describe('quoteRowToPortalQuote — pending booked amendment consent', () => {
     expect(approval?.pendingAmendment).toBeUndefined();
     expect(approval?.totalUsd).toBe(2400);
     expect(approval?.depositUsd).toBe(1000);
+  });
+});
+
+// Delta-verify HIGH (fix round 3): the previous round's `invoiceBasisTotal`
+// reconstruction is GONE — it scaled a trail figure by a ratio taken from
+// the row's CURRENT full-quote pricing, which is only valid for the entry
+// that produced that current state. `previous_total` was always priced
+// against an EARLIER state, so the reconstruction silently drifted the
+// moment a later amendment re-priced the quote again (the delta-verify's
+// own worked example: card showed previous $4,615.94 / +$830.87 against a
+// real invoice of $4,608.33 / +$838.48). The fix persists the real
+// invoice-basis figures on the trail entry at amend time (amend.ts's
+// AmendmentTrailEntry.invoice_basis) and the adapter now just reads them.
+describe('quoteRowToPortalQuote — amendment consent card money basis (delta-verify HIGH fix)', () => {
+  // Real engine output so the fixture is genuine — same shape as the
+  // "pending booked amendment consent" describe above (a $2,400 custom item).
+  const inputs = emptyInputs({ customLineItems: [{ label: 'Lighting', amount: 2400 }] });
+  const result = calculateQuote(inputs);
+
+  function amendedPortalWithBasis(
+    invoiceBasis: { previous_total: number; new_total: number; delta: number } | undefined,
+    consent: { status: 'pending' } | { status: 'declined'; declined_at: string; ip: null } = { status: 'pending' },
+  ) {
+    const row = rowWith(result, inputs);
+    row.customer_approved_at = '2026-07-01T00:00:00.000Z';
+    row.deposit_paid_at = '2026-07-01T00:10:00.000Z';
+    row.status = 'booked';
+    row.approval_snapshot = {
+      approvedAt: '2026-07-01T00:00:00.000Z',
+      customerSelection: {
+        packageId: 'A',
+        activeName: 'Original order',
+        selectedItemIds: ['custom-0'],
+        currentTotalUsd: 2000,
+        currentDepositUsd: 1000,
+      },
+      amendments: [
+        {
+          amended_at: '2026-07-18T12:00:00.000Z',
+          by: 'staff:ops',
+          reason: 'Added front wreaths',
+          previous_total: 2000,
+          new_total: 2400,
+          previous_balance: 1000,
+          new_balance: 1400,
+          deposit_applied: 1000,
+          delta: 400,
+          line_item_changes: [],
+          consent,
+          ...(invoiceBasis ? { invoice_basis: invoiceBasis } : {}),
+        },
+      ],
+    };
+    return quoteRowToPortalQuote({ row, photos: PHOTOS })!;
+  }
+
+  it('no stored invoice_basis (pre-fix entry, or no linked invoice at amend time) — falls back to the raw trail figures', () => {
+    const approval = amendedPortalWithBasis(undefined).approval;
+    expect(approval?.pendingAmendment).toMatchObject({
+      previousTotalUsd: 2000,
+      newTotalUsd: 2400,
+      deltaUsd: 400,
+      newBalanceUsd: 1400,
+    });
+  });
+
+  it('a stored invoice_basis is read DIRECTLY, byte-for-byte — never re-derived from the row\'s current full-quote pricing', () => {
+    // These figures are deliberately UNRELATED to the fixture's own `result`
+    // (a $2,400 custom item) — proving the adapter does no ratio math against
+    // row.result at all anymore. Numbers from the delta-verify's own worked
+    // example: a real invoice basis of $4,608.33 → $5,446.81 (+$838.48),
+    // which the broken reconstruction turned into $4,615.94 / +$830.87.
+    const approval = amendedPortalWithBasis({
+      previous_total: 4608.33,
+      new_total: 5446.81,
+      delta: 838.48,
+    }).approval;
+    expect(approval?.pendingAmendment).toMatchObject({
+      previousTotalUsd: 4608.33,
+      newTotalUsd: 5446.81,
+      deltaUsd: 838.48,
+    });
+    // Internal consistency still holds — trivially, since all three now come
+    // from ONE recorded object instead of being independently re-derived.
+    expect(approval!.pendingAmendment!.newTotalUsd - approval!.pendingAmendment!.deltaUsd).toBeCloseTo(
+      approval!.pendingAmendment!.previousTotalUsd,
+      2,
+    );
+    // The balance still derives from the (invoice-basis) new total, per the
+    // unchanged newBalanceUsd formula (5446.81 − 1000 deposit).
+    expect(approval!.pendingAmendment!.newBalanceUsd).toBe(4446.81);
+  });
+
+  it('a DECLINED entry with a stored invoice_basis also reads previousTotalUsd from it (the field the card actually renders)', () => {
+    // AmendmentConsentCard's declined branch renders ONLY previousTotalUsd —
+    // proving it independently since it shares the same computation path as
+    // the pending branch's fuller field set, not assuming parity.
+    const declinedConsent = { status: 'declined' as const, declined_at: '2026-07-19T09:00:00.000Z', ip: null };
+    const trailBasis = amendedPortalWithBasis(undefined, declinedConsent).approval!.pendingAmendment!;
+    const invoiceBasis = amendedPortalWithBasis(
+      { previous_total: 4608.33, new_total: 5446.81, delta: 838.48 },
+      declinedConsent,
+    ).approval!.pendingAmendment!;
+    expect(trailBasis.consentStatus).toBe('declined');
+    expect(trailBasis.previousTotalUsd).toBe(2000); // no stored basis — trail figure
+    expect(invoiceBasis.consentStatus).toBe('declined');
+    expect(invoiceBasis.previousTotalUsd).toBe(4608.33);
+  });
+
+  it('the deposit-already-paid figure stays basis-independent (the real dollar amount charged)', () => {
+    const trailBasis = amendedPortalWithBasis(undefined).approval!.pendingAmendment!;
+    const invoiceBasis = amendedPortalWithBasis({
+      previous_total: 4608.33,
+      new_total: 5446.81,
+      delta: 838.48,
+    }).approval!.pendingAmendment!;
+    expect(trailBasis.depositAppliedUsd).toBe(1000);
+    expect(invoiceBasis.depositAppliedUsd).toBe(1000);
+  });
+
+  // FIX C (fix round 4): a malformed invoice_basis — not reachable through
+  // any current write path (the amend route only ever stamps all three
+  // fields together, as finite numbers, or omits the field entirely) — must
+  // render the trail figures, never undefined/NaN. Exercises
+  // resolveAmendmentBasis's shape guard through the real adapter, not just
+  // amend.test.ts's direct unit tests of the function.
+  it('a malformed invoice_basis (bad shape, not reachable through any current write path) falls back to the trail figures', () => {
+    const approval = amendedPortalWithBasis(
+      // `as any` — this shape can never come from the amend route.
+      { previous_total: '4608.33', new_total: 5446.81 } as unknown as {
+        previous_total: number;
+        new_total: number;
+        delta: number;
+      },
+    ).approval;
+    expect(approval?.pendingAmendment).toMatchObject({
+      previousTotalUsd: 2000,
+      newTotalUsd: 2400,
+      deltaUsd: 400,
+      newBalanceUsd: 1400,
+    });
   });
 });
 
