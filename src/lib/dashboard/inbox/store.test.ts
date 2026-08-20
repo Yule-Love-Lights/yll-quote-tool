@@ -491,6 +491,7 @@ vi.mock('@/lib/supabase', () => ({
 import {
   closeFollowUpsForResolvedItem,
   closeQuoteInboxNoise,
+  completeTerminalQuoteItems,
   dismissItem,
   ensureFollowUp,
   EXCLUDE_LEGACY_REBOOK_FROM_INBOX,
@@ -3962,6 +3963,237 @@ describe('closeQuoteInboxNoise — I/O wiring (#187a)', () => {
   it('no-ops (no throw) when the service client is not configured', async () => {
     sbRef.current = null;
     await expect(closeQuoteInboxNoise(QUOTE_ID, OPERATOR_ID)).resolves.toBeUndefined();
+  });
+});
+
+// ─── completeTerminalQuoteItems — I/O wiring (#317) ─────────────────────────
+describe('completeTerminalQuoteItems (#317 — terminal-quote auto-complete)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  const QUOTE_ID = '99999999-9999-9999-9999-999999999999';
+  const NOW = new Date('2026-08-20T12:00:00Z');
+
+  /** Dispatch `from()` by table: 1st `inbox_items` call = the SELECT lookup,
+   *  2nd = the UPDATE; `follow_ups` and `dashboard_activity` get their own
+   *  builders (shared across closeFollowUpsForResolvedItem's own calls, which
+   *  this function invokes once per completed row). */
+  function makeSbForComplete(opts: {
+    itemsSelect: { data: unknown; error: null | { message: string } };
+    itemsUpdate?: { data: unknown; error: null | { message: string } };
+    followUpsUpdate?: { data: unknown; error: null | { message: string } };
+    activityInsert?: { data: unknown; error: null | { message: string } };
+  }) {
+    const { builder: itemsSelectBuilder, calls: itemsSelectCalls } = makeBuilder(opts.itemsSelect);
+    const { builder: itemsUpdateBuilder, calls: itemsUpdateCalls } = makeBuilder(
+      opts.itemsUpdate ?? { data: [], error: null },
+    );
+    const { builder: fuBuilder, calls: fuCalls } = makeBuilder(opts.followUpsUpdate ?? { data: [], error: null });
+    const { builder: activityBuilder, calls: activityCalls } = makeBuilder(
+      opts.activityInsert ?? { data: null, error: null },
+    );
+    let inboxItemsCallCount = 0;
+    const from = (table: string) => {
+      if (table === 'inbox_items') {
+        inboxItemsCallCount += 1;
+        return inboxItemsCallCount === 1 ? itemsSelectBuilder : itemsUpdateBuilder;
+      }
+      if (table === 'follow_ups') return fuBuilder;
+      if (table === 'dashboard_activity') return activityBuilder;
+      throw new Error(`unexpected table: ${table}`);
+    };
+    return { from, itemsSelectCalls, itemsUpdateCalls, fuCalls, activityCalls };
+  }
+
+  it('looks up BOTH the bare quote id and its :color-request sibling', async () => {
+    const { from, itemsSelectCalls } = makeSbForComplete({ itemsSelect: { data: [], error: null } });
+    sbRef.current = { from };
+
+    await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+    const sourceEqCall = itemsSelectCalls.find((c) => c.method === 'eq' && c.args[0] === 'source');
+    expect(sourceEqCall!.args).toEqual(['source', 'quotetool']);
+    const inCall = itemsSelectCalls.find((c) => c.method === 'in' && c.args[0] === 'external_id');
+    expect(inCall!.args).toEqual(['external_id', [QUOTE_ID, `${QUOTE_ID}:color-request`]]);
+  });
+
+  it('completes an awaiting-reply bare item (followed_up_at set) — the live "2 declined" self-heal shape', async () => {
+    const { from, itemsUpdateCalls, activityCalls } = makeSbForComplete({
+      itemsSelect: {
+        data: [{ id: 'item-bare', status: 'handled', followed_up_at: '2026-08-10T00:00:00Z' }],
+        error: null,
+      },
+      itemsUpdate: { data: [{ id: 'item-bare' }], error: null },
+    });
+    sbRef.current = { from };
+
+    const n = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+    expect(n).toBe(1);
+    const updateCall = itemsUpdateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toEqual({
+      status: 'completed',
+      followed_up_at: null,
+      handled_by: null,
+      handled_at: NOW.toISOString(),
+      updated_at: NOW.toISOString(),
+    });
+    const idInCall = itemsUpdateCalls.find((c) => c.method === 'in' && c.args[0] === 'id');
+    expect(idInCall!.args).toEqual(['id', ['item-bare']]);
+    const statusInCall = itemsUpdateCalls.find((c) => c.method === 'in' && c.args[0] === 'status');
+    expect(statusInCall!.args).toEqual(['status', ['unresponded', 'handled']]);
+
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toEqual([
+      {
+        actor: 'system',
+        action: 'completed',
+        inbox_item_id: 'item-bare',
+        detail: { auto: true, reason: 'quote_terminal', from: { status: 'handled', wasFollowed: true } },
+      },
+    ]);
+  });
+
+  it('completes a plain handled item (no follow-up flag)', async () => {
+    const { from, itemsUpdateCalls } = makeSbForComplete({
+      itemsSelect: { data: [{ id: 'item-bare', status: 'handled', followed_up_at: null }], error: null },
+      itemsUpdate: { data: [{ id: 'item-bare' }], error: null },
+    });
+    sbRef.current = { from };
+
+    const n = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+    expect(n).toBe(1);
+    const updateCall = itemsUpdateCalls.find((c) => c.method === 'update');
+    expect(updateCall!.args[0]).toMatchObject({ status: 'completed' });
+  });
+
+  // THE HARD CONSTRAINT (#317, a lens HIGH) — Susan Pace-Burke's live shape:
+  // an UNRESPONDED :color-request item with NO follow flag on a BOOKED quote.
+  // Must be left alone, completely untouched — no update, no activity row.
+  it('NEVER completes a needs_reply item (unresponded, no follow-up flag) — the hard constraint', async () => {
+    const { from, itemsUpdateCalls, activityCalls } = makeSbForComplete({
+      itemsSelect: {
+        data: [
+          { id: 'item-bare', status: 'handled', followed_up_at: null },
+          { id: 'item-color-request', status: 'unresponded', followed_up_at: null },
+        ],
+        error: null,
+      },
+      itemsUpdate: { data: [{ id: 'item-bare' }], error: null },
+    });
+    sbRef.current = { from };
+
+    const n = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+    expect(n).toBe(1); // only the bare item
+    const idInCall = itemsUpdateCalls.find((c) => c.method === 'in' && c.args[0] === 'id');
+    expect(idInCall!.args).toEqual(['id', ['item-bare']]); // color-request excluded from the write entirely
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect((insertCall!.args[0] as unknown[]).map((r) => (r as { inbox_item_id: string }).inbox_item_id)).toEqual([
+      'item-bare',
+    ]);
+  });
+
+  it('a color-request item DOES complete once it is no longer needs_reply (awaiting_reply — staff replied, never applied/dismissed)', async () => {
+    const { from, itemsUpdateCalls } = makeSbForComplete({
+      itemsSelect: {
+        data: [{ id: 'item-color-request', status: 'unresponded', followed_up_at: '2026-08-18T00:00:00Z' }],
+        error: null,
+      },
+      itemsUpdate: { data: [{ id: 'item-color-request' }], error: null },
+    });
+    sbRef.current = { from };
+
+    const n = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+    expect(n).toBe(1);
+    const idInCall = itemsUpdateCalls.find((c) => c.method === 'in' && c.args[0] === 'id');
+    expect(idInCall!.args).toEqual(['id', ['item-color-request']]);
+  });
+
+  it('never touches an already-completed or dismissed item, and writes nothing', async () => {
+    const { from, itemsUpdateCalls, activityCalls } = makeSbForComplete({
+      itemsSelect: {
+        data: [
+          { id: 'item-done', status: 'completed', followed_up_at: null },
+          { id: 'item-spam', status: 'dismissed', followed_up_at: null },
+        ],
+        error: null,
+      },
+    });
+    sbRef.current = { from };
+
+    const n = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+    expect(n).toBe(0);
+    expect(itemsUpdateCalls.some((c) => c.method === 'update')).toBe(false);
+    expect(activityCalls.some((c) => c.method === 'insert')).toBe(false);
+  });
+
+  it('does nothing when neither the bare nor the color-request id has an inbox item', async () => {
+    const { from } = makeSbForComplete({ itemsSelect: { data: [], error: null } });
+    sbRef.current = { from };
+
+    const n = await completeTerminalQuoteItems(QUOTE_ID, NOW);
+    expect(n).toBe(0);
+  });
+
+  it('closes any pending follow-up anchored to a completed item (#252 follow-up-autoclose, extended here)', async () => {
+    const { from, fuCalls } = makeSbForComplete({
+      itemsSelect: { data: [{ id: 'item-bare', status: 'handled', followed_up_at: null }], error: null },
+      itemsUpdate: { data: [{ id: 'item-bare' }], error: null },
+      followUpsUpdate: { data: [{ id: 'fu-1' }], error: null },
+    });
+    sbRef.current = { from };
+
+    await completeTerminalQuoteItems(QUOTE_ID, NOW);
+
+    const fuUpdateCall = fuCalls.find((c) => c.method === 'update');
+    expect(fuUpdateCall!.args[0]).toEqual({ status: 'done' });
+    const fuInboxItemEq = fuCalls.find((c) => c.method === 'eq' && c.args[0] === 'inbox_item_id');
+    expect(fuInboxItemEq!.args).toEqual(['inbox_item_id', 'item-bare']);
+  });
+
+  it('is non-fatal (warns) when the lookup fails — never throws, never blocks the reconcile tick', async () => {
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { from } = makeSbForComplete({ itemsSelect: { data: null, error: { message: 'db down' } } });
+      sbRef.current = { from };
+
+      await expect(completeTerminalQuoteItems(QUOTE_ID, NOW)).resolves.toBe(0);
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        '[inbox] terminal-quote auto-complete: item lookup failed (non-fatal):',
+        'db down',
+      );
+    } finally {
+      consoleWarnSpy.mockRestore();
+    }
+  });
+
+  it('is non-fatal (warns) when the item write fails', async () => {
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { from } = makeSbForComplete({
+        itemsSelect: { data: [{ id: 'item-bare', status: 'handled', followed_up_at: null }], error: null },
+        itemsUpdate: { data: null, error: { message: 'write failed' } },
+      });
+      sbRef.current = { from };
+
+      await expect(completeTerminalQuoteItems(QUOTE_ID, NOW)).resolves.toBe(0);
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        '[inbox] terminal-quote auto-complete: item resolve failed (non-fatal):',
+        'write failed',
+      );
+    } finally {
+      consoleWarnSpy.mockRestore();
+    }
+  });
+
+  it('no-ops (no throw) when the service client is not configured', async () => {
+    sbRef.current = null;
+    await expect(completeTerminalQuoteItems(QUOTE_ID, NOW)).resolves.toBe(0);
   });
 });
 
