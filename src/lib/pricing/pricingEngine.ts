@@ -759,9 +759,22 @@ function calculateWreaths(inputs: QuoteInputs): LineItem[] {
     const qty = units(item.quantity);
     const price = BUSINESS_RULES.wreathPrices[item.size][item.tier];
     const amount = price * qty;
-    const base = `${WREATH_SIZE_LABELS[item.size]} Wreath – ${TIER_LABELS[item.tier]}`;
+    const productName = `${WREATH_SIZE_LABELS[item.size]} Wreath`;
+    const base = `${productName} – ${TIER_LABELS[item.tier]}`;
     const defaultLabel = qty === 1 ? base : `${base} × ${qty}`;
-    return { item, defaultLabel, amount, insertAt: defaultLabel.length };
+    // item-numbering-rename (fix round, technical-lens MED): insert the
+    // duplicate's " N" right after the PRODUCT-NAME segment, before " – tier"
+    // — NOT at the label's end like the original cut. Appending at the end
+    // put the digit inside the portal's extractDecorDetail tier capture
+    // (lineItemKind.ts's tierM regex has no "×" terminator when qty===1, so
+    // it swallowed a trailing digit straight into `detail` — "Non-Decorated
+    // 1" — which prints VERBATIM on the customer Quote/Invoice/Receipt PDFs;
+    // wreath/garland skip the wrapped-mini aggregation that would have hidden
+    // it). Same structural fix as minis (insertAt = prefix.length) — the
+    // prefix boundary here is just delimited by " – " instead of a bare
+    // space, and it happens to also dodge the qty>1 "× N N" concern for free
+    // (the number always lands before " – tier", never after "× qty").
+    return { item, defaultLabel, amount, insertAt: productName.length };
   });
   const labels = numberDuplicateLabels(raw, overrides);
   return raw.map((r, i) => ({ label: labels[i], amount: r.amount, ...withIdentity(r.item) }));
@@ -781,9 +794,14 @@ function calculateGarland(inputs: QuoteInputs): LineItem[] {
     const qty = units(item.quantity);
     const price = BUSINESS_RULES.garlandPrices[item.type][item.length][item.tier];
     const amount = price * qty;
-    const base = `${item.length} ${GARLAND_TYPE_LABELS[item.type]} Garland – ${TIER_LABELS[item.tier]}`;
+    const productName = `${item.length} ${GARLAND_TYPE_LABELS[item.type]} Garland`;
+    const base = `${productName} – ${TIER_LABELS[item.tier]}`;
     const defaultLabel = qty === 1 ? base : `${base} × ${qty}`;
-    return { item, defaultLabel, amount, insertAt: defaultLabel.length };
+    // item-numbering-rename (fix round, technical-lens MED): same
+    // product-name-segment insertion as calculateWreaths above, for the
+    // identical reason (extractDecorDetail's tier capture would otherwise
+    // swallow the digit into the customer-facing PDF `detail`).
+    return { item, defaultLabel, amount, insertAt: productName.length };
   });
   const labels = numberDuplicateLabels(raw, overrides);
   return raw.map((r, i) => ({ label: labels[i], amount: r.amount, ...withIdentity(r.item) }));
