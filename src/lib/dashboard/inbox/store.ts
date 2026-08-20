@@ -73,6 +73,24 @@ export type ExistingItem = {
   sourceMessageId?: string | null;
   leadKind?: string | null;
   quoteValue?: number | null;
+  /** #316 follow-up (review FIX 2): the two raw-JSON fields getItemForReply
+   *  falls back to when the joined dashboard_contacts row lacks them (see
+   *  getItemForReply below) — raw.highlevel_contact_id / raw.customer_name.
+   *  Selected narrowly via a PostgREST JSON-path expression (findExistingItem
+   *  below), not by fetching the whole raw blob. Only the quotetool source's
+   *  raw (`raw: q`, a DashboardQuote row) ever carries these keys today —
+   *  ghl.ts/gmail.ts/ingest.ts's raw shapes don't have them, so for those
+   *  sources both sides compare null===null and this pair is inert, same
+   *  fail-safe direction as every other field here. Concrete case this
+   *  closes: a draft quote gets linked to a GHL contact via
+   *  /api/integrations/highlevel/attach (writes quotes.highlevel_contact_id
+   *  only, never dashboard_contacts or inbox_items) — without this pair, if
+   *  none of the OTHER 7 fields changed on the next reconcile tick, the tick
+   *  would noop and inbox_items.raw would stay frozen pre-attach, leaving
+   *  getItemForReply's fallback showing "no GHL contact" on an item that IS
+   *  linked. */
+  rawHighlevelContactId?: string | null;
+  rawCustomerName?: string | null;
 };
 
 export type ContactOp =
@@ -133,10 +151,11 @@ export type IngestPlan = {
    *       nothing else about a resolved item's display depends on the touch.
    *    2. #316: an UNRESOLVED ('unresponded') item whose touch-derived fields
    *       (direction/channel/preview/subject/source_message_id/lead_kind/
-   *       quote_value — see ExistingItem's doc for source_message_id's real,
-   *       near-inert discriminating power on live traffic) ALSO match the
-   *       stored row — same status + same last_message_at is not enough here,
-   *       because a still-DRAFT
+   *       quote_value, plus the raw.highlevel_contact_id/raw.customer_name
+   *       pair added in the review FIX 2 follow-up — see ExistingItem's doc
+   *       for what each field actually discriminates on live traffic) ALSO
+   *       match the stored row — same status + same last_message_at is not
+   *       enough here, because a still-DRAFT
    *       quotetool lead's lastMessageAt is pinned to created_at, so an
    *       edited draft total can change preview/quote_value with the
    *       timestamp frozen. Deliberately does NOT compare escalation_level —
@@ -204,6 +223,20 @@ const TRACKS_OUTBOUND_FIRST_OBSERVATION: ReadonlySet<InboxSource> = new Set<Inbo
 // defaults to staying skipped, not silently tracked.
 function tracksOutboundFirstObservation(source: InboxSource, channel: NormalizedTouch['channel']): boolean {
   return TRACKS_OUTBOUND_FIRST_OBSERVATION.has(source) || (source === 'ghl' && channel === 'call');
+}
+
+// #316 follow-up (review FIX 2): safely pull one string field out of a
+// touch's `raw` blob — typed `unknown` on NormalizedTouch because every
+// source shapes it differently (a GhlConversation, a GmailThreadLite, a
+// DashboardQuote row, an arbitrary ingest POST body). Only the quotetool
+// source's raw ever carries highlevel_contact_id/customer_name (it IS a
+// DashboardQuote row); every other source's raw lacks both keys, so this
+// returns null for them — same null===null fail-safe direction as every
+// other unrespondedNoContentChange comparison below.
+function rawStringField(raw: unknown, key: string): string | null {
+  if (raw === null || typeof raw !== 'object') return null;
+  const v = (raw as Record<string, unknown>)[key];
+  return typeof v === 'string' ? v : null;
 }
 
 /**
@@ -290,14 +323,17 @@ export function planIngest(input: {
   // quotetool.ts's normalizeQuoteTouch) while a real edit changes what's
   // shown (a draft's total → preview + quote_value). Compares every
   // touch-derived field the upsert writes that could plausibly change without
-  // moving last_message_at — though not every field pulls equal weight on
-  // live traffic today: source_message_id is null on every path except
-  // gmail.ts's rare lead-forward branch, so it stays in the comparison for
-  // future-proofing, not because it discriminates most traffic (see
-  // ExistingItem's doc for the honest breakdown). Deliberately EXCLUDES
-  // escalation_level (see the IngestPlan.noopReingest doc above — it's a
-  // pure function of elapsed time, not of the touch, and the escalate cron
-  // owns keeping it current independent of ingest) and notified_levels
+  // moving last_message_at, plus (review FIX 2, #316 follow-up) the
+  // raw.highlevel_contact_id/raw.customer_name pair getItemForReply falls
+  // back to. Not every field pulls equal weight on live traffic today:
+  // source_message_id is null on every path except gmail.ts's rare
+  // lead-forward branch, and the raw pair is only ever non-null for the
+  // quotetool source — both stay in the comparison for future-proofing and
+  // fail-safe symmetry with the rest, not because they discriminate most
+  // traffic (see ExistingItem's doc for the honest breakdown). Deliberately
+  // EXCLUDES escalation_level (see the IngestPlan.noopReingest doc above —
+  // it's a pure function of elapsed time, not of the touch, and the escalate
+  // cron owns keeping it current independent of ingest) and notified_levels
   // (already byte-identical to `existing` here by construction — see
   // `notifiedLevels` above, `reopened` is false whenever this runs).
   const unrespondedNoContentChange =
@@ -308,7 +344,9 @@ export function planIngest(input: {
     (touch.subject ?? null) === existing?.subject &&
     (touch.sourceMessageId ?? null) === existing?.sourceMessageId &&
     (touch.leadKind ?? 'lead') === existing?.leadKind &&
-    (touch.quoteValue ?? null) === existing?.quoteValue;
+    (touch.quoteValue ?? null) === existing?.quoteValue &&
+    rawStringField(touch.raw, 'highlevel_contact_id') === existing?.rawHighlevelContactId &&
+    rawStringField(touch.raw, 'customer_name') === existing?.rawCustomerName;
 
   const noopReingest = commonNoopPreconditions && (isResolvedStatus || unrespondedNoContentChange);
 
@@ -400,11 +438,14 @@ async function findExistingItem(source: InboxSource, externalId: string): Promis
   if (!sb) return null;
   // #316: also selects the touch-derived columns planIngest's unresponded-item
   // noop check compares (see ExistingItem's doc) — direction/channel/preview/
-  // subject/source_message_id/lead_kind/quote_value.
+  // subject/source_message_id/lead_kind/quote_value — plus (review FIX 2) the
+  // raw.highlevel_contact_id/raw.customer_name pair, pulled narrowly via a
+  // PostgREST JSON-path select (raw->>key, aliased) rather than fetching the
+  // whole raw blob per row.
   const { data } = await sb
     .from('inbox_items')
     .select(
-      'id, contact_id, status, notified_levels, last_message_at, direction, channel, preview, subject, source_message_id, lead_kind, quote_value',
+      'id, contact_id, status, notified_levels, last_message_at, direction, channel, preview, subject, source_message_id, lead_kind, quote_value, raw_highlevel_contact_id:raw->>highlevel_contact_id, raw_customer_name:raw->>customer_name',
     )
     .eq('source', source)
     .eq('external_id', externalId)
@@ -424,6 +465,8 @@ async function findExistingItem(source: InboxSource, externalId: string): Promis
     sourceMessageId: (row.source_message_id as string | null) ?? null,
     leadKind: (row.lead_kind as string | null) ?? null,
     quoteValue: (row.quote_value as number | null) ?? null,
+    rawHighlevelContactId: (row.raw_highlevel_contact_id as string | null) ?? null,
+    rawCustomerName: (row.raw_customer_name as string | null) ?? null,
   };
 }
 
@@ -2127,7 +2170,11 @@ export type ReplyItem = {
 /**
  * Resolve the send-target coordinates for a reply action: source, channel,
  * external ID, GHL contact ID, customer name, and quote total. The GHL contact
- * ID and customer name fall back to the raw payload if the contact row is absent.
+ * ID and customer name fall back to the raw payload if the contact row is
+ * absent — #316 follow-up (review FIX 2): planIngest's noop check now
+ * compares raw.highlevel_contact_id/raw.customer_name (see ExistingItem's
+ * doc), so a later attach that changes either un-noops the next reconcile
+ * tick and refreshes `raw` instead of leaving this fallback frozen stale.
  */
 export async function getItemForReply(itemId: string): Promise<ReplyItem | null> {
   const sb = getSupabaseServiceClient();

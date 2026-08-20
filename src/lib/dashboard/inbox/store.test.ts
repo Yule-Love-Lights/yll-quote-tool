@@ -257,11 +257,12 @@ describe('planIngest — noopReingest short-circuits dead re-ingests', () => {
   // #316: an ExistingItem whose touch-derived fields exactly mirror what
   // touch()'s defaults produce on the ItemRow (direction 'inbound', channel
   // 'sms', preview 'hello', no subject/sourceMessageId, leadKind 'lead', no
-  // quoteValue) — i.e. the stored row from a PRIOR identical ingest of
-  // touch(). Absent touch fields normalize to `null` on the item (`?? null` /
-  // `?? 'lead'`), so the matching existing fixture must spell those out as
-  // `null`, not leave them `undefined` — see the "missing fields" test below
-  // for why that distinction matters.
+  // quoteValue, no raw so no raw.highlevel_contact_id/raw.customer_name) —
+  // i.e. the stored row from a PRIOR identical ingest of touch(). Absent
+  // touch fields normalize to `null` on the item (`?? null` / `?? 'lead'`),
+  // so the matching existing fixture must spell those out as `null`, not
+  // leave them `undefined` — see the "missing fields" test below for why
+  // that distinction matters.
   const unrespondedMatchingTouch = (over: Partial<ExistingItem> = {}): ExistingItem => ({
     id: 'i1',
     contactId: 'A',
@@ -275,6 +276,8 @@ describe('planIngest — noopReingest short-circuits dead re-ingests', () => {
     sourceMessageId: null,
     leadKind: 'lead',
     quoteValue: null,
+    rawHighlevelContactId: null,
+    rawCustomerName: null,
     ...over,
   });
 
@@ -386,6 +389,60 @@ describe('planIngest — noopReingest short-circuits dead re-ingests', () => {
       candidates: [],
       existing: unrespondedMatchingTouch({ subject: 'Old subject' }),
       touch: touch({ direction: 'inbound', lastMessageAt: T, subject: 'New subject' }),
+      now: at(HOUR),
+    });
+    expect(plan.noopReingest).toBe(false);
+  });
+
+  // #316 follow-up (review FIX 2) — concrete traced case: a still-open draft
+  // quote gets linked to a GHL contact via /api/integrations/highlevel/attach
+  // (writes quotes.highlevel_contact_id only, never inbox_items or
+  // dashboard_contacts) between two reconcile ticks. The stored item's
+  // frozen raw still shows no contact; the next tick's touch carries the
+  // newly-attached one, content otherwise identical. MUST NOT no-op, or
+  // inbox_items.raw stays frozen pre-attach and getItemForReply's fallback
+  // keeps showing "no GHL contact linked" on an item that IS linked.
+  it('a draft quote attached to a GHL contact between two ticks (raw.highlevel_contact_id changed, nothing else did) is NOT a no-op', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: unrespondedMatchingTouch({ rawHighlevelContactId: null, rawCustomerName: 'Jane Doe' }),
+      touch: touch({
+        source: 'quotetool',
+        direction: 'inbound',
+        lastMessageAt: T,
+        raw: { highlevel_contact_id: 'ghl-contact-99', customer_name: 'Jane Doe' },
+      }),
+      now: at(HOUR),
+    });
+    expect(plan.noopReingest).toBe(false);
+  });
+
+  // #316 follow-up: both sides null is the ORDINARY shape (every non-quotetool
+  // source's raw lacks these keys entirely, and so does an un-attached
+  // quotetool draft) — still a no-op. Guards against the new pair breaking
+  // the noop for sources that never carry it.
+  it('raw.highlevel_contact_id/customer_name null on BOTH sides is still a no-op', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: unrespondedMatchingTouch(), // rawHighlevelContactId/rawCustomerName both null
+      touch: touch({ direction: 'inbound', lastMessageAt: T }), // no raw on the touch -> both null
+      now: at(HOUR),
+    });
+    expect(plan.noopReingest).toBe(true);
+  });
+
+  // #316 follow-up: raw.customer_name changing alone (contact id unchanged)
+  // is held to the same bar as the contact-id case above.
+  it('a changed raw.customer_name with everything else identical is NOT a no-op', () => {
+    const plan = planIngest({
+      candidates: [],
+      existing: unrespondedMatchingTouch({ rawHighlevelContactId: 'ghl-contact-1', rawCustomerName: 'Old Name' }),
+      touch: touch({
+        source: 'quotetool',
+        direction: 'inbound',
+        lastMessageAt: T,
+        raw: { highlevel_contact_id: 'ghl-contact-1', customer_name: 'New Name' },
+      }),
       now: at(HOUR),
     });
     expect(plan.noopReingest).toBe(false);
