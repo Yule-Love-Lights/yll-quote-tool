@@ -4080,11 +4080,12 @@ describe('reverseItemState (row 312 — reclassified + wrong-occurrence guard)',
   // refusal test further down for that path itself.
   const RECLASSIFIED_DETAIL = { op: 're-file', to: 'awaiting_reply', from: 'handled', followedUpAtSetTo: '2026-08-06T16:33:02.701Z' };
 
-  it("reverses a 'reclassified' row: clears followed_up_at only, status untouched", async () => {
+  it("reverses a 'reclassified' row: clears followed_up_at only, status untouched, CASing on followed_up_at IS NOT NULL (FIX 1)", async () => {
     const { from, updateCalls, insertCalls } = makeSbForReverse({
       activityRow: { data: { action: 'reclassified', inbox_item_id: ITEM_ID, detail: RECLASSIFIED_DETAIL } },
       latestRow: { data: { id: ACTIVITY_ID } }, // this row IS the latest — passes 312c
       curItem: { data: { status: 'handled', followed_up_at: '2026-08-01T00:00:00Z' } },
+      updateResult: { data: { id: ITEM_ID }, error: null }, // FIX 1: CAS matched a row
     });
     sbRef.current = { from };
 
@@ -4094,8 +4095,34 @@ describe('reverseItemState (row 312 — reclassified + wrong-occurrence guard)',
     const updateCall = updateCalls.find((c) => c.method === 'update');
     expect(updateCall!.args[0]).toMatchObject({ followed_up_at: null });
     expect(updateCall!.args[0]).not.toHaveProperty('status'); // inverseOf('reclassified') never sets status
+    // FIX 1: 'reclassified' CASes on followed_up_at IS NOT NULL, not on status.
+    const casNotCall = updateCalls.find((c) => c.method === 'not');
+    expect(casNotCall!.args).toEqual(['followed_up_at', 'is', null]);
+    expect(updateCalls.some((c) => c.method === 'eq' && c.args[0] === 'status')).toBe(false);
     const insertCall = insertCalls.find((c) => c.method === 'insert');
     expect(insertCall!.args[0]).toMatchObject({ action: 'reversed', detail: { reversed_action: 'reclassified' } });
+  });
+
+  // row 312 fix-round FIX 1 (HIGH): the CAS on the update — not the earlier
+  // read — is what actually closes the race/double-click window. Simulated
+  // here by having the pre-check (curItem) pass stillMatches while the update
+  // itself matches zero rows (updateResult.data: null) — exactly what a
+  // concurrent write landing between the read and the write would produce.
+  it('FIX 1: refuses (lost race) when the CAS update matches no row even though the pre-check read passed', async () => {
+    const { from, insertCalls } = makeSbForReverse({
+      activityRow: { data: { action: 'handled', inbox_item_id: ITEM_ID, detail: null } },
+      latestRow: { data: { id: ACTIVITY_ID } },
+      curItem: { data: { status: 'handled', followed_up_at: null } }, // stillMatches passes
+      updateResult: { data: null, error: null }, // but the CAS itself matches nothing (lost race)
+    });
+    sbRef.current = { from };
+
+    const res = await reverseItemState(ACTIVITY_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/state has changed/i);
+    // No 'reversed' audit row gets written for a lost-race refusal.
+    expect(insertCalls.some((c) => c.method === 'insert')).toBe(false);
   });
 
   it("refuses a 'reclassified' row whose item is no longer awaiting reply (followed_up_at already cleared)", async () => {
@@ -4173,6 +4200,7 @@ describe('reverseItemState (row 312 — reclassified + wrong-occurrence guard)',
       activityRow: { data: { action: 'handled', inbox_item_id: ITEM_ID, detail: null } },
       latestRow: { data: null }, // no row found (maybeSingle null) — nothing later
       curItem: { data: { status: 'handled', followed_up_at: null } },
+      updateResult: { data: { id: ITEM_ID }, error: null }, // FIX 1: CAS matched a row
     });
     sbRef.current = { from };
 
@@ -4180,6 +4208,8 @@ describe('reverseItemState (row 312 — reclassified + wrong-occurrence guard)',
 
     expect(res.ok).toBe(true);
     expect(updateCalls.some((c) => c.method === 'update')).toBe(true);
+    // FIX 1: non-followed/reclassified actions CAS on status, not followed_up_at.
+    expect(updateCalls.some((c) => c.method === 'eq' && c.args[0] === 'status' && c.args[1] === 'handled')).toBe(true);
   });
 
   it("312c: the latest-row query's action set covers every reversible action plus 'reversed'/'reopened', ordered with an id tiebreaker (FIX 5a/5b)", async () => {

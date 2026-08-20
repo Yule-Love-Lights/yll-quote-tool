@@ -2228,8 +2228,11 @@ export async function reverseItemState(
   }
 
   // Only reverse if the item is STILL in the state this action produced — otherwise
-  // a later action superseded it and reversing now would clobber the newer state
-  // (this also de-dupes a double-clicked reverse).
+  // a later action superseded it and reversing now would clobber the newer state.
+  // This is a fast, friendly pre-check only — it does NOT by itself de-dupe a
+  // double-clicked reverse (a read-check-then-act has a race window between this
+  // read and the write below); the atomic CAS on the update IS what de-dupes it,
+  // see the fix-round comment there.
   const { data: cur } = await sb
     .from('inbox_items')
     .select('status, followed_up_at')
@@ -2250,8 +2253,28 @@ export async function reverseItemState(
   if (t.clearFollowed) upd.followed_up_at = null;
   if (t.setFollowed) upd.followed_up_at = now.toISOString();
 
-  const { error } = await sb.from('inbox_items').update(upd).eq('id', a.inbox_item_id);
+  // row 312 fix-round HIGH (technical lens, sibling-parity class): re-encode the
+  // SAME condition `stillMatches` just checked, atomically, IN the update's WHERE
+  // — mirrors markItemHandledLocal / dismissItem's sibling CAS idiom in this same
+  // file (`.eq('id').neq('status', target).select().maybeSingle()`, no-row-
+  // matched = refused). Without this the read above and this write are two
+  // separate round-trips: a concurrent write (e.g. another operator's Mark
+  // handled) landing in that window would be silently clobbered by an
+  // unconditional update, and a double-clicked Reverse would double-apply (the
+  // OLD comment here claimed the read-check alone "de-dupes" that — false, since
+  // read-check-then-act has no such property on its own). The CAS closes both:
+  // after the first write succeeds the row's status/followed_up_at no longer
+  // matches `action`'s condition, so a second concurrent call's WHERE matches
+  // zero rows and it gets the same honest refusal as the wrong-occurrence guard
+  // above, instead of clobbering the first call's result.
+  let casQuery = sb.from('inbox_items').update(upd).eq('id', a.inbox_item_id);
+  casQuery =
+    action === 'followed' || action === 'reclassified'
+      ? casQuery.not('followed_up_at', 'is', null)
+      : casQuery.eq('status', action);
+  const { data: casRow, error } = await casQuery.select('id').maybeSingle();
   if (error) return { ok: false, error: error.message };
+  if (!casRow) return { ok: false, error: 'Item state has changed since this action; nothing to reverse' };
 
   if (t.unsuppress) {
     const { data: c } = await sb
