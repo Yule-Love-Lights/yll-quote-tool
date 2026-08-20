@@ -974,6 +974,63 @@ describe('listOpenItems — select string, sort order, and field mapping', () =>
     expect(item.isReturning).toBe(false); // no contact_id
   });
 
+  // Row 321: badges/confirm-gates a color-request row in InboxList.tsx.
+  it('sets isColorRequest true for a quotetool item whose external_id is :color-request-suffixed, false otherwise', async () => {
+    const colorRequestRow = {
+      id: 'item-cr',
+      source: 'quotetool',
+      external_id: '123e4567-e89b-12d3-a456-426614174000:color-request',
+      channel: null,
+      direction: 'inbound',
+      last_message_at: '2026-08-17T17:37:48.337Z',
+      preview: 'Champagne',
+      subject: null,
+      escalation_level: 0,
+      contact_id: null,
+      lead_kind: 'lead',
+      quote_value: null,
+      dashboard_contacts: null,
+    };
+    const bareQuoteRow = {
+      ...colorRequestRow,
+      id: 'item-bare',
+      external_id: '123e4567-e89b-12d3-a456-426614174000',
+    };
+    const { builder: mainBuilder } = makeBuilder({ data: [colorRequestRow, bareQuoteRow], error: null });
+    sbRef.current = { from: (_table: string) => mainBuilder };
+
+    const result = await listOpenItems(100);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items.find((i) => i.id === 'item-cr')!.isColorRequest).toBe(true);
+    expect(result.items.find((i) => i.id === 'item-bare')!.isColorRequest).toBe(false);
+  });
+
+  it('never flags isColorRequest for a non-quotetool source, even with a colon in external_id', async () => {
+    const row = {
+      id: 'item-ghl',
+      source: 'ghl',
+      external_id: 'conv-1:color-request', // pathological — a real ghl id never looks like this
+      channel: 'sms',
+      direction: 'inbound',
+      last_message_at: '2026-08-17T17:37:48.337Z',
+      preview: 'hi',
+      subject: null,
+      escalation_level: 0,
+      contact_id: null,
+      lead_kind: 'lead',
+      quote_value: null,
+      dashboard_contacts: null,
+    };
+    const { builder: mainBuilder } = makeBuilder({ data: [row], error: null });
+    sbRef.current = { from: (_table: string) => mainBuilder };
+
+    const result = await listOpenItems(100);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items[0].isColorRequest).toBe(false);
+  });
+
   it('filters out followed items via .is("followed_up_at", null)', async () => {
     const { builder: mainBuilder, calls: mainCalls } = makeBuilder({ data: [], error: null });
     sbRef.current = { from: (_table: string) => mainBuilder };
@@ -1162,6 +1219,7 @@ describe('listInWorks — parallel fetch (#185)', () => {
         customerName: 'Awaiting Amy',
         lastActivityAt: '2026-07-20T10:00:00Z',
         needsLookReason: null,
+        isColorRequest: false,
       },
     ]);
     expect(result.handled).toEqual([
@@ -1173,6 +1231,7 @@ describe('listInWorks — parallel fetch (#185)', () => {
         customerName: 'Handled Hank',
         lastActivityAt: '2026-07-21T09:00:00Z',
         needsLookReason: null,
+        isColorRequest: false,
       },
     ]);
     expect(inboxCallIndex).toBe(2);
@@ -1300,6 +1359,8 @@ describe('listInWorks — parallel fetch (#185)', () => {
     if (!result.ok) return;
     expect(result.handled).toHaveLength(1);
     expect(result.handled[0].needsLookReason).toBe('Quote unanswered');
+    // Row 321: this row's external_id IS the :color-request suffix.
+    expect(result.handled[0].isColorRequest).toBe(true);
     // Exactly one quotes query for the whole page (not one per handled row) —
     // and it was looked up by the QUOTE id (quoteIdPrefix strips the
     // :color-request suffix), not the raw external_id.

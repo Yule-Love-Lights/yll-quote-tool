@@ -19,6 +19,8 @@ import {
   withRowFlagSet,
   withRowFlagCleared,
   requiresCompleteConfirmation,
+  requiresColorRequestConfirmation,
+  colorRequestConfirmMessage,
   omitKey,
   clearNeedsLookOnMove,
   errorNoteFor,
@@ -114,6 +116,33 @@ describe('InWorksSection (row 291 — initial render)', () => {
       <InWorksSection awaiting={[]} handled={handled} followUpDays={3} nowMs={now} />,
     );
     expect(html).not.toContain('Locked until');
+  });
+
+  // Row 321: the badge renders for an isColorRequest row and NOT for an
+  // ordinary one, independent of needsLookReason. Uses the 'awaiting' bucket
+  // (renders unconditionally, no collapse toggle) so the row is provably in
+  // the markup either way — the 'handled' bucket's settled rows start
+  // collapsed and would make a false negative read as a pass.
+  it('badges a row flagged isColorRequest with "Colour request pending"', () => {
+    const awaiting: InWorksItem[] = [
+      { ...baseItem, id: 'a1', customerName: 'Colour Customer', isColorRequest: true },
+    ];
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={awaiting} handled={[]} followUpDays={3} nowMs={now} />,
+    );
+    expect(html).toContain('Colour Customer');
+    expect(html).toContain('Colour request pending');
+  });
+
+  it('does not badge an ordinary row', () => {
+    const awaiting: InWorksItem[] = [
+      { ...baseItem, id: 'a1', customerName: 'Ordinary Customer' },
+    ];
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={awaiting} handled={[]} followUpDays={3} nowMs={now} />,
+    );
+    expect(html).toContain('Ordinary Customer');
+    expect(html).not.toContain('Colour request pending');
   });
 });
 
@@ -245,6 +274,28 @@ describe('completeConfirmMessage (row 304 — no overpromise on the follow-up na
     const msg = completeConfirmMessage({ needsLookReason: 'Quote unanswered' });
     expect(msg).not.toMatch(/undo it/i);
     expect(msg.toLowerCase()).toContain('does not re-open the follow-up');
+  });
+});
+
+// Row 321: pins the pure predicate + message handleMarkCompleted's SECOND,
+// independent confirm gate is built on (checked before requiresCompleteConfirmation
+// — see requiresColorRequestConfirmation's own doc comment). The click-then-
+// confirm-then-act flow itself can't be driven without jsdom (same limitation
+// as the rest of this file).
+describe('requiresColorRequestConfirmation / colorRequestConfirmMessage (row 321 — pure)', () => {
+  it('is true for a row flagged isColorRequest, independent of needsLookReason', () => {
+    expect(requiresColorRequestConfirmation({ isColorRequest: true })).toBe(true);
+  });
+
+  it('is false for a row not flagged isColorRequest (undefined reads as false)', () => {
+    expect(requiresColorRequestConfirmation({ isColorRequest: false })).toBe(false);
+    expect(requiresColorRequestConfirmation({ isColorRequest: undefined })).toBe(false);
+  });
+
+  it('names what is outstanding and points to the quote admin page', () => {
+    const msg = colorRequestConfirmMessage();
+    expect(msg).toContain('This customer is waiting on a colour change — mark it handled anyway?');
+    expect(msg).toContain('Colour request panel');
   });
 });
 

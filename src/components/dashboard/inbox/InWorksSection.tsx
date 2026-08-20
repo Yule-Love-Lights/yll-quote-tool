@@ -96,6 +96,23 @@ export function completeConfirmMessage(item: Pick<InWorksItem, 'needsLookReason'
   return `${item.needsLookReason} — mark completed anyway?\n\nThis removes it from every inbox list and closes any pending follow-up. Reverse (Activity Log) undoes the status change, but does not re-open the follow-up nag.`;
 }
 
+/** Row 321: an independent, higher-priority confirm gate for "Mark
+ *  completed" on a `:color-request` item (item.isColorRequest) — separate
+ *  from requiresCompleteConfirmation/completeConfirmMessage above because the
+ *  two signals are independent (a color-request row can read as "settled" on
+ *  needsLookReason — e.g. staff already replied, flipping direction to
+ *  outbound — while its quote's pendingColorRequest is still live). A local
+ *  copy of InboxList.tsx's own colorRequestConfirmMessage, kept deliberately
+ *  un-shared like this file's other duplicated helpers (see withRowFlagSet's
+ *  own doc comment above). Does NOT hard-block. */
+export function requiresColorRequestConfirmation(item: Pick<InWorksItem, 'isColorRequest'>): boolean {
+  return !!item.isColorRequest;
+}
+
+export function colorRequestConfirmMessage(): string {
+  return "This customer is waiting on a colour change — mark it handled anyway?\n\nThe requested colour is still pending on the quote. Review or apply it from the quote's admin page (Colour request panel) first, or Cancel and do that now.";
+}
+
 export function InWorksSection({
   awaiting,
   handled,
@@ -248,6 +265,12 @@ export function InWorksSection({
   // unflagged row (requiresCompleteConfirmation false) calls act() directly,
   // identical to the pre-fix one-click behavior.
   function handleMarkCompleted(item: InWorksItem, group: 'awaiting' | 'handled') {
+    // Row 321: checked first/independently — see requiresColorRequestConfirmation's
+    // own doc for why this can't just fold into requiresCompleteConfirmation.
+    if (requiresColorRequestConfirmation(item)) {
+      const ok = window.confirm(colorRequestConfirmMessage());
+      if (!ok) return;
+    }
     if (requiresCompleteConfirmation(item)) {
       const ok = window.confirm(completeConfirmMessage(item));
       if (!ok) return;
@@ -303,6 +326,16 @@ export function InWorksSection({
                   style={{ background: '#dbeafe', color: '#1e40af' }}
                 >
                   {item.needsLookReason}
+                </span>
+              )}
+              {/* Row 321: so the row is visually distinct before Mark
+                  completed can silently bury a still-pending colour request. */}
+              {item.isColorRequest && (
+                <span
+                  className="text-xs font-medium px-1.5 py-0.5 rounded"
+                  style={{ background: '#fce7f3', color: '#9d174d' }}
+                >
+                  Colour request pending
                 </span>
               )}
             </div>

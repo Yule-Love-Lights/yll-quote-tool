@@ -905,6 +905,9 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
             phone: (c.primary_phone as string | null) ?? null,
           }
         : null,
+      // Row 321: badges + confirm-gates Handled/Mark-completed in InboxList.tsx
+      // so a still-live colour request can't be silently buried by them.
+      isColorRequest: row.source === 'quotetool' && isColorRequestExternalId(String(row.external_id ?? '')),
     };
   });
   // count is null only if Postgrest didn't return one (shouldn't happen with
@@ -2393,6 +2396,12 @@ export type InWorksItem = {
   // fire. Non-null is the single displayed reason — see needsLookReason's own
   // doc comment for why only one shows when a row trips more than one rule.
   needsLookReason: string | null;
+  /** Row 321: true for a `quotetool` item whose external_id carries the
+   *  `:color-request` suffix — badges + confirm-gates "Mark completed" in
+   *  InWorksSection.tsx. Always false for an 'awaiting' row (that bucket's
+   *  narrower IN_WORKS_SELECT doesn't fetch external_id — see its own comment
+   *  below); optional so existing fixtures that omit it read as false. */
+  isColorRequest?: boolean;
 };
 export type InWorksResult =
   | {
@@ -2432,6 +2441,10 @@ function mapInWorksRow(
       customerName: (c?.display_name as string | null) ?? null,
       lastActivityAt: (row[tsKey] as string | null) ?? null,
       needsLookReason: reasonFor ? reasonFor(row) : null,
+      // Row 321: 'awaiting' rows never select external_id (see
+      // IN_WORKS_SELECT's own comment above), so this is always false there —
+      // undefined coerced to false by isColorRequestExternalId('').
+      isColorRequest: row.source === 'quotetool' && isColorRequestExternalId(String(row.external_id ?? '')),
     };
   });
 }

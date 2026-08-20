@@ -134,6 +134,16 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
             {item.leadKind === 'automated' && (
               <span className="text-xs" style={{ color: 'var(--op-text-2)' }}>· filtered</span>
             )}
+            {/* Row 321: so the row is visually distinct before Handled/Mark
+                completed can silently bury a still-pending colour request. */}
+            {item.isColorRequest && (
+              <span
+                className="text-xs font-medium px-1.5 py-0.5 rounded"
+                style={{ background: '#fce7f3', color: '#9d174d' }}
+              >
+                Colour request pending
+              </span>
+            )}
           </div>
           {item.subject && (
             <p className="text-sm mt-1 truncate" style={{ color: 'var(--op-text)' }}>
@@ -221,7 +231,12 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
           <button
             type="button"
             disabled={!!busyIds[item.id] || lockedOut('Handled')}
-            onClick={() => act(item.id, '/api/dashboard/handled', 'Handled')}
+            onClick={() => {
+              // Row 321: does NOT hard-block — the operator may legitimately
+              // have handled this by phone.
+              if (item.isColorRequest && !window.confirm(colorRequestConfirmMessage())) return;
+              act(item.id, '/api/dashboard/handled', 'Handled');
+            }}
             title={lockedOut('Handled') ? `Locked until the ${lockedTo} attempt is confirmed` : 'Closed as answered'}
             className="px-3 py-1.5 rounded-md text-sm font-medium disabled:opacity-50"
             style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
@@ -251,7 +266,10 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
           <button
             type="button"
             disabled={!!busyIds[item.id] || lockedOut('Mark completed')}
-            onClick={() => act(item.id, '/api/dashboard/completed', 'Mark completed')}
+            onClick={() => {
+              if (item.isColorRequest && !window.confirm(colorRequestConfirmMessage())) return;
+              act(item.id, '/api/dashboard/completed', 'Mark completed');
+            }}
             title={lockedOut('Mark completed') ? `Locked until the ${lockedTo} attempt is confirmed` : 'Closed as done'}
             className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
             style={{ border: '1px solid var(--op-border)', color: 'var(--op-text-2)' }}
@@ -364,6 +382,18 @@ export function errorNoteFor(unreachableAction: string | undefined, rejectionErr
     return `Couldn't reach the server — this may or may not have gone through. Click ${unreachableAction} again to confirm.`;
   }
   return rejectionError || 'Something went wrong — try again.';
+}
+
+/** Row 321: the Handled/Mark-completed confirm for a `:color-request` item
+ *  (item.isColorRequest — see OpenInboxItem's own doc). Mirrors
+ *  InWorksSection.tsx's completeConfirmMessage precedent (a local, pure,
+ *  exported message so the wording is directly unit-testable), kept
+ *  deliberately un-shared like this file's other duplicated helpers (see
+ *  omitKey's own doc above). Does NOT hard-block — the operator may
+ *  legitimately have already handled this by phone; it just names what's
+ *  outstanding before either button proceeds. */
+export function colorRequestConfirmMessage(): string {
+  return "This customer is waiting on a colour change — mark it handled anyway?\n\nThe requested colour is still pending on the quote. Review or apply it from the quote's admin page (Colour request panel) first, or Cancel and do that now.";
 }
 
 // #302 fix: pure helper mirroring withRowFlagSet/withRowFlagCleared's own

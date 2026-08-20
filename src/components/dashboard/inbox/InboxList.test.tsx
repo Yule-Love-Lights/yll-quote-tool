@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { InboxList, isGroupExpanded, canToggleGroup, withRowFlagSet, withRowFlagCleared, withItemRestored, omitKey, errorNoteFor } from './InboxList';
+import { InboxList, isGroupExpanded, canToggleGroup, withRowFlagSet, withRowFlagCleared, withItemRestored, omitKey, errorNoteFor, colorRequestConfirmMessage } from './InboxList';
 import type { OpenInboxItem } from '@/lib/dashboard/inbox/types';
 import type { InboxGroup } from '@/lib/dashboard/inbox/groupInboxItems';
 
@@ -589,5 +589,38 @@ describe('errorNoteFor (row 311 fix-round FIX 3)', () => {
 
   it('a definite rejection with no error falls back to the generic copy', () => {
     expect(errorNoteFor(undefined, undefined)).toBe('Something went wrong — try again.');
+  });
+});
+
+// Row 321: badges an isColorRequest row so it's visually distinct before
+// Handled/Mark completed can silently bury a still-pending colour request.
+// The click-then-confirm-then-act flow itself can't be driven without jsdom
+// (same limitation as the rest of this file — see the header comment); the
+// message the confirm gate shows is pinned directly below.
+describe('InboxList (row 321 — pending colour request badge)', () => {
+  it('badges a row flagged isColorRequest with "Colour request pending"', () => {
+    const items: OpenInboxItem[] = [
+      { ...base, id: 'cr1', source: 'quotetool', contactId: 'c1', contact: { displayName: 'Colour Customer', email: null, phone: null }, isColorRequest: true, lastMessageAt: at(3_600_000) },
+    ];
+    const html = renderToStaticMarkup(<InboxList initialItems={items} nowMs={now} />);
+    expect(html).toContain('Colour Customer');
+    expect(html).toContain('Colour request pending');
+  });
+
+  it('does not badge an ordinary row', () => {
+    const items: OpenInboxItem[] = [
+      { ...base, id: 'ord1', source: 'ghl', contactId: 'c2', contact: { displayName: 'Ordinary Customer', email: null, phone: null }, lastMessageAt: at(3_600_000) },
+    ];
+    const html = renderToStaticMarkup(<InboxList initialItems={items} nowMs={now} />);
+    expect(html).toContain('Ordinary Customer');
+    expect(html).not.toContain('Colour request pending');
+  });
+});
+
+describe('colorRequestConfirmMessage (row 321 — pure)', () => {
+  it('names what is outstanding and points to the quote admin page', () => {
+    const msg = colorRequestConfirmMessage();
+    expect(msg).toContain('This customer is waiting on a colour change — mark it handled anyway?');
+    expect(msg).toContain('Colour request panel');
   });
 });
