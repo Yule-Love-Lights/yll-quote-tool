@@ -4099,8 +4099,17 @@ describe('reverseItemState (row 312 — reclassified + wrong-occurrence guard)',
     const casNotCall = updateCalls.find((c) => c.method === 'not');
     expect(casNotCall!.args).toEqual(['followed_up_at', 'is', null]);
     expect(updateCalls.some((c) => c.method === 'eq' && c.args[0] === 'status')).toBe(false);
+    // FIX 4: the 'reversed' audit row now carries the reversed activity's own
+    // id + the prior values it cleared/restored.
     const insertCall = insertCalls.find((c) => c.method === 'insert');
-    expect(insertCall!.args[0]).toMatchObject({ action: 'reversed', detail: { reversed_action: 'reclassified' } });
+    expect(insertCall!.args[0]).toMatchObject({
+      action: 'reversed',
+      detail: {
+        reversed_action: 'reclassified',
+        reversedActivityId: ACTIVITY_ID,
+        from: { status: 'handled', followedUpAt: '2026-08-01T00:00:00Z' },
+      },
+    });
   });
 
   // row 312 fix-round FIX 1 (HIGH): the CAS on the update — not the earlier

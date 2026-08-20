@@ -2288,11 +2288,23 @@ export async function reverseItemState(
     if (dc) await removeSuppressedSenders([dc.primary_email ?? null, dc.primary_phone ?? null]);
   }
 
+  // row 312 fix-round FIX 4 (MED, admin lens): carry the reversed row's own id
+  // + the prior values this reverse is clearing/restoring, mirroring the
+  // `detail: { from }` shape the forward siblings (markItemHandledLocal,
+  // dismissItem, markItemCompleted) already write. `curRow` and `activityId`
+  // are already in scope — without this, a 'reversed' row told you WHAT action
+  // got undone but not WHICH activity row or what state it undid, so the audit
+  // trail couldn't answer "what did this reverse actually change" without
+  // cross-referencing the original row by hand.
   await sb.from('dashboard_activity').insert({
     actor: operatorId,
     action: 'reversed',
     inbox_item_id: a.inbox_item_id,
-    detail: { reversed_action: a.action },
+    detail: {
+      reversed_action: a.action,
+      reversedActivityId: activityId,
+      from: { status: curRow.status, followedUpAt: curRow.followed_up_at },
+    },
   });
 
   return { ok: true };
