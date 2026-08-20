@@ -69,7 +69,7 @@ describe('seedRooflineStrands', () => {
     const santas = strands.find((s) => s.surface === 'santas-roofline')!;
     expect(santas.points).toEqual([0, 240, 320, 120, 640, 240]); // ×640 / ×480
     expect(santas.bulbType).toBe('c9');
-    expect(santas.spacingIn).toBe(12);
+    expect(santas.spacingIn).toBe(15); // Medium preset post-row-248 trim (Jason pick)
     expect(santas.drawingStyle).toBe('strand');
     expect(santas.colorPattern).toEqual(['warm-white']);
     expect(santas.included).toBe(true);
