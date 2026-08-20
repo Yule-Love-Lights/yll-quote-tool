@@ -1,8 +1,8 @@
 // #110 W6-011: GET/PUT /api/designs/[id] (the editor's continuously-called
-// autosave endpoint — updateDesignScene / linkDesignToQuote /
+// autosave endpoint — updateDesignSceneGuarded / linkDesignToQuote /
 // updateDesignSatelliteLines) had zero route-level test coverage, unlike its
 // sibling design sub-routes. requireOperator, Supabase config, and lib/designs
-// mocked.
+// mocked. (updateDesignScene became updateDesignSceneGuarded — ledger row 260.)
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
