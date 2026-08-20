@@ -19,7 +19,7 @@ export const runtime = 'nodejs';
  *   POST  /api/admin/crew-accounts → create a login and link it to a crew member
  *   PATCH /api/admin/crew-accounts → link or unlink a crew member's Telegram
  *
- * WHY PATCH EXISTS (row 301). A crew LOGIN and a crew member's TELEGRAM are two
+ * WHY PATCH EXISTS (row 313). A crew LOGIN and a crew member's TELEGRAM are two
  * independent identities, and only the second one reaches the time clock:
  * `handleCrewTimeMessage` resolves the sender through
  * `getCrewMemberByTelegramUserId`, never through the auth session. Before this,

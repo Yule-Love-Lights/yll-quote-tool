@@ -49,7 +49,7 @@ export default async function AccountsPage() {
                 </section>
                 {/*
                   Was imported but never rendered, so the whole crew panel — login
-                  creation (row 279/296) AND the Telegram link (row 301) — had no
+                  creation (row 279/296) AND the Telegram link (row 313) — had no
                   reachable surface at all. Admin-only, matching every handler in
                   /api/admin/crew-accounts.
                 */}
