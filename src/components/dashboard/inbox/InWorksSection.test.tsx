@@ -21,6 +21,7 @@ import {
   requiresCompleteConfirmation,
   omitKey,
   clearNeedsLookOnMove,
+  errorNoteFor,
 } from './InWorksSection';
 import type { InWorksItem } from '@/lib/dashboard/inbox/store';
 
@@ -346,5 +347,23 @@ describe('clearNeedsLookOnMove (row 311 fold-in — LOW)', () => {
       customerName: 'Flagged Customer',
       needsLookReason: null,
     });
+  });
+});
+
+// Row 311 fix-round FIX 3: a local copy of InboxList.tsx's own errorNoteFor —
+// before this, a definite server rejection's own `data.error` was discarded.
+describe('errorNoteFor (row 311 fix-round FIX 3)', () => {
+  it('a thrown fetch always wins, regardless of any rejection error also present', () => {
+    expect(errorNoteFor('Followed', 'Already marked followed')).toBe(
+      "Couldn't reach the server — this may or may not have gone through. Click Followed again to confirm.",
+    );
+  });
+
+  it('a definite rejection with an error renders that error, not the generic fallback', () => {
+    expect(errorNoteFor(undefined, 'Already marked followed')).toBe('Already marked followed');
+  });
+
+  it('a definite rejection with no error falls back to the generic copy', () => {
+    expect(errorNoteFor(undefined, undefined)).toBe('Something went wrong — try again.');
   });
 });

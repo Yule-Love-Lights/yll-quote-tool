@@ -47,6 +47,21 @@ export function omitKey<T>(map: Record<string, T>, id: string): Record<string, T
   return next;
 }
 
+/** Row 311 fix-round FIX 3: picks the error note's text — a local copy of
+ *  InboxList.tsx's own `errorNoteFor`, kept deliberately un-shared like the
+ *  rest of this file's helpers (see the doc comment on `omitKey` above). A
+ *  thrown fetch (no answer received) takes priority — its copy is unchanged
+ *  by this fix, and it's the more consequential case (drives the row's action
+ *  lock below). A definite server rejection's own `data.error` is more
+ *  specific than the generic fallback and now renders when the route provided
+ *  one. Pure and exported so this is directly unit-testable without rendering. */
+export function errorNoteFor(unreachableAction: string | undefined, rejectionError: string | undefined): string {
+  if (unreachableAction) {
+    return `Couldn't reach the server — this may or may not have gone through. Click ${unreachableAction} again to confirm.`;
+  }
+  return rejectionError || 'Something went wrong — try again.';
+}
+
 /** Row 311 fold-in (LOW): a row moved client-side by moveGroup carries its OLD
  *  needsLookReason along with it unless cleared — moveGroup only ever fires as
  *  the RESULT of a real operator action (a "Followed" click, or a sent reply),
@@ -99,6 +114,9 @@ export function InWorksSection({
   // received, unlike a server rejection) — mirrors InboxList.tsx's own
   // unreachableActions (#302). Drives both the error copy and the lock below.
   const [unreachableActions, setUnreachableActions] = useState<Record<string, string>>({});
+  // Row 311 fix-round FIX 3: a definite server rejection's own error text —
+  // mirrors InboxList.tsx's own rejectionErrors. See errorNoteFor above.
+  const [rejectionErrors, setRejectionErrors] = useState<Record<string, string>>({});
   const [composerFor, setComposerFor] = useState<string | null>(null);
   // #307: "Handled" starts collapsed; "Needs a look" always renders expanded
   // (there's no toggle for it). Both are views over the SAME handledItems
@@ -171,13 +189,14 @@ export function InWorksSection({
     // silently erased row A's still-true failure note).
     setErrorIds((prev) => withRowFlagCleared(prev, item.id));
     setUnreachableActions((prev) => omitKey(prev, item.id));
+    setRejectionErrors((prev) => omitKey(prev, item.id));
     try {
       const res = await fetch(path, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ itemId: item.id }),
       });
-      const data = (await res.json().catch(() => null)) as { ok?: boolean } | null;
+      const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
       if (data?.ok) {
         if (outcome === 'remove') {
           removeFromGroup(item.id, group);
@@ -188,6 +207,9 @@ export function InWorksSection({
         // A definite server answer (a rejection, not a throw) — the write is
         // known NOT to have happened, so no lock: every button stays usable.
         setErrorIds((prev) => withRowFlagSet(prev, item.id));
+        // Row 311 fix-round FIX 3: surface the route's own error text (e.g.
+        // "Already marked followed") instead of only the generic fallback.
+        setRejectionErrors((prev) => (data?.error ? { ...prev, [item.id]: data.error } : omitKey(prev, item.id)));
       }
     } catch {
       setErrorIds((prev) => withRowFlagSet(prev, item.id));
@@ -204,6 +226,7 @@ export function InWorksSection({
   function dismissError(itemId: string) {
     setErrorIds((prev) => withRowFlagCleared(prev, itemId));
     setUnreachableActions((prev) => omitKey(prev, itemId));
+    setRejectionErrors((prev) => omitKey(prev, itemId));
   }
 
   // #307 review fix 1: the "Mark completed" click handler. For a flagged row,
@@ -287,12 +310,11 @@ export function InWorksSection({
               <p className="text-xs mt-0.5 flex items-center gap-2" style={{ color: '#dc2626' }}>
                 {/* Row 311: mirrors InboxList.tsx's two-kind failure copy — a
                     THROWN fetch (no answer received) is not the same claim as
-                    a server REJECTION (a definite answer that nothing wrote). */}
-                <span>
-                  {unreachableActions[item.id]
-                    ? `Couldn't reach the server — this may or may not have gone through. Click ${unreachableActions[item.id]} again to confirm.`
-                    : 'Something went wrong — try again.'}
-                </span>
+                    a server REJECTION (a definite answer that nothing wrote).
+                    Fix-round FIX 3: a rejection's own `data.error` (e.g.
+                    "Already marked followed") now renders when present — see
+                    errorNoteFor above. */}
+                <span>{errorNoteFor(unreachableActions[item.id], rejectionErrors[item.id])}</span>
                 <button
                   type="button"
                   onClick={() => dismissError(item.id)}
