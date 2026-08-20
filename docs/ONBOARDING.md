@@ -102,6 +102,7 @@ Derived by scanning the codebase for `process.env.*` (not from memory). **21 dis
 |---|---|---|
 | `NEXT_PUBLIC_PORTAL_LEADER_NAME` | Portal display name in copy/CTAs (e.g. "Naldo") | `lib/portal/adapter.ts` + portal pages |
 | `NEXT_PUBLIC_PORTAL_PHONE` | "Text Naldo" tap-to-call number shown on portals | portal pages |
+| `NEXT_PUBLIC_PORTAL_EMAIL` | Sales email on the declined/abandoned "reopen your quote?" strip (row 236). Unset in prod — the email line is omitted when unset. | `components/portal/snowglobe/StickyBottomBar.tsx` |
 | `NEXT_PUBLIC_PORTAL_WEEKLY_BOOKINGS` | Scarcity banner: weekly bookings count | `lib/portal/adapter.ts` |
 | `NEXT_PUBLIC_PORTAL_BOOKED_THROUGH_DATE` | Scarcity banner: "booked through" date copy | `lib/portal/adapter.ts` |
 | `NEXT_PUBLIC_PORTAL_WALKTHROUGH_VIDEO_ID` | Global YouTube walkthrough video ID for all portals (public ID, not a secret) | `lib/portal/adapter.ts` |
