@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { ChevronDown } from 'lucide-react';
 import type { OpenInboxItem } from '@/lib/dashboard/inbox/types';
 import { parseLeadForwardDisplay } from '@/lib/dashboard/inbox/leadForward';
@@ -62,7 +63,14 @@ type RowActions = {
   // previously the ONLY ways to clear one were retrying that exact row or
   // the accidental cross-row steal above.
   dismissError: (id: string) => void;
-  claimBusy: string | null;
+  // Row 305: was a single global slot (`string | null`, keyed by contactId) —
+  // claiming contact A (in flight), then claiming contact B before A settled,
+  // re-enabled A's claim/release control mid-flight (the slot now held B's
+  // id) and a second concurrent POST to /api/dashboard/claim for A was only
+  // one more click away. Same shape as row 291's busyIds/errorIds fix, now
+  // applied to this file's other single-slot holdout — per-contact record,
+  // read/written with this file's own withRowFlagSet/withRowFlagCleared.
+  claimBusyIds: Record<string, boolean>;
   composerFor: string | null;
   currentOperatorId: string | null;
   act: (id: string, path: string, label: string) => void;
@@ -84,7 +92,7 @@ type RowActions = {
 // "call/text directly" affordance instead, see the source==='gmail' branch
 // below) with its ReplyComposer.
 function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }) {
-  const { now, busyIds, errorIds, unreachableActions, rejectionErrors, dismissError, claimBusy, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent } = actions;
+  const { now, busyIds, errorIds, unreachableActions, rejectionErrors, dismissError, claimBusyIds, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent } = actions;
   const esc = escalation(item.escalationLevel);
   const waiting = item.lastMessageAt ? formatWaiting(now - new Date(item.lastMessageAt).getTime()) : '';
   const cs = claimState(item.assignedTo, currentOperatorId);
@@ -134,6 +142,16 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
             {item.leadKind === 'automated' && (
               <span className="text-xs" style={{ color: 'var(--op-text-2)' }}>· filtered</span>
             )}
+            {/* Row 321: so the row is visually distinct before Handled/Mark
+                completed can silently bury a still-pending colour request. */}
+            {item.isColorRequest && (
+              <span
+                className="text-xs font-medium px-1.5 py-0.5 rounded"
+                style={{ background: '#fce7f3', color: '#9d174d' }}
+              >
+                Colour request pending
+              </span>
+            )}
           </div>
           {item.subject && (
             <p className="text-sm mt-1 truncate" style={{ color: 'var(--op-text)' }}>
@@ -156,7 +174,7 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
                   ✓ You’ve got this ·{' '}
                   <button
                     type="button"
-                    disabled={claimBusy === cid}
+                    disabled={!!claimBusyIds[cid]}
                     onClick={() => claim(cid, 'release')}
                     className="underline disabled:opacity-50"
                     style={{ color: 'var(--op-text-2)' }}
@@ -169,7 +187,7 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
                   Claimed ·{' '}
                   <button
                     type="button"
-                    disabled={claimBusy === cid}
+                    disabled={!!claimBusyIds[cid]}
                     onClick={() => claim(cid, 'claim')}
                     className="underline disabled:opacity-50"
                     style={{ color: 'var(--op-text-2)' }}
@@ -180,7 +198,7 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
               ) : (
                 <button
                   type="button"
-                  disabled={claimBusy === cid}
+                  disabled={!!claimBusyIds[cid]}
                   onClick={() => claim(cid, 'claim')}
                   className="underline disabled:opacity-50"
                   style={{ color: 'var(--brand-evergreen-3)' }}
@@ -221,7 +239,12 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
           <button
             type="button"
             disabled={!!busyIds[item.id] || lockedOut('Handled')}
-            onClick={() => act(item.id, '/api/dashboard/handled', 'Handled')}
+            onClick={() => {
+              // Row 321: does NOT hard-block — the operator may legitimately
+              // have handled this by phone.
+              if (item.isColorRequest && !window.confirm(colorRequestConfirmMessage())) return;
+              act(item.id, '/api/dashboard/handled', 'Handled');
+            }}
             title={lockedOut('Handled') ? `Locked until the ${lockedTo} attempt is confirmed` : 'Closed as answered'}
             className="px-3 py-1.5 rounded-md text-sm font-medium disabled:opacity-50"
             style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
@@ -251,7 +274,10 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
           <button
             type="button"
             disabled={!!busyIds[item.id] || lockedOut('Mark completed')}
-            onClick={() => act(item.id, '/api/dashboard/completed', 'Mark completed')}
+            onClick={() => {
+              if (item.isColorRequest && !window.confirm(colorRequestConfirmMessage())) return;
+              act(item.id, '/api/dashboard/completed', 'Mark completed');
+            }}
             title={lockedOut('Mark completed') ? `Locked until the ${lockedTo} attempt is confirmed` : 'Closed as done'}
             className="px-3 py-1.5 rounded-md text-sm disabled:opacity-50"
             style={{ border: '1px solid var(--op-border)', color: 'var(--op-text-2)' }}
@@ -364,6 +390,37 @@ export function errorNoteFor(unreachableAction: string | undefined, rejectionErr
     return `Couldn't reach the server — this may or may not have gone through. Click ${unreachableAction} again to confirm.`;
   }
   return rejectionError || 'Something went wrong — try again.';
+}
+
+/** Row 321: the Handled/Mark-completed confirm for a `:color-request` item
+ *  (item.isColorRequest — see OpenInboxItem's own doc). Mirrors
+ *  InWorksSection.tsx's completeConfirmMessage precedent (a local, pure,
+ *  exported message so the wording is directly unit-testable), kept
+ *  deliberately un-shared like this file's other duplicated helpers (see
+ *  omitKey's own doc above). Does NOT hard-block — the operator may
+ *  legitimately have already handled this by phone; it just names what's
+ *  outstanding before either button proceeds.
+ *
+ *  Row 321 fix-round FIX 3 (staff LOW): named "(Colour request panel)" —
+ *  ColorRequestPanel.tsx has no such label anywhere; its real on-page heading
+ *  is "Colour change requested" (pre-apply) / "Colour change applied"
+ *  (post-apply). Fixed to name what staff will actually see. */
+export function colorRequestConfirmMessage(): string {
+  return "This customer is waiting on a colour change — mark it handled anyway?\n\nThe requested colour is still pending on the quote. Review or apply it from the quote's admin page (the \"Colour change requested\" section) first, or Cancel and do that now.";
+}
+
+/** Row 309: only 'Not a lead' (dismiss) and 'Mark completed' can retire a
+ *  pending "due today" follow-up — closeFollowUpsForResolvedItem (store.ts)
+ *  is called ONLY from dismissItem and markItemCompleted (its own doc: "a
+ *  'handled' item is NOT terminal"), never from markItemHandled or
+ *  markItemFollowed. router.refresh() re-renders the whole InboxPage server
+ *  component (every one of its sub-fetches, not just listDueFollowUps), so
+ *  gating it to just these two actions — rather than firing it after every
+ *  successful act() — keeps a Handled/Followed click from paying that cost
+ *  for a follow-up it structurally cannot have touched. Pure and exported so
+ *  this is directly unit-testable without rendering. */
+export function retiresFollowUp(path: string): boolean {
+  return path === '/api/dashboard/dismiss' || path === '/api/dashboard/completed';
 }
 
 // #302 fix: pure helper mirroring withRowFlagSet/withRowFlagCleared's own
@@ -650,6 +707,7 @@ export function InboxList({
   nowMs: number;
   currentOperatorId?: string | null;
 }) {
+  const router = useRouter();
   const [items, setItems] = useState<OpenInboxItem[]>(initialItems);
   // Row 291 fix: busyId/errorId were single global slots (string | null) —
   // acting on one row stole another row's busy pin, and worse, silently
@@ -664,7 +722,10 @@ export function InboxList({
   // Row 311 fix-round FIX 3: parallel to errorIds/unreachableActions, always
   // cleared alongside them — see errorNoteFor's own doc comment above.
   const [rejectionErrors, setRejectionErrors] = useState<Record<string, string>>({});
-  const [claimBusy, setClaimBusy] = useState<string | null>(null);
+  // Row 305: was a single global slot (`string | null`) — see RowActions'
+  // claimBusyIds doc comment above for the exact race this per-contact record
+  // fixes, mirroring row 291's busyIds/errorIds treatment on this same file.
+  const [claimBusyIds, setClaimBusyIds] = useState<Record<string, boolean>>({});
   const [composerFor, setComposerFor] = useState<string | null>(null);
   // `now` is seeded from the server render (stable across hydration) and ticked
   // from an interval callback, so render stays pure and "waiting Xm" stays live.
@@ -805,6 +866,14 @@ export function InboxList({
         // "Already marked followed") instead of only the generic fallback.
         setRejectionErrors((prev) => (data?.error ? { ...prev, [id]: data.error } : omitKey(prev, id)));
         await refresh();
+      } else if (retiresFollowUp(path)) {
+        // Row 309: this row's own optimistic removal above already keeps
+        // THIS list correct — router.refresh() exists purely to reach the
+        // sibling FollowUpStrip, whose initialItems prop is otherwise only
+        // ever read once (useState's initializer is mount-only, see
+        // FollowUpStrip's own reconcile effect). See retiresFollowUp's doc
+        // comment for why this is scoped to dismiss/completed only.
+        router.refresh();
       }
     } catch {
       // #302 fix: restore the optimistically-removed row (if it isn't
@@ -818,7 +887,7 @@ export function InboxList({
     } finally {
       setBusyIds((prev) => withRowFlagCleared(prev, id));
     }
-  }, [refresh, items]);
+  }, [refresh, items, router]);
 
   // Row 291 fix: explicit acknowledge control for the error note. Previously
   // the only ways to clear a row's error were retrying that exact row (via
@@ -831,7 +900,7 @@ export function InboxList({
 
   const claim = useCallback(
     async (contactId: string, action: 'claim' | 'release') => {
-      setClaimBusy(contactId);
+      setClaimBusyIds((prev) => withRowFlagSet(prev, contactId));
       // Optimistic: assignment is per-contact, so update every item for it.
       setItems((prev) =>
         prev.map((i) =>
@@ -848,7 +917,7 @@ export function InboxList({
       } catch {
         await refresh();
       } finally {
-        setClaimBusy(null);
+        setClaimBusyIds((prev) => withRowFlagCleared(prev, contactId));
       }
     },
     [currentOperatorId, refresh],
@@ -878,7 +947,7 @@ export function InboxList({
   // place; there's no empty group to separately prune.
   const groups = groupInboxItems(visibleItems);
   const rowActions: RowActions = {
-    now, busyIds, errorIds, unreachableActions, rejectionErrors, dismissError, claimBusy, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent,
+    now, busyIds, errorIds, unreachableActions, rejectionErrors, dismissError, claimBusyIds, composerFor, currentOperatorId, act, claim, toggleComposer, onComposerSent,
   };
 
   if (items.length === 0) {

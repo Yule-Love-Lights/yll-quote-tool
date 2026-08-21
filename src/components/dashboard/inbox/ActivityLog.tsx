@@ -73,14 +73,33 @@ function friendlyActor(actor: string | null, actorName: string | null): string {
   return actor;
 }
 
+// Row 305 (WRAP TECHNICAL LENS widening): a local copy of InboxList.tsx's own
+// withRowFlagSet/withRowFlagCleared (kept deliberately un-shared, same as
+// this directory's other per-file copies — see InWorksSection.tsx's own doc
+// comment on its copy). Fixes this file's single-slot `busyId`: reversing
+// row A (in flight), then clicking Reverse on row B before A settles,
+// re-enabled A's button mid-flight (the slot now held B's id) — contained to
+// a clean 400 by reverseItemState's own state re-check server-side, but the
+// double-fire itself was real. Per-row record, same shape as row 291's fix.
+export function withRowFlagSet(map: Record<string, boolean>, id: string): Record<string, boolean> {
+  return { ...map, [id]: true };
+}
+
+export function withRowFlagCleared(map: Record<string, boolean>, id: string): Record<string, boolean> {
+  if (!map[id]) return map;
+  const next = { ...map };
+  delete next[id];
+  return next;
+}
+
 export function ActivityLog({ initialRows }: { initialRows: ActivityRow[] }) {
   const [rows, setRows] = useState<ActivityRow[]>(initialRows);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  const [busyIds, setBusyIds] = useState<Record<string, boolean>>({});
   const [errorById, setErrorById] = useState<Record<string, string>>({});
   const [reversedIds, setReversedIds] = useState<Set<string>>(new Set());
 
   async function handleReverse(activityId: string) {
-    setBusyId(activityId);
+    setBusyIds((prev) => withRowFlagSet(prev, activityId));
     setErrorById((prev) => {
       const next = { ...prev };
       delete next[activityId];
@@ -126,7 +145,7 @@ export function ActivityLog({ initialRows }: { initialRows: ActivityRow[] }) {
     } catch {
       setErrorById((prev) => ({ ...prev, [activityId]: 'Network error — try again.' }));
     } finally {
-      setBusyId(null);
+      setBusyIds((prev) => withRowFlagCleared(prev, activityId));
     }
   }
 
@@ -142,7 +161,7 @@ export function ActivityLog({ initialRows }: { initialRows: ActivityRow[] }) {
     <ul className="space-y-3">
       {rows.map((row) => {
         const isReversed = reversedIds.has(row.id);
-        const isBusy = busyId === row.id;
+        const isBusy = !!busyIds[row.id];
         const rowError = errorById[row.id];
         const when = row.at ? new Date(row.at).toLocaleString() : '—';
 
