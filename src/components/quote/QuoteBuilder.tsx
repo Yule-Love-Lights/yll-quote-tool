@@ -5529,7 +5529,7 @@ export default function QuoteBuilder({
                                         <input
                                           className="w-20 border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-teal-500"
                                           type="number" min="0" placeholder="0"
-                                          value={ft ?? ''}
+                                          value={ft || ''}
                                           onChange={(e) => updateBistroRunFootage(line.id, Math.max(0, Number(e.target.value) || 0))}
                                           onBlur={() => {
                                             // #244 premerge finding 1 (HIGH, money — #139 parity):
