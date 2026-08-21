@@ -1,6 +1,6 @@
 ---
 name: wrap
-description: Wrap up the current work session — run the gates, run the four-lens session review, update the continuity memory (without changing the session number), append the self-assessment + scorecard, sweep repo hygiene, open a close/docs PR off fresh master, verify prod, and produce a ready-to-paste handoff for the next session. NEVER auto-merges (a human gives the merge-go). Trigger — "/wrap", "wrap the session", "close out the session".
+description: Wrap up the current work session — run the gates, run the four-lens session review, update the continuity memory (without changing the session number), append the self-assessment + scorecard, sweep repo hygiene, open a close/docs PR off fresh master, verify prod, and produce a ready-to-paste handoff for the next session. Auto-merges ONLY a documents-only close on Naldo's machine; every other PR waits for the dev's merge-go. Trigger — "/wrap", "wrap the session", "close out the session".
 license: MIT
 ---
 
@@ -95,9 +95,15 @@ master** — `master` auto-deploys to prod, so a human gives the merge-go (AGENT
      edits; hand-resolve only a literal same-line clash).
    - Commit (end the message with the `Co-Authored-By: Claude …` line), push, open
      the PR with `gh`.
-   - **🛑 STOP HERE. Surface the PR and WAIT for the dev's explicit "merge."** NEVER
-     auto-merge — `master` → prod. On the dev's go: re-verify master is current
-     ("always merge current"), bring the branch up to date + re-gate, then merge.
+   - **Merge policy for the close PR (Naldo 2026-08-21).** On Jason's machine, and for
+     ANY close whose diff touches a non-doc file (code, `AGENTS.md`, `.claude/**`,
+     `.github/workflows/**`, settings): **🛑 STOP HERE, surface the PR, and WAIT for the
+     dev's explicit "merge"** — never auto-merge, `master` → prod. On Naldo's machine a
+     **documents-only** close (every changed path under `docs/context/**` or the
+     `CLAUDE.md` journal — the AGENTS.md allowlist) auto-merges after the collision
+     verify; a single non-doc path in the diff drops it back to STOP-for-go. Either way,
+     before merging: re-verify master is current ("always merge current"), bring the
+     branch up to date, re-gate, then merge.
 
 7. **Close-out verify.** If the session merged any CODE PR, verify prod actually
    serves it: one Vercel API call, latest READY deployment's SHA equals the current
@@ -116,7 +122,7 @@ master** — `master` auto-deploys to prod, so a human gives the merge-go (AGENT
    number, never write a new session block.
 
 ## Don't
-- Don't auto-merge or auto-deploy — the human approves every merge.
+- Don't auto-merge anything but a documents-only close on Naldo's machine (the standing exception) — every other PR, and every deploy, the human approves.
 - Don't bump the session number.
 - Don't edit the other dev's session log.
 - Don't skip the session review (Step 2) to save tokens; it is a standing order
