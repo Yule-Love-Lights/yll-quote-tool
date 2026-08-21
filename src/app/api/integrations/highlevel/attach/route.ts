@@ -227,14 +227,35 @@ export async function POST(req: NextRequest) {
     // link moved to the newly-picked contact while quotes.customer_id stayed
     // on the original. Jason's ruling made identity atomic past approval, so
     // the early return added above means this line is now unreachable for an
-    // approved/booked quote and the split can no longer occur.
-    const { error: updateErr } = await sb
+    // approved/booked quote and the split can no longer occur... for a quote
+    // that was ALREADY frozen when this handler started.
+    //
+    // #839 fix-round MED (delta-verify — TOCTOU): the early return above is
+    // checked off `quoteRow`, read BEFORE findOrCreateOpportunityForContact's
+    // GHL network round trip (hundreds of ms). If the quote becomes
+    // approved/booked DURING that window, this write used to still land
+    // unconditionally — the exact split the #251 ruling exists to prevent,
+    // just moved one race window later. Fixed the same way quotes.ts's own
+    // #839 fix closes it: CAS-guard THIS write's `.is(...)` conditions so the
+    // freeze check and the write are one atomic database statement, not a
+    // read-then-write pair with a gap a concurrent /approve can land in.
+    // is_test bypasses the CAS (the #251 exemption — test quotes stay fully
+    // editable); read off `quoteRow?.is_test` since it's the only copy we
+    // have (a failed pre-read fails OPEN here too, matching this route's
+    // existing posture — `applyCas` defaults true, and an actually-unfrozen
+    // row still matches the CAS normally).
+    const applyCas = !quoteRow?.is_test;
+    let identityWrite = sb
       .from('quotes')
       .update({
         highlevel_contact_id: body.contactId,
         highlevel_opportunity_id: opportunity.id,
       })
       .eq('id', body.quoteId);
+    if (applyCas) {
+      identityWrite = identityWrite.is('customer_approved_at', null).is('deposit_paid_at', null);
+    }
+    const { data: identityRow, error: updateErr } = await identityWrite.select('id').maybeSingle();
     if (updateErr) {
       // Audit fix (#53): escalate warn → error and include quoteId + opportunity.id
       // so the orphaned GHL card (exists remotely, unlinked locally) is discoverable.
@@ -242,6 +263,17 @@ export async function POST(req: NextRequest) {
         '[api/integrations/highlevel/attach] DB link failed — orphaned GHL card:',
         { quoteId: body.quoteId, opportunityId: opportunity.id, error: updateErr.message },
       );
+    }
+    // 0 rows matched under the CAS (no error) means approval/booking landed
+    // between the pre-read above and THIS statement — the write never took
+    // effect. Same response shape as the early-return freeze above, so the
+    // caller (the builder's pick handler) treats both identically.
+    const frozenAtWrite = applyCas && !updateErr && !identityRow;
+    if (frozenAtWrite) {
+      console.warn(
+        `[api/integrations/highlevel/attach] #839 identity freeze (write-time) — quote ${body.quoteId} became approved/booked during the GHL round trip; refused the contact link (contact ${body.contactId}).`,
+      );
+      return NextResponse.json({ linked: false, identityFrozen: true });
     }
 
     // #214 (d): this route is where a quote GAINS its hl contact id after
@@ -309,14 +341,15 @@ export async function POST(req: NextRequest) {
     // two freezes are siblings guarding the SAME invariant from two
     // different write paths; widen them TOGETHER from now on — see
     // quotes.ts's identical condition and comment for the other half.
-    if (
-      !updateErr &&
-      quoteRow &&
-      !quoteRow.is_test &&
-      !quoteRow.deposit_paid_at &&
-      !quoteRow.customer_approved_at &&
-      hasNonHlField
-    ) {
+    //
+    // #839 fix-round MED: dropped the `!quoteRow.deposit_paid_at &&
+    // !quoteRow.customer_approved_at` checks that used to sit here — they
+    // read the SAME stale pre-write `quoteRow` the TOCTOU above was about;
+    // keeping them would have re-introduced exactly that staleness one guard
+    // later. `frozenAtWrite` already returned early above using the fresh
+    // CAS result, so reaching this line already proves the identity write
+    // was NOT frozen at write time — nothing further to re-check here.
+    if (!updateErr && quoteRow && !quoteRow.is_test && hasNonHlField) {
       try {
         const resolved = await attachQuoteToCustomer(contactIdentity);
         // Repoint visibility (#214 review, WT-55 family): a resolution that
