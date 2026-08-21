@@ -1,6 +1,6 @@
 ---
 name: wrap
-description: Wrap up the current work session — run the gates, run the four-lens session review, update the continuity memory (without changing the session number), append the self-assessment + scorecard, sweep repo hygiene, open a close/docs PR off fresh master, verify prod, and produce a ready-to-paste handoff for the next session. NEVER auto-merges (a human gives the merge-go). Trigger — "/wrap", "wrap the session", "close out the session".
+description: Wrap up the current work session — run the gates, run the scaled session review (one integration lens when everything shipped was already lens-reviewed, full lenses otherwise), update the continuity memory (without changing the session number), append the self-assessment + scorecard, sweep repo hygiene, open a close/docs PR off fresh master, verify prod, and produce a ready-to-paste handoff for the next session. NEVER auto-merges (a human gives the merge-go). Trigger — "/wrap", "wrap the session", "close out the session".
 license: MIT
 ---
 
@@ -29,11 +29,15 @@ master** — `master` auto-deploys to prod, so a human gives the merge-go (AGENT
    opening git-status snapshot (or the previous session's handoff); if neither
    exists, use the merge-base of the session's first branch with master. Scale the
    review to what the diff already survived:
-   - **Everything shipped already passed its pre-merge lens review AND no live
-     non-repo surface changed:** spawn ONE integration agent (Sonnet 5,
+   - **Everything shipped already passed its pre-merge lens review, no live
+     non-repo surface changed, AND the combined diff touches no customer-facing
+     surface or SHARED-table path:** spawn ONE integration agent (Sonnet 5,
      diff-scoped) hunting only what per-PR reviews cannot see: cross-PR
      interactions, shared-file drift, a combined tree that breaks where each PR
-     alone was fine.
+     alone was fine. If the combined diff DOES touch a customer-facing surface
+     or SHARED path, add the customer lens with a real page drive; S47 is on
+     record: persona-specific defects survived per-PR reviews and only the
+     whole-session pass caught them.
    - **Anything shipped WITHOUT a pre-merge lens review, or any live non-repo
      customer surface changed (WordPress, Elementor, GHL, Vercel config):** full
      lenses per AGENTS.md "Review gates". A zero git diff does NOT exempt a
@@ -43,8 +47,10 @@ master** — `master` auto-deploys to prod, so a human gives the merge-go (AGENT
    Sonnet 5, the seat's dispositions on Opus (never let a spawn inherit the
    session model). **Report contract:** each review agent MUST end by writing its
    findings to a file the brief names (one file per lens, scratchpad or a
-   repo-ignored temp path); after the spawns return, glob for the files, and a
-   missing file means a stalled agent: respawn that lens once and say so.
+   repo-ignored temp path); after the spawns return, check each named path
+   exists; a missing file means a stalled agent: respawn that lens once and say
+   so. If the respawn also produces no file, STOP: no merge-go, surface the
+   stall to the dev, and treat that lens as unreviewed.
    Disposition every finding: fix / accept with a stated reason / defer to a
    ledger row. HIGH findings on still-open work get fixed before the close PR;
    HIGH findings on already-merged work get a ledger row AND a direct flag to the
