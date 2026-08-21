@@ -12,6 +12,8 @@ import { ViewOnlyToggle } from '@/components/admin/ViewOnlyToggle';
 import { MarkAsSentButton } from '@/components/admin/MarkAsSentButton';
 import { FreeItemsPanel } from '@/components/admin/FreeItemsPanel';
 import { ColorRequestPanel } from '@/components/admin/ColorRequestPanel';
+import { StaffColorRequestForm } from '@/components/admin/StaffColorRequestForm';
+import { canRecordStaffColorRequest } from '@/components/admin/staffColorRequestEligibility';
 import { buildPortalLineItems } from '@/lib/portal/adapter';
 import { BUSINESS_RULES, resolveLineItemLabel, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { getQuoteRaw } from '@/lib/quotes';
@@ -30,6 +32,7 @@ import { getColorScheme, CUSTOM_SCHEME_ID } from '@/lib/design/colorSchemes';
 import { depositDeclineReasonText } from '@/lib/integrations/quoteMessages';
 import { VaultRegistrationNotice } from '@/components/admin/VaultRegistrationNotice';
 import { isVaultRegisterEnabled } from '@/lib/integrations/valorVault';
+import { getAppSettings } from '@/lib/appSettings';
 
 // Read-only operator detail for a single quote (PR1 of #83 ops console).
 // No action buttons here — those land in PR2's PipelineActionsMenu.
@@ -131,6 +134,16 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
   const pendingColorRequest = quote.approval_snapshot?.pendingColorRequest as
     | { label?: string }
     | undefined;
+  const staffColorRequestSettings =
+    canRecordStaffColorRequest({
+      serviceType: quote.service_type,
+      status,
+      customerApprovedAt: quote.customer_approved_at,
+      customerSelection: quote.approval_snapshot?.customerSelection,
+      pendingColorRequest,
+    })
+      ? await getAppSettings()
+      : null;
 
   // #162 — the FREE ($0) items currently on the approved selection, so staff can
   // add/remove more (e.g. the free spritzers on #1191). Only an approved/booked
@@ -434,6 +447,20 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
         {/* Colour change request (#163 Slice B) — apply/dismiss a pending request. */}
         {pendingColorRequest?.label && (
           <ColorRequestPanel quoteId={id} label={pendingColorRequest.label} />
+        )}
+        {staffColorRequestSettings && (
+          <StaffColorRequestForm
+            quoteId={id}
+            schemes={staffColorRequestSettings.permanentSwatches.schemes}
+            buildableColorIds={staffColorRequestSettings.permanentSwatches.buildableColorIds}
+            colors={staffColorRequestSettings.colors.map(({ id: colorId, label, hex }) => ({
+              id: colorId,
+              label,
+              hex,
+            }))}
+            initialColorSchemeId={quote.approval_snapshot?.customerSelection?.colorSchemeId}
+            initialCustomPattern={quote.approval_snapshot?.customerSelection?.customPattern}
+          />
         )}
 
         {/* Free items (#162) — add/remove $0 items on an approved order. */}

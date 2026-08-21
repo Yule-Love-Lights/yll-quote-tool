@@ -95,7 +95,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Invalid quote id' }, { status: 400 });
   }
 
-  let body: { colorSchemeId?: unknown; customPattern?: unknown };
+  let body: { colorSchemeId?: unknown; customPattern?: unknown; onlyIfNoPending?: unknown };
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -178,6 +178,32 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     .eq('id', id)
     .maybeSingle<{ approval_snapshot: QuoteRow['approval_snapshot'] }>();
   const priorSnapshot = freshRow?.approval_snapshot ?? quote.approval_snapshot;
+  // The admin picker is rendered only when no request is pending, but a
+  // customer can submit one before staff clicks Save. Its stricter precondition
+  // prevents that stale page from overwriting the newer customer request. An
+  // identical retry is a successful no-op so a lost response cannot send a
+  // second inbox notification/email or replace requestedAt.
+  const existingPending = priorSnapshot?.pendingColorRequest;
+  if (body.onlyIfNoPending === true && existingPending != null) {
+    if (typeof existingPending === 'object' && !Array.isArray(existingPending)) {
+      const existing = existingPending as { colorSchemeId?: unknown; customPattern?: unknown };
+      const existingPattern = Array.isArray(existing.customPattern) ? existing.customPattern : [];
+      const sameRequest =
+        existing.colorSchemeId === colorSchemeId &&
+        existingPattern.length === customPattern.length &&
+        existingPattern.every((color, index) => color === customPattern[index]);
+      if (sameRequest) {
+        return NextResponse.json({ ok: true, label, alreadyPending: true });
+      }
+    }
+    return NextResponse.json(
+      {
+        error: 'A colour request is already pending. Refresh before recording another.',
+        code: 'request-already-pending',
+      },
+      { status: 409 },
+    );
+  }
   const newSnapshot = { ...priorSnapshot, pendingColorRequest };
   const { data: updatedRows, error: upErr } = await sb
     .from('quotes')

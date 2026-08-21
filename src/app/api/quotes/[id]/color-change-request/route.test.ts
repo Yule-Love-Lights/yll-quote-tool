@@ -179,6 +179,91 @@ describe('POST /api/quotes/[id]/color-change-request', () => {
     expect(touch.externalId).toBe(`${ID}:color-request`);
   });
 
+  it('staff-only precondition rejects a different request that arrived after the page loaded', async () => {
+    process.env.HIGHLEVEL_INTERNAL_CONTACT_ID = 'internal-1';
+    const quote = bookedQuote({
+      approval_snapshot: {
+        customerSelection: { packageId: 'C', selectedItemIds: ['x'] },
+        pendingColorRequest: {
+          colorSchemeId: 'custom',
+          customPattern: ['red', 'green'],
+          colorIds: ['red', 'green'],
+          label: 'Custom pattern (2 colours)',
+          requestedAt: '2026-08-20T12:00:00.000Z',
+        },
+      },
+    });
+    const { client, updates } = makeSb(quote);
+    sbRef.current = client;
+
+    const res = await POST(
+      req({ colorSchemeId: 'warm-white', customPattern: [], onlyIfNoPending: true }),
+      ctx(),
+    );
+    const body = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(body.code).toBe('request-already-pending');
+    expect(updates).toHaveLength(0);
+    expect(ingestTouchMock).not.toHaveBeenCalled();
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('staff-only precondition makes an identical lost-response retry side-effect free', async () => {
+    process.env.HIGHLEVEL_INTERNAL_CONTACT_ID = 'internal-1';
+    const quote = bookedQuote({
+      approval_snapshot: {
+        customerSelection: { packageId: 'C', selectedItemIds: ['x'] },
+        pendingColorRequest: {
+          colorSchemeId: 'custom',
+          customPattern: ['red', 'green'],
+          colorIds: ['red', 'green'],
+          label: 'Custom pattern (2 colours)',
+          requestedAt: '2026-08-20T12:00:00.000Z',
+        },
+      },
+    });
+    const { client, updates } = makeSb(quote);
+    sbRef.current = client;
+
+    const res = await POST(
+      req({ colorSchemeId: 'custom', customPattern: ['red', 'green'], onlyIfNoPending: true }),
+      ctx(),
+    );
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({ ok: true, alreadyPending: true, label: 'Custom pattern (2 colours)' });
+    expect(updates).toHaveLength(0);
+    expect(ingestTouchMock).not.toHaveBeenCalled();
+    expect(hl.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('keeps the existing customer resubmit behavior when the staff precondition is absent', async () => {
+    const quote = bookedQuote({
+      approval_snapshot: {
+        customerSelection: { packageId: 'C', selectedItemIds: ['x'] },
+        pendingColorRequest: {
+          colorSchemeId: 'custom',
+          customPattern: ['red', 'green'],
+          colorIds: ['red', 'green'],
+          label: 'Custom pattern (2 colours)',
+          requestedAt: '2026-08-20T12:00:00.000Z',
+        },
+      },
+    });
+    const { client, updates } = makeSb(quote);
+    sbRef.current = client;
+
+    const res = await POST(req({ colorSchemeId: 'warm-white', customPattern: [] }), ctx());
+
+    expect(res.status).toBe(200);
+    const snapshot = updates[0].approval_snapshot as {
+      pendingColorRequest: { colorSchemeId: string };
+    };
+    expect(snapshot.pendingColorRequest.colorSchemeId).toBe('warm-white');
+  });
+
   it('labels a Permanent-only configured scheme with its live display name', async () => {
     process.env.HIGHLEVEL_INTERNAL_CONTACT_ID = 'internal-1';
     const permanentScheme = { id: 'permanent-ocean', label: 'Ocean Twinkle', colorIds: ['blue'] };
@@ -192,7 +277,10 @@ describe('POST /api/quotes/[id]/color-change-request', () => {
     const { client, updates } = makeSb(bookedQuote({ service_type: 'permanent' }));
     sbRef.current = client;
 
-    const res = await POST(req({ colorSchemeId: permanentScheme.id }), ctx());
+    const res = await POST(
+      req({ colorSchemeId: permanentScheme.id, onlyIfNoPending: true }),
+      ctx(),
+    );
 
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ label: 'Ocean Twinkle' });
