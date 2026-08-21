@@ -25,8 +25,7 @@ export type CrewTimeCommand =
   | { kind: 'status' }
   | { kind: 'arrive'; jobNumber: number }
   | { kind: 'depart'; reason: StoppageReason }
-  | { kind: 'complete' }
-  | { kind: 'help' };
+  | { kind: 'complete' };
 
 /** Normalize: lowercase, collapse whitespace, drop a leading slash. */
 function norm(text: string): string {
@@ -120,15 +119,3 @@ export function isDepartMissingReason(rawText: string): boolean {
   return m ? REASONS[m[1]!.trim()] === undefined : false;
 }
 
-export const CREW_HELP_TEXT = [
-  'Time clock:',
-  '  in — clock in for the day',
-  '  out — clock out (also ends any open break or job)',
-  '  break — start a break (unpaid)',
-  '  back — end the break',
-  '  arrive 1042 — arrive at job #1042',
-  '  done — finished the job (marks it installed)',
-  '  depart <reason> — leave without finishing',
-  `      reasons: ${['weather', 'access', 'materials', 'other'].join(', ')}`,
-  '  status — what am I currently on',
-].join('\n');

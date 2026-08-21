@@ -11,15 +11,29 @@
 // since a static render can't drive the async click-then-fetch flow that
 // would otherwise require jsdom + a mocked fetch (not this repo's idiom —
 // no jsdom/testing-library dependency exists here).
+//
+// Row 309: useRouter (next/navigation) throws outside an app-router context —
+// InWorksSection now calls it unconditionally (React hook-order rules), so
+// it's mocked here, same shape as AmendmentConsentCard.test.tsx's own mock.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
+
+vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: () => {} }) }));
+
 import {
   InWorksSection,
   withRowFlagSet,
   withRowFlagCleared,
   requiresCompleteConfirmation,
+  requiresColorRequestConfirmation,
+  colorRequestConfirmMessage,
+  combinedCompleteConfirmMessage,
+  omitKey,
+  clearNeedsLookOnMove,
+  errorNoteFor,
   completeConfirmMessage,
+  retiresFollowUp,
 } from './InWorksSection';
 import type { InWorksItem } from '@/lib/dashboard/inbox/store';
 
@@ -98,6 +112,46 @@ describe('InWorksSection (row 291 — initial render)', () => {
     );
     expect(html).not.toContain('Something went wrong');
     expect(html).not.toContain('Saving…');
+  });
+
+  // Row 311: unreachableActions (the lock state) always starts empty, same as
+  // busyIds/errorIds above — a fresh render never shows a row locked to a
+  // prior attempted action.
+  it('a fresh render never shows a locked-button tooltip — unreachableActions always starts empty', () => {
+    const handled: InWorksItem[] = [
+      { ...baseItem, id: 'h1', customerName: 'Flagged Customer', needsLookReason: 'They wrote last' },
+    ];
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={[]} handled={handled} followUpDays={3} nowMs={now} />,
+    );
+    expect(html).not.toContain('Locked until');
+  });
+
+  // Row 321: the badge renders for an isColorRequest row and NOT for an
+  // ordinary one, independent of needsLookReason. Uses the 'awaiting' bucket
+  // (renders unconditionally, no collapse toggle) so the row is provably in
+  // the markup either way — the 'handled' bucket's settled rows start
+  // collapsed and would make a false negative read as a pass.
+  it('badges a row flagged isColorRequest with "Colour request pending"', () => {
+    const awaiting: InWorksItem[] = [
+      { ...baseItem, id: 'a1', customerName: 'Colour Customer', isColorRequest: true },
+    ];
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={awaiting} handled={[]} followUpDays={3} nowMs={now} />,
+    );
+    expect(html).toContain('Colour Customer');
+    expect(html).toContain('Colour request pending');
+  });
+
+  it('does not badge an ordinary row', () => {
+    const awaiting: InWorksItem[] = [
+      { ...baseItem, id: 'a1', customerName: 'Ordinary Customer' },
+    ];
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={awaiting} handled={[]} followUpDays={3} nowMs={now} />,
+    );
+    expect(html).toContain('Ordinary Customer');
+    expect(html).not.toContain('Colour request pending');
   });
 });
 
@@ -232,6 +286,56 @@ describe('completeConfirmMessage (row 304 — no overpromise on the follow-up na
   });
 });
 
+// Row 321: pins the pure predicate + message handleMarkCompleted's SECOND,
+// independent confirm gate is built on (checked before requiresCompleteConfirmation
+// — see requiresColorRequestConfirmation's own doc comment). The click-then-
+// confirm-then-act flow itself can't be driven without jsdom (same limitation
+// as the rest of this file).
+describe('requiresColorRequestConfirmation / colorRequestConfirmMessage (row 321 — pure)', () => {
+  it('is true for a row flagged isColorRequest, independent of needsLookReason', () => {
+    expect(requiresColorRequestConfirmation({ isColorRequest: true })).toBe(true);
+  });
+
+  it('is false for a row not flagged isColorRequest (undefined reads as false)', () => {
+    expect(requiresColorRequestConfirmation({ isColorRequest: false })).toBe(false);
+    expect(requiresColorRequestConfirmation({ isColorRequest: undefined })).toBe(false);
+  });
+
+  it('names what is outstanding and points to the quote admin page', () => {
+    const msg = colorRequestConfirmMessage();
+    expect(msg).toContain('This customer is waiting on a colour change — mark it handled anyway?');
+    // Row 321 fix-round FIX 3: names the REAL on-page heading
+    // (ColorRequestPanel.tsx's pre-apply h2), never the nonexistent
+    // "Colour request panel" label the original copy invented.
+    expect(msg).toContain('Colour change requested');
+    expect(msg).not.toContain('Colour request panel');
+  });
+});
+
+// Row 321 fix-round FIX 2 (staff MED): handleMarkCompleted used to fire TWO
+// sequential window.confirm() dialogs on one click whenever both
+// requiresColorRequestConfirmation AND requiresCompleteConfirmation were true
+// (reachable together in the handled bucket). The click-then-confirm-then-act
+// flow itself can't be driven without jsdom (same limitation as the rest of
+// this file) — this pins the pure composed message the merged single dialog
+// is built from.
+describe('combinedCompleteConfirmMessage (row 321 fix-round FIX 2 — pure)', () => {
+  it('names BOTH the colour-change concern and the flagged needsLookReason, and asks once', () => {
+    const msg = combinedCompleteConfirmMessage({ needsLookReason: 'Quote unanswered' });
+    expect(msg).toContain('Quote unanswered');
+    expect(msg).toContain('colour change');
+    expect(msg).toContain('Colour change requested');
+    // Exactly one question — never two stacked "...anyway?" prompts.
+    expect(msg.match(/anyway\?/g)).toHaveLength(1);
+  });
+
+  it('still names Reverse and the follow-up-nag caveat (parity with completeConfirmMessage)', () => {
+    const msg = combinedCompleteConfirmMessage({ needsLookReason: 'They wrote last' });
+    expect(msg).toContain('Reverse');
+    expect(msg.toLowerCase()).toContain('does not re-open the follow-up');
+  });
+});
+
 // #307 review fix 2: evidenceIncomplete must render its note even when the
 // "Needs a look" heading itself does not (zero flagged rows) — that's the
 // exact silent-undercount scenario the flag exists to surface.
@@ -298,5 +402,89 @@ describe('InWorksSection (#307 review fix 3 — Handled toggle label feedback)',
     );
     expect(html).toContain('Show Handled (1)');
     expect(html).not.toContain('Hide Handled');
+  });
+});
+
+// Row 311 (10th sibling-parity instance — the LOCK half of #806/#302 that this
+// file never got): a local copy of InboxList.tsx's own omitKey (#302), used to
+// clear a row's recorded unreachableActions entry. Mirrors
+// InboxList.test.tsx's own omitKey coverage.
+describe('omitKey (row 311 — clearing the recorded unreachable action)', () => {
+  it('removes only the named key', () => {
+    expect(omitKey({ a: 'Followed', b: 'Mark completed' }, 'a')).toEqual({ b: 'Mark completed' });
+  });
+
+  it('returns the SAME reference when the key is absent, so an unaffected row does not re-render', () => {
+    const map = { a: 'Followed' };
+    expect(omitKey(map, 'missing')).toBe(map);
+  });
+
+  it('does not mutate the input map', () => {
+    const map = { a: 'Followed', b: 'Mark completed' };
+    omitKey(map, 'a');
+    expect(map).toEqual({ a: 'Followed', b: 'Mark completed' });
+  });
+
+  it('leaves an empty map alone, same reference', () => {
+    const map: Record<string, string> = {};
+    expect(omitKey(map, 'a')).toBe(map);
+  });
+});
+
+// Row 311 fold-in (LOW): moveGroup applies this transform to a row on the way
+// into its new bucket — see clearNeedsLookOnMove's own doc comment in
+// InWorksSection.tsx for why a genuine client-side transition always resolves
+// the flag.
+describe('clearNeedsLookOnMove (row 311 fold-in — LOW)', () => {
+  it('clears a set needsLookReason', () => {
+    const item = { id: 'h1', needsLookReason: 'Quote unanswered' };
+    expect(clearNeedsLookOnMove(item)).toEqual({ id: 'h1', needsLookReason: null });
+  });
+
+  it('is a no-op (same reference) when needsLookReason is already null', () => {
+    const item = { id: 'a1', needsLookReason: null };
+    expect(clearNeedsLookOnMove(item)).toBe(item);
+  });
+
+  it('leaves every other field on the item untouched', () => {
+    const item = { id: 'h1', customerName: 'Flagged Customer', needsLookReason: 'They wrote last' };
+    expect(clearNeedsLookOnMove(item)).toEqual({
+      id: 'h1',
+      customerName: 'Flagged Customer',
+      needsLookReason: null,
+    });
+  });
+});
+
+// Row 311 fix-round FIX 3: a local copy of InboxList.tsx's own errorNoteFor —
+// before this, a definite server rejection's own `data.error` was discarded.
+describe('errorNoteFor (row 311 fix-round FIX 3)', () => {
+  it('a thrown fetch always wins, regardless of any rejection error also present', () => {
+    expect(errorNoteFor('Followed', 'Already marked followed')).toBe(
+      "Couldn't reach the server — this may or may not have gone through. Click Followed again to confirm.",
+    );
+  });
+
+  it('a definite rejection with an error renders that error, not the generic fallback', () => {
+    expect(errorNoteFor(undefined, 'Already marked followed')).toBe('Already marked followed');
+  });
+
+  it('a definite rejection with no error falls back to the generic copy', () => {
+    expect(errorNoteFor(undefined, undefined)).toBe('Something went wrong — try again.');
+  });
+});
+
+// Row 309: closeFollowUpsForResolvedItem (store.ts) is only called from
+// dismissItem and markItemCompleted — this file's 'Followed' action never
+// retires a pending follow-up, so act()'s router.refresh() is gated on this
+// predicate rather than firing after every successful action. Mirrors
+// InboxList.test.tsx's own coverage of its identical local copy.
+describe('retiresFollowUp (row 309 — which action can retire a due follow-up)', () => {
+  it('is true for completed — the only terminal transition this file can produce', () => {
+    expect(retiresFollowUp('/api/dashboard/completed')).toBe(true);
+  });
+
+  it('is false for followed — not a terminal transition', () => {
+    expect(retiresFollowUp('/api/dashboard/followed')).toBe(false);
   });
 });

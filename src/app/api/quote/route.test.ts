@@ -703,6 +703,42 @@ describe('POST /api/quote — validation hardening', () => {
       expect(save).not.toHaveBeenCalled();
     }
   });
+
+  it('accepts a valid labelOverrides map, incl. an empty-string value (item-numbering-rename)', async () => {
+    const inputs = validInputs();
+    inputs.labelOverrides = { 'mini-1': 'Front Left Tree', 'wreath-1': '' };
+    const res = await POST(makeReq({ inputs }));
+    expect(res.status).toBe(200);
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it('renamed mini item flows through to the returned result label (item-numbering-rename)', async () => {
+    const inputs = validInputs();
+    inputs.miniLightItems = [{ type: 'tree', wrapStyle: 'canopy', stringCount: 1, id: 'mini-x' }];
+    inputs.labelOverrides = { 'mini-x': 'Front Left Tree' };
+    const res = await POST(makeReq({ inputs }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { result: { lineItems: { id?: string; label: string }[] } };
+    // The ENGINE's own label stays the default (kind classification safety) —
+    // the override is applied by the portal adapter/UI display layer, not here.
+    expect(body.result.lineItems.find((li) => li.id === 'mini-x')!.label).toBe('Tree – canopy wrap, 1 string');
+  });
+
+  it('rejects a malformed labelOverrides with 400 (item-numbering-rename)', async () => {
+    const bads: unknown[] = [
+      [], // array, not object
+      { x: 5 }, // value not a string
+      { x: 'a'.repeat(201) }, // over the 200-char cap
+    ];
+    for (const bad of bads) {
+      vi.clearAllMocks();
+      const inputs = validInputs();
+      inputs.labelOverrides = bad;
+      const res = await POST(makeReq({ inputs }));
+      expect(res.status).toBe(400);
+      expect(save).not.toHaveBeenCalled();
+    }
+  });
 });
 
 describe('POST /api/quote — created_by actor trail (#90)', () => {

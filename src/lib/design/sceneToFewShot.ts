@@ -109,6 +109,22 @@ function pointsBoundingBox(
   return [round4(x0), round4(y0), round4(Math.max(0, x1 - x0)), round4(Math.max(0, y1 - y0))];
 }
 
+// #240: a mini-light group's members can be strands AND/OR scattershots
+// (miniArea) — raw PHOTO-PIXEL points for either kind, so a railing group's
+// member-box loop below can merge both into one pointsBoundingBox call. A
+// box-shape miniArea has no `.points`; its two corners stand in for it (the
+// group's real box only needs the extent, not the exact fill shape).
+function memberPixelPoints(item: SceneItem): number[] {
+  if (isStrand(item)) return item.points;
+  if (isMiniArea(item)) {
+    if (item.shape === 'polygon' && Array.isArray(item.points)) return item.points;
+    if (typeof item.x === 'number' && typeof item.y === 'number' && typeof item.width === 'number' && typeof item.height === 'number') {
+      return [item.x, item.y, item.x + item.width, item.y + item.height];
+    }
+  }
+  return [];
+}
+
 // A box centered on (cx, cy) photo-pixels, sidePx wide/tall, clamped into the
 // photo → normalized [x, y, w, h].
 function centeredBox(
@@ -188,13 +204,14 @@ export function sceneToFewShotPieces(
 
     if (isMiniGroup(item)) {
       // A grouped railing (e.g. a deck rail drawn as several segments): the group
-      // holds the billed count. Emit ONE detection boxing all member strands.
+      // holds the billed count. Emit ONE detection boxing all members (strands
+      // AND/OR scattershots, #240 — a group can mix both).
       // Curtains stay OUT (editable but not analyzer-taught, #52).
       if (item.surface === 'railing') {
-        // Primary lookup: strands whose groupId points back at this group.
+        // Primary lookup: strands/scattershots whose groupId points back at this group.
         const memberPoints: number[] = [];
         for (const other of items) {
-          if (isStrand(other) && other.groupId === item.id) memberPoints.push(...other.points);
+          if ((isStrand(other) || isMiniArea(other)) && other.groupId === item.id) memberPoints.push(...memberPixelPoints(other));
         }
         // Fallback (#110 W5-006): groupId/memberIds can diverge (members
         // deleted but the group kept, or a corrupt scene) — a billed railing
@@ -203,7 +220,7 @@ export function sceneToFewShotPieces(
         if (memberPoints.length === 0 && item.memberIds?.length) {
           const memberIdSet = new Set(item.memberIds);
           for (const other of items) {
-            if (isStrand(other) && memberIdSet.has(other.id)) memberPoints.push(...other.points);
+            if ((isStrand(other) || isMiniArea(other)) && memberIdSet.has(other.id)) memberPoints.push(...memberPixelPoints(other));
           }
         }
         const box = pointsBoundingBox(memberPoints, photoW, photoH);
@@ -222,6 +239,13 @@ export function sceneToFewShotPieces(
     }
 
     if (isMiniArea(item)) {
+      // #240 fix: a GROUPED scattershot is emitted via its group's ONE
+      // detection above (memberPixelPoints), not its own — mirrors the
+      // isStrand branch's `bulbType === 'mini' && !item.groupId` skip.
+      // Without this, a grouped scattershot leaked into the training data
+      // TWICE: once correctly (folded into the group's box) and once more
+      // here with its own stale per-member stringCount, poisoning the label.
+      if (item.groupId) continue;
       const surface = item.surface;
       if (surface !== 'bush' && surface !== 'tree' && surface !== 'column') continue;
       // Box-shape areas carry x/y/width/height; traced polygons carry points.

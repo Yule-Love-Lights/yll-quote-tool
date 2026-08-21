@@ -17,6 +17,7 @@
 
 import { useSelection } from '../SelectionContext';
 import { financedBalanceUsd, isFinancingEligible } from '@/lib/financing/eligibility';
+import { isTerminalBrowseStatus } from '@/lib/quoteStatus';
 import type { ServiceType } from '@/lib/serviceType';
 
 const STEPS: Array<{ title: string; body: string }> = [
@@ -34,10 +35,43 @@ const STEPS: Array<{ title: string; body: string }> = [
   },
 ];
 
+// Pure eligibility gate — extracted for test coverage (no render infra for
+// client components in this repo — same reasoning StickyBottomBar's own
+// extracted pure seams give). Row 236 fix round (four-lens MED): before that
+// row, a declined/abandoned quote's portal hard-blocked before this section
+// could ever mount, so quoteStatus never needed to be in this gate. Now that
+// StickyBottomBar's terminalBrowse strip keeps those two statuses' portals
+// open, this section would otherwise show "Book like normal. Your deposit
+// holds your install date..." — a promise the portal can't keep once
+// approve/pay/decline are all 409-closed server-side. Mirrors how #176's
+// viewOnly already excluded a browse-only quote for the same reason (nothing
+// for the pitch to lead to).
+export function financingSectionEligible(input: {
+  viewOnly?: boolean;
+  quoteStatus?: string | null;
+  prequalUrl?: string;
+  serviceType?: ServiceType;
+  totalUsd: number;
+  depositUsd: number;
+}): boolean {
+  return (
+    !input.viewOnly &&
+    !isTerminalBrowseStatus(input.quoteStatus) &&
+    input.prequalUrl != null &&
+    isFinancingEligible({
+      enabled: true,
+      serviceType: input.serviceType,
+      totalUsd: input.totalUsd,
+      balanceUsd: financedBalanceUsd(input.totalUsd, input.depositUsd),
+    })
+  );
+}
+
 export function FinancingSection({
   prequalUrl,
   serviceType,
   viewOnly,
+  quoteStatus,
 }: {
   /** Server-threaded Wisetack prequal URL (PortalQuote.financing) — undefined = feature off. */
   prequalUrl?: string;
@@ -45,17 +79,23 @@ export function FinancingSection({
   /** #176 — a staff-flagged browse-only quote can never book, so a "Book like
    *  normal" pitch + a live Wisetack link have nothing to lead to. */
   viewOnly?: boolean;
+  /** Ledger row 236 fix round — the quote's live lifecycle status
+   *  (PortalQuote.quoteStatus). A declined/abandoned quote excludes this
+   *  section the same way viewOnly does, for the same reason — see
+   *  financingSectionEligible's own comment. Undefined/null is treated as
+   *  actionable (fail-open — matches isPortalActionable/isTerminalBrowseStatus
+   *  elsewhere in the portal). */
+  quoteStatus?: string | null;
 }) {
   const { currentTotal, currentDeposit } = useSelection();
-  const eligible =
-    !viewOnly &&
-    prequalUrl != null &&
-    isFinancingEligible({
-      enabled: true,
-      serviceType,
-      totalUsd: currentTotal,
-      balanceUsd: financedBalanceUsd(currentTotal, currentDeposit),
-    });
+  const eligible = financingSectionEligible({
+    viewOnly,
+    quoteStatus,
+    prequalUrl,
+    serviceType,
+    totalUsd: currentTotal,
+    depositUsd: currentDeposit,
+  });
   if (!eligible) return null;
 
   return (

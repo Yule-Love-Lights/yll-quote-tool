@@ -9,7 +9,7 @@
 // If the DB schema or pricing engine output ever changes shape, fix the
 // mapping here, not in components. This is the contract.
 
-import { effectiveDepositRate, type CustomLineItem, type QuoteInputs, type QuoteResult } from '@/lib/pricing/pricingEngine';
+import { effectiveDepositRate, resolveLineItemLabel, type CustomLineItem, type QuoteInputs, type QuoteResult } from '@/lib/pricing/pricingEngine';
 import type { PermanentWarranty } from '@/lib/permanent/types';
 import type {
   InstallTiming,
@@ -438,6 +438,16 @@ function buildLineItems(result: QuoteResult, inputs: QuoteInputs | null = null):
       // attachSceneLinks preserves this (it spreads ...li in the WW/Stake branch).
       if (raw.id === 'winter-wonderland' && inputs?.winterWonderlandRecommended) item.recommended = true;
       if (raw.id === 'stake-lighting' && inputs?.stakeLightingRecommended) item.recommended = true;
+      // item-numbering-rename: a staff rename (inputs.labelOverrides, keyed by
+      // the SAME stable id as raw.id/stableId above) wins over any auto label —
+      // applied LAST, after kind classification + every strip transform above,
+      // so a freeform override can never confuse parseLineItem (which only
+      // ever saw the un-overridden raw.label).
+      const overrideResolved = resolveLineItemLabel(raw.id, item.label, inputs?.labelOverrides);
+      if (overrideResolved.overridden) {
+        item.label = overrideResolved.label;
+        item.labelOverridden = true;
+      }
       return item;
     });
 }
@@ -649,9 +659,20 @@ function buildApproval(row: QuoteRowForPortal, packages: PortalPackage[]): Porta
   // Once re-consent is accepted, the amended total is the durable customer
   // agreement. Keep the booked portal aligned with billing instead of falling
   // back to the original approval total after the pending card disappears.
+  // Row 315(b): read the SAME resolveAmendmentBasis figure the PENDING card
+  // (below) already signs the customer on — the invoice-basis total when a
+  // linked invoice exists, else the trail total. Before this, an accepted
+  // amendment always read the raw trail new_total even when invoice_basis
+  // was present, so a customer who signed the pending card's invoice-basis
+  // total (e.g. a tax-overridden invoice's lower figure) could see a
+  // DIFFERENT number the moment the page refreshed post-signature — the same
+  // trail-vs-invoice-basis mismatch row 313 already fixed on the pending
+  // side, now closed on the accepted side too. approval.totalUsd is also the
+  // only load-bearing figure the Quote PDF renders from (docModels.ts), so
+  // this fix reaches that document as well.
   const totalUsd =
     acceptedAmendment
-      ? acceptedAmendment.new_total
+      ? resolveAmendmentBasis(acceptedAmendment).newTotalUsd
       : typeof sel?.currentTotalUsd === 'number'
         ? sel.currentTotalUsd
         : (row.total ?? 0);

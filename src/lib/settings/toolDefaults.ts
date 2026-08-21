@@ -11,8 +11,9 @@
 // in lockstep) but it is NOT a byte-identical core file — no relay.
 
 import type { ToolDefaults } from '@/lib/design/sceneTypes';
-// #223: the decor/pole size options below must mirror the editor's own
-// preset lists (#202 trimmed each to 3) — importing them (rather than
+// #223/#248: the decor/pole size options and c9/mini/bistro spacing options
+// below must mirror the editor's own preset lists (#202 trimmed decor/pole
+// to 3; #248 trimmed light spacing to 3) — importing them (rather than
 // re-listing the numbers) means the two can't drift apart again. Pure
 // module, same reason colors.ts/renderSettings.ts are imported here too.
 import {
@@ -21,12 +22,23 @@ import {
   GARLAND_SIZES,
   SPRITZER_SIZES,
   POLE_HEIGHTS,
+  C9_SPACINGS,
+  MINI_SPACINGS,
+  BISTRO_SPACINGS,
 } from '@/components/design/editor-core/sizePresets';
 
 // Factory defaults — the per-type starting values (mirror the design tool's
 // FACTORY_DEFAULTS / DEFAULT_TOOL_DEFAULTS). Also the target of "Reset".
+// #843 fix 1: c9/bistro spacingIn are derived from the imported preset
+// arrays (their Medium/middle entry) rather than hand literals -- the old
+// literal "12" was valid before #248's trim but isn't a member of either
+// type's new 3-value list, so a fresh install (no stored app_settings.defaults
+// row yet) fed this straight into editor.ts's applyDefaultsForCurrentType,
+// which silently clamped it to Medium on first tool select. Deriving from
+// the array means a future trim moves this automatically instead of
+// orphaning it again.
 export const DEFAULT_TOOL_DEFAULTS: ToolDefaults = {
-  c9: { spacingIn: 12, drawingStyle: 'strand', colorPattern: ['warm-white'] },
+  c9: { spacingIn: C9_SPACINGS[Math.floor(C9_SPACINGS.length / 2)], drawingStyle: 'strand', colorPattern: ['warm-white'] },
   mini: { spacingIn: 6, drawingStyle: 'strand', colorPattern: ['warm-white'] },
   permanent: {
     spacingIn: 8,
@@ -39,7 +51,7 @@ export const DEFAULT_TOOL_DEFAULTS: ToolDefaults = {
     showCoverage: false,
     showBeam: true,
   },
-  bistro: { spacingIn: 12, drawingStyle: 'strand', colorPattern: ['warm-white'], sagFactor: 0.1 },
+  bistro: { spacingIn: BISTRO_SPACINGS[Math.floor(BISTRO_SPACINGS.length / 2)], drawingStyle: 'strand', colorPattern: ['warm-white'], sagFactor: 0.1 },
   wreath: { sizeIn: 36, withLights: true, withBow: true, colorPattern: ['warm-white'] },
   bow: { sizeIn: 24 },
   garland: { sizeIn: 12, withLights: true, drawingStyle: 'strand' },
@@ -61,11 +73,15 @@ export type FieldSpec =
 
 export type SectionSpec = { key: string; label: string; fields: FieldSpec[] };
 
+// #248: imported (not re-listed) for the same reason as the decor size
+// arrays above — the editor's own trimmed presets and this Settings page
+// dropdown can't drift apart. c9/mini/bistro were trimmed to 3 values;
+// permanent stays its own single-value literal (#88).
 const SPACINGS_BY_TYPE: Record<string, number[]> = {
-  c9: [6, 9, 12, 15, 18, 24, 36],
-  mini: [4, 6, 9, 12, 18],
+  c9: C9_SPACINGS,
+  mini: MINI_SPACINGS,
   permanent: [8], // #88: perm pucks ship 8" on-center only (BOM already assumes 8").
-  bistro: [9, 12, 15, 18, 24, 36],
+  bistro: BISTRO_SPACINGS,
 };
 
 const DRAWING_STYLES = ['strand', 'trace', 'single'];

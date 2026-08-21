@@ -44,6 +44,7 @@ function targets(items: SceneItem[]): Target[] {
       if (!MINI_SURFACES.has(s)) continue;
       out.push({ id: item.id, type: 'mini', noun: s, nounPlural: 'mini lights', colors: item.colorPattern ?? [], size: DEFAULT_SPRITZER_SIZE });
     } else if (isMiniArea(item)) {
+      if (item.groupId) continue; // #240 fix: projected via its MiniGroupItem, mirrors the isStrand skip above
       const s = item.surface ?? '';
       if (!MINI_SURFACES.has(s)) continue;
       out.push({ id: item.id, type: 'mini', noun: s, nounPlural: 'mini lights', colors: item.colorPattern ?? [], size: DEFAULT_SPRITZER_SIZE });

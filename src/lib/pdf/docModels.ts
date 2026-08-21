@@ -81,11 +81,19 @@ const WRAPPED_MINI_LABELS: Record<'bush' | 'tree' | 'column', { one: string; man
 };
 
 function groupWrappedItems(filtered: PortalLineItem[]): PdfLineItem[] {
+  // item-numbering-rename: a staff-renamed item carries its own customer-typed
+  // identity (e.g. "Front Left Tree") — folding it into the generic "Trees"
+  // combined row would silently discard that name from the PDF, so it's
+  // excluded from the aggregate here and falls to the individual-row `else`
+  // branch below instead, same as any non-wrapped-mini kind. Untouched
+  // (non-renamed) siblings still collapse exactly as before.
+  const isAggregatable = (li: PortalLineItem) => WRAPPED_MINI_KINDS.has(li.kind) && !li.labelOverridden;
+
   // Pre-aggregate the wrapped kinds: count, summed total, and whether every
   // member shares one price (drives the Unit Price column).
   const agg = new Map<'bush' | 'tree' | 'column', { count: number; total: number; prices: Set<number> }>();
   for (const li of filtered) {
-    if (WRAPPED_MINI_KINDS.has(li.kind)) {
+    if (isAggregatable(li)) {
       const k = li.kind as 'bush' | 'tree' | 'column';
       const g = agg.get(k) ?? { count: 0, total: 0, prices: new Set<number>() };
       g.count += 1;
@@ -98,7 +106,7 @@ function groupWrappedItems(filtered: PortalLineItem[]): PdfLineItem[] {
   const emitted = new Set<string>();
   const out: PdfLineItem[] = [];
   for (const li of filtered) {
-    if (WRAPPED_MINI_KINDS.has(li.kind)) {
+    if (isAggregatable(li)) {
       const k = li.kind as 'bush' | 'tree' | 'column';
       if (emitted.has(k)) continue; // one combined row per kind, placed at its first occurrence
       emitted.add(k);

@@ -18,6 +18,8 @@ import {
   isAlreadyApprovedCode,
   isViewOnlyCode,
   viewOnlyBrowsingCopy,
+  reopenAskCopy,
+  reopenResultState,
 } from './StickyBottomBar';
 import type { CapturedSignature } from './SignaturePad';
 
@@ -89,6 +91,59 @@ describe('viewOnlyBrowsingCopy (#176)', () => {
 
   it('preserves a leading +country code in the tel href', () => {
     expect(viewOnlyBrowsingCopy('+1 631-517-0186').telHref).toBe('tel:+16315170186');
+  });
+});
+
+// Ledger row 236 — isTerminalBrowseStatus itself now lives in
+// @/lib/quoteStatus (shared with FinancingSection's eligibility gate — fix
+// round, four-lens MED) and is tested there (quoteStatus.test.ts). This file
+// only covers the pieces that stay local to StickyBottomBar's own render
+// branch: the reopen-ask copy + the fetch-result state mapping below.
+
+// Ledger row 236 — the reopen-ask strip's contact links. Mirrors
+// viewOnlyBrowsingCopy's tel: normalization; email is the new part —
+// NEXT_PUBLIC_PORTAL_EMAIL is unset in prod today, and the caller must
+// render no email line at all when it's absent, never a broken mailto:.
+describe('reopenAskCopy (row 236)', () => {
+  it('builds a tel: href and omits email/mailtoHref when no email is given', () => {
+    expect(reopenAskCopy('(631) 517-0186')).toEqual({
+      phone: '(631) 517-0186',
+      telHref: 'tel:6315170186',
+    });
+  });
+
+  it('includes email + a mailto: href when an email is given', () => {
+    expect(reopenAskCopy('(631) 517-0186', 'sales@yulelovelights.com')).toEqual({
+      phone: '(631) 517-0186',
+      telHref: 'tel:6315170186',
+      email: 'sales@yulelovelights.com',
+      mailtoHref: 'mailto:sales@yulelovelights.com',
+    });
+  });
+
+  it('preserves a leading +country code in the tel href', () => {
+    expect(reopenAskCopy('+1 631-517-0186').telHref).toBe('tel:+16315170186');
+  });
+});
+
+// Fix round (four-lens, MED) — the reopen-request route now 200s a staff
+// preview with { ok: true, skipped: 'staff' } (nothing was actually sent).
+// onRequestReopen must NOT show the customer-facing "Thanks" confirmation for
+// that case — reopenResultState is the pure mapping it uses to decide.
+describe('reopenResultState (row 236 fix round)', () => {
+  it('maps a non-ok response to error, regardless of body', () => {
+    expect(reopenResultState(false)).toBe('error');
+    expect(reopenResultState(false, 'staff')).toBe('error');
+  });
+
+  it('maps an ok response with skipped:"staff" to idle — no "Thanks" shown', () => {
+    expect(reopenResultState(true, 'staff')).toBe('idle');
+  });
+
+  it('maps an ok response with no skip, or any other skip reason, to sent', () => {
+    expect(reopenResultState(true)).toBe('sent');
+    expect(reopenResultState(true, undefined)).toBe('sent');
+    expect(reopenResultState(true, 'cooldown')).toBe('sent');
   });
 });
 

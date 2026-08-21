@@ -13,7 +13,7 @@ import { MarkAsSentButton } from '@/components/admin/MarkAsSentButton';
 import { FreeItemsPanel } from '@/components/admin/FreeItemsPanel';
 import { ColorRequestPanel } from '@/components/admin/ColorRequestPanel';
 import { buildPortalLineItems } from '@/lib/portal/adapter';
-import { BUSINESS_RULES, type QuoteInputs } from '@/lib/pricing/pricingEngine';
+import { BUSINESS_RULES, resolveLineItemLabel, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { getQuoteRaw } from '@/lib/quotes';
 import { deriveStatus, APPROVED_DISPLAYS_AS, type QuoteStatus } from '@/lib/quoteStatus';
 import { requiresReconsent, isSupersededPendingAmendment } from '@/lib/amend';
@@ -382,7 +382,13 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
                 <tbody>
                   {quote.result.lineItems.map((li, i) => (
                     <tr key={i} className="border-t border-gray-100 first:border-0">
-                      <td className="py-1.5 text-gray-700">{li.label}</td>
+                      {/* item-numbering-rename: a staff rename (quote.inputs.
+                          labelOverrides) reads through the same seam the
+                          builder/portal/PDF use, so this read-only operator
+                          view never shows the stale auto label. */}
+                      <td className="py-1.5 text-gray-700">
+                        {resolveLineItemLabel(li.id, li.label, (quote.inputs as QuoteInputs | null)?.labelOverrides).label}
+                      </td>
                       <td className="py-1.5 text-right text-gray-700 whitespace-nowrap">{money(li.amount)}</td>
                     </tr>
                   ))}
