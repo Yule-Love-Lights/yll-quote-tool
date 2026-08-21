@@ -498,7 +498,10 @@ alter table designs
   add column if not exists extra_photos jsonb,
   -- 2026-07-02 a staff title for the BASE photo (renameable "Photo 1" tab,
   -- like the extras' own titles). Nullable — null renders as "Photo 1".
-  add column if not exists photo_title text;
+  add column if not exists photo_title text,
+  -- 2026-08-21 independent customer-portal image visibility controls.
+  add column if not exists portal_show_street_view boolean not null default true,
+  add column if not exists portal_show_satellite_view boolean not null default true;
 
 alter table designs enable row level security;
 

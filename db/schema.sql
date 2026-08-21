@@ -20,7 +20,8 @@
 -- is complete beyond these fixes:
 --   - (W2-018 fixed) The `designs` table was entirely missing; it's now
 --     present below with its full current column set (extra_photos,
---     photo_title, photo_path/_w/_h, satellite_*, seed_analysis, created_by).
+--     photo_title, photo_path/_w/_h, satellite_*, seed_analysis, created_by,
+--     portal_show_street_view, portal_show_satellite_view).
 --     Still verify against migrations/ before trusting it blindly — this is a
 --     hand-maintained snapshot, not a mechanically-generated one.
 --   - Missing 8+ newer tables entirely: app_settings, custom_uploads,
@@ -137,7 +138,10 @@ create table if not exists designs (
   extra_photos jsonb,
   -- #13: a staff title for the BASE photo (renameable "Photo 1" tab, like the
   -- extras' own titles). Nullable — null renders as "Photo 1".
-  photo_title text
+  photo_title text,
+  -- Staff can hide either customer-portal image without deleting staff data.
+  portal_show_street_view boolean not null default true,
+  portal_show_satellite_view boolean not null default true
 );
 
 -- RLS ENABLED, no policies (#90 defense in depth) — see

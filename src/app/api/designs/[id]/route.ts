@@ -4,7 +4,8 @@
 //   PUT /api/designs/[id] — update the scene (autosave), link the design to a
 //                            quote, and/or store the staff's final satellite
 //                            measurement lines ({ scene?, quoteId?,
-//                            satelliteLines? } — #8 Stage A).
+//                            satelliteLines?, portalShowStreetView?,
+//                            portalShowSatelliteView? } — #8 Stage A).
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
@@ -14,9 +15,11 @@ import {
   updateDesignScene,
   linkDesignToQuote,
   updateDesignSatelliteLines,
+  updateDesignPortalVisibility,
   isValidDesignId,
   type DesignScene,
   type DesignSatelliteLines,
+  type DesignPortalVisibility,
 } from '@/lib/designs';
 
 export const runtime = 'nodejs';
@@ -88,10 +91,21 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     return NextResponse.json({ error: 'Request body must be an object' }, { status: 400 });
   }
 
-  const { scene, quoteId, satelliteLines } = body;
-  if (scene === undefined && quoteId === undefined && satelliteLines === undefined) {
+  const { scene, quoteId, satelliteLines, portalShowStreetView, portalShowSatelliteView } = body;
+  const hasStreetVisibility = Object.prototype.hasOwnProperty.call(body, 'portalShowStreetView');
+  const hasSatelliteVisibility = Object.prototype.hasOwnProperty.call(body, 'portalShowSatelliteView');
+  if (
+    scene === undefined &&
+    quoteId === undefined &&
+    satelliteLines === undefined &&
+    !hasStreetVisibility &&
+    !hasSatelliteVisibility
+  ) {
     return NextResponse.json(
-      { error: 'Nothing to update (provide scene, quoteId, and/or satelliteLines)' },
+      {
+        error:
+          'Nothing to update (provide scene, quoteId, satelliteLines, portalShowStreetView, and/or portalShowSatelliteView)',
+      },
       { status: 400 },
     );
   }
@@ -107,8 +121,15 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       { status: 400 },
     );
   }
+  if (hasStreetVisibility && typeof portalShowStreetView !== 'boolean') {
+    return NextResponse.json({ error: 'portalShowStreetView must be a boolean' }, { status: 400 });
+  }
+  if (hasSatelliteVisibility && typeof portalShowSatelliteView !== 'boolean') {
+    return NextResponse.json({ error: 'portalShowSatelliteView must be a boolean' }, { status: 400 });
+  }
 
   try {
+    let portalVisibility: DesignPortalVisibility | null = null;
     if (scene !== undefined) {
       const ok = await updateDesignScene(id, scene as DesignScene);
       if (!ok) return NextResponse.json({ error: 'Failed to save scene' }, { status: 500 });
@@ -126,7 +147,20 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       const ok = await updateDesignSatelliteLines(id, satelliteLines as DesignSatelliteLines);
       if (!ok) return NextResponse.json({ error: 'Failed to save satellite lines' }, { status: 500 });
     }
-    return NextResponse.json({ ok: true });
+    if (hasStreetVisibility || hasSatelliteVisibility) {
+      portalVisibility = await updateDesignPortalVisibility(id, {
+        ...(hasStreetVisibility
+          ? { portalShowStreetView: portalShowStreetView as boolean }
+          : {}),
+        ...(hasSatelliteVisibility
+          ? { portalShowSatelliteView: portalShowSatelliteView as boolean }
+          : {}),
+      });
+      if (!portalVisibility) {
+        return NextResponse.json({ error: 'Failed to save portal visibility' }, { status: 500 });
+      }
+    }
+    return NextResponse.json({ ok: true, ...(portalVisibility ?? {}) });
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Update failed';
     console.error('PUT /api/designs/[id] error:', err);

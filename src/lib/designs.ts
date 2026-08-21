@@ -125,6 +125,10 @@ export type DesignRow = {
   extra_photos?: DesignExtraPhoto[] | null;
   // Staff title for the BASE photo (#13) — null renders as "Photo 1".
   photo_title?: string | null;
+  // Customer-portal presentation controls. Staff reads still return every
+  // artifact so a hidden image can be edited or shown again later.
+  portal_show_street_view: boolean;
+  portal_show_satellite_view: boolean;
 };
 
 // What the GET route hands the editor: the row plus a freshly-signed,
@@ -162,7 +166,18 @@ export type DesignWithPhoto = {
   }[];
   // Staff title for the base photo (#13) — null renders as "Photo 1".
   photoTitle: string | null;
+  // Raw-path availability, independent of signed-URL success. Staff controls
+  // use these so a transient signing failure cannot strand a hidden image.
+  hasStreetImage: boolean;
+  hasSatelliteImage: boolean;
+  portalShowStreetView: boolean;
+  portalShowSatelliteView: boolean;
 };
+
+export type DesignPortalVisibility = Pick<
+  DesignWithPhoto,
+  'portalShowStreetView' | 'portalShowSatelliteView'
+>;
 
 const BUCKET = 'designs';
 const SIGNED_URL_TTL_SECONDS = 60 * 60; // 1 hour
@@ -316,7 +331,7 @@ export async function getDesign(id: string): Promise<DesignRow | null> {
 // (trainingExamples.ts captureTrainingExample, the seed-roofline/seed-analysis
 // routes) and narrowing it would regress those.
 const DESIGN_WITH_PHOTO_COLUMNS =
-  'id, quote_id, scene, photo_path, photo_w, photo_h, satellite_path, satellite_w, satellite_h, satellite_feet_per_pixel, satellite_lines, extra_photos, photo_title';
+  'id, quote_id, scene, photo_path, photo_w, photo_h, satellite_path, satellite_w, satellite_h, satellite_feet_per_pixel, satellite_lines, extra_photos, photo_title, portal_show_street_view, portal_show_satellite_view';
 
 type DesignWithPhotoRow = Pick<
   DesignRow,
@@ -333,6 +348,8 @@ type DesignWithPhotoRow = Pick<
   | 'satellite_lines'
   | 'extra_photos'
   | 'photo_title'
+  | 'portal_show_street_view'
+  | 'portal_show_satellite_view'
 >;
 
 // Attach a signed URL for the base photo (+ satellite + extras) to an
@@ -372,6 +389,11 @@ async function toDesignWithPhoto(row: DesignWithPhotoRow): Promise<DesignWithPho
       source: p.source ?? null,
     })),
     photoTitle: row.photo_title ?? null,
+    hasStreetImage:
+      !!row.photo_path || extras.some((photo) => photo.source !== 'crew' && !!photo.path),
+    hasSatelliteImage: !!row.satellite_path,
+    portalShowStreetView: row.portal_show_street_view ?? true,
+    portalShowSatelliteView: row.portal_show_satellite_view ?? true,
   };
 }
 
@@ -432,7 +454,9 @@ export type SampleDesign = {
  * drawn scene — the ACTUAL designs staff traced, so they render (via DesignCanvas)
  * exactly like the portal, not a fabricated overlay on a stock photo. Best-effort:
  * returns [] on any failure. The payload is the house render only (no name/address/
- * PII); the same render is already public on that quote's own portal by UUID.
+ * PII). This marketing gallery intentionally remains independent of the
+ * per-quote image controls; customer quote payloads and the self-serve design
+ * poller enforce those controls separately.
  *
  * Two plain queries rather than a PostgREST foreign-key embed: the designs/quotes
  * schema is RLS-disabled and may not declare the FK the embed needs, which would
@@ -510,6 +534,44 @@ export async function updateDesignScene(id: string, scene: DesignScene): Promise
   return true;
 }
 
+// Customer-portal presentation flags. Build the update from only the supplied
+// keys so two staff tabs changing different toggles cannot stale-overwrite one
+// another. Return the row's canonical pair for the client to reconcile.
+export async function updateDesignPortalVisibility(
+  id: string,
+  patch: Partial<DesignPortalVisibility>,
+): Promise<DesignPortalVisibility | null> {
+  const sb = getSb();
+  if (!sb) return null;
+
+  const update: Record<string, boolean> = {};
+  if (patch.portalShowStreetView !== undefined) {
+    update.portal_show_street_view = patch.portalShowStreetView;
+  }
+  if (patch.portalShowSatelliteView !== undefined) {
+    update.portal_show_satellite_view = patch.portalShowSatelliteView;
+  }
+  if (Object.keys(update).length === 0) return null;
+
+  const { data, error } = await sb
+    .from('designs')
+    .update(update)
+    .eq('id', id)
+    .select('portal_show_street_view, portal_show_satellite_view')
+    .maybeSingle<{
+      portal_show_street_view: boolean;
+      portal_show_satellite_view: boolean;
+    }>();
+  if (error || !data) {
+    console.error('Supabase updateDesignPortalVisibility error:', error ?? 'Design not found');
+    return null;
+  }
+  return {
+    portalShowStreetView: data.portal_show_street_view,
+    portalShowSatelliteView: data.portal_show_satellite_view,
+  };
+}
+
 // Link an existing design to a quote (set when the operator clicks "Calculate
 // Quote"). The partial unique index allows at most one design per quote; on a
 // conflict we log and report failure rather than clobbering another design.
@@ -566,7 +628,15 @@ export async function cloneDesignToNewQuote(
 
   const { data: created, error: insErr } = await sb
     .from('designs')
-    .insert({ quote_id: newQuoteId, scene: src.scene ?? newDesignScene(), created_by: createdBy ?? null })
+    .insert({
+      quote_id: newQuoteId,
+      scene: src.scene ?? newDesignScene(),
+      created_by: createdBy ?? null,
+      // Visibility is per quote. A rebook starts visible even when staff hid
+      // imagery on the old quote.
+      portal_show_street_view: true,
+      portal_show_satellite_view: true,
+    })
     .select('id')
     .single();
   if (insErr || !created) {

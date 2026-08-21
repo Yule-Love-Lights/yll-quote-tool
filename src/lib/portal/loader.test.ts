@@ -54,7 +54,7 @@ function emptyInputs(overrides: Partial<QuoteInputs> = {}): QuoteInputs {
 
 const SCENE: Scene = { yardsticks: [], items: [] };
 
-function makeDesign(): DesignWithPhoto {
+function makeDesign(overrides: Partial<DesignWithPhoto> = {}): DesignWithPhoto {
   return {
     id: 'design-1',
     quoteId: ID,
@@ -69,6 +69,11 @@ function makeDesign(): DesignWithPhoto {
     satelliteLines: null,
     extraPhotos: [],
     photoTitle: null,
+    hasStreetImage: true,
+    hasSatelliteImage: false,
+    portalShowStreetView: true,
+    portalShowSatelliteView: true,
+    ...overrides,
   };
 }
 
@@ -162,6 +167,83 @@ describe('loadPortalQuote — W4-016 parallel design lookup', () => {
     expect(portal!.design!.photoUrl).toBe('https://example.test/photo.jpg');
     expect(portal!.design!.photoW).toBe(800);
     expect(portal!.design!.scene).toEqual(SCENE);
+  });
+
+  it('redacts every house-photo field when staff hide the street/design view', async () => {
+    getDesignByQuoteMock.mockResolvedValue(
+      makeDesign({
+        portalShowStreetView: false,
+        extraPhotos: [
+          { id: 'extra-1', url: 'https://example.test/side.jpg', w: 400, h: 300, title: 'Side' },
+        ],
+        satelliteUrl: 'https://example.test/satellite.jpg',
+        satelliteW: 640,
+        satelliteH: 640,
+        satelliteLines: { santas: [{ points: [[0, 0], [1, 1]], label: 'Front' }], gingerbread: [], c9: [] },
+      }),
+    );
+
+    const portal = await loadPortalQuote(ID);
+
+    expect(portal!.design).toMatchObject({
+      imageVisibility: { state: 'satellite-only', street: false, satellite: true },
+      photoUrl: null,
+      photoW: null,
+      photoH: null,
+      extraPhotos: [],
+      satelliteUrl: 'https://example.test/satellite.jpg',
+    });
+    expect(JSON.stringify(portal)).not.toContain('https://example.test/photo.jpg');
+    expect(JSON.stringify(portal)).not.toContain('https://example.test/side.jpg');
+  });
+
+  it('redacts every satellite field without disturbing the house design', async () => {
+    getDesignByQuoteMock.mockResolvedValue(
+      makeDesign({
+        portalShowSatelliteView: false,
+        satelliteUrl: 'https://example.test/satellite.jpg',
+        satelliteW: 640,
+        satelliteH: 640,
+        satelliteLines: { santas: [{ points: [[0, 0], [1, 1]], label: 'Front' }], gingerbread: [], c9: [] },
+      }),
+    );
+
+    const portal = await loadPortalQuote(ID);
+
+    expect(portal!.design).toMatchObject({
+      imageVisibility: { state: 'street-only', street: true, satellite: false },
+      photoUrl: 'https://example.test/photo.jpg',
+      satelliteUrl: null,
+      satelliteW: null,
+      satelliteH: null,
+      satelliteLines: null,
+    });
+    expect(JSON.stringify(portal)).not.toContain('https://example.test/satellite.jpg');
+  });
+
+  it('keeps the scene but returns no customer imagery when both views are hidden', async () => {
+    getDesignByQuoteMock.mockResolvedValue(
+      makeDesign({
+        portalShowStreetView: false,
+        portalShowSatelliteView: false,
+        satelliteUrl: 'https://example.test/satellite.jpg',
+        satelliteW: 640,
+        satelliteH: 640,
+        satelliteLines: { santas: [{ points: [[0, 0], [1, 1]], label: 'Front' }], gingerbread: [], c9: [] },
+      }),
+    );
+
+    const portal = await loadPortalQuote(ID);
+
+    expect(portal!.design).toMatchObject({
+      scene: SCENE,
+      imageVisibility: { state: 'neither', street: false, satellite: false },
+      photoUrl: null,
+      satelliteUrl: null,
+      extraPhotos: [],
+    });
+    expect(JSON.stringify(portal)).not.toContain('https://example.test/photo.jpg');
+    expect(JSON.stringify(portal)).not.toContain('https://example.test/satellite.jpg');
   });
 
   it('returns the quote with design undefined when no design is linked', async () => {

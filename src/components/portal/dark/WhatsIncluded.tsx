@@ -16,6 +16,7 @@ import { formatIncludedHeading, formatUsd } from '../format';
 import { DesignReprise } from './DesignReprise';
 import { SatelliteRoofView } from './SatelliteRoofView';
 import { selectDrawableLineGroups, PERMANENT_SIDE_SATELLITE_KEYS, type SatelliteLineGroup } from '@/lib/portal/satelliteLines';
+import { resolvePortalImageVisibility } from '@/lib/portal/imageVisibility';
 
 // Customer-toggleable add-on (rush install / premium takedown) — #4.
 function AddOnToggle({
@@ -205,6 +206,17 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
         : undefined;
   const satelliteLabelOverrides =
     serviceType === 'permanent' ? { santas: 'Front of House', gingerbread: 'Sides' } : undefined;
+  const drawableSatelliteGroups = design
+    ? selectDrawableLineGroups(
+        design.satelliteLines,
+        allowedSatelliteKeys,
+        satelliteLabelOverrides,
+      )
+    : [];
+  const imageLayout = resolvePortalImageVisibility(
+    !!design?.imageVisibility.street && !!design.photoUrl,
+    !!design?.imageVisibility.satellite && !!design.satelliteUrl && drawableSatelliteGroups.length > 0,
+  );
   const {
     isItemSelected,
     toggleItem,
@@ -364,8 +376,7 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
             the page; on tablet/mobile they stack full-width. Without satellite
             data, the lit render stays full-width on its own. */}
         {design &&
-          (!!design.satelliteUrl &&
-          selectDrawableLineGroups(design.satelliteLines, allowedSatelliteKeys, satelliteLabelOverrides).length > 0 ? (
+          (imageLayout.state === 'both' ? (
             <div
               className="mt-10 md:mt-12 lg:[margin-left:calc(50%_-_50vw)] lg:[margin-right:calc(50%_-_50vw)] lg:overflow-x-clip"
               style={{ ['--row-h']: 'clamp(280px, 42vh, 480px)' } as CSSProperties}
@@ -380,9 +391,15 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
                 <SatelliteRoofView design={design} className="" inRow allowedSatelliteKeys={allowedSatelliteKeys} labelOverrides={satelliteLabelOverrides} />
               </div>
             </div>
-          ) : (
+          ) : imageLayout.state === 'street-only' ? (
             <DesignReprise design={design} palette={palette} renderSettings={renderSettings} serviceType={serviceType ?? null} />
-          ))}
+          ) : imageLayout.state === 'satellite-only' ? (
+            <SatelliteRoofView
+              design={design}
+              allowedSatelliteKeys={allowedSatelliteKeys}
+              labelOverrides={satelliteLabelOverrides}
+            />
+          ) : null)}
 
         {/* Optional add-ons — customer-toggleable rush + premium takedown (#4).
          * Seeded from the staff quote's choice; NEVER changed by picking a
