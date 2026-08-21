@@ -544,29 +544,74 @@ describe('updateQuote — NCE + YLL Neighbor tags (#198)', () => {
 // targets the re-resolution's FRESH id — or is SKIPPED when a triggered
 // re-attach fails, never falling back to the possibly-stale cached id. ──────
 
-// Fake tuned to BOTH updateQuote chains:
-//   pre-read: from('quotes').select(identity cols).eq().maybeSingle() → stored
-//   write:    from('quotes').update(payload).eq().select(...).single() → returnRow
+// Fake tuned to ALL THREE updateQuote chains:
+//   pre-read:      from('quotes').select(identity cols).eq().maybeSingle() → stored
+//   base write:    from('quotes').update(payload).eq().select(...).single() → returnRow
+//   identity write (#839 fix-round HIGH, CAS-guarded):
+//                  from('quotes').update(payload).eq()[.is().is()].select('id').maybeSingle()
+//
+// `row` is the ground-truth row the CAS `.is(...)` filters evaluate against,
+// and that a MATCHING identity write actually mutates — seeded from
+// `{...stored, ...returnRow}` so a test can simulate a race (approval landing
+// between the pre-read and the write) by giving `stored` and `returnRow`
+// DIFFERENT lifecycle stamps. A test reads `fake.row` back after calling
+// updateQuote to prove whether the identity write actually took effect —
+// this is the real proof, not inspecting the raw update() payload: like a
+// real `UPDATE ... WHERE customer_approved_at IS NULL`, the statement is
+// always ISSUED (captured in `updates`) regardless of whether it matches any
+// row; only `row` reflects whether it landed.
 function makeIdentityFake(
   stored: Record<string, unknown> | null,
   returnRow: Record<string, unknown> = {},
 ) {
   const updates: Record<string, unknown>[] = [];
+  const row: Record<string, unknown> = { ...stored, ...returnRow };
+  // Reset by each update() call; consumed by the terminal maybeSingle()/
+  // single() that follows it. null means "no update() has run yet this
+  // call" — used to tell the identity pre-read's maybeSingle() apart from a
+  // CAS write's maybeSingle() (both terminate the same shared builder).
+  let currentPayload: Record<string, unknown> | null = null;
+  let currentFilters: Record<string, unknown> = {};
   const builder: Record<string, unknown> = {};
   Object.assign(builder, {
     select: () => builder,
     eq: () => builder,
-    update: (payload: Record<string, unknown>) => {
-      updates.push(payload);
+    is: (col: string, val: unknown) => {
+      currentFilters[col] = val;
       return builder;
     },
-    maybeSingle: async () => ({ data: stored, error: null }),
-    single: async () => ({
-      data: { id: 'q1', quote_sent_at: null, customer_id: null, is_test: false, ...returnRow },
-      error: null,
-    }),
+    update: (payload: Record<string, unknown>) => {
+      updates.push(payload);
+      currentPayload = payload;
+      currentFilters = {};
+      return builder;
+    },
+    maybeSingle: async () => {
+      if (currentPayload === null) {
+        // No update() has run yet this call — this is the identity pre-read.
+        return { data: stored, error: null };
+      }
+      const payload = currentPayload;
+      const filters = currentFilters;
+      currentPayload = null;
+      currentFilters = {};
+      const passed = Object.entries(filters).every(([col, val]) => (row[col] ?? null) === val);
+      if (!passed) return { data: null, error: null };
+      Object.assign(row, payload);
+      return { data: { id: 'q1' }, error: null };
+    },
+    single: async () => {
+      // The base update never carries .is(...) filters — always matches.
+      if (currentPayload) Object.assign(row, currentPayload);
+      currentPayload = null;
+      currentFilters = {};
+      return {
+        data: { id: 'q1', quote_sent_at: null, customer_id: null, is_test: false, ...returnRow },
+        error: null,
+      };
+    },
   });
-  return { client: { from: () => builder }, updates };
+  return { client: { from: () => builder }, updates, row };
 }
 
 // A stored row whose identity exactly matches what writing CUSTOMER below
@@ -770,7 +815,7 @@ describe('updateQuote — #214 identity verify-or-reattach', () => {
     );
     serviceRef.current = fake.client;
 
-    await updateQuote(
+    const res = await updateQuote(
       'q1', INPUTS, RESULT,
       { ...CUSTOMER, name: 'Edited After Approval', email: 'new@x.com' },
       'holiday', undefined, undefined, undefined, undefined,
@@ -780,16 +825,54 @@ describe('updateQuote — #214 identity verify-or-reattach', () => {
     expect(written).toBeDefined();
     // The pricing half of the save still lands — only identity is frozen.
     expect(written.result).toBeDefined();
-    // ...and none of the identity columns moved.
-    expect(written).not.toHaveProperty('customer_name');
-    expect(written).not.toHaveProperty('customer_email');
-    expect(written).not.toHaveProperty('customer_phone');
-    expect(written).not.toHaveProperty('customer_address');
+    // #839 fix-round HIGH: the identity write is a CAS — a real
+    // `UPDATE ... WHERE customer_approved_at IS NULL` is always ISSUED (so it
+    // shows up in `updates`, same as a real Postgres statement would), but it
+    // must not have MATCHED any row — proven by reading the ground-truth row
+    // back, not by inspecting the (structurally separate, now) base payload.
+    expect(fake.updates.some((u) => 'customer_name' in u)).toBe(true);
+    expect(fake.row.customer_name).toBe('Jane');
+    expect(fake.row.customer_email).toBe('jane@x.com');
+    expect(res).toMatchObject({ identityFrozen: true });
+  });
+
+  // #839 fix-round HIGH (delta-verify on the block above — TOCTOU): the fix
+  // above gated the customer_* write on `identityLocked`, computed from the
+  // PRE-write `stored` read. If a customer /approve (or the deposit-paid
+  // webhook) commits in the window BETWEEN that pre-read and the write, the
+  // pre-read is stale-null (identityLocked=false → the write goes out) while
+  // the POST-write `frozen` flag reads true (→ the customer_id reattach is
+  // refused) — display fields move, customer_id stays put: the exact
+  // inverted split #251 exists to prevent, reproduced by the very fix meant
+  // to close it. Simulated here: `stored` (the pre-read) looks UNAPPROVED,
+  // but the row's TRUE state by write time (`returnRow`) is already
+  // approved. Against the identityLocked-gated code this test FAILS (the
+  // write lands, moving the display fields); the CAS-guarded write checks
+  // the freeze in the SAME database statement as the write, so it PASSES.
+  it('CAS-blocks the customer_* write when approval lands between the pre-read and the write (#839 fix-round HIGH — TOCTOU)', async () => {
+    const fake = makeIdentityFake(
+      { ...STORED, customer_approved_at: null, deposit_paid_at: null, is_test: false }, // pre-read: looks UNAPPROVED
+      { customer_approved_at: '2026-08-10T00:00:00Z', customer_id: 'cust-1' }, // true state by write time: APPROVED
+    );
+    serviceRef.current = fake.client;
+
+    const res = await updateQuote(
+      'q1', INPUTS, RESULT,
+      { ...CUSTOMER, name: 'Edited Mid-Race', email: 'new@x.com' },
+      'holiday',
+    );
+
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+    expect(res).toMatchObject({ identityFrozen: true });
+    // The CAS write must not have taken effect — the row keeps its ORIGINAL identity.
+    expect(fake.row.customer_name).toBe('Jane');
+    expect(fake.row.customer_email).toBe('jane@x.com');
   });
 
   // The same write on an UNAPPROVED quote must still carry the customer_*
-  // columns — proving the gate above is scoped, not a blanket stop.
-  it('still writes the customer_* columns on a draft/sent quote (the freeze is scoped)', async () => {
+  // columns AND still repoint customer_id — proving the gate above is
+  // scoped, not a blanket stop (the brief's "positive test").
+  it('still writes the customer_* columns on a draft/sent quote, and still repoints customer_id (the freeze is scoped)', async () => {
     attachQuoteToCustomerMock.mockResolvedValueOnce({ customerId: 'cust-fresh', propertyId: 'p1' });
     const fake = makeIdentityFake(
       { ...STORED, customer_approved_at: null, deposit_paid_at: null, is_test: false },
@@ -797,14 +880,15 @@ describe('updateQuote — #214 identity verify-or-reattach', () => {
     );
     serviceRef.current = fake.client;
 
-    await updateQuote(
+    const res = await updateQuote(
       'q1', INPUTS, RESULT,
       { ...CUSTOMER, name: 'Edited Before Approval' },
       'holiday', undefined, undefined, undefined, undefined,
     );
 
-    const written = fake.updates.find((u) => 'inputs' in u)!;
-    expect(written.customer_name).toBe('Edited Before Approval');
+    expect(fake.row.customer_name).toBe('Edited Before Approval');
+    expect(attachQuoteToCustomerMock).toHaveBeenCalled();
+    expect(res?.identityFrozen).toBeUndefined();
   });
 
   // Boundary check: a DRAFT/SENT quote (neither approved nor booked) must stay

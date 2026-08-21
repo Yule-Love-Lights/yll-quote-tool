@@ -481,9 +481,20 @@ export async function updateQuote(
   // screen); this round just inverted which half lied. Freezing them together
   // means a post-approval identity is either wholly unchanged or wholly moved,
   // never half. is_test is exempt (same carve-out the reattach freeze uses).
-  const identityLocked =
-    !stored?.is_test && (!!stored?.customer_approved_at || !!stored?.deposit_paid_at);
-
+  //
+  // #839 fix-round HIGH (delta-verify on the block above — TOCTOU): an earlier
+  // version of this fix gated the customer_* write on `identityLocked`, a
+  // boolean computed from `stored` — the PRE-write read taken above. If a
+  // customer /approve (or the deposit-paid webhook) commits in the window
+  // BETWEEN that pre-read and the write below, `stored.customer_approved_at`
+  // is stale-null (identityLocked=false → the write goes out) while `frozen`
+  // further down — computed from the write's own fresh response — reads true
+  // (→ the customer_id reattach is refused). Display fields move, customer_id
+  // stays put: the exact inverted split #251 exists to prevent, reproduced by
+  // the very fix meant to close it. So the customer_* write is no longer part
+  // of this combined `.update()` at all — see the CAS-guarded write below,
+  // which makes the freeze check and the write ONE atomic database statement
+  // instead of two JS reads taken at two different times.
   const { data, error } = await supabase
     .from('quotes')
     .update({
@@ -492,16 +503,6 @@ export async function updateQuote(
       total: result.total,
       ...(serviceType ? { service_type: serviceType } : {}),
       ...(clearGhlLink ? { highlevel_opportunity_id: null, ghl_stage_synced_at: null } : {}),
-      // Gated on identityLocked (#251): see its comment above. A frozen quote
-      // keeps the name/address/phone/email it carried at approval.
-      ...(customer && !identityLocked
-        ? {
-            customer_name: blankToNull(customer.name) ?? 'Anonymous',
-            customer_address: blankToNull(customer.address) ?? '(no address)',
-            customer_phone: blankToNull(customer.phone),
-            customer_email: blankToNull(customer.email),
-          }
-        : {}),
       ...(legacyRebook !== undefined ? { legacy_rebook: legacyRebook } : {}),
       ...(isNce !== undefined ? { is_nce: isNce } : {}),
     })
@@ -527,6 +528,55 @@ export async function updateQuote(
   if (error) {
     console.error('Supabase updateQuote error:', error);
     return null;
+  }
+
+  // #839 fix-round HIGH: the CAS-guarded identity write. `customerWriteBlocked`
+  // is set ONLY when this specific statement's `.is(...)` conditions failed to
+  // match (0 rows) — i.e. the row was ALREADY approved/booked at the exact
+  // moment of THIS write, per the database itself, not a separate earlier
+  // read. `frozen` below (which also gates the customer_id reattach) reuses
+  // this exact value whenever a customer_* write was attempted this call, so
+  // the two actions can never disagree about whether the identity is frozen —
+  // closing the split at its root instead of just detecting it after the fact.
+  // is_test bypasses the CAS and always writes unconditionally (the #251
+  // exemption — test quotes stay fully editable regardless of lifecycle
+  // stamps); is_test is read off `data.is_test`, the freshest copy available
+  // (the column is immutable, so pre- vs post-read can never disagree on it).
+  let customerWriteBlocked = false;
+  if (customer) {
+    const identityPayload = {
+      customer_name: blankToNull(customer.name) ?? 'Anonymous',
+      customer_address: blankToNull(customer.address) ?? '(no address)',
+      customer_phone: blankToNull(customer.phone),
+      customer_email: blankToNull(customer.email),
+    };
+    if (data.is_test) {
+      const { error: identErr } = await supabase
+        .from('quotes')
+        .update(identityPayload)
+        .eq('id', id)
+        .select('id')
+        .maybeSingle();
+      if (identErr) {
+        console.warn('updateQuote: is_test identity write failed:', identErr.message);
+      }
+    } else {
+      const { data: casRow, error: casErr } = await supabase
+        .from('quotes')
+        .update(identityPayload)
+        .eq('id', id)
+        .is('customer_approved_at', null)
+        .is('deposit_paid_at', null)
+        .select('id')
+        .maybeSingle();
+      if (casErr) {
+        console.warn('updateQuote: #251 identity CAS write failed:', casErr.message);
+      } else if (!casRow) {
+        // 0 rows matched: approval/booking landed before (or in a race,
+        // concurrently with) this statement — the write never took effect.
+        customerWriteBlocked = true;
+      }
+    }
   }
 
   // #214 (a): verify-or-reattach the customers link whenever this update
@@ -624,7 +674,16 @@ export async function updateQuote(
     const hlChanged =
       hlContactId !== undefined && effectiveHl !== (stored.highlevel_contact_id?.trim() || null);
     const wouldReattach = identityChanged || hlChanged || stored.customer_id == null;
-    const frozen = !!data.deposit_paid_at || !!data.customer_approved_at;
+    // #839 fix-round HIGH: when a customer_* write was attempted this call,
+    // `frozen` reuses that write's OWN CAS result (customerWriteBlocked) —
+    // the freshest possible signal, checked in the SAME database statement
+    // that would otherwise have moved the display columns, so this can never
+    // disagree with whether the write actually landed. When no customer_*
+    // write happened (hlContactId-only edits, or no identity args at all),
+    // there is nothing for it to split against, so this falls back to the
+    // base update's own fresh post-write read (still newer than the earlier
+    // `stored` pre-read, just not from an additional CAS round trip).
+    const frozen = customer ? customerWriteBlocked : !!data.deposit_paid_at || !!data.customer_approved_at;
     if (wouldReattach && frozen) {
       identityFrozen = true;
       console.warn(
