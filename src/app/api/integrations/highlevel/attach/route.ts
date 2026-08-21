@@ -105,7 +105,8 @@ export async function POST(req: NextRequest) {
     // the same shape. This read is the route's only pre-detach round trip;
     // a read failure fails OPEN (matching the attach path's posture below)
     // rather than blocking a legitimate clear on an unapproved quote.
-    const { data: detachRow } = await getSupabaseServiceClient()!
+    const detachClient = getSupabaseServiceClient()!;
+    const { data: detachRow } = await detachClient
       .from('quotes')
       .select('is_test, deposit_paid_at, customer_approved_at')
       .eq('id', body.quoteId)
@@ -116,12 +117,40 @@ export async function POST(req: NextRequest) {
       );
       return NextResponse.json({ detached: false, identityFrozen: true });
     }
-    const { error: detachErr } = await getSupabaseServiceClient()!
+    // #839 round-2 delta-verify MED (sibling-guard parity, same class as the
+    // attach write's own #839 fix): the pre-read above and this write are two
+    // separate round trips — an approval landing in that gap (the same TOCTOU
+    // the attach write was CAS-gated for) used to let this plain update null
+    // the HighLevel ids on a now-approved/booked quote while customer_id and
+    // the customer_* columns stayed put: an HL-id split. CAS-gate the write
+    // itself so the freeze check and the null-out are one atomic statement.
+    // is_test bypasses the CAS (the #251 exemption), read off `detachRow` —
+    // the only copy available; a failed pre-read (detachRow null) fails
+    // OPEN on applyCas too, matching the attach write's identical posture
+    // directly below (`!quoteRow?.is_test`) and this route's existing
+    // fail-open stance on a read hiccup.
+    const applyCas = !detachRow?.is_test;
+    let detachWrite = detachClient
       .from('quotes')
       .update({ highlevel_contact_id: null, highlevel_opportunity_id: null })
       .eq('id', body.quoteId);
+    if (applyCas) {
+      detachWrite = detachWrite.is('customer_approved_at', null).is('deposit_paid_at', null);
+    }
+    const { data: detachWriteRow, error: detachErr } = await detachWrite.select('id').maybeSingle();
     if (detachErr) {
       return NextResponse.json({ error: `Detach failed: ${detachErr.message}` }, { status: 500 });
+    }
+    // 0 rows matched under the CAS (no error) means approval/booking landed
+    // between the pre-read above and THIS statement — the write never took
+    // effect. Same response shape as the pre-read freeze above and as the
+    // attach write's own write-time freeze, so every caller treats all three
+    // identically.
+    if (applyCas && !detachWriteRow) {
+      console.warn(
+        `[api/integrations/highlevel/attach] #839 identity freeze (write-time) — quote ${body.quoteId} became approved/booked during the detach round trip; refused the detach.`,
+      );
+      return NextResponse.json({ detached: false, identityFrozen: true });
     }
     return NextResponse.json({ detached: true });
   }

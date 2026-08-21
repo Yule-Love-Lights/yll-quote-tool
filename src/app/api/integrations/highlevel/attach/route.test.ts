@@ -48,24 +48,27 @@ import { POST } from './route';
 // The route does three chains:
 //   read:    from('quotes').select().eq().maybeSingle()          → the quote row
 //            (service_type drives the per-type pipeline resolution)
-//   detach:  from().update().eq() awaited directly                → { error: updateErr }
+//   detach write (#839 round-2 delta-verify MED, CAS-guarded):
+//            from().update().eq()[.is().is()].select().maybeSingle() → { data, error }
 //   identity write (#839 fix-round MED, CAS-guarded):
 //            from().update().eq()[.is().is()].select().maybeSingle() → { data, error }
-// The identity-write chain is BOTH a thenable (so a bare `await update().eq()`,
-// the detach shape, still resolves to `{ error }`) AND further-chainable into
-// `.is()/.select()/.maybeSingle()` — exactly like a real Postgrest builder.
+// Both writes share the exact same chain shape (one `makeUpdateChain()`
+// serves both) — `.is()/.select()/.maybeSingle()`, exactly like a real
+// Postgrest builder.
 function makeSb(
   quote: Record<string, unknown> | null,
   updateErr: { message: string } | null = null,
   opts: { identityCasMatch?: boolean } = {},
 ) {
-  // identityCasMatch controls whether the identity write's `.is(...)`
-  // conditions would match in a real DB — false simulates approval/booking
-  // having landed by the time that specific statement runs (a TOCTOU race,
-  // or an already-frozen row), regardless of what the earlier pre-read
-  // (`quote`) says. Only takes effect on a chain that actually called
-  // `.is(...)` — the is_test-bypass write and the detach write never do, so
-  // they always "match" regardless of this flag. Defaults to true (matches —
+  // identityCasMatch controls whether a CAS write's `.is(...)` conditions
+  // would match in a real DB — false simulates approval/booking having
+  // landed by the time that specific statement runs (a TOCTOU race, or an
+  // already-frozen row), regardless of what the earlier pre-read (`quote`)
+  // says. Applies to BOTH the identity write and the detach write (round-2
+  // delta-verify MED — sibling parity), since both now share the same
+  // CAS-guarded chain. Only takes effect on a chain that actually called
+  // `.is(...)` — the is_test-bypass branch of either write never does, so it
+  // always "matches" regardless of this flag. Defaults to true (matches —
   // not frozen) so every pre-#839 test above, which never touches this
   // option, keeps behaving exactly as before.
   const casMatch = opts.identityCasMatch ?? true;
@@ -156,6 +159,42 @@ describe('HighLevel attach — detach (#172)', () => {
 
     const res = await POST(makeReq({ quoteId: QUOTE_ID, detach: true }));
     expect(res.status).toBe(500);
+  });
+
+  // #839 round-2 delta-verify MED (sibling-guard parity — the same TOCTOU
+  // class the attach write was CAS-gated for, same file): the pre-read above
+  // and the plain update that used to follow it are two separate round
+  // trips. An approval landing in that gap used to null the HighLevel ids on
+  // a now-approved/booked quote with no CAS at all — an HL-id split, since
+  // customer_id/customer_* stay put. The detach write is now CAS-guarded the
+  // same way; proven here by a pre-read that looks UNAPPROVED (so the
+  // pre-read freeze check does NOT fire) whose CAS write then fails to match
+  // (simulating approval landing mid-flight, between the read and the write).
+  it('CAS-blocks the detach write when approval lands between the pre-read and the write (#839 round-2 delta-verify MED)', async () => {
+    sbRef.current = makeSb(HOLIDAY_QUOTE, null, { identityCasMatch: false });
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, detach: true }));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json).toEqual({ detached: false, identityFrozen: true });
+  });
+
+  // is_test bypasses the detach CAS entirely (the #251 exemption — test
+  // quotes stay fully editable regardless of lifecycle stamps), even on a
+  // quote that otherwise looks approved.
+  it('is_test bypasses the detach CAS even on an approved-looking quote', async () => {
+    sbRef.current = makeSb(
+      { ...HOLIDAY_QUOTE, is_test: true, customer_approved_at: '2026-08-10T00:00:00Z' },
+      null,
+      { identityCasMatch: false },
+    );
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, detach: true }));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json).toEqual({ detached: true });
   });
 });
 
