@@ -469,6 +469,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // amend-summary toast reads these display_* fields instead of the raw
   // ones, so a tax-overridden amendment's staff-facing summary can never
   // disagree with the invoice the customer is actually billed against.
+  // FOOTGUN (row 330 review): any FUTURE staff- or customer-facing consumer of
+  // this response MUST read the display_* fields, NEVER the raw
+  // new_total/new_balance/delta above — the raw ones are the pre-tax-scaling
+  // trail figures kept only as a test comparison point, and reading them on a
+  // tax-overridden amendment reproduces the exact row 330 bug this fix closed.
   const displayBasis = resolveAmendmentBasis(amendment);
 
   return NextResponse.json({
