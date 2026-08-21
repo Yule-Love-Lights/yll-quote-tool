@@ -80,8 +80,9 @@ Rules:
 
 - Every `codex exec` run is stateless — Claude re-briefs from scratch each
   round. That's by design; it keeps the briefs honest.
-- All the normal repo rules still apply: gates green before commit, four-lens
-  review before a merge-go, your explicit go on every merge. Codex changes who
-  types the code, nothing about the guardrails.
+- All the normal repo rules still apply: gates green before commit, the
+  risk-scaled lens review before a merge-go (AGENTS.md "Review gates"), your
+  explicit go on every merge. Codex changes who types the code, nothing about
+  the guardrails.
 - The quality of the result equals the quality of the brief. Vague brief =
   wasted run. That's the skill being practiced.
