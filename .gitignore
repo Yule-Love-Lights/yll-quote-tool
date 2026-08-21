@@ -46,6 +46,7 @@ next-env.d.ts
 .claude/*
 !.claude/skills/
 !.claude/commands/
+!.claude/agents/
 # ...and shared project-scope settings (permission allow-rules the whole team gets)
 !.claude/settings.json
 

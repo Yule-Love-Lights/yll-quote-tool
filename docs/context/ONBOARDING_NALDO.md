@@ -29,8 +29,8 @@ Concrete step-by-step to get the quote tool running on Naldo's **Windows** machi
 
 ## 3. Seed local memory from the repo
 The shared project memory lives in `docs/context/`. The assistant copies **every file** from `docs/context/` into **this machine's** Claude Code memory folder (`~/.claude/projects/<this-repo-slug>/memory/`), **overwriting** Naldo's stale month-old memory. Going forward:
-- Read **both** `session_log.md` (Jason's) and `session_log_naldo.md` (yours) at session start.
-- You only ever **write** to `session_log_naldo.md`.
+- Read the newest `docs/context/journal/` fragments of both devs at session start (old `session_log*.md` files are frozen history).
+- You only ever **write** your own session's fragment: `docs/context/journal/S<N>-naldo.md`.
 
 ## 4. Build the codebase knowledge graph (per-machine, free)
 - `/graphify src` — builds `graphify-out/` (gitignored, ~seconds).

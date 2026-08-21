@@ -35,16 +35,23 @@ risky lines being touched.
   Supabase row-level security policy.
 - Migrations: any new or edited file under a migrations path, or a schema
   change.
+- Any SHARED-table path (per AGENTS.md): `layout.tsx`, `globals.css`, the data
+  layer (`quotes.ts`, `designs.ts`, `supabase*`), or `src/lib/integrations/**`.
+- `.github/workflows/**` (gates every merge and carries repo secrets), or a
+  `.claude/settings.json` permission change (decides which tool calls skip the
+  human prompt). These are config by file type but FULL by blast radius.
+- When in doubt between tiers, take the higher one (AGENTS.md rule).
 
 **CODE** — touches application code but none of the FULL triggers above
 (dashboard-only, internal tooling, tests, a component with no money or
 customer-facing surface, etc).
 
-**PROCESS** — touches only docs, a skill, an agent definition, or config
-(`AGENTS.md`, `CLAUDE.md`, anything under `.claude/**`, `.github/workflows/**`,
-`docs/**`, a ledger or session-log entry) with zero application code
-changed. If even one application file is touched alongside docs, this is
-CODE or FULL, not PROCESS, classify by the code that's there.
+**PROCESS** — touches only docs, a skill, an agent definition, or non-permission
+config (`AGENTS.md`, `CLAUDE.md`, skills and commands under `.claude/**`,
+`docs/**`, a ledger or journal entry) with zero application code changed and
+none of the FULL triggers above. If even one application file is touched
+alongside docs, this is CODE or FULL, not PROCESS, classify by the code that's
+there.
 
 Print the tier and the specific trigger evidence (file:line or file names)
 that put it there before moving on. If genuinely torn between two tiers,
