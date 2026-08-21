@@ -30,7 +30,7 @@ const ok = () => NextResponse.json({ ok: true });
 type TelegramPhotoSize = { file_id?: string };
 type TelegramMessage = {
   chat?: { id?: number | string; type?: string };
-  from?: { id?: number | string };
+  from?: { id?: number | string; first_name?: string; last_name?: string; username?: string };
   text?: string;
   caption?: string;
   photo?: TelegramPhotoSize[];
@@ -38,6 +38,13 @@ type TelegramMessage = {
   audio?: { file_id?: string };
   reply_to_message?: { from?: { is_bot?: boolean } };
 };
+
+/** "First Last @handle" for the sender log, or "(no name)". Never message text. */
+function senderLabel(from: TelegramMessage['from']): string {
+  const name = [from?.first_name, from?.last_name].filter(Boolean).join(' ').trim();
+  const handle = from?.username ? `@${from.username}` : '';
+  return [name, handle].filter(Boolean).join(' ') || '(no name)';
+}
 
 export async function GET() {
   // For ops checks — Telegram itself doesn't GET; just return 200.
@@ -75,6 +82,26 @@ export async function POST(req: NextRequest) {
 
   const userId = msg.from?.id;
   if (userId === undefined) return ok();
+
+  // WHY THIS LOG EXISTS: a Telegram user id is knowable ONLY from a message
+  // that person actually sent. Telegram gives a bot no way to enumerate who
+  // has talked to it — getUpdates is disabled while a webhook is set, and
+  // there is no member-list API for groups. But linking a crew member
+  // (crew_members.telegram_user_id, row 318) needs exactly that number, so
+  // without this the only route is asking each person to fetch it themselves
+  // from @userinfobot. One line per inbound message turns a round of hellos in
+  // the crew group into a copyable list in the Vercel logs.
+  // WHICH messages reach here is Telegram's call, not ours: with the bot's
+  // group privacy mode ON it only receives /commands, @mentions and replies to
+  // itself, and with it OFF it receives everything in the room. That setting
+  // lives in BotFather, not in this repo, so tell crew to @mention the bot —
+  // that arrives under BOTH settings.
+  // Ids and display names ONLY — never message text, which can carry customer
+  // details. A 1:1 DM from an unlinked person is already covered by the
+  // non-allowlisted warn above, since a private chat's chat.id IS their from.id.
+  console.info(
+    `[telegram] sender id=${userId} name=${senderLabel(msg.from)} chat=${chatId} type=${msg.chat?.type ?? 'private'}`,
+  );
 
   // Telegram sends a photo as an array of sizes, smallest first — the last one
   // is the highest resolution available.
