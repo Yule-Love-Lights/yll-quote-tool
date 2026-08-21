@@ -20,6 +20,10 @@ Rules:
   written, and any section it could not number.
 
 Run from the repo root:  python scripts/migrate-journal.py
+With --check it writes nothing and exits 1 if any source-log section is
+missing from journal/, which is what happens when an older PR that still
+appends to a frozen log merges after the migration. Wire this into any
+merge of such a PR: run the converter for real, commit the new fragments.
 """
 import io, os, re, sys
 
@@ -57,13 +61,14 @@ def split_sections(lines):
         yield cur_num, cur
 
 def main():
+    check_only = "--check" in sys.argv
     os.makedirs(OUT, exist_ok=True)
     # Never delete by glob: sessions after the migration hand-write their own
     # fragments here, and a re-run must not destroy them. This script only
     # OVERWRITES the exact names it generates from the four frozen source logs.
 
     seen = {}
-    stats, unnumbered = [], 0
+    stats, unnumbered, drift = [], 0, []
     for dev, path in SOURCES:
         with io.open(path, encoding="utf-8-sig") as f:
             lines = f.read().splitlines(True)
@@ -83,8 +88,16 @@ def main():
             seen[key] = seen.get(key, 0) + 1
             suffix = "" if seen[key] == 1 else "-" + "bcdefgh"[seen[key] - 2]
             name = "S%d%s-%s%s.md" % (n, letter, dev, suffix)
-            with io.open(os.path.join(OUT, name), "w", encoding="utf-8") as f:
-                f.writelines(body)
+            dest = os.path.join(OUT, name)
+            if check_only:
+                current = ""
+                if os.path.exists(dest):
+                    current = io.open(dest, encoding="utf-8").read()
+                if current != "".join(body):
+                    drift.append(name)
+            else:
+                with io.open(dest, "w", encoding="utf-8") as f:
+                    f.writelines(body)
             written += len(body)
         stats.append((os.path.basename(path), section_lines, written))
 
@@ -100,6 +113,13 @@ def main():
     if unnumbered:
         print("un-numbered sections skipped: %d (see stderr)" % unnumbered)
         ok = False
+    if check_only and drift:
+        ok = False
+        print("DRIFT: %d fragment(s) do not match the source logs:" % len(drift))
+        for name in drift[:10]:
+            print("  " + name)
+        print("A frozen log gained or changed content. Run this script without")
+        print("--check, then commit the regenerated fragments.")
     print("coverage: %s" % ("COMPLETE" if ok else "INCOMPLETE, do not merge"))
     sys.exit(0 if ok else 1)
 
