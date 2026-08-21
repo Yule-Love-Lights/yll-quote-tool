@@ -563,6 +563,18 @@ describe('updateQuote — NCE + YLL Neighbor tags (#198)', () => {
 function makeIdentityFake(
   stored: Record<string, unknown> | null,
   returnRow: Record<string, unknown> = {},
+  // #839 round-2 delta-verify HIGH — test-coverage gap: the original fake
+  // could only simulate a CAS 0-ROW MISMATCH (a stale filter that just
+  // doesn't match), never a genuine DB ERROR from the identity CAS write
+  // itself (a connection reset, timeout, RLS denial, ...) — so the round-1
+  // fail-open bug (casErr left customerWriteBlocked at its `false` default)
+  // was untestable. This knob makes the CAS write's OWN maybeSingle() call —
+  // the one issued WITH `.is(...)` filters, which distinguishes it from the
+  // unconditional is_test write that carries no filters — return
+  // `{ data: null, error: casWriteError }` instead of evaluating the filters
+  // at all, proving whether the caller then fails OPEN (a split) or CLOSED
+  // (frozen) on a genuine write error, not just a CAS mismatch.
+  casWriteError?: { message: string; code?: string },
 ) {
   const updates: Record<string, unknown>[] = [];
   const row: Record<string, unknown> = { ...stored, ...returnRow };
@@ -595,6 +607,11 @@ function makeIdentityFake(
       const filters = currentFilters;
       currentPayload = null;
       currentFilters = {};
+      if (casWriteError && Object.keys(filters).length > 0) {
+        // The identity CAS write itself errors — matches nothing, applies
+        // nothing (a real Postgres statement that errors never commits).
+        return { data: null, error: casWriteError };
+      }
       const passed = Object.entries(filters).every(([col, val]) => (row[col] ?? null) === val);
       if (!passed) return { data: null, error: null };
       Object.assign(row, payload);
@@ -867,6 +884,38 @@ describe('updateQuote — #214 identity verify-or-reattach', () => {
     // The CAS write must not have taken effect — the row keeps its ORIGINAL identity.
     expect(fake.row.customer_name).toBe('Jane');
     expect(fake.row.customer_email).toBe('jane@x.com');
+  });
+
+  // #839 round-2 delta-verify HIGH: a genuine DB ERROR on the identity CAS
+  // write (a connection reset, timeout, RLS denial — NOT a 0-row CAS
+  // mismatch, and no approval race required at all) used to leave
+  // `customerWriteBlocked` at its `false` default, so `frozen` read false and
+  // the `wouldReattach` branch went on to repoint customer_id via
+  // attachQuoteToCustomer — while the customer_* write had just ERRORED and
+  // never landed. Result: customer_id moves to the new identity, the display
+  // columns stay on the old one — a SPLIT on any db hiccup. Fixed by failing
+  // CLOSED: `customerWriteBlocked = true` on `casErr` too, same as a 0-row
+  // mismatch.
+  it('fails CLOSED (no reattach, no split) when the identity CAS write itself ERRORS — not just a 0-row mismatch (#839 round-2 delta-verify HIGH)', async () => {
+    const fake = makeIdentityFake(
+      { ...STORED, customer_approved_at: null, deposit_paid_at: null, is_test: false },
+      { customer_id: 'cust-1' },
+      { message: 'connection reset', code: '08006' },
+    );
+    serviceRef.current = fake.client;
+
+    const res = await updateQuote(
+      'q1', INPUTS, RESULT,
+      { ...CUSTOMER, name: 'Edited Mid-Error', email: 'new@x.com' },
+      'holiday',
+    );
+
+    // No split: the reattach must NOT run — the customer_* write never landed.
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+    // The row keeps its ORIGINAL identity — the errored write never applied.
+    expect(fake.row.customer_name).toBe('Jane');
+    expect(fake.row.customer_email).toBe('jane@x.com');
+    expect(res).toMatchObject({ identityFrozen: true });
   });
 
   // The same write on an UNAPPROVED quote must still carry the customer_*

@@ -570,7 +570,24 @@ export async function updateQuote(
         .select('id')
         .maybeSingle();
       if (casErr) {
+        // #839 round-2 delta-verify HIGH: this branch used to leave
+        // customerWriteBlocked at its `false` default, so ANY db error here
+        // (a connection reset, timeout, RLS denial, constraint — not just a
+        // CAS mismatch) silently produced a SPLIT: the customer_* write did
+        // NOT land (this statement errored), yet `frozen` below read false
+        // and let the `wouldReattach` branch repoint customer_id to the new
+        // identity anyway — customer_id moves, the display columns don't.
+        // Failing closed here means a transient error freezes the WHOLE
+        // identity for this call (customer_id stays put too), never splits
+        // it; the customer can retry. We deliberately do NOT `return null`
+        // for this error — the base `.update()` (inputs/result/total) above
+        // already committed, so bailing now would misreport an otherwise-
+        // successful save as a failure. The `wouldReattach && frozen` branch
+        // below surfaces this as `identityFrozen`, not a 500 — a transient
+        // CAS error and a genuine approved/booked freeze look the same to
+        // the caller, which is the safe/conservative answer either way.
         console.warn('updateQuote: #251 identity CAS write failed:', casErr.message);
+        customerWriteBlocked = true;
       } else if (!casRow) {
         // 0 rows matched: approval/booking landed before (or in a race,
         // concurrently with) this statement — the write never took effect.
