@@ -48,7 +48,7 @@ The script's exit code tells you which rung failed:
 | Code | Meaning | What to do |
 |---|---|---|
 | 0 | transcript written | continue to Step 2 |
-| 3 | **network/egress blocked** | STOP the URL route immediately. Go to the paste route. Do NOT try mirror sites or transcript-scraper services — routing around an org egress policy is forbidden (`/root/.ccr/README.md`). |
+| 3 | **network/egress blocked** | STOP the URL route immediately. Go to the paste route. Do NOT try mirror sites or transcript-scraper services — routing around an egress policy is forbidden. |
 | 4 | video has no captions | offer the audio route (needs `ffmpeg` + a local `whisper`), else paste route |
 | 5 | `yt-dlp` or `python3` missing | `pip3 install yt-dlp` (or `brew install yt-dlp`), retry once |
 
