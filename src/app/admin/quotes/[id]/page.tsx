@@ -13,10 +13,10 @@ import { MarkAsSentButton } from '@/components/admin/MarkAsSentButton';
 import { FreeItemsPanel } from '@/components/admin/FreeItemsPanel';
 import { ColorRequestPanel } from '@/components/admin/ColorRequestPanel';
 import { buildPortalLineItems } from '@/lib/portal/adapter';
-import { BUSINESS_RULES, type QuoteInputs } from '@/lib/pricing/pricingEngine';
+import { BUSINESS_RULES, resolveLineItemLabel, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { getQuoteRaw } from '@/lib/quotes';
-import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
-import { requiresReconsent, isSupersededPendingAmendment } from '@/lib/amend';
+import { deriveStatus, APPROVED_DISPLAYS_AS, type QuoteStatus } from '@/lib/quoteStatus';
+import { requiresReconsent, isSupersededPendingAmendment, resolveAmendmentBasis } from '@/lib/amend';
 import { getJobByQuote } from '@/lib/jobs';
 import { getInvoiceByJob } from '@/lib/invoices';
 import { getDesignByQuote } from '@/lib/designs';
@@ -34,11 +34,17 @@ import { isVaultRegisterEnabled } from '@/lib/integrations/valorVault';
 // Read-only operator detail for a single quote (PR1 of #83 ops console).
 // No action buttons here — those land in PR2's PipelineActionsMenu.
 
+// Row 242 (Jason's ruling — no third stage): 'approved' reads + colors
+// IDENTICALLY to 'sent' (APPROVED_DISPLAYS_AS === 'Sent') — see quoteStatus.ts
+// for the rationale. deriveStatus/canTransition/money guards are unaffected;
+// this is presentation only. Note the "Approved" dt below in the Lifecycle
+// timeline is a DIFFERENT thing (a raw event timestamp — when
+// customer_approved_at was stamped) and is untouched.
 const STATUS_LABELS: Record<QuoteStatus, string> = {
   draft: 'Draft',
   sent: 'Sent',
   viewed: 'Viewed',
-  approved: 'Approved',
+  approved: APPROVED_DISPLAYS_AS,
   booked: 'Booked',
   changes_requested: 'Changes requested',
   declined: 'Declined',
@@ -48,7 +54,8 @@ const STATUS_LABELS: Record<QuoteStatus, string> = {
 
 const STATUS_STYLES: Record<QuoteStatus, string> = {
   booked: 'bg-emerald-100 text-emerald-700',
-  approved: 'bg-green-100 text-green-700',
+  // Row 242: no distinct color for approved — takes sent's exact style.
+  approved: 'bg-blue-100 text-blue-700',
   viewed: 'bg-purple-100 text-purple-700',
   sent: 'bg-blue-100 text-blue-700',
   draft: 'bg-amber-100 text-amber-700',
@@ -375,7 +382,13 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
                 <tbody>
                   {quote.result.lineItems.map((li, i) => (
                     <tr key={i} className="border-t border-gray-100 first:border-0">
-                      <td className="py-1.5 text-gray-700">{li.label}</td>
+                      {/* item-numbering-rename: a staff rename (quote.inputs.
+                          labelOverrides) reads through the same seam the
+                          builder/portal/PDF use, so this read-only operator
+                          view never shows the stale auto label. */}
+                      <td className="py-1.5 text-gray-700">
+                        {resolveLineItemLabel(li.id, li.label, (quote.inputs as QuoteInputs | null)?.labelOverrides).label}
+                      </td>
                       <td className="py-1.5 text-right text-gray-700 whitespace-nowrap">{money(li.amount)}</td>
                     </tr>
                   ))}
@@ -550,6 +563,15 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
                         : status === 'pending'
                           ? { label: 'Pending customer response', cls: 'bg-amber-100 text-amber-700' }
                           : null;
+                // Row 313(b) fix: read the SAME resolveAmendmentBasis figure
+                // the portal card / customer notice / amend-decline staff
+                // alert already use (invoice_basis when the amend route
+                // stamped one, else the raw trail) instead of the raw
+                // a.delta/a.new_total/a.new_balance, which disagree with the
+                // Linked invoice card's own invoice.balance above on a
+                // tax-overridden invoice (amend.ts's resolveAmendmentBasis
+                // doc comment).
+                const { deltaUsd, newTotalUsd, newBalanceUsd } = resolveAmendmentBasis(a);
                 return (
                   <li key={i} className="border-t border-gray-100 pt-2 first:border-0 first:pt-0">
                     <div className="flex items-start justify-between gap-2">
@@ -562,8 +584,8 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
                     </div>
                     <p className="text-gray-500 text-xs">
                       {fmtDate(a.amended_at)} · by {a.by} ·{' '}
-                      {a.delta >= 0 ? '+' : '−'}{money(Math.abs(a.delta))} → new total{' '}
-                      {money(a.new_total)} · balance {money(a.new_balance)}
+                      {deltaUsd >= 0 ? '+' : '−'}{money(Math.abs(deltaUsd))} → new total{' '}
+                      {money(newTotalUsd)} · balance {money(newBalanceUsd)}
                     </p>
                     {a.consent?.status === 'declined' && (
                       <p className="mt-1 text-xs text-red-700">

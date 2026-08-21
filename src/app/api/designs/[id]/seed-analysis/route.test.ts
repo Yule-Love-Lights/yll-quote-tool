@@ -86,12 +86,15 @@ beforeEach(() => {
 
 describe('POST /api/designs/[id]/seed-analysis — pruned mini-group reporting (#255)', () => {
   it('reports a miniGroup orphaned when re-analyze drops its last member strand', async () => {
-    // g1's only member (seed-mini-1) is NOT re-detected by this re-analyze —
-    // seedSceneFromAnalysis drops the stale seed-mini-1 and re-adds a FRESH
-    // seed-mini-1 that has no groupId, so g1 loses its member and gets pruned.
+    // g1's only member is seed-mini-2 (a THIRD stale detection from a prior
+    // re-analyze); this re-analyze's MINI_DETECTION_SEED has exactly one
+    // detection, so detectionItems only ever regenerates seed-mini-1 — the
+    // seed-mini-2 id is never reproduced (#240: it also can't be reattached
+    // as a scattershot for the same reason — nothing fresh carries that id),
+    // so g1 genuinely loses its only member and gets pruned.
     const before = {
       yardsticks: [],
-      items: [mkStrand({ id: 'seed-mini-1' }), mkGroup({ id: 'g1', memberIds: ['seed-mini-1'] })],
+      items: [mkStrand({ id: 'seed-mini-2' }), mkGroup({ id: 'g1', memberIds: ['seed-mini-2'] })],
     };
     getDesign.mockResolvedValue(baseRow(before));
 

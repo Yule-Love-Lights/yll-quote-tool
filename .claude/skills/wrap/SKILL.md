@@ -1,6 +1,6 @@
 ---
 name: wrap
-description: Wrap up the current work session — run the gates, run the four-lens session review, update the continuity memory (without changing the session number), append the self-assessment + scorecard, sweep repo hygiene, open a close/docs PR off fresh master, verify prod, and produce a ready-to-paste handoff for the next session. NEVER auto-merges (a human gives the merge-go). Trigger — "/wrap", "wrap the session", "close out the session".
+description: Wrap up the current work session — run the gates, run the scaled session review (one integration lens when everything shipped was already lens-reviewed, full lenses otherwise), update the continuity memory (without changing the session number), append the self-assessment + scorecard, sweep repo hygiene, open a close/docs PR off fresh master, verify prod, and produce a ready-to-paste handoff for the next session. Auto-merges ONLY a documents-only close on Naldo's machine; every other PR waits for the dev's merge-go. Trigger — "/wrap", "wrap the session", "close out the session".
 license: MIT
 ---
 
@@ -22,40 +22,60 @@ master** — `master` auto-deploys to prod, so a human gives the merge-go (AGENT
    stop: don't close out on a broken tree. (If the Bash tool is blocked, hand the
    dev a paste-able command sequence instead of stalling.)
 
-2. **Session review (four lenses, standing order, Naldo 2026-07-20).** Review
-   EVERYTHING the session shipped: the diff from the session's starting master SHA
-   to current master, plus any branch still open at close. The starting master SHA
-   is the master tip captured in this session's opening git-status snapshot (or
-   the previous session's handoff); if neither exists, use the merge-base of the
-   session's first branch with master. Spawn four review agents in parallel, in
-   one message, each with an explicit model: finders on Sonnet 5, the seat's
-   dispositions on Opus (never let a spawn inherit the session model). Lenses and
-   brief shape: AGENTS.md "Review gates". Run it even when every PR was
-   lens-reviewed at merge time; the combined tree can break in ways per-PR reviews
-   miss. If the session changed a live non-repo customer surface (WordPress,
-   Elementor, GHL, Vercel config), a zero git diff does NOT exempt it: run at
-   least the customer lens against a written description of the change. Disposition
-   every finding: fix / accept with a stated reason / defer to a ledger row.
-   HIGH findings on still-open work get fixed before the close PR; HIGH findings
-   on already-merged work get a ledger row AND a direct flag to the dev. Findings
-   feed Steps 3 and 4.
+2. **Session review (scaled lenses, standing order, Naldo 2026-07-20; scaling
+   updated 2026-08-21).** Review EVERYTHING the session shipped: the diff from the
+   session's starting master SHA to current master, plus any branch still open at
+   close. The starting master SHA is the master tip captured in this session's
+   opening git-status snapshot (or the previous session's handoff); if neither
+   exists, use the merge-base of the session's first branch with master. Scale the
+   review to what the diff already survived:
+   - **Everything shipped already passed its pre-merge lens review, no live
+     non-repo surface changed, AND the combined diff touches no customer-facing
+     surface or SHARED-table path:** spawn ONE integration agent (Sonnet 5,
+     diff-scoped) hunting only what per-PR reviews cannot see: cross-PR
+     interactions, shared-file drift, a combined tree that breaks where each PR
+     alone was fine. If the combined diff DOES touch a customer-facing surface
+     or SHARED path, add the customer lens with a real page drive; S47 is on
+     record: persona-specific defects survived per-PR reviews and only the
+     whole-session pass caught them.
+   - **Anything shipped WITHOUT a pre-merge lens review, or any live non-repo
+     customer surface changed (WordPress, Elementor, GHL, Vercel config):** full
+     lenses per AGENTS.md "Review gates". A zero git diff does NOT exempt a
+     live-surface change: run at least the customer lens against a written
+     description of it.
+   Spawns are parallel, in one message, each with an explicit model: finders on
+   Sonnet 5, the seat's dispositions on Opus (never let a spawn inherit the
+   session model). **Report contract:** each review agent MUST end by writing its
+   findings to a file the brief names (one file per lens, scratchpad or a
+   repo-ignored temp path); after the spawns return, check each named path
+   exists; a missing file means a stalled agent: respawn that lens once and say
+   so. If the respawn also produces no file, STOP: no merge-go, surface the
+   stall to the dev, and treat that lens as unreviewed.
+   Disposition every finding: fix / accept with a stated reason / defer to a
+   ledger row. HIGH findings on still-open work get fixed before the close PR;
+   HIGH findings on already-merged work get a ledger row AND a direct flag to the
+   dev. Findings feed Steps 3 and 4.
 
 3. **Update the continuity memory — WITHOUT changing the session number.** One
-   conversation = one session; read the current number from the logs and keep it
-   fixed.
-   - Append a session entry to **your OWN** log only — `docs/context/session_log.md`
-     (Jason) or `session_log_naldo.md` (Naldo). Never edit the other dev's log.
-     Include the session-review outcome (finding counts + dispositions).
+   conversation = one session; read the current number from the journal fragments
+   and keep it fixed.
+   - Write the session entry to **your OWN fragment** —
+     `docs/context/journal/S<N>-<dev>.md` (append a POST-CLOSE DELTA to the same
+     fragment if work continues after close). Never edit another session's
+     fragment. Then run `bash scripts/build-docs.sh` so `JOURNAL.md` rebuilds.
+     The old `session_log.md` / `session_log_naldo.md` are FROZEN (2026-08-21
+     migration): never append to them. Include the session-review outcome
+     (finding counts + dispositions).
    - Update the unified docs as needed: `task_ledger.md` (mark shipped tasks ✅ + the
      Shipped session) and `project_quote_tool.md` (current state / next up). Read the
      giant ledger rows **surgically** (narrow ranges / `grep -o`).
    - **Keep the continuity docs lean — archive on cadence (runs EVERY close, so the dev
      never has to ask).** Move newly-✅ ledger rows `task_ledger.md` → `task_ledger_archive.md`;
-     if your session log now holds > 3 sessions, move the oldest beyond the latest 3 →
-     `session_log_archive.md` (your OWN log only); trim the CLAUDE.md self-review journal to
-     the cumulative scorecard + latest ~2 sessions. Move content **byte-verbatim** (the
-     archives are the full record). Then reseed local memory from `docs/context` so the next
-     session boots lean.
+     trim the CLAUDE.md self-review journal to the cumulative scorecard + latest ~2
+     sessions, moving content **byte-verbatim** (the archives are the full record).
+     Session-log rotation is gone: fragments are per-session files already, nothing
+     to rotate. Then reseed local memory from `docs/context` so the next session
+     boots lean.
    - Capture: what shipped, the ending state (master SHA + gate counts), confirmed
      decisions (so they aren't re-litigated), and any cross-dev heads-up (shared-file
      or other-area touches the other owner should know about).
@@ -95,9 +115,15 @@ master** — `master` auto-deploys to prod, so a human gives the merge-go (AGENT
      edits; hand-resolve only a literal same-line clash).
    - Commit (end the message with the `Co-Authored-By: Claude …` line), push, open
      the PR with `gh`.
-   - **🛑 STOP HERE. Surface the PR and WAIT for the dev's explicit "merge."** NEVER
-     auto-merge — `master` → prod. On the dev's go: re-verify master is current
-     ("always merge current"), bring the branch up to date + re-gate, then merge.
+   - **Merge policy for the close PR (Naldo 2026-08-21).** On Jason's machine, and for
+     ANY close whose diff touches a non-doc file (code, `AGENTS.md`, `.claude/**`,
+     `.github/workflows/**`, settings): **🛑 STOP HERE, surface the PR, and WAIT for the
+     dev's explicit "merge"** — never auto-merge, `master` → prod. On Naldo's machine a
+     **documents-only** close (every changed path under `docs/context/**` or the
+     `CLAUDE.md` journal — the AGENTS.md allowlist) auto-merges after the collision
+     verify; a single non-doc path in the diff drops it back to STOP-for-go. Either way,
+     before merging: re-verify master is current ("always merge current"), bring the
+     branch up to date, re-gate, then merge.
 
 7. **Close-out verify.** If the session merged any CODE PR, verify prod actually
    serves it: one Vercel API call, latest READY deployment's SHA equals the current
@@ -116,10 +142,11 @@ master** — `master` auto-deploys to prod, so a human gives the merge-go (AGENT
    number, never write a new session block.
 
 ## Don't
-- Don't auto-merge or auto-deploy — the human approves every merge.
+- Don't auto-merge anything but a documents-only close on Naldo's machine (the standing exception) — every other PR, and every deploy, the human approves.
 - Don't bump the session number.
 - Don't edit the other dev's session log.
 - Don't skip the session review (Step 2) to save tokens; it is a standing order
-  (Naldo 2026-07-20). Scale the agent count down only if the session shipped
-  nothing at all: no repo diff AND no live non-repo surface touched (then say so
-  and move on).
+  (Naldo 2026-07-20, scaling updated 2026-08-21). The Step 2 rules set the agent
+  count: one integration lens when everything shipped was already lens-reviewed,
+  full lenses otherwise. Zero agents only if the session shipped nothing at all:
+  no repo diff AND no live non-repo surface touched (then say so and move on).

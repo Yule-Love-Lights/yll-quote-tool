@@ -168,6 +168,7 @@ function colorables(items: SceneItem[]): Colorable[] {
       if (!MINI_SURFACES.has(item.surface ?? '')) continue; // roofline / unmapped
       out.push({ id: item.id, type: 'mini', colors: item.colorPattern ?? [], size: DEFAULT_SPRITZER_SIZE });
     } else if (isMiniArea(item)) {
+      if (item.groupId) continue; // #240 fix: projected via its MiniGroupItem, mirrors the isStrand skip above
       if (!MINI_SURFACES.has(item.surface ?? '')) continue;
       out.push({ id: item.id, type: 'mini', colors: item.colorPattern ?? [], size: DEFAULT_SPRITZER_SIZE });
     } else if (isMiniGroup(item)) {

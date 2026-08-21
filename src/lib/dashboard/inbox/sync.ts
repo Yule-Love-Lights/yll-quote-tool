@@ -23,11 +23,12 @@ import { handledByTag } from './assignment';
 import { listQuotesForDashboard } from '@/lib/dashboard/queries';
 import { normalizeGhlConversation } from './ghl';
 import { mapGmailThread, normalizeGmailThreadTouches } from './gmail';
-import { normalizeQuoteTouch, quoteFollowUpDecision } from './quotetool';
+import { isAutoCompleteTerminalQuote, normalizeQuoteTouch, quoteFollowUpDecision } from './quotetool';
 import { getFollowUpDays } from './settings';
 import { FOLLOWUP_REASONS } from './followups';
 import {
   closeFollowUp,
+  completeTerminalQuoteItems,
   ensureFollowUp,
   getSyncCursor,
   ingestTouch,
@@ -125,6 +126,10 @@ export type QuoteReconcileSummary = {
   scanned: number;
   ingested: number;
   skipped: number;
+  /** #317: quotetool inbox items (bare + a `:color-request` sibling, if any)
+   *  auto-completed this tick because their backing quote derived into
+   *  booked/declined/abandoned — see completeTerminalQuoteItems (store.ts). */
+  autoCompleted: number;
   followUpsCreated: number;
   followUpsSuppressed: number;
   followUpsClosed: number;
@@ -134,6 +139,15 @@ export type QuoteReconcileSummary = {
    *  follow-up tick is distinguishable in the summary; `ok` and the route's
    *  HTTP status both fold it in (see runQuoteToolReconcile). */
   followUpErrors: number;
+  /** row 317 fix-round FIX 3 (admin LOW, mirrors #825/#310's followUpErrors
+   *  precedent above): count of completeTerminalQuoteItems calls that returned
+   *  `failed: true` — a genuine Supabase read/write error inside that call
+   *  (the lookup, the FIX-2 reversed-row check, or the resolve UPDATE), not a
+   *  legitimate "nothing eligible this tick". Before this fix such a failure
+   *  only ever hit console.warn — invisible to the summary, recordSyncRun, and
+   *  the cron route's HTTP status. Folded into `degraded`/`ok` the same way
+   *  followUpErrors is (see below). */
+  autoCompleteErrors: number;
   errors: number;
   error?: string;
 };
@@ -164,10 +178,12 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
     const followUpDays = await getFollowUpDays();
     let ingested = 0;
     let skipped = 0;
+    let autoCompleted = 0;
     let followUpsCreated = 0;
     let followUpsSuppressed = 0;
     let followUpsClosed = 0;
     let followUpErrors = 0;
+    let autoCompleteErrors = 0;
     let errors = 0;
     for (const q of quotes) {
       // #181: suppressed unsent YLL Neighbor draft — no touch, no follow-up.
@@ -183,6 +199,21 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
       }
       if (res.skipped) skipped++;
       else ingested++;
+      // #317: the quote's own status is now terminal (booked/declined/
+      // abandoned) — finish every quotetool item tied to it (bare +
+      // :color-request) to 'completed', skipping needs_reply (the hard
+      // constraint — see completeTerminalQuoteItems' own doc). Independent of
+      // `res` above: runs even on a noop-reingest tick (#826), which is
+      // exactly the "2 declined (awaiting)" self-heal case — ingestTouch has
+      // nothing new to persist, but this item was never completed before.
+      if (isAutoCompleteTerminalQuote(q)) {
+        // row 317 fix-round FIX 3: completeTerminalQuoteItems now returns
+        // { completed, failed } instead of a bare count — see its own doc and
+        // QuoteReconcileSummary.autoCompleteErrors above.
+        const autoCompleteResult = await completeTerminalQuoteItems(q.id, now);
+        autoCompleted += autoCompleteResult.completed;
+        if (autoCompleteResult.failed) autoCompleteErrors++;
+      }
       const decision = quoteFollowUpDecision(q);
       if (res.itemId && decision.kind === 'create') {
         // WT-44: forward the configured cadence so the "Follow-up reminder
@@ -244,11 +275,13 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
     // of this function (aborting the whole tick) — now ensureFollowUp fails
     // open per-item, so `errors > 0` alone would no longer catch it. Fold
     // followUpErrors into the same 'error'/'ok' decision so a degraded tick
-    // still shows up here (sync_runs / /inbox/activity).
-    const degraded = errors > 0 || followUpErrors > 0;
+    // still shows up here (sync_runs / /inbox/activity). row 317 fix-round
+    // FIX 3: autoCompleteErrors folded in the SAME way, same reasoning.
+    const degraded = errors > 0 || followUpErrors > 0 || autoCompleteErrors > 0;
     const errorParts: string[] = [];
     if (errors > 0) errorParts.push(`${errors} item error(s)`);
     if (followUpErrors > 0) errorParts.push(`${followUpErrors} follow-up error(s)`);
+    if (autoCompleteErrors > 0) errorParts.push(`${autoCompleteErrors} auto-complete error(s)`);
     await recordSyncRun('quotetool', degraded ? 'error' : 'ok', degraded ? errorParts.join(', ') : undefined);
     // `ok` drives the reconcile route's HTTP status (200 vs 500) — a
     // followUpErrors-only tick still processed every quote and both sweeps
@@ -256,12 +289,39 @@ export async function runQuoteToolReconcile(now: Date): Promise<QuoteReconcileSu
     // doesn't silently read as a healthy one in Vercel's cron dashboard. The
     // pre-existing `errors` (ingestTouch failures) counter does NOT itself
     // flip `ok` here — that's an existing, separate condition unrelated to
-    // this fix, out of scope for #310.
-    return { ok: followUpErrors === 0, scanned: quotes.length, ingested, skipped, followUpsCreated, followUpsSuppressed, followUpsClosed, followUpErrors, errors };
+    // this fix, out of scope for #310. row 317 fix-round FIX 3:
+    // autoCompleteErrors DOES flip `ok`, same as followUpErrors — both are the
+    // same "degraded, not aborted" shape (#825/#310's precedent).
+    return {
+      ok: followUpErrors === 0 && autoCompleteErrors === 0,
+      scanned: quotes.length,
+      ingested,
+      skipped,
+      autoCompleted,
+      followUpsCreated,
+      followUpsSuppressed,
+      followUpsClosed,
+      followUpErrors,
+      autoCompleteErrors,
+      errors,
+    };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     await recordSyncRun('quotetool', 'error', error);
-    return { ok: false, scanned: 0, ingested: 0, skipped: 0, followUpsCreated: 0, followUpsSuppressed: 0, followUpsClosed: 0, followUpErrors: 0, errors: 1, error };
+    return {
+      ok: false,
+      scanned: 0,
+      ingested: 0,
+      skipped: 0,
+      autoCompleted: 0,
+      followUpsCreated: 0,
+      followUpsSuppressed: 0,
+      followUpsClosed: 0,
+      followUpErrors: 0,
+      autoCompleteErrors: 0,
+      errors: 1,
+      error,
+    };
   }
 }
 
