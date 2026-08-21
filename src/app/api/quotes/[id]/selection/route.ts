@@ -67,7 +67,7 @@ import { rateLimitResponse } from '@/lib/rateLimit';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { isStaffPreview } from '@/lib/auth/staffDevice';
 import { isPermanentEffect } from '@/lib/design/permanentScenes';
-import { isPortalActionable } from '@/lib/quoteStatus';
+import { isPortalActionable, isTerminalBrowseStatus } from '@/lib/quoteStatus';
 
 export const runtime = 'nodejs';
 
@@ -215,22 +215,28 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ ok: true, skipped: 'approved' });
   }
 
-  // FIX D (technical lens, LOW, row 239 fix round) — defense-in-depth: a
-  // quote that was sent, never approved, then moved to a terminal/branch
-  // state (declined, cancelled, abandoned) or is under revision
-  // (changes_requested) still has customer_approved_at === null, so without
-  // this it would fall through to the write below. isPortalActionable is the
-  // SAME check page.tsx already uses to gate the portal UI — once a quote is
+  // FIX D (technical lens, LOW, row 239 fix round), WIDENED (row 236 x row 239
+  // compose fix): a quote that was sent, never approved, then moved to a
+  // terminal/branch state (declined, cancelled, abandoned) or is under
+  // revision (changes_requested) still has customer_approved_at === null, so
+  // without this it would fall through to the write below. isPortalActionable
+  // is the SAME check page.tsx uses to gate the portal UI — once a quote is
   // non-actionable the page shows a "no longer available" / "being updated"
-  // screen and never mounts <SelectionProvider>, so the client never reaches
-  // this route in that state; this only guards a hand-crafted POST holding
-  // the capability UUID. Impact is cosmetic (a stale browsing_selection
-  // value), not a real race with anything of consequence, so this is a
+  // screen and never mounts <SelectionProvider>, EXCEPT for declined/abandoned
+  // (ledger row 236 — Jason's ruling): those two stay browsable, colors and
+  // line-item toggles included, so isTerminalBrowseStatus carves them back OUT
+  // of this skip so the customer's edits on a still-open declined/abandoned
+  // quote actually persist instead of silently reverting on reload. cancelled
+  // and changes_requested are unaffected — the client never mounts the
+  // interactive UI for those, so this only guards a hand-crafted POST holding
+  // the capability UUID for THEM. Impact of NOT guarding declined/abandoned is
+  // the point of this fix, not a residual risk: nothing money-relevant is
+  // ever read from browsing_selection (see the route header). This is a
   // fast-path check only — no `.eq('status', ...)` re-check on the write
   // itself the way the approval guard has one. Fail-open on a null/legacy
   // status (isPortalActionable's own contract) keeps pre-migration rows
   // working exactly as before this fix.
-  if (!isPortalActionable(quote.status)) {
+  if (!isPortalActionable(quote.status) && !isTerminalBrowseStatus(quote.status)) {
     return NextResponse.json({ ok: true, skipped: 'inactive' });
   }
 
