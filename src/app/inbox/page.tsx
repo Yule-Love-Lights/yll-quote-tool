@@ -8,12 +8,14 @@ import {
   listInWorks,
   listItemsForMetrics,
   listOpenItems,
+  listPendingColorRequests,
 } from '@/lib/dashboard/inbox/store';
 import { getFollowUpDays } from '@/lib/dashboard/inbox/settings';
 import { computeResponseAnalytics, withOperatorLabels } from '@/lib/dashboard/inbox/responseMetrics';
 import { InboxList } from '@/components/dashboard/inbox/InboxList';
 import { FollowUpStrip } from '@/components/dashboard/inbox/FollowUpStrip';
 import { InWorksSection } from '@/components/dashboard/inbox/InWorksSection';
+import { PendingColorRequestsSection } from '@/components/dashboard/inbox/PendingColorRequestsSection';
 import { ResponseAnalytics } from '@/components/dashboard/inbox/ResponseAnalytics';
 
 // Always fresh — the inbox reflects live unanswered messages on every load; the
@@ -47,9 +49,10 @@ export default async function InboxPage() {
       timed('getFollowUpDays', () => getFollowUpDays()),
       timed('getReopenCounts', () => getReopenCounts(now)),
       timed('getOperatorLabels', () => getOperatorLabels()),
+      timed('listPendingColorRequests', () => listPendingColorRequests()),
     ]),
   );
-  const [openR, followR, metricsR, operatorR, inWorksR, daysR, reopenR, repLabelsR] = results;
+  const [openR, followR, metricsR, operatorR, inWorksR, daysR, reopenR, repLabelsR, colorRequestsR] = results;
   const openRes = openR.value;
   const followRes = followR.value;
   const metricsRes = metricsR.value;
@@ -58,6 +61,7 @@ export default async function InboxPage() {
   const days = daysR.value;
   const reopen = reopenR.value;
   const repLabels = repLabelsR.value;
+  const colorRequestsRes = colorRequestsR.value;
 
   console.log(
     `[inbox-timing] total=${totalMs}ms ` + results.map((r) => `${r.label}=${r.ms}ms`).join(' '),
@@ -85,6 +89,13 @@ export default async function InboxPage() {
             </Link>
           </div>
         </header>
+
+        {/* Row 321: rendered independent of every inbox_items row's status —
+            see listPendingColorRequests' own doc for why this can never be
+            hidden the way the old inbox-item-only view could. */}
+        {colorRequestsRes.ok && colorRequestsRes.items.length > 0 && (
+          <PendingColorRequestsSection items={colorRequestsRes.items} nowMs={now.getTime()} />
+        )}
 
         {followRes.ok && followRes.items.length > 0 && <FollowUpStrip initialItems={followRes.items} />}
 

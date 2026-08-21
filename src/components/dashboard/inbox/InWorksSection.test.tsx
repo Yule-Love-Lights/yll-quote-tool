@@ -26,6 +26,9 @@ import {
   withRowFlagSet,
   withRowFlagCleared,
   requiresCompleteConfirmation,
+  requiresColorRequestConfirmation,
+  colorRequestConfirmMessage,
+  combinedCompleteConfirmMessage,
   omitKey,
   clearNeedsLookOnMove,
   errorNoteFor,
@@ -122,6 +125,33 @@ describe('InWorksSection (row 291 — initial render)', () => {
       <InWorksSection awaiting={[]} handled={handled} followUpDays={3} nowMs={now} />,
     );
     expect(html).not.toContain('Locked until');
+  });
+
+  // Row 321: the badge renders for an isColorRequest row and NOT for an
+  // ordinary one, independent of needsLookReason. Uses the 'awaiting' bucket
+  // (renders unconditionally, no collapse toggle) so the row is provably in
+  // the markup either way — the 'handled' bucket's settled rows start
+  // collapsed and would make a false negative read as a pass.
+  it('badges a row flagged isColorRequest with "Colour request pending"', () => {
+    const awaiting: InWorksItem[] = [
+      { ...baseItem, id: 'a1', customerName: 'Colour Customer', isColorRequest: true },
+    ];
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={awaiting} handled={[]} followUpDays={3} nowMs={now} />,
+    );
+    expect(html).toContain('Colour Customer');
+    expect(html).toContain('Colour request pending');
+  });
+
+  it('does not badge an ordinary row', () => {
+    const awaiting: InWorksItem[] = [
+      { ...baseItem, id: 'a1', customerName: 'Ordinary Customer' },
+    ];
+    const html = renderToStaticMarkup(
+      <InWorksSection awaiting={awaiting} handled={[]} followUpDays={3} nowMs={now} />,
+    );
+    expect(html).toContain('Ordinary Customer');
+    expect(html).not.toContain('Colour request pending');
   });
 });
 
@@ -252,6 +282,56 @@ describe('completeConfirmMessage (row 304 — no overpromise on the follow-up na
   it('does NOT claim Reverse undoes the follow-up/nag (the false half of the old copy)', () => {
     const msg = completeConfirmMessage({ needsLookReason: 'Quote unanswered' });
     expect(msg).not.toMatch(/undo it/i);
+    expect(msg.toLowerCase()).toContain('does not re-open the follow-up');
+  });
+});
+
+// Row 321: pins the pure predicate + message handleMarkCompleted's SECOND,
+// independent confirm gate is built on (checked before requiresCompleteConfirmation
+// — see requiresColorRequestConfirmation's own doc comment). The click-then-
+// confirm-then-act flow itself can't be driven without jsdom (same limitation
+// as the rest of this file).
+describe('requiresColorRequestConfirmation / colorRequestConfirmMessage (row 321 — pure)', () => {
+  it('is true for a row flagged isColorRequest, independent of needsLookReason', () => {
+    expect(requiresColorRequestConfirmation({ isColorRequest: true })).toBe(true);
+  });
+
+  it('is false for a row not flagged isColorRequest (undefined reads as false)', () => {
+    expect(requiresColorRequestConfirmation({ isColorRequest: false })).toBe(false);
+    expect(requiresColorRequestConfirmation({ isColorRequest: undefined })).toBe(false);
+  });
+
+  it('names what is outstanding and points to the quote admin page', () => {
+    const msg = colorRequestConfirmMessage();
+    expect(msg).toContain('This customer is waiting on a colour change — mark it handled anyway?');
+    // Row 321 fix-round FIX 3: names the REAL on-page heading
+    // (ColorRequestPanel.tsx's pre-apply h2), never the nonexistent
+    // "Colour request panel" label the original copy invented.
+    expect(msg).toContain('Colour change requested');
+    expect(msg).not.toContain('Colour request panel');
+  });
+});
+
+// Row 321 fix-round FIX 2 (staff MED): handleMarkCompleted used to fire TWO
+// sequential window.confirm() dialogs on one click whenever both
+// requiresColorRequestConfirmation AND requiresCompleteConfirmation were true
+// (reachable together in the handled bucket). The click-then-confirm-then-act
+// flow itself can't be driven without jsdom (same limitation as the rest of
+// this file) — this pins the pure composed message the merged single dialog
+// is built from.
+describe('combinedCompleteConfirmMessage (row 321 fix-round FIX 2 — pure)', () => {
+  it('names BOTH the colour-change concern and the flagged needsLookReason, and asks once', () => {
+    const msg = combinedCompleteConfirmMessage({ needsLookReason: 'Quote unanswered' });
+    expect(msg).toContain('Quote unanswered');
+    expect(msg).toContain('colour change');
+    expect(msg).toContain('Colour change requested');
+    // Exactly one question — never two stacked "...anyway?" prompts.
+    expect(msg.match(/anyway\?/g)).toHaveLength(1);
+  });
+
+  it('still names Reverse and the follow-up-nag caveat (parity with completeConfirmMessage)', () => {
+    const msg = combinedCompleteConfirmMessage({ needsLookReason: 'They wrote last' });
+    expect(msg).toContain('Reverse');
     expect(msg.toLowerCase()).toContain('does not re-open the follow-up');
   });
 });
