@@ -8,6 +8,7 @@ import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { JobStatusBadge } from '@/components/admin/JobStatusBadge';
 import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
 import { NceBadge } from '@/components/admin/NceBadge';
+import { StaffNotesPanel } from '@/components/admin/StaffNotesPanel';
 import { reconcileInvoice } from '@/lib/invoices';
 import { isSupersededPendingAmendment, resolveAmendmentBasis } from '@/lib/amend';
 import type { JobDetail } from '@/lib/jobs';
@@ -230,6 +231,8 @@ export default function JobDetailPage() {
                 </div>
               )}
             </div>
+
+            {data.job.quote_id && <StaffNotesPanel key={data.job.quote_id} quoteId={data.job.quote_id} />}
 
             <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
               <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">

@@ -89,6 +89,7 @@ describe('isPublicPath — customer-facing allowlist', () => {
       '/api/integrations/highlevel/contacts', // CRITICAL #2
       '/api/integrations/highlevel/attach',
       '/api/quotes/8f14e45f-ceea-467a-9f3a-1b2c3d4e5f60/send', // operator action
+      '/api/quotes/8f14e45f-ceea-467a-9f3a-1b2c3d4e5f60/staff-notes', // internal notes
       '/api/quotes/8f14e45f-ceea-467a-9f3a-1b2c3d4e5f60/video', // operator-managed
       '/api/inbox', // #58 operator-only open-items feed
       '/api/dashboard/handled', // #58 operator action

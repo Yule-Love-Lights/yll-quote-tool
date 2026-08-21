@@ -7,6 +7,7 @@ import { OperatorShell } from '@/components/OperatorShell';
 import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
 import { NceBadge } from '@/components/admin/NceBadge';
+import { StaffNotesPanel } from '@/components/admin/StaffNotesPanel';
 import { reconcileInvoice } from '@/lib/invoices';
 import type { InvoiceDetail, PaymentPreference } from '@/lib/invoices';
 import type { ChargeSlotState } from '@/lib/integrations/valorBalance';
@@ -464,6 +465,8 @@ export default function InvoiceDetailPage() {
                 )}
               </div>
             </div>
+
+            {inv.quote_id && <StaffNotesPanel key={inv.quote_id} quoteId={inv.quote_id} />}
 
             <div className="bg-white border border-gray-200 rounded-lg p-4">
               <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-3">Balance</h2>
