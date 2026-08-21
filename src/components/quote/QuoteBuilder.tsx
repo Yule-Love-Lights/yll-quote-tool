@@ -61,7 +61,10 @@ import { hasSatellitePayload } from '@/lib/design/analysisSatellitePayload';
 import { deriveSideMeasure } from '@/lib/permanent/satelliteMeasure';
 import { roundFootageUpTo5 } from '@/lib/permanent/types';
 import { deriveTrackAccessories, hasAccessorySignal } from '@/lib/permanent/trackAccessories';
-import { reconcileBistroFootage } from '@/lib/permanentBistro/reconcileFootage';
+import {
+  reconcileBistroFootage,
+  roundBistroFootageOnBlur,
+} from '@/lib/permanentBistro/reconcileFootage';
 import { isStrand, isLinkedTwin, type Surface } from '@/lib/design/sceneTypes';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
 import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
@@ -5510,6 +5513,15 @@ export default function QuoteBuilder({
                                           type="number" min="0" placeholder="0"
                                           value={ft ?? ''}
                                           onChange={(e) => updateBistroRunFootage(line.id, Math.max(0, Number(e.target.value) || 0))}
+                                          onBlur={() => {
+                                            // #244 premerge finding 1 (HIGH, money — #139 parity):
+                                            // round a hand-typed override up to the next 5ft step on
+                                            // blur, same as PermanentSection's roundFootageOnBlur —
+                                            // calculatePermanentBistro never re-rounds, so an
+                                            // un-rounded override silently under-bills.
+                                            const rounded = roundBistroFootageOnBlur(ft);
+                                            if (rounded != null) updateBistroRunFootage(line.id, rounded);
+                                          }}
                                         />
                                         <span className="text-gray-400">ft</span>
                                       </>

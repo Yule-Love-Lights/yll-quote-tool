@@ -34,6 +34,8 @@
 // reconcile against, so it always takes the fresh derived value — the same
 // as a brand-new run.
 
+import { roundFootageUpTo5 } from '@/lib/permanent/types';
+
 export type BistroRunFootage = { id?: string; footage: number };
 
 export type ReconcileBistroResult = {
@@ -85,4 +87,20 @@ export function reconcileBistroFootage(
     return { id: run.id, footage: fresh };
   });
   return { next, nextBaseline };
+}
+
+// #244 premerge finding 1 (HIGH, money — #139 parity): footage bills in 5-ft
+// steps everywhere else (the auto-derive above rounds via roundFootageUpTo5,
+// and PermanentSection's manual side-footage fields round the same way on
+// blur), but the bistro override input billed the raw typed value —
+// calculatePermanentBistro never re-rounds, so a tape-measured "22" would
+// silently under-bill (should be 25). Mirrors PermanentSection's
+// roundFootageOnBlur: rounds UP on blur (not per keystroke, so typing "22"
+// isn't fought mid-entry), and returns null (no-op) when nothing was typed
+// yet or the value is already a multiple of 5, so the caller doesn't write
+// back an identical value.
+export function roundBistroFootageOnBlur(current: number | null): number | null {
+  if (current == null) return null;
+  const rounded = roundFootageUpTo5(current);
+  return rounded !== current ? rounded : null;
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { reconcileBistroFootage } from './reconcileFootage';
+import { reconcileBistroFootage, roundBistroFootageOnBlur } from './reconcileFootage';
 
 describe('reconcileBistroFootage', () => {
   it('auto-populates a brand-new run (no prior baseline, no billed entry)', () => {
@@ -86,5 +86,22 @@ describe('reconcileBistroFootage', () => {
     const result = reconcileBistroFootage([], [{ id: 'a', footage: 35 }], { a: 20 });
     expect(result.next).toEqual([]);
     expect(result.nextBaseline).toEqual({});
+  });
+});
+
+// #244 premerge finding 1 (HIGH, money — #139 parity).
+describe('roundBistroFootageOnBlur', () => {
+  it('rounds a hand-typed value up to the next 5ft step', () => {
+    expect(roundBistroFootageOnBlur(22)).toBe(25);
+    expect(roundBistroFootageOnBlur(37)).toBe(40);
+  });
+
+  it('no-ops (returns null) when already a multiple of 5', () => {
+    expect(roundBistroFootageOnBlur(35)).toBeNull();
+    expect(roundBistroFootageOnBlur(0)).toBeNull();
+  });
+
+  it('no-ops (returns null) when nothing has been typed yet', () => {
+    expect(roundBistroFootageOnBlur(null)).toBeNull();
   });
 });
