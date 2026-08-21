@@ -24,7 +24,7 @@
 -- verified the header count against a fresh `ls migrations/*.sql` rather
 -- than trusting either number, per the "re-derive, don't hand-increment"
 -- line above.
--- WHY THIS PASS EXISTED: the S59 six-lens review found this file no longer was
+-- WHY THIS PASS EXISTED: the S58 post-close six-lens review (mislabelled S59 until the 2026-08-19 correction) found this file no longer was
 -- what its own header claimed. It said "64 dated migrations" and "30 LIVE"
 -- tables while 81 migrations and 37 live tables existed, and TWO tables
 -- (archive_photos, site_submissions) were absent from the file entirely — so
