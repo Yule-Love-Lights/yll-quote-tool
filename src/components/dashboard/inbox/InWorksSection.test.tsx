@@ -11,9 +11,16 @@
 // since a static render can't drive the async click-then-fetch flow that
 // would otherwise require jsdom + a mocked fetch (not this repo's idiom —
 // no jsdom/testing-library dependency exists here).
+//
+// Row 309: useRouter (next/navigation) throws outside an app-router context —
+// InWorksSection now calls it unconditionally (React hook-order rules), so
+// it's mocked here, same shape as AmendmentConsentCard.test.tsx's own mock.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
+
+vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: () => {} }) }));
+
 import {
   InWorksSection,
   withRowFlagSet,
@@ -26,6 +33,7 @@ import {
   clearNeedsLookOnMove,
   errorNoteFor,
   completeConfirmMessage,
+  retiresFollowUp,
 } from './InWorksSection';
 import type { InWorksItem } from '@/lib/dashboard/inbox/store';
 
@@ -463,5 +471,20 @@ describe('errorNoteFor (row 311 fix-round FIX 3)', () => {
 
   it('a definite rejection with no error falls back to the generic copy', () => {
     expect(errorNoteFor(undefined, undefined)).toBe('Something went wrong — try again.');
+  });
+});
+
+// Row 309: closeFollowUpsForResolvedItem (store.ts) is only called from
+// dismissItem and markItemCompleted — this file's 'Followed' action never
+// retires a pending follow-up, so act()'s router.refresh() is gated on this
+// predicate rather than firing after every successful action. Mirrors
+// InboxList.test.tsx's own coverage of its identical local copy.
+describe('retiresFollowUp (row 309 — which action can retire a due follow-up)', () => {
+  it('is true for completed — the only terminal transition this file can produce', () => {
+    expect(retiresFollowUp('/api/dashboard/completed')).toBe(true);
+  });
+
+  it('is false for followed — not a terminal transition', () => {
+    expect(retiresFollowUp('/api/dashboard/followed')).toBe(false);
   });
 });

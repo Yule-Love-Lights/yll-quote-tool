@@ -6,10 +6,17 @@
 // contact collapses into one rolled-up row instead of N separate ones. The
 // grouping/sorting logic itself is covered exhaustively in
 // groupInboxItems.test.ts; this just proves InboxList actually wires it in.
+//
+// Row 309: useRouter (next/navigation) throws outside an app-router context —
+// InboxList now calls it unconditionally (React hook-order rules), so it's
+// mocked here, same shape as AmendmentConsentCard.test.tsx's own mock.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { InboxList, isGroupExpanded, canToggleGroup, withRowFlagSet, withRowFlagCleared, withItemRestored, omitKey, errorNoteFor, colorRequestConfirmMessage } from './InboxList';
+
+vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: () => {} }) }));
+
+import { InboxList, isGroupExpanded, canToggleGroup, withRowFlagSet, withRowFlagCleared, withItemRestored, omitKey, errorNoteFor, retiresFollowUp, colorRequestConfirmMessage } from './InboxList';
 import type { OpenInboxItem } from '@/lib/dashboard/inbox/types';
 import type { InboxGroup } from '@/lib/dashboard/inbox/groupInboxItems';
 
@@ -626,5 +633,22 @@ describe('colorRequestConfirmMessage (row 321 — pure)', () => {
     // "Colour request panel" label the original copy invented.
     expect(msg).toContain('Colour change requested');
     expect(msg).not.toContain('Colour request panel');
+  });
+});
+
+// Row 309: closeFollowUpsForResolvedItem (store.ts) is only called from
+// dismissItem and markItemCompleted — 'Handled'/'Followed' never retire a
+// pending follow-up, so act()'s router.refresh() (which re-renders the whole
+// InboxPage server component, not just the follow-up strip) is gated on this
+// predicate rather than firing after every successful action.
+describe('retiresFollowUp (row 309 — which actions can retire a due follow-up)', () => {
+  it('is true for dismiss and completed — the two terminal transitions', () => {
+    expect(retiresFollowUp('/api/dashboard/dismiss')).toBe(true);
+    expect(retiresFollowUp('/api/dashboard/completed')).toBe(true);
+  });
+
+  it('is false for handled and followed — neither is a terminal transition', () => {
+    expect(retiresFollowUp('/api/dashboard/handled')).toBe(false);
+    expect(retiresFollowUp('/api/dashboard/followed')).toBe(false);
   });
 });

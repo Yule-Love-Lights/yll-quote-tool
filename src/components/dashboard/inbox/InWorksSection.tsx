@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import type { InWorksItem } from '@/lib/dashboard/inbox/store';
 import { formatWaiting } from '@/lib/dashboard/inbox/notify';
 import { isStale } from '@/lib/dashboard/inbox/lifecycle';
@@ -60,6 +61,17 @@ export function errorNoteFor(unreachableAction: string | undefined, rejectionErr
     return `Couldn't reach the server — this may or may not have gone through. Click ${unreachableAction} again to confirm.`;
   }
   return rejectionError || 'Something went wrong — try again.';
+}
+
+/** Row 309: a local copy of InboxList.tsx's own retiresFollowUp (kept
+ *  deliberately un-shared like the rest of this file's helpers). Only 'Mark
+ *  completed' (path === '/api/dashboard/completed') can retire a pending
+ *  "due today" follow-up — closeFollowUpsForResolvedItem (store.ts) is
+ *  called ONLY from dismissItem and markItemCompleted; 'Followed' (this
+ *  file's other act() caller) never does. Pure and exported so this is
+ *  directly unit-testable without rendering. */
+export function retiresFollowUp(path: string): boolean {
+  return path === '/api/dashboard/completed';
 }
 
 /** Row 311 fold-in (LOW): a row moved client-side by moveGroup carries its OLD
@@ -149,6 +161,7 @@ export function InWorksSection({
   // callers/tests that don't pass it render exactly as before (no banner).
   evidenceIncomplete?: boolean;
 }) {
+  const router = useRouter();
   const [awaitingItems, setAwaitingItems] = useState<InWorksItem[]>(awaiting);
   const [handledItems, setHandledItems] = useState<InWorksItem[]>(handled);
   // Row 291 fix: busyId/errorId were single global slots (`string | null`) —
@@ -251,6 +264,13 @@ export function InWorksSection({
         } else {
           moveGroup(item.id, group, outcome);
         }
+        // Row 309: this row's own optimistic transition above already keeps
+        // THIS section correct — router.refresh() exists purely to reach the
+        // sibling FollowUpStrip, whose initialItems prop is otherwise only
+        // ever read once (useState's initializer is mount-only, see
+        // FollowUpStrip's own reconcile effect). See retiresFollowUp's doc
+        // comment for why this is scoped to 'Mark completed' only.
+        if (retiresFollowUp(path)) router.refresh();
       } else {
         // A definite server answer (a rejection, not a throw) — the write is
         // known NOT to have happened, so no lock: every button stays usable.
