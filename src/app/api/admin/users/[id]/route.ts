@@ -137,6 +137,26 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     if (getErr || !target?.user) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 });
     }
+    // ⚠️ SAME DOOR, SAME REFUSAL AS PATCH ABOVE — see that comment for why
+    // `roleOf` cannot be trusted to spot a crew login here either.
+    //
+    // DELETE needs the guard for a SECOND reason PATCH does not have:
+    // `crew_members.auth_user_id` has no foreign key to `auth.users`, so
+    // deleting the auth user here does NOT clear the pointer. The column keeps
+    // a dangling id, `GET /api/admin/crew-accounts` still reports
+    // `hasLogin: true` for that person, and `POST /api/admin/crew-accounts`
+    // refuses to mint a replacement with a 409 because it only tests the column
+    // for truthiness — never whether the id still resolves. That crew member is
+    // then locked out permanently, recoverable only by a manual SQL UPDATE.
+    // Crew rows render as a plain "operator" in the accounts table, so this was
+    // one routine "remove the operator who never signed in" click away.
+    if (isCrewAccount(target.user.app_metadata)) {
+      return NextResponse.json(
+        { error: 'This is a crew login. Manage it under Settings → Accounts → Crew logins.' },
+        { status: 403 },
+      );
+    }
+
     const targetRole = roleOf(target.user.app_metadata);
     const accounts = await listOperatorAccounts(sb);
     const g = canDeleteUser({
