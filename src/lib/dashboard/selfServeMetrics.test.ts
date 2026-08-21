@@ -97,10 +97,12 @@ describe('computeSelfServeMetrics', () => {
   });
 
   it('clamps a pre-fix sub-minimum low up to the job floor before scoring (default minimum = $1,000)', () => {
-    // A $1,000 home stored a $900 low before the S47 fix (a low it could never be
-    // charged). Staff re-priced to $1,050. Scored against the CLAMPED range
-    // [1000, 1100], midpoint 1050 ⇒ 0% miss, in range — matching what a post-fix
-    // row would store, so the go/no-go tile no longer mixes pre/post-fix eras.
+    // A $1,000 home WOULD have stored a $900 low in the pre-fix window (a low it
+    // could never be charged). No such row was ever actually written (0 rows in
+    // self_serve_estimates as of 2026-08-21), so this is the guarded case, not a
+    // replay of live data. Staff re-priced to $1,050. Scored against the CLAMPED
+    // range [1000, 1100], midpoint 1050 ⇒ 0% miss, in range, matching what a
+    // post-fix row would store, so the go/no-go tile can't mix eras.
     const r = row({ low: 900, high: 1100, estimateTotal: 1000, total: 1050 });
     const clamped = computeSelfServeMetrics([r]);
     expect(clamped.medianMissPct).toBeCloseTo(0, 10);

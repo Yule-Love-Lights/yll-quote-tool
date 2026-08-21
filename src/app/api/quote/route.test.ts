@@ -18,7 +18,11 @@ const { save, update, getRaw, rawRef, operatorRef } = vi.hoisted(() => ({
   update: vi.fn(
     async (
       ..._args: unknown[]
-    ): Promise<{ id: string; priorInputs?: { event?: { eventDate?: string } } | null }> => ({ id: 'existing-id' }),
+    ): Promise<{
+      id: string;
+      priorInputs?: { event?: { eventDate?: string } } | null;
+      identityFrozen?: boolean;
+    }> => ({ id: 'existing-id' }),
   ),
   // getQuoteRaw is consulted only on the update branch (W1-003 booked-re-price
   // gate). rawRef.current is the row the mock returns; null = row not found,
@@ -576,6 +580,24 @@ describe('POST /api/quote — validation hardening', () => {
     expect(res.status).toBe(200);
     expect(update).toHaveBeenCalledTimes(1);
     expect(save).not.toHaveBeenCalled();
+  });
+
+  // #839 fix-round MED: updateQuote's identityFrozen flag (set when the #251
+  // freeze actually refused a would-be reattach) must reach the client so the
+  // builder can show a notice instead of the save silently succeeding.
+  it('propagates identityFrozen:true from updateQuote onto the response', async () => {
+    update.mockResolvedValueOnce({ id: 'existing-id', identityFrozen: true });
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.identityFrozen).toBe(true);
+  });
+
+  it('omits identityFrozen from the response when updateQuote did not set it', async () => {
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.identityFrozen).toBeUndefined();
   });
 
   it('rejects an over-cap input array (length 501) with 400', async () => {
