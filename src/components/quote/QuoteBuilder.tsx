@@ -63,6 +63,7 @@ import { roundFootageUpTo5 } from '@/lib/permanent/types';
 import { deriveTrackAccessories, hasAccessorySignal } from '@/lib/permanent/trackAccessories';
 import {
   reconcileBistroFootage,
+  deriveBistroFootageMap,
   roundBistroFootageOnBlur,
 } from '@/lib/permanentBistro/reconcileFootage';
 import { isStrand, isLinkedTwin, type Surface } from '@/lib/design/sceneTypes';
@@ -1608,15 +1609,14 @@ export default function QuoteBuilder({
         // (the S24 reopen-clobber class). Seed from the CURRENT (pre-edit)
         // lines/scale/aspect — by the time a human can click-drag a line, the
         // satellite <img> has already fired onLoad and corrected
-        // satelliteAspect away from its 1:1 default.
+        // satelliteAspect away from its 1:1 default. The seed decision itself
+        // is the pure, tested deriveBistroFootageMap (reconcileFootage.ts,
+        // #244 premerge finding 3) — this repo has no component-render
+        // harness for QuoteBuilder.tsx, so the regression coverage lives on
+        // that extracted function, composed with reconcileBistroFootage in
+        // reconcileFootage.test.ts's rehydrate -> first-edit -> derive test.
         if (permDeriveFrozenRef.current) {
-          const seed: Record<string, number> = {};
-          for (const l of satelliteBistroLines) {
-            if (!l.id) continue;
-            const ft = bistroRunFootage(l);
-            if (ft != null) seed[l.id] = ft;
-          }
-          prevBistroDerivedRef.current = seed;
+          prevBistroDerivedRef.current = deriveBistroFootageMap(satelliteBistroLines, bistroRunFootage);
         }
         // #142 thaw: the operator touched the lines — footage follows the
         // visible geometry again (live-session rules), mirroring the

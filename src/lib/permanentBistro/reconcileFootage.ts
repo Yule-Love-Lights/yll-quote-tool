@@ -89,6 +89,31 @@ export function reconcileBistroFootage(
   return { next, nextBaseline };
 }
 
+// #244 premerge finding 3 (technical, MED): the reopen-clobber protection
+// above only works if `baseline` is seeded correctly on a reopened quote's
+// FIRST post-rehydrate edit — QuoteBuilder.tsx's getSetter('bistro') does
+// this by computing every currently-drawn run's derived footage (by id)
+// BEFORE the edit's updater runs, so reconcileBistroFootage has a real prior
+// baseline instead of treating every already-billed run as brand-new and
+// stamping fresh geometry over a saved manual override (the S24
+// reopen-clobber class). Extracted to a pure, testable function — this repo
+// has no component-render harness for QuoteBuilder.tsx, so the seed DECISION
+// lives here and QuoteBuilder.tsx's seed block just calls it; see
+// reconcileFootage.test.ts for the composed rehydrate -> first-edit -> derive
+// regression test this enables.
+export function deriveBistroFootageMap<T extends { id?: string }>(
+  lines: T[],
+  computeFootage: (line: T) => number | null,
+): Record<string, number> {
+  const map: Record<string, number> = {};
+  for (const line of lines) {
+    if (!line.id) continue;
+    const ft = computeFootage(line);
+    if (ft != null) map[line.id] = ft;
+  }
+  return map;
+}
+
 // #244 premerge finding 1 (HIGH, money — #139 parity): footage bills in 5-ft
 // steps everywhere else (the auto-derive above rounds via roundFootageUpTo5,
 // and PermanentSection's manual side-footage fields round the same way on

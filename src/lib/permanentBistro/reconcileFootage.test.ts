@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { reconcileBistroFootage, roundBistroFootageOnBlur } from './reconcileFootage';
+import { reconcileBistroFootage, deriveBistroFootageMap, roundBistroFootageOnBlur } from './reconcileFootage';
 
 describe('reconcileBistroFootage', () => {
   it('auto-populates a brand-new run (no prior baseline, no billed entry)', () => {
@@ -86,6 +86,75 @@ describe('reconcileBistroFootage', () => {
     const result = reconcileBistroFootage([], [{ id: 'a', footage: 35 }], { a: 20 });
     expect(result.next).toEqual([]);
     expect(result.nextBaseline).toEqual({});
+  });
+});
+
+// #244 premerge finding 3 (technical, MED — reopen-clobber seed guard).
+describe('deriveBistroFootageMap (the seed decision QuoteBuilder.getSetter(\'bistro\') calls)', () => {
+  it('maps each id-carrying line to its computed footage', () => {
+    const lines = [{ id: 'a', points: [] }, { id: 'b', points: [] }];
+    const map = deriveBistroFootageMap(lines, (l) => (l.id === 'a' ? 20 : 15));
+    expect(map).toEqual({ a: 20, b: 15 });
+  });
+
+  it('skips a line with no stable id (nothing to key the baseline on)', () => {
+    const lines = [{ points: [] }, { id: 'b', points: [] }];
+    const map = deriveBistroFootageMap(lines, () => 20);
+    expect(map).toEqual({ b: 20 });
+  });
+
+  it('skips a line whose footage cannot be computed yet (null — no satellite scale)', () => {
+    const lines = [{ id: 'a', points: [] }];
+    const map = deriveBistroFootageMap(lines, () => null);
+    expect(map).toEqual({});
+  });
+});
+
+// #244 premerge finding 3: WIRING-LEVEL test — no component-render harness
+// exists in this repo for QuoteBuilder.tsx (no jsdom/testing-library in this
+// project's vitest setup), so this composes the exact two pure functions
+// QuoteBuilder.tsx's real code path chains together (getSetter('bistro')'s
+// seed step -> deriveBistroFootageMap; the derive effect -> reconcileBistroFootage)
+// to exercise rehydrate -> first-edit -> derive end to end. See the report for
+// the mutation-probe that confirms this actually fails without the seed.
+describe('#244 reopen-clobber guard — rehydrate -> first-edit -> derive (composed)', () => {
+  it('an existing override survives the FIRST post-rehydrate edit, even though a DIFFERENT run redraws', () => {
+    // Rehydrate: two persisted runs. Run 'a' was saved with a staff override
+    // (35ft) that disagrees with its own geometry (which still derives to 20ft
+    // — the operator typed 35 by tape measure, never redrew the line).
+    const persistedLines = [
+      { id: 'a', points: [[0, 0], [1, 0]] as [number, number][] },
+      { id: 'b', points: [[0, 0], [0, 1]] as [number, number][] },
+    ];
+    const billedForm = [
+      { id: 'a', footage: 35 },
+      { id: 'b', footage: 15 },
+    ];
+    const computeFootage = (l: { id?: string }) => (l.id === 'a' ? 20 : 15);
+
+    // getSetter('bistro')'s seed step: fires on the FIRST edit while still
+    // frozen (#142), seeded from the CURRENT pre-edit lines.
+    const seededBaseline = deriveBistroFootageMap(persistedLines, computeFootage);
+
+    // First edit: the operator redraws run 'b' only — 'a's geometry is
+    // unchanged, but the shared satelliteBistroLines array still re-fires the
+    // derive effect for BOTH runs.
+    const freshRuns = persistedLines.map((l) => ({ id: l.id, footage: computeFootage(l) }));
+    const { next } = reconcileBistroFootage(freshRuns, billedForm, seededBaseline);
+
+    expect(next).toEqual([
+      { id: 'a', footage: 35 }, // override survives — the guard this test protects
+      { id: 'b', footage: 15 },
+    ]);
+  });
+
+  it('WITHOUT the seed (baseline empty, the pre-#244-guard bug), the same first edit clobbers the override', () => {
+    const persistedLines = [{ id: 'a', points: [[0, 0], [1, 0]] as [number, number][] }];
+    const billedForm = [{ id: 'a', footage: 35 }];
+    const freshRuns = [{ id: 'a', footage: 20 }];
+
+    const { next } = reconcileBistroFootage(freshRuns, billedForm, {}); // no seed at all
+    expect(next).toEqual([{ id: 'a', footage: 20 }]); // clobbered — this is the bug the seed prevents
   });
 });
 
