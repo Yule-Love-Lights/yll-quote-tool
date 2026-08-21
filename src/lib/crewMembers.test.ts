@@ -202,6 +202,30 @@ function makeDb() {
                 }
               }
 
+              // The OTHER partial unique index on this table. Modelled here so the
+              // telegram-collision path is exercised against realistic Postgres
+              // behaviour rather than a hand-thrown error.
+              if (payload.telegram_user_id !== undefined && payload.telegram_user_id !== null) {
+                const collision = stateRef.current.rows.find(
+                  (row, i) => i !== idx && row.telegram_user_id === String(payload.telegram_user_id),
+                );
+                if (collision) {
+                  return {
+                    select: () => ({
+                      maybeSingle: () =>
+                        Promise.resolve({
+                          data: null,
+                          error: {
+                            code: '23505',
+                            message:
+                              'duplicate key value violates unique constraint "crew_members_telegram_user_id_key"',
+                          },
+                        }),
+                    }),
+                  };
+                }
+              }
+
               const existing = stateRef.current.rows[idx];
               const row = mergeRow(existing, payload);
               stateRef.current.rows[idx] = row;
@@ -236,6 +260,7 @@ import {
   getCrewMemberByTelegramUserId,
   insertCrewMember,
   listActiveCrewMembers,
+  TelegramUserIdTakenError,
   updateCrewMember,
 } from './crewMembers';
 
@@ -427,6 +452,38 @@ describe('insertCrewMember', () => {
 });
 
 describe('updateCrewMember', () => {
+  it('rejects a Telegram id that already belongs to another crew member, with a NAMED error', async () => {
+    // CREW_1 (SonSon) already holds '111'. Giving it to crew-2 must not silently
+    // succeed, and must not surface as a generic write failure — the office needs
+    // to know it is a conflict they can resolve.
+    await expect(updateCrewMember('crew-2', { telegramUserId: '111' })).rejects.toBeInstanceOf(
+      TelegramUserIdTakenError,
+    );
+    await expect(updateCrewMember('crew-2', { telegramUserId: '111' })).rejects.toThrow(
+      'Telegram account 111 is already linked to another crew member',
+    );
+  });
+
+  it('links a free Telegram id, and unlinks with null', async () => {
+    await expect(updateCrewMember('crew-2', { telegramUserId: '999' })).resolves.toMatchObject({
+      id: 'crew-2',
+      telegramUserId: '999',
+    });
+    await expect(updateCrewMember('crew-2', { telegramUserId: null })).resolves.toMatchObject({
+      id: 'crew-2',
+      telegramUserId: null,
+    });
+  });
+
+  it('does NOT treat a re-link of the SAME id on the SAME row as a collision', async () => {
+    // The partial index is on the column, so a no-op write of a row's own value
+    // must not be mistaken for someone else's claim.
+    await expect(updateCrewMember('crew-1', { telegramUserId: '111' })).resolves.toMatchObject({
+      id: 'crew-1',
+      telegramUserId: '111',
+    });
+  });
+
   it('throws when Supabase is not configured', async () => {
     dbRef.current = null;
     await expect(
