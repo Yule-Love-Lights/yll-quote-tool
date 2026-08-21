@@ -2670,6 +2670,21 @@ export default function QuoteBuilder({
             permDeriveFrozenRef.current = false;
             hadBistroLinesRef.current = satelliteBistroLines.length > 0;
             setSatelliteBistroLines([]);
+          } else {
+            // #244 delta-verify HIGH (money-silent): unlike applyPulledSatellite,
+            // this function already called setSatelliteFeetPerPixel(the NEW
+            // scale) above, BEFORE this confirm ever ran — so a decline can't be
+            // a true no-op the way the sibling's is. Without freezing here, the
+            // kept satelliteBistroLines/overrides re-derive on the next effect
+            // pass against the NEW scale; since the freshly-derived footage now
+            // differs from prevBistroDerivedRef's baseline, reconcileBistroFootage's
+            // "this run's geometry changed -> redraw wins" branch fires and
+            // silently stamps the new-scale value over a hand-typed override
+            // (e.g. 35ft -> ~22ft), reversing the explicit Cancel. Freeze the
+            // derive (#142 idiom) so the kept billed array stays exactly as the
+            // operator left it; a later real line edit thaws it as usual via
+            // getSetter('bistro').
+            permDeriveFrozenRef.current = true;
           }
         }
         // #443 fix (S23): persist the satellite IMAGE onto the design so the portal

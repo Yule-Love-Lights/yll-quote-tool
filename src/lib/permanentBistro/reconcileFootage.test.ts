@@ -157,6 +157,56 @@ describe('#244 reopen-clobber guard — rehydrate -> first-edit -> derive (compo
   });
 });
 
+// #244 delta-verify HIGH (money-silent): the previous fix round's
+// window.confirm before "Analyze from Address" discards bistro runs did NOT
+// actually protect a hand-typed override on Cancel, because
+// setSatelliteFeetPerPixel(the NEW scale) already fires unconditionally
+// BEFORE the confirm block in QuoteBuilder.tsx (~line 2644) — so a decline
+// left permDeriveFrozenRef untouched (still thawed from the earlier draw) and
+// the kept run re-derived against the new scale on the next effect pass,
+// with reconcileBistroFootage's "this run's geometry changed -> redraw wins"
+// branch silently clobbering the override. The fix freezes the derive on
+// decline (QuoteBuilder.tsx's `else { permDeriveFrozenRef.current = true; }`
+// in the same block). No component-render harness exists for QuoteBuilder.tsx
+// (same limitation the file's other "composed" describe block above
+// documents), so this models the derive effect's own guard shape exactly —
+// `if (permDeriveFrozenRef.current) return;` (QuoteBuilder.tsx ~line 1774)
+// before it would otherwise call reconcileBistroFootage — via a local
+// `frozen` flag standing in for the ref.
+describe('#244 delta-verify HIGH — Analyze-from-Address decline must freeze the derive, not just window.confirm()', () => {
+  // Mirrors QuoteBuilder.tsx's derive effect body exactly: frozen -> no-op
+  // (never calls reconcile); unfrozen -> reconcile against the fresh,
+  // new-scale-derived footage.
+  const simulateBistroDeriveEffect = (
+    frozen: boolean,
+    freshRuns: Parameters<typeof reconcileBistroFootage>[0],
+    currentForm: Parameters<typeof reconcileBistroFootage>[1],
+    baseline: Parameters<typeof reconcileBistroFootage>[2],
+  ) =>
+    frozen
+      ? { next: currentForm, nextBaseline: baseline }
+      : reconcileBistroFootage(freshRuns, currentForm, baseline);
+
+  // Run 'a': drawn once, auto-derived to 20ft at the OLD scale (baseline
+  // records 20). Staff then hand-typed an override of 35ft (tape measure).
+  const baseline = { a: 20 };
+  const billedFormWithOverride = [{ id: 'a', footage: 35 }];
+  // Analyze-from-Address re-runs and pulls a NEW satellite scale; the SAME
+  // (unredrawn) geometry now derives to a different footage under it —
+  // exactly the repro's 35 -> ~22 clobber.
+  const freshRunsAtNewScale = [{ id: 'a', footage: 22 }];
+
+  it('FROZEN (the fix — decline sets permDeriveFrozenRef.current = true): the override survives the scale change', () => {
+    const result = simulateBistroDeriveEffect(true, freshRunsAtNewScale, billedFormWithOverride, baseline);
+    expect(result.next).toEqual([{ id: 'a', footage: 35 }]); // override survives
+  });
+
+  it('UNFROZEN (the bug — decline left the derive thawed): the same scale change silently clobbers the override', () => {
+    const result = simulateBistroDeriveEffect(false, freshRunsAtNewScale, billedFormWithOverride, baseline);
+    expect(result.next).toEqual([{ id: 'a', footage: 22 }]); // clobbered — this was the bug
+  });
+});
+
 // #244 premerge finding 1 (HIGH, money — #139 parity).
 describe('roundBistroFootageOnBlur', () => {
   it('rounds a hand-typed value up to the next 5ft step', () => {
