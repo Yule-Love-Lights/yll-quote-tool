@@ -149,7 +149,6 @@ describe('#244 reopen-clobber guard — rehydrate -> first-edit -> derive (compo
   });
 
   it('WITHOUT the seed (baseline empty, the pre-#244-guard bug), the same first edit clobbers the override', () => {
-    const persistedLines = [{ id: 'a', points: [[0, 0], [1, 0]] as [number, number][] }];
     const billedForm = [{ id: 'a', footage: 35 }];
     const freshRuns = [{ id: 'a', footage: 20 }];
 
