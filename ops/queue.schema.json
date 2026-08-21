@@ -1,0 +1,81 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://yll-quote-tool/ops/queue.schema.json",
+  "title": "Work Queue Task",
+  "description": "One line of a queue.jsonl file. Each line is one task object that the run-queue skill executes and verifies on its own, with no human in the loop unless it gets quarantined.",
+  "type": "object",
+  "required": ["id", "description", "verify", "blast_radius"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Short unique task id. Used as the file name for its blocker file if it gets quarantined.",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "description": "What the task does, in plain English. This is not proof of done. Only the verify step is proof.",
+      "minLength": 1
+    },
+    "execute_notes": {
+      "type": "string",
+      "description": "Optional hints for how to do the work: files to touch, commands to run, gotchas. Not required."
+    },
+    "verify": {
+      "type": "object",
+      "description": "The one and only source of truth for whether this task is done. Narration of the work is never enough.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type", "command"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "shell" },
+            "command": {
+              "type": "string",
+              "description": "A shell command run from the repo root. Exit code 0 means verified. Any other exit code means not verified.",
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type", "check"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "manual" },
+            "check": {
+              "type": "string",
+              "description": "A written check a human can follow to confirm the task by hand. Used only when no shell command can prove the result (UI-only changes, third-party dashboards, physical checks). A manual task cannot be auto-verified, so it always needs a human before it can move to verified.",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "max_attempts": {
+      "type": "integer",
+      "description": "How many distinct approaches to try before quarantining. Default 2.",
+      "minimum": 1,
+      "default": 2
+    },
+    "blast_radius": {
+      "type": "string",
+      "description": "READ: looks at things, changes nothing. WRITE: changes files, dev data, or non-prod state. PROD_WRITE: changes production data, a live customer record, or anything a real customer or Naldo's business depends on right now.",
+      "enum": ["READ", "WRITE", "PROD_WRITE"]
+    },
+    "depends_on": {
+      "type": "array",
+      "description": "Ids of tasks that must be VERIFIED before this one starts.",
+      "items": { "type": "string" },
+      "default": []
+    },
+    "status": {
+      "type": "string",
+      "description": "Current state of the task. The queue file starts every task as pending; run-queue updates this field as it works.",
+      "enum": ["pending", "verified", "quarantined"],
+      "default": "pending"
+    }
+  }
+}
