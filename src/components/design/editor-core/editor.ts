@@ -5,6 +5,7 @@ import Konva from "konva";
 // THIS folder (./). Everything else in this file is byte-identical with the
 // design tool's canonical editor.ts — keep it that way.
 import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, isItemOnPhoto, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type SideOfHouse, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, isMiniGroupable, pruneOrphanedMiniGroups, removeItemsForPhoto, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
+import { addMiniGroupMembers, createMiniGroup, resolveMiniGroupSelection, setMiniGroupMemberSpacing, sharedMiniGroupColorPattern, updateMiniGroupMemberColorPatterns, updateSelectedColorPatterns } from "@/lib/design/miniGroupEdits";
 import { createEditorApi } from "./storage";
 import { COLORS, setPalette } from "./colors";
 import { renderStrand, strandLengthPx } from "./strand";
@@ -447,8 +448,9 @@ export async function renderEditor(
   let drawPreview: Konva.Line | null = null;
   // Scattershot box-drag state (lights-only local style → commits a MiniAreaItem).
   let scattershotStart: { x: number; y: number } | null = null;
-  // Scattershot / spritzer edit panels: when armed (via "+ Add to pattern"),
+  // Mini-group / scattershot / spritzer edit panels: when armed (via "+ Add to pattern"),
   // the next color tap APPENDS to the pattern instead of replacing it.
+  let mgAddArmed = false;
   let maAddArmed = false;
   let spAddArmed = false;
 
@@ -2706,22 +2708,14 @@ export async function renderEditor(
     const poleSel = selectedItems.filter(isPole);
     const miniAreaSel = selectedItems.filter(isMiniArea);
 
-    // #240: a mini-light group can now mix strand + scattershot members. Any
-    // selection drawn ENTIRELY from those two kinds (pure strand, pure
-    // scattershot, or a mix) checks group membership FIRST, before any
-    // kind-specific panel below, so selecting a mixed group's members always
-    // opens the group editor — the same thing the old strand-only check did,
-    // just widened to cover scattershot members too.
+    // #240: a mini-light group can mix strand + scattershot members. Check for
+    // one represented group before the kind-specific panels so its existing
+    // members can be edited together and eligible ungrouped minis can be added.
     const miniCandidates: (StrandItem | MiniAreaItem)[] = [...strandSel, ...miniAreaSel];
-    if (miniCandidates.length > 0 && miniCandidates.length === selectedItems.length) {
-      const gid = miniCandidates[0].groupId;
-      if (gid && miniCandidates.every((m) => m.groupId === gid)) {
-        const grp = scene.items.find((i) => isMiniGroup(i) && i.id === gid);
-        if (grp && isMiniGroup(grp)) {
-          renderSelectedMiniGroupSidebar(sb, grp);
-          return;
-        }
-      }
+    const miniGroupSelection = resolveMiniGroupSelection(scene.items, selectedIds);
+    if (miniGroupSelection) {
+      renderSelectedMiniGroupSidebar(sb, miniGroupSelection.group, miniGroupSelection.addableMembers);
+      return;
     }
 
     // All-of-one-kind → dedicated edit panel.
@@ -2764,19 +2758,20 @@ export async function renderEditor(
       // #240: a mixed strand + scattershot selection (no shared group, or the
       // check above would already have returned) — offer to group them into
       // one billed unit, same affordance the strand-only panel has.
-      const canGroup = opts.showQuoteBinding && miniCandidates.length >= 2 && miniCandidates.every(isMiniGroupable);
+      const groupable = opts.showQuoteBinding && miniCandidates.length >= 2 && miniCandidates.every(isMiniGroupable);
+      const canGroup = groupable && sharedMiniGroupColorPattern(miniCandidates) !== null;
       sb.innerHTML = `
         <section>
           <h3>Mixed selection</h3>
           <div style="color:var(--text-dim);font-size:12px;margin-bottom:8px">
             ${strandSel.length} strand${strandSel.length === 1 ? "" : "s"} + ${miniAreaSel.length} scattershot${miniAreaSel.length === 1 ? "" : "s"} selected.
-            ${canGroup ? "Group them as one billed unit, or delete." : "Delete, or select only strands / only scattershots to edit them."}
+            ${groupable ? "Group them as one billed unit, or delete." : "Delete, or select only strands / only scattershots to edit them."}
           </div>
         </section>
-        ${canGroup ? `
+        ${groupable ? `
         <section>
-          <button id="sel-group-mini-mixed" style="width:100%">Group as one quote unit</button>
-          <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Bills these ${miniCandidates.length} items as a single unit (e.g. a railing).</div>
+          <button id="sel-group-mini-mixed" style="width:100%" ${canGroup ? "" : "disabled"}>Group as one quote unit</button>
+          <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">${canGroup ? `Bills these ${miniCandidates.length} items as a single unit (e.g. a railing).` : "Match the strand and scattershot color patterns before grouping."}</div>
         </section>
         ` : ""}
         <section><button class="danger" id="sel-delete" style="width:100%">Delete all selected</button></section>
@@ -2818,6 +2813,8 @@ export async function renderEditor(
     const sharedBulbType = uniq(sel.map((s) => s.bulbType));
     const sharedSpacing = uniq(sel.map((s) => s.spacingIn));
     const sharedPattern = uniq(sel.map((s) => s.colorPattern.join(",")));
+    const groupableMiniSelection = opts.showQuoteBinding && sel.length >= 2 && sel.every(isMiniGroupable);
+    const canCreateMiniGroup = groupableMiniSelection && sharedMiniGroupColorPattern(sel) !== null;
     const totalFt = sel.reduce((acc, s) => acc + strandLengthPx(s) / ppfForStrand(s), 0);
     const sharedYsId = uniq(sel.map((s) => s.yardstickId ?? ""));
 
@@ -2920,10 +2917,10 @@ export async function renderEditor(
       </section>
       ` : ""}
 
-      ${opts.showQuoteBinding && sel.length >= 2 && sel.every(isMiniGroupable) ? `
+      ${groupableMiniSelection ? `
       <section>
-        <button id="sel-group-mini" style="width:100%">Group as one quote unit</button>
-        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Bills these ${sel.length} mini strands as a single unit (e.g. a railing).</div>
+        <button id="sel-group-mini" style="width:100%" ${canCreateMiniGroup ? "" : "disabled"}>Group as one quote unit</button>
+        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">${canCreateMiniGroup ? `Bills these ${sel.length} mini strands as a single unit (e.g. a railing).` : "Match the strand color patterns before grouping."}</div>
       </section>
       ` : ""}
       ${opts.showQuoteBinding ? (() => {
@@ -3026,6 +3023,14 @@ export async function renderEditor(
       commit();
       redrawScene();
     };
+    const updateSelectedColors = (mut: (pattern: string[]) => string[]) => {
+      const next = updateSelectedColorPatterns(scene, selectedIds, mut);
+      if (next === scene) return;
+      scene = next;
+      scheduleSave();
+      commit();
+      redrawScene();
+    };
 
     // Continuous updates (slider drags) — mutate scene, request a coalesced canvas redraw,
     // update only the slider label inline so the sidebar HTML isn't recreated.
@@ -3062,7 +3067,7 @@ export async function renderEditor(
     sb.querySelectorAll("#sel-colors button").forEach((b) =>
       b.addEventListener("click", () => {
         const c = (b as HTMLElement).dataset.c!;
-        updateSelected((s) => ({ ...s, colorPattern: [c] }));
+        updateSelectedColors(() => [c]);
       }),
     );
 
@@ -3158,8 +3163,9 @@ export async function renderEditor(
         // billing) group. Twins never bill on their own (projectScene skips
         // `linkedToId` items), so falling through to a plain surface tag below is
         // harmless — it just doesn't create a group to resurrect.
-        if ((v === "railing" || v === "curtain") && sel.length >= 2 && sel.every(isMiniGroupable)) {
-          groupSelectedMini(sel, v, sel.length);
+        if ((v === "railing" || v === "curtain") && groupableMiniSelection) {
+          if (canCreateMiniGroup) groupSelectedMini(sel, v, sel.length);
+          else renderSidebar();
           return;
         }
         updateSelected((s) => ({ ...s, surface: v ? (v as Surface) : null }));
@@ -3728,6 +3734,9 @@ export async function renderEditor(
     const sCount = uniq(sel.map((a) => a.stringCount ?? 1));
     const sInc = uniq(sel.map((a) => a.included ?? true));
     const densityVal = sharedDensity.length === 1 ? sharedDensity[0] : 0.5;
+    const groupableMiniSelection = opts.showQuoteBinding && sel.length >= 2 && sel.every(isMiniGroupable);
+    const canCreateMiniGroup = groupableMiniSelection && sharedMiniGroupColorPattern(sel) !== null;
+    const selectableMiniAreas = allMiniAreas();
 
     sb.innerHTML = `
       <section>
@@ -3737,7 +3746,7 @@ export async function renderEditor(
         </div>
       </section>
       ${(() => {
-        const count = scene.items.filter(isMiniArea).length;
+        const count = selectableMiniAreas.length;
         return `<section><button id="sel-select-all-miniareas" style="width:100%" ${count === 0 ? "disabled" : ""}>
           Select All Scattershots (${count})
         </button></section>`;
@@ -3776,10 +3785,10 @@ export async function renderEditor(
         </div>`}
       </section>`;
       })()}
-      ${opts.showQuoteBinding && sel.length >= 2 && sel.every(isMiniGroupable) ? `
+      ${groupableMiniSelection ? `
       <section>
-        <button id="sel-group-mini-area" style="width:100%">Group as one quote unit</button>
-        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Bills these ${sel.length} scattershots as a single unit (e.g. a railing).</div>
+        <button id="sel-group-mini-area" style="width:100%" ${canCreateMiniGroup ? "" : "disabled"}>Group as one quote unit</button>
+        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">${canCreateMiniGroup ? `Bills these ${sel.length} scattershots as a single unit (e.g. a railing).` : "Match the scattershot color patterns before grouping."}</div>
       </section>
       ` : ""}
       ${opts.showQuoteBinding ? `
@@ -3820,9 +3829,18 @@ export async function renderEditor(
       commit();
       redrawScene();
     };
+    const updateMiniAreaColors = (mut: (pattern: string[]) => string[]) => {
+      const next = updateSelectedColorPatterns(scene, selectedIds, mut);
+      if (next !== scene) {
+        scene = next;
+        scheduleSave();
+        commit();
+      }
+      redrawScene();
+    };
 
     sb.querySelector("#sel-select-all-miniareas")?.addEventListener("click", () => {
-      const ids = scene.items.filter(isMiniArea).map((a) => a.id);
+      const ids = selectableMiniAreas.map((area) => area.id);
       if (ids.length === 0) return;
       selectedIds = new Set(ids);
       selectedYardstickId = null;
@@ -3848,9 +3866,9 @@ export async function renderEditor(
         const id = (b as HTMLElement).dataset.c!;
         if (maAddArmed) {
           maAddArmed = false;
-          updateMiniAreas((a) => ({ ...a, colorPattern: [...(a.colorPattern ?? ["warm-white"]), id] }));
+          updateMiniAreaColors((pattern) => [...pattern, id]);
         } else {
-          updateMiniAreas((a) => ({ ...a, colorPattern: [id] }));
+          updateMiniAreaColors(() => [id]);
         }
       }),
     );
@@ -3860,20 +3878,20 @@ export async function renderEditor(
     });
     sb.querySelector("#sel-ma-clear-pattern")?.addEventListener("click", () => {
       maAddArmed = false;
-      updateMiniAreas((a) => ({ ...a, colorPattern: [(a.colorPattern ?? [])[0] ?? "warm-white"] }));
+      updateMiniAreaColors((pattern) => [pattern[0] ?? "warm-white"]);
     });
     sb.querySelector("#sel-ma-multi")?.addEventListener("click", () => {
       maAddArmed = false;
       const all = COLORS.map((c) => c.id);
-      updateMiniAreas((a) => ({ ...a, colorPattern: all }));
+      updateMiniAreaColors(() => all);
     });
     sb.querySelectorAll("#sel-ma-pattern .swatch button").forEach((btn) => {
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
         const i = Number(((btn as HTMLElement).parentElement as HTMLElement).dataset.i);
-        updateMiniAreas((a) => {
-          const cp = (a.colorPattern ?? []).filter((_, idx) => idx !== i);
-          return { ...a, colorPattern: cp.length > 0 ? cp : ["warm-white"] };
+        updateMiniAreaColors((pattern) => {
+          const next = pattern.filter((_, idx) => idx !== i);
+          return next.length > 0 ? next : ["warm-white"];
         });
       });
     });
@@ -3951,26 +3969,24 @@ export async function renderEditor(
       stringCount,
       included: true,
     };
-    scene = {
-      ...scene,
-      items: [
-        ...scene.items.map((i) =>
-          (isStrand(i) || isMiniArea(i)) && memberIds.includes(i.id) ? { ...i, groupId } : i,
-        ),
-        stampPhoto(grp),
-      ],
-    };
+    const next = createMiniGroup(scene, stampPhoto(grp));
+    if (next === scene) return;
+    scene = next;
     scheduleSave();
     commit();
     redrawScene();
   }
 
   // ============================================================
-  // Sidebar — edit panel for a mini-light GROUP (surfaced when the selected
-  // strands and/or scattershots all share one groupId). The group is
-  // geometry-less; its members still render/move individually.
+  // Sidebar — edit panel for a mini-light GROUP (surfaced when the selection
+  // represents one group, optionally plus eligible ungrouped minis to add).
+  // The group is geometry-less; its members still render/move individually.
   // ============================================================
-  function renderSelectedMiniGroupSidebar(sb: HTMLElement, group: MiniGroupItem) {
+  function renderSelectedMiniGroupSidebar(
+    sb: HTMLElement,
+    group: MiniGroupItem,
+    addableMembers: (StrandItem | MiniAreaItem)[] = [],
+  ) {
     const sSurface = group.surface ?? "";
     const sWrap = group.wrapStyle ?? "canopy";
     const sCount = group.stringCount ?? 1;
@@ -3979,10 +3995,20 @@ export async function renderEditor(
     // scattershots, or a mix of both. Resolve the live members (not just the
     // id count) so the label always matches what's actually in the group.
     const liveMembers = scene.items.filter(
-      (i): i is StrandItem | MiniAreaItem => group.memberIds.includes(i.id) && (isStrand(i) || isMiniArea(i)),
+      (i): i is StrandItem | MiniAreaItem =>
+        group.memberIds.includes(i.id) &&
+        (isStrand(i) || isMiniArea(i)) &&
+        i.groupId === group.id,
     );
-    const strandCount = liveMembers.filter(isStrand).length;
+    const strandMembers = liveMembers.filter(isStrand);
+    const strandCount = strandMembers.length;
     const areaCount = liveMembers.filter(isMiniArea).length;
+    const sharedSpacing = uniq(strandMembers.map((strand) => strand.spacingIn));
+    const memberPattern = (member: StrandItem | MiniAreaItem) =>
+      member.colorPattern?.length ? member.colorPattern : ["warm-white"];
+    const sharedPattern = uniq(liveMembers.map((member) => memberPattern(member).join(",")));
+    const firstPattern = liveMembers.length > 0 ? memberPattern(liveMembers[0]) : [];
+    const canAddMembers = !!group.colorPattern?.length || sharedPattern.length === 1;
     const memberLabel = (() => {
       const parts: string[] = [];
       if (strandCount) parts.push(`${strandCount} strand${strandCount === 1 ? "" : "s"}`);
@@ -3997,9 +4023,47 @@ export async function renderEditor(
       <section>
         <h3>Mini-light group</h3>
         <div style="color:var(--text-dim);font-size:12px;margin-bottom:4px">
-          ${memberLabel} billed as one mini-light unit. Edit the billed attributes here, or ungroup to bill them separately.
+          ${memberLabel} billed as one mini-light unit. Edit its appearance and billed attributes here, or ungroup to bill the members separately.
         </div>
       </section>
+      ${opts.showQuoteBinding && addableMembers.length > 0 ? `
+      <section>
+        <button id="sel-mg-add-members" style="width:100%" ${canAddMembers ? "" : "disabled"}>Add ${addableMembers.length} selected to group</button>
+        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">${canAddMembers ? `Added items use this group's pattern. The billed string count stays at ${sCount}.` : "Choose one group color or pattern before adding to this mixed-color group."}</div>
+      </section>
+      ` : ""}
+      ${strandMembers.length > 0 ? `
+      <section>
+        ${spacingRowHtml(false, SPACINGS.mini, sharedSpacing, "sel-mg-spacings")}
+        ${areaCount > 0 ? `<div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Spacing applies to the ${strandCount} strand${strandCount === 1 ? "" : "s"}, not scattershots.</div>` : ""}
+      </section>
+      ` : ""}
+      ${liveMembers.length > 0 ? `
+      <section>
+        <h3>Color${sharedPattern.length > 1 ? " (mixed)" : ""}</h3>
+        <div class="colors" id="sel-mg-colors">
+          ${COLORS.map((c) => `<button data-c="${c.id}" title="${c.label}" style="background:${c.hex}"></button>`).join("")}
+        </div>
+        <div style="margin-top:8px;display:flex;gap:6px">
+          <button id="sel-mg-add-color" class="${mgAddArmed ? "active" : ""}">${mgAddArmed ? "Tap a color to add…" : "+ Add to pattern"}</button>
+          <button id="sel-mg-clear-pattern">Clear</button>
+          <button id="sel-mg-multi" title="Set the pattern to every color in the palette">Multi</button>
+        </div>
+        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">
+          Tap a color to recolor the group · "+ Add to pattern" then a color to extend the group's pattern.
+        </div>
+        ${sharedPattern.length === 1 ? `
+        <div class="pattern-row" id="sel-mg-pattern">
+          ${firstPattern.map((id, i) => {
+            const c = COLORS.find((cc) => cc.id === id);
+            return `<div class="swatch" data-i="${i}" style="background:${c?.hex ?? "#333"}"><button>×</button></div>`;
+          }).join("")}
+        </div>` : `
+        <div style="margin-top:8px;color:var(--text-dim);font-size:11px">
+          Patterns differ across the group. Tap a color to make them match, or use Multi for rainbow.
+        </div>`}
+      </section>
+      ` : ""}
       ${opts.showQuoteBinding ? `
       <section>
         <h3>Quote binding</h3>
@@ -4032,12 +4096,62 @@ export async function renderEditor(
       </section>
     `;
 
-    const updateGroup = (mut: (g: MiniGroupItem) => MiniGroupItem) => {
-      scene = { ...scene, items: scene.items.map((i) => (i.id === group.id && isMiniGroup(i) ? mut(i) : i)) };
+    const applySceneEdit = (next: Scene) => {
+      if (next === scene) {
+        redrawScene();
+        return;
+      }
+      scene = next;
       scheduleSave();
       commit();
       redrawScene();
     };
+    const updateGroup = (mut: (g: MiniGroupItem) => MiniGroupItem) => {
+      applySceneEdit({ ...scene, items: scene.items.map((i) => (i.id === group.id && isMiniGroup(i) ? mut(i) : i)) });
+    };
+
+    sb.querySelector("#sel-mg-add-members")?.addEventListener("click", () => {
+      applySceneEdit(addMiniGroupMembers(scene, group.id, addableMembers.map((member) => member.id)));
+    });
+    sb.querySelectorAll("#sel-mg-spacings button").forEach((button) =>
+      button.addEventListener("click", () => {
+        const spacingIn = Number((button as HTMLElement).dataset.s);
+        applySceneEdit(setMiniGroupMemberSpacing(scene, group.id, spacingIn));
+      }),
+    );
+    sb.querySelectorAll("#sel-mg-colors button").forEach((button) =>
+      button.addEventListener("click", () => {
+        const colorId = (button as HTMLElement).dataset.c!;
+        if (mgAddArmed) {
+          mgAddArmed = false;
+          applySceneEdit(updateMiniGroupMemberColorPatterns(scene, group.id, (pattern) => [...pattern, colorId]));
+        } else {
+          applySceneEdit(updateMiniGroupMemberColorPatterns(scene, group.id, () => [colorId]));
+        }
+      }),
+    );
+    sb.querySelector("#sel-mg-add-color")?.addEventListener("click", () => {
+      mgAddArmed = !mgAddArmed;
+      renderSidebar();
+    });
+    sb.querySelector("#sel-mg-clear-pattern")?.addEventListener("click", () => {
+      mgAddArmed = false;
+      applySceneEdit(updateMiniGroupMemberColorPatterns(scene, group.id, (pattern) => [pattern[0] ?? "warm-white"]));
+    });
+    sb.querySelector("#sel-mg-multi")?.addEventListener("click", () => {
+      mgAddArmed = false;
+      applySceneEdit(updateMiniGroupMemberColorPatterns(scene, group.id, () => COLORS.map((color) => color.id)));
+    });
+    sb.querySelectorAll("#sel-mg-pattern .swatch button").forEach((button) => {
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const index = Number(((button as HTMLElement).parentElement as HTMLElement).dataset.i);
+        applySceneEdit(updateMiniGroupMemberColorPatterns(scene, group.id, (pattern) => {
+          const next = pattern.filter((_, patternIndex) => patternIndex !== index);
+          return next.length > 0 ? next : [pattern[0] ?? "warm-white"];
+        }));
+      });
+    });
 
     if (opts.showQuoteBinding) {
       const surf = sb.querySelector("#sel-mg-surface") as HTMLSelectElement | null;

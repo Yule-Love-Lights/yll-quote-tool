@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import { isLineDrawContext } from "./drawContext";
 
 // #203: unit coverage for the shared "line drawing" context gate that both
@@ -104,5 +105,21 @@ describe("isLineDrawContext", () => {
     expect(
       isLineDrawContext({ ...base, category: "poles" as const, drawingStyle: "trace" as const }, "trace"),
     ).toBe(false);
+  });
+});
+
+describe("scattershot select-all wiring", () => {
+  it("uses the active-photo collection for both the count and selected ids", () => {
+    // editor.ts cannot be imported in this headless suite because Konva's Node
+    // entrypoint requires the optional `canvas` package. Keep this narrow
+    // source assertion beside the pure isItemOnPhoto coverage in sceneTypes.
+    const source = readFileSync(new URL("./editor.ts", import.meta.url), "utf8");
+    const start = source.indexOf("function renderSelectedMiniAreaSidebar");
+    const end = source.indexOf("function groupSelectedMini", start);
+    const panel = source.slice(start, end);
+
+    expect(panel).toContain("const selectableMiniAreas = allMiniAreas();");
+    expect(panel).toContain("selectableMiniAreas.length");
+    expect(panel).toContain("selectableMiniAreas.map((area) => area.id)");
   });
 });

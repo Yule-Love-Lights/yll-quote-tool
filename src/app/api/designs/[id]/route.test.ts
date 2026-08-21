@@ -177,6 +177,26 @@ describe('PUT /api/designs/[id]', () => {
     expect(json.ok).toBe(true);
   });
 
+  it('preserves a mini-group color pattern in the opaque scene update', async () => {
+    const scene = {
+      yardsticks: [],
+      items: [{
+        id: 'group-1',
+        kind: 'miniGroup',
+        yardstickId: null,
+        memberIds: ['member-1', 'member-2'],
+        surface: 'railing',
+        stringCount: 3,
+        colorPattern: ['red', 'green'],
+      }],
+    };
+
+    const res = await PUT(makeReq({ scene }), ctx());
+
+    expect(res.status).toBe(200);
+    expect(updateDesignScene).toHaveBeenCalledWith(VALID_ID, scene);
+  });
+
   it('saves satelliteLines successfully', async () => {
     const res = await PUT(makeReq({ satelliteLines: validSatelliteLines }), ctx());
     expect(res.status).toBe(200);
