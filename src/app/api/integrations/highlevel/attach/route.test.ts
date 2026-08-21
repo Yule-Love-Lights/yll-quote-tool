@@ -45,16 +45,52 @@ vi.mock('@/lib/rateLimit', () => ({
 import { POST } from './route';
 
 // ── Fake Supabase query builder ─────────────────────────────────────────────
-// The route now does two chains:
-//   read:  from('quotes').select().eq().maybeSingle()  → the quote row
-//          (service_type drives the per-type pipeline resolution)
-//   write: from().update().eq() awaited                → { error: updateErr }
+// The route does three chains:
+//   read:    from('quotes').select().eq().maybeSingle()          → the quote row
+//            (service_type drives the per-type pipeline resolution)
+//   detach write (#839 round-2 delta-verify MED, CAS-guarded):
+//            from().update().eq()[.is().is()].select().maybeSingle() → { data, error }
+//   identity write (#839 fix-round MED, CAS-guarded):
+//            from().update().eq()[.is().is()].select().maybeSingle() → { data, error }
+// Both writes share the exact same chain shape (one `makeUpdateChain()`
+// serves both) — `.is()/.select()/.maybeSingle()`, exactly like a real
+// Postgrest builder.
 function makeSb(
   quote: Record<string, unknown> | null,
   updateErr: { message: string } | null = null,
+  opts: { identityCasMatch?: boolean } = {},
 ) {
+  // identityCasMatch controls whether a CAS write's `.is(...)` conditions
+  // would match in a real DB — false simulates approval/booking having
+  // landed by the time that specific statement runs (a TOCTOU race, or an
+  // already-frozen row), regardless of what the earlier pre-read (`quote`)
+  // says. Applies to BOTH the identity write and the detach write (round-2
+  // delta-verify MED — sibling parity), since both now share the same
+  // CAS-guarded chain. Only takes effect on a chain that actually called
+  // `.is(...)` — the is_test-bypass branch of either write never does, so it
+  // always "matches" regardless of this flag. Defaults to true (matches —
+  // not frozen) so every pre-#839 test above, which never touches this
+  // option, keeps behaving exactly as before.
+  const casMatch = opts.identityCasMatch ?? true;
   let isUpdate = false;
   const builder: Record<string, unknown> = {};
+  function makeUpdateChain() {
+    let hasIsFilter = false;
+    const chain: Record<string, unknown> = {
+      is: () => {
+        hasIsFilter = true;
+        return chain;
+      },
+      select: () => chain,
+      maybeSingle: async () => {
+        if (updateErr) return { data: null, error: updateErr };
+        if (hasIsFilter && !casMatch) return { data: null, error: null };
+        return { data: { id: 'matched' }, error: null };
+      },
+      then: (resolve: (v: { error: unknown }) => void) => resolve({ error: updateErr }),
+    };
+    return chain;
+  }
   Object.assign(builder, {
     from: () => builder,
     select: () => builder,
@@ -65,7 +101,7 @@ function makeSb(
     eq: () => {
       if (isUpdate) {
         isUpdate = false;
-        return Promise.resolve({ error: updateErr });
+        return makeUpdateChain();
       }
       return builder;
     },
@@ -123,6 +159,42 @@ describe('HighLevel attach — detach (#172)', () => {
 
     const res = await POST(makeReq({ quoteId: QUOTE_ID, detach: true }));
     expect(res.status).toBe(500);
+  });
+
+  // #839 round-2 delta-verify MED (sibling-guard parity — the same TOCTOU
+  // class the attach write was CAS-gated for, same file): the pre-read above
+  // and the plain update that used to follow it are two separate round
+  // trips. An approval landing in that gap used to null the HighLevel ids on
+  // a now-approved/booked quote with no CAS at all — an HL-id split, since
+  // customer_id/customer_* stay put. The detach write is now CAS-guarded the
+  // same way; proven here by a pre-read that looks UNAPPROVED (so the
+  // pre-read freeze check does NOT fire) whose CAS write then fails to match
+  // (simulating approval landing mid-flight, between the read and the write).
+  it('CAS-blocks the detach write when approval lands between the pre-read and the write (#839 round-2 delta-verify MED)', async () => {
+    sbRef.current = makeSb(HOLIDAY_QUOTE, null, { identityCasMatch: false });
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, detach: true }));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json).toEqual({ detached: false, identityFrozen: true });
+  });
+
+  // is_test bypasses the detach CAS entirely (the #251 exemption — test
+  // quotes stay fully editable regardless of lifecycle stamps), even on a
+  // quote that otherwise looks approved.
+  it('is_test bypasses the detach CAS even on an approved-looking quote', async () => {
+    sbRef.current = makeSb(
+      { ...HOLIDAY_QUOTE, is_test: true, customer_approved_at: '2026-08-10T00:00:00Z' },
+      null,
+      { identityCasMatch: false },
+    );
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, detach: true }));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json).toEqual({ detached: true });
   });
 });
 
@@ -311,9 +383,10 @@ describe('HighLevel attach — post-link customers re-resolution (#214)', () => 
 
   // Round-3 delta-verify HIGH (sibling-guard parity with updateQuote's
   // booked-freeze): jobs/invoices/GHL tenure snapshot the customers link at
-  // booking and never resync — a post-booking contact re-pick must update
-  // the GHL card link only, never relink the customers row.
-  it('never re-resolves a BOOKED quote (deposit paid) — the GHL link still updates, the customers link is frozen', async () => {
+  // booking and never resync. SUPERSEDED by Jason's 2026-08-20 ruling —
+  // identity is ATOMIC past approval, so the GHL card link no longer moves
+  // either: the whole endpoint is a no-op and corrections go through amend.
+  it('refuses the WHOLE re-link on a BOOKED quote (deposit paid) — GHL link and customers link both frozen', async () => {
     sbRef.current = makeSb(
       { ...HOLIDAY_QUOTE, is_test: false, deposit_paid_at: '2026-08-01T00:00:00Z', customer_id: 'cust-frozen' },
       null,
@@ -322,8 +395,67 @@ describe('HighLevel attach — post-link customers re-resolution (#214)', () => 
     const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1', ...CONTACT_FIELDS }));
     const json = await res.json();
     expect(res.status).toBe(200);
-    expect(json.linked).toBe(true); // the route's own job still happened
+    expect(json.linked).toBe(false); // #251 atomic identity — no GHL write either
+    expect(json.identityFrozen).toBe(true);
     expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+  });
+
+  // #839 fix-round HIGH (staff+technical lenses): this is the live incident's
+  // ACTUAL click path — pickHighLevelContact calls this route directly on a
+  // confirmed pick (queueAttach), before any Calculate ever reaches
+  // updateQuote's own #251 freeze. An approved-but-unpaid quote must be
+  // frozen HERE too, exactly like the booked case above — parity with
+  // quotes.ts's identical widening (~line 564).
+  it('refuses the WHOLE re-link on an APPROVED-but-unpaid quote — GHL link and customers link both frozen', async () => {
+    sbRef.current = makeSb(
+      {
+        ...HOLIDAY_QUOTE,
+        is_test: false,
+        customer_approved_at: '2026-08-10T00:00:00Z',
+        customer_id: 'cust-frozen',
+      },
+      null,
+    );
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1', ...CONTACT_FIELDS }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.linked).toBe(false); // #251 atomic identity — no GHL write either
+    expect(json.identityFrozen).toBe(true);
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+  });
+
+  // #839 fix-round MED (delta-verify — TOCTOU): the early freeze check above
+  // (lines ~165-180) reads the quote row BEFORE findOrCreateOpportunityForContact's
+  // GHL network round trip (hundreds of ms). If the quote becomes approved/
+  // booked DURING that window, the early check alone can't catch it — it
+  // already ran and passed. This simulates exactly that: the pre-read quote
+  // looks UNAPPROVED (passes the early check, `hl.findOrCreate` gets called),
+  // but the identity write's own CAS fails to match, as it would if the row
+  // had become approved/booked in the meantime.
+  it('refuses the link when the identity write CAS fails to match (approval landed during the GHL round trip)', async () => {
+    sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false }, null, { identityCasMatch: false });
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1', ...CONTACT_FIELDS }));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(hl.findOrCreate).toHaveBeenCalled(); // the early check passed; the race is write-time
+    expect(json.linked).toBe(false);
+    expect(json.identityFrozen).toBe(true);
+    // Same atomic freeze — the customers re-resolution must not run either.
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+  });
+
+  it('the CAS is bypassed for a TEST quote — the identity write matches regardless', async () => {
+    sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: true }, null, { identityCasMatch: false });
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.linked).toBe(true);
+    expect(json.identityFrozen).toBeUndefined();
   });
 
   // Round-3 delta-verify MED: the non-hl-field gate runs POST-translation —

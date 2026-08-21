@@ -98,12 +98,59 @@ export async function POST(req: NextRequest) {
   // behind the client's serialized queue). Clears the LOCAL link only; the
   // GHL card itself is untouched.
   if (body.detach === true) {
-    const { error: detachErr } = await getSupabaseServiceClient()!
+    // #251 (Jason's ruling 2026-08-20 — identity is ATOMIC past approval):
+    // Clear is an identity change like any other. Unlinking the HighLevel
+    // contact on an approved/booked quote would fork the record exactly the
+    // way a re-pick would, so it is refused here for the same reason and with
+    // the same shape. This read is the route's only pre-detach round trip;
+    // a read failure fails OPEN (matching the attach path's posture below)
+    // rather than blocking a legitimate clear on an unapproved quote.
+    const detachClient = getSupabaseServiceClient()!;
+    const { data: detachRow } = await detachClient
+      .from('quotes')
+      .select('is_test, deposit_paid_at, customer_approved_at')
+      .eq('id', body.quoteId)
+      .maybeSingle<{ is_test: boolean; deposit_paid_at: string | null; customer_approved_at: string | null }>();
+    if (detachRow && !detachRow.is_test && (detachRow.deposit_paid_at || detachRow.customer_approved_at)) {
+      console.warn(
+        `[api/integrations/highlevel/attach] #251 identity freeze — quote ${body.quoteId} is approved/booked; refused a detach.`,
+      );
+      return NextResponse.json({ detached: false, identityFrozen: true });
+    }
+    // #839 round-2 delta-verify MED (sibling-guard parity, same class as the
+    // attach write's own #839 fix): the pre-read above and this write are two
+    // separate round trips — an approval landing in that gap (the same TOCTOU
+    // the attach write was CAS-gated for) used to let this plain update null
+    // the HighLevel ids on a now-approved/booked quote while customer_id and
+    // the customer_* columns stayed put: an HL-id split. CAS-gate the write
+    // itself so the freeze check and the null-out are one atomic statement.
+    // is_test bypasses the CAS (the #251 exemption), read off `detachRow` —
+    // the only copy available; a failed pre-read (detachRow null) fails
+    // OPEN on applyCas too, matching the attach write's identical posture
+    // directly below (`!quoteRow?.is_test`) and this route's existing
+    // fail-open stance on a read hiccup.
+    const applyCas = !detachRow?.is_test;
+    let detachWrite = detachClient
       .from('quotes')
       .update({ highlevel_contact_id: null, highlevel_opportunity_id: null })
       .eq('id', body.quoteId);
+    if (applyCas) {
+      detachWrite = detachWrite.is('customer_approved_at', null).is('deposit_paid_at', null);
+    }
+    const { data: detachWriteRow, error: detachErr } = await detachWrite.select('id').maybeSingle();
     if (detachErr) {
       return NextResponse.json({ error: `Detach failed: ${detachErr.message}` }, { status: 500 });
+    }
+    // 0 rows matched under the CAS (no error) means approval/booking landed
+    // between the pre-read above and THIS statement — the write never took
+    // effect. Same response shape as the pre-read freeze above and as the
+    // attach write's own write-time freeze, so every caller treats all three
+    // identically.
+    if (applyCas && !detachWriteRow) {
+      console.warn(
+        `[api/integrations/highlevel/attach] #839 identity freeze (write-time) — quote ${body.quoteId} became approved/booked during the detach round trip; refused the detach.`,
+      );
+      return NextResponse.json({ detached: false, identityFrozen: true });
     }
     return NextResponse.json({ detached: true });
   }
@@ -125,8 +172,9 @@ export async function POST(req: NextRequest) {
     // deposit_paid_at (booked-freeze, round-3 delta-verify HIGH) ride along
     // for the post-link customers re-resolution below (no second read). The
     // re-resolution's IDENTITY comes from the request body's contact
-    // fields, never from this row — see the block below.
-    .select('id, service_type, legacy_rebook, is_test, customer_id, deposit_paid_at')
+    // fields, never from this row — see the block below. customer_approved_at
+    // rides along for the #251/#839 approved-freeze parity fix (same block).
+    .select('id, service_type, legacy_rebook, is_test, customer_id, deposit_paid_at, customer_approved_at')
     .eq('id', body.quoteId)
     .maybeSingle<{
       id: string;
@@ -135,12 +183,29 @@ export async function POST(req: NextRequest) {
       is_test: boolean;
       customer_id: string | null;
       deposit_paid_at: string | null;
+      customer_approved_at: string | null;
     }>();
   if (quoteErr) {
     console.warn(
       '[api/integrations/highlevel/attach] service_type read failed — defaulting to the holiday pipeline:',
       quoteErr.message,
     );
+  }
+  // #251 (Jason's ruling 2026-08-20 — identity is ATOMIC past approval): bail
+  // BEFORE any GHL card is found/created. The customers re-resolution further
+  // down already refuses on an approved/booked quote, and the ruling extends
+  // that to this route's own highlevel_contact_id/highlevel_opportunity_id
+  // write — so the whole endpoint is a no-op past approval and corrections go
+  // through the amend flow. Placed here, not at the write site, so a frozen
+  // quote never leaves an orphaned card on GHL's side that our row won't
+  // reference. Fails OPEN when the pre-read failed (quoteRow null): a read
+  // hiccup must not block a legitimate link on an unapproved quote, matching
+  // the service_type fallback's posture directly above.
+  if (quoteRow && !quoteRow.is_test && (quoteRow.deposit_paid_at || quoteRow.customer_approved_at)) {
+    console.warn(
+      `[api/integrations/highlevel/attach] #251 identity freeze — quote ${body.quoteId} is approved/booked; refused a contact re-link (contact ${body.contactId}).`,
+    );
+    return NextResponse.json({ linked: false, identityFrozen: true });
   }
   // Legacy rebook (#156): legacy_rebook wins regardless of service_type,
   // routing to the Neighbors pipeline instead of Christmas Lights — a staff
@@ -185,13 +250,41 @@ export async function POST(req: NextRequest) {
     // lost the local link. We report `linked:false` so the operator UI can
     // surface "card created but not linked — retry safe" (a retry re-finds the
     // same open card and re-attaches, so no hard 500 is needed).
-    const { error: updateErr } = await sb
+    //
+    // #251 RESOLVED (Jason, 2026-08-20): this write used to be unconditional,
+    // producing a SPLIT identity on an approved quote — the HighLevel card
+    // link moved to the newly-picked contact while quotes.customer_id stayed
+    // on the original. Jason's ruling made identity atomic past approval, so
+    // the early return added above means this line is now unreachable for an
+    // approved/booked quote and the split can no longer occur... for a quote
+    // that was ALREADY frozen when this handler started.
+    //
+    // #839 fix-round MED (delta-verify — TOCTOU): the early return above is
+    // checked off `quoteRow`, read BEFORE findOrCreateOpportunityForContact's
+    // GHL network round trip (hundreds of ms). If the quote becomes
+    // approved/booked DURING that window, this write used to still land
+    // unconditionally — the exact split the #251 ruling exists to prevent,
+    // just moved one race window later. Fixed the same way quotes.ts's own
+    // #839 fix closes it: CAS-guard THIS write's `.is(...)` conditions so the
+    // freeze check and the write are one atomic database statement, not a
+    // read-then-write pair with a gap a concurrent /approve can land in.
+    // is_test bypasses the CAS (the #251 exemption — test quotes stay fully
+    // editable); read off `quoteRow?.is_test` since it's the only copy we
+    // have (a failed pre-read fails OPEN here too, matching this route's
+    // existing posture — `applyCas` defaults true, and an actually-unfrozen
+    // row still matches the CAS normally).
+    const applyCas = !quoteRow?.is_test;
+    let identityWrite = sb
       .from('quotes')
       .update({
         highlevel_contact_id: body.contactId,
         highlevel_opportunity_id: opportunity.id,
       })
       .eq('id', body.quoteId);
+    if (applyCas) {
+      identityWrite = identityWrite.is('customer_approved_at', null).is('deposit_paid_at', null);
+    }
+    const { data: identityRow, error: updateErr } = await identityWrite.select('id').maybeSingle();
     if (updateErr) {
       // Audit fix (#53): escalate warn → error and include quoteId + opportunity.id
       // so the orphaned GHL card (exists remotely, unlinked locally) is discoverable.
@@ -199,6 +292,17 @@ export async function POST(req: NextRequest) {
         '[api/integrations/highlevel/attach] DB link failed — orphaned GHL card:',
         { quoteId: body.quoteId, opportunityId: opportunity.id, error: updateErr.message },
       );
+    }
+    // 0 rows matched under the CAS (no error) means approval/booking landed
+    // between the pre-read above and THIS statement — the write never took
+    // effect. Same response shape as the early-return freeze above, so the
+    // caller (the builder's pick handler) treats both identically.
+    const frozenAtWrite = applyCas && !updateErr && !identityRow;
+    if (frozenAtWrite) {
+      console.warn(
+        `[api/integrations/highlevel/attach] #839 identity freeze (write-time) — quote ${body.quoteId} became approved/booked during the GHL round trip; refused the contact link (contact ${body.contactId}).`,
+      );
+      return NextResponse.json({ linked: false, identityFrozen: true });
     }
 
     // #214 (d): this route is where a quote GAINS its hl contact id after
@@ -251,7 +355,30 @@ export async function POST(req: NextRequest) {
     // re-pick through the still-enabled builder autocomplete must not
     // relink the quote. The GHL card link above still updates (that's this
     // route's job); only the customers re-resolution freezes.
-    if (!updateErr && quoteRow && !quoteRow.is_test && !quoteRow.deposit_paid_at && hasNonHlField) {
+    //
+    // #839 fix-round HIGH (staff+technical lenses, sibling-guard parity —
+    // round 2 of THIS parity, same class again): this freeze widened to
+    // deposit_paid_at only tracked quotes.ts's PRE-#251 state — the #251
+    // widening (quotes.ts, ~line 564: "!data.deposit_paid_at &&
+    // !data.customer_approved_at") added the approved-unpaid boundary there
+    // but this route's own copy was never updated to match, leaving a
+    // confirmed contact re-pick on an approved-but-unpaid quote free to
+    // repoint customer_id through THIS route even after quotes.ts's freeze
+    // shipped (queueAttach fires this route directly on pick, before any
+    // Calculate ever reaches quotes.ts's own freeze — by then `stored`
+    // already holds the new id and there's nothing left to block). These
+    // two freezes are siblings guarding the SAME invariant from two
+    // different write paths; widen them TOGETHER from now on — see
+    // quotes.ts's identical condition and comment for the other half.
+    //
+    // #839 fix-round MED: dropped the `!quoteRow.deposit_paid_at &&
+    // !quoteRow.customer_approved_at` checks that used to sit here — they
+    // read the SAME stale pre-write `quoteRow` the TOCTOU above was about;
+    // keeping them would have re-introduced exactly that staleness one guard
+    // later. `frozenAtWrite` already returned early above using the fresh
+    // CAS result, so reaching this line already proves the identity write
+    // was NOT frozen at write time — nothing further to re-check here.
+    if (!updateErr && quoteRow && !quoteRow.is_test && hasNonHlField) {
       try {
         const resolved = await attachQuoteToCustomer(contactIdentity);
         // Repoint visibility (#214 review, WT-55 family): a resolution that

@@ -952,6 +952,12 @@ export async function POST(req: NextRequest) {
       baseline, // #104 — overrides-stripped, for the "was $X" display
       quoteId: saved?.id ?? null,
       persisted: saved !== null,
+      // #839 fix-round MED: updateQuote's #251 identity freeze used to be
+      // log-only when it actually refused a would-be reattach on an
+      // approved/booked quote. Propagate the flag (absent on a brand-new
+      // insert — saveQuote never sets it) so the builder can show a small
+      // notice instead of the save silently succeeding with a stale link.
+      ...(saved?.identityFrozen ? { identityFrozen: true } : {}),
     });
   } catch (err) {
     console.error('Quote calculation error:', err);
