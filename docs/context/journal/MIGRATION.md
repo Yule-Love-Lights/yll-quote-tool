@@ -4,8 +4,8 @@
 
 This PR adds the fragment system (`docs/context/journal/`, the build
 script, the session scripts). It does not migrate any existing history.
-`docs/context/session_log.md` and `docs/context/session_log_naldo.md` stay
-authoritative until Naldo flips the switch described below. Nothing reads
+EXECUTED 2026-08-21 (PR #865): fragments are authoritative, the old logs are
+frozen with banners. Historical plan below. Before that PR merged, nothing read
 `docs/context/JOURNAL.md` as a source of truth yet.
 
 ## Why wait

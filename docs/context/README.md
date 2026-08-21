@@ -60,4 +60,4 @@ No memory-folder setup; the assistant reads them as normal files for that sessio
 
 ## What to read first
 
-Start with **`project_quote_tool.md`** + the latest `session_log.md` entry — current state, confirmed decisions, what's next. Then `user_naldo.md` for owner context. The two `feedback_*` files are environment quirks worth knowing before you run the dev server. (`project_yll_render_engine.md` is purely historical — the render pipeline was removed in #36, S7.)
+Start with **`project_quote_tool.md`** + the newest fragments in `journal/` (or the generated `JOURNAL.md`; the old `session_log*.md` files are frozen history, 2026-08-21 fragment migration) — current state, confirmed decisions, what's next. Then `user_naldo.md` for owner context. The two `feedback_*` files are environment quirks worth knowing before you run the dev server. (`project_yll_render_engine.md` is purely historical — the render pipeline was removed in #36, S7.)
