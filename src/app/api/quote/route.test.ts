@@ -18,7 +18,11 @@ const { save, update, getRaw, rawRef, operatorRef } = vi.hoisted(() => ({
   update: vi.fn(
     async (
       ..._args: unknown[]
-    ): Promise<{ id: string; priorInputs?: { event?: { eventDate?: string } } | null }> => ({ id: 'existing-id' }),
+    ): Promise<{
+      id: string;
+      priorInputs?: { event?: { eventDate?: string } } | null;
+      identityFrozen?: boolean;
+    }> => ({ id: 'existing-id' }),
   ),
   // getQuoteRaw is consulted only on the update branch (W1-003 booked-re-price
   // gate). rawRef.current is the row the mock returns; null = row not found,
@@ -578,6 +582,24 @@ describe('POST /api/quote — validation hardening', () => {
     expect(save).not.toHaveBeenCalled();
   });
 
+  // #839 fix-round MED: updateQuote's identityFrozen flag (set when the #251
+  // freeze actually refused a would-be reattach) must reach the client so the
+  // builder can show a notice instead of the save silently succeeding.
+  it('propagates identityFrozen:true from updateQuote onto the response', async () => {
+    update.mockResolvedValueOnce({ id: 'existing-id', identityFrozen: true });
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.identityFrozen).toBe(true);
+  });
+
+  it('omits identityFrozen from the response when updateQuote did not set it', async () => {
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.identityFrozen).toBeUndefined();
+  });
+
   it('rejects an over-cap input array (length 501) with 400', async () => {
     const inputs = validInputs();
     inputs.spritzers = Array.from({ length: 501 }, () => ({ size: '16', quantity: 1 }));
@@ -676,6 +698,42 @@ describe('POST /api/quote — validation hardening', () => {
       vi.clearAllMocks();
       const inputs = validInputs();
       inputs.lineItemPriceOverrides = bad;
+      const res = await POST(makeReq({ inputs }));
+      expect(res.status).toBe(400);
+      expect(save).not.toHaveBeenCalled();
+    }
+  });
+
+  it('accepts a valid labelOverrides map, incl. an empty-string value (item-numbering-rename)', async () => {
+    const inputs = validInputs();
+    inputs.labelOverrides = { 'mini-1': 'Front Left Tree', 'wreath-1': '' };
+    const res = await POST(makeReq({ inputs }));
+    expect(res.status).toBe(200);
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it('renamed mini item flows through to the returned result label (item-numbering-rename)', async () => {
+    const inputs = validInputs();
+    inputs.miniLightItems = [{ type: 'tree', wrapStyle: 'canopy', stringCount: 1, id: 'mini-x' }];
+    inputs.labelOverrides = { 'mini-x': 'Front Left Tree' };
+    const res = await POST(makeReq({ inputs }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { result: { lineItems: { id?: string; label: string }[] } };
+    // The ENGINE's own label stays the default (kind classification safety) —
+    // the override is applied by the portal adapter/UI display layer, not here.
+    expect(body.result.lineItems.find((li) => li.id === 'mini-x')!.label).toBe('Tree – canopy wrap, 1 string');
+  });
+
+  it('rejects a malformed labelOverrides with 400 (item-numbering-rename)', async () => {
+    const bads: unknown[] = [
+      [], // array, not object
+      { x: 5 }, // value not a string
+      { x: 'a'.repeat(201) }, // over the 200-char cap
+    ];
+    for (const bad of bads) {
+      vi.clearAllMocks();
+      const inputs = validInputs();
+      inputs.labelOverrides = bad;
       const res = await POST(makeReq({ inputs }));
       expect(res.status).toBe(400);
       expect(save).not.toHaveBeenCalled();

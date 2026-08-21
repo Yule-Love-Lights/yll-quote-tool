@@ -5,6 +5,9 @@ import {
   GARLAND_SIZES,
   SPRITZER_SIZES,
   POLE_HEIGHTS,
+  C9_SPACINGS,
+  MINI_SPACINGS,
+  BISTRO_SPACINGS,
   sizePresetLabel,
   formatRawSize,
   offPresetSizeSuffix,
@@ -44,6 +47,36 @@ describe("decor/pole size presets — shape", () => {
   }
 });
 
+// #248 (row 248): the light-SPACING presets get the same 3-value trim, but
+// Jason picked the exact values rather than preserving the old shared
+// default (unlike LEGACY above) -- so these tests lock shape + provenance
+// (3, ascending, drawn from the real pre-trim superset) without asserting
+// any particular value is "the default". editor.ts derives its own default
+// from each array's middle (Medium) entry instead of a separate literal.
+describe("light spacing presets — shape (#248)", () => {
+  const SPACING_LEGACY = {
+    c9: { superset: [6, 9, 12, 15, 18, 24, 36], current: C9_SPACINGS },
+    mini: { superset: [4, 6, 9, 12, 18], current: MINI_SPACINGS },
+    bistro: { superset: [9, 12, 15, 18, 24, 36], current: BISTRO_SPACINGS },
+  } as const;
+
+  for (const [type, { superset, current }] of Object.entries(SPACING_LEGACY)) {
+    it(`${type}: collapses to exactly 3 strictly ascending values, drawn from the original spacing list`, () => {
+      expect(current).toHaveLength(3);
+      for (let i = 1; i < current.length; i++) {
+        expect(current[i]).toBeGreaterThan(current[i - 1]);
+      }
+      for (const v of current) expect(superset).toContain(v);
+    });
+  }
+
+  it("matches Jason's exact picks (row 248) -- not substituted for a different trim", () => {
+    expect(C9_SPACINGS).toEqual([9, 15, 24]);
+    expect(MINI_SPACINGS).toEqual([6, 9, 12]);
+    expect(BISTRO_SPACINGS).toEqual([9, 18, 24]);
+  });
+});
+
 describe("sizePresetLabel", () => {
   it("labels each of the 3 kept values Small / Medium / Large in position order", () => {
     expect(sizePresetLabel(WREATH_SIZES, WREATH_SIZES[0])).toBe("Small");
@@ -55,6 +88,26 @@ describe("sizePresetLabel", () => {
     expect(sizePresetLabel(POLE_HEIGHTS, 96)).toBe("Small");
     expect(sizePresetLabel(POLE_HEIGHTS, 120)).toBe("Medium");
     expect(sizePresetLabel(POLE_HEIGHTS, 180)).toBe("Large");
+  });
+
+  it("works the same for the light-spacing arrays (#248) -- c9/mini/bistro get the S/M/L relabel", () => {
+    for (const spacings of [C9_SPACINGS, MINI_SPACINGS, BISTRO_SPACINGS]) {
+      expect(sizePresetLabel(spacings, spacings[0])).toBe("Small");
+      expect(sizePresetLabel(spacings, spacings[1])).toBe("Medium");
+      expect(sizePresetLabel(spacings, spacings[2])).toBe("Large");
+    }
+  });
+
+  // Permanent is deliberately EXCLUDED from the S/M/L relabel (#248) -- a
+  // single fixed option has no small/medium/large to show. It isn't a
+  // sizePresets.ts export at all (stays a local [8] literal in editor.ts /
+  // toolDefaults.ts), so this documents the exclusion at the boundary this
+  // module DOES control: labeling a genuine single-value array would still
+  // return "Small" (index 0), which is exactly why editor.ts's
+  // spacingRowHtml() branches around calling sizePresetLabel/sizeButtons for
+  // the permanent case instead of relying on this function to no-op for it.
+  it("a degenerate single-value array (permanent's shape) would still label its one entry Small -- callers must branch around this, not rely on it returning null", () => {
+    expect(sizePresetLabel([8], 8)).toBe("Small");
   });
 
   // The round-trip guarantee: an off-preset stored sizeIn/heightIn (a dropped
@@ -122,6 +175,15 @@ describe("offPresetSizeSuffix", () => {
     expect(offPresetSizeSuffix(WREATH_SIZES, [48])).toBe(' — 48"'); // dropped legacy tier
     expect(offPresetSizeSuffix(POLE_HEIGHTS, [144], "ft")).toBe(" — 12 ft"); // dropped legacy pole tier
     expect(offPresetSizeSuffix(WREATH_SIZES, [41.5])).toBe(' — 41.5"'); // hand-resized, never any preset
+  });
+
+  // #248: a strand drawn before the trim (e.g. a legacy 36" c9 strand -- part
+  // of the pre-trim superset, dropped by Jason's picks) must surface its real
+  // spacing instead of silently losing its active button, exactly like the
+  // decor cases above.
+  it("returns the em-dash raw-size suffix for a legacy off-preset SPACING value (#248)", () => {
+    expect(offPresetSizeSuffix(C9_SPACINGS, [36])).toBe(' — 36"'); // dropped legacy c9 spacing tier
+    expect(offPresetSizeSuffix(BISTRO_SPACINGS, [12])).toBe(' — 12"'); // dropped legacy bistro spacing tier (also the old shared tool default)
   });
 
   it("returns \"\" for a mixed multi-select or an empty selection -- no single number to show", () => {

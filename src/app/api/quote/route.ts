@@ -46,6 +46,11 @@ const MAX_CUSTOM_RATE = 1000;
 const MAX_OVERRIDE_AMOUNT = 1_000_000;
 const MAX_OVERRIDE_REASON_LEN = 500;
 
+// item-numbering-rename: per-quote label override cap. Matches the existing
+// MAX_STRING_LEN convention (src/app/api/quotes/[id]/selection/route.ts) for
+// a short staff-typed name.
+const MAX_LABEL_OVERRIDE_LEN = 200;
+
 // #leads "Create quote" link: a HighLevel contact id is an opaque short
 // string (GHL's own ids run well under this) — cap it generously so a clean
 // 400 beats persisting an oversized/garbage value into highlevel_contact_id.
@@ -273,6 +278,29 @@ export async function POST(req: NextRequest) {
       if (reason !== undefined && !(typeof reason === 'string' && reason.length <= MAX_OVERRIDE_REASON_LEN)) {
         return NextResponse.json(
           { error: `lineItemPriceOverrides.${k}.reason must be a string ≤ ${MAX_OVERRIDE_REASON_LEN} chars` },
+          { status: 400 },
+        );
+      }
+    }
+  }
+  // item-numbering-rename: optional per-quote label overrides — a map of
+  // stableId → renamed label. Mirrors the lineItemPriceOverrides validation
+  // above. An empty string is accepted through (the engine/adapter treat a
+  // blank/whitespace-only value as "no override", same as omitting the key).
+  if (q.labelOverrides !== undefined) {
+    const ov = q.labelOverrides;
+    if (!isObj(ov) || Array.isArray(ov)) {
+      return NextResponse.json({ error: 'labelOverrides must be an object if provided' }, { status: 400 });
+    }
+    const keys = Object.keys(ov);
+    if (keys.length > MAX_ARRAY_LEN) {
+      return NextResponse.json({ error: 'too many labelOverrides' }, { status: 400 });
+    }
+    for (const k of keys) {
+      const v = (ov as Record<string, unknown>)[k];
+      if (typeof v !== 'string' || v.length > MAX_LABEL_OVERRIDE_LEN) {
+        return NextResponse.json(
+          { error: `labelOverrides.${k} must be a string ≤ ${MAX_LABEL_OVERRIDE_LEN} chars` },
           { status: 400 },
         );
       }
@@ -924,6 +952,12 @@ export async function POST(req: NextRequest) {
       baseline, // #104 — overrides-stripped, for the "was $X" display
       quoteId: saved?.id ?? null,
       persisted: saved !== null,
+      // #839 fix-round MED: updateQuote's #251 identity freeze used to be
+      // log-only when it actually refused a would-be reattach on an
+      // approved/booked quote. Propagate the flag (absent on a brand-new
+      // insert — saveQuote never sets it) so the builder can show a small
+      // notice instead of the save silently succeeding with a stale link.
+      ...(saved?.identityFrozen ? { identityFrozen: true } : {}),
     });
   } catch (err) {
     console.error('Quote calculation error:', err);

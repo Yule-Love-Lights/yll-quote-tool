@@ -193,7 +193,11 @@ function blankToNull(v: string | undefined): string | null {
 // sets it (a brand-new insert has no "prior" row) — only updateQuote
 // populates it, from its own late pre-read (see `stored` below), taken
 // immediately before the write rather than route.ts's much-earlier snapshot.
-export type SaveQuoteResult = { id: string; priorInputs?: Partial<QuoteInputs> | null };
+// identityFrozen (#839 fix-round MED): true only when updateQuote's #251
+// freeze actually refused a would-be reattach on this call (see its own
+// comment above `identityFrozen` in updateQuote) — absent/false otherwise,
+// including on a brand-new insert (saveQuote never sets it).
+export type SaveQuoteResult = { id: string; priorInputs?: Partial<QuoteInputs> | null; identityFrozen?: boolean };
 
 export async function saveQuote(
   customer: Customer,
@@ -438,6 +442,13 @@ export async function updateQuote(
     highlevel_contact_id: string | null;
     customer_id: string | null;
     inputs: Partial<QuoteInputs> | null;
+    // #251 (Jason's ruling 2026-08-20 — identity is ATOMIC past approval):
+    // read the lifecycle stamps BEFORE the write, not just off the write's
+    // own response, so the freeze can gate the denormalized customer_* write
+    // below instead of only the customers-table reattach further down.
+    customer_approved_at: string | null;
+    deposit_paid_at: string | null;
+    is_test: boolean | null;
   };
   let stored: StoredIdentityRow | null = null;
   let clearGhlLink = false;
@@ -445,7 +456,7 @@ export async function updateQuote(
     const { data: existing, error: readErr } = await supabase
       .from('quotes')
       .select(
-        'service_type, customer_name, customer_email, customer_phone, customer_address, highlevel_contact_id, customer_id, inputs',
+        'service_type, customer_name, customer_email, customer_phone, customer_address, highlevel_contact_id, customer_id, inputs, customer_approved_at, deposit_paid_at, is_test',
       )
       .eq('id', id)
       .maybeSingle<StoredIdentityRow>();
@@ -460,6 +471,30 @@ export async function updateQuote(
     }
   }
 
+  // #251 (Jason's ruling 2026-08-20): a quote's IDENTITY is ATOMIC once the
+  // customer has approved. Before this, the freeze further down protected only
+  // customer_id (billing/jobs/invoices/tenure) while these denormalized
+  // customer_* columns — what every staff screen DISPLAYS and what the send
+  // route emails — moved freely with whatever contact was last picked. That
+  // split is precisely the shape of the 2026-08-11 incident (displayed fields
+  // said one person, customer_id said another, so it was invisible on every
+  // screen); this round just inverted which half lied. Freezing them together
+  // means a post-approval identity is either wholly unchanged or wholly moved,
+  // never half. is_test is exempt (same carve-out the reattach freeze uses).
+  //
+  // #839 fix-round HIGH (delta-verify on the block above — TOCTOU): an earlier
+  // version of this fix gated the customer_* write on `identityLocked`, a
+  // boolean computed from `stored` — the PRE-write read taken above. If a
+  // customer /approve (or the deposit-paid webhook) commits in the window
+  // BETWEEN that pre-read and the write below, `stored.customer_approved_at`
+  // is stale-null (identityLocked=false → the write goes out) while `frozen`
+  // further down — computed from the write's own fresh response — reads true
+  // (→ the customer_id reattach is refused). Display fields move, customer_id
+  // stays put: the exact inverted split #251 exists to prevent, reproduced by
+  // the very fix meant to close it. So the customer_* write is no longer part
+  // of this combined `.update()` at all — see the CAS-guarded write below,
+  // which makes the freeze check and the write ONE atomic database statement
+  // instead of two JS reads taken at two different times.
   const { data, error } = await supabase
     .from('quotes')
     .update({
@@ -468,14 +503,6 @@ export async function updateQuote(
       total: result.total,
       ...(serviceType ? { service_type: serviceType } : {}),
       ...(clearGhlLink ? { highlevel_opportunity_id: null, ghl_stage_synced_at: null } : {}),
-      ...(customer
-        ? {
-            customer_name: blankToNull(customer.name) ?? 'Anonymous',
-            customer_address: blankToNull(customer.address) ?? '(no address)',
-            customer_phone: blankToNull(customer.phone),
-            customer_email: blankToNull(customer.email),
-          }
-        : {}),
       ...(legacyRebook !== undefined ? { legacy_rebook: legacyRebook } : {}),
       ...(isNce !== undefined ? { is_nce: isNce } : {}),
     })
@@ -486,19 +513,87 @@ export async function updateQuote(
     // review) — updateQuote has no other way to know is_test (it's immutable
     // and never a param here), and a reopened TEST quote CAN be re-Calculated
     // through this exact path. deposit_paid_at rides along for the #214
-    // booked-freeze below.
-    .select('id, quote_sent_at, customer_id, is_test, deposit_paid_at')
+    // booked-freeze below; customer_approved_at rides along for the #251
+    // approved-freeze widening (same block, see its comment).
+    .select('id, quote_sent_at, customer_id, is_test, deposit_paid_at, customer_approved_at')
     .single<{
       id: string;
       quote_sent_at: string | null;
       customer_id: string | null;
       is_test: boolean;
       deposit_paid_at: string | null;
+      customer_approved_at: string | null;
     }>();
 
   if (error) {
     console.error('Supabase updateQuote error:', error);
     return null;
+  }
+
+  // #839 fix-round HIGH: the CAS-guarded identity write. `customerWriteBlocked`
+  // is set ONLY when this specific statement's `.is(...)` conditions failed to
+  // match (0 rows) — i.e. the row was ALREADY approved/booked at the exact
+  // moment of THIS write, per the database itself, not a separate earlier
+  // read. `frozen` below (which also gates the customer_id reattach) reuses
+  // this exact value whenever a customer_* write was attempted this call, so
+  // the two actions can never disagree about whether the identity is frozen —
+  // closing the split at its root instead of just detecting it after the fact.
+  // is_test bypasses the CAS and always writes unconditionally (the #251
+  // exemption — test quotes stay fully editable regardless of lifecycle
+  // stamps); is_test is read off `data.is_test`, the freshest copy available
+  // (the column is immutable, so pre- vs post-read can never disagree on it).
+  let customerWriteBlocked = false;
+  if (customer) {
+    const identityPayload = {
+      customer_name: blankToNull(customer.name) ?? 'Anonymous',
+      customer_address: blankToNull(customer.address) ?? '(no address)',
+      customer_phone: blankToNull(customer.phone),
+      customer_email: blankToNull(customer.email),
+    };
+    if (data.is_test) {
+      const { error: identErr } = await supabase
+        .from('quotes')
+        .update(identityPayload)
+        .eq('id', id)
+        .select('id')
+        .maybeSingle();
+      if (identErr) {
+        console.warn('updateQuote: is_test identity write failed:', identErr.message);
+      }
+    } else {
+      const { data: casRow, error: casErr } = await supabase
+        .from('quotes')
+        .update(identityPayload)
+        .eq('id', id)
+        .is('customer_approved_at', null)
+        .is('deposit_paid_at', null)
+        .select('id')
+        .maybeSingle();
+      if (casErr) {
+        // #839 round-2 delta-verify HIGH: this branch used to leave
+        // customerWriteBlocked at its `false` default, so ANY db error here
+        // (a connection reset, timeout, RLS denial, constraint — not just a
+        // CAS mismatch) silently produced a SPLIT: the customer_* write did
+        // NOT land (this statement errored), yet `frozen` below read false
+        // and let the `wouldReattach` branch repoint customer_id to the new
+        // identity anyway — customer_id moves, the display columns don't.
+        // Failing closed here means a transient error freezes the WHOLE
+        // identity for this call (customer_id stays put too), never splits
+        // it; the customer can retry. We deliberately do NOT `return null`
+        // for this error — the base `.update()` (inputs/result/total) above
+        // already committed, so bailing now would misreport an otherwise-
+        // successful save as a failure. The `wouldReattach && frozen` branch
+        // below surfaces this as `identityFrozen`, not a 500 — a transient
+        // CAS error and a genuine approved/booked freeze look the same to
+        // the caller, which is the safe/conservative answer either way.
+        console.warn('updateQuote: #251 identity CAS write failed:', casErr.message);
+        customerWriteBlocked = true;
+      } else if (!casRow) {
+        // 0 rows matched: approval/booking landed before (or in a race,
+        // concurrently with) this statement — the write never took effect.
+        customerWriteBlocked = true;
+      }
+    }
   }
 
   // #214 (a): verify-or-reattach the customers link whenever this update
@@ -530,12 +625,55 @@ export async function updateQuote(
   // restores the pre-#214 immutability-after-booking for the LINK
   // specifically; tag propagation below still runs against the (frozen)
   // cached id.
+  //
+  // #251 widening (real incident, 2026-08-11 — Sharon McDonough's APPROVED
+  // but not-yet-booked quote #1173 got silently re-pointed at a different
+  // customer via a stale HighLevel contact pick, invisible on every screen
+  // because the denormalized customer_name/email/phone never moved). The
+  // booked-only freeze above left every approved-but-unpaid quote exposed —
+  // the exact gap this incident fell through. An approval is itself a
+  // signed commitment (the approval_snapshot freezes pricing/terms the same
+  // moment); the customers link deserves the same immutability from that
+  // moment on, not just from booking. So the freeze now triggers on EITHER
+  // customer_approved_at OR deposit_paid_at — approved behaves exactly like
+  // booked already does here: the re-attach is skipped and the cached
+  // customer_id is left untouched. (#839 fix-round update: this is no longer
+  // fully silent — see `identityFrozen` below, set + returned on
+  // SaveQuoteResult exactly when this freeze refuses a would-be reattach;
+  // there is still no 409/error idiom at this layer, unlike the route-level
+  // #177 deposit-percent-locked check — a blocked identity change is a
+  // successful save with a flag, not a rejection.) A same-contact no-op
+  // re-pick still passes through untouched regardless — identityChanged/
+  // hlChanged below are false when nothing actually differs from `stored`,
+  // so this widening only ever blocks a REAL change of identity, never a
+  // redundant re-save.
+  //
+  // SIBLING (#839 fix-round HIGH): src/app/api/integrations/highlevel/
+  // attach/route.ts carries the IDENTICAL freeze condition on its own
+  // customers re-resolution — that route is what pickHighLevelContact calls
+  // DIRECTLY on a confirmed pick (queueAttach), before any Calculate ever
+  // reaches this function, so widening only HERE left the live incident's
+  // actual click path unprotected for a full fix-round (the route's copy
+  // stayed booked-only). Widen both together from now on.
   const effectiveHl =
     hlContactId === undefined
       ? (stored?.highlevel_contact_id ?? null)
       : (hlContactId?.trim() || null);
   let reattached: { customerId: string } | null | undefined;
-  if (!data.is_test && !data.deposit_paid_at && stored) {
+  // #839 fix-round MED (staff+technical lenses, delta-verify on #251): the
+  // freeze above used to be fully silent even when it actually BLOCKED a
+  // would-be reattach — nothing told the caller/builder a real identity
+  // change was refused, only a console.warn buried in server logs.
+  // identityFrozen is set ONLY when the freeze is the reason nothing ran
+  // (identityChanged/hlChanged/never-linked would have fired a reattach, and
+  // the quote is approved or booked) — an unrelated field edit on an
+  // approved/booked quote, or a same-id no-op re-pick, never sets it.
+  // is_test / no-`stored` still short-circuit the whole block silently, same
+  // as before — those are "not applicable," not "blocked." Surfaced on
+  // SaveQuoteResult so /api/quote/route.ts and the builder can show a small
+  // notice instead of this being log-only.
+  let identityFrozen = false;
+  if (!data.is_test && stored) {
     const written = customer
       ? {
           customer_name: blankToNull(customer.name) ?? 'Anonymous',
@@ -552,7 +690,23 @@ export async function updateQuote(
         written.customer_address !== stored.customer_address);
     const hlChanged =
       hlContactId !== undefined && effectiveHl !== (stored.highlevel_contact_id?.trim() || null);
-    if (identityChanged || hlChanged || stored.customer_id == null) {
+    const wouldReattach = identityChanged || hlChanged || stored.customer_id == null;
+    // #839 fix-round HIGH: when a customer_* write was attempted this call,
+    // `frozen` reuses that write's OWN CAS result (customerWriteBlocked) —
+    // the freshest possible signal, checked in the SAME database statement
+    // that would otherwise have moved the display columns, so this can never
+    // disagree with whether the write actually landed. When no customer_*
+    // write happened (hlContactId-only edits, or no identity args at all),
+    // there is nothing for it to split against, so this falls back to the
+    // base update's own fresh post-write read (still newer than the earlier
+    // `stored` pre-read, just not from an additional CAS round trip).
+    const frozen = customer ? customerWriteBlocked : !!data.deposit_paid_at || !!data.customer_approved_at;
+    if (wouldReattach && frozen) {
+      identityFrozen = true;
+      console.warn(
+        `updateQuote: #251 identity freeze — quote ${id} is approved/booked; refused a would-be reattach (identityChanged=${identityChanged}, hlChanged=${hlChanged}). Use the amend flow to change the linked customer.`,
+      );
+    } else if (wouldReattach) {
       try {
         reattached = await attachQuoteToCustomer(
           // Stored halves go through the sentinel translation
@@ -667,7 +821,7 @@ export async function updateQuote(
   // column itself read back empty) — both mean "nothing to report" to
   // route.ts's fallback (`saved.priorInputs ?? existing.inputs`), but only
   // the former is truly "we never looked."
-  return { id: data.id, priorInputs: stored?.inputs };
+  return { id: data.id, priorInputs: stored?.inputs, ...(identityFrozen ? { identityFrozen: true } : {}) };
 }
 
 // The raw row the EDIT flow needs (/quote/[id], #31): stored customer columns +

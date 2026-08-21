@@ -174,8 +174,14 @@ export function projectMaterials(
       const feet = strandFeet(item, scene);
       if (feet > 0) {
         const pattern = item.colorPattern?.length ? item.colorPattern : [DEFAULT_PALETTE];
-        const spacing = item.spacingIn && item.spacingIn > 0 ? item.spacingIn : 12;
-        const bulbCount = Math.round((feet * 12) / spacing);
+        // Jason's ruling (2026-08-20, row 248 follow-up): the drawn spacingIn is
+        // DESIGN-ONLY aesthetics — crews install every real job at the standard
+        // 12" C9 spacing regardless of what the operator drew. Ordering off the
+        // drawn value under- or over-bought bulbs whenever a run was drawn at a
+        // non-12 spacing (24" drawn = half the bulbs the job actually uses), so
+        // the projection deliberately ignores item.spacingIn here.
+        const C9_INSTALL_SPACING_IN = 12;
+        const bulbCount = Math.round((feet * 12) / C9_INSTALL_SPACING_IN);
         if (bulbCount > 0) {
           // Split the run's bulbs across its distinct pattern colors (a single-color
           // roofline is the common case → one line).
@@ -215,7 +221,7 @@ export function projectMaterials(
       continue;
     }
 
-    // Mini-light wrap — strand (skip group members), area fill, or grouped railing.
+    // Mini-light wrap — strand or area fill (skip group members either way), or grouped railing.
     let surface: MiniSurface | null = null;
     let stringCount = 1;
     let paletteId = DEFAULT_PALETTE;
@@ -225,6 +231,10 @@ export function projectMaterials(
       stringCount = intAtLeast1(item.stringCount);
       paletteId = item.colorPattern?.[0] ?? DEFAULT_PALETTE;
     } else if (isMiniArea(item)) {
+      // #240 fix: a grouped scattershot (mixed-group member) is projected via
+      // its MiniGroupItem — mirrors the isStrand skip above so it isn't
+      // double-counted (own line AND the group's line).
+      if (item.groupId) continue;
       surface = asMiniSurface(item.surface);
       stringCount = intAtLeast1(item.stringCount);
       paletteId = item.colorPattern?.[0] ?? DEFAULT_PALETTE;

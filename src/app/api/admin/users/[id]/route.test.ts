@@ -94,6 +94,38 @@ describe('PATCH /api/admin/users/[id]', () => {
 
 const CREW_USER = '33333333-3333-3333-3333-333333333333';
 
+describe('DELETE /api/admin/users/[id] — crew logins are refused here', () => {
+  // Without this guard the delete SUCCEEDS: roleOf collapses 'crew' to
+  // 'operator', so canDeleteUser sees an ordinary operator and permits it.
+  // The damage is not the lost login — it is that crew_members.auth_user_id has
+  // no FK to auth.users, so the pointer survives the delete and no route can
+  // clear it. crew-accounts POST then 409s "already has a login" forever.
+  it('REFUSES to delete a crew login (403), and never calls deleteUser', async () => {
+    getUserById.mockResolvedValue({
+      data: { user: { id: CREW_USER, app_metadata: { role: 'crew', name: 'SonSon' } } },
+      error: null,
+    });
+
+    const res = await DELETE(makeReq(null), params(CREW_USER));
+
+    expect(res.status).toBe(403);
+    expect(deleteUser).not.toHaveBeenCalled();
+  });
+
+  it('still deletes an ordinary operator, so the guard is narrow', async () => {
+    getUserById.mockResolvedValue({
+      data: { user: { id: OP2, app_metadata: { role: 'operator' } } },
+      error: null,
+    });
+    deleteUser.mockResolvedValue({ error: null });
+
+    const res = await DELETE(makeReq(null), params(OP2));
+
+    expect(res.status).toBe(200);
+    expect(deleteUser).toHaveBeenCalledWith(OP2);
+  });
+});
+
 describe('PATCH /api/admin/users/[id] — crew logins are refused here', () => {
   it('REFUSES to promote a crew login to admin (403), and updates nothing', async () => {
     // Before the guard this returned 200 and the account became a real admin

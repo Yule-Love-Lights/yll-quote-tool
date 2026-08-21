@@ -816,4 +816,29 @@ describe('resolveAgreedLineItems — wrapped-item grouping (bush/tree/column) on
     // A non-wrapped item (wreath) keeps its own label + detail verbatim.
     expect(items.find((i) => i.label === '30" Noble Wreath')!.detail).toBe('Non-Decorated');
   });
+
+  // item-numbering-rename: a staff rename must still be visible on the PDF —
+  // the generic "Trees" combined row would otherwise silently discard it.
+  it('breaks a RENAMED tree out of the "Trees" aggregate into its own row, leaving the un-renamed sibling(s) combined', () => {
+    const items = resolveAgreedLineItems(
+      quoteWith([
+        { id: 't1', kind: 'tree', label: 'Tree 1', detail: '', price: 180 },
+        { id: 't2', kind: 'tree', label: 'Front Left Tree', detail: '', price: 210, labelOverridden: true },
+        { id: 't3', kind: 'tree', label: 'Tree 3', detail: '', price: 195 },
+      ]),
+    )!.items;
+    // Two non-renamed trees still collapse into one "Trees" row; the renamed
+    // one gets its own row, keeping its custom name and its own price.
+    expect(items.map((i) => ({ label: i.label, qty: i.qty, amount: i.amount }))).toEqual([
+      { label: 'Trees', qty: 2, amount: '$375.00' }, // 180 + 195
+      { label: 'Front Left Tree', qty: 1, amount: '$210.00' },
+    ]);
+  });
+
+  it('a lone renamed tree (no un-renamed sibling) shows only its own row — no empty "Trees" row', () => {
+    const items = resolveAgreedLineItems(
+      quoteWith([{ id: 't1', kind: 'tree', label: 'Front Left Tree', detail: '', price: 180, labelOverridden: true }]),
+    )!.items;
+    expect(items).toEqual([{ label: 'Front Left Tree', detail: '', qty: 1, unitPrice: '$180.00', amount: '$180.00' }]);
+  });
 });

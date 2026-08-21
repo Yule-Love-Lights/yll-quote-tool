@@ -24,6 +24,12 @@ import {
   amendmentEmailHtml,
   amendmentDeclinedInternalEmailSubject,
   amendmentDeclinedInternalEmailHtml,
+  internalReopenRequestedEmailSubject,
+  internalReopenRequestedEmailHtml,
+  receiptSmsBody,
+  receiptEmailHtml,
+  referralLinkEmailHtml,
+  colorChangeAppliedEmailHtml,
 } from './quoteMessages';
 
 describe('quote-ready notifications, per service type (S26)', () => {
@@ -875,5 +881,155 @@ describe('amendmentDeclinedInternalEmailHtml', () => {
   it('falls back to "Unknown" for a null customer name', () => {
     const html = amendmentDeclinedInternalEmailHtml({ ...base, customerName: null });
     expect(html).toContain('Unknown');
+  });
+});
+
+// Ledger row 236, fix round (four-lens LOW) — the quote number is threaded
+// through in the SAME subject/body format as the money-alert siblings above
+// (amendmentDeclinedInternalEmail*/internalDepositDeclinedEmail*).
+describe('internalReopenRequestedEmailSubject (row 236)', () => {
+  it('names the customer, with a fallback', () => {
+    expect(internalReopenRequestedEmailSubject({ customerName: 'Jordan Smith', quoteNumber: 12 })).toContain(
+      'Jordan Smith',
+    );
+    expect(internalReopenRequestedEmailSubject({ customerName: null, quoteNumber: null })).toContain('A customer');
+  });
+
+  it('includes the quote number when present, omits it when absent', () => {
+    expect(internalReopenRequestedEmailSubject({ customerName: 'Jordan', quoteNumber: 42 })).toContain('quote #42');
+    expect(internalReopenRequestedEmailSubject({ customerName: 'Jordan', quoteNumber: null })).not.toContain(
+      'quote #',
+    );
+  });
+});
+
+describe('internalReopenRequestedEmailHtml (row 236)', () => {
+  const base = {
+    customerName: 'Jordan Smith',
+    quoteNumber: 42,
+    address: '1 Main St',
+    phone: '+15555550123',
+    email: 'jordan@example.com',
+    status: 'declined',
+    portalUrl: 'https://quote.yulelovelights.com/portal/abc',
+    adminUrl: 'https://quote.yulelovelights.com/quote/abc',
+  };
+
+  it('carries the customer, quote number, status, and both links', () => {
+    const html = internalReopenRequestedEmailHtml(base);
+    expect(html).toContain('Jordan Smith');
+    expect(html).toContain('(quote #42)');
+    expect(html).toContain('declined');
+    expect(html).toContain('href="https://quote.yulelovelights.com/quote/abc"');
+    expect(html).toContain('href="https://quote.yulelovelights.com/portal/abc"');
+  });
+
+  it('omits the quote-number label entirely when quoteNumber is null', () => {
+    const html = internalReopenRequestedEmailHtml({ ...base, quoteNumber: null });
+    expect(html).not.toContain('(quote #');
+  });
+
+  it('shows "Unknown" for a missing name and reflects an abandoned status', () => {
+    const html = internalReopenRequestedEmailHtml({ ...base, customerName: null, status: 'abandoned' });
+    expect(html).toContain('Unknown');
+    expect(html).toContain('abandoned');
+  });
+
+  it('escapes HTML in the customer name', () => {
+    const html = internalReopenRequestedEmailHtml({ ...base, customerName: '<script>' });
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('&lt;script&gt;');
+  });
+});
+
+// Row 315: greetingName (the first-letter-only casing helper, shipped #805)
+// was wired into ONLY the amendment SMS/email — every other customer greeting
+// still rendered the raw stored name, so one customer could read "Hi susan!"
+// on the quote-ready text and "Hi Susan!" on the amendment text in the same
+// thread. Every customer-greeting builder below now routes through the same
+// helper. Each function gets BOTH directions: a lowercase name gets
+// capitalised, and an already-capitalised name is byte-identical to before
+// (greetingName only ever touches the first character).
+describe('greeting casing sweep (row 315): every customer greeting routes through greetingName', () => {
+  it('quoteSmsBody capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    expect(quoteSmsBody('susan', 'https://x/portal/1', 'holiday')).toContain('Hi Susan!');
+    expect(quoteSmsBody('Susan', 'https://x/portal/1', 'holiday')).toContain('Hi Susan!');
+  });
+
+  it("the literal 'there' fallback passes through every swept builder uncapitalised (value-based exemption)", () => {
+    expect(quoteSmsBody('there', 'https://x/portal/1', 'holiday')).toContain('Hi there!');
+    expect(quoteEmailHtml('there', 'https://x/portal/1', 'holiday')).toContain('Hi there,');
+    expect(approvalSmsBody('there', 2700, '(631) 517-0186', 50)).toContain('Hi there!');
+  });
+
+  it('quoteEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    expect(quoteEmailHtml('susan', 'https://x/portal/1', 'holiday')).toContain('Hi Susan,');
+    expect(quoteEmailHtml('Susan', 'https://x/portal/1', 'holiday')).toContain('Hi Susan,');
+  });
+
+  it('approvalSmsBody capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    expect(approvalSmsBody('susan', 2700, '(631) 517-0186', 50)).toContain('Hi Susan!');
+    expect(approvalSmsBody('Susan', 2700, '(631) 517-0186', 50)).toContain('Hi Susan!');
+  });
+
+  it('approvalEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    expect(approvalEmailHtml('susan', 2700, 'https://x/portal/1', '(631) 517-0186', 50)).toContain('Hi Susan,');
+    expect(approvalEmailHtml('Susan', 2700, 'https://x/portal/1', '(631) 517-0186', 50)).toContain('Hi Susan,');
+  });
+
+  it('balanceLinkSmsBody capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    expect(balanceLinkSmsBody('susan', 551.91, 'https://x/portal/1/pay-balance', '(631) 517-0186')).toContain('Hi Susan!');
+    expect(balanceLinkSmsBody('Susan', 551.91, 'https://x/portal/1/pay-balance', '(631) 517-0186')).toContain('Hi Susan!');
+  });
+
+  it('balanceLinkEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    const args = (firstName: string) => ({
+      firstName,
+      balanceUsd: 551.91,
+      payUrl: 'https://x/portal/1/pay-balance',
+      phone: '(631) 517-0186',
+    });
+    expect(balanceLinkEmailHtml(args('susan'))).toContain('Hi Susan,');
+    expect(balanceLinkEmailHtml(args('Susan'))).toContain('Hi Susan,');
+  });
+
+  it('receiptSmsBody capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    expect(receiptSmsBody('susan', 2700, '(631) 517-0186')).toContain('Hi Susan!');
+    expect(receiptSmsBody('Susan', 2700, '(631) 517-0186')).toContain('Hi Susan!');
+  });
+
+  it('receiptEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    const args = (firstName: string) => ({
+      firstName,
+      depositUsd: 2700,
+      totalUsd: 5400,
+      receiptUrl: null,
+      confirmationUrl: 'https://x/portal/1',
+      phone: '(631) 517-0186',
+    });
+    expect(receiptEmailHtml(args('susan'))).toContain('Hi Susan,');
+    expect(receiptEmailHtml(args('Susan'))).toContain('Hi Susan,');
+  });
+
+  it('referralLinkEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    const referralUrl = 'https://x/refer/abc';
+    expect(referralLinkEmailHtml({ firstName: 'susan', referralUrl })).toContain('Hi Susan,');
+    expect(referralLinkEmailHtml({ firstName: 'Susan', referralUrl })).toContain('Hi Susan,');
+  });
+
+  it("referralLinkEmailHtml still falls back to 'there' (unchanged) for a missing/blank name", () => {
+    const referralUrl = 'https://x/refer/abc';
+    expect(referralLinkEmailHtml({ firstName: null, referralUrl })).toContain('Hi there,');
+    expect(referralLinkEmailHtml({ firstName: '   ', referralUrl })).toContain('Hi there,');
+  });
+
+  it('colorChangeAppliedEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {
+    expect(colorChangeAppliedEmailHtml('susan', 'Warm White')).toContain('Hi Susan,');
+    expect(colorChangeAppliedEmailHtml('Susan', 'Warm White')).toContain('Hi Susan,');
+  });
+
+  it('never fixes interior capitals (documents the shared limitation, not a full name-caser)', () => {
+    expect(quoteSmsBody("o'brien", 'https://x/portal/1', 'holiday')).toContain("Hi O'brien!");
+    expect(receiptSmsBody("o'brien", 2700, '(631) 517-0186')).toContain("Hi O'brien!");
   });
 });

@@ -209,6 +209,26 @@ describe('home.works /send — HIGH: bills the AGREED total on a resend', () => 
   });
 });
 
+describe('home.works /send — item-numbering-rename: a staff rename flows to the outbound line items', () => {
+  it('sends the labelOverrides-resolved name, not the raw engine label', async () => {
+    const QUOTE = baseQuote({
+      result: {
+        ...FULL_RESULT,
+        lineItems: [{ id: 'mini-a', label: 'Tree – canopy wrap, 1 string', price: 6000, amount: 6000 }],
+      },
+      inputs: { labelOverrides: { 'mini-a': 'Front Left Tree' } },
+    });
+    const { factory } = makeSb(QUOTE);
+    sbRef.current = factory;
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID }));
+    expect(res.status).toBe(200);
+    const payload = sendQuoteToHomeworksMock.mock.calls[0]![0] as Record<string, unknown>;
+    const lineItems = payload.lineItems as { label: string }[];
+    expect(lineItems).toEqual([{ label: 'Front Left Tree', amountUsd: 6000 }]);
+  });
+});
+
 describe('home.works /send — MEDIUM: atomic claim prevents a double-send', () => {
   it('two concurrent sends for the same quote fire Zapier exactly once', async () => {
     const QUOTE = baseQuote({});

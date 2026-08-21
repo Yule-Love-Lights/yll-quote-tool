@@ -6,10 +6,17 @@
 // contact collapses into one rolled-up row instead of N separate ones. The
 // grouping/sorting logic itself is covered exhaustively in
 // groupInboxItems.test.ts; this just proves InboxList actually wires it in.
+//
+// Row 309: useRouter (next/navigation) throws outside an app-router context —
+// InboxList now calls it unconditionally (React hook-order rules), so it's
+// mocked here, same shape as AmendmentConsentCard.test.tsx's own mock.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { InboxList, isGroupExpanded, canToggleGroup, withRowFlagSet, withRowFlagCleared, withItemRestored, omitKey } from './InboxList';
+
+vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: () => {} }) }));
+
+import { InboxList, isGroupExpanded, canToggleGroup, withRowFlagSet, withRowFlagCleared, withItemRestored, omitKey, errorNoteFor, retiresFollowUp, colorRequestConfirmMessage } from './InboxList';
 import type { OpenInboxItem } from '@/lib/dashboard/inbox/types';
 import type { InboxGroup } from '@/lib/dashboard/inbox/groupInboxItems';
 
@@ -569,5 +576,79 @@ describe('the unreachable-action lock (#302)', () => {
     for (const label of ['Handled', 'Not a lead', 'Followed', 'Mark completed']) {
       expect(lockedOut(null, label)).toBe(false);
     }
+  });
+});
+
+// Row 311 fix-round FIX 3: before this, a definite server rejection's own
+// `data.error` was discarded — only the generic "Something went wrong" note
+// ever rendered. errorNoteFor picks the right text; the thrown-fetch case
+// (unreachableAction set) is unchanged.
+describe('errorNoteFor (row 311 fix-round FIX 3)', () => {
+  it('a thrown fetch always wins, regardless of any rejection error also present', () => {
+    expect(errorNoteFor('Followed', 'Already marked followed')).toBe(
+      "Couldn't reach the server — this may or may not have gone through. Click Followed again to confirm.",
+    );
+  });
+
+  it('a definite rejection with an error renders that error, not the generic fallback', () => {
+    expect(errorNoteFor(undefined, 'Already marked followed')).toBe('Already marked followed');
+  });
+
+  it('a definite rejection with no error falls back to the generic copy', () => {
+    expect(errorNoteFor(undefined, undefined)).toBe('Something went wrong — try again.');
+  });
+});
+
+// Row 321: badges an isColorRequest row so it's visually distinct before
+// Handled/Mark completed can silently bury a still-pending colour request.
+// The click-then-confirm-then-act flow itself can't be driven without jsdom
+// (same limitation as the rest of this file — see the header comment); the
+// message the confirm gate shows is pinned directly below.
+describe('InboxList (row 321 — pending colour request badge)', () => {
+  it('badges a row flagged isColorRequest with "Colour request pending"', () => {
+    const items: OpenInboxItem[] = [
+      { ...base, id: 'cr1', source: 'quotetool', contactId: 'c1', contact: { displayName: 'Colour Customer', email: null, phone: null }, isColorRequest: true, lastMessageAt: at(3_600_000) },
+    ];
+    const html = renderToStaticMarkup(<InboxList initialItems={items} nowMs={now} />);
+    expect(html).toContain('Colour Customer');
+    expect(html).toContain('Colour request pending');
+  });
+
+  it('does not badge an ordinary row', () => {
+    const items: OpenInboxItem[] = [
+      { ...base, id: 'ord1', source: 'ghl', contactId: 'c2', contact: { displayName: 'Ordinary Customer', email: null, phone: null }, lastMessageAt: at(3_600_000) },
+    ];
+    const html = renderToStaticMarkup(<InboxList initialItems={items} nowMs={now} />);
+    expect(html).toContain('Ordinary Customer');
+    expect(html).not.toContain('Colour request pending');
+  });
+});
+
+describe('colorRequestConfirmMessage (row 321 — pure)', () => {
+  it('names what is outstanding and points to the quote admin page', () => {
+    const msg = colorRequestConfirmMessage();
+    expect(msg).toContain('This customer is waiting on a colour change — mark it handled anyway?');
+    // Row 321 fix-round FIX 3: names the REAL on-page heading
+    // (ColorRequestPanel.tsx's pre-apply h2), never the nonexistent
+    // "Colour request panel" label the original copy invented.
+    expect(msg).toContain('Colour change requested');
+    expect(msg).not.toContain('Colour request panel');
+  });
+});
+
+// Row 309: closeFollowUpsForResolvedItem (store.ts) is only called from
+// dismissItem and markItemCompleted — 'Handled'/'Followed' never retire a
+// pending follow-up, so act()'s router.refresh() (which re-renders the whole
+// InboxPage server component, not just the follow-up strip) is gated on this
+// predicate rather than firing after every successful action.
+describe('retiresFollowUp (row 309 — which actions can retire a due follow-up)', () => {
+  it('is true for dismiss and completed — the two terminal transitions', () => {
+    expect(retiresFollowUp('/api/dashboard/dismiss')).toBe(true);
+    expect(retiresFollowUp('/api/dashboard/completed')).toBe(true);
+  });
+
+  it('is false for handled and followed — neither is a terminal transition', () => {
+    expect(retiresFollowUp('/api/dashboard/handled')).toBe(false);
+    expect(retiresFollowUp('/api/dashboard/followed')).toBe(false);
   });
 });

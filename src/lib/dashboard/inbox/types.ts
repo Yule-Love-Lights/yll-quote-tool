@@ -88,6 +88,12 @@ export type OpenInboxItem = {
   /** The contact's current assignee (auth.users id), or null when unclaimed. */
   assignedTo: string | null;
   contact: { displayName: string | null; email: string | null; phone: string | null } | null;
+  /** Row 321: true for a `quotetool` item whose external_id carries the
+   *  `:color-request` suffix (store.ts's isColorRequestExternalId) — badges the
+   *  row and confirm-gates its Handled/Mark-completed buttons so a still-live
+   *  colour request can't be silently buried by the ordinary buttons. Optional
+   *  so existing fixtures that don't set it keep reading as false (no badge). */
+  isColorRequest?: boolean;
 };
 
 /** A candidate duplicate contact pair, shaped for the merge UI. */
@@ -110,6 +116,18 @@ export type DueFollowUp = {
    *  itself doesn't need these; they ride along for that one consumer. */
   contactPhone: string | null;
   contactEmail: string | null;
+};
+
+/** Row 321: one quote with a live `approval_snapshot.pendingColorRequest`, for
+ *  the /inbox "Pending colour requests" section — read straight off the quote
+ *  (store.ts's listPendingColorRequests), independent of any inbox item's
+ *  status, so a hidden/completed/dismissed inbox row can never suppress it. */
+export type PendingColorRequestItem = {
+  quoteId: string;
+  quoteNumber: number | null;
+  customerName: string | null;
+  label: string;
+  requestedAt: string | null;
 };
 
 // ─── Follow-ups ─────────────────────────────────────────────────────────────

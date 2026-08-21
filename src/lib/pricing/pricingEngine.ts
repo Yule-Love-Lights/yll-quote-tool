@@ -278,6 +278,23 @@ export interface QuoteInputs {
   // exists is simply ignored. `reason` is an optional staff note (not priced).
   // Optional/additive — absent means no overrides.
   lineItemPriceOverrides?: Record<string, { amount: number; reason?: string }>;
+  // item-numbering-rename: per-quote staff RENAME of a per-unit line's default
+  // label, keyed by the SAME stable line id as lineItemPriceOverrides above
+  // (`mini-<sceneItemId>` etc, #104) — only mini/spritzer/wreath/garland/bow
+  // lines carry one; the builder's rename control only ever writes those
+  // prefixes. Applied in two places: (1) here in calculateQuote, an item with
+  // an ACTIVE override drops OUT of the duplicate-numbering pool (see
+  // numberDuplicateLabels) so renaming one of two identically-labeled items
+  // un-numbers the survivor; (2) resolveLineItemLabel (exported below), used
+  // by every DISPLAY surface (builder breakdown, portal adapter, PDF, the
+  // admin quote page) to swap in the override text. The engine's own
+  // LineItem.label NEVER carries the override text itself — only the
+  // numbered/default text — so the portal adapter's parseLineItem (label-text
+  // kind classification) can never be confused by a staff-typed freeform
+  // name. A blank/whitespace-only value means "no override" (revert to the
+  // auto label), same as omitting the key. Optional/additive — absent means
+  // no renames.
+  labelOverrides?: Record<string, string>;
   // Staff "recommend to the customer" flags (#12) for the measurement-driven
   // Winter Wonderland + Stake lines. Per-unit items carry `recommended` on the
   // scene item, but WW/Stake are typed-footage lines with no scene item when
@@ -604,22 +621,97 @@ function withIdentity(item: LineIdentity): Pick<LineItem, 'id' | 'sceneItemIds'>
   };
 }
 
+// ─────────────────────────────────────────────────────────
+// item-numbering-rename: duplicate-label numbering + staff renames
+// ─────────────────────────────────────────────────────────
+
+// The active override text for a line id, or undefined (no override / blank /
+// whitespace-only — a blank value means "revert to the auto label", same as
+// omitting the key entirely). PRESENCE-keyed like overrideAmount below, not
+// truthiness, so the trim is the only thing that decides "active".
+function activeLabelOverride(id: string | undefined, overrides: QuoteInputs['labelOverrides']): string | undefined {
+  if (!id || !overrides || !Object.prototype.hasOwnProperty.call(overrides, id)) return undefined;
+  const raw = overrides[id];
+  const trimmed = typeof raw === 'string' ? raw.trim() : '';
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+// Exported: resolve a line's DISPLAY label for any surface that reads
+// result.lineItems directly (the quote builder breakdown, the admin quote
+// page) instead of going through the portal adapter (which applies this same
+// resolution itself, in buildLineItems) — both call sites share this one
+// implementation so they can never disagree. `overridden` tells the caller
+// whether an active override won, so a "custom · reset" UI affordance (or a
+// PDF's decision to break an item out of an aggregate row) doesn't have to
+// re-derive it by comparing strings.
+export function resolveLineItemLabel(
+  id: string | undefined,
+  defaultLabel: string,
+  overrides: QuoteInputs['labelOverrides'],
+): { label: string; overridden: boolean } {
+  const ov = activeLabelOverride(id, overrides);
+  return ov !== undefined ? { label: ov, overridden: true } : { label: defaultLabel, overridden: false };
+}
+
+// Number duplicate DEFAULT labels within one per-unit category, in array
+// order — stable across recalculates because the array order is the design
+// scene's own persisted item order (projectScene → applyProjectionToInputs),
+// never Map/object key iteration. An item with an ACTIVE override drops OUT
+// of the duplicate pool entirely (both as a contributor to another item's
+// count, and as a recipient of a number itself) — Jason's ruling: renaming
+// one of two identically-labeled items un-numbers the survivor, since it's no
+// longer ambiguous. Its own returned label is irrelevant (resolveLineItemLabel
+// replaces it at every display surface) — returned unnumbered for
+// determinism, not because it matters.
+//
+// `insertAt` is the character offset within the default label to insert " N"
+// at: minis pass the bare kind-name prefix's length (so "Tree – canopy
+// wrap…" becomes "Tree 2 – canopy wrap…", matching the customer-facing bare
+// name once the portal strips the wrap-detail suffix); every other category
+// has no clean separable product-name prefix (size/tier ARE the identity), so
+// they pass the label's own length to append at the end instead.
+function numberDuplicateLabels<T extends LineIdentity>(
+  raw: { item: T; defaultLabel: string; insertAt: number }[],
+  overrides: QuoteInputs['labelOverrides'],
+): string[] {
+  const counts = new Map<string, number>();
+  for (const r of raw) {
+    if (activeLabelOverride(r.item.id, overrides) !== undefined) continue;
+    counts.set(r.defaultLabel, (counts.get(r.defaultLabel) ?? 0) + 1);
+  }
+  const seen = new Map<string, number>();
+  return raw.map((r) => {
+    if (activeLabelOverride(r.item.id, overrides) !== undefined) return r.defaultLabel;
+    const total = counts.get(r.defaultLabel) ?? 1;
+    if (total <= 1) return r.defaultLabel;
+    const n = (seen.get(r.defaultLabel) ?? 0) + 1;
+    seen.set(r.defaultLabel, n);
+    return `${r.defaultLabel.slice(0, r.insertAt)} ${n}${r.defaultLabel.slice(r.insertAt)}`;
+  });
+}
+
 function calculateMiniLights(inputs: QuoteInputs): LineItem[] {
-  return inputs.miniLightItems.map(item => {
+  const overrides = inputs.labelOverrides;
+  const raw = inputs.miniLightItems.map(item => {
     const count = units(item.stringCount);
     const strings = count === 1 ? '1 string' : `${count} strings`;
+    const prefix = MINI_LIGHT_TYPE_LABELS[item.type];
+    let amount: number;
+    let defaultLabel: string;
     if (NO_WRAP_STYLE_TYPES.has(item.type)) {
-      return {
-        label: `${MINI_LIGHT_TYPE_LABELS[item.type]} – ${strings}`,
-        amount: count * BUSINESS_RULES.miniLightRates.canopy,
-        ...withIdentity(item),
-      };
+      defaultLabel = `${prefix} – ${strings}`;
+      amount = count * BUSINESS_RULES.miniLightRates.canopy;
+    } else {
+      const rate = BUSINESS_RULES.miniLightRates[item.wrapStyle];
+      amount = count * rate;
+      defaultLabel = `${prefix} – ${item.wrapStyle} wrap, ${strings}`;
     }
-    const rate = BUSINESS_RULES.miniLightRates[item.wrapStyle];
-    const amount = count * rate;
-    const label = `${MINI_LIGHT_TYPE_LABELS[item.type]} – ${item.wrapStyle} wrap, ${strings}`;
-    return { label, amount, ...withIdentity(item) };
+    // item-numbering-rename: insert a duplicate's " N" right after the bare
+    // kind-name prefix ("Tree 2 – canopy wrap, …"), not at the label's end.
+    return { item, defaultLabel, amount, insertAt: prefix.length };
   });
+  const labels = numberDuplicateLabels(raw, overrides);
+  return raw.map((r, i) => ({ label: labels[i], amount: r.amount, ...withIdentity(r.item) }));
 }
 
 // ─────────────────────────────────────────────────────────
@@ -627,15 +719,20 @@ function calculateMiniLights(inputs: QuoteInputs): LineItem[] {
 // ─────────────────────────────────────────────────────────
 
 function calculateSpritzers(inputs: QuoteInputs): LineItem[] {
-  return inputs.spritzers.map(item => {
+  const overrides = inputs.labelOverrides;
+  const raw = inputs.spritzers.map(item => {
     const qty = units(item.quantity);
     const rate = BUSINESS_RULES.spritzerRates[item.size];
     const amount = qty * rate;
-    const label = qty === 1
+    const defaultLabel = qty === 1
       ? `${item.size}" Spritzer`
       : `${item.size}" Spritzers × ${qty}`;
-    return { label, amount, ...withIdentity(item) };
+    // No clean separable product-name prefix (size IS the identity) — a
+    // duplicate's " N" appends at the label's end instead.
+    return { item, defaultLabel, amount, insertAt: defaultLabel.length };
   });
+  const labels = numberDuplicateLabels(raw, overrides);
+  return raw.map((r, i) => ({ label: labels[i], amount: r.amount, ...withIdentity(r.item) }));
 }
 
 // ─────────────────────────────────────────────────────────
@@ -657,14 +754,30 @@ const TIER_LABELS: Record<DecorTier, string> = {
 };
 
 function calculateWreaths(inputs: QuoteInputs): LineItem[] {
-  return inputs.wreaths.map(item => {
+  const overrides = inputs.labelOverrides;
+  const raw = inputs.wreaths.map(item => {
     const qty = units(item.quantity);
     const price = BUSINESS_RULES.wreathPrices[item.size][item.tier];
     const amount = price * qty;
-    const base = `${WREATH_SIZE_LABELS[item.size]} Wreath – ${TIER_LABELS[item.tier]}`;
-    const label = qty === 1 ? base : `${base} × ${qty}`;
-    return { label, amount, ...withIdentity(item) };
+    const productName = `${WREATH_SIZE_LABELS[item.size]} Wreath`;
+    const base = `${productName} – ${TIER_LABELS[item.tier]}`;
+    const defaultLabel = qty === 1 ? base : `${base} × ${qty}`;
+    // item-numbering-rename (fix round, technical-lens MED): insert the
+    // duplicate's " N" right after the PRODUCT-NAME segment, before " – tier"
+    // — NOT at the label's end like the original cut. Appending at the end
+    // put the digit inside the portal's extractDecorDetail tier capture
+    // (lineItemKind.ts's tierM regex has no "×" terminator when qty===1, so
+    // it swallowed a trailing digit straight into `detail` — "Non-Decorated
+    // 1" — which prints VERBATIM on the customer Quote/Invoice/Receipt PDFs;
+    // wreath/garland skip the wrapped-mini aggregation that would have hidden
+    // it). Same structural fix as minis (insertAt = prefix.length) — the
+    // prefix boundary here is just delimited by " – " instead of a bare
+    // space, and it happens to also dodge the qty>1 "× N N" concern for free
+    // (the number always lands before " – tier", never after "× qty").
+    return { item, defaultLabel, amount, insertAt: productName.length };
   });
+  const labels = numberDuplicateLabels(raw, overrides);
+  return raw.map((r, i) => ({ label: labels[i], amount: r.amount, ...withIdentity(r.item) }));
 }
 
 // ─────────────────────────────────────────────────────────
@@ -676,14 +789,22 @@ const GARLAND_TYPE_LABELS: Record<GarlandType, string> = {
 };
 
 function calculateGarland(inputs: QuoteInputs): LineItem[] {
-  return inputs.garland.map(item => {
+  const overrides = inputs.labelOverrides;
+  const raw = inputs.garland.map(item => {
     const qty = units(item.quantity);
     const price = BUSINESS_RULES.garlandPrices[item.type][item.length][item.tier];
     const amount = price * qty;
-    const base = `${item.length} ${GARLAND_TYPE_LABELS[item.type]} Garland – ${TIER_LABELS[item.tier]}`;
-    const label = qty === 1 ? base : `${base} × ${qty}`;
-    return { label, amount, ...withIdentity(item) };
+    const productName = `${item.length} ${GARLAND_TYPE_LABELS[item.type]} Garland`;
+    const base = `${productName} – ${TIER_LABELS[item.tier]}`;
+    const defaultLabel = qty === 1 ? base : `${base} × ${qty}`;
+    // item-numbering-rename (fix round, technical-lens MED): same
+    // product-name-segment insertion as calculateWreaths above, for the
+    // identical reason (extractDecorDetail's tier capture would otherwise
+    // swallow the digit into the customer-facing PDF `detail`).
+    return { item, defaultLabel, amount, insertAt: productName.length };
   });
+  const labels = numberDuplicateLabels(raw, overrides);
+  return raw.map((r, i) => ({ label: labels[i], amount: r.amount, ...withIdentity(r.item) }));
 }
 
 // ─────────────────────────────────────────────────────────
@@ -696,7 +817,8 @@ function calculateGarland(inputs: QuoteInputs): LineItem[] {
 // entries are skipped, quantities floor to whole bows.
 function calculateBows(inputs: QuoteInputs): LineItem[] {
   if (!Array.isArray(inputs.bows)) return [];
-  return inputs.bows
+  const overrides = inputs.labelOverrides;
+  const raw = inputs.bows
     .filter(
       (b) =>
         b &&
@@ -706,12 +828,11 @@ function calculateBows(inputs: QuoteInputs): LineItem[] {
     )
     .map((b) => {
       const qty = Math.floor(b.quantity);
-      return {
-        label: qty === 1 ? 'Bow' : `Bows × ${qty}`,
-        amount: qty * BUSINESS_RULES.standaloneBowPrice,
-        ...withIdentity(b),
-      };
+      const defaultLabel = qty === 1 ? 'Bow' : `Bows × ${qty}`;
+      return { item: b, defaultLabel, amount: qty * BUSINESS_RULES.standaloneBowPrice, insertAt: defaultLabel.length };
     });
+  const labels = numberDuplicateLabels(raw, overrides);
+  return raw.map((r, i) => ({ label: labels[i], amount: r.amount, ...withIdentity(r.item) }));
 }
 
 // ─────────────────────────────────────────────────────────

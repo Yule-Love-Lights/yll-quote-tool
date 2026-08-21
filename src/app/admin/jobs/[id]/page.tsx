@@ -9,7 +9,7 @@ import { JobStatusBadge } from '@/components/admin/JobStatusBadge';
 import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
 import { NceBadge } from '@/components/admin/NceBadge';
 import { reconcileInvoice } from '@/lib/invoices';
-import { isSupersededPendingAmendment } from '@/lib/amend';
+import { isSupersededPendingAmendment, resolveAmendmentBasis } from '@/lib/amend';
 import type { JobDetail } from '@/lib/jobs';
 
 // Operator BILLING detail for one job (ledger #83): customer, the booking-time
@@ -112,8 +112,13 @@ export default function JobDetailPage() {
             ? ' (Test quote — no message sent.)'
             : ' (Customer notice not sent — check messaging setup.)'
         : '';
+      // Row 313(b) fix: display_delta/display_new_balance are the SAME
+      // resolveAmendmentBasis figures the customer notice/portal/trail show
+      // (amend/route.ts) — not the raw d.delta/d.new_balance, which on a
+      // tax-overridden invoice disagree with what the customer is actually
+      // billed.
       setAmendMsg(
-        `Amended: ${d.delta >= 0 ? '+' : '−'}${money(Math.abs(d.delta))} → new balance ${money(d.new_balance)}.` +
+        `Amended: ${d.display_delta >= 0 ? '+' : '−'}${money(Math.abs(d.display_delta))} → new balance ${money(d.display_new_balance)}.` +
           (body.requiresReconsent
             ? ' Customer must re-approve the new total before the balance is charged.'
             : '') +
@@ -377,6 +382,14 @@ export default function JobDetailPage() {
                             : status === 'pending'
                               ? { label: 'Awaiting customer', cls: 'bg-amber-100 text-amber-700' }
                               : null;
+                    // Row 313(b) fix: read the SAME resolveAmendmentBasis figure
+                    // the portal card / customer notice / /admin/quotes/[id]'s
+                    // fuller trail already use — invoice_basis when the amend
+                    // route stamped one, else the raw trail — instead of the
+                    // raw a.delta/a.new_balance, which disagree with the Linked
+                    // invoice card's own invoice.balance on a tax-overridden
+                    // invoice (amend.ts's resolveAmendmentBasis doc comment).
+                    const { deltaUsd, newBalanceUsd } = resolveAmendmentBasis(a);
                     return (
                       <li key={i} className="border-t border-gray-100 pt-2 first:border-0 first:pt-0">
                         <div className="flex items-start justify-between gap-2">
@@ -388,7 +401,7 @@ export default function JobDetailPage() {
                           )}
                         </div>
                         <p className="text-gray-500 text-xs">
-                          {fmtDate(a.amended_at)} · {a.delta >= 0 ? '+' : '−'}{money(Math.abs(a.delta))} → balance {money(a.new_balance)}
+                          {fmtDate(a.amended_at)} · {deltaUsd >= 0 ? '+' : '−'}{money(Math.abs(deltaUsd))} → balance {money(newBalanceUsd)}
                         </p>
                         {a.consent?.status === 'declined' && (
                           <p className="mt-1 text-xs text-red-700">

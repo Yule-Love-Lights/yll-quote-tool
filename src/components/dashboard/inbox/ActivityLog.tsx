@@ -21,8 +21,11 @@ const ACTION_LABEL: Record<string, string> = {
   // see recordAutoClosedFollowUps' doc (store.ts). Unlabelled actions already
   // fall through to the raw string below; this just reads properly on the page.
   followup_autoclosed: 'Follow-up closed (conversation resolved)',
-  // Row 308: a colour-change-request staff email that failed to send — see
-  // color-change-request/route.ts's catch branch.
+  // Row 311 fix-round FIX 2: before this, an 'action_failed' row (row 308)
+  // rendered as the raw literal string 'action_failed' — no verb, no detail.
+  action_failed: 'Action failed',
+  // Row 308 family: a colour-change-request staff email that failed to send —
+  // see color-change-request/route.ts's catch branch.
   color_request_email_failed: 'Colour-change staff email failed',
 };
 
@@ -32,6 +35,22 @@ const ACTION_LABEL: Record<string, string> = {
 // requiresCompleteConfirmation).
 export function friendlyAction(action: string): string {
   return ACTION_LABEL[action] ?? action;
+}
+
+// row 317 fix-round FIX 4 (staff LOW): completeTerminalQuoteItems (store.ts)
+// writes `detail: { auto: true, reason: 'quote_terminal', ... }` on the
+// 'completed' rows it produces, but nothing rendered WHY a row marked
+// "System" happened — only THAT it did. ActivityRow.autoReason (store.ts)
+// carries `detail.reason` through for exactly this. Only one reason exists
+// today; falls through to the raw string for anything future, same
+// convention as friendlyAction above. Exported for pure-function testing
+// without jsdom (mirrors friendlyAction/isPermanentReverseRefusal).
+const AUTO_REASON_LABEL: Record<string, string> = {
+  quote_terminal: 'quote booked/declined/abandoned',
+};
+
+export function friendlyAutoReason(reason: string): string {
+  return AUTO_REASON_LABEL[reason] ?? reason;
 }
 
 // row 312 fix-round FIX 5(c) (LOW, converged): a refusal from the wrong-
@@ -54,14 +73,33 @@ function friendlyActor(actor: string | null, actorName: string | null): string {
   return actor;
 }
 
+// Row 305 (WRAP TECHNICAL LENS widening): a local copy of InboxList.tsx's own
+// withRowFlagSet/withRowFlagCleared (kept deliberately un-shared, same as
+// this directory's other per-file copies — see InWorksSection.tsx's own doc
+// comment on its copy). Fixes this file's single-slot `busyId`: reversing
+// row A (in flight), then clicking Reverse on row B before A settles,
+// re-enabled A's button mid-flight (the slot now held B's id) — contained to
+// a clean 400 by reverseItemState's own state re-check server-side, but the
+// double-fire itself was real. Per-row record, same shape as row 291's fix.
+export function withRowFlagSet(map: Record<string, boolean>, id: string): Record<string, boolean> {
+  return { ...map, [id]: true };
+}
+
+export function withRowFlagCleared(map: Record<string, boolean>, id: string): Record<string, boolean> {
+  if (!map[id]) return map;
+  const next = { ...map };
+  delete next[id];
+  return next;
+}
+
 export function ActivityLog({ initialRows }: { initialRows: ActivityRow[] }) {
   const [rows, setRows] = useState<ActivityRow[]>(initialRows);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  const [busyIds, setBusyIds] = useState<Record<string, boolean>>({});
   const [errorById, setErrorById] = useState<Record<string, string>>({});
   const [reversedIds, setReversedIds] = useState<Set<string>>(new Set());
 
   async function handleReverse(activityId: string) {
-    setBusyId(activityId);
+    setBusyIds((prev) => withRowFlagSet(prev, activityId));
     setErrorById((prev) => {
       const next = { ...prev };
       delete next[activityId];
@@ -89,6 +127,7 @@ export function ActivityLog({ initialRows }: { initialRows: ActivityRow[] }) {
             customerName: original.customerName,
             at: new Date().toISOString(),
             reversible: false,
+            autoReason: null,
           };
           setRows((prev) => [syntheticRow, ...prev]);
         }
@@ -106,7 +145,7 @@ export function ActivityLog({ initialRows }: { initialRows: ActivityRow[] }) {
     } catch {
       setErrorById((prev) => ({ ...prev, [activityId]: 'Network error — try again.' }));
     } finally {
-      setBusyId(null);
+      setBusyIds((prev) => withRowFlagCleared(prev, activityId));
     }
   }
 
@@ -122,7 +161,7 @@ export function ActivityLog({ initialRows }: { initialRows: ActivityRow[] }) {
     <ul className="space-y-3">
       {rows.map((row) => {
         const isReversed = reversedIds.has(row.id);
-        const isBusy = busyId === row.id;
+        const isBusy = !!busyIds[row.id];
         const rowError = errorById[row.id];
         const when = row.at ? new Date(row.at).toLocaleString() : '—';
 
@@ -137,6 +176,12 @@ export function ActivityLog({ initialRows }: { initialRows: ActivityRow[] }) {
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-medium text-sm" style={{ color: 'var(--op-text)' }}>
                     {friendlyAction(row.action)}
+                    {row.autoReason && (
+                      <span className="font-normal" style={{ color: 'var(--op-text-2)' }}>
+                        {' '}
+                        · auto ({friendlyAutoReason(row.autoReason)})
+                      </span>
+                    )}
                   </span>
                   {row.customerName && (
                     <span className="text-sm" style={{ color: 'var(--op-text)' }}>
@@ -147,6 +192,16 @@ export function ActivityLog({ initialRows }: { initialRows: ActivityRow[] }) {
                 <p className="text-xs" style={{ color: 'var(--op-text-2)' }}>
                   {when} · {friendlyActor(row.actor, row.actorName)}
                 </p>
+                {/* Row 311 fix-round FIX 2: the row's own failure detail — which
+                    action failed and why (a guard refusal reads as one, e.g.
+                    "Item is completed or dismissed…"; a real DB error reads as
+                    the other) — the two error strings already differ, so no
+                    separate classifier is needed to tell them apart at a glance. */}
+                {row.action === 'action_failed' && row.detail && (
+                  <p className="text-xs mt-1" style={{ color: '#dc2626' }}>
+                    {friendlyAction(row.detail.action ?? '')} failed: {row.detail.error ?? 'unknown error'}
+                  </p>
+                )}
                 {rowError && (
                   <p className="text-xs mt-1" style={{ color: '#dc2626' }}>
                     {rowError}

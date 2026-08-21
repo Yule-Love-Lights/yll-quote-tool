@@ -8,7 +8,7 @@ import type {
   CustomLineItem,
   RooflineChoice,
 } from '@/lib/pricing/pricingEngine';
-import { BUSINESS_RULES } from '@/lib/pricing/pricingEngine';
+import { BUSINESS_RULES, resolveLineItemLabel } from '@/lib/pricing/pricingEngine';
 import { buildPortalLineItems, BILLED_ROOFLINE_IDS, PERMANENT_RECOMMEND_FIELDS } from '@/lib/portal/adapter';
 import { attachSceneLinks } from '@/lib/portal/sceneLinks';
 import { extraPhotoLabels, photoLabelForLine } from '@/lib/design/photoLabels';
@@ -30,6 +30,8 @@ import {
   clearNceOrNeighborOnServiceTypeSwitch,
   legacyRebookConfirmMessage,
   nceConfirmMessage,
+  contactRelinkConfirmMessage,
+  clearContactConfirmMessage,
   initialNceDepositProvenance,
 } from '@/lib/quoteForm';
 import type { CrmContact } from '@/lib/integrations/types';
@@ -211,6 +213,118 @@ function EditablePrice({
         }`}
       >
         {usd(amount)}
+      </button>
+    </span>
+  );
+}
+
+// item-numbering-rename: click-to-rename a breakdown line's DISPLAY label
+// (per-quote override). Mirrors EditablePrice's idiom — shows the current
+// label as a button; click → inline text field; Enter/blur commits, Esc
+// cancels. Clearing the field (blank/whitespace) resets instead of
+// committing an empty override. When overridden, a "custom · was "X" ✕" chip
+// shows the baseline + resets — same idiom, price parity (staff-lens MED).
+// stopPropagation/preventDefault so it never toggles a recommendable row's
+// <label> (same reason as EditablePrice).
+//
+// `baseLabel` is the ENGINE's current default (item.label, pre-resolution —
+// the caller passes it straight from the closure, unlike EditablePrice's
+// baseAmount which needs a separate overrides-stripped recompute
+// (baselineResult) because price has no cheaper source of truth). Unlike
+// price, this is never stale/reopen-seeded: item.label is recomputed by
+// calculateQuote on every render from the CURRENT scene, so if a sibling
+// duplicate was renamed away and this item un-numbered (Jason's numbering-
+// interplay ruling), the "was" chip already shows the NEW bare label reset
+// would actually produce right now — not a frozen historical string.
+function EditableLabel({
+  label,
+  baseLabel,
+  overridden,
+  disabled,
+  onCommit,
+  onReset,
+}: {
+  label: string;
+  baseLabel: string;
+  overridden: boolean;
+  disabled: boolean;
+  onCommit: (s: string) => void;
+  onReset: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState('');
+  const start = () => {
+    if (disabled) return;
+    setVal(label);
+    setEditing(true);
+  };
+  const commit = () => {
+    setEditing(false);
+    const trimmed = val.trim();
+    if (trimmed.length === 0) {
+      if (overridden) onReset();
+      return;
+    }
+    if (trimmed !== label) onCommit(trimmed);
+  };
+  if (editing) {
+    return (
+      <span className="inline-flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+        <input
+          autoFocus
+          type="text"
+          maxLength={200}
+          className="min-w-[8rem] border border-green-400 rounded px-1.5 py-0.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-500"
+          value={val}
+          onChange={(e) => setVal(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commit();
+            if (e.key === 'Escape') setEditing(false);
+          }}
+        />
+      </span>
+    );
+  }
+  // Only claim a "was X" when we have a DISTINCT baseline — mirrors
+  // EditablePrice's showBase guard exactly (same reasoning: if label already
+  // equals baseLabel there's nothing to contrast, show a plain "custom" chip).
+  const showBase = baseLabel !== label;
+  return (
+    <span className="inline-flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+      {overridden && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onReset();
+          }}
+          disabled={disabled}
+          title={
+            showBase
+              ? `Custom name for this quote — reset to "${baseLabel}"`
+              : 'Custom name for this quote — reset'
+          }
+          className="text-[10px] font-semibold uppercase tracking-wide text-amber-600 hover:text-amber-800 disabled:opacity-40 cursor-pointer"
+        >
+          custom{showBase ? ` · was "${baseLabel}"` : ''} ✕
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          start();
+        }}
+        disabled={disabled}
+        title="Click to rename this item for this quote"
+        className={`rounded px-1 -mx-1 hover:bg-green-50 disabled:cursor-not-allowed cursor-text ${
+          overridden ? 'text-amber-700 font-medium' : ''
+        }`}
+      >
+        {label}
       </button>
     </span>
   );
@@ -757,6 +871,13 @@ export default function QuoteBuilder({
   // for the ?retryGhl reconcile bucket). Surfaced so the operator knows + can
   // retry, instead of the old falsely-confident "stage moved to Bid Sent".
   const [ghlSyncWarning, setGhlSyncWarning] = useState<string | null>(null);
+  // #839 fix-round MED (staff+technical lenses): the #251 identity freeze
+  // used to be log-only when it actually refused a would-be reattach on an
+  // approved/booked quote — this mirrors ghlSyncWarning's shape (a boolean
+  // is enough; the copy is fixed, unlike ghlSyncWarning's server-supplied
+  // string) so a real freeze shows a small notice instead of a save that
+  // silently succeeds with a stale customer link.
+  const [identityFrozenNotice, setIdentityFrozenNotice] = useState(false);
   // FIX A (#237 fix round, staff-lens HIGH): mirrors ghlSyncWarning's shape
   // (send route field: eventDateSyncError) for a DIFFERENT failure surface —
   // the event-date GHL custom-field push can fail independently of the stage
@@ -789,6 +910,23 @@ export default function QuoteBuilder({
   // operator pick still overwrites via the attach flow as usual.
   const [dbLinked, setDbLinked] = useState<boolean>(
     !!initialQuote?.highlevelContactId || (!initialQuote && !!prefill?.ghlContactId),
+  );
+  // #839 fix-round HIGH (customer+technical lenses, BYPASS 2): session memory
+  // of the last contact this quote was ACTUALLY linked to, independent of
+  // dbLinked/highlevelContact — because clearHighLevelContact synchronously
+  // resets BOTH of those (setHighLevelContact(null); setDbLinked(false)), so
+  // the ordinary correction sequence "Clear, then pick contact B" made
+  // pickHighLevelContact's currentContactId resolve null and skip the #251
+  // confirm entirely, even on an approved/booked quote — a clear-then-pick
+  // bypassed the whole Fix 2 guard. Seeded on mount (same precedence
+  // dbLinked's own seed uses: the reopened quote's saved link, else a
+  // lead-prefill's), and updated ONLY on a successful pick — never on Clear —
+  // so a clear-then-pick still confirms against the contact that was linked
+  // seconds ago. Same convention as isNceRef/legacyRebookRef above: a ref
+  // mirror kept synchronously current so a callback a few lines down never
+  // reads a stale value.
+  const everLinkedContactIdRef = useRef<string | null>(
+    initialQuote?.highlevelContactId ?? (!initialQuote ? (prefill?.ghlContactId ?? null) : null),
   );
 
   // ─── Draft autosave (quote-forms-partial-save) ───────────────────────────
@@ -2935,6 +3073,24 @@ export default function QuoteBuilder({
     void runQuote(undefined, finalForm);
   };
 
+  // item-numbering-rename: click-to-rename a breakdown line's label (per-quote
+  // override) — mirrors commitLinePrice/resetLinePrice exactly.
+  const commitLineLabel = (id: string, label: string) => {
+    const finalForm: QuoteFormData = {
+      ...form,
+      labelOverrides: { ...form.labelOverrides, [id]: label },
+    };
+    setForm(finalForm);
+    void runQuote(undefined, finalForm);
+  };
+  const resetLineLabel = (id: string) => {
+    const overrides = { ...form.labelOverrides };
+    delete overrides[id];
+    const finalForm: QuoteFormData = { ...form, labelOverrides: overrides };
+    setForm(finalForm);
+    void runQuote(undefined, finalForm);
+  };
+
   // Pick a HighLevel contact → pre-fill the customer block below.
   // Precedence: HL data wins if the contact has a value for that field. If
   // HL has nothing (e.g., contact was created without an email), we keep
@@ -2946,8 +3102,33 @@ export default function QuoteBuilder({
   // silently ignore HL's data because a prior value (including browser
   // autofill or a stray keystroke) was sitting in the field.
   const pickHighLevelContact = (c: CrmContact) => {
-    setHighLevelContact(c);
     const hlName = c.fullName || [c.firstName, c.lastName].filter(Boolean).join(' ');
+    // #251 (live incident, 2026-08-11): confirm BEFORE any state changes when
+    // this quote is already linked to a DIFFERENT contact — see
+    // contactRelinkConfirmMessage's own doc for why highlevelContact?.id is
+    // preferred over the persisted dbLinked/initialQuote fallback, and why
+    // both are in scope. window.confirm is synchronous, so returning here
+    // happens before setHighLevelContact, before attachSeqRef is bumped, and
+    // before the tag-lookup fetch below ever fires — a decline is a true
+    // no-op, not just a skipped final step.
+    // #839 fix-round HIGH (BYPASS 2): prefer everLinkedContactIdRef over the
+    // live dbLinked/highlevelContact state — those are SESSION state and a
+    // Clear click resets both, which would silently drop this comparison to
+    // null on a clear-then-pick sequence. The ref remembers the last contact
+    // this quote was actually linked to regardless of an intervening Clear.
+    const currentContactId =
+      everLinkedContactIdRef.current ??
+      highlevelContact?.id ??
+      (dbLinked ? (initialQuote?.highlevelContactId ?? null) : null);
+    const confirmMsg = contactRelinkConfirmMessage(
+      c.id,
+      hlName || 'this contact',
+      currentContactId,
+      !!initialQuote?.approvedAt,
+    );
+    if (confirmMsg && !window.confirm(confirmMsg)) return;
+    everLinkedContactIdRef.current = c.id;
+    setHighLevelContact(c);
     const hlAddress = [c.address1, c.city, c.state, c.postalCode].filter(Boolean).join(', ');
     setForm(f => ({
       ...f,
@@ -3033,6 +3214,13 @@ export default function QuoteBuilder({
   };
 
   const clearHighLevelContact = () => {
+    // #839 fix-round HIGH (BYPASS 3, customer+technical lenses): this route
+    // fires POST .../attach {detach:true} with no server-side guard at all —
+    // see clearContactConfirmMessage's own doc for why a client confirm (not
+    // a server block) is the right shape. window.confirm is synchronous, so
+    // returning here is a true no-op — nothing below has run yet.
+    const clearMsg = clearContactConfirmMessage(!!initialQuote?.approvedAt);
+    if (clearMsg && !window.confirm(clearMsg)) return;
     attachSeqRef.current++;
     setHighLevelContact(null);
     // #214 (c): a real undo clears the FORM's hl link too — leaving a
@@ -3664,6 +3852,10 @@ export default function QuoteBuilder({
     setSendStatus('idle');
     setSendError(null);
     setAlreadySentAt(null);
+    // #839 fix-round MED: reset before every Calculate — a PRIOR call's freeze
+    // must not keep showing after a later call that didn't hit it (e.g. an
+    // unrelated field edit right after a frozen attempt).
+    setIdentityFrozenNotice(false);
     // #241: reset alongside its siblings. Not visible today (the notice that
     // reads it is gated on sendStatus === 'already-sent', which this same block
     // clears, and both places that re-enter that status reset this flag first)
@@ -3764,6 +3956,10 @@ export default function QuoteBuilder({
       // 200 with persisted:false means the DB write failed even though
       // pricing succeeded (see /api/quote's own persisted: saved !== null).
       const persisted = data.persisted === true;
+      // #839 fix-round MED: surface the #251 freeze when it actually fired on
+      // THIS save (route.ts only sends the key when updateQuote set it —
+      // absent/falsy on every normal save, including a brand-new insert).
+      if (data.identityFrozen === true) setIdentityFrozenNotice(true);
       setResult(data.result);
       setBaselineResult(data.baseline ?? data.result); // #104 "was $X" source
       const newQuoteId = typeof data.quoteId === 'string' ? data.quoteId : null;
@@ -6234,6 +6430,11 @@ export default function QuoteBuilder({
                 return rows.map((item, i) => {
                   const linked = breakdownLinked[i];
                   const sceneItemIds = linked?.sceneItemIds;
+                  // item-numbering-rename: resolved once per row, up front, so
+                  // the checkbox aria-labels below and the row's own display
+                  // text (rowInner, further down) always agree on the name a
+                  // renamed item goes by.
+                  const resolvedLabel = resolveLineItemLabel(item.id, item.label, form.labelOverrides);
                   let checkbox: React.ReactNode = null;
                   if (designId && sceneItemIds && sceneItemIds.length > 0 && linked && RECOMMENDABLE_KINDS.has(linked.kind)) {
                     // Design-driven per-unit row (incl. strand-drawn WW/Stake) →
@@ -6246,7 +6447,7 @@ export default function QuoteBuilder({
                         checked={checked}
                         disabled={recommendBusy}
                         onChange={() => void toggleDesignItemRecommended(sceneItemIds, !checked)}
-                        aria-label={`Recommend ${item.label}`}
+                        aria-label={`Recommend ${resolvedLabel.label}`}
                         title="Recommend this item to the customer"
                       />
                     );
@@ -6334,11 +6535,31 @@ export default function QuoteBuilder({
                     breakdownScene?.items ?? [],
                     breakdownPhotoLabels,
                   );
+                  // item-numbering-rename: only the per-unit categories the
+                  // design projects one-instance-per-drawn-item (mini/spritzer/
+                  // wreath/garland/bow — the SAME ids projectScene stamps, and
+                  // the only ones duplicate-numbering ever applies to) get the
+                  // inline rename control. Roofline/WW/Stake/permanent/custom
+                  // rows keep their plain label — each already has its own
+                  // dedicated editing surface (footage inputs, the custom-item
+                  // form) and duplicate numbering never applies to them.
+                  const renameable = !!item.id && /^(mini|spritzer|wreath|garland|bow)-/.test(item.id);
                   const rowInner = (
                     <>
                       <span className="flex items-center gap-2 text-gray-700">
                         {checkbox}
-                        {item.label}
+                        {renameable ? (
+                          <EditableLabel
+                            label={resolvedLabel.label}
+                            baseLabel={item.label}
+                            overridden={resolvedLabel.overridden}
+                            disabled={loading}
+                            onCommit={(s) => commitLineLabel(item.id!, s)}
+                            onReset={() => resetLineLabel(item.id!)}
+                          />
+                        ) : (
+                          item.label
+                        )}
                         {photoTag && (
                           <span className="rounded bg-gray-200 text-gray-600 px-1 py-0.5 text-[10px] font-medium">
                             {photoTag}
@@ -6467,6 +6688,21 @@ export default function QuoteBuilder({
                   <span className="text-amber-700">{attachError}</span>
                 )}
               </div>
+            )}
+
+            {/* #839 fix-round MED: the #251 identity freeze used to be
+                log-only when it actually refused a would-be reattach — this
+                is that surfaced. Not nested in the highlevelContact-gated
+                block above: it can fire even when highlevelContact is null
+                (a reopened quote's DB link isn't hydrated into that state —
+                #172), and it describes the save that just ran, not the
+                current chip. */}
+            {identityFrozenNotice && (
+              <p className="mb-3 text-xs text-amber-700">
+                This quote is approved or booked, so its customer stayed put — the name, contact details and
+                HighLevel link on this quote were left exactly as the customer approved them, and nothing on this
+                save changed who the quote belongs to. Use the amend flow to move it to a different customer.
+              </p>
             )}
 
             {hasNoPricedItems && (
