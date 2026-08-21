@@ -66,3 +66,6 @@ __pycache__/
 
 # video transcripts (third-party content; the skill writes these to a scratchpad)
 video-transcripts/
+
+# per-worktree session marker written by scripts/session-open.sh, local only
+.session-id
