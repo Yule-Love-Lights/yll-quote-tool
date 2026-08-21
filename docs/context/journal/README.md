@@ -38,6 +38,6 @@ not hand-edit it: edit your fragment and re-run the build script instead.
 ## Status
 
 This is new tooling. It does not replace anything yet.
-`docs/context/session_log.md` and `docs/context/session_log_naldo.md` stay
-the live, authoritative session history until Naldo switches over. See
+The migration ran 2026-08-21 (PR #865): fragments are now the live session
+history and `session_log*.md` are frozen. See
 `MIGRATION.md` in this directory for that plan.

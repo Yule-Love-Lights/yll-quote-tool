@@ -13,15 +13,15 @@ Rules:
   encounter order (active file first, then archive, newest-on-top order kept).
 - File preamble (frontmatter, header warnings) is NOT session content and stays
   in the original logs, which this script never modifies.
-- Idempotent: deletes only fragments it generated before (S*-naldo*.md,
-  S*-jason*.md) and rewrites them, so re-running at merge time picks up any
-  lines that landed in the logs since the last run. S0-example.md untouched.
+- Idempotent and additive: only OVERWRITES the exact fragment names it
+  generates from the four frozen source logs. It never deletes anything, so
+  fragments hand-written by post-migration sessions are safe on any re-run.
 - Prints a coverage check: session-section line counts per source vs lines
   written, and any section it could not number.
 
 Run from the repo root:  python scripts/migrate-journal.py
 """
-import io, os, re, sys, glob
+import io, os, re, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CTX = os.path.join(ROOT, "docs", "context")
@@ -58,10 +58,9 @@ def split_sections(lines):
 
 def main():
     os.makedirs(OUT, exist_ok=True)
-    for old in glob.glob(os.path.join(OUT, "S*-naldo*.md")) + glob.glob(
-        os.path.join(OUT, "S*-jason*.md")
-    ):
-        os.remove(old)
+    # Never delete by glob: sessions after the migration hand-write their own
+    # fragments here, and a re-run must not destroy them. This script only
+    # OVERWRITES the exact names it generates from the four frozen source logs.
 
     seen = {}
     stats, unnumbered = [], 0
