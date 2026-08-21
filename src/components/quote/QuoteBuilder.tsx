@@ -2649,10 +2649,28 @@ export default function QuoteBuilder({
         // into new billing footage — the operator redraws on the new image. Thaw
         // the rehydrate freeze (fresh live session) and flag hadBistroLines so the
         // derive resets the billed array to empty; then a redraw bills correctly.
+        // #244 premerge finding 2 (staff, MED): unlike applyPulledSatellite's
+        // "Pull satellite" sibling above (which window.confirms before
+        // clearing ANY drawn satellite line, including bistro), this path
+        // discarded bistro runs/overrides unconditionally. #244 raises the
+        // stakes — this can now silently drop a staff-TYPED footage override,
+        // not just re-derivable geometry. Mirror the sibling's confirm; a
+        // decline KEEPS the existing runs/overrides (the new image/scale
+        // above still apply — same tradeoff the #117 comment already accepts
+        // for geometry alone). Silent when nothing would be lost.
         if (form.serviceType === 'permanent_bistro') {
-          permDeriveFrozenRef.current = false;
-          hadBistroLinesRef.current = satelliteBistroLines.length > 0;
-          setSatelliteBistroLines([]);
+          const hasBistroToLose =
+            satelliteBistroLines.length > 0 || form.permanentBistro.bistro.length > 0;
+          const keepExisting =
+            hasBistroToLose &&
+            !window.confirm(
+              'Replaces the satellite image — traced bistro runs + footage will reset. Continue?',
+            );
+          if (!keepExisting) {
+            permDeriveFrozenRef.current = false;
+            hadBistroLinesRef.current = satelliteBistroLines.length > 0;
+            setSatelliteBistroLines([]);
+          }
         }
         // #443 fix (S23): persist the satellite IMAGE onto the design so the portal
         // can show the "Where the lights go" view. Holiday does this in
