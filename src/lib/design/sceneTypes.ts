@@ -288,6 +288,9 @@ export type Scene = {
   yardsticks: Yardstick[];
   items: SceneItem[];
   brightness?: number; // 0 = darkest, 50 = neutral, 100 = lightest
+  // Extra street photos have independent brightness. Missing entries inherit
+  // the base photo's `brightness`, preserving every legacy scene unchanged.
+  extraPhotoBrightness?: Record<string, number>;
 };
 
 // One extra street photo as the editor sees it (#13 multi-image): a signed URL

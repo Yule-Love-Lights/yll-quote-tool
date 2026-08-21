@@ -35,6 +35,7 @@ import {
 import { isLineDrawContext } from "./drawContext";
 import { surfaceOptionsForBulbType } from "./surfaceOptions";
 import { sideOfHouseOptions } from "./sideOfHouseOptions";
+import { brightnessForPhoto, setBrightnessForPhoto } from "@/lib/design/photoBrightness";
 
 // Default real-world width for newly-placed custom uploads — about 3 feet,
 // big enough to spot on the photo, small enough to resize down with the
@@ -230,6 +231,7 @@ export async function renderEditor(
   const activeExtra = activePhotoId
     ? (design.extraPhotos ?? []).find((p) => p.id === activePhotoId) ?? null
     : null;
+  const extraPhotoIds = (design.extraPhotos ?? []).map((p) => p.id);
   const activeBgUrl = activePhotoId ? (activeExtra?.url ?? null) : design.photoUrl;
   // An item belongs to the mounted photo when its photoId matches (absent/null
   // = the base photo).
@@ -693,7 +695,7 @@ export async function renderEditor(
       tintLayer.batchDraw();
       return;
     }
-    const b = scene.brightness ?? 50;
+    const b = brightnessForPhoto(scene, activePhotoId);
     if (b === 50) {
       tintLayer.batchDraw();
       return;
@@ -4707,9 +4709,9 @@ export async function renderEditor(
 
   // --- Brightness slider ---
   const brightnessEl = root.querySelector("#brightness") as HTMLInputElement;
-  brightnessEl.value = String(scene.brightness ?? 50);
+  brightnessEl.value = String(brightnessForPhoto(scene, activePhotoId));
   brightnessEl.addEventListener("input", () => {
-    scene = { ...scene, brightness: Number(brightnessEl.value) };
+    scene = setBrightnessForPhoto(scene, extraPhotoIds, activePhotoId, Number(brightnessEl.value));
     drawTint();
     scheduleSave();
   });
@@ -4720,7 +4722,7 @@ export async function renderEditor(
   // Double-click resets to neutral (50) — the original photo brightness.
   brightnessEl.addEventListener("dblclick", () => {
     brightnessEl.value = "50";
-    scene = { ...scene, brightness: 50 };
+    scene = setBrightnessForPhoto(scene, extraPhotoIds, activePhotoId, 50);
     drawTint();
     scheduleSave();
     commit();

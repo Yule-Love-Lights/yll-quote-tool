@@ -170,9 +170,14 @@ describe('PUT /api/designs/[id]', () => {
   });
 
   it('saves a scene-only update successfully', async () => {
-    const res = await PUT(makeReq({ scene: validScene }), ctx());
+    const perPhotoScene = {
+      ...validScene,
+      brightness: 20,
+      extraPhotoBrightness: { 'left-photo': 65 },
+    };
+    const res = await PUT(makeReq({ scene: perPhotoScene }), ctx());
     expect(res.status).toBe(200);
-    expect(updateDesignScene).toHaveBeenCalledWith(VALID_ID, validScene);
+    expect(updateDesignScene).toHaveBeenCalledWith(VALID_ID, perPhotoScene);
     const json = await res.json();
     expect(json.ok).toBe(true);
   });
