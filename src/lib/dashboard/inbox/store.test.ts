@@ -2713,6 +2713,38 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
     expect(activityInserts[0]).toMatchObject({ actor: 'system', action: 'handled' });
   });
 
+  // #323: two tabs / two operators racing to click Done on the same follow-up
+  // must not both log an activity row. The row is already 'done' (a prior
+  // caller won the race) — markFollowUpDone's .eq('status','pending') CAS
+  // matches zero rows, and that's an honest no-op: still ok:true (the row IS
+  // in the caller's desired end state), but zero dashboard_activity inserts.
+  it('is a no-op (ok:true, no activity insert) when the follow-up is already done — lost race', async () => {
+    const fake = makeFollowUpsFake([
+      { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'done' },
+    ]);
+    const activityInserts: Record<string, unknown>[] = [];
+    sbRef.current = {
+      from: (table: string) => {
+        if (table === 'follow_ups') return fake.table();
+        if (table === 'dashboard_activity') {
+          return {
+            insert: (row: Record<string, unknown>) => {
+              activityInserts.push(row);
+              return Promise.resolve({ data: null, error: null });
+            },
+          };
+        }
+        return genericTable();
+      },
+    };
+
+    const done = await markFollowUpDone('fu-1', 'operator-1');
+
+    expect(done.ok).toBe(true);
+    expect(fake.rows[0].status).toBe('done'); // unchanged, not re-touched
+    expect(activityInserts).toHaveLength(0);
+  });
+
   // #252 follow-up-autoclose: closeFollowUpsForResolvedItem + its backlog
   // sweep, exercised against the REAL create/update/select shape via the
   // (now-fixed) stateful fake above rather than a fixed-response stub — this
