@@ -730,7 +730,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json(
           {
             error:
-              'This quote has already been approved — line prices are locked and cannot be changed here. Use the amend flow to change a price.',
+              'This quote has already been approved — line prices are locked. A price change needs re-approval: decline the quote, revive it, make the change, and re-send. (A booked order is amended via the builder instead.)',
             code: 'price-override-locked',
           },
           { status: 409 },
@@ -740,7 +740,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json(
           {
             error:
-              'This quote has already been approved — line item names are locked and cannot be changed here. Use the amend flow to rename a line.',
+              'This quote has already been approved — line item names are locked. A rename needs re-approval: decline the quote, revive it, make the change, and re-send.',
             code: 'label-override-locked',
           },
           { status: 409 },
@@ -751,7 +751,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json(
           {
             error:
-              'This quote has already been approved — bistro run footage is locked and cannot be changed here. Use the amend flow to change footage.',
+              'This quote has already been approved — bistro run footage is locked. A footage change needs re-approval: decline the quote, revive it, make the change, and re-send.',
             code: 'bistro-footage-locked',
           },
           { status: 409 },
