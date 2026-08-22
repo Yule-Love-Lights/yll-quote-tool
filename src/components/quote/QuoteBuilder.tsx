@@ -1271,6 +1271,19 @@ export default function QuoteBuilder({
           window.alert("An unsaved edit made during the re-analyze was discarded (it hadn't saved yet).");
         }
         setDesignEditorKey((k) => k + 1);
+      } else {
+        // Fix round (HIGH, four-lens review): `if (res.ok)` used to have no
+        // else — a non-ok response (most commonly the #260 CAS's 409 when the
+        // scene changed elsewhere during this multi-second analyze round
+        // trip) fell through with nothing done. The catch below only sees
+        // NETWORK errors (a thrown fetch); an ordinary HTTP error status
+        // isn't one, so the AI-detected layout silently never applied and the
+        // operator had no way to know. Surface the route's own message
+        // (already actionable — e.g. "...reopen it and try again" on a
+        // conflict) via the same designError banner the design-photo effect
+        // above already uses for this design.
+        const data = await res.json().catch(() => ({}));
+        setDesignError(data.error ?? 'The AI-detected layout could not be applied — reopen the design and try again');
       }
     } catch {
       // Non-fatal: the design still works, it just isn't pre-designed.
