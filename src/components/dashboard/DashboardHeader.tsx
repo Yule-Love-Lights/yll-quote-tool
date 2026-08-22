@@ -1,8 +1,14 @@
 import Link from 'next/link';
 
 import { ClockCard } from '@/components/dashboard/ClockCard';
+import { getOperator } from '@/lib/auth/supabaseServer';
 
-export function DashboardHeader() {
+export async function DashboardHeader() {
+  // The greeting names whoever is signed in. getOperator() is null when the gate
+  // is dormant / nobody is signed in, so the name is simply omitted then.
+  const operator = await getOperator();
+  const name = operator?.name ?? null;
+
   return (
     <header className="flex flex-wrap items-center justify-between gap-4 mb-8">
       <div>
@@ -13,7 +19,7 @@ export function DashboardHeader() {
           Operator dashboard
         </p>
         <h1 className="text-3xl font-semibold" style={{ color: 'var(--op-text)' }}>
-          Good morning.
+          Happy Holidays{name ? `, ${name}` : ''}.
         </h1>
       </div>
       {/* The office time clock lives here, in the header (row 337, Naldo's placement). */}
