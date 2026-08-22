@@ -226,6 +226,10 @@ alter table quotes
   -- 2026-06-27 GHL pipeline-stage sync durability
   add column if not exists ghl_stage_synced_at timestamptz,
   add column if not exists ghl_sync_error text,
+  -- 2026-08-22 retry leases: guard customer re-delivery and GHL retries
+  -- independently before either can invoke an external provider.
+  add column if not exists delivery_retry_claimed_at timestamptz,
+  add column if not exists ghl_retry_claimed_at timestamptz,
   -- 2026-06-27 approve-notify failure marker
   add column if not exists approval_notify_failed_at timestamptz,
   add column if not exists approval_notify_error text,
