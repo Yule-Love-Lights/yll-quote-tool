@@ -20,6 +20,13 @@ const hl = vi.hoisted(() => {
       name: 'Event Date',
     })),
     upsertContactCustomField: vi.fn(async (_contactId: string, _fieldId: string, _value: string | string[]) => {}),
+    // #314: backs getEventDateFromGhl's live-contact read. Defaults to a
+    // contact with no custom fields; individual tests override.
+    getContactInternal: vi.fn(async (_contactId: string) => ({
+      id: 'hl-contact-1',
+      source: 'highlevel' as const,
+      raw: { id: 'hl-contact-1', customFields: [] as Array<{ id: string; value?: string | string[] }> },
+    })),
   };
 });
 
@@ -29,11 +36,13 @@ vi.mock('./highlevel', () => ({
   listLocationCustomFields: hl.listLocationCustomFields,
   createLocationCustomField: hl.createLocationCustomField,
   upsertContactCustomField: hl.upsertContactCustomField,
+  getContactInternal: hl.getContactInternal,
 }));
 
 import {
   formatEventDateForGhl,
   pushEventDateToGhl,
+  getEventDateFromGhl,
   resetEventDateFieldCacheForTests,
   EVENT_DATE_FIELD_NAME,
 } from './ghlEventDate';
@@ -44,6 +53,11 @@ beforeEach(() => {
   hl.listLocationCustomFields.mockResolvedValue([]);
   hl.createLocationCustomField.mockResolvedValue({ id: 'created-field-1', name: EVENT_DATE_FIELD_NAME });
   hl.upsertContactCustomField.mockResolvedValue(undefined);
+  hl.getContactInternal.mockResolvedValue({
+    id: 'hl-contact-1',
+    source: 'highlevel' as const,
+    raw: { id: 'hl-contact-1', customFields: [] },
+  });
   resetEventDateFieldCacheForTests();
 });
 
@@ -318,5 +332,73 @@ describe('pushEventDateToGhl — field resolution (create-if-missing + cache)', 
     expect(second).toEqual({ pushed: true });
     expect(hl.listLocationCustomFields).toHaveBeenCalledTimes(2);
     expect(hl.upsertContactCustomField).toHaveBeenLastCalledWith('hl-1', 'field-2', '12/25/2026');
+  });
+});
+
+// #314: the approval-time reconciliation read.
+describe('getEventDateFromGhl', () => {
+  it('returns null when contactId is missing', async () => {
+    const result = await getEventDateFromGhl(null);
+    expect(result).toBeNull();
+    expect(hl.getContactInternal).not.toHaveBeenCalled();
+  });
+
+  it('returns null when HighLevel is not configured', async () => {
+    hl.configured.value = false;
+    const result = await getEventDateFromGhl('hl-1');
+    expect(result).toBeNull();
+    expect(hl.getContactInternal).not.toHaveBeenCalled();
+  });
+
+  it('returns null when the field cannot be resolved (empty-list parse guard)', async () => {
+    hl.listLocationCustomFields.mockResolvedValue([]);
+    const result = await getEventDateFromGhl('hl-1');
+    expect(result).toBeNull();
+    expect(hl.getContactInternal).not.toHaveBeenCalled();
+  });
+
+  it('returns the current field value when the contact carries a match', async () => {
+    hl.listLocationCustomFields.mockResolvedValue([{ id: 'field-42', name: EVENT_DATE_FIELD_NAME }]);
+    hl.getContactInternal.mockResolvedValue({
+      id: 'hl-1',
+      source: 'highlevel' as const,
+      raw: {
+        id: 'hl-1',
+        customFields: [
+          { id: 'other-field', value: 'x' },
+          { id: 'field-42', value: '11/27/2026' },
+        ],
+      },
+    });
+
+    const result = await getEventDateFromGhl('hl-1');
+    expect(result).toBe('11/27/2026');
+  });
+
+  it('returns null when the contact has no matching custom field yet', async () => {
+    hl.listLocationCustomFields.mockResolvedValue([{ id: 'field-42', name: EVENT_DATE_FIELD_NAME }]);
+    hl.getContactInternal.mockResolvedValue({
+      id: 'hl-1',
+      source: 'highlevel' as const,
+      raw: { id: 'hl-1', customFields: [] },
+    });
+
+    const result = await getEventDateFromGhl('hl-1');
+    expect(result).toBeNull();
+  });
+
+  it('fails soft (returns null, does not throw) when the GHL read itself errors', async () => {
+    hl.listLocationCustomFields.mockResolvedValue([{ id: 'field-42', name: EVENT_DATE_FIELD_NAME }]);
+    hl.getContactInternal.mockRejectedValue(new hl.HighLevelError('boom', 500));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await getEventDateFromGhl('hl-1');
+
+    expect(result).toBeNull();
+    expect(errSpy).toHaveBeenCalledWith(
+      expect.stringContaining('failed to read the current "Event Date" value'),
+      expect.anything(),
+    );
+    errSpy.mockRestore();
   });
 });

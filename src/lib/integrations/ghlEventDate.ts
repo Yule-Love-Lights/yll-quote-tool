@@ -48,7 +48,9 @@ import {
   listLocationCustomFields,
   createLocationCustomField,
   upsertContactCustomField,
+  getContactInternal,
 } from './highlevel';
+import type { HighLevelContact } from './types';
 
 export const EVENT_DATE_FIELD_NAME = 'Event Date';
 
@@ -255,5 +257,44 @@ export async function pushEventDateToGhl(
     return await Promise.race([pushEventDateToGhlInner(contactId, eventDate), deadline]);
   } finally {
     clearTimeout(timer!);
+  }
+}
+
+/**
+ * Read the CURRENT value of the "Event Date" custom field off the linked GHL
+ * contact (ledger #314) — used at APPROVAL time to detect drift instead of
+ * assuming an earlier push (at send, or at a later staff save — see
+ * src/app/api/quote/route.ts's isUpdate branch) actually landed. Both of
+ * those pushes are fire-and-forget / fail-soft (see this file's own header
+ * and pushEventDateToGhl's doc comment above) — a missing customFields scope,
+ * a GHL 500, or the 6s push deadline tripping leaves nothing that retries, so
+ * a persisted "we attempted a push" marker would only prove an attempt was
+ * made, never that GHL actually agrees. Reading GHL's own current value
+ * checks the real thing being reconciled.
+ *
+ * Returns null on ANY failure to resolve a value — no contactId, HighLevel
+ * not configured, the field can't be resolved (missing scope, parse-bug
+ * guard, etc.), or the GHL read itself errors/times out. Never throws — the
+ * caller (the approve route, a customer-facing money action) treats a null
+ * read as "can't confirm the current value, so push anyway" rather than
+ * blocking or guessing; see getContactInternal's own timeout, which is the
+ * same real-AbortController-bounded ghlFetch (#264, 10s) every other GHL call
+ * in this app already goes through — no separate deadline wrapper needed
+ * here (unlike pushEventDateToGhl's Promise.race, added before ghlFetch had
+ * real cancellation).
+ */
+export async function getEventDateFromGhl(contactId: string | null | undefined): Promise<string | null> {
+  if (!contactId) return null;
+  if (!isHighLevelConfigured()) return null;
+  try {
+    const fieldId = await resolveEventDateFieldId();
+    if (!fieldId) return null;
+    const { raw } = await getContactInternal(contactId);
+    const fields = (raw as HighLevelContact).customFields;
+    const match = fields?.find((f) => f.id === fieldId);
+    return typeof match?.value === 'string' ? match.value : null;
+  } catch (err) {
+    console.error(`[ghlEventDate] failed to read the current "${EVENT_DATE_FIELD_NAME}" value:`, err);
+    return null;
   }
 }
