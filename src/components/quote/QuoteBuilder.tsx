@@ -69,7 +69,10 @@ import {
 import {
   reconcileHolidayFootageField,
   deriveHolidayFootageBaseline,
+  mergeHolidayFootageBaseline,
   type HolidayFootageBaseline,
+  type HolidayFootageFieldKey,
+  type HolidayFieldReconcileResult,
 } from '@/lib/holidayFootage/reconcileFootage';
 import { isStrand, isLinkedTwin, type Surface } from '@/lib/design/sceneTypes';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
@@ -1561,67 +1564,93 @@ export default function QuoteBuilder({
     // resets that footage to 0 instead of leaving a stale value. Loading a quote
     // must never move its billed numbers — only an actual edit may.
     if (holidayDeriveFrozenRef.current) return;
+    // C9 Custom-Runs + Stake are HOLIDAY-only (the event/permanent engines don't
+    // price winterWonderland/stakeLighting — event allow-list is santas/gingerbread
+    // rooflines only). Never derive those two fields from a satellite draw on a
+    // non-holiday quote, or footage would silently persist unbilled (finding #1).
+    //
+    // Row 333 fix (S46 premerge, finding 2, technical MED): compute the
+    // reconcile + the baseline update HERE, synchronously, using the
+    // render-closure `form` — not inside the setForm functional updater
+    // using `f`. React StrictMode dev double-invokes a setState updater to
+    // check purity: it discards the FIRST call's return value, but not any
+    // side effect the call performed. Mutating prevHolidayDerivedRef from
+    // inside the updater let the discarded first call pre-advance the
+    // baseline, so the kept second call compared against an
+    // already-advanced baseline and misclassified a genuine redraw as a
+    // standing override, silently no-op'ing it (dev-only; prod never
+    // double-invokes). The updater below is now a pure function of `f` with
+    // no side effects, so being double-invoked is harmless. Mirrors the
+    // prevBistroDerivedRef fix below.
+    const isHoliday = form.serviceType === 'holiday';
+    // Row 333: baseline-keyed per-field reconcile (reconcileFootage.ts) —
+    // replaces the old direct billed-vs-fresh-target comparison, which
+    // couldn't tell "staff typed an override" apart from "this field's own
+    // geometry changed" and so clobbered an untouched field's override
+    // whenever a DIFFERENT field's lines redrew (all four share this one
+    // effect/dependency list).
+    const baseline = prevHolidayDerivedRef.current;
+    const santas = reconcileHolidayFootageField({
+      active: true,
+      hasLines: hasSantasLines,
+      hadLinesPrev: hadSantasPrev,
+      freshFt: sFt,
+      currentBilled: form.santasFootage,
+      baseline: baseline.santas,
+    });
+    const gingerbread = reconcileHolidayFootageField({
+      active: true,
+      hasLines: hasGingerbreadLines,
+      hadLinesPrev: hadGingerbreadPrev,
+      freshFt: gFt,
+      currentBilled: form.gingerbreadFootage,
+      baseline: baseline.gingerbread,
+    });
+    const c9 = reconcileHolidayFootageField({
+      active: isHoliday,
+      hasLines: hasC9Lines,
+      hadLinesPrev: hadC9Prev,
+      freshFt: c9Ft,
+      currentBilled: form.winterWonderlandFootage,
+      baseline: baseline.c9,
+    });
+    const stake = reconcileHolidayFootageField({
+      active: isHoliday,
+      hasLines: hasStakeLines,
+      hadLinesPrev: hadStakePrev,
+      freshFt: stakeFt,
+      currentBilled: form.stakeLightingFootage,
+      baseline: baseline.stake,
+    });
+    // Row 333 fix (finding 1, staff HIGH): MERGE into the previous baseline —
+    // an inactive field (C9/stake off-holiday) keeps its existing baseline
+    // key untouched, so toggling service type away and back can't drop it.
+    // See mergeHolidayFootageBaseline's own comment for the full defect.
+    const activeByField: Record<HolidayFootageFieldKey, boolean> = {
+      santas: true,
+      gingerbread: true,
+      c9: isHoliday,
+      stake: isHoliday,
+    };
+    const resultsByField: Record<HolidayFootageFieldKey, HolidayFieldReconcileResult> = {
+      santas, gingerbread, c9, stake,
+    };
+    prevHolidayDerivedRef.current = mergeHolidayFootageBaseline(baseline, activeByField, resultsByField);
+    if (santas.target == null && gingerbread.target == null && c9.target == null && stake.target == null) return;
     // defer so the form update isn't synchronous within the effect (flushes before paint)
-    queueMicrotask(() => setForm(f => {
-      // C9 Custom-Runs + Stake are HOLIDAY-only (the event/permanent engines don't
-      // price winterWonderland/stakeLighting — event allow-list is santas/gingerbread
-      // rooflines only). Never derive those two fields from a satellite draw on a
-      // non-holiday quote, or footage would silently persist unbilled (finding #1).
-      const isHoliday = f.serviceType === 'holiday';
-      // Row 333: baseline-keyed per-field reconcile (reconcileFootage.ts) —
-      // replaces the old direct billed-vs-fresh-target comparison, which
-      // couldn't tell "staff typed an override" apart from "this field's own
-      // geometry changed" and so clobbered an untouched field's override
-      // whenever a DIFFERENT field's lines redrew (all four share this one
-      // effect/dependency list).
-      const baseline = prevHolidayDerivedRef.current;
-      const santas = reconcileHolidayFootageField({
-        active: true,
-        hasLines: hasSantasLines,
-        hadLinesPrev: hadSantasPrev,
-        freshFt: sFt,
-        currentBilled: f.santasFootage,
-        baseline: baseline.santas,
-      });
-      const gingerbread = reconcileHolidayFootageField({
-        active: true,
-        hasLines: hasGingerbreadLines,
-        hadLinesPrev: hadGingerbreadPrev,
-        freshFt: gFt,
-        currentBilled: f.gingerbreadFootage,
-        baseline: baseline.gingerbread,
-      });
-      const c9 = reconcileHolidayFootageField({
-        active: isHoliday,
-        hasLines: hasC9Lines,
-        hadLinesPrev: hadC9Prev,
-        freshFt: c9Ft,
-        currentBilled: f.winterWonderlandFootage,
-        baseline: baseline.c9,
-      });
-      const stake = reconcileHolidayFootageField({
-        active: isHoliday,
-        hasLines: hasStakeLines,
-        hadLinesPrev: hadStakePrev,
-        freshFt: stakeFt,
-        currentBilled: f.stakeLightingFootage,
-        baseline: baseline.stake,
-      });
-      prevHolidayDerivedRef.current = {
-        ...(santas.nextBaseline != null ? { santas: santas.nextBaseline } : {}),
-        ...(gingerbread.nextBaseline != null ? { gingerbread: gingerbread.nextBaseline } : {}),
-        ...(c9.nextBaseline != null ? { c9: c9.nextBaseline } : {}),
-        ...(stake.nextBaseline != null ? { stake: stake.nextBaseline } : {}),
-      };
-      if (santas.target == null && gingerbread.target == null && c9.target == null && stake.target == null) return f;
-      return {
-        ...f,
-        ...(santas.target != null ? { santasFootage: santas.target } : {}),
-        ...(gingerbread.target != null ? { gingerbreadFootage: gingerbread.target } : {}),
-        ...(c9.target != null ? { winterWonderlandFootage: c9.target } : {}),
-        ...(stake.target != null ? { stakeLightingFootage: stake.target } : {}),
-      };
-    }));
+    queueMicrotask(() => setForm(f => ({
+      ...f,
+      ...(santas.target != null ? { santasFootage: santas.target } : {}),
+      ...(gingerbread.target != null ? { gingerbreadFootage: gingerbread.target } : {}),
+      ...(c9.target != null ? { winterWonderlandFootage: c9.target } : {}),
+      ...(stake.target != null ? { stakeLightingFootage: stake.target } : {}),
+    })));
+    // form.{santasFootage,gingerbreadFootage,winterWonderlandFootage,stakeLightingFootage,serviceType}
+    // are read intentionally (S46 finding 2 fix) but must NOT be dependencies —
+    // this effect derives from satellite GEOMETRY only; adding the billed
+    // fields would re-fire it on every manual override/service-type change
+    // too, which is exactly the over-firing this reconcile exists to survive.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [satelliteSantasLines, satelliteGingerbreadLines, satelliteC9Lines, satelliteStakeLines, satelliteFeetPerPixel, satelliteAspect]);
 
   // Footage readout for the satellite tab.
@@ -1887,20 +1916,31 @@ export default function QuoteBuilder({
       id: line.id,
       footage: roundFootageUpTo5(polylineLength([line], satelliteAspect) * SAT_PX * satelliteFeetPerPixel),
     }));
+    // Row 333 fix (S46 premerge, finding 2, technical MED — sibling parity
+    // with the holiday effect above): compute the reconcile and mutate
+    // prevBistroDerivedRef HERE, synchronously, using the render-closure
+    // `form` — not inside the setForm functional updater using `f`. See the
+    // holiday effect's comment above for the full StrictMode
+    // double-invoke-of-a-setState-updater explanation this mirrors.
     const priorBaseline = prevBistroDerivedRef.current;
+    const { next, nextBaseline } = reconcileBistroFootage(freshRuns, form.permanentBistro.bistro, priorBaseline);
+    prevBistroDerivedRef.current = nextBaseline;
+    const cur = form.permanentBistro.bistro;
+    const same =
+      cur.length === next.length &&
+      cur.every((b, i) => b.footage === next[i].footage && b.id === next[i].id);
+    if (same) return;
     queueMicrotask(() =>
       setForm((f) => {
         if (f.serviceType !== 'permanent_bistro') return f;
-        const { next, nextBaseline } = reconcileBistroFootage(freshRuns, f.permanentBistro.bistro, priorBaseline);
-        prevBistroDerivedRef.current = nextBaseline;
-        const cur = f.permanentBistro.bistro;
-        const same =
-          cur.length === next.length &&
-          cur.every((b, i) => b.footage === next[i].footage && b.id === next[i].id);
-        if (same) return f;
         return { ...f, permanentBistro: { ...f.permanentBistro, bistro: next } };
       }),
     );
+    // form.permanentBistro.bistro is read intentionally (S46 finding 2 fix)
+    // but must NOT be a dependency — same reasoning as the holiday effect
+    // above: this effect derives from satellite GEOMETRY only, and adding
+    // the billed array would re-fire it on every override too.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [satelliteBistroLines, satelliteFeetPerPixel, satelliteAspect, satellitePreview, form.serviceType]);
 
   // #142: REHYDRATE the satellite tab on a reopened permanent (or, #117,
