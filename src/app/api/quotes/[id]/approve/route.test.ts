@@ -21,6 +21,19 @@ const { sbRef, hl, valorCheckout } = vi.hoisted(() => ({
     configured: { value: true },
     sendSms: vi.fn(async () => ({})),
     sendEmail: vi.fn(async () => ({})),
+    // #314: backs ghlEventDate.ts's field resolution + the approval-time
+    // reconciliation read/push — ghlEventDate.ts itself is NOT mocked (same
+    // convention as send/route.test.ts: real module, mocked HighLevel client
+    // underneath). Default: an already-existing "Event Date" field with no
+    // customFields on the contact yet, so most tests never touch this path.
+    listLocationCustomFields: vi.fn(async () => [{ id: 'ed_field_1', name: 'Event Date' }]),
+    createLocationCustomField: vi.fn(async () => ({ id: 'ed_field_created', name: 'Event Date' })),
+    upsertContactCustomField: vi.fn(async (_contactId: string, _fieldId: string, _value: string | string[]) => {}),
+    getContactInternal: vi.fn(async (_contactId: string) => ({
+      id: 'hl-contact-1',
+      source: 'highlevel' as const,
+      raw: { id: 'hl-contact-1', customFields: [] as Array<{ id: string; value?: string | string[] }> },
+    })),
   },
   valorCheckout: { enabled: { value: false } },
 }));
@@ -36,6 +49,10 @@ vi.mock('@/lib/integrations/highlevel', () => ({
   isHighLevelConfigured: () => hl.configured.value,
   sendSms: hl.sendSms,
   sendEmail: hl.sendEmail,
+  listLocationCustomFields: hl.listLocationCustomFields,
+  createLocationCustomField: hl.createLocationCustomField,
+  upsertContactCustomField: hl.upsertContactCustomField,
+  getContactInternal: hl.getContactInternal,
   HighLevelError: class HighLevelError extends Error {},
 }));
 
@@ -56,6 +73,11 @@ vi.mock('@/lib/appSettings', async () => {
 
 import { POST } from './route';
 import { getAppSettings, DEFAULT_APP_SETTINGS } from '@/lib/appSettings';
+// #314: ghlEventDate.ts caches its resolved field id at module scope
+// (mirrors ghlTenure.ts) — reset it every test so one test's resolution
+// doesn't silently skip another test's listLocationCustomFields call. Same
+// convention as send/route.test.ts.
+import { resetEventDateFieldCacheForTests } from '@/lib/integrations/ghlEventDate';
 
 // A QuoteResult whose portal line items are: Santa's $1200, Gingerbread $1500
 // (mutually-exclusive roofline options → ids roofline-santas/roofline-gingerbread)
@@ -233,6 +255,15 @@ beforeEach(() => {
   vi.clearAllMocks();
   hl.configured.value = false; // no messaging unless a test opts in
   valorCheckout.enabled.value = false;
+  hl.listLocationCustomFields.mockResolvedValue([{ id: 'ed_field_1', name: 'Event Date' }]);
+  hl.createLocationCustomField.mockResolvedValue({ id: 'ed_field_created', name: 'Event Date' });
+  hl.upsertContactCustomField.mockResolvedValue(undefined);
+  hl.getContactInternal.mockResolvedValue({
+    id: 'hl-contact-1',
+    source: 'highlevel' as const,
+    raw: { id: 'hl-contact-1', customFields: [] },
+  });
+  resetEventDateFieldCacheForTests();
 });
 
 describe('POST /api/quotes/[id]/approve — server recompute', () => {
@@ -1158,5 +1189,91 @@ describe('POST /api/quotes/[id]/approve — event discount (#212)', () => {
     expect(snap.customerSelection.installTiming).toBe('none');
     expect(snap.customerSelection.installDiscountUsd).toBe(0);
     expect(snap.customerSelection.currentTotalUsd).toBeCloseTo(1631.25, 2);
+  });
+});
+
+// #314: push a changed event date to GHL at approval too, reconciling
+// against a possibly-silently-failed earlier push instead of assuming
+// #807's send/save-time pushes always landed.
+describe('POST /api/quotes/[id]/approve — event-date GHL reconciliation (#314)', () => {
+  function eventQuote(overrides: Record<string, unknown> = {}) {
+    return baseQuote({
+      result: EVENT_RESULT,
+      service_type: 'event',
+      highlevel_contact_id: 'hl-contact-1',
+      inputs: { event: { eventDate: '2026-12-25' } },
+      ...overrides,
+    });
+  }
+
+  it('pushes when the current date differs from what GHL has (changed-date push)', async () => {
+    hl.configured.value = true;
+    hl.getContactInternal.mockResolvedValue({
+      id: 'hl-contact-1',
+      source: 'highlevel' as const,
+      // GHL still has the OLD date — staff amended it after send.
+      raw: { id: 'hl-contact-1', customFields: [{ id: 'ed_field_1', value: '11/01/2026' }] },
+    });
+    const { client } = makeSb(eventQuote());
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+
+    expect(res.status).toBe(200);
+    expect(hl.upsertContactCustomField).toHaveBeenCalledWith('hl-contact-1', 'ed_field_1', '12/25/2026');
+  });
+
+  it('does NOT push when GHL already has the current date (unchanged-date skip)', async () => {
+    hl.configured.value = true;
+    hl.getContactInternal.mockResolvedValue({
+      id: 'hl-contact-1',
+      source: 'highlevel' as const,
+      // GHL already agrees with inputs.event.eventDate — nothing to reconcile.
+      raw: { id: 'hl-contact-1', customFields: [{ id: 'ed_field_1', value: '12/25/2026' }] },
+    });
+    const { client } = makeSb(eventQuote());
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+
+    expect(res.status).toBe(200);
+    expect(hl.upsertContactCustomField).not.toHaveBeenCalled();
+  });
+
+  it('never reads or pushes for a non-event quote (non-event skip)', async () => {
+    hl.configured.value = true;
+    const { client } = makeSb(
+      baseQuote({
+        result: RESULT,
+        service_type: 'holiday',
+        highlevel_contact_id: 'hl-contact-1',
+        inputs: { event: { eventDate: '2026-12-25' } }, // present but irrelevant — not an event quote
+      }),
+    );
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+
+    expect(res.status).toBe(200);
+    expect(hl.getContactInternal).not.toHaveBeenCalled();
+    expect(hl.upsertContactCustomField).not.toHaveBeenCalled();
+  });
+
+  it('a GHL failure on the reconciliation read/push never blocks the approval', async () => {
+    hl.configured.value = true;
+    hl.getContactInternal.mockRejectedValue(new Error('GHL down'));
+    hl.upsertContactCustomField.mockRejectedValue(new Error('GHL down'));
+    const { client, updatePayloads } = makeSb(eventQuote());
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+    const json = await res.json();
+
+    // The approval itself (the durable snapshot write) still succeeds —
+    // a GHL hiccup on this best-effort reconciliation must never 500 a
+    // customer's approval or leave it unrecorded.
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(updatePayloads[0].customer_approved_at).toBeTruthy();
   });
 });

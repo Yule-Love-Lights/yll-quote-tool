@@ -79,6 +79,7 @@ import {
   minimumOrderSubtotal,
   orderMinimumStatus,
 } from '@/lib/portal/derivePackages';
+import { formatEventDateForGhl, getEventDateFromGhl, pushEventDateToGhl } from '@/lib/integrations/ghlEventDate';
 // #110 W1-064: shared plain round-to-cents (was copy-pasted here / derivePackages).
 // Aliased to `round2` so call sites are byte-identical.
 import { roundMoney as round2 } from '@/lib/money';
@@ -703,6 +704,33 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       { error: 'Quote already approved', code: 'already-approved' },
       { status: 409 },
     );
+  }
+
+  // Event-date GHL reconciliation (ledger #314). Approval is the last
+  // moment before a job becomes real — #807 already pushes an EVENT quote's
+  // date to GHL on send and re-pushes it on every date-changing save
+  // (src/app/api/quote/route.ts's isUpdate branch), but both of those pushes
+  // are fire-and-forget / fail-soft (see ghlEventDate.ts's file header): a
+  // missing customFields scope, a GHL 500, or the 6s push deadline tripping
+  // leaves nothing that retries, so weeks later the CRM can still be stale
+  // even though every prior attempt "should" have caught it. Reconciles
+  // against GHL's OWN current value (getEventDateFromGhl) rather than a
+  // locally-persisted "last attempted" marker — a marker would only prove an
+  // attempt was made, never that it landed. Same positive-match gate as
+  // #807 (`=== 'event'`, never `!== 'permanent'`, per this repo's standing
+  // rule) + !is_test + a linked contact + a valid formatted date. Never
+  // throws (see getEventDateFromGhl / pushEventDateToGhl's own doc
+  // comments), so a GHL hiccup here can never turn a customer's approval
+  // into a 500 — this fires after the approval snapshot above is already
+  // durably recorded, and its own failure is independent of that record.
+  if (isEvent && !quote.is_test && quote.highlevel_contact_id) {
+    const formattedEventDate = formatEventDateForGhl(quote.inputs?.event?.eventDate);
+    if (formattedEventDate) {
+      const currentGhlValue = await getEventDateFromGhl(quote.highlevel_contact_id);
+      if (currentGhlValue !== formattedEventDate) {
+        await pushEventDateToGhl(quote.highlevel_contact_id, quote.inputs?.event?.eventDate);
+      }
+    }
   }
 
   // Approval is now recorded. Notify the customer and ourselves — all
