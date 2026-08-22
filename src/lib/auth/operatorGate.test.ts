@@ -343,6 +343,15 @@ describe('isCrewPath — the crew-only surface (row 279)', () => {
 });
 
 describe('the crew API is NOT public — it needs a session, just a crew one', () => {
+  it('allows only the three signed Flow Q machine endpoints without a session', () => {
+    expect(isPublicPath('/api/ops/v1/quote-events', 'GET')).toBe(true);
+    expect(isPublicPath('/api/ops/v1/paid-contexts/current', 'GET')).toBe(true);
+    expect(isPublicPath('/api/ops/v1/employee-authorization-snapshots', 'POST')).toBe(true);
+    expect(isPublicPath('/api/ops/v1/quote-events', 'POST')).toBe(false);
+    expect(isPublicPath('/api/ops/v1/paid-contexts/current', 'POST')).toBe(false);
+    expect(isPublicPath('/api/ops/v1/employee-authorization-snapshots', 'GET')).toBe(false);
+  });
+
   it('keeps every crew path out of the public allowlist', () => {
     for (const p of [
       '/api/ops/v1',

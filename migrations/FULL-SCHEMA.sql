@@ -314,6 +314,82 @@ create index if not exists quotes_is_test_idx on quotes (is_test);
 -- itself (see the "Quote ⇄ customer/property linkage" block near the
 -- properties table — customer_id can't exist until customers does).
 
+-- Flow Q lifecycle facts and feed outbox (2026-08-22). The authoritative
+-- writer and constraints are in 2026-08-22-quote-lifecycle-event-outbox.sql.
+alter table public.quotes
+  add column if not exists first_sent_at timestamptz,
+  add column if not exists entity_version integer not null default 0;
+
+create table if not exists public.quote_requests (
+  id uuid primary key default gen_random_uuid(),
+  received_at timestamptz not null,
+  source_system text not null,
+  source_record_id text not null,
+  customer_reference text not null,
+  quote_id uuid references public.quotes(id) on delete set null,
+  assignee_employee_id uuid,
+  created_at timestamptz not null default now(),
+  unique (source_system, source_record_id)
+);
+
+create table if not exists public.quote_lifecycle_events (
+  id uuid primary key default gen_random_uuid(),
+  quote_id uuid references public.quotes(id) on delete restrict,
+  quote_request_id uuid references public.quote_requests(id) on delete restrict,
+  event_type text not null,
+  entity_version integer not null check (entity_version >= 1),
+  occurred_at timestamptz not null,
+  accepted_at timestamptz not null default now(),
+  actor_employee_id uuid,
+  source text not null,
+  idempotency_key text not null unique,
+  correlation_id uuid not null,
+  causation_id uuid,
+  payload jsonb not null default '{}'::jsonb,
+  check (num_nonnulls(quote_id, quote_request_id) = 1),
+  check (source = 'system' or actor_employee_id is not null),
+  unique (quote_id, entity_version)
+);
+
+create table if not exists public.quote_event_outbox (
+  sequence bigint generated always as identity primary key,
+  event_id uuid not null unique references public.quote_lifecycle_events(id) on delete restrict,
+  created_at timestamptz not null default now(),
+  available_at timestamptz not null default now(),
+  delivery_attempts integer not null default 0 check (delivery_attempts >= 0),
+  last_error text,
+  delivered_at timestamptz,
+  dead_lettered_at timestamptz
+);
+
+create table if not exists public.ops_machine_request_nonces (
+  key_id text not null,
+  nonce text not null,
+  expires_at timestamptz not null,
+  created_at timestamptz not null default now(),
+  primary key (key_id, nonce)
+);
+
+create table if not exists public.employee_authorization_snapshots (
+  snapshot_id uuid primary key,
+  employee_id uuid not null,
+  entity_version integer not null check (entity_version >= 1),
+  authorization_policy_version text not null check (length(authorization_policy_version) > 0),
+  snapshot jsonb not null,
+  idempotency_key text not null unique,
+  payload_hash text not null,
+  effective_at timestamptz not null,
+  accepted_at timestamptz not null default now(),
+  source_key_id text not null,
+  unique (employee_id, entity_version)
+);
+
+alter table public.quote_requests enable row level security;
+alter table public.quote_lifecycle_events enable row level security;
+alter table public.quote_event_outbox enable row level security;
+alter table public.ops_machine_request_nonces enable row level security;
+alter table public.employee_authorization_snapshots enable row level security;
+
 -- Display-number sequence (seeded at #1000 so early real customers don't see
 -- "#1"). Independent per entity type — job_number_seq / invoice_number_seq
 -- below share the one allocate_display_number() RPC.

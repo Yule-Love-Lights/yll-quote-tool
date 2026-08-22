@@ -168,6 +168,15 @@ export function isPublicPath(pathname: string, method: string = 'GET'): boolean 
   // Exact public APIs (webhooks + crons + login).
   if (PUBLIC_API_EXACT.has(path)) return true;
 
+  // Hub-to-Quote Tool Flow Q machine routes. These must reach their own
+  // HMAC, version, nonce, and authorization checks without an operator cookie;
+  // this is deliberately an exact path-and-method allowlist, never a public
+  // `/api/ops/v1` prefix (crew write routes remain session-gated).
+  if (
+    (method.toUpperCase() === 'GET' && (path === '/api/ops/v1/quote-events' || path === '/api/ops/v1/paid-contexts/current')) ||
+    (method.toUpperCase() === 'POST' && path === '/api/ops/v1/employee-authorization-snapshots')
+  ) return true;
+
   // Customer quote sub-routes: /api/quotes/<id>/(approve|pay|view|decline|request-changes|interested|simulate-deposit).
   const m = /^\/api\/quotes\/[^/]+\/([^/]+)$/.exec(path);
   if (m && PUBLIC_QUOTE_SUBROUTES.has(m[1]!)) return true;
