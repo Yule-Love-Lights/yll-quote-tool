@@ -551,39 +551,27 @@ export async function updateDesignScene(id: string, scene: DesignScene): Promise
 //
 // `expectedVersion == null` (a request with no version at all — a browser
 // tab whose bundle predates this feature, or a caller that genuinely has no
-// prior read) ADOPTS instead of bricking the save: it writes unconditionally
-// and seeds version to 1. This is deliberately the ONLY remaining unguarded
-// write in the guarded path — see the migration file
-// (migrations/2026-08-20-designs-scene-version.sql) for why it's expected to
-// be a defensive fallback, not a real steady-state case.
+// prior read) ADOPTS instead of bricking the save. Fix round (four-lens
+// review, HIGH): the original adopt branch was an unconditional write that
+// also reset version to 1 — a stale pre-deploy tab, or the standalone design
+// tool (which never sends a version at all), could clobber a concurrent
+// legitimate write AND poison the counter so the NEXT real CAS spuriously
+// conflicts. Adopt now reads the row's version fresh immediately before
+// writing, then CASes against that read — same shape as the read-then-CAS
+// retry loop removeDesignExtraPhoto's scene prune already uses (line ~1210
+// above). A write racing this read now correctly loses (reports 'conflict')
+// instead of winning; the counter is never reset.
 export type UpdateSceneOutcome =
   | { ok: true; version: number }
   | { ok: false; reason: 'conflict' }
   | { ok: false; reason: 'error' };
 
-export async function updateDesignSceneGuarded(
+async function casWriteScene(
+  sb: NonNullable<ReturnType<typeof getSb>>,
   id: string,
   scene: DesignScene,
-  expectedVersion: number | null | undefined,
+  expectedVersion: number,
 ): Promise<UpdateSceneOutcome> {
-  const sb = getSb();
-  if (!sb) return { ok: false, reason: 'error' };
-
-  if (expectedVersion == null) {
-    const { data, error } = await sb
-      .from('designs')
-      .update({ scene, version: 1 })
-      .eq('id', id)
-      .select('version')
-      .maybeSingle();
-    if (error) {
-      console.error('Supabase updateDesignSceneGuarded (adopt) error:', error);
-      return { ok: false, reason: 'error' };
-    }
-    if (!data) return { ok: false, reason: 'error' }; // no such design
-    return { ok: true, version: (data as { version: number }).version };
-  }
-
   const { data, error } = await sb
     .from('designs')
     .update({ scene, version: expectedVersion + 1 })
@@ -598,6 +586,31 @@ export async function updateDesignSceneGuarded(
     return { ok: false, reason: 'conflict' };
   }
   return { ok: true, version: (data[0] as { version: number }).version };
+}
+
+export async function updateDesignSceneGuarded(
+  id: string,
+  scene: DesignScene,
+  expectedVersion: number | null | undefined,
+): Promise<UpdateSceneOutcome> {
+  const sb = getSb();
+  if (!sb) return { ok: false, reason: 'error' };
+
+  if (expectedVersion == null) {
+    const { data: currentRow, error: readError } = await sb
+      .from('designs')
+      .select('version')
+      .eq('id', id)
+      .maybeSingle();
+    if (readError) {
+      console.error('Supabase updateDesignSceneGuarded (adopt read) error:', readError);
+      return { ok: false, reason: 'error' };
+    }
+    if (!currentRow) return { ok: false, reason: 'error' }; // no such design
+    return casWriteScene(sb, id, scene, (currentRow as { version: number }).version);
+  }
+
+  return casWriteScene(sb, id, scene, expectedVersion);
 }
 
 // Link an existing design to a quote (set when the operator clicks "Calculate

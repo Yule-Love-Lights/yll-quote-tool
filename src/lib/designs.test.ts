@@ -666,10 +666,17 @@ describe('extra street photos (#13)', () => {
 
 // Ledger row 260: updateDesignSceneGuarded — the compare-and-swap scene
 // write. A minimal, purpose-built fake distinct from makeExtrasSb (that one's
-// tailored to extra_photos' updated_at-based guard); this one models exactly
-// the two query shapes updateDesignSceneGuarded issues:
-//   guarded:  .update({scene,version}).eq('id',id).eq('version',expected).select('version')
-//   adopt:    .update({scene,version:1}).eq('id',id).select('version').maybeSingle()
+// tailored to extra_photos' updated_at-based guard); this one models the
+// query shapes updateDesignSceneGuarded issues:
+//   guarded:      .update({scene,version}).eq('id',id).eq('version',expected).select('version')
+//   adopt (read): .select('version').eq('id',id).maybeSingle()  -- fresh version read
+//   adopt (CAS):  .update({scene,version}).eq('id',id).eq('version',<the fresh read>).select('version')
+// Fix round (HIGH, four-lens review): adopt used to be a THIRD, unguarded
+// shape (`.update({scene,version:1}).eq('id',id).select('version').maybeSingle()`)
+// that wrote unconditionally and reset the counter to 1. It now issues a
+// plain read, then reuses the SAME guarded-CAS shape as the normal path —
+// so the fake needs no adopt-specific branch beyond the plain-select case it
+// already had for other callers (falls into the `!updatePayload` arm below).
 function makeSceneOnlySb(initial: { scene: DesignScene; version: number }) {
   const state = { row: { id: ID, scene: initial.scene, version: initial.version } as Record<string, unknown> };
   function tableBuilder() {
@@ -734,27 +741,68 @@ describe('updateDesignSceneGuarded (ledger row 260 — scene compare-and-swap)',
     expect(state.row.scene).toEqual({ yardsticks: [], items: [{ id: 'concurrent' }] });
   });
 
-  it('adopts when expectedVersion is null: writes unconditionally and seeds version to 1', async () => {
+  it('adopts when expectedVersion is null: reads the CURRENT version fresh, then CASes against it (does not reset the counter)', async () => {
     const scene: DesignScene = { yardsticks: [], items: [{ id: 'i1', kind: 'wreath' } as never] };
-    // Any starting version — the adopt path doesn't check it.
     const { client, state } = makeSceneOnlySb({ scene: { yardsticks: [], items: [] }, version: 47 });
     sbRef.current = client;
 
     const outcome = await updateDesignSceneGuarded(ID, scene, null);
 
-    expect(outcome).toEqual({ ok: true, version: 1 });
-    expect(state.row.version).toBe(1);
+    expect(outcome).toEqual({ ok: true, version: 48 });
+    expect(state.row.version).toBe(48);
     expect(state.row.scene).toEqual(scene);
   });
 
-  it('adopts when expectedVersion is undefined too (a caller with no prior read)', async () => {
+  it('adopts when expectedVersion is undefined too (a caller with no prior read) — same read-then-CAS path', async () => {
     const scene: DesignScene = { yardsticks: [], items: [] };
     const { client } = makeSceneOnlySb({ scene: { yardsticks: [], items: [] }, version: 3 });
     sbRef.current = client;
 
     const outcome = await updateDesignSceneGuarded(ID, scene, undefined);
 
-    expect(outcome).toEqual({ ok: true, version: 1 });
+    expect(outcome).toEqual({ ok: true, version: 4 });
+  });
+
+  it('adopt path closes the read-then-write race: a writer that lands between the fresh read and the CAS wins, this caller loses and reports conflict instead of clobbering (fix-round HIGH, negative-controlled)', async () => {
+    const scene: DesignScene = { yardsticks: [], items: [{ id: 'i1', kind: 'wreath' } as never] };
+    const concurrentScene: DesignScene = { yardsticks: [], items: [{ id: 'concurrent' } as never] };
+    // Models the row as it actually stands in Postgres by the time the CAS
+    // fires: a concurrent writer already bumped it to version 6. The adopt
+    // branch's OWN read (below) still reports the stale value it saw a
+    // moment earlier (5) — exactly the window the fix closes.
+    const state: Record<string, unknown> = { id: ID, scene: concurrentScene, version: 6 };
+    let readCount = 0;
+    const client = {
+      from: () => {
+        const eqFilters: Array<[string, unknown]> = [];
+        let updatePayload: Record<string, unknown> | null = null;
+        const b: Record<string, unknown> = {};
+        Object.assign(b, {
+          update: (payload: Record<string, unknown>) => { updatePayload = payload; return b; },
+          eq: (col: string, val: unknown) => { eqFilters.push([col, val]); return b; },
+          select: (_cols?: string) => b,
+          maybeSingle: async () => {
+            readCount++;
+            return { data: { version: 5 }, error: null }; // stale-by-the-time-it-matters read
+          },
+          then: (resolve: (v: unknown) => void) => {
+            const preconditionOk = eqFilters.every(([col, val]) => state[col] === val);
+            if (preconditionOk) Object.assign(state, updatePayload);
+            resolve({ data: preconditionOk ? [{ version: state.version }] : [], error: null });
+          },
+        });
+        return b;
+      },
+    };
+    sbRef.current = client;
+
+    const outcome = await updateDesignSceneGuarded(ID, scene, null);
+
+    expect(readCount).toBe(1);
+    expect(outcome).toEqual({ ok: false, reason: 'conflict' });
+    // The concurrent writer's data must survive untouched.
+    expect(state.version).toBe(6);
+    expect(state.scene).toEqual(concurrentScene);
   });
 });
 
