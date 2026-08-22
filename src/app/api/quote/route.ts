@@ -648,9 +648,18 @@ export async function POST(req: NextRequest) {
     // service_type — never deposit_paid_at or status, so the lifecycle stays booked),
     // which the operator immediately follows with the amend record. Terminal statuses
     // (declined/cancelled/abandoned) stay hard-locked — a dead order is never re-priced.
+    //
+    // Row 331+341 fix (premerge finding 1): amendRepriceAllowed is hoisted out of
+    // this if-block (was previously scoped only here) so the price/label/bistro-
+    // footage freeze below can carve out the SAME operator-only amend path. Without
+    // this, a booked order needing a price/label/footage correction had no path at
+    // all — the amend flow's own documented mechanism ("edit in the builder +
+    // Calculate, then record the amendment", amend/route.ts:9-15) IS these three
+    // surfaces, and they 409'd unconditionally.
+    let amendRepriceAllowed = false;
     if (isUpdate && existing) {
       const currentStatus = deriveStatus(existing);
-      const amendRepriceAllowed = amendReprice && currentStatus === 'booked';
+      amendRepriceAllowed = amendReprice && currentStatus === 'booked';
       if (REPRICE_LOCKED_STATUSES.has(currentStatus) && !amendRepriceAllowed) {
         return NextResponse.json(
           {
@@ -706,7 +715,16 @@ export async function POST(req: NextRequest) {
     // materials/BOM basis for an already-sold job (row 341). is_test exempt,
     // matching every other freeze in this file (#251/#177) — a test quote
     // stays fully editable regardless of lifecycle stamps.
-    if (isUpdate && existing?.customer_approved_at && !existing.is_test) {
+    //
+    // Premerge finding 1 fix: carve out the SAME operator-only amendReprice path
+    // the sibling REPRICE_LOCKED_STATUSES guard above allows for a booked order.
+    // Without this, the sanctioned amend mechanism for a booked order (edit these
+    // exact three fields in the builder + Calculate, then record the amendment —
+    // see amend/route.ts:9-15) 409'd with no path at all. amendRepriceAllowed is
+    // only true when amendReprice===true AND the order is already 'booked', so an
+    // approved-but-not-yet-booked quote (no amend record possible — see finding 2
+    // below) is UNAFFECTED by this carve-out and stays hard-locked here.
+    if (isUpdate && existing?.customer_approved_at && !existing.is_test && !amendRepriceAllowed) {
       const storedInputs = existing.inputs ?? {};
       if (!priceOverridesEqual(q.lineItemPriceOverrides, storedInputs.lineItemPriceOverrides)) {
         return NextResponse.json(
