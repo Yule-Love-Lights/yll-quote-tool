@@ -9,7 +9,7 @@ import {
 } from './gmail';
 import type { GmailMessageLite, GmailThreadLite, RawGmailThread } from './gmail';
 
-const msg = (fromMe: boolean, iso: string, snippet?: string) => ({ fromMe, at: new Date(iso), snippet });
+const msg = (fromMe: boolean, iso: string, snippet?: string, id?: string) => ({ fromMe, at: new Date(iso), snippet, id });
 
 function thread(over: Partial<GmailThreadLite> = {}): GmailThreadLite {
   return {
@@ -58,6 +58,46 @@ describe('normalizeGmailThread — thread → NormalizedTouch', () => {
     expect(t.direction).toBe('outbound');
     expect(t.preview).toBe('Absolutely — here it is');
     expect(t.lastMessageAt.toISOString()).toBe('2026-06-28T15:30:00.000Z');
+  });
+
+  // #303: an ordinary (non-lead-forward, 0-parsed) thread used to hardcode
+  // sourceMessageId: null unconditionally, which starved the Handled
+  // write-back (sync.ts's runHandledWriteback) of a message id for the
+  // overwhelming majority of Gmail traffic. It now carries the last INBOUND
+  // (customer) message's id, so the write-back can act message-level here too.
+  it('carries the last inbound message id as sourceMessageId, so the message-level Handled write-back can act on an ordinary thread (#303)', () => {
+    const t = normalizeGmailThread(
+      thread({ messages: [msg(false, '2026-06-28T14:00:00Z', 'Can I get a quote?', 'm-cust-1')] }),
+    );
+    expect(t.sourceMessageId).toBe('m-cust-1');
+  });
+
+  // #303: deliberately NOT thread.partition().latest — if staff already
+  // replied directly in Gmail (the thread's chronologically-latest message is
+  // OURS) and then click "Handled" ("closed as answered" — InboxList.tsx's
+  // own button title), targeting our own SENT message would be a no-op
+  // (already read, and a staffer checking raw Gmail wants the CUSTOMER'S
+  // message labeled/cleared, not their own reply). sourceMessageId stays
+  // pinned to the customer's own last message regardless of who replied last.
+  it("stays pinned to the CUSTOMER's last message when we already replied — never our own latest outbound reply (#303)", () => {
+    const t = normalizeGmailThread(
+      thread({
+        messages: [
+          msg(false, '2026-06-28T14:00:00Z', 'Can I get a quote?', 'm-cust-1'),
+          msg(true, '2026-06-28T15:30:00Z', 'Absolutely — here it is', 'm-us-1'),
+        ],
+      }),
+    );
+    expect(t.direction).toBe('outbound');
+    expect(t.sourceMessageId).toBe('m-cust-1');
+  });
+
+  // Edge case: a thread with no inbound message at all (every message
+  // fromMe) has nothing for the write-back to target — stays null rather than
+  // mislabeling one of our own sent messages.
+  it('has a null sourceMessageId when the thread has no inbound message at all (#303)', () => {
+    const t = normalizeGmailThread(thread({ messages: [msg(true, '2026-06-28T14:00:00Z', 'note to self', 'm-us-1')] }));
+    expect(t.sourceMessageId).toBe(null);
   });
 });
 
@@ -149,7 +189,12 @@ describe('mapGmailThread — raw Gmail payload → GmailThreadLite', () => {
         gm({ internalDate: '1782693000000', labelIds: ['SENT'], from: OUR, snippet: 'replied' }),
       ],
     };
-    expect(normalizeGmailThread(mapGmailThread(raw, { ourEmail: OUR })).direction).toBe('outbound');
+    const t = normalizeGmailThread(mapGmailThread(raw, { ourEmail: OUR }));
+    expect(t.direction).toBe('outbound');
+    // #303 end-to-end through the real raw-payload mapper: sourceMessageId is
+    // the CUSTOMER's raw message id (gm() auto-ids as `m-<internalDate>`),
+    // not our own SENT message's id.
+    expect(t.sourceMessageId).toBe('m-1782690000000');
   });
 
   it('never produces an Invalid Date from a malformed internalDate (would crash .toISOString)', () => {
