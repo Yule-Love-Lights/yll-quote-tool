@@ -182,6 +182,13 @@
 
 ## Sessions (newest first)
 
+### S64 (Naldo) - 2026-08-21 - eight quote-tool PRs built and reviewed, all still draft
+
+- MISTAKES: let eight independently green branches accumulate before a combined integration pass. The wrap review found predictable keep-both conflicts in `FULL-SCHEMA.sql`, QuoteBuilder, and portal rendering that each PR's isolated gates could not prove safe.
+- DID RIGHT: kept every bug and suggestion in a separate PR; used failing-first tests for defects; applied and verified only safe additive schemas; ran the required persona/technical reviews and fix rounds; kept all PRs draft when browser previews were unavailable.
+- REVIEW: no new correctness blocker in #875 and no customer blocker across the batch. Release remains blocked on rebasing/conflict reconciliation, combined-tree gates, and browser checks. The separate concurrent-send delivery race is ledger row 337.
+- Full detail: `docs/context/journal/S64-naldo.md`. NEXT: exact merge authorization for #875, then resolve the remaining draft stack one PR at a time. The Clear AI-drawn design suggestion remains unbuilt.
+
 ### S62 (Naldo) — 2026-08-20 — the `video` skill built + shipped (PR #816) and the governance gap it exposed closed (PR #820), both merged; two four-lens rounds plus a wrap review, the last still finding 3 fail-safe coherence HIGHs in my own merged rule — [Claude Code on the web, run for Naldo]
 
 - MISTAKES (all recurrences of already-promoted pitfalls — evidence, no new promotion): claimed "verified" in the #816 PR body over two live script HIGHs (report-not-hope); extended the auto-merge trip-wire sentence while writing a paragraph that contradicts it, AND added the async-48h standard without reconciling the untouched "other owner reviews first" line (both the re-read-the-whole-paragraph-you-edit class); #820's first draft enumerated 1 of 3 tracked `.claude/` paths (enumerate-the-population). Every one caught by a review agent, not by me.
