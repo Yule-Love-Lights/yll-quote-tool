@@ -61,6 +61,11 @@ import { hasSatellitePayload } from '@/lib/design/analysisSatellitePayload';
 import { deriveSideMeasure } from '@/lib/permanent/satelliteMeasure';
 import { roundFootageUpTo5 } from '@/lib/permanent/types';
 import { deriveTrackAccessories, hasAccessorySignal } from '@/lib/permanent/trackAccessories';
+import {
+  reconcileBistroFootage,
+  deriveBistroFootageMap,
+  roundBistroFootageOnBlur,
+} from '@/lib/permanentBistro/reconcileFootage';
 import { isStrand, isLinkedTwin, type Surface } from '@/lib/design/sceneTypes';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
 import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
@@ -1488,6 +1493,12 @@ export default function QuoteBuilder({
   // Permanent Bistro Lighting (#117): mirrors hadC9LinesRef — deleting the last
   // bistro run resets the billed array to [] instead of leaving a stale value.
   const hadBistroLinesRef = useRef(false);
+  // #244: per-run reconcile baseline (run id -> its derived footage as of the
+  // last reconcile) — the array analog of the holiday/permanent scalar
+  // "already equals the target" check, but keyed by id so ONE run's redraw
+  // can't clobber an override on ANOTHER. See reconcileFootage.ts and the
+  // rehydrate-seed comment in getSetter('bistro') below.
+  const prevBistroDerivedRef = useRef<Record<string, number>>({});
 
   // Recompute footages from the SATELLITE lines (#35: the only line-measurement
   // source — deterministic feet-per-pixel × image pixel width). When there's no
@@ -1588,6 +1599,25 @@ export default function QuoteBuilder({
     }
     if (type === 'bistro') {
       return (updater) => {
+        // #244 reopen-clobber guard: while still frozen (#142), the reconcile
+        // baseline (prevBistroDerivedRef) has never been seeded for these
+        // PERSISTED runs — rehydrate sets satelliteBistroLines directly and
+        // never runs the derive effect while frozen. Without this seed, the
+        // FIRST post-reopen edit would see every existing run as having no
+        // recorded baseline, treat all of them as "new", and stamp their
+        // freshly re-derived footage straight over any saved manual override
+        // (the S24 reopen-clobber class). Seed from the CURRENT (pre-edit)
+        // lines/scale/aspect — by the time a human can click-drag a line, the
+        // satellite <img> has already fired onLoad and corrected
+        // satelliteAspect away from its 1:1 default. The seed decision itself
+        // is the pure, tested deriveBistroFootageMap (reconcileFootage.ts,
+        // #244 premerge finding 3) — this repo has no component-render
+        // harness for QuoteBuilder.tsx, so the regression coverage lives on
+        // that extracted function, composed with reconcileBistroFootage in
+        // reconcileFootage.test.ts's rehydrate -> first-edit -> derive test.
+        if (permDeriveFrozenRef.current) {
+          prevBistroDerivedRef.current = deriveBistroFootageMap(satelliteBistroLines, bistroRunFootage);
+        }
         // #142 thaw: the operator touched the lines — footage follows the
         // visible geometry again (live-session rules), mirroring the
         // permanent-side branch below.
@@ -1718,37 +1748,51 @@ export default function QuoteBuilder({
     form.permanent?.accessoriesSource,
   ]);
 
-  // Permanent Bistro Lighting (#117): derive each drawn run's OWN footage (per
-  // run — never summed into one side total, unlike permanent) from its
-  // satellite trace, and write the array straight onto form.permanentBistro.bistro
-  // — the BILLING source (the Design tab's bistro strand there stays visual-only,
-  // mirroring permanent's split; see the route's design-projection exemption).
-  // Guard chain: NOT frozen (#142 rehydrate) AND a known satellite scale AND a
-  // LIVE satellite session (satellitePreview != null — the S24/S25 clobber-class
-  // guard: a reopened-but-untouched quote must never have its saved footage
+  // Permanent Bistro Lighting (#117, editable footage #244): derive each
+  // drawn run's OWN footage (per run — never summed into one side total,
+  // unlike permanent) from its satellite trace, and RECONCILE it onto
+  // form.permanentBistro.bistro — the BILLING source (the Design tab's
+  // bistro strand there stays visual-only, mirroring permanent's split; see
+  // the route's design-projection exemption). Guard chain: NOT frozen (#142
+  // rehydrate) AND a known satellite scale AND a LIVE satellite session
+  // (satellitePreview != null — the S24/S25 clobber-class guard: a
+  // reopened-but-untouched quote must never have its saved footage
   // overwritten by "nothing drawn this session" math).
+  //
+  // #244: unlike the holiday/permanent scalar derives, this is an ARRAY —
+  // redrawing ANY run re-fires this whole effect (satelliteBistroLines is
+  // one shared array), so a naive "always overwrite" would clobber a
+  // hand-typed override on every OTHER, untouched run. reconcileBistroFootage
+  // (pure, tested) reconciles BY RUN ID against prevBistroDerivedRef (the
+  // per-id "last known derived value" baseline): an untouched run's override
+  // survives; a run whose OWN geometry changed has its override reset (staff
+  // redraw wins — the same call as the holiday precedent). See getSetter
+  // ('bistro') above for how the baseline is seeded on a reopened quote's
+  // first post-rehydrate edit, so this can't clobber a saved override on load.
   useEffect(() => {
     if (form.serviceType !== 'permanent_bistro') return;
     if (permDeriveFrozenRef.current) return; // #142: rehydrated, untouched — saved values win
     if (satelliteFeetPerPixel == null) return; // no known scale — manual typing only
     if (satellitePreview == null) return; // no live satellite session — nothing to derive from
     const hasLines = satelliteBistroLines.length > 0;
-    // Each run carries its stable id (#117 MED) so the billed line item id
-    // follows the run across a mid-list delete, not its position.
-    const runs = hasLines
-      ? satelliteBistroLines.map((line) => ({
-          footage: roundFootageUpTo5(polylineLength([line], satelliteAspect) * SAT_PX * satelliteFeetPerPixel),
-          id: line.id,
-        }))
-      : hadBistroLinesRef.current
-        ? [] // had runs, all deleted — reset the billed array to empty
-        : null; // never drawn this session — leave the saved array alone
+    // Never drawn this session (no lines now, and none were had) — leave the
+    // saved array alone rather than resetting it to empty.
+    if (!hasLines && !hadBistroLinesRef.current) return;
     hadBistroLinesRef.current = hasLines;
-    if (runs == null) return;
+    // Each run carries its stable id (#117 MED) so the billed line item id
+    // (and this reconcile's override tracking) follows the run across a
+    // mid-list delete, not its position. Empty when the last run was just
+    // deleted — reconcileBistroFootage resets the billed array to [] too.
+    const freshRuns = satelliteBistroLines.map((line) => ({
+      id: line.id,
+      footage: roundFootageUpTo5(polylineLength([line], satelliteAspect) * SAT_PX * satelliteFeetPerPixel),
+    }));
+    const priorBaseline = prevBistroDerivedRef.current;
     queueMicrotask(() =>
       setForm((f) => {
         if (f.serviceType !== 'permanent_bistro') return f;
-        const next = runs.map((r) => ({ footage: r.footage, ...(r.id ? { id: r.id } : {}) }));
+        const { next, nextBaseline } = reconcileBistroFootage(freshRuns, f.permanentBistro.bistro, priorBaseline);
+        prevBistroDerivedRef.current = nextBaseline;
         const cur = f.permanentBistro.bistro;
         const same =
           cur.length === next.length &&
@@ -1919,6 +1963,37 @@ export default function QuoteBuilder({
   const updateLineLabel = (type: LineType, lineIdx: number, label: string) => {
     const setter = getSetter(type);
     setter(lines => lines.map((line, i) => i === lineIdx ? { ...line, label } : line));
+  };
+
+  // #244: hand-edit a bistro run's BILLED footage, keyed by its stable run
+  // id — mirrors the holiday `set('santasFootage', ...)` idiom but targets
+  // one entry inside form.permanentBistro.bistro instead of a top-level
+  // scalar. Does NOT touch satelliteBistroLines/scale, so it never re-fires
+  // the derive effect above (typing an override is not a redraw). Upserts:
+  // most edits update an existing entry, but with no satellite scale the
+  // derive effect never creates one (its top-level guard), so a fully manual
+  // entry is created here on first edit.
+  const updateBistroRunFootage = (runId: string | undefined, footage: number) => {
+    if (!runId) return; // no stable id — nothing to target (see reconcileFootage.ts)
+    setForm((f) => {
+      if (f.serviceType !== 'permanent_bistro') return f;
+      const idx = f.permanentBistro.bistro.findIndex((b) => b.id === runId);
+      const bistro =
+        idx >= 0
+          ? f.permanentBistro.bistro.map((b, i) => (i === idx ? { ...b, footage } : b))
+          : [...f.permanentBistro.bistro, { id: runId, footage }];
+      return { ...f, permanentBistro: { ...f.permanentBistro, bistro } };
+    });
+  };
+
+  // #244: a run's BILLED footage — the value form.permanentBistro.bistro
+  // actually carries for this run's id (which may be a hand-typed override),
+  // falling back to the pure geometry-derived value when no billed entry
+  // exists yet (e.g. no satellite scale — manual-only — or the derive
+  // effect's queued microtask hasn't landed yet).
+  const billedBistroFootage = (line: LineSegment): number | null => {
+    const entry = line.id ? form.permanentBistro.bistro.find((b) => b.id === line.id) : undefined;
+    return entry ? entry.footage : bistroRunFootage(line);
   };
 
   const handleImageClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -2574,10 +2649,43 @@ export default function QuoteBuilder({
         // into new billing footage — the operator redraws on the new image. Thaw
         // the rehydrate freeze (fresh live session) and flag hadBistroLines so the
         // derive resets the billed array to empty; then a redraw bills correctly.
+        // #244 premerge finding 2 (staff, MED): unlike applyPulledSatellite's
+        // "Pull satellite" sibling above (which window.confirms before
+        // clearing ANY drawn satellite line, including bistro), this path
+        // discarded bistro runs/overrides unconditionally. #244 raises the
+        // stakes — this can now silently drop a staff-TYPED footage override,
+        // not just re-derivable geometry. Mirror the sibling's confirm; a
+        // decline KEEPS the existing runs/overrides (the new image/scale
+        // above still apply — same tradeoff the #117 comment already accepts
+        // for geometry alone). Silent when nothing would be lost.
         if (form.serviceType === 'permanent_bistro') {
-          permDeriveFrozenRef.current = false;
-          hadBistroLinesRef.current = satelliteBistroLines.length > 0;
-          setSatelliteBistroLines([]);
+          const hasBistroToLose =
+            satelliteBistroLines.length > 0 || form.permanentBistro.bistro.length > 0;
+          const keepExisting =
+            hasBistroToLose &&
+            !window.confirm(
+              'Replaces the satellite image — traced bistro runs + footage will reset. Continue?',
+            );
+          if (!keepExisting) {
+            permDeriveFrozenRef.current = false;
+            hadBistroLinesRef.current = satelliteBistroLines.length > 0;
+            setSatelliteBistroLines([]);
+          } else {
+            // #244 delta-verify HIGH (money-silent): unlike applyPulledSatellite,
+            // this function already called setSatelliteFeetPerPixel(the NEW
+            // scale) above, BEFORE this confirm ever ran — so a decline can't be
+            // a true no-op the way the sibling's is. Without freezing here, the
+            // kept satelliteBistroLines/overrides re-derive on the next effect
+            // pass against the NEW scale; since the freshly-derived footage now
+            // differs from prevBistroDerivedRef's baseline, reconcileBistroFootage's
+            // "this run's geometry changed -> redraw wins" branch fires and
+            // silently stamps the new-scale value over a hand-typed override
+            // (e.g. 35ft -> ~22ft), reversing the explicit Cancel. Freeze the
+            // derive (#142 idiom) so the kept billed array stays exactly as the
+            // operator left it; a later real line edit thaws it as usual via
+            // getSetter('bistro').
+            permDeriveFrozenRef.current = true;
+          }
         }
         // #443 fix (S23): persist the satellite IMAGE onto the design so the portal
         // can show the "Where the lights go" view. Holiday does this in
@@ -5414,22 +5522,47 @@ export default function QuoteBuilder({
                             <span className="w-4 h-1 rounded" style={{ backgroundColor: '#14b8a6' }}></span>
                             <span className="text-sm font-semibold text-gray-800">
                               Bistro Runs — {satelliteBistroLines.reduce(
-                                (sum, line) => sum + (bistroRunFootage(line) ?? 0),
+                                (sum, line) => sum + (billedBistroFootage(line) ?? 0),
                                 0,
                               )}ft total
                             </span>
                           </div>
+                          <p className="text-xs text-gray-400 ml-6 mb-2">
+                            Auto-measured from photo. Adjust if needed.
+                          </p>
                           {satelliteBistroLines.length > 0 ? (
                             <ul className="space-y-1 ml-6">
                               {satelliteBistroLines.map((line, i) => {
-                                const ft = bistroRunFootage(line);
+                                const ft = billedBistroFootage(line);
                                 return (
-                                  <li key={`bistro-${i}`} className="flex items-center gap-2 text-xs">
-                                    <span className="flex-1 text-gray-500">
-                                      Run {i + 1} — {ft != null ? `${ft} ft` : 'no scale'} ({line.points.length} pts)
+                                  <li key={line.id ?? `bistro-${i}`} className="flex items-center gap-2 text-xs">
+                                    <span className="text-gray-500 whitespace-nowrap">
+                                      Run {i + 1} ({line.points.length} pts)
                                     </span>
+                                    {line.id ? (
+                                      <>
+                                        <input
+                                          className="w-20 border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-teal-500"
+                                          type="number" min="0" placeholder="0"
+                                          value={ft || ''}
+                                          onChange={(e) => updateBistroRunFootage(line.id, Math.max(0, Number(e.target.value) || 0))}
+                                          onBlur={() => {
+                                            // #244 premerge finding 1 (HIGH, money — #139 parity):
+                                            // round a hand-typed override up to the next 5ft step on
+                                            // blur, same as PermanentSection's roundFootageOnBlur —
+                                            // calculatePermanentBistro never re-rounds, so an
+                                            // un-rounded override silently under-bills.
+                                            const rounded = roundBistroFootageOnBlur(ft);
+                                            if (rounded != null) updateBistroRunFootage(line.id, rounded);
+                                          }}
+                                        />
+                                        <span className="text-gray-400">ft</span>
+                                      </>
+                                    ) : (
+                                      <span className="flex-1 text-gray-500">{ft != null ? `${ft} ft` : 'no scale'}</span>
+                                    )}
                                     <button type="button" onClick={() => deleteLine('bistro', i)}
-                                      className="text-red-400 hover:text-red-600 font-bold">×</button>
+                                      className="ml-auto text-red-400 hover:text-red-600 font-bold">×</button>
                                   </li>
                                 );
                               })}
