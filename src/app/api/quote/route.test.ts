@@ -7,7 +7,21 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-const { save, update, getRaw, rawRef, operatorRef } = vi.hoisted(() => ({
+const {
+  completeQuoteBuildSession,
+  linkQuoteBuildSession,
+  quoteBuildSessionTargetState,
+  save,
+  startQuoteBuildSession,
+  update,
+  getRaw,
+  rawRef,
+  operatorRef,
+} = vi.hoisted(() => ({
+  completeQuoteBuildSession: vi.fn(),
+  linkQuoteBuildSession: vi.fn(),
+  quoteBuildSessionTargetState: vi.fn(),
+  startQuoteBuildSession: vi.fn(),
   // Typed varargs so `.mock.calls[n]` is an indexable unknown[] (the permanent
   // dispatch tests read positional args like calls[0][3] = serviceType).
   save: vi.fn(async (..._args: unknown[]) => ({ id: 'new-id' })),
@@ -48,6 +62,7 @@ const { save, update, getRaw, rawRef, operatorRef } = vi.hoisted(() => ({
       inputs?: { depositPercent?: number; event?: { eventDate?: string } } | null;
       // FIX B (#237 fix round): the two other gates the re-push needs.
       is_test?: boolean;
+      view_only?: boolean;
       highlevel_contact_id?: string | null;
     } | null,
   },
@@ -58,6 +73,13 @@ vi.mock('@/lib/quotes', () => ({
   saveQuote: save,
   updateQuote: update,
   getQuoteRaw: getRaw,
+}));
+
+vi.mock('@/lib/quoteBuildTiming', () => ({
+  completeQuoteBuildSession,
+  linkQuoteBuildSession,
+  quoteBuildSessionTargetState,
+  startQuoteBuildSession,
 }));
 
 // FIX B (#237 fix round): only pushEventDateToGhl is mocked (spied on) — the
@@ -169,6 +191,14 @@ beforeEach(() => {
   designIdRef.current = false;
   afterCallCount.current = 0;
   getDesignMock.mockResolvedValue(null);
+  completeQuoteBuildSession.mockResolvedValue(true);
+  linkQuoteBuildSession.mockResolvedValue(true);
+  quoteBuildSessionTargetState.mockResolvedValue({ kind: 'draft' });
+  startQuoteBuildSession.mockImplementation(async (input: { timerId: string; quoteId?: string }) => ({
+    ok: true,
+    kind: 'started',
+    row: { id: input.timerId, quote_id: input.quoteId ?? null, sent_at: null },
+  }));
   // Default the update-branch row to a plain draft (no lifecycle timestamps) so
   // the existing UUID→update tests still re-price; booked/terminal cases set it.
   rawRef.current = {
@@ -776,6 +806,141 @@ describe('POST /api/quote — created_by actor trail (#90)', () => {
       undefined,
       undefined,
     );
+  });
+});
+
+describe('POST /api/quote — quote build timer association', () => {
+  it('creates or reuses the owned timer on a new quote before reporting save success', async () => {
+    const timerId = '11111111-2222-4333-8444-555555555555';
+    operatorRef.current = { id: 'op-1', email: 'a@b.com', role: 'operator' };
+    let releaseStart!: (value: {
+      ok: true;
+      kind: 'started';
+      row: { id: string; quote_id: string; sent_at: null };
+    }) => void;
+    startQuoteBuildSession.mockReturnValueOnce(
+      new Promise((resolve) => {
+        releaseStart = resolve;
+      }),
+    );
+    let settled = false;
+
+    const pending = POST(makeReq({
+      inputs: validInputs(),
+      quoteBuildTimerId: timerId,
+      quoteBuildStartReason: 'contact_selected',
+    }))
+      .then((response) => {
+        settled = true;
+        return response;
+      });
+
+    await vi.waitFor(() => expect(startQuoteBuildSession).toHaveBeenCalledWith({
+      timerId,
+      startReason: 'contact_selected',
+      quoteId: 'new-id',
+      operator: { id: 'op-1', email: 'a@b.com', role: 'operator' },
+      startedAt: expect.any(String),
+    }));
+    expect(settled).toBe(false);
+
+    releaseStart({
+      ok: true,
+      kind: 'started',
+      row: { id: timerId, quote_id: 'new-id', sent_at: null },
+    });
+    const res = await pending;
+    expect(res.status).toBe(200);
+    expect(linkQuoteBuildSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed timer id before saving', async () => {
+    const res = await POST(makeReq({ inputs: validInputs(), quoteBuildTimerId: 'not-a-uuid' }));
+
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+    expect(linkQuoteBuildSession).not.toHaveBeenCalled();
+  });
+
+  it('requires the timer id and start reason together', async () => {
+    const res = await POST(makeReq({
+      inputs: validInputs(),
+      quoteBuildTimerId: '11111111-2222-4333-8444-555555555555',
+    }));
+
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('links the timer on an existing saved draft too', async () => {
+    const timerId = '11111111-2222-4333-8444-555555555555';
+    operatorRef.current = { id: 'op-1', email: 'a@b.com', role: 'operator' };
+    rawRef.current = {
+      ...rawRef.current!,
+      is_test: false,
+      view_only: false,
+    };
+
+    const res = await POST(makeReq({
+      inputs: validInputs(),
+      quoteId: REAL_UUID,
+      quoteBuildTimerId: timerId,
+      quoteBuildStartReason: 'contact_selected',
+    }));
+
+    expect(res.status).toBe(200);
+    expect(startQuoteBuildSession).toHaveBeenCalledWith({
+      timerId,
+      startReason: 'contact_selected',
+      quoteId: 'existing-id',
+      operator: { id: 'op-1', email: 'a@b.com', role: 'operator' },
+      startedAt: expect.any(String),
+    });
+  });
+
+  it('never associates a timer to a test quote', async () => {
+    operatorRef.current = { id: 'op-1', email: 'a@b.com', role: 'operator' };
+
+    const res = await POST(makeReq({
+      inputs: validInputs(),
+      isTest: true,
+      quoteBuildTimerId: '11111111-2222-4333-8444-555555555555',
+      quoteBuildStartReason: 'contact_selected',
+    }));
+
+    expect(res.status).toBe(200);
+    expect(linkQuoteBuildSession).not.toHaveBeenCalled();
+  });
+
+  it('links an earlier unlinked start and completes it when Send wins during save', async () => {
+    const timerId = '11111111-2222-4333-8444-555555555555';
+    const sentAt = '2026-08-21T12:10:00.000Z';
+    operatorRef.current = { id: 'op-1', email: 'a@b.com', role: 'operator' };
+    startQuoteBuildSession.mockResolvedValueOnce({
+      ok: true,
+      kind: 'existing',
+      row: { id: timerId, quote_id: null, sent_at: null },
+    });
+    quoteBuildSessionTargetState.mockResolvedValueOnce({ kind: 'sent', sentAt });
+
+    const res = await POST(makeReq({
+      inputs: validInputs(),
+      quoteBuildTimerId: timerId,
+      quoteBuildStartReason: 'contact_selected',
+    }));
+
+    expect(res.status).toBe(200);
+    expect(linkQuoteBuildSession).toHaveBeenCalledWith({
+      timerId,
+      quoteId: 'new-id',
+      operatorId: 'op-1',
+    });
+    expect(completeQuoteBuildSession).toHaveBeenCalledWith({
+      quoteId: 'new-id',
+      timerId,
+      operatorId: 'op-1',
+      sentAt,
+    });
   });
 });
 
