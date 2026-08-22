@@ -1636,7 +1636,20 @@ export async function renderEditor(
     const btn = document.createElement("button");
     btn.textContent = "Reload";
     btn.style.cssText = "margin-left:6px;text-decoration:underline;cursor:pointer;background:none;border:none;color:inherit;font:inherit;padding:0;";
-    btn.addEventListener("click", () => window.location.reload());
+    // Fix round (MED, four-lens review): a bare reload() here silently
+    // discarded more than just this banner's already-lost scene edit — this
+    // editor is often EMBEDDED in a page with its OWN unrelated unsaved form
+    // state (the quote builder's pricing overrides, line items) that a
+    // reload would wipe with no warning at all. A confirm is the simplest
+    // guard, not a state-preservation system — consistent with this file's
+    // constraint of staying framework-free (it travels unchanged into the
+    // standalone design tool, which has no rule for a class this repo
+    // invents).
+    btn.addEventListener("click", () => {
+      if (window.confirm("Reload now? Any other unsaved changes on this page will also be lost.")) {
+        window.location.reload();
+      }
+    });
     banner.appendChild(btn);
     host.prepend(banner);
   }
