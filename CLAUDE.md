@@ -182,6 +182,13 @@
 
 ## Sessions (newest first)
 
+### S45 (Jason) — 2026-08-21 — five PRs merged+live incl. #839 identity atomicity; close written RETROACTIVELY by S46 from the handoff (S45 never ran its own wrap)
+
+- MISTAKES (structural, S46-observed): the session ended without running its close — the journal fragment, ledger rows 338-341, and this block all had to be reconstructed a session later from the handoff; anything the handoff didn't record is lost. A handoff is better than nothing and worse than a close.
+- DID RIGHT (per the handoff): deferred #870 at premerge-BLOCK instead of patching at session end (prod is bare last-write-wins, so holding was no regression) · delta-verified every fix round on the #839 identity seam — BOTH fix-introduced HIGHs were caught by the delta-verify, not the author · ran S44's missing wrap review · wrote a handoff detailed enough to reconstruct this close from.
+- SHIPPED: #846 (rows 309+305) · #847 (row 321, colour-request visibility — live-customer HIGH) · #862 (row 330) · #861 (declined portal selection persists) · #839 (identity atomicity, the 2026-08-11 incident class). Built not merged: #867 (row 244) · #870 (row 260, BLOCK, findings on the PR).
+- Full detail: `docs/context/journal/S45-jason.md`. NEXT (S46 running it): #867 freshness+merge-go · #870 fix round · rows 338-341 · two customers owed a HUMAN colour-change reply (Kristie Tibbetts $761.25, Susan Pace-Burke $1,680.19).
+
 ### S62 (Naldo) — 2026-08-20 — the `video` skill built + shipped (PR #816) and the governance gap it exposed closed (PR #820), both merged; two four-lens rounds plus a wrap review, the last still finding 3 fail-safe coherence HIGHs in my own merged rule — [Claude Code on the web, run for Naldo]
 
 - MISTAKES (all recurrences of already-promoted pitfalls — evidence, no new promotion): claimed "verified" in the #816 PR body over two live script HIGHs (report-not-hope); extended the auto-merge trip-wire sentence while writing a paragraph that contradicts it, AND added the async-48h standard without reconciling the untouched "other owner reviews first" line (both the re-read-the-whole-paragraph-you-edit class); #820's first draft enumerated 1 of 3 tracked `.claude/` paths (enumerate-the-population). Every one caught by a review agent, not by me.
