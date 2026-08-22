@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { calculatePermanentBistro } from './pricing';
 import { DEFAULT_PERMANENT_BISTRO_RATES, type PermanentBistroRates } from './types';
 import type { QuoteInputs } from '@/lib/pricing/pricingEngine';
+import { roundBistroFootageOnBlur } from './reconcileFootage';
 
 function baseInputs(overrides: Partial<QuoteInputs> = {}): QuoteInputs {
   return {
@@ -74,6 +75,19 @@ describe('calculatePermanentBistro — bistro runs at DEFAULT rates', () => {
     );
     expect(r.lineItems).toHaveLength(1);
     expect(r.subtotalBeforeDiscount).toBe(600); // only the 20ft line
+  });
+
+  // #244 premerge finding 1 (HIGH, money — #139 parity). calculatePermanentBistro
+  // itself never rounds (bills whatever footage it's handed, by design — see
+  // `units()` above), so this proves the QuoteBuilder onBlur guard
+  // (roundBistroFootageOnBlur) is what stands between a tape-measured "22"
+  // and an under-bill: the value it hands to pricing is 25, not 22.
+  it('a hand-typed 22ft override rounds to 25ft via the onBlur guard BEFORE it reaches pricing', () => {
+    const typed = 22;
+    const billed = roundBistroFootageOnBlur(typed) ?? typed; // mirrors the onBlur handler exactly
+    expect(billed).toBe(25);
+    const r = calculatePermanentBistro(baseInputs({ permanentBistro: { bistro: [{ footage: billed }] } }), R);
+    expect(r.lineItems[0].amount).toBe(750); // 25 * $30/ft, NOT 22 * $30/ft ($660 would be the bug)
   });
 
   it('sceneItemIds + id are carried through from the input onto the priced line', () => {
