@@ -2,6 +2,10 @@ import { describe, it, expect } from 'vitest';
 import {
   reconcileHolidayFootageField,
   deriveHolidayFootageBaseline,
+  mergeHolidayFootageBaseline,
+  type HolidayFootageBaseline,
+  type HolidayFootageFieldKey,
+  type HolidayFieldReconcileResult,
 } from './reconcileFootage';
 
 // Row 333 premise verification: a faithful pure extraction of the PRE-FIX
@@ -262,5 +266,190 @@ describe('row 333 reopen-clobber guard — rehydrate -> first-edit -> derive (co
       baseline: undefined, // no seed at all
     });
     expect(santasResult.target).toBe(100); // clobbered — this is the bug the seed prevents
+  });
+});
+
+// S46 premerge finding 1 (HIGH, staff): the OLD wiring rebuilt
+// prevHolidayDerivedRef.current from scratch every effect run — an inactive
+// field's key (C9/stake off-holiday) never made it into the spread, so it
+// was silently dropped instead of preserved. This is the naive
+// "replace-not-merge" shape that bug shipped with, kept here ONLY to
+// document/repro the class (never used by QuoteBuilder.tsx).
+function legacyReplaceBaseline(
+  results: Record<HolidayFootageFieldKey, HolidayFieldReconcileResult>,
+): HolidayFootageBaseline {
+  const baseline: HolidayFootageBaseline = {};
+  (Object.keys(results) as HolidayFootageFieldKey[]).forEach((field) => {
+    const nb = results[field].nextBaseline;
+    if (nb != null) baseline[field] = nb;
+  });
+  return baseline;
+}
+
+describe('mergeHolidayFootageBaseline — finding 1 fix: an inactive field keeps its baseline', () => {
+  it('preserves an inactive field key untouched, and recomputes an active one', () => {
+    const prev: HolidayFootageBaseline = { santas: 100, c9: 40 };
+    const results: Record<HolidayFootageFieldKey, HolidayFieldReconcileResult> = {
+      santas: { target: 110, nextBaseline: 110 },
+      gingerbread: { target: null, nextBaseline: undefined },
+      // c9 inactive this run (off-holiday) — its own result is whatever
+      // reconcileHolidayFootageField's inactive branch returns, but the
+      // merge must not even look at it.
+      c9: { target: null, nextBaseline: undefined },
+      stake: { target: null, nextBaseline: undefined },
+    };
+    const next = mergeHolidayFootageBaseline(
+      prev,
+      { santas: true, gingerbread: true, c9: false, stake: false },
+      results,
+    );
+    expect(next).toEqual({ santas: 110, c9: 40 }); // c9 survives inactivity
+  });
+
+  it('clears an ACTIVE field whose result reports no baseline (its last line was deleted)', () => {
+    const prev: HolidayFootageBaseline = { santas: 100, c9: 40 };
+    const results: Record<HolidayFootageFieldKey, HolidayFieldReconcileResult> = {
+      santas: { target: null, nextBaseline: 100 },
+      gingerbread: { target: null, nextBaseline: undefined },
+      c9: { target: 0, nextBaseline: undefined }, // active, last line just deleted
+      stake: { target: null, nextBaseline: undefined },
+    };
+    const next = mergeHolidayFootageBaseline(
+      prev,
+      { santas: true, gingerbread: true, c9: true, stake: true },
+      results,
+    );
+    expect(next).toEqual({ santas: 100 }); // c9 key removed — it was ACTIVE and reported none
+  });
+});
+
+// S46 premerge finding 1 — the round-trip regression the fix brief asked
+// for: an override survives a full toggle-away/toggle-back cycle, composed
+// from the exact two functions QuoteBuilder.tsx's real effect chains
+// together each run (reconcileHolidayFootageField +
+// mergeHolidayFootageBaseline). No component-render harness exists for
+// QuoteBuilder.tsx (see the reopen-clobber composed test above for the same
+// convention).
+describe('row 333 / S46 finding 1 — c9 override survives a holiday -> event -> holiday round trip', () => {
+  it('with the FIX (merge): the c9 override is still standing after toggling away and back', () => {
+    // Run 1 (holiday): both santas and c9 are drawn for the first time —
+    // brand-new baseline, auto-populate.
+    let baseline: HolidayFootageBaseline = {};
+    const run1 = {
+      santas: reconcileHolidayFootageField({ active: true, hasLines: true, hadLinesPrev: false, freshFt: 100, currentBilled: 0, baseline: baseline.santas }),
+      gingerbread: reconcileHolidayFootageField({ active: true, hasLines: false, hadLinesPrev: false, freshFt: 0, currentBilled: 0, baseline: baseline.gingerbread }),
+      c9: reconcileHolidayFootageField({ active: true, hasLines: true, hadLinesPrev: false, freshFt: 40, currentBilled: 0, baseline: baseline.c9 }),
+      stake: reconcileHolidayFootageField({ active: true, hasLines: false, hadLinesPrev: false, freshFt: 0, currentBilled: 0, baseline: baseline.stake }),
+    };
+    baseline = mergeHolidayFootageBaseline(
+      baseline,
+      { santas: true, gingerbread: true, c9: true, stake: true },
+      run1,
+    );
+    expect(baseline).toEqual({ santas: 100, c9: 40 });
+    // Staff hand-types a c9 override (60ft) sometime after — no reconcile
+    // call happens from typing alone, only billed state changes.
+    const c9Billed = 60;
+
+    // Run 2: toggle to Event, then redraw santas (an always-active field) —
+    // the shared effect re-fires; c9/stake are gated off (isHoliday=false).
+    const run2 = {
+      santas: reconcileHolidayFootageField({ active: true, hasLines: true, hadLinesPrev: true, freshFt: 110, currentBilled: 100, baseline: baseline.santas }),
+      gingerbread: reconcileHolidayFootageField({ active: true, hasLines: false, hadLinesPrev: false, freshFt: 0, currentBilled: 0, baseline: baseline.gingerbread }),
+      c9: reconcileHolidayFootageField({ active: false, hasLines: true, hadLinesPrev: true, freshFt: 40, currentBilled: c9Billed, baseline: baseline.c9 }),
+      stake: reconcileHolidayFootageField({ active: false, hasLines: false, hadLinesPrev: false, freshFt: 0, currentBilled: 0, baseline: baseline.stake }),
+    };
+    baseline = mergeHolidayFootageBaseline(
+      baseline,
+      { santas: true, gingerbread: true, c9: false, stake: false },
+      run2,
+    );
+    expect(baseline).toEqual({ santas: 110, c9: 40 }); // c9's baseline survived the inactive run
+
+    // Run 3: toggle back to holiday, edit again (redraw gingerbread) — c9's
+    // OWN geometry never changed (still 40ft), and its baseline (40) is
+    // still on record, so the override (60) is recognized and kept.
+    const run3 = {
+      santas: reconcileHolidayFootageField({ active: true, hasLines: true, hadLinesPrev: true, freshFt: 110, currentBilled: 110, baseline: baseline.santas }),
+      gingerbread: reconcileHolidayFootageField({ active: true, hasLines: true, hadLinesPrev: false, freshFt: 75, currentBilled: 0, baseline: baseline.gingerbread }),
+      c9: reconcileHolidayFootageField({ active: true, hasLines: true, hadLinesPrev: true, freshFt: 40, currentBilled: c9Billed, baseline: baseline.c9 }),
+      stake: reconcileHolidayFootageField({ active: true, hasLines: false, hadLinesPrev: false, freshFt: 0, currentBilled: 0, baseline: baseline.stake }),
+    };
+    expect(run3.c9.target).toBeNull(); // the override survives — nothing stamps it back to 40
+  });
+
+  it('WITHOUT the fix (naive replace-not-merge), the same round trip clobbers the override', () => {
+    let baseline: HolidayFootageBaseline = {};
+    const run1 = {
+      santas: reconcileHolidayFootageField({ active: true, hasLines: true, hadLinesPrev: false, freshFt: 100, currentBilled: 0, baseline: baseline.santas }),
+      gingerbread: reconcileHolidayFootageField({ active: true, hasLines: false, hadLinesPrev: false, freshFt: 0, currentBilled: 0, baseline: baseline.gingerbread }),
+      c9: reconcileHolidayFootageField({ active: true, hasLines: true, hadLinesPrev: false, freshFt: 40, currentBilled: 0, baseline: baseline.c9 }),
+      stake: reconcileHolidayFootageField({ active: true, hasLines: false, hadLinesPrev: false, freshFt: 0, currentBilled: 0, baseline: baseline.stake }),
+    };
+    baseline = legacyReplaceBaseline(run1);
+    const c9Billed = 60;
+
+    // Run 2: toggle to Event, redraw santas. The legacy replace rebuilds the
+    // baseline from ONLY this run's results — c9/stake are inactive and
+    // report nextBaseline: undefined, so their keys vanish entirely.
+    const run2 = {
+      santas: reconcileHolidayFootageField({ active: true, hasLines: true, hadLinesPrev: true, freshFt: 110, currentBilled: 100, baseline: baseline.santas }),
+      gingerbread: reconcileHolidayFootageField({ active: true, hasLines: false, hadLinesPrev: false, freshFt: 0, currentBilled: 0, baseline: baseline.gingerbread }),
+      c9: reconcileHolidayFootageField({ active: false, hasLines: true, hadLinesPrev: true, freshFt: 40, currentBilled: c9Billed, baseline: baseline.c9 }),
+      stake: reconcileHolidayFootageField({ active: false, hasLines: false, hadLinesPrev: false, freshFt: 0, currentBilled: 0, baseline: baseline.stake }),
+    };
+    baseline = legacyReplaceBaseline(run2);
+    expect(baseline).toEqual({ santas: 110 }); // BUG: c9's baseline is gone
+
+    // Run 3: toggle back to holiday, edit again. c9 now has NO recorded
+    // baseline, so it's treated as a brand-new draw and its fresh (unchanged)
+    // geometry stamps straight over the standing override.
+    const run3c9 = reconcileHolidayFootageField({
+      active: true, hasLines: true, hadLinesPrev: true, freshFt: 40, currentBilled: c9Billed, baseline: baseline.c9,
+    });
+    expect(run3c9.target).toBe(40); // BUG: the override is clobbered back to raw geometry
+    expect(run3c9.target).not.toBe(null);
+  });
+});
+
+// S46 premerge finding 2 (technical MED): React StrictMode dev double-invokes
+// a setState functional updater to check purity — it discards the first
+// call's RETURN VALUE, but not any side effect performed during that call.
+// The fix moved the ref mutation OUT of the updater entirely, so these pure
+// helpers are now called exactly once per effect run and never need to
+// tolerate being invoked twice with a self-referential ref argument — but
+// this documents that they're safe to call twice with IDENTICAL inputs
+// regardless (same result both times, no hidden state).
+describe('S46 finding 2 — reconcile helpers are idempotent under repeated calls with identical inputs', () => {
+  it('reconcileHolidayFootageField returns the same result called twice with the same inputs', () => {
+    const input = {
+      active: true,
+      hasLines: true,
+      hadLinesPrev: true,
+      freshFt: 130,
+      currentBilled: 120,
+      baseline: 100,
+    };
+    const call1 = reconcileHolidayFootageField(input);
+    const call2 = reconcileHolidayFootageField(input);
+    expect(call2).toEqual(call1);
+    expect(call2).toEqual({ target: 130, nextBaseline: 130 });
+  });
+
+  it('mergeHolidayFootageBaseline returns the same result called twice with the same inputs', () => {
+    const prev: HolidayFootageBaseline = { santas: 100, c9: 40 };
+    const active = { santas: true, gingerbread: true, c9: false, stake: false };
+    const results: Record<HolidayFootageFieldKey, HolidayFieldReconcileResult> = {
+      santas: { target: 110, nextBaseline: 110 },
+      gingerbread: { target: null, nextBaseline: undefined },
+      c9: { target: null, nextBaseline: undefined },
+      stake: { target: null, nextBaseline: undefined },
+    };
+    const call1 = mergeHolidayFootageBaseline(prev, active, results);
+    const call2 = mergeHolidayFootageBaseline(prev, active, results);
+    expect(call2).toEqual(call1);
+    expect(call2).toEqual({ santas: 110, c9: 40 });
+    // and the shared input object was never mutated by either call
+    expect(prev).toEqual({ santas: 100, c9: 40 });
   });
 });

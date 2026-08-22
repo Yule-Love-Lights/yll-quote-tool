@@ -112,3 +112,38 @@ export function deriveHolidayFootageBaseline(fields: {
   if (fields.stake.active && fields.stake.hasLines) baseline.stake = fields.stake.freshFt;
   return baseline;
 }
+
+// Row 333 premerge finding 1 (HIGH, staff): C9/stake are gated `active:
+// isHoliday`, and reconcileHolidayFootageField returns `nextBaseline:
+// undefined` for an inactive field (by design — see its own comment). The
+// derive effect used to rebuild prevHolidayDerivedRef.current from scratch
+// every run, so an effect run while serviceType !== 'holiday' silently
+// dropped the c9/stake baseline entries entirely. Reachable clobber: draw C9
+// on holiday -> hand-type an override -> switch to Event -> edit
+// santas/gingerbread (redraw, so the shared effect re-fires) -> switch back
+// to holiday -> one more ordinary edit -> C9 has no recorded baseline, gets
+// treated as a brand-new draw, and the override gets stamped back to raw
+// geometry.
+//
+// Fix: MERGE into the previous baseline instead of replacing it wholesale.
+// An inactive field's key is left completely untouched (whatever it already
+// held survives); only an ACTIVE field's key is recomputed from this run's
+// reconcile result (set when a fresh baseline exists, cleared when the field
+// reports none — e.g. its last line was just deleted). This also resolves
+// the paired admin-lens LOW: because the baseline now survives a period of
+// inactivity, toggling back to holiday no longer sees a missing baseline and
+// redundantly re-stamps the field.
+export function mergeHolidayFootageBaseline(
+  prevBaseline: HolidayFootageBaseline,
+  active: Record<HolidayFootageFieldKey, boolean>,
+  results: Record<HolidayFootageFieldKey, HolidayFieldReconcileResult>,
+): HolidayFootageBaseline {
+  const next: HolidayFootageBaseline = { ...prevBaseline };
+  (Object.keys(results) as HolidayFootageFieldKey[]).forEach((field) => {
+    if (!active[field]) return; // inactive: leave its existing baseline entry alone
+    const nb = results[field].nextBaseline;
+    if (nb != null) next[field] = nb;
+    else delete next[field];
+  });
+  return next;
+}
