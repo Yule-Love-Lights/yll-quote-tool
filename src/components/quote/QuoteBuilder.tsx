@@ -66,6 +66,11 @@ import {
   deriveBistroFootageMap,
   roundBistroFootageOnBlur,
 } from '@/lib/permanentBistro/reconcileFootage';
+import {
+  reconcileHolidayFootageField,
+  deriveHolidayFootageBaseline,
+  type HolidayFootageBaseline,
+} from '@/lib/holidayFootage/reconcileFootage';
 import { isStrand, isLinkedTwin, type Surface } from '@/lib/design/sceneTypes';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
 import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
@@ -1512,6 +1517,14 @@ export default function QuoteBuilder({
   // can't clobber an override on ANOTHER. See reconcileFootage.ts and the
   // rehydrate-seed comment in getSetter('bistro') below.
   const prevBistroDerivedRef = useRef<Record<string, number>>({});
+  // Row 333: baseline reconcile for the four holiday satellite footage
+  // fields (santas/gingerbread/C9/stake) — the scalar analog of
+  // prevBistroDerivedRef above. Each field's baseline is the derived footage
+  // recorded at its own last reconcile, so redrawing ONE field's lines can't
+  // clobber a hand-typed override on an UNTOUCHED field even though all four
+  // share one derive effect. See reconcileFootage.ts and the rehydrate-seed
+  // comment in getSetter below.
+  const prevHolidayDerivedRef = useRef<HolidayFootageBaseline>({});
 
   // Recompute footages from the SATELLITE lines (#35: the only line-measurement
   // source — deterministic feet-per-pixel × image pixel width). When there's no
@@ -1531,16 +1544,16 @@ export default function QuoteBuilder({
     // street-traced roofline sets a real AI footage estimate with no satellite
     // lines drawn; without this guard this effect unconditionally zeroed it.
     const hasC9Lines = satelliteC9Lines.length > 0;
-    const c9Target = hasC9Lines ? c9Ft : hadC9LinesRef.current ? 0 : null;
+    const hadC9Prev = hadC9LinesRef.current;
     hadC9LinesRef.current = hasC9Lines;
     const hasStakeLines = satelliteStakeLines.length > 0;
-    const stakeTarget = hasStakeLines ? stakeFt : hadStakeLinesRef.current ? 0 : null;
+    const hadStakePrev = hadStakeLinesRef.current;
     hadStakeLinesRef.current = hasStakeLines;
     const hasSantasLines = satelliteSantasLines.length > 0;
-    const santasTarget = hasSantasLines ? sFt : hadSantasLinesRef.current ? 0 : null;
+    const hadSantasPrev = hadSantasLinesRef.current;
     hadSantasLinesRef.current = hasSantasLines;
     const hasGingerbreadLines = satelliteGingerbreadLines.length > 0;
-    const gingerbreadTarget = hasGingerbreadLines ? gFt : hadGingerbreadLinesRef.current ? 0 : null;
+    const hadGingerbreadPrev = hadGingerbreadLinesRef.current;
     hadGingerbreadLinesRef.current = hasGingerbreadLines;
     // #142-style rehydrate freeze (holiday). Deliberately placed AFTER the four
     // had*LinesRef updates: the refs must record the hydrated geometry even while
@@ -1555,17 +1568,58 @@ export default function QuoteBuilder({
       // rooflines only). Never derive those two fields from a satellite draw on a
       // non-holiday quote, or footage would silently persist unbilled (finding #1).
       const isHoliday = f.serviceType === 'holiday';
-      const sameSantas = santasTarget == null || f.santasFootage === santasTarget;
-      const sameGingerbread = gingerbreadTarget == null || f.gingerbreadFootage === gingerbreadTarget;
-      const sameC9 = c9Target == null || f.winterWonderlandFootage === c9Target || !isHoliday;
-      const sameStake = stakeTarget == null || f.stakeLightingFootage === stakeTarget || !isHoliday;
-      if (sameSantas && sameGingerbread && sameC9 && sameStake) return f;
+      // Row 333: baseline-keyed per-field reconcile (reconcileFootage.ts) —
+      // replaces the old direct billed-vs-fresh-target comparison, which
+      // couldn't tell "staff typed an override" apart from "this field's own
+      // geometry changed" and so clobbered an untouched field's override
+      // whenever a DIFFERENT field's lines redrew (all four share this one
+      // effect/dependency list).
+      const baseline = prevHolidayDerivedRef.current;
+      const santas = reconcileHolidayFootageField({
+        active: true,
+        hasLines: hasSantasLines,
+        hadLinesPrev: hadSantasPrev,
+        freshFt: sFt,
+        currentBilled: f.santasFootage,
+        baseline: baseline.santas,
+      });
+      const gingerbread = reconcileHolidayFootageField({
+        active: true,
+        hasLines: hasGingerbreadLines,
+        hadLinesPrev: hadGingerbreadPrev,
+        freshFt: gFt,
+        currentBilled: f.gingerbreadFootage,
+        baseline: baseline.gingerbread,
+      });
+      const c9 = reconcileHolidayFootageField({
+        active: isHoliday,
+        hasLines: hasC9Lines,
+        hadLinesPrev: hadC9Prev,
+        freshFt: c9Ft,
+        currentBilled: f.winterWonderlandFootage,
+        baseline: baseline.c9,
+      });
+      const stake = reconcileHolidayFootageField({
+        active: isHoliday,
+        hasLines: hasStakeLines,
+        hadLinesPrev: hadStakePrev,
+        freshFt: stakeFt,
+        currentBilled: f.stakeLightingFootage,
+        baseline: baseline.stake,
+      });
+      prevHolidayDerivedRef.current = {
+        ...(santas.nextBaseline != null ? { santas: santas.nextBaseline } : {}),
+        ...(gingerbread.nextBaseline != null ? { gingerbread: gingerbread.nextBaseline } : {}),
+        ...(c9.nextBaseline != null ? { c9: c9.nextBaseline } : {}),
+        ...(stake.nextBaseline != null ? { stake: stake.nextBaseline } : {}),
+      };
+      if (santas.target == null && gingerbread.target == null && c9.target == null && stake.target == null) return f;
       return {
         ...f,
-        ...(santasTarget != null ? { santasFootage: santasTarget } : {}),
-        ...(gingerbreadTarget != null ? { gingerbreadFootage: gingerbreadTarget } : {}),
-        ...(c9Target != null && isHoliday ? { winterWonderlandFootage: c9Target } : {}),
-        ...(stakeTarget != null && isHoliday ? { stakeLightingFootage: stakeTarget } : {}),
+        ...(santas.target != null ? { santasFootage: santas.target } : {}),
+        ...(gingerbread.target != null ? { gingerbreadFootage: gingerbread.target } : {}),
+        ...(c9.target != null ? { winterWonderlandFootage: c9.target } : {}),
+        ...(stake.target != null ? { stakeLightingFootage: stake.target } : {}),
       };
     }));
   }, [satelliteSantasLines, satelliteGingerbreadLines, satelliteC9Lines, satelliteStakeLines, satelliteFeetPerPixel, satelliteAspect]);
@@ -1585,6 +1639,35 @@ export default function QuoteBuilder({
       ? roundFootageUpTo5(polylineLength([line], satelliteAspect) * SAT_PX * satelliteFeetPerPixel)
       : null;
 
+  // Row 333: same rounding formula as the holiday derive effect below, factored
+  // out so the getSetter thaw-seed (right below) can't drift from it. 0 when
+  // there's no satellite scale yet, matching the derive effect's own early bail.
+  const computeHolidaySatFt = (lines: LineSegment[]): number =>
+    satelliteFeetPerPixel != null
+      ? Math.round(polylineLength(lines, satelliteAspect) * SAT_PX * satelliteFeetPerPixel / 5) * 5
+      : 0;
+
+  // Row 333 reopen-clobber guard (mirrors #244's bistro seed above): while
+  // still frozen (#142), prevHolidayDerivedRef has never been seeded for
+  // these PERSISTED fields — rehydrate sets the satellite line arrays
+  // directly and never runs the derive effect while frozen. Without this
+  // seed, the FIRST post-reopen edit on ANY one of the four fields would see
+  // the OTHER three as having no recorded baseline, treat them as new, and
+  // stamp their freshly re-derived footage over any saved manual override.
+  // Called before thawing, from all four holiday-line getSetter branches
+  // below (not just the touched one), so every field's baseline is seeded
+  // together.
+  const seedHolidayBaselineIfFrozen = () => {
+    if (!holidayDeriveFrozenRef.current) return;
+    const isHoliday = form.serviceType === 'holiday';
+    prevHolidayDerivedRef.current = deriveHolidayFootageBaseline({
+      santas: { hasLines: satelliteSantasLines.length > 0, freshFt: computeHolidaySatFt(satelliteSantasLines) },
+      gingerbread: { hasLines: satelliteGingerbreadLines.length > 0, freshFt: computeHolidaySatFt(satelliteGingerbreadLines) },
+      c9: { active: isHoliday, hasLines: satelliteC9Lines.length > 0, freshFt: computeHolidaySatFt(satelliteC9Lines) },
+      stake: { active: isHoliday, hasLines: satelliteStakeLines.length > 0, freshFt: computeHolidaySatFt(satelliteStakeLines) },
+    });
+  };
+
   // Line setters — satellite-only now (#35): street lines are gone, the design
   // owns the street-side visuals.
   const getSetter = (type: LineType): ((updater: (lines: LineSegment[]) => LineSegment[]) => void) => {
@@ -1594,18 +1677,21 @@ export default function QuoteBuilder({
     // saved footage exactly as staff left it.
     if (type === 'santas') {
       return (updater) => {
+        seedHolidayBaselineIfFrozen();
         holidayDeriveFrozenRef.current = false;
         setSatelliteSantasLines(updater);
       };
     }
     if (type === 'gingerbread') {
       return (updater) => {
+        seedHolidayBaselineIfFrozen();
         holidayDeriveFrozenRef.current = false;
         setSatelliteGingerbreadLines(updater);
       };
     }
     if (type === 'stake') {
       return (updater) => {
+        seedHolidayBaselineIfFrozen();
         holidayDeriveFrozenRef.current = false;
         setSatelliteStakeLines(updater);
       };
@@ -1648,6 +1734,7 @@ export default function QuoteBuilder({
     }
     // C9 custom runs — same holiday thaw as the three branches above.
     return (updater) => {
+      seedHolidayBaselineIfFrozen();
       holidayDeriveFrozenRef.current = false;
       setSatelliteC9Lines(updater);
     };
