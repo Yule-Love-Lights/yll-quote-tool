@@ -10,6 +10,7 @@ import { NceBadge } from '@/components/admin/NceBadge';
 import { reconcileInvoice } from '@/lib/invoices';
 import type { InvoiceDetail, PaymentPreference } from '@/lib/invoices';
 import type { ChargeSlotState } from '@/lib/integrations/valorBalance';
+import { InvoicesListSkeleton } from '../InvoicesListSkeleton';
 
 // Operator BILLING detail for one invoice (ledger #83): the money breakdown
 // (total, deposit applied → balance), status, the linked job, and the customer.
@@ -386,7 +387,13 @@ export default function InvoiceDetailPage() {
           </Link>
         </div>
 
-        {loading && <p className="text-sm text-gray-500">Loading…</p>}
+        {/* This detail route has no loading.tsx of its own — it inherits
+            ../loading.tsx (the list shape) during a route transition, so
+            reusing that SAME shared skeleton here (row 332, mirrors #171b)
+            avoids adding a second, mismatched morph on top of the one that
+            already exists between the inherited list skeleton and this
+            page's own detail content. */}
+        {loading && <InvoicesListSkeleton />}
         {error && (
           <div className="bg-red-50 border border-red-200 rounded-md p-3 text-sm text-red-700">{error}</div>
         )}
