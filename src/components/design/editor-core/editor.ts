@@ -1567,8 +1567,24 @@ export async function renderEditor(
       const result = await api.updateDesign(design.id, { scene, name: design.name, version: design.version ?? null });
       if (typeof result.version === "number") design.version = result.version;
     } catch (err) {
-      if (destroyed || seq !== saveSeq) return;
       if (err instanceof SceneConflictError) {
+        // Fix round (HIGH, four-lens review): this branch must run BEFORE the
+        // `destroyed` early-return below. destroy()'s final teardown flush
+        // calls runSave() with `destroyed` already true — and this function
+        // always RESOLVES rather than rejects on a caught error, so
+        // destroy()'s own `flushSave().catch(...)` (which sets the same
+        // marker) never fires either. Without this, a conflict on that last
+        // flush was swallowed completely: no banner (nothing left to show it
+        // to — correct), but also no recovery marker, so the operator's last
+        // edit vanished with no trace. Record the marker for the CURRENT
+        // save attempt (seq === saveSeq — a stale/superseded attempt has
+        // already been overtaken by a newer save and recording it here would
+        // be a false positive) regardless of destroyed; UI updates still
+        // only happen on the live (non-destroyed) path below.
+        if (seq === saveSeq) {
+          try { localStorage.setItem("editorUnsavedDesign", design.id); } catch { /* storage unavailable */ }
+        }
+        if (destroyed || seq !== saveSeq) return;
         // Ledger row 260: a lost race, NOT a transient failure — do not retry
         // (retrying would just resend the same now-stale overwrite forever).
         // Block further saves and tell the operator plainly.
@@ -1579,6 +1595,7 @@ export async function renderEditor(
         showConflictBanner();
         return;
       }
+      if (destroyed || seq !== saveSeq) return;
       pendingSave = true; // edit not persisted — keep it queued
       savingEl.textContent = "Save failed — retry";
       if (!retryTimer) {
