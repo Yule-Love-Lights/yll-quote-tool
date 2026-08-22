@@ -134,6 +134,7 @@ function EditablePrice({
   baseAmount,
   overridden,
   disabled,
+  lockedReason,
   onCommit,
   onReset,
 }: {
@@ -141,6 +142,11 @@ function EditablePrice({
   baseAmount: number;
   overridden: boolean;
   disabled: boolean;
+  // Row 331: when set, `disabled` is true BECAUSE the quote is past approval
+  // (not merely `loading`) — shown as the click target's title instead of the
+  // normal "click to edit" hint, so the disabled state explains itself rather
+  // than reading as a stuck/broken control.
+  lockedReason?: string;
   onCommit: (n: number) => void;
   onReset: () => void;
 }) {
@@ -211,7 +217,7 @@ function EditablePrice({
           start();
         }}
         disabled={disabled}
-        title="Click to set a custom price for this quote"
+        title={lockedReason ?? 'Click to set a custom price for this quote'}
         className={`font-medium tabular-nums rounded px-1 -mx-1 hover:bg-green-50 disabled:cursor-not-allowed cursor-text ${
           overridden ? 'text-amber-700' : 'text-gray-900'
         }`}
@@ -245,6 +251,7 @@ function EditableLabel({
   baseLabel,
   overridden,
   disabled,
+  lockedReason,
   onCommit,
   onReset,
 }: {
@@ -252,6 +259,8 @@ function EditableLabel({
   baseLabel: string;
   overridden: boolean;
   disabled: boolean;
+  // Row 331: mirrors EditablePrice's lockedReason exactly.
+  lockedReason?: string;
   onCommit: (s: string) => void;
   onReset: () => void;
 }) {
@@ -323,7 +332,7 @@ function EditableLabel({
           start();
         }}
         disabled={disabled}
-        title="Click to rename this item for this quote"
+        title={lockedReason ?? 'Click to rename this item for this quote'}
         className={`rounded px-1 -mx-1 hover:bg-green-50 disabled:cursor-not-allowed cursor-text ${
           overridden ? 'text-amber-700 font-medium' : ''
         }`}
@@ -699,6 +708,17 @@ export default function QuoteBuilder({
   // reading it too — it was never actually Neighbor-specific, just the
   // generic "has this quote left draft" signal.
   const quoteLeftDraft = savedStatus != null && savedStatus !== 'draft';
+  // Row 331+341: post-approval freeze for the three click-to-edit override
+  // surfaces that auto-persist with no separate Calculate/confirm step and no
+  // "already approved" warning of their own — EditablePrice (#104),
+  // EditableLabel (S44), and #244's per-run bistro footage. Reuses the exact
+  // predicate every other post-approval freeze in this file already uses
+  // (nceDepositLocked above, the deposit% input below) rather than inventing
+  // a second definition of "frozen." is_test exempt, matching the server's
+  // #251/#177 freezes — a test quote stays fully editable regardless of
+  // lifecycle stamps.
+  const postApprovalFrozen = !isTest && (savedStatus === 'approved' || savedStatus === 'booked');
+  const POST_APPROVAL_LOCK_REASON = 'Locked after approval — use the amend flow to change this.';
   const quoteNumber = initialQuote?.quoteNumber ?? null;
   // PS-G2: the booked quote's job id (null pre-booking) — drives the "Amend
   // order" banner below, which links to the job page's Record-amendment
@@ -5561,9 +5581,11 @@ export default function QuoteBuilder({
                                     {line.id ? (
                                       <>
                                         <input
-                                          className="w-20 border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-teal-500"
+                                          className="w-20 border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-teal-500 disabled:bg-gray-100 disabled:text-gray-400"
                                           type="number" min="0" placeholder="0"
                                           value={ft || ''}
+                                          disabled={postApprovalFrozen}
+                                          title={postApprovalFrozen ? POST_APPROVAL_LOCK_REASON : undefined}
                                           onChange={(e) => updateBistroRunFootage(line.id, Math.max(0, Number(e.target.value) || 0))}
                                           onBlur={() => {
                                             // #244 premerge finding 1 (HIGH, money — #139 parity):
@@ -6427,7 +6449,8 @@ export default function QuoteBuilder({
                         amount={result.rooflineOptions.santas.amount}
                         baseAmount={baselineResult?.rooflineOptions?.santas?.amount ?? result.rooflineOptions.santas.amount}
                         overridden={Object.prototype.hasOwnProperty.call(form.lineItemPriceOverrides, 'roofline-santas')}
-                        disabled={loading}
+                        disabled={loading || postApprovalFrozen}
+                        lockedReason={postApprovalFrozen ? POST_APPROVAL_LOCK_REASON : undefined}
                         onCommit={(n) => commitLinePrice('roofline-santas', n)}
                         onReset={() => resetLinePrice('roofline-santas')}
                       />
@@ -6449,7 +6472,8 @@ export default function QuoteBuilder({
                         amount={result.rooflineOptions.gingerbread.amount}
                         baseAmount={baselineResult?.rooflineOptions?.gingerbread?.amount ?? result.rooflineOptions.gingerbread.amount}
                         overridden={Object.prototype.hasOwnProperty.call(form.lineItemPriceOverrides, 'roofline-gingerbread')}
-                        disabled={loading}
+                        disabled={loading || postApprovalFrozen}
+                        lockedReason={postApprovalFrozen ? POST_APPROVAL_LOCK_REASON : undefined}
                         onCommit={(n) => commitLinePrice('roofline-gingerbread', n)}
                         onReset={() => resetLinePrice('roofline-gingerbread')}
                       />
@@ -6585,7 +6609,8 @@ export default function QuoteBuilder({
                       amount={item.amount}
                       baseAmount={baseById.get(item.id) ?? item.amount}
                       overridden={Object.prototype.hasOwnProperty.call(form.lineItemPriceOverrides, item.id)}
-                      disabled={loading}
+                      disabled={loading || postApprovalFrozen}
+                      lockedReason={postApprovalFrozen ? POST_APPROVAL_LOCK_REASON : undefined}
                       onCommit={(n) => commitLinePrice(item.id!, n)}
                       onReset={() => resetLinePrice(item.id!)}
                     />
@@ -6617,7 +6642,8 @@ export default function QuoteBuilder({
                             label={resolvedLabel.label}
                             baseLabel={item.label}
                             overridden={resolvedLabel.overridden}
-                            disabled={loading}
+                            disabled={loading || postApprovalFrozen}
+                            lockedReason={postApprovalFrozen ? POST_APPROVAL_LOCK_REASON : undefined}
                             onCommit={(s) => commitLineLabel(item.id!, s)}
                             onReset={() => resetLineLabel(item.id!)}
                           />
