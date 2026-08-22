@@ -180,6 +180,31 @@ describe('HighLevel attach — detach (#172)', () => {
     expect(json).toEqual({ detached: false, identityFrozen: true });
   });
 
+  // Row 338 (identity-freeze STICKY hatch): the pre-detach freeze check
+  // reads customer_approved_at/deposit_paid_at directly off the pre-read row
+  // — both null on a REVIVED quote (#116's revive write clears
+  // customer_approved_at) — but approval_snapshot still carries the marker
+  // from the ORIGINAL approval. `identityCasMatch` is left at its default
+  // (true — CAS would MATCH) so this isolates the PRE-READ bail specifically:
+  // if wasEverApproved were reverted, the pre-read check would pass this
+  // quote through, the CAS write would then also match (nothing there is
+  // frozen either), and the Clear would silently succeed.
+  it('refuses a detach on a REVIVED quote whose approval_snapshot still carries approvedAt, even though the live columns read null (row 338)', async () => {
+    sbRef.current = makeSb({
+      ...HOLIDAY_QUOTE,
+      is_test: false,
+      customer_approved_at: null,
+      deposit_paid_at: null,
+      approval_snapshot: { approvedAt: '2026-06-01T00:00:00Z' },
+    });
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, detach: true }));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json).toEqual({ detached: false, identityFrozen: true });
+  });
+
   // is_test bypasses the detach CAS entirely (the #251 exemption — test
   // quotes stay fully editable regardless of lifecycle stamps), even on a
   // quote that otherwise looks approved.
@@ -422,6 +447,38 @@ describe('HighLevel attach — post-link customers re-resolution (#214)', () => 
     expect(res.status).toBe(200);
     expect(json.linked).toBe(false); // #251 atomic identity — no GHL write either
     expect(json.identityFrozen).toBe(true);
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+  });
+
+  // Row 338 (identity-freeze STICKY hatch): #116's revive write clears
+  // customer_approved_at on a declined→sent revive, so a quote that was
+  // approved-then-declined-then-revived would read as UNFROZEN by
+  // deposit_paid_at/customer_approved_at alone — the queueAttach click path
+  // (this route, fired directly on a confirmed contact pick, ahead of any
+  // Calculate) would silently repoint it. approval_snapshot still carries
+  // the marker from the ORIGINAL approval (staff-decline only ADDS a key via
+  // spread, never removes one — see wasEverApproved's comment in
+  // quoteStatus.ts), so the pre-read bail check must catch this even with
+  // both live lifecycle columns null.
+  it('refuses the WHOLE re-link on a REVIVED quote whose approval_snapshot still carries approvedAt, even though the live columns read null (row 338)', async () => {
+    sbRef.current = makeSb(
+      {
+        ...HOLIDAY_QUOTE,
+        is_test: false,
+        customer_approved_at: null,
+        deposit_paid_at: null,
+        approval_snapshot: { approvedAt: '2026-06-01T00:00:00Z' },
+        customer_id: 'cust-frozen',
+      },
+      null,
+    );
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1', ...CONTACT_FIELDS }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.linked).toBe(false);
+    expect(json.identityFrozen).toBe(true);
+    expect(hl.findOrCreate).not.toHaveBeenCalled(); // bails BEFORE any GHL work
     expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
   });
 
