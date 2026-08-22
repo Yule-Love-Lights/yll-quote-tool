@@ -502,7 +502,12 @@ alter table designs
   add column if not exists extra_photos jsonb,
   -- 2026-07-02 a staff title for the BASE photo (renameable "Photo 1" tab,
   -- like the extras' own titles). Nullable — null renders as "Photo 1".
-  add column if not exists photo_title text;
+  add column if not exists photo_title text,
+  -- 2026-08-20 compare-and-swap guard for the scene autosave (ledger row
+  -- 260, migrations/2026-08-20-designs-scene-version.sql). Every scene write
+  -- goes UPDATE ... WHERE version = <last-read value> SET version =
+  -- version + 1 — zero rows updated means a concurrent writer won the race.
+  add column if not exists version integer not null default 1;
 
 alter table designs enable row level security;
 

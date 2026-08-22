@@ -9,17 +9,17 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
-import type { DesignRow } from '@/lib/designs';
+import type { DesignRow, UpdateSceneOutcome } from '@/lib/designs';
 import type { MiniGroupItem, StrandItem } from '@/lib/design/sceneTypes';
 
-const { getDesign, updateDesignScene } = vi.hoisted(() => ({
+const { getDesign, updateDesignSceneGuarded } = vi.hoisted(() => ({
   getDesign: vi.fn(),
-  updateDesignScene: vi.fn(async () => true),
+  updateDesignSceneGuarded: vi.fn(async (): Promise<UpdateSceneOutcome> => ({ ok: true, version: 2 })),
 }));
 
 vi.mock('@/lib/designs', () => ({
   getDesign,
-  updateDesignScene,
+  updateDesignSceneGuarded,
   isValidDesignId: (id: unknown) =>
     typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id),
   EMPTY_SCENE: { yardsticks: [], items: [] },
@@ -75,12 +75,13 @@ function baseRow(scene: DesignRow['scene']): DesignRow {
     satellite_lines: null,
     extra_photos: null,
     photo_title: null,
+    version: 1,
   } as unknown as DesignRow;
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
-  updateDesignScene.mockResolvedValue(true);
+  updateDesignSceneGuarded.mockResolvedValue({ ok: true, version: 2 });
 });
 
 describe('POST /api/designs/[id]/seed-analysis — pruned mini-group reporting (#255)', () => {
@@ -161,5 +162,36 @@ describe('POST /api/designs/[id]/seed-analysis — pruned mini-group reporting (
       ]),
     );
     expect(data.prunedMiniGroups).toHaveLength(2);
+  });
+});
+
+// Ledger row 260: this route's write goes through the version this SAME call
+// already read via getDesign() — not a bare overwrite — and a lost race comes
+// back as a distinguishable 409, not a generic 500.
+describe('POST /api/designs/[id]/seed-analysis — scene compare-and-swap (ledger row 260)', () => {
+  it('CAS-writes with the version this call read', async () => {
+    const before = { yardsticks: [], items: [] };
+    getDesign.mockResolvedValue(baseRow(before));
+
+    const res = await POST(
+      makeReq({ seed: MINI_DETECTION_SEED }),
+      { params: Promise.resolve({ id: VALID_DESIGN_ID }) },
+    );
+    expect(res.status).toBe(200);
+    expect(updateDesignSceneGuarded).toHaveBeenCalledWith(VALID_DESIGN_ID, expect.anything(), 1);
+  });
+
+  it('409s a scene conflict instead of silently overwriting', async () => {
+    const before = { yardsticks: [], items: [] };
+    getDesign.mockResolvedValue(baseRow(before));
+    updateDesignSceneGuarded.mockResolvedValueOnce({ ok: false, reason: 'conflict' });
+
+    const res = await POST(
+      makeReq({ seed: MINI_DETECTION_SEED }),
+      { params: Promise.resolve({ id: VALID_DESIGN_ID }) },
+    );
+    expect(res.status).toBe(409);
+    const data = await res.json();
+    expect(data.conflict).toBe(true);
   });
 });

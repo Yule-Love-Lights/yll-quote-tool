@@ -5,7 +5,7 @@ import Konva from "konva";
 // THIS folder (./). Everything else in this file is byte-identical with the
 // design tool's canonical editor.ts — keep it that way.
 import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, isItemOnPhoto, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type SideOfHouse, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, isMiniGroupable, pruneOrphanedMiniGroups, removeItemsForPhoto, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
-import { createEditorApi } from "./storage";
+import { createEditorApi, SceneConflictError } from "./storage";
 import { COLORS, setPalette } from "./colors";
 import { renderStrand, strandLengthPx } from "./strand";
 import { createWreath } from "./wreath";
@@ -1530,22 +1530,71 @@ export async function renderEditor(
   let pendingSave = false;
   let retryTimer: number | null = null;
   let saveSeq = 0;
+  // Ledger row 260: true once the server has rejected a save with a scene
+  // version conflict (a concurrent writer — another tab, another operator, a
+  // server-side re-seed — won the race). Saving is BLOCKED from here on; the
+  // operator must reload to see the current design before editing again. This
+  // is deliberately the only way out — reload-and-reapply-the-edit is a real
+  // design decision this fix doesn't make; see showConflictBanner().
+  let conflicted = false;
+  // Ledger row 260: every doSave() call chains onto this tail instead of
+  // firing its own overlapping PUT. Without this, two saves in flight at once
+  // (a slow autosave overlapping a forced #741 corrective save, or a retry
+  // racing a fresh edit) would both read the SAME `design.version` and send
+  // it — the CAS then rejects whichever lands second with a 409 that's
+  // actually just this client's own earlier write, not a real external
+  // conflict. Serializing means each queued save always uses the freshest
+  // scene + the freshest known version, and a caller awaiting doSave()'s
+  // return value (flushSave) genuinely waits for everything queued so far.
+  let saveTail: Promise<void> = Promise.resolve();
   const savingEl = root.querySelector("#saving") as HTMLElement;
-  async function doSave() {
+  function doSave(): Promise<void> {
+    saveTail = saveTail.then(() => (conflicted ? undefined : runSave()));
+    return saveTail;
+  }
+  async function runSave() {
     // AUDIT FIX (editor-autosave-honest-failure): the PUT can throw on any
     // non-2xx. Previously pendingSave was cleared BEFORE the await and there was
     // no try/catch, so a failed save dropped the billable edit while the pill
     // still read "Saved". Keep pendingSave true until the write actually lands;
     // on failure surface an honest state + schedule a backoff retry (the PUT
     // writes the whole scene, so a later retry self-heals).
-    // AUDIT FIX (W3-008): a slow PUT overlapping a later scheduleSave()/retry
-    // could let an older response's success/failure side effects land after a
-    // newer one's, reverting the "Saved" state (or a retry timer) to a stale
-    // save. Only the LATEST doSave() call may apply side effects.
+    // AUDIT FIX (W3-008): saves are now serialized (see doSave()), so this is
+    // belt-and-suspenders rather than load-bearing — kept as a cheap guard
+    // against a future regression that reintroduces overlap.
     const seq = ++saveSeq;
     try {
-      await api.updateDesign(design.id, { scene, name: design.name });
-    } catch {
+      const result = await api.updateDesign(design.id, { scene, name: design.name, version: design.version ?? null });
+      if (typeof result.version === "number") design.version = result.version;
+    } catch (err) {
+      if (err instanceof SceneConflictError) {
+        // Fix round (HIGH, four-lens review): this branch must run BEFORE the
+        // `destroyed` early-return below. destroy()'s final teardown flush
+        // calls runSave() with `destroyed` already true — and this function
+        // always RESOLVES rather than rejects on a caught error, so
+        // destroy()'s own `flushSave().catch(...)` (which sets the same
+        // marker) never fires either. Without this, a conflict on that last
+        // flush was swallowed completely: no banner (nothing left to show it
+        // to — correct), but also no recovery marker, so the operator's last
+        // edit vanished with no trace. Record the marker for the CURRENT
+        // save attempt (seq === saveSeq — a stale/superseded attempt has
+        // already been overtaken by a newer save and recording it here would
+        // be a false positive) regardless of destroyed; UI updates still
+        // only happen on the live (non-destroyed) path below.
+        if (seq === saveSeq) {
+          try { localStorage.setItem("editorUnsavedDesign", design.id); } catch { /* storage unavailable */ }
+        }
+        if (destroyed || seq !== saveSeq) return;
+        // Ledger row 260: a lost race, NOT a transient failure — do not retry
+        // (retrying would just resend the same now-stale overwrite forever).
+        // Block further saves and tell the operator plainly.
+        conflicted = true;
+        pendingSave = false; // the queued edit is NOT persisted, but nothing further will attempt it — see showConflictBanner()
+        if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+        savingEl.textContent = "Save blocked — reload";
+        showConflictBanner();
+        return;
+      }
       if (destroyed || seq !== saveSeq) return;
       pendingSave = true; // edit not persisted — keep it queued
       savingEl.textContent = "Save failed — retry";
@@ -1565,7 +1614,47 @@ export async function renderEditor(
       if (savingEl.textContent === "Saved") savingEl.textContent = "";
     }, 1500);
   }
+  // Ledger row 260: a persistent, non-auto-dismissing notice — unlike
+  // showTransientNotice, this stays until the operator reloads. Styled INLINE
+  // for the same reason showTransientNotice is (see its comment above): this
+  // file travels unchanged into the standalone design tool, which has no rule
+  // for a class this repo invents.
+  function showConflictBanner() {
+    if (root.querySelector("#scene-conflict-banner")) return; // already shown
+    const host = root.querySelector(".editor");
+    if (!host) return;
+    const banner = document.createElement("div");
+    banner.id = "scene-conflict-banner";
+    banner.style.cssText = [
+      "position:fixed", "top:12px", "left:50%", "transform:translateX(-50%)", "z-index:9999",
+      "max-width:min(90vw,480px)", "padding:10px 14px", "border-radius:8px",
+      "background:#7a1f1f", "color:#fff2f2", "border:1px solid rgba(255,255,255,0.25)",
+      "box-shadow:0 4px 14px rgba(0,0,0,0.35)", "font-size:13px", "line-height:1.4",
+      "text-align:center",
+    ].join(";");
+    banner.textContent = "This design changed elsewhere — your recent edits here are NOT saved. ";
+    const btn = document.createElement("button");
+    btn.textContent = "Reload";
+    btn.style.cssText = "margin-left:6px;text-decoration:underline;cursor:pointer;background:none;border:none;color:inherit;font:inherit;padding:0;";
+    // Fix round (MED, four-lens review): a bare reload() here silently
+    // discarded more than just this banner's already-lost scene edit — this
+    // editor is often EMBEDDED in a page with its OWN unrelated unsaved form
+    // state (the quote builder's pricing overrides, line items) that a
+    // reload would wipe with no warning at all. A confirm is the simplest
+    // guard, not a state-preservation system — consistent with this file's
+    // constraint of staying framework-free (it travels unchanged into the
+    // standalone design tool, which has no rule for a class this repo
+    // invents).
+    btn.addEventListener("click", () => {
+      if (window.confirm("Reload now? Any other unsaved changes on this page will also be lost.")) {
+        window.location.reload();
+      }
+    });
+    banner.appendChild(btn);
+    host.prepend(banner);
+  }
   function scheduleSave() {
+    if (conflicted) return; // #260: blocked until reload — see showConflictBanner()
     if (saveTimer) clearTimeout(saveTimer);
     pendingSave = true;
     savingEl.textContent = "Saving…";
@@ -1758,13 +1847,16 @@ export async function renderEditor(
     // PUT the still-un-spliced scene, landing AFTER the server's own prune
     // write and silently reverting it. Force an immediate corrective save of
     // the now-spliced scene right after processing: it cancels any debounce
-    // timer so the PUT goes out now rather than later, and — because doSave()
-    // only applies the LATEST saveSeq's outcome (AUDIT FIX W3-008) — this
-    // becomes the save whose success updates the "Saved" pill even if an
-    // earlier stale PUT is still in flight. This narrows the race rather than
-    // closing it outright (no row lock — a slower stale PUT could in theory
-    // still land after this one), same trade-off already accepted by the
-    // pre-delete flush in DesignEditor.deletePhoto and seedDesignFromAnalysis.
+    // timer so the PUT goes out now rather than later. Ledger row 260: doSave()
+    // now SERIALIZES every save (see its comment above) rather than letting an
+    // earlier stale PUT race a later one concurrently, so this corrective save
+    // simply queues after whatever's already in flight and always uses the
+    // freshest `scene` + `design.version` when its turn comes — no separate
+    // staleness reasoning needed here anymore. Kept as a forced immediate save
+    // (rather than relying on the 600ms debounce) purely to close the WINDOW
+    // before the next edit, same trade-off already accepted by the pre-delete
+    // flush in DesignEditor.deletePhoto and seedDesignFromAnalysis.
+    if (conflicted) return; // #260: blocked until reload — see showConflictBanner()
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
     pendingSave = true;
     savingEl.textContent = "Saving…";
