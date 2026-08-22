@@ -307,7 +307,11 @@ describe('mergeHolidayFootageBaseline — finding 1 fix: an inactive field keeps
   });
 
   it('clears an ACTIVE field whose result reports no baseline (its last line was deleted)', () => {
-    const prev: HolidayFootageBaseline = { santas: 100, c9: 40 };
+    // stake carries a baseline while INACTIVE: the merge must preserve it,
+    // which a naive replace-not-merge drops. The S46 delta-verify proved the
+    // earlier all-active fixture passed under BOTH implementations by
+    // coincidence, so the inactive key is what makes this test discriminate.
+    const prev: HolidayFootageBaseline = { santas: 100, c9: 40, stake: 25 };
     const results: Record<HolidayFootageFieldKey, HolidayFieldReconcileResult> = {
       santas: { target: null, nextBaseline: 100 },
       gingerbread: { target: null, nextBaseline: undefined },
@@ -316,10 +320,11 @@ describe('mergeHolidayFootageBaseline — finding 1 fix: an inactive field keeps
     };
     const next = mergeHolidayFootageBaseline(
       prev,
-      { santas: true, gingerbread: true, c9: true, stake: true },
+      { santas: true, gingerbread: true, c9: true, stake: false },
       results,
     );
-    expect(next).toEqual({ santas: 100 }); // c9 key removed — it was ACTIVE and reported none
+    // c9 key removed (ACTIVE, reported none) · stake preserved (INACTIVE)
+    expect(next).toEqual({ santas: 100, stake: 25 });
   });
 });
 
