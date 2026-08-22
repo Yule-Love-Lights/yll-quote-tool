@@ -2530,9 +2530,10 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
    *  silently took the read-only branch (data: rows as they were BEFORE the
    *  update, not the affected rows, and the update itself never applied); (b)
    *  there was no `.maybeSingle()` at all, so a chain ending in it would call
-   *  a nonexistent method. Neither defect was ever hit by the two tests below
-   *  (markFollowUpDone's `.update().eq('id', id)` never chains `.select()`,
-   *  and ensureFollowUp never calls `.maybeSingle()`), so fixing this changes
+   *  a nonexistent method. Neither defect was ever hit by the tests below at
+   *  the time (markFollowUpDone's row-323 CAS now DOES chain
+   *  `.update().eq().eq().select()`, and the fake models it; ensureFollowUp
+   *  still never calls `.maybeSingle()`), so fixing this changed
    *  neither test's outcome — the bug was latent, not currently masking a
    *  false-passing assertion. */
   function makeFollowUpsFake(seed: FollowUpRow[]) {
