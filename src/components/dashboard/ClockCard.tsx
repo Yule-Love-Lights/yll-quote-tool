@@ -8,10 +8,11 @@ import { useEffect, useState } from 'react';
  * on/off break; identity comes from their session server-side, never from here.
  *
  * The page is a server component, so this is a small self-fetching client
- * island. It renders NOTHING until it knows the caller's state, shows a quiet
- * setup hint when the login isn't linked to a staff record yet (a fail-closed
- * 403, not an error), and always re-reads the server's truth after each action
- * rather than trusting an optimistic guess about what a tap did.
+ * island. It ALWAYS renders the "Time clock" card once past the first paint and
+ * says plainly what state it is in — signed out, not linked, unavailable, or
+ * the live clock — rather than vanishing on an error, which just reads as "the
+ * feature is missing". After each action it re-renders from the server's truth,
+ * never an optimistic guess about what a tap did.
  */
 
 export type ClockState = {
@@ -49,43 +50,59 @@ function clockInTime(iso: string): string {
   }).format(new Date(iso));
 }
 
-type Load = { status: 'loading' } | { status: 'hidden' } | { status: 'unlinked' } | { status: 'ready'; state: ClockState };
+type Load =
+  | { status: 'loading' }
+  | { status: 'signedout' }
+  | { status: 'unlinked' }
+  | { status: 'error' }
+  | { status: 'ready'; state: ClockState };
+
+/** Shared card chrome so every state looks like the same card, not a new one. */
+function Shell({ name, children }: { name?: string; children: React.ReactNode }) {
+  return (
+    <section
+      aria-label="Time clock"
+      className="rounded-lg border p-4"
+      style={{ background: 'var(--op-bg-raised)', borderColor: 'var(--op-border)' }}
+    >
+      <div className="flex items-baseline justify-between mb-3">
+        <h3 className="text-base font-semibold" style={{ color: 'var(--op-text)' }}>Time clock</h3>
+        {name && <span className="text-xs" style={{ color: 'var(--op-text-dim)' }}>{name}</span>}
+      </div>
+      {children}
+    </section>
+  );
+}
 
 export function ClockCard() {
   const [load, setLoad] = useState<Load>({ status: 'loading' });
+  const [reload, setReload] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Mount-time read of the caller's current clock state. Inlined with a
-  // `cancelled` guard (the repo's CrewLogins pattern) so the lint rule against
-  // effect-driven setState is satisfied and no state is set after unmount.
+  // Mount-time (and retry) read of the caller's current clock state. Inlined
+  // with a `cancelled` guard (the repo's CrewLogins pattern) so the lint rule
+  // against effect-driven setState stays green and nothing sets state after
+  // unmount. `reload` re-runs it for the retry button.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const res = await fetch('/api/office/clock', { method: 'GET' });
         if (cancelled) return;
-        if (res.status === 403) {
-          // is_crew or unlinked — the card offers a quiet hint, not an error.
-          setLoad({ status: 'unlinked' });
-          return;
-        }
-        if (!res.ok) {
-          // 401 (won't happen behind the operator gate) or a transient fault:
-          // hide rather than clutter the dashboard with a red box.
-          setLoad({ status: 'hidden' });
-          return;
-        }
+        if (res.status === 401) return setLoad({ status: 'signedout' });
+        if (res.status === 403) return setLoad({ status: 'unlinked' });
+        if (!res.ok) return setLoad({ status: 'error' });
         const state = (await res.json()) as ClockState;
         if (!cancelled) setLoad({ status: 'ready', state });
       } catch {
-        if (!cancelled) setLoad({ status: 'hidden' });
+        if (!cancelled) setLoad({ status: 'error' });
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reload]);
 
   async function act(action: string) {
     setBusy(true);
@@ -109,22 +126,46 @@ export function ClockCard() {
     }
   }
 
-  if (load.status === 'loading' || load.status === 'hidden') return null;
+  const dim = { color: 'var(--op-text-dim)' } as const;
+
+  if (load.status === 'loading') {
+    return <Shell><p className="text-sm" style={dim}>Loading…</p></Shell>;
+  }
+
+  if (load.status === 'signedout') {
+    return (
+      <Shell>
+        <p className="text-sm" style={dim}>
+          You’re not signed in to the time clock.{' '}
+          <a href="/login" className="underline" style={{ color: 'var(--op-accent)' }}>Sign in</a> to clock in.
+        </p>
+      </Shell>
+    );
+  }
 
   if (load.status === 'unlinked') {
     return (
-      <section
-        aria-label="Time clock"
-        className="rounded-lg border p-4"
-        style={{ background: 'var(--op-bg-raised)', borderColor: 'var(--op-border)' }}
-      >
-        <div className="flex items-baseline justify-between mb-1">
-          <h3 className="text-base font-semibold" style={{ color: 'var(--op-text)' }}>Time clock</h3>
-        </div>
-        <p className="text-sm" style={{ color: 'var(--op-text-dim)' }}>
+      <Shell>
+        <p className="text-sm" style={dim}>
           This login isn’t linked to a staff record yet, so it can’t clock in. An admin can link it under Settings → Accounts.
         </p>
-      </section>
+      </Shell>
+    );
+  }
+
+  if (load.status === 'error') {
+    return (
+      <Shell>
+        <p className="text-sm mb-3" style={dim}>The time clock is temporarily unavailable.</p>
+        <button
+          type="button"
+          onClick={() => setReload((n) => n + 1)}
+          className="rounded-md px-3 py-2 text-sm font-medium"
+          style={{ background: 'var(--op-bg)', color: 'var(--op-text)', border: '1px solid var(--op-border)' }}
+        >
+          Retry
+        </button>
+      </Shell>
     );
   }
 
@@ -138,16 +179,7 @@ export function ClockCard() {
         : 'Clocked in';
 
   return (
-    <section
-      aria-label="Time clock"
-      className="rounded-lg border p-4"
-      style={{ background: 'var(--op-bg-raised)', borderColor: 'var(--op-border)' }}
-    >
-      <div className="flex items-baseline justify-between mb-3">
-        <h3 className="text-base font-semibold" style={{ color: 'var(--op-text)' }}>Time clock</h3>
-        <span className="text-xs" style={{ color: 'var(--op-text-dim)' }}>{state.staff.name}</span>
-      </div>
-
+    <Shell name={state.staff.name}>
       <p className="text-sm mb-3" style={{ color: 'var(--op-text)' }}>
         <span
           aria-hidden
@@ -181,6 +213,6 @@ export function ClockCard() {
           {error}
         </p>
       )}
-    </section>
+    </Shell>
   );
 }
