@@ -93,6 +93,61 @@ function isObj(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
 
+// Row 331+341: server-side halves of the post-approval freeze on line PRICE
+// overrides, line LABEL overrides, and permanent-bistro per-run FOOTAGE — a
+// browser guard is never a guard (AGENTS.md), and this route is directly
+// POST-able on its own. Mirrors the #177 fix 3b deposit-percent freeze
+// exactly: each compares the INCOMING value against what's actually stored
+// so an unrelated field edit on an approved-but-unbooked quote still saves
+// normally (this route's existing intended behavior — see the #177 comment
+// at the call site below), and only a REAL change 409s.
+function priceOverridesEqual(a: unknown, b: unknown): boolean {
+  const av = isObj(a) ? a : {};
+  const bv = isObj(b) ? b : {};
+  const ak = Object.keys(av);
+  const bk = Object.keys(bv);
+  if (ak.length !== bk.length) return false;
+  return ak.every((k) => {
+    const x = av[k];
+    const y = bv[k];
+    if (!isObj(x) || !isObj(y)) return false;
+    return x.amount === y.amount && (x.reason ?? '') === (y.reason ?? '');
+  });
+}
+
+function labelOverridesEqual(a: unknown, b: unknown): boolean {
+  const av = isObj(a) ? a : {};
+  const bv = isObj(b) ? b : {};
+  const ak = Object.keys(av);
+  const bk = Object.keys(bv);
+  if (ak.length !== bk.length) return false;
+  return ak.every((k) => av[k] === bv[k]);
+}
+
+// Compared by stable run id → footage, order-independent (an id-less bistro
+// line has no editable footage input on the client — see updateBistroRunFootage
+// — so it never appears in a diff that matters here). A run added or removed
+// changes the map's size, which counts as a change same as an edited footage.
+function bistroFootageEqual(a: unknown, b: unknown): boolean {
+  const toMap = (v: unknown): Map<string, number> => {
+    const m = new Map<string, number>();
+    if (!Array.isArray(v)) return m;
+    for (const item of v) {
+      if (isObj(item) && typeof item.id === 'string' && typeof item.footage === 'number') {
+        m.set(item.id, item.footage);
+      }
+    }
+    return m;
+  };
+  const am = toMap(a);
+  const bm = toMap(b);
+  if (am.size !== bm.size) return false;
+  for (const [id, footage] of am) {
+    if (bm.get(id) !== footage) return false;
+  }
+  return true;
+}
+
 export async function POST(req: NextRequest) {
   const denied = await requireOperator();
   if (denied) return denied;
@@ -636,6 +691,50 @@ export async function POST(req: NextRequest) {
             error:
               'This quote has already been approved — the deposit percent is locked and cannot be changed here. Use the amend flow to change it.',
             code: 'deposit-percent-locked',
+          },
+          { status: 409 },
+        );
+      }
+    }
+
+    // Row 331+341: the same #177-shaped freeze for a line's PRICE override, its
+    // LABEL override, and a permanent-bistro run's FOOTAGE — all three auto-
+    // persist through this exact route (EditablePrice/EditableLabel commit
+    // immediately on blur/Enter; #244's per-run bistro footage saves on the
+    // next Calculate) with nothing stopping a staffer from silently changing
+    // what the customer already signed. Bistro footage additionally feeds the
+    // materials/BOM basis for an already-sold job (row 341). is_test exempt,
+    // matching every other freeze in this file (#251/#177) — a test quote
+    // stays fully editable regardless of lifecycle stamps.
+    if (isUpdate && existing?.customer_approved_at && !existing.is_test) {
+      const storedInputs = existing.inputs ?? {};
+      if (!priceOverridesEqual(q.lineItemPriceOverrides, storedInputs.lineItemPriceOverrides)) {
+        return NextResponse.json(
+          {
+            error:
+              'This quote has already been approved — line prices are locked and cannot be changed here. Use the amend flow to change a price.',
+            code: 'price-override-locked',
+          },
+          { status: 409 },
+        );
+      }
+      if (!labelOverridesEqual(q.labelOverrides, storedInputs.labelOverrides)) {
+        return NextResponse.json(
+          {
+            error:
+              'This quote has already been approved — line item names are locked and cannot be changed here. Use the amend flow to rename a line.',
+            code: 'label-override-locked',
+          },
+          { status: 409 },
+        );
+      }
+      const incomingBistro = isObj(q.permanentBistro) ? q.permanentBistro.bistro : undefined;
+      if (!bistroFootageEqual(incomingBistro, storedInputs.permanentBistro?.bistro)) {
+        return NextResponse.json(
+          {
+            error:
+              'This quote has already been approved — bistro run footage is locked and cannot be changed here. Use the amend flow to change footage.',
+            code: 'bistro-footage-locked',
           },
           { status: 409 },
         );

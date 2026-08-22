@@ -45,7 +45,15 @@ const { save, update, getRaw, rawRef, operatorRef } = vi.hoisted(() => ({
       // incoming change on an already-approved quote.
       // FIX B (#237 fix round): event.eventDate — the stored PRIOR value the
       // re-push gate compares the incoming save against.
-      inputs?: { depositPercent?: number; event?: { eventDate?: string } } | null;
+      // Row 331+341: the stored line-price/label overrides + bistro run
+      // footage, read back the same way for the post-approval freeze tests.
+      inputs?: {
+        depositPercent?: number;
+        event?: { eventDate?: string };
+        lineItemPriceOverrides?: Record<string, { amount: number; reason?: string }>;
+        labelOverrides?: Record<string, string>;
+        permanentBistro?: { poles?: number; bistro?: { id?: string; footage: number }[] };
+      } | null;
       // FIX B (#237 fix round): the two other gates the re-push needs.
       is_test?: boolean;
       highlevel_contact_id?: string | null;
@@ -1517,6 +1525,221 @@ describe('POST /api/quote — deposit percent locked post-approval (#177 fix 3b)
     const body = (await res.json()) as { error: string; code?: string };
     expect(body.code).toBe('deposit-percent-locked');
     expect(update).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/quote — post-approval freeze for price/label/bistro-footage overrides (rows 331+341)', () => {
+  // Mirrors the #177 fix 3b deposit-percent-locked suite exactly: scoped ONLY
+  // to these three fields actually changing — an unrelated field edit on an
+  // approved-but-unbooked quote still re-prices fine (proven by the W1-003
+  // "still re-prices an approved-but-unbooked quote in place" test above,
+  // which sends no overrides at all and is unaffected by this freeze).
+
+  it('rejects a CHANGED lineItemPriceOverrides amount on an approved quote with 409', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      inputs: { lineItemPriceOverrides: { 'mini-1': { amount: 100 } } },
+    };
+    const res = await POST(
+      makeReq({
+        inputs: { ...validInputs(), lineItemPriceOverrides: { 'mini-1': { amount: 250 } } },
+        quoteId: REAL_UUID,
+      }),
+    );
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; code?: string };
+    expect(body.code).toBe('price-override-locked');
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('rejects ADDING a lineItemPriceOverrides entry on an approved quote that had none', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      inputs: {},
+    };
+    const res = await POST(
+      makeReq({
+        inputs: { ...validInputs(), lineItemPriceOverrides: { 'mini-1': { amount: 250 } } },
+        quoteId: REAL_UUID,
+      }),
+    );
+    expect(res.status).toBe(409);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('allows an UNCHANGED lineItemPriceOverrides resubmit on an approved quote (routine recalculate)', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      inputs: { lineItemPriceOverrides: { 'mini-1': { amount: 100 } } },
+    };
+    const res = await POST(
+      makeReq({
+        inputs: { ...validInputs(), lineItemPriceOverrides: { 'mini-1': { amount: 100 } } },
+        quoteId: REAL_UUID,
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows a lineItemPriceOverrides change on a NOT-YET-APPROVED (sent) quote', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: null,
+      deposit_paid_at: null,
+      viewed_at: null,
+      status: 'sent',
+      inputs: { lineItemPriceOverrides: { 'mini-1': { amount: 100 } } },
+    };
+    const res = await POST(
+      makeReq({
+        inputs: { ...validInputs(), lineItemPriceOverrides: { 'mini-1': { amount: 250 } } },
+        quoteId: REAL_UUID,
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows a lineItemPriceOverrides change on an approved TEST quote (is_test exempt, matching #251/#177)', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      is_test: true,
+      inputs: { lineItemPriceOverrides: { 'mini-1': { amount: 100 } } },
+    };
+    const res = await POST(
+      makeReq({
+        inputs: { ...validInputs(), lineItemPriceOverrides: { 'mini-1': { amount: 250 } } },
+        quoteId: REAL_UUID,
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a CHANGED labelOverrides value on an approved quote with 409', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      inputs: { labelOverrides: { 'mini-1': 'Front Left' } },
+    };
+    const res = await POST(
+      makeReq({
+        inputs: { ...validInputs(), labelOverrides: { 'mini-1': 'Renamed' } },
+        quoteId: REAL_UUID,
+      }),
+    );
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; code?: string };
+    expect(body.code).toBe('label-override-locked');
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('allows an UNCHANGED labelOverrides resubmit on an approved quote', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      inputs: { labelOverrides: { 'mini-1': 'Front Left' } },
+    };
+    const res = await POST(
+      makeReq({
+        inputs: { ...validInputs(), labelOverrides: { 'mini-1': 'Front Left' } },
+        quoteId: REAL_UUID,
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a CHANGED permanentBistro run footage on an approved permanent_bistro quote with 409', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      service_type: 'permanent_bistro',
+      inputs: { permanentBistro: { bistro: [{ id: 'run-1', footage: 40 }] } },
+    };
+    const inputs = { ...validInputs(), permanentBistro: { bistro: [{ id: 'run-1', footage: 65 }] } };
+    const res = await POST(makeReq({ serviceType: 'permanent_bistro', inputs, quoteId: REAL_UUID }));
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; code?: string };
+    expect(body.code).toBe('bistro-footage-locked');
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('rejects ADDING a new bistro run on an approved permanent_bistro quote', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      service_type: 'permanent_bistro',
+      inputs: { permanentBistro: { bistro: [{ id: 'run-1', footage: 40 }] } },
+    };
+    const inputs = {
+      ...validInputs(),
+      permanentBistro: { bistro: [{ id: 'run-1', footage: 40 }, { id: 'run-2', footage: 20 }] },
+    };
+    const res = await POST(makeReq({ serviceType: 'permanent_bistro', inputs, quoteId: REAL_UUID }));
+    expect(res.status).toBe(409);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('allows an UNCHANGED permanentBistro resubmit on an approved quote (routine recalculate)', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      service_type: 'permanent_bistro',
+      inputs: { permanentBistro: { bistro: [{ id: 'run-1', footage: 40 }] } },
+    };
+    const inputs = { ...validInputs(), permanentBistro: { bistro: [{ id: 'run-1', footage: 40 }] } };
+    const res = await POST(makeReq({ serviceType: 'permanent_bistro', inputs, quoteId: REAL_UUID }));
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows a permanentBistro footage change on a NOT-YET-APPROVED (sent) permanent_bistro quote', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: null,
+      deposit_paid_at: null,
+      viewed_at: null,
+      status: 'sent',
+      service_type: 'permanent_bistro',
+      inputs: { permanentBistro: { bistro: [{ id: 'run-1', footage: 40 }] } },
+    };
+    const inputs = { ...validInputs(), permanentBistro: { bistro: [{ id: 'run-1', footage: 65 }] } };
+    const res = await POST(makeReq({ serviceType: 'permanent_bistro', inputs, quoteId: REAL_UUID }));
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
   });
 });
 
