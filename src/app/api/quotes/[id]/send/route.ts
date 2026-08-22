@@ -115,6 +115,11 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // case. See TAG_PROPAGATION_DEADLINE_MS below.)
 const SEND_ROUTE_DB_TIMEOUT_MS = 5_000;
 
+// A retry owns its external side effects for two minutes. That comfortably
+// exceeds this route's bounded GHL/message work, while a crashed invocation
+// eventually becomes retryable instead of leaving the quote stuck forever.
+const RETRY_CLAIM_WINDOW_MS = 2 * 60_000;
+
 // postgrest-js query builders are only PromiseLike (a bare `.then()`, no
 // `.catch()`/`.finally()` — confirmed by reading PostgrestBuilder's own class
 // declaration), so the timer can't be cleared with a `.finally()` chained
@@ -464,6 +469,56 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       },
       { status: 400 },
     );
+  }
+
+  // An explicit retry has no fresh-send stamp to act as its idempotency key, so
+  // claim the relevant retry slot before any GHL or customer-delivery work.
+  // The lifecycle fields are re-checked on the write: a concurrent approval,
+  // payment, cancellation, or send-stage success cannot be overwritten by a
+  // stale retry request. Each mode owns its own slot so a delivery retry never
+  // blocks an independent CRM reconciliation (or vice versa).
+  const retryClaimColumn = isGhlRetry
+    ? 'ghl_retry_claimed_at'
+    : isDeliveryRetry
+      ? 'delivery_retry_claimed_at'
+      : null;
+  const retryClaimAt = retryClaimColumn ? new Date().toISOString() : null;
+  if (retryClaimColumn && retryClaimAt) {
+    const retryClaimCutoff = new Date(Date.now() - RETRY_CLAIM_WINDOW_MS).toISOString();
+    try {
+      const { data: claimRows, error: claimErr } = await withDbTimeout((signal) => {
+        let claimQuery = sb
+          .from('quotes')
+          .update({ [retryClaimColumn]: retryClaimAt })
+          .eq('id', id)
+          .eq('quote_sent_at', quote.quote_sent_at)
+          .eq('view_only', false)
+          .is('customer_approved_at', null)
+          .is('deposit_paid_at', null)
+          .or(`${retryClaimColumn}.is.null,${retryClaimColumn}.lt.${retryClaimCutoff}`);
+        claimQuery = quote.status == null
+          ? claimQuery.is('status', null)
+          : claimQuery.eq('status', quote.status);
+        if (isGhlRetry) claimQuery = claimQuery.is('ghl_stage_synced_at', null);
+        return claimQuery.select('id').abortSignal(signal);
+      });
+      if (claimErr) {
+        console.error('[api/quotes/:id/send] retry claim failed:', claimErr);
+        return NextResponse.json(
+          { error: `Failed to claim retry: ${claimErr.message}` },
+          { status: 500 },
+        );
+      }
+      if (!claimRows || claimRows.length === 0) {
+        return NextResponse.json(
+          { error: 'This quote changed before it could be sent — please refresh and try again.', code: 'send-conflict' },
+          { status: 409 },
+        );
+      }
+    } catch (error) {
+      console.error('[api/quotes/:id/send] retry claim failed:', error);
+      return NextResponse.json({ error: 'Failed to claim retry' }, { status: 500 });
+    }
   }
 
   // On a GHL-only retry the quote keeps its original sent timestamp.
@@ -1001,6 +1056,27 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // maxDuration export needed (round-2 staff-lens correction to round 1's
   // fix 5, which had assumed a 60s default).
   await Promise.allSettled([ghlStageChain(), customerSms(), customerEmail(), tagPropagationRaced()]);
+
+  // Release only the exact claim this request won. If the invocation crashed,
+  // the two-minute lease expires on its own; if a later request has already
+  // reclaimed a stale lease, this write cannot clear that newer claim.
+  if (retryClaimColumn && retryClaimAt) {
+    try {
+      const { error: releaseErr } = await withDbTimeout((signal) =>
+        sb
+          .from('quotes')
+          .update({ [retryClaimColumn]: null })
+          .eq('id', id)
+          .eq(retryClaimColumn, retryClaimAt)
+          .abortSignal(signal),
+      );
+      if (releaseErr) {
+        console.warn('[api/quotes/:id/send] retry claim release failed:', releaseErr.message);
+      }
+    } catch (error) {
+      console.warn('[api/quotes/:id/send] retry claim release failed:', error);
+    }
+  }
 
   // Join the two message errors deterministically (SMS first, then email),
   // preserving the original "a; b" concatenation shape.

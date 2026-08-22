@@ -153,6 +153,7 @@ function makeSb(
       isArgs.push([column, value]);
       return builder;
     },
+    or: () => builder,
     // #264: real route code now chains `.abortSignal(signal)` on every direct
     // query (see withDbTimeout in route.ts) — no-op passthrough here, same
     // shape as eq()/is() above; the timeout behavior itself is covered by
@@ -186,7 +187,10 @@ function makeSb(
 // capture the same lifecycle state before either stamp can run. Update filters
 // are then evaluated against the live row at execution time, matching the
 // database behavior that makes a conditional update a CAS.
-function makeConcurrentSendSb(quote: Record<string, unknown>) {
+function makeConcurrentSendSb(
+  quote: Record<string, unknown>,
+  { readBarrier = true }: { readBarrier?: boolean } = {},
+) {
   const liveQuote: Record<string, unknown> = {
     status: null,
     deposit_paid_at: null,
@@ -206,6 +210,7 @@ function makeConcurrentSendSb(quote: Record<string, unknown>) {
       let updatePayload: Record<string, unknown> = {};
       const eqFilters: Array<[string, unknown]> = [];
       const isFilters: Array<[string, unknown]> = [];
+      const orFilters: Array<(row: Record<string, unknown>) => boolean> = [];
 
       const query: Record<string, unknown> = {};
       Object.assign(query, {
@@ -227,9 +232,24 @@ function makeConcurrentSendSb(quote: Record<string, unknown>) {
           isFilters.push([column, value]);
           return query;
         },
+        or: (conditions: string) => {
+          const predicates = conditions.split(',').map((condition) => {
+            const nullMatch = condition.match(/^([a-z_]+)\.is\.null$/);
+            if (nullMatch) return (row: Record<string, unknown>) => row[nullMatch[1]] == null;
+            const beforeMatch = condition.match(/^([a-z_]+)\.lt\.(.+)$/);
+            if (beforeMatch) return (row: Record<string, unknown>) => {
+              const value = row[beforeMatch[1]];
+              return typeof value === 'string' && value < beforeMatch[2];
+            };
+            throw new Error(`unsupported .or() condition in concurrent send fake: ${condition}`);
+          });
+          orFilters.push((row) => predicates.some((predicate) => predicate(row)));
+          return query;
+        },
         abortSignal: () => query,
         single: async () => {
           const snapshot = { ...liveQuote };
+          if (!readBarrier) return { data: snapshot, error: null };
           readCount += 1;
           if (readCount === 2) releaseReads();
           await bothReadsReached;
@@ -248,7 +268,7 @@ function makeConcurrentSendSb(quote: Record<string, unknown>) {
             if (operation === 'update') {
               const matches = [...eqFilters, ...isFilters].every(
                 ([column, value]) => liveQuote[column] === value,
-              );
+              ) && orFilters.every((predicate) => predicate(liveQuote));
               if (matches) Object.assign(liveQuote, updatePayload);
               resolve({
                 data: matches ? [{ id: liveQuote.id }] : [],
@@ -267,7 +287,7 @@ function makeConcurrentSendSb(quote: Record<string, unknown>) {
     },
   };
 
-  return { client, bothReadsReached };
+  return { client, bothReadsReached, liveQuote };
 }
 
 const ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
@@ -1087,6 +1107,136 @@ describe('POST /api/quotes/[id]/send — portal and delivery gates', () => {
         );
       },
     );
+
+    it('allows exactly one customer delivery when two retryDelivery requests race', async () => {
+      const { client, bothReadsReached } = makeConcurrentSendSb({
+        ...FRESH_QUOTE,
+        quote_sent_at: '2026-07-18T12:00:00.000Z',
+        ghl_stage_synced_at: '2026-07-18T12:00:01.000Z',
+        status: 'sent',
+      });
+      sbRef.current = client;
+      let releaseSms!: () => void;
+      const smsGate = new Promise<void>((resolve) => { releaseSms = resolve; });
+      hl.sendSms.mockImplementation(async () => {
+        await smsGate;
+        return undefined;
+      });
+
+      const first = POST(makeReqWithBody({ channel: 'sms' }, true), { params });
+      const second = POST(makeReqWithBody({ channel: 'sms' }, true), { params });
+
+      await bothReadsReached;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(hl.sendSms).toHaveBeenCalledTimes(1);
+      expect(hl.sendEmail).not.toHaveBeenCalled();
+
+      releaseSms();
+      const responses = await Promise.all([first, second]);
+      const bodies = await Promise.all(responses.map((response) => response.json()));
+
+      expect(responses.map((response) => response.status).sort((a, b) => a - b)).toEqual([200, 409]);
+      expect(bodies).toContainEqual(expect.objectContaining({ code: 'send-conflict' }));
+    });
+
+    it('allows exactly one CRM update when two retryGhl requests race', async () => {
+      const { client, bothReadsReached } = makeConcurrentSendSb({
+        ...FRESH_QUOTE,
+        quote_sent_at: '2026-07-18T12:00:00.000Z',
+        ghl_stage_synced_at: null,
+        status: 'sent',
+      });
+      sbRef.current = client;
+      let releaseGhl!: () => void;
+      const ghlGate = new Promise<void>((resolve) => { releaseGhl = resolve; });
+      hl.updateOpportunity.mockImplementation(async () => {
+        await ghlGate;
+        return { id: 'opp_1' };
+      });
+
+      const first = POST(makeReq(true), { params });
+      const second = POST(makeReq(true), { params });
+
+      await bothReadsReached;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(hl.updateOpportunity).toHaveBeenCalledTimes(1);
+      expect(hl.sendSms).not.toHaveBeenCalled();
+      expect(hl.sendEmail).not.toHaveBeenCalled();
+
+      releaseGhl();
+      const responses = await Promise.all([first, second]);
+      const bodies = await Promise.all(responses.map((response) => response.json()));
+
+      expect(responses.map((response) => response.status).sort((a, b) => a - b)).toEqual([200, 409]);
+      expect(bodies).toContainEqual(expect.objectContaining({ code: 'send-conflict' }));
+    });
+
+    it('does not reclaim an unexpired delivery retry lease', async () => {
+      const { client } = makeConcurrentSendSb({
+        ...FRESH_QUOTE,
+        quote_sent_at: '2026-07-18T12:00:00.000Z',
+        ghl_stage_synced_at: '2026-07-18T12:00:01.000Z',
+        status: 'sent',
+        delivery_retry_claimed_at: '2099-01-01T00:00:00.000Z',
+      }, { readBarrier: false });
+      sbRef.current = client;
+
+      const res = await POST(makeReqWithBody({ channel: 'sms' }, true), { params });
+      const json = await res.json();
+
+      expect(res.status).toBe(409);
+      expect(json.code).toBe('send-conflict');
+      expect(hl.sendSms).not.toHaveBeenCalled();
+      expect(hl.sendEmail).not.toHaveBeenCalled();
+    });
+
+    it('reclaims a stale delivery retry lease before delivering', async () => {
+      const { client, liveQuote } = makeConcurrentSendSb({
+        ...FRESH_QUOTE,
+        quote_sent_at: '2026-07-18T12:00:00.000Z',
+        ghl_stage_synced_at: '2026-07-18T12:00:01.000Z',
+        status: 'sent',
+        delivery_retry_claimed_at: '2020-01-01T00:00:00.000Z',
+      }, { readBarrier: false });
+      sbRef.current = client;
+
+      const res = await POST(makeReqWithBody({ channel: 'sms' }, true), { params });
+
+      expect(res.status).toBe(200);
+      expect(hl.sendSms).toHaveBeenCalledTimes(1);
+      expect(liveQuote.delivery_retry_claimed_at).toBeNull();
+    });
+
+    it('does not let an older delivery retry release a reclaimed lease', async () => {
+      const { client, liveQuote } = makeConcurrentSendSb({
+        ...FRESH_QUOTE,
+        quote_sent_at: '2026-07-18T12:00:00.000Z',
+        ghl_stage_synced_at: '2026-07-18T12:00:01.000Z',
+        status: 'sent',
+      }, { readBarrier: false });
+      sbRef.current = client;
+      let releaseSms!: () => void;
+      const smsGate = new Promise<void>((resolve) => { releaseSms = resolve; });
+      hl.sendSms.mockImplementation(async () => {
+        await smsGate;
+        return undefined;
+      });
+
+      const request = POST(makeReqWithBody({ channel: 'sms' }, true), { params });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(hl.sendSms).toHaveBeenCalledTimes(1);
+      expect(typeof liveQuote.delivery_retry_claimed_at).toBe('string');
+
+      const newerClaim = '2099-01-01T00:00:00.000Z';
+      liveQuote.delivery_retry_claimed_at = newerClaim;
+      releaseSms();
+
+      const res = await request;
+      expect(res.status).toBe(200);
+      expect(liveQuote.delivery_retry_claimed_at).toBe(newerClaim);
+    });
 
     it('409s and does no GHL/messaging work when view_only flips ON between fetch and stamp', async () => {
       const { client, updatePayloads } = makeSb({ ...FRESH_QUOTE }, { stampRace: true });
