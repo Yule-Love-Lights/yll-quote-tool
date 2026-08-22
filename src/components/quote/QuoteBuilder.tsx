@@ -3382,6 +3382,20 @@ export default function QuoteBuilder({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `Attach failed (${res.status})`);
+      // Row 338 fix-round HIGH (staff lens): a frozen refusal (route.ts's
+      // #251/#839 CAS gates) used to fall into the generic linked:false
+      // branch below and claim "Card attached... try again" — false (nothing
+      // attached) and a retry can never succeed once the quote is frozen.
+      // Read the flag first and throw a distinct, honest error the catch
+      // block routes to the non-alarming 'skipped' status (matching the
+      // identityFrozenNotice banner's copy voice) instead of 'error'.
+      if (data.identityFrozen === true) {
+        const frozenErr = new Error(
+          'This quote is approved or booked, so its customer identity is locked — this contact wasn’t linked and nothing changed. There is no in-app way to relink an approved quote to a different customer; flag it for a manual fix rather than retrying.',
+        ) as Error & { identityFrozen?: boolean };
+        frozenErr.identityFrozen = true;
+        throw frozenErr;
+      }
       if (data.linked === false) {
         throw new Error('Card attached in HighLevel but the quote link didn’t save — try again.');
       }
@@ -3393,7 +3407,8 @@ export default function QuoteBuilder({
       return true;
     } catch (err) {
       if (fresh()) {
-        setAttachStatus('error');
+        const frozen = err instanceof Error && (err as Error & { identityFrozen?: boolean }).identityFrozen === true;
+        setAttachStatus(frozen ? 'skipped' : 'error');
         setAttachError(err instanceof Error ? err.message : 'Attach failed');
       }
       return false;
