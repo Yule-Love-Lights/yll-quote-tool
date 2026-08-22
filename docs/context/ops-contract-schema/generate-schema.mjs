@@ -362,6 +362,64 @@ function assertCommitmentFeedContract(document) {
   }
 }
 
+function assertQuoteLifecycleContract(document) {
+  const quoteEvents = document.paths?.['/api/ops/v1/quote-events']?.get;
+  const paidContext = document.paths?.['/api/ops/v1/paid-contexts/current']?.get;
+  const authorizationSnapshots = document.paths?.['/api/ops/v1/employee-authorization-snapshots']?.post;
+  const schemas = document.components?.schemas ?? {};
+
+  for (const [name, operation] of Object.entries({
+    quoteEvents,
+    paidContext,
+    authorizationSnapshots,
+  })) {
+    if (!operation?.security?.some((entry) => Array.isArray(entry.YllHmac))) {
+      throw new Error(`Flow Q ${name} must require YllHmac security`);
+    }
+    const parameterRefs = new Set(
+      (operation.parameters ?? []).map((parameter) => parameter.$ref).filter(Boolean),
+    );
+    for (const parameter of [
+      'YllKeyId', 'YllTimestamp', 'YllNonce', 'YllSignature',
+      'YllContractVersion', 'YllSchemaVersion', 'YllClientVersion',
+    ]) {
+      if (!parameterRefs.has(`#/components/parameters/${parameter}`)) {
+        throw new Error(`Flow Q ${name} is missing required machine-auth parameter ${parameter}`);
+      }
+    }
+  }
+
+  if (
+    quoteEvents?.responses?.['200']?.content?.['application/json']?.schema?.$ref
+      !== '#/components/schemas/QuoteEventsPage'
+    || paidContext?.responses?.['200']?.content?.['application/json']?.schema?.$ref
+      !== '#/components/schemas/CurrentPaidContextRead'
+    || authorizationSnapshots?.requestBody?.content?.['application/json']?.schema?.$ref
+      !== '#/components/schemas/EmployeeAuthorizationSnapshot'
+  ) {
+    throw new Error('Flow Q endpoint schemas must stay pinned to their canonical response and request shapes');
+  }
+
+  const eventTypes = schemas.QuoteLifecycleEventType?.enum;
+  for (const eventType of [
+    'QuoteRequestReceived', 'QuoteAssigned', 'QuoteUnassigned', 'QuoteSentRecorded',
+    'QuoteRevisionSaved', 'QuotePromiseRecorded', 'QuotePromiseSuperseded',
+    'QuotePromiseCancelled', 'QuotePromiseFulfilled',
+  ]) {
+    if (!Array.isArray(eventTypes) || !eventTypes.includes(eventType)) {
+      throw new Error(`Flow Q event union is missing ${eventType}`);
+    }
+  }
+  if (
+    schemas.QuoteEventsPage?.properties?.source_watermark?.minLength !== 1
+    || schemas.QuoteLifecycleEvent?.allOf?.[1]?.properties?.source_outbox_sequence?.minimum !== 1
+    || schemas.EmployeeAuthorizationSnapshot?.properties?.authorization_policy_version?.minLength !== 1
+    || schemas.CurrentPaidContextRead?.oneOf?.length !== 2
+  ) {
+    throw new Error('Flow Q must preserve source watermark, outbox order, policy version, and explicit unavailable paid context');
+  }
+}
+
 if (openApi.openapi !== '3.1.0') {
   throw new Error('common.openapi.json must use OpenAPI 3.1.0');
 }
@@ -390,6 +448,7 @@ const openApiSchemas = openApi.components?.schemas ?? {};
 assertOpenApiRefs(openApi, openApi);
 assertHmacVectors(openApi);
 assertCommitmentFeedContract(openApi);
+assertQuoteLifecycleContract(openApi);
 
 const schema = {
   $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -403,6 +462,12 @@ const schema = {
     { $ref: '#/$defs/CommandResponse' },
     { $ref: '#/$defs/CommitmentEvent' },
     { $ref: '#/$defs/CommitmentEventsPage' },
+    { $ref: '#/$defs/QuoteLifecycleEvent' },
+    { $ref: '#/$defs/QuoteEventsPage' },
+    { $ref: '#/$defs/CurrentPaidContextRead' },
+    { $ref: '#/$defs/EmployeeAuthorizationSnapshot' },
+    { $ref: '#/$defs/AuthorizationSnapshotReceipt' },
+    { $ref: '#/$defs/AuthorizationSnapshotError' },
     { $ref: '#/$defs/MachineReadErrorResponse' },
   ],
 };

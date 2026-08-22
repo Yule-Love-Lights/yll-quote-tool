@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ops.yulelovelights.com/schemas/operations-hub/common.schema.json",
   "title": "Yule Love Lights Operations Hub shared contract schemas",
-  "schema_version": "1.0.0-draft",
-  "contract_version": "1.4.0-draft",
+  "schema_version": "1.1.0-draft",
+  "contract_version": "1.5.0-draft",
   "$defs": {
     "RequestedContractVersion": {
       "type": "string",
@@ -15,11 +15,11 @@
     },
     "ContractVersion": {
       "type": "string",
-      "const": "1.4.0-draft"
+      "const": "1.5.0-draft"
     },
     "SchemaVersion": {
       "type": "string",
-      "const": "1.0.0-draft"
+      "const": "1.1.0-draft"
     },
     "ClientVersion": {
       "type": "string",
@@ -920,6 +920,512 @@
         }
       ]
     },
+    "QuoteLifecycleEventType": {
+      "type": "string",
+      "enum": [
+        "QuoteRequestReceived",
+        "QuoteRequestLinked",
+        "QuoteCreated",
+        "QuoteAssigned",
+        "QuoteUnassigned",
+        "QuoteMeaningfulEditRecorded",
+        "QuoteRevisionSaved",
+        "QuoteWorkWaitStarted",
+        "QuoteWorkWaitEnded",
+        "QuoteSentRecorded",
+        "QuoteDeliveryAttempted",
+        "QuoteDeliveryOutcomeRecorded",
+        "QuoteChangesRequested",
+        "QuoteAccepted",
+        "QuoteDeclined",
+        "QuoteExpired",
+        "QuoteAbandoned",
+        "QuoteCancelled",
+        "QuoteBooked",
+        "QuoteReopened",
+        "QuotePromiseRecorded",
+        "QuotePromiseSuperseded",
+        "QuotePromiseCancelled",
+        "QuotePromiseFulfilled"
+      ]
+    },
+    "QuotePromiseType": {
+      "type": "string",
+      "enum": [
+        "send_quote",
+        "provide_revision",
+        "customer_follow_up"
+      ]
+    },
+    "QuoteDeliveryMode": {
+      "type": "string",
+      "enum": [
+        "tool_sms",
+        "tool_email",
+        "tool_both",
+        "manual_external"
+      ]
+    },
+    "QuoteLifecycleEvent": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/EventEnvelope"
+        },
+        {
+          "type": "object",
+          "required": [
+            "quote_id",
+            "event_type",
+            "source_outbox_sequence"
+          ],
+          "properties": {
+            "event_type": {
+              "$ref": "#/$defs/QuoteLifecycleEventType"
+            },
+            "quote_id": {
+              "$ref": "#/$defs/CanonicalUuid"
+            },
+            "quote_number": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "request_id": {
+              "$ref": "#/$defs/NullableUuid"
+            },
+            "customer_ref": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CanonicalUuid"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "job_id": {
+              "$ref": "#/$defs/NullableUuid"
+            },
+            "assigned_employee_id": {
+              "$ref": "#/$defs/NullableUuid"
+            },
+            "previous_assigned_employee_id": {
+              "$ref": "#/$defs/NullableUuid"
+            },
+            "first_sent_at": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "revision_id": {
+              "$ref": "#/$defs/NullableUuid"
+            },
+            "promise_id": {
+              "$ref": "#/$defs/NullableUuid"
+            },
+            "replacement_promise_id": {
+              "$ref": "#/$defs/NullableUuid"
+            },
+            "promise_type": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/QuotePromiseType"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "promise_due_at": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "delivery_mode": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/QuoteDeliveryMode"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "first_send": {
+              "type": "boolean"
+            },
+            "total_cents": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "source_outbox_sequence": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "QuoteEventsPage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "events",
+        "next_cursor",
+        "has_more",
+        "source_watermark",
+        "contract_version",
+        "schema_version",
+        "client_version",
+        "correlation_id"
+      ],
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/QuoteLifecycleEvent"
+          }
+        },
+        "next_cursor": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "has_more": {
+          "type": "boolean"
+        },
+        "source_watermark": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contract_version": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        },
+        "client_version": {
+          "$ref": "#/$defs/ClientVersion"
+        },
+        "correlation_id": {
+          "$ref": "#/$defs/Uuid"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "has_more": {
+                "const": true
+              }
+            },
+            "required": [
+              "has_more"
+            ]
+          },
+          "then": {
+            "properties": {
+              "next_cursor": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "CurrentPaidContextRead": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "employee_id",
+            "paid_day_id",
+            "paid_context_id",
+            "active_department_id",
+            "context_entity_version",
+            "effective_at",
+            "source_watermark",
+            "contract_version",
+            "schema_version",
+            "client_version",
+            "correlation_id"
+          ],
+          "properties": {
+            "status": {
+              "const": "available"
+            },
+            "employee_id": {
+              "$ref": "#/$defs/Uuid"
+            },
+            "paid_day_id": {
+              "$ref": "#/$defs/CanonicalUuid"
+            },
+            "paid_context_id": {
+              "$ref": "#/$defs/CanonicalUuid"
+            },
+            "active_department_id": {
+              "$ref": "#/$defs/CanonicalUuid"
+            },
+            "context_entity_version": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "effective_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "source_watermark": {
+              "type": "string",
+              "minLength": 1
+            },
+            "contract_version": {
+              "$ref": "#/$defs/ContractVersion"
+            },
+            "schema_version": {
+              "$ref": "#/$defs/SchemaVersion"
+            },
+            "client_version": {
+              "$ref": "#/$defs/ClientVersion"
+            },
+            "correlation_id": {
+              "$ref": "#/$defs/Uuid"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "employee_id",
+            "unavailable_reason",
+            "source_watermark",
+            "contract_version",
+            "schema_version",
+            "client_version",
+            "correlation_id"
+          ],
+          "properties": {
+            "status": {
+              "const": "unavailable"
+            },
+            "employee_id": {
+              "$ref": "#/$defs/Uuid"
+            },
+            "unavailable_reason": {
+              "type": "string",
+              "enum": [
+                "no_current_paid_context",
+                "employee_unlinked",
+                "context_not_authorized",
+                "context_data_unavailable"
+              ]
+            },
+            "source_watermark": {
+              "type": "string",
+              "minLength": 1
+            },
+            "contract_version": {
+              "$ref": "#/$defs/ContractVersion"
+            },
+            "schema_version": {
+              "$ref": "#/$defs/SchemaVersion"
+            },
+            "client_version": {
+              "$ref": "#/$defs/ClientVersion"
+            },
+            "correlation_id": {
+              "$ref": "#/$defs/Uuid"
+            }
+          }
+        }
+      ]
+    },
+    "HubCapability": {
+      "type": "string",
+      "enum": [
+        "internal_public.read",
+        "office.tools.use",
+        "office.analytics.read",
+        "office.calls.work",
+        "office.customer.search",
+        "office.coaching.self",
+        "office.coaching.team.read",
+        "office.coaching.settings.manage",
+        "office.knowledge.read",
+        "office.knowledge.manage",
+        "office.pipeline.run",
+        "office.scoreboard.self",
+        "office.scoreboard.manage",
+        "office.second_mile.work",
+        "office.second_mile.send",
+        "office.job_operations",
+        "advertising.navigation",
+        "installer.navigation",
+        "operations.admin"
+      ]
+    },
+    "EmployeeAuthorizationSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "snapshot_id",
+        "employee_id",
+        "entity_version",
+        "authorization_policy_version",
+        "capabilities",
+        "effective_at",
+        "idempotency_key",
+        "correlation_id",
+        "contract_version",
+        "schema_version",
+        "client_version"
+      ],
+      "properties": {
+        "snapshot_id": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "employee_id": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "entity_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "authorization_policy_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HubCapability"
+          },
+          "uniqueItems": true
+        },
+        "effective_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "correlation_id": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "contract_version": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        },
+        "client_version": {
+          "$ref": "#/$defs/ClientVersion"
+        }
+      }
+    },
+    "AuthorizationSnapshotReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "employee_id",
+        "entity_version",
+        "authorization_policy_version",
+        "contract_version",
+        "schema_version",
+        "client_version",
+        "correlation_id"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "superseded"
+          ]
+        },
+        "employee_id": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "entity_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "authorization_policy_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contract_version": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        },
+        "client_version": {
+          "$ref": "#/$defs/ClientVersion"
+        },
+        "correlation_id": {
+          "$ref": "#/$defs/Uuid"
+        }
+      }
+    },
+    "AuthorizationSnapshotError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "error_code",
+        "contract_version",
+        "schema_version",
+        "client_version",
+        "correlation_id"
+      ],
+      "properties": {
+        "error_code": {
+          "type": "string",
+          "enum": [
+            "contract_version_unsupported",
+            "schema_version_unsupported",
+            "conflict_idempotency",
+            "entity_version_conflict"
+          ]
+        },
+        "contract_version": {
+          "$ref": "#/$defs/ContractVersion"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/SchemaVersion"
+        },
+        "client_version": {
+          "$ref": "#/$defs/ClientVersion"
+        },
+        "correlation_id": {
+          "$ref": "#/$defs/Uuid"
+        }
+      }
+    },
     "MachineKeyId": {
       "type": "string",
       "minLength": 1
@@ -949,6 +1455,24 @@
     },
     {
       "$ref": "#/$defs/CommitmentEventsPage"
+    },
+    {
+      "$ref": "#/$defs/QuoteLifecycleEvent"
+    },
+    {
+      "$ref": "#/$defs/QuoteEventsPage"
+    },
+    {
+      "$ref": "#/$defs/CurrentPaidContextRead"
+    },
+    {
+      "$ref": "#/$defs/EmployeeAuthorizationSnapshot"
+    },
+    {
+      "$ref": "#/$defs/AuthorizationSnapshotReceipt"
+    },
+    {
+      "$ref": "#/$defs/AuthorizationSnapshotError"
     },
     {
       "$ref": "#/$defs/MachineReadErrorResponse"
