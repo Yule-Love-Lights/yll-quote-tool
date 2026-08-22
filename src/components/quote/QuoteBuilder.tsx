@@ -6760,12 +6760,23 @@ export default function QuoteBuilder({
                 block above: it can fire even when highlevelContact is null
                 (a reopened quote's DB link isn't hydrated into that state —
                 #172), and it describes the save that just ran, not the
-                current chip. */}
+                current chip.
+                Row 338 fix: the original copy told staff to "Use the amend
+                flow to move it to a different customer" — traced and found
+                false. The amend flow (/api/quotes/[id]/amend) only re-prices
+                a booked order's totals; it has no identity fields at all and
+                never writes customer_id/highlevel_contact_id/customer_name/
+                etc. There is currently no in-app way to move a frozen quote
+                to a different customer (the code-level remedy is a manual DB
+                correction — see the "WT-55 manual merge" comments in
+                quotes.ts/customers.ts), so the copy now says that honestly
+                instead of pointing at a flow that can't do it. */}
             {identityFrozenNotice && (
               <p className="mb-3 text-xs text-amber-700">
                 This quote is approved or booked, so its customer stayed put — the name, contact details and
                 HighLevel link on this quote were left exactly as the customer approved them, and nothing on this
-                save changed who the quote belongs to. Use the amend flow to move it to a different customer.
+                save changed who the quote belongs to. There is no in-app way to move an approved quote to a
+                different customer — if this needs correcting, flag it for a manual fix rather than re-saving.
               </p>
             )}
 
