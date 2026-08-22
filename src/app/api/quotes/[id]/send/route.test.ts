@@ -103,7 +103,7 @@ import { DELIVERY_TIMEOUT_ERROR_PREFIX } from '@/lib/quoteDeliveries';
 // from().update(payload).eq() (awaited). Records every update payload so we
 // can assert what was persisted.
 //
-// #187b: the fresh-send stamp now chains `.eq('view_only', false)
+// #187b: the send stamp now chains `.eq('view_only', false)
 // .is('deposit_paid_at', null).select('id')` as a TOCTOU guard, so its
 // `.then()` must resolve `data` too (not just `error`) — default is a single
 // matched row `[{ id }]`; `opts.stampRace: true` simulates losing that race
@@ -121,6 +121,7 @@ function makeSb(
 ) {
   const updatePayloads: Array<Record<string, unknown>> = [];
   const insertPayloads: Array<{ table: string; payload: Record<string, unknown> }> = [];
+  const eqArgs: Array<[string, unknown]> = [];
   const isArgs: Array<[string, unknown]> = [];
   const builder: Record<string, unknown> = {};
   let isUpdate = false;
@@ -144,7 +145,10 @@ function makeSb(
       insertPayloads.push({ table: lastTable, payload });
       return builder;
     },
-    eq: () => builder,
+    eq: (column: string, value: unknown) => {
+      eqArgs.push([column, value]);
+      return builder;
+    },
     is: (column: string, value: unknown) => {
       isArgs.push([column, value]);
       return builder;
@@ -173,16 +177,16 @@ function makeSb(
       resolve(res);
     },
   });
-  return { client: builder, updatePayloads, insertPayloads, isArgs };
+  return { client: builder, updatePayloads, insertPayloads, eqArgs, isArgs };
 }
 
-// Two-request Supabase fake for the fresh-send race regression. Each query gets
-// its own builder (the general-purpose fake above intentionally reuses one),
-// while both requests share one live row. The read barrier guarantees both
-// handlers capture quote_sent_at=null before either stamp can run. Update
-// filters are then evaluated against the live row at execution time, matching
-// the database behavior that makes a quote_sent_at IS NULL predicate a CAS.
-function makeConcurrentFreshSendSb(quote: Record<string, unknown>) {
+// Two-request Supabase fake for send-stamp race regressions. Each query gets its
+// own builder (the general-purpose fake above intentionally reuses one), while
+// both requests share one live row. The read barrier guarantees both handlers
+// capture the same lifecycle state before either stamp can run. Update filters
+// are then evaluated against the live row at execution time, matching the
+// database behavior that makes a conditional update a CAS.
+function makeConcurrentSendSb(quote: Record<string, unknown>) {
   const liveQuote: Record<string, unknown> = {
     status: null,
     deposit_paid_at: null,
@@ -575,7 +579,7 @@ describe('POST /api/quotes/[id]/send — changes_requested resend (Bug 1)', () =
       ghl_stage_synced_at: '2026-06-26T00:00:01Z',
       status: 'changes_requested',
     };
-    const { client, updatePayloads, isArgs } = makeSb(changesRequested);
+    const { client, updatePayloads, eqArgs, isArgs } = makeSb(changesRequested);
     sbRef.current = client;
 
     const res = await POST(makeReq(), { params });
@@ -588,6 +592,7 @@ describe('POST /api/quotes/[id]/send — changes_requested resend (Bug 1)', () =
     // status re-stamped to 'sent'
     const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
     expect(stampWrite).toBeTruthy();
+    expect(eqArgs).toContainEqual(['status', 'changes_requested']);
     expect(isArgs).not.toContainEqual(['quote_sent_at', null]);
     // messaging fired
     expect(hl.sendSms).toHaveBeenCalled();
@@ -645,7 +650,7 @@ describe('POST /api/quotes/[id]/send — #116 revive (declined/abandoned re-send
       status: 'declined',
       decline_reason: 'Went with a competitor',
     };
-    const { client, updatePayloads, isArgs } = makeSb(declined);
+    const { client, updatePayloads, eqArgs, isArgs } = makeSb(declined);
     sbRef.current = client;
 
     const res = await POST(makeReq(), { params });
@@ -659,6 +664,7 @@ describe('POST /api/quotes/[id]/send — #116 revive (declined/abandoned re-send
     const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
     expect(stampWrite).toBeTruthy();
     expect(stampWrite!.quote_sent_at).not.toBe('2026-06-20T00:00:00Z');
+    expect(eqArgs).toContainEqual(['status', 'declined']);
     expect(isArgs).not.toContainEqual(['quote_sent_at', null]);
     // messaging + GHL card move fired, same as any fresh send
     expect(hl.sendSms).toHaveBeenCalled();
@@ -672,7 +678,7 @@ describe('POST /api/quotes/[id]/send — #116 revive (declined/abandoned re-send
       quote_sent_at: '2026-06-20T00:00:00Z',
       status: 'abandoned',
     };
-    const { client, updatePayloads, isArgs } = makeSb(abandoned);
+    const { client, updatePayloads, eqArgs, isArgs } = makeSb(abandoned);
     sbRef.current = client;
 
     const res = await POST(makeReq(), { params });
@@ -682,6 +688,7 @@ describe('POST /api/quotes/[id]/send — #116 revive (declined/abandoned re-send
     expect(json.revived).toBe(true);
     const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
     expect(stampWrite).toBeTruthy();
+    expect(eqArgs).toContainEqual(['status', 'abandoned']);
     expect(isArgs).not.toContainEqual(['quote_sent_at', null]);
     expect(hl.sendSms).toHaveBeenCalled();
   });
@@ -1027,9 +1034,9 @@ describe('POST /api/quotes/[id]/send — portal and delivery gates', () => {
   // #187b TOCTOU: the fresh-send stamp write itself re-asserts view_only AND
   // deposit_paid_at, so a race landing AFTER the fast-path checks above (but
   // before this write) can't sneak a real stamp/GHL/message through.
-  describe('#187b — fresh-send stamp TOCTOU guard', () => {
+  describe('#187b — send stamp TOCTOU guard', () => {
     it('allows exactly one external delivery when two fresh sends race', async () => {
-      const { client, bothReadsReached } = makeConcurrentFreshSendSb({ ...FRESH_QUOTE });
+      const { client, bothReadsReached } = makeConcurrentSendSb({ ...FRESH_QUOTE });
       sbRef.current = client;
 
       const first = POST(makeReqWithBody({ channel: 'both' }), { params });
@@ -1045,6 +1052,41 @@ describe('POST /api/quotes/[id]/send — portal and delivery gates', () => {
       expect(responses.map((response) => response.status).sort((a, b) => a - b)).toEqual([200, 409]);
       expect(bodies).toContainEqual(expect.objectContaining({ code: 'send-conflict' }));
     });
+
+    it.each([
+      ['changes_requested', false],
+      ['declined', true],
+      ['abandoned', true],
+    ] as const)(
+      'allows exactly one external delivery when two %s sends race',
+      async (status, revived) => {
+        const { client, bothReadsReached } = makeConcurrentSendSb({
+          ...FRESH_QUOTE,
+          quote_sent_at: '2026-06-20T00:00:00.000Z',
+          ghl_stage_synced_at: '2026-06-20T00:00:01.000Z',
+          status,
+        });
+        sbRef.current = client;
+
+        const first = POST(makeReqWithBody({ channel: 'both' }), { params });
+        const second = POST(makeReqWithBody({ channel: 'both' }), { params });
+
+        await bothReadsReached;
+        const responses = await Promise.all([first, second]);
+        const bodies = await Promise.all(responses.map((response) => response.json()));
+
+        expect(hl.sendSms).toHaveBeenCalledTimes(1);
+        expect(hl.sendEmail).toHaveBeenCalledTimes(1);
+        expect(hl.updateOpportunity).toHaveBeenCalledTimes(1);
+        expect(responses.map((response) => response.status).sort((a, b) => a - b)).toEqual([200, 409]);
+        expect(bodies).toContainEqual(expect.objectContaining({ code: 'send-conflict' }));
+        expect(bodies).toContainEqual(
+          revived
+            ? expect.objectContaining({ ok: true, revived: true })
+            : expect.objectContaining({ ok: true }),
+        );
+      },
+    );
 
     it('409s and does no GHL/messaging work when view_only flips ON between fetch and stamp', async () => {
       const { client, updatePayloads } = makeSb({ ...FRESH_QUOTE }, { stampRace: true });
