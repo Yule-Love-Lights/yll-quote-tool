@@ -16,7 +16,6 @@ import {
 import { buildNeedsAction } from '@/lib/dashboard/needsAction';
 import { OperatorShell } from '@/components/OperatorShell';
 import { DashboardHeader } from '@/components/dashboard/DashboardHeader';
-import { ClockCard } from '@/components/dashboard/ClockCard';
 import { KpiStrip } from '@/components/dashboard/KpiStrip';
 import { WorkflowBoard } from '@/components/dashboard/WorkflowBoard';
 import { Worklist } from '@/components/dashboard/Worklist';
@@ -104,7 +103,6 @@ export default async function DashboardPage() {
             Based on the newest 500 quotes — lifetime totals may not include older quotes.
           </p>
         )}
-        <ClockCard />
         <KpiStrip kpis={kpis} />
         {/* Early-stage worklist (drafts / unsent) above the late-stage
             Needs-Action money queue (overdue follow-ups / deposits / balances). */}

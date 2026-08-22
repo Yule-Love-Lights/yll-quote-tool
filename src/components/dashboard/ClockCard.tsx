@@ -3,16 +3,17 @@
 import { useEffect, useState } from 'react';
 
 /**
- * Office web clock card (row 337) — the dashboard-home face of
- * /api/office/clock. The signed-in office staffer clocks themselves in/out and
- * on/off break; identity comes from their session server-side, never from here.
+ * Office web clock (row 337) — a COMPACT widget that lives in the dashboard
+ * header, next to "Good morning." The signed-in office staffer clocks
+ * themselves in/out and on/off break; identity comes from their session
+ * server-side, never from here.
  *
- * The page is a server component, so this is a small self-fetching client
- * island. It ALWAYS renders the "Time clock" card once past the first paint and
- * says plainly what state it is in — signed out, not linked, unavailable, or
- * the live clock — rather than vanishing on an error, which just reads as "the
- * feature is missing". After each action it re-renders from the server's truth,
- * never an optimistic guess about what a tap did.
+ * The header is a server component, so this is a small self-fetching client
+ * island. It always shows something once past first paint and says plainly what
+ * state it is in — signed out, not linked, unavailable, or the live clock —
+ * rather than vanishing on an error, which just reads as "the feature is gone".
+ * After each action it re-renders from the server's truth, never an optimistic
+ * guess about what a tap did.
  */
 
 export type ClockState = {
@@ -57,20 +58,16 @@ type Load =
   | { status: 'error' }
   | { status: 'ready'; state: ClockState };
 
-/** Shared card chrome so every state looks like the same card, not a new one. */
-function Shell({ name, children }: { name?: string; children: React.ReactNode }) {
+/** The compact pill the header shows in every state. */
+function Pill({ children }: { children: React.ReactNode }) {
   return (
-    <section
+    <div
       aria-label="Time clock"
-      className="rounded-lg border p-4"
+      className="inline-flex items-center gap-2 rounded-lg border px-3 py-1.5"
       style={{ background: 'var(--op-bg-raised)', borderColor: 'var(--op-border)' }}
     >
-      <div className="flex items-baseline justify-between mb-3">
-        <h3 className="text-base font-semibold" style={{ color: 'var(--op-text)' }}>Time clock</h3>
-        {name && <span className="text-xs" style={{ color: 'var(--op-text-dim)' }}>{name}</span>}
-      </div>
       {children}
-    </section>
+    </div>
   );
 }
 
@@ -129,74 +126,70 @@ export function ClockCard() {
   const dim = { color: 'var(--op-text-dim)' } as const;
 
   if (load.status === 'loading') {
-    return <Shell><p className="text-sm" style={dim}>Loading…</p></Shell>;
+    return <Pill><span className="text-xs" style={dim}>Time clock…</span></Pill>;
   }
 
   if (load.status === 'signedout') {
     return (
-      <Shell>
-        <p className="text-sm" style={dim}>
-          You’re not signed in to the time clock.{' '}
-          <a href="/login" className="underline" style={{ color: 'var(--op-accent)' }}>Sign in</a> to clock in.
-        </p>
-      </Shell>
+      <Pill>
+        <span className="text-xs" style={dim}>Time clock —</span>
+        <a href="/login" className="text-xs underline" style={{ color: 'var(--op-accent)' }}>sign in</a>
+      </Pill>
     );
   }
 
   if (load.status === 'unlinked') {
     return (
-      <Shell>
-        <p className="text-sm" style={dim}>
-          This login isn’t linked to a staff record yet, so it can’t clock in. An admin can link it under Settings → Accounts.
-        </p>
-      </Shell>
+      <Pill>
+        <span className="text-xs" style={dim} title="An admin can link this login under Settings → Accounts.">
+          Time clock — login not linked
+        </span>
+      </Pill>
     );
   }
 
   if (load.status === 'error') {
     return (
-      <Shell>
-        <p className="text-sm mb-3" style={dim}>The time clock is temporarily unavailable.</p>
+      <Pill>
+        <span className="text-xs" style={dim}>Time clock unavailable</span>
         <button
           type="button"
           onClick={() => setReload((n) => n + 1)}
-          className="rounded-md px-3 py-2 text-sm font-medium"
-          style={{ background: 'var(--op-bg)', color: 'var(--op-text)', border: '1px solid var(--op-border)' }}
+          className="text-xs underline"
+          style={{ color: 'var(--op-accent)' }}
         >
-          Retry
+          retry
         </button>
-      </Shell>
+      </Pill>
     );
   }
 
   const { state } = load;
-  const status = !state.clockedIn
+  const label = !state.clockedIn
     ? 'Clocked out'
     : state.onBreak
       ? 'On break'
       : state.shift
-        ? `Clocked in since ${clockInTime(state.shift.clockInAt)}`
+        ? `In since ${clockInTime(state.shift.clockInAt)}`
         : 'Clocked in';
 
   return (
-    <Shell name={state.staff.name}>
-      <p className="text-sm mb-3" style={{ color: 'var(--op-text)' }}>
-        <span
-          aria-hidden
-          className="inline-block w-2 h-2 rounded-full mr-2 align-middle"
-          style={{ background: state.clockedIn ? (state.onBreak ? '#d97706' : '#16a34a') : 'var(--op-text-dim)' }}
-        />
-        {status}
-      </p>
-
-      <div className="flex flex-wrap gap-2">
+    <Pill>
+      <span
+        aria-hidden
+        className="inline-block w-2 h-2 rounded-full"
+        style={{ background: state.clockedIn ? (state.onBreak ? '#d97706' : '#16a34a') : 'var(--op-text-dim)' }}
+      />
+      <span className="text-xs font-medium whitespace-nowrap" style={{ color: 'var(--op-text)' }}>{label}</span>
+      <span className="mx-1 h-4 w-px" style={{ background: 'var(--op-border)' }} aria-hidden />
+      <div className="flex items-center gap-1.5">
         {actionsFor(state).map((b) => (
           <button
             key={b.action}
             type="button"
             disabled={busy}
             onClick={() => act(b.action)}
-            className="rounded-md px-3 py-2 text-sm font-medium disabled:opacity-50"
+            className="rounded-md px-2.5 py-1 text-xs font-medium disabled:opacity-50 whitespace-nowrap"
             style={
               b.kind === 'primary'
                 ? { background: 'var(--op-accent)', color: '#1c1917' }
@@ -207,12 +200,9 @@ export function ClockCard() {
           </button>
         ))}
       </div>
-
       {error && (
-        <p className="text-sm mt-3" style={{ color: 'var(--op-danger)' }} role="alert">
-          {error}
-        </p>
+        <span className="text-xs" style={{ color: 'var(--op-danger)' }} role="alert">{error}</span>
       )}
-    </Shell>
+    </Pill>
   );
 }

@@ -1,8 +1,10 @@
 import Link from 'next/link';
 
+import { ClockCard } from '@/components/dashboard/ClockCard';
+
 export function DashboardHeader() {
   return (
-    <header className="flex items-end justify-between mb-8">
+    <header className="flex flex-wrap items-center justify-between gap-4 mb-8">
       <div>
         <p
           className="text-xs font-semibold uppercase tracking-widest mb-1"
@@ -14,6 +16,8 @@ export function DashboardHeader() {
           Good morning.
         </h1>
       </div>
+      {/* The office time clock lives here, in the header (row 337, Naldo's placement). */}
+      <ClockCard />
       <Link
         href="/quote/new"
         className="inline-flex items-center gap-2 px-4 py-2 rounded-md font-medium text-sm"
