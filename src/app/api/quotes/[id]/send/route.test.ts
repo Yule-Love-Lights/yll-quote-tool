@@ -121,6 +121,7 @@ function makeSb(
 ) {
   const updatePayloads: Array<Record<string, unknown>> = [];
   const insertPayloads: Array<{ table: string; payload: Record<string, unknown> }> = [];
+  const isArgs: Array<[string, unknown]> = [];
   const builder: Record<string, unknown> = {};
   let isUpdate = false;
   let isInsert = false;
@@ -144,7 +145,10 @@ function makeSb(
       return builder;
     },
     eq: () => builder,
-    is: () => builder,
+    is: (column: string, value: unknown) => {
+      isArgs.push([column, value]);
+      return builder;
+    },
     // #264: real route code now chains `.abortSignal(signal)` on every direct
     // query (see withDbTimeout in route.ts) — no-op passthrough here, same
     // shape as eq()/is() above; the timeout behavior itself is covered by
@@ -169,7 +173,97 @@ function makeSb(
       resolve(res);
     },
   });
-  return { client: builder, updatePayloads, insertPayloads };
+  return { client: builder, updatePayloads, insertPayloads, isArgs };
+}
+
+// Two-request Supabase fake for the fresh-send race regression. Each query gets
+// its own builder (the general-purpose fake above intentionally reuses one),
+// while both requests share one live row. The read barrier guarantees both
+// handlers capture quote_sent_at=null before either stamp can run. Update
+// filters are then evaluated against the live row at execution time, matching
+// the database behavior that makes a quote_sent_at IS NULL predicate a CAS.
+function makeConcurrentFreshSendSb(quote: Record<string, unknown>) {
+  const liveQuote: Record<string, unknown> = {
+    status: null,
+    deposit_paid_at: null,
+    viewed_at: null,
+    customer_approved_at: null,
+    ...quote,
+  };
+  let readCount = 0;
+  let releaseReads!: () => void;
+  const bothReadsReached = new Promise<void>((resolve) => {
+    releaseReads = resolve;
+  });
+
+  const client = {
+    from: (table: string) => {
+      let operation: 'select' | 'update' | 'insert' = 'select';
+      let updatePayload: Record<string, unknown> = {};
+      const eqFilters: Array<[string, unknown]> = [];
+      const isFilters: Array<[string, unknown]> = [];
+
+      const query: Record<string, unknown> = {};
+      Object.assign(query, {
+        select: () => query,
+        update: (payload: Record<string, unknown>) => {
+          operation = 'update';
+          updatePayload = payload;
+          return query;
+        },
+        insert: () => {
+          operation = 'insert';
+          return query;
+        },
+        eq: (column: string, value: unknown) => {
+          eqFilters.push([column, value]);
+          return query;
+        },
+        is: (column: string, value: unknown) => {
+          isFilters.push([column, value]);
+          return query;
+        },
+        abortSignal: () => query,
+        single: async () => {
+          const snapshot = { ...liveQuote };
+          readCount += 1;
+          if (readCount === 2) releaseReads();
+          await bothReadsReached;
+          return { data: snapshot, error: null };
+        },
+        then: (
+          resolve: (value: unknown) => void,
+          reject?: (reason: unknown) => void,
+        ) => {
+          try {
+            if (operation === 'insert' || table !== 'quotes') {
+              resolve({ data: null, error: null });
+              return;
+            }
+
+            if (operation === 'update') {
+              const matches = [...eqFilters, ...isFilters].every(
+                ([column, value]) => liveQuote[column] === value,
+              );
+              if (matches) Object.assign(liveQuote, updatePayload);
+              resolve({
+                data: matches ? [{ id: liveQuote.id }] : [],
+                error: null,
+              });
+              return;
+            }
+
+            resolve({ data: { ...liveQuote }, error: null });
+          } catch (error) {
+            reject?.(error);
+          }
+        },
+      });
+      return query;
+    },
+  };
+
+  return { client, bothReadsReached };
 }
 
 const ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
@@ -481,7 +575,7 @@ describe('POST /api/quotes/[id]/send — changes_requested resend (Bug 1)', () =
       ghl_stage_synced_at: '2026-06-26T00:00:01Z',
       status: 'changes_requested',
     };
-    const { client, updatePayloads } = makeSb(changesRequested);
+    const { client, updatePayloads, isArgs } = makeSb(changesRequested);
     sbRef.current = client;
 
     const res = await POST(makeReq(), { params });
@@ -494,6 +588,7 @@ describe('POST /api/quotes/[id]/send — changes_requested resend (Bug 1)', () =
     // status re-stamped to 'sent'
     const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
     expect(stampWrite).toBeTruthy();
+    expect(isArgs).not.toContainEqual(['quote_sent_at', null]);
     // messaging fired
     expect(hl.sendSms).toHaveBeenCalled();
     expect(hl.sendEmail).toHaveBeenCalled();
@@ -550,7 +645,7 @@ describe('POST /api/quotes/[id]/send — #116 revive (declined/abandoned re-send
       status: 'declined',
       decline_reason: 'Went with a competitor',
     };
-    const { client, updatePayloads } = makeSb(declined);
+    const { client, updatePayloads, isArgs } = makeSb(declined);
     sbRef.current = client;
 
     const res = await POST(makeReq(), { params });
@@ -564,6 +659,7 @@ describe('POST /api/quotes/[id]/send — #116 revive (declined/abandoned re-send
     const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
     expect(stampWrite).toBeTruthy();
     expect(stampWrite!.quote_sent_at).not.toBe('2026-06-20T00:00:00Z');
+    expect(isArgs).not.toContainEqual(['quote_sent_at', null]);
     // messaging + GHL card move fired, same as any fresh send
     expect(hl.sendSms).toHaveBeenCalled();
     expect(hl.sendEmail).toHaveBeenCalled();
@@ -576,7 +672,7 @@ describe('POST /api/quotes/[id]/send — #116 revive (declined/abandoned re-send
       quote_sent_at: '2026-06-20T00:00:00Z',
       status: 'abandoned',
     };
-    const { client, updatePayloads } = makeSb(abandoned);
+    const { client, updatePayloads, isArgs } = makeSb(abandoned);
     sbRef.current = client;
 
     const res = await POST(makeReq(), { params });
@@ -586,6 +682,7 @@ describe('POST /api/quotes/[id]/send — #116 revive (declined/abandoned re-send
     expect(json.revived).toBe(true);
     const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
     expect(stampWrite).toBeTruthy();
+    expect(isArgs).not.toContainEqual(['quote_sent_at', null]);
     expect(hl.sendSms).toHaveBeenCalled();
   });
 
@@ -931,6 +1028,24 @@ describe('POST /api/quotes/[id]/send — portal and delivery gates', () => {
   // deposit_paid_at, so a race landing AFTER the fast-path checks above (but
   // before this write) can't sneak a real stamp/GHL/message through.
   describe('#187b — fresh-send stamp TOCTOU guard', () => {
+    it('allows exactly one external delivery when two fresh sends race', async () => {
+      const { client, bothReadsReached } = makeConcurrentFreshSendSb({ ...FRESH_QUOTE });
+      sbRef.current = client;
+
+      const first = POST(makeReqWithBody({ channel: 'both' }), { params });
+      const second = POST(makeReqWithBody({ channel: 'both' }), { params });
+
+      await bothReadsReached;
+      const responses = await Promise.all([first, second]);
+      const bodies = await Promise.all(responses.map((response) => response.json()));
+
+      expect(hl.sendSms).toHaveBeenCalledTimes(1);
+      expect(hl.sendEmail).toHaveBeenCalledTimes(1);
+      expect(hl.updateOpportunity).toHaveBeenCalledTimes(1);
+      expect(responses.map((response) => response.status).sort((a, b) => a - b)).toEqual([200, 409]);
+      expect(bodies).toContainEqual(expect.objectContaining({ code: 'send-conflict' }));
+    });
+
     it('409s and does no GHL/messaging work when view_only flips ON between fetch and stamp', async () => {
       const { client, updatePayloads } = makeSb({ ...FRESH_QUOTE }, { stampRace: true });
       sbRef.current = client;
