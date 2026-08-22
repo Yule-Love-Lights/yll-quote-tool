@@ -94,6 +94,9 @@ const PUBLIC_API_EXACT = new Set([
   '/api/ops/midnight-close', // Vercel Cron (CRON_SECRET-guarded, row 281 P4P midnight auto-close for forgotten days) — same reason as the digest above: a cron carries no session, so without this entry the perimeter 401s it before its own secret check ever runs. Deliberately NOT under /api/ops/v1, so it stays outside the crew surface.
   '/api/inventory/prep-digest', // Vercel Cron (CRON_SECRET-guarded, #666 daily prep digest — was silently 401'd by this perimeter from #666's merge until the S47 wrap review caught it)
   '/api/jobs/completing-today', // Vercel Cron (CRON_SECRET-guarded, #666 completing-today Jobs ping — same gap, same fix)
+  '/api/site-forms/retry', // Vercel Cron (CRON_SECRET-guarded, #195 site-submission GHL retry) —
+  // same reasoning as the leads worker below: no operator session on a cron request,
+  // so without this it 401s before reaching its own secret check.
   '/api/leads/retry', // Vercel Cron (CRON_SECRET-guarded, #leads GHL-outage retry worker) — a cron
   // request carries no operator session, so it must be allowlisted here to reach
   // its own CRON_SECRET check (the /api/leads carve-out below is exact-match +

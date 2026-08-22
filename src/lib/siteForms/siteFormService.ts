@@ -43,6 +43,12 @@ export const SITE_FORM_TAGS: Record<SiteFormType, string> = {
 // Tags that belong to the sales path and must never be applied from here.
 export const FORBIDDEN_SALES_TAGS = ['new lead'] as const;
 
+// The nominated household, created as a contact when the nominator confirms they
+// have permission for us to contact them (Naldo, 2026-08-17). A separate tag so a
+// nominee is never mistaken for the person who sent the nomination, and so this
+// audience can be targeted or suppressed on its own.
+export const NOMINEE_TAG = 'hope-nominee';
+
 export type SiteSubmissionInput = {
   formType: SiteFormType;
   formVariant: string;
@@ -127,4 +133,44 @@ export async function syncSubmissionToGhl(input: {
 
   await addContactTags(contactId, [tag]);
   return { contactId, tags: [tag] };
+}
+
+/**
+ * Creates the NOMINATED household as a GHL contact, tagged so it can enter the
+ * Light Up For Hope automation.
+ *
+ * Only ever called when the nominator ticked the permission box on the form.
+ * That gate exists for a plain reason: the nominee did not fill in this form and
+ * did not ask to hear from us, and messaging people who never agreed is the kind
+ * of thing that carries per-message penalties. The nominator confirming they have
+ * the household's permission is what makes reaching out defensible, so the
+ * caller MUST pass consent through rather than defaulting it on.
+ */
+export async function syncNomineeToGhl(input: {
+  email?: string | null;
+  phone?: string | null;
+  name?: string | null;
+  address?: string | null;
+  consent: boolean;
+}): Promise<SiteFormGhlResult> {
+  if (!input.consent) return { contactId: null, tags: [] };
+  // Nothing to create a contact from. A nomination can legitimately arrive with
+  // only a name and address, and GHL needs an email or phone to be reachable.
+  if (!input.email && !input.phone) return { contactId: null, tags: [] };
+
+  const { firstName, lastName } = splitName(input.name);
+  const { contact } = await upsertContact({
+    email: input.email || undefined,
+    phone: input.phone || undefined,
+    firstName,
+    lastName,
+    address1: input.address || undefined,
+    source: 'website hope nominee',
+  });
+
+  const contactId = (contact as { id?: string } | undefined)?.id ?? null;
+  if (!contactId) return { contactId: null, tags: [] };
+
+  await addContactTags(contactId, [NOMINEE_TAG]);
+  return { contactId, tags: [NOMINEE_TAG] };
 }

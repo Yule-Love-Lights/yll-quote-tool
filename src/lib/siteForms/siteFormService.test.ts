@@ -142,3 +142,55 @@ describe('splitName', () => {
     });
   });
 });
+
+describe('nominee contact (Naldo 2026-08-17: nominees become contacts and enter automation)', () => {
+  it('creates a tagged nominee contact WHEN permission was given', async () => {
+    const { syncNomineeToGhl, NOMINEE_TAG } = await import('./siteFormService');
+    upsertContact.mockResolvedValue({ contact: { id: 'nominee-1' }, new: true });
+
+    const res = await syncNomineeToGhl({
+      name: 'Ruth Neighbour',
+      email: 'ruth@example.com',
+      phone: '5552220000',
+      address: '12 Elm Street',
+      consent: true,
+    });
+
+    expect(res).toEqual({ contactId: 'nominee-1', tags: [NOMINEE_TAG] });
+    expect(addContactTags).toHaveBeenCalledWith('nominee-1', [NOMINEE_TAG]);
+    // Still never a sales opportunity, even for a nominee.
+    expect(createOpportunity).not.toHaveBeenCalled();
+    expect(findOrCreateOpportunityForContact).not.toHaveBeenCalled();
+  });
+
+  it('creates NOTHING when permission was not given', async () => {
+    const { syncNomineeToGhl } = await import('./siteFormService');
+    const res = await syncNomineeToGhl({
+      name: 'Ruth Neighbour',
+      email: 'ruth@example.com',
+      phone: '5552220000',
+      consent: false,
+    });
+
+    expect(res).toEqual({ contactId: null, tags: [] });
+    // The load-bearing assertion: a household that never agreed is never sent to
+    // the CRM and so can never be swept into a campaign.
+    expect(upsertContact).not.toHaveBeenCalled();
+    expect(addContactTags).not.toHaveBeenCalled();
+  });
+
+  it('skips when there is no way to reach them', async () => {
+    const { syncNomineeToGhl } = await import('./siteFormService');
+    const res = await syncNomineeToGhl({ name: 'Ruth', address: '12 Elm St', consent: true });
+    expect(res).toEqual({ contactId: null, tags: [] });
+    expect(upsertContact).not.toHaveBeenCalled();
+  });
+
+  it('keeps the nominee tag distinct from the nominator tag', async () => {
+    const { NOMINEE_TAG, SITE_FORM_TAGS, FORBIDDEN_SALES_TAGS } = await import('./siteFormService');
+    expect(NOMINEE_TAG).not.toBe(SITE_FORM_TAGS.nomination);
+    for (const forbidden of FORBIDDEN_SALES_TAGS) {
+      expect(NOMINEE_TAG.toLowerCase()).not.toBe(forbidden.toLowerCase());
+    }
+  });
+});

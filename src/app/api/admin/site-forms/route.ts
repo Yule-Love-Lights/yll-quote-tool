@@ -16,7 +16,7 @@ import { SITE_FORM_TYPES } from '@/lib/siteForms/siteFormService';
 export const runtime = 'nodejs';
 
 const LIST_COLUMNS =
-  'id,created_at,form_type,form_variant,name,email,phone,payload,resume_path,resume_error,consent,landing_url,sync_status,sync_error,ghl_contact_id,is_test';
+  'id,created_at,form_type,form_variant,name,email,phone,payload,resume_path,resume_error,consent,landing_url,sync_status,sync_error,ghl_contact_id,is_test,handled_at,handled_by,retry_count,last_retried_at,nominee_consent,nominee_ghl_contact_id,nominee_sync_error';
 
 const MAX_ROWS = 500;
 // Long enough for a human to click it, short enough that a copied link dies.
@@ -41,6 +41,12 @@ export async function GET(req: NextRequest) {
   if (typeParam && (SITE_FORM_TYPES as readonly string[]).includes(typeParam)) {
     query = query.eq('form_type', typeParam);
   }
+
+  // ?handled=open shows only what still needs attention, which is the useful
+  // default view once the list has any history in it.
+  const handledParam = req.nextUrl.searchParams.get('handled');
+  if (handledParam === 'open') query = query.is('handled_at', null);
+  if (handledParam === 'done') query = query.not('handled_at', 'is', null);
 
   const { data, error } = await query;
   if (error) {

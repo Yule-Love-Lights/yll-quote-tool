@@ -41,6 +41,7 @@ import {
   asSiteFormType,
   requiredFieldsFor,
   syncSubmissionToGhl,
+  syncNomineeToGhl,
   type SiteFormType,
 } from '@/lib/siteForms/siteFormService';
 import {
@@ -220,6 +221,10 @@ export async function POST(req: NextRequest) {
   const landingUrl = str(fields.landingUrl, MAX_LEN.landingUrl);
   const payload = sanitizePayload(fields.payload);
   const consent = fields.consent === true;
+  // Separate from the submitter's own consent: this is the nominator confirming
+  // they have the household's permission for us to contact them. Only that turns
+  // the nominee into a contact, so it is never inferred.
+  const nomineeConsent = fields.nomineeConsent === true || fields.nomineeConsent === 'true';
 
   if (!email || !EMAIL_RE.test(email)) {
     return jsonResponse(origin, { error: 'A valid email address is required' }, 400);
@@ -316,6 +321,7 @@ export async function POST(req: NextRequest) {
       phone,
       payload,
       consent,
+      nominee_consent: formType === 'nomination' ? nomineeConsent : false,
       landing_url: landingUrl,
       ip,
       sync_status: isSpam ? 'spam' : 'pending',
@@ -382,6 +388,32 @@ export async function POST(req: NextRequest) {
       .from('site_submissions')
       .update({ sync_status: 'error', sync_error: message })
       .eq('id', inserted.id);
+  }
+
+  // The nominated household, only when the nominator confirmed permission.
+  // Fail-open like every other integration call here: a GHL problem is recorded
+  // on the row and never surfaced to the person filling in the form.
+  if (formType === 'nomination' && nomineeConsent) {
+    try {
+      const { contactId } = await syncNomineeToGhl({
+        name: payload.nomineeName,
+        email: payload.nomineeEmail,
+        phone: payload.nomineePhone,
+        address: payload.nomineeAddress,
+        consent: true,
+      });
+      await supabase
+        .from('site_submissions')
+        .update({ nominee_ghl_contact_id: contactId })
+        .eq('id', inserted.id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      console.error('[site-forms] nominee sync failed');
+      await supabase
+        .from('site_submissions')
+        .update({ nominee_sync_error: message })
+        .eq('id', inserted.id);
+    }
   }
 
   // Staff alerts, both fail-open.
