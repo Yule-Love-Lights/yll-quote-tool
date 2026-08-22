@@ -13,6 +13,7 @@ import {
 } from "@/lib/design/sceneTypes";
 import { pxPerFoot } from "./yardstick";
 import { renderStrand } from "./strand";
+import { normalizeLightScale } from "./lightScale";
 import { createWreath } from "./wreath";
 import { createBow } from "./bow";
 import { renderGarland } from "./garland";
@@ -39,6 +40,13 @@ export type ReadOnlyDesignOptions = {
   photoH: number | null;
   /** Overrides scene.brightness if provided. */
   brightness?: number;
+  /**
+   * Overrides scene.lightScale if provided — how big the lights are DRAWN
+   * (0.5–4, default 1). Presentation only; it never touches footage or price.
+   * Normally left unset so the portal shows exactly the size staff set in the
+   * editor.
+   */
+  lightScale?: number;
   /**
    * Scene-item ids to HIDE (#27 D — portal toggle filter). null/undefined ⇒
    * render everything. Update live without remounting via the returned setHidden.
@@ -80,6 +88,7 @@ export async function renderReadOnlyDesign(
 ): Promise<ReadOnlyDesignController> {
   const scene = opts.scene;
   const brightness = opts.brightness ?? scene.brightness ?? 50;
+  const lightScale = normalizeLightScale(opts.lightScale ?? scene.lightScale);
   // Mutable so the React wrapper can update the toggle filter without remounting.
   let hidden: Set<string> | null = opts.hiddenIds ?? null;
   // Mutable per-item color override (#10/#92). null ⇒ render as authored.
@@ -184,7 +193,7 @@ export async function renderReadOnlyDesign(
       // Light items (strand, spritzer, mini-area) recolor to the whole-house
       // override (#10/#92) by swapping their colorPattern — a shallow clone so the
       // stored scene is never mutated. Non-light items ignore the override.
-      if (isStrand(item)) g = renderStrand(cp ? { ...item, colorPattern: cp } : item, ppfBound(item.yardstickId));
+      if (isStrand(item)) g = renderStrand(cp ? { ...item, colorPattern: cp } : item, ppfBound(item.yardstickId), lightScale);
       else if (isWreath(item)) g = createWreath(item, ppfActive(), requestRedraw);
       else if (isBow(item)) g = createBow(item, ppfActive(), requestRedraw);
       else if (isGarland(item)) g = renderGarland(item, ppfBound(item.yardstickId), requestRedraw);
@@ -195,7 +204,7 @@ export async function renderReadOnlyDesign(
       // A2 Mini-Area scatter-fill (bushes/canopy). Uses its bound yardstick like
       // strands (the fill density is area/scale-dependent). miniGroup has no
       // geometry — its member strands render on their own.
-      else if (isMiniArea(item)) g = renderMiniArea(cp ? { ...item, colorPattern: cp } : item, ppfBound(item.yardstickId));
+      else if (isMiniArea(item)) g = renderMiniArea(cp ? { ...item, colorPattern: cp } : item, ppfBound(item.yardstickId), lightScale);
       if (g) {
         g.listening(false);
         drawLayer.add(g);
