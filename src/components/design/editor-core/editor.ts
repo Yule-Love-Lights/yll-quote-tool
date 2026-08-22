@@ -819,7 +819,7 @@ export async function renderEditor(
         g.draggable(true);
         g.on("transformend dragend", () => bakeTransformIntoGarland(g, item.id));
       } else if (isSpritzer(item)) {
-        g = createSpritzer(item, ppfForActiveYardstick());
+        g = createSpritzer(item, ppfForActiveYardstick(), activeLightScale());
         g.on("transformend dragend", () => bakeTransformIntoSpritzer(g, item.id));
       } else if (isText(item)) {
         g = renderText(item, ppfForActiveYardstick());

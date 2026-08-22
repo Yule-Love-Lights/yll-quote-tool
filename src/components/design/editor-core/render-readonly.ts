@@ -197,7 +197,7 @@ export async function renderReadOnlyDesign(
       else if (isWreath(item)) g = createWreath(item, ppfActive(), requestRedraw);
       else if (isBow(item)) g = createBow(item, ppfActive(), requestRedraw);
       else if (isGarland(item)) g = renderGarland(item, ppfBound(item.yardstickId), requestRedraw);
-      else if (isSpritzer(item)) g = createSpritzer(cp ? { ...item, colorPattern: cp } : item, ppfActive());
+      else if (isSpritzer(item)) g = createSpritzer(cp ? { ...item, colorPattern: cp } : item, ppfActive(), lightScale);
       else if (isText(item)) g = renderText(item, ppfActive());
       else if (isCustom(item)) g = createCustom(item, ppfActive(), requestRedraw);
       else if (isPole(item)) g = createPole(item, ppfActive());

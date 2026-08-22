@@ -5,6 +5,7 @@ import {
   LIGHT_SCALE_MIN,
   bulbDims,
   normalizeLightScale,
+  spritzerLightDims,
 } from "./lightScale";
 
 // Unit coverage for the per-design light-size multiplier (Naldo, 2026-08-22).
@@ -103,5 +104,62 @@ describe("bulbDims scaling", () => {
 
   it("leaves coreSoftness alone — it is a gradient stop, not a size", () => {
     expect(bulbDims("c9", 20, 4).coreSoftness).toBe(bulbDims("c9", 20, 1).coreSoftness);
+  });
+});
+
+describe("spritzerLightDims", () => {
+  // A 24" spritzer at 20 px/ft renders at radiusPx 20: (24/12 * 20) / 2.
+  const R = 20;
+
+  it("has both tips and rays pinned to their floors at 1x on a house photo", () => {
+    // 20 * 0.028 = 0.56 and 20 * 0.008 = 0.16, so both floors are what is
+    // actually in force. This is the reported bug, pinned as a number.
+    const d = spritzerLightDims(R);
+    expect(d.tipRadius).toBe(1.5);
+    expect(d.rayStroke).toBe(0.6);
+  });
+
+  it("is identical to passing an explicit 1", () => {
+    for (const r of [2, 20, 60, 200]) {
+      expect(spritzerLightDims(r, 1)).toEqual(spritzerLightDims(r));
+    }
+  });
+
+  it("multiplies AFTER the floors, so the slider actually moves them", () => {
+    const d = spritzerLightDims(R, 3);
+    expect(d.tipRadius).toBe(4.5);
+    expect(d.rayStroke).toBeCloseTo(1.8, 10);
+  });
+
+  it("also scales a big spritzer whose real size already beat the floors", () => {
+    // radiusPx 200: 200 * 0.028 = 5.6 and 200 * 0.008 = 1.6, both above floor.
+    const d = spritzerLightDims(200, 2);
+    expect(d.tipRadius).toBeCloseTo(11.2, 10);
+    expect(d.rayStroke).toBeCloseTo(3.2, 10);
+  });
+
+  it("grows the tip halo with the tip so a tip keeps its proportions", () => {
+    for (const scale of [0.5, 1, 2, 4]) {
+      const d = spritzerLightDims(R, scale);
+      expect(d.tipHaloRadius).toBeCloseTo(d.tipRadius * 2.6, 10);
+    }
+  });
+
+  it("clamps a bad scale rather than applying it raw", () => {
+    expect(spritzerLightDims(R, 0)).toEqual(spritzerLightDims(R, LIGHT_SCALE_MIN));
+    expect(spritzerLightDims(R, 500)).toEqual(spritzerLightDims(R, LIGHT_SCALE_MAX));
+    expect(spritzerLightDims(R, NaN)).toEqual(spritzerLightDims(R, 1));
+  });
+
+  it("does not touch the spritzer's own radius, which staff already control", () => {
+    // Guards the split this helper exists to keep: it returns light parts
+    // only. If a future edit starts returning a scaled spray radius, the
+    // Small/Medium/Large size buttons and the resize handles would start
+    // fighting the slider.
+    expect(Object.keys(spritzerLightDims(R, 4)).sort()).toEqual([
+      "rayStroke",
+      "tipHaloRadius",
+      "tipRadius",
+    ]);
   });
 });

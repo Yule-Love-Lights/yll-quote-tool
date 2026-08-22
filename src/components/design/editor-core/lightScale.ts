@@ -59,6 +59,32 @@ const TYPE: Record<
   bistro:    { radiusFt: 0.11,  haloMul: 3.0, coreSoftness: 0.55, minPx: 4.5 },
 };
 
+// The drawn size of a spritzer's LIGHT parts, given the spritzer's own
+// rendered radius in pixels.
+//
+// A spritzer is a radial spray: `radiusPx` is how big the SPRAY is, which
+// staff already control through the item's Small/Medium/Large size and the
+// resize handles. This helper covers only the lit elements inside it, which
+// had no control at all and hit the same floor as a c9 does. A 24" spritzer
+// at 20 px/ft renders at radiusPx 20, so its tips compute to 0.56 px and pin
+// to the 1.5 px floor, and its rays pin to their 0.6 px floor. Both are
+// hairlines on a house photo.
+//
+// Same money rule as `bulbDims`: nothing here is priced. A spritzer bills off
+// its staff-set `quoteSize`, never off anything drawn.
+export function spritzerLightDims(
+  radiusPx: number,
+  lightScale: number = LIGHT_SCALE_DEFAULT,
+) {
+  const scale = normalizeLightScale(lightScale);
+  const tipRadius = Math.max(1.5, radiusPx * 0.028) * scale;
+  return {
+    tipRadius,
+    tipHaloRadius: tipRadius * 2.6,
+    rayStroke: Math.max(0.6, radiusPx * 0.008) * scale,
+  };
+}
+
 // The drawn size of one bulb. `lightScale` multiplies AFTER the `minPx` floor
 // on purpose: on a wide house shot the floor is what's actually in force
 // (see the header), so scaling before it would be swallowed whole and the
