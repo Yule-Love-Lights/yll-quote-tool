@@ -459,6 +459,23 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
   }
 
+  // Row 313(b) fix: the SAME resolveAmendmentBasis figures the customer
+  // notice/portal card/trail already use (previous_total/new_total/delta from
+  // invoice_basis when present, else the raw trail) — added alongside the
+  // existing raw amendment.* fields (NOT replacing them: route.test.ts's own
+  // "quotes the INVOICE balance, not the trail balance" case asserts
+  // `amendment.new_balance` stays the raw TRAIL figure, on purpose, as a
+  // known-different comparison point). The jobs/[id] admin page's own
+  // amend-summary toast reads these display_* fields instead of the raw
+  // ones, so a tax-overridden amendment's staff-facing summary can never
+  // disagree with the invoice the customer is actually billed against.
+  // FOOTGUN (row 330 review): any FUTURE staff- or customer-facing consumer of
+  // this response MUST read the display_* fields, NEVER the raw
+  // new_total/new_balance/delta above — the raw ones are the pre-tax-scaling
+  // trail figures kept only as a test comparison point, and reading them on a
+  // tax-overridden amendment reproduces the exact row 330 bug this fix closed.
+  const displayBasis = resolveAmendmentBasis(amendment);
+
   return NextResponse.json({
     ok: true,
     requiresReconsent: requiresReconsent(amendment),
@@ -475,6 +492,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       new_balance: amendment.new_balance,
       credit_note: amendment.credit_note ?? 0,
       overpayment: !!amendment.overpayment,
+      display_delta: displayBasis.deltaUsd,
+      display_new_total: displayBasis.newTotalUsd,
+      display_new_balance: displayBasis.newBalanceUsd,
     },
   });
 }

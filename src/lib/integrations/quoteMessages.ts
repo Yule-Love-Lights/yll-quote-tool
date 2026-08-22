@@ -33,7 +33,7 @@ const QUOTE_READY_SMS_INTRO: Record<ServiceType, string> = {
 
 export function quoteSmsBody(firstName: string, portalUrl: string, serviceType?: string | null): string {
   const type = asServiceType(serviceType) ?? DEFAULT_SERVICE_TYPE;
-  return `Hi ${firstName}! ${QUOTE_READY_SMS_INTRO[type]} View your design, see the price, and approve here: ${portalUrl} Reply with any questions!`;
+  return `Hi ${greetingName(firstName)}! ${QUOTE_READY_SMS_INTRO[type]} View your design, see the price, and approve here: ${portalUrl} Reply with any questions!`;
 }
 
 function escapeHtml(s: string): string {
@@ -54,7 +54,7 @@ const QUOTE_READY_EMAIL_COPY: Record<ServiceType, { intro: string; breakdown: st
 export function quoteEmailHtml(firstName: string, portalUrl: string, serviceType?: string | null): string {
   const type = asServiceType(serviceType) ?? DEFAULT_SERVICE_TYPE;
   const { intro, breakdown } = QUOTE_READY_EMAIL_COPY[type];
-  const name = escapeHtml(firstName);
+  const name = escapeHtml(greetingName(firstName));
   return [
     `<p>Hi ${name},</p>`,
     `<p>${intro}</p>`,
@@ -97,11 +97,18 @@ const GREETING_FALLBACK = 'there';
 
 function greetingName(firstName: string): string {
   if (!firstName) return firstName;
-  // The ONE caller (POST /api/quotes/[id]/amend) resolves a missing/blank
+  // The amend route (POST /api/quotes/[id]/amend) resolves a missing/blank
   // customer_name to the literal 'there' BEFORE calling us, so a nameless
   // customer's greeting arrives here as a sentence word, not a name.
   // Capitalising it turns the natural "Hi there!" into "Hi There!", which
   // reads like a literal name. Caught by a review lens, not by the author.
+  // (row 315: every other customer greeting now routes through this same
+  // helper — and several of their callers (send, approve, send-balance,
+  // apply-color-request, valor webhook) resolve a blank name to the SAME
+  // literal 'there' before calling, so this exemption is value-based on
+  // purpose: it protects every caller that passes 'there', not one route's
+  // calling shape. The staff lens corrected an earlier version of this
+  // comment that claimed the opposite.)
   if (firstName === GREETING_FALLBACK) return firstName;
   return firstName.charAt(0).toUpperCase() + firstName.slice(1);
 }
@@ -126,7 +133,7 @@ export function approvalSmsBody(
   phone: string,
   depositPercent: number,
 ): string {
-  return `Hi ${firstName}! 🎄 Thanks for approving your Yule Love Lights quote. We'll reach out shortly to collect your ${depositPercent}% deposit (about ${usd(depositUsd)}) and lock in your install date — nothing to do right now. Questions? Call or text us at ${phone}.`;
+  return `Hi ${greetingName(firstName)}! 🎄 Thanks for approving your Yule Love Lights quote. We'll reach out shortly to collect your ${depositPercent}% deposit (about ${usd(depositUsd)}) and lock in your install date — nothing to do right now. Questions? Call or text us at ${phone}.`;
 }
 
 export function approvalEmailHtml(
@@ -136,7 +143,7 @@ export function approvalEmailHtml(
   phone: string,
   depositPercent: number,
 ): string {
-  const name = escapeHtml(firstName);
+  const name = escapeHtml(greetingName(firstName));
   return [
     `<p>Hi ${name},</p>`,
     `<p>Thanks for approving your holiday lighting quote! 🎄</p>`,
@@ -632,7 +639,7 @@ export function amendmentDeclinedInternalEmailHtml(input: {
 export const BALANCE_LINK_EMAIL_SUBJECT = 'Your Yule Love Lights balance is ready to pay';
 
 export function balanceLinkSmsBody(firstName: string, balanceUsd: number, payUrl: string, phone: string): string {
-  return `Hi ${firstName}! 🎄 Your Yule Love Lights install is wrapping up. Your remaining balance of ${usdExact(balanceUsd)} can be paid securely here: ${payUrl}  Questions? Call or text ${phone}.`;
+  return `Hi ${greetingName(firstName)}! 🎄 Your Yule Love Lights install is wrapping up. Your remaining balance of ${usdExact(balanceUsd)} can be paid securely here: ${payUrl}  Questions? Call or text ${phone}.`;
 }
 
 export function balanceLinkEmailHtml(input: {
@@ -641,7 +648,7 @@ export function balanceLinkEmailHtml(input: {
   payUrl: string;
   phone: string;
 }): string {
-  const name = escapeHtml(input.firstName);
+  const name = escapeHtml(greetingName(input.firstName));
   return [
     `<p>Hi ${name},</p>`,
     `<p>Your holiday lighting install is wrapping up — thank you! Here's your remaining balance:</p>`,
@@ -664,7 +671,7 @@ export const RECEIPT_EMAIL_SUBJECT = 'Your deposit is confirmed — you’re boo
 // Customer SMS confirming the deposit posted. Whole-dollar amount; points them
 // at the booked/confirmation page.
 export function receiptSmsBody(firstName: string, depositUsd: number, phone: string): string {
-  return `Hi ${firstName}! 🎄 We received your ${usd(depositUsd)} deposit — you're officially booked with Yule Love Lights. We'll be in touch about your install date. Questions? Call or text ${phone}.`;
+  return `Hi ${greetingName(firstName)}! 🎄 We received your ${usd(depositUsd)} deposit — you're officially booked with Yule Love Lights. We'll be in touch about your install date. Questions? Call or text ${phone}.`;
 }
 
 // Customer receipt email. Includes the deposit amount, the official Valor
@@ -677,7 +684,7 @@ export function receiptEmailHtml(input: {
   confirmationUrl: string;
   phone: string;
 }): string {
-  const name = escapeHtml(input.firstName);
+  const name = escapeHtml(greetingName(input.firstName));
   const balance = Math.max(0, input.totalUsd - input.depositUsd);
   return [
     `<p>Hi ${name},</p>`,
@@ -996,7 +1003,7 @@ export function referralEarnedEmailHtml(friendFirstName: string, amountUsd: numb
 export const REFERRAL_LINK_EMAIL_SUBJECT = "Here's your Yule Love Lights referral link";
 
 export function referralLinkEmailHtml(input: { firstName?: string | null; referralUrl: string }): string {
-  const name = input.firstName?.trim() ? escapeHtml(input.firstName.trim()) : 'there';
+  const name = input.firstName?.trim() ? escapeHtml(greetingName(input.firstName.trim())) : 'there';
   const link = escapeHtml(input.referralUrl);
   return [
     `<p>Hi ${name},</p>`,
@@ -1051,7 +1058,7 @@ export function colorChangeAppliedSmsBody(label: string): string {
 }
 
 export function colorChangeAppliedEmailHtml(firstName: string, label: string): string {
-  const name = escapeHtml(firstName);
+  const name = escapeHtml(greetingName(firstName));
   const safeLabel = escapeHtml(label);
   return [
     `<p>Hi ${name},</p>`,
@@ -1096,5 +1103,58 @@ export function internalColorChangeRequestedEmailHtml(input: {
     row('Address', escapeHtml(input.address || '—')),
     `</table>`,
     `<p><a href="${input.adminUrl}">Open in quote tool to apply →</a> &nbsp;|&nbsp; <a href="${input.portalUrl}">Customer portal →</a></p>`,
+  ].join('\n');
+}
+
+// ─── Reopen requested — internal staff alert (ledger row 236) ───────────────
+// Fired (best-effort) when a customer on a DECLINED or ABANDONED quote's
+// read-only portal taps "Want to reopen your quote? Let us know!"
+// (reopen-request/route.ts). Mirrors internalChangesRequestedEmail* /
+// internalColorChangeRequestedEmail* for the overall shape (same request
+// shape: a customer portal action on an existing quote that needs a staff
+// look) — this one has no customer-typed note, since the affordance is a
+// single button, not a form. Fix round (four-lens, LOW): the quote NUMBER
+// (not just the customer name) is what an inbox-triage staffer actually
+// scans for, same reasoning as the money-alert siblings
+// (amendmentDeclinedInternalEmail*/internalDepositDeclinedEmail*) — this now
+// carries `quoteNumber` in the exact same subject/body format those use.
+
+export function internalReopenRequestedEmailSubject(input: {
+  customerName: string | null;
+  quoteNumber: number | null;
+}): string {
+  const who = input.customerName?.replace(/[\r\n]+/g, ' ').trim() || 'A customer';
+  const quoteLabel = input.quoteNumber != null ? ` quote #${input.quoteNumber}` : '';
+  return `🔓 Reopen requested: ${who}${quoteLabel}`;
+}
+
+export function internalReopenRequestedEmailHtml(input: {
+  customerName: string | null;
+  quoteNumber: number | null;
+  address: string | null;
+  phone: string | null;
+  email: string | null;
+  // The quote's derived lifecycle status ('declined' | 'abandoned' in
+  // practice — the caller only reaches this after canRevive(current) passed
+  // — typed as string so the caller can pass deriveStatus's QuoteStatus
+  // return value straight through without a narrowing cast).
+  status: string;
+  portalUrl: string;
+  adminUrl: string;
+}): string {
+  const name = escapeHtml(input.customerName?.trim() || 'Unknown');
+  const quoteLabel = input.quoteNumber != null ? ` (quote #${input.quoteNumber})` : '';
+  const row = (label: string, value: string) =>
+    `<tr><td style="padding:2px 14px 2px 0;color:#666;">${label}</td><td style="padding:2px 0;"><strong>${value}</strong></td></tr>`;
+  return [
+    `<p><strong>${name}</strong>${quoteLabel}'s ${input.status} quote — they'd like us to reopen it.</p>`,
+    `<p><strong>Action:</strong> reach out, and if it's still a fit, re-send the quote to bring them back in.</p>`,
+    `<table style="border-collapse:collapse;font-size:14px;">`,
+    row('Customer', name),
+    row('Phone', escapeHtml(input.phone || '—')),
+    row('Email', escapeHtml(input.email || '—')),
+    row('Address', escapeHtml(input.address || '—')),
+    `</table>`,
+    `<p><a href="${input.adminUrl}">Open in quote tool →</a> &nbsp;|&nbsp; <a href="${input.portalUrl}">Customer portal →</a></p>`,
   ].join('\n');
 }

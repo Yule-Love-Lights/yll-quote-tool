@@ -4,8 +4,8 @@ import Konva from "konva";
 // storage connector (createEditorApi, below), and the sibling renderers live in
 // THIS folder (./). Everything else in this file is byte-identical with the
 // design tool's canonical editor.ts — keep it that way.
-import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, isItemOnPhoto, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type SideOfHouse, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, pruneOrphanedMiniGroups, removeItemsForPhoto, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
-import { createEditorApi } from "./storage";
+import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, isItemOnPhoto, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type SideOfHouse, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, isMiniGroupable, pruneOrphanedMiniGroups, removeItemsForPhoto, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
+import { createEditorApi, SceneConflictError } from "./storage";
 import { COLORS, setPalette } from "./colors";
 import { renderStrand, strandLengthPx } from "./strand";
 import { createWreath } from "./wreath";
@@ -16,6 +16,7 @@ import { renderText, fontsReady, FONT_OPTIONS, DEFAULT_TEXT_SIZE_IN, type FontFa
 import { createCustom } from "./custom";
 import { createPole } from "./pole";
 import { renderMiniArea } from "./miniArea";
+import { LIGHT_SCALE_MAX, LIGHT_SCALE_MIN, normalizeLightScale } from "./lightScale";
 import { preloadAssets } from "./assets";
 import { renderYardstick, pxPerFoot, yardstickLabel } from "./yardstick";
 import { DEFAULT_KEYMAP, resolveAction, type KeyMap } from "./keymap";
@@ -25,6 +26,9 @@ import {
   GARLAND_SIZES,
   SPRITZER_SIZES,
   POLE_HEIGHTS,
+  C9_SPACINGS,
+  MINI_SPACINGS,
+  BISTRO_SPACINGS,
   sizePresetLabel,
   formatRawSize,
   offPresetSizeSuffix,
@@ -68,6 +72,33 @@ function sizeButtons(options: readonly number[], values: number[], attr: "data-s
   return preset + `<button ${attr}="${values[0]}" class="active" title="${raw}">${raw}</button>`;
 }
 
+// Renders the whole "Spacing" quick-pick row (#248): the <h3> + the button
+// row, for the new-tool draw panel (#spacings) and the select/bulk-edit
+// panel (#sel-spacings) alike, so the two render sites can't drift apart.
+// c9/mini/bistro get the S/M/L treatment (sizeButtons/offPresetSizeSuffix —
+// the same #202 decor pattern, including its off-preset 4th "you are here"
+// button for a legacy stored spacing the trim dropped, e.g. an old 36" c9
+// strand). Permanent is explicitly excluded — S/M/L is degenerate for its
+// single fixed option — and keeps the exact pre-#248 raw-inch rendering.
+// `values` mirrors sizeButtons' contract: [tool.spacingIn] for the new-tool
+// panel, or the bulk-edit panel's uniq'd `sharedSpacing` (mixed selections
+// get no active button / no 4th button, same as decor's mixed-size case).
+function spacingRowHtml(isPermanentType: boolean, options: number[], values: number[], containerId: string): string {
+  if (isPermanentType) {
+    const isActive = (v: number) => values.length === 1 && values[0] === v;
+    return `
+        <h3>Spacing (in)</h3>
+        <div class="spacing-row" id="${containerId}">
+          ${options.map((s) => `<button data-s="${s}" class="${isActive(s) ? "active" : ""}">${s}"</button>`).join("")}
+        </div>`;
+  }
+  return `
+        <h3>Spacing${offPresetSizeSuffix(options, values)}</h3>
+        <div class="spacing-row" id="${containerId}">
+          ${sizeButtons(options, values, "data-s")}
+        </div>`;
+}
+
 const BULB_TYPES: { id: BulbType; label: string }[] = [
   { id: "c9", label: "C9" },
   { id: "permanent", label: "Permanent" },
@@ -75,14 +106,18 @@ const BULB_TYPES: { id: BulbType; label: string }[] = [
   { id: "bistro", label: "Bistro" },
 ];
 
+// #248: trimmed to 3 values per type (Jason's picks), same shape as the
+// decor size presets in sizePresets.ts. c9/mini/bistro get the S/M/L
+// relabel (sizeButtons/offPresetSizeSuffix, below); permanent is excluded —
+// a single fixed option has no small/medium/large to show — and stays a
+// local literal here.
 const SPACINGS: Record<BulbType, number[]> = {
-  c9: [6, 9, 12, 15, 18, 24, 36],
-  mini: [4, 6, 9, 12, 18],
+  c9: C9_SPACINGS,
+  mini: MINI_SPACINGS,
   // #88: permanent pucks ship 8" on-center ONLY — no other spacing is offered
   // (the BOM math already assumes 8"). Single fixed option.
   permanent: [8],
-  // Bistro spacing typical real-world range: 12"–24" between bulbs.
-  bistro: [9, 12, 15, 18, 24, 36],
+  bistro: BISTRO_SPACINGS,
 };
 
 const STYLES: { id: DrawingStyle; label: string }[] = [
@@ -221,7 +256,11 @@ export async function renderEditor(
   const MINI_WRAP_SURFACES = new Set<string>(["bush", "tree", "column", "railing", "curtain"]);
   const isStampableCanonical = (i: SceneItem): boolean =>
     !i.linkedToId &&
-    (isWreath(i) || isBow(i) || isGarland(i) || isSpritzer(i) || isMiniArea(i) ||
+    (isWreath(i) || isBow(i) || isGarland(i) || isSpritzer(i) ||
+      // #240: a GROUPED scattershot is excluded too, same reason as the
+      // grouped-strand exclusion just below — its extent is the group's, so
+      // stamping just this one member alone wouldn't reflect the whole unit.
+      (isMiniArea(i) && !i.groupId) ||
       (isStrand(i) && !i.groupId && MINI_WRAP_SURFACES.has(i.surface ?? "")) ||
       // #88 (S23): permanent roofline runs DO twin across photos (unlike holiday
       // roofline, which staff re-draw per photo) so a portal package toggle
@@ -302,6 +341,12 @@ export async function renderEditor(
             <div class="neutral-tick" title="Neutral — original photo brightness"></div>
           </div>
           <span class="icon" title="Brighter">${sunSvg()}</span>
+          <span class="ctl-sep"></span>
+          <span class="ctl-label" title="How big the lights are drawn. Presentation only: this does not change footage or price.">Light size</span>
+          <div class="slider-wrap narrow">
+            <input type="range" min="${LIGHT_SCALE_MIN}" max="${LIGHT_SCALE_MAX}" step="0.1" value="1" id="light-scale" title="Double-click to reset to 1.0x" />
+          </div>
+          <span class="ctl-value" id="light-scale-val">1.0x</span>
         </div>
         <div class="stage-empty" id="empty"${activeBgUrl ? ' style="display:none"' : ""}>
           <div>${activePhotoId ? "This photo couldn't be loaded." : "Upload a photo of the house to get started."}</div>
@@ -317,15 +362,29 @@ export async function renderEditor(
   `;
 
   // --- State ---
-  let scene: Scene = { ...design.scene, brightness: design.scene.brightness ?? 50 };
+  let scene: Scene = {
+    ...design.scene,
+    brightness: design.scene.brightness ?? 50,
+    // Normalize on load, not just on edit: an older design has no field at
+    // all, and a hand-edited scene JSON could carry 0 (invisible lights) or a
+    // huge number. Seeding it here means every later read is already sane.
+    lightScale: normalizeLightScale(design.scene.lightScale),
+  };
+  // #88/#117: a permanent (or permanent-bistro) quote's design is locked to
+  // one bulb type so the operator only ever draws that type's runs.
+  const initialBulbType: BulbType = opts.permanentOnly ? "permanent" : opts.bistroOnly ? "bistro" : "c9";
+  // #248: the old shared "12" literal happened to sit inside all three
+  // pre-trim SPACINGS lists; it isn't in c9's or bistro's trimmed lists
+  // ([9,15,24] / [9,18,24]), so seed from SPACINGS' own middle (Medium)
+  // value instead — mirrors the bulb-type click handler's clamp below and
+  // keeps a freshly-opened tool showing a real preset active, never the
+  // off-preset 4th button, matching the decor ToolState defaults' convention
+  // of seeding the array's middle value.
+  const initialSpacings = SPACINGS[initialBulbType];
   const tool: ToolState = {
     category: "lights",
-    // #88: a permanent quote's design is locked to permanent pucks — seed the
-    // bulb type + spacing to permanent so the operator only ever draws permanent
-    // roofline runs (no holiday bulb types / decor on a permanent quote).
-    // #117: a permanent-bistro quote is locked to bistro strands the same way.
-    bulbType: opts.permanentOnly ? "permanent" : opts.bistroOnly ? "bistro" : "c9",
-    spacingIn: opts.permanentOnly ? 8 : 12,
+    bulbType: initialBulbType,
+    spacingIn: initialSpacings[Math.floor(initialSpacings.length / 2)],
     drawingStyle: "strand",
     scattershot: false,
     colorPattern: ["warm-white"],
@@ -746,7 +805,7 @@ export async function renderEditor(
       if (!onActivePhoto(item)) continue;
       let g: Konva.Group;
       if (isStrand(item)) {
-        g = renderStrand(item, ppfForStrand(item));
+        g = renderStrand(item, ppfForStrand(item), activeLightScale());
         g.draggable(true);
         g.on("transformend dragend", () => bakeTransformIntoStrand(g, item.id));
       } else if (isWreath(item)) {
@@ -760,7 +819,7 @@ export async function renderEditor(
         g.draggable(true);
         g.on("transformend dragend", () => bakeTransformIntoGarland(g, item.id));
       } else if (isSpritzer(item)) {
-        g = createSpritzer(item, ppfForActiveYardstick());
+        g = createSpritzer(item, ppfForActiveYardstick(), activeLightScale());
         g.on("transformend dragend", () => bakeTransformIntoSpritzer(g, item.id));
       } else if (isText(item)) {
         g = renderText(item, ppfForActiveYardstick());
@@ -783,7 +842,7 @@ export async function renderEditor(
           g.draggable(false);
         }
       } else if (isMiniArea(item)) {
-        g = renderMiniArea(item, ppfForActiveYardstick());
+        g = renderMiniArea(item, ppfForActiveYardstick(), activeLightScale());
         g.draggable(true);
         g.on("transformend dragend", () => bakeTransformIntoMiniArea(g, item.id));
       } else {
@@ -862,6 +921,15 @@ export async function renderEditor(
   // (They don't have an own-yardstick concept yet — that'd be an easy add later.)
   function ppfForActiveYardstick(): number {
     return pxPerFoot(activeYs());
+  }
+
+  // The scene's light-size multiplier, read fresh on every render so the
+  // slider updates the canvas live. Presentation only: this feeds the bulb
+  // renderers and nothing that computes footage or price. Deliberately NOT
+  // folded into ppfForActiveYardstick above, because px/ft is the money
+  // number (footage = strand px / px/ft) and must stay untouched.
+  function activeLightScale(): number {
+    return normalizeLightScale(scene.lightScale);
   }
 
   // #13: all photo-scoped, like allStrands above.
@@ -1462,22 +1530,71 @@ export async function renderEditor(
   let pendingSave = false;
   let retryTimer: number | null = null;
   let saveSeq = 0;
+  // Ledger row 260: true once the server has rejected a save with a scene
+  // version conflict (a concurrent writer — another tab, another operator, a
+  // server-side re-seed — won the race). Saving is BLOCKED from here on; the
+  // operator must reload to see the current design before editing again. This
+  // is deliberately the only way out — reload-and-reapply-the-edit is a real
+  // design decision this fix doesn't make; see showConflictBanner().
+  let conflicted = false;
+  // Ledger row 260: every doSave() call chains onto this tail instead of
+  // firing its own overlapping PUT. Without this, two saves in flight at once
+  // (a slow autosave overlapping a forced #741 corrective save, or a retry
+  // racing a fresh edit) would both read the SAME `design.version` and send
+  // it — the CAS then rejects whichever lands second with a 409 that's
+  // actually just this client's own earlier write, not a real external
+  // conflict. Serializing means each queued save always uses the freshest
+  // scene + the freshest known version, and a caller awaiting doSave()'s
+  // return value (flushSave) genuinely waits for everything queued so far.
+  let saveTail: Promise<void> = Promise.resolve();
   const savingEl = root.querySelector("#saving") as HTMLElement;
-  async function doSave() {
+  function doSave(): Promise<void> {
+    saveTail = saveTail.then(() => (conflicted ? undefined : runSave()));
+    return saveTail;
+  }
+  async function runSave() {
     // AUDIT FIX (editor-autosave-honest-failure): the PUT can throw on any
     // non-2xx. Previously pendingSave was cleared BEFORE the await and there was
     // no try/catch, so a failed save dropped the billable edit while the pill
     // still read "Saved". Keep pendingSave true until the write actually lands;
     // on failure surface an honest state + schedule a backoff retry (the PUT
     // writes the whole scene, so a later retry self-heals).
-    // AUDIT FIX (W3-008): a slow PUT overlapping a later scheduleSave()/retry
-    // could let an older response's success/failure side effects land after a
-    // newer one's, reverting the "Saved" state (or a retry timer) to a stale
-    // save. Only the LATEST doSave() call may apply side effects.
+    // AUDIT FIX (W3-008): saves are now serialized (see doSave()), so this is
+    // belt-and-suspenders rather than load-bearing — kept as a cheap guard
+    // against a future regression that reintroduces overlap.
     const seq = ++saveSeq;
     try {
-      await api.updateDesign(design.id, { scene, name: design.name });
-    } catch {
+      const result = await api.updateDesign(design.id, { scene, name: design.name, version: design.version ?? null });
+      if (typeof result.version === "number") design.version = result.version;
+    } catch (err) {
+      if (err instanceof SceneConflictError) {
+        // Fix round (HIGH, four-lens review): this branch must run BEFORE the
+        // `destroyed` early-return below. destroy()'s final teardown flush
+        // calls runSave() with `destroyed` already true — and this function
+        // always RESOLVES rather than rejects on a caught error, so
+        // destroy()'s own `flushSave().catch(...)` (which sets the same
+        // marker) never fires either. Without this, a conflict on that last
+        // flush was swallowed completely: no banner (nothing left to show it
+        // to — correct), but also no recovery marker, so the operator's last
+        // edit vanished with no trace. Record the marker for the CURRENT
+        // save attempt (seq === saveSeq — a stale/superseded attempt has
+        // already been overtaken by a newer save and recording it here would
+        // be a false positive) regardless of destroyed; UI updates still
+        // only happen on the live (non-destroyed) path below.
+        if (seq === saveSeq) {
+          try { localStorage.setItem("editorUnsavedDesign", design.id); } catch { /* storage unavailable */ }
+        }
+        if (destroyed || seq !== saveSeq) return;
+        // Ledger row 260: a lost race, NOT a transient failure — do not retry
+        // (retrying would just resend the same now-stale overwrite forever).
+        // Block further saves and tell the operator plainly.
+        conflicted = true;
+        pendingSave = false; // the queued edit is NOT persisted, but nothing further will attempt it — see showConflictBanner()
+        if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+        savingEl.textContent = "Save blocked — reload";
+        showConflictBanner();
+        return;
+      }
       if (destroyed || seq !== saveSeq) return;
       pendingSave = true; // edit not persisted — keep it queued
       savingEl.textContent = "Save failed — retry";
@@ -1497,7 +1614,47 @@ export async function renderEditor(
       if (savingEl.textContent === "Saved") savingEl.textContent = "";
     }, 1500);
   }
+  // Ledger row 260: a persistent, non-auto-dismissing notice — unlike
+  // showTransientNotice, this stays until the operator reloads. Styled INLINE
+  // for the same reason showTransientNotice is (see its comment above): this
+  // file travels unchanged into the standalone design tool, which has no rule
+  // for a class this repo invents.
+  function showConflictBanner() {
+    if (root.querySelector("#scene-conflict-banner")) return; // already shown
+    const host = root.querySelector(".editor");
+    if (!host) return;
+    const banner = document.createElement("div");
+    banner.id = "scene-conflict-banner";
+    banner.style.cssText = [
+      "position:fixed", "top:12px", "left:50%", "transform:translateX(-50%)", "z-index:9999",
+      "max-width:min(90vw,480px)", "padding:10px 14px", "border-radius:8px",
+      "background:#7a1f1f", "color:#fff2f2", "border:1px solid rgba(255,255,255,0.25)",
+      "box-shadow:0 4px 14px rgba(0,0,0,0.35)", "font-size:13px", "line-height:1.4",
+      "text-align:center",
+    ].join(";");
+    banner.textContent = "This design changed elsewhere — your recent edits here are NOT saved. ";
+    const btn = document.createElement("button");
+    btn.textContent = "Reload";
+    btn.style.cssText = "margin-left:6px;text-decoration:underline;cursor:pointer;background:none;border:none;color:inherit;font:inherit;padding:0;";
+    // Fix round (MED, four-lens review): a bare reload() here silently
+    // discarded more than just this banner's already-lost scene edit — this
+    // editor is often EMBEDDED in a page with its OWN unrelated unsaved form
+    // state (the quote builder's pricing overrides, line items) that a
+    // reload would wipe with no warning at all. A confirm is the simplest
+    // guard, not a state-preservation system — consistent with this file's
+    // constraint of staying framework-free (it travels unchanged into the
+    // standalone design tool, which has no rule for a class this repo
+    // invents).
+    btn.addEventListener("click", () => {
+      if (window.confirm("Reload now? Any other unsaved changes on this page will also be lost.")) {
+        window.location.reload();
+      }
+    });
+    banner.appendChild(btn);
+    host.prepend(banner);
+  }
   function scheduleSave() {
+    if (conflicted) return; // #260: blocked until reload — see showConflictBanner()
     if (saveTimer) clearTimeout(saveTimer);
     pendingSave = true;
     savingEl.textContent = "Saving…";
@@ -1690,13 +1847,16 @@ export async function renderEditor(
     // PUT the still-un-spliced scene, landing AFTER the server's own prune
     // write and silently reverting it. Force an immediate corrective save of
     // the now-spliced scene right after processing: it cancels any debounce
-    // timer so the PUT goes out now rather than later, and — because doSave()
-    // only applies the LATEST saveSeq's outcome (AUDIT FIX W3-008) — this
-    // becomes the save whose success updates the "Saved" pill even if an
-    // earlier stale PUT is still in flight. This narrows the race rather than
-    // closing it outright (no row lock — a slower stale PUT could in theory
-    // still land after this one), same trade-off already accepted by the
-    // pre-delete flush in DesignEditor.deletePhoto and seedDesignFromAnalysis.
+    // timer so the PUT goes out now rather than later. Ledger row 260: doSave()
+    // now SERIALIZES every save (see its comment above) rather than letting an
+    // earlier stale PUT race a later one concurrently, so this corrective save
+    // simply queues after whatever's already in flight and always uses the
+    // freshest `scene` + `design.version` when its turn comes — no separate
+    // staleness reasoning needed here anymore. Kept as a forced immediate save
+    // (rather than relying on the 600ms debounce) purely to close the WINDOW
+    // before the next edit, same trade-off already accepted by the pre-delete
+    // flush in DesignEditor.deletePhoto and seedDesignFromAnalysis.
+    if (conflicted) return; // #260: blocked until reload — see showConflictBanner()
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
     pendingSave = true;
     savingEl.textContent = "Saving…";
@@ -1847,10 +2007,7 @@ export async function renderEditor(
       </section>
       ${tool.scattershot ? "" : `
       <section>
-        <h3>Spacing (in)</h3>
-        <div class="spacing-row" id="spacings">
-          ${SPACINGS[tool.bulbType].map((s) => `<button data-s="${s}" class="${tool.spacingIn === s ? "active" : ""}">${s}"</button>`).join("")}
-        </div>
+        ${spacingRowHtml(tool.bulbType === "permanent", SPACINGS[tool.bulbType], [tool.spacingIn], "spacings")}
       </section>
       `}
       <section>
@@ -2664,6 +2821,24 @@ export async function renderEditor(
     const poleSel = selectedItems.filter(isPole);
     const miniAreaSel = selectedItems.filter(isMiniArea);
 
+    // #240: a mini-light group can now mix strand + scattershot members. Any
+    // selection drawn ENTIRELY from those two kinds (pure strand, pure
+    // scattershot, or a mix) checks group membership FIRST, before any
+    // kind-specific panel below, so selecting a mixed group's members always
+    // opens the group editor — the same thing the old strand-only check did,
+    // just widened to cover scattershot members too.
+    const miniCandidates: (StrandItem | MiniAreaItem)[] = [...strandSel, ...miniAreaSel];
+    if (miniCandidates.length > 0 && miniCandidates.length === selectedItems.length) {
+      const gid = miniCandidates[0].groupId;
+      if (gid && miniCandidates.every((m) => m.groupId === gid)) {
+        const grp = scene.items.find((i) => isMiniGroup(i) && i.id === gid);
+        if (grp && isMiniGroup(grp)) {
+          renderSelectedMiniGroupSidebar(sb, grp);
+          return;
+        }
+      }
+    }
+
     // All-of-one-kind → dedicated edit panel.
     if (wreathSel.length === selectedItems.length) {
       renderSelectedWreathSidebar(sb, wreathSel);
@@ -2698,19 +2873,38 @@ export async function renderEditor(
       return;
     }
     if (strandSel.length === selectedItems.length) {
-      // If the selected strands all belong to ONE mini group, edit the GROUP
-      // (its billed attrs + Ungroup) rather than the individual strands.
-      const gid = strandSel[0].groupId;
-      if (gid && strandSel.every((s) => s.groupId === gid)) {
-        const grp = scene.items.find((i) => isMiniGroup(i) && i.id === gid);
-        if (grp && isMiniGroup(grp)) {
-          renderSelectedMiniGroupSidebar(sb, grp);
-          return;
-        }
+      // Pure-strand selection, no shared group matched above — falls through
+      // to the strand panel below.
+    } else if (strandSel.length > 0 && miniAreaSel.length > 0 && miniCandidates.length === selectedItems.length) {
+      // #240: a mixed strand + scattershot selection (no shared group, or the
+      // check above would already have returned) — offer to group them into
+      // one billed unit, same affordance the strand-only panel has.
+      const canGroup = opts.showQuoteBinding && miniCandidates.length >= 2 && miniCandidates.every(isMiniGroupable);
+      sb.innerHTML = `
+        <section>
+          <h3>Mixed selection</h3>
+          <div style="color:var(--text-dim);font-size:12px;margin-bottom:8px">
+            ${strandSel.length} strand${strandSel.length === 1 ? "" : "s"} + ${miniAreaSel.length} scattershot${miniAreaSel.length === 1 ? "" : "s"} selected.
+            ${canGroup ? "Group them as one billed unit, or delete." : "Delete, or select only strands / only scattershots to edit them."}
+          </div>
+        </section>
+        ${canGroup ? `
+        <section>
+          <button id="sel-group-mini-mixed" style="width:100%">Group as one quote unit</button>
+          <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Bills these ${miniCandidates.length} items as a single unit (e.g. a railing).</div>
+        </section>
+        ` : ""}
+        <section><button class="danger" id="sel-delete" style="width:100%">Delete all selected</button></section>
+      `;
+      sb.querySelector("#sel-delete")?.addEventListener("click", deleteSelected);
+      if (canGroup) {
+        sb.querySelector("#sel-group-mini-mixed")?.addEventListener("click", () => {
+          groupSelectedMini(miniCandidates, miniCandidates[0].surface ?? "bush", miniCandidates[0].stringCount ?? 1);
+        });
       }
-      // else: falls through to the strand panel below.
+      return;
     } else {
-      // Mixed selection — just offer delete.
+      // Mixed selection across other kinds — just offer delete.
       const counts: string[] = [];
       if (strandSel.length) counts.push(`${strandSel.length} strand${strandSel.length === 1 ? "" : "s"}`);
       if (garlandSel.length) counts.push(`${garlandSel.length} garland${garlandSel.length === 1 ? "" : "s"}`);
@@ -2773,10 +2967,7 @@ export async function renderEditor(
       </section>
 
       <section>
-        <h3>Spacing (in)</h3>
-        <div class="spacing-row" id="sel-spacings">
-          ${spacingOptions.map((s) => `<button data-s="${s}" class="${sharedSpacing.length === 1 && sharedSpacing[0] === s ? "active" : ""}">${s}"</button>`).join("")}
-        </div>
+        ${spacingRowHtml(isPerm, spacingOptions, sharedSpacing, "sel-spacings")}
       </section>
 
       <section>
@@ -2844,7 +3035,7 @@ export async function renderEditor(
       </section>
       ` : ""}
 
-      ${opts.showQuoteBinding && sel.length >= 2 && sel.every((s) => s.bulbType === "mini" && !s.groupId && !s.linkedToId) ? `
+      ${opts.showQuoteBinding && sel.length >= 2 && sel.every(isMiniGroupable) ? `
       <section>
         <button id="sel-group-mini" style="width:100%">Group as one quote unit</button>
         <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Bills these ${sel.length} mini strands as a single unit (e.g. a railing).</div>
@@ -3066,38 +3257,6 @@ export async function renderEditor(
       commit();
       redrawScene();
     });
-    // Group the selected (mini, ungrouped) strands into ONE billed unit: a
-    // MiniGroupItem owning the billed attrs; members get groupId and are
-    // skipped by the quote's projection.
-    const groupSelectedMini = (surface: Surface, stringCount: number) => {
-      // #227 FIX 2 belt-and-braces: both call sites already gate on `!s.linkedToId`,
-      // but guard here too (mirrors the projectScene defensive re-guard for the
-      // same bug) so a future third caller can't reintroduce the stale-autosave
-      // resurrection bug described above the surfSel handler.
-      if (sel.some((s) => s.linkedToId)) return;
-      const memberIds = sel.map((s) => s.id);
-      const groupId = cryptoId();
-      const grp: MiniGroupItem = {
-        id: groupId,
-        kind: "miniGroup",
-        memberIds,
-        yardstickId: null,
-        surface,
-        wrapStyle: sel[0].wrapStyle ?? "canopy",
-        stringCount,
-        included: true,
-      };
-      scene = {
-        ...scene,
-        items: [
-          ...scene.items.map((i) => (isStrand(i) && memberIds.includes(i.id) ? { ...i, groupId } : i)),
-          stampPhoto(grp),
-        ],
-      };
-      scheduleSave();
-      commit();
-      redrawScene();
-    };
     if (opts.showQuoteBinding) {
       const surfSel = sb.querySelector("#sel-surface") as HTMLSelectElement | null;
       surfSel?.addEventListener("change", () => {
@@ -3114,8 +3273,8 @@ export async function renderEditor(
         // billing) group. Twins never bill on their own (projectScene skips
         // `linkedToId` items), so falling through to a plain surface tag below is
         // harmless — it just doesn't create a group to resurrect.
-        if ((v === "railing" || v === "curtain") && sel.length >= 2 && sel.every((s) => s.bulbType === "mini" && !s.groupId && !s.linkedToId)) {
-          groupSelectedMini(v, sel.length);
+        if ((v === "railing" || v === "curtain") && sel.length >= 2 && sel.every(isMiniGroupable)) {
+          groupSelectedMini(sel, v, sel.length);
           return;
         }
         updateSelected((s) => ({ ...s, surface: v ? (v as Surface) : null }));
@@ -3153,7 +3312,7 @@ export async function renderEditor(
       });
     }
     sb.querySelector("#sel-group-mini")?.addEventListener("click", () => {
-      groupSelectedMini(sel[0].surface ?? "bush", sel[0].stringCount ?? 1);
+      groupSelectedMini(sel, sel[0].surface ?? "bush", sel[0].stringCount ?? 1);
     });
     sb.querySelector("#sel-delete")!.addEventListener("click", deleteSelected);
   }
@@ -3732,6 +3891,12 @@ export async function renderEditor(
         </div>`}
       </section>`;
       })()}
+      ${opts.showQuoteBinding && sel.length >= 2 && sel.every(isMiniGroupable) ? `
+      <section>
+        <button id="sel-group-mini-area" style="width:100%">Group as one quote unit</button>
+        <div style="margin-top:4px;font-size:11px;color:var(--text-dim)">Bills these ${sel.length} scattershots as a single unit (e.g. a railing).</div>
+      </section>
+      ` : ""}
       ${opts.showQuoteBinding ? `
       <section>
         <h3>Quote binding</h3>
@@ -3849,10 +4014,20 @@ export async function renderEditor(
       });
     }
 
+    sb.querySelector("#sel-group-mini-area")?.addEventListener("click", () => {
+      groupSelectedMini(sel, sel[0].surface ?? "bush", sel[0].stringCount ?? 1);
+    });
+
     sb.querySelector("#sel-ma-duplicate")?.addEventListener("click", () => {
       const dupes = sel.map((a) => ({
         ...a,
         id: cryptoId(),
+        // #240: a duplicate is a NEW item, not a member of the source's group
+        // — mirrors the strand panel's duplicate handler. Without this, the
+        // copy would inherit a stale groupId pointing at a group it isn't
+        // actually a member of, and silently stop billing (projectScene skips
+        // any grouped item).
+        groupId: undefined,
         ...(a.shape === "polygon" && a.points
           ? { points: a.points.map((p) => p + 20) }
           : { x: (a.x ?? 0) + 20, y: (a.y ?? 0) + 20 }),
@@ -3866,22 +4041,78 @@ export async function renderEditor(
     sb.querySelector("#sel-ma-delete")?.addEventListener("click", deleteSelected);
   }
 
+  // Group the selected (mini, ungrouped) strands and/or scattershots into ONE
+  // billed unit: a MiniGroupItem owning the billed attrs; members get groupId
+  // and are skipped by the quote's own per-item projection (#240: a group can
+  // mix strand + miniArea members, not just strands). A `function` (not a
+  // `const`) so it's hoisted — every sidebar panel that offers "Group as one
+  // quote unit" (strand-only, scattershot-only, mixed) calls this same one.
+  function groupSelectedMini(members: (StrandItem | MiniAreaItem)[], surface: Surface, stringCount: number) {
+    // #227 FIX 2 belt-and-braces: every call site already filters to
+    // isMiniGroupable (which excludes linkedToId), but guard here too
+    // (mirrors the projectScene defensive re-guard for the same bug) so a
+    // future caller can't reintroduce the stale-autosave resurrection bug
+    // described above the surfSel handler.
+    if (members.some((m) => m.linkedToId)) return;
+    const memberIds = members.map((m) => m.id);
+    const groupId = cryptoId();
+    const grp: MiniGroupItem = {
+      id: groupId,
+      kind: "miniGroup",
+      memberIds,
+      yardstickId: null,
+      surface,
+      wrapStyle: members[0].wrapStyle ?? "canopy",
+      stringCount,
+      included: true,
+    };
+    scene = {
+      ...scene,
+      items: [
+        ...scene.items.map((i) =>
+          (isStrand(i) || isMiniArea(i)) && memberIds.includes(i.id) ? { ...i, groupId } : i,
+        ),
+        stampPhoto(grp),
+      ],
+    };
+    scheduleSave();
+    commit();
+    redrawScene();
+  }
+
   // ============================================================
   // Sidebar — edit panel for a mini-light GROUP (surfaced when the selected
-  // strands all share one groupId). The group is geometry-less; the member
-  // strands still render/move individually.
+  // strands and/or scattershots all share one groupId). The group is
+  // geometry-less; its members still render/move individually.
   // ============================================================
   function renderSelectedMiniGroupSidebar(sb: HTMLElement, group: MiniGroupItem) {
     const sSurface = group.surface ?? "";
     const sWrap = group.wrapStyle ?? "canopy";
     const sCount = group.stringCount ?? 1;
     const inc = group.included ?? true;
+    // #240: member-kind-accurate copy — a group can now hold strands,
+    // scattershots, or a mix of both. Resolve the live members (not just the
+    // id count) so the label always matches what's actually in the group.
+    const liveMembers = scene.items.filter(
+      (i): i is StrandItem | MiniAreaItem => group.memberIds.includes(i.id) && (isStrand(i) || isMiniArea(i)),
+    );
+    const strandCount = liveMembers.filter(isStrand).length;
+    const areaCount = liveMembers.filter(isMiniArea).length;
+    const memberLabel = (() => {
+      const parts: string[] = [];
+      if (strandCount) parts.push(`${strandCount} strand${strandCount === 1 ? "" : "s"}`);
+      if (areaCount) parts.push(`${areaCount} scattershot${areaCount === 1 ? "" : "s"}`);
+      // A #227 fully/partially orphaned group can have fewer live members than
+      // memberIds (or none at all) — fall back to the raw id count so the
+      // copy never reads "0 strands billed as one mini-light unit".
+      return parts.length > 0 ? parts.join(" + ") : `${group.memberIds.length} member${group.memberIds.length === 1 ? "" : "s"}`;
+    })();
 
     sb.innerHTML = `
       <section>
         <h3>Mini-light group</h3>
         <div style="color:var(--text-dim);font-size:12px;margin-bottom:4px">
-          ${group.memberIds.length} strands billed as one mini-light unit. Edit the billed attributes here, or ungroup to bill them separately.
+          ${memberLabel} billed as one mini-light unit. Edit the billed attributes here, or ungroup to bill them separately.
         </div>
       </section>
       ${opts.showQuoteBinding ? `
@@ -3946,9 +4177,11 @@ export async function renderEditor(
         ...scene,
         items: scene.items
           .filter((i) => i.id !== group.id)
-          .map((i) => (isStrand(i) && memberIds.includes(i.id) ? { ...i, groupId: undefined } : i)),
+          // #240: a member can be a strand OR a scattershot — clear groupId on
+          // either kind (mirrors groupSelectedMini's own kind check).
+          .map((i) => ((isStrand(i) || isMiniArea(i)) && memberIds.includes(i.id) ? { ...i, groupId: undefined } : i)),
       };
-      selectedIds = new Set(memberIds); // keep members selected → strand panel returns
+      selectedIds = new Set(memberIds); // keep members selected → the right panel returns
       scheduleSave();
       commit();
       redrawScene();
@@ -4605,6 +4838,42 @@ export async function renderEditor(
     scene = { ...scene, brightness: 50 };
     drawTint();
     scheduleSave();
+    commit();
+  });
+
+  // --- Light-size slider ---
+  // Same shape as brightness above, with one difference: brightness only
+  // repaints the tint layer, while light size changes the drawn items, so
+  // this redraws the canvas instead. requestCanvasRedraw is rAF-throttled, so
+  // dragging costs one rebuild per frame rather than one per input event.
+  const lightScaleEl = root.querySelector("#light-scale") as HTMLInputElement;
+  const lightScaleValEl = root.querySelector("#light-scale-val") as HTMLElement;
+  function showLightScale(v: number) {
+    lightScaleEl.value = String(v);
+    lightScaleValEl.textContent = `${v.toFixed(1)}x`;
+  }
+  function applyLightScale(value: number) {
+    const v = normalizeLightScale(value);
+    scene = { ...scene, lightScale: v };
+    showLightScale(v);
+    requestCanvasRedraw();
+    scheduleSave();
+  }
+  // Seed the control from the saved scene WITHOUT saving or redrawing: this
+  // runs on every open, and calling applyLightScale here would dirty the
+  // design (and queue an autosave) just because someone looked at it.
+  showLightScale(normalizeLightScale(scene.lightScale));
+  lightScaleEl.addEventListener("input", () => {
+    applyLightScale(Number(lightScaleEl.value));
+  });
+  // Snapshot for undo only once the user releases the slider, so a drag is one
+  // undo step and not fifty.
+  lightScaleEl.addEventListener("change", () => {
+    commit();
+  });
+  // Double-click resets to 1.0x — lights drawn at their real-world size.
+  lightScaleEl.addEventListener("dblclick", () => {
+    applyLightScale(1);
     commit();
   });
 

@@ -252,13 +252,18 @@ export type MiniAreaItem = ItemBase & MiniBilling & {
   density?: number; // 0–1 VISUAL fill (bulbs-per-area at render), NOT a count
   colorPattern?: string[]; // palette color IDs; bulbs cycle the pattern (spritzer semantics); empty ⇒ warm-white. VISUAL-only (no projection impact).
   // surface (bush/tree/column) + included inherited from ItemBase
+  // #240: this scattershot belongs to a MiniGroupItem (mixed groups can hold
+  // strands AND areas) → priced via the group + skipped in its own per-item
+  // projection (no double-count). Mirrors StrandItem.groupId exactly.
+  groupId?: string;
 };
 
-// A mini-light GROUP (#27 A2 / v0.4): several drawn strands grouped into ONE
-// priced unit (e.g. a railing). Geometry-less — its extent is its members, which
-// still render individually and carry a `groupId` backref. One group = one
-// priced mini unit (surface + MiniBilling); grouped strands are skipped in the
-// per-strand projection.
+// A mini-light GROUP (#27 A2 / v0.4; #240: members can be strands AND/OR
+// scattershots): several drawn strands and/or mini-light areas grouped into
+// ONE priced unit (e.g. a railing). Geometry-less — its extent is its
+// members, which still render individually and carry a `groupId` backref.
+// One group = one priced mini unit (surface + MiniBilling); grouped members
+// are skipped in their own per-item projection.
 export type MiniGroupItem = ItemBase & MiniBilling & {
   kind: 'miniGroup';
   memberIds: string[]; // the member strand ids
@@ -283,6 +288,22 @@ export type Scene = {
   yardsticks: Yardstick[];
   items: SceneItem[];
   brightness?: number; // 0 = darkest, 50 = neutral, 100 = lightest
+  /**
+   * How big the lights are DRAWN, as a multiplier (0.5–4, default 1). Purely
+   * presentational, exactly like `brightness` above: it changes the picture
+   * staff and the customer see and it changes nothing that is priced.
+   *
+   * It exists because a whole-house photo runs 10–25 px/ft, below the floor
+   * where a bulb's real-world size takes over, so every light pins to a few
+   * pixels and the yardstick cannot make it any bigger. The yardstick is NOT
+   * the workaround: `pxPerFoot` also drives bulb spacing and divides strand
+   * pixel length into billed footage, so stretching it for a nicer picture
+   * corrupts the quote. This field is the separate knob.
+   *
+   * Absent/invalid reads as 1 via `normalizeLightScale` — see
+   * `editor-core/lightScale.ts` for the sizing math and the money-safety rule.
+   */
+  lightScale?: number;
 };
 
 // One extra street photo as the editor sees it (#13 multi-image): a signed URL
@@ -313,6 +334,11 @@ export type Design = {
   // tool's own storage doesn't supply it and the editor treats absent as "no
   // extras", so both apps compile/run unchanged without it.
   extraPhotos?: EditorExtraPhoto[];
+  // Compare-and-swap counter for the scene write (ledger row 260). Optional +
+  // additive — the standalone design tool's own storage doesn't supply it;
+  // absent/null is treated as "unknown version" (adopt, don't guard) by the
+  // storage seam and the server, so both apps compile/run unchanged without it.
+  version?: number | null;
 };
 
 // One entry in the custom-graphic library (deferred in Phase 1).
@@ -386,24 +412,42 @@ export function isMiniGroup(item: SceneItem): item is MiniGroupItem {
   return item.kind === 'miniGroup';
 }
 
-// #227: a `miniGroup` (a grouped railing/curtain) whose member strands have
-// ALL been deleted renders nothing (it has no points of its own — its extent
-// is its members'), so the editor gives no way to select or delete it, yet
+// #240: is this item eligible to join (or start) a mini-light GROUP? A strand
+// must be bulbType 'mini' (only mini bulbs wrap into a group); a scattershot
+// (miniArea) is inherently mini-light so no bulbType check applies to it.
+// Either kind is excluded once already grouped (`groupId` set — grouping it
+// again would silently move it between groups) or once it's a #13 linked twin
+// (`linkedToId` set — a twin never bills on its own, so grouping one would
+// create a group with nothing feeding it). Shared by every "select 2+ →
+// group" gate so strand-only, scattershot-only, and mixed selections agree.
+export function isMiniGroupable(item: SceneItem): item is StrandItem | MiniAreaItem {
+  if (item.linkedToId) return false;
+  if (isStrand(item)) return item.bulbType === 'mini' && !item.groupId;
+  if (isMiniArea(item)) return !item.groupId;
+  return false;
+}
+
+// #227: a `miniGroup` (a grouped railing/curtain) whose members have ALL been
+// deleted renders nothing (it has no points of its own — its extent is its
+// members'), so the editor gives no way to select or delete it, yet
 // `projectScene` would otherwise keep emitting it and billing its
 // `stringCount` forever. Call this immediately after ANY operation that
-// removes strand items from a scene's `items` array, so the dangling group is
-// deleted in the same edit instead of surviving as an unbillable-but-still-
-// billed ghost. A PARTIALLY orphaned group (some members still alive) is left
-// alone — it still bills normally. A group with an empty `memberIds` (never
-// produced by the editor's own grouping flow, which requires >=2 selected
-// strands) is also left alone — this only targets the "used to have members,
-// now has none" case.
+// removes strand or (#240) scattershot items from a scene's `items` array, so
+// the dangling group is deleted in the same edit instead of surviving as an
+// unbillable-but-still-billed ghost. A PARTIALLY orphaned group (some members
+// still alive) is left alone — it still bills normally. A group with an empty
+// `memberIds` (never produced by the editor's own grouping flow, which
+// requires >=2 selected members) is also left alone — this only targets the
+// "used to have members, now has none" case.
 export function pruneOrphanedMiniGroups(items: SceneItem[]): SceneItem[] {
-  const strandIds = new Set(items.filter(isStrand).map((i) => i.id));
+  // #240: a group's members can be strands AND/OR miniAreas — count both as
+  // "still alive" so a mixed group isn't wrongly pruned when only its strand
+  // members survive (or vice versa).
+  const memberIds = new Set(items.filter((i) => isStrand(i) || isMiniArea(i)).map((i) => i.id));
   return items.filter((item) => {
     if (!isMiniGroup(item)) return true;
     if (item.memberIds.length === 0) return true;
-    return item.memberIds.some((id) => strandIds.has(id));
+    return item.memberIds.some((id) => memberIds.has(id));
   });
 }
 

@@ -2,6 +2,7 @@ import Konva from "konva";
 // VENDOR ADAPTATION (Path B): types from our local sceneTypes, not ../api.
 import type { SpritzerItem } from "@/lib/design/sceneTypes";
 import { colorOf } from "./colors";
+import { LIGHT_SCALE_DEFAULT, spritzerLightDims } from "./lightScale";
 import { getRenderSettings } from "./renderSettings";
 
 // Procedurally renders a spritzer: a radial spray of glowing rays from a
@@ -14,8 +15,13 @@ import { getRenderSettings } from "./renderSettings";
 export function createSpritzer(
   item: SpritzerItem,
   pxPerFoot: number,
+  lightScale: number = LIGHT_SCALE_DEFAULT,
 ): Konva.Group {
   const diameterFt = item.sizeIn / 12;
+  // NOT scaled by lightScale: this is how big the SPRAY is, which staff set
+  // through the item's Small/Medium/Large size and the resize handles.
+  // lightScale is about the lit parts inside it (tips and rays, below), which
+  // had no control and sit on their pixel floors on a house photo.
   const radiusPx = Math.max(2, (diameterFt * pxPerFoot) / 2);
 
   const group = new Konva.Group({
@@ -61,9 +67,7 @@ export function createSpritzer(
   group.add(halo);
 
   // ----- Rays + tip bulbs -----
-  const rayStroke = Math.max(0.6, radiusPx * 0.008);
-  const tipRadius = Math.max(1.5, radiusPx * 0.028);
-  const tipHaloRadius = tipRadius * 2.6;
+  const { tipRadius, tipHaloRadius, rayStroke } = spritzerLightDims(radiusPx, lightScale);
 
   for (let i = 0; i < numRays; i++) {
     // Even angular spacing with a small per-ray jitter for organic look.
@@ -131,6 +135,10 @@ export function createSpritzer(
   // The ray bases all overlap at center but adding a small dense glow makes
   // the core read as a single bright source rather than a knot of lines.
   const centerHex = isMulti ? "#fff2d4" : colorOf(colors[0]).glow;
+  // Left off lightScale on purpose, unlike the tips and rays above. This is a
+  // single blob sized against the spritzer's own radius, so growing it makes
+  // the spritzer read as a bigger blob rather than as more light, and at the
+  // top of the range it would swallow the rays it is supposed to sit under.
   const centerRadius = Math.max(4, radiusPx * 0.18);
   const center = new Konva.Circle({
     radius: centerRadius,

@@ -13,7 +13,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import {
   getDesign,
-  updateDesignScene,
+  updateDesignSceneGuarded,
   isValidDesignId,
   EMPTY_SCENE,
 } from '@/lib/designs';
@@ -67,8 +67,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   const scene = seedRooflineStrands(row.scene ?? EMPTY_SCENE, lines, row.photo_w, row.photo_h);
-  const ok = await updateDesignScene(id, scene);
-  if (!ok) {
+  // Ledger row 260: CAS'd on the version this route just read via getDesign()
+  // above. "The builder closes the embedded editor before calling this" (see
+  // the file header) was always a soft, client-enforced invariant — this
+  // makes it a real guarantee instead of an accepted risk.
+  const outcome = await updateDesignSceneGuarded(id, scene, row.version ?? null);
+  if (!outcome.ok) {
+    if (outcome.reason === 'conflict') {
+      return NextResponse.json(
+        { error: 'The design changed elsewhere while syncing — reopen it and try again', conflict: true },
+        { status: 409 },
+      );
+    }
     return NextResponse.json({ error: 'Failed to save the seeded scene' }, { status: 500 });
   }
   return NextResponse.json({ ok: true, rooflineStrands: countRooflineStrands(scene) });

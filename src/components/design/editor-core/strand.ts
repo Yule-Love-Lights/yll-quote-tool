@@ -1,6 +1,7 @@
 import Konva from "konva";
 import type { Strand } from "@/lib/design/sceneTypes";
 import { createBulb } from "./bulb";
+import { LIGHT_SCALE_DEFAULT } from "./lightScale";
 import { createPermanentLight, PERM_DEFAULTS } from "./permanent";
 
 // Default catenary sag for bistro strands when sagFactor is not set on the
@@ -12,6 +13,7 @@ export const DEFAULT_BISTRO_SAG = 0.10;
 export function renderStrand(
   strand: Strand,
   pxPerFoot: number,
+  lightScale: number = LIGHT_SCALE_DEFAULT,
 ): Konva.Group {
   const group = new Konva.Group({
     id: strand.id,
@@ -45,7 +47,7 @@ export function renderStrand(
   group.add(hit);
 
   if (strand.drawingStyle === "single") {
-    placeBulb(group, strand, strand.points[0], strand.points[1], pxPerFoot, 0);
+    placeBulb(group, strand, strand.points[0], strand.points[1], pxPerFoot, 0, lightScale);
     return group;
   }
 
@@ -85,7 +87,7 @@ export function renderStrand(
         const chordX = x1 + dx * t;
         const chordY = y1 + dy * t;
         const yOffset = isBistro ? sagPx * 4 * t * (1 - t) : 0;
-        placeBulb(group, strand, chordX, chordY + yOffset, pxPerFoot, bulbIndex++);
+        placeBulb(group, strand, chordX, chordY + yOffset, pxPerFoot, bulbIndex++, lightScale);
       }
       traveled += spacingPx;
     }
@@ -143,6 +145,7 @@ function placeBulb(
   y: number,
   pxPerFoot: number,
   index: number,
+  lightScale: number = LIGHT_SCALE_DEFAULT,
 ) {
   const palette =
     strand.colorPattern.length > 0 ? strand.colorPattern : ["warm-white"];
@@ -158,8 +161,9 @@ function placeBulb(
           strand.opacity ?? PERM_DEFAULTS.opacity,
           strand.showCoverage ?? PERM_DEFAULTS.showCoverage,
           strand.showBeam ?? PERM_DEFAULTS.showBeam,
+          lightScale,
         )
-      : createBulb(strand.bulbType, colorId, pxPerFoot);
+      : createBulb(strand.bulbType, colorId, pxPerFoot, lightScale);
   node.position({ x, y });
   parent.add(node);
 }

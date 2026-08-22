@@ -3,6 +3,7 @@ import {
   deriveStatus,
   canTransition,
   canRevive,
+  isTerminalBrowseStatus,
   isQuoteStatus,
   isPortalActionable,
   QUOTE_STATUSES,
@@ -286,6 +287,31 @@ describe('canRevive — #116 re-send half (revive a dead quote in place)', () =>
     for (const s of ['draft', 'sent', 'viewed', 'approved', 'booked', 'changes_requested'] as const) {
       expect(canRevive(s)).toBe(false);
     }
+  });
+});
+
+// Ledger row 236, fix round (four-lens MED) — same declined/abandoned set as
+// canRevive above, loose-typed for display components (StickyBottomBar's
+// terminalBrowse branch, FinancingSection's eligibility gate) that carry
+// quoteStatus as a bare string prop.
+describe('isTerminalBrowseStatus (row 236)', () => {
+  it('is true for declined and abandoned', () => {
+    expect(isTerminalBrowseStatus('declined')).toBe(true);
+    expect(isTerminalBrowseStatus('abandoned')).toBe(true);
+  });
+
+  it('is false for every other status, including the other two non-actionable ones', () => {
+    expect(isTerminalBrowseStatus('cancelled')).toBe(false);
+    expect(isTerminalBrowseStatus('changes_requested')).toBe(false);
+    expect(isTerminalBrowseStatus('sent')).toBe(false);
+    expect(isTerminalBrowseStatus('viewed')).toBe(false);
+    expect(isTerminalBrowseStatus('approved')).toBe(false);
+    expect(isTerminalBrowseStatus('booked')).toBe(false);
+  });
+
+  it('is false for null/undefined (fail toward showing normal UI)', () => {
+    expect(isTerminalBrowseStatus(null)).toBe(false);
+    expect(isTerminalBrowseStatus(undefined)).toBe(false);
   });
 });
 

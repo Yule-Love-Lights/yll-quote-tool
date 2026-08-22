@@ -373,6 +373,15 @@ describe('projectScene — hasProjectableItems (Finding #103)', () => {
   it('is false for an empty scene', () => {
     expect(projectScene(scene([])).hasProjectableItems).toBe(false);
   });
+  // #240: a grouped scattershot isn't projectable ON ITS OWN (its group is),
+  // mirroring the pre-existing grouped-strand case.
+  it('is true for a scene with only a grouped scattershot + its group (the group is projectable)', () => {
+    const p = projectScene(scene([
+      miniArea({ id: 'a1', surface: 'bush', groupId: 'g1' }),
+      miniGroup({ id: 'g1', surface: 'bush', memberIds: ['a1'] }),
+    ]));
+    expect(p.hasProjectableItems).toBe(true);
+  });
 });
 
 describe('projectScene — needsReview cue for defaulted bindings (Finding #38)', () => {
@@ -499,6 +508,52 @@ describe('projectScene — A2 mini-light areas + grouped railings', () => {
   it('#227 a zero-member miniGroup is NOT treated as orphaned (falls back to its own id, as before)', () => {
     const p = projectScene(scene([miniGroup({ id: 'g0', surface: 'bush', memberIds: [] })]));
     expect(p.items[0].sceneItemIds).toEqual(['g0']);
+  });
+
+  // #240: a mini-light group's members can be strands AND/OR scattershots.
+  it('#240 SKIPS a grouped scattershot (priced via its group — no double count)', () => {
+    const p = projectScene(scene([
+      miniArea({ id: 'a1', surface: 'bush', stringCount: 1, groupId: 'g1' }),
+      miniGroup({ id: 'g1', surface: 'bush', stringCount: 5, memberIds: ['a1'] }),
+    ]));
+    // Only the group prices — the grouped scattershot is skipped.
+    expect(p.miniLightItems).toEqual([{ type: 'bush', wrapStyle: 'canopy', stringCount: 5 }]);
+    expect(p.items.map((i) => i.id)).toEqual(['mini-g1']);
+  });
+
+  it('#240 projects a MIXED group (strand + scattershot members) as one mini unit', () => {
+    const p = projectScene(scene([
+      strand({ id: 's1', surface: 'bush', groupId: 'g1' }),
+      miniArea({ id: 'a1', surface: 'bush', groupId: 'g1' }),
+      miniGroup({ id: 'g1', surface: 'bush', stringCount: 4, memberIds: ['s1', 'a1'] }),
+    ]));
+    expect(p.miniLightItems).toEqual([{ type: 'bush', wrapStyle: 'canopy', stringCount: 4 }]);
+    expect(p.items[0].sceneItemIds).toEqual(['s1', 'a1']);
+    expect(p.items[0].id).toBe('mini-g1');
+  });
+
+  it('#227/#240 a mixed group survives (bills normally) when only its scattershot member is still alive', () => {
+    const p = projectScene(scene([
+      miniArea({ id: 'a1', surface: 'bush', groupId: 'g1' }), // the one survivor
+      miniGroup({ id: 'g1', surface: 'bush', stringCount: 4, memberIds: ['dead-strand', 'a1'] }),
+    ]));
+    expect(p.miniLightItems).toEqual([{ type: 'bush', wrapStyle: 'canopy', stringCount: 4 }]);
+  });
+
+  it('#227/#240 a mixed group is FULLY orphaned (never bills) once both its strand and scattershot members are gone', () => {
+    const p = projectScene(scene([
+      miniGroup({ id: 'g1', surface: 'bush', stringCount: 4, memberIds: ['dead-strand', 'dead-area'] }),
+    ]));
+    expect(p.items).toEqual([]);
+    expect(p.miniLightItems).toEqual([]);
+  });
+
+  it('#240 an UNGROUPED scattershot still bills normally on its own', () => {
+    const p = projectScene(scene([
+      miniArea({ id: 'a1', surface: 'bush', stringCount: 2 }), // no groupId
+    ]));
+    expect(p.miniLightItems).toEqual([{ type: 'bush', wrapStyle: 'canopy', stringCount: 2 }]);
+    expect(p.items.map((i) => i.id)).toEqual(['mini-a1']);
   });
 });
 

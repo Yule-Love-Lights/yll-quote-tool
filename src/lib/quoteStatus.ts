@@ -187,6 +187,22 @@ export function canRevive(status: QuoteStatus): boolean {
   return status === 'declined' || status === 'abandoned';
 }
 
+/**
+ * Ledger row 236 — true for the two terminal statuses whose portal stays
+ * BROWSABLE (colors, line-item toggles) instead of hard-blocked, per Jason's
+ * want: declined/abandoned. Same predicate as canRevive above, loose-typed
+ * (`string | null | undefined`) so display components that carry
+ * PortalQuote.quoteStatus as a bare string prop (StickyBottomBar's
+ * terminalBrowse branch, FinancingSection's eligibility gate — a "Book like
+ * normal" pitch has nothing to lead to once approve/pay are 409-closed) can
+ * call it without a narrowing cast. A null/undefined value returns false
+ * (fail toward showing normal UI, matching isPortalActionable's fail-open
+ * convention just below).
+ */
+export function isTerminalBrowseStatus(status: string | null | undefined): boolean {
+  return status === 'declined' || status === 'abandoned';
+}
+
 // Bug fix (B3 UI): the customer portal shows the approve + pay controls only
 // while a quote is still live. A quote in a terminal branch (declined /
 // cancelled / abandoned) is closed; one in changes_requested is being revised.

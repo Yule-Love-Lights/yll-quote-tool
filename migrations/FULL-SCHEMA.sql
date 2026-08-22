@@ -3,7 +3,7 @@
 -- Paste into the Supabase SQL Editor and click Run.
 --
 -- GENERATED (audit #110 wave 2, finding W2-007): this file is produced by
--- reconciling ALL 82 dated migrations/*.sql files IN DATE ORDER (creates,
+-- reconciling ALL 83 dated migrations/*.sql files IN DATE ORDER (creates,
 -- alters, drops, RLS enable/disable applied in sequence) into one canonical
 -- end-state schema. It supersedes running db/schema.sql + the individual
 -- dated migrations separately (CREATE ... IF NOT EXISTS on a fresh DB; the
@@ -18,7 +18,13 @@
 -- 82, i.e. the exact hand-patch-without-updating-the-changelog drift row 282
 -- existed to end. The counts on line 6 and the roster below are the numbers to
 -- trust; re-derive them rather than incrementing by hand.
--- WHY THIS PASS EXISTED: the S59 six-lens review found this file no longer was
+-- 2026-08-19-quotes-browsing-selection.sql (ledger row 239) folded in the
+-- SAME PR that added the migration (83 files, still 38 live tables — an
+-- ADD COLUMN on the existing quotes table, not a new table). Row 315
+-- verified the header count against a fresh `ls migrations/*.sql` rather
+-- than trusting either number, per the "re-derive, don't hand-increment"
+-- line above.
+-- WHY THIS PASS EXISTED: the S58 post-close six-lens review (mislabelled S59 until the 2026-08-19 correction) found this file no longer was
 -- what its own header claimed. It said "64 dated migrations" and "30 LIVE"
 -- tables while 81 migrations and 37 live tables existed, and TWO tables
 -- (archive_photos, site_submissions) were absent from the file entirely — so
@@ -220,6 +226,10 @@ alter table quotes
   -- 2026-06-27 GHL pipeline-stage sync durability
   add column if not exists ghl_stage_synced_at timestamptz,
   add column if not exists ghl_sync_error text,
+  -- 2026-08-22 retry leases: guard customer re-delivery and GHL retries
+  -- independently before either can invoke an external provider.
+  add column if not exists delivery_retry_claimed_at timestamptz,
+  add column if not exists ghl_retry_claimed_at timestamptz,
   -- 2026-06-27 approve-notify failure marker
   add column if not exists approval_notify_failed_at timestamptz,
   add column if not exists approval_notify_error text,
@@ -492,7 +502,12 @@ alter table designs
   add column if not exists extra_photos jsonb,
   -- 2026-07-02 a staff title for the BASE photo (renameable "Photo 1" tab,
   -- like the extras' own titles). Nullable — null renders as "Photo 1".
-  add column if not exists photo_title text;
+  add column if not exists photo_title text,
+  -- 2026-08-20 compare-and-swap guard for the scene autosave (ledger row
+  -- 260, migrations/2026-08-20-designs-scene-version.sql). Every scene write
+  -- goes UPDATE ... WHERE version = <last-read value> SET version =
+  -- version + 1 — zero rows updated means a concurrent writer won the race.
+  add column if not exists version integer not null default 1;
 
 alter table designs enable row level security;
 
