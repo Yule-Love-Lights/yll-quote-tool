@@ -16,6 +16,7 @@ import { calculatePermanentBistro } from '@/lib/permanentBistro/pricing';
 import { getAppSettings } from '@/lib/appSettings';
 import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
 import { pushEventDateToGhl, formatEventDateForGhl } from '@/lib/integrations/ghlEventDate';
+import { getSupabaseServiceClient } from '@/lib/supabase';
 
 const VALID_DIFFICULTIES = ['easy', 'medium', 'hard'];
 const VALID_TAKEDOWNS = ['included', 'premium'];
@@ -942,7 +943,29 @@ export async function POST(req: NextRequest) {
       const priorFormatted = formatEventDateForGhl(priorInputs?.event?.eventDate);
       const nextFormatted = formatEventDateForGhl(quoteInputs.event?.eventDate);
       if (nextFormatted && nextFormatted !== priorFormatted) {
-        after(() => pushEventDateToGhl(existing.highlevel_contact_id, quoteInputs.event?.eventDate));
+        // #314 fix round: stamp quotes.ghl_event_date_pushed on a CONFIRMED
+        // push, same as the send route and the approve route's own reconcile
+        // — see ghlEventDate.ts's migration comment for why this marker (not
+        // GHL's live value) is what the approve-time reconcile compares
+        // against. Best-effort, inside the same after() task: a failed stamp
+        // only means a later reconcile may re-push a value GHL already has
+        // (harmless, a plain overwrite), never that a real change goes
+        // unpushed.
+        const contactId = existing.highlevel_contact_id;
+        const targetQuoteId = quoteId as string;
+        after(async () => {
+          const { pushed } = await pushEventDateToGhl(contactId, quoteInputs.event?.eventDate);
+          if (!pushed) return;
+          const sb = getSupabaseServiceClient();
+          if (!sb) return;
+          const { error } = await sb
+            .from('quotes')
+            .update({ ghl_event_date_pushed: nextFormatted })
+            .eq('id', targetQuoteId);
+          if (error) {
+            console.error('[api/quote] failed to stamp ghl_event_date_pushed (#314):', error.message);
+          }
+        });
       }
     }
 

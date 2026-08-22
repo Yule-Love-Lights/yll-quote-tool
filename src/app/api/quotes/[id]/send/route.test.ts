@@ -2016,6 +2016,45 @@ describe('POST /api/quotes/[id]/send — event-date GHL push (#237)', () => {
     expect(hl.upsertContactCustomField).toHaveBeenCalledWith('contact_1', 'ed_field_1', '12/25/2026');
   });
 
+  // #314 fix round (staff-lens HIGH): a CONFIRMED push must stamp
+  // ghl_event_date_pushed — the marker the approve route's reconcile
+  // compares against instead of GHL's live value.
+  it('stamps ghl_event_date_pushed on the same sync-state write when the push succeeds', async () => {
+    const { client, updatePayloads } = makeSb({
+      ...FRESH_QUOTE,
+      service_type: 'event',
+      inputs: { event: { eventDate: '2026-12-25' } },
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+
+    const syncWrite = updatePayloads.find((p) => 'ghl_stage_synced_at' in p || 'ghl_sync_error' in p);
+    expect(syncWrite?.ghl_event_date_pushed).toBe('12/25/2026');
+  });
+
+  // Counterpart: a FAILED push must never stamp the marker with a value that
+  // never actually landed.
+  it('does NOT stamp ghl_event_date_pushed when the push fails', async () => {
+    hl.upsertContactCustomField.mockImplementation(async (_contactId: string, fieldId: string) => {
+      if (fieldId === 'ed_field_1') throw new HighLevelError('GHL 500', 500, 'server error');
+      return undefined;
+    });
+    const { client, updatePayloads } = makeSb({
+      ...FRESH_QUOTE,
+      service_type: 'event',
+      inputs: { event: { eventDate: '2026-12-25' } },
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+
+    const syncWrite = updatePayloads.find((p) => 'ghl_stage_synced_at' in p || 'ghl_sync_error' in p);
+    expect(syncWrite?.ghl_event_date_pushed).toBeUndefined();
+  });
+
   // Positive gate (`=== 'event'`, never `!== 'event'`): the other three
   // service types must never even attempt field resolution, let alone a
   // write — asserted via listLocationCustomFields, which nothing else in
