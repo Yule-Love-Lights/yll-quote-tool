@@ -163,6 +163,30 @@ async function run(action: PipelineAction, rec: PipelineRecord): Promise<Respons
       // cancelled-prompt branch in this switch.
       if (sendInFlight) return null;
       sendInFlight = true;
+      // Row 340: a declined/abandoned quote's Send is a REVIVE (see /send's
+      // canRevive) — the customer's portal will reopen exactly where they
+      // left off before declining, including any browsing selection they
+      // saved (row 239/#861). Ask up front whether to clear that stale
+      // selection so the customer sees a fresh default instead. Purely
+      // informational + a choice — always proceeds to send either way (the
+      // operator already committed to sending by picking this menu item);
+      // synchronous, so it runs before sendInFlight's first-await contract
+      // above is at risk.
+      let clearBrowsingSelection = false;
+      if (
+        (rec.quoteStatus === 'declined' || rec.quoteStatus === 'abandoned') &&
+        rec.staleBrowsingSelection
+      ) {
+        const sel = rec.staleBrowsingSelection;
+        const what =
+          sel.packageId && sel.packageId !== 'D'
+            ? `Package ${sel.packageId}`
+            : `${sel.itemCount} custom item${sel.itemCount === 1 ? '' : 's'}`;
+        const savedLabel = sel.savedAt ? new Date(sel.savedAt).toLocaleDateString() : 'before they declined';
+        clearBrowsingSelection = window.confirm(
+          `Heads up: this customer's portal will reopen on their pre-decline selection (${what}, saved ${savedLabel}) instead of a fresh default.\n\nClear it now so they start fresh? OK = clear it, Cancel = keep it and send as-is.`,
+        );
+      }
       // PS-G4: this is now the ONE way to send a quote (the admin quotes list's
       // inline Send/Resend button was dropped as a duplicate that offered no
       // channel choice). Carries over that button's UX — copy the portal URL to
@@ -182,7 +206,10 @@ async function run(action: PipelineAction, rec: PipelineRecord): Promise<Respons
         res = await fetch(`/api/quotes/${q}/send`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ channel: action.channel }),
+          body: JSON.stringify({
+            channel: action.channel,
+            ...(clearBrowsingSelection ? { clearBrowsingSelection: true } : {}),
+          }),
         });
         // Row 270: read via .clone() (leaves `res` itself unconsumed) so a
         // response this case doesn't specially handle can still be returned
