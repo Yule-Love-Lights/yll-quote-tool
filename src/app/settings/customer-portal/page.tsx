@@ -115,7 +115,10 @@ export default function CustomerPortalSettingsPage() {
                 is a small placeholder matching the status line's own visual
                 weight, not a full-content skeleton. */}
             {status === 'loading' && (
-              <span className="inline-block h-4 w-16 animate-pulse rounded bg-black/10" aria-hidden="true" />
+              <>
+                <span className="inline-block h-4 w-16 animate-pulse rounded bg-black/10" aria-hidden="true" />
+                <span className="sr-only">Loading</span>
+              </>
             )}
             {status === 'saving' && <span className="text-gray-400">Saving…</span>}
             {status === 'saved' && <span className="text-emerald-600">Saved</span>}
