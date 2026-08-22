@@ -15,8 +15,14 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-const { sbRef, hl, valorCheckout } = vi.hoisted(() => ({
+const { sbRef, hl, valorCheckout, afterTasks } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
+  // #314 fix round (technical HIGH + customer MED): the event-date reconcile
+  // moved into after() so it never blocks the customer's approval response.
+  // Same capture-not-run mock as referrals/request-link/route.test.ts —
+  // drainAfterTasks() (below) lets a test explicitly settle the task before
+  // asserting on it, and assert it did NOT run (yet) when relevant.
+  afterTasks: [] as Array<() => Promise<void> | void>,
   hl: {
     configured: { value: true },
     sendSms: vi.fn(async () => ({})),
@@ -44,6 +50,19 @@ vi.mock('@/lib/supabase', () => ({
 }));
 
 vi.mock('@/lib/rateLimit', () => ({ rateLimitResponse: () => null }));
+
+// #314 fix round: real NextRequest/NextResponse (spread from importOriginal),
+// only after() replaced with a version that captures the scheduled task
+// instead of running it.
+vi.mock('next/server', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('next/server')>();
+  return {
+    ...actual,
+    after: (task: () => Promise<void> | void) => {
+      afterTasks.push(task);
+    },
+  };
+});
 
 vi.mock('@/lib/integrations/highlevel', () => ({
   isHighLevelConfigured: () => hl.configured.value,
@@ -166,6 +185,9 @@ function baseQuote(overrides: Record<string, unknown> = {}) {
     viewed_at: null,
     quote_sent_at: '2026-06-25T00:00:00Z',
     view_only: false,
+    // #314 fix round: null = legacy/never-confirmed-pushed row (the default
+    // for every test below except the ones deliberately setting a marker).
+    ghl_event_date_pushed: null,
     ...overrides,
   };
 }
@@ -232,6 +254,11 @@ function makeSb(quote: Record<string, unknown> | null, updateRows: Array<{ id: s
   return { client: builder, updatePayloads };
 }
 
+async function drainAfterTasks() {
+  const tasks = afterTasks.splice(0, afterTasks.length);
+  for (const t of tasks) await t();
+}
+
 function makeReq(body: Record<string, unknown>): NextRequest {
   return {
     json: async () => body,
@@ -253,6 +280,7 @@ const validBody = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  afterTasks.length = 0;
   hl.configured.value = false; // no messaging unless a test opts in
   valorCheckout.enabled.value = false;
   hl.listLocationCustomFields.mockResolvedValue([{ id: 'ed_field_1', name: 'Event Date' }]);
@@ -1195,6 +1223,13 @@ describe('POST /api/quotes/[id]/approve — event discount (#212)', () => {
 // #314: push a changed event date to GHL at approval too, reconciling
 // against a possibly-silently-failed earlier push instead of assuming
 // #807's send/save-time pushes always landed.
+//
+// #314 fix round (staff-lens HIGH + technical HIGH + admin MED): reworked
+// throughout for the new comparison basis (quote.ghl_event_date_pushed, the
+// last CONFIRMED-pushed value — never GHL's live value) and the move into
+// after() (see route.ts's own comment on the reconcile block for the full
+// reasoning on both). `drainAfterTasks()` settles the captured after() task;
+// tests that care about "did NOT run inline" assert BEFORE draining.
 describe('POST /api/quotes/[id]/approve — event-date GHL reconciliation (#314)', () => {
   function eventQuote(overrides: Record<string, unknown> = {}) {
     return baseQuote({
@@ -1206,38 +1241,91 @@ describe('POST /api/quotes/[id]/approve — event-date GHL reconciliation (#314)
     });
   }
 
-  it('pushes when the current date differs from what GHL has (changed-date push)', async () => {
+  it('pushes when the quote\'s date changed since the last confirmed push, without reading GHL first', async () => {
     hl.configured.value = true;
-    hl.getContactInternal.mockResolvedValue({
-      id: 'hl-contact-1',
-      source: 'highlevel' as const,
-      // GHL still has the OLD date — staff amended it after send.
-      raw: { id: 'hl-contact-1', customFields: [{ id: 'ed_field_1', value: '11/01/2026' }] },
-    });
-    const { client } = makeSb(eventQuote());
+    // A prior push confirmed '11/01/2026'; the quote has since moved to
+    // '12/25/2026' — our own side changed, so this pushes unconditionally.
+    // No GHL read is needed (or should happen) to decide that.
+    const { client, updatePayloads } = makeSb(eventQuote({ ghl_event_date_pushed: '11/01/2026' }));
     sbRef.current = client;
 
     const res = await POST(makeReq(validBody), { params });
-
     expect(res.status).toBe(200);
+
+    // Not run inline — the whole point of the after() move (technical HIGH).
+    expect(hl.upsertContactCustomField).not.toHaveBeenCalled();
+    expect(afterTasks).toHaveLength(1);
+
+    await drainAfterTasks();
+    expect(hl.getContactInternal).not.toHaveBeenCalled();
     expect(hl.upsertContactCustomField).toHaveBeenCalledWith('hl-contact-1', 'ed_field_1', '12/25/2026');
+    // Confirmed-pushed marker stamped on success.
+    const stamp = updatePayloads.find((p) => 'ghl_event_date_pushed' in p);
+    expect(stamp?.ghl_event_date_pushed).toBe('12/25/2026');
   });
 
-  it('does NOT push when GHL already has the current date (unchanged-date skip)', async () => {
+  it('does NOT push when the quote\'s date is unchanged since the last confirmed push, even when GHL currently disagrees (a staff correction made directly in GHL survives approval)', async () => {
+    hl.configured.value = true;
+    // The last confirmed push already matches the quote's current date —
+    // nothing on OUR side has changed, so this must not push, must not even
+    // read GHL's current value (a staff correction there is none of our
+    // business to overwrite).
+    const { client, updatePayloads } = makeSb(eventQuote({ ghl_event_date_pushed: '12/25/2026' }));
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+    expect(res.status).toBe(200);
+    // No after() task even scheduled — the gate is evaluated inline, before
+    // after() is called, specifically so a no-op reconcile costs nothing.
+    expect(afterTasks).toHaveLength(0);
+
+    await drainAfterTasks();
+    expect(hl.getContactInternal).not.toHaveBeenCalled();
+    expect(hl.upsertContactCustomField).not.toHaveBeenCalled();
+    expect(updatePayloads.some((p) => 'ghl_event_date_pushed' in p)).toBe(false);
+  });
+
+  it('legacy row (never confirmed pushed): pushes when GHL is currently empty', async () => {
     hl.configured.value = true;
     hl.getContactInternal.mockResolvedValue({
       id: 'hl-contact-1',
       source: 'highlevel' as const,
-      // GHL already agrees with inputs.event.eventDate — nothing to reconcile.
-      raw: { id: 'hl-contact-1', customFields: [{ id: 'ed_field_1', value: '12/25/2026' }] },
+      raw: { id: 'hl-contact-1', customFields: [] },
     });
-    const { client } = makeSb(eventQuote());
+    // ghl_event_date_pushed defaults to null in eventQuote/baseQuote.
+    const { client, updatePayloads } = makeSb(eventQuote());
     sbRef.current = client;
 
     const res = await POST(makeReq(validBody), { params });
-
     expect(res.status).toBe(200);
+    await drainAfterTasks();
+
+    expect(hl.getContactInternal).toHaveBeenCalledWith('hl-contact-1');
+    expect(hl.upsertContactCustomField).toHaveBeenCalledWith('hl-contact-1', 'ed_field_1', '12/25/2026');
+    const stamp = updatePayloads.find((p) => 'ghl_event_date_pushed' in p);
+    expect(stamp?.ghl_event_date_pushed).toBe('12/25/2026');
+  });
+
+  it('legacy row (never confirmed pushed): does NOT overwrite a non-empty GHL value (no push history to trust)', async () => {
+    hl.configured.value = true;
+    hl.getContactInternal.mockResolvedValue({
+      id: 'hl-contact-1',
+      source: 'highlevel' as const,
+      // GHL already holds SOME value — with no push history, we can't tell
+      // whether that's a stale value or a staff correction, so the
+      // conservative rule is: never overwrite it.
+      raw: { id: 'hl-contact-1', customFields: [{ id: 'ed_field_1', value: '11/01/2026' }] },
+    });
+    const { client, updatePayloads } = makeSb(eventQuote());
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+    expect(res.status).toBe(200);
+    await drainAfterTasks();
+
+    expect(hl.getContactInternal).toHaveBeenCalledWith('hl-contact-1');
     expect(hl.upsertContactCustomField).not.toHaveBeenCalled();
+    expect(updatePayloads.some((p) => 'ghl_event_date_pushed' in p)).toBe(false);
   });
 
   it('never reads or pushes for a non-event quote (non-event skip)', async () => {
@@ -1253,8 +1341,10 @@ describe('POST /api/quotes/[id]/approve — event-date GHL reconciliation (#314)
     sbRef.current = client;
 
     const res = await POST(makeReq(validBody), { params });
-
     expect(res.status).toBe(200);
+    expect(afterTasks).toHaveLength(0);
+    await drainAfterTasks();
+
     expect(hl.getContactInternal).not.toHaveBeenCalled();
     expect(hl.upsertContactCustomField).not.toHaveBeenCalled();
   });
@@ -1263,17 +1353,27 @@ describe('POST /api/quotes/[id]/approve — event-date GHL reconciliation (#314)
     hl.configured.value = true;
     hl.getContactInternal.mockRejectedValue(new Error('GHL down'));
     hl.upsertContactCustomField.mockRejectedValue(new Error('GHL down'));
+    // Legacy row (null marker) so the reconcile exercises both the GHL read
+    // and the push attempt.
     const { client, updatePayloads } = makeSb(eventQuote());
     sbRef.current = client;
 
     const res = await POST(makeReq(validBody), { params });
     const json = await res.json();
 
-    // The approval itself (the durable snapshot write) still succeeds —
-    // a GHL hiccup on this best-effort reconciliation must never 500 a
-    // customer's approval or leave it unrecorded.
+    // The approval itself (the durable snapshot write) is already recorded
+    // BEFORE the after() task even runs — a GHL hiccup on this best-effort
+    // reconciliation must never 500 a customer's approval or leave it
+    // unrecorded.
     expect(res.status).toBe(200);
     expect(json.ok).toBe(true);
     expect(updatePayloads[0].customer_approved_at).toBeTruthy();
+
+    // Draining must not throw (pushEventDateToGhl/getEventDateFromGhl are
+    // documented never-throw, but the reconcile's own after() task wraps
+    // nothing extra around them — this proves there's no unhandled
+    // rejection lurking in the stamp-write branch either).
+    await expect(drainAfterTasks()).resolves.not.toThrow();
+    expect(updatePayloads.some((p) => 'ghl_event_date_pushed' in p)).toBe(false);
   });
 });
