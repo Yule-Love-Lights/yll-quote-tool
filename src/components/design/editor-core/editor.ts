@@ -16,6 +16,7 @@ import { renderText, fontsReady, FONT_OPTIONS, DEFAULT_TEXT_SIZE_IN, type FontFa
 import { createCustom } from "./custom";
 import { createPole } from "./pole";
 import { renderMiniArea } from "./miniArea";
+import { LIGHT_SCALE_MAX, LIGHT_SCALE_MIN, normalizeLightScale } from "./lightScale";
 import { preloadAssets } from "./assets";
 import { renderYardstick, pxPerFoot, yardstickLabel } from "./yardstick";
 import { DEFAULT_KEYMAP, resolveAction, type KeyMap } from "./keymap";
@@ -340,6 +341,12 @@ export async function renderEditor(
             <div class="neutral-tick" title="Neutral — original photo brightness"></div>
           </div>
           <span class="icon" title="Brighter">${sunSvg()}</span>
+          <span class="ctl-sep"></span>
+          <span class="ctl-label" title="How big the lights are drawn. Presentation only: this does not change footage or price.">Light size</span>
+          <div class="slider-wrap narrow">
+            <input type="range" min="${LIGHT_SCALE_MIN}" max="${LIGHT_SCALE_MAX}" step="0.1" value="1" id="light-scale" title="Double-click to reset to 1.0x" />
+          </div>
+          <span class="ctl-value" id="light-scale-val">1.0x</span>
         </div>
         <div class="stage-empty" id="empty"${activeBgUrl ? ' style="display:none"' : ""}>
           <div>${activePhotoId ? "This photo couldn't be loaded." : "Upload a photo of the house to get started."}</div>
@@ -355,7 +362,14 @@ export async function renderEditor(
   `;
 
   // --- State ---
-  let scene: Scene = { ...design.scene, brightness: design.scene.brightness ?? 50 };
+  let scene: Scene = {
+    ...design.scene,
+    brightness: design.scene.brightness ?? 50,
+    // Normalize on load, not just on edit: an older design has no field at
+    // all, and a hand-edited scene JSON could carry 0 (invisible lights) or a
+    // huge number. Seeding it here means every later read is already sane.
+    lightScale: normalizeLightScale(design.scene.lightScale),
+  };
   // #88/#117: a permanent (or permanent-bistro) quote's design is locked to
   // one bulb type so the operator only ever draws that type's runs.
   const initialBulbType: BulbType = opts.permanentOnly ? "permanent" : opts.bistroOnly ? "bistro" : "c9";
@@ -791,7 +805,7 @@ export async function renderEditor(
       if (!onActivePhoto(item)) continue;
       let g: Konva.Group;
       if (isStrand(item)) {
-        g = renderStrand(item, ppfForStrand(item));
+        g = renderStrand(item, ppfForStrand(item), activeLightScale());
         g.draggable(true);
         g.on("transformend dragend", () => bakeTransformIntoStrand(g, item.id));
       } else if (isWreath(item)) {
@@ -805,7 +819,7 @@ export async function renderEditor(
         g.draggable(true);
         g.on("transformend dragend", () => bakeTransformIntoGarland(g, item.id));
       } else if (isSpritzer(item)) {
-        g = createSpritzer(item, ppfForActiveYardstick());
+        g = createSpritzer(item, ppfForActiveYardstick(), activeLightScale());
         g.on("transformend dragend", () => bakeTransformIntoSpritzer(g, item.id));
       } else if (isText(item)) {
         g = renderText(item, ppfForActiveYardstick());
@@ -828,7 +842,7 @@ export async function renderEditor(
           g.draggable(false);
         }
       } else if (isMiniArea(item)) {
-        g = renderMiniArea(item, ppfForActiveYardstick());
+        g = renderMiniArea(item, ppfForActiveYardstick(), activeLightScale());
         g.draggable(true);
         g.on("transformend dragend", () => bakeTransformIntoMiniArea(g, item.id));
       } else {
@@ -907,6 +921,15 @@ export async function renderEditor(
   // (They don't have an own-yardstick concept yet — that'd be an easy add later.)
   function ppfForActiveYardstick(): number {
     return pxPerFoot(activeYs());
+  }
+
+  // The scene's light-size multiplier, read fresh on every render so the
+  // slider updates the canvas live. Presentation only: this feeds the bulb
+  // renderers and nothing that computes footage or price. Deliberately NOT
+  // folded into ppfForActiveYardstick above, because px/ft is the money
+  // number (footage = strand px / px/ft) and must stay untouched.
+  function activeLightScale(): number {
+    return normalizeLightScale(scene.lightScale);
   }
 
   // #13: all photo-scoped, like allStrands above.
@@ -4785,6 +4808,42 @@ export async function renderEditor(
     scene = { ...scene, brightness: 50 };
     drawTint();
     scheduleSave();
+    commit();
+  });
+
+  // --- Light-size slider ---
+  // Same shape as brightness above, with one difference: brightness only
+  // repaints the tint layer, while light size changes the drawn items, so
+  // this redraws the canvas instead. requestCanvasRedraw is rAF-throttled, so
+  // dragging costs one rebuild per frame rather than one per input event.
+  const lightScaleEl = root.querySelector("#light-scale") as HTMLInputElement;
+  const lightScaleValEl = root.querySelector("#light-scale-val") as HTMLElement;
+  function showLightScale(v: number) {
+    lightScaleEl.value = String(v);
+    lightScaleValEl.textContent = `${v.toFixed(1)}x`;
+  }
+  function applyLightScale(value: number) {
+    const v = normalizeLightScale(value);
+    scene = { ...scene, lightScale: v };
+    showLightScale(v);
+    requestCanvasRedraw();
+    scheduleSave();
+  }
+  // Seed the control from the saved scene WITHOUT saving or redrawing: this
+  // runs on every open, and calling applyLightScale here would dirty the
+  // design (and queue an autosave) just because someone looked at it.
+  showLightScale(normalizeLightScale(scene.lightScale));
+  lightScaleEl.addEventListener("input", () => {
+    applyLightScale(Number(lightScaleEl.value));
+  });
+  // Snapshot for undo only once the user releases the slider, so a drag is one
+  // undo step and not fifty.
+  lightScaleEl.addEventListener("change", () => {
+    commit();
+  });
+  // Double-click resets to 1.0x — lights drawn at their real-world size.
+  lightScaleEl.addEventListener("dblclick", () => {
+    applyLightScale(1);
     commit();
   });
 

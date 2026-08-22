@@ -5,12 +5,14 @@ This directory is the Quote Tool-owned canonical machine-readable companion to
 
 - `manifest.json` pins the independent schema and contract versions.
 - `common.openapi.json` is the OpenAPI 3.1 source for the common command,
-  response, event, enum, and machine-auth components. It includes the first
-  complete operation, Flow H's commitment-event pull feed.
+  response, event, enum, and machine-auth components. It includes Flow H's
+  commitment-event pull feed and Flow Q's quote-event feed, paid-context read,
+  and Hub-owned authorization-snapshot write.
 - `common.schema.json` is generated from the OpenAPI component schemas.
   Its root accepts only a command request, command response, typed commitment
-  event, commitment-event page, or typed machine-read error; consumers may also
-  validate a named `$defs` entry directly.
+  event, commitment-event page, Quote lifecycle event/page, paid-context read,
+  authorization snapshot/receipt/error, or typed machine-read error; consumers
+  may also validate a named `$defs` entry directly.
 
 Generate or verify the JSON Schema with Node.js:
 

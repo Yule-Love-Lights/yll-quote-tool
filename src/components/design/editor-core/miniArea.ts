@@ -2,6 +2,7 @@ import Konva from "konva";
 // VENDOR ADAPTATION (Path B): type from our local sceneTypes, not ../api.
 import type { MiniAreaItem } from "@/lib/design/sceneTypes";
 import { colorOf } from "./colors";
+import { LIGHT_SCALE_DEFAULT, normalizeLightScale } from "./lightScale";
 
 // Renders a MiniAreaItem: a box or traced polygon "filled" with deterministically
 // scattered single mini-lights, blended onto the photo with `lighten` so it reads
@@ -27,7 +28,11 @@ const FILL_K = 6;          // bulbs per real-world sq ft at density = 1
 const MIN_BULBS = 4;
 const MAX_BULBS = 600;     // perf guard for huge / dense areas
 
-export function renderMiniArea(item: MiniAreaItem, pxPerFoot: number): Konva.Group {
+export function renderMiniArea(
+  item: MiniAreaItem,
+  pxPerFoot: number,
+  lightScale: number = LIGHT_SCALE_DEFAULT,
+): Konva.Group {
   // Resolve the shape into LOCAL polygon points + an origin (so the group can
   // sit at the origin and children are relative to it).
   const { originX, originY, local, widthPx, heightPx } = resolveShape(item);
@@ -46,7 +51,12 @@ export function renderMiniArea(item: MiniAreaItem, pxPerFoot: number): Konva.Gro
 
   const colors = item.colorPattern && item.colorPattern.length > 0 ? item.colorPattern : ["warm-white"];
 
-  const rPx = Math.max(1.2, 0.09 * pxPerFoot);   // mini bulb core radius
+  // Bulb SIZE takes the scene's presentation multiplier; bulb COUNT above
+  // deliberately does not — count comes from the real area and the operator's
+  // density, and inflating it would change how full the bush reads, not how
+  // big its lights read. Same money-safety rule as lightScale.ts: `areaFt2`
+  // and `count` never see this value.
+  const rPx = Math.max(1.2, 0.09 * pxPerFoot) * normalizeLightScale(lightScale); // mini bulb core radius
   const haloPx = rPx * 2.6;
 
   // Faint dashed outline so the area is visible even when sparsely filled / empty.
