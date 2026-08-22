@@ -852,6 +852,64 @@ describe('POST /api/quotes/[id]/send — #116 revive (declined/abandoned re-send
     expect(updatePayloads.some((p) => 'decline_reason' in p)).toBe(false);
     expect(updatePayloads.some((p) => 'approval_snapshot' in p)).toBe(false);
   });
+
+  // Row 340: an operator-requested wipe of the stale pre-decline browsing
+  // selection, done as part of the SAME guarded revive write (never a
+  // separate route/call).
+  it('clearBrowsingSelection:true nulls browsing_selection + browsing_selection_updated_at on a revive', async () => {
+    const declined = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-20T00:00:00Z',
+      status: 'declined',
+      browsing_selection: { packageId: 'B', selectedItemIds: ['a', 'b'] },
+      browsing_selection_updated_at: '2026-06-19T00:00:00Z',
+    };
+    const { client, updatePayloads } = makeSb(declined);
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ clearBrowsingSelection: true }), { params });
+    expect(res.status).toBe(200);
+    const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
+    expect(stampWrite).toBeTruthy();
+    expect(stampWrite!.browsing_selection).toBeNull();
+    expect(stampWrite!.browsing_selection_updated_at).toBeNull();
+  });
+
+  // Negative control (AGENTS.md — negative-control every guard): omitting the
+  // flag must leave the stale selection untouched, not default-clear it.
+  it('a revive WITHOUT clearBrowsingSelection leaves the stale browsing selection alone', async () => {
+    const declined = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-20T00:00:00Z',
+      status: 'declined',
+      browsing_selection: { packageId: 'B', selectedItemIds: ['a', 'b'] },
+      browsing_selection_updated_at: '2026-06-19T00:00:00Z',
+    };
+    const { client, updatePayloads } = makeSb(declined);
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
+    expect(stampWrite).toBeTruthy();
+    expect('browsing_selection' in stampWrite!).toBe(false);
+    expect('browsing_selection_updated_at' in stampWrite!).toBe(false);
+  });
+
+  // clearBrowsingSelection must be inert outside a revive — a fresh/resend
+  // send must never touch a LIVE quote's real, in-progress browsing selection.
+  it('clearBrowsingSelection:true is a no-op on a non-revive (fresh) send', async () => {
+    const fresh = { ...FRESH_QUOTE, browsing_selection: { packageId: 'B', selectedItemIds: ['a'] } };
+    const { client, updatePayloads } = makeSb(fresh);
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ clearBrowsingSelection: true }), { params });
+    expect(res.status).toBe(200);
+    const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
+    expect(stampWrite).toBeTruthy();
+    expect('browsing_selection' in stampWrite!).toBe(false);
+    expect('browsing_selection_updated_at' in stampWrite!).toBe(false);
+  });
 });
 
 describe('POST /api/quotes/[id]/send — per-service-type pipeline (#GHL pipeline sync)', () => {

@@ -14,6 +14,17 @@
 //   short-circuiting on the old quote_sent_at. CANCELLED stays excluded
 //   (post-booking — refunds are manual, rebook-only). A revive with
 //   deposit_paid_at already set is refused 409 (fail closed).
+// Row 340: a revive reseeds the customer's portal from whatever
+//   browsing_selection they last saved BEFORE declining/abandoning (ledger row
+//   239's live-selection persist, widened to stay browsable post-decline by
+//   row 236) — the operator previously had no visibility into this and no way
+//   to reset it. Body accepts an optional `clearBrowsingSelection: true`
+//   (only meaningful on a revive) to wipe that stale selection as PART OF the
+//   same guarded stamp write, so the customer's portal reopens on the normal
+//   staff-recommended default instead of picking back up where they left off
+//   pre-decline. PipelineActionsMenu.tsx surfaces the stale selection (via
+//   GET /api/pipeline/[quoteId]'s staleBrowsingSelection) and asks the
+//   operator before setting this flag. A no-op on any non-revive send.
 // Response:
 //   { ok: true, sentAt: ISO, stageUpdated: boolean, opportunityCreated: boolean,
 //     opportunityId: string | null, stageError?: string, ghlRetry: boolean,
@@ -317,11 +328,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // Task 10 — Send channel split: accept an optional body { channel?: 'email' | 'sms' | 'both' }.
   // Default is 'both' (back-compat — the admin Send button posts no body).
   // Guard against a double-read: the body is only ever read once here.
-  let sendBody: { channel?: unknown } = {};
+  // Row 340: also accepts `clearBrowsingSelection?: boolean` — see the route
+  // header. Read here (not deferred to the isRevive branch below) so both
+  // fields come from the ONE body read.
+  let sendBody: { channel?: unknown; clearBrowsingSelection?: unknown } = {};
   try { sendBody = await req.json(); } catch { sendBody = {}; }
   const channel = (sendBody.channel === 'sms' || sendBody.channel === 'email' || sendBody.channel === 'both')
     ? sendBody.channel
     : 'both';
+  const clearBrowsingSelection = sendBody.clearBrowsingSelection === true;
   const doSms   = channel === 'both' || channel === 'sms';
   const doEmail = channel === 'both' || channel === 'email';
 
@@ -550,6 +565,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       // and are useful history ("declined once, revived on <date>").
       stampPayload.customer_approved_at = null;
       stampPayload.viewed_at = null;
+      // Row 340: an explicit operator choice (surfaced from the pipeline
+      // menu's pre-send prompt, see the route header) to wipe the stale
+      // pre-decline browsing selection as part of THIS SAME guarded write —
+      // never a default, and never touched on a non-revive send (the
+      // ordinary browsing-selection route already refuses to write over an
+      // approval, and a live sent/viewed quote's selection is real,
+      // in-progress customer data this route has no business clearing).
+      if (clearBrowsingSelection) {
+        stampPayload.browsing_selection = null;
+        stampPayload.browsing_selection_updated_at = null;
+      }
     }
     // #187b TOCTOU: the view_only check above (and the deposit_paid_at check
     // baked into isRevive's 409 above) are fast-path reads — staff could flip
