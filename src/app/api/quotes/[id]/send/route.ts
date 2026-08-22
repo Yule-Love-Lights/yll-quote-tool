@@ -505,12 +505,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // revive-stamp from clobbering customer_approved_at/viewed_at on a quote
     // that's now paid.
     //
-    // A first send also claims quote_sent_at IS NULL atomically. Two requests
-    // can both read the same fresh row, but only one update can still match;
-    // the loser returns the existing send-conflict below before any GHL or
-    // customer-delivery work. Resends and revivals deliberately skip this
-    // predicate because they re-stamp an existing quote_sent_at. `.select('id')`
-    // reports whether we actually won.
+    // A first send claims quote_sent_at IS NULL atomically. Resends and
+    // revivals already have a sent timestamp, so they instead claim the exact
+    // lifecycle status read above. Either way, only one update can still
+    // match; the loser returns the existing send-conflict below before any GHL
+    // or customer-delivery work. `.select('id')` reports whether we won.
     const { data: stampedRows, error: stampErr } = await withDbTimeout((signal) => {
       let stampQuery = sb
         .from('quotes')
@@ -518,9 +517,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         .eq('id', id)
         .eq('view_only', false)
         .is('deposit_paid_at', null);
-      if (!isResend && !isRevive) {
-        stampQuery = stampQuery.is('quote_sent_at', null);
-      }
+      stampQuery = (isResend || isRevive)
+        ? stampQuery.eq('status', currentStatus)
+        : stampQuery.is('quote_sent_at', null);
       return stampQuery
         .select('id')
         .abortSignal(signal);
