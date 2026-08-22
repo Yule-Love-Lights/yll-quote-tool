@@ -1,4 +1,4 @@
-# Operations Hub <-> Quote Tool contract, v1.4.0-draft
+# Operations Hub <-> Quote Tool contract, v1.5.0-draft
 
 > Canonical authority resides at
 > `yll-quote-tool/docs/context/OPERATIONS_HUB_CONTRACT.md`. The byte-identical
@@ -8,7 +8,7 @@
 > This file is the complete normative contract. Historical Hub plans,
 > proposals, and decision logs are provenance only. Implementations may
 > additionally consume only the OpenAPI and JSON Schema artifacts explicitly
-> generated from this file. The draft becomes `v1.4.0` only through the paired
+> generated from this file. The draft becomes `v1.5.0` only through the paired
 > review and human-approval process in section 10; it is never renumbered
 > downward to `v1.0.0`.
 
@@ -276,7 +276,7 @@ only a generic authentication error.
   schema file in their own CI. Neither side hand-implements the envelope
   twice. A CI check in each repo fails on any byte diff between the
   canonical contract and the mirror, version string included.
-  The initial independent `schema_version` is `1.0.0-draft`; it does not inherit
+  The independent `schema_version` is `1.1.0-draft`; it does not inherit
   or mirror the contract version.
 - **Deploy skew guard:** each side's deploy runs a staging smoke against
   every `/api/ops/v1` endpoint and fails on `contract_version` disagreement.
@@ -681,6 +681,125 @@ additionally carry no attribution at all until ledger #219 lands
 (`call_recordings.ghl_user_id` is NULL on every inbound call), which is why the
 plan routes unattributed inbound to a shared unclaimed lane in the interim.
 
+## 8d. Flow Q: quote lifecycle, paid-context, promises, and task evidence (QT -> Hub), v1.5.0-draft
+
+**Authority and purpose.** Quote Tool is the sole canonical owner of quote
+requests, quotes, lifecycle, assignment, customer handoff, delivery evidence,
+paid-work context, and the events in this flow. Hub is a durable consumer and
+may create its own task projection; it never changes a Quote Tool fact. This
+flow exists so Office shows only source-backed timing, workload, promises,
+assignments, and Quote-origin work.
+
+### Canonical facts and monotonicity
+
+- A `QuoteRequestReceived` event is created only when an inbound source
+  explicitly creates a `quote_requests` record. It carries the stable request
+  id, `received_at`, `source_system`, `source_record_id`, opaque customer
+  reference, optional linked quote id, and assignee when known. The pair
+  (`source_system`, `source_record_id`) is unique. No consumer may manufacture
+  a request by correlating a contact, email, browser activity, or timestamp.
+- The Quote aggregate has an integer `entity_version` that starts at one and
+  increases on every committed canonical lifecycle change. A received event's
+  entity version is never lower than a previously accepted event for that
+  aggregate. Consumers retain the higher version and audit, quarantine, and
+  retry an older or malformed event rather than overwriting newer state.
+- `first_sent_at` is immutable. `QuoteSentRecorded` sets it only when it is
+  null. A resend, revive, retry, or later delivery outcome may update a
+  convenience latest-send value or append evidence, but can never change
+  `first_sent_at`.
+- Assignment events retain prior assignee, next assignee, actor, server time,
+  optional reason, and the new entity version. An absent actor or assignee is
+  represented as unavailable and enters reconciliation; neither side guesses
+  from display name, email, activity, or timing.
+
+### Lifecycle union
+
+The `event_type` enum in the shared schema is closed. Its initial members are
+`QuoteRequestReceived`, `QuoteRequestLinked`, `QuoteCreated`, `QuoteAssigned`,
+`QuoteUnassigned`, `QuoteMeaningfulEditRecorded`, `QuoteRevisionSaved`,
+`QuoteWorkWaitStarted`, `QuoteWorkWaitEnded`, `QuoteSentRecorded`,
+`QuoteDeliveryAttempted`, `QuoteDeliveryOutcomeRecorded`,
+`QuoteChangesRequested`, `QuoteAccepted`, `QuoteDeclined`, `QuoteExpired`,
+`QuoteAbandoned`, `QuoteCancelled`, `QuoteBooked`, `QuoteReopened`, and
+`QuotePromiseRecorded`, `QuotePromiseSuperseded`, `QuotePromiseCancelled`,
+and `QuotePromiseFulfilled`.
+
+A meaningful edit is a successful persisted customer-facing, design, or
+pricing change with no-op detection. It is never a keystroke, focus, mouse,
+browser-presence, email, or timestamp proxy. Wait reasons are the closed values
+`approval` and `customer_information`. A send records local handoff, not a
+delivery guarantee, and carries revision id when available, `first_send`, mode
+(`tool_sms`, `tool_email`, `tool_both`, or `manual_external`), actor, and
+integer total cents. Delivery evidence uses a stable attempt id, channel,
+fresh-or-retry flag, retry lineage, attempted/resolved times, provider id,
+sanitized error code, and outcome `accepted`, `failed`, or `unknown`.
+
+### Explicit promise and task evidence rule
+
+A promise exists only after an authorized staff member explicitly records one.
+It contains a stable promise id, quote or request reference, owner when known,
+promise type, promised-at and due-at timestamps, actor, reason, correlation
+id, and entity version. The allowed promise types and evidence rules are:
+
+| Promise type | Fulfillment evidence |
+| --- | --- |
+| `send_quote` | a later `QuoteSentRecorded` for the referenced quote |
+| `provide_revision` | a later `QuoteRevisionSaved` for the referenced quote |
+| `customer_follow_up` | an explicit Hub task-completion record citing the promise id |
+
+Rescheduling does not mutate a promise: `QuotePromiseSuperseded` names the old
+and replacement promise and carries the reason. Cancellation is explicit and
+does not count as fulfillment. Quote Tool creates no Hub task. Hub creates at
+most one task per `QuotePromiseRecorded` source event, deduplicated by
+(`source_system = quote_tool`, `source_event_id`); its task lifecycle remains
+separate from feed acknowledgement and promise fulfillment.
+
+### Current paid-context and authorization read
+
+`GET /api/ops/v1/paid-contexts/current?employee_id=<uuid>` is a Quote Tool
+machine-authenticated read. The response is either `available`, carrying the
+employee id, current paid-day/context ids, active department id, context entity
+version, effective time, and source watermark, or `unavailable`, carrying an
+approved unavailable reason and source watermark. A missing or unavailable
+context never authorizes protected work and never becomes a guessed context.
+
+Hub remains the source of explicit capability grants and its
+`authorization_policy_version`. It sends complete signed snapshots to the
+Quote Tool at `POST /api/ops/v1/employee-authorization-snapshots`; Quote Tool
+persists the newest accepted snapshot and uses it with the current paid-context,
+assignment, and resource scope checks. A missing, malformed, unsupported, or
+older snapshot fails closed. Membership or role text alone is never a grant.
+
+### Feed, retention, and replay
+
+`GET /api/ops/v1/quote-events?since=<cursor>&limit=<n>` is a HMAC-authenticated
+pull feed, separate from commitment events. `limit` is 1 through 500 and
+defaults to 100. Events are ordered by immutable outbox sequence and then event
+id; cursors are opaque, identify that order, and are never derived from a
+timestamp. A page returns `source_watermark`, `has_more`, and `next_cursor`;
+`has_more=true` requires a non-empty next cursor. The implementation records a
+minimum 45-day cursor/event retention window. An expired cursor returns typed
+HTTP 410 `cursor_expired` and requires audited reconciliation, never silent
+advancement.
+
+Lifecycle record and outbox row commit in the same transaction. Delivery is
+retry-safe and replayable by event id and idempotency key. Hub has a durable
+inbox keyed by Quote Tool event id, an applied cursor, retry schedule,
+dead-letter record, and audit trail. Duplicate delivery returns the original
+result without duplicate projection or task. A dead letter is visible to an
+admin and does not advance the cursor past unprocessed evidence. The feed and
+the current-context read are independently kill-switched; disabled reads return
+typed HTTP 503 `kill_switched`, never an empty successful response.
+
+### Office projection boundary
+
+Hub may show request-to-first-send turnaround only when both explicitly sourced
+facts exist. Active-quoting-time and conversion stay unavailable until their
+owner-approved formulas land in this contract. Manual Hub tasks and Quote-origin
+tasks use distinct source domains and cannot collide through duplicate ids.
+Unattributed call-origin work enters the unclaimed reconciliation lane, with
+redacted customer data; it is never assigned to a likely employee.
+
 ## 9. Sequencing hooks (F1)
 
 Joint Phase 0 delivers: this contract as OpenAPI stubs, identity mapping,
@@ -1053,7 +1172,7 @@ not infer a value, silently choose a default, or weaken a safety gate.
 **Shared schema artifact path (Phase 0):**
 `yll-quote-tool/docs/context/ops-contract-schema/` (generated from the
 OpenAPI fragments; the manifest starts at independent
-`schema_version = 1.0.0-draft`; both CIs validate against it and the Hub vendors
+`schema_version` is `1.1.0-draft`; both CIs validate against it and the Hub vendors
 the same files byte-identically).
 
 ## 10. Change process
