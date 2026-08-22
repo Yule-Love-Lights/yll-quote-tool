@@ -104,6 +104,15 @@ export function OperatorNav({
             </li>
           ))}
           <li>
+            <Link
+              href="/quote/new"
+              className="px-3 py-1.5 rounded-md text-sm font-semibold inline-flex items-center whitespace-nowrap"
+              style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
+            >
+              + New quote
+            </Link>
+          </li>
+          <li>
             <button
               type="button"
               onClick={signOut}
@@ -154,6 +163,16 @@ export function OperatorNav({
               </Link>
             </li>
           ))}
+          <li>
+            <Link
+              href="/quote/new"
+              onClick={() => setOpen(false)}
+              className="flex items-center px-4 py-3 text-sm font-semibold border-b"
+              style={{ borderColor: 'var(--op-border)', background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
+            >
+              + New quote
+            </Link>
+          </li>
           <li>
             <button
               type="button"

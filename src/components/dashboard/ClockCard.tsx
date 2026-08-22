@@ -63,7 +63,7 @@ function Pill({ children }: { children: React.ReactNode }) {
   return (
     <div
       aria-label="Time clock"
-      className="inline-flex items-center gap-2 rounded-lg border px-3 py-1.5"
+      className="inline-flex items-center gap-2.5 rounded-lg border px-4 py-2 shadow-sm"
       style={{ background: 'var(--op-bg-raised)', borderColor: 'var(--op-border)' }}
     >
       {children}
@@ -126,14 +126,14 @@ export function ClockCard() {
   const dim = { color: 'var(--op-text-dim)' } as const;
 
   if (load.status === 'loading') {
-    return <Pill><span className="text-xs" style={dim}>Time clock…</span></Pill>;
+    return <Pill><span className="text-sm" style={dim}>Time clock…</span></Pill>;
   }
 
   if (load.status === 'signedout') {
     return (
       <Pill>
-        <span className="text-xs" style={dim}>Time clock —</span>
-        <a href="/login" className="text-xs underline" style={{ color: 'var(--op-accent)' }}>sign in</a>
+        <span className="text-sm" style={dim}>Time clock —</span>
+        <a href="/login" className="text-sm underline" style={{ color: 'var(--op-accent)' }}>sign in</a>
       </Pill>
     );
   }
@@ -141,7 +141,7 @@ export function ClockCard() {
   if (load.status === 'unlinked') {
     return (
       <Pill>
-        <span className="text-xs" style={dim} title="An admin can link this login under Settings → Accounts.">
+        <span className="text-sm" style={dim} title="An admin can link this login under Settings → Accounts.">
           Time clock — login not linked
         </span>
       </Pill>
@@ -151,11 +151,11 @@ export function ClockCard() {
   if (load.status === 'error') {
     return (
       <Pill>
-        <span className="text-xs" style={dim}>Time clock unavailable</span>
+        <span className="text-sm" style={dim}>Time clock unavailable</span>
         <button
           type="button"
           onClick={() => setReload((n) => n + 1)}
-          className="text-xs underline"
+          className="text-sm underline"
           style={{ color: 'var(--op-accent)' }}
         >
           retry
@@ -177,10 +177,10 @@ export function ClockCard() {
     <Pill>
       <span
         aria-hidden
-        className="inline-block w-2 h-2 rounded-full"
+        className="inline-block w-2.5 h-2.5 rounded-full"
         style={{ background: state.clockedIn ? (state.onBreak ? '#d97706' : '#16a34a') : 'var(--op-text-dim)' }}
       />
-      <span className="text-xs font-medium whitespace-nowrap" style={{ color: 'var(--op-text)' }}>{label}</span>
+      <span className="text-sm font-medium whitespace-nowrap" style={{ color: 'var(--op-text)' }}>{label}</span>
       <span className="mx-1 h-4 w-px" style={{ background: 'var(--op-border)' }} aria-hidden />
       <div className="flex items-center gap-1.5">
         {actionsFor(state).map((b) => (
@@ -189,7 +189,7 @@ export function ClockCard() {
             type="button"
             disabled={busy}
             onClick={() => act(b.action)}
-            className="rounded-md px-2.5 py-1 text-xs font-medium disabled:opacity-50 whitespace-nowrap"
+            className="rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-50 whitespace-nowrap"
             style={
               b.kind === 'primary'
                 ? { background: 'var(--op-accent)', color: '#1c1917' }
@@ -201,7 +201,7 @@ export function ClockCard() {
         ))}
       </div>
       {error && (
-        <span className="text-xs" style={{ color: 'var(--op-danger)' }} role="alert">{error}</span>
+        <span className="text-sm" style={{ color: 'var(--op-danger)' }} role="alert">{error}</span>
       )}
     </Pill>
   );
