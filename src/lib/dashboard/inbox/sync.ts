@@ -493,19 +493,17 @@ export async function runHandledWriteback(target: HandledTarget, operatorLabel: 
       // Gmail" affordance sends them there — would see an already-handled
       // thread and skip it, reintroducing the buried-lead failure one layer
       // up). Only run the write-back when the row knows its own message id.
-      // A null sourceMessageId is the ORDINARY shape, not a legacy one:
-      // normalizeGmailThread (gmail.ts) sets it unconditionally for every
-      // non-lead-forward thread — the overwhelming majority of Gmail traffic
-      // — and only the parsed-lead-forward shapes (normalizeGmailThreadTouches'
-      // 1-parsed and 2+-parsed branches) carry a real message id. Skipping
-      // here makes zero Gmail API calls (getAccessToken/getOrCreateLabel both
+      // #303: an ordinary (non-lead-forward) thread now carries the
+      // CUSTOMER's last inbound message id too — normalizeGmailThread
+      // (gmail.ts) no longer hardcodes null for that shape, so this branch
+      // fires message-level for the overwhelming majority of Gmail traffic,
+      // not just the parsed-lead-forward shapes. sourceMessageId is still
+      // null only when a thread has no inbound message at all (e.g. an
+      // internal note-to-self) — that residual case still skips here and
+      // makes zero Gmail API calls (getAccessToken/getOrCreateLabel both
       // sit inside the sourceMessageId branch below — see sync.test.ts).
       // Best-effort by design: the local handled_at stamp already landed
-      // before this runs, and the retired thread-wide call only ever fired on
-      // an explicit Handled action (most gmail rows resolve by dismiss or
-      // complete, which never reach this code), so the accepted cost is on
-      // the order of a couple of unlabeled Gmail threads a month — not a
-      // broad loss of write-back coverage.
+      // before this runs, so a failure here never blocks marking Handled.
       if (target.sourceMessageId) {
         const token = await getAccessToken();
         const labelId = await getOrCreateLabel(token, 'YLL/Handled');

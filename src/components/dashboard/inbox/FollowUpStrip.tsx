@@ -12,9 +12,9 @@ const REASON_LABEL: Record<string, string> = {
 // this directory's other per-file copies). Fixes this file's single-slot
 // `busyId`: marking follow-up A done (in flight), then clicking Done on B
 // before A settles, re-enabled A's button mid-flight (the slot now held B's
-// id) — markFollowUpDone (store.ts) has no server-side guard, so a second
-// concurrent POST for A was one more click away (worst case: a duplicate
-// activity row). Per-row record, same shape as row 291's fix.
+// id). Since row 323, markFollowUpDone (store.ts) also carries a server-side
+// `.eq('status','pending')` CAS, so this per-row lock is defense-in-depth
+// rather than the only protection. Per-row record, same shape as row 291's fix.
 export function withRowFlagSet(map: Record<string, boolean>, id: string): Record<string, boolean> {
   return { ...map, [id]: true };
 }

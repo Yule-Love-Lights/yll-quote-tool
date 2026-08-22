@@ -2298,8 +2298,14 @@ export async function listPendingColorRequests(limit = 200): Promise<PendingColo
 export async function markFollowUpDone(id: string, operatorId: string | null): Promise<{ ok: boolean; error?: string }> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
-  const { error } = await sb.from('follow_ups').update({ status: 'done' }).eq('id', id);
+  // #323: CAS on status='pending', matching closeFollowUp's guard on the same
+  // table. Two tabs / two operators racing to click Done on one follow-up must
+  // not both succeed and both log a dashboard_activity row — the loser's
+  // update matches zero rows, and that's an honest no-op (the row is already
+  // 'done', which is the caller's desired end state), not an error.
+  const { data, error } = await sb.from('follow_ups').update({ status: 'done' }).eq('id', id).eq('status', 'pending').select('id');
   if (error) return { ok: false, error: error.message };
+  if (!data || data.length === 0) return { ok: true };
   await sb.from('dashboard_activity').insert({ actor: operatorId ?? 'system', action: 'handled', detail: { followUpId: id } });
   return { ok: true };
 }
