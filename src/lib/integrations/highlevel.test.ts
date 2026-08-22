@@ -19,6 +19,7 @@ import {
   createLocationCustomField,
   sendSms,
   updateOpportunity,
+  getContactInternal,
   HighLevelError,
 } from './highlevel';
 import type { HighLevelContact, HighLevelOpportunity } from './types';
@@ -423,6 +424,25 @@ describe('HighLevel client (audit fix g19-highlevel)', () => {
       expect(contact).toBeDefined();
       expect(contact.firstName).toBe('Jordan');
       expect('raw' in contact).toBe(false);
+    });
+  });
+
+  // #314: getContactInternal is the server-only counterpart that DOES carry
+  // the raw record — proves the opt-in path actually surfaces customFields,
+  // which the redacted default above (correctly) discards.
+  describe('getContactInternal (#314 — server-only raw contact fetch)', () => {
+    it('returns the raw HighLevel record including customFields', async () => {
+      const hl: HighLevelContact = {
+        id: 'c1',
+        firstName: 'Jordan',
+        customFields: [{ id: 'ed_field_1', value: '11/27/2026' }],
+      };
+      mockFetchOnce({ contact: hl });
+      const contact = await getContactInternal('c1');
+      expect(contact.id).toBe('c1');
+      expect((contact.raw as HighLevelContact).customFields).toEqual([
+        { id: 'ed_field_1', value: '11/27/2026' },
+      ]);
     });
   });
 
