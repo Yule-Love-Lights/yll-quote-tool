@@ -3360,7 +3360,7 @@ export default function QuoteBuilder({
             setDbLinked(true);
             setAttachStatus('skipped');
             setAttachError(
-              'This quote is approved or booked, so its customer identity is locked — the link was not cleared. There is no in-app way to unlink an approved quote to relink it elsewhere; flag it for a manual fix rather than retrying.',
+              'This quote is approved or booked, so its customer identity is locked — the link was not cleared. There is no in-app way to unlink an approved quote to relink it elsewhere; contact support for a manual fix rather than retrying.',
             );
           }
         } catch {
@@ -3458,7 +3458,7 @@ export default function QuoteBuilder({
       // identityFrozenNotice banner's copy voice) instead of 'error'.
       if (data.identityFrozen === true) {
         const frozenErr = new Error(
-          'This quote is approved or booked, so its customer identity is locked — this contact wasn’t linked and nothing changed. There is no in-app way to relink an approved quote to a different customer; flag it for a manual fix rather than retrying.',
+          'This quote is approved or booked, so its customer identity is locked — this contact wasn’t linked and nothing changed. There is no in-app way to relink an approved quote to a different customer; contact support for a manual fix rather than retrying.',
         ) as Error & { identityFrozen?: boolean };
         frozenErr.identityFrozen = true;
         throw frozenErr;
@@ -6858,7 +6858,7 @@ export default function QuoteBuilder({
                 This quote is approved or booked, so its customer stayed put — the name, contact details and
                 HighLevel link on this quote were left exactly as the customer approved them, and nothing on this
                 save changed who the quote belongs to. There is no in-app way to move an approved quote to a
-                different customer — if this needs correcting, flag it for a manual fix rather than re-saving.
+                different customer — if this needs correcting, contact support for a manual fix rather than re-saving.
               </p>
             )}
 
