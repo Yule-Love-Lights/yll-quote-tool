@@ -93,16 +93,23 @@ export async function getOfficeClockCaller(): Promise<OfficeLookup> {
   };
 }
 
-/** Maps a failed lookup to the response the route returns directly. */
+/**
+ * Maps a failed lookup to the response the route returns directly.
+ *
+ * The `reason` is echoed in the body so the client can tell apart the two 403s —
+ * `unlinked` (never set up) from `inactive` (set up, then deactivated) — which
+ * carry different copy in the header clock. The office-onboarding UI (row 354)
+ * made `inactive` reachable, so the distinction now matters.
+ */
 export function officeDenialResponse(
   reason: Exclude<OfficeLookup, { ok: true }>['reason'],
 ): NextResponse {
   switch (reason) {
     case 'unauthenticated':
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: 'Unauthorized', reason }, { status: 401 });
     case 'is_crew':
       return NextResponse.json(
-        { error: 'Crew logins clock in from the crew app, not the office clock.' },
+        { error: 'Crew logins clock in from the crew app, not the office clock.', reason },
         { status: 403 },
       );
     case 'unlinked':
@@ -110,12 +117,13 @@ export function officeDenialResponse(
         {
           error:
             'This login is not linked to a staff record yet. An admin must link it before time can be recorded.',
+          reason,
         },
         { status: 403 },
       );
     case 'inactive':
-      return NextResponse.json({ error: 'This staff member is not active.' }, { status: 403 });
+      return NextResponse.json({ error: 'This staff member is not active.', reason }, { status: 403 });
     case 'unconfigured':
-      return NextResponse.json({ error: 'Auth is not configured' }, { status: 503 });
+      return NextResponse.json({ error: 'Auth is not configured', reason }, { status: 503 });
   }
 }

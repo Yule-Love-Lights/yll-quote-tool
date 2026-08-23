@@ -64,11 +64,37 @@ function isTelegramUserIdUniqueViolation(error: { code?: string; message?: strin
   return error?.code === '23505' && error.message?.includes('crew_members_telegram_user_id_key') === true;
 }
 
+/**
+ * The `crew_members_auth_user_id_key` partial unique index
+ * (`where auth_user_id is not null`). Linking an operator who is already linked
+ * to a crew_members row is a real conflict the office can act on ("that person
+ * is already set up"), distinct from a generic write failure.
+ */
+function isAuthUserIdUniqueViolation(error: { code?: string; message?: string } | null): boolean {
+  return error?.code === '23505' && error.message?.includes('crew_members_auth_user_id_key') === true;
+}
+
 /** Thrown when a patch would give one Telegram account to two crew members. */
 export class TelegramUserIdTakenError extends Error {
   constructor(telegramUserId: string) {
     super(`Telegram account ${telegramUserId} is already linked to another crew member`);
     this.name = 'TelegramUserIdTakenError';
+  }
+}
+
+/** Thrown when an operator is already linked to a crew_members pay row. */
+export class OperatorAlreadyLinkedError extends Error {
+  constructor() {
+    super('That operator is already set up as staff.');
+    this.name = 'OperatorAlreadyLinkedError';
+  }
+}
+
+/** Thrown when an office-staff display name collides with an existing row. */
+export class OfficeDisplayNameTakenError extends Error {
+  constructor(displayName: string) {
+    super(`The name "${displayName}" is already in use by another staff member. Choose a different display name.`);
+    this.name = 'OfficeDisplayNameTakenError';
   }
 }
 
@@ -239,4 +265,133 @@ export async function updateCrewMember(
   }
   if (!data) throw new Error(`updateCrewMember: no row found for id ${crewMemberId}`);
   return toCrewMember(data as Row);
+}
+
+// --- Office staff (is_office = true) -------------------------------------------
+//
+// Office staff (Naldo, Kelly, Ann, ...) sign in with an OPERATOR login and clock
+// in on the office web clock. Their pay identity is a crew_members row with
+// is_office=true and auth_user_id pointing at that operator login — the row
+// getOfficeClockCaller resolves a punch through. These three functions are the
+// app-side replacement for creating that row by hand in SQL (ledger #354). They
+// are deliberately separate from the general insert/update above so the
+// office-only columns (is_office, auth_user_id) are written ONLY through this
+// door, never widened into the field-crew upsert path.
+
+export type OfficeStaffMember = {
+  id: string;
+  displayName: string;
+  active: boolean;
+  authUserId: string | null;
+};
+
+type OfficeRow = { id: string; display_name: string; active: boolean; auth_user_id: string | null };
+
+const OFFICE_SELECT = 'id, display_name, active, auth_user_id';
+
+function toOfficeStaffMember(row: OfficeRow): OfficeStaffMember {
+  return { id: row.id, displayName: row.display_name, active: row.active, authUserId: row.auth_user_id };
+}
+
+/** Every office-staff pay row (is_office = true), for the onboarding panel. */
+export async function listOfficeStaff(): Promise<OfficeStaffMember[]> {
+  const db = getSupabaseServiceClient();
+  if (!db) return [];
+  const { data, error } = await db
+    .from('crew_members')
+    .select(OFFICE_SELECT)
+    .eq('is_office', true)
+    .order('display_name', { ascending: true });
+  if (error) {
+    console.error('listOfficeStaff error:', error);
+    return [];
+  }
+  return (data ?? []).map((row) => toOfficeStaffMember(row as OfficeRow));
+}
+
+/**
+ * The auth_user_id of EVERY crew_members row that has one — field crew AND office
+ * staff. An operator already in this set is already linked to a pay row and must
+ * not be offered again in the onboarding picker, nor linked a second time.
+ */
+export async function listLinkedAuthUserIds(): Promise<Set<string>> {
+  const db = getSupabaseServiceClient();
+  if (!db) return new Set();
+  const { data, error } = await db
+    .from('crew_members')
+    .select('auth_user_id')
+    .order('display_name', { ascending: true });
+  if (error) {
+    console.error('listLinkedAuthUserIds error:', error);
+    return new Set();
+  }
+  const ids = new Set<string>();
+  for (const row of (data ?? []) as { auth_user_id: string | null }[]) {
+    if (row.auth_user_id) ids.add(row.auth_user_id);
+  }
+  return ids;
+}
+
+/**
+ * Link an existing operator login to a new office-staff pay row. Office staff are
+ * hourly and never in the P4P pool. No auth user is created here — the operator
+ * already has one; this only writes the pay identity that ties their session to
+ * the time clock.
+ */
+export async function linkOfficeStaff(input: {
+  authUserId: string;
+  displayName: string;
+  baseRateCents: number;
+}): Promise<OfficeStaffMember> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+
+  const payload = {
+    display_name: input.displayName.trim(),
+    base_rate_cents: input.baseRateCents,
+    in_p4p_pool: false,
+    pay_mode: 'hourly' as CrewPayMode,
+    language: 'en',
+    active: true,
+    is_office: true,
+    auth_user_id: input.authUserId,
+  };
+
+  const { data, error } = await db.from('crew_members').insert(payload).select(OFFICE_SELECT).maybeSingle();
+  if (error) {
+    // auth_user_id collision is checked FIRST: a lost race to link the same
+    // operator is the specific conflict the office needs named, and its message
+    // must win over the generic display-name one when both could apply.
+    if (isAuthUserIdUniqueViolation(error as { code?: string; message?: string })) {
+      throw new OperatorAlreadyLinkedError();
+    }
+    if (isDisplayNameUniqueViolation(error as { code?: string; message?: string })) {
+      throw new OfficeDisplayNameTakenError(payload.display_name);
+    }
+    throw new Error(`linkOfficeStaff: ${error.message}`);
+  }
+  if (!data) throw new Error('linkOfficeStaff: no row returned');
+  return toOfficeStaffMember(data as OfficeRow);
+}
+
+/**
+ * Activate or deactivate an OFFICE staff member. The `is_office = true` filter is
+ * part of the write, not a separate read-then-check: a field-crew id simply
+ * matches no row and returns null, so this can never toggle `active` on a field
+ * crew member (who are managed on the crew panel, not here). Returns null when no
+ * office row matched.
+ */
+export async function setOfficeStaffActive(id: string, active: boolean): Promise<OfficeStaffMember | null> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+
+  const { data, error } = await db
+    .from('crew_members')
+    .update({ active })
+    .eq('id', id.trim())
+    .eq('is_office', true)
+    .select(OFFICE_SELECT)
+    .maybeSingle();
+  if (error) throw new Error(`setOfficeStaffActive: ${error.message}`);
+  return data ? toOfficeStaffMember(data as OfficeRow) : null;
 }

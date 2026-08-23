@@ -55,6 +55,7 @@ type Load =
   | { status: 'loading' }
   | { status: 'signedout' }
   | { status: 'unlinked' }
+  | { status: 'inactive' }
   | { status: 'error' }
   | { status: 'ready'; state: ClockState };
 
@@ -88,7 +89,14 @@ export function ClockCard() {
         const res = await fetch('/api/office/clock', { method: 'GET' });
         if (cancelled) return;
         if (res.status === 401) return setLoad({ status: 'signedout' });
-        if (res.status === 403) return setLoad({ status: 'unlinked' });
+        if (res.status === 403) {
+          // Two 403s look the same by status. The body's reason tells apart a
+          // login that was never linked from one that was deactivated, which read
+          // very differently to the person staring at the header.
+          const body = (await res.json().catch(() => ({}))) as { reason?: string };
+          if (cancelled) return;
+          return setLoad({ status: body.reason === 'inactive' ? 'inactive' : 'unlinked' });
+        }
         if (!res.ok) return setLoad({ status: 'error' });
         const state = (await res.json()) as ClockState;
         if (!cancelled) setLoad({ status: 'ready', state });
@@ -147,6 +155,20 @@ export function ClockCard() {
           title="This login isn't linked to a staff time record yet — ask an admin to set it up."
         >
           Time clock — login not linked
+        </span>
+      </Pill>
+    );
+  }
+
+  if (load.status === 'inactive') {
+    return (
+      <Pill>
+        <span
+          className="text-sm"
+          style={dim}
+          title="Your staff record is inactive — ask an admin to reactivate it before clocking in."
+        >
+          Time clock — account inactive
         </span>
       </Pill>
     );
