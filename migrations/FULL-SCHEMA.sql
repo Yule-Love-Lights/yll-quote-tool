@@ -1878,12 +1878,12 @@ create unique index if not exists crew_members_auth_user_id_key
 create unique index if not exists crew_members_display_name_key
   on public.crew_members (lower(trim(display_name)));
 
--- Office/field flag (2026-08-22, migrations/2026-08-22-crew-members-is-office.sql,
--- row 337): true = OFFICE staff (operator login + office web clock), false =
--- FIELD crew (crew login / Telegram clock). QT-internal presentation flag only —
--- it excludes office staff from the Settings crew-logins panel and is NOT part of
--- the Operations Hub contract. The office web clock resolves office staff by their
--- operator session, not by this flag.
+-- Office/field flag (Naldo 2026-08-22, migrations/2026-08-22-crew-members-is-office.sql):
+-- true = OFFICE staff (operator login), false = FIELD crew (crew login / Telegram
+-- clock). QT-internal presentation flag only — it excludes office staff from the
+-- Settings crew-logins panel and from the field-crew assignment dropdowns, and is
+-- NOT part of the Operations Hub contract. Office staff are recognised for time
+-- capture by their operator session, not by this flag.
 alter table public.crew_members
   add column if not exists is_office boolean not null default false;
 

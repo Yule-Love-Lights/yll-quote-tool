@@ -45,7 +45,7 @@ vi.mock('@/lib/auth/crewAccounts', () => ({
 
 vi.mock('@/lib/crewMembers', () => ({ TelegramUserIdTakenError, updateCrewMember }));
 
-import { GET, PATCH } from './route';
+import { GET, PATCH, POST } from './route';
 
 const CREW = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const req = (body: unknown) =>
@@ -59,7 +59,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   requireAdmin.mockResolvedValue({ operator: { id: 'admin-1' } });
   maybeSingle.mockResolvedValue({
-    data: { id: CREW, display_name: 'SonSon', active: true, auth_user_id: null, telegram_user_id: null },
+    data: { id: CREW, display_name: 'SonSon', active: true, auth_user_id: null, telegram_user_id: null, is_office: false },
     error: null,
   });
   updateCrewMember.mockResolvedValue({ id: CREW, displayName: 'SonSon', telegramUserId: '123456789' });
@@ -111,6 +111,32 @@ describe('PATCH /api/admin/crew-accounts', () => {
     const res = await PATCH(req({ crewMemberId: CREW, telegramUserId: '123456789' }));
     expect(res.status).toBe(409);
     expect(((await res.json()) as { error: string }).error).toContain('already linked');
+  });
+
+  it('409s a Telegram link on OFFICE staff and never writes (sibling-guard parity)', async () => {
+    maybeSingle.mockResolvedValueOnce({
+      data: { id: CREW, display_name: 'Kelly', active: true, auth_user_id: 'op-1', telegram_user_id: null, is_office: true },
+      error: null,
+    });
+    const res = await PATCH(req({ crewMemberId: CREW, telegramUserId: '123456789' }));
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toContain('office staff');
+    expect(updateCrewMember).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/admin/crew-accounts', () => {
+  it('409s a crew-login create for OFFICE staff, before touching auth (sibling-guard parity)', async () => {
+    // Office staff sign in with an operator login; minting a crew-role login for
+    // them by raw id is exactly what is_office exists to prevent. The guard fires
+    // right after the lookup, before sb.auth.admin.createUser is ever reached.
+    maybeSingle.mockResolvedValueOnce({
+      data: { id: CREW, display_name: 'Kelly', active: true, auth_user_id: 'op-1', telegram_user_id: null, is_office: true },
+      error: null,
+    });
+    const res = await POST(req({ crewMemberId: CREW, email: 'kelly@x.com', password: 'password123' }));
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toContain('office staff');
   });
 });
 

@@ -20,9 +20,9 @@
 --
 -- SCOPE - PRESENTATION ONLY. This is a QT-internal flag, not part of the
 -- Operations Hub contract envelope/enums/events, and the Hub never reads it.
--- The office web clock (getOfficeClockCaller) resolves an office staffer by
--- their OPERATOR session, NOT by this flag, so flipping it never changes who
--- can clock in - it only changes who shows in the crew-logins panel. When Hub
+-- The office web clock (a sibling change) resolves an office staffer by their
+-- OPERATOR session, NOT by this flag, so flipping it never changes who can
+-- clock in - it only changes who shows in the crew-logins panel. When Hub
 -- department memberships land (contract Flow I), the office/field split
 -- becomes a department fact and this flag is superseded; until then it is the
 -- pragmatic QT-side distinction.
