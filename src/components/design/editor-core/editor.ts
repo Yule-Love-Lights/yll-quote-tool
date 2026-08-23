@@ -36,6 +36,7 @@ import {
 import { isLineDrawContext } from "./drawContext";
 import { surfaceOptionsForBulbType } from "./surfaceOptions";
 import { sideOfHouseOptions } from "./sideOfHouseOptions";
+import { sumMiniStringCount } from "./miniGroupBilling";
 
 // Default real-world width for newly-placed custom uploads — about 3 feet,
 // big enough to spot on the photo, small enough to resize down with the
@@ -2899,7 +2900,7 @@ export async function renderEditor(
       sb.querySelector("#sel-delete")?.addEventListener("click", deleteSelected);
       if (canGroup) {
         sb.querySelector("#sel-group-mini-mixed")?.addEventListener("click", () => {
-          groupSelectedMini(miniCandidates, miniCandidates[0].surface ?? "bush", miniCandidates[0].stringCount ?? 1);
+          groupSelectedMini(miniCandidates, miniCandidates[0].surface ?? "bush", sumMiniStringCount(miniCandidates));
         });
       }
       return;
@@ -3312,7 +3313,7 @@ export async function renderEditor(
       });
     }
     sb.querySelector("#sel-group-mini")?.addEventListener("click", () => {
-      groupSelectedMini(sel, sel[0].surface ?? "bush", sel[0].stringCount ?? 1);
+      groupSelectedMini(sel, sel[0].surface ?? "bush", sumMiniStringCount(sel));
     });
     sb.querySelector("#sel-delete")!.addEventListener("click", deleteSelected);
   }
@@ -4015,7 +4016,7 @@ export async function renderEditor(
     }
 
     sb.querySelector("#sel-group-mini-area")?.addEventListener("click", () => {
-      groupSelectedMini(sel, sel[0].surface ?? "bush", sel[0].stringCount ?? 1);
+      groupSelectedMini(sel, sel[0].surface ?? "bush", sumMiniStringCount(sel));
     });
 
     sb.querySelector("#sel-ma-duplicate")?.addEventListener("click", () => {
@@ -4047,6 +4048,11 @@ export async function renderEditor(
   // mix strand + miniArea members, not just strands). A `function` (not a
   // `const`) so it's hoisted — every sidebar panel that offers "Group as one
   // quote unit" (strand-only, scattershot-only, mixed) calls this same one.
+  // #334: callers seed `stringCount` via miniGroupBilling's sumMiniStringCount
+  // (the sum of the members' own counts, money-neutral) rather than any one
+  // member's count — except the railing/curtain multi-strand path below, whose
+  // `sel.length` seed means "one string per strand run", a different and
+  // already-correct semantic.
   function groupSelectedMini(members: (StrandItem | MiniAreaItem)[], surface: Surface, stringCount: number) {
     // #227 FIX 2 belt-and-braces: every call site already filters to
     // isMiniGroupable (which excludes linkedToId), but guard here too
