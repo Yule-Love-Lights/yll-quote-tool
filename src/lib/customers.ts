@@ -852,14 +852,58 @@ export async function attachQuoteToCustomer(
     }
   }
 
-  const { error } = await sb
+  // Row 338 (sibling-guard parity — the AGENTS.md pitfall by name): this was
+  // the one #251/#839 identity writer with NO freeze guard at all — every
+  // OTHER quotes.customer_id/highlevel_* writer (quotes.ts's updateQuote,
+  // the highlevel/attach route's link + detach) is CAS-gated on
+  // customer_approved_at/deposit_paid_at (+ row 338's own
+  // approval_snapshot->approvedAt/staffApproved sticky legs — see
+  // wasEverApproved's comment in quoteStatus.ts for why those two keys, not
+  // a bare non-null check), but this function's OWN write — reached by every
+  // one of those callers, plus send/route.ts's tagPropagation, mark-sent,
+  // legacy-rebook, nce, and backfillCustomersFromQuotes below — updated
+  // customer_id/property_id completely unconditionally. A caller that itself
+  // checked the freeze before calling in was still exposed to the TOCTOU
+  // between that check and this write (findOrCreateCustomer/
+  // findOrCreateProperty above are 2+ network round trips); callers that
+  // never checked at all (send/route.ts's tagPropagation, mark-sent — see
+  // row 338's enumeration in the PR body) had zero protection. Guarding HERE
+  // closes every one of those gaps in one place instead of requiring each
+  // caller to remember its own copy of the CAS.
+  //
+  // is_test is deliberately NOT threaded through this CAS (QuoteIdentityRow
+  // carries no is_test field) — every existing call site already refuses to
+  // invoke this function at all for a test quote (the standing "
+  // attachQuoteToCustomer must never run with test data" convention, stated
+  // at each call site), so a test quote never reaches this guard in
+  // practice; adding the field would touch every caller's identity-row
+  // construction for a case that structurally can't fire today.
+  const { data: linkedRow, error } = await sb
     .from('quotes')
     .update({ customer_id: customer.id, property_id: property.id })
-    .eq('id', q.id);
+    .eq('id', q.id)
+    .is('customer_approved_at', null)
+    .is('deposit_paid_at', null)
+    .is('approval_snapshot->approvedAt', null)
+    .is('approval_snapshot->staffApproved', null)
+    .select('id')
+    .maybeSingle();
   if (error) {
     console.error(
       `attachQuoteToCustomer link error (quote ${q.id} — customer ${customer.id} + property ${property.id} now orphaned, no quote points at them; safe to retry):`,
       error,
+    );
+    return null;
+  }
+  if (!linkedRow) {
+    // 0 rows matched the CAS: this quote is (or became) approved/booked, or
+    // was ever approved before a decline/revive cleared the live columns.
+    // Same "orphaned customer+property, safe to retry" shape as a DB error
+    // above — the customer/property rows already exist (idempotent
+    // find-or-create), just not linked from this quote. No in-app remedy;
+    // see row 338's PR body / the amend-flow copy fix for why.
+    console.warn(
+      `attachQuoteToCustomer: #338 identity freeze — quote ${q.id} is approved/booked (or was); refused a customer/property link (customer ${customer.id}, property ${property.id}).`,
     );
     return null;
   }
