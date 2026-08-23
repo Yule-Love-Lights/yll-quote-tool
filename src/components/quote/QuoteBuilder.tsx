@@ -66,6 +66,14 @@ import {
   deriveBistroFootageMap,
   roundBistroFootageOnBlur,
 } from '@/lib/permanentBistro/reconcileFootage';
+import {
+  reconcileHolidayFootageField,
+  deriveHolidayFootageBaseline,
+  mergeHolidayFootageBaseline,
+  type HolidayFootageBaseline,
+  type HolidayFootageFieldKey,
+  type HolidayFieldReconcileResult,
+} from '@/lib/holidayFootage/reconcileFootage';
 import { isStrand, isLinkedTwin, type Surface } from '@/lib/design/sceneTypes';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
 import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
@@ -134,6 +142,7 @@ function EditablePrice({
   baseAmount,
   overridden,
   disabled,
+  lockedReason,
   onCommit,
   onReset,
 }: {
@@ -141,6 +150,11 @@ function EditablePrice({
   baseAmount: number;
   overridden: boolean;
   disabled: boolean;
+  // Row 331: when set, `disabled` is true BECAUSE the quote is past approval
+  // (not merely `loading`) — shown as the click target's title instead of the
+  // normal "click to edit" hint, so the disabled state explains itself rather
+  // than reading as a stuck/broken control.
+  lockedReason?: string;
   onCommit: (n: number) => void;
   onReset: () => void;
 }) {
@@ -194,9 +208,16 @@ function EditablePrice({
           }}
           disabled={disabled}
           title={
-            showBase
-              ? `Custom price for this quote — reset to ${usd(baseAmount)}`
-              : 'Custom price for this quote — reset'
+            // Premerge finding 5 fix: when disabled BECAUSE of the freeze
+            // (lockedReason set), explain that instead of the normal reset
+            // hint — mirrors the main price button's own lockedReason ??
+            // fallback a few lines below, which this reset button had been
+            // missing.
+            disabled && lockedReason
+              ? lockedReason
+              : showBase
+                ? `Custom price for this quote — reset to ${usd(baseAmount)}`
+                : 'Custom price for this quote — reset'
           }
           className="text-[10px] font-semibold uppercase tracking-wide text-amber-600 hover:text-amber-800 disabled:opacity-40 cursor-pointer"
         >
@@ -211,7 +232,7 @@ function EditablePrice({
           start();
         }}
         disabled={disabled}
-        title="Click to set a custom price for this quote"
+        title={lockedReason ?? 'Click to set a custom price for this quote'}
         className={`font-medium tabular-nums rounded px-1 -mx-1 hover:bg-green-50 disabled:cursor-not-allowed cursor-text ${
           overridden ? 'text-amber-700' : 'text-gray-900'
         }`}
@@ -245,6 +266,7 @@ function EditableLabel({
   baseLabel,
   overridden,
   disabled,
+  lockedReason,
   onCommit,
   onReset,
 }: {
@@ -252,6 +274,8 @@ function EditableLabel({
   baseLabel: string;
   overridden: boolean;
   disabled: boolean;
+  // Row 331: mirrors EditablePrice's lockedReason exactly.
+  lockedReason?: string;
   onCommit: (s: string) => void;
   onReset: () => void;
 }) {
@@ -306,9 +330,14 @@ function EditableLabel({
           }}
           disabled={disabled}
           title={
-            showBase
-              ? `Custom name for this quote — reset to "${baseLabel}"`
-              : 'Custom name for this quote — reset'
+            // Premerge finding 5 fix (sibling parity with EditablePrice's
+            // identical fix): explain the freeze when that's why it's
+            // disabled, instead of the normal reset hint.
+            disabled && lockedReason
+              ? lockedReason
+              : showBase
+                ? `Custom name for this quote — reset to "${baseLabel}"`
+                : 'Custom name for this quote — reset'
           }
           className="text-[10px] font-semibold uppercase tracking-wide text-amber-600 hover:text-amber-800 disabled:opacity-40 cursor-pointer"
         >
@@ -323,7 +352,7 @@ function EditableLabel({
           start();
         }}
         disabled={disabled}
-        title="Click to rename this item for this quote"
+        title={lockedReason ?? 'Click to rename this item for this quote'}
         className={`rounded px-1 -mx-1 hover:bg-green-50 disabled:cursor-not-allowed cursor-text ${
           overridden ? 'text-amber-700 font-medium' : ''
         }`}
@@ -699,6 +728,56 @@ export default function QuoteBuilder({
   // reading it too — it was never actually Neighbor-specific, just the
   // generic "has this quote left draft" signal.
   const quoteLeftDraft = savedStatus != null && savedStatus !== 'draft';
+  // Premerge finding 3 (S46 fix round): a stale tab's rejected 409 must not
+  // vaporize the rendered breakdown (every price/label/footage control lives
+  // inside `{result && (...)}`). When runQuote gets one of the three lock
+  // codes back it restores the last-known-good result and flips this true so
+  // the tab self-corrects to server truth (frozen controls, honest copy)
+  // instead of staying editable and re-erroring forever. This also covers
+  // finding 4's predicate-mismatch case (a staff-decline-after-approval quote
+  // whose savedStatus/approvedAt read stale in THIS tab).
+  const [staleApprovalFrozen, setStaleApprovalFrozen] = useState(false);
+  // Row 331+341: post-approval freeze for the three click-to-edit override
+  // surfaces that auto-persist with no separate Calculate/confirm step and no
+  // "already approved" warning of their own — EditablePrice (#104),
+  // EditableLabel (S44), and #244's per-run bistro footage. is_test exempt,
+  // matching the server's #251/#177 freezes — a test quote stays fully
+  // editable regardless of lifecycle stamps.
+  //
+  // Premerge finding 1+4 fix: drive this off `initialQuote.approvedAt` (the
+  // loaded row's real customer_approved_at) rather than the derived
+  // `savedStatus`, so it matches the server's exact predicate — a
+  // staff-declined-after-approval quote (staff-decline never clears
+  // customer_approved_at; deriveStatus reports 'declined', not 'approved') no
+  // longer shows editable controls that then 409 (finding 4). And carve out
+  // the booked-amend case: the client already sends `amendReprice: true`
+  // unconditionally whenever savedStatus === 'booked' (see the runQuote fetch
+  // body below), which the server now honors for these three fields too — so
+  // the sanctioned amend path (edit here + Calculate, then record the
+  // amendment) must NOT be disabled, or a booked order has no correction path
+  // at all (finding 1). An approved-but-not-yet-booked quote has no such
+  // carve-out (no amend record is possible pre-booking — amend/route.ts
+  // requires deposit_paid_at) and stays hard-locked; see POST_APPROVAL_LOCK_REASON
+  // for its actual path (decline → revive → edit → re-send).
+  const bookedAmendEligible = savedStatus === 'booked';
+  const postApprovalFrozen =
+    (!isTest && !!initialQuote?.approvedAt && !bookedAmendEligible) || staleApprovalFrozen;
+  // Premerge finding 2 fix: this copy only ever shows when postApprovalFrozen
+  // is true, which (per the carve-out above) now excludes the booked-amend
+  // case entirely — so this is always the "re-approval needed" path, never
+  // the amend flow (amend requires a booked/deposit-paid order, which this
+  // predicate no longer reaches). Traced the actual mechanism (there is no
+  // dedicated "revive" route): staff-decline (approved→declined is a legal
+  // transition — quoteStatus.ts's ALLOWED_TRANSITIONS) declines the quote,
+  // which per #124 does NOT clear customer_approved_at; "revive" is then just
+  // a RE-SEND (POST /api/quotes/[id]/send) on that declined quote — canRevive
+  // gates it, and send/route.ts's isRevive branch explicitly clears
+  // customer_approved_at + viewed_at so deriveStatus reads 'sent' again,
+  // reopening the quote for editing. That resend is the sanctioned way to
+  // change a price/label/footage that was already customer-approved but
+  // never booked.
+  const POST_APPROVAL_LOCK_REASON =
+    "Locked after approval — a price, label, or footage change here needs re-approval. Decline this quote, revive it, make the change, and re-send; the customer's prior approval no longer applies once you do.";
   const quoteNumber = initialQuote?.quoteNumber ?? null;
   // PS-G2: the booked quote's job id (null pre-booking) — drives the "Amend
   // order" banner below, which links to the job page's Record-amendment
@@ -1512,6 +1591,14 @@ export default function QuoteBuilder({
   // can't clobber an override on ANOTHER. See reconcileFootage.ts and the
   // rehydrate-seed comment in getSetter('bistro') below.
   const prevBistroDerivedRef = useRef<Record<string, number>>({});
+  // Row 333: baseline reconcile for the four holiday satellite footage
+  // fields (santas/gingerbread/C9/stake) — the scalar analog of
+  // prevBistroDerivedRef above. Each field's baseline is the derived footage
+  // recorded at its own last reconcile, so redrawing ONE field's lines can't
+  // clobber a hand-typed override on an UNTOUCHED field even though all four
+  // share one derive effect. See reconcileFootage.ts and the rehydrate-seed
+  // comment in getSetter below.
+  const prevHolidayDerivedRef = useRef<HolidayFootageBaseline>({});
 
   // Recompute footages from the SATELLITE lines (#35: the only line-measurement
   // source — deterministic feet-per-pixel × image pixel width). When there's no
@@ -1531,16 +1618,16 @@ export default function QuoteBuilder({
     // street-traced roofline sets a real AI footage estimate with no satellite
     // lines drawn; without this guard this effect unconditionally zeroed it.
     const hasC9Lines = satelliteC9Lines.length > 0;
-    const c9Target = hasC9Lines ? c9Ft : hadC9LinesRef.current ? 0 : null;
+    const hadC9Prev = hadC9LinesRef.current;
     hadC9LinesRef.current = hasC9Lines;
     const hasStakeLines = satelliteStakeLines.length > 0;
-    const stakeTarget = hasStakeLines ? stakeFt : hadStakeLinesRef.current ? 0 : null;
+    const hadStakePrev = hadStakeLinesRef.current;
     hadStakeLinesRef.current = hasStakeLines;
     const hasSantasLines = satelliteSantasLines.length > 0;
-    const santasTarget = hasSantasLines ? sFt : hadSantasLinesRef.current ? 0 : null;
+    const hadSantasPrev = hadSantasLinesRef.current;
     hadSantasLinesRef.current = hasSantasLines;
     const hasGingerbreadLines = satelliteGingerbreadLines.length > 0;
-    const gingerbreadTarget = hasGingerbreadLines ? gFt : hadGingerbreadLinesRef.current ? 0 : null;
+    const hadGingerbreadPrev = hadGingerbreadLinesRef.current;
     hadGingerbreadLinesRef.current = hasGingerbreadLines;
     // #142-style rehydrate freeze (holiday). Deliberately placed AFTER the four
     // had*LinesRef updates: the refs must record the hydrated geometry even while
@@ -1548,26 +1635,93 @@ export default function QuoteBuilder({
     // resets that footage to 0 instead of leaving a stale value. Loading a quote
     // must never move its billed numbers — only an actual edit may.
     if (holidayDeriveFrozenRef.current) return;
+    // C9 Custom-Runs + Stake are HOLIDAY-only (the event/permanent engines don't
+    // price winterWonderland/stakeLighting — event allow-list is santas/gingerbread
+    // rooflines only). Never derive those two fields from a satellite draw on a
+    // non-holiday quote, or footage would silently persist unbilled (finding #1).
+    //
+    // Row 333 fix (S46 premerge, finding 2, technical MED): compute the
+    // reconcile + the baseline update HERE, synchronously, using the
+    // render-closure `form` — not inside the setForm functional updater
+    // using `f`. React StrictMode dev double-invokes a setState updater to
+    // check purity: it discards the FIRST call's return value, but not any
+    // side effect the call performed. Mutating prevHolidayDerivedRef from
+    // inside the updater let the discarded first call pre-advance the
+    // baseline, so the kept second call compared against an
+    // already-advanced baseline and misclassified a genuine redraw as a
+    // standing override, silently no-op'ing it (dev-only; prod never
+    // double-invokes). The updater below is now a pure function of `f` with
+    // no side effects, so being double-invoked is harmless. Mirrors the
+    // prevBistroDerivedRef fix below.
+    const isHoliday = form.serviceType === 'holiday';
+    // Row 333: baseline-keyed per-field reconcile (reconcileFootage.ts) —
+    // replaces the old direct billed-vs-fresh-target comparison, which
+    // couldn't tell "staff typed an override" apart from "this field's own
+    // geometry changed" and so clobbered an untouched field's override
+    // whenever a DIFFERENT field's lines redrew (all four share this one
+    // effect/dependency list).
+    const baseline = prevHolidayDerivedRef.current;
+    const santas = reconcileHolidayFootageField({
+      active: true,
+      hasLines: hasSantasLines,
+      hadLinesPrev: hadSantasPrev,
+      freshFt: sFt,
+      currentBilled: form.santasFootage,
+      baseline: baseline.santas,
+    });
+    const gingerbread = reconcileHolidayFootageField({
+      active: true,
+      hasLines: hasGingerbreadLines,
+      hadLinesPrev: hadGingerbreadPrev,
+      freshFt: gFt,
+      currentBilled: form.gingerbreadFootage,
+      baseline: baseline.gingerbread,
+    });
+    const c9 = reconcileHolidayFootageField({
+      active: isHoliday,
+      hasLines: hasC9Lines,
+      hadLinesPrev: hadC9Prev,
+      freshFt: c9Ft,
+      currentBilled: form.winterWonderlandFootage,
+      baseline: baseline.c9,
+    });
+    const stake = reconcileHolidayFootageField({
+      active: isHoliday,
+      hasLines: hasStakeLines,
+      hadLinesPrev: hadStakePrev,
+      freshFt: stakeFt,
+      currentBilled: form.stakeLightingFootage,
+      baseline: baseline.stake,
+    });
+    // Row 333 fix (finding 1, staff HIGH): MERGE into the previous baseline —
+    // an inactive field (C9/stake off-holiday) keeps its existing baseline
+    // key untouched, so toggling service type away and back can't drop it.
+    // See mergeHolidayFootageBaseline's own comment for the full defect.
+    const activeByField: Record<HolidayFootageFieldKey, boolean> = {
+      santas: true,
+      gingerbread: true,
+      c9: isHoliday,
+      stake: isHoliday,
+    };
+    const resultsByField: Record<HolidayFootageFieldKey, HolidayFieldReconcileResult> = {
+      santas, gingerbread, c9, stake,
+    };
+    prevHolidayDerivedRef.current = mergeHolidayFootageBaseline(baseline, activeByField, resultsByField);
+    if (santas.target == null && gingerbread.target == null && c9.target == null && stake.target == null) return;
     // defer so the form update isn't synchronous within the effect (flushes before paint)
-    queueMicrotask(() => setForm(f => {
-      // C9 Custom-Runs + Stake are HOLIDAY-only (the event/permanent engines don't
-      // price winterWonderland/stakeLighting — event allow-list is santas/gingerbread
-      // rooflines only). Never derive those two fields from a satellite draw on a
-      // non-holiday quote, or footage would silently persist unbilled (finding #1).
-      const isHoliday = f.serviceType === 'holiday';
-      const sameSantas = santasTarget == null || f.santasFootage === santasTarget;
-      const sameGingerbread = gingerbreadTarget == null || f.gingerbreadFootage === gingerbreadTarget;
-      const sameC9 = c9Target == null || f.winterWonderlandFootage === c9Target || !isHoliday;
-      const sameStake = stakeTarget == null || f.stakeLightingFootage === stakeTarget || !isHoliday;
-      if (sameSantas && sameGingerbread && sameC9 && sameStake) return f;
-      return {
-        ...f,
-        ...(santasTarget != null ? { santasFootage: santasTarget } : {}),
-        ...(gingerbreadTarget != null ? { gingerbreadFootage: gingerbreadTarget } : {}),
-        ...(c9Target != null && isHoliday ? { winterWonderlandFootage: c9Target } : {}),
-        ...(stakeTarget != null && isHoliday ? { stakeLightingFootage: stakeTarget } : {}),
-      };
-    }));
+    queueMicrotask(() => setForm(f => ({
+      ...f,
+      ...(santas.target != null ? { santasFootage: santas.target } : {}),
+      ...(gingerbread.target != null ? { gingerbreadFootage: gingerbread.target } : {}),
+      ...(c9.target != null ? { winterWonderlandFootage: c9.target } : {}),
+      ...(stake.target != null ? { stakeLightingFootage: stake.target } : {}),
+    })));
+    // form.{santasFootage,gingerbreadFootage,winterWonderlandFootage,stakeLightingFootage,serviceType}
+    // are read intentionally (S46 finding 2 fix) but must NOT be dependencies —
+    // this effect derives from satellite GEOMETRY only; adding the billed
+    // fields would re-fire it on every manual override/service-type change
+    // too, which is exactly the over-firing this reconcile exists to survive.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [satelliteSantasLines, satelliteGingerbreadLines, satelliteC9Lines, satelliteStakeLines, satelliteFeetPerPixel, satelliteAspect]);
 
   // Footage readout for the satellite tab.
@@ -1585,6 +1739,35 @@ export default function QuoteBuilder({
       ? roundFootageUpTo5(polylineLength([line], satelliteAspect) * SAT_PX * satelliteFeetPerPixel)
       : null;
 
+  // Row 333: same rounding formula as the holiday derive effect below, factored
+  // out so the getSetter thaw-seed (right below) can't drift from it. 0 when
+  // there's no satellite scale yet, matching the derive effect's own early bail.
+  const computeHolidaySatFt = (lines: LineSegment[]): number =>
+    satelliteFeetPerPixel != null
+      ? Math.round(polylineLength(lines, satelliteAspect) * SAT_PX * satelliteFeetPerPixel / 5) * 5
+      : 0;
+
+  // Row 333 reopen-clobber guard (mirrors #244's bistro seed above): while
+  // still frozen (#142), prevHolidayDerivedRef has never been seeded for
+  // these PERSISTED fields — rehydrate sets the satellite line arrays
+  // directly and never runs the derive effect while frozen. Without this
+  // seed, the FIRST post-reopen edit on ANY one of the four fields would see
+  // the OTHER three as having no recorded baseline, treat them as new, and
+  // stamp their freshly re-derived footage over any saved manual override.
+  // Called before thawing, from all four holiday-line getSetter branches
+  // below (not just the touched one), so every field's baseline is seeded
+  // together.
+  const seedHolidayBaselineIfFrozen = () => {
+    if (!holidayDeriveFrozenRef.current) return;
+    const isHoliday = form.serviceType === 'holiday';
+    prevHolidayDerivedRef.current = deriveHolidayFootageBaseline({
+      santas: { hasLines: satelliteSantasLines.length > 0, freshFt: computeHolidaySatFt(satelliteSantasLines) },
+      gingerbread: { hasLines: satelliteGingerbreadLines.length > 0, freshFt: computeHolidaySatFt(satelliteGingerbreadLines) },
+      c9: { active: isHoliday, hasLines: satelliteC9Lines.length > 0, freshFt: computeHolidaySatFt(satelliteC9Lines) },
+      stake: { active: isHoliday, hasLines: satelliteStakeLines.length > 0, freshFt: computeHolidaySatFt(satelliteStakeLines) },
+    });
+  };
+
   // Line setters — satellite-only now (#35): street lines are gone, the design
   // owns the street-side visuals.
   const getSetter = (type: LineType): ((updater: (lines: LineSegment[]) => LineSegment[]) => void) => {
@@ -1594,18 +1777,21 @@ export default function QuoteBuilder({
     // saved footage exactly as staff left it.
     if (type === 'santas') {
       return (updater) => {
+        seedHolidayBaselineIfFrozen();
         holidayDeriveFrozenRef.current = false;
         setSatelliteSantasLines(updater);
       };
     }
     if (type === 'gingerbread') {
       return (updater) => {
+        seedHolidayBaselineIfFrozen();
         holidayDeriveFrozenRef.current = false;
         setSatelliteGingerbreadLines(updater);
       };
     }
     if (type === 'stake') {
       return (updater) => {
+        seedHolidayBaselineIfFrozen();
         holidayDeriveFrozenRef.current = false;
         setSatelliteStakeLines(updater);
       };
@@ -1648,6 +1834,7 @@ export default function QuoteBuilder({
     }
     // C9 custom runs — same holiday thaw as the three branches above.
     return (updater) => {
+      seedHolidayBaselineIfFrozen();
       holidayDeriveFrozenRef.current = false;
       setSatelliteC9Lines(updater);
     };
@@ -1800,20 +1987,31 @@ export default function QuoteBuilder({
       id: line.id,
       footage: roundFootageUpTo5(polylineLength([line], satelliteAspect) * SAT_PX * satelliteFeetPerPixel),
     }));
+    // Row 333 fix (S46 premerge, finding 2, technical MED — sibling parity
+    // with the holiday effect above): compute the reconcile and mutate
+    // prevBistroDerivedRef HERE, synchronously, using the render-closure
+    // `form` — not inside the setForm functional updater using `f`. See the
+    // holiday effect's comment above for the full StrictMode
+    // double-invoke-of-a-setState-updater explanation this mirrors.
     const priorBaseline = prevBistroDerivedRef.current;
+    const { next, nextBaseline } = reconcileBistroFootage(freshRuns, form.permanentBistro.bistro, priorBaseline);
+    prevBistroDerivedRef.current = nextBaseline;
+    const cur = form.permanentBistro.bistro;
+    const same =
+      cur.length === next.length &&
+      cur.every((b, i) => b.footage === next[i].footage && b.id === next[i].id);
+    if (same) return;
     queueMicrotask(() =>
       setForm((f) => {
         if (f.serviceType !== 'permanent_bistro') return f;
-        const { next, nextBaseline } = reconcileBistroFootage(freshRuns, f.permanentBistro.bistro, priorBaseline);
-        prevBistroDerivedRef.current = nextBaseline;
-        const cur = f.permanentBistro.bistro;
-        const same =
-          cur.length === next.length &&
-          cur.every((b, i) => b.footage === next[i].footage && b.id === next[i].id);
-        if (same) return f;
         return { ...f, permanentBistro: { ...f.permanentBistro, bistro: next } };
       }),
     );
+    // form.permanentBistro.bistro is read intentionally (S46 finding 2 fix)
+    // but must NOT be a dependency — same reasoning as the holiday effect
+    // above: this effect derives from satellite GEOMETRY only, and adding
+    // the billed array would re-fire it on every override too.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [satelliteBistroLines, satelliteFeetPerPixel, satelliteAspect, satellitePreview, form.serviceType]);
 
   // #142: REHYDRATE the satellite tab on a reopened permanent (or, #117,
@@ -3889,6 +4087,11 @@ export default function QuoteBuilder({
   ): Promise<boolean> => {
     setLoading(true);
     setError(null);
+    // Premerge finding 3 fix: keep the last-known-good result/baseline around
+    // so a rejected save can restore them instead of leaving the breakdown
+    // vaporized (see the 409 handling below).
+    const prevResult = result;
+    const prevBaseline = baselineResult;
     setResult(null);
     // #172: keep a genuinely-attached chip through a recalculation — the
     // save-flow's lastAttachKey guard skips re-attaching the same pair, so
@@ -4000,7 +4203,27 @@ export default function QuoteBuilder({
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Request failed');
+      if (!res.ok) {
+        // Premerge finding 3 fix: a 409 from one of the three post-approval
+        // lock codes (route.ts:~716-737) means a stale tab tried to save a
+        // price/label/bistro-footage edit against a quote that's since been
+        // approved (or, per finding 4, whose approval this tab's own derived
+        // state hadn't caught up to). setResult(null) above already nulled
+        // the breakdown; every price/label/footage control lives inside
+        // `{result && (...)}`, so leaving it null here would strand the tab
+        // on a red banner with no way back short of a full reload (losing any
+        // other unsaved edits). Restore the last-known-good result/baseline
+        // and flip the tab to frozen so the controls lock with the honest
+        // post-approval copy — the tab self-corrects to server truth instead
+        // of staying editable and re-erroring on every retry.
+        const LOCK_CODES = new Set(['price-override-locked', 'label-override-locked', 'bistro-footage-locked']);
+        if (res.status === 409 && typeof data?.code === 'string' && LOCK_CODES.has(data.code)) {
+          setResult(prevResult);
+          setBaselineResult(prevBaseline);
+          setStaleApprovalFrozen(true);
+        }
+        throw new Error(data.error ?? 'Request failed');
+      }
       // #41 adversarial-review HIGH fix: the real save-succeeded signal — a
       // 200 with persisted:false means the DB write failed even though
       // pricing succeeded (see /api/quote's own persisted: saved !== null).
@@ -5561,9 +5784,11 @@ export default function QuoteBuilder({
                                     {line.id ? (
                                       <>
                                         <input
-                                          className="w-20 border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-teal-500"
+                                          className="w-20 border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-teal-500 disabled:bg-gray-100 disabled:text-gray-400"
                                           type="number" min="0" placeholder="0"
                                           value={ft || ''}
+                                          disabled={postApprovalFrozen}
+                                          title={postApprovalFrozen ? POST_APPROVAL_LOCK_REASON : undefined}
                                           onChange={(e) => updateBistroRunFootage(line.id, Math.max(0, Number(e.target.value) || 0))}
                                           onBlur={() => {
                                             // #244 premerge finding 1 (HIGH, money — #139 parity):
@@ -6427,7 +6652,8 @@ export default function QuoteBuilder({
                         amount={result.rooflineOptions.santas.amount}
                         baseAmount={baselineResult?.rooflineOptions?.santas?.amount ?? result.rooflineOptions.santas.amount}
                         overridden={Object.prototype.hasOwnProperty.call(form.lineItemPriceOverrides, 'roofline-santas')}
-                        disabled={loading}
+                        disabled={loading || postApprovalFrozen}
+                        lockedReason={postApprovalFrozen ? POST_APPROVAL_LOCK_REASON : undefined}
                         onCommit={(n) => commitLinePrice('roofline-santas', n)}
                         onReset={() => resetLinePrice('roofline-santas')}
                       />
@@ -6449,7 +6675,8 @@ export default function QuoteBuilder({
                         amount={result.rooflineOptions.gingerbread.amount}
                         baseAmount={baselineResult?.rooflineOptions?.gingerbread?.amount ?? result.rooflineOptions.gingerbread.amount}
                         overridden={Object.prototype.hasOwnProperty.call(form.lineItemPriceOverrides, 'roofline-gingerbread')}
-                        disabled={loading}
+                        disabled={loading || postApprovalFrozen}
+                        lockedReason={postApprovalFrozen ? POST_APPROVAL_LOCK_REASON : undefined}
                         onCommit={(n) => commitLinePrice('roofline-gingerbread', n)}
                         onReset={() => resetLinePrice('roofline-gingerbread')}
                       />
@@ -6585,7 +6812,8 @@ export default function QuoteBuilder({
                       amount={item.amount}
                       baseAmount={baseById.get(item.id) ?? item.amount}
                       overridden={Object.prototype.hasOwnProperty.call(form.lineItemPriceOverrides, item.id)}
-                      disabled={loading}
+                      disabled={loading || postApprovalFrozen}
+                      lockedReason={postApprovalFrozen ? POST_APPROVAL_LOCK_REASON : undefined}
                       onCommit={(n) => commitLinePrice(item.id!, n)}
                       onReset={() => resetLinePrice(item.id!)}
                     />
@@ -6617,7 +6845,8 @@ export default function QuoteBuilder({
                             label={resolvedLabel.label}
                             baseLabel={item.label}
                             overridden={resolvedLabel.overridden}
-                            disabled={loading}
+                            disabled={loading || postApprovalFrozen}
+                            lockedReason={postApprovalFrozen ? POST_APPROVAL_LOCK_REASON : undefined}
                             onCommit={(s) => commitLineLabel(item.id!, s)}
                             onReset={() => resetLineLabel(item.id!)}
                           />
