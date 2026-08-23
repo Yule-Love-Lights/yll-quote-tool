@@ -110,7 +110,16 @@ export default function CustomerPortalSettingsPage() {
             </span>
           </label>
           <div className="mt-4 h-5 text-sm" aria-live="polite">
-            {status === 'loading' && <span className="text-gray-400">Loading…</span>}
+            {/* row 332, mirrors #171b: was a bare "Loading…" text node — the
+                checkbox/label above already render unconditionally, so this
+                is a small placeholder matching the status line's own visual
+                weight, not a full-content skeleton. */}
+            {status === 'loading' && (
+              <>
+                <span className="inline-block h-4 w-16 animate-pulse rounded bg-black/10" aria-hidden="true" />
+                <span className="sr-only">Loading</span>
+              </>
+            )}
             {status === 'saving' && <span className="text-gray-400">Saving…</span>}
             {status === 'saved' && <span className="text-emerald-600">Saved</span>}
             {status === 'error' && <span className="text-red-600">{error ?? 'Something went wrong'}</span>}

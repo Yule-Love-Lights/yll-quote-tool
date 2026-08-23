@@ -111,7 +111,22 @@ export default function SiteFormsAdminClient() {
         ))}
       </div>
 
-      {loading && <p>Loading...</p>}
+      {/* row 332: was a bare "Loading..." line. This route has no loading.tsx
+          in its chain (falls through to the root skeleton, out of scope to
+          add here — see the row 332 PR body), so this placeholder just
+          matches the row cards below it (same borderRadius/background) rather
+          than mirroring a route-level skeleton that doesn't exist. */}
+      {loading && (
+        <div style={{ display: 'grid', gap: 12 }}>
+          {[0, 1, 2].map((i) => (
+            <div
+              key={i}
+              className="animate-pulse"
+              style={{ height: 72, borderRadius: 12, background: '#e5e5e5' }}
+            />
+          ))}
+        </div>
+      )}
       {error && <p style={{ color: '#B00020' }}>{error}</p>}
       {!loading && !error && rows.length === 0 && <p style={{ color: '#666' }}>Nothing yet.</p>}
 

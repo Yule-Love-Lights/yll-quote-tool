@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useMemo, useState, use } from 'react';
 import Link from 'next/link';
 import { OperatorShell } from '@/components/OperatorShell';
+import { QuoteDetailSkeleton } from '../QuoteDetailSkeleton';
 
 type VideoKind = 'youtube' | 'mp4';
 
@@ -214,7 +215,11 @@ export default function QuoteVideoAdminPage({ params }: PageProps) {
         </div>
 
         {loading ? (
-          <p className="text-sm text-gray-500">Loading…</p>
+          // This route has no loading.tsx of its own — it inherits
+          // ../loading.tsx during a route transition, so reusing that SAME
+          // shared skeleton here (row 332, mirrors #171b) means no morph into
+          // a bare "Loading…" line before the real content mounts.
+          <QuoteDetailSkeleton />
         ) : (
           <>
             {current && (
