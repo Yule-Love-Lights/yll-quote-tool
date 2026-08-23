@@ -10,6 +10,7 @@ type Row = {
   pay_mode: 'hourly' | 'shadow' | 'p4p';
   language: string;
   active: boolean;
+  is_office: boolean;
   created_at: string | null;
   updated_at: string | null;
 };
@@ -24,6 +25,7 @@ const CREW_1: Row = {
   pay_mode: 'shadow',
   language: 'en',
   active: true,
+  is_office: false,
   created_at: '2026-08-07T00:00:00.000Z',
   updated_at: '2026-08-07T00:00:00.000Z',
 };
@@ -38,6 +40,7 @@ const CREW_2: Row = {
   pay_mode: 'shadow',
   language: 'es',
   active: true,
+  is_office: false,
   created_at: '2026-08-07T00:00:00.000Z',
   updated_at: '2026-08-07T00:00:00.000Z',
 };
@@ -52,6 +55,24 @@ const CREW_3: Row = {
   pay_mode: 'hourly',
   language: 'en',
   active: false,
+  is_office: false,
+  created_at: '2026-08-07T00:00:00.000Z',
+  updated_at: '2026-08-07T00:00:00.000Z',
+};
+
+// Active but OFFICE staff — must be excluded from listActiveFieldCrew (job
+// assignment) while still returned by listActiveCrewMembers (full roster).
+const CREW_OFFICE: Row = {
+  id: 'crew-office',
+  hub_employee_id: null,
+  telegram_user_id: null,
+  display_name: 'Kelly',
+  base_rate_cents: 2500,
+  in_p4p_pool: false,
+  pay_mode: 'hourly',
+  language: 'en',
+  active: true,
+  is_office: true,
   created_at: '2026-08-07T00:00:00.000Z',
   updated_at: '2026-08-07T00:00:00.000Z',
 };
@@ -83,6 +104,7 @@ function rowFromPayload(payload: Record<string, unknown>, id: string): Row {
     pay_mode: payload.pay_mode as Row['pay_mode'],
     language: String(payload.language ?? 'en'),
     active: payload.active === undefined ? true : Boolean(payload.active),
+    is_office: payload.is_office === undefined ? false : Boolean(payload.is_office),
     created_at: '2026-08-07T00:00:00.000Z',
     updated_at: '2026-08-07T00:00:00.000Z',
   };
@@ -102,6 +124,7 @@ function mergeRow(existing: Row, payload: Record<string, unknown>): Row {
     pay_mode: payload.pay_mode === undefined ? existing.pay_mode : (payload.pay_mode as Row['pay_mode']),
     language: payload.language === undefined ? existing.language : String(payload.language),
     active: payload.active === undefined ? existing.active : Boolean(payload.active),
+    is_office: payload.is_office === undefined ? existing.is_office : Boolean(payload.is_office),
     updated_at: '2026-08-07T00:00:00.000Z',
   };
 }
@@ -260,6 +283,7 @@ import {
   getCrewMemberByTelegramUserId,
   insertCrewMember,
   listActiveCrewMembers,
+  listActiveFieldCrew,
   TelegramUserIdTakenError,
   updateCrewMember,
 } from './crewMembers';
@@ -351,6 +375,27 @@ describe('listActiveCrewMembers', () => {
         updatedAt: '2026-08-07T00:00:00.000Z',
       },
     ]);
+  });
+});
+
+describe('listActiveFieldCrew', () => {
+  it('returns [] when Supabase is not configured', async () => {
+    dbRef.current = null;
+    await expect(listActiveFieldCrew()).resolves.toEqual([]);
+  });
+
+  it('EXCLUDES active office staff (is_office) while listActiveCrewMembers keeps them', async () => {
+    // Roster now includes an active OFFICE row (Kelly) alongside the field crew.
+    stateRef.current.rows = [CREW_1, CREW_OFFICE, CREW_2, CREW_3];
+
+    // Field-crew roster (job assignment): office staff excluded, inactive excluded.
+    const field = await listActiveFieldCrew();
+    expect(field.map((c) => c.id)).toEqual(['crew-1', 'crew-2']);
+
+    // Full roster (payroll): office staff STILL included — the office person must
+    // not silently vanish from pay just because they are not dispatchable.
+    const all = await listActiveCrewMembers();
+    expect(all.map((c) => c.id)).toEqual(['crew-1', 'crew-office', 'crew-2']);
   });
 });
 

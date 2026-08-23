@@ -53,6 +53,7 @@ type CrewRow = {
   active: boolean;
   auth_user_id: string | null;
   telegram_user_id: string | null;
+  is_office: boolean;
 };
 
 /**
@@ -75,9 +76,17 @@ export async function GET() {
     return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
   }
 
+  // Office staff (is_office = true) are excluded here. They are NOT field crew:
+  // they sign in with an OPERATOR login (not a crew login), so they must never
+  // appear in this panel, whose entire job is to hand out crew-role logins and
+  // Telegram time-clock links. Listing them here invites creating a second,
+  // crew-role login for someone who already has an operator one. Their operator
+  // session is how they are recognised for time capture, independent of this
+  // flag, so hiding them here changes nothing about that.
   const { data, error } = await sb
     .from('crew_members')
     .select('id, display_name, active, auth_user_id, telegram_user_id')
+    .eq('is_office', false)
     .order('display_name', { ascending: true });
 
   if (error) {
@@ -120,7 +129,7 @@ export async function POST(req: NextRequest) {
   // index would reject a second link anyway, but a clear message beats a 23505.
   const { data: existing, error: lookupError } = await sb
     .from('crew_members')
-    .select('id, display_name, active, auth_user_id')
+    .select('id, display_name, active, auth_user_id, is_office')
     .eq('id', input.crewMemberId)
     .maybeSingle();
 
@@ -130,6 +139,16 @@ export async function POST(req: NextRequest) {
   }
   const crew = existing as unknown as CrewRow | null;
   if (!crew) return NextResponse.json({ error: 'Crew member not found' }, { status: 404 });
+  // Sibling-guard parity with the GET filter: this panel is for FIELD crew only.
+  // Refuse to mint a crew-role login for OFFICE staff by raw id even though the
+  // UI no longer lists them — office staff sign in with their operator login, and
+  // a second crew-role login is exactly what the is_office flag exists to prevent.
+  if (crew.is_office) {
+    return NextResponse.json(
+      { error: `${crew.display_name} is office staff — they sign in with an operator login, not a crew login.` },
+      { status: 409 },
+    );
+  }
   if (crew.auth_user_id) {
     return NextResponse.json(
       { error: `${crew.display_name} already has a login.` },
@@ -230,7 +249,7 @@ export async function PATCH(req: NextRequest) {
 
   const { data: existing, error: lookupError } = await sb
     .from('crew_members')
-    .select('id, display_name, active, auth_user_id, telegram_user_id')
+    .select('id, display_name, active, auth_user_id, telegram_user_id, is_office')
     .eq('id', crewMemberId)
     .maybeSingle();
 
@@ -240,6 +259,16 @@ export async function PATCH(req: NextRequest) {
   }
   const crew = existing as unknown as CrewRow | null;
   if (!crew) return NextResponse.json({ error: 'Crew member not found' }, { status: 404 });
+  // Sibling-guard parity with the GET filter and POST above: the Telegram time
+  // clock is a FIELD-crew channel. Office staff clock in as operators, so refuse
+  // to link (or unlink) a Telegram id on an office row by raw id. Guarding unlink
+  // too keeps the row's telegram_user_id null-by-construction for office staff.
+  if (crew.is_office) {
+    return NextResponse.json(
+      { error: `${crew.display_name} is office staff — the Telegram clock is for field crew.` },
+      { status: 409 },
+    );
+  }
 
   try {
     const updated = await updateCrewMember(crewMemberId, { telegramUserId });

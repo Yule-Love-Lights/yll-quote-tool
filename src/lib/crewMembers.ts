@@ -154,6 +154,33 @@ export async function listActiveCrewMembers(): Promise<CrewMember[]> {
   return (data ?? []).map((row) => toCrewMember(row as Row));
 }
 
+/**
+ * Active FIELD crew only — excludes office staff (`is_office = true`).
+ *
+ * This is the roster for JOB ASSIGNMENT (the schedule / dispatch dropdowns).
+ * Office staff (Naldo, Kelly, ...) are operators, not installers, and must never
+ * be offered as assignable crew for a job. Payroll and the full-roster views use
+ * `listActiveCrewMembers`, which INCLUDES office staff — office people still
+ * accrue hours, they just are not dispatchable field crew. Keep the two apart:
+ * filtering the shared `listActiveCrewMembers` would silently drop office hours
+ * from payroll.
+ */
+export async function listActiveFieldCrew(): Promise<CrewMember[]> {
+  const db = getSupabaseServiceClient();
+  if (!db) return [];
+  const { data, error } = await db
+    .from('crew_members')
+    .select(SELECT)
+    .eq('active', true)
+    .eq('is_office', false)
+    .order('display_name', { ascending: true });
+  if (error) {
+    console.error('listActiveFieldCrew error:', error);
+    return [];
+  }
+  return (data ?? []).map((row) => toCrewMember(row as Row));
+}
+
 // insertCrewMember has no `id` in its input by design (that's the whole
 // point of the insert/update split — see the review that split them), so it
 // cannot check "does this id already exist" before inserting. The one race
