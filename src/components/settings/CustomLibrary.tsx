@@ -101,11 +101,23 @@ export function CustomLibrary() {
       {loading ? (
         // row 346, mirrors row 332/#171b: was a bare "Loading…" line — replaced
         // with placeholder tiles matching the grid below so there's no morph
-        // from empty text into the real thumbnails.
+        // from empty text into the real thumbnails. Fix-round LOW: each tile
+        // now carries the same border/p-1 wrapper + filename-caption row the
+        // real tiles have (previously just a bare aspect-square block), so
+        // there's no small height bump when the real tiles mount.
         <div role="status" aria-busy="true" className="grid grid-cols-[repeat(auto-fill,minmax(96px,1fr))] gap-2">
-          <div className="aspect-square animate-pulse rounded bg-black/10" />
-          <div className="aspect-square animate-pulse rounded bg-black/10" />
-          <div className="aspect-square animate-pulse rounded bg-black/10" />
+          <div className="border border-gray-200 rounded p-1">
+            <div className="aspect-square animate-pulse rounded bg-black/10" />
+            <div className="h-2.5 w-3/4 mt-1 animate-pulse rounded bg-black/10" />
+          </div>
+          <div className="border border-gray-200 rounded p-1">
+            <div className="aspect-square animate-pulse rounded bg-black/10" />
+            <div className="h-2.5 w-3/4 mt-1 animate-pulse rounded bg-black/10" />
+          </div>
+          <div className="border border-gray-200 rounded p-1">
+            <div className="aspect-square animate-pulse rounded bg-black/10" />
+            <div className="h-2.5 w-3/4 mt-1 animate-pulse rounded bg-black/10" />
+          </div>
         </div>
       ) : uploads.length === 0 ? (
         <p className="text-sm text-gray-400">No graphics yet. Click “+ Upload image” to add one.</p>
