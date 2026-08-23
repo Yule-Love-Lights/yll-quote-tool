@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 
 // ── Mocks (hoisted so the vi.mock factories can see them) ───────────────────
-const { sbRef, hl, attachQuoteToCustomerMock } = vi.hoisted(() => ({
+const { sbRef, hl, attachQuoteToCustomerMock, requireOperatorMock, getOperatorMock } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
   hl: {
     findOrCreate: vi.fn(async () => ({ opportunity: { id: 'opp-1' }, created: false })),
@@ -17,11 +17,20 @@ const { sbRef, hl, attachQuoteToCustomerMock } = vi.hoisted(() => ({
   // #214 (d): the route re-resolves the customers link after a successful
   // link write — mocked so these unit tests never touch a customers table.
   attachQuoteToCustomerMock: vi.fn(async () => null as null | { customerId: string; propertyId: string }),
+  // Row 326 residual (b): the refusal-audit write calls getOperator() directly
+  // (not gated behind requireOperator's AUTH_GATE_ENABLED dormancy), so it must
+  // be mocked explicitly — mirrors staff-decline/route.test.ts's pattern.
+  requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
+  getOperatorMock: vi.fn(async () => null as { email: string | null } | null),
 }));
 
 vi.mock('@/lib/supabase', () => ({
   isSupabaseServiceConfigured: () => true,
   getSupabaseServiceClient: () => sbRef.current,
+}));
+vi.mock('@/lib/auth/supabaseServer', () => ({
+  requireOperator: requireOperatorMock,
+  getOperator: getOperatorMock,
 }));
 
 // #214: importOriginal keeps quoteRowToIdentity (pure sentinel translation)
@@ -73,7 +82,13 @@ function makeSb(
   // option, keeps behaving exactly as before.
   const casMatch = opts.identityCasMatch ?? true;
   let isUpdate = false;
-  const builder: Record<string, unknown> = {};
+  // Row 326 residual (b): records every update() payload (in call order) so
+  // tests can assert on the audit-marker write's shape without adding a
+  // fourth chain kind — the marker write is a plain
+  // from().update(payload).eq() with no .select()/.maybeSingle() follow-up,
+  // so it resolves through makeUpdateChain()'s `then` below like the others.
+  const updateCalls: Record<string, unknown>[] = [];
+  const builder: Record<string, unknown> = { updateCalls };
   function makeUpdateChain() {
     let hasIsFilter = false;
     const chain: Record<string, unknown> = {
@@ -94,7 +109,8 @@ function makeSb(
   Object.assign(builder, {
     from: () => builder,
     select: () => builder,
-    update: () => {
+    update: (payload: Record<string, unknown>) => {
+      updateCalls.push(payload);
       isUpdate = true;
       return builder;
     },
@@ -551,6 +567,116 @@ describe('HighLevel attach — post-link customers re-resolution (#214)', () => 
     const json = await res.json();
     expect(res.status).toBe(200);
     expect(json.linked).toBe(true);
+  });
+});
+
+// Row 326 residual (b): until now a refused identity change (either freeze
+// point, either action) left only a console.warn — server logs only, not
+// owner-queryable. Every refusal now merges an entry onto
+// approval_snapshot.identityChangeRefusals (append-only, mirrors
+// amend/route.ts's amendments[]) in the SAME database write, so an owner can
+// later query WHO tried WHAT on an approved/booked quote and WHEN — the
+// missing half of row 251's own near-miss.
+describe('HighLevel attach — refusal audit trace (row 326 residual b)', () => {
+  function updatesOf(): Record<string, unknown>[] {
+    return (sbRef.current as unknown as { updateCalls: Record<string, unknown>[] }).updateCalls;
+  }
+  function refusalsFrom(payload: Record<string, unknown> | undefined): Record<string, unknown>[] {
+    const snapshot = payload?.approval_snapshot as Record<string, unknown> | undefined;
+    return (snapshot?.identityChangeRefusals as Record<string, unknown>[] | undefined) ?? [];
+  }
+
+  it('writes an identityChangeRefusals entry (and preserves prior snapshot content) when the pre-read freeze refuses an attach', async () => {
+    getOperatorMock.mockResolvedValueOnce({ email: 'staff@yulelovelights.com' });
+    sbRef.current = makeSb({
+      ...HOLIDAY_QUOTE,
+      is_test: false,
+      customer_approved_at: '2026-08-10T00:00:00Z',
+      approval_snapshot: { approvedAt: '2026-08-10T00:00:00Z' },
+    });
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toEqual({ linked: false, identityFrozen: true });
+
+    const refusalWrite = updatesOf().find((p) => refusalsFrom(p).length > 0);
+    expect(refusalWrite).toBeDefined();
+    const [entry] = refusalsFrom(refusalWrite);
+    expect(entry).toMatchObject({
+      by: 'staff@yulelovelights.com',
+      action: 'attach',
+      attemptedContactId: 'contact-1',
+      stage: 'pre-read',
+    });
+    // The pre-existing approval_snapshot content (the original approval
+    // marker) must survive the merge — never clobbered by the audit write.
+    expect((refusalWrite!.approval_snapshot as Record<string, unknown>).approvedAt).toBe(
+      '2026-08-10T00:00:00Z',
+    );
+  });
+
+  it('writes an identityChangeRefusals entry when the pre-read freeze refuses a detach', async () => {
+    getOperatorMock.mockResolvedValueOnce({ email: 'staff@yulelovelights.com' });
+    sbRef.current = makeSb({
+      ...HOLIDAY_QUOTE,
+      is_test: false,
+      customer_approved_at: '2026-08-10T00:00:00Z',
+    });
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, detach: true }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toEqual({ detached: false, identityFrozen: true });
+
+    const refusalWrite = updatesOf().find((p) => refusalsFrom(p).length > 0);
+    const [entry] = refusalsFrom(refusalWrite);
+    expect(entry).toMatchObject({
+      by: 'staff@yulelovelights.com',
+      action: 'detach',
+      attemptedContactId: null,
+      stage: 'pre-read',
+    });
+  });
+
+  it('writes a write-time-stage entry when the attach CAS refusal fires (approval landed during the GHL round trip)', async () => {
+    sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false }, null, { identityCasMatch: false });
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toEqual({ linked: false, identityFrozen: true });
+
+    const refusalWrite = updatesOf().find((p) => refusalsFrom(p).length > 0);
+    const [entry] = refusalsFrom(refusalWrite);
+    expect(entry).toMatchObject({ action: 'attach', attemptedContactId: 'contact-1', stage: 'write-time' });
+  });
+
+  it('writes a write-time-stage entry when the detach CAS refusal fires', async () => {
+    sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false }, null, { identityCasMatch: false });
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, detach: true }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toEqual({ detached: false, identityFrozen: true });
+
+    const refusalWrite = updatesOf().find((p) => refusalsFrom(p).length > 0);
+    const [entry] = refusalsFrom(refusalWrite);
+    expect(entry).toMatchObject({ action: 'detach', attemptedContactId: null, stage: 'write-time' });
+  });
+
+  it('never writes an audit entry when the attach succeeds normally (not frozen)', async () => {
+    sbRef.current = makeSb(HOLIDAY_QUOTE, null);
+
+    await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+    expect(updatesOf().some((p) => refusalsFrom(p).length > 0)).toBe(false);
+  });
+
+  it('never writes an audit entry when a detach succeeds normally (not frozen)', async () => {
+    sbRef.current = makeSb(HOLIDAY_QUOTE, null);
+
+    await POST(makeReq({ quoteId: QUOTE_ID, detach: true }));
+    expect(updatesOf().some((p) => refusalsFrom(p).length > 0)).toBe(false);
   });
 });
 

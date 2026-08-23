@@ -40,13 +40,66 @@ import {
 } from '@/lib/integrations/highlevel';
 import { resolvePipelineStages } from '@/lib/integrations/ghlPipelineMap';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
-import { requireOperator } from '@/lib/auth/supabaseServer';
+import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
 import { attachQuoteToCustomer, quoteRowToIdentity } from '@/lib/customers';
 import { wasEverApproved } from '@/lib/quoteStatus';
 
 export const runtime = 'nodejs';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Row 326 residual (b): a durable audit trace for a #251/#338/#839 identity
+// freeze REFUSAL — until now the only record was a console.warn (server logs
+// only, not owner-queryable). Mirrors the established approval_snapshot
+// audit-marker idiom (staff-decline's `staffDeclined`, the send route's
+// `browsingSelectionCleared`), but as an append-only ARRAY like
+// amend/route.ts's `amendments[]` — a refusal can legitimately repeat (staff
+// retrying, or trying a different contact), and each attempt is worth
+// keeping, not just the latest. Best-effort: never blocks or changes the
+// caller's response; a failed audit write is logged and swallowed, same
+// posture as every other non-critical write in this file (e.g. the
+// customers re-resolution below).
+type IdentityRefusalEntry = {
+  by: string | null;
+  at: string;
+  action: 'attach' | 'detach';
+  attemptedContactId: string | null;
+  stage: 'pre-read' | 'write-time';
+};
+
+async function logIdentityRefusal(
+  client: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  quoteId: string,
+  baseSnapshot: unknown,
+  entry: Pick<IdentityRefusalEntry, 'action' | 'attemptedContactId' | 'stage'>,
+): Promise<void> {
+  try {
+    const operator = await getOperator();
+    const prior =
+      baseSnapshot && typeof baseSnapshot === 'object' ? (baseSnapshot as Record<string, unknown>) : {};
+    const priorRefusals = Array.isArray(prior.identityChangeRefusals) ? prior.identityChangeRefusals : [];
+    const newEntry: IdentityRefusalEntry = {
+      by: operator?.email ?? null,
+      at: new Date().toISOString(),
+      ...entry,
+    };
+    const { error } = await client
+      .from('quotes')
+      .update({ approval_snapshot: { ...prior, identityChangeRefusals: [...priorRefusals, newEntry] } })
+      .eq('id', quoteId);
+    if (error) {
+      console.warn(
+        `[api/integrations/highlevel/attach] identity-refusal audit write failed for quote ${quoteId}:`,
+        error.message,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[api/integrations/highlevel/attach] identity-refusal audit write threw for quote ${quoteId}:`,
+      err,
+    );
+  }
+}
 
 export async function POST(req: NextRequest) {
   const denied = await requireOperator();
@@ -129,6 +182,11 @@ export async function POST(req: NextRequest) {
       console.warn(
         `[api/integrations/highlevel/attach] #251/#338 identity freeze — quote ${body.quoteId} is approved/booked (or was); refused a detach.`,
       );
+      await logIdentityRefusal(detachClient, body.quoteId, detachRow.approval_snapshot, {
+        action: 'detach',
+        attemptedContactId: null,
+        stage: 'pre-read',
+      });
       return NextResponse.json({ detached: false, identityFrozen: true });
     }
     // #839 round-2 delta-verify MED (sibling-guard parity, same class as the
@@ -171,6 +229,22 @@ export async function POST(req: NextRequest) {
       console.warn(
         `[api/integrations/highlevel/attach] #839 identity freeze (write-time) — quote ${body.quoteId} became approved/booked during the detach round trip; refused the detach.`,
       );
+      // Fresh re-read (not the pre-read `detachRow` above): the CAS just told
+      // us something else wrote to this row in the gap, most likely the
+      // customer's own /approve or /pay stamping approval_snapshot — merging
+      // onto the stale pre-read here would silently erase that write. Best
+      // effort like the rest of this helper; a failed re-read just means the
+      // audit entry merges onto an empty object instead of losing data.
+      const { data: freshRow } = await detachClient
+        .from('quotes')
+        .select('approval_snapshot')
+        .eq('id', body.quoteId)
+        .maybeSingle<{ approval_snapshot: unknown }>();
+      await logIdentityRefusal(detachClient, body.quoteId, freshRow?.approval_snapshot ?? null, {
+        action: 'detach',
+        attemptedContactId: null,
+        stage: 'write-time',
+      });
       return NextResponse.json({ detached: false, identityFrozen: true });
     }
     return NextResponse.json({ detached: true });
@@ -230,6 +304,26 @@ export async function POST(req: NextRequest) {
   // quoteStatus.ts. Closes the queueAttach half of the revive→decline→revive
   // hole: this route fires directly on a confirmed contact pick, before any
   // Calculate ever reaches quotes.ts's own freeze.
+  //
+  // Row 326 residual (a) — DELIBERATELY NOT special-cased: a quote that was
+  // approved/booked with `customer_id == null` (never linked to a customer
+  // row at all) still refuses here, exactly like an already-linked quote.
+  // Considered and rejected a narrower "only refuse when customer_id is
+  // already set" carve-out: attachQuoteToCustomer resolves identity from the
+  // PICKED CONTACT's own name/email/phone (the request body), which this
+  // route cannot verify against the quote's approval-time identity — a
+  // never-linked quote has no CURRENT link to protect, but a wrong pick would
+  // still permanently misattribute the quote's customer_id (and everything
+  // that snapshots it — jobs, invoices, GHL tenure), which is the exact harm
+  // #251 exists to prevent. quotes.ts's own sibling freeze (updateQuote,
+  // `wouldReattach = identityChanged || hlChanged || stored.customer_id ==
+  // null`) makes the identical call — a never-linked quote is eligible for
+  // `wouldReattach` but is STILL blocked when `frozen`, not carved out — so
+  // narrowing only THIS route would break the "widen both together" sibling
+  // contract documented at the #839 fix-round comment below. The sanctioned
+  // remedy stays the one already documented above: a manual DB fix, now with
+  // an audit trail (`logIdentityRefusal` below) to actually surface the need
+  // for one, instead of a console.warn nobody reads.
   if (
     quoteRow &&
     !quoteRow.is_test &&
@@ -238,6 +332,11 @@ export async function POST(req: NextRequest) {
     console.warn(
       `[api/integrations/highlevel/attach] #251/#338 identity freeze — quote ${body.quoteId} is approved/booked (or was); refused a contact re-link (contact ${body.contactId}).`,
     );
+    await logIdentityRefusal(sb, body.quoteId, quoteRow.approval_snapshot, {
+      action: 'attach',
+      attemptedContactId: body.contactId,
+      stage: 'pre-read',
+    });
     return NextResponse.json({ linked: false, identityFrozen: true });
   }
   // Legacy rebook (#156): legacy_rebook wins regardless of service_type,
@@ -341,6 +440,20 @@ export async function POST(req: NextRequest) {
       console.warn(
         `[api/integrations/highlevel/attach] #839 identity freeze (write-time) — quote ${body.quoteId} became approved/booked during the GHL round trip; refused the contact link (contact ${body.contactId}).`,
       );
+      // Fresh re-read, same reasoning as the detach write-time refusal above
+      // — the CAS mismatch means something else (most likely the customer's
+      // own /approve or /pay) wrote approval_snapshot in the gap since
+      // `quoteRow` was read; merging onto that stale copy would erase it.
+      const { data: freshRow } = await sb
+        .from('quotes')
+        .select('approval_snapshot')
+        .eq('id', body.quoteId)
+        .maybeSingle<{ approval_snapshot: unknown }>();
+      await logIdentityRefusal(sb, body.quoteId, freshRow?.approval_snapshot ?? null, {
+        action: 'attach',
+        attemptedContactId: body.contactId,
+        stage: 'write-time',
+      });
       return NextResponse.json({ linked: false, identityFrozen: true });
     }
 
