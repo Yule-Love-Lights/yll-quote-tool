@@ -90,17 +90,41 @@ vi.mock('@/lib/integrations/ghlEventDate', async (importOriginal) => ({
 // below keeps working unmodified; afterCallCount lets ONE test additionally
 // assert the call was actually routed through after(), not just that the
 // push still fires (a bare void call would make these tests pass too).
-const { afterCallCount } = vi.hoisted(() => ({ afterCallCount: { current: 0 } }));
+// #314 fix round: lastAfterTask captures the SAME task's promise (still fired
+// immediately/undrained, so every existing pushEventDateMock assertion below
+// keeps working unmodified) so a test that cares about the stamp write
+// (which chains an extra couple of awaits past pushEventDateToGhl itself)
+// can explicitly `await lastAfterTask.current` before asserting on it.
+const { afterCallCount, lastAfterTask } = vi.hoisted(() => ({
+  afterCallCount: { current: 0 },
+  lastAfterTask: { current: null as Promise<void> | null },
+}));
 vi.mock('next/server', async (importOriginal) => {
   const actual = await importOriginal<typeof import('next/server')>();
   return {
     ...actual,
     after: (task: () => Promise<void> | void) => {
       afterCallCount.current++;
-      void task();
+      lastAfterTask.current = Promise.resolve(task());
     },
   };
 });
+
+// #314 fix round (staff-lens HIGH): a confirmed push now stamps
+// quotes.ghl_event_date_pushed via a fresh getSupabaseServiceClient() call
+// inside the after() task — mocked here the same way approve/send route
+// tests mock the data layer, capturing update payloads.
+const { sbUpdatePayloads } = vi.hoisted(() => ({ sbUpdatePayloads: [] as Array<Record<string, unknown>> }));
+vi.mock('@/lib/supabase', () => ({
+  getSupabaseServiceClient: () => ({
+    from: () => ({
+      update: (payload: Record<string, unknown>) => {
+        sbUpdatePayloads.push(payload);
+        return { eq: async () => ({ error: null }) };
+      },
+    }),
+  }),
+}));
 
 // No design linked in most tests → isValidDesignId false, getDesign untouched.
 // W1-010: designIdRef.current flips this per-test so the design-projection
@@ -176,6 +200,8 @@ beforeEach(() => {
   operatorRef.current = null;
   designIdRef.current = false;
   afterCallCount.current = 0;
+  lastAfterTask.current = null;
+  sbUpdatePayloads.length = 0;
   getDesignMock.mockResolvedValue(null);
   // Default the update-branch row to a plain draft (no lifecycle timestamps) so
   // the existing UUID→update tests still re-price; booked/terminal cases set it.
@@ -1774,6 +1800,32 @@ describe('POST /api/quote — event-date GHL re-push on save (FIX B, #237 fix ro
     // would still make the assertion above pass (the mocked after() fires
     // the task either way), but afterCallCount would stay 0.
     expect(afterCallCount.current).toBe(1);
+  });
+
+  // #314 fix round (staff-lens HIGH): a confirmed push stamps
+  // quotes.ghl_event_date_pushed — the marker the approve route's own
+  // reconcile compares against instead of GHL's live value.
+  it('stamps ghl_event_date_pushed when the re-push is confirmed', async () => {
+    rawRef.current = { ...SENT_EVENT_ROW };
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, serviceType: 'event', inputs: { ...validInputs(), event: { eventDate: '2026-12-25' } } }),
+    );
+    expect(res.status).toBe(200);
+    await lastAfterTask.current;
+
+    expect(sbUpdatePayloads).toContainEqual({ ghl_event_date_pushed: '12/25/2026' });
+  });
+
+  it('does NOT stamp ghl_event_date_pushed when the push fails', async () => {
+    pushEventDateMock.mockResolvedValueOnce({ pushed: false });
+    rawRef.current = { ...SENT_EVENT_ROW };
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, serviceType: 'event', inputs: { ...validInputs(), event: { eventDate: '2026-12-25' } } }),
+    );
+    expect(res.status).toBe(200);
+    await lastAfterTask.current;
+
+    expect(sbUpdatePayloads).toHaveLength(0);
   });
 
   it('does NOT re-push when the date is unchanged (a routine unrelated re-save)', async () => {
