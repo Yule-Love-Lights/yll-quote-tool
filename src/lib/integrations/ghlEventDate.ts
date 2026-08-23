@@ -272,29 +272,41 @@ export async function pushEventDateToGhl(
  * made, never that GHL actually agrees. Reading GHL's own current value
  * checks the real thing being reconciled.
  *
- * Returns null on ANY failure to resolve a value — no contactId, HighLevel
- * not configured, the field can't be resolved (missing scope, parse-bug
- * guard, etc.), or the GHL read itself errors/times out. Never throws — the
- * caller (the approve route, a customer-facing money action) treats a null
- * read as "can't confirm the current value, so push anyway" rather than
- * blocking or guessing; see getContactInternal's own timeout, which is the
- * same real-AbortController-bounded ghlFetch (#264, 10s) every other GHL call
- * in this app already goes through — no separate deadline wrapper needed
- * here (unlike pushEventDateToGhl's Promise.race, added before ghlFetch had
- * real cancellation).
+ * THREE-STATE return contract (#314 fix round, technical-lens MED — the
+ * original two-state null-means-everything contract collapsed "the field is
+ * genuinely empty" and "the read failed" into the same value, which let a
+ * transient GHL failure masquerade as confirmed-empty at the one call site
+ * that treats confirmed-empty as a green light to push):
+ *   - a `string` — the field was read successfully and holds that value.
+ *   - `null` — the field was read successfully and is genuinely empty (the
+ *     contact carries no matching custom field, or its value isn't a
+ *     string). This is a CONFIRMED result: we did talk to GHL and it agrees
+ *     the field is unset.
+ *   - `undefined` — we could NOT confirm anything either way: no contactId,
+ *     HighLevel isn't configured, the field id can't be resolved (missing
+ *     scope, the empty-list parse-bug guard, etc.), or the GHL read itself
+ *     errored/timed out. Never throws.
+ * Callers MUST treat `undefined` as "unknown, do not act on it" — only a
+ * confirmed `null` licenses a fallback push. See getContactInternal's own
+ * timeout, which is the same real-AbortController-bounded ghlFetch (#264,
+ * 10s) every other GHL call in this app already goes through — no separate
+ * deadline wrapper needed here (unlike pushEventDateToGhl's Promise.race,
+ * added before ghlFetch had real cancellation).
  */
-export async function getEventDateFromGhl(contactId: string | null | undefined): Promise<string | null> {
-  if (!contactId) return null;
-  if (!isHighLevelConfigured()) return null;
+export async function getEventDateFromGhl(
+  contactId: string | null | undefined,
+): Promise<string | null | undefined> {
+  if (!contactId) return undefined;
+  if (!isHighLevelConfigured()) return undefined;
   try {
     const fieldId = await resolveEventDateFieldId();
-    if (!fieldId) return null;
+    if (!fieldId) return undefined;
     const { raw } = await getContactInternal(contactId);
     const fields = (raw as HighLevelContact).customFields;
     const match = fields?.find((f) => f.id === fieldId);
     return typeof match?.value === 'string' ? match.value : null;
   } catch (err) {
     console.error(`[ghlEventDate] failed to read the current "${EVENT_DATE_FIELD_NAME}" value:`, err);
-    return null;
+    return undefined;
   }
 }

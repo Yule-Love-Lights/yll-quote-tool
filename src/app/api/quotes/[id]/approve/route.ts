@@ -736,11 +736,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   //
   // Legacy rows (ghl_event_date_pushed is null — approved, or last pushed,
   // before this column existed) have no push history to compare against.
-  // Conservative fallback: read GHL's current value and push ONLY if it's
-  // EMPTY — never overwrite a non-empty value we have no record of having
-  // put there ourselves. getEventDateFromGhl is only called from this one
-  // branch now; once every legacy row picks up a ghl_event_date_pushed
-  // stamp from a later push, this branch stops firing on its own.
+  // Conservative fallback: read GHL's current value and push ONLY on a
+  // CONFIRMED-empty read — never overwrite a non-empty value we have no
+  // record of having put there ourselves. getEventDateFromGhl is only
+  // called from this one branch now; once every legacy row picks up a
+  // ghl_event_date_pushed stamp from a later push, this branch stops firing
+  // on its own.
+  //
+  // #314 fix round #2 (delta-verify MED — this fix round partially REOPENED
+  // the HIGH it exists to close): getEventDateFromGhl used to collapse
+  // "confirmed empty" and "the read itself failed" into the same `null`, so
+  // `shouldPush = !currentGhlValue` treated a transient GHL outage (a 500, a
+  // network blip, a scope problem on the GET) as confirmed-empty and pushed
+  // anyway — the independently-fallible write could then succeed and stomp a
+  // real staff-set GHL value, exactly the class of bug this PR exists to
+  // prevent. getEventDateFromGhl now returns `undefined` (not `null`) for
+  // any inconclusive read; only a CONFIRMED `null` licenses the fallback
+  // push below. An inconclusive read pushes nothing and leaves the row for a
+  // later reconcile — a missed push is recoverable, a stomped staff edit is
+  // not.
   //
   // Same positive-match gate as #807 (`=== 'event'`, never `!== 'permanent'`,
   // per this repo's standing rule) + !is_test + a linked contact + a valid
@@ -767,13 +781,28 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         let shouldPush = true;
         if (pushedMarker === null) {
           const currentGhlValue = await getEventDateFromGhl(contactId);
-          shouldPush = !currentGhlValue;
-          if (!shouldPush) {
-            // #314 fix round (admin lens MED): log the skip, matching the
-            // logging style of the failure branches below.
+          if (currentGhlValue === undefined) {
+            // Inconclusive read (no contactId, not configured, field
+            // resolution failed, or the GHL call itself errored/timed out)
+            // — NOT the same as a confirmed-empty field. Do not push: a
+            // false "empty" reading here is exactly what let a transient
+            // GHL failure stomp a real staff-set value (#314 fix round #2).
+            shouldPush = false;
             console.log(
-              `[api/quotes/:id/approve] event-date reconcile (#314) SKIPPED quote ${id}: legacy row (no push history) and GHL already holds a non-empty value ("${currentGhlValue}")`,
+              `[api/quotes/:id/approve] event-date reconcile (#314) SKIPPED quote ${id}: legacy row (no push history) and GHL's current value could not be confirmed (inconclusive read) — leaving for a later reconcile`,
             );
+          } else {
+            // A confirmed read: null = GHL agrees the field is genuinely
+            // empty (push is safe); a string = GHL already holds a
+            // non-empty value (never overwrite it here).
+            shouldPush = currentGhlValue === null;
+            if (!shouldPush) {
+              // #314 fix round (admin lens MED): log the skip, matching the
+              // logging style of the failure branches below.
+              console.log(
+                `[api/quotes/:id/approve] event-date reconcile (#314) SKIPPED quote ${id}: legacy row (no push history) and GHL already holds a non-empty value ("${currentGhlValue}")`,
+              );
+            }
           }
         }
         if (!shouldPush) return;

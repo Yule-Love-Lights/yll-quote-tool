@@ -336,24 +336,33 @@ describe('pushEventDateToGhl — field resolution (create-if-missing + cache)', 
 });
 
 // #314: the approval-time reconciliation read.
+//
+// #314 fix round #2 (delta-verify MED): three-state contract. `undefined` =
+// inconclusive (could not confirm either way) — no contactId, not
+// configured, the field can't be resolved, or the read itself errors.
+// `null` = CONFIRMED empty — a successful read that found no value. A
+// `string` = the confirmed current value. Callers must not treat
+// `undefined` the same as confirmed-`null`; see the approve route's legacy-
+// row branch, which used to collapse them and could push on a merely-failed
+// read.
 describe('getEventDateFromGhl', () => {
-  it('returns null when contactId is missing', async () => {
+  it('returns undefined (inconclusive) when contactId is missing', async () => {
     const result = await getEventDateFromGhl(null);
-    expect(result).toBeNull();
+    expect(result).toBeUndefined();
     expect(hl.getContactInternal).not.toHaveBeenCalled();
   });
 
-  it('returns null when HighLevel is not configured', async () => {
+  it('returns undefined (inconclusive) when HighLevel is not configured', async () => {
     hl.configured.value = false;
     const result = await getEventDateFromGhl('hl-1');
-    expect(result).toBeNull();
+    expect(result).toBeUndefined();
     expect(hl.getContactInternal).not.toHaveBeenCalled();
   });
 
-  it('returns null when the field cannot be resolved (empty-list parse guard)', async () => {
+  it('returns undefined (inconclusive) when the field cannot be resolved (empty-list parse guard)', async () => {
     hl.listLocationCustomFields.mockResolvedValue([]);
     const result = await getEventDateFromGhl('hl-1');
-    expect(result).toBeNull();
+    expect(result).toBeUndefined();
     expect(hl.getContactInternal).not.toHaveBeenCalled();
   });
 
@@ -375,7 +384,7 @@ describe('getEventDateFromGhl', () => {
     expect(result).toBe('11/27/2026');
   });
 
-  it('returns null when the contact has no matching custom field yet', async () => {
+  it('returns CONFIRMED null (not undefined) when the contact has no matching custom field yet', async () => {
     hl.listLocationCustomFields.mockResolvedValue([{ id: 'field-42', name: EVENT_DATE_FIELD_NAME }]);
     hl.getContactInternal.mockResolvedValue({
       id: 'hl-1',
@@ -387,14 +396,14 @@ describe('getEventDateFromGhl', () => {
     expect(result).toBeNull();
   });
 
-  it('fails soft (returns null, does not throw) when the GHL read itself errors', async () => {
+  it('fails soft (returns undefined/inconclusive, does not throw) when the GHL read itself errors', async () => {
     hl.listLocationCustomFields.mockResolvedValue([{ id: 'field-42', name: EVENT_DATE_FIELD_NAME }]);
     hl.getContactInternal.mockRejectedValue(new hl.HighLevelError('boom', 500));
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     const result = await getEventDateFromGhl('hl-1');
 
-    expect(result).toBeNull();
+    expect(result).toBeUndefined();
     expect(errSpy).toHaveBeenCalledWith(
       expect.stringContaining('failed to read the current "Event Date" value'),
       expect.anything(),

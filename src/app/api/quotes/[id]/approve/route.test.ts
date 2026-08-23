@@ -1328,6 +1328,30 @@ describe('POST /api/quotes/[id]/approve — event-date GHL reconciliation (#314)
     expect(updatePayloads.some((p) => 'ghl_event_date_pushed' in p)).toBe(false);
   });
 
+  it('legacy row (never confirmed pushed): a failed/inconclusive GHL read does NOT push, even when the write would have succeeded (#314 fix round #2 regression test)', async () => {
+    hl.configured.value = true;
+    // The READ fails (transient GHL outage) — getEventDateFromGhl now
+    // resolves `undefined` (inconclusive), NOT a confirmed-empty `null`.
+    // The WRITE is deliberately left able to succeed (unlike the sibling
+    // "GHL failure" test below, which fails both), to prove the route does
+    // not fall through to a push on an inconclusive read. Before this fix,
+    // getEventDateFromGhl collapsed "read failed" into the same `null` as
+    // "confirmed empty", so `shouldPush = !currentGhlValue` treated this
+    // exact scenario as a green light and pushed — silently overwriting
+    // whatever real, non-empty value GHL actually held.
+    hl.getContactInternal.mockRejectedValue(new Error('GHL down'));
+    const { client, updatePayloads } = makeSb(eventQuote());
+    sbRef.current = client;
+
+    const res = await POST(makeReq(validBody), { params });
+    expect(res.status).toBe(200);
+    await drainAfterTasks();
+
+    expect(hl.getContactInternal).toHaveBeenCalledWith('hl-contact-1');
+    expect(hl.upsertContactCustomField).not.toHaveBeenCalled();
+    expect(updatePayloads.some((p) => 'ghl_event_date_pushed' in p)).toBe(false);
+  });
+
   it('never reads or pushes for a non-event quote (non-event skip)', async () => {
     hl.configured.value = true;
     const { client } = makeSb(
@@ -1353,8 +1377,13 @@ describe('POST /api/quotes/[id]/approve — event-date GHL reconciliation (#314)
     hl.configured.value = true;
     hl.getContactInternal.mockRejectedValue(new Error('GHL down'));
     hl.upsertContactCustomField.mockRejectedValue(new Error('GHL down'));
-    // Legacy row (null marker) so the reconcile exercises both the GHL read
-    // and the push attempt.
+    // Legacy row (null marker). Both the read AND the write are mocked to
+    // fail here — this test is about the never-throws/never-500s safety
+    // property, not about the read/write asymmetry (see the dedicated
+    // regression test above for that: read fails, write WOULD succeed).
+    // Since #314 fix round #2, a failed read is inconclusive and short-
+    // circuits before the push is even attempted, so upsertContactCustomField
+    // rejecting here never actually fires — asserted below.
     const { client, updatePayloads } = makeSb(eventQuote());
     sbRef.current = client;
 
@@ -1374,6 +1403,7 @@ describe('POST /api/quotes/[id]/approve — event-date GHL reconciliation (#314)
     // nothing extra around them — this proves there's no unhandled
     // rejection lurking in the stamp-write branch either).
     await expect(drainAfterTasks()).resolves.not.toThrow();
+    expect(hl.upsertContactCustomField).not.toHaveBeenCalled();
     expect(updatePayloads.some((p) => 'ghl_event_date_pushed' in p)).toBe(false);
   });
 });
