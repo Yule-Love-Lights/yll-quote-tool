@@ -403,6 +403,32 @@ describe('runHandledWriteback — Gmail write-back targeting (#288 GML split + #
     expect(sync.gmailLabelError).toBeUndefined();
   });
 
+  // #342 fix round (technical lens MED 1): a total Gmail outage used to leave
+  // gmailLabel UNSET entirely (the old outer condition required
+  // isGmailConfigured() to even enter this block), which meant
+  // listGmailWritebackFailures' gmailLabel==='failed' filter saw nothing —
+  // the banner read all-clear during the worst-case failure it exists to
+  // catch. Pins that a fully unconfigured Gmail now records its own distinct
+  // state, makes ZERO Gmail API calls, and is never confused with 'skipped'
+  // (no message id) or 'failed' (a live token that threw).
+  it('(vii) #342 — Gmail entirely unconfigured records sync.gmailLabel "unconfigured" (not unset, not "skipped", not "failed") and makes zero Gmail API calls', async () => {
+    isGmailConfiguredMock.mockReturnValue(false);
+    const target: HandledTarget = {
+      source: 'gmail',
+      externalId: 'thr-abc123:msg-def456',
+      sourceMessageId: 'msg-def456',
+      ghlContactId: null,
+      displayName: 'No Token At All Customer',
+    };
+
+    const sync = await runHandledWriteback(target, 'jason');
+
+    expect(sync.gmailLabel).toBe('unconfigured');
+    expect(getAccessTokenMock).not.toHaveBeenCalled();
+    expect(getOrCreateLabelMock).not.toHaveBeenCalled();
+    expect(modifyMessageMock).not.toHaveBeenCalled();
+  });
+
   it('(iii) two rows from the same coalesced thread each get their OWN independent message-level write-back — no cross-talk, no error propagation', async () => {
     const aliceTarget: HandledTarget = {
       source: 'gmail',

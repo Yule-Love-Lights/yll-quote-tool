@@ -1276,31 +1276,187 @@ export async function markItemFollowed(
 export async function recordWriteback(itemId: string, sync: unknown): Promise<void> {
   const sb = getSupabaseServiceClient();
   if (!sb) return;
-  await sb.from('inbox_items').update({ handled_channel_sync: sync }).eq('id', itemId);
+  // #342 fix round (technical lens MED 3): this used to discard the update's
+  // own error — the same silent-failure shape the row exists to fix, one hop
+  // upstream of the read side. A failed PERSIST of the computed write-back
+  // outcome is now at least logged (still fire-and-forget/best-effort by
+  // design, per this function's callers, so it stays void — but no longer
+  // silent).
+  const { error } = await sb.from('inbox_items').update({ handled_channel_sync: sync }).eq('id', itemId);
+  if (error) console.error('[inbox] recordWriteback failed to persist handled_channel_sync:', error.message);
 }
 
+export type GmailWritebackFailure = {
+  id: string;
+  /** Display name, falling back to email, falling back to a placeholder —
+   *  never blank, so the /inbox banner always names WHO is affected. */
+  label: string;
+  /** handled_channel_sync.gmailLabelError, when the row's catch block
+   *  recorded one. Already bounded to 500 chars at the source (sync.ts's
+   *  errMsg) — not re-truncated here. Always null for 'unconfigured' (there
+   *  is no per-item error — the whole channel was down). */
+  error: string | null;
+  /** 'failed' = a live token attempted the write-back and it threw.
+   *  'unconfigured' = Gmail had no credentials at all when this ran (#342
+   *  fix round MED 1) — a systemic outage, not a per-item error, and worth
+   *  its own copy in the UI rather than being read as "N write-backs failed". */
+  status: 'failed' | 'unconfigured';
+};
+
+export type GmailWritebackFailuresResult =
+  | { ok: true; items: GmailWritebackFailure[]; total: number; truncated: boolean }
+  | { ok: false; error: string };
+
+const GMAIL_WRITEBACK_FAILURES_LIMIT = 25;
+
 /**
- * #342: recordWriteback (above) has always persisted runHandledWriteback's
- * per-channel outcome into handled_channel_sync — but nothing ever READ it, so
- * a broken Gmail token failed silently while staff kept marking items Handled.
- * PR #886 took the Gmail branch from ~4 lead-forward rows to the overwhelming
- * majority of Gmail traffic (sync.ts's runHandledWriteback doc comment), so a
- * dead token is now a fleet-wide blind spot, not a corner case.
+ * #342 fix round (staff lens BLOCK, 2 HIGH): recordWriteback (above) has
+ * always persisted runHandledWriteback's per-channel outcome into
+ * handled_channel_sync — but nothing ever READ it, so a broken Gmail token
+ * failed silently while staff kept marking items Handled. PR #886 took the
+ * Gmail branch from ~4 lead-forward rows to the overwhelming majority of
+ * Gmail traffic (sync.ts's runHandledWriteback doc comment), so a dead token
+ * is now a fleet-wide blind spot, not a corner case.
  *
- * Counts every item whose Gmail label write-back is known to have failed
- * (handled_channel_sync.gmailLabel === 'failed' — set in sync.ts's catch
- * block). No time window: these are Handled items whose external Gmail state
- * never actually synced, which stays true until someone fixes the token and
- * re-runs the write-back — not something that ages out on its own.
+ * Returns the actual FAILING ROWS (id + a human label + the stored error),
+ * not just a count — round 1 shipped a bare `count:'exact', head:true`
+ * number with no way to learn WHICH items were affected. Bounded to
+ * GMAIL_WRITEBACK_FAILURES_LIMIT (most-recently-handled first, since those
+ * are the ones a token fix should retry first); `total` is the TRUE
+ * unbounded count (Postgres/PostgREST's exact count ignores .limit()), and
+ * `truncated` says whether the list under-represents it.
+ *
+ * No time window: these are Handled items whose external Gmail state never
+ * actually synced, which stays true until either a fixed token successfully
+ * retries the write-back (see the retry-gmail-sync route) or an operator
+ * acknowledges it — not something that ages out on its own.
+ *
+ * Round-1 bug this fixes in itself: `const { count } = await sb...` used to
+ * discard `error` — a query FAILURE made `count` null, `?? 0` turned that
+ * into a confident "0 failures", and the banner went dark on a broken
+ * monitor. Now a query error returns `ok:false` so the caller can render a
+ * "couldn't check" state instead of a false all-clear (the exact bug class
+ * this whole row exists to fix, reproduced inside the first fix — caught by
+ * the staff lens's MED finding).
+ *
+ * Fix round (technical lens, 2 more MEDs):
+ *   - MED 1: also matches gmailLabel==='unconfigured' (sync.ts now records
+ *     this instead of leaving the field unset when Gmail has no credentials
+ *     at all) — a total outage must not read as zero failures.
+ *   - MED 2: scoped to status='handled'. Reopening a Handled item resets
+ *     status to 'unresponded' (reducer.ts) but the upsert OMITS
+ *     handled_channel_sync on reopen, so the stale sync state is preserved
+ *     verbatim (store.ts's ingestTouch upsert comment, ~line 571) — without
+ *     this filter, a reopened-then-still-open item could keep tripping the
+ *     banner for a write-back that no longer describes its current state.
+ *     Verified against prod: 0 rows currently in that state, but 188
+ *     all-time reopen events make it a real latent case, not theoretical.
  */
-export async function countGmailWritebackFailures(): Promise<number> {
+export async function listGmailWritebackFailures(
+  limit = GMAIL_WRITEBACK_FAILURES_LIMIT,
+): Promise<GmailWritebackFailuresResult> {
   const sb = getSupabaseServiceClient();
-  if (!sb) return 0;
-  const { count } = await sb
+  // Unconfigured (no service-role key, e.g. local dev) mirrors this file's
+  // existing convention (getReopenCounts et al.): "no data available" is not
+  // itself a monitoring failure, so this returns the all-clear shape, not
+  // ok:false.
+  if (!sb) return { ok: true, items: [], total: 0, truncated: false };
+
+  const { data, error, count } = await sb
     .from('inbox_items')
-    .select('id', { count: 'exact', head: true })
-    .eq('handled_channel_sync->>gmailLabel', 'failed');
-  return count ?? 0;
+    .select('id, handled_channel_sync, dashboard_contacts ( display_name, primary_email )', { count: 'exact' })
+    .eq('status', 'handled')
+    .in('handled_channel_sync->>gmailLabel', ['failed', 'unconfigured'])
+    .order('handled_at', { ascending: false })
+    .limit(limit);
+  if (error) {
+    console.error('[inbox] listGmailWritebackFailures query failed:', error.message);
+    return { ok: false, error: error.message };
+  }
+
+  const rows = (data ?? []) as unknown as Array<{
+    id: string;
+    handled_channel_sync: Record<string, unknown> | null;
+    dashboard_contacts: { display_name: string | null; primary_email: string | null } | null;
+  }>;
+  const items: GmailWritebackFailure[] = rows.map((r) => {
+    const c = r.dashboard_contacts;
+    const label = c?.display_name || c?.primary_email || 'Unknown contact';
+    const status = r.handled_channel_sync?.gmailLabel === 'unconfigured' ? 'unconfigured' : 'failed';
+    const err = status === 'unconfigured' ? null : r.handled_channel_sync?.gmailLabelError;
+    return { id: r.id, label, error: typeof err === 'string' ? err : null, status };
+  });
+  const total = count ?? items.length;
+  return { ok: true, items, total, truncated: total > items.length };
+}
+
+export type GmailWritebackRetryTarget =
+  | { ok: true; target: HandledTarget }
+  | { ok: false; error: string };
+
+/**
+ * #342 fix round: the coordinates runHandledWriteback (sync.ts) needs to
+ * RETRY the Gmail write-back for an already-Handled item — deliberately NOT
+ * markItemHandledLocal's job (that stamps status='handled' with a
+ * `.neq('status','handled')` guard against double-apply; this item is
+ * already handled, only the external write-back is being reattempted, so
+ * that guard doesn't apply and must not be reused here).
+ *
+ * Refuses (ok:false) unless the row's OWN stored handled_channel_sync
+ * currently says gmailLabel==='failed' or 'unconfigured' — so this can't be
+ * repurposed into a generic "fire a write-back at any item id" endpoint; it
+ * only ever replays a write-back that is known to be missing or broken.
+ * ('unconfigured' added in the fix round alongside sync.ts's MED 1 fix —
+ * once a token is restored, a row that failed only because Gmail was
+ * entirely unconfigured is just as retryable as one that threw.)
+ *
+ * Also requires status='handled' (fix round MED 2, same reasoning as
+ * listGmailWritebackFailures' own doc comment): a reopened item's stale
+ * write-back outcome is not something this route should replay.
+ *
+ * Re-running runHandledWriteback here is safe to call more than once:
+ *   - GHL mark-read: a plain PUT {status:'read'} — setting an already-read
+ *     conversation read again is a no-op.
+ *   - GHL tags: POST /contacts/{id}/tags MERGES (documented + verified
+ *     against the live API — see addContactTags' own doc comment in
+ *     highlevel.ts), so re-adding a tag the contact already has is a no-op.
+ *   - Gmail modifyMessage: add/remove-label is Gmail's own idempotent
+ *     primitive — adding a label already present, or removing UNREAD that's
+ *     already removed, both no-op. getOrCreateLabel finds-before-creates.
+ * None of the three write-back steps has any OTHER side effect (no email
+ * sent, no activity-log row from runHandledWriteback itself), so replaying
+ * the exact same call is safe.
+ */
+export async function getGmailWritebackRetryTarget(itemId: string): Promise<GmailWritebackRetryTarget> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const { data, error } = await sb
+    .from('inbox_items')
+    .select('source, external_id, source_message_id, status, handled_channel_sync, dashboard_contacts ( ghl_contact_id, display_name )')
+    .eq('id', itemId)
+    .maybeSingle();
+  if (error) return { ok: false, error: error.message };
+  if (!data) return { ok: false, error: 'Item not found' };
+
+  const row = data as unknown as Record<string, unknown>;
+  if (row.status !== 'handled') {
+    return { ok: false, error: 'This item is no longer Handled — its Gmail write-back state is stale' };
+  }
+  const sync = (row.handled_channel_sync as Record<string, unknown> | null) ?? null;
+  if (sync?.gmailLabel !== 'failed' && sync?.gmailLabel !== 'unconfigured') {
+    return { ok: false, error: 'This item has no recorded Gmail write-back failure to retry' };
+  }
+  const c = (row.dashboard_contacts as Record<string, unknown> | null) ?? null;
+  return {
+    ok: true,
+    target: {
+      source: row.source as InboxSource,
+      externalId: row.external_id as string,
+      sourceMessageId: (row.source_message_id as string | null) ?? null,
+      ghlContactId: (c?.ghl_contact_id as string | null) ?? null,
+      displayName: (c?.display_name as string | null) ?? null,
+    },
+  };
 }
 
 // ─── Escalation support ─────────────────────────────────────────────────────
