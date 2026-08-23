@@ -119,6 +119,8 @@ export default async function InboxPage() {
           <GmailWritebackFailuresBanner
             items={gmailFailRes.items}
             total={gmailFailRes.total}
+            failedCount={gmailFailRes.failedCount}
+            unconfiguredCount={gmailFailRes.unconfiguredCount}
             truncated={gmailFailRes.truncated}
           />
         )}

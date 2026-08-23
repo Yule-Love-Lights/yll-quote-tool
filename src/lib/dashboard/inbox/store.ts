@@ -1304,7 +1304,26 @@ export type GmailWritebackFailure = {
 };
 
 export type GmailWritebackFailuresResult =
-  | { ok: true; items: GmailWritebackFailure[]; total: number; truncated: boolean }
+  | {
+      ok: true;
+      items: GmailWritebackFailure[];
+      /** Combined (failed + unconfigured) TRUE count — drives ONLY the
+       *  truncation check below, never rendered as-is. Fix round MED
+       *  (delta-verify): a mixed population printed under this one number
+       *  made a condition-specific headline ("Gmail isn't connected —
+       *  {total}") state a count that included rows the sentence wasn't
+       *  describing. Use failedCount/unconfiguredCount for anything a
+       *  human reads. */
+      total: number;
+      /** TRUE (unbounded, not just the returned page) count of
+       *  gmailLabel==='failed' rows — from a separate head:true query, not
+       *  derived from `items` (which is capped at `limit`), because the
+       *  whole point of this fix is a correct number under truncation. */
+      failedCount: number;
+      /** Same as failedCount, for gmailLabel==='unconfigured'. */
+      unconfiguredCount: number;
+      truncated: boolean;
+    }
   | { ok: false; error: string };
 
 const GMAIL_WRITEBACK_FAILURES_LIMIT = 25;
@@ -1351,6 +1370,16 @@ const GMAIL_WRITEBACK_FAILURES_LIMIT = 25;
  *     banner for a write-back that no longer describes its current state.
  *     Verified against prod: 0 rows currently in that state, but 188
  *     all-time reopen events make it a real latent case, not theoretical.
+ *
+ * Second fix round (delta-verify MED): the banner used to headline with
+ * `total` (failed+unconfigured combined) under BOTH condition-specific
+ * sentences — "Gmail isn't connected — {total}" stated a number that, in a
+ * mixed population, counted rows the sentence wasn't describing. No fixture
+ * exercised a mixed population, so nothing caught it. Runs two additional
+ * head:true count queries (in parallel with the page query) so
+ * failedCount/unconfiguredCount are TRUE unbounded numbers — not derived
+ * from the capped `items` page, which would under-count exactly the
+ * truncated-and-mixed case that exposed the bug.
  */
 export async function listGmailWritebackFailures(
   limit = GMAIL_WRITEBACK_FAILURES_LIMIT,
@@ -1360,21 +1389,42 @@ export async function listGmailWritebackFailures(
   // existing convention (getReopenCounts et al.): "no data available" is not
   // itself a monitoring failure, so this returns the all-clear shape, not
   // ok:false.
-  if (!sb) return { ok: true, items: [], total: 0, truncated: false };
+  if (!sb) return { ok: true, items: [], total: 0, failedCount: 0, unconfiguredCount: 0, truncated: false };
 
-  const { data, error, count } = await sb
-    .from('inbox_items')
-    .select('id, handled_channel_sync, dashboard_contacts ( display_name, primary_email )', { count: 'exact' })
-    .eq('status', 'handled')
-    .in('handled_channel_sync->>gmailLabel', ['failed', 'unconfigured'])
-    .order('handled_at', { ascending: false })
-    .limit(limit);
-  if (error) {
-    console.error('[inbox] listGmailWritebackFailures query failed:', error.message);
-    return { ok: false, error: error.message };
+  const [pageRes, failedRes, unconfiguredRes] = await Promise.all([
+    sb
+      .from('inbox_items')
+      .select('id, handled_channel_sync, dashboard_contacts ( display_name, primary_email )', { count: 'exact' })
+      .eq('status', 'handled')
+      .in('handled_channel_sync->>gmailLabel', ['failed', 'unconfigured'])
+      .order('handled_at', { ascending: false })
+      .limit(limit),
+    sb
+      .from('inbox_items')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'handled')
+      .eq('handled_channel_sync->>gmailLabel', 'failed'),
+    sb
+      .from('inbox_items')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'handled')
+      .eq('handled_channel_sync->>gmailLabel', 'unconfigured'),
+  ]);
+
+  if (pageRes.error) {
+    console.error('[inbox] listGmailWritebackFailures query failed:', pageRes.error.message);
+    return { ok: false, error: pageRes.error.message };
+  }
+  if (failedRes.error) {
+    console.error('[inbox] listGmailWritebackFailures failedCount query failed:', failedRes.error.message);
+    return { ok: false, error: failedRes.error.message };
+  }
+  if (unconfiguredRes.error) {
+    console.error('[inbox] listGmailWritebackFailures unconfiguredCount query failed:', unconfiguredRes.error.message);
+    return { ok: false, error: unconfiguredRes.error.message };
   }
 
-  const rows = (data ?? []) as unknown as Array<{
+  const rows = (pageRes.data ?? []) as unknown as Array<{
     id: string;
     handled_channel_sync: Record<string, unknown> | null;
     dashboard_contacts: { display_name: string | null; primary_email: string | null } | null;
@@ -1386,8 +1436,10 @@ export async function listGmailWritebackFailures(
     const err = status === 'unconfigured' ? null : r.handled_channel_sync?.gmailLabelError;
     return { id: r.id, label, error: typeof err === 'string' ? err : null, status };
   });
-  const total = count ?? items.length;
-  return { ok: true, items, total, truncated: total > items.length };
+  const total = pageRes.count ?? items.length;
+  const failedCount = failedRes.count ?? 0;
+  const unconfiguredCount = unconfiguredRes.count ?? 0;
+  return { ok: true, items, total, failedCount, unconfiguredCount, truncated: total > items.length };
 }
 
 export type GmailWritebackRetryTarget =

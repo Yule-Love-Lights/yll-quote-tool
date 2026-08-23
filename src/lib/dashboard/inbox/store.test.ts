@@ -1265,27 +1265,79 @@ describe('listGmailWritebackFailures (#342 fix round — drill-down + honest err
     sbRef.current = null;
   });
 
+  // listGmailWritebackFailures now fires 3 PARALLEL .from('inbox_items')
+  // calls (the page query, then the failedCount and unconfiguredCount
+  // head:true queries) via Promise.all — call order is still deterministic
+  // (the array literal is built synchronously before any await), so this
+  // routes by call index, same pattern as getReopenCounts' own test above.
+  // `results[i]` may be omitted for a test that only cares about an earlier
+  // call (e.g. the page-query-fails case never reaches the other two).
+  function makeRouter(results: Array<{ data: unknown; error: null | { message: string }; count?: number | null }>) {
+    const builders = results.map((r) => makeBuilder(r));
+    let i = 0;
+    return {
+      sb: {
+        from: () => {
+          const b = builders[i] ?? builders[builders.length - 1];
+          i += 1;
+          return b.builder;
+        },
+      },
+      builders,
+    };
+  }
+
   it('returns the all-clear shape (not an error) when Supabase is unconfigured', async () => {
     const res = await listGmailWritebackFailures();
-    expect(res).toEqual({ ok: true, items: [], total: 0, truncated: false });
+    expect(res).toEqual({ ok: true, items: [], total: 0, failedCount: 0, unconfiguredCount: 0, truncated: false });
   });
 
-  it('ok:false with the query error message on a real query failure — NOT a silent 0 (the round-1 MED)', async () => {
-    const { builder } = makeBuilder({ data: null, error: { message: 'connection reset' }, count: null });
-    sbRef.current = { from: () => builder };
+  it('ok:false with the page query\'s error message on a real query failure — NOT a silent 0 (the round-1 MED)', async () => {
+    const { sb } = makeRouter([{ data: null, error: { message: 'connection reset' }, count: null }]);
+    sbRef.current = sb;
 
     const res = await listGmailWritebackFailures();
 
     expect(res).toEqual({ ok: false, error: 'connection reset' });
   });
 
-  it('returns the all-clear shape when nothing has failed', async () => {
-    const { builder } = makeBuilder({ data: [], error: null, count: 0 });
-    sbRef.current = { from: () => builder };
+  it('ok:false when the failedCount query fails, even though the page query itself succeeded', async () => {
+    const { sb } = makeRouter([
+      { data: [], error: null, count: 0 },
+      { data: null, error: { message: 'failedCount query down' }, count: null },
+      { data: null, error: null, count: 0 },
+    ]);
+    sbRef.current = sb;
 
     const res = await listGmailWritebackFailures();
 
-    expect(res).toEqual({ ok: true, items: [], total: 0, truncated: false });
+    expect(res).toEqual({ ok: false, error: 'failedCount query down' });
+  });
+
+  it('ok:false when the unconfiguredCount query fails, even though the other two succeeded', async () => {
+    const { sb } = makeRouter([
+      { data: [], error: null, count: 0 },
+      { data: null, error: null, count: 0 },
+      { data: null, error: { message: 'unconfiguredCount query down' }, count: null },
+    ]);
+    sbRef.current = sb;
+
+    const res = await listGmailWritebackFailures();
+
+    expect(res).toEqual({ ok: false, error: 'unconfiguredCount query down' });
+  });
+
+  it('returns the all-clear shape when nothing has failed', async () => {
+    const { sb } = makeRouter([
+      { data: [], error: null, count: 0 },
+      { data: null, error: null, count: 0 },
+      { data: null, error: null, count: 0 },
+    ]);
+    sbRef.current = sb;
+
+    const res = await listGmailWritebackFailures();
+
+    expect(res).toEqual({ ok: true, items: [], total: 0, failedCount: 0, unconfiguredCount: 0, truncated: false });
   });
 
   it('maps failing rows to id/label/error/status, filters status=handled + gmailLabel in [failed,unconfigured], and flags truncation when total exceeds the page', async () => {
@@ -1306,8 +1358,13 @@ describe('listGmailWritebackFailures (#342 fix round — drill-down + honest err
         dashboard_contacts: null, // no linked contact at all
       },
     ];
-    const { builder, calls } = makeBuilder({ data: rows, error: null, count: 5 }); // 5 total, only 3 paged back
-    sbRef.current = { from: () => builder };
+    // Page: 5 total (failed+unconfigured combined), only 3 returned (limit 3).
+    const { sb, builders } = makeRouter([
+      { data: rows, error: null, count: 5 },
+      { data: null, error: null, count: 5 },
+      { data: null, error: null, count: 0 },
+    ]);
+    sbRef.current = sb;
 
     const res = await listGmailWritebackFailures(3);
 
@@ -1319,11 +1376,14 @@ describe('listGmailWritebackFailures (#342 fix round — drill-down + honest err
         { id: 'i3', label: 'Unknown contact', error: null, status: 'failed' }, // falls back to placeholder
       ],
       total: 5,
+      failedCount: 5,
+      unconfiguredCount: 0,
       truncated: true, // 5 total > 3 returned
     });
-    expect(calls.some((c) => c.method === 'eq' && c.args[0] === 'status' && c.args[1] === 'handled')).toBe(true);
+    const pageCalls = builders[0].calls;
+    expect(pageCalls.some((c) => c.method === 'eq' && c.args[0] === 'status' && c.args[1] === 'handled')).toBe(true);
     expect(
-      calls.some(
+      pageCalls.some(
         (c) =>
           c.method === 'in' &&
           c.args[0] === 'handled_channel_sync->>gmailLabel' &&
@@ -1331,15 +1391,17 @@ describe('listGmailWritebackFailures (#342 fix round — drill-down + honest err
           (c.args[1] as string[]).sort().join(',') === 'failed,unconfigured',
       ),
     ).toBe(true);
-    expect(calls.some((c) => c.method === 'limit' && c.args[0] === 3)).toBe(true);
+    expect(pageCalls.some((c) => c.method === 'limit' && c.args[0] === 3)).toBe(true);
   });
 
   it('truncated is false when every failing row fits in the page', async () => {
-    const rows = [
-      { id: 'i1', handled_channel_sync: { gmailLabel: 'failed' }, dashboard_contacts: null },
-    ];
-    const { builder } = makeBuilder({ data: rows, error: null, count: 1 });
-    sbRef.current = { from: () => builder };
+    const rows = [{ id: 'i1', handled_channel_sync: { gmailLabel: 'failed' }, dashboard_contacts: null }];
+    const { sb } = makeRouter([
+      { data: rows, error: null, count: 1 },
+      { data: null, error: null, count: 1 },
+      { data: null, error: null, count: 0 },
+    ]);
+    sbRef.current = sb;
 
     const res = await listGmailWritebackFailures(25);
 
@@ -1357,8 +1419,12 @@ describe('listGmailWritebackFailures (#342 fix round — drill-down + honest err
         dashboard_contacts: { display_name: 'Jane Doe', primary_email: null },
       },
     ];
-    const { builder } = makeBuilder({ data: rows, error: null, count: 1 });
-    sbRef.current = { from: () => builder };
+    const { sb } = makeRouter([
+      { data: rows, error: null, count: 1 },
+      { data: null, error: null, count: 0 },
+      { data: null, error: null, count: 1 },
+    ]);
+    sbRef.current = sb;
 
     const res = await listGmailWritebackFailures();
 
@@ -1366,8 +1432,50 @@ describe('listGmailWritebackFailures (#342 fix round — drill-down + honest err
       ok: true,
       items: [{ id: 'i1', label: 'Jane Doe', error: null, status: 'unconfigured' }],
       total: 1,
+      failedCount: 0,
+      unconfiguredCount: 1,
       truncated: false,
     });
+  });
+
+  // Second fix round (delta-verify MED): the gap that let the mixed-headline
+  // bug through — no fixture ever exercised a mixed failed+unconfigured
+  // population. Deliberately makes the TRUE per-status counts differ from
+  // BOTH the combined `total` (12) AND from what a naive count of the
+  // 3-row page would suggest, so this can only pass if failedCount/
+  // unconfiguredCount genuinely come from their own queries.
+  it('mixed population: failedCount and unconfiguredCount are independent TRUE counts, neither equal to combined `total` nor to the page size', async () => {
+    const rows = [
+      {
+        id: 'i1',
+        handled_channel_sync: { gmailLabel: 'failed', gmailLabelError: 'boom' },
+        dashboard_contacts: { display_name: 'Jane Doe', primary_email: null },
+      },
+      {
+        id: 'i2',
+        handled_channel_sync: { gmailLabel: 'unconfigured' },
+        dashboard_contacts: { display_name: 'Bob Baker', primary_email: null },
+      },
+    ];
+    const { sb } = makeRouter([
+      { data: rows, error: null, count: 12 }, // combined total (page capped at 2)
+      { data: null, error: null, count: 9 }, // TRUE failed count
+      { data: null, error: null, count: 3 }, // TRUE unconfigured count
+    ]);
+    sbRef.current = sb;
+
+    const res = await listGmailWritebackFailures(2);
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.total).toBe(12);
+    expect(res.failedCount).toBe(9);
+    expect(res.unconfiguredCount).toBe(3);
+    // Sanity: neither count equals the 2-row page size — proves they came
+    // from their own queries, not from counting `items`.
+    expect(res.items.length).toBe(2);
+    expect(res.failedCount).not.toBe(res.items.length);
+    expect(res.unconfiguredCount).not.toBe(res.items.length);
   });
 });
 

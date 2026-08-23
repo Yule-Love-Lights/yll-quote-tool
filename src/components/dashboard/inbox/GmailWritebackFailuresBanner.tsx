@@ -13,27 +13,61 @@ import type { GmailWritebackFailure } from '@/lib/dashboard/inbox/store';
 // (store.ts) for why replaying it is safe (every write-back step is
 // independently idempotent).
 //
+// Second fix round (delta-verify MED): the headline used to print the
+// COMBINED `total` (failed+unconfigured) under a condition-specific
+// sentence — "Gmail isn't connected right now — {total}" stated a number
+// that, whenever the population was mixed, included rows the sentence
+// wasn't describing. gmailWritebackHeadline (exported for its own direct
+// test, below) takes the two counts SEPARATELY and picks/composes the right
+// sentence, so no branch can ever print a number that doesn't belong to its
+// condition — including the mixed case, which gets its own third sentence
+// naming both counts rather than defaulting to either single-condition one.
+export function gmailWritebackHeadline(failedCount: number, unconfiguredCount: number): string {
+  const s = (n: number) => (n === 1 ? '' : 's');
+  const nothingLost =
+    "Each was still marked Handled here, so nothing was lost — just not reflected in the real mailbox. " +
+    "This needs a developer to fix the Gmail connection — tell Jason or Naldo. Once it's fixed, Retry below clears each item.";
+  if (unconfiguredCount > 0 && failedCount > 0) {
+    return (
+      `Gmail write-back needs attention — ${unconfiguredCount} Handled item${s(unconfiguredCount)} couldn't ` +
+      `sync because Gmail wasn't connected at all, and ${failedCount} more failed for other reasons. ${nothingLost}`
+    );
+  }
+  if (unconfiguredCount > 0) {
+    return (
+      `Gmail isn't connected right now — ${unconfiguredCount} Handled item${s(unconfiguredCount)} couldn't ` +
+      `sync to Gmail AT ALL (no valid token), not a one-off error. ${nothingLost}`
+    );
+  }
+  return (
+    `Gmail write-back failing — ${failedCount} Handled item${s(failedCount)} never got the YLL/Handled label ` +
+    `in Gmail. ${nothingLost}`
+  );
+}
+
 // Not unit-tested end-to-end, same reason as InboxList.tsx's act() (see its
 // own header comment): this file's test only exercises renderToStaticMarkup
-// (no jsdom, no click simulation), which covers the static render — labels,
-// error text, the truncation note — not the click-then-refetch flow.
+// (no jsdom, no click simulation), which covers the static render — the
+// headline, per-row labels/error text, the truncation note — not the
+// click-then-refetch flow.
 export function GmailWritebackFailuresBanner({
   items,
   total,
+  failedCount,
+  unconfiguredCount,
   truncated,
 }: {
   items: GmailWritebackFailure[];
+  /** Combined (failed+unconfigured) TRUE count — used ONLY in the
+   *  truncation note below ("...of {total}"), never in the headline. */
   total: number;
+  failedCount: number;
+  unconfiguredCount: number;
   truncated: boolean;
 }) {
   const router = useRouter();
   const [busyIds, setBusyIds] = useState<Record<string, boolean>>({});
   const [retryFailedIds, setRetryFailedIds] = useState<Record<string, boolean>>({});
-  // Fix round MED 1: at least one item on THIS page whose write-back never
-  // even attempted (Gmail had no credentials at all) gets a distinct leading
-  // sentence — a total outage reads differently from a handful of per-item
-  // errors, and conflating them would bury the worse case in the milder one.
-  const anyUnconfigured = items.some((i) => i.status === 'unconfigured');
 
   async function retry(id: string) {
     setBusyIds((prev) => ({ ...prev, [id]: true }));
@@ -65,21 +99,9 @@ export function GmailWritebackFailuresBanner({
 
   return (
     <div className="rounded-md border p-3 text-sm mb-4" style={{ borderColor: '#dc2626' }}>
-      {anyUnconfigured ? (
-        <p className="font-medium mb-2" style={{ color: '#dc2626' }}>
-          Gmail isn&apos;t connected right now — {total} Handled item{total === 1 ? '' : 's'} couldn&apos;t
-          sync to Gmail AT ALL (no valid token), not a one-off error. Each was still marked Handled here, so
-          nothing was lost — just not reflected in the real mailbox. This needs a developer to fix the Gmail
-          connection — tell Jason or Naldo. Once it&apos;s fixed, Retry below clears each item.
-        </p>
-      ) : (
-        <p className="font-medium mb-2" style={{ color: '#dc2626' }}>
-          Gmail write-back failing — {total} Handled item{total === 1 ? '' : 's'} never got the YLL/Handled
-          label in Gmail (each was still marked Handled here, so nothing was lost — just not reflected in the
-          real mailbox). This needs a developer to fix the Gmail connection (the API token) — tell Jason or
-          Naldo. Once it&apos;s fixed, Retry below clears each item.
-        </p>
-      )}
+      <p className="font-medium mb-2" style={{ color: '#dc2626' }}>
+        {gmailWritebackHeadline(failedCount, unconfiguredCount)}
+      </p>
       <ul className="space-y-1">
         {items.map((item) => (
           <li key={item.id} className="flex items-center justify-between gap-2">
