@@ -5,7 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { requireAdmin, maybeSingle, updateCrewMember, TelegramUserIdTakenError } = vi.hoisted(() => {
+const { requireAdmin, maybeSingle, order, eq, updateCrewMember, TelegramUserIdTakenError } = vi.hoisted(() => {
   // Declared here because vi.mock factories are hoisted above module scope, and
   // the 409 mapping is an `instanceof` check — a plain object would make the
   // test pass for the wrong reason.
@@ -15,9 +15,17 @@ const { requireAdmin, maybeSingle, updateCrewMember, TelegramUserIdTakenError } 
       this.name = 'TelegramUserIdTakenError';
     }
   }
+  // One shared query-builder stub. GET uses select().eq().order(); the
+  // PATCH/POST lookups use select().eq().maybeSingle(). So eq() returns BOTH
+  // terminals and each test drives the one it needs.
+  const maybeSingle = vi.fn();
+  const order = vi.fn();
+  const eq = vi.fn(() => ({ maybeSingle, order }));
   return {
     requireAdmin: vi.fn(),
-    maybeSingle: vi.fn(),
+    maybeSingle,
+    order,
+    eq,
     updateCrewMember: vi.fn(),
     TelegramUserIdTakenError,
   };
@@ -26,7 +34,7 @@ const { requireAdmin, maybeSingle, updateCrewMember, TelegramUserIdTakenError } 
 vi.mock('@/lib/auth/supabaseServer', () => ({ requireAdmin }));
 vi.mock('@/lib/supabase', () => ({
   getSupabaseServiceClient: () => ({
-    from: () => ({ select: () => ({ eq: () => ({ maybeSingle }) }) }),
+    from: () => ({ select: () => ({ eq }) }),
   }),
 }));
 vi.mock('@/lib/auth/crewAccounts', () => ({
@@ -37,7 +45,7 @@ vi.mock('@/lib/auth/crewAccounts', () => ({
 
 vi.mock('@/lib/crewMembers', () => ({ TelegramUserIdTakenError, updateCrewMember }));
 
-import { PATCH } from './route';
+import { GET, PATCH } from './route';
 
 const CREW = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const req = (body: unknown) =>
@@ -55,6 +63,7 @@ beforeEach(() => {
     error: null,
   });
   updateCrewMember.mockResolvedValue({ id: CREW, displayName: 'SonSon', telegramUserId: '123456789' });
+  order.mockResolvedValue({ data: [], error: null });
 });
 
 describe('PATCH /api/admin/crew-accounts', () => {
@@ -102,5 +111,39 @@ describe('PATCH /api/admin/crew-accounts', () => {
     const res = await PATCH(req({ crewMemberId: CREW, telegramUserId: '123456789' }));
     expect(res.status).toBe(409);
     expect(((await res.json()) as { error: string }).error).toContain('already linked');
+  });
+});
+
+describe('GET /api/admin/crew-accounts', () => {
+  it('EXCLUDES office staff (is_office = false) — they punch the office web clock, not this panel', async () => {
+    order.mockResolvedValue({
+      data: [
+        { id: 'f1', display_name: 'SonSon', active: true, auth_user_id: null, telegram_user_id: null },
+        { id: 'f2', display_name: 'Big James', active: true, auth_user_id: null, telegram_user_id: '5' },
+      ],
+      error: null,
+    });
+    const res = await GET();
+    expect(res.status).toBe(200);
+    // The filter is the whole point of the change: office staff carry an operator
+    // login and must never be offered a crew-role login or a Telegram clock here.
+    expect(eq).toHaveBeenCalledWith('is_office', false);
+    const body = (await res.json()) as { crew: Array<{ displayName: string; hasLogin: boolean }> };
+    expect(body.crew.map((c) => c.displayName)).toEqual(['SonSon', 'Big James']);
+    expect(body.crew[0].hasLogin).toBe(false);
+  });
+
+  it('blocks a non-admin caller and never queries', async () => {
+    requireAdmin.mockResolvedValueOnce({ response: NextResponse.json({ error: 'x' }, { status: 403 }) });
+    const res = await GET();
+    expect(res.status).toBe(403);
+    expect(eq).not.toHaveBeenCalled();
+  });
+
+  it('500s when the query errors, without leaking the DB message', async () => {
+    order.mockResolvedValue({ data: null, error: { message: 'boom' } });
+    const res = await GET();
+    expect(res.status).toBe(500);
+    expect(((await res.json()) as { error: string }).error).toBe('Failed to load crew members');
   });
 });

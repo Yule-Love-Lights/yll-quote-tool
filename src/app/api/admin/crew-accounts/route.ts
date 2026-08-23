@@ -75,9 +75,17 @@ export async function GET() {
     return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
   }
 
+  // Office staff (is_office = true) are excluded here. They are NOT field crew:
+  // they sign in with an OPERATOR login and punch the office web clock, so they
+  // must never appear in this panel, whose entire job is to hand out crew-role
+  // logins and Telegram time-clock links. Listing them here invites creating a
+  // second, crew-role login for someone who already has an operator one. The
+  // office/web clock resolves them by their operator session, independent of
+  // this flag, so hiding them here changes nothing about their ability to clock.
   const { data, error } = await sb
     .from('crew_members')
     .select('id, display_name, active, auth_user_id, telegram_user_id')
+    .eq('is_office', false)
     .order('display_name', { ascending: true });
 
   if (error) {

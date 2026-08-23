@@ -133,6 +133,10 @@ export function CrewLogins() {
         login reaches the crew job routes only — never customer records. It does NOT cover the
         Telegram time clock, which is a separate link set up further down this page.
       </p>
+      <p className="text-xs text-gray-400 mt-1">
+        This is for field crew only. Office staff sign in as operators and clock in from the
+        dashboard clock — add them under Accounts above, not here.
+      </p>
 
       {loading ? (
         <p className="text-sm text-gray-500 mt-4">Loading crew…</p>
