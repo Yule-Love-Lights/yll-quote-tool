@@ -34,6 +34,13 @@ type SendCaseBody = SendResponseBody & {
   stageUpdated?: boolean;
   stageError?: string;
   eventDateSyncError?: string;
+  // Row 340 fix round (technical+customer+admin MED — TOCTOU): present only
+  // when this send asked to clear the stale browsing selection AND the
+  // route's CAS dropped it because the row's browsing_selection_updated_at
+  // no longer matched what this menu showed at open time. The send itself
+  // still succeeded; only the clear was skipped — surfaced below so the
+  // operator knows the customer's newer selection is still there.
+  browsingSelectionClearSkipped?: boolean;
 };
 
 // Row 270 fix round, FIX 1 (technical MED — sibling-guard parity with
@@ -165,14 +172,23 @@ async function run(action: PipelineAction, rec: PipelineRecord): Promise<Respons
       sendInFlight = true;
       // Row 340: a declined/abandoned quote's Send is a REVIVE (see /send's
       // canRevive) — the customer's portal will reopen exactly where they
-      // left off before declining, including any browsing selection they
-      // saved (row 239/#861). Ask up front whether to clear that stale
-      // selection so the customer sees a fresh default instead. Purely
-      // informational + a choice — always proceeds to send either way (the
-      // operator already committed to sending by picking this menu item);
-      // synchronous, so it runs before sendInFlight's first-await contract
+      // left off before declining/going abandoned, including any browsing
+      // selection they saved (row 239/#861). Ask up front whether to clear
+      // that stale selection so the customer sees a fresh default instead.
+      // Synchronous, so it runs before sendInFlight's first-await contract
       // above is at risk.
-      let clearBrowsingSelection = false;
+      //
+      // Premerge fix round (row 340, staff MED): a plain window.confirm here
+      // used to bind Enter/OK to the DESTRUCTIVE choice (clear), inverting
+      // this same file's own safe-default conventions (see the typed-yes
+      // gate in redeliverAndReport above, built for exactly this reflexive-
+      // Enter class of bug). Inverted: the FIRST dialog's OK/Enter now KEEPS
+      // the selection and sends as-is — the safe, non-destructive default.
+      // Only on Cancel does a SECOND dialog offer the destructive clear, and
+      // THAT dialog's Cancel aborts the send entirely rather than falling
+      // back to any default — an operator who isn't ready to decide gets to
+      // stop, not get sent down either path by reflex.
+      let clearBrowsingSelection: { expectedUpdatedAt: string | null } | null = null;
       if (
         (rec.quoteStatus === 'declined' || rec.quoteStatus === 'abandoned') &&
         rec.staleBrowsingSelection
@@ -182,10 +198,27 @@ async function run(action: PipelineAction, rec: PipelineRecord): Promise<Respons
           sel.packageId && sel.packageId !== 'D'
             ? `Package ${sel.packageId}`
             : `${sel.itemCount} custom item${sel.itemCount === 1 ? '' : 's'}`;
-        const savedLabel = sel.savedAt ? new Date(sel.savedAt).toLocaleDateString() : 'before they declined';
-        clearBrowsingSelection = window.confirm(
-          `Heads up: this customer's portal will reopen on their pre-decline selection (${what}, saved ${savedLabel}) instead of a fresh default.\n\nClear it now so they start fresh? OK = clear it, Cancel = keep it and send as-is.`,
+        // LOW (staff+customer, row 340): status-appropriate wording — this
+        // quote may never have been declined at all (abandoned = the
+        // customer just never came back), and a missing savedAt used to
+        // fall back to literally "before they declined" even then.
+        const priorState = rec.quoteStatus === 'declined' ? 'declined' : 'the quote went abandoned';
+        const savedLabel = sel.savedAt ? `saved ${new Date(sel.savedAt).toLocaleDateString()}` : 'saved earlier';
+        const keepIt = window.confirm(
+          `Heads up: this customer has a saved selection from before ${priorState} (${what}, ${savedLabel}). Send will reopen their portal on it.\n\nOK = keep it and send. Cancel = decide whether to clear it instead.`,
         );
+        if (!keepIt) {
+          // LOW (row 340): the clear is PERMANENT — this route is the only
+          // copy of the selection (browsing_selection has no history/undo).
+          const reallyClear = window.confirm(
+            `Clear their saved selection instead? This is the only copy — clearing it is permanent and cannot be undone.\n\nOK = clear it and send. Cancel = abort the send (nothing changes).`,
+          );
+          if (!reallyClear) {
+            sendInFlight = false;
+            return null;
+          }
+          clearBrowsingSelection = { expectedUpdatedAt: sel.savedAt };
+        }
       }
       // PS-G4: this is now the ONE way to send a quote (the admin quotes list's
       // inline Send/Resend button was dropped as a duplicate that offered no
@@ -208,7 +241,7 @@ async function run(action: PipelineAction, rec: PipelineRecord): Promise<Respons
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             channel: action.channel,
-            ...(clearBrowsingSelection ? { clearBrowsingSelection: true } : {}),
+            ...(clearBrowsingSelection ? { clearBrowsingSelection } : {}),
           }),
         });
         // Row 270: read via .clone() (leaves `res` itself unconsumed) so a
@@ -251,10 +284,17 @@ async function run(action: PipelineAction, rec: PipelineRecord): Promise<Respons
       const dateSync = body.eventDateSyncError
         ? `\nEvent date: ${body.eventDateSyncError} (Retry from the quote's own page — this menu has no CRM-sync retry.)`
         : '';
+      // Row 340 fix round (TOCTOU): the operator asked to clear the stale
+      // browsing selection, but the route's CAS dropped it because the
+      // selection changed under them — the send still went through, so this
+      // is informational, not an error.
+      const clearSkipped = body.browsingSelectionClearSkipped
+        ? '\nNote: their saved selection changed since you opened this menu, so it was NOT cleared — the portal still has it.'
+        : '';
       const already = body.alreadySent ? ' (already sent earlier)' : '';
       const outcome = decideSendOutcome(res.ok, body, action.channel, false);
       alert(
-        `Portal URL${copied ? ' copied to clipboard' : ''}${already}:\n\n${portalUrl}${stage}${dateSync}${outcome.message ? `\n\n${outcome.message}` : ''}`,
+        `Portal URL${copied ? ' copied to clipboard' : ''}${already}:\n\n${portalUrl}${stage}${dateSync}${clearSkipped}${outcome.message ? `\n\n${outcome.message}` : ''}`,
       );
       if (outcome.retryChannel && outcome.retryPrompt && outcome.retryGate) {
         await redeliverAndReport(q, outcome.retryChannel, outcome.retryPrompt, outcome.retryGate);
