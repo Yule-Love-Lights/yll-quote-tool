@@ -886,6 +886,95 @@ describe('updateQuote — #214 identity verify-or-reattach', () => {
     expect(fake.row.customer_email).toBe('jane@x.com');
   });
 
+  // Row 338 (identity-freeze STICKY hatch): #116's revive write (send/route.ts)
+  // clears customer_approved_at on a declined→sent revive, so the LIVE
+  // columns alone make a previously-approved quote read as unfrozen again —
+  // a revive→decline→revive cycle would silently walk the freeze open. This
+  // is the sticky backstop: the row's approval_snapshot still carries the
+  // approvedAt/staffApproved marker from the ORIGINAL approval (staff-decline
+  // only ADDS a key via spread, never removes it — see wasEverApproved's own
+  // comment), so the CAS must still refuse even with both live columns null.
+  //
+  // The fake's `.is(col, val)` treats a json-arrow column name as an opaque
+  // literal key (same convention this suite already uses for
+  // customer_approved_at/deposit_paid_at) — setting the literal key
+  // 'approval_snapshot->approvedAt' on `row` models what a real
+  // `approval_snapshot->'approvedAt' IS NOT NULL` filter would see.
+  it('CAS-blocks the customer_* write on a REVIVED quote whose approval_snapshot still carries approvedAt (row 338 — revive→decline→revive)', async () => {
+    const fake = makeIdentityFake(
+      { ...STORED, customer_approved_at: null, deposit_paid_at: null, is_test: false },
+      {
+        customer_id: 'cust-1',
+        'approval_snapshot->approvedAt': '2026-06-01T00:00:00Z',
+      },
+    );
+    serviceRef.current = fake.client;
+
+    const res = await updateQuote(
+      'q1', INPUTS, RESULT,
+      { ...CUSTOMER, name: 'Edited After Revive', email: 'new@x.com' },
+      'holiday',
+    );
+
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+    expect(res).toMatchObject({ identityFrozen: true });
+    // The CAS write must not have taken effect — the row keeps its ORIGINAL identity.
+    expect(fake.row.customer_name).toBe('Jane');
+    expect(fake.row.customer_email).toBe('jane@x.com');
+  });
+
+  // Same sticky signal, staff-approve's shape (a nested `staffApproved`
+  // marker, no top-level `approvedAt` — see wasEverApproved's own comment
+  // for why both keys are checked).
+  it('CAS-blocks the customer_* write on a REVIVED quote whose approval_snapshot carries staffApproved instead of approvedAt (row 338)', async () => {
+    const fake = makeIdentityFake(
+      { ...STORED, customer_approved_at: null, deposit_paid_at: null, is_test: false },
+      {
+        customer_id: 'cust-1',
+        'approval_snapshot->staffApproved': { by: 'op@x.com', at: '2026-06-01T00:00:00Z' },
+      },
+    );
+    serviceRef.current = fake.client;
+
+    const res = await updateQuote(
+      'q1', INPUTS, RESULT,
+      { ...CUSTOMER, name: 'Edited After Staff Revive', email: 'new@x.com' },
+      'holiday',
+    );
+
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+    expect(res).toMatchObject({ identityFrozen: true });
+    expect(fake.row.customer_name).toBe('Jane');
+    expect(fake.row.customer_email).toBe('jane@x.com');
+  });
+
+  // The no-customer-write fallback branch (an hlContactId-only edit, or a
+  // bare never-linked reattach with no `customer` param) reads `frozen` off
+  // `wasEverApproved(data)` in JS instead of a DB-side CAS leg — `data` comes
+  // from the base update's OWN `.single()` read, so this exercises that path
+  // with a REAL nested approval_snapshot object (not the fake's literal-key
+  // CAS convention above).
+  it('refuses an hlContactId-only reattach on a revived quote via the JS-side wasEverApproved fallback (row 338)', async () => {
+    const fake = makeIdentityFake(STORED, {
+      quote_sent_at: '2026-07-01T00:00:00Z',
+      customer_id: 'cust-1',
+      // No customer_approved_at / deposit_paid_at on returnRow (both read
+      // undefined/falsy) — only the sticky marker says this was ever approved.
+      approval_snapshot: { approvedAt: '2026-06-01T00:00:00Z' },
+    });
+    serviceRef.current = fake.client;
+
+    // hlContactId-only edit (no `customer` param) — hlChanged triggers
+    // wouldReattach, with nothing for the CAS branch to run against.
+    const res = await updateQuote(
+      'q1', INPUTS, RESULT,
+      undefined, 'holiday', undefined, undefined, undefined, 'hl-NEW',
+    );
+
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+    expect(res).toMatchObject({ identityFrozen: true });
+  });
+
   // #839 round-2 delta-verify HIGH: a genuine DB ERROR on the identity CAS
   // write (a connection reset, timeout, RLS denial — NOT a 0-row CAS
   // mismatch, and no approval race required at all) used to leave

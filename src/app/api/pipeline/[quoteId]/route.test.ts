@@ -134,4 +134,84 @@ describe('GET /api/pipeline/[quoteId]', () => {
     const json = await res.json();
     expect(json.viewOnly).toBe(false);
   });
+
+  // Row 340: a revive (declined/abandoned -> sent) reseeds the customer's
+  // portal from whatever browsing_selection they saved before declining, with
+  // no staff visibility. staleBrowsingSelection surfaces that so
+  // PipelineActionsMenu can warn the operator before Send.
+  describe('staleBrowsingSelection (row 340)', () => {
+    it('summarizes a lettered-package browsing selection on a DECLINED quote', async () => {
+      getQuoteRawMock.mockResolvedValueOnce({
+        ...approvedQuoteRow,
+        customer_approved_at: null,
+        status: 'declined',
+        browsing_selection: { packageId: 'B', selectedItemIds: ['a', 'b'] },
+        browsing_selection_updated_at: '2026-08-01T00:00:00Z',
+      });
+      const res = await GET(req, ctx());
+      const json = await res.json();
+      expect(json.quoteStatus).toBe('declined');
+      expect(json.staleBrowsingSelection).toEqual({
+        packageId: 'B',
+        itemCount: 2,
+        savedAt: '2026-08-01T00:00:00Z',
+      });
+    });
+
+    it('summarizes a custom (packageId D) browsing selection on an ABANDONED quote', async () => {
+      getQuoteRawMock.mockResolvedValueOnce({
+        ...approvedQuoteRow,
+        customer_approved_at: null,
+        status: 'abandoned',
+        browsing_selection: { packageId: 'D', selectedItemIds: ['x', 'y', 'z'] },
+        browsing_selection_updated_at: '2026-08-02T00:00:00Z',
+      });
+      const res = await GET(req, ctx());
+      const json = await res.json();
+      expect(json.quoteStatus).toBe('abandoned');
+      expect(json.staleBrowsingSelection).toEqual({
+        packageId: 'D',
+        itemCount: 3,
+        savedAt: '2026-08-02T00:00:00Z',
+      });
+    });
+
+    it('is null when the quote is declined but has no saved browsing selection', async () => {
+      getQuoteRawMock.mockResolvedValueOnce({
+        ...approvedQuoteRow,
+        customer_approved_at: null,
+        status: 'declined',
+        browsing_selection: null,
+      });
+      const res = await GET(req, ctx());
+      const json = await res.json();
+      expect(json.staleBrowsingSelection).toBeNull();
+    });
+
+    // Positive-match seam gate (AGENTS.md): a leftover browsing_selection on
+    // any status OTHER than declined/abandoned is a live quote's real,
+    // in-progress selection — not this feature's concern — and must never
+    // surface as "stale."
+    it('is null for a non-terminal-browse status even with a browsing_selection present', async () => {
+      getQuoteRawMock.mockResolvedValueOnce({
+        ...approvedQuoteRow,
+        status: 'sent',
+        quote_sent_at: '2024-01-01T00:00:00Z',
+        customer_approved_at: null,
+        viewed_at: null,
+        browsing_selection: { packageId: 'B', selectedItemIds: ['a'] },
+        browsing_selection_updated_at: '2026-08-01T00:00:00Z',
+      });
+      const res = await GET(req, ctx());
+      const json = await res.json();
+      expect(json.quoteStatus).toBe('sent');
+      expect(json.staleBrowsingSelection).toBeNull();
+    });
+
+    it('is null when the row lacks browsing_selection entirely (back-compat)', async () => {
+      const res = await GET(req, ctx()); // bookedQuoteRow has no browsing_selection field
+      const json = await res.json();
+      expect(json.staleBrowsingSelection).toBeNull();
+    });
+  });
 });

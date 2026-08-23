@@ -9,8 +9,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-const { sbRef, hl, attachQuoteToCustomerMock, propagateMock } = vi.hoisted(() => ({
+const { sbRef, hl, attachQuoteToCustomerMock, propagateMock, getOperatorMock } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
+  // Row 340 fix round: the browsing-selection-clear audit stamp reads the
+  // operator's email via getOperator() (mirrors staff-decline's own test
+  // mock) — defaulted in beforeEach below, overridable per test.
+  getOperatorMock: vi.fn(async () => null as { email: string | null } | null),
   // #198: mocked so (a) the existing legacy_rebook fixture (no customer_id set)
   // doesn't hit the real attachQuoteToCustomer against this file's Supabase
   // fake (which lacks .maybeSingle()), and (b) the tag-propagation tests below
@@ -91,6 +95,11 @@ vi.mock('@/lib/integrations/quoteMessages', () => ({
   quoteEmailHtml: () => '<p>email</p>',
 }));
 
+vi.mock('@/lib/auth/supabaseServer', () => ({
+  requireOperator: async () => null,
+  getOperator: getOperatorMock,
+}));
+
 import { POST } from './route';
 import { HighLevelError } from '@/lib/integrations/highlevel';
 // #237: resolveEventDateFieldId caches the resolved field id at module scope
@@ -103,7 +112,7 @@ import { DELIVERY_TIMEOUT_ERROR_PREFIX } from '@/lib/quoteDeliveries';
 // from().update(payload).eq() (awaited). Records every update payload so we
 // can assert what was persisted.
 //
-// #187b: the fresh-send stamp now chains `.eq('view_only', false)
+// #187b: the send stamp now chains `.eq('view_only', false)
 // .is('deposit_paid_at', null).select('id')` as a TOCTOU guard, so its
 // `.then()` must resolve `data` too (not just `error`) — default is a single
 // matched row `[{ id }]`; `opts.stampRace: true` simulates losing that race
@@ -121,6 +130,8 @@ function makeSb(
 ) {
   const updatePayloads: Array<Record<string, unknown>> = [];
   const insertPayloads: Array<{ table: string; payload: Record<string, unknown> }> = [];
+  const eqArgs: Array<[string, unknown]> = [];
+  const isArgs: Array<[string, unknown]> = [];
   const builder: Record<string, unknown> = {};
   let isUpdate = false;
   let isInsert = false;
@@ -143,8 +154,15 @@ function makeSb(
       insertPayloads.push({ table: lastTable, payload });
       return builder;
     },
-    eq: () => builder,
-    is: () => builder,
+    eq: (column: string, value: unknown) => {
+      eqArgs.push([column, value]);
+      return builder;
+    },
+    is: (column: string, value: unknown) => {
+      isArgs.push([column, value]);
+      return builder;
+    },
+    or: () => builder,
     // #264: real route code now chains `.abortSignal(signal)` on every direct
     // query (see withDbTimeout in route.ts) — no-op passthrough here, same
     // shape as eq()/is() above; the timeout behavior itself is covered by
@@ -169,7 +187,116 @@ function makeSb(
       resolve(res);
     },
   });
-  return { client: builder, updatePayloads, insertPayloads };
+  return { client: builder, updatePayloads, insertPayloads, eqArgs, isArgs };
+}
+
+// Two-request Supabase fake for send-stamp race regressions. Each query gets its
+// own builder (the general-purpose fake above intentionally reuses one), while
+// both requests share one live row. The read barrier guarantees both handlers
+// capture the same lifecycle state before either stamp can run. Update filters
+// are then evaluated against the live row at execution time, matching the
+// database behavior that makes a conditional update a CAS.
+function makeConcurrentSendSb(
+  quote: Record<string, unknown>,
+  { readBarrier = true }: { readBarrier?: boolean } = {},
+) {
+  const liveQuote: Record<string, unknown> = {
+    status: null,
+    deposit_paid_at: null,
+    viewed_at: null,
+    customer_approved_at: null,
+    ...quote,
+  };
+  let readCount = 0;
+  let releaseReads!: () => void;
+  const bothReadsReached = new Promise<void>((resolve) => {
+    releaseReads = resolve;
+  });
+
+  const client = {
+    from: (table: string) => {
+      let operation: 'select' | 'update' | 'insert' = 'select';
+      let updatePayload: Record<string, unknown> = {};
+      const eqFilters: Array<[string, unknown]> = [];
+      const isFilters: Array<[string, unknown]> = [];
+      const orFilters: Array<(row: Record<string, unknown>) => boolean> = [];
+
+      const query: Record<string, unknown> = {};
+      Object.assign(query, {
+        select: () => query,
+        update: (payload: Record<string, unknown>) => {
+          operation = 'update';
+          updatePayload = payload;
+          return query;
+        },
+        insert: () => {
+          operation = 'insert';
+          return query;
+        },
+        eq: (column: string, value: unknown) => {
+          eqFilters.push([column, value]);
+          return query;
+        },
+        is: (column: string, value: unknown) => {
+          isFilters.push([column, value]);
+          return query;
+        },
+        or: (conditions: string) => {
+          const predicates = conditions.split(',').map((condition) => {
+            const nullMatch = condition.match(/^([a-z_]+)\.is\.null$/);
+            if (nullMatch) return (row: Record<string, unknown>) => row[nullMatch[1]] == null;
+            const beforeMatch = condition.match(/^([a-z_]+)\.lt\.(.+)$/);
+            if (beforeMatch) return (row: Record<string, unknown>) => {
+              const value = row[beforeMatch[1]];
+              return typeof value === 'string' && value < beforeMatch[2];
+            };
+            throw new Error(`unsupported .or() condition in concurrent send fake: ${condition}`);
+          });
+          orFilters.push((row) => predicates.some((predicate) => predicate(row)));
+          return query;
+        },
+        abortSignal: () => query,
+        single: async () => {
+          const snapshot = { ...liveQuote };
+          if (!readBarrier) return { data: snapshot, error: null };
+          readCount += 1;
+          if (readCount === 2) releaseReads();
+          await bothReadsReached;
+          return { data: snapshot, error: null };
+        },
+        then: (
+          resolve: (value: unknown) => void,
+          reject?: (reason: unknown) => void,
+        ) => {
+          try {
+            if (operation === 'insert' || table !== 'quotes') {
+              resolve({ data: null, error: null });
+              return;
+            }
+
+            if (operation === 'update') {
+              const matches = [...eqFilters, ...isFilters].every(
+                ([column, value]) => liveQuote[column] === value,
+              ) && orFilters.every((predicate) => predicate(liveQuote));
+              if (matches) Object.assign(liveQuote, updatePayload);
+              resolve({
+                data: matches ? [{ id: liveQuote.id }] : [],
+                error: null,
+              });
+              return;
+            }
+
+            resolve({ data: { ...liveQuote }, error: null });
+          } catch (error) {
+            reject?.(error);
+          }
+        },
+      });
+      return query;
+    },
+  };
+
+  return { client, bothReadsReached, liveQuote };
 }
 
 const ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
@@ -215,6 +342,7 @@ beforeEach(() => {
   process.env.HIGHLEVEL_STAGE_QUOTE_SENT = 'stage_bid_sent';
   process.env.HIGHLEVEL_PIPELINE_ID = 'pipeline_1';
   resetEventDateFieldCacheForTests();
+  getOperatorMock.mockResolvedValue({ email: 'operator@example.com' });
 });
 
 describe('POST /api/quotes/[id]/send — GHL sync state', () => {
@@ -481,7 +609,7 @@ describe('POST /api/quotes/[id]/send — changes_requested resend (Bug 1)', () =
       ghl_stage_synced_at: '2026-06-26T00:00:01Z',
       status: 'changes_requested',
     };
-    const { client, updatePayloads } = makeSb(changesRequested);
+    const { client, updatePayloads, eqArgs, isArgs } = makeSb(changesRequested);
     sbRef.current = client;
 
     const res = await POST(makeReq(), { params });
@@ -494,6 +622,8 @@ describe('POST /api/quotes/[id]/send — changes_requested resend (Bug 1)', () =
     // status re-stamped to 'sent'
     const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
     expect(stampWrite).toBeTruthy();
+    expect(eqArgs).toContainEqual(['status', 'changes_requested']);
+    expect(isArgs).not.toContainEqual(['quote_sent_at', null]);
     // messaging fired
     expect(hl.sendSms).toHaveBeenCalled();
     expect(hl.sendEmail).toHaveBeenCalled();
@@ -550,7 +680,7 @@ describe('POST /api/quotes/[id]/send — #116 revive (declined/abandoned re-send
       status: 'declined',
       decline_reason: 'Went with a competitor',
     };
-    const { client, updatePayloads } = makeSb(declined);
+    const { client, updatePayloads, eqArgs, isArgs } = makeSb(declined);
     sbRef.current = client;
 
     const res = await POST(makeReq(), { params });
@@ -564,6 +694,8 @@ describe('POST /api/quotes/[id]/send — #116 revive (declined/abandoned re-send
     const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
     expect(stampWrite).toBeTruthy();
     expect(stampWrite!.quote_sent_at).not.toBe('2026-06-20T00:00:00Z');
+    expect(eqArgs).toContainEqual(['status', 'declined']);
+    expect(isArgs).not.toContainEqual(['quote_sent_at', null]);
     // messaging + GHL card move fired, same as any fresh send
     expect(hl.sendSms).toHaveBeenCalled();
     expect(hl.sendEmail).toHaveBeenCalled();
@@ -576,7 +708,7 @@ describe('POST /api/quotes/[id]/send — #116 revive (declined/abandoned re-send
       quote_sent_at: '2026-06-20T00:00:00Z',
       status: 'abandoned',
     };
-    const { client, updatePayloads } = makeSb(abandoned);
+    const { client, updatePayloads, eqArgs, isArgs } = makeSb(abandoned);
     sbRef.current = client;
 
     const res = await POST(makeReq(), { params });
@@ -586,6 +718,8 @@ describe('POST /api/quotes/[id]/send — #116 revive (declined/abandoned re-send
     expect(json.revived).toBe(true);
     const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
     expect(stampWrite).toBeTruthy();
+    expect(eqArgs).toContainEqual(['status', 'abandoned']);
+    expect(isArgs).not.toContainEqual(['quote_sent_at', null]);
     expect(hl.sendSms).toHaveBeenCalled();
   });
 
@@ -727,6 +861,171 @@ describe('POST /api/quotes/[id]/send — #116 revive (declined/abandoned re-send
     // as historical audit trail (the row still HAS them; we just never wrote them).
     expect(updatePayloads.some((p) => 'decline_reason' in p)).toBe(false);
     expect(updatePayloads.some((p) => 'approval_snapshot' in p)).toBe(false);
+  });
+
+  // Row 340: an operator-requested wipe of the stale pre-decline browsing
+  // selection, done as part of the SAME guarded revive write (never a
+  // separate route/call). expectedUpdatedAt matches the row's current
+  // browsing_selection_updated_at (the matched-clear case).
+  it('clearBrowsingSelection matching expectedUpdatedAt nulls browsing_selection + browsing_selection_updated_at on a revive', async () => {
+    const declined = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-20T00:00:00Z',
+      status: 'declined',
+      browsing_selection: { packageId: 'B', selectedItemIds: ['a', 'b'] },
+      browsing_selection_updated_at: '2026-06-19T00:00:00Z',
+      approval_snapshot: { staffApproved: { by: 'old@example.com' } },
+    };
+    const { client, updatePayloads } = makeSb(declined);
+    sbRef.current = client;
+
+    const res = await POST(
+      makeReqWithBody({ clearBrowsingSelection: { expectedUpdatedAt: '2026-06-19T00:00:00Z' } }),
+      { params },
+    );
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.browsingSelectionClearSkipped).toBeUndefined();
+    const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
+    expect(stampWrite).toBeTruthy();
+    expect(stampWrite!.browsing_selection).toBeNull();
+    expect(stampWrite!.browsing_selection_updated_at).toBeNull();
+    // Admin MED (audit trace): mirrors staff-decline's approval_snapshot
+    // marker, and preserves the pre-existing snapshot entry alongside it.
+    const snapshot = stampWrite!.approval_snapshot as Record<string, unknown>;
+    expect(snapshot.staffApproved).toEqual({ by: 'old@example.com' });
+    expect(snapshot.browsingSelectionCleared).toMatchObject({
+      by: 'operator@example.com',
+      packageId: 'B',
+      itemCount: 2,
+    });
+    expect(typeof (snapshot.browsingSelectionCleared as Record<string, unknown>).at).toBe('string');
+  });
+
+  // Technical+customer+admin MED, converged (TOCTOU): a mismatched
+  // expectedUpdatedAt means the customer saved a NEWER selection between the
+  // staff menu-open GET and this click — the clear must be SKIPPED, not
+  // destroy the newer selection, and the send must still succeed.
+  it('clearBrowsingSelection with a stale expectedUpdatedAt SKIPS the clear but still sends', async () => {
+    const declined = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-20T00:00:00Z',
+      status: 'declined',
+      browsing_selection: { packageId: 'C', selectedItemIds: ['x', 'y', 'z'] },
+      browsing_selection_updated_at: '2026-06-19T12:00:00Z', // customer re-saved after the GET
+    };
+    const { client, updatePayloads } = makeSb(declined);
+    sbRef.current = client;
+
+    const res = await POST(
+      // Operator was shown 00:00:00Z; the row now reads 12:00:00Z.
+      makeReqWithBody({ clearBrowsingSelection: { expectedUpdatedAt: '2026-06-19T00:00:00Z' } }),
+      { params },
+    );
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.browsingSelectionClearSkipped).toBe(true);
+    const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
+    expect(stampWrite).toBeTruthy();
+    expect('browsing_selection' in stampWrite!).toBe(false);
+    expect('browsing_selection_updated_at' in stampWrite!).toBe(false);
+    expect('approval_snapshot' in stampWrite!).toBe(false);
+  });
+
+  // NEGATIVE CONTROL for the mismatched-skip test above (AGENTS.md —
+  // negative-control every guard): revert the condition to an unconditional
+  // clear (simulated here by supplying the CURRENT value as expected) and
+  // confirm the clear fires — proving the skip above is actually caused by
+  // the timestamp mismatch, not some unrelated reason the clear never runs.
+  it('negative control: the SAME mismatch fixture clears fine when expectedUpdatedAt is corrected', async () => {
+    const declined = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-20T00:00:00Z',
+      status: 'declined',
+      browsing_selection: { packageId: 'C', selectedItemIds: ['x', 'y', 'z'] },
+      browsing_selection_updated_at: '2026-06-19T12:00:00Z',
+    };
+    const { client, updatePayloads } = makeSb(declined);
+    sbRef.current = client;
+
+    const res = await POST(
+      makeReqWithBody({ clearBrowsingSelection: { expectedUpdatedAt: '2026-06-19T12:00:00Z' } }),
+      { params },
+    );
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.browsingSelectionClearSkipped).toBeUndefined();
+    const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
+    expect(stampWrite!.browsing_selection).toBeNull();
+    expect(stampWrite!.browsing_selection_updated_at).toBeNull();
+  });
+
+  // A revive whose operator never saw a savedAt (a legacy row with a
+  // selection but no timestamp) can still clear it — null matches null.
+  it('clearBrowsingSelection with expectedUpdatedAt:null matches a row with no browsing_selection_updated_at', async () => {
+    const declined = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-20T00:00:00Z',
+      status: 'declined',
+      browsing_selection: { packageId: 'B', selectedItemIds: ['a'] },
+      browsing_selection_updated_at: null,
+    };
+    const { client, updatePayloads } = makeSb(declined);
+    sbRef.current = client;
+
+    const res = await POST(
+      makeReqWithBody({ clearBrowsingSelection: { expectedUpdatedAt: null } }),
+      { params },
+    );
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.browsingSelectionClearSkipped).toBeUndefined();
+    const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
+    expect(stampWrite!.browsing_selection).toBeNull();
+  });
+
+  // Negative control (AGENTS.md — negative-control every guard): omitting the
+  // flag must leave the stale selection untouched, not default-clear it.
+  it('a revive WITHOUT clearBrowsingSelection leaves the stale browsing selection alone', async () => {
+    const declined = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-20T00:00:00Z',
+      status: 'declined',
+      browsing_selection: { packageId: 'B', selectedItemIds: ['a', 'b'] },
+      browsing_selection_updated_at: '2026-06-19T00:00:00Z',
+    };
+    const { client, updatePayloads } = makeSb(declined);
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
+    expect(stampWrite).toBeTruthy();
+    expect('browsing_selection' in stampWrite!).toBe(false);
+    expect('browsing_selection_updated_at' in stampWrite!).toBe(false);
+  });
+
+  // clearBrowsingSelection must be inert outside a revive — a fresh/resend
+  // send must never touch a LIVE quote's real, in-progress browsing selection.
+  it('clearBrowsingSelection is a no-op on a non-revive (fresh) send', async () => {
+    const fresh = {
+      ...FRESH_QUOTE,
+      browsing_selection: { packageId: 'B', selectedItemIds: ['a'] },
+      browsing_selection_updated_at: '2026-06-19T00:00:00Z',
+    };
+    const { client, updatePayloads } = makeSb(fresh);
+    sbRef.current = client;
+
+    const res = await POST(
+      makeReqWithBody({ clearBrowsingSelection: { expectedUpdatedAt: '2026-06-19T00:00:00Z' } }),
+      { params },
+    );
+    expect(res.status).toBe(200);
+    const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
+    expect(stampWrite).toBeTruthy();
+    expect('browsing_selection' in stampWrite!).toBe(false);
+    expect('browsing_selection_updated_at' in stampWrite!).toBe(false);
   });
 });
 
@@ -930,7 +1229,190 @@ describe('POST /api/quotes/[id]/send — portal and delivery gates', () => {
   // #187b TOCTOU: the fresh-send stamp write itself re-asserts view_only AND
   // deposit_paid_at, so a race landing AFTER the fast-path checks above (but
   // before this write) can't sneak a real stamp/GHL/message through.
-  describe('#187b — fresh-send stamp TOCTOU guard', () => {
+  describe('#187b — send stamp TOCTOU guard', () => {
+    it('allows exactly one external delivery when two fresh sends race', async () => {
+      const { client, bothReadsReached } = makeConcurrentSendSb({ ...FRESH_QUOTE });
+      sbRef.current = client;
+
+      const first = POST(makeReqWithBody({ channel: 'both' }), { params });
+      const second = POST(makeReqWithBody({ channel: 'both' }), { params });
+
+      await bothReadsReached;
+      const responses = await Promise.all([first, second]);
+      const bodies = await Promise.all(responses.map((response) => response.json()));
+
+      expect(hl.sendSms).toHaveBeenCalledTimes(1);
+      expect(hl.sendEmail).toHaveBeenCalledTimes(1);
+      expect(hl.updateOpportunity).toHaveBeenCalledTimes(1);
+      expect(responses.map((response) => response.status).sort((a, b) => a - b)).toEqual([200, 409]);
+      expect(bodies).toContainEqual(expect.objectContaining({ code: 'send-conflict' }));
+    });
+
+    it.each([
+      ['changes_requested', false],
+      ['declined', true],
+      ['abandoned', true],
+    ] as const)(
+      'allows exactly one external delivery when two %s sends race',
+      async (status, revived) => {
+        const { client, bothReadsReached } = makeConcurrentSendSb({
+          ...FRESH_QUOTE,
+          quote_sent_at: '2026-06-20T00:00:00.000Z',
+          ghl_stage_synced_at: '2026-06-20T00:00:01.000Z',
+          status,
+        });
+        sbRef.current = client;
+
+        const first = POST(makeReqWithBody({ channel: 'both' }), { params });
+        const second = POST(makeReqWithBody({ channel: 'both' }), { params });
+
+        await bothReadsReached;
+        const responses = await Promise.all([first, second]);
+        const bodies = await Promise.all(responses.map((response) => response.json()));
+
+        expect(hl.sendSms).toHaveBeenCalledTimes(1);
+        expect(hl.sendEmail).toHaveBeenCalledTimes(1);
+        expect(hl.updateOpportunity).toHaveBeenCalledTimes(1);
+        expect(responses.map((response) => response.status).sort((a, b) => a - b)).toEqual([200, 409]);
+        expect(bodies).toContainEqual(expect.objectContaining({ code: 'send-conflict' }));
+        expect(bodies).toContainEqual(
+          revived
+            ? expect.objectContaining({ ok: true, revived: true })
+            : expect.objectContaining({ ok: true }),
+        );
+      },
+    );
+
+    it('allows exactly one customer delivery when two retryDelivery requests race', async () => {
+      const { client, bothReadsReached } = makeConcurrentSendSb({
+        ...FRESH_QUOTE,
+        quote_sent_at: '2026-07-18T12:00:00.000Z',
+        ghl_stage_synced_at: '2026-07-18T12:00:01.000Z',
+        status: 'sent',
+      });
+      sbRef.current = client;
+      let releaseSms!: () => void;
+      const smsGate = new Promise<void>((resolve) => { releaseSms = resolve; });
+      hl.sendSms.mockImplementation(async () => {
+        await smsGate;
+        return undefined;
+      });
+
+      const first = POST(makeReqWithBody({ channel: 'sms' }, true), { params });
+      const second = POST(makeReqWithBody({ channel: 'sms' }, true), { params });
+
+      await bothReadsReached;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(hl.sendSms).toHaveBeenCalledTimes(1);
+      expect(hl.sendEmail).not.toHaveBeenCalled();
+
+      releaseSms();
+      const responses = await Promise.all([first, second]);
+      const bodies = await Promise.all(responses.map((response) => response.json()));
+
+      expect(responses.map((response) => response.status).sort((a, b) => a - b)).toEqual([200, 409]);
+      expect(bodies).toContainEqual(expect.objectContaining({ code: 'send-conflict' }));
+    });
+
+    it('allows exactly one CRM update when two retryGhl requests race', async () => {
+      const { client, bothReadsReached } = makeConcurrentSendSb({
+        ...FRESH_QUOTE,
+        quote_sent_at: '2026-07-18T12:00:00.000Z',
+        ghl_stage_synced_at: null,
+        status: 'sent',
+      });
+      sbRef.current = client;
+      let releaseGhl!: () => void;
+      const ghlGate = new Promise<void>((resolve) => { releaseGhl = resolve; });
+      hl.updateOpportunity.mockImplementation(async () => {
+        await ghlGate;
+        return { id: 'opp_1' };
+      });
+
+      const first = POST(makeReq(true), { params });
+      const second = POST(makeReq(true), { params });
+
+      await bothReadsReached;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(hl.updateOpportunity).toHaveBeenCalledTimes(1);
+      expect(hl.sendSms).not.toHaveBeenCalled();
+      expect(hl.sendEmail).not.toHaveBeenCalled();
+
+      releaseGhl();
+      const responses = await Promise.all([first, second]);
+      const bodies = await Promise.all(responses.map((response) => response.json()));
+
+      expect(responses.map((response) => response.status).sort((a, b) => a - b)).toEqual([200, 409]);
+      expect(bodies).toContainEqual(expect.objectContaining({ code: 'send-conflict' }));
+    });
+
+    it('does not reclaim an unexpired delivery retry lease', async () => {
+      const { client } = makeConcurrentSendSb({
+        ...FRESH_QUOTE,
+        quote_sent_at: '2026-07-18T12:00:00.000Z',
+        ghl_stage_synced_at: '2026-07-18T12:00:01.000Z',
+        status: 'sent',
+        delivery_retry_claimed_at: '2099-01-01T00:00:00.000Z',
+      }, { readBarrier: false });
+      sbRef.current = client;
+
+      const res = await POST(makeReqWithBody({ channel: 'sms' }, true), { params });
+      const json = await res.json();
+
+      expect(res.status).toBe(409);
+      expect(json.code).toBe('send-conflict');
+      expect(hl.sendSms).not.toHaveBeenCalled();
+      expect(hl.sendEmail).not.toHaveBeenCalled();
+    });
+
+    it('reclaims a stale delivery retry lease before delivering', async () => {
+      const { client, liveQuote } = makeConcurrentSendSb({
+        ...FRESH_QUOTE,
+        quote_sent_at: '2026-07-18T12:00:00.000Z',
+        ghl_stage_synced_at: '2026-07-18T12:00:01.000Z',
+        status: 'sent',
+        delivery_retry_claimed_at: '2020-01-01T00:00:00.000Z',
+      }, { readBarrier: false });
+      sbRef.current = client;
+
+      const res = await POST(makeReqWithBody({ channel: 'sms' }, true), { params });
+
+      expect(res.status).toBe(200);
+      expect(hl.sendSms).toHaveBeenCalledTimes(1);
+      expect(liveQuote.delivery_retry_claimed_at).toBeNull();
+    });
+
+    it('does not let an older delivery retry release a reclaimed lease', async () => {
+      const { client, liveQuote } = makeConcurrentSendSb({
+        ...FRESH_QUOTE,
+        quote_sent_at: '2026-07-18T12:00:00.000Z',
+        ghl_stage_synced_at: '2026-07-18T12:00:01.000Z',
+        status: 'sent',
+      }, { readBarrier: false });
+      sbRef.current = client;
+      let releaseSms!: () => void;
+      const smsGate = new Promise<void>((resolve) => { releaseSms = resolve; });
+      hl.sendSms.mockImplementation(async () => {
+        await smsGate;
+        return undefined;
+      });
+
+      const request = POST(makeReqWithBody({ channel: 'sms' }, true), { params });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(hl.sendSms).toHaveBeenCalledTimes(1);
+      expect(typeof liveQuote.delivery_retry_claimed_at).toBe('string');
+
+      const newerClaim = '2099-01-01T00:00:00.000Z';
+      liveQuote.delivery_retry_claimed_at = newerClaim;
+      releaseSms();
+
+      const res = await request;
+      expect(res.status).toBe(200);
+      expect(liveQuote.delivery_retry_claimed_at).toBe(newerClaim);
+    });
+
     it('409s and does no GHL/messaging work when view_only flips ON between fetch and stamp', async () => {
       const { client, updatePayloads } = makeSb({ ...FRESH_QUOTE }, { stampRace: true });
       sbRef.current = client;
@@ -1707,6 +2189,45 @@ describe('POST /api/quotes/[id]/send — event-date GHL push (#237)', () => {
     expect(res.status).toBe(200);
     expect(hl.listLocationCustomFields).toHaveBeenCalledTimes(1);
     expect(hl.upsertContactCustomField).toHaveBeenCalledWith('contact_1', 'ed_field_1', '12/25/2026');
+  });
+
+  // #314 fix round (staff-lens HIGH): a CONFIRMED push must stamp
+  // ghl_event_date_pushed — the marker the approve route's reconcile
+  // compares against instead of GHL's live value.
+  it('stamps ghl_event_date_pushed on the same sync-state write when the push succeeds', async () => {
+    const { client, updatePayloads } = makeSb({
+      ...FRESH_QUOTE,
+      service_type: 'event',
+      inputs: { event: { eventDate: '2026-12-25' } },
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+
+    const syncWrite = updatePayloads.find((p) => 'ghl_stage_synced_at' in p || 'ghl_sync_error' in p);
+    expect(syncWrite?.ghl_event_date_pushed).toBe('12/25/2026');
+  });
+
+  // Counterpart: a FAILED push must never stamp the marker with a value that
+  // never actually landed.
+  it('does NOT stamp ghl_event_date_pushed when the push fails', async () => {
+    hl.upsertContactCustomField.mockImplementation(async (_contactId: string, fieldId: string) => {
+      if (fieldId === 'ed_field_1') throw new HighLevelError('GHL 500', 500, 'server error');
+      return undefined;
+    });
+    const { client, updatePayloads } = makeSb({
+      ...FRESH_QUOTE,
+      service_type: 'event',
+      inputs: { event: { eventDate: '2026-12-25' } },
+    });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+
+    const syncWrite = updatePayloads.find((p) => 'ghl_stage_synced_at' in p || 'ghl_sync_error' in p);
+    expect(syncWrite?.ghl_event_date_pushed).toBeUndefined();
   });
 
   // Positive gate (`=== 'event'`, never `!== 'event'`): the other three
