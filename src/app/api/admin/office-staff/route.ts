@@ -11,6 +11,7 @@ import {
   OfficeDisplayNameTakenError,
   OperatorAlreadyLinkedError,
   setOfficeStaffActive,
+  setOfficeStaffRate,
 } from '@/lib/crewMembers';
 
 export const runtime = 'nodejs';
@@ -69,8 +70,13 @@ export async function GET() {
           displayName: s.displayName,
           active: s.active,
           authUserId: s.authUserId,
+          baseRateCents: s.baseRateCents,
           operatorEmail: op?.email ?? null,
           operatorName: op?.name ?? null,
+          // The linked operator login no longer exists (deleted from the accounts
+          // store). Surfaced so an orphaned pay row is visible in the panel, not
+          // silently left showing as a normal active staffer.
+          operatorMissing: s.authUserId !== null && !opById.has(s.authUserId),
         };
       }),
       // An operator is eligible only if they are NOT already linked to any
@@ -165,12 +171,32 @@ export async function PATCH(req: NextRequest) {
   if (!crewMemberId) {
     return NextResponse.json({ error: 'Choose an office staff member.' }, { status: 400 });
   }
-  if (typeof body?.active !== 'boolean') {
-    return NextResponse.json({ error: 'active must be true or false.' }, { status: 400 });
+
+  // Two independent edits share PATCH: an active toggle and a rate correction.
+  // The office sends one at a time; a rate edit wins if somehow both arrive.
+  const hasRate = body?.hourlyRate !== undefined;
+  const hasActive = typeof body?.active === 'boolean';
+  if (!hasRate && !hasActive) {
+    return NextResponse.json(
+      { error: 'Nothing to update. Send active or hourlyRate.' },
+      { status: 400 },
+    );
   }
 
   try {
-    const member = await setOfficeStaffActive(crewMemberId, body.active);
+    let member;
+    if (hasRate) {
+      const baseRateCents = dollarsToCents(body?.hourlyRate);
+      if (baseRateCents === null) {
+        return NextResponse.json(
+          { error: 'Enter a valid hourly rate, for example 22.50.' },
+          { status: 400 },
+        );
+      }
+      member = await setOfficeStaffRate(crewMemberId, baseRateCents);
+    } else {
+      member = await setOfficeStaffActive(crewMemberId, body!.active as boolean);
+    }
     // null means no is_office row matched — either an unknown id or a FIELD-crew
     // row (which the by-construction filter refuses to touch here).
     if (!member) {

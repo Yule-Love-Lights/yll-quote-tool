@@ -118,8 +118,18 @@ export function ClockCard() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ action }),
       });
-      const body = (await res.json().catch(() => null)) as (ClockState & { error?: string }) | null;
+      const body = (await res.json().catch(() => null)) as
+        | (ClockState & { error?: string; reason?: string })
+        | null;
       if (!res.ok) {
+        // A 403 mid-session means the account was just deactivated or unlinked
+        // (e.g. an admin changed it in another tab). Transition to that state's
+        // messaging instead of leaving stale live-looking buttons that keep
+        // failing with a generic error.
+        if (res.status === 403) {
+          setLoad({ status: body?.reason === 'inactive' ? 'inactive' : 'unlinked' });
+          return;
+        }
         setError(body?.error ?? 'Something went wrong. Try again.');
         return;
       }
@@ -156,6 +166,14 @@ export function ClockCard() {
         >
           Time clock — login not linked
         </span>
+        <button
+          type="button"
+          onClick={() => setReload((n) => n + 1)}
+          className="text-sm underline"
+          style={{ color: 'var(--op-accent)' }}
+        >
+          refresh
+        </button>
       </Pill>
     );
   }
@@ -170,6 +188,14 @@ export function ClockCard() {
         >
           Time clock — account inactive
         </span>
+        <button
+          type="button"
+          onClick={() => setReload((n) => n + 1)}
+          className="text-sm underline"
+          style={{ color: 'var(--op-accent)' }}
+        >
+          refresh
+        </button>
       </Pill>
     );
   }

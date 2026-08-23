@@ -283,14 +283,30 @@ export type OfficeStaffMember = {
   displayName: string;
   active: boolean;
   authUserId: string | null;
+  baseRateCents: number;
 };
 
-type OfficeRow = { id: string; display_name: string; active: boolean; auth_user_id: string | null };
+type OfficeRow = {
+  id: string;
+  display_name: string;
+  active: boolean;
+  auth_user_id: string | null;
+  base_rate_cents: number;
+};
 
-const OFFICE_SELECT = 'id, display_name, active, auth_user_id';
+// base_rate_cents is selected back (not just written) so the office can SEE the
+// rate that was saved and catch a decimal-point typo, and so the rate can be
+// edited in-app rather than by hand SQL.
+const OFFICE_SELECT = 'id, display_name, active, auth_user_id, base_rate_cents';
 
 function toOfficeStaffMember(row: OfficeRow): OfficeStaffMember {
-  return { id: row.id, displayName: row.display_name, active: row.active, authUserId: row.auth_user_id };
+  return {
+    id: row.id,
+    displayName: row.display_name,
+    active: row.active,
+    authUserId: row.auth_user_id,
+    baseRateCents: row.base_rate_cents,
+  };
 }
 
 /** Every office-staff pay row (is_office = true), for the onboarding panel. */
@@ -375,23 +391,38 @@ export async function linkOfficeStaff(input: {
 }
 
 /**
- * Activate or deactivate an OFFICE staff member. The `is_office = true` filter is
- * part of the write, not a separate read-then-check: a field-crew id simply
- * matches no row and returns null, so this can never toggle `active` on a field
- * crew member (who are managed on the crew panel, not here). Returns null when no
- * office row matched.
+ * Update one OFFICE staff row. The `is_office = true` filter is part of the
+ * write, not a separate read-then-check: a field-crew id simply matches no row
+ * and returns null, so nothing here can ever touch a field crew member (who are
+ * managed on the crew panel, not here). Returns null when no office row matched.
  */
-export async function setOfficeStaffActive(id: string, active: boolean): Promise<OfficeStaffMember | null> {
+async function patchOfficeStaffRow(
+  id: string,
+  payload: Record<string, unknown>,
+): Promise<OfficeStaffMember | null> {
   const db = getSupabaseServiceClient();
   if (!db) throw new Error('Supabase service role not configured');
 
   const { data, error } = await db
     .from('crew_members')
-    .update({ active })
+    .update(payload)
     .eq('id', id.trim())
     .eq('is_office', true)
     .select(OFFICE_SELECT)
     .maybeSingle();
-  if (error) throw new Error(`setOfficeStaffActive: ${error.message}`);
+  if (error) throw new Error(`patchOfficeStaffRow: ${error.message}`);
   return data ? toOfficeStaffMember(data as OfficeRow) : null;
+}
+
+/** Activate or deactivate an office staff member. */
+export async function setOfficeStaffActive(id: string, active: boolean): Promise<OfficeStaffMember | null> {
+  return patchOfficeStaffRow(id, { active });
+}
+
+/**
+ * Correct or raise an office staff member's hourly rate (integer cents), in-app,
+ * so a typo or a routine raise no longer needs hand SQL.
+ */
+export async function setOfficeStaffRate(id: string, baseRateCents: number): Promise<OfficeStaffMember | null> {
+  return patchOfficeStaffRow(id, { base_rate_cents: baseRateCents });
 }

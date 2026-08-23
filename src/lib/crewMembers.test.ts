@@ -311,6 +311,7 @@ import {
   OfficeDisplayNameTakenError,
   OperatorAlreadyLinkedError,
   setOfficeStaffActive,
+  setOfficeStaffRate,
   TelegramUserIdTakenError,
   updateCrewMember,
 } from './crewMembers';
@@ -646,7 +647,7 @@ describe('listOfficeStaff', () => {
   it('returns only is_office rows, mapped to the panel shape', async () => {
     stateRef.current.rows = [CREW_1, CREW_OFFICE, CREW_2];
     await expect(listOfficeStaff()).resolves.toEqual([
-      { id: 'crew-office', displayName: 'Kelly', active: true, authUserId: 'op-kelly' },
+      { id: 'crew-office', displayName: 'Kelly', active: true, authUserId: 'op-kelly', baseRateCents: 2500 },
     ]);
   });
 
@@ -682,7 +683,7 @@ describe('linkOfficeStaff', () => {
   it('creates an is_office, hourly, non-P4P row linked to the operator', async () => {
     stateRef.current.rows = [];
     const member = await linkOfficeStaff({ authUserId: 'op-ann', displayName: 'Ann', baseRateCents: 2500 });
-    expect(member).toEqual({ id: 'generated-1', displayName: 'Ann', active: true, authUserId: 'op-ann' });
+    expect(member).toEqual({ id: 'generated-1', displayName: 'Ann', active: true, authUserId: 'op-ann', baseRateCents: 2500 });
 
     const written = stateRef.current.inserted[0];
     expect(written).toMatchObject({
@@ -723,7 +724,13 @@ describe('setOfficeStaffActive', () => {
   it('deactivates an office row and returns the updated shape', async () => {
     stateRef.current.rows = [CREW_OFFICE];
     const member = await setOfficeStaffActive('crew-office', false);
-    expect(member).toEqual({ id: 'crew-office', displayName: 'Kelly', active: false, authUserId: 'op-kelly' });
+    expect(member).toEqual({
+      id: 'crew-office',
+      displayName: 'Kelly',
+      active: false,
+      authUserId: 'op-kelly',
+      baseRateCents: 2500,
+    });
     expect(stateRef.current.rows.find((r) => r.id === 'crew-office')?.active).toBe(false);
   });
 
@@ -733,5 +740,27 @@ describe('setOfficeStaffActive', () => {
     expect(member).toBeNull();
     // The field-crew row was NOT touched — no way to toggle it through this door.
     expect(stateRef.current.rows.find((r) => r.id === 'crew-1')?.active).toBe(true);
+  });
+});
+
+describe('setOfficeStaffRate', () => {
+  it('updates an office row rate (integer cents) and returns the updated shape', async () => {
+    stateRef.current.rows = [CREW_OFFICE];
+    const member = await setOfficeStaffRate('crew-office', 3000);
+    expect(member).toEqual({
+      id: 'crew-office',
+      displayName: 'Kelly',
+      active: true,
+      authUserId: 'op-kelly',
+      baseRateCents: 3000,
+    });
+    expect(stateRef.current.rows.find((r) => r.id === 'crew-office')?.base_rate_cents).toBe(3000);
+  });
+
+  it('returns null for a FIELD-crew id — never edits a field-crew rate through this door', async () => {
+    stateRef.current.rows = [CREW_1, CREW_OFFICE];
+    const member = await setOfficeStaffRate('crew-1', 9999);
+    expect(member).toBeNull();
+    expect(stateRef.current.rows.find((r) => r.id === 'crew-1')?.base_rate_cents).toBe(1600);
   });
 });

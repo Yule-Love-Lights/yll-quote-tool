@@ -13,6 +13,7 @@ const {
   listLinkedAuthUserIds,
   linkOfficeStaff,
   setOfficeStaffActive,
+  setOfficeStaffRate,
   listNonCrewOperators,
   OperatorAlreadyLinkedError,
   OfficeDisplayNameTakenError,
@@ -38,6 +39,7 @@ const {
     listLinkedAuthUserIds: vi.fn(),
     linkOfficeStaff: vi.fn(),
     setOfficeStaffActive: vi.fn(),
+    setOfficeStaffRate: vi.fn(),
     listNonCrewOperators: vi.fn(),
     OperatorAlreadyLinkedError,
     OfficeDisplayNameTakenError,
@@ -52,6 +54,7 @@ vi.mock('@/lib/crewMembers', () => ({
   listLinkedAuthUserIds,
   linkOfficeStaff,
   setOfficeStaffActive,
+  setOfficeStaffRate,
   OperatorAlreadyLinkedError,
   OfficeDisplayNameTakenError,
 }));
@@ -81,8 +84,9 @@ beforeEach(() => {
   listOfficeStaff.mockResolvedValue([]);
   listLinkedAuthUserIds.mockResolvedValue(new Set<string>());
   listNonCrewOperators.mockResolvedValue([OP_ANN, OP_KELLY]);
-  linkOfficeStaff.mockResolvedValue({ id: 'crew-new', displayName: 'Ann', active: true, authUserId: 'op-ann' });
-  setOfficeStaffActive.mockResolvedValue({ id: 'crew-office', displayName: 'Kelly', active: false, authUserId: 'op-kelly' });
+  linkOfficeStaff.mockResolvedValue({ id: 'crew-new', displayName: 'Ann', active: true, authUserId: 'op-ann', baseRateCents: 2250 });
+  setOfficeStaffActive.mockResolvedValue({ id: 'crew-office', displayName: 'Kelly', active: false, authUserId: 'op-kelly', baseRateCents: 2500 });
+  setOfficeStaffRate.mockResolvedValue({ id: 'crew-office', displayName: 'Kelly', active: true, authUserId: 'op-kelly', baseRateCents: 3000 });
 });
 
 describe('GET /api/admin/office-staff', () => {
@@ -101,21 +105,44 @@ describe('GET /api/admin/office-staff', () => {
 
   it('joins office staff to their operator and excludes already-linked operators from the picker', async () => {
     listOfficeStaff.mockResolvedValue([
-      { id: 'crew-office', displayName: 'Kelly', active: true, authUserId: 'op-kelly' },
+      { id: 'crew-office', displayName: 'Kelly', active: true, authUserId: 'op-kelly', baseRateCents: 2500 },
     ]);
     listLinkedAuthUserIds.mockResolvedValue(new Set(['op-kelly']));
     const res = await GET();
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      officeStaff: Array<{ id: string; operatorEmail: string | null }>;
+      officeStaff: Array<{ id: string; operatorEmail: string | null; operatorMissing: boolean; baseRateCents: number }>;
       eligibleOperators: Array<{ id: string }>;
     };
-    // Kelly is joined to her operator account…
+    // Kelly is joined to her operator account, rate visible, operator present…
     expect(body.officeStaff).toEqual([
-      { id: 'crew-office', displayName: 'Kelly', active: true, authUserId: 'op-kelly', operatorEmail: 'kelly@x.com', operatorName: 'Kelly' },
+      {
+        id: 'crew-office',
+        displayName: 'Kelly',
+        active: true,
+        authUserId: 'op-kelly',
+        baseRateCents: 2500,
+        operatorEmail: 'kelly@x.com',
+        operatorName: 'Kelly',
+        operatorMissing: false,
+      },
     ]);
     // …and is NOT offered again in the picker; only the unlinked operator is.
     expect(body.eligibleOperators.map((o) => o.id)).toEqual(['op-ann']);
+  });
+
+  it('flags an office row whose operator login was deleted (dangling) instead of hiding it', async () => {
+    listOfficeStaff.mockResolvedValue([
+      { id: 'crew-ghost', displayName: 'Gone', active: true, authUserId: 'op-deleted', baseRateCents: 2000 },
+    ]);
+    listLinkedAuthUserIds.mockResolvedValue(new Set(['op-deleted']));
+    // op-deleted is NOT among listNonCrewOperators (deleted from the accounts store).
+    const res = await GET();
+    const body = (await res.json()) as {
+      officeStaff: Array<{ operatorMissing: boolean; operatorEmail: string | null }>;
+    };
+    expect(body.officeStaff[0].operatorMissing).toBe(true);
+    expect(body.officeStaff[0].operatorEmail).toBeNull();
   });
 
   it('500s (without leaking) when a lib call throws', async () => {
@@ -200,11 +227,31 @@ describe('PATCH /api/admin/office-staff', () => {
     expect(setOfficeStaffActive).toHaveBeenCalledWith('crew-office', false);
   });
 
-  it('400s a missing id or a non-boolean active, without writing', async () => {
+  it('edits an office staffer rate, parsing dollars to integer cents', async () => {
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', hourlyRate: '30' }));
+    expect(res.status).toBe(200);
+    expect(setOfficeStaffRate).toHaveBeenCalledWith('crew-office', 3000);
+    expect(setOfficeStaffActive).not.toHaveBeenCalled();
+  });
+
+  it('400s a bad rate on edit, without writing', async () => {
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', hourlyRate: 'abc' }));
+    expect(res.status).toBe(400);
+    expect(setOfficeStaffRate).not.toHaveBeenCalled();
+  });
+
+  it('404s a rate edit when no office row matched (unknown or field-crew id)', async () => {
+    setOfficeStaffRate.mockResolvedValueOnce(null);
+    const res = await PATCH(patch({ crewMemberId: 'crew-field', hourlyRate: '20' }));
+    expect(res.status).toBe(404);
+  });
+
+  it('400s a missing id, or a body with neither active nor hourlyRate, without writing', async () => {
     expect((await PATCH(patch({ active: false }))).status).toBe(400);
     expect((await PATCH(patch({ crewMemberId: 'crew-office' }))).status).toBe(400);
     expect((await PATCH(patch({ crewMemberId: 'crew-office', active: 'no' }))).status).toBe(400);
     expect(setOfficeStaffActive).not.toHaveBeenCalled();
+    expect(setOfficeStaffRate).not.toHaveBeenCalled();
   });
 
   it('404s when no office row matched — an unknown id OR a field-crew id (by-construction guard)', async () => {

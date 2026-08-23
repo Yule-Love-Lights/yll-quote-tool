@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react';
 
+import { dollarsToCents } from '@/lib/hourlyRate';
+
 /**
  * Settings → Accounts → Office staff time clock (ledger #354).
  *
@@ -19,11 +21,17 @@ type OfficeStaffRow = {
   displayName: string;
   active: boolean;
   authUserId: string | null;
+  baseRateCents: number;
   operatorEmail: string | null;
   operatorName: string | null;
+  operatorMissing: boolean;
 };
 
 type EligibleOperator = { id: string; name: string | null; email: string | null };
+
+function fmtUsd(cents: number): string {
+  return (cents / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+}
 
 export function OfficeStaff() {
   const [staff, setStaff] = useState<OfficeStaffRow[]>([]);
@@ -78,6 +86,19 @@ export function OfficeStaff() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    // Parse and CONFIRM the rate before sending, so a decimal-point typo
+    // ("2250" meaning 22.50) is caught here — the amount is shown back as
+    // dollars, not silently saved as $2,250/hr. The server re-parses the same
+    // string, so this is a preview, not the source of truth.
+    const cents = dollarsToCents(rate);
+    if (cents === null) {
+      setError('Enter a valid hourly rate, for example 22.50.');
+      return;
+    }
+    const op = eligible.find((o) => o.id === selected);
+    const who = nameOverride.trim() || op?.name || op?.email || 'this operator';
+    if (!window.confirm(`Set up ${who} at ${fmtUsd(cents)} per hour?`)) return;
+
     setBusy(true);
     setError(null);
     setDone(null);
@@ -132,6 +153,38 @@ export function OfficeStaff() {
     }
   }
 
+  async function editRate(row: OfficeStaffRow) {
+    const input = window.prompt(
+      `New hourly rate for ${row.displayName}? Currently ${fmtUsd(row.baseRateCents)} per hour.`,
+      (row.baseRateCents / 100).toFixed(2),
+    );
+    if (input == null) return;
+    const cents = dollarsToCents(input);
+    if (cents === null) {
+      setError('Enter a valid hourly rate, for example 22.50.');
+      return;
+    }
+    if (!window.confirm(`Set ${row.displayName}'s rate to ${fmtUsd(cents)} per hour?`)) return;
+    setTogglingId(row.id);
+    setError(null);
+    setDone(null);
+    try {
+      const res = await fetch('/api/admin/office-staff', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ crewMemberId: row.id, hourlyRate: input }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) throw new Error(data.error ?? 'Failed to update the rate');
+      setDone(`${row.displayName}'s rate is now ${fmtUsd(cents)} per hour.`);
+      reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to update the rate');
+    } finally {
+      setTogglingId(null);
+    }
+  }
+
   const operatorLabel = (o: EligibleOperator) => o.name ?? o.email ?? 'Unnamed operator';
 
   return (
@@ -153,15 +206,27 @@ export function OfficeStaff() {
         <>
           <ul className="mt-4 divide-y divide-gray-100 border border-gray-200 rounded-md">
             {staff.map((s) => (
-              <li key={s.id} className="flex items-center justify-between px-3 py-2 text-sm">
-                <span className="text-gray-900">
+              <li key={s.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+                <span className="min-w-0 text-gray-900">
                   {s.displayName}
                   {s.operatorEmail && <span className="ml-2 text-xs text-gray-400">{s.operatorEmail}</span>}
+                  {s.operatorMissing && (
+                    <span className="ml-2 text-xs text-red-600">operator login deleted</span>
+                  )}
+                  <span className="ml-2 text-xs text-gray-500">{fmtUsd(s.baseRateCents)}/hr</span>
                 </span>
-                <span className="flex items-center gap-3">
+                <span className="flex shrink-0 items-center gap-3">
                   <span className={s.active ? 'text-xs text-green-700' : 'text-xs text-amber-700'}>
                     {s.active ? 'Active' : 'Inactive'}
                   </span>
+                  <button
+                    type="button"
+                    disabled={togglingId === s.id}
+                    onClick={() => void editRate(s)}
+                    className="text-xs text-gray-500 underline disabled:opacity-50"
+                  >
+                    Edit rate
+                  </button>
                   <button
                     type="button"
                     disabled={togglingId === s.id}
@@ -245,8 +310,8 @@ export function OfficeStaff() {
             </form>
           ) : (
             <p className="mt-4 text-sm text-gray-500">
-              Every operator is already set up. Add a new person under Staff accounts above to set
-              up another.
+              No operators are available to set up. Add a person under Staff accounts above, then
+              set them up here.
             </p>
           )}
 
