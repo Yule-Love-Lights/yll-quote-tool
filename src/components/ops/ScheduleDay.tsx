@@ -124,7 +124,17 @@ export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
       )}
 
       {loading ? (
-        <p className="text-sm text-gray-500">Loading…</p>
+        // row 346, mirrors row 332/#171b: was a bare "Loading…" line — this
+        // view reloads on every date change (not just first mount), so it was
+        // the most frequently-hit bare morph of the six flagged. Placeholder
+        // rows matching the three sections below (load-for-day, booked,
+        // unscheduled) so switching dates doesn't wipe the layout down to one
+        // line and back.
+        <div role="status" aria-busy="true" className="space-y-6">
+          <div className="h-24 animate-pulse rounded-md bg-black/10" />
+          <div className="h-24 animate-pulse rounded-md bg-black/10" />
+          <div className="h-24 animate-pulse rounded-md bg-black/10" />
+        </div>
       ) : (
         <>
           <section className="mb-6">
