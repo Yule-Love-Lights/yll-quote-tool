@@ -41,6 +41,15 @@ export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [token, setToken] = useState(0);
+  // Row 346 fix round: the date this component's CURRENT jobs/capacity/
+  // unscheduled state actually belongs to — set only on a successful load,
+  // separately from `loading`/`date`. Lets the render below tell "no data
+  // yet" (never loaded — show the skeleton) apart from "have data, refetching"
+  // (keep the stale content on screen with a busy note instead of blanking
+  // it), and — since it can lag `date` during a date change — lets that note
+  // say explicitly which day is on screen so stale content is never mistaken
+  // for the newly-picked day's data.
+  const [loadedDate, setLoadedDate] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
     setLoading(true);
@@ -69,6 +78,7 @@ export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
         setCapacity(day.days[0] ?? null);
         setUnscheduled(unsched.jobs ?? []);
         setError(null);
+        setLoadedDate(date);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load');
       } finally {
@@ -123,10 +133,38 @@ export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
         </p>
       )}
 
-      {loading ? (
-        <p className="text-sm text-gray-500">Loading…</p>
+      {loading && !loadedDate ? (
+        // row 346: was a bare "Loading…" line on FIRST load (nothing to show
+        // yet) — placeholder rows matching the three sections below
+        // (load-for-day, booked, unscheduled) so first mount doesn't show a
+        // single sparse line before the real layout appears.
+        <div role="status" aria-busy="true" className="space-y-6">
+          <div className="h-24 animate-pulse rounded-md bg-black/10" />
+          <div className="h-24 animate-pulse rounded-md bg-black/10" />
+          <div className="h-24 animate-pulse rounded-md bg-black/10" />
+        </div>
       ) : (
         <>
+          {/* Row 346 fix round: this view reloads on every date change AND
+              after every assign/unassign (mutate() -> refresh()), so a
+              lens caught the FIRST version of this fix replacing already-good
+              on-screen content with a big pulsing skeleton on every one of
+              those — louder than the bare "Loading…" text it replaced.
+              Stale-while-revalidate instead: the sections below keep
+              rendering whatever loadedDate's data already fetched, and this
+              is the only thing that changes while a refetch is in flight — a
+              small status line, never the big placeholder blocks. When the
+              date being fetched differs from loadedDate (a date-change
+              refetch, not a mutate() refresh), it names both days explicitly
+              so the still-visible content is never mistaken for the
+              newly-picked day's data. */}
+          {loading && (
+            <p role="status" aria-busy="true" className="mb-4 text-xs text-gray-500">
+              {loadedDate && loadedDate !== date
+                ? `Loading ${date}… (showing ${loadedDate} below)`
+                : 'Refreshing…'}
+            </p>
+          )}
           <section className="mb-6">
             <h3 className="text-sm font-semibold text-gray-900 mb-2">Load for the day</h3>
             {capacity && Object.keys(capacity.perCrew).length > 0 ? (

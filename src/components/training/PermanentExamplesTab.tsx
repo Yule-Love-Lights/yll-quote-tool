@@ -20,6 +20,7 @@ import type {
 import type { PermanentSatelliteLines, PermanentStreetRun } from '@/lib/permanent/photoAnalysis';
 import type { LineSegment, RoofFeatureClass } from '@/lib/photoAnalysis';
 import AnnotatedPhoto from '@/components/training/AnnotatedPhoto';
+import { TrainingRowsSkeleton } from '@/app/training/TrainingRowsSkeleton';
 
 const FRONT = '#ef4444'; // red
 const LEFT = '#3b82f6'; // blue
@@ -156,7 +157,11 @@ export default function PermanentExamplesTab() {
         </div>
       )}
 
-      {loading && <p className="text-sm text-gray-500">Loading…</p>}
+      {/* Same shared skeleton the holiday tab (this page's other panel) shows
+          (row 346, mirrors row 332/#171b) — this tab mounts on first switch
+          to "Permanent" and fetches, so was a bare "Loading…" line where its
+          sibling panel already got the rich skeleton. */}
+      {loading && <TrainingRowsSkeleton />}
 
       {!loading && items.length === 0 && (
         <div className="bg-white border border-gray-200 rounded-lg p-8 text-center">
