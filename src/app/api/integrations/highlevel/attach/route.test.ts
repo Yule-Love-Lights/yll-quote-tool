@@ -82,6 +82,14 @@ function makeSb(
     // then succeeds on the internal retry, 2 exhausts both attempts (gives
     // up, no entry ever lands).
     auditCasMissCount?: number;
+    // Row 326 final-round LOW (coverage gap, delta-verify-found): successive
+    // `.select('approval_snapshot')` reads return successive entries from
+    // this array (last entry repeats once exhausted) instead of the fixed
+    // `quote.approval_snapshot` — lets a test prove the retry's re-read
+    // returns a DIFFERENT (fresher) value than the site-level read that fed
+    // attempt 0, so a regression that reused the stale snapshot on retry is
+    // actually caught instead of silently passing.
+    approvalSnapshotSequence?: unknown[];
   } = {},
 ) {
   // identityCasMatch controls whether a CAS write's `.is(...)` conditions
@@ -100,13 +108,20 @@ function makeSb(
   let isUpdate = false;
   let pendingUpdatePayload: Record<string, unknown> | undefined;
   let lastSelectCols: string | undefined;
+  let approvalSnapshotReadCount = 0;
+  // Row 326 final-round LOW: records every value-CAS filter argument (in
+  // call order) so a test can assert WHICH snapshot each write attempt
+  // actually CASed on — the retry-freshness gap the delta-verify found would
+  // otherwise pass silently (a stale-snapshot retry still "succeeds" in this
+  // fake unless the test inspects the filter value itself).
+  const auditCasFilters: string[] = [];
   // Row 326 residual (b): records every update() payload (in call order) so
   // tests can assert on the audit-marker write's shape without adding a
   // fourth chain kind — the marker write is a plain
   // from().update(payload).eq() with no .select()/.maybeSingle() follow-up,
   // so it resolves through makeUpdateChain()'s `then` below like the others.
   const updateCalls: Record<string, unknown>[] = [];
-  const builder: Record<string, unknown> = { updateCalls };
+  const builder: Record<string, unknown> = { updateCalls, auditCasFilters };
   function makeUpdateChain() {
     let hasIsFilter = false;
     const chain: Record<string, unknown> = {
@@ -133,7 +148,10 @@ function makeSb(
   // ever does.
   function makeAuditWriteChain() {
     const chain: Record<string, unknown> = {
-      eq: () => chain,
+      eq: (_col: string, value: unknown) => {
+        auditCasFilters.push(String(value));
+        return chain;
+      },
       select: () => chain,
       then: (resolve: (v: { data: unknown[] | null; error: unknown }) => void) => {
         if (updateErr) return resolve({ data: null, error: updateErr });
@@ -168,8 +186,15 @@ function makeSb(
       return builder;
     },
     maybeSingle: async () => {
-      if (opts.approvalSnapshotReadFails && lastSelectCols === 'approval_snapshot') {
-        return { data: null, error: { message: 'db read failed (simulated)' } };
+      if (lastSelectCols === 'approval_snapshot') {
+        if (opts.approvalSnapshotReadFails) {
+          return { data: null, error: { message: 'db read failed (simulated)' } };
+        }
+        if (opts.approvalSnapshotSequence) {
+          const idx = Math.min(approvalSnapshotReadCount, opts.approvalSnapshotSequence.length - 1);
+          approvalSnapshotReadCount += 1;
+          return { data: { approval_snapshot: opts.approvalSnapshotSequence[idx] }, error: null };
+        }
       }
       return { data: quote, error: null };
     },
@@ -844,6 +869,49 @@ describe('HighLevel attach — refusal audit trace (row 326 residual b)', () => 
       expect(attempts.length).toBe(2);
       const [entry] = refusalsFrom(attempts[1]);
       expect(entry).toMatchObject({ by: 'staff@yulelovelights.com', action: 'attach', stage: 'pre-read' });
+    });
+
+    // Row 326 final-round LOW (delta-verify coverage gap): the retry must
+    // CAS on a FRESHLY re-read snapshot, not silently reuse the stale value
+    // from attempt 0 — a stale-snapshot retry would always CAS on the same
+    // (already-losing) value, and would drop whatever a concurrent
+    // legitimate write (amend/pay/apply-color-request) had just added.
+    // Neither the CAS-miss-count nor the payload-shape assertions above
+    // would catch that regression (the miss counter fires on call COUNT,
+    // not on the filter's actual value) — this test inspects the filter
+    // value and a distinguishing key directly.
+    it('CASes the retry on the FRESH re-read, not the stale first-attempt snapshot, and preserves a concurrent write', async () => {
+      const baseSnapshot = { approvedAt: '2026-08-10T00:00:00Z' };
+      // Simulates a concurrent legitimate write (e.g. amend/pay) landing
+      // between attempt 0 and the retry's re-read.
+      const concurrentSnapshot = { approvedAt: '2026-08-10T00:00:00Z', someOtherKey: 'x' };
+      sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false, customer_approved_at: '2026-08-10T00:00:00Z' }, null, {
+        auditCasMissCount: 1,
+        approvalSnapshotSequence: [baseSnapshot, concurrentSnapshot],
+      });
+
+      const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+      const json = await res.json();
+      expect(res.status).toBe(200);
+      expect(json).toEqual({ linked: false, identityFrozen: true });
+
+      const auditCasFilters = (sbRef.current as unknown as { auditCasFilters: string[] }).auditCasFilters;
+      expect(auditCasFilters.length).toBe(2);
+      // Attempt 0 CASed on the site-level (first) read...
+      expect(auditCasFilters[0]).toBe(JSON.stringify(baseSnapshot));
+      // ...and the retry MUST CAS on the fresh re-read, not the stale value
+      // attempt 0 used. A retry that reused `baseSnapshot` here would fail
+      // this line while every other assertion in this file stays green.
+      expect(auditCasFilters[1]).toBe(JSON.stringify(concurrentSnapshot));
+
+      const attempts = updatesOf().filter((p) => 'approval_snapshot' in p);
+      expect(attempts.length).toBe(2);
+      const landedPayload = attempts[1].approval_snapshot as Record<string, unknown>;
+      // The concurrent write's key must survive — a stale-snapshot retry
+      // would silently drop it.
+      expect(landedPayload.someOtherKey).toBe('x');
+      const [entry] = refusalsFrom(attempts[1]);
+      expect(entry).toMatchObject({ action: 'attach', stage: 'pre-read' });
     });
 
     it('gives up silently (no clobber, response unchanged) after losing the race twice', async () => {
