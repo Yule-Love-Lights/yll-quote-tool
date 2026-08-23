@@ -6,7 +6,7 @@
 // migrations/2026-04-24-quotes-add-walkthrough-video.sql.
 //
 // Auth: operator session (ledger #81). Every handler (GET/PUT/DELETE) is gated
-// via the dormancy-aware requireOperator(); DORMANT until AUTH_GATE_ENABLED=true.
+// via requireOperator(), engaged by default (ledger #347).
 // Rate limit: low — operator-only, one human, they don't spam save.
 //
 // PUT /api/quotes/[id]/video
