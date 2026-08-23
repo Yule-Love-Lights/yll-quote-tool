@@ -927,6 +927,15 @@ export type QuoteRaw = {
   // registration never completed — see VaultRegistrationNotice.
   valor_vault_token: string | null;
   valor_vault_customer_id: string | null;
+  // Row 340: the customer's live/declined-era browsing selection (ledger row
+  // 239's browsing_selection column, kept in adapter.ts's BrowsingSelectionJson
+  // shape) — read here so GET /api/pipeline/[quoteId] can summarize it for
+  // staff (item count / packageId / saved-at) before a revive silently
+  // reseeds a declined/abandoned quote's portal from it. Untyped beyond the
+  // two fields that summary needs; every other consumer of getQuoteRaw
+  // already ignores fields it doesn't ask for.
+  browsing_selection: { packageId?: string; selectedItemIds?: unknown[] } | null;
+  browsing_selection_updated_at: string | null;
 };
 
 export async function getQuoteRaw(id: string): Promise<QuoteRaw | null> {
@@ -936,7 +945,7 @@ export async function getQuoteRaw(id: string): Promise<QuoteRaw | null> {
   const { data, error } = await sb
     .from('quotes')
     .select(
-      'id, customer_id, customer_name, customer_address, customer_phone, customer_email, service_type, inputs, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, total, approval_snapshot, status, decline_reason, quote_number, is_test, legacy_rebook, is_nce, highlevel_contact_id, view_only, deposit_declined_at, deposit_decline_code, deposit_decline_notified_at, valor_vault_token, valor_vault_customer_id',
+      'id, customer_id, customer_name, customer_address, customer_phone, customer_email, service_type, inputs, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, total, approval_snapshot, status, decline_reason, quote_number, is_test, legacy_rebook, is_nce, highlevel_contact_id, view_only, deposit_declined_at, deposit_decline_code, deposit_decline_notified_at, valor_vault_token, valor_vault_customer_id, browsing_selection, browsing_selection_updated_at',
     )
     .eq('id', id)
     .maybeSingle();

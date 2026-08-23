@@ -9,8 +9,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-const { sbRef, hl, attachQuoteToCustomerMock, propagateMock } = vi.hoisted(() => ({
+const { sbRef, hl, attachQuoteToCustomerMock, propagateMock, getOperatorMock } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
+  // Row 340 fix round: the browsing-selection-clear audit stamp reads the
+  // operator's email via getOperator() (mirrors staff-decline's own test
+  // mock) — defaulted in beforeEach below, overridable per test.
+  getOperatorMock: vi.fn(async () => null as { email: string | null } | null),
   // #198: mocked so (a) the existing legacy_rebook fixture (no customer_id set)
   // doesn't hit the real attachQuoteToCustomer against this file's Supabase
   // fake (which lacks .maybeSingle()), and (b) the tag-propagation tests below
@@ -89,6 +93,11 @@ vi.mock('@/lib/integrations/quoteMessages', () => ({
   quoteEmailSubject: () => 'subj',
   quoteSmsBody: () => 'sms',
   quoteEmailHtml: () => '<p>email</p>',
+}));
+
+vi.mock('@/lib/auth/supabaseServer', () => ({
+  requireOperator: async () => null,
+  getOperator: getOperatorMock,
 }));
 
 import { POST } from './route';
@@ -333,6 +342,7 @@ beforeEach(() => {
   process.env.HIGHLEVEL_STAGE_QUOTE_SENT = 'stage_bid_sent';
   process.env.HIGHLEVEL_PIPELINE_ID = 'pipeline_1';
   resetEventDateFieldCacheForTests();
+  getOperatorMock.mockResolvedValue({ email: 'operator@example.com' });
 });
 
 describe('POST /api/quotes/[id]/send — GHL sync state', () => {
@@ -851,6 +861,171 @@ describe('POST /api/quotes/[id]/send — #116 revive (declined/abandoned re-send
     // as historical audit trail (the row still HAS them; we just never wrote them).
     expect(updatePayloads.some((p) => 'decline_reason' in p)).toBe(false);
     expect(updatePayloads.some((p) => 'approval_snapshot' in p)).toBe(false);
+  });
+
+  // Row 340: an operator-requested wipe of the stale pre-decline browsing
+  // selection, done as part of the SAME guarded revive write (never a
+  // separate route/call). expectedUpdatedAt matches the row's current
+  // browsing_selection_updated_at (the matched-clear case).
+  it('clearBrowsingSelection matching expectedUpdatedAt nulls browsing_selection + browsing_selection_updated_at on a revive', async () => {
+    const declined = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-20T00:00:00Z',
+      status: 'declined',
+      browsing_selection: { packageId: 'B', selectedItemIds: ['a', 'b'] },
+      browsing_selection_updated_at: '2026-06-19T00:00:00Z',
+      approval_snapshot: { staffApproved: { by: 'old@example.com' } },
+    };
+    const { client, updatePayloads } = makeSb(declined);
+    sbRef.current = client;
+
+    const res = await POST(
+      makeReqWithBody({ clearBrowsingSelection: { expectedUpdatedAt: '2026-06-19T00:00:00Z' } }),
+      { params },
+    );
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.browsingSelectionClearSkipped).toBeUndefined();
+    const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
+    expect(stampWrite).toBeTruthy();
+    expect(stampWrite!.browsing_selection).toBeNull();
+    expect(stampWrite!.browsing_selection_updated_at).toBeNull();
+    // Admin MED (audit trace): mirrors staff-decline's approval_snapshot
+    // marker, and preserves the pre-existing snapshot entry alongside it.
+    const snapshot = stampWrite!.approval_snapshot as Record<string, unknown>;
+    expect(snapshot.staffApproved).toEqual({ by: 'old@example.com' });
+    expect(snapshot.browsingSelectionCleared).toMatchObject({
+      by: 'operator@example.com',
+      packageId: 'B',
+      itemCount: 2,
+    });
+    expect(typeof (snapshot.browsingSelectionCleared as Record<string, unknown>).at).toBe('string');
+  });
+
+  // Technical+customer+admin MED, converged (TOCTOU): a mismatched
+  // expectedUpdatedAt means the customer saved a NEWER selection between the
+  // staff menu-open GET and this click — the clear must be SKIPPED, not
+  // destroy the newer selection, and the send must still succeed.
+  it('clearBrowsingSelection with a stale expectedUpdatedAt SKIPS the clear but still sends', async () => {
+    const declined = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-20T00:00:00Z',
+      status: 'declined',
+      browsing_selection: { packageId: 'C', selectedItemIds: ['x', 'y', 'z'] },
+      browsing_selection_updated_at: '2026-06-19T12:00:00Z', // customer re-saved after the GET
+    };
+    const { client, updatePayloads } = makeSb(declined);
+    sbRef.current = client;
+
+    const res = await POST(
+      // Operator was shown 00:00:00Z; the row now reads 12:00:00Z.
+      makeReqWithBody({ clearBrowsingSelection: { expectedUpdatedAt: '2026-06-19T00:00:00Z' } }),
+      { params },
+    );
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.browsingSelectionClearSkipped).toBe(true);
+    const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
+    expect(stampWrite).toBeTruthy();
+    expect('browsing_selection' in stampWrite!).toBe(false);
+    expect('browsing_selection_updated_at' in stampWrite!).toBe(false);
+    expect('approval_snapshot' in stampWrite!).toBe(false);
+  });
+
+  // NEGATIVE CONTROL for the mismatched-skip test above (AGENTS.md —
+  // negative-control every guard): revert the condition to an unconditional
+  // clear (simulated here by supplying the CURRENT value as expected) and
+  // confirm the clear fires — proving the skip above is actually caused by
+  // the timestamp mismatch, not some unrelated reason the clear never runs.
+  it('negative control: the SAME mismatch fixture clears fine when expectedUpdatedAt is corrected', async () => {
+    const declined = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-20T00:00:00Z',
+      status: 'declined',
+      browsing_selection: { packageId: 'C', selectedItemIds: ['x', 'y', 'z'] },
+      browsing_selection_updated_at: '2026-06-19T12:00:00Z',
+    };
+    const { client, updatePayloads } = makeSb(declined);
+    sbRef.current = client;
+
+    const res = await POST(
+      makeReqWithBody({ clearBrowsingSelection: { expectedUpdatedAt: '2026-06-19T12:00:00Z' } }),
+      { params },
+    );
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.browsingSelectionClearSkipped).toBeUndefined();
+    const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
+    expect(stampWrite!.browsing_selection).toBeNull();
+    expect(stampWrite!.browsing_selection_updated_at).toBeNull();
+  });
+
+  // A revive whose operator never saw a savedAt (a legacy row with a
+  // selection but no timestamp) can still clear it — null matches null.
+  it('clearBrowsingSelection with expectedUpdatedAt:null matches a row with no browsing_selection_updated_at', async () => {
+    const declined = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-20T00:00:00Z',
+      status: 'declined',
+      browsing_selection: { packageId: 'B', selectedItemIds: ['a'] },
+      browsing_selection_updated_at: null,
+    };
+    const { client, updatePayloads } = makeSb(declined);
+    sbRef.current = client;
+
+    const res = await POST(
+      makeReqWithBody({ clearBrowsingSelection: { expectedUpdatedAt: null } }),
+      { params },
+    );
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.browsingSelectionClearSkipped).toBeUndefined();
+    const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
+    expect(stampWrite!.browsing_selection).toBeNull();
+  });
+
+  // Negative control (AGENTS.md — negative-control every guard): omitting the
+  // flag must leave the stale selection untouched, not default-clear it.
+  it('a revive WITHOUT clearBrowsingSelection leaves the stale browsing selection alone', async () => {
+    const declined = {
+      ...FRESH_QUOTE,
+      quote_sent_at: '2026-06-20T00:00:00Z',
+      status: 'declined',
+      browsing_selection: { packageId: 'B', selectedItemIds: ['a', 'b'] },
+      browsing_selection_updated_at: '2026-06-19T00:00:00Z',
+    };
+    const { client, updatePayloads } = makeSb(declined);
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), { params });
+    expect(res.status).toBe(200);
+    const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
+    expect(stampWrite).toBeTruthy();
+    expect('browsing_selection' in stampWrite!).toBe(false);
+    expect('browsing_selection_updated_at' in stampWrite!).toBe(false);
+  });
+
+  // clearBrowsingSelection must be inert outside a revive — a fresh/resend
+  // send must never touch a LIVE quote's real, in-progress browsing selection.
+  it('clearBrowsingSelection is a no-op on a non-revive (fresh) send', async () => {
+    const fresh = {
+      ...FRESH_QUOTE,
+      browsing_selection: { packageId: 'B', selectedItemIds: ['a'] },
+      browsing_selection_updated_at: '2026-06-19T00:00:00Z',
+    };
+    const { client, updatePayloads } = makeSb(fresh);
+    sbRef.current = client;
+
+    const res = await POST(
+      makeReqWithBody({ clearBrowsingSelection: { expectedUpdatedAt: '2026-06-19T00:00:00Z' } }),
+      { params },
+    );
+    expect(res.status).toBe(200);
+    const stampWrite = updatePayloads.find((p) => 'status' in p && p.status === 'sent');
+    expect(stampWrite).toBeTruthy();
+    expect('browsing_selection' in stampWrite!).toBe(false);
+    expect('browsing_selection_updated_at' in stampWrite!).toBe(false);
   });
 });
 
