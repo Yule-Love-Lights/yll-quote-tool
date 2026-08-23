@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { OperatorShell } from '@/components/OperatorShell';
 import { getOperator } from '@/lib/auth/supabaseServer';
 import {
+  countGmailWritebackFailures,
   getOperatorLabels,
   getReopenCounts,
   listDueFollowUps,
@@ -50,9 +51,10 @@ export default async function InboxPage() {
       timed('getReopenCounts', () => getReopenCounts(now)),
       timed('getOperatorLabels', () => getOperatorLabels()),
       timed('listPendingColorRequests', () => listPendingColorRequests()),
+      timed('countGmailWritebackFailures', () => countGmailWritebackFailures()),
     ]),
   );
-  const [openR, followR, metricsR, operatorR, inWorksR, daysR, reopenR, repLabelsR, colorRequestsR] = results;
+  const [openR, followR, metricsR, operatorR, inWorksR, daysR, reopenR, repLabelsR, colorRequestsR, gmailFailR] = results;
   const openRes = openR.value;
   const followRes = followR.value;
   const metricsRes = metricsR.value;
@@ -62,6 +64,7 @@ export default async function InboxPage() {
   const reopen = reopenR.value;
   const repLabels = repLabelsR.value;
   const colorRequestsRes = colorRequestsR.value;
+  const gmailWritebackFailures = gmailFailR.value;
 
   console.log(
     `[inbox-timing] total=${totalMs}ms ` + results.map((r) => `${r.label}=${r.ms}ms`).join(' '),
@@ -89,6 +92,24 @@ export default async function InboxPage() {
             </Link>
           </div>
         </header>
+
+        {/* Row 342: runHandledWriteback's Gmail branch is best-effort (sync.ts) —
+            a dead token fails silently unless something reads what it already
+            persists into handled_channel_sync. Mirrors the send route's
+            eventDateSyncError pattern (a visible failure indicator, not a
+            silent swallow) but as a standing counter rather than a one-shot
+            toast, because the Handled item that failed to sync has already
+            left this page's open list by the time anyone would see a toast. */}
+        {gmailWritebackFailures > 0 && (
+          <div
+            className="rounded-md border p-3 text-sm mb-4"
+            style={{ borderColor: '#dc2626', color: '#dc2626' }}
+          >
+            Gmail write-back failing: {gmailWritebackFailures} Handled item{gmailWritebackFailures === 1 ? '' : 's'} never
+            got the YLL/Handled label in Gmail (the item was still marked Handled here). Check the Gmail
+            connection/token — the real mailbox may not be reflecting what staff have answered.
+          </div>
+        )}
 
         {/* Row 321: rendered independent of every inbox_items row's status —
             see listPendingColorRequests' own doc for why this can never be

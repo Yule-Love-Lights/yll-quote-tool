@@ -1279,6 +1279,30 @@ export async function recordWriteback(itemId: string, sync: unknown): Promise<vo
   await sb.from('inbox_items').update({ handled_channel_sync: sync }).eq('id', itemId);
 }
 
+/**
+ * #342: recordWriteback (above) has always persisted runHandledWriteback's
+ * per-channel outcome into handled_channel_sync — but nothing ever READ it, so
+ * a broken Gmail token failed silently while staff kept marking items Handled.
+ * PR #886 took the Gmail branch from ~4 lead-forward rows to the overwhelming
+ * majority of Gmail traffic (sync.ts's runHandledWriteback doc comment), so a
+ * dead token is now a fleet-wide blind spot, not a corner case.
+ *
+ * Counts every item whose Gmail label write-back is known to have failed
+ * (handled_channel_sync.gmailLabel === 'failed' — set in sync.ts's catch
+ * block). No time window: these are Handled items whose external Gmail state
+ * never actually synced, which stays true until someone fixes the token and
+ * re-runs the write-back — not something that ages out on its own.
+ */
+export async function countGmailWritebackFailures(): Promise<number> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return 0;
+  const { count } = await sb
+    .from('inbox_items')
+    .select('id', { count: 'exact', head: true })
+    .eq('handled_channel_sync->>gmailLabel', 'failed');
+  return count ?? 0;
+}
+
 // ─── Escalation support ─────────────────────────────────────────────────────
 
 export type EscalatableItem = {

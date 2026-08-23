@@ -492,6 +492,7 @@ import {
   closeFollowUpsForResolvedItem,
   closeQuoteInboxNoise,
   completeTerminalQuoteItems,
+  countGmailWritebackFailures,
   dismissItem,
   ensureFollowUp,
   EXCLUDE_LEGACY_REBOOK_FROM_INBOX,
@@ -1206,6 +1207,45 @@ describe('getReopenCounts — window pairs run concurrently (#185)', () => {
     expect(result['30']).toEqual({ handled: 3, reopened: 1 });
     expect(callIndex).toBe(6);
     expect(fromCalls.every((t) => t === 'dashboard_activity')).toBe(true);
+  });
+});
+
+// ─── countGmailWritebackFailures — Gmail write-back failure visibility (#342) ─
+//
+// recordWriteback (untested I/O glue, per this file's own convention) has
+// always persisted runHandledWriteback's per-channel outcome into
+// handled_channel_sync; nothing ever read it back. This is the read side —
+// it counts rows whose Gmail label write-back is known to have failed, which
+// is what /inbox's new banner (page.tsx) renders as a visible count.
+
+describe('countGmailWritebackFailures (#342 — Gmail write-back failure visibility)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('returns 0 when Supabase is unconfigured', async () => {
+    expect(await countGmailWritebackFailures()).toBe(0);
+  });
+
+  it('queries inbox_items filtered on handled_channel_sync->>gmailLabel = failed, and returns the count', async () => {
+    const { builder, calls } = makeBuilder({ data: null, error: null, count: 3 });
+    sbRef.current = { from: () => builder };
+
+    const n = await countGmailWritebackFailures();
+
+    expect(n).toBe(3);
+    expect(
+      calls.some(
+        (c) => c.method === 'eq' && c.args[0] === 'handled_channel_sync->>gmailLabel' && c.args[1] === 'failed',
+      ),
+    ).toBe(true);
+  });
+
+  it('returns 0 (not null) when no row has failed', async () => {
+    const { builder } = makeBuilder({ data: null, error: null, count: 0 });
+    sbRef.current = { from: () => builder };
+
+    expect(await countGmailWritebackFailures()).toBe(0);
   });
 });
 

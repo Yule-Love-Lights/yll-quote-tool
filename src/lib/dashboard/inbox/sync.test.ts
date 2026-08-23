@@ -365,6 +365,44 @@ describe('runHandledWriteback — Gmail write-back targeting (#288 GML split + #
     expect(sync.gmailLabel).toBe('skipped');
   });
 
+  // #342: this catch block has always caught a thrown modifyMessage and
+  // stored 'failed' on the returned sync object — recordWriteback (store.ts)
+  // then persists it into handled_channel_sync unconditionally. What was
+  // MISSING was anything reading that failure back out (countGmailWritebackFailures
+  // + the /inbox banner, added alongside this test). This pins the source of
+  // truth those depend on: a throw is recorded as failed, not silently
+  // swallowed as ok/skipped, and a success is never mistaken for a failure.
+  it('(v) #342 — a thrown modifyMessage is recorded as sync.gmailLabel "failed" with the error message, not silently swallowed as ok/skipped', async () => {
+    const target: HandledTarget = {
+      source: 'gmail',
+      externalId: 'thr-abc123:msg-def456',
+      sourceMessageId: 'msg-def456',
+      ghlContactId: null,
+      displayName: 'Broken Token Customer',
+    };
+    modifyMessageMock.mockRejectedValueOnce(new Error('invalid_grant: token expired'));
+
+    const sync = await runHandledWriteback(target, 'jason');
+
+    expect(sync.gmailLabel).toBe('failed');
+    expect(sync.gmailLabelError).toContain('invalid_grant: token expired');
+  });
+
+  it('(vi) #342 — a successful write-back does NOT record a failure (gmailLabel "ok", no gmailLabelError)', async () => {
+    const target: HandledTarget = {
+      source: 'gmail',
+      externalId: 'thr-abc123:msg-def456',
+      sourceMessageId: 'msg-def456',
+      ghlContactId: null,
+      displayName: 'Working Token Customer',
+    };
+
+    const sync = await runHandledWriteback(target, 'jason');
+
+    expect(sync.gmailLabel).toBe('ok');
+    expect(sync.gmailLabelError).toBeUndefined();
+  });
+
   it('(iii) two rows from the same coalesced thread each get their OWN independent message-level write-back — no cross-talk, no error propagation', async () => {
     const aliceTarget: HandledTarget = {
       source: 'gmail',
