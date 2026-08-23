@@ -99,7 +99,14 @@ export function CustomLibrary() {
         onChange={onUpload}
       />
       {loading ? (
-        <p className="text-sm text-gray-500">Loading…</p>
+        // row 346, mirrors row 332/#171b: was a bare "Loading…" line — replaced
+        // with placeholder tiles matching the grid below so there's no morph
+        // from empty text into the real thumbnails.
+        <div role="status" aria-busy="true" className="grid grid-cols-[repeat(auto-fill,minmax(96px,1fr))] gap-2">
+          <div className="aspect-square animate-pulse rounded bg-black/10" />
+          <div className="aspect-square animate-pulse rounded bg-black/10" />
+          <div className="aspect-square animate-pulse rounded bg-black/10" />
+        </div>
       ) : uploads.length === 0 ? (
         <p className="text-sm text-gray-400">No graphics yet. Click “+ Upload image” to add one.</p>
       ) : (

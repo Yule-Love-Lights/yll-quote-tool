@@ -232,11 +232,18 @@ export function AccountsManager({ currentUserId }: { currentUserId: string }) {
           </thead>
           <tbody>
             {loading ? (
-              <tr>
-                <td colSpan={5} className="px-4 py-6 text-gray-400">
-                  Loading…
-                </td>
-              </tr>
+              // row 346, mirrors row 332/#171b: was a bare "Loading…" cell —
+              // replaced with placeholder rows matching this table's own row
+              // height so there's no morph from empty text into real rows.
+              <>
+                {[0, 1, 2].map((i) => (
+                  <tr key={i} className="border-t border-gray-100">
+                    <td colSpan={5} className="px-4 py-2.5">
+                      <div role={i === 0 ? 'status' : undefined} aria-busy={i === 0 ? true : undefined} className="h-5 animate-pulse rounded bg-black/10" />
+                    </td>
+                  </tr>
+                ))}
+              </>
             ) : users.length === 0 ? (
               <tr>
                 <td colSpan={5} className="px-4 py-6 text-gray-400">
