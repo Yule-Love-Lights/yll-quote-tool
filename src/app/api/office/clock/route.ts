@@ -23,9 +23,13 @@ export const runtime = 'nodejs';
  * treats it as operator-only by default — no allowlist entry needed, and a
  * signed-out request 401s here AND at the perimeter.
  *
- * Every action is idempotent against a double-tap: clocking in when already in
- * returns the open shift, and starting a break when one is open returns it,
- * because the person on the clock cannot see our database and WILL tap twice.
+ * The actions tolerate a double-tap AND a genuine multi-tab / multi-device race,
+ * because the person on the clock cannot see our database and WILL tap twice:
+ * clocking in when already in returns the open shift; starting a break when one
+ * is open is a no-op; and clocking out / ending a break swallow a lost CAS race
+ * when the shift or break is already closed, since the desired end state is
+ * already reached. A clock-out or break-end with NOTHING open at all is a 409,
+ * not a silent success — the person genuinely was not on the clock / on a break.
  */
 
 const SOURCE = 'office' as const;
@@ -90,7 +94,15 @@ export async function POST(req: NextRequest) {
         if (!shift) {
           return NextResponse.json({ error: 'You are not clocked in.' }, { status: 409 });
         }
-        await clockOut(shift.id, crewMemberId, SOURCE);
+        try {
+          await clockOut(shift.id, crewMemberId, SOURCE);
+        } catch (raceError) {
+          // Lost a race to a concurrent clock-out (multi-tab / multi-device): the
+          // CAS matched no still-open row and clockOut threw. If we are now
+          // clocked out, the desired end state is already reached — that is an
+          // idempotent success, not a false 500. Only re-throw a genuine failure.
+          if (await getOpenShift(crewMemberId)) throw raceError;
+        }
         break;
       }
       case 'break-start': {
@@ -115,7 +127,14 @@ export async function POST(req: NextRequest) {
         if (!open) {
           return NextResponse.json({ error: 'You are not on a break.' }, { status: 409 });
         }
-        await endBreak(open.id, crewMemberId, SOURCE);
+        try {
+          await endBreak(open.id, crewMemberId, SOURCE);
+        } catch (raceError) {
+          // Same idempotency as clock-out: if the break is already ended (a lost
+          // race, or a concurrent clock-out auto-closed it), that is the desired
+          // end state, not a failure. Only re-throw if a break is still open.
+          if (await getOpenBreak(shift.id)) throw raceError;
+        }
         break;
       }
     }

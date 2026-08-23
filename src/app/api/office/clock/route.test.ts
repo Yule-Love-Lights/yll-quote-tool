@@ -97,6 +97,22 @@ describe('office clock — actions', () => {
     expect(clockOut).toHaveBeenCalledWith('shift-1', 'crew-1', 'office');
   });
 
+  it('is idempotent on a lost clock-out race (already closed) — 200, not a false 500', async () => {
+    // Pre-check sees an open shift; the CAS then loses a race to a concurrent
+    // clock-out and clockOut throws; the re-check shows we are now clocked out.
+    getOpenShift.mockResolvedValueOnce(OPEN_SHIFT); // pre-check; later calls use the null default
+    clockOut.mockRejectedValueOnce(new Error('clockOut: shift shift-1 is already closed'));
+    const res = await POST(makeReq({ action: 'out' }));
+    expect(res.status).toBe(200);
+  });
+
+  it('re-throws a GENUINE clock-out failure (still clocked in) as 500', async () => {
+    getOpenShift.mockResolvedValue(OPEN_SHIFT); // still open on the re-check → not a race
+    clockOut.mockRejectedValueOnce(new Error('clockOut: db down'));
+    const res = await POST(makeReq({ action: 'out' }));
+    expect(res.status).toBe(500);
+  });
+
   it('409s break-start when not clocked in', async () => {
     getOpenShift.mockResolvedValue(null);
     const res = await POST(makeReq({ action: 'break-start' }));
@@ -134,6 +150,14 @@ describe('office clock — actions', () => {
     const res = await POST(makeReq({ action: 'break-end' }));
     expect(res.status).toBe(200);
     expect(endBreak).toHaveBeenCalledWith('break-1', 'crew-1', 'office');
+  });
+
+  it('is idempotent on a lost break-end race (already ended) — 200, not a false 500', async () => {
+    getOpenShift.mockResolvedValue(OPEN_SHIFT);
+    getOpenBreak.mockResolvedValueOnce(OPEN_BREAK); // pre-check; re-check uses the null default
+    endBreak.mockRejectedValueOnce(new Error('endBreak: break break-1 already ended'));
+    const res = await POST(makeReq({ action: 'break-end' }));
+    expect(res.status).toBe(200);
   });
 
   it('400s an unknown action', async () => {

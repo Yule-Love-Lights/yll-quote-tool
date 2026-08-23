@@ -141,7 +141,11 @@ export function ClockCard() {
   if (load.status === 'unlinked') {
     return (
       <Pill>
-        <span className="text-sm" style={dim} title="An admin can link this login under Settings → Accounts.">
+        <span
+          className="text-sm"
+          style={dim}
+          title="This login isn't linked to a staff time record yet — ask an admin to set it up."
+        >
           Time clock — login not linked
         </span>
       </Pill>

@@ -109,7 +109,7 @@ export function officeDenialResponse(
       return NextResponse.json(
         {
           error:
-            'This login is not linked to a staff member yet. An admin must link it under Settings → Accounts before time can be recorded.',
+            'This login is not linked to a staff record yet. An admin must link it before time can be recorded.',
         },
         { status: 403 },
       );
