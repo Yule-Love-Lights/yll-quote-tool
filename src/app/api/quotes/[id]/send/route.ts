@@ -630,6 +630,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       // Deliberately NOT guarded the other direction: a selection saved
       // AFTER this clear commits is fresh browsing, not stale, and
       // legitimately wins.
+      //
+      // Precision, so nobody later reads this as more than it is (S46
+      // delta-verify): the compare is JS-side against the value THIS
+      // request SELECTed — it is NOT an atomic DB compare-and-swap, and
+      // the stamp UPDATE below carries no .eq() on this column. It NARROWS
+      // the race from minutes (staff menu-open GET -> click) to the few ms
+      // between this route's own SELECT and its UPDATE; it does not close
+      // it. A real CAS would have to condition the single combined stamp
+      // write on this column, which on a mismatch would fail the whole
+      // write and so block the SEND — the opposite of the intended "skip
+      // the clear, never the send".
       if (clearBrowsingSelectionReq) {
         const shownUpdatedAt = clearBrowsingSelectionReq.expectedUpdatedAt;
         const currentUpdatedAt = quote.browsing_selection_updated_at ?? null;
