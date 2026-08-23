@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { OperatorArea } from '@/components/OperatorShell';
 
 type NavItem = { label: string; href: string; match: OperatorArea[] };
@@ -55,6 +55,30 @@ export function OperatorNav({
   const router = useRouter();
   const isActive = (item: NavItem) => item.match.includes(active);
 
+  // Ledger #347: this nav is shared chrome rendered on every operator page,
+  // several of which don't fetch the operator session themselves — so it has
+  // no server-provided session state to start from. It used to render "Sign
+  // out" unconditionally, which LIED on a signed-out browser (nothing to sign
+  // out of). Default to false (don't show a control that isn't real yet) and
+  // confirm via GET /api/auth/session, which reports the true session state
+  // directly (never through the dormancy-aware requireOperator()) so this stays
+  // honest even while the gate is deliberately off.
+  const [signedIn, setSignedIn] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/auth/session')
+      .then(res => (res.ok ? res.json() : { signedIn: false }))
+      .then((body: { signedIn?: boolean }) => {
+        if (!cancelled) setSignedIn(body.signedIn === true);
+      })
+      .catch(() => {
+        if (!cancelled) setSignedIn(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const linkStyle = (item: NavItem) =>
     isActive(item)
       ? { background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }
@@ -103,16 +127,18 @@ export function OperatorNav({
               </Link>
             </li>
           ))}
-          <li>
-            <button
-              type="button"
-              onClick={signOut}
-              className="px-3 py-1.5 rounded-md transition-colors"
-              style={{ color: 'var(--op-text-2)' }}
-            >
-              Sign out
-            </button>
-          </li>
+          {signedIn && (
+            <li>
+              <button
+                type="button"
+                onClick={signOut}
+                className="px-3 py-1.5 rounded-md transition-colors"
+                style={{ color: 'var(--op-text-2)' }}
+              >
+                Sign out
+              </button>
+            </li>
+          )}
         </ul>
 
         {/* Mobile + tablet-portrait: hamburger toggle (shown below lg / 1024px) */}
@@ -154,19 +180,21 @@ export function OperatorNav({
               </Link>
             </li>
           ))}
-          <li>
-            <button
-              type="button"
-              onClick={() => {
-                setOpen(false);
-                void signOut();
-              }}
-              className="block w-full text-left px-4 py-3 text-sm font-medium border-b"
-              style={{ borderColor: 'var(--op-border)', color: 'var(--op-text-2)' }}
-            >
-              Sign out
-            </button>
-          </li>
+          {signedIn && (
+            <li>
+              <button
+                type="button"
+                onClick={() => {
+                  setOpen(false);
+                  void signOut();
+                }}
+                className="block w-full text-left px-4 py-3 text-sm font-medium border-b"
+                style={{ borderColor: 'var(--op-border)', color: 'var(--op-text-2)' }}
+              >
+                Sign out
+              </button>
+            </li>
+          )}
         </ul>
       )}
     </nav>
