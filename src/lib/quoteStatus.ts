@@ -188,6 +188,45 @@ export function canRevive(status: QuoteStatus): boolean {
 }
 
 /**
+ * Ledger row 338 (identity-freeze STICKY hatch — closes a #839 residual):
+ * true once a quote has EVER crossed the #251/#839 approval line, even after
+ * a decline/revive cycle clears `customer_approved_at` back to null.
+ *
+ * The #251/#839 identity freeze reads `customer_approved_at`/`deposit_paid_at`
+ * as its live signal — correct while a quote stays approved, but #116's revive
+ * write (send/route.ts) deliberately NULLS `customer_approved_at` on a
+ * declined→sent revive (so `deriveStatus` doesn't resurrect the row to
+ * 'approved' — see quoteStatus.test.ts's "resurrection proof" suite). That
+ * clear also silently UNFROZE the identity: a revive→decline→revive cycle
+ * could walk a customer's identity link right back open with no explicit
+ * unfreeze step. This function is the sticky backstop every freeze check
+ * ORs in alongside the live columns.
+ *
+ * approval_snapshot is the signal, but it is NOT simply "non-null" — both
+ * staff-decline and staff-abandon ALSO write a non-null approval_snapshot
+ * (a `{ ...existing, staffDeclined: {...} }` / `staffAbandoned` audit
+ * marker) on quotes that were NEVER approved, so a bare null-check would
+ * over-freeze quotes that never crossed the line at all. The two markers
+ * that DO mean "this row was really approved" are `approvedAt` (the
+ * customer /approve route's top-level ApprovalSnapshot field) and
+ * `staffApproved` (staff-approve's own nested marker — it has no top-level
+ * `approvedAt`). Both are written in the SAME atomic update that sets
+ * `customer_approved_at` (approve/route.ts, staff-approve/route.ts), and
+ * neither is ever removed afterward: staff-decline/staff-abandon only ADD
+ * their own key via a spread (never drop existing ones), and every
+ * amend-family rewrite (amend/free-items/apply-color-request/
+ * color-change-request) spreads the prior snapshot forward too. That makes
+ * this readable on every ALREADY-approved row in prod today — no
+ * migration/backfill needed to turn this on.
+ */
+export function wasEverApproved(row: { approval_snapshot: unknown }): boolean {
+  const snap = row.approval_snapshot;
+  if (!snap || typeof snap !== 'object') return false;
+  const s = snap as Record<string, unknown>;
+  return s.approvedAt != null || s.staffApproved != null;
+}
+
+/**
  * Ledger row 236 — true for the two terminal statuses whose portal stays
  * BROWSABLE (colors, line-item toggles) instead of hard-blocked, per Jason's
  * want: declined/abandoned. Same predicate as canRevive above, loose-typed

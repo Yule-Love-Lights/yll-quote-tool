@@ -12,8 +12,15 @@
 //   - Same status field + reason column written as the customer decline:
 //     status='declined', decline_reason=<reason or a staff marker>.
 //   - Same legal-transition gate: canTransition(from, 'declined') — declinable
-//     only from {sent, viewed, changes_requested} (NOT approved/booked/terminal),
-//     derived from the canonical table so it can never drift from quoteStatus.ts.
+//     from {draft, sent, viewed, changes_requested, approved} (NOT
+//     booked/terminal; #124 is what added 'approved' to this set — declined
+//     from approved means the customer backed out before paying a deposit,
+//     which is money-safe by construction, see quoteStatus.ts's own #124
+//     comment), derived from the canonical table so it can never drift from
+//     quoteStatus.ts. (Row 340: this comment previously said "sent-only",
+//     which was stale the moment #124 shipped — DECLINABLE_FROM below is
+//     computed FROM the table, so the code was always right; only the prose
+//     had drifted.)
 //   - Same guarded write as the customer decline route (.or(declinable).is(
 //     deposit_paid_at, null)) so a concurrent approval/booking can't be raced past.
 //   - Audit marker, mirroring staff-approve's approval_snapshot.staffApproved:

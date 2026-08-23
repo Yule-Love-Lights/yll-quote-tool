@@ -14,6 +14,34 @@
 //   short-circuiting on the old quote_sent_at. CANCELLED stays excluded
 //   (post-booking — refunds are manual, rebook-only). A revive with
 //   deposit_paid_at already set is refused 409 (fail closed).
+// Row 340: a revive reseeds the customer's portal from whatever
+//   browsing_selection they last saved BEFORE declining/abandoning (ledger row
+//   239's live-selection persist, widened to stay browsable post-decline by
+//   row 236) — the operator previously had no visibility into this and no way
+//   to reset it. Body accepts an optional
+//   `clearBrowsingSelection: { expectedUpdatedAt: string | null }` (only
+//   meaningful on a revive) to wipe that stale selection as part of THIS SAME
+//   guarded stamp write, so the customer's portal reopens on the normal
+//   staff-recommended default instead of picking back up where they left off
+//   pre-decline. PipelineActionsMenu.tsx surfaces the stale selection (via
+//   GET /api/pipeline/[quoteId]'s staleBrowsingSelection) and asks the
+//   operator before sending this field. A no-op on any non-revive send.
+//   Premerge fix round (row 340, technical+customer+admin MED, converged):
+//   the customer's DECLINED/ABANDONED portal stays deliberately browsable
+//   (row 236), so a fresh selection can land between the staff menu-open GET
+//   and the send+clear click — a bare clear would silently destroy a
+//   selection NEWER than the one the operator was shown. `expectedUpdatedAt`
+//   is the `savedAt` the operator was shown; the clear only fires when the
+//   row's CURRENT browsing_selection_updated_at (read by this same request's
+//   own SELECT, below) still equals it. A mismatch SKIPS the clear (never the
+//   send — the stamp write still proceeds) and the response's
+//   `browsingSelectionClearSkipped: true` tells the operator their clear was
+//   dropped because the selection changed under them. Deliberately NOT
+//   guarded the other direction: a selection saved AFTER the clear commits is
+//   fresh browsing, not stale, and legitimately wins. The clear also stamps
+//   `approval_snapshot.browsingSelectionCleared = { by, at, packageId,
+//   itemCount }`, mirroring staff-decline's `approval_snapshot.staffDeclined`
+//   audit marker for the same class of operator-initiated destructive change.
 // Response:
 //   { ok: true, sentAt: ISO, stageUpdated: boolean, opportunityCreated: boolean,
 //     opportunityId: string | null, stageError?: string, ghlRetry: boolean,
@@ -21,7 +49,11 @@
 //     smsSent: boolean,
 //     emailSent: boolean, messageError?: string, failedChannels: ('sms'|'email')[],
 //     channel: 'sms' | 'email' | 'both', alreadySent?: boolean, revived?: true,
+//     browsingSelectionClearSkipped?: true,
 //     channelOutcomes?: { sms: ChannelOutcome | null, email: ChannelOutcome | null } }
+//     — browsingSelectionClearSkipped (row 340 fix round) is present only when
+//     the operator asked to clear the stale browsing selection and the TOCTOU
+//     guard dropped it (see the route header) — the send itself still succeeded.
 //     — eventDateSyncError (#237 FIX A) is present only for an EVENT quote
 //     with a real event date and a linked contact: undefined means either
 //     "not applicable" or "pushed fine," a string means the push to GHL's
@@ -85,7 +117,7 @@ import {
   quoteEmailHtml,
 } from '@/lib/integrations/quoteMessages';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
-import { requireOperator } from '@/lib/auth/supabaseServer';
+import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
 import { deriveStatus, canRevive } from '@/lib/quoteStatus';
 import { attachQuoteToCustomer, propagateQuoteTagsToCustomer, quoteRowToIdentity } from '@/lib/customers';
 import {
@@ -273,6 +305,16 @@ type QuoteRow = {
   // src/lib/event/types.ts's EventInputFields). Not selected before this row;
   // added specifically for the event-date push below.
   inputs: QuoteInputs | null;
+  // Row 340 fix round: the CAS + audit-stamp source for a revive's optional
+  // browsing-selection clear (see the route header). browsing_selection_updated_at
+  // is the version this request's clear is checked against;  browsing_selection
+  // itself supplies the packageId/itemCount recorded in the audit marker.
+  browsing_selection: { packageId?: unknown; selectedItemIds?: unknown } | null;
+  browsing_selection_updated_at: string | null;
+  // Audit marker column (mirrors staff-decline's approval_snapshot.staffDeclined) —
+  // spread-preserved so a browsing-selection-clear stamp never clobbers an
+  // existing snapshot entry.
+  approval_snapshot: Record<string, unknown> | null;
 };
 
 export function hasDeliverableQuoteResult(
@@ -317,11 +359,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // Task 10 — Send channel split: accept an optional body { channel?: 'email' | 'sms' | 'both' }.
   // Default is 'both' (back-compat — the admin Send button posts no body).
   // Guard against a double-read: the body is only ever read once here.
-  let sendBody: { channel?: unknown } = {};
+  // Row 340: also accepts `clearBrowsingSelection?: { expectedUpdatedAt: string | null }`
+  // — see the route header. Read here (not deferred to the isRevive branch
+  // below) so both fields come from the ONE body read.
+  let sendBody: { channel?: unknown; clearBrowsingSelection?: unknown } = {};
   try { sendBody = await req.json(); } catch { sendBody = {}; }
   const channel = (sendBody.channel === 'sms' || sendBody.channel === 'email' || sendBody.channel === 'both')
     ? sendBody.channel
     : 'both';
+  const clearBrowsingSelectionReq = (() => {
+    const raw = sendBody.clearBrowsingSelection;
+    if (!raw || typeof raw !== 'object') return null;
+    const expected = (raw as Record<string, unknown>).expectedUpdatedAt;
+    if (expected !== null && typeof expected !== 'string') return null;
+    return { expectedUpdatedAt: expected as string | null };
+  })();
   const doSms   = channel === 'both' || channel === 'sms';
   const doEmail = channel === 'both' || channel === 'email';
 
@@ -329,7 +381,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { data: quote, error: fetchErr } = await withDbTimeout((signal) =>
     sb
       .from('quotes')
-      .select('id, highlevel_opportunity_id, highlevel_contact_id, customer_name, service_type, total, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status, ghl_stage_synced_at, is_test, legacy_rebook, is_nce, view_only, customer_id, customer_email, customer_phone, customer_address, inputs')
+      .select('id, highlevel_opportunity_id, highlevel_contact_id, customer_name, service_type, total, result, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, status, ghl_stage_synced_at, is_test, legacy_rebook, is_nce, view_only, customer_id, customer_email, customer_phone, customer_address, inputs, browsing_selection, browsing_selection_updated_at, approval_snapshot')
       .eq('id', id)
       .abortSignal(signal)
       .single<QuoteRow>(),
@@ -529,6 +581,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     ? (quote.quote_sent_at ?? new Date().toISOString())
     : new Date().toISOString();
 
+  // Row 340 fix round: true only when the operator asked to clear the stale
+  // browsing selection AND that ask was dropped because the row's
+  // browsing_selection_updated_at no longer matched what they were shown —
+  // surfaced in the response so the operator knows the selection is still
+  // there (see the route header + stampPayload construction below).
+  let browsingSelectionClearSkipped = false;
+
   // Stamp the DB FIRST (fresh send only), before the HL call, so we don't
   // double-fire the stage move on retries. Same pattern as /approve.
   if (!isGhlRetry && !isDeliveryRetry) {
@@ -550,6 +609,63 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       // and are useful history ("declined once, revived on <date>").
       stampPayload.customer_approved_at = null;
       stampPayload.viewed_at = null;
+      // Row 340: an explicit operator choice (surfaced from the pipeline
+      // menu's pre-send prompt, see the route header) to wipe the stale
+      // pre-decline browsing selection as part of THIS SAME guarded write —
+      // never a default, and never touched on a non-revive send (the
+      // ordinary browsing-selection route already refuses to write over an
+      // approval, and a live sent/viewed quote's selection is real,
+      // in-progress customer data this route has no business clearing).
+      //
+      // Premerge fix round (row 340, technical+customer+admin MED, converged
+      // TOCTOU): the operator's choice was made against the `savedAt` GET
+      // /api/pipeline/[quoteId] showed them at menu-open time, which can be
+      // stale by the time this request lands — the portal stays browsable
+      // post-decline (row 236), so the customer can save a NEW selection in
+      // that window. `expectedUpdatedAt` is that shown `savedAt`; the clear
+      // only fires when the row's CURRENT browsing_selection_updated_at
+      // (read by this request's own SELECT above, so as fresh as this route
+      // ever gets) still matches. A mismatch skips the clear — never the
+      // send — and browsingSelectionClearSkipped tells the operator why.
+      // Deliberately NOT guarded the other direction: a selection saved
+      // AFTER this clear commits is fresh browsing, not stale, and
+      // legitimately wins.
+      //
+      // Precision, so nobody later reads this as more than it is (S46
+      // delta-verify): the compare is JS-side against the value THIS
+      // request SELECTed — it is NOT an atomic DB compare-and-swap, and
+      // the stamp UPDATE below carries no .eq() on this column. It NARROWS
+      // the race from minutes (staff menu-open GET -> click) to the few ms
+      // between this route's own SELECT and its UPDATE; it does not close
+      // it. A real CAS would have to condition the single combined stamp
+      // write on this column, which on a mismatch would fail the whole
+      // write and so block the SEND — the opposite of the intended "skip
+      // the clear, never the send".
+      if (clearBrowsingSelectionReq) {
+        const shownUpdatedAt = clearBrowsingSelectionReq.expectedUpdatedAt;
+        const currentUpdatedAt = quote.browsing_selection_updated_at ?? null;
+        if (currentUpdatedAt === shownUpdatedAt) {
+          stampPayload.browsing_selection = null;
+          stampPayload.browsing_selection_updated_at = null;
+          // Audit trace (admin MED): mirrors staff-decline's
+          // approval_snapshot.staffDeclined marker for the same class of
+          // operator-initiated destructive change. packageId/itemCount only
+          // — never serialize the whole selection into the audit trail.
+          const operator = await getOperator();
+          const rawSelection = quote.browsing_selection;
+          stampPayload.approval_snapshot = {
+            ...(quote.approval_snapshot ?? {}),
+            browsingSelectionCleared: {
+              by: operator?.email ?? null,
+              at: sentAt,
+              packageId: typeof rawSelection?.packageId === 'string' ? rawSelection.packageId : null,
+              itemCount: Array.isArray(rawSelection?.selectedItemIds) ? rawSelection.selectedItemIds.length : 0,
+            },
+          };
+        } else {
+          browsingSelectionClearSkipped = true;
+        }
+      }
     }
     // #187b TOCTOU: the view_only check above (and the deposit_paid_at check
     // baked into isRevive's 409 above) are fast-path reads — staff could flip
@@ -615,6 +731,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // problem (or nothing was attempted); a string = the push was attempted
   // (a real event date existed) and pushEventDateToGhl reported pushed:false.
   let eventDateSyncError: string | undefined;
+  // #314 fix round (staff-lens HIGH): set only when this push actually
+  // succeeded, to the exact MM/DD/YYYY value pushed — stamped onto
+  // quotes.ghl_event_date_pushed below (same write as the stage-sync
+  // persist) so the approval-time reconcile (and any future save) can tell
+  // "our date changed since we last confirmed a push" from "GHL currently
+  // disagrees with us." See ghlEventDate.ts's migration comment / the
+  // approve route's own #314 comment for the full reasoning.
+  let eventDatePushedValue: string | undefined;
 
   // Per-service-type pipeline/stage resolution (#GHL pipeline sync) — holiday
   // still honors the legacy HIGHLEVEL_PIPELINE_ID/STAGE_* env vars when set
@@ -818,16 +942,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // (the deliberate "quietly do nothing" case a few lines up) never
     // manufactures a false warning; it only means there's nothing to warn
     // about.
+    const formattedEventDateForPush = formatEventDateForGhl(quote.inputs?.event?.eventDate);
     if (
       quote.service_type === 'event' &&
       !quote.is_test &&
       quote.highlevel_contact_id &&
-      formatEventDateForGhl(quote.inputs?.event?.eventDate)
+      formattedEventDateForPush
     ) {
       const { pushed } = await pushEventDateToGhl(quote.highlevel_contact_id, quote.inputs?.event?.eventDate);
       if (!pushed) {
         eventDateSyncError =
           'The event date may not have synced to HighLevel — check the CRM contact, or retry below.';
+      } else {
+        // #314 fix round: record the CONFIRMED value so the syncPayload
+        // write below can stamp quotes.ghl_event_date_pushed.
+        eventDatePushedValue = formattedEventDateForPush;
       }
     }
 
@@ -837,9 +966,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // error and stamp ghl_stage_synced_at; on failure record the reason and leave
     // ghl_stage_synced_at NULL (the ?retryGhl reconcile bucket). This write is
     // itself best-effort — its failure only logs, never undoes the send.
-    const syncPayload = quote.is_test || stageUpdated
-      ? { ghl_stage_synced_at: new Date().toISOString(), ghl_sync_error: null }
-      : { ghl_sync_error: stageError ?? 'GHL stage not synced' };
+    const syncPayload = {
+      ...(quote.is_test || stageUpdated
+        ? { ghl_stage_synced_at: new Date().toISOString(), ghl_sync_error: null }
+        : { ghl_sync_error: stageError ?? 'GHL stage not synced' }),
+      // #314 fix round: only present when this send actually confirmed a
+      // push — never overwrites the marker with something on a skip/failure.
+      ...(eventDatePushedValue ? { ghl_event_date_pushed: eventDatePushedValue } : {}),
+    };
     const { error: syncErr } = await withDbTimeout((signal) =>
       sb.from('quotes').update(syncPayload).eq('id', id).abortSignal(signal),
     );
@@ -1137,6 +1271,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         // mirror it here too so a split failure (delivery fails AND the
         // event-date push failed) doesn't drop this half of the picture.
         eventDateSyncError,
+        // Row 340 fix round: mirror the 200 body's field below — a split
+        // failure (delivery fails AND the browsing-selection clear was
+        // dropped by the TOCTOU guard) must not lose this half either.
+        ...(browsingSelectionClearSkipped ? { browsingSelectionClearSkipped: true } : {}),
       },
       { status: 502 },
     );
@@ -1170,5 +1308,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // #116: flags a revive run (declined/abandoned → sent on the SAME quote) so
     // the operator UI can distinguish it from a fresh/first send.
     ...(isRevive ? { revived: true } : {}),
+    // Row 340 fix round: present only when the operator asked to clear the
+    // stale browsing selection and the TOCTOU guard dropped it (the row's
+    // browsing_selection_updated_at no longer matched what they were shown)
+    // — the send itself still succeeded; only the clear was skipped.
+    ...(browsingSelectionClearSkipped ? { browsingSelectionClearSkipped: true } : {}),
   });
 }

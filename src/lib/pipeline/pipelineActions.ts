@@ -19,6 +19,12 @@ export type PipelineRecord = {
   viewOnly: boolean;
   job?: { id: string; status: JobStatus } | null;
   invoice?: { id: string; status: InvoiceStatus; balance: number } | null;
+  // Row 340: present only for a declined/abandoned quote that still carries a
+  // pre-decline browsing selection (see GET /api/pipeline/[quoteId]) — purely
+  // informational, read by PipelineActionsMenu's 'send' case to warn the
+  // operator before a revive silently reseeds the portal from it. Never
+  // affects which actions pipelineActions() below offers.
+  staleBrowsingSelection?: { packageId: string | null; itemCount: number; savedAt: string | null } | null;
 };
 
 export type PipelineAction =

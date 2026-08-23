@@ -502,7 +502,12 @@ alter table designs
   add column if not exists extra_photos jsonb,
   -- 2026-07-02 a staff title for the BASE photo (renameable "Photo 1" tab,
   -- like the extras' own titles). Nullable — null renders as "Photo 1".
-  add column if not exists photo_title text;
+  add column if not exists photo_title text,
+  -- 2026-08-20 compare-and-swap guard for the scene autosave (ledger row
+  -- 260, migrations/2026-08-20-designs-scene-version.sql). Every scene write
+  -- goes UPDATE ... WHERE version = <last-read value> SET version =
+  -- version + 1 — zero rows updated means a concurrent writer won the race.
+  add column if not exists version integer not null default 1;
 
 alter table designs enable row level security;
 
@@ -2406,3 +2411,21 @@ alter table public.quotes
 
 comment on column public.quotes.browsing_selection is
   'Customer''s LIVE, still-editable portal selection (ledger row 239) — packageId/selectedItemIds/rushSelected/takedownSelected/installTiming/colorSchemeId/customPattern/permanentEffect. NOT the frozen agreement (see approval_snapshot); never trusted for money math; reconciled against live packages/lineItems on read (resolveBrowsingSelectionSeed). Written only pre-approval by /api/quotes/[id]/selection.';
+
+-- ---------------------------------------------------------------------
+-- quotes.ghl_event_date_pushed (2026-08-22,
+-- migrations/2026-08-22-quotes-ghl-event-date-pushed.sql) — ledger #314 fix
+-- round (staff-lens HIGH): the MM/DD/YYYY value last CONFIRMED pushed to
+-- GHL's "Event Date" custom field, so every push site (send route,
+-- quote/route.ts's date-changing update, the approve route reconcile)
+-- compares "did OUR side change since we last pushed" instead of "does GHL
+-- currently agree with us" — the latter silently reverts a staff correction
+-- made directly in GHL. Nullable, no backfill; null = legacy/never-
+-- confirmed-pushed row, handled conservatively (only overwrite an EMPTY GHL
+-- value).
+-- ---------------------------------------------------------------------
+alter table public.quotes
+  add column if not exists ghl_event_date_pushed text;
+
+comment on column public.quotes.ghl_event_date_pushed is
+  'MM/DD/YYYY value last CONFIRMED pushed to GHL''s "Event Date" custom field (ledger #314). Stamped by every push site (send route, quote/route.ts''s date-changing update, the approve route reconcile) on a successful push. Compared against the quote''s current formatted event date to detect "our side changed since the last push" — never compared against GHL''s live value, which would silently revert a staff correction made directly in GHL. Null = legacy/never-confirmed-pushed row.';
