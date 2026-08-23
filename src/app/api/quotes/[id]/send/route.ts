@@ -731,6 +731,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // problem (or nothing was attempted); a string = the push was attempted
   // (a real event date existed) and pushEventDateToGhl reported pushed:false.
   let eventDateSyncError: string | undefined;
+  // #314 fix round (staff-lens HIGH): set only when this push actually
+  // succeeded, to the exact MM/DD/YYYY value pushed — stamped onto
+  // quotes.ghl_event_date_pushed below (same write as the stage-sync
+  // persist) so the approval-time reconcile (and any future save) can tell
+  // "our date changed since we last confirmed a push" from "GHL currently
+  // disagrees with us." See ghlEventDate.ts's migration comment / the
+  // approve route's own #314 comment for the full reasoning.
+  let eventDatePushedValue: string | undefined;
 
   // Per-service-type pipeline/stage resolution (#GHL pipeline sync) — holiday
   // still honors the legacy HIGHLEVEL_PIPELINE_ID/STAGE_* env vars when set
@@ -934,16 +942,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // (the deliberate "quietly do nothing" case a few lines up) never
     // manufactures a false warning; it only means there's nothing to warn
     // about.
+    const formattedEventDateForPush = formatEventDateForGhl(quote.inputs?.event?.eventDate);
     if (
       quote.service_type === 'event' &&
       !quote.is_test &&
       quote.highlevel_contact_id &&
-      formatEventDateForGhl(quote.inputs?.event?.eventDate)
+      formattedEventDateForPush
     ) {
       const { pushed } = await pushEventDateToGhl(quote.highlevel_contact_id, quote.inputs?.event?.eventDate);
       if (!pushed) {
         eventDateSyncError =
           'The event date may not have synced to HighLevel — check the CRM contact, or retry below.';
+      } else {
+        // #314 fix round: record the CONFIRMED value so the syncPayload
+        // write below can stamp quotes.ghl_event_date_pushed.
+        eventDatePushedValue = formattedEventDateForPush;
       }
     }
 
@@ -953,9 +966,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // error and stamp ghl_stage_synced_at; on failure record the reason and leave
     // ghl_stage_synced_at NULL (the ?retryGhl reconcile bucket). This write is
     // itself best-effort — its failure only logs, never undoes the send.
-    const syncPayload = quote.is_test || stageUpdated
-      ? { ghl_stage_synced_at: new Date().toISOString(), ghl_sync_error: null }
-      : { ghl_sync_error: stageError ?? 'GHL stage not synced' };
+    const syncPayload = {
+      ...(quote.is_test || stageUpdated
+        ? { ghl_stage_synced_at: new Date().toISOString(), ghl_sync_error: null }
+        : { ghl_sync_error: stageError ?? 'GHL stage not synced' }),
+      // #314 fix round: only present when this send actually confirmed a
+      // push — never overwrites the marker with something on a skip/failure.
+      ...(eventDatePushedValue ? { ghl_event_date_pushed: eventDatePushedValue } : {}),
+    };
     const { error: syncErr } = await withDbTimeout((signal) =>
       sb.from('quotes').update(syncPayload).eq('id', id).abortSignal(signal),
     );
