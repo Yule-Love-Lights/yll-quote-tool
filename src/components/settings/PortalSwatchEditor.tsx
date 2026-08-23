@@ -176,7 +176,16 @@ export function PortalSwatchEditor({
       <h2 className="text-[15px] font-medium text-gray-900">{title}</h2>
       <p className="text-sm text-gray-500 mt-1 leading-relaxed">{description}</p>
 
-      {status === 'loading' && <p className="text-sm text-gray-400 mt-4">Loading…</p>}
+      {/* row 332, mirrors #171b: was a bare "Loading…" line gating the whole
+          scheme list below — replaced with placeholder rows matching that
+          list's own shape so there's no morph from empty text into rows. */}
+      {status === 'loading' && (
+        <div role="status" aria-busy="true" className="mt-4 space-y-2.5">
+          <div className="h-10 animate-pulse rounded-md bg-black/10" />
+          <div className="h-10 animate-pulse rounded-md bg-black/10" />
+          <div className="h-10 animate-pulse rounded-md bg-black/10" />
+        </div>
+      )}
 
       {status !== 'loading' && (
         <>

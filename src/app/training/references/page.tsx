@@ -6,6 +6,7 @@ import { OperatorShell } from '@/components/OperatorShell';
 import type { StoredReferenceAsset, ReferenceAssetType } from '@/lib/referenceAssets';
 import { GARLAND_LENGTHS } from '@/lib/design/sceneCorrections';
 import { downscaleForUpload } from '@/lib/clientImage';
+import { TrainingRowsSkeleton } from '../TrainingRowsSkeleton';
 
 const SPRITZER_SIZES = ['16', '24', '32'];
 const WREATH_SIZES = ['24noble', '30noble', '36noble', '48noble', '60noble', '72noble'];
@@ -189,7 +190,11 @@ export default function ReferenceLibraryPage() {
           </div>
         </div>
 
-        {loading && <p className="text-sm text-gray-500">Loading…</p>}
+        {/* Same skeleton the route's loading.tsx shows (row 332, mirrors
+            #171b) — was a bare "Loading…" line, which made the route-transition
+            skeleton morph into something sparser before morphing again into the
+            real list once the client-side GET /api/references fetch resolved. */}
+        {loading && <TrainingRowsSkeleton />}
 
         {(['wreath', 'spritzer', 'garland'] as ReferenceAssetType[]).map(t => (
           <div key={t} className="mb-6">
