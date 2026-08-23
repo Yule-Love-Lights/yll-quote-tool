@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { isLineDrawContext } from "./drawContext";
+import { sumMiniStringCount } from "./miniGroupBilling";
+import type { StrandItem, MiniAreaItem } from "@/lib/design/sceneTypes";
 
 // #203: unit coverage for the shared "line drawing" context gate that both
 // editor.ts's isStrandDrawContext() (#63) and isTraceDrawContext() (#203)
@@ -104,5 +106,51 @@ describe("isLineDrawContext", () => {
     expect(
       isLineDrawContext({ ...base, category: "poles" as const, drawingStyle: "trace" as const }, "trace"),
     ).toBe(false);
+  });
+});
+
+// #334: editor.ts's groupSelectedMini seeds a new MiniGroupItem's billed
+// stringCount from sumMiniStringCount (this module), the SUM of the grouped
+// members' own counts — not just one member's, which silently dropped the
+// other members' strings from the bill. Money-neutral by construction:
+// grouping never changes the total billed string count.
+const strand = (stringCount?: number): StrandItem => ({
+  id: `s-${Math.random()}`,
+  yardstickId: null,
+  kind: "strand",
+  bulbType: "mini",
+  spacingIn: 6,
+  drawingStyle: "strand",
+  colorPattern: ["warm-white"],
+  points: [0, 0, 10, 10],
+  stringCount,
+});
+const miniArea = (stringCount?: number): MiniAreaItem => ({
+  id: `a-${Math.random()}`,
+  yardstickId: null,
+  kind: "miniArea",
+  shape: "box",
+  stringCount,
+});
+
+describe("sumMiniStringCount", () => {
+  it("sums a mixed strand + scattershot selection's own counts — the #334 bug (billed 1 of 5)", () => {
+    // A 4-string scattershot grouped with a 1-string strand: the bug seeded
+    // from the FIRST member alone (whichever the caller happened to pass
+    // first) and silently billed 1, dropping 80% of the strings.
+    expect(sumMiniStringCount([miniArea(4), strand(1)])).toBe(5);
+    expect(sumMiniStringCount([strand(1), miniArea(4)])).toBe(5);
+  });
+
+  it("sums a strand-only selection", () => {
+    expect(sumMiniStringCount([strand(2), strand(3), strand(1)])).toBe(6);
+  });
+
+  it("defaults an unset member stringCount to 1, same as the billed default elsewhere", () => {
+    expect(sumMiniStringCount([strand(undefined), strand(2)])).toBe(3);
+  });
+
+  it("a single-member group still sums to that member's own count (no regression on the common case)", () => {
+    expect(sumMiniStringCount([strand(3)])).toBe(3);
   });
 });
