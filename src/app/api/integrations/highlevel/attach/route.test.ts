@@ -24,6 +24,12 @@ vi.mock('@/lib/supabase', () => ({
   getSupabaseServiceClient: () => sbRef.current,
 }));
 
+// ledger #347: requireOperator is now engaged by default (it used to be
+// dormant unless AUTH_GATE_ENABLED==='true'). This suite is about the attach
+// route's own logic, not auth, so stub it authorized like the other route.ts
+// test suites do.
+vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: vi.fn(async () => null) }));
+
 // #214: importOriginal keeps quoteRowToIdentity (pure sentinel translation)
 // REAL — only the DB-touching fn is mocked.
 vi.mock('@/lib/customers', async (importOriginal) => ({
