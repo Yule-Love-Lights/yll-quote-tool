@@ -67,7 +67,22 @@ import { POST } from './route';
 function makeSb(
   quote: Record<string, unknown> | null,
   updateErr: { message: string } | null = null,
-  opts: { identityCasMatch?: boolean } = {},
+  opts: {
+    identityCasMatch?: boolean;
+    // Fix-round HIGH (data-loss bug): makes any `.select('approval_snapshot')`
+    // read (readApprovalSnapshot — used at all four refusal call sites AND
+    // inside logIdentityRefusal's own internal retry) fail, so the bail-out
+    // path is actually reachable in the test harness. Never affects the
+    // wide-column quote/detach pre-read (a different `.select(...)` string),
+    // so the freeze branches themselves are unaffected.
+    approvalSnapshotReadFails?: boolean;
+    // Row 326 fix-round MED: how many times logIdentityRefusal's own value
+    // CAS (the approval_snapshot equality filter) reports "0 rows matched"
+    // before it succeeds — 0 (default) matches immediately, 1 misses once
+    // then succeeds on the internal retry, 2 exhausts both attempts (gives
+    // up, no entry ever lands).
+    auditCasMissCount?: number;
+  } = {},
 ) {
   // identityCasMatch controls whether a CAS write's `.is(...)` conditions
   // would match in a real DB — false simulates approval/booking having
@@ -81,7 +96,10 @@ function makeSb(
   // not frozen) so every pre-#839 test above, which never touches this
   // option, keeps behaving exactly as before.
   const casMatch = opts.identityCasMatch ?? true;
+  let auditCasMissesRemaining = opts.auditCasMissCount ?? 0;
   let isUpdate = false;
+  let pendingUpdatePayload: Record<string, unknown> | undefined;
+  let lastSelectCols: string | undefined;
   // Row 326 residual (b): records every update() payload (in call order) so
   // tests can assert on the audit-marker write's shape without adding a
   // fourth chain kind — the marker write is a plain
@@ -106,22 +124,55 @@ function makeSb(
     };
     return chain;
   }
+  // Fix-round MED: logIdentityRefusal's write is a DIFFERENT chain shape from
+  // the route's other CAS writes above — a value CAS (`.eq('approval_snapshot',
+  // JSON.stringify(prior))` instead of `.is(...)`), and it's awaited directly
+  // after `.select('id')` with NO `.maybeSingle()` (array-returning, like the
+  // real amend/free-items siblings). Dispatched below whenever the update
+  // payload carries an `approval_snapshot` key — no other write in this route
+  // ever does.
+  function makeAuditWriteChain() {
+    const chain: Record<string, unknown> = {
+      eq: () => chain,
+      select: () => chain,
+      then: (resolve: (v: { data: unknown[] | null; error: unknown }) => void) => {
+        if (updateErr) return resolve({ data: null, error: updateErr });
+        if (auditCasMissesRemaining > 0) {
+          auditCasMissesRemaining -= 1;
+          return resolve({ data: [], error: null }); // 0 rows matched
+        }
+        return resolve({ data: [{ id: 'matched' }], error: null });
+      },
+    };
+    return chain;
+  }
   Object.assign(builder, {
     from: () => builder,
-    select: () => builder,
+    select: (cols?: string) => {
+      lastSelectCols = cols;
+      return builder;
+    },
     update: (payload: Record<string, unknown>) => {
       updateCalls.push(payload);
       isUpdate = true;
+      pendingUpdatePayload = payload;
       return builder;
     },
     eq: () => {
       if (isUpdate) {
         isUpdate = false;
-        return makeUpdateChain();
+        const payload = pendingUpdatePayload;
+        pendingUpdatePayload = undefined;
+        return payload && 'approval_snapshot' in payload ? makeAuditWriteChain() : makeUpdateChain();
       }
       return builder;
     },
-    maybeSingle: async () => ({ data: quote, error: null }),
+    maybeSingle: async () => {
+      if (opts.approvalSnapshotReadFails && lastSelectCols === 'approval_snapshot') {
+        return { data: null, error: { message: 'db read failed (simulated)' } };
+      }
+      return { data: quote, error: null };
+    },
   });
   return builder;
 }
@@ -622,6 +673,10 @@ describe('HighLevel attach — refusal audit trace (row 326 residual b)', () => 
       ...HOLIDAY_QUOTE,
       is_test: false,
       customer_approved_at: '2026-08-10T00:00:00Z',
+      // A frozen quote's approval_snapshot is always populated by /approve —
+      // see logIdentityRefusal's own null-base guard: an absent snapshot now
+      // means "unconfirmed," not "empty," and the write is skipped.
+      approval_snapshot: { approvedAt: '2026-08-10T00:00:00Z' },
     });
 
     const res = await POST(makeReq({ quoteId: QUOTE_ID, detach: true }));
@@ -640,7 +695,13 @@ describe('HighLevel attach — refusal audit trace (row 326 residual b)', () => 
   });
 
   it('writes a write-time-stage entry when the attach CAS refusal fires (approval landed during the GHL round trip)', async () => {
-    sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false }, null, { identityCasMatch: false });
+    // approval_snapshot must be a CONFIRMED (non-null) value here — the
+    // write-time site's readApprovalSnapshot call feeds logIdentityRefusal,
+    // whose own null-base guard now refuses to write on an unconfirmed
+    // snapshot (fix-round HIGH, the data-loss bug).
+    sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false, approval_snapshot: {} }, null, {
+      identityCasMatch: false,
+    });
 
     const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
     const json = await res.json();
@@ -653,7 +714,9 @@ describe('HighLevel attach — refusal audit trace (row 326 residual b)', () => 
   });
 
   it('writes a write-time-stage entry when the detach CAS refusal fires', async () => {
-    sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false }, null, { identityCasMatch: false });
+    sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false, approval_snapshot: {} }, null, {
+      identityCasMatch: false,
+    });
 
     const res = await POST(makeReq({ quoteId: QUOTE_ID, detach: true }));
     const json = await res.json();
@@ -677,6 +740,134 @@ describe('HighLevel attach — refusal audit trace (row 326 residual b)', () => 
 
     await POST(makeReq({ quoteId: QUOTE_ID, detach: true }));
     expect(updatesOf().some((p) => refusalsFrom(p).length > 0)).toBe(false);
+  });
+
+  // Fix-round HIGH (data-loss bug, review-caught): a failed approval_snapshot
+  // re-read must SKIP the audit write entirely, never fall back to `{}` and
+  // write that back — doing so would REPLACE the real frozen agreement
+  // (total, deposit, line items, approvedAt/staffApproved, colour selection)
+  // with just the new audit entry. Covers all four refusal sites.
+  describe('a failed approval_snapshot read never triggers a write (never clobbers the frozen agreement)', () => {
+    it('attach pre-read freeze: skips the audit write, refusal response unchanged', async () => {
+      sbRef.current = makeSb(
+        {
+          ...HOLIDAY_QUOTE,
+          is_test: false,
+          customer_approved_at: '2026-08-10T00:00:00Z',
+          approval_snapshot: { approvedAt: '2026-08-10T00:00:00Z' },
+        },
+        null,
+        { approvalSnapshotReadFails: true },
+      );
+
+      const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+      const json = await res.json();
+      expect(res.status).toBe(200);
+      expect(json).toEqual({ linked: false, identityFrozen: true });
+      // No update call ever carries approval_snapshot — logIdentityRefusal
+      // was never even invoked (the site-level bail-out fired first).
+      expect(updatesOf().some((p) => 'approval_snapshot' in p)).toBe(false);
+    });
+
+    it('detach pre-read freeze: skips the audit write, refusal response unchanged', async () => {
+      sbRef.current = makeSb(
+        {
+          ...HOLIDAY_QUOTE,
+          is_test: false,
+          customer_approved_at: '2026-08-10T00:00:00Z',
+          approval_snapshot: { approvedAt: '2026-08-10T00:00:00Z' },
+        },
+        null,
+        { approvalSnapshotReadFails: true },
+      );
+
+      const res = await POST(makeReq({ quoteId: QUOTE_ID, detach: true }));
+      const json = await res.json();
+      expect(res.status).toBe(200);
+      expect(json).toEqual({ detached: false, identityFrozen: true });
+      expect(updatesOf().some((p) => 'approval_snapshot' in p)).toBe(false);
+    });
+
+    it('attach write-time CAS refusal: skips the audit write, refusal response unchanged', async () => {
+      sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false, approval_snapshot: {} }, null, {
+        identityCasMatch: false,
+        approvalSnapshotReadFails: true,
+      });
+
+      const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+      const json = await res.json();
+      expect(res.status).toBe(200);
+      expect(json).toEqual({ linked: false, identityFrozen: true });
+      expect(updatesOf().some((p) => 'approval_snapshot' in p)).toBe(false);
+    });
+
+    it('detach write-time CAS refusal: skips the audit write, refusal response unchanged', async () => {
+      sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false, approval_snapshot: {} }, null, {
+        identityCasMatch: false,
+        approvalSnapshotReadFails: true,
+      });
+
+      const res = await POST(makeReq({ quoteId: QUOTE_ID, detach: true }));
+      const json = await res.json();
+      expect(res.status).toBe(200);
+      expect(json).toEqual({ detached: false, identityFrozen: true });
+      expect(updatesOf().some((p) => 'approval_snapshot' in p)).toBe(false);
+    });
+  });
+
+  // Row 326 fix-round MED: the value CAS is optimistic concurrency, not a
+  // freeze check — a lost race must retry once against a freshly re-read
+  // snapshot, and only give up (silently — the refusal response is
+  // untouched either way) after a second miss.
+  describe('the audit write itself retries once on a lost optimistic-concurrency race', () => {
+    it('retries once and lands the entry when the first CAS attempt loses the race', async () => {
+      getOperatorMock.mockResolvedValueOnce({ email: 'staff@yulelovelights.com' });
+      sbRef.current = makeSb(
+        {
+          ...HOLIDAY_QUOTE,
+          is_test: false,
+          customer_approved_at: '2026-08-10T00:00:00Z',
+          approval_snapshot: { approvedAt: '2026-08-10T00:00:00Z' },
+        },
+        null,
+        { auditCasMissCount: 1 },
+      );
+
+      const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+      const json = await res.json();
+      expect(res.status).toBe(200);
+      expect(json).toEqual({ linked: false, identityFrozen: true });
+
+      // Two attempted writes carrying approval_snapshot: the lost first
+      // attempt, then the retry that actually lands.
+      const attempts = updatesOf().filter((p) => 'approval_snapshot' in p);
+      expect(attempts.length).toBe(2);
+      const [entry] = refusalsFrom(attempts[1]);
+      expect(entry).toMatchObject({ by: 'staff@yulelovelights.com', action: 'attach', stage: 'pre-read' });
+    });
+
+    it('gives up silently (no clobber, response unchanged) after losing the race twice', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      sbRef.current = makeSb(
+        {
+          ...HOLIDAY_QUOTE,
+          is_test: false,
+          customer_approved_at: '2026-08-10T00:00:00Z',
+          approval_snapshot: { approvedAt: '2026-08-10T00:00:00Z' },
+        },
+        null,
+        { auditCasMissCount: 2 },
+      );
+
+      const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+      const json = await res.json();
+      expect(res.status).toBe(200);
+      expect(json).toEqual({ linked: false, identityFrozen: true });
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('lost the optimistic-concurrency race twice'),
+      );
+      warnSpy.mockRestore();
+    });
   });
 });
 
