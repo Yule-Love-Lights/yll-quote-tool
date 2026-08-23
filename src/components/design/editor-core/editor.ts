@@ -36,6 +36,7 @@ import {
 import { isLineDrawContext } from "./drawContext";
 import { surfaceOptionsForBulbType } from "./surfaceOptions";
 import { sideOfHouseOptions } from "./sideOfHouseOptions";
+import { seedGroupStringCount } from "./miniGroupBilling";
 
 // Default real-world width for newly-placed custom uploads — about 3 feet,
 // big enough to spot on the photo, small enough to resize down with the
@@ -2899,7 +2900,7 @@ export async function renderEditor(
       sb.querySelector("#sel-delete")?.addEventListener("click", deleteSelected);
       if (canGroup) {
         sb.querySelector("#sel-group-mini-mixed")?.addEventListener("click", () => {
-          groupSelectedMini(miniCandidates, miniCandidates[0].surface ?? "bush", miniCandidates[0].stringCount ?? 1);
+          groupSelectedMini(miniCandidates, miniCandidates[0].surface ?? "bush", seedGroupStringCount(miniCandidates, miniCandidates[0].stringCount ?? 1));
         });
       }
       return;
@@ -3264,7 +3265,17 @@ export async function renderEditor(
         // Railing or Curtain across a multi-selection means ONE grouped unit built
         // from these strands — emit a single MiniGroupItem (projection bills one
         // "Railing – N strings" / "Curtain Lights – N strings") instead of tagging
-        // each strand as its own billed unit. Default the string count to the member count.
+        // each strand as its own billed unit. #334: seed via seedGroupStringCount,
+        // fallback sel.length (this site's historical seed, unchanged) — each
+        // strand carries its own staff-editable stringCount (the #sel-stringcount
+        // field above, shown whenever a selection's surface is bush/tree/column/
+        // railing/curtain). Summing only fires when a member carries an explicit
+        // count above 1 (a staffer set real per-strand counts before re-tagging to
+        // Railing/Curtain); otherwise this seeds exactly sel.length, same as
+        // before — a prod sweep found 84% of grouped members sit at the untouched
+        // default of 1, where summing would silently OVER-bill (see
+        // miniGroupBilling.ts), so the ordinary trace-then-group workflow is left
+        // alone on purpose.
         // #227 FIX 2: exclude a selection containing a #13 linked twin — grouping
         // a twin (a render-only depiction of a canonical strand on ANOTHER photo)
         // lets a later delete of that OTHER photo's canonical cascade-prune the
@@ -3274,7 +3285,7 @@ export async function renderEditor(
         // `linkedToId` items), so falling through to a plain surface tag below is
         // harmless — it just doesn't create a group to resurrect.
         if ((v === "railing" || v === "curtain") && sel.length >= 2 && sel.every(isMiniGroupable)) {
-          groupSelectedMini(sel, v, sel.length);
+          groupSelectedMini(sel, v, seedGroupStringCount(sel, sel.length));
           return;
         }
         updateSelected((s) => ({ ...s, surface: v ? (v as Surface) : null }));
@@ -3312,7 +3323,7 @@ export async function renderEditor(
       });
     }
     sb.querySelector("#sel-group-mini")?.addEventListener("click", () => {
-      groupSelectedMini(sel, sel[0].surface ?? "bush", sel[0].stringCount ?? 1);
+      groupSelectedMini(sel, sel[0].surface ?? "bush", seedGroupStringCount(sel, sel[0].stringCount ?? 1));
     });
     sb.querySelector("#sel-delete")!.addEventListener("click", deleteSelected);
   }
@@ -4015,7 +4026,7 @@ export async function renderEditor(
     }
 
     sb.querySelector("#sel-group-mini-area")?.addEventListener("click", () => {
-      groupSelectedMini(sel, sel[0].surface ?? "bush", sel[0].stringCount ?? 1);
+      groupSelectedMini(sel, sel[0].surface ?? "bush", seedGroupStringCount(sel, sel[0].stringCount ?? 1));
     });
 
     sb.querySelector("#sel-ma-duplicate")?.addEventListener("click", () => {
@@ -4047,6 +4058,20 @@ export async function renderEditor(
   // mix strand + miniArea members, not just strands). A `function` (not a
   // `const`) so it's hoisted — every sidebar panel that offers "Group as one
   // quote unit" (strand-only, scattershot-only, mixed) calls this same one.
+  // #334: every call site seeds `stringCount` via miniGroupBilling's
+  // seedGroupStringCount(members, fallback), passing ITS OWN pre-existing
+  // fallback (members[0].stringCount for the three "Group as one quote unit"
+  // buttons; sel.length for the railing/curtain dropdown above — these are
+  // NOT harmonised on purpose). seedGroupStringCount sums the members' own
+  // counts ONLY when at least one member carries an explicit count above 1;
+  // otherwise it returns the caller's fallback unchanged. This is conditional,
+  // not unconditional summing: a prod sweep found 84% of grouped members sit
+  // at the untouched default of 1 (staff trace N segments, group them, then
+  // type the true count on the GROUP), so summing every time would silently
+  // OVER-bill the common case. The minority case this exists for is row 334's
+  // actual bug — a member with a real explicit count (e.g. a 4-string
+  // scattershot) grouped alongside members at the default, previously seeding
+  // just the first member's count instead of preserving the explicit one.
   function groupSelectedMini(members: (StrandItem | MiniAreaItem)[], surface: Surface, stringCount: number) {
     // #227 FIX 2 belt-and-braces: every call site already filters to
     // isMiniGroupable (which excludes linkedToId), but guard here too
