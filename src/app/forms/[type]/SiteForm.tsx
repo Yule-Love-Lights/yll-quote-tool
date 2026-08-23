@@ -135,6 +135,8 @@ export default function SiteForm({ formType, formVariant, theme, compact }: Prop
     const payload: Record<string, string> = {};
     for (const key of [
       'holidayMemory',
+      'lightingMemory',
+      'suggestions',
       'role',
       'message',
       'nomineeName',
@@ -372,12 +374,26 @@ export default function SiteForm({ formType, formVariant, theme, compact }: Prop
         )}
 
         {formType === 'careers' && (
-          <div>
-            <label style={labelStyle} htmlFor="role">
-              What role are you interested in?
-            </label>
-            <input id="role" name="role" style={inputStyle} placeholder="Installer, crew lead, office" />
-          </div>
+          <>
+            <div>
+              <label style={labelStyle} htmlFor="role">
+                What role are you interested in?
+              </label>
+              <input id="role" name="role" style={inputStyle} placeholder="Installer, crew lead, office" />
+            </div>
+            <div>
+              <label style={labelStyle} htmlFor="lightingMemory">
+                What is your favorite holiday lighting memory?
+              </label>
+              <textarea id="lightingMemory" name="lightingMemory" style={areaStyle} />
+            </div>
+            <div>
+              <label style={labelStyle} htmlFor="suggestions">
+                Do you have any suggestions for what else should be on the application form?
+              </label>
+              <textarea id="suggestions" name="suggestions" style={areaStyle} />
+            </div>
+          </>
         )}
 
         {formType === 'intern' && (
