@@ -4,6 +4,7 @@ import { ServiceType, DEFAULT_SERVICE_TYPE, asServiceType } from './serviceType'
 import { deleteDesign, deleteDesignsForQuote } from './designs';
 import { allocateNumber } from './displayId';
 import type { QuoteStatus } from './quoteStatus';
+import { wasEverApproved } from './quoteStatus';
 import type { AmendmentTrailEntry } from './amend';
 import { attachQuoteToCustomer, propagateQuoteTagsToCustomer, quoteRowToIdentity } from './customers';
 import { createPendingReferral } from './referrals';
@@ -514,8 +515,10 @@ export async function updateQuote(
     // and never a param here), and a reopened TEST quote CAN be re-Calculated
     // through this exact path. deposit_paid_at rides along for the #214
     // booked-freeze below; customer_approved_at rides along for the #251
-    // approved-freeze widening (same block, see its comment).
-    .select('id, quote_sent_at, customer_id, is_test, deposit_paid_at, customer_approved_at')
+    // approved-freeze widening (same block, see its comment). approval_snapshot
+    // rides along for row 338's wasEverApproved sticky check — see `frozen`
+    // below.
+    .select('id, quote_sent_at, customer_id, is_test, deposit_paid_at, customer_approved_at, approval_snapshot')
     .single<{
       id: string;
       quote_sent_at: string | null;
@@ -523,6 +526,7 @@ export async function updateQuote(
       is_test: boolean;
       deposit_paid_at: string | null;
       customer_approved_at: string | null;
+      approval_snapshot: unknown;
     }>();
 
   if (error) {
@@ -561,12 +565,26 @@ export async function updateQuote(
         console.warn('updateQuote: is_test identity write failed:', identErr.message);
       }
     } else {
+      // Row 338 (sticky-freeze hatch): the two extra `.is()` legs read the
+      // approval_snapshot json path directly in the SAME statement — no
+      // second read, same "one atomic database statement" property the
+      // comment above this block already established for
+      // customer_approved_at/deposit_paid_at. `approval_snapshot->key IS
+      // NULL` matches both "column is NULL" (never approved) and "key
+      // absent" (approved but not through that path) — see wasEverApproved's
+      // own comment in quoteStatus.ts for why these two keys (not a bare
+      // non-null check) are the correct signal. Closes the revive→decline→
+      // revive hole: a revive clears customer_approved_at, but never these
+      // two keys, so a previously-approved-then-declined-then-revived quote
+      // still fails this CAS.
       const { data: casRow, error: casErr } = await supabase
         .from('quotes')
         .update(identityPayload)
         .eq('id', id)
         .is('customer_approved_at', null)
         .is('deposit_paid_at', null)
+        .is('approval_snapshot->approvedAt', null)
+        .is('approval_snapshot->staffApproved', null)
         .select('id')
         .maybeSingle();
       if (casErr) {
@@ -700,11 +718,17 @@ export async function updateQuote(
     // there is nothing for it to split against, so this falls back to the
     // base update's own fresh post-write read (still newer than the earlier
     // `stored` pre-read, just not from an additional CAS round trip).
-    const frozen = customer ? customerWriteBlocked : !!data.deposit_paid_at || !!data.customer_approved_at;
+    // Row 338: OR in the sticky wasEverApproved signal on the no-customer-
+    // write fallback branch too — a hlContactId-only edit (or a bare
+    // never-linked reattach) must stay frozen after a revive exactly like the
+    // customer_* CAS branch above now does.
+    const frozen = customer
+      ? customerWriteBlocked
+      : !!data.deposit_paid_at || !!data.customer_approved_at || wasEverApproved(data);
     if (wouldReattach && frozen) {
       identityFrozen = true;
       console.warn(
-        `updateQuote: #251 identity freeze — quote ${id} is approved/booked; refused a would-be reattach (identityChanged=${identityChanged}, hlChanged=${hlChanged}). Use the amend flow to change the linked customer.`,
+        `updateQuote: #251 identity freeze — quote ${id} is approved/booked (or was, even after a decline/revive — row 338); refused a would-be reattach (identityChanged=${identityChanged}, hlChanged=${hlChanged}). The amend flow cannot change identity — there is no in-app remedy; a wrong link needs a manual DB fix.`,
       );
     } else if (wouldReattach) {
       try {
