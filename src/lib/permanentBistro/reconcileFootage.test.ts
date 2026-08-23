@@ -223,3 +223,24 @@ describe('roundBistroFootageOnBlur', () => {
     expect(roundBistroFootageOnBlur(null)).toBeNull();
   });
 });
+
+// S46 premerge finding 2 (technical MED, sibling parity with the holiday fix):
+// React StrictMode dev double-invokes a setState functional updater to check
+// purity, discarding the first call's return value but NOT any side effect
+// it performed — QuoteBuilder.tsx used to mutate prevBistroDerivedRef from
+// inside that updater, so this documents (mirroring the holiday test file)
+// that reconcileBistroFootage is safe to call twice with identical inputs:
+// same result both times, no hidden state to pre-advance.
+describe('S46 finding 2 — reconcileBistroFootage is idempotent under repeated calls with identical inputs', () => {
+  it('returns the same result called twice with the same inputs', () => {
+    const freshRuns = [{ id: 'a', footage: 27 }];
+    const currentForm = [{ id: 'a', footage: 35 }];
+    const baseline = { a: 20 };
+    const call1 = reconcileBistroFootage(freshRuns, currentForm, baseline);
+    const call2 = reconcileBistroFootage(freshRuns, currentForm, baseline);
+    expect(call2).toEqual(call1);
+    expect(call2.next).toEqual([{ id: 'a', footage: 27 }]);
+    // and the shared baseline input was never mutated by either call
+    expect(baseline).toEqual({ a: 20 });
+  });
+});
