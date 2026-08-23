@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { toOperatorAccount, countAdmins, listOperatorAccounts } from './adminUsers';
+import { toOperatorAccount, countAdmins, listOperatorAccounts, listNonCrewOperators } from './adminUsers';
 
 describe('toOperatorAccount', () => {
   it('maps a Supabase user to the public account shape, deriving role safely', () => {
@@ -75,5 +75,37 @@ describe('listOperatorAccounts', () => {
     const listUsers = vi.fn(async () => ({ data: null, error: { message: 'boom' } }));
     const sb = { auth: { admin: { listUsers } } } as unknown as SupabaseClient;
     await expect(listOperatorAccounts(sb)).rejects.toThrow('boom');
+  });
+});
+
+describe('listNonCrewOperators', () => {
+  it('EXCLUDES crew logins so the office picker never offers one (raw-role check, before roleOf flattens crew to operator)', async () => {
+    const pages = [
+      {
+        data: {
+          users: [
+            { id: 'op-1', email: 'ann@x.com', app_metadata: { role: 'operator', name: 'Ann' } },
+            { id: 'crew-1', email: 'sonson@x.com', app_metadata: { role: 'crew', name: 'SonSon' } },
+            { id: 'ad-1', email: 'naldo@x.com', app_metadata: { role: 'admin', name: 'Naldo' } },
+          ],
+          nextPage: null,
+        },
+        error: null,
+      },
+    ];
+    const listUsers = vi.fn(async ({ page }: { page: number }) => pages[page - 1]);
+    const sb = { auth: { admin: { listUsers } } } as unknown as SupabaseClient;
+
+    const accounts = await listNonCrewOperators(sb);
+    // The crew login is gone; only the operator + admin remain, sorted by name
+    // ("Ann" < "Naldo").
+    expect(accounts.map((a) => a.id)).toEqual(['op-1', 'ad-1']);
+    expect(accounts.some((a) => a.id === 'crew-1')).toBe(false);
+  });
+
+  it('throws on a Supabase error', async () => {
+    const listUsers = vi.fn(async () => ({ data: null, error: { message: 'boom' } }));
+    const sb = { auth: { admin: { listUsers } } } as unknown as SupabaseClient;
+    await expect(listNonCrewOperators(sb)).rejects.toThrow('boom');
   });
 });
