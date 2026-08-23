@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { isLineDrawContext } from "./drawContext";
-import { sumMiniStringCount } from "./miniGroupBilling";
+import { sumMiniStringCount, seedGroupStringCount } from "./miniGroupBilling";
 import type { StrandItem, MiniAreaItem } from "@/lib/design/sceneTypes";
 
 // #203: unit coverage for the shared "line drawing" context gate that both
@@ -110,10 +110,10 @@ describe("isLineDrawContext", () => {
 });
 
 // #334: editor.ts's groupSelectedMini seeds a new MiniGroupItem's billed
-// stringCount from sumMiniStringCount (this module), the SUM of the grouped
-// members' own counts — not just one member's, which silently dropped the
-// other members' strings from the bill. Money-neutral by construction:
-// grouping never changes the total billed string count.
+// stringCount via seedGroupStringCount(members, fallback) — sumMiniStringCount
+// (this module) is the underlying "sum the members' own counts" building
+// block, used only when seedGroupStringCount's own trigger fires. See that
+// describe block below for the actual per-call-site rule.
 const strand = (stringCount?: number): StrandItem => ({
   id: `s-${Math.random()}`,
   yardstickId: null,
@@ -152,5 +152,69 @@ describe("sumMiniStringCount", () => {
 
   it("a single-member group still sums to that member's own count (no regression on the common case)", () => {
     expect(sumMiniStringCount([strand(3)])).toBe(3);
+  });
+});
+
+// #334 (conditional-seed revision): seedGroupStringCount is the function every
+// groupSelectedMini call site actually calls. A prod sweep found 84% of
+// grouped members (275/~327) sit at stringCount=1, the untouched default —
+// staff routinely trace N segments, group them, then type the true count on
+// the GROUP itself afterward (Julia Lee's group: 23 traced segments, staff
+// typed 8). Unconditionally summing would seed 23 there, replacing a silent
+// under-count with a silent OVER-count. So: sum only when at least one member
+// carries an explicit count ABOVE 1 (the only usable signal — stringCount:1
+// serializes identically whether staff set it or never touched it); otherwise
+// return the caller's own historical fallback unchanged.
+describe("seedGroupStringCount", () => {
+  it("sums when a member carries an explicit count above 1 — the original row-334 bug (4-string scattershot + 1-string strand billed 1)", () => {
+    const members = [miniArea(4), strand(1)];
+    // Mirrors the "Group as one quote unit" buttons' own fallback shape
+    // (members[0].stringCount ?? 1) — irrelevant here since the sum wins.
+    expect(seedGroupStringCount(members, members[0].stringCount ?? 1)).toBe(5);
+  });
+
+  // THE OVER-BILL REGRESSION GUARD: many members, all still at the untouched
+  // default — must seed the caller's OLD fallback (1, matching the "Group as
+  // one quote unit" buttons' members[0].stringCount ?? 1 shape), NOT the
+  // member count (25) and NOT the sum (25). Seeding 25 here is exactly the
+  // silent over-bill the dev rejected the unconditional-sum version for.
+  it("many members all at the default (no explicit count) seeds the caller's OLD fallback, NOT the member count", () => {
+    const members = Array.from({ length: 25 }, () => strand(1)); // real prod shape: stringCount:1 serialized explicitly, same as untouched
+    expect(seedGroupStringCount(members, members[0].stringCount ?? 1)).toBe(1); // NOT 25
+  });
+
+  // #334 FIX 2: the railing/curtain auto-group path (editor.ts's #sel-surface
+  // change handler) falls back to sel.length, not members[0].stringCount —
+  // confirm the sum still wins over THAT fallback when a real explicit count
+  // is present (2 strands, staff-edited stringCount:3 each = 6 billed
+  // strings; the old code seeded sel.length = 2, a 67% under-count).
+  it("sums over the railing/curtain dropdown's sel.length fallback when strands carry explicit counts", () => {
+    const members = [strand(3), strand(3)];
+    expect(seedGroupStringCount(members, members.length)).toBe(6); // NOT sel.length (2)
+  });
+
+  // Same dropdown shape, but no member was ever touched — sel.length (3)
+  // happens to equal the sum of three untouched defaults (1+1+1), so this
+  // case can't distinguish "fallback preserved" from "summed anyway"; it just
+  // confirms the ordinary un-edited path still seeds the expected number.
+  it("the railing/curtain dropdown's ordinary un-edited case still seeds sel.length", () => {
+    const members = [strand(1), strand(1), strand(1)];
+    expect(seedGroupStringCount(members, members.length)).toBe(3);
+  });
+
+  it("an explicit count of exactly 1 does NOT trigger the sum — only strictly above 1 counts as staff-set", () => {
+    const members = [strand(1), strand(undefined)];
+    expect(seedGroupStringCount(members, members[0].stringCount ?? 1)).toBe(1); // fallback, not sum(2)
+  });
+
+  // KNOWN RESIDUAL (reported, not fixed — see the build report): the trigger
+  // is "ANY member above 1", not "most members" or "all members". A single
+  // stray explicit count amid a large otherwise-untouched group still flips
+  // the WHOLE group to sum mode. Documented here as current, accepted
+  // behavior — not asserted as correct, just pinned so a future change to the
+  // trigger doesn't silently alter this case without a test noticing.
+  it("a single outlier explicit count among many defaults still sums the whole group (documented residual)", () => {
+    const members = [...Array.from({ length: 22 }, () => strand(1)), strand(2)];
+    expect(seedGroupStringCount(members, members[0].stringCount ?? 1)).toBe(24); // 22*1 + 2, not the fallback (1)
   });
 });
