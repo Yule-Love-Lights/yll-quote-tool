@@ -41,7 +41,7 @@ import {
   SERVICE_TYPE_LABELS,
   canCarryNceOrYllNeighborTag,
 } from '@/lib/serviceType';
-import { deriveStatus, APPROVED_DISPLAYS_AS, type QuoteStatus } from '@/lib/quoteStatus';
+import { deriveStatus, APPROVED_DISPLAYS_AS, wasEverApproved, type QuoteStatus } from '@/lib/quoteStatus';
 import { EventSection } from './EventSection';
 import { OperatorShell } from '@/components/OperatorShell';
 import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
@@ -541,6 +541,15 @@ export type QuoteBuilderInitial = {
   status?: QuoteStatus | null;
   viewedAt?: string | null;
   depositPaidAt?: string | null;
+  // Row 338 fix-round HIGH (staff lens): the sticky identity-freeze signal
+  // (wasEverApproved, quoteStatus.ts) reads this — the same jsonb the
+  // server's #251/#839 CAS checks. approvedAt/depositPaidAt above are the
+  // NON-sticky columns a decline->revive cycle nulls; this is what lets the
+  // Clear/re-pick confirm dialogs (and their gates) agree with the server on
+  // a revived previously-approved quote. Raw passthrough (not a
+  // server-derived boolean) so the client reuses the one pure function
+  // instead of a second copy of the OR logic.
+  approvalSnapshot?: unknown;
   quoteNumber?: number | null;
   // Test Quote (ledger #93): a reopened test quote stays in TEST MODE — derived
   // from the saved row, never re-read from the URL on edit (is_test is immutable).
@@ -717,6 +726,24 @@ export default function QuoteBuilder({
         status: initialQuote.status ?? null,
       })
     : null;
+  // Row 338 fix-round HIGH/MED (staff lens): the STICKY identity-freeze
+  // signal, mirroring the exact three-way OR route.ts's #251/#839 CAS gates
+  // check server-side (deposit_paid_at || customer_approved_at ||
+  // wasEverApproved(row)) — is_test bypasses it, same as the server. The
+  // Clear confirm gate and the re-pick confirm's wording used to key off
+  // initialQuote?.approvedAt alone, which a decline->revive cycle nulls; a
+  // revived previously-approved quote showed the weak "different contact"
+  // warning (or no Clear-confirm at all) instead of the frozen one, even
+  // though the server would refuse the write either way. Computed once from
+  // the loaded row (mount-hydrate convention, matches isTest/viewOnly
+  // above) — it describes history the session can't clear.
+  const identityEverFrozen =
+    !isTest &&
+    !!(
+      initialQuote?.depositPaidAt ||
+      initialQuote?.approvedAt ||
+      wasEverApproved({ approval_snapshot: initialQuote?.approvalSnapshot ?? null })
+    );
   // #215: mirrors LegacyRebookToggle's/NceToggle's own `status !== 'draft'`
   // check (the admin siblings — both ultimately read deriveStatus) so EITHER
   // chip's confirm can show the SAME "already left draft" caveats once a
@@ -3371,7 +3398,11 @@ export default function QuoteBuilder({
       c.id,
       hlName || 'this contact',
       currentContactId,
-      !!initialQuote?.approvedAt,
+      // Row 338 fix-round MED (staff lens): the STICKY signal, not the
+      // non-sticky approvedAt alone — a revived previously-approved quote
+      // must still get the frozen warning, matching what the server (which
+      // checks the same sticky OR) will actually do with this pick.
+      identityEverFrozen,
     );
     if (confirmMsg && !window.confirm(confirmMsg)) return;
     everLinkedContactIdRef.current = c.id;
@@ -3461,14 +3492,31 @@ export default function QuoteBuilder({
   };
 
   const clearHighLevelContact = () => {
-    // #839 fix-round HIGH (BYPASS 3, customer+technical lenses): this route
-    // fires POST .../attach {detach:true} with no server-side guard at all —
-    // see clearContactConfirmMessage's own doc for why a client confirm (not
-    // a server block) is the right shape. window.confirm is synchronous, so
-    // returning here is a true no-op — nothing below has run yet.
-    const clearMsg = clearContactConfirmMessage(!!initialQuote?.approvedAt);
+    // #839 fix-round HIGH (BYPASS 3, customer+technical lenses): a client
+    // confirm, not a hard block, is the deliberate shape here — see
+    // clearContactConfirmMessage's own doc for the reasoning. window.confirm
+    // is synchronous, so returning here is a true no-op — nothing below has
+    // run yet. Row 338 correction: this comment used to say the route has
+    // "no server-side guard at all" — false as of this PR. route.ts's
+    // detach branch DOES refuse under the same sticky freeze CAS as the
+    // attach write (identityEverFrozen below matches it); the confirm here
+    // is the fast first line of defense, and the response-read restore a
+    // few lines down is the real backstop for whatever the confirm's
+    // point-in-time gate can't see (a revive racing this click, is_test's
+    // bypass shape changing mid-session, etc).
+    const clearMsg = clearContactConfirmMessage(identityEverFrozen);
     if (clearMsg && !window.confirm(clearMsg)) return;
     attachSeqRef.current++;
+    const clearSeq = attachSeqRef.current;
+    const freshClear = () => clearSeq === attachSeqRef.current;
+    // Row 338 fix-round HIGH (staff lens): captured BEFORE the optimistic
+    // flip below so a server-side identityFrozen refusal (read from the
+    // detach response further down) can restore the UI to what the DB
+    // actually still has — the detach fetch used to be pure best-effort
+    // with no read of its own result, so the UI showed "unlinked" even when
+    // the server had refused and the link was still live.
+    const previousContact = highlevelContact;
+    const previousFormHlId = form.highlevelContactId;
     setHighLevelContact(null);
     // #214 (c): a real undo clears the FORM's hl link too — leaving a
     // prefill/reopen-seeded id here would put the dropped contact right back
@@ -3490,14 +3538,33 @@ export default function QuoteBuilder({
       setDbLinked(false);
       attachPromiseRef.current = (attachPromiseRef.current ?? Promise.resolve(false)).then(async () => {
         try {
-          await fetch('/api/integrations/highlevel/attach', {
+          const res = await fetch('/api/integrations/highlevel/attach', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ quoteId: savedQuoteId, detach: true }),
           });
+          const data = await res.json().catch(() => null);
+          // Row 338 fix-round HIGH: the server refused (frozen quote — the
+          // detach branch's CAS, or a revive/approve landing in the race
+          // window between the pre-read and the write) — restore the
+          // optimistic flip above so the UI agrees with the DB instead of
+          // silently claiming "unlinked" while the link is still live.
+          // Only when this is still the LATEST clear/pick (freshClear): a
+          // newer pick already owns the visible state and must not be
+          // clobbered by a slow, now-superseded response.
+          if (data?.identityFrozen === true && freshClear()) {
+            setHighLevelContact(previousContact);
+            setForm(f => ({ ...f, highlevelContactId: previousFormHlId }));
+            setDbLinked(true);
+            setAttachStatus('skipped');
+            setAttachError(
+              'This quote is approved or booked, so its customer identity is locked — the link was not cleared. There is no in-app way to unlink an approved quote to relink it elsewhere; contact support for a manual fix rather than retrying.',
+            );
+          }
         } catch {
-          // Best-effort — a failed detach leaves the old link in place, which
-          // the visible "linked from a previous session" note then reflects.
+          // Best-effort — a network failure leaves the old link in place,
+          // which the visible "linked from a previous session" note then
+          // reflects (unchanged from before this fix).
         }
         return false;
       });
@@ -3580,6 +3647,20 @@ export default function QuoteBuilder({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `Attach failed (${res.status})`);
+      // Row 338 fix-round HIGH (staff lens): a frozen refusal (route.ts's
+      // #251/#839 CAS gates) used to fall into the generic linked:false
+      // branch below and claim "Card attached... try again" — false (nothing
+      // attached) and a retry can never succeed once the quote is frozen.
+      // Read the flag first and throw a distinct, honest error the catch
+      // block routes to the non-alarming 'skipped' status (matching the
+      // identityFrozenNotice banner's copy voice) instead of 'error'.
+      if (data.identityFrozen === true) {
+        const frozenErr = new Error(
+          'This quote is approved or booked, so its customer identity is locked — this contact wasn’t linked and nothing changed. There is no in-app way to relink an approved quote to a different customer; contact support for a manual fix rather than retrying.',
+        ) as Error & { identityFrozen?: boolean };
+        frozenErr.identityFrozen = true;
+        throw frozenErr;
+      }
       if (data.linked === false) {
         throw new Error('Card attached in HighLevel but the quote link didn’t save — try again.');
       }
@@ -3591,7 +3672,8 @@ export default function QuoteBuilder({
       return true;
     } catch (err) {
       if (fresh()) {
-        setAttachStatus('error');
+        const frozen = err instanceof Error && (err as Error & { identityFrozen?: boolean }).identityFrozen === true;
+        setAttachStatus(frozen ? 'skipped' : 'error');
         setAttachError(err instanceof Error ? err.message : 'Attach failed');
       }
       return false;
@@ -6989,12 +7071,23 @@ export default function QuoteBuilder({
                 block above: it can fire even when highlevelContact is null
                 (a reopened quote's DB link isn't hydrated into that state —
                 #172), and it describes the save that just ran, not the
-                current chip. */}
+                current chip.
+                Row 338 fix: the original copy told staff to "Use the amend
+                flow to move it to a different customer" — traced and found
+                false. The amend flow (/api/quotes/[id]/amend) only re-prices
+                a booked order's totals; it has no identity fields at all and
+                never writes customer_id/highlevel_contact_id/customer_name/
+                etc. There is currently no in-app way to move a frozen quote
+                to a different customer (the code-level remedy is a manual DB
+                correction — see the "WT-55 manual merge" comments in
+                quotes.ts/customers.ts), so the copy now says that honestly
+                instead of pointing at a flow that can't do it. */}
             {identityFrozenNotice && (
               <p className="mb-3 text-xs text-amber-700">
                 This quote is approved or booked, so its customer stayed put — the name, contact details and
                 HighLevel link on this quote were left exactly as the customer approved them, and nothing on this
-                save changed who the quote belongs to. Use the amend flow to move it to a different customer.
+                save changed who the quote belongs to. There is no in-app way to move an approved quote to a
+                different customer — if this needs correcting, contact support for a manual fix rather than re-saving.
               </p>
             )}
 

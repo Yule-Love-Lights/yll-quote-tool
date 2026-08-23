@@ -42,6 +42,7 @@ import { resolvePipelineStages } from '@/lib/integrations/ghlPipelineMap';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { attachQuoteToCustomer, quoteRowToIdentity } from '@/lib/customers';
+import { wasEverApproved } from '@/lib/quoteStatus';
 
 export const runtime = 'nodejs';
 
@@ -108,12 +109,25 @@ export async function POST(req: NextRequest) {
     const detachClient = getSupabaseServiceClient()!;
     const { data: detachRow } = await detachClient
       .from('quotes')
-      .select('is_test, deposit_paid_at, customer_approved_at')
+      .select('is_test, deposit_paid_at, customer_approved_at, approval_snapshot')
       .eq('id', body.quoteId)
-      .maybeSingle<{ is_test: boolean; deposit_paid_at: string | null; customer_approved_at: string | null }>();
-    if (detachRow && !detachRow.is_test && (detachRow.deposit_paid_at || detachRow.customer_approved_at)) {
+      .maybeSingle<{
+        is_test: boolean;
+        deposit_paid_at: string | null;
+        customer_approved_at: string | null;
+        approval_snapshot: unknown;
+      }>();
+    // Row 338: OR in the sticky wasEverApproved signal — see its own comment
+    // in quoteStatus.ts. Without it, a decline→revive cycle (which clears
+    // customer_approved_at) would let a Clear click through here even though
+    // this quote was frozen at some point in its history.
+    if (
+      detachRow &&
+      !detachRow.is_test &&
+      (detachRow.deposit_paid_at || detachRow.customer_approved_at || wasEverApproved(detachRow))
+    ) {
       console.warn(
-        `[api/integrations/highlevel/attach] #251 identity freeze — quote ${body.quoteId} is approved/booked; refused a detach.`,
+        `[api/integrations/highlevel/attach] #251/#338 identity freeze — quote ${body.quoteId} is approved/booked (or was); refused a detach.`,
       );
       return NextResponse.json({ detached: false, identityFrozen: true });
     }
@@ -135,7 +149,14 @@ export async function POST(req: NextRequest) {
       .update({ highlevel_contact_id: null, highlevel_opportunity_id: null })
       .eq('id', body.quoteId);
     if (applyCas) {
-      detachWrite = detachWrite.is('customer_approved_at', null).is('deposit_paid_at', null);
+      // Row 338: same two extra json-path legs as quotes.ts's identity CAS —
+      // see that block's comment for why these two keys (not a bare
+      // approval_snapshot non-null check) are the sticky signal.
+      detachWrite = detachWrite
+        .is('customer_approved_at', null)
+        .is('deposit_paid_at', null)
+        .is('approval_snapshot->approvedAt', null)
+        .is('approval_snapshot->staffApproved', null);
     }
     const { data: detachWriteRow, error: detachErr } = await detachWrite.select('id').maybeSingle();
     if (detachErr) {
@@ -174,7 +195,8 @@ export async function POST(req: NextRequest) {
     // re-resolution's IDENTITY comes from the request body's contact
     // fields, never from this row — see the block below. customer_approved_at
     // rides along for the #251/#839 approved-freeze parity fix (same block).
-    .select('id, service_type, legacy_rebook, is_test, customer_id, deposit_paid_at, customer_approved_at')
+    // approval_snapshot rides along for row 338's wasEverApproved sticky check.
+    .select('id, service_type, legacy_rebook, is_test, customer_id, deposit_paid_at, customer_approved_at, approval_snapshot')
     .eq('id', body.quoteId)
     .maybeSingle<{
       id: string;
@@ -184,6 +206,7 @@ export async function POST(req: NextRequest) {
       customer_id: string | null;
       deposit_paid_at: string | null;
       customer_approved_at: string | null;
+      approval_snapshot: unknown;
     }>();
   if (quoteErr) {
     console.warn(
@@ -195,15 +218,25 @@ export async function POST(req: NextRequest) {
   // BEFORE any GHL card is found/created. The customers re-resolution further
   // down already refuses on an approved/booked quote, and the ruling extends
   // that to this route's own highlevel_contact_id/highlevel_opportunity_id
-  // write — so the whole endpoint is a no-op past approval and corrections go
-  // through the amend flow. Placed here, not at the write site, so a frozen
+  // write — so the whole endpoint is a no-op past approval. There is no
+  // in-app correction path (row 338: the amend flow only re-prices a booked
+  // order's totals, it has no identity fields); a wrong link needs a manual
+  // DB fix. Placed here, not at the write site, so a frozen
   // quote never leaves an orphaned card on GHL's side that our row won't
   // reference. Fails OPEN when the pre-read failed (quoteRow null): a read
   // hiccup must not block a legitimate link on an unapproved quote, matching
   // the service_type fallback's posture directly above.
-  if (quoteRow && !quoteRow.is_test && (quoteRow.deposit_paid_at || quoteRow.customer_approved_at)) {
+  // Row 338: OR in the sticky wasEverApproved signal — see its comment in
+  // quoteStatus.ts. Closes the queueAttach half of the revive→decline→revive
+  // hole: this route fires directly on a confirmed contact pick, before any
+  // Calculate ever reaches quotes.ts's own freeze.
+  if (
+    quoteRow &&
+    !quoteRow.is_test &&
+    (quoteRow.deposit_paid_at || quoteRow.customer_approved_at || wasEverApproved(quoteRow))
+  ) {
     console.warn(
-      `[api/integrations/highlevel/attach] #251 identity freeze — quote ${body.quoteId} is approved/booked; refused a contact re-link (contact ${body.contactId}).`,
+      `[api/integrations/highlevel/attach] #251/#338 identity freeze — quote ${body.quoteId} is approved/booked (or was); refused a contact re-link (contact ${body.contactId}).`,
     );
     return NextResponse.json({ linked: false, identityFrozen: true });
   }
@@ -282,7 +315,13 @@ export async function POST(req: NextRequest) {
       })
       .eq('id', body.quoteId);
     if (applyCas) {
-      identityWrite = identityWrite.is('customer_approved_at', null).is('deposit_paid_at', null);
+      // Row 338: same two extra json-path legs as quotes.ts's identity CAS
+      // and this route's own detach CAS above — see either comment for why.
+      identityWrite = identityWrite
+        .is('customer_approved_at', null)
+        .is('deposit_paid_at', null)
+        .is('approval_snapshot->approvedAt', null)
+        .is('approval_snapshot->staffApproved', null);
     }
     const { data: identityRow, error: updateErr } = await identityWrite.select('id').maybeSingle();
     if (updateErr) {
