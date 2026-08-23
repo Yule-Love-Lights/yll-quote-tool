@@ -3,6 +3,7 @@ import {
   deriveStatus,
   canTransition,
   canRevive,
+  wasEverApproved,
   isTerminalBrowseStatus,
   isQuoteStatus,
   isPortalActionable,
@@ -287,6 +288,61 @@ describe('canRevive — #116 re-send half (revive a dead quote in place)', () =>
     for (const s of ['draft', 'sent', 'viewed', 'approved', 'booked', 'changes_requested'] as const) {
       expect(canRevive(s)).toBe(false);
     }
+  });
+});
+
+describe('wasEverApproved — row 338 (identity-freeze sticky hatch)', () => {
+  it('is false for a null approval_snapshot (never approved)', () => {
+    expect(wasEverApproved({ approval_snapshot: null })).toBe(false);
+  });
+
+  it('is false for an empty object', () => {
+    expect(wasEverApproved({ approval_snapshot: {} })).toBe(false);
+  });
+
+  // The over-freeze trap this function exists to avoid: staff-decline and
+  // staff-abandon BOTH write a non-null approval_snapshot (their own audit
+  // marker) on a quote that was NEVER approved — a bare non-null check would
+  // wrongly treat a never-approved, staff-declined draft as sticky-frozen.
+  it('is false for a staffDeclined-only marker (declined without ever approving)', () => {
+    expect(
+      wasEverApproved({ approval_snapshot: { staffDeclined: { by: 'op@x.com', at: '2026-06-01T00:00:00Z' } } }),
+    ).toBe(false);
+  });
+
+  it('is false for a staffAbandoned-only marker (abandoned without ever approving)', () => {
+    expect(
+      wasEverApproved({ approval_snapshot: { staffAbandoned: { by: 'op@x.com', at: '2026-06-01T00:00:00Z' } } }),
+    ).toBe(false);
+  });
+
+  it('is true for a top-level approvedAt (the customer /approve route\'s marker)', () => {
+    expect(wasEverApproved({ approval_snapshot: { approvedAt: '2026-06-01T00:00:00Z' } })).toBe(true);
+  });
+
+  it('is true for a staffApproved marker (staff-approve has no top-level approvedAt)', () => {
+    expect(
+      wasEverApproved({ approval_snapshot: { staffApproved: { by: 'op@x.com', at: '2026-06-01T00:00:00Z' } } }),
+    ).toBe(true);
+  });
+
+  // The exact revive scenario: approved, then declined (staffDeclined ADDS a
+  // key via spread — approvedAt survives), then customer_approved_at gets
+  // cleared by the revive write. This must still read sticky-true.
+  it('is true once BOTH approvedAt and a LATER staffDeclined marker are present', () => {
+    expect(
+      wasEverApproved({
+        approval_snapshot: {
+          approvedAt: '2026-06-01T00:00:00Z',
+          staffDeclined: { by: 'op@x.com', at: '2026-06-05T00:00:00Z' },
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it('is false for a non-object approval_snapshot (defensive)', () => {
+    expect(wasEverApproved({ approval_snapshot: 'garbage' })).toBe(false);
+    expect(wasEverApproved({ approval_snapshot: 42 })).toBe(false);
   });
 });
 

@@ -41,7 +41,7 @@ import {
   SERVICE_TYPE_LABELS,
   canCarryNceOrYllNeighborTag,
 } from '@/lib/serviceType';
-import { deriveStatus, APPROVED_DISPLAYS_AS, type QuoteStatus } from '@/lib/quoteStatus';
+import { deriveStatus, APPROVED_DISPLAYS_AS, wasEverApproved, type QuoteStatus } from '@/lib/quoteStatus';
 import { EventSection } from './EventSection';
 import { OperatorShell } from '@/components/OperatorShell';
 import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
@@ -142,6 +142,7 @@ function EditablePrice({
   baseAmount,
   overridden,
   disabled,
+  lockedReason,
   onCommit,
   onReset,
 }: {
@@ -149,6 +150,11 @@ function EditablePrice({
   baseAmount: number;
   overridden: boolean;
   disabled: boolean;
+  // Row 331: when set, `disabled` is true BECAUSE the quote is past approval
+  // (not merely `loading`) — shown as the click target's title instead of the
+  // normal "click to edit" hint, so the disabled state explains itself rather
+  // than reading as a stuck/broken control.
+  lockedReason?: string;
   onCommit: (n: number) => void;
   onReset: () => void;
 }) {
@@ -202,9 +208,16 @@ function EditablePrice({
           }}
           disabled={disabled}
           title={
-            showBase
-              ? `Custom price for this quote — reset to ${usd(baseAmount)}`
-              : 'Custom price for this quote — reset'
+            // Premerge finding 5 fix: when disabled BECAUSE of the freeze
+            // (lockedReason set), explain that instead of the normal reset
+            // hint — mirrors the main price button's own lockedReason ??
+            // fallback a few lines below, which this reset button had been
+            // missing.
+            disabled && lockedReason
+              ? lockedReason
+              : showBase
+                ? `Custom price for this quote — reset to ${usd(baseAmount)}`
+                : 'Custom price for this quote — reset'
           }
           className="text-[10px] font-semibold uppercase tracking-wide text-amber-600 hover:text-amber-800 disabled:opacity-40 cursor-pointer"
         >
@@ -219,7 +232,7 @@ function EditablePrice({
           start();
         }}
         disabled={disabled}
-        title="Click to set a custom price for this quote"
+        title={lockedReason ?? 'Click to set a custom price for this quote'}
         className={`font-medium tabular-nums rounded px-1 -mx-1 hover:bg-green-50 disabled:cursor-not-allowed cursor-text ${
           overridden ? 'text-amber-700' : 'text-gray-900'
         }`}
@@ -253,6 +266,7 @@ function EditableLabel({
   baseLabel,
   overridden,
   disabled,
+  lockedReason,
   onCommit,
   onReset,
 }: {
@@ -260,6 +274,8 @@ function EditableLabel({
   baseLabel: string;
   overridden: boolean;
   disabled: boolean;
+  // Row 331: mirrors EditablePrice's lockedReason exactly.
+  lockedReason?: string;
   onCommit: (s: string) => void;
   onReset: () => void;
 }) {
@@ -314,9 +330,14 @@ function EditableLabel({
           }}
           disabled={disabled}
           title={
-            showBase
-              ? `Custom name for this quote — reset to "${baseLabel}"`
-              : 'Custom name for this quote — reset'
+            // Premerge finding 5 fix (sibling parity with EditablePrice's
+            // identical fix): explain the freeze when that's why it's
+            // disabled, instead of the normal reset hint.
+            disabled && lockedReason
+              ? lockedReason
+              : showBase
+                ? `Custom name for this quote — reset to "${baseLabel}"`
+                : 'Custom name for this quote — reset'
           }
           className="text-[10px] font-semibold uppercase tracking-wide text-amber-600 hover:text-amber-800 disabled:opacity-40 cursor-pointer"
         >
@@ -331,7 +352,7 @@ function EditableLabel({
           start();
         }}
         disabled={disabled}
-        title="Click to rename this item for this quote"
+        title={lockedReason ?? 'Click to rename this item for this quote'}
         className={`rounded px-1 -mx-1 hover:bg-green-50 disabled:cursor-not-allowed cursor-text ${
           overridden ? 'text-amber-700 font-medium' : ''
         }`}
@@ -520,6 +541,15 @@ export type QuoteBuilderInitial = {
   status?: QuoteStatus | null;
   viewedAt?: string | null;
   depositPaidAt?: string | null;
+  // Row 338 fix-round HIGH (staff lens): the sticky identity-freeze signal
+  // (wasEverApproved, quoteStatus.ts) reads this — the same jsonb the
+  // server's #251/#839 CAS checks. approvedAt/depositPaidAt above are the
+  // NON-sticky columns a decline->revive cycle nulls; this is what lets the
+  // Clear/re-pick confirm dialogs (and their gates) agree with the server on
+  // a revived previously-approved quote. Raw passthrough (not a
+  // server-derived boolean) so the client reuses the one pure function
+  // instead of a second copy of the OR logic.
+  approvalSnapshot?: unknown;
   quoteNumber?: number | null;
   // Test Quote (ledger #93): a reopened test quote stays in TEST MODE — derived
   // from the saved row, never re-read from the URL on edit (is_test is immutable).
@@ -696,6 +726,24 @@ export default function QuoteBuilder({
         status: initialQuote.status ?? null,
       })
     : null;
+  // Row 338 fix-round HIGH/MED (staff lens): the STICKY identity-freeze
+  // signal, mirroring the exact three-way OR route.ts's #251/#839 CAS gates
+  // check server-side (deposit_paid_at || customer_approved_at ||
+  // wasEverApproved(row)) — is_test bypasses it, same as the server. The
+  // Clear confirm gate and the re-pick confirm's wording used to key off
+  // initialQuote?.approvedAt alone, which a decline->revive cycle nulls; a
+  // revived previously-approved quote showed the weak "different contact"
+  // warning (or no Clear-confirm at all) instead of the frozen one, even
+  // though the server would refuse the write either way. Computed once from
+  // the loaded row (mount-hydrate convention, matches isTest/viewOnly
+  // above) — it describes history the session can't clear.
+  const identityEverFrozen =
+    !isTest &&
+    !!(
+      initialQuote?.depositPaidAt ||
+      initialQuote?.approvedAt ||
+      wasEverApproved({ approval_snapshot: initialQuote?.approvalSnapshot ?? null })
+    );
   // #215: mirrors LegacyRebookToggle's/NceToggle's own `status !== 'draft'`
   // check (the admin siblings — both ultimately read deriveStatus) so EITHER
   // chip's confirm can show the SAME "already left draft" caveats once a
@@ -707,6 +755,56 @@ export default function QuoteBuilder({
   // reading it too — it was never actually Neighbor-specific, just the
   // generic "has this quote left draft" signal.
   const quoteLeftDraft = savedStatus != null && savedStatus !== 'draft';
+  // Premerge finding 3 (S46 fix round): a stale tab's rejected 409 must not
+  // vaporize the rendered breakdown (every price/label/footage control lives
+  // inside `{result && (...)}`). When runQuote gets one of the three lock
+  // codes back it restores the last-known-good result and flips this true so
+  // the tab self-corrects to server truth (frozen controls, honest copy)
+  // instead of staying editable and re-erroring forever. This also covers
+  // finding 4's predicate-mismatch case (a staff-decline-after-approval quote
+  // whose savedStatus/approvedAt read stale in THIS tab).
+  const [staleApprovalFrozen, setStaleApprovalFrozen] = useState(false);
+  // Row 331+341: post-approval freeze for the three click-to-edit override
+  // surfaces that auto-persist with no separate Calculate/confirm step and no
+  // "already approved" warning of their own — EditablePrice (#104),
+  // EditableLabel (S44), and #244's per-run bistro footage. is_test exempt,
+  // matching the server's #251/#177 freezes — a test quote stays fully
+  // editable regardless of lifecycle stamps.
+  //
+  // Premerge finding 1+4 fix: drive this off `initialQuote.approvedAt` (the
+  // loaded row's real customer_approved_at) rather than the derived
+  // `savedStatus`, so it matches the server's exact predicate — a
+  // staff-declined-after-approval quote (staff-decline never clears
+  // customer_approved_at; deriveStatus reports 'declined', not 'approved') no
+  // longer shows editable controls that then 409 (finding 4). And carve out
+  // the booked-amend case: the client already sends `amendReprice: true`
+  // unconditionally whenever savedStatus === 'booked' (see the runQuote fetch
+  // body below), which the server now honors for these three fields too — so
+  // the sanctioned amend path (edit here + Calculate, then record the
+  // amendment) must NOT be disabled, or a booked order has no correction path
+  // at all (finding 1). An approved-but-not-yet-booked quote has no such
+  // carve-out (no amend record is possible pre-booking — amend/route.ts
+  // requires deposit_paid_at) and stays hard-locked; see POST_APPROVAL_LOCK_REASON
+  // for its actual path (decline → revive → edit → re-send).
+  const bookedAmendEligible = savedStatus === 'booked';
+  const postApprovalFrozen =
+    (!isTest && !!initialQuote?.approvedAt && !bookedAmendEligible) || staleApprovalFrozen;
+  // Premerge finding 2 fix: this copy only ever shows when postApprovalFrozen
+  // is true, which (per the carve-out above) now excludes the booked-amend
+  // case entirely — so this is always the "re-approval needed" path, never
+  // the amend flow (amend requires a booked/deposit-paid order, which this
+  // predicate no longer reaches). Traced the actual mechanism (there is no
+  // dedicated "revive" route): staff-decline (approved→declined is a legal
+  // transition — quoteStatus.ts's ALLOWED_TRANSITIONS) declines the quote,
+  // which per #124 does NOT clear customer_approved_at; "revive" is then just
+  // a RE-SEND (POST /api/quotes/[id]/send) on that declined quote — canRevive
+  // gates it, and send/route.ts's isRevive branch explicitly clears
+  // customer_approved_at + viewed_at so deriveStatus reads 'sent' again,
+  // reopening the quote for editing. That resend is the sanctioned way to
+  // change a price/label/footage that was already customer-approved but
+  // never booked.
+  const POST_APPROVAL_LOCK_REASON =
+    "Locked after approval — a price, label, or footage change here needs re-approval. Decline this quote, revive it, make the change, and re-send; the customer's prior approval no longer applies once you do.";
   const quoteNumber = initialQuote?.quoteNumber ?? null;
   // PS-G2: the booked quote's job id (null pre-booking) — drives the "Amend
   // order" banner below, which links to the job page's Record-amendment
@@ -3300,7 +3398,11 @@ export default function QuoteBuilder({
       c.id,
       hlName || 'this contact',
       currentContactId,
-      !!initialQuote?.approvedAt,
+      // Row 338 fix-round MED (staff lens): the STICKY signal, not the
+      // non-sticky approvedAt alone — a revived previously-approved quote
+      // must still get the frozen warning, matching what the server (which
+      // checks the same sticky OR) will actually do with this pick.
+      identityEverFrozen,
     );
     if (confirmMsg && !window.confirm(confirmMsg)) return;
     everLinkedContactIdRef.current = c.id;
@@ -3390,14 +3492,31 @@ export default function QuoteBuilder({
   };
 
   const clearHighLevelContact = () => {
-    // #839 fix-round HIGH (BYPASS 3, customer+technical lenses): this route
-    // fires POST .../attach {detach:true} with no server-side guard at all —
-    // see clearContactConfirmMessage's own doc for why a client confirm (not
-    // a server block) is the right shape. window.confirm is synchronous, so
-    // returning here is a true no-op — nothing below has run yet.
-    const clearMsg = clearContactConfirmMessage(!!initialQuote?.approvedAt);
+    // #839 fix-round HIGH (BYPASS 3, customer+technical lenses): a client
+    // confirm, not a hard block, is the deliberate shape here — see
+    // clearContactConfirmMessage's own doc for the reasoning. window.confirm
+    // is synchronous, so returning here is a true no-op — nothing below has
+    // run yet. Row 338 correction: this comment used to say the route has
+    // "no server-side guard at all" — false as of this PR. route.ts's
+    // detach branch DOES refuse under the same sticky freeze CAS as the
+    // attach write (identityEverFrozen below matches it); the confirm here
+    // is the fast first line of defense, and the response-read restore a
+    // few lines down is the real backstop for whatever the confirm's
+    // point-in-time gate can't see (a revive racing this click, is_test's
+    // bypass shape changing mid-session, etc).
+    const clearMsg = clearContactConfirmMessage(identityEverFrozen);
     if (clearMsg && !window.confirm(clearMsg)) return;
     attachSeqRef.current++;
+    const clearSeq = attachSeqRef.current;
+    const freshClear = () => clearSeq === attachSeqRef.current;
+    // Row 338 fix-round HIGH (staff lens): captured BEFORE the optimistic
+    // flip below so a server-side identityFrozen refusal (read from the
+    // detach response further down) can restore the UI to what the DB
+    // actually still has — the detach fetch used to be pure best-effort
+    // with no read of its own result, so the UI showed "unlinked" even when
+    // the server had refused and the link was still live.
+    const previousContact = highlevelContact;
+    const previousFormHlId = form.highlevelContactId;
     setHighLevelContact(null);
     // #214 (c): a real undo clears the FORM's hl link too — leaving a
     // prefill/reopen-seeded id here would put the dropped contact right back
@@ -3419,14 +3538,33 @@ export default function QuoteBuilder({
       setDbLinked(false);
       attachPromiseRef.current = (attachPromiseRef.current ?? Promise.resolve(false)).then(async () => {
         try {
-          await fetch('/api/integrations/highlevel/attach', {
+          const res = await fetch('/api/integrations/highlevel/attach', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ quoteId: savedQuoteId, detach: true }),
           });
+          const data = await res.json().catch(() => null);
+          // Row 338 fix-round HIGH: the server refused (frozen quote — the
+          // detach branch's CAS, or a revive/approve landing in the race
+          // window between the pre-read and the write) — restore the
+          // optimistic flip above so the UI agrees with the DB instead of
+          // silently claiming "unlinked" while the link is still live.
+          // Only when this is still the LATEST clear/pick (freshClear): a
+          // newer pick already owns the visible state and must not be
+          // clobbered by a slow, now-superseded response.
+          if (data?.identityFrozen === true && freshClear()) {
+            setHighLevelContact(previousContact);
+            setForm(f => ({ ...f, highlevelContactId: previousFormHlId }));
+            setDbLinked(true);
+            setAttachStatus('skipped');
+            setAttachError(
+              'This quote is approved or booked, so its customer identity is locked — the link was not cleared. There is no in-app way to unlink an approved quote to relink it elsewhere; contact support for a manual fix rather than retrying.',
+            );
+          }
         } catch {
-          // Best-effort — a failed detach leaves the old link in place, which
-          // the visible "linked from a previous session" note then reflects.
+          // Best-effort — a network failure leaves the old link in place,
+          // which the visible "linked from a previous session" note then
+          // reflects (unchanged from before this fix).
         }
         return false;
       });
@@ -3509,6 +3647,20 @@ export default function QuoteBuilder({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `Attach failed (${res.status})`);
+      // Row 338 fix-round HIGH (staff lens): a frozen refusal (route.ts's
+      // #251/#839 CAS gates) used to fall into the generic linked:false
+      // branch below and claim "Card attached... try again" — false (nothing
+      // attached) and a retry can never succeed once the quote is frozen.
+      // Read the flag first and throw a distinct, honest error the catch
+      // block routes to the non-alarming 'skipped' status (matching the
+      // identityFrozenNotice banner's copy voice) instead of 'error'.
+      if (data.identityFrozen === true) {
+        const frozenErr = new Error(
+          'This quote is approved or booked, so its customer identity is locked — this contact wasn’t linked and nothing changed. There is no in-app way to relink an approved quote to a different customer; contact support for a manual fix rather than retrying.',
+        ) as Error & { identityFrozen?: boolean };
+        frozenErr.identityFrozen = true;
+        throw frozenErr;
+      }
       if (data.linked === false) {
         throw new Error('Card attached in HighLevel but the quote link didn’t save — try again.');
       }
@@ -3520,7 +3672,8 @@ export default function QuoteBuilder({
       return true;
     } catch (err) {
       if (fresh()) {
-        setAttachStatus('error');
+        const frozen = err instanceof Error && (err as Error & { identityFrozen?: boolean }).identityFrozen === true;
+        setAttachStatus(frozen ? 'skipped' : 'error');
         setAttachError(err instanceof Error ? err.message : 'Attach failed');
       }
       return false;
@@ -4016,6 +4169,11 @@ export default function QuoteBuilder({
   ): Promise<boolean> => {
     setLoading(true);
     setError(null);
+    // Premerge finding 3 fix: keep the last-known-good result/baseline around
+    // so a rejected save can restore them instead of leaving the breakdown
+    // vaporized (see the 409 handling below).
+    const prevResult = result;
+    const prevBaseline = baselineResult;
     setResult(null);
     // #172: keep a genuinely-attached chip through a recalculation — the
     // save-flow's lastAttachKey guard skips re-attaching the same pair, so
@@ -4127,7 +4285,27 @@ export default function QuoteBuilder({
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Request failed');
+      if (!res.ok) {
+        // Premerge finding 3 fix: a 409 from one of the three post-approval
+        // lock codes (route.ts:~716-737) means a stale tab tried to save a
+        // price/label/bistro-footage edit against a quote that's since been
+        // approved (or, per finding 4, whose approval this tab's own derived
+        // state hadn't caught up to). setResult(null) above already nulled
+        // the breakdown; every price/label/footage control lives inside
+        // `{result && (...)}`, so leaving it null here would strand the tab
+        // on a red banner with no way back short of a full reload (losing any
+        // other unsaved edits). Restore the last-known-good result/baseline
+        // and flip the tab to frozen so the controls lock with the honest
+        // post-approval copy — the tab self-corrects to server truth instead
+        // of staying editable and re-erroring on every retry.
+        const LOCK_CODES = new Set(['price-override-locked', 'label-override-locked', 'bistro-footage-locked']);
+        if (res.status === 409 && typeof data?.code === 'string' && LOCK_CODES.has(data.code)) {
+          setResult(prevResult);
+          setBaselineResult(prevBaseline);
+          setStaleApprovalFrozen(true);
+        }
+        throw new Error(data.error ?? 'Request failed');
+      }
       // #41 adversarial-review HIGH fix: the real save-succeeded signal — a
       // 200 with persisted:false means the DB write failed even though
       // pricing succeeded (see /api/quote's own persisted: saved !== null).
@@ -5688,9 +5866,11 @@ export default function QuoteBuilder({
                                     {line.id ? (
                                       <>
                                         <input
-                                          className="w-20 border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-teal-500"
+                                          className="w-20 border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-teal-500 disabled:bg-gray-100 disabled:text-gray-400"
                                           type="number" min="0" placeholder="0"
                                           value={ft || ''}
+                                          disabled={postApprovalFrozen}
+                                          title={postApprovalFrozen ? POST_APPROVAL_LOCK_REASON : undefined}
                                           onChange={(e) => updateBistroRunFootage(line.id, Math.max(0, Number(e.target.value) || 0))}
                                           onBlur={() => {
                                             // #244 premerge finding 1 (HIGH, money — #139 parity):
@@ -6554,7 +6734,8 @@ export default function QuoteBuilder({
                         amount={result.rooflineOptions.santas.amount}
                         baseAmount={baselineResult?.rooflineOptions?.santas?.amount ?? result.rooflineOptions.santas.amount}
                         overridden={Object.prototype.hasOwnProperty.call(form.lineItemPriceOverrides, 'roofline-santas')}
-                        disabled={loading}
+                        disabled={loading || postApprovalFrozen}
+                        lockedReason={postApprovalFrozen ? POST_APPROVAL_LOCK_REASON : undefined}
                         onCommit={(n) => commitLinePrice('roofline-santas', n)}
                         onReset={() => resetLinePrice('roofline-santas')}
                       />
@@ -6576,7 +6757,8 @@ export default function QuoteBuilder({
                         amount={result.rooflineOptions.gingerbread.amount}
                         baseAmount={baselineResult?.rooflineOptions?.gingerbread?.amount ?? result.rooflineOptions.gingerbread.amount}
                         overridden={Object.prototype.hasOwnProperty.call(form.lineItemPriceOverrides, 'roofline-gingerbread')}
-                        disabled={loading}
+                        disabled={loading || postApprovalFrozen}
+                        lockedReason={postApprovalFrozen ? POST_APPROVAL_LOCK_REASON : undefined}
                         onCommit={(n) => commitLinePrice('roofline-gingerbread', n)}
                         onReset={() => resetLinePrice('roofline-gingerbread')}
                       />
@@ -6712,7 +6894,8 @@ export default function QuoteBuilder({
                       amount={item.amount}
                       baseAmount={baseById.get(item.id) ?? item.amount}
                       overridden={Object.prototype.hasOwnProperty.call(form.lineItemPriceOverrides, item.id)}
-                      disabled={loading}
+                      disabled={loading || postApprovalFrozen}
+                      lockedReason={postApprovalFrozen ? POST_APPROVAL_LOCK_REASON : undefined}
                       onCommit={(n) => commitLinePrice(item.id!, n)}
                       onReset={() => resetLinePrice(item.id!)}
                     />
@@ -6744,7 +6927,8 @@ export default function QuoteBuilder({
                             label={resolvedLabel.label}
                             baseLabel={item.label}
                             overridden={resolvedLabel.overridden}
-                            disabled={loading}
+                            disabled={loading || postApprovalFrozen}
+                            lockedReason={postApprovalFrozen ? POST_APPROVAL_LOCK_REASON : undefined}
                             onCommit={(s) => commitLineLabel(item.id!, s)}
                             onReset={() => resetLineLabel(item.id!)}
                           />
@@ -6887,12 +7071,23 @@ export default function QuoteBuilder({
                 block above: it can fire even when highlevelContact is null
                 (a reopened quote's DB link isn't hydrated into that state —
                 #172), and it describes the save that just ran, not the
-                current chip. */}
+                current chip.
+                Row 338 fix: the original copy told staff to "Use the amend
+                flow to move it to a different customer" — traced and found
+                false. The amend flow (/api/quotes/[id]/amend) only re-prices
+                a booked order's totals; it has no identity fields at all and
+                never writes customer_id/highlevel_contact_id/customer_name/
+                etc. There is currently no in-app way to move a frozen quote
+                to a different customer (the code-level remedy is a manual DB
+                correction — see the "WT-55 manual merge" comments in
+                quotes.ts/customers.ts), so the copy now says that honestly
+                instead of pointing at a flow that can't do it. */}
             {identityFrozenNotice && (
               <p className="mb-3 text-xs text-amber-700">
                 This quote is approved or booked, so its customer stayed put — the name, contact details and
                 HighLevel link on this quote were left exactly as the customer approved them, and nothing on this
-                save changed who the quote belongs to. Use the amend flow to move it to a different customer.
+                save changed who the quote belongs to. There is no in-app way to move an approved quote to a
+                different customer — if this needs correcting, contact support for a manual fix rather than re-saving.
               </p>
             )}
 

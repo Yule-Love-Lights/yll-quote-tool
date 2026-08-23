@@ -788,6 +788,9 @@ describe('findOrCreateCustomer — #213 >=2-field identity-agreement gate', () =
       customers: [
         { id: 'c1', match_key: 'hl:hl9', hl_contact_id: 'hl9', email: 'old@x.com', name: 'Old Name', phone: null },
       ],
+      // Row 338: the quote-link write is now CAS-guarded, so it needs a real
+      // row to match against — an unapproved/unbooked quote passes cleanly.
+      quotes: [{ id: 'q1', customer_approved_at: null, deposit_paid_at: null }],
     });
     sbRef.current = fake.client;
 
@@ -809,6 +812,14 @@ describe('findOrCreateCustomer — #213 >=2-field identity-agreement gate', () =
       customers: [
         { id: 'c1', match_key: 'hl:hl-old', hl_contact_id: 'hl-old', email: 'shared@x.com', phone: '5551234567', name: 'Jane' },
       ],
+      // Row 338 fix-round MED (technical lens): the quote-link write is now
+      // CAS-guarded, so without a real q1 row here the CAS always matches 0
+      // rows regardless of the veto outcome — attachQuoteToCustomer returns
+      // null either way, and the res?.customerId assertion below passed
+      // VACUOUSLY on `undefined` instead of proving the veto ran. An
+      // unapproved/unbooked quote passes the CAS cleanly, matching the
+      // sibling fixtures already fixed elsewhere in this describe block.
+      quotes: [{ id: 'q1', customer_approved_at: null, deposit_paid_at: null }],
     });
     sbRef.current = fake.client;
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -824,7 +835,9 @@ describe('findOrCreateCustomer — #213 >=2-field identity-agreement gate', () =
 
     // Vetoed despite email+phone+name ALL agreeing — a different hl id means
     // a different real CRM contact, full stop (fix 2's veto beats fix 3's
-    // >=2-field rule).
+    // >=2-field rule). res is truthy now that q1 is real+unfrozen, so
+    // customerId genuinely resolves to a NEW row, not the veto'd c1.
+    expect(res).toBeTruthy();
     expect(res?.customerId).not.toBe('c1');
     expect(fake.tables.customers).toHaveLength(2);
     expect(fake.tables.customers.find((c) => c.id === 'c1')!.hl_contact_id).toBe('hl-old'); // untouched
@@ -1109,6 +1122,47 @@ describe('attachQuoteToCustomer', () => {
     expect(fake.tables.customers).toHaveLength(0);
   });
 
+  // Row 338 (sibling-guard parity — this was the one #251/#839 identity
+  // writer with NO freeze guard at all; every caller either checked freeze
+  // itself before calling in, or — like send/route.ts's tagPropagation and
+  // mark-sent — never checked at all). Models a decline→revive cycle: the
+  // LIVE columns (customer_approved_at/deposit_paid_at) read unfrozen, but
+  // approval_snapshot still carries the marker from the original approval
+  // (row 338's sticky signal — see wasEverApproved's comment in
+  // quoteStatus.ts). The fake's `.is(col, val)` treats a json-arrow column
+  // name as an opaque literal key (same convention quotes.test.ts and
+  // attach/route.test.ts use for this exact CAS shape) — this models what a
+  // real `approval_snapshot->'staffApproved' IS NOT NULL` filter would see.
+  it('row 338: refuses the quote-link write when the quote was EVER approved, even though customer_approved_at reads null (post-revive)', async () => {
+    const fake = makeFakeSupabase({
+      quotes: [
+        {
+          id: 'q1',
+          customer_email: 'jane@x.com',
+          customer_address: '1 A St',
+          customer_id: null,
+          customer_approved_at: null,
+          deposit_paid_at: null,
+          'approval_snapshot->staffApproved': { by: 'op@x.com', at: '2026-06-01T00:00:00Z' },
+        },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const res = await attachQuoteToCustomer({
+      id: 'q1',
+      customer_email: 'jane@x.com',
+      customer_address: '1 A St',
+    });
+
+    expect(res).toBeNull();
+    // find-or-create is idempotent and already ran (customer/property rows
+    // exist — "orphaned, safe to retry", the documented shape for any other
+    // failure on this write); only the QUOTE'S OWN link is refused.
+    expect(fake.tables.customers).toHaveLength(1);
+    expect(fake.tables.quotes.find((r) => r.id === 'q1')!.customer_id).toBeNull();
+  });
+
   // Forward-heal (S34, #198 follow-up — live finding: 166/168 customers rows
   // had hl_contact_id NULL, because a quote can gain highlevel_contact_id
   // LATER (the builder's HL-contact-pick autocomplete) via a route that never
@@ -1119,6 +1173,9 @@ describe('attachQuoteToCustomer', () => {
     it('stamps a null hl_contact_id when the quote it resolves to carries one', async () => {
       const fake = makeFakeSupabase({
         customers: [{ id: 'c1', match_key: 'email:jane@x.com', hl_contact_id: null, email: 'jane@x.com', name: 'Jane', phone: null }],
+        // Row 338: the quote-link write is now CAS-guarded — needs a real
+        // (unapproved/unbooked) row to match against.
+        quotes: [{ id: 'q1', customer_approved_at: null, deposit_paid_at: null }],
       });
       sbRef.current = fake.client;
 
@@ -1143,6 +1200,13 @@ describe('attachQuoteToCustomer', () => {
       // customer's existing, deliberately-different link.
       const fake = makeFakeSupabase({
         customers: [{ id: 'bob', match_key: 'hl:ghl-bob', hl_contact_id: 'ghl-bob', email: 'bob@x.com', name: 'Bob', phone: null }],
+        // Row 338 fix-round MED (technical lens): needs a real q1 row —
+        // without one the CAS write always matches 0 rows and
+        // attachQuoteToCustomer always returns null regardless of which
+        // customer findOrCreateCustomer resolved, so res?.customerId below
+        // passed VACUOUSLY on `undefined` instead of proving the resolution
+        // landed on a NEW customer rather than Bob's row.
+        quotes: [{ id: 'q1', customer_approved_at: null, deposit_paid_at: null }],
       });
       sbRef.current = fake.client;
 
@@ -1154,6 +1218,7 @@ describe('attachQuoteToCustomer', () => {
         customer_address: '1 A St',
       });
 
+      expect(res).toBeTruthy();
       expect(res?.customerId).not.toBe('bob');
       expect(fake.tables.customers.find((c) => c.id === 'bob')!.hl_contact_id).toBe('ghl-bob');
     });
@@ -1161,6 +1226,9 @@ describe('attachQuoteToCustomer', () => {
     it('does nothing when the quote carries no highlevel_contact_id', async () => {
       const fake = makeFakeSupabase({
         customers: [{ id: 'c1', match_key: 'email:jane@x.com', hl_contact_id: null, email: 'jane@x.com', name: 'Jane', phone: null }],
+        // Row 338: the quote-link write is now CAS-guarded — needs a real
+        // (unapproved/unbooked) row to match against.
+        quotes: [{ id: 'q1', customer_approved_at: null, deposit_paid_at: null }],
       });
       sbRef.current = fake.client;
 
