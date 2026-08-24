@@ -1832,6 +1832,27 @@ export default function QuoteBuilder({
     prevPermSideDerivedRef.current = derivePermanentSideFootageBaseline(sides);
   };
 
+  // Row 345 finding 2: permDeriveFrozenRef is shared by THREE independent
+  // consumers — the permanent-side footage/corners derive above (line
+  // ~1942), the permanent accessories derive (line ~2032, no baseline
+  // concept of its own), and the permanent_bistro derive (its own baseline,
+  // prevBistroDerivedRef, seeded separately in the 'bistro' branch below).
+  // Every site that thaws the ref is a place the footage/corners derive can
+  // next fire from — an UNRELATED touch (a bistro edit, a Recount click)
+  // still shares this one ref, so if the seed above isn't called first,
+  // that next footage/corners run sees an EMPTY baseline for all four
+  // sides, treats every one of them as brand-new, and stamps fresh
+  // geometry over any hand-typed override — even on a side nobody touched.
+  // Reachable exactly this way through the "Recount from drawn lines"
+  // button (PermanentSection's accessories recount, wired to onRecount
+  // below), which used to clear the ref directly with no seed at all.
+  // Route every thaw through this helper instead of setting the ref
+  // directly, so the seed can never be forgotten at a new call site again.
+  const thawPermDerive = () => {
+    seedPermanentSideBaselineIfFrozen();
+    permDeriveFrozenRef.current = false;
+  };
+
   // Line setters — satellite-only now (#35): street lines are gone, the design
   // owns the street-side visuals.
   const getSetter = (type: LineType): ((updater: (lines: LineSegment[]) => LineSegment[]) => void) => {
@@ -1883,8 +1904,12 @@ export default function QuoteBuilder({
         }
         // #142 thaw: the operator touched the lines — footage follows the
         // visible geometry again (live-session rules), mirroring the
-        // permanent-side branch below.
-        permDeriveFrozenRef.current = false;
+        // permanent-side branch below. Also seeds the permanent-SIDE baseline
+        // (row 345 finding 2) even though this branch only fires on a
+        // permanent_bistro quote — permDeriveFrozenRef is shared, and it's
+        // strictly safer for a later service-type switch back to 'permanent'
+        // to inherit a real seeded baseline than an empty one.
+        thawPermDerive();
         setSatelliteBistroLines(updater);
       };
     }
@@ -1894,10 +1919,7 @@ export default function QuoteBuilder({
         // CURRENT (pre-edit) lines BEFORE thawing — see
         // seedPermanentSideBaselineIfFrozen's own comment above. No-ops when
         // not frozen (a live session already has a real baseline).
-        seedPermanentSideBaselineIfFrozen();
-        // #142: the operator touched the lines — thaw the rehydrate freeze so
-        // footage/counts follow the visible geometry again (live-session rules).
-        permDeriveFrozenRef.current = false;
+        thawPermDerive();
         setPermanentSatLines((pl) => ({ ...pl, [type]: updater(pl[type]) }));
       };
     }
@@ -1960,29 +1982,40 @@ export default function QuoteBuilder({
     const hadBackPrev = hadPermLinesRef.current.back;
     hadPermLinesRef.current = { front: hasFront, left: hasLeft, right: hasRight, back: hasBack };
 
-    // Footage is gated on a known satellite scale (deriveSideMeasure returns
-    // footage: null with none — a manual satellite upload); corners is
-    // scale-free and always active while its side has lines.
-    const frontFootage = reconcilePermanentSideField({ active: hasScale, hasLines: hasFront, hadLinesPrev: hadFrontPrev, freshValue: front.footage ?? 0, currentBilled: p.frontFootage, baseline: baseline.frontFootage });
-    const frontCorners = reconcilePermanentSideField({ active: true, hasLines: hasFront, hadLinesPrev: hadFrontPrev, freshValue: front.corners, currentBilled: p.frontCorners, baseline: baseline.frontCorners });
-    const leftFootage = reconcilePermanentSideField({ active: hasScale, hasLines: hasLeft, hadLinesPrev: hadLeftPrev, freshValue: left.footage ?? 0, currentBilled: p.leftFootage, baseline: baseline.leftFootage });
-    const leftCorners = reconcilePermanentSideField({ active: true, hasLines: hasLeft, hadLinesPrev: hadLeftPrev, freshValue: left.corners, currentBilled: p.leftCorners, baseline: baseline.leftCorners });
-    const rightFootage = reconcilePermanentSideField({ active: hasScale, hasLines: hasRight, hadLinesPrev: hadRightPrev, freshValue: right.footage ?? 0, currentBilled: p.rightFootage, baseline: baseline.rightFootage });
-    const rightCorners = reconcilePermanentSideField({ active: true, hasLines: hasRight, hadLinesPrev: hadRightPrev, freshValue: right.corners, currentBilled: p.rightCorners, baseline: baseline.rightCorners });
-    const backFootage = reconcilePermanentSideField({ active: hasScale, hasLines: hasBack, hadLinesPrev: hadBackPrev, freshValue: back.footage ?? 0, currentBilled: p.backFootage, baseline: baseline.backFootage });
-    const backCorners = reconcilePermanentSideField({ active: true, hasLines: hasBack, hadLinesPrev: hadBackPrev, freshValue: back.corners, currentBilled: p.backCorners, baseline: baseline.backCorners });
+    // Row 345 finding 1 fix: `active` (in-scope — always true here, the
+    // effect's own gate above already confirmed serviceType === 'permanent')
+    // is now separate from `canDerive` (whether a fresh value exists this
+    // run). Footage's canDerive is gated on a known satellite scale
+    // (deriveSideMeasure returns footage: null with none — a manual
+    // satellite upload); corners is scale-free and always derivable while
+    // its side has lines. See reconcileSideFootage.ts's header comment for
+    // why folding these into one flag (the pre-fix design) made a
+    // no-scale delete-transition unreachable.
+    const frontFootage = reconcilePermanentSideField({ active: true, canDerive: hasScale, hasLines: hasFront, hadLinesPrev: hadFrontPrev, freshValue: front.footage ?? 0, currentBilled: p.frontFootage, baseline: baseline.frontFootage });
+    const frontCorners = reconcilePermanentSideField({ active: true, canDerive: true, hasLines: hasFront, hadLinesPrev: hadFrontPrev, freshValue: front.corners, currentBilled: p.frontCorners, baseline: baseline.frontCorners });
+    const leftFootage = reconcilePermanentSideField({ active: true, canDerive: hasScale, hasLines: hasLeft, hadLinesPrev: hadLeftPrev, freshValue: left.footage ?? 0, currentBilled: p.leftFootage, baseline: baseline.leftFootage });
+    const leftCorners = reconcilePermanentSideField({ active: true, canDerive: true, hasLines: hasLeft, hadLinesPrev: hadLeftPrev, freshValue: left.corners, currentBilled: p.leftCorners, baseline: baseline.leftCorners });
+    const rightFootage = reconcilePermanentSideField({ active: true, canDerive: hasScale, hasLines: hasRight, hadLinesPrev: hadRightPrev, freshValue: right.footage ?? 0, currentBilled: p.rightFootage, baseline: baseline.rightFootage });
+    const rightCorners = reconcilePermanentSideField({ active: true, canDerive: true, hasLines: hasRight, hadLinesPrev: hadRightPrev, freshValue: right.corners, currentBilled: p.rightCorners, baseline: baseline.rightCorners });
+    const backFootage = reconcilePermanentSideField({ active: true, canDerive: hasScale, hasLines: hasBack, hadLinesPrev: hadBackPrev, freshValue: back.footage ?? 0, currentBilled: p.backFootage, baseline: baseline.backFootage });
+    const backCorners = reconcilePermanentSideField({ active: true, canDerive: true, hasLines: hasBack, hadLinesPrev: hadBackPrev, freshValue: back.corners, currentBilled: p.backCorners, baseline: baseline.backCorners });
 
-    // MERGE into the previous baseline (row 333 finding 1 precedent) — a
-    // footage field with no known scale this run keeps its existing baseline
-    // key untouched, so switching to a manual satellite upload and back can't
-    // drop it (see reconcileSideFootage.ts's own comment for the full hazard:
-    // handleSatelliteSelect resets satelliteFeetPerPixel to null mid-session
-    // without clearing permanentSatLines).
+    // MERGE into the previous baseline (row 333 finding 1 precedent) — but
+    // unlike the holiday merge above, EVERY field passes active: true here.
+    // Row 345 finding 1 fix moved "leave an undeliverable field's baseline
+    // alone" INTO reconcilePermanentSideField itself (the canDerive: false
+    // branch echoes the baseline back unchanged), so this merge no longer
+    // needs its own scale-gated skip — and must not have one: a
+    // scale-gated skip would silently un-apply the delete-transition's
+    // explicit baseline clear (nextBaseline: undefined) whenever a side had
+    // no known scale, resurrecting finding 1 at the merge layer instead of
+    // the reconcile layer. See mergePermanentSideFootageBaseline's own
+    // comment in reconcileSideFootage.ts.
     const activeByField: Record<PermanentSideFieldKey, boolean> = {
-      frontFootage: hasScale, frontCorners: true,
-      leftFootage: hasScale, leftCorners: true,
-      rightFootage: hasScale, rightCorners: true,
-      backFootage: hasScale, backCorners: true,
+      frontFootage: true, frontCorners: true,
+      leftFootage: true, leftCorners: true,
+      rightFootage: true, rightCorners: true,
+      backFootage: true, backCorners: true,
     };
     const resultsByField: Record<PermanentSideFieldKey, PermanentSideFieldReconcileResult> = {
       frontFootage, frontCorners, leftFootage, leftCorners, rightFootage, rightCorners, backFootage, backCorners,
@@ -3014,7 +3047,10 @@ export default function QuoteBuilder({
               'Replaces the satellite image — traced bistro runs + footage will reset. Continue?',
             );
           if (!keepExisting) {
-            permDeriveFrozenRef.current = false;
+            // Row 345 finding 2: thaw via the shared helper (seeds the
+            // permanent-SIDE baseline too) rather than clearing the ref
+            // directly — see thawPermDerive's own comment.
+            thawPermDerive();
             hadBistroLinesRef.current = satelliteBistroLines.length > 0;
             setSatelliteBistroLines([]);
           } else {
@@ -3082,6 +3118,26 @@ export default function QuoteBuilder({
           if (seeded && seededSides.length > 0) {
             // #142: a fresh analyze is a NEW live session — thaw any rehydrate
             // freeze so the seeded lines drive footage/counts immediately.
+            //
+            // Row 345 finding 2: deliberately a PLAIN thaw, not
+            // thawPermDerive() — this is the one site where seeding the
+            // baseline first would be WRONG, not just unnecessary. Every
+            // other thaw site preserves the CURRENT lines (a manual edit
+            // touches one side, Recount re-derives from what's already
+            // drawn); this one REPLACES all four sides wholesale with a
+            // fresh AI re-trace two lines below, which is exactly the
+            // "geometry changed" case the reconcile is supposed to let win
+            // outright. Seeding from the pre-replace (old/frozen) lines
+            // would only matter in the rare coincidence where the AI
+            // re-derives a side to the exact same footage/corners as
+            // before — and in that one case seeding would make a stale
+            // hand-typed override survive a fresh re-analysis the operator
+            // explicitly asked for, which is the opposite of "drive
+            // footage/counts immediately" above. Leaving the baseline
+            // un-seeded here means every side starts this run with no
+            // recorded baseline, so the reconcile's "brand-new" branch
+            // takes the AI's fresh values unconditionally — the correct
+            // behavior for a full re-analyze.
             permDeriveFrozenRef.current = false;
             setPermanentSatLines({
               front: seeded.front ?? [],
@@ -6223,7 +6279,18 @@ export default function QuoteBuilder({
               form={form}
               setForm={setForm}
               onRecount={() => {
-                permDeriveFrozenRef.current = false; // #142: Recount = explicit re-derive
+                // #142: Recount = explicit re-derive. Row 345 finding 2: this
+                // button only intends to hand the ACCESSORIES count back to
+                // auto (see recountAccessories in PermanentSection.tsx), but
+                // permDeriveFrozenRef is shared with the footage/corners
+                // derive above — clearing it directly here used to leave
+                // that derive's baseline permanently empty (seeded only from
+                // the isPermanentSide getSetter, which requires frozen ===
+                // true, so it could never fire again after this ran). Route
+                // through the shared helper so an unrelated Recount click
+                // can't clobber every side's footage/corners override on the
+                // operator's NEXT line edit.
+                thawPermDerive();
               }}
               // PS-B1: a billed side (footage > 0) with no drawn satellite trace
               // never shows on the portal's roof map — surface that mismatch
