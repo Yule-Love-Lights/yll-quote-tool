@@ -109,6 +109,17 @@ export function PortalImageVisibilityControls({
       <p className="text-sm text-gray-500 mb-3">
         Hide either view from the customer without deleting staff photos or measurements.
       </p>
+      {/* Three review lenses flagged the same gap: these switches govern the
+          QUOTE PORTAL only. The public referral hero (/refer/[code]) and the
+          marketing sample-homes gallery read the design photo directly and do
+          not check these flags, so "hidden" here is not "hidden everywhere".
+          Saying so on the control is what stops a staffer believing a photo is
+          private when it is still publicly reachable. */}
+      <p className="text-xs text-gray-500 mb-3">
+        This controls the quote portal only. It does not hide the photo from the
+        public referral page or the sample-homes gallery, which are governed
+        separately.
+      </p>
       <div className="space-y-3">
         <label className={`flex items-start gap-3 ${hasStreetImage ? 'cursor-pointer' : 'text-gray-400'}`}>
           <input
