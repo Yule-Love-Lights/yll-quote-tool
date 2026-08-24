@@ -28,6 +28,7 @@
 
 import { useState, type FormEvent } from 'react';
 import { ReferralLinkCopy } from '@/components/portal/dark/ReferralLinkCopy';
+import { PhoneFrame } from './PhoneFrame';
 
 const inputClass =
   'w-full rounded-lg bg-[#060B0F] border border-[#1F2A23] px-3.5 py-2.5 text-[15px] text-[#F4ECD8] placeholder:text-[#5A5648] focus:outline-none focus:ring-2 focus:ring-[#FFB744]';
@@ -100,6 +101,15 @@ export function ReferralLinkReady({ link, name }: { link: string; name: string |
         16&quot; spritzers.
       </p>
       <ReferralLinkCopy link={link} />
+
+      {/* Live preview (naldo/referral-link-preview, PIECE 3b): their OWN
+          real page, in the same phone frame the sample used before they
+          generated anything (page.tsx), so they can see it live, house
+          render and all, before they send it to anyone. Decorative only:
+          the link and Copy button above already work with no dependency
+          on this rendering. */}
+      <PhoneFrame src={link} title="Your referral page, live" className="mt-6" />
+
       <p className="mt-5 text-[13px] text-[#A89F87] leading-[1.5]">
         Forwarded to you? This link belongs to {name || 'someone else'}.{' '}
         <a href="/referral-link" className={linkClass}>

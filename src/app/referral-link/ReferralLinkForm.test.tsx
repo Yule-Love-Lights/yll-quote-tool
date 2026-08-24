@@ -22,6 +22,8 @@
 // onSubmit/onChange handler), to prove which fields a given `contactId`
 // prop shows or hides. That is a one-shot render, not an interaction test.
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
   ReferralLinkSuccess,
@@ -86,6 +88,33 @@ describe('ReferralLinkReady (naldo/referral-link-personalized, review fix 1 this
     expect(html).toContain(LINK);
     // ReferralLinkCopy's own copy button, reused here rather than rebuilt.
     expect(html).toContain('Copy link');
+  });
+
+  it('also shows their own real page live, in a phone frame, pointed at their exact link (PIECE 3b)', () => {
+    const html = renderToStaticMarkup(<ReferralLinkReady link={LINK} name="Riley" />);
+    expect(html).toContain(`src="${LINK}"`);
+  });
+
+  it('the link and Copy button still render if the phone frame is absent (the frame is decoration, the link is the deliverable)', () => {
+    // PhoneFrame degrades to `null` on a failed load (see PhoneFrame.test.tsx),
+    // which can only remove ITSELF from the tree if it is a sibling of
+    // ReferralLinkCopy, never a wrapper around it. Proven structurally here
+    // rather than by simulating a load failure: renderToStaticMarkup never
+    // fires an iframe's onError (no browser underneath it), so there is no
+    // way to drive PhoneFrame's internal `failed` state through the public
+    // render path in this test setup, the same limitation every interactive
+    // test in this file already works around (see the file header).
+    const source = readFileSync(join(__dirname, 'ReferralLinkForm.tsx'), 'utf8');
+    const readyBody = source.slice(
+      source.indexOf('export function ReferralLinkReady'),
+      source.indexOf('export function ReferralLinkContactIdFailed'),
+    );
+    // <ReferralLinkCopy .../> and <PhoneFrame .../> must be independent,
+    // self-closing sibling elements, i.e. neither is nested inside the
+    // other's own JSX tag.
+    expect(readyBody).toMatch(/<ReferralLinkCopy[^>]*\/>/);
+    expect(readyBody).toMatch(/<PhoneFrame[^>]*\/>/);
+    expect(readyBody.indexOf('<ReferralLinkCopy')).toBeLessThan(readyBody.indexOf('<PhoneFrame'));
   });
 
   it('names the person in the heading when a name is available', () => {

@@ -30,6 +30,7 @@ import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { isReferralSelfServeEnabled } from '@/lib/referralSelfServeFlag';
 import { CompactTrustRow } from '@/components/portal/dark/CompactTrustRow';
+import { PhoneFrame } from './PhoneFrame';
 import { ReferralLinkForm } from './ReferralLinkForm';
 
 // The flag is a runtime server env read, never statically pre-render this page.
@@ -76,6 +77,16 @@ export default async function ReferralLinkPage({
             <CompactTrustRow />
           </div>
         </div>
+
+        {/* Sample preview (naldo/referral-link-preview, PIECE 3a): the
+            enticement. Shows the no-database /refer/preview route (PIECE 2)
+            in a phone-shaped frame so a visitor sees exactly what their
+            friend receives before they bother generating anything. */}
+        <div className="mb-10 text-center">
+          <PhoneFrame src="/refer/preview" title="A sample of what your friend receives" />
+          <p className="mt-4 text-[13px] text-[#A89F87]">This is what your friend sees when you send your link.</p>
+        </div>
+
         <ReferralLinkForm contactId={contactId} />
       </div>
     </main>
