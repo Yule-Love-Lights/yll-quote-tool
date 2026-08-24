@@ -489,6 +489,7 @@ vi.mock('@/lib/supabase', () => ({
 }));
 
 import {
+  ANCHORED_ITEM_RESOLVABLE_STATUS,
   closeFollowUpsForResolvedItem,
   closeQuoteInboxNoise,
   completeTerminalQuoteItems,
@@ -498,6 +499,7 @@ import {
   excludeLegacyRebookItems,
   findOrphanedFollowUpItems,
   findViewOnlyFollowUpItems,
+  getItemStatus,
   getGmailWritebackRetryTarget,
   getReopenCounts,
   isColorRequestExternalId,
@@ -514,6 +516,7 @@ import {
   markItemCompleted,
   markItemFollowed,
   markItemHandledLocal,
+  shouldResolveAnchoredItem,
   needsLookReason,
   quoteIdPrefix,
   recordSuppressedFollowUp,
@@ -3072,6 +3075,35 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
     expect(fake.rows[0].reason).toBe('quote_sent_no_reply');
   });
 
+  // #252 slice E revival: markFollowUpDone now hands back the follow-up's
+  // anchored inbox_item_id so a caller (the /api/dashboard/followup route)
+  // can decide whether to also resolve that item — see route.test.ts's
+  // coupling tests.
+  it('returns the anchored inbox_item_id on success', async () => {
+    const fake = makeFollowUpsFake([
+      { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'pending' },
+    ]);
+    sbRef.current = { from: (table: string) => (table === 'follow_ups' ? fake.table() : genericTable()) };
+
+    const done = await markFollowUpDone('fu-1', 'operator-1');
+    expect(done.ok).toBe(true);
+    if (!done.ok) return;
+    expect(done.inboxItemId).toBe('item-1');
+    expect(fake.rows[0].status).toBe('done');
+  });
+
+  it("returns a null inboxItemId for a manual follow-up with no anchor (today's behavior preserved)", async () => {
+    const fake = makeFollowUpsFake([
+      { id: 'fu-1', inbox_item_id: null as unknown as string, reason: 'manual', status: 'pending' },
+    ]);
+    sbRef.current = { from: (table: string) => (table === 'follow_ups' ? fake.table() : genericTable()) };
+
+    const done = await markFollowUpDone('fu-1', 'operator-1');
+    expect(done.ok).toBe(true);
+    if (!done.ok) return;
+    expect(done.inboxItemId).toBeNull();
+  });
+
   // #252 salvage: markFollowUpDone's operatorId widened to `string | null` for
   // parity with markItemHandledLocal/dismissItem/markItemCompleted. The activity
   // row must still name an actor when no operator resolved — dashboard_activity
@@ -3109,7 +3141,10 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
   // caller won the race) — markFollowUpDone's .eq('status','pending') CAS
   // matches zero rows, and that's an honest no-op: still ok:true (the row IS
   // in the caller's desired end state), but zero dashboard_activity inserts.
-  it('is a no-op (ok:true, no activity insert) when the follow-up is already done — lost race', async () => {
+  // #252 slice E revival: the SAME CAS also protects the anchor-resolution
+  // coupling — a lost race returns inboxItemId: null, so the losing caller's
+  // route never attempts to resolve the anchored item a second time either.
+  it('is a no-op (ok:true, inboxItemId: null, no activity insert) when the follow-up is already done — lost race', async () => {
     const fake = makeFollowUpsFake([
       { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'done' },
     ]);
@@ -3132,6 +3167,7 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
     const done = await markFollowUpDone('fu-1', 'operator-1');
 
     expect(done.ok).toBe(true);
+    if (done.ok) expect(done.inboxItemId).toBeNull();
     expect(fake.rows[0].status).toBe('done'); // unchanged, not re-touched
     expect(activityInserts).toHaveLength(0);
   });
@@ -3635,6 +3671,73 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
       expect(orderCall!.args[0]).toBe('id');
       expect(orderCall!.args[1]).toEqual({ ascending: true });
     });
+  });
+});
+
+// ─── #252 slice E — anchored-item resolution gate ───────────────────────────
+//
+// "Clicking Done on a follow-up currently does NOT touch the inbox item, so
+// the strip clears while the conversation stays open elsewhere" (ledger row
+// 252). shouldResolveAnchoredItem is the single decision point the
+// /api/dashboard/followup route consults before reusing the Handled route's
+// machinery (markItemHandledLocal + runHandledWriteback + recordWriteback) —
+// see route.test.ts for the full wiring. Tested as a pure function here so
+// every input combination (including a 'dismissed' follow-up, which has no
+// live UI caller today but IS a real value under follow_ups' own
+// `status in ('pending','done','dismissed')` CHECK constraint) is covered
+// directly, without needing a live dismiss code path to exist.
+describe('shouldResolveAnchoredItem (#252 slice E)', () => {
+  it('true: a done follow-up anchored to a still-unresponded item', () => {
+    expect(shouldResolveAnchoredItem('done', 'unresponded')).toBe(true);
+  });
+
+  it('false: an already-handled item is left untouched (no double-stamp)', () => {
+    expect(shouldResolveAnchoredItem('done', 'handled')).toBe(false);
+  });
+
+  it('false: an already-completed item is left untouched', () => {
+    expect(shouldResolveAnchoredItem('done', 'completed')).toBe(false);
+  });
+
+  it('false: an already-dismissed item is left untouched', () => {
+    expect(shouldResolveAnchoredItem('done', 'dismissed')).toBe(false);
+  });
+
+  it('false: no anchored item (null status — e.g. item not found)', () => {
+    expect(shouldResolveAnchoredItem('done', null)).toBe(false);
+  });
+
+  it('false: a DISMISSED follow-up never resolves the item, regardless of item status', () => {
+    expect(shouldResolveAnchoredItem('dismissed', 'unresponded')).toBe(false);
+    expect(shouldResolveAnchoredItem('dismissed', 'handled')).toBe(false);
+  });
+
+  it('false: a PENDING follow-up (not yet acted on) never resolves the item', () => {
+    expect(shouldResolveAnchoredItem('pending', 'unresponded')).toBe(false);
+  });
+});
+
+describe('getItemStatus (#252 slice E)', () => {
+  /** Minimal single-table stub: select('status').eq('id', itemId).maybeSingle(). */
+  function makeInboxItemsFake(row: { id: string; status: string } | null) {
+    return {
+      select: () => ({
+        eq: (_col: string, val: string) => ({
+          maybeSingle: async () => ({ data: row && row.id === val ? { status: row.status } : null, error: null }),
+        }),
+      }),
+    };
+  }
+
+  it("returns the item's current status", async () => {
+    // getItemStatus only ever queries inbox_items — no generic-table fallback needed.
+    sbRef.current = { from: () => makeInboxItemsFake({ id: 'item-1', status: 'unresponded' }) };
+    expect(await getItemStatus('item-1')).toBe('unresponded');
+  });
+
+  it('returns null when the item does not exist', async () => {
+    sbRef.current = { from: () => makeInboxItemsFake(null) };
+    expect(await getItemStatus('missing-item')).toBeNull();
   });
 });
 
@@ -6598,5 +6701,97 @@ describe('reverseItemState (row 312 — reclassified + wrong-occurrence guard)',
       { method: 'order', args: ['created_at', { ascending: false }] },
       { method: 'order', args: ['id', { ascending: false }] },
     ]);
+  });
+});
+
+// ─── Row 366: markItemHandledLocal's expectedStatus CAS ─────────────────────
+// The followup route reads an item's status, gates POSITIVELY on 'unresponded',
+// then writes. The default write guard is a NEGATIVE .neq('status','handled'),
+// which refuses an already-handled row but happily overwrites one that moved to
+// 'completed'/'dismissed' in the gap — silently RESURRECTING it to 'handled'.
+// expectedStatus carries the caller's positive check into the UPDATE itself.
+describe('markItemHandledLocal — expectedStatus positive CAS (row 366)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  const ITEM_ID = 'item-366';
+  const OPERATOR_ID = '11111111-2222-3333-4444-555555555555';
+  const NOW = new Date('2026-08-24T12:00:00Z');
+
+  /** 1st .from('inbox_items') = priorStateOf's SELECT, 2nd = the UPDATE chain. */
+  function makeSbFor(itemUpdateResult: { data: unknown; error: null | { message: string } }) {
+    const { builder: priorBuilder } = makeBuilder({ data: null, error: null });
+    const { builder: updateBuilder, calls: updateCalls } = makeBuilder(itemUpdateResult);
+    const { builder: activityBuilder, calls: activityCalls } = makeBuilder({ data: null, error: null });
+    let inboxCallCount = 0;
+    const from = (table: string) => {
+      if (table === 'inbox_items') {
+        inboxCallCount += 1;
+        return inboxCallCount === 1 ? priorBuilder : updateBuilder;
+      }
+      if (table === 'dashboard_activity') return activityBuilder;
+      throw new Error(`unexpected table: ${table}`);
+    };
+    return { from, updateCalls, activityCalls };
+  }
+
+  const OK_ROW = { source: 'ghl', external_id: 'ext-1', source_message_id: null, dashboard_contacts: null };
+
+  it('with expectedStatus, the UPDATE guards on .eq(status, expected) and NEVER on the negative .neq', async () => {
+    const { from, updateCalls } = makeSbFor({ data: OK_ROW, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemHandledLocal(ITEM_ID, OPERATOR_ID, NOW, { expectedStatus: 'unresponded' });
+    expect(res.ok).toBe(true);
+
+    expect(updateCalls.filter((c) => c.method === 'eq')).toEqual([
+      { method: 'eq', args: ['id', ITEM_ID] },
+      { method: 'eq', args: ['status', 'unresponded'] },
+    ]);
+    expect(updateCalls.some((c) => c.method === 'neq')).toBe(false);
+  });
+
+  it('without expectedStatus the guard is unchanged — .neq(status, handled), no status .eq (the other two callers)', async () => {
+    const { from, updateCalls } = makeSbFor({ data: OK_ROW, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemHandledLocal(ITEM_ID, OPERATOR_ID, NOW);
+    expect(res.ok).toBe(true);
+
+    expect(updateCalls).toContainEqual({ method: 'neq', args: ['status', 'handled'] });
+    expect(updateCalls.filter((c) => c.method === 'eq')).toEqual([{ method: 'eq', args: ['id', ITEM_ID] }]);
+  });
+
+  it('a lost race (the row moved on, so the guarded UPDATE matches nothing) refuses with a message naming the expected status', async () => {
+    const { from, activityCalls } = makeSbFor({ data: null, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemHandledLocal(ITEM_ID, OPERATOR_ID, NOW, { expectedStatus: 'unresponded' });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toBe('Item not found or no longer unresponded');
+
+    // The refusal is audited, same as the default guard's refusal path.
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toMatchObject({
+      action: 'action_failed',
+      detail: { action: 'handled', error: 'Item not found or no longer unresponded' },
+    });
+  });
+
+  it('the default refusal message is untouched for callers that pass no expectedStatus', async () => {
+    const { from } = makeSbFor({ data: null, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemHandledLocal(ITEM_ID, OPERATOR_ID, NOW);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toBe('Item not found or already handled');
+  });
+
+  it('the constant the followup gate reads is the same one it passes as the CAS — they cannot drift', () => {
+    expect(ANCHORED_ITEM_RESOLVABLE_STATUS).toBe('unresponded');
+    expect(shouldResolveAnchoredItem('done', ANCHORED_ITEM_RESOLVABLE_STATUS)).toBe(true);
+    expect(shouldResolveAnchoredItem('done', 'completed')).toBe(false);
+    expect(shouldResolveAnchoredItem('done', 'dismissed')).toBe(false);
   });
 });

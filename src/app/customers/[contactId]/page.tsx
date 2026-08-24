@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
-import { getOperator } from '@/lib/auth/supabaseServer';
+import { authGateEngaged, getOperator } from '@/lib/auth/supabaseServer';
 import { listQuotesForDashboard, getViewEventsForQuotes } from '@/lib/dashboard/queries';
 import { buildCustomerActivity } from '@/lib/dashboard/activity';
 import { statusOf, matchesCustomerRoute } from '@/lib/dashboard/customers';
@@ -57,8 +57,9 @@ export default async function CustomerDetailPage({
 }) {
   // Defense in depth behind the middleware perimeter — re-check at render so this
   // customer-PII surface never serves anonymously even if the perimeter is
-  // bypassed. Dormant until the auth gate is live (Slice 4).
-  if (process.env.AUTH_GATE_ENABLED === 'true' && !(await getOperator())) {
+  // bypassed. Engaged by default; dormant only on the explicit
+  // AUTH_GATE_ENABLED=false opt-out (ledger #347).
+  if (authGateEngaged() && !(await getOperator())) {
     redirect('/login?from=/customers');
   }
   // The route id is either a HighLevel contact id (CRM-linked customers) or a
