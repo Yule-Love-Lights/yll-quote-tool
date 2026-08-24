@@ -30,7 +30,35 @@ export async function POST(req: NextRequest) {
   const operator = await getOperator();
   // handled_by is a uuid FK (auth.users) — NULL, never the string 'system', on
   // the narrow path where the auth gate is dormant and no operator resolved.
-  const res = await dismissItem(itemId, operator?.id ?? null, new Date());
-  if (!res.ok) return NextResponse.json({ error: res.error }, { status: 503 });
+  // Row 387: 'unresponded' is the ONLY status an operator can legally dismiss
+  // FROM. The single Dismiss control in the app is InboxList's "Not a lead"
+  // (InboxList.tsx), and that list is fed by listOpenItems, which applies
+  // applyBucketFilter(..., 'needs_reply') — `status = 'unresponded'` AND
+  // `followed_up_at IS NULL`. InWorksSection renders no dismiss control at all.
+  //
+  // FIX ROUND (two lenses converged on this independently): the first cut passed
+  // ['unresponded','handled'], derived from which buckets EXIST rather than from
+  // which bucket actually feeds the button — and 'handled' is precisely the
+  // status this guard exists to REFUSE. A row that a colleague answered in the
+  // read→write gap is 'handled', so allowing it let the stale click through and
+  // reopened the very race the row is about: an answered lead flipped to
+  // dismissed, and addSuppressedSenders silently filtering that real customer's
+  // future messages. Single value, matching /api/dashboard/handled exactly.
+  const res = await dismissItem(itemId, operator?.id ?? null, new Date(), {
+    expectedStatus: 'unresponded',
+  });
+  // 409, not 503: `refused` means the CAS matched zero rows — real evidence the
+  // item moved on (another operator answered/completed it), not a backend
+  // failure, so the client can tell a lost race from an outage.
+  //
+  // Known cosmetic gap (staff lens, deferred): on a real refusal the row has by
+  // definition left the needs_reply bucket, so act()'s refresh() drops it and
+  // the error note is keyed to an id that never renders again. The operator sees
+  // the row disappear — the same thing they would see on success — so they may
+  // believe the sender was suppressed when it deliberately was not. Not harmful
+  // (the refusal is CORRECT: a colleague answered it, so it IS a real lead and
+  // must not be suppressed), but it is the honesty gap row 287 closed for reply,
+  // and closing it here means keeping a note visible for a removed row.
+  if (!res.ok) return NextResponse.json({ error: res.error }, { status: res.refused ? 409 : 503 });
   return NextResponse.json({ ok: true });
 }
