@@ -4,6 +4,7 @@ import { requireAdmin } from '@/lib/auth/supabaseServer';
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import { listNonCrewOperators } from '@/lib/auth/adminUsers';
 import { dollarsToCents } from '@/lib/hourlyRate';
+import { asJsonObject, parseTelegramUserId, TELEGRAM_USER_ID_ERROR } from '@/lib/telegramUserId';
 import {
   linkOfficeStaff,
   listLinkedAuthUserIds,
@@ -12,6 +13,8 @@ import {
   OperatorAlreadyLinkedError,
   setOfficeStaffActive,
   setOfficeStaffRate,
+  setOfficeStaffTelegram,
+  TelegramUserIdTakenError,
 } from '@/lib/crewMembers';
 
 export const runtime = 'nodejs';
@@ -71,6 +74,7 @@ export async function GET() {
           active: s.active,
           authUserId: s.authUserId,
           baseRateCents: s.baseRateCents,
+          telegramUserId: s.telegramUserId,
           operatorEmail: op?.email ?? null,
           operatorName: op?.name ?? null,
           // The linked operator login no longer exists (deleted from the accounts
@@ -101,7 +105,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
   }
 
-  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+  // Narrowed to a plain object (or null): a JSON primitive body like `42` would
+  // otherwise reach the `in` operator below and throw a TypeError instead of
+  // returning this route's own 400.
+  const body = asJsonObject(await req.json().catch(() => null));
   const authUserId = String(body?.authUserId ?? '').trim();
   if (!authUserId) {
     return NextResponse.json({ error: 'Choose an operator to set up.' }, { status: 400 });
@@ -166,19 +173,24 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
   }
 
-  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+  // Narrowed to a plain object (or null): a JSON primitive body like `42` would
+  // otherwise reach the `in` operator below and throw a TypeError instead of
+  // returning this route's own 400.
+  const body = asJsonObject(await req.json().catch(() => null));
   const crewMemberId = String(body?.crewMemberId ?? '').trim();
   if (!crewMemberId) {
     return NextResponse.json({ error: 'Choose an office staff member.' }, { status: 400 });
   }
 
-  // Two independent edits share PATCH: an active toggle and a rate correction.
-  // The office sends one at a time; a rate edit wins if somehow both arrive.
+  // Three independent edits share PATCH: an active toggle, a rate correction,
+  // and a Telegram link. The office sends exactly one at a time; the order below
+  // is the precedence if more than one somehow arrives.
   const hasRate = body?.hourlyRate !== undefined;
+  const hasTelegram = body !== null && 'telegramUserId' in body;
   const hasActive = typeof body?.active === 'boolean';
-  if (!hasRate && !hasActive) {
+  if (!hasRate && !hasTelegram && !hasActive) {
     return NextResponse.json(
-      { error: 'Nothing to update. Send active or hourlyRate.' },
+      { error: 'Nothing to update. Send active, hourlyRate or telegramUserId.' },
       { status: 400 },
     );
   }
@@ -194,6 +206,22 @@ export async function PATCH(req: NextRequest) {
         );
       }
       member = await setOfficeStaffRate(crewMemberId, baseRateCents);
+    } else if (hasTelegram) {
+      // Office staff text the bot too (Naldo, 2026-08-24). null unlinks; a
+      // missing key is a caller bug, never a silent unlink.
+      const parsed = parseTelegramUserId(body?.telegramUserId);
+      if (!parsed.ok) {
+        return NextResponse.json(
+          {
+            error:
+              parsed.reason === 'missing'
+                ? 'telegramUserId is required (send null to unlink).'
+                : TELEGRAM_USER_ID_ERROR,
+          },
+          { status: 400 },
+        );
+      }
+      member = await setOfficeStaffTelegram(crewMemberId, parsed.telegramUserId);
     } else {
       member = await setOfficeStaffActive(crewMemberId, body!.active as boolean);
     }
@@ -204,6 +232,11 @@ export async function PATCH(req: NextRequest) {
     }
     return NextResponse.json({ member });
   } catch (e) {
+    // A partial unique index guards telegram_user_id, so this is a real "that
+    // account already belongs to someone else" the office can fix, not a 500.
+    if (e instanceof TelegramUserIdTakenError) {
+      return NextResponse.json({ error: e.message }, { status: 409 });
+    }
     console.error('PATCH /api/admin/office-staff:', e instanceof Error ? e.message : e);
     return NextResponse.json({ error: 'Failed to update office staff' }, { status: 500 });
   }

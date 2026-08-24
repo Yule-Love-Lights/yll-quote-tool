@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 
 import { dollarsToCents } from '@/lib/hourlyRate';
+import { isValidTelegramUserId } from '@/lib/telegramUserId';
 
 /**
  * Settings → Accounts → Office staff time clock (ledger #354).
@@ -22,6 +23,7 @@ type OfficeStaffRow = {
   active: boolean;
   authUserId: string | null;
   baseRateCents: number;
+  telegramUserId: string | null;
   operatorEmail: string | null;
   operatorName: string | null;
   operatorMissing: boolean;
@@ -185,6 +187,58 @@ export function OfficeStaff() {
     }
   }
 
+  async function saveTelegram(row: OfficeStaffRow, telegramUserId: string | null) {
+    setTogglingId(row.id);
+    setError(null);
+    setDone(null);
+    try {
+      const res = await fetch('/api/admin/office-staff', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ crewMemberId: row.id, telegramUserId }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) throw new Error(data.error ?? 'Failed to save the Telegram link');
+      setDone(
+        telegramUserId
+          ? `${row.displayName} can now clock in by texting the bot.`
+          : `${row.displayName}'s Telegram is unlinked. Their texts no longer clock them in.`,
+      );
+      reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to save the Telegram link');
+    } finally {
+      setTogglingId(null);
+    }
+  }
+
+  function editTelegram(row: OfficeStaffRow) {
+    const input = window.prompt(
+      `Telegram user id for ${row.displayName}? Digits only — they can get theirs by messaging @userinfobot.`,
+      row.telegramUserId ?? '',
+    );
+    if (input == null) return;
+    const trimmed = input.trim();
+    if (trimmed === '') {
+      setError('Enter a Telegram user id, or use Unlink to remove it.');
+      return;
+    }
+    if (!isValidTelegramUserId(trimmed)) {
+      setError('That is not a Telegram user id. It is a number, not an @handle.');
+      return;
+    }
+    void saveTelegram(row, trimmed);
+  }
+
+  function unlinkTelegram(row: OfficeStaffRow) {
+    // Destructive and SILENT for the staff member: their texts simply stop
+    // clocking them in, with no error on their end. Matches the crew panel.
+    const ok = window.confirm(
+      `Unlink ${row.displayName}'s Telegram? Their texts will stop clocking them in until it is linked again.`,
+    );
+    if (ok) void saveTelegram(row, null);
+  }
+
   const operatorLabel = (o: EligibleOperator) => o.name ?? o.email ?? 'Unnamed operator';
 
   return (
@@ -198,6 +252,14 @@ export function OfficeStaff() {
       <p className="text-xs text-gray-400 mt-1">
         Only operator accounts can be set up here. Add a new person under Staff accounts above
         first, then set them up. Field crew are handled under Crew logins below, not here.
+      </p>
+      <p className="text-xs text-gray-500 mt-2">
+        Office staff can clock in two ways: from the dashboard header with their operator login,
+        or by texting the bot once their Telegram is linked below. Linking is necessary but not
+        enough on its own: the bot only reads chats on its allow list, so texting works in a group
+        the bot is already in, while a one-to-one chat also needs that same id added to
+        TELEGRAM_ALLOWED_CHATS. Until then their texts are ignored silently, with no error shown
+        to them.
       </p>
 
       {loading ? (
@@ -214,6 +276,9 @@ export function OfficeStaff() {
                     <span className="ml-2 text-xs text-red-600">operator login deleted</span>
                   )}
                   <span className="ml-2 text-xs text-gray-500">{fmtUsd(s.baseRateCents)}/hr</span>
+                  <span className={s.telegramUserId ? 'ml-2 text-xs text-green-700' : 'ml-2 text-xs text-amber-700'}>
+                    {s.telegramUserId ? 'Telegram linked' : 'No Telegram'}
+                  </span>
                 </span>
                 <span className="flex shrink-0 items-center gap-3">
                   <span className={s.active ? 'text-xs text-green-700' : 'text-xs text-amber-700'}>
@@ -227,6 +292,24 @@ export function OfficeStaff() {
                   >
                     Edit rate
                   </button>
+                  <button
+                    type="button"
+                    disabled={togglingId === s.id}
+                    onClick={() => editTelegram(s)}
+                    className="text-xs text-gray-500 underline disabled:opacity-50"
+                  >
+                    {s.telegramUserId ? 'Change Telegram' : 'Link Telegram'}
+                  </button>
+                  {s.telegramUserId && (
+                    <button
+                      type="button"
+                      disabled={togglingId === s.id}
+                      onClick={() => unlinkTelegram(s)}
+                      className="text-xs text-gray-500 underline disabled:opacity-50"
+                    >
+                      Unlink
+                    </button>
+                  )}
                   <button
                     type="button"
                     disabled={togglingId === s.id}
