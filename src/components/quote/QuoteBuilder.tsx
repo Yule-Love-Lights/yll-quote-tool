@@ -81,6 +81,15 @@ import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
 import { track } from '@/lib/analytics/posthog';
 import { loadQuoteDraft, saveQuoteDraft, clearQuoteDraft, customerIsEmpty, draftAutosaveActive } from '@/lib/quoteDraft';
 import { downscaleForUpload, downscaleForUploadAsBlob, readUploadErrorMessage } from '@/lib/clientImage';
+import {
+  parkSatelliteContext,
+  persistSatelliteMeasurements,
+  saveAnalysisContext,
+  satelliteContextAfterPhotoChange,
+  satelliteLinesHaveContent,
+  type DesignAnalysisContext,
+  type InFlightSatelliteSave,
+} from '@/components/quote/persistSatelliteMeasurements';
 // Row 269: pure, client-safe helpers shared with PipelineActionsMenu.tsx —
 // pipelineSendOutcome.ts has zero imports of its own (no React, no
 // Supabase), so pulling it in here does not drag anything server-only into
@@ -1196,6 +1205,7 @@ export default function QuoteBuilder({
   // Bumped when the design's scene/photo changes outside the editor (roofline
   // seed, photo replacement) so a remount reloads it.
   const [designEditorKey, setDesignEditorKey] = useState(0);
+  const [designPhotoRevision, setDesignPhotoRevision] = useState(0);
   // The live design scene, fetched after each Calculate so the Quote Breakdown
   // can map each line-item row → its scene item(s) and show the "recommended"
   // checkbox (#12). Empty/no-design → only custom rows are toggleable (their
@@ -1249,13 +1259,7 @@ export default function QuoteBuilder({
   // the satellite image/scale, persisted server-side so training capture
   // can assemble "what the AI originally said" from a reopened quote.
   // Parked here when the design doesn't exist yet (same dance as the seed).
-  type AnalysisContext = {
-    analysis?: Record<string, unknown>;
-    satelliteBase64?: string;
-    satelliteMediaType?: string;
-    satelliteFeetPerPixel?: number | null;
-  };
-  const pendingContextRef = useRef<AnalysisContext | null>(null);
+  const pendingContextRef = useRef<DesignAnalysisContext | null>(null);
   // #204 review round: which address the currently-parked pendingContextRef
   // satellite was pulled for — client-only bookkeeping, NEVER sent to the
   // server (pushAnalysisContext's payload shape is unchanged). Stamped by
@@ -1272,17 +1276,29 @@ export default function QuoteBuilder({
   // manual satellite upload) read the CURRENT id at fire time, not the stale
   // one captured in their closure when a design was created mid-flight.
   const designIdRef = useRef<string | null>(initialQuote?.designId ?? null);
-  const pushAnalysisContext = async (id: string, ctx: AnalysisContext) => {
+  const designPhotoOperationRef = useRef<Promise<void> | null>(null);
+  const designPhotoChangeInProgressRef = useRef(false);
+  const quoteSaveInProgressRef = useRef(false);
+  const satelliteChangeInProgressRef = useRef(false);
+  // Satellite uploads clear any older saved trace. Keep the latest request so
+  // Calculate can wait for it (or retry it) before writing the new lines.
+  const satelliteContextSaveRef = useRef<InFlightSatelliteSave | null>(null);
+  const pushAnalysisContext = async (id: string, ctx: DesignAnalysisContext) => {
     if (!ctx.analysis && !ctx.satelliteBase64) return;
+    const save = ctx.satelliteBase64
+      ? (satelliteContextSaveRef.current?.promise ?? Promise.resolve())
+          .catch(() => {})
+          .then(() => saveAnalysisContext(id, ctx))
+      : saveAnalysisContext(id, ctx);
+    if (ctx.satelliteBase64) {
+      satelliteContextSaveRef.current = { designId: id, context: ctx, promise: save };
+    }
     try {
-      await fetch(`/api/designs/${id}/analysis-context`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(ctx),
-      });
+      await save;
     } catch {
       // Non-fatal: quoting works without provenance; only training capture
-      // loses the "original analysis" half for this design.
+      // loses the "original analysis" half for this design. Calculate retries
+      // satellite payloads because their image must precede the saved trace.
     }
   };
   // "Save as training example" feedback (#8 Stage A) — covers both the
@@ -1430,8 +1446,15 @@ export default function QuoteBuilder({
   // pending roofline seed); photo changes later (camera recapture / re-lookup)
   // → replace the existing design's base photo in place.
   useEffect(() => {
-    if (!photoBase64 || !photoMediaType) return;
-    if (designPhotoRef.current === photoBase64) return;
+    if (!photoBase64 || !photoMediaType) {
+      designPhotoChangeInProgressRef.current = false;
+      return;
+    }
+    if (designPhotoRef.current === photoBase64) {
+      designPhotoChangeInProgressRef.current = false;
+      return;
+    }
+    designPhotoChangeInProgressRef.current = true;
     let stale = false;
     const push = async () => {
       setDesignBusy(true);
@@ -1474,6 +1497,7 @@ export default function QuoteBuilder({
               pendingContextRef.current = null;
               void pushAnalysisContext(id, ctx);
             }
+            designIdRef.current = id;
             setDesignId(id);
           }
         } else {
@@ -1505,12 +1529,18 @@ export default function QuoteBuilder({
         if (!stale) setDesignBusy(false);
       }
     };
-    void push();
+    const operation = push();
+    designPhotoOperationRef.current = operation;
+    void operation.then(() => {
+      if (designPhotoOperationRef.current === operation) {
+        designPhotoChangeInProgressRef.current = false;
+      }
+    });
     return () => {
       stale = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [photoBase64, photoMediaType, designId]);
+  }, [photoBase64, photoMediaType, designId, designPhotoRevision]);
 
   // Keep the designId ref in lockstep with state for async closures (L6).
   useEffect(() => {
@@ -1622,6 +1652,7 @@ export default function QuoteBuilder({
   const imgContainerRef = useRef<HTMLDivElement>(null);
   const [addMode, setAddMode] = useState<LineType | null>(null);
   const [pendingPoints, setPendingPoints] = useState<[number, number][]>([]);
+  const satelliteTraceVersionRef = useRef(0);
   // Scroll-wheel zoom + drag-to-pan for the satellite measurement box (#26).
   // Pan/zoom are paused while placing points (addMode) so clicks add points.
   const satWrapperRef = useRef<HTMLDivElement>(null);
@@ -1823,6 +1854,7 @@ export default function QuoteBuilder({
   // Line setters — satellite-only now (#35): street lines are gone, the design
   // owns the street-side visuals.
   const getSetter = (type: LineType): ((updater: (lines: LineSegment[]) => LineSegment[]) => void) => {
+    satelliteTraceVersionRef.current += 1;
     // #142 thaw (holiday): the operator touched the lines, so footage may follow
     // the visible geometry again — same live-session rule as the permanent
     // branches below. Until then the rehydrate freeze keeps a reopened quote's
@@ -2301,6 +2333,11 @@ export default function QuoteBuilder({
   const handlePhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (quoteSaveInProgressRef.current) {
+      e.target.value = '';
+      setAnalysisError('Wait for the quote save to finish, then select the street photo.');
+      return;
+    }
     setPhotoFile(file);
     setPhotoPreview(URL.createObjectURL(file));
     setAnalysisNotes(null);
@@ -2341,18 +2378,13 @@ export default function QuoteBuilder({
     // googleAddress: googleAddress only changes on a fresh successful
     // geocode, so it would still read "house A" here and miss an
     // edited-but-not-yet-re-pulled address.
-    const currentAddress = form.customer.address.trim();
-    const parked = pendingContextRef.current;
-    if (parked?.satelliteBase64 != null && pendingSatelliteAddressRef.current === currentAddress) {
-      pendingContextRef.current = {
-        satelliteBase64: parked.satelliteBase64,
-        satelliteMediaType: parked.satelliteMediaType,
-        satelliteFeetPerPixel: parked.satelliteFeetPerPixel,
-      };
-    } else {
-      pendingContextRef.current = null;
-      pendingSatelliteAddressRef.current = null;
-    }
+    const preservedSatellite = satelliteContextAfterPhotoChange(
+      pendingContextRef.current,
+      pendingSatelliteAddressRef.current,
+      form.customer.address,
+    );
+    pendingContextRef.current = preservedSatellite.context;
+    pendingSatelliteAddressRef.current = preservedSatellite.address;
   };
 
   // Manual satellite upload (#9): a second photo slot so manually-photographed
@@ -2363,40 +2395,67 @@ export default function QuoteBuilder({
     const input = e.target;
     const file = input.files?.[0];
     if (!file) return;
-    // Replacing an auto-measured Google satellite (known scale) discards its
-    // measurement — confirm before clobbering it. Manual-over-manual is silent.
-    if (satellitePreview != null && satelliteFeetPerPixel != null) {
+    if (quoteSaveInProgressRef.current || satelliteChangeInProgressRef.current) {
+      input.value = '';
+      setAnalysisError('Wait for the current satellite or quote save to finish, then try again.');
+      return;
+    }
+    const hasAnyLines = satelliteLinesHaveContent({
+      santas: satelliteSantasLines,
+      gingerbread: satelliteGingerbreadLines,
+      c9: satelliteC9Lines,
+      stake: satelliteStakeLines,
+      bistro: satelliteBistroLines,
+      permanent: permanentSatLines,
+    });
+    // Every replacement invalidates existing geometry. A Google-scale image
+    // also invalidates its measured footage even when nothing was drawn.
+    if (satellitePreview != null && (satelliteFeetPerPixel != null || hasAnyLines)) {
       const ok = window.confirm(
-        'Replace the Google satellite (with its measured scale) with this uploaded image? The traced roofline + footage will reset.',
+        'Replace the satellite image? The traced roofline + footage will reset.',
       );
       if (!ok) { input.value = ''; return; }
     }
     input.value = ''; // allow re-picking the same file
+    satelliteChangeInProgressRef.current = true;
     void (async () => {
-      // #186: downscale before base64-encoding — see clientImage.ts.
-      const { dataUrl, mediaType } = await downscaleForUpload(file);
-      const comma = dataUrl.indexOf(',');
-      const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
-      setSatellitePreview(dataUrl);
-      setSatelliteSantasLines([]);
-      setSatelliteGingerbreadLines([]);
-      setSatelliteC9Lines([]);
-      setSatelliteStakeLines([]);
-      // #117 LOW: a new satellite image invalidates any runs drawn on the old
-      // one — clear so they don't overlay/rescale onto this image.
-      setSatelliteBistroLines([]);
-      hadBistroLinesRef.current = false;
-      setSatelliteFeetPerPixel(null); // manual = no known scale
-      const satCtx = { satelliteBase64: base64, satelliteMediaType: mediaType, satelliteFeetPerPixel: null };
-      // Read the CURRENT design id (L6) — a design may have been created while
-      // downscaleForUpload was decoding. uploadDesignSatellite also clears the
-      // design's stale satellite_lines so a captured example can't overlay old
-      // Google lines on the new image (M4).
-      const id = designIdRef.current;
-      if (id) {
-        void pushAnalysisContext(id, satCtx);
-      } else {
-        pendingContextRef.current = { ...(pendingContextRef.current ?? {}), ...satCtx };
+      try {
+        // #186: downscale before base64-encoding — see clientImage.ts.
+        const { dataUrl, mediaType } = await downscaleForUpload(file);
+        const comma = dataUrl.indexOf(',');
+        const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+        setSatellitePreview(dataUrl);
+        setSatelliteSantasLines([]);
+        setSatelliteGingerbreadLines([]);
+        setSatelliteC9Lines([]);
+        setSatelliteStakeLines([]);
+        setSatelliteBistroLines([]);
+        hadBistroLinesRef.current = false;
+        holidayDeriveFrozenRef.current = false;
+        permDeriveFrozenRef.current = false;
+        setPermanentSatLines({ front: [], left: [], right: [], back: [] });
+        setSatelliteFeetPerPixel(null); // manual = no known scale
+        const satCtx = { satelliteBase64: base64, satelliteMediaType: mediaType, satelliteFeetPerPixel: null };
+        // Read the CURRENT design id (L6) — a design may have been created while
+        // downscaleForUpload was decoding. uploadDesignSatellite also clears the
+        // design's stale satellite_lines so a captured example can't overlay old
+        // Google lines on the new image (M4).
+        const id = designIdRef.current;
+        if (id) {
+          void pushAnalysisContext(id, satCtx);
+        } else {
+          const parked = parkSatelliteContext(
+            pendingContextRef.current,
+            satCtx,
+            form.customer.address,
+          );
+          pendingContextRef.current = parked.context;
+          pendingSatelliteAddressRef.current = parked.address;
+        }
+      } catch {
+        setAnalysisError("Couldn't read that satellite image. Try selecting it again.");
+      } finally {
+        satelliteChangeInProgressRef.current = false;
       }
     })();
   };
@@ -2434,6 +2493,13 @@ export default function QuoteBuilder({
       // effect will push this photo into the design as its new base.)
       pendingSeedRef.current = null;
       setPhotoPreview(`data:${data.photoMediaType};base64,${data.photoBase64}`);
+      const photoNeedsSave = !!(
+        data.photoBase64 &&
+        data.photoMediaType &&
+        designPhotoRef.current !== data.photoBase64
+      );
+      designPhotoChangeInProgressRef.current = photoNeedsSave;
+      if (photoNeedsSave) setDesignPhotoRevision((revision) => revision + 1);
       setPhotoBase64(data.photoBase64);
       setPhotoMediaType(data.photoMediaType);
       setSvHeading(nextHeading);
@@ -2474,6 +2540,13 @@ export default function QuoteBuilder({
       }
       pendingSeedRef.current = null;
       setPhotoPreview(`data:${data.photoMediaType};base64,${data.photoBase64}`);
+      const photoNeedsSave = !!(
+        data.photoBase64 &&
+        data.photoMediaType &&
+        designPhotoRef.current !== data.photoBase64
+      );
+      designPhotoChangeInProgressRef.current = photoNeedsSave;
+      if (photoNeedsSave) setDesignPhotoRevision((revision) => revision + 1);
       setPhotoBase64(data.photoBase64);
       setPhotoMediaType(data.photoMediaType);
       setSvLat(data.camLat);
@@ -2694,7 +2767,7 @@ export default function QuoteBuilder({
     };
     // Provenance for training capture (#8 Stage A): the RAW analysis + the
     // satellite image/scale, persisted onto the design (parked until it exists).
-    const ctx: AnalysisContext = {
+    const ctx: DesignAnalysisContext = {
       analysis: r as unknown as Record<string, unknown>,
       ...(data.satelliteBase64
         ? {
@@ -2719,6 +2792,13 @@ export default function QuoteBuilder({
     // rooflines invisible from the street) — surface that tab if so.
     setViewMode(r.preferredSource === 'satellite' ? 'satellite' : 'design');
     setAnalysisNotes(`${r.notes} (confidence: ${r.confidence})`);
+    const photoNeedsSave = !!(
+      data.photoBase64 &&
+      data.photoMediaType &&
+      designPhotoRef.current !== data.photoBase64
+    );
+    designPhotoChangeInProgressRef.current = photoNeedsSave;
+    if (photoNeedsSave) setDesignPhotoRevision((revision) => revision + 1);
     setPhotoBase64(data.photoBase64 ?? null);
     setPhotoMediaType(data.photoMediaType ?? null);
     setFewShotCount(data.fewShotCount ?? 0);
@@ -2753,13 +2833,14 @@ export default function QuoteBuilder({
     // before replacing when anything's drawn, clear EVERY satellite line
     // array on apply; silent when nothing's drawn yet (the common case — the
     // first pull on a fresh quote).
-    const hasAnyLines =
-      satelliteSantasLines.length > 0 ||
-      satelliteGingerbreadLines.length > 0 ||
-      satelliteC9Lines.length > 0 ||
-      satelliteStakeLines.length > 0 ||
-      satelliteBistroLines.length > 0 ||
-      PERMANENT_SIDES.some((s) => permanentSatLines[s].length > 0);
+    const hasAnyLines = satelliteLinesHaveContent({
+      santas: satelliteSantasLines,
+      gingerbread: satelliteGingerbreadLines,
+      c9: satelliteC9Lines,
+      stake: satelliteStakeLines,
+      bistro: satelliteBistroLines,
+      permanent: permanentSatLines,
+    });
     if (hasAnyLines) {
       const ok = window.confirm(
         'Replaces the satellite image — traced roofline + footage will reset. Continue?',
@@ -2771,6 +2852,8 @@ export default function QuoteBuilder({
       setSatelliteStakeLines([]);
       setSatelliteBistroLines([]);
       hadBistroLinesRef.current = false;
+      holidayDeriveFrozenRef.current = false;
+      permDeriveFrozenRef.current = false;
       setPermanentSatLines({ front: [], left: [], right: [], back: [] });
     }
     setGoogleAddress(data.formattedAddress ?? null);
@@ -2800,8 +2883,9 @@ export default function QuoteBuilder({
       if (id) {
         void pushAnalysisContext(id, satCtx);
       } else {
-        pendingContextRef.current = { ...(pendingContextRef.current ?? {}), ...satCtx };
-        pendingSatelliteAddressRef.current = pulledForAddress;
+        const parked = parkSatelliteContext(pendingContextRef.current, satCtx, pulledForAddress);
+        pendingContextRef.current = parked.context;
+        pendingSatelliteAddressRef.current = parked.address;
       }
     }
     return true;
@@ -2816,11 +2900,16 @@ export default function QuoteBuilder({
   // (hasSatellitePayload) keeps this pulled scale intact through that later
   // analyze (see analysisSatellitePayload.ts / the #204 ordering test).
   const handlePullSatellite = async () => {
+    if (quoteSaveInProgressRef.current || satelliteChangeInProgressRef.current) {
+      setAnalysisError('Wait for the current satellite or quote save to finish, then try again.');
+      return;
+    }
     const addr = form.customer.address.trim();
     if (!addr) {
       setAnalysisError('Enter the property address above first.');
       return;
     }
+    satelliteChangeInProgressRef.current = true;
     setLookingUp(true);
     setAnalysisError(null);
     setAnalysisWarning(null);
@@ -2844,16 +2933,22 @@ export default function QuoteBuilder({
     } catch (err) {
       setAnalysisError(err instanceof Error ? err.message : 'Satellite pull failed');
     } finally {
+      satelliteChangeInProgressRef.current = false;
       setLookingUp(false);
     }
   };
 
   const handleLookupAddress = async () => {
+    if (quoteSaveInProgressRef.current || satelliteChangeInProgressRef.current) {
+      setAnalysisError('Wait for the current satellite or quote save to finish, then try again.');
+      return;
+    }
     const addr = form.customer.address.trim();
     if (!addr) {
       setAnalysisError('Enter the property address above first.');
       return;
     }
+    satelliteChangeInProgressRef.current = true;
     setLookingUp(true);
     setAnalysisError(null);
     setAnalysisWarning(null);
@@ -2902,6 +2997,13 @@ export default function QuoteBuilder({
         // Imagery loaded WITHOUT a holiday seed: permanent/bistro (which skip the
         // holiday analyzer/seed by design) or the fail-safe (analyzer down). The street
         // photo creates the design; the satellite + its scale stay for measuring.
+        const photoNeedsSave = !!(
+          data.photoBase64 &&
+          data.photoMediaType &&
+          designPhotoRef.current !== data.photoBase64
+        );
+        designPhotoChangeInProgressRef.current = photoNeedsSave;
+        if (photoNeedsSave) setDesignPhotoRevision((revision) => revision + 1);
         setPhotoBase64(data.photoBase64 ?? null);
         setPhotoMediaType(data.photoMediaType ?? null);
         setSatelliteFeetPerPixel(data.satelliteFeetPerPixel ?? null);
@@ -3065,17 +3167,23 @@ export default function QuoteBuilder({
     } catch (err) {
       setAnalysisError(err instanceof Error ? err.message : 'Address lookup failed');
     } finally {
+      satelliteChangeInProgressRef.current = false;
       setLookingUp(false);
     }
   };
 
   const handleAnalyzePhoto = async () => {
     if (!photoFile) return;
+    if (quoteSaveInProgressRef.current || designPhotoChangeInProgressRef.current) {
+      setAnalysisError('Wait for the current photo or quote save to finish, then try again.');
+      return;
+    }
     // #88/#117: permanent + permanent bistro design MANUALLY — no holiday
     // auto-measure/seed. Load the uploaded photo into a bare design (no
     // Anthropic call, no santas/gingerbread roofline drawn) so the operator
     // draws the runs themselves. Mirrors the analyzer-outage fail-safe below.
     if (form.serviceType === 'permanent' || form.serviceType === 'permanent_bistro') {
+      designPhotoChangeInProgressRef.current = true;
       // Read the base64 from the File itself — photoPreview is a blob: object URL
       // (URL.createObjectURL), NOT a data URL, so it can't be split for base64.
       // #186: downscale before base64-encoding — see clientImage.ts.
@@ -3084,11 +3192,20 @@ export default function QuoteBuilder({
       try {
         ({ dataUrl, mediaType } = await downscaleForUpload(photoFile));
       } catch {
+        designPhotoChangeInProgressRef.current = false;
         setAnalysisError("Couldn't read that photo. Try selecting it again.");
+        return;
+      }
+      if (quoteSaveInProgressRef.current) {
+        designPhotoChangeInProgressRef.current = false;
+        setAnalysisError('Quote save started before the photo was ready. Load the photo again.');
         return;
       }
       const comma = dataUrl.indexOf(',');
       const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+      const photoNeedsSave = designPhotoRef.current !== base64;
+      designPhotoChangeInProgressRef.current = photoNeedsSave;
+      if (photoNeedsSave) setDesignPhotoRevision((revision) => revision + 1);
       pendingSeedRef.current = null;
       setAnalysisError(null);
       setAnalysisWarning(null);
@@ -3143,8 +3260,17 @@ export default function QuoteBuilder({
         // FAIL-SAFE: analyzer unavailable. Load the uploaded photo into the editor
         // (it isn't loaded until now — handlePhotoSelect nulls photoBase64) so
         // staff design MANUALLY. Skip the seed.
-        setPhotoBase64(data.photoBase64 ?? null);
-        setPhotoMediaType(data.photoMediaType ?? null);
+        const nextPhotoBase64 = data.photoBase64 ?? null;
+        const nextPhotoMediaType = data.photoMediaType ?? null;
+        const photoNeedsSave = !!(
+          nextPhotoBase64 &&
+          nextPhotoMediaType &&
+          designPhotoRef.current !== nextPhotoBase64
+        );
+        designPhotoChangeInProgressRef.current = photoNeedsSave;
+        if (photoNeedsSave) setDesignPhotoRevision((revision) => revision + 1);
+        setPhotoBase64(nextPhotoBase64);
+        setPhotoMediaType(nextPhotoMediaType);
         setFewShotCount(0);
         setViewMode('design');
         setAnalysisWarning(
@@ -4201,6 +4327,14 @@ export default function QuoteBuilder({
     // and may also clear the #102 $/ft on that line.
     formOverride?: QuoteFormData,
   ): Promise<boolean> => {
+    if (quoteSaveInProgressRef.current) return false;
+    if (satelliteChangeInProgressRef.current || designPhotoChangeInProgressRef.current) {
+      setResult(null);
+      setError('Wait for the house images to finish loading, then Calculate again.');
+      return false;
+    }
+    const satelliteTraceVersionAtStart = satelliteTraceVersionRef.current;
+    quoteSaveInProgressRef.current = true;
     setLoading(true);
     setError(null);
     // Premerge finding 3 fix: keep the last-known-good result/baseline around
@@ -4350,8 +4484,9 @@ export default function QuoteBuilder({
       // THIS save (route.ts only sends the key when updateQuote set it —
       // absent/falsy on every normal save, including a brand-new insert).
       if (data.identityFrozen === true) setIdentityFrozenNotice(true);
-      setResult(data.result);
-      setBaselineResult(data.baseline ?? data.result); // #104 "was $X" source
+      // The result is deliberately NOT exposed here. It is set AFTER the
+      // satellite plan is durably stored (below), so a failed plan save cannot
+      // leave a Send-ready quote on screen beside its own error banner.
       const newQuoteId = typeof data.quoteId === 'string' ? data.quoteId : null;
       // Only overwrite savedQuoteId on a real id (#110 W3-004 / #80-105). A 200
       // response with quoteId:null means the server-side save/update failed
@@ -4382,7 +4517,7 @@ export default function QuoteBuilder({
       // satelliteLines mirror the builder's own line shape, same as permanent).
       const bistroSatelliteActive =
         form.serviceType === 'permanent_bistro' && satelliteBistroLines.length > 0;
-      if (designId && (holidaySatelliteActive || permanentSatelliteActive || bistroSatelliteActive)) {
+      if (newQuoteId && (holidaySatelliteActive || permanentSatelliteActive || bistroSatelliteActive)) {
         const satelliteLines = permanentSatelliteActive
           ? {
               front: permanentSatLines.front,
@@ -4400,12 +4535,48 @@ export default function QuoteBuilder({
                 ...(satFootage.santas != null ? { santasFootage: satFootage.santas } : {}),
                 ...(satFootage.ginger != null ? { gingerbreadFootage: satFootage.ginger } : {}),
               };
-        void fetch(`/api/designs/${designId}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ satelliteLines }),
-        }).catch(() => {});
+        try {
+          // A photo lookup may already be creating or updating the design.
+          // Reuse that row and let it drain any parked satellite first.
+          if (designPhotoOperationRef.current) await designPhotoOperationRef.current;
+          // The photo operation can start a background satellite save, so read
+          // both refs only AFTER that operation has settled.
+          const inFlightSatelliteSave = satelliteContextSaveRef.current;
+          const parkedSatelliteContext = pendingContextRef.current?.satelliteBase64
+            ? pendingContextRef.current
+            : null;
+          const satelliteContext = parkedSatelliteContext ?? inFlightSatelliteSave?.context ?? null;
+          await persistSatelliteMeasurements({
+            designId: designIdRef.current ?? designId,
+            quoteId: newQuoteId,
+            satelliteContext,
+            satelliteLines,
+            inFlightSatelliteSave,
+            onDesignCreated: (id) => {
+              designIdRef.current = id;
+              setDesignId(id);
+            },
+          });
+          if (pendingContextRef.current === satelliteContext) {
+            pendingContextRef.current = null;
+            pendingSatelliteAddressRef.current = null;
+          }
+          if (satelliteContextSaveRef.current === inFlightSatelliteSave) {
+            satelliteContextSaveRef.current = null;
+          }
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : 'Unknown satellite save error';
+          throw new Error(`Quote saved, but its satellite plan did not save: ${detail}`);
+        }
       }
+      // Do not expose a sendable result until the customer-facing satellite
+      // plan is durably stored. A failed image/trace save leaves an explicit
+      // retry error instead of a quote that looks ready to send.
+      if (satelliteTraceVersionRef.current !== satelliteTraceVersionAtStart) {
+        throw new Error('Quote saved, but the satellite trace changed while saving. Click Calculate again.');
+      }
+      setResult(data.result);
+      setBaselineResult(data.baseline ?? data.result); // #104 "was $X" source
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
       // Attach to HL opportunity in parallel, if an HL contact was picked
       // (skipped when this quote+contact pair is already attached).
@@ -4427,6 +4598,7 @@ export default function QuoteBuilder({
       setError(err instanceof Error ? err.message : 'Something went wrong');
       return false;
     } finally {
+      quoteSaveInProgressRef.current = false;
       setLoading(false);
     }
   };
@@ -5142,7 +5314,7 @@ export default function QuoteBuilder({
                   <button
                     type="button"
                     onClick={handlePullSatellite}
-                    disabled={lookingUp || !form.customer.address.trim()}
+                    disabled={lookingUp || loading || !form.customer.address.trim()}
                     title={
                       form.customer.address.trim()
                         ? 'No Street View at this address? Skip straight to the satellite image + real scale — instant, no AI. Draw channels by hand.'
@@ -5155,7 +5327,7 @@ export default function QuoteBuilder({
                   <button
                     type="button"
                     onClick={handleLookupAddress}
-                    disabled={lookingUp || !form.customer.address.trim()}
+                    disabled={lookingUp || loading || !form.customer.address.trim()}
                     title={form.customer.address.trim() ? undefined : 'Enter the property address above first.'}
                     className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium text-sm px-4 py-2 rounded-md whitespace-nowrap"
                   >
@@ -5221,6 +5393,7 @@ export default function QuoteBuilder({
                 type="file"
                 accept="image/*"
                 onChange={handlePhotoSelect}
+                disabled={loading}
                 className="block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-green-50 file:text-green-700 hover:file:bg-green-100"
               />
               {photoPreview && photoFile && (
@@ -5230,7 +5403,7 @@ export default function QuoteBuilder({
                   <button
                     type="button"
                     onClick={handleAnalyzePhoto}
-                    disabled={analyzing}
+                    disabled={analyzing || loading}
                     className="bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white font-medium py-2 px-4 rounded-md text-sm"
                   >
                     {analyzing
@@ -5253,6 +5426,7 @@ export default function QuoteBuilder({
                   type="file"
                   accept="image/*"
                   onChange={handleSatelliteSelect}
+                  disabled={loading}
                   className="block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
                 />
                 {satellitePreview != null && satelliteFeetPerPixel == null && (
