@@ -152,6 +152,19 @@ const SEND_ROUTE_DB_TIMEOUT_MS = 5_000;
 // eventually becomes retryable instead of leaving the quote stuck forever.
 const RETRY_CLAIM_WINDOW_MS = 2 * 60_000;
 
+// A fresh send, resend, or revival performs both GHL and customer-delivery
+// work. Its lifecycle stamp may therefore claim both effect slots only when
+// neither is owned by another live request. PostgREST's `.or()` accepts this
+// disjunctive normal form for `(delivery is free) AND (GHL is free)`.
+function effectClaimsAvailableFilter(cutoff: string): string {
+  return [
+    'and(delivery_retry_claimed_at.is.null,ghl_retry_claimed_at.is.null)',
+    `and(delivery_retry_claimed_at.is.null,ghl_retry_claimed_at.lt.${cutoff})`,
+    `and(delivery_retry_claimed_at.lt.${cutoff},ghl_retry_claimed_at.is.null)`,
+    `and(delivery_retry_claimed_at.lt.${cutoff},ghl_retry_claimed_at.lt.${cutoff})`,
+  ].join(',');
+}
+
 // postgrest-js query builders are only PromiseLike (a bare `.then()`, no
 // `.catch()`/`.finally()` — confirmed by reading PostgrestBuilder's own class
 // declaration), so the timer can't be cleared with a `.finally()` chained
@@ -523,12 +536,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
-  // An explicit retry has no fresh-send stamp to act as its idempotency key, so
-  // claim the relevant retry slot before any GHL or customer-delivery work.
-  // The lifecycle fields are re-checked on the write: a concurrent approval,
-  // payment, cancellation, or send-stage success cannot be overwritten by a
-  // stale retry request. Each mode owns its own slot so a delivery retry never
-  // blocks an independent CRM reconciliation (or vice versa).
+  // Every provider-effecting path holds the relevant short-lived claim until
+  // its work settles. Retries acquire one here; fresh sends, resends, and
+  // revivals write both claims atomically with their sent stamp below. That
+  // makes a retry conflict with an in-flight initial send instead of reaching
+  // the same customer or GHL card alongside it.
+  const effectClaims: Array<{
+    column: 'delivery_retry_claimed_at' | 'ghl_retry_claimed_at';
+    claimedAt: string;
+  }> = [];
   const retryClaimColumn = isGhlRetry
     ? 'ghl_retry_claimed_at'
     : isDeliveryRetry
@@ -567,6 +583,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           { status: 409 },
         );
       }
+      effectClaims.push({ column: retryClaimColumn, claimedAt: retryClaimAt });
     } catch (error) {
       console.error('[api/quotes/:id/send] retry claim failed:', error);
       return NextResponse.json({ error: 'Failed to claim retry' }, { status: 500 });
@@ -594,7 +611,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // Advance the explicit lifecycle status alongside the timestamp (ledger
     // #83). quote_sent_at stays the idempotency key; status mirrors it so the
     // explicit-status read path agrees with deriveStatus().
-    const stampPayload: Record<string, unknown> = { quote_sent_at: sentAt, status: 'sent' };
+    const initialClaimAt = new Date().toISOString();
+    const initialClaimCutoff = new Date(Date.now() - RETRY_CLAIM_WINDOW_MS).toISOString();
+    const stampPayload: Record<string, unknown> = {
+      quote_sent_at: sentAt,
+      status: 'sent',
+      delivery_retry_claimed_at: initialClaimAt,
+      ghl_retry_claimed_at: initialClaimAt,
+    };
     if (isRevive) {
       // #116: force deriveStatus to read 'sent' the moment this row is next
       // loaded. deriveStatus only trusts a persisted status for the
@@ -687,7 +711,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         .update(stampPayload)
         .eq('id', id)
         .eq('view_only', false)
-        .is('deposit_paid_at', null);
+        .is('deposit_paid_at', null)
+        .or(effectClaimsAvailableFilter(initialClaimCutoff));
       stampQuery = (isResend || isRevive)
         ? stampQuery.eq('status', currentStatus)
         : stampQuery.is('quote_sent_at', null);
@@ -711,6 +736,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         { status: 409 },
       );
     }
+    effectClaims.push(
+      { column: 'delivery_retry_claimed_at', claimedAt: initialClaimAt },
+      { column: 'ghl_retry_claimed_at', claimedAt: initialClaimAt },
+    );
 
     // NCE + YLL Neighbor tag propagation (#198): moved into the delivery
     // Promise.allSettled group below (review fix, customer MED, S34 #198
@@ -1191,17 +1220,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // fix 5, which had assumed a 60s default).
   await Promise.allSettled([ghlStageChain(), customerSms(), customerEmail(), tagPropagationRaced()]);
 
-  // Release only the exact claim this request won. If the invocation crashed,
-  // the two-minute lease expires on its own; if a later request has already
-  // reclaimed a stale lease, this write cannot clear that newer claim.
-  if (retryClaimColumn && retryClaimAt) {
+  // Release only the exact claims this request won. If the invocation crashed,
+  // the two-minute leases expire on their own; if a later request has already
+  // reclaimed a stale lease, an older request cannot clear that newer claim.
+  await Promise.all(effectClaims.map(async ({ column, claimedAt }) => {
     try {
       const { error: releaseErr } = await withDbTimeout((signal) =>
         sb
           .from('quotes')
-          .update({ [retryClaimColumn]: null })
+          .update({ [column]: null })
           .eq('id', id)
-          .eq(retryClaimColumn, retryClaimAt)
+          .eq(column, claimedAt)
           .abortSignal(signal),
       );
       if (releaseErr) {
@@ -1210,7 +1239,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     } catch (error) {
       console.warn('[api/quotes/:id/send] retry claim release failed:', error);
     }
-  }
+  }));
 
   // Join the two message errors deterministically (SMS first, then email),
   // preserving the original "a; b" concatenation shape.

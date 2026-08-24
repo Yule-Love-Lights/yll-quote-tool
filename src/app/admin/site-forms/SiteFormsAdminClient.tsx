@@ -8,6 +8,8 @@
 // that the nominated person has not been contacted.
 
 import { useEffect, useState } from 'react';
+import { OperatorShell } from '@/components/OperatorShell';
+import { SiteFormsListSkeleton } from './SiteFormsListSkeleton';
 
 type Submission = {
   id: string;
@@ -82,7 +84,13 @@ export default function SiteFormsAdminClient() {
   }, [type]);
 
   return (
-    <div style={{ padding: 24, maxWidth: 1100, margin: '0 auto' }}>
+    // row 346: wrapped in the operator chrome so a route transition into this
+    // page doesn't flash the top nav out (mirrors the #171a/#662 pattern) —
+    // this page previously rendered with no OperatorShell at all. maxWidth
+    // 1100/margin auto matches the previous outer div; `padding: 24` is
+    // dropped since OperatorShell now supplies py-8 px-4.
+    <OperatorShell active="leads">
+    <div style={{ maxWidth: 1100, margin: '0 auto' }}>
       <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 4 }}>Website form submissions</h1>
       <p style={{ color: '#666', marginBottom: 20, fontSize: 14 }}>
         Newsletter signups, job and intern applications, and Light Up For Hope nominations. These
@@ -111,22 +119,12 @@ export default function SiteFormsAdminClient() {
         ))}
       </div>
 
-      {/* row 332: was a bare "Loading..." line. This route has no loading.tsx
-          in its chain (falls through to the root skeleton, out of scope to
-          add here — see the row 332 PR body), so this placeholder just
-          matches the row cards below it (same borderRadius/background) rather
-          than mirroring a route-level skeleton that doesn't exist. */}
-      {loading && (
-        <div style={{ display: 'grid', gap: 12 }}>
-          {[0, 1, 2].map((i) => (
-            <div
-              key={i}
-              className="animate-pulse"
-              style={{ height: 72, borderRadius: 12, background: '#e5e5e5' }}
-            />
-          ))}
-        </div>
-      )}
+      {/* row 346: now the SAME shared component ./loading.tsx renders (mirrors
+          row 332/#171b) — one continuous skeleton across the route transition
+          and this client-fetch loading state, no morph into a differently-
+          shaped placeholder in between. Previously this route had no
+          loading.tsx to share with (row 332 left this out of scope). */}
+      {loading && <SiteFormsListSkeleton />}
       {error && <p style={{ color: '#B00020' }}>{error}</p>}
       {!loading && !error && rows.length === 0 && <p style={{ color: '#666' }}>Nothing yet.</p>}
 
@@ -268,5 +266,6 @@ export default function SiteFormsAdminClient() {
         ))}
       </div>
     </div>
+    </OperatorShell>
   );
 }
