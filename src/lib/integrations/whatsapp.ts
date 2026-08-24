@@ -126,6 +126,7 @@ export async function runWhatsAppCommand(cmd: WhatsAppCommand): Promise<string> 
       if (!card) return `No active job #${cmd.jobNumber}.`;
       const r = await prepareJobMaterials(card.id);
       if (!r) return `Couldn't prep job #${cmd.jobNumber}.`;
+      if (!r.ok) return `Couldn't prep job #${cmd.jobNumber} — ${r.error}`;
       if (r.alreadyDone) return `Job #${cmd.jobNumber} was already prepped — stock not deducted again.`;
       const n = r.deductions.length;
       return `Job #${cmd.jobNumber} prepped — deducted ${n} SKU${n === 1 ? '' : 's'} from stock. Now Ready For Install.`;

@@ -714,6 +714,17 @@ export function PipelineActionsMenu({
         alert((body as { error?: string }).error ?? 'Action failed');
       }
       if (res && res.ok) {
+        // Row 329 fix: cancel's response carries a `note` (refund-due caveat,
+        // the stock-returned line, or the legacy-snapshot-reconstruction
+        // caveat) that this generic success path used to drop silently. This
+        // menu backs cancel on FOUR surfaces (admin/quotes, admin/jobs list,
+        // admin/invoices, customers/[contactId]); only admin/jobs/[id]'s own
+        // cancelOrder (not this component) ever surfaced it. Same idiom as
+        // that page: a ⚠️ cue when a refund is due, the note appended.
+        if (action.kind === 'cancel') {
+          const body = (await res.json().catch(() => ({}))) as { refundNeeded?: boolean; note?: string };
+          if (body.note) alert(`${body.refundNeeded ? '⚠️ ' : ''}Order cancelled. ${body.note}`);
+        }
         closeAndReset();
         onDone?.();
       }

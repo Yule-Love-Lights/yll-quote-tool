@@ -484,7 +484,11 @@ export function computeStockDeductions(
 
 export type PrepareResult =
   | { ok: true; alreadyDone: true }
-  | { ok: true; alreadyDone: false; deductions: StockDeduction[] };
+  | { ok: true; alreadyDone: false; deductions: StockDeduction[] }
+  // Row 329 fix: the atomic CLAIM update itself failed (a real DB error, not
+  // just "someone else already claimed it" — see prepareJobMaterials below).
+  // Nothing was deducted and the job was not marked prepped; safe to retry.
+  | { ok: false; error: string };
 
 /**
  * Mark a job prepped and decrement its on-hand stock — idempotent (Naldo Q4:
@@ -515,25 +519,42 @@ export async function prepareJobMaterials(id: string): Promise<PrepareResult | n
   // stage), but it must NEVER touch real on-hand. Skip the deduction entirely
   // — an empty result, so the UI shows "prepped" with no phantom stock change.
   //
-  // Row 325: computed BEFORE the claim (pure — reads only wo.materials, no DB
-  // write) so it can be persisted in the SAME atomic update as the claim
-  // itself, below. That snapshot is what cancel reverses from, instead of
-  // recomputing the materials projection live at cancel time (which silently
-  // drifts if the materials rules change in between — the bug this fixes).
-  const deductions = !wo.job.isTest ? computeStockDeductions(wo.materials.materials) : [];
+  // Row 325 / Row 329: `intendedDeductions` is a PRE-claim read (pure — reads
+  // only wo.materials, no DB write) and is used only to pick which SKUs/qtys to
+  // attempt below. It is NOT what gets persisted as the durable snapshot —
+  // adjustOnHandAtomic floors at 0, so if a concurrent prep/receipt shifts a
+  // SKU's on-hand between this read and the deduction loop below, the amount
+  // ACTUALLY applied can be smaller (in magnitude) than intended. Persisting
+  // the intended numbers let cancel's reversal over-credit on-hand — the exact
+  // Row 329 bug. The real snapshot (`actualDeductions`, from adjustOnHandAtomic's
+  // own before/after/applied) is written in a SEPARATE update right after the
+  // loop, below.
+  const intendedDeductions = !wo.job.isTest ? computeStockDeductions(wo.materials.materials) : [];
 
   // Atomic claim — only the caller that flips NULL → now() proceeds to deduct.
-  const { data: claimed } = await db
+  // Row 329: `error` is now checked explicitly. `.is('stock_decremented_at',
+  // null)` matching zero rows (claimed === null, error === null) means someone
+  // else already prepped this job (or it vanished) — that's the legitimate
+  // alreadyDone case below. A non-null `error` means the UPDATE itself failed
+  // (network/DB fault) — previously that was silently treated exactly like
+  // alreadyDone, reporting success for a claim that never happened and never
+  // deducted anything. Nothing was written in either failure branch here (a
+  // failed WHERE-guarded UPDATE writes nothing), so both are safely retryable.
+  const { data: claimed, error: claimError } = await db
     .from('jobs')
     .update({
       stock_decremented_at: new Date().toISOString(),
       fulfillment_stage: 'ready_for_install',
-      stock_deductions: deductions,
     })
     .eq('id', id)
     .is('stock_decremented_at', null)
     .select('id')
     .maybeSingle();
+
+  if (claimError) {
+    console.error(`prepareJobMaterials: claim update failed for job ${id}:`, claimError);
+    return { ok: false, error: 'The prep claim update failed — nothing was deducted; safe to retry.' };
+  }
 
   if (!claimed) {
     // Lost the claim (already prepped) or the job vanished between read and claim.
@@ -542,19 +563,50 @@ export async function prepareJobMaterials(id: string): Promise<PrepareResult | n
     return { ok: true, alreadyDone: true };
   }
 
-  for (const d of deductions) {
+  // Row 329: build the durable snapshot from what adjustOnHandAtomic actually
+  // applied (`applied`), not from `intendedDeductions` — only entries where the
+  // clamp didn't zero the write are worth persisting (mirrors
+  // computeStockDeductions' own "skip zero-change" filter).
+  const actualDeductions: StockDeduction[] = [];
+  for (const d of intendedDeductions) {
     try {
       // Atomic NEGATIVE delta (mirrors receiveOrder's positive delta) so a job
       // decrement can never clobber a concurrent receipt increment (or another
       // job's decrement) on the same SKU. The old absolute set of d.after read a
       // snapshot before the atomic claim and last-write-wins dropped the racer's
       // delta — phantom stock. See adjustOnHandAtomic in onHand.ts.
-      await adjustOnHandAtomic(db, d.sku, -d.deducted);
+      const { before, after, applied } = await adjustOnHandAtomic(db, d.sku, -d.deducted);
+      if (applied !== 0) actualDeductions.push({ sku: d.sku, before, deducted: -applied, after });
     } catch (err) {
       // A single failed write shouldn't unwind the claim; staff can reconcile
       // that SKU manually on the Stock tab. Log for visibility.
       console.error(`prepareJobMaterials: on-hand write failed for ${d.sku}:`, err);
     }
   }
-  return { ok: true, alreadyDone: false, deductions };
+
+  // Row 329: a SECOND write, deliberately — the true applied amounts can only
+  // be known after the deduction loop above runs, and that loop can only run
+  // AFTER the claim wins (so a concurrent prep can't double-deduct). Row 325's
+  // "same atomic update as the claim" guarantee is therefore no longer
+  // possible for an ACCURATE snapshot; this write follows immediately after,
+  // scoped to the row this call already owns (no re-claim needed). If it
+  // fails, stock_deductions is left at its pre-claim value (null, for a
+  // never-before-prepped job) rather than a wrong number — cancel's existing
+  // legacy-reconstruction fallback (stockDeductions == null) then applies, an
+  // approximation rather than a frozen wrong snapshot.
+  try {
+    const { error: snapErr } = await db
+      .from('jobs')
+      .update({ stock_deductions: actualDeductions })
+      .eq('id', id)
+      .select('id')
+      .maybeSingle();
+    if (snapErr) {
+      console.error(`prepareJobMaterials: stock_deductions snapshot write failed for job ${id}:`, snapErr);
+    }
+  } catch (err) {
+    console.error(`prepareJobMaterials: stock_deductions snapshot write failed for job ${id}:`, err);
+  }
+
+  return { ok: true, alreadyDone: false, deductions: actualDeductions };
 }

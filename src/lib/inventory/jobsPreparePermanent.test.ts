@@ -8,7 +8,16 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 let currentDb: unknown = null;
 let jobRow: Record<string, unknown> | null = null;
 let quoteRow: Record<string, unknown> | null = null;
-const { adjustOnHandAtomic } = vi.hoisted(() => ({ adjustOnHandAtomic: vi.fn(async () => {}) }));
+// Row 329: adjustOnHandAtomic now returns {before,after,applied}. No clamp
+// scenario in this suite — the mocked on-hand (100) always covers the BOM's
+// need, so applied === the requested delta exactly.
+const { adjustOnHandAtomic } = vi.hoisted(() => ({
+  adjustOnHandAtomic: vi.fn(async (_db: unknown, _sku: string, delta: number) => ({
+    before: 100,
+    after: 100 + delta,
+    applied: delta,
+  })),
+}));
 
 vi.mock('../supabase', () => ({ getSupabaseServiceClient: () => currentDb }));
 vi.mock('../jobs', () => ({
