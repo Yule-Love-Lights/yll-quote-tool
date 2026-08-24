@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   footageFromLines,
   satelliteFootageDisagrees,
+  polylineLengthAspectUnits,
   SATELLITE_FOOTAGE_DISAGREEMENT_THRESHOLD_PCT,
   type FootagePolyline,
 } from './polylineFootage';
@@ -196,5 +197,83 @@ describe('satelliteFootageDisagrees', () => {
     expect(satelliteFootageDisagrees(NaN, 50)).toBe(false);
     expect(satelliteFootageDisagrees(40, NaN)).toBe(false);
     expect(satelliteFootageDisagrees(40, Infinity)).toBe(false);
+  });
+});
+
+describe('polylineLengthAspectUnits (QuoteBuilder consolidation, 2026-08-24)', () => {
+  // Independent re-implementation of QuoteBuilder.tsx's PRE-consolidation
+  // local `polylineLength` function (verbatim, as it existed before this
+  // change swapped it for an import) — used as an oracle to prove the new
+  // shared function reproduces the exact same formula, not just "a
+  // reasonable" one.
+  const oldQuoteBuilderPolylineLength = (lines: FootagePolyline[], aspect: number): number => {
+    const yScale = 1 / aspect;
+    let total = 0;
+    for (const l of lines) {
+      const pts = l.points;
+      for (let i = 1; i < pts.length; i++) {
+        const [x1, y1] = pts[i - 1];
+        const [x2, y2] = pts[i];
+        const dx = x2 - x1;
+        const dy = (y2 - y1) * yScale;
+        total += Math.sqrt(dx * dx + dy * dy);
+      }
+    }
+    return total;
+  };
+
+  it('matches the old QuoteBuilder formula on a square image (aspect=1) — the shape of every valid-scale live corpus row today', () => {
+    const lines = [line([[0.1, 0.2], [0.9, 0.2]]), line([[0.3, 0.1], [0.3, 0.9]])];
+    expect(polylineLengthAspectUnits(lines, 1)).toBeCloseTo(oldQuoteBuilderPolylineLength(lines, 1), 12);
+  });
+
+  it('matches the old QuoteBuilder formula on a non-square (wide) aspect, e.g. the live 642x470 shape (aspect ~1.366)', () => {
+    const aspect = 642 / 470;
+    const lines = [line([[0.05, 0.4], [0.6, 0.55]]), line([[0.2, 0.1], [0.2, 0.9], [0.8, 0.9]])];
+    expect(polylineLengthAspectUnits(lines, aspect)).toBeCloseTo(oldQuoteBuilderPolylineLength(lines, aspect), 12);
+  });
+
+  it('matches the old QuoteBuilder formula on a portrait aspect (< 1)', () => {
+    const aspect = 0.5;
+    const lines = [line([[0, 0], [1, 1]])];
+    expect(polylineLengthAspectUnits(lines, aspect)).toBeCloseTo(oldQuoteBuilderPolylineLength(lines, aspect), 12);
+  });
+
+  it('a pure horizontal run is unaffected by aspect (dx is left in width-units)', () => {
+    const lines = [line([[0.1, 0.5], [0.9, 0.5]])];
+    expect(polylineLengthAspectUnits(lines, 1)).toBeCloseTo(0.8, 12);
+    expect(polylineLengthAspectUnits(lines, 2.5)).toBeCloseTo(0.8, 12);
+  });
+
+  it('a pure vertical run scales by 1/aspect', () => {
+    const lines = [line([[0.5, 0.1], [0.5, 0.9]])];
+    expect(polylineLengthAspectUnits(lines, 2)).toBeCloseTo(0.8 / 2, 12);
+  });
+
+  it('degenerate: empty/null lines -> 0, same as footageFromLines', () => {
+    expect(polylineLengthAspectUnits([], 1)).toBe(0);
+    expect(polylineLengthAspectUnits(null, 1)).toBe(0);
+    expect(polylineLengthAspectUnits(undefined, 1)).toBe(0);
+  });
+
+  it('degenerate: a single-point polyline contributes 0', () => {
+    expect(polylineLengthAspectUnits([line([[0.5, 0.5]])], 1)).toBe(0);
+  });
+
+  it('non-finite or non-positive aspect -> 0 (never NaN/Infinity — stricter than the original unguarded formula, but this never fires in the live app: aspect is always a real image\'s positive naturalWidth/naturalHeight)', () => {
+    expect(polylineLengthAspectUnits([line([[0, 0], [1, 1]])], 0)).toBe(0);
+    expect(polylineLengthAspectUnits([line([[0, 0], [1, 1]])], -1)).toBe(0);
+    expect(polylineLengthAspectUnits([line([[0, 0], [1, 1]])], NaN)).toBe(0);
+    expect(polylineLengthAspectUnits([line([[0, 0], [1, 1]])], Infinity)).toBe(0);
+  });
+
+  it('never returns NaN or Infinity for any input tried above', () => {
+    const results = [
+      polylineLengthAspectUnits([], 1),
+      polylineLengthAspectUnits([line([[0.5, 0.5]])], 1),
+      polylineLengthAspectUnits([line([[0, 0], [1, 1]])], 0),
+      polylineLengthAspectUnits([line([[0, 0], [Infinity, 0]])], 1),
+    ];
+    for (const r of results) expect(Number.isFinite(r)).toBe(true);
   });
 });

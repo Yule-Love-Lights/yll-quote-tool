@@ -23,6 +23,42 @@ export type FootagePolyline = { points: readonly NormalizedPoint[] };
 
 const MIN_DIMENSION_PX = 1;
 
+// SHARED CORE (2026-08-24 consolidation): the one polyline-segment-summing
+// loop, reused by every typed wrapper below. Before this, the exact same
+// "sum each segment's scaled Pythagorean distance" loop existed as THREE
+// separate hand-written copies across the repo: this module's own (below),
+// QuoteBuilder.tsx's local polylineLength (the staff-priced holiday
+// satellite recompute — the ACTUAL money path), and
+// src/lib/permanent/satelliteMeasure.ts's own deliberately-duplicated copy
+// (its own comment says "avoid churning the holiday builder's internals" —
+// left untouched here; it's under src/lib/permanent/**, out of scope for
+// this change). This consolidation folds QuoteBuilder's copy into this
+// shared core via polylineLengthAspectUnits below, leaving two: this module
+// and the permanent one (a separate, later decision — see the PR body).
+//
+// No guards here — callers are responsible for validating their own scale
+// inputs before calling. A non-finite per-segment result is skipped (that
+// ONE segment contributes 0), never propagated as NaN/Infinity.
+function sumSegmentLengths(
+  lines: readonly FootagePolyline[] | null | undefined,
+  xScale: number,
+  yScale: number,
+): number {
+  let total = 0;
+  for (const poly of lines ?? []) {
+    const pts = poly?.points ?? [];
+    for (let i = 1; i < pts.length; i++) {
+      const [x1, y1] = pts[i - 1];
+      const [x2, y2] = pts[i];
+      const dx = (x2 - x1) * xScale;
+      const dy = (y2 - y1) * yScale;
+      if (!Number.isFinite(dx) || !Number.isFinite(dy)) continue; // skip a garbage segment, not the whole sum
+      total += Math.sqrt(dx * dx + dy * dy);
+    }
+  }
+  return total;
+}
+
 /**
  * Total real-world footage traced by a set of polylines, given the pixel
  * dimensions of the image they were drawn on and a feet-per-pixel scale.
@@ -67,20 +103,36 @@ export function footageFromLines(
   ) {
     return null;
   }
+  return sumSegmentLengths(lines, imageWidthPx, imageHeightPx) * feetPerPixel;
+}
 
-  let totalPx = 0;
-  for (const poly of lines ?? []) {
-    const pts = poly?.points ?? [];
-    for (let i = 1; i < pts.length; i++) {
-      const [x1, y1] = pts[i - 1];
-      const [x2, y2] = pts[i];
-      const dxPx = (x2 - x1) * imageWidthPx;
-      const dyPx = (y2 - y1) * imageHeightPx;
-      if (!Number.isFinite(dxPx) || !Number.isFinite(dyPx)) continue; // skip a garbage segment, not the whole sum
-      totalPx += Math.sqrt(dxPx * dxPx + dyPx * dyPx);
-    }
-  }
-  return totalPx * feetPerPixel;
+/**
+ * QuoteBuilder-compatible aspect-ratio-normalized polyline length. This is
+ * the SAME formula as the local `polylineLength` function QuoteBuilder.tsx
+ * used to define itself (dx left in "image width = 1 unit" terms, dy scaled
+ * by 1/aspect so a diagonal reflects the image's real width:height
+ * proportion) — reused via the shared `sumSegmentLengths` core instead of a
+ * second hand-written copy of the same loop. Returns a value in normalized
+ * width-units; the CALLER still multiplies by its own pixel-width constant
+ * and feet-per-pixel scale (unchanged from before this consolidation).
+ *
+ * Verified byte-for-byte parity with the pre-consolidation QuoteBuilder
+ * formula (raw value AND both rounding conventions QuoteBuilder uses) across
+ * every training_examples row with a valid satellite scale (70 row×line
+ * combinations, 2026-08-24) — see the PR body for the comparison.
+ *
+ * `aspect` non-finite or <= 0 (never observed in the live app — QuoteBuilder
+ * only ever sets it from a loaded image's real, positive naturalWidth /
+ * naturalHeight — but the ORIGINAL unguarded formula would have silently
+ * produced Infinity/NaN here) -> 0, never NaN/Infinity. This is strictly
+ * SAFER than the code it replaces, not a change in any observed output.
+ */
+export function polylineLengthAspectUnits(
+  lines: readonly FootagePolyline[] | null | undefined,
+  aspect: number,
+): number {
+  if (!Number.isFinite(aspect) || aspect <= 0) return 0;
+  return sumSegmentLengths(lines, 1, 1 / aspect);
 }
 
 // Threshold beyond which the model's own stated satellite footage and the

@@ -60,6 +60,7 @@ import type { AnalysisSeed } from '@/lib/design/seedFromAnalysis';
 import { hasSatellitePayload } from '@/lib/design/analysisSatellitePayload';
 import { deriveSideMeasure } from '@/lib/permanent/satelliteMeasure';
 import { roundFootageUpTo5 } from '@/lib/permanent/types';
+import { polylineLengthAspectUnits as polylineLength } from '@/lib/design/polylineFootage';
 import { deriveTrackAccessories, hasAccessorySignal } from '@/lib/permanent/trackAccessories';
 import {
   reconcileBistroFootage,
@@ -372,23 +373,14 @@ type LineSegment = { points: [number, number][]; label: string; feature?: 'gutte
 // Satellite image is always 640x640 at zoom=20 from Static Maps.
 const SAT_PX = 640;
 
-// Compute polyline length in "aspect-corrected" normalized units.
-// dx stays as-is (image width = 1), dy is scaled by (height/width) so
-// diagonal distances reflect real pixel distances on the image.
-function polylineLength(lines: LineSegment[], aspect: number): number {
-  const yScale = 1 / aspect; // height in width-units
-  let total = 0;
-  for (const line of lines) {
-    for (let i = 1; i < line.points.length; i++) {
-      const [x1, y1] = line.points[i - 1];
-      const [x2, y2] = line.points[i];
-      const dx = x2 - x1;
-      const dy = (y2 - y1) * yScale;
-      total += Math.sqrt(dx * dx + dy * dy);
-    }
-  }
-  return total;
-}
+// polylineLength moved to src/lib/design/polylineFootage.ts
+// (polylineLengthAspectUnits, imported below as polylineLength) — 2026-08-24
+// consolidation: this was one of THREE hand-written copies of the same
+// "sum each segment's scaled Pythagorean distance" loop across the repo.
+// Verified byte-for-byte parity (raw value + both rounding conventions this
+// file uses) with the old local formula across every training_examples row
+// with a valid satellite scale before this swap (see the PR body). Behavior
+// here is UNCHANGED — same signature, same formula, same call sites.
 
 // #255: mini-group surface labels for the pruned-group warning — matches the
 // wording editor.ts's own pruneOrphanedMiniGroupsNotify toast uses
