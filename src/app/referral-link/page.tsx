@@ -29,9 +29,21 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { isReferralSelfServeEnabled } from '@/lib/referralSelfServeFlag';
+import { REFERRAL_CREDIT_USD, REFERRAL_CREDIT_EXPIRY_YEARS, REFERRAL_FRIEND_SPRITZERS } from '@/lib/referrals';
+import { spritzerRetailValueUsd } from '@/lib/referralSpritzerValue';
 import { CompactTrustRow } from '@/components/portal/dark/CompactTrustRow';
+import { formatUsd } from '@/components/portal/format';
 import { PhoneFrame } from './PhoneFrame';
 import { ReferralLinkForm } from './ReferralLinkForm';
+
+// naldo/referral-link-preview: "2 free 16 inch spritzers" is trade jargon a
+// homeowner has no way to price on their own. Dollarized once here, from the
+// quote builder's own per-size rate, never a separate hardcoded number
+// (mirrors src/app/refer/[code]/page.tsx's own SPRITZER_VALUE_USD).
+const SPRITZER_VALUE_USD = spritzerRetailValueUsd(
+  REFERRAL_FRIEND_SPRITZERS.count,
+  REFERRAL_FRIEND_SPRITZERS.sizeInches,
+);
 
 // The flag is a runtime server env read, never statically pre-render this page.
 export const dynamic = 'force-dynamic';
@@ -61,8 +73,10 @@ export default async function ReferralLinkPage({
             Get your referral link
           </h1>
           <p className="mt-4 text-[16px] md:text-[17px] text-[#E0D7C1] leading-[1.6]">
-            Send friends and neighbors our way. When they book, you get $125 off your next job. They get 2 free
-            16&quot; spritzers.
+            Send friends and neighbors our way. When they book, you get {formatUsd(REFERRAL_CREDIT_USD)}{' '}
+            credit toward any Yule Love Lights service, holiday, permanent, event and wedding
+            lighting, or bistro. They get {formatUsd(SPRITZER_VALUE_USD)} in free lighting on their
+            first install: {REFERRAL_FRIEND_SPRITZERS.count} staked spotlights for their yard.
           </p>
           {/* Trust row (naldo/referral-link-preview, PIECE 1): the same
               compact rating / license / guarantee signals the referral
@@ -87,7 +101,14 @@ export default async function ReferralLinkPage({
           <p className="mt-4 text-[13px] text-[#A89F87]">This is what your friend sees when you send your link.</p>
         </div>
 
-        <ReferralLinkForm contactId={contactId} />
+        <ReferralLinkForm
+          contactId={contactId}
+          creditUsd={REFERRAL_CREDIT_USD}
+          creditExpiryYears={REFERRAL_CREDIT_EXPIRY_YEARS}
+          spritzerCount={REFERRAL_FRIEND_SPRITZERS.count}
+          spritzerSizeInches={REFERRAL_FRIEND_SPRITZERS.sizeInches}
+          spritzerValueUsd={SPRITZER_VALUE_USD}
+        />
       </div>
     </main>
   );
