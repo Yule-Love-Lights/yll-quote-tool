@@ -32,6 +32,9 @@ const BLUE = '#3b82f6'; // Gingerbread / ridge+sides
 const AMBER = '#f59e0b'; // C9 / Winter Wonderland
 const GREEN = '#22c55e'; // mini-light detections
 const PURPLE = '#a855f7'; // wreaths/spritzers/garland
+// Client-side mirror of trainingExamples.ts's sanitizeNotes cap (the server
+// re-caps regardless) so the box doesn't accept more than it can keep.
+const NOTES_MAX_LEN = 2000;
 
 const tierLabel = (t: string) => (t === 'bow' ? 'Non-Decorated' : 'Decorated');
 const wreathLabel = (s: string) => s.replace('noble', '” Noble'); // 24noble → 24” Noble
@@ -316,9 +319,13 @@ function ExampleDetail({ example, onSaved }: { example: TrainingExampleRow; onSa
   const [saveErr, setSaveErr] = useState<string | null>(null);
   const [draft, setDraft] = useState<TrainingExampleInputs>(example.final_inputs);
   const [corr, setCorr] = useState<Record<string, ItemCorrection>>({});
+  // What did the AI get wrong here — editable from this review page too, so a
+  // note captured (or skipped) at correction time isn't write-once.
+  const [draftNotes, setDraftNotes] = useState(example.notes ?? '');
 
   const startEdit = () => {
     setDraft(example.final_inputs);
+    setDraftNotes(example.notes ?? '');
     // Seed each editable item with its current values so unchanged items save
     // as-is (re-applying the same value is a no-op) and the controls are simple.
     const seed: Record<string, ItemCorrection> = {};
@@ -350,7 +357,7 @@ function ExampleDetail({ example, onSaved }: { example: TrainingExampleRow; onSa
       const res = await fetch(`/api/training-examples/${example.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ finalInputs: draft, itemCorrections: corr }),
+        body: JSON.stringify({ finalInputs: draft, itemCorrections: corr, notes: draftNotes.trim() || null }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error ?? `Save failed (${res.status})`);
@@ -452,6 +459,17 @@ function ExampleDetail({ example, onSaved }: { example: TrainingExampleRow; onSa
                     <li key={`g${i}`}>{d.label} — {d.tier}</li>
                   ))}
                 </ul>
+              )}
+            </div>
+            <div>
+              <div className="flex items-center justify-between">
+                <div className="font-semibold text-gray-700">What did the AI get wrong here?</div>
+                <button onClick={startEdit} className="text-blue-600 hover:underline">✎ Edit</button>
+              </div>
+              {example.notes ? (
+                <div className="italic">&ldquo;{example.notes}&rdquo;</div>
+              ) : (
+                <div className="text-gray-400">No note yet.</div>
               )}
             </div>
           </>
@@ -572,6 +590,17 @@ function ExampleDetail({ example, onSaved }: { example: TrainingExampleRow; onSa
                 </div>
               </div>
             )}
+            <div>
+              <div className="font-semibold text-gray-700">What did the AI get wrong here? (optional)</div>
+              <textarea
+                value={draftNotes}
+                onChange={(e) => setDraftNotes(e.target.value)}
+                maxLength={NOTES_MAX_LEN}
+                rows={2}
+                placeholder={`e.g. "missed the garage wing", "put a wreath on a window with no wreath"`}
+                className="mt-1 w-full border border-gray-300 rounded px-1.5 py-0.5 bg-white placeholder:text-gray-400"
+              />
+            </div>
             {saveErr && <p className="text-red-600">{saveErr}</p>}
             <div className="flex gap-2 pt-1">
               <button onClick={save} disabled={saving}
