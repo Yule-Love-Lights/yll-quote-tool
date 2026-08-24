@@ -1011,16 +1011,39 @@ describe('greeting casing sweep (row 315): every customer greeting routes throug
     expect(receiptEmailHtml(args('Susan'))).toContain('Hi Susan,');
   });
 
+  const REFERRAL_LINK_REWARD_TERMS = { creditUsd: 125, spritzerCount: 2, spritzerSizeInches: 16 };
+
   it('referralLinkEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {
     const referralUrl = 'https://x/refer/abc';
-    expect(referralLinkEmailHtml({ firstName: 'susan', referralUrl })).toContain('Hi Susan,');
-    expect(referralLinkEmailHtml({ firstName: 'Susan', referralUrl })).toContain('Hi Susan,');
+    expect(referralLinkEmailHtml({ firstName: 'susan', referralUrl, ...REFERRAL_LINK_REWARD_TERMS })).toContain(
+      'Hi Susan,',
+    );
+    expect(referralLinkEmailHtml({ firstName: 'Susan', referralUrl, ...REFERRAL_LINK_REWARD_TERMS })).toContain(
+      'Hi Susan,',
+    );
   });
 
   it("referralLinkEmailHtml still falls back to 'there' (unchanged) for a missing/blank name", () => {
     const referralUrl = 'https://x/refer/abc';
-    expect(referralLinkEmailHtml({ firstName: null, referralUrl })).toContain('Hi there,');
-    expect(referralLinkEmailHtml({ firstName: '   ', referralUrl })).toContain('Hi there,');
+    expect(referralLinkEmailHtml({ firstName: null, referralUrl, ...REFERRAL_LINK_REWARD_TERMS })).toContain(
+      'Hi there,',
+    );
+    expect(referralLinkEmailHtml({ firstName: '   ', referralUrl, ...REFERRAL_LINK_REWARD_TERMS })).toContain(
+      'Hi there,',
+    );
+  });
+
+  it('referralLinkEmailHtml states the credit toward ANY service (not a same-service repeat) and dollarizes the spritzer reward', () => {
+    const html = referralLinkEmailHtml({
+      firstName: 'Susan',
+      referralUrl: 'https://x/refer/abc',
+      ...REFERRAL_LINK_REWARD_TERMS,
+    });
+    expect(html).toContain('$125 in credit');
+    expect(html).toContain('any Yule Love Lights service');
+    expect(html).toContain('$170 in free lighting');
+    expect(html).not.toContain('next YLL job');
+    expect(html).not.toContain('—');
   });
 
   it('colorChangeAppliedEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {

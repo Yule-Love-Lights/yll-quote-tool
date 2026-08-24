@@ -6,14 +6,22 @@
 // when it doesn't (desktop browsers, most of them). Client boundary kept
 // small, mirroring ReferralLinkCopy.
 //
-// Message states the FRIEND's real offer (2 free spritzers on their first
+// Message states the FRIEND's real offer (free spritzers on their first
 // booked install) — not the referrer's $125 credit, which is a separate,
 // unrelated line in the product terms (src/lib/referrals.ts). A share
 // message that quoted "$125 off" here would misstate what the referred
 // friend actually gets.
+//
+// naldo/referral-link-preview: "spritzers" is trade jargon with no meaning
+// to a homeowner on its own, so the message states the dollar value first
+// and names the physical thing (a staked ground spotlight) in plain words.
+// spritzerValueUsd is passed in by the caller, derived from the quote
+// builder's own per-size rate (src/lib/referralSpritzerValue.ts), never a
+// separate hardcoded number.
 
 import { useSyncExternalStore } from 'react';
 import { Share2 } from 'lucide-react';
+import { formatUsd } from '@/components/portal/format';
 
 // navigator.share's availability never changes during a page's lifetime, so
 // there's nothing to subscribe to — an empty unsubscribe is correct here.
@@ -30,18 +38,27 @@ function getCanShareServerSnapshot(): boolean {
 /** The exact text composed for both the native share sheet and the SMS
  *  fallback, so both paths send an identical message. Exported for direct
  *  testing of the composition (count/size/link all show up correctly). */
-export function buildReferralShareMessage(link: string, spritzerCount: number, spritzerSizeInches: number): string {
-  return `Check out the holiday lights I'm getting from Yule Love Lights! Use my link and get ${spritzerCount} free ${spritzerSizeInches}" spritzers on your first booked install: ${link}`;
+export function buildReferralShareMessage(
+  link: string,
+  spritzerCount: number,
+  spritzerSizeInches: number,
+  spritzerValueUsd: number,
+): string {
+  return `Check out the holiday lights I'm getting from Yule Love Lights! Use my link and get ${formatUsd(
+    spritzerValueUsd,
+  )} in free lighting on your first booked install, ${spritzerCount} staked spotlights for your yard (${spritzerSizeInches}" spritzers): ${link}`;
 }
 
 export function ReferralShareButton({
   link,
   spritzerCount,
   spritzerSizeInches,
+  spritzerValueUsd,
 }: {
   link: string;
   spritzerCount: number;
   spritzerSizeInches: number;
+  spritzerValueUsd: number;
 }) {
   // Web Share API is a browser capability, unknown at SSR time — the server
   // snapshot forces the SMS-link fallback (a real, functioning <a>) so the
@@ -52,7 +69,7 @@ export function ReferralShareButton({
   // setState needed, so it doesn't trigger a cascading-render re-render).
   const canShare = useSyncExternalStore(subscribeNoop, getCanShareSnapshot, getCanShareServerSnapshot);
 
-  const message = buildReferralShareMessage(link, spritzerCount, spritzerSizeInches);
+  const message = buildReferralShareMessage(link, spritzerCount, spritzerSizeInches, spritzerValueUsd);
 
   const buttonClass =
     'inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-transparent text-[#FFB744] border border-[#FFB744]/45 font-semibold text-[14px] cursor-pointer transition-colors duration-200 hover:bg-[#FFB744]/10 hover:text-[#FFD07A] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#FFB744] focus-visible:ring-offset-2 focus-visible:ring-offset-[#060B0F]';

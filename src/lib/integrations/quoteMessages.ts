@@ -11,6 +11,7 @@
 
 import { asServiceType, DEFAULT_SERVICE_TYPE, type ServiceType } from '@/lib/serviceType';
 import { PERMANENT_SIDE_LABEL, type PermanentSide } from '@/lib/permanent/types';
+import { spritzerRetailValueUsd } from '@/lib/referralSpritzerValue';
 
 const QUOTE_READY_EMAIL_SUBJECT: Record<ServiceType, string> = {
   holiday: 'Your Yule Love Lights quote is ready 🎄',
@@ -971,15 +972,21 @@ export function refundDueEmailHtml(input: {
 
 // ─── Referral earned notification (ledger #41 follow-up) ────────────────────
 // Fired (best-effort, fail-open — see src/lib/referrals.ts notifyReferrerEarned)
-// when a referrer's friend books and the referrer earns their $125 next-season
-// credit — nudges them to refer again while the win is fresh.
+// when a referrer's friend books and the referrer earns their $125 credit,
+// nudges them to refer again while the win is fresh.
+//
+// naldo/referral-link-preview: the credit is good toward ANY Yule Love
+// Lights service (consumeCredits in src/lib/referrals.ts carries no
+// service-type filter), not just a repeat of whatever the referrer already
+// has, so the copy below says so plainly instead of implying a same-service
+// repeat.
 
 export const REFERRAL_EARNED_EMAIL_SUBJECT = 'You just earned a referral credit! 🎁';
 
 export function referralEarnedSmsBody(friendFirstName: string, amountUsd: number, referLink: string): string {
   return `Great news! ${friendFirstName} just booked with Yule Love Lights, so you've earned ${usd(
     amountUsd,
-  )} off next season. Refer another friend anytime: ${referLink}`;
+  )} in referral credit, good toward any job. Refer another friend anytime: ${referLink}`;
 }
 
 export function referralEarnedEmailHtml(friendFirstName: string, amountUsd: number, referLink: string): string {
@@ -988,7 +995,7 @@ export function referralEarnedEmailHtml(friendFirstName: string, amountUsd: numb
     `<p>Great news!</p>`,
     `<p><strong>${friend}</strong> just booked with Yule Love Lights, so you've earned <strong>${usd(
       amountUsd,
-    )}</strong> off next season.</p>`,
+    )}</strong> in referral credit, good toward any Yule Love Lights service: holiday, permanent, event and wedding lighting, or bistro.</p>`,
     `<p>There's no limit, refer another friend anytime:</p>`,
     `<p><a href="${escapeHtml(referLink)}">${escapeHtml(referLink)}</a></p>`,
     `<p>Thank you for spreading the word,<br>Yule Love Lights</p>`,
@@ -1002,14 +1009,36 @@ export function referralEarnedEmailHtml(friendFirstName: string, amountUsd: numb
 
 export const REFERRAL_LINK_EMAIL_SUBJECT = "Here's your Yule Love Lights referral link";
 
-export function referralLinkEmailHtml(input: { firstName?: string | null; referralUrl: string }): string {
+// naldo/referral-link-preview: creditUsd/spritzerCount/spritzerSizeInches
+// are passed in by the caller (src/app/api/referrals/request-link/route.ts,
+// sourced from src/lib/referrals.ts's own constants) rather than hardcoded
+// here, so this email can never drift from the real program terms. The
+// spritzer dollar value is computed locally from spritzerRetailValueUsd,
+// safe to import directly (no cycle: that module only imports
+// pricingEngine.ts), unlike referrals.ts itself, which this file is already
+// imported BY (see referralEarnedEmailHtml above), so importing referrals.ts
+// here would be circular.
+export function referralLinkEmailHtml(input: {
+  firstName?: string | null;
+  referralUrl: string;
+  creditUsd: number;
+  spritzerCount: number;
+  spritzerSizeInches: number;
+}): string {
   const name = input.firstName?.trim() ? escapeHtml(greetingName(input.firstName.trim())) : 'there';
   const link = escapeHtml(input.referralUrl);
+  const spritzerValueUsd = spritzerRetailValueUsd(input.spritzerCount, input.spritzerSizeInches);
   return [
     `<p>Hi ${name},</p>`,
     `<p>Here's your personal Yule Love Lights referral link:</p>`,
     `<p><a href="${link}">${link}</a></p>`,
-    `<p>Send it to a friend or neighbor. When they book with us, you get <strong>$125 off your next YLL job</strong>, good for two years. They get <strong>2 free 16" spritzers</strong> with their install.</p>`,
+    `<p>Send it to a friend or neighbor. When they book with us, you get <strong>${usd(
+      input.creditUsd,
+    )} in credit</strong> toward any Yule Love Lights service, holiday, permanent, event and wedding lighting, or bistro, good for two years. They get <strong>${usd(
+      spritzerValueUsd,
+    )} in free lighting</strong> on their first install, ${input.spritzerCount} staked ${
+      input.spritzerSizeInches
+    }" spotlights for their yard.</p>`,
     `<p>No limit, share it with as many people as you like.</p>`,
     `<p>Questions? Just reply here or text/call us at (631) 517-0186, we're happy to help!</p>`,
     `<p>Warm wishes,<br>Yule Love Lights team</p>`,
