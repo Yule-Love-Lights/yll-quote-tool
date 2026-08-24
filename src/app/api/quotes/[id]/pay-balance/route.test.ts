@@ -81,6 +81,11 @@ function makeSb(
 ) {
   const b: Record<string, unknown> = {};
   const updates: Record<string, unknown>[] = [];
+  // STATEFUL (fix-round-2): a successful marker write becomes what the NEXT
+  // read sees. Without this, every test constructs one frozen snapshot and two
+  // consecutive requests can never observe each other — which is exactly how the
+  // first fix round's sliding-cooldown HIGH slipped past three new tests.
+  let currentSnapshot: Record<string, unknown> | null = opts.snapshot ?? null;
   const upd: Record<string, unknown> = {};
   Object.assign(upd, {
     eq: () => upd,
@@ -89,6 +94,7 @@ function makeSb(
   let lastSelect = '';
   Object.assign(b, {
     __updates: updates,
+    __snapshot: () => currentSnapshot,
     from: () => b,
     select: (cols?: string) => {
       lastSelect = cols ?? '';
@@ -97,12 +103,15 @@ function makeSb(
     eq: () => b,
     update: (payload: Record<string, unknown>) => {
       updates.push(payload);
+      if (!opts.snapshotCasLost && payload.approval_snapshot) {
+        currentSnapshot = payload.approval_snapshot as Record<string, unknown>;
+      }
       return upd;
     },
     single: async () => ({ data: quote, error: quote ? null : { message: 'no rows' } }),
     maybeSingle: async () => {
       if (lastSelect.includes('approval_snapshot')) {
-        return { data: { approval_snapshot: opts.snapshot ?? null }, error: null };
+        return { data: { approval_snapshot: currentSnapshot }, error: null };
       }
       return {
         data:
@@ -114,6 +123,12 @@ function makeSb(
     },
   });
   return b;
+}
+
+/** The marker as it currently stands in the stateful fake. */
+function liveMarker(sb: unknown): Record<string, unknown> | undefined {
+  const snap = (sb as { __snapshot: () => Record<string, unknown> | null }).__snapshot();
+  return snap?.paymentBlocked as Record<string, unknown> | undefined;
 }
 
 /** The approval_snapshot payloads the route CASed during a request. */
@@ -343,7 +358,7 @@ describe('POST /api/quotes/[id]/pay-balance', () => {
 
   it('does not page staff twice for the same order inside the cooldown', async () => {
     sbRef.current = makeSb(AMENDED('accepted'), {
-      snapshot: { paymentBlocked: { at: new Date().toISOString() } },
+      snapshot: { paymentBlocked: { at: new Date().toISOString(), lastAlertedAt: new Date().toISOString() } },
     });
     getInvoiceByJobMock.mockResolvedValue(INVOICE_IN_SYNC);
     const res = await POST(req(), ctx());
@@ -354,12 +369,51 @@ describe('POST /api/quotes/[id]/pay-balance', () => {
   });
 
   it('pings again once the cooldown has expired', async () => {
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
     sbRef.current = makeSb(AMENDED('accepted'), {
-      snapshot: { paymentBlocked: { at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString() } },
+      snapshot: { paymentBlocked: { at: twoHoursAgo, lastAlertedAt: twoHoursAgo } },
     });
     getInvoiceByJobMock.mockResolvedValue(INVOICE_IN_SYNC);
     await POST(req(), ctx());
     expect(notifyTelegramAudienceMock).toHaveBeenCalledTimes(1);
+  });
+
+  // Fix-round-2 regression test (adversarial delta-verify HIGH). The first cut
+  // compared against `at` and then rewrote `at` to now on EVERY call INCLUDING
+  // the ones it was suppressing, so each retry inside the hour pushed the window
+  // forward and staff were never paged again — the dead end the marker exists to
+  // prevent. Three isolated tests all passed anyway, because each built one
+  // frozen snapshot; only CHAINING real calls exposes a sliding window.
+  it('keeps the cooldown anchored to the last PING, so a retrying customer cannot slide it forever', async () => {
+    // Seeded 30 minutes back rather than measured across calls: three POSTs in a
+    // test complete inside the same millisecond, so comparing timestamps the
+    // route itself generated compares two IDENTICAL strings and the slide is
+    // invisible. The first version of this test did exactly that and passed
+    // happily against the reintroduced bug — the mutation probe is what caught
+    // it. A seeded anchor makes the assertion deterministic.
+    const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    const sb = makeSb(AMENDED('accepted'), {
+      snapshot: {
+        customerSelection: { currentTotalUsd: 2000 },
+        paymentBlocked: { at: thirtyMinAgo, lastAlertedAt: thirtyMinAgo },
+      },
+    });
+    sbRef.current = sb;
+    getInvoiceByJobMock.mockResolvedValue(INVOICE_IN_SYNC);
+
+    // The customer retries twice, both well inside the cooldown.
+    await POST(req(), ctx());
+    await POST(req(), ctx());
+
+    // Staff are not re-paged...
+    expect(notifyTelegramAudienceMock).not.toHaveBeenCalled();
+    // ...and the PING clock has not budged, so the window genuinely expires
+    // 30 minutes from now instead of being pushed forward by every retry.
+    expect(liveMarker(sb)?.lastAlertedAt).toBe(thirtyMinAgo);
+    // The forensic timestamp DOES move — the block is still happening now.
+    expect(liveMarker(sb)?.at).not.toBe(thirtyMinAgo);
+    // Every retry is still refused; the cooldown gates the ALERT only.
+    expect(createHostedPageSaleMock).not.toHaveBeenCalled();
   });
 
   // The marker is best-effort forensics; the customer's refusal is not. A lost

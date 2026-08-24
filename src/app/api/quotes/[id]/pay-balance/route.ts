@@ -105,14 +105,36 @@ async function recordPaymentBlocked(
       .eq('id', quoteId)
       .maybeSingle<{ approval_snapshot: Record<string, unknown> | null }>();
     const priorSnapshot = quoteRow?.approval_snapshot ?? {};
-    const priorBlocked = (priorSnapshot as { paymentBlocked?: { at?: string } }).paymentBlocked;
-    const priorAt = priorBlocked?.at ? Date.parse(priorBlocked.at) : NaN;
+    // Fix-round-2 (adversarial delta-verify, HIGH — a bug the FIRST fix round
+    // introduced): these are TWO different facts and collapsing them into one
+    // `at` field created a cooldown that never expired. The first cut compared
+    // against `at` and then rewrote `at` to now on EVERY call, including the
+    // calls it was suppressing — so a customer re-clicking or reloading inside
+    // the hour rolled the window forward each time and staff were NEVER paged
+    // again, silently recreating the exact dead end the marker exists to
+    // prevent. `at` = when the block was last seen (always refreshed, it is the
+    // forensic record). `lastAlertedAt` = when the office was last actually
+    // told (only refreshed when a ping really goes out, so the window is
+    // anchored to the ping and genuinely expires).
+    const priorBlocked = (priorSnapshot as {
+      paymentBlocked?: { at?: string; lastAlertedAt?: string };
+    }).paymentBlocked;
+    const priorAlertAt = priorBlocked?.lastAlertedAt ? Date.parse(priorBlocked.lastAlertedAt) : NaN;
     const alertedRecently =
-      Number.isFinite(priorAt) && Date.now() - priorAt < PAYMENT_BLOCKED_ALERT_COOLDOWN_MS;
+      Number.isFinite(priorAlertAt) && Date.now() - priorAlertAt < PAYMENT_BLOCKED_ALERT_COOLDOWN_MS;
 
+    const nowIso = new Date().toISOString();
     const nextSnapshot = {
       ...priorSnapshot,
-      paymentBlocked: { invoiceId, storedBalance, expectedBalance, at: new Date().toISOString() },
+      paymentBlocked: {
+        invoiceId,
+        storedBalance,
+        expectedBalance,
+        at: nowIso,
+        // Carried forward untouched while suppressing; advanced only when this
+        // call is the one that pings.
+        lastAlertedAt: alertedRecently ? priorBlocked?.lastAlertedAt : nowIso,
+      },
     };
     const { data: updated, error } = await sb
       .from('quotes')
