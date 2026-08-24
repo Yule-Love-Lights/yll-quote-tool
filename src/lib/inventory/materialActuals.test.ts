@@ -33,10 +33,15 @@ function makeWo(overrides: {
   isTest?: boolean;
   stockDecrementedAt?: string | null;
   materials?: { sku: string; qty: number; onHand?: number | null }[];
+  // Row 383: the per-prep snapshot (jobs.stock_deductions, row 325). Omitted by
+  // default so every pre-existing test keeps exercising the LEGACY fallback
+  // path, which is exactly what a legacy job (null column) does in prod.
+  stockDeductions?: { sku: string; before: number; deducted: number; after: number }[] | 'pending' | null;
 } = {}) {
   const {
     isTest = false,
     stockDecrementedAt = '2026-07-01T00:00:00.000Z',
+    stockDeductions = null,
     materials = [
       { sku: 'SKU-A', qty: 10 },
       { sku: 'SKU-B', qty: 5 },
@@ -54,6 +59,7 @@ function makeWo(overrides: {
       customerName: 'Test Customer',
       customerAddress: '1 Test St',
       stockDecrementedAt,
+      stockDeductions,
       isTest,
     },
     materials: {
@@ -388,5 +394,113 @@ describe('recordMaterialActuals', () => {
     expect(adjustOnHandAtomicMock).toHaveBeenCalledWith(expect.anything(), 'SKU-A', 4);
     expect(spy).toHaveBeenCalled();
     spy.mockRestore();
+  });
+});
+// ── Row 383: the baseline is what prep ACTUALLY deducted ────────────────────
+//
+// The KNOWN LIMITATION this closes: the baseline used to be re-derived from the
+// design as it stands NOW, so it drifted whenever the design changed between
+// prep and completion — and, worse, it ignored the on-hand floor. Row 325's
+// per-prep snapshot (jobs.stock_deductions) is the accurate record.
+describe('recordMaterialActuals — prep snapshot baseline (row 383)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    listOnHandMock.mockResolvedValue([]);
+    adjustOnHandAtomicMock.mockResolvedValue(undefined);
+  });
+
+  // THE money case. Prep was SHORT: 10 needed, only 2 on the shelf, so only 2
+  // came off. Crew reports all 10 used.
+  //   old (live projection): estimate 10 − actual 10 = 0 → nothing moves, and
+  //                          8 units are never deducted from stock at all.
+  //   new (prep snapshot)  : estimate  2 − actual 10 = −8 → the 8 come off.
+  it('uses the DEDUCTED quantity, so a short prep is trued up instead of silently ignored', async () => {
+    getJobWorkOrderMock.mockResolvedValue(
+      makeWo({
+        materials: [{ sku: 'SKU-A', qty: 10, onHand: 50 }],
+        stockDeductions: [{ sku: 'SKU-A', before: 2, deducted: 2, after: 0 }],
+      }),
+    );
+
+    const res = await recordMaterialActuals(JOB_ID, [{ sku: 'SKU-A', qty: 10 }], 'crew-1');
+
+    expect(res?.ok).toBe(true);
+    if (!res || !res.ok || res.alreadyDone) return;
+    expect(res.trueUps).toEqual([expect.objectContaining({ sku: 'SKU-A', estimated: 2, actual: 10, delta: -8 })]);
+    expect(adjustOnHandAtomicMock).toHaveBeenCalledWith(expect.anything(), 'SKU-A', -8);
+  });
+
+  // The design changed between prep and completion: today's projection says 4,
+  // but prep really took 10 off the shelf. The credit must be measured against
+  // what left the shelf, not against a design nobody prepped from.
+  it('measures against the snapshot when the design changed after prep', async () => {
+    getJobWorkOrderMock.mockResolvedValue(
+      makeWo({
+        materials: [{ sku: 'SKU-A', qty: 4, onHand: 50 }],
+        stockDeductions: [{ sku: 'SKU-A', before: 50, deducted: 10, after: 40 }],
+      }),
+    );
+
+    const res = await recordMaterialActuals(JOB_ID, [{ sku: 'SKU-A', qty: 6 }], 'crew-1');
+
+    expect(res?.ok).toBe(true);
+    if (!res || !res.ok || res.alreadyDone) return;
+    // 10 deducted, 6 used → 4 back on the shelf. Against the live projection it
+    // would have been 4 − 6 = −2, deducting 2 MORE for a job that over-prepped.
+    expect(res.trueUps).toEqual([expect.objectContaining({ sku: 'SKU-A', estimated: 10, actual: 6, delta: 4 })]);
+    expect(adjustOnHandAtomicMock).toHaveBeenCalledWith(expect.anything(), 'SKU-A', 4);
+  });
+
+  // Row 325's contract has THREE states, and only a real array is trustworthy.
+  it('falls back to the live projection on the PENDING sentinel (snapshot write never landed)', async () => {
+    getJobWorkOrderMock.mockResolvedValue(
+      makeWo({ materials: [{ sku: 'SKU-A', qty: 10, onHand: 50 }], stockDeductions: 'pending' }),
+    );
+
+    const res = await recordMaterialActuals(JOB_ID, [{ sku: 'SKU-A', qty: 6 }], 'crew-1');
+
+    expect(res?.ok).toBe(true);
+    if (!res || !res.ok || res.alreadyDone) return;
+    expect(res.trueUps).toEqual([expect.objectContaining({ estimated: 10, actual: 6, delta: 4 })]);
+  });
+
+  it('falls back to the live projection on a LEGACY job (null column, prepped before row 325)', async () => {
+    getJobWorkOrderMock.mockResolvedValue(
+      makeWo({ materials: [{ sku: 'SKU-A', qty: 10, onHand: 50 }], stockDeductions: null }),
+    );
+
+    const res = await recordMaterialActuals(JOB_ID, [{ sku: 'SKU-A', qty: 6 }], 'crew-1');
+
+    expect(res?.ok).toBe(true);
+    if (!res || !res.ok || res.alreadyDone) return;
+    expect(res.trueUps).toEqual([expect.objectContaining({ estimated: 10, actual: 6, delta: 4 })]);
+  });
+
+  // An EMPTY snapshot is a real answer ("prep deducted nothing"), unlike an
+  // empty projection, which may just be a swallowed read. It must not trip the
+  // baseline-unavailable bail-out, or the crew's usage never comes off stock.
+  it('trusts an EMPTY snapshot and still trues up, rather than bailing out', async () => {
+    getJobWorkOrderMock.mockResolvedValue(
+      makeWo({ materials: [{ sku: 'SKU-A', qty: 10, onHand: 50 }], stockDeductions: [] }),
+    );
+
+    const res = await recordMaterialActuals(JOB_ID, [{ sku: 'SKU-A', qty: 3 }], 'crew-1');
+
+    expect(res?.ok).toBe(true);
+    if (!res || !res.ok || res.alreadyDone) return;
+    expect(res.baselineUnavailable).toBeUndefined();
+    expect(res.trueUps).toEqual([expect.objectContaining({ sku: 'SKU-A', estimated: 0, actual: 3, delta: -3 })]);
+  });
+
+  // ...whereas an empty PROJECTION on a prepped job is still distrusted.
+  it('still bails out on an empty FALLBACK baseline for a prepped job', async () => {
+    getJobWorkOrderMock.mockResolvedValue(makeWo({ materials: [], stockDeductions: null }));
+
+    const res = await recordMaterialActuals(JOB_ID, [{ sku: 'SKU-A', qty: 3 }], 'crew-1');
+
+    expect(res?.ok).toBe(true);
+    if (!res || !res.ok || res.alreadyDone) return;
+    expect(res.baselineUnavailable).toBe(true);
+    expect(adjustOnHandAtomicMock).not.toHaveBeenCalled();
   });
 });
