@@ -11,7 +11,7 @@ import { claimState } from '@/lib/dashboard/inbox/assignment';
 import { buildInboxSummary } from '@/lib/dashboard/inbox/summary';
 import { groupInboxItems, type InboxGroup } from '@/lib/dashboard/inbox/groupInboxItems';
 import { InboxSummaryStrip } from './InboxSummaryStrip';
-import { ReplyComposer } from './ReplyComposer';
+import { ReplyComposer, type ReplySentOutcome } from './ReplyComposer';
 
 const SOURCE_LABEL: Record<string, string> = {
   ghl: 'GHL',
@@ -76,7 +76,7 @@ type RowActions = {
   act: (id: string, path: string, label: string) => void;
   claim: (contactId: string, action: 'claim' | 'release') => void;
   toggleComposer: (id: string) => void;
-  onComposerSent: (id: string) => void;
+  onComposerSent: (id: string, outcome: ReplySentOutcome) => void;
 };
 
 // One conversation's row — exactly what InboxList rendered inline before
@@ -308,6 +308,15 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
               </span>
             )
           ) : (
+            // Fix round 2 delta-verify LOW (decided, not fixed — same
+            // reasoning as InWorksSection.tsx's identical button, kept
+            // deliberately un-shared like this file's other duplicated
+            // helpers): stays live and un-disabled after an 'error' outcome,
+            // on purpose. See InWorksSection.tsx's Reply button doc comment
+            // for the full reasoning (the note's own "Reply sent" copy, the
+            // server's 20s claim guard, a fresh blank composer on reopen, and
+            // the residual being a low-cost duplicate text rather than money
+            // or data corruption).
             <button
               type="button"
               onClick={() => toggleComposer(item.id)}
@@ -323,7 +332,7 @@ function ItemRow({ item, actions }: { item: OpenInboxItem; actions: RowActions }
         <ReplyComposer
           itemId={item.id}
           source={item.source}
-          onSent={() => onComposerSent(item.id)}
+          onSent={(outcome) => onComposerSent(item.id, outcome)}
         />
       )}
     </li>
@@ -390,6 +399,40 @@ export function errorNoteFor(unreachableAction: string | undefined, rejectionErr
     return `Couldn't reach the server — this may or may not have gone through. Click ${unreachableAction} again to confirm.`;
   }
   return rejectionError || 'Something went wrong — try again.';
+}
+
+/** Fix round 3 (MED — this file was the THIRD, unaudited ReplyComposer
+ *  consumer left on the old flatten-everything-into-remove `onComposerSent`;
+ *  InWorksSection.tsx and the reply route were fixed in earlier rounds, this
+ *  one was missed): a local copy of InWorksSection.tsx's own replyRowAction
+ *  (kept deliberately un-shared, same as this file's other duplicated
+ *  helpers — see withRowFlagSet's own doc comment above). This file's open
+ *  queue has no second bucket to move a row INTO (unlike InWorksSection's
+ *  awaiting/handled split) — 'move' here means "leaves the open queue
+ *  immediately, no note", since 'resolved' and a genuine 'refused' both mean
+ *  the item is no longer 'unresponded' either way. 'error' still means the
+ *  write's outcome is UNCONFIRMED — most likely the item is still genuinely
+ *  'unresponded' (the write never landed) — so removing it would hide an
+ *  open lead from the PRIMARY place staff look for one; it stays, flagged. */
+export function replyRowAction(outcome: ReplySentOutcome): 'move' | 'flag-and-remove' | 'flag-and-keep' {
+  switch (outcome) {
+    case 'resolved':
+      return 'move';
+    case 'refused':
+      return 'flag-and-remove';
+    case 'error':
+      return 'flag-and-keep';
+  }
+}
+
+/** Fix round 3: a local copy of InWorksSection.tsx's own replyOutcomeMessage
+ *  (same un-shared convention). Identical wording on purpose — same
+ *  real-world event, same operator-facing claim, regardless of which list
+ *  the row happened to be sitting in when it fired. */
+export function replyOutcomeMessage(outcome: 'refused' | 'error'): string {
+  return outcome === 'refused'
+    ? 'Reply sent — but this item was already resolved by someone else in the meantime. Dismiss to remove it from this list.'
+    : "Reply sent, but we couldn't confirm this item's status update — it may still need attention. Check it directly.";
 }
 
 /** Row 321: the Handled/Mark-completed confirm for a `:color-request` item
@@ -722,6 +765,15 @@ export function InboxList({
   // Row 311 fix-round FIX 3: parallel to errorIds/unreachableActions, always
   // cleared alongside them — see errorNoteFor's own doc comment above.
   const [rejectionErrors, setRejectionErrors] = useState<Record<string, string>>({});
+  // Fix round 3 (MED): marks a row flagged via a reply's 'refused' outcome
+  // (replyRowAction === 'flag-and-remove') — dismissError checks this to
+  // decide whether dismissing the note should ALSO remove the row from the
+  // open queue (a genuine CAS refusal, the row really is no longer
+  // 'unresponded') or just clear the note and leave the row in place (every
+  // other errorIds use, including a reply's 'error' outcome, where the row's
+  // true state is unknown, not resolved). Mirrors InWorksSection.tsx's own
+  // refusedIds (same un-shared convention as this file's other local copies).
+  const [refusedIds, setRefusedIds] = useState<Record<string, boolean>>({});
   // Row 305: was a single global slot (`string | null`) — see RowActions'
   // claimBusyIds doc comment above for the exact race this per-contact record
   // fixes, mirroring row 291's busyIds/errorIds treatment on this same file.
@@ -893,10 +945,20 @@ export function InboxList({
   // the only ways to clear a row's error were retrying that exact row (via
   // act()) or the accidental cross-row steal this fix removes.
   const dismissError = useCallback((id: string) => {
+    // Fix round 3 (MED): capture BEFORE clearing — a row flagged
+    // 'flag-and-remove' (a reply's genuine CAS refusal) never got removed at
+    // send-time; it waits for the operator to see the note and dismiss it,
+    // which is when the delayed removal actually happens. Every other
+    // dismissError caller (a thrown/rejected act() call, or a reply's
+    // 'error' outcome) never sets refusedIds, so this is a no-op for them —
+    // the row just stays put with its note cleared, exactly as before.
+    const shouldRemove = !!refusedIds[id];
     setErrorIds((prev) => withRowFlagCleared(prev, id));
     setUnreachableActions((prev) => omitKey(prev, id));
     setRejectionErrors((prev) => omitKey(prev, id));
-  }, []);
+    setRefusedIds((prev) => omitKey(prev, id));
+    if (shouldRemove) setItems((prev) => prev.filter((i) => i.id !== id));
+  }, [refusedIds]);
 
   const claim = useCallback(
     async (contactId: string, action: 'claim' | 'release') => {
@@ -927,9 +989,27 @@ export function InboxList({
     setComposerFor((prev) => (prev === id ? null : id));
   }, []);
 
-  const onComposerSent = useCallback((id: string) => {
+  const onComposerSent = useCallback((id: string, outcome: ReplySentOutcome) => {
     setComposerFor(null);
-    setItems((prev) => prev.filter((i) => i.id !== id));
+    if (outcome === 'resolved') {
+      setItems((prev) => prev.filter((i) => i.id !== id));
+      return;
+    }
+    // Fix round 3 (MED): 'refused' and 'error' get different treatment, same
+    // as InWorksSection.tsx — see replyRowAction's own doc above. Neither
+    // silently disappears the row: both use this file's existing
+    // error/dismiss idiom (errorIds/rejectionErrors + the Dismiss button) so
+    // the operator sees WHY, instead of the row just vanishing (or, for
+    // 'error', staying invisible as still-open, still-'unresponded' work in
+    // the PRIMARY open-lead queue).
+    setErrorIds((prev) => withRowFlagSet(prev, id));
+    setRejectionErrors((prev) => ({ ...prev, [id]: replyOutcomeMessage(outcome) }));
+    if (replyRowAction(outcome) === 'flag-and-remove') {
+      // 'refused' only: the row DOES leave the queue, but only once the
+      // operator dismisses the note (dismissError's shouldRemove branch) —
+      // never synchronously/silently here.
+      setRefusedIds((prev) => withRowFlagSet(prev, id));
+    }
   }, []);
 
   const toggleExpanded = useCallback((key: string) => {

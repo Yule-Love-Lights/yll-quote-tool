@@ -1098,7 +1098,16 @@ export type HandledTarget = {
   ghlContactId: string | null;
   displayName: string | null;
 };
-export type MarkHandledResult = { ok: true; target: HandledTarget } | { ok: false; error: string };
+// Row 366 fix round 2 (MED): `refused` distinguishes WHY ok is false — true
+// for a legitimate CAS refusal (the WHERE clause matched zero rows: the item
+// really did move to a status this call didn't expect, e.g. another operator's
+// concurrent Mark-completed/Dismiss), false for a genuine backend failure
+// (service role unconfigured, or the query itself errored) where nothing is
+// actually known about the item's current status. Callers that need to tell a
+// benign lost-race apart from a real failure (reply/route.ts, since its send
+// already fired and can't be undone either way) read this instead of trying to
+// pattern-match the `error` string.
+export type MarkHandledResult = { ok: true; target: HandledTarget } | { ok: false; error: string; refused: boolean };
 
 /**
  * Stamp an item handled locally FIRST (attribution never depends on the external
@@ -1108,24 +1117,35 @@ export type MarkHandledResult = { ok: true; target: HandledTarget } | { ok: fals
  * nullable `uuid` column ("NULL when system auto-resolved" per its schema
  * comment); never pass a display name/email string here.
  *
- * Row 366: the default guard is the NEGATIVE `.neq('status','handled')` — right
- * for a caller whose whole intent is "handle this, whatever it currently is"
- * (/api/dashboard/handled, /api/dashboard/reply). A caller that first READ the
- * status and gated on a specific value must pass `expectedStatus`, which swaps
- * that guard for a POSITIVE `.eq('status', expectedStatus)` so the check it made
- * is carried across the read→write gap. Without it, a row that moved to
- * 'completed'/'dismissed' in that gap passes `.neq('status','handled')` and gets
- * silently RESURRECTED to 'handled' (the followup route's own hazard — see
- * shouldResolveAnchoredItem below).
+ * Row 366: the default guard is the NEGATIVE `.neq('status','handled')`. A
+ * caller that first READ the status (or knows the fixed set of statuses its own
+ * UI surface can legally be in) should pass `expectedStatus` — a single value or
+ * an array — which swaps that guard for a POSITIVE `.eq(...)`/`.in(...)` so the
+ * check is carried across the read→write gap as one atomic UPDATE...WHERE.
+ * Without it, a row that moved to 'completed'/'dismissed' in that gap passes
+ * `.neq('status','handled')` and gets silently RESURRECTED to 'handled'.
+ *
+ * Row 320(c): the doc here previously claimed the negative default was
+ * correct for /api/dashboard/handled and /api/dashboard/reply because their
+ * "whole intent is handle this, whatever it currently is" — that claim was
+ * never actually checked against those routes' real UI reachability and does
+ * not hold. /api/dashboard/handled's button only ever renders on a
+ * listOpenItems row (bucket 'needs_reply': status==='unresponded'); ReplyComposer
+ * only ever renders on a needs_reply/awaiting_reply/handled row, i.e. status
+ * ∈ {'unresponded','handled'} (applyBucketFilter, lifecycle.ts, excludes
+ * completed/dismissed by construction). Neither caller legitimately expects
+ * to resolve a 'completed'/'dismissed' row — a stale click/composer racing a
+ * concurrent Mark-completed/Dismiss should be REFUSED, not resurrect the
+ * terminal row — so both now pass their real legal-status set below.
  */
 export async function markItemHandledLocal(
   itemId: string,
   operatorId: string | null,
   now: Date,
-  opts?: { expectedStatus?: string },
+  opts?: { expectedStatus?: string | string[] },
 ): Promise<MarkHandledResult> {
   const sb = getSupabaseServiceClient();
-  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  if (!sb) return { ok: false, error: 'Supabase service role not configured', refused: false };
   const expectedStatus = opts?.expectedStatus ?? null;
   const from = await priorStateOf(sb, itemId);
   const update = sb
@@ -1134,12 +1154,14 @@ export async function markItemHandledLocal(
     .eq('id', itemId);
   const { data, error } = await (expectedStatus === null
     ? update.neq('status', 'handled')
-    : update.eq('status', expectedStatus))
+    : Array.isArray(expectedStatus)
+      ? update.in('status', expectedStatus)
+      : update.eq('status', expectedStatus))
     .select('source, external_id, source_message_id, dashboard_contacts ( ghl_contact_id, display_name )')
     .maybeSingle();
   if (error) {
     await recordActionFailed(itemId, operatorId, 'handled', error.message);
-    return { ok: false, error: error.message };
+    return { ok: false, error: error.message, refused: false };
   }
   if (!data) {
     // Row 311 fix-round FIX 4: hoisted, mirroring the sibling guard functions'
@@ -1147,9 +1169,9 @@ export async function markItemHandledLocal(
     // this repeated the literal twice.
     const msg = expectedStatus === null
       ? 'Item not found or already handled'
-      : `Item not found or no longer ${expectedStatus}`;
+      : `Item not found or no longer ${Array.isArray(expectedStatus) ? expectedStatus.join('/') : expectedStatus}`;
     await recordActionFailed(itemId, operatorId, 'handled', msg);
-    return { ok: false, error: msg };
+    return { ok: false, error: msg, refused: true };
   }
   const row = data as unknown as Record<string, unknown>;
   const c = (row.dashboard_contacts as Record<string, unknown> | null) ?? null;
@@ -1720,13 +1742,38 @@ export async function ensureFollowUp(input: {
     // suppress branch, which exists because decision.kind is recomputed per tick.
     // Costs one read, and only on the path that would otherwise write: the
     // early-return above already covers the steady state.
+    //
+    // Row 287(b) (Jason's ruling, same "HANDLED MEANS DONE" principle as row
+    // 252's shouldResolveAnchoredItem): 'handled' now skips too, not just
+    // 'completed'/'dismissed'. Before this, a follow-up an operator had
+    // explicitly marked Done re-armed to 'pending' on the very next reconcile
+    // tick (≤5 min later) for any item merely 'handled' — every OTHER
+    // sent-but-unapproved-quote tick re-requests kind:'create', so the "Done"
+    // action was silently undone almost immediately, reading to staff as a
+    // broken button. The escape hatch that keeps this from silently dropping a
+    // genuinely-open conversation: a real NEW inbound message reopens the item
+    // to 'unresponded' (ingestTouch's reducer, see this file's own comments
+    // near 'reopened'), which is outside this skip set and resumes normal
+    // re-arming immediately — so this only silences the nag while nothing new
+    // has actually happened. A quote's own approval/decline/going-dead closes
+    // its nag through a completely separate path (quoteFollowUpDecision
+    // returning 'close', sync.ts) that never reads item status at all, so
+    // that closure is unaffected either way.
+    //
+    // KNOWN UNCOVERED GAP (flagged by the fix-round-2 delta-verify, raised
+    // with the dev as a product call — not fixed here, and this skip set is
+    // NOT to be weakened to work around it): staff replies once (item becomes
+    // 'handled'), the customer then goes quiet — no new inbound message ever
+    // arrives — and the quote itself never reaches a terminal status either.
+    // That case is outside BOTH escape hatches above, so it is never
+    // automatically re-chased again.
     const { data: item, error: itemErr } = await sb.from('inbox_items').select('status').eq('id', input.inboxItemId).maybeSingle();
     if (itemErr) {
       console.error('[inbox] ensureFollowUp: item status lookup failed (skipping item):', itemErr.message);
       return 'failed';
     }
     const itemStatus = (item as { status: string } | null)?.status ?? null;
-    if (itemStatus === 'completed' || itemStatus === 'dismissed') return 'skipped';
+    if (itemStatus === 'completed' || itemStatus === 'dismissed' || itemStatus === 'handled') return 'skipped';
     const fu = quoteSentNoReplyFollowUp({ contactId: input.contactId, inboxItemId: input.inboxItemId, sentAt: input.sentAt, afterDays: input.afterDays });
     // WT-43: UPSERT, not insert. The table has `unique (inbox_item_id, reason)`
     // with no status predicate, so once a prior nudge is marked 'done' a plain
@@ -1755,17 +1802,27 @@ export async function ensureFollowUp(input: {
 
 /** Mark a pending follow-up for an item done (e.g. the quote got approved).
  *  Returns how many rows were closed (0 when there was none) so callers can keep
- *  an accurate metric. */
+ *  an accurate metric.
+ *
+ *  Row 320(b): this used to discard the query's `error` entirely, so a genuine
+ *  DB failure here was indistinguishable from the legitimate "nothing pending
+ *  to close" no-op — both silently returned 0, with no breadcrumb. Its sibling
+ *  sweeps (sweepOrphanedFollowUps, sweepResolvedItemFollowUps) both check and
+ *  log this same query's error (#825/#310's precedent); this now matches. */
 export async function closeFollowUp(inboxItemId: string, reason: string): Promise<number> {
   const sb = getSupabaseServiceClient();
   if (!sb) return 0;
-  const { data } = await sb
+  const { data, error } = await sb
     .from('follow_ups')
     .update({ status: 'done' })
     .eq('inbox_item_id', inboxItemId)
     .eq('reason', reason)
     .eq('status', 'pending')
     .select('id');
+  if (error) {
+    console.error('[inbox] closeFollowUp failed:', error.message);
+    return 0;
+  }
   return data ? data.length : 0;
 }
 
