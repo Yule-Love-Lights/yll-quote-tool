@@ -9,8 +9,8 @@ export const runtime = 'nodejs';
 // is a separate OPS view of the SAME rows at /api/inventory/jobs; this is the
 // billing view (status, customer, From-Quote). Service-role only (reads under
 // RLS). Gated by the #81 session perimeter; also calls requireOperator() as
-// defense in depth — dormant until AUTH_GATE_ENABLED, so the same-origin
-// /admin/jobs fetch keeps working and rides the operator session once live.
+// defense in depth — engaged by default (ledger #347), so the same-origin
+// /admin/jobs fetch rides the operator session cookie.
 export async function GET() {
   const denied = await requireOperator();
   if (denied) return denied;
