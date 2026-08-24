@@ -16,7 +16,7 @@ import { StaffNotesPanel } from '@/components/admin/StaffNotesPanel';
 import { buildPortalLineItems } from '@/lib/portal/adapter';
 import { BUSINESS_RULES, resolveLineItemLabel, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { getQuoteRaw } from '@/lib/quotes';
-import { deriveStatus, APPROVED_DISPLAYS_AS, type QuoteStatus } from '@/lib/quoteStatus';
+import { deriveStatus, repriceSignalCanFire, APPROVED_DISPLAYS_AS, type QuoteStatus } from '@/lib/quoteStatus';
 import { requiresReconsent, isSupersededPendingAmendment, resolveAmendmentBasis } from '@/lib/amend';
 import { getJobByQuote } from '@/lib/jobs';
 import { getInvoiceByJob } from '@/lib/invoices';
@@ -248,12 +248,25 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
               View-only
             </span>
           )}
-          {/* Row 344 fix round (staff-lens HIGH): the divergence is still LIVE
-              only while the quote sits approved-and-unbooked — once booked
-              (or declined/revived) the portal question this pill flags has
-              already been resolved one way or another, so it stops showing
-              here (the panel below still keeps the historical trail). */}
-          {status === 'approved' && postApprovalReprices.length > 0 && (
+          {/* Row 344 fix round (staff-lens HIGH; second fix round, technical-
+              lens HIGH): the divergence is still LIVE only while the quote
+              sits in a status where /api/quote's own reprice-signal write can
+              still fire — 'approved' (not yet booked) OR 'booked' (via the
+              amendReprice bypass). The FIRST fix round scoped this pill to
+              'approved' only, matching that round's OWN gate at the time —
+              but a later round widened the write's gate to also cover
+              'booked' and never revisited this pill, so it went dark for
+              exactly the highest-money-risk case (a booked, already-amended
+              order) the widening exists to cover. Now reads
+              repriceSignalCanFire (lib/quoteStatus.ts) — the SAME predicate
+              route.ts's gate reads — so the two can never independently
+              drift apart again. Once the quote leaves both statuses (booked
+              orders don't leave 'booked' except to a terminal state; approved
+              orders leave via decline/revive/re-send or moving to 'booked')
+              the portal question this pill flags has been resolved one way
+              or another, so it stops showing here (the panel below still
+              keeps the historical trail regardless of status). */}
+          {repriceSignalCanFire(status) && postApprovalReprices.length > 0 && (
             <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">
               Repriced since approval ({postApprovalReprices.length})
             </span>
