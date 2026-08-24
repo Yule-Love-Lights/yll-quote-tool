@@ -4,7 +4,7 @@
 // rendered from the shared getJobWorkOrder so it always matches the board modal.
 
 import { notFound, redirect } from 'next/navigation';
-import { getOperator } from '@/lib/auth/supabaseServer';
+import { authGateEngaged, getOperator } from '@/lib/auth/supabaseServer';
 import { getJobWorkOrder } from '@/lib/inventory/jobs';
 import { FULFILLMENT_STAGE_LABELS } from '@/lib/inventory/fulfillmentStage';
 import { PERMANENT_SIDE_LABEL } from '@/lib/permanent/types';
@@ -19,9 +19,10 @@ function fmtDate(iso: string | null): string {
 export default async function WorkOrderPrintPage({ params }: { params: Promise<{ id: string }> }) {
   // Defense in depth behind the middleware perimeter — re-check at render so this
   // staff work order (customer PII + pick list) never serves anonymously even if
-  // the perimeter is bypassed. Dormant until the auth gate is live (matches the
-  // #81 operator-page pattern).
-  if (process.env.AUTH_GATE_ENABLED === 'true' && !(await getOperator())) {
+  // the perimeter is bypassed. Engaged by default; dormant only on the explicit
+  // AUTH_GATE_ENABLED=false opt-out (ledger #347, matches the #81 operator-page
+  // pattern).
+  if (authGateEngaged() && !(await getOperator())) {
     redirect('/login?from=/inventory/jobs');
   }
   const { id } = await params;

@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { OperatorArea } from '@/components/OperatorShell';
 
 type NavItem = { label: string; href: string; match: OperatorArea[] };
@@ -39,6 +39,17 @@ function NavBadge({ count, overdue }: { count: number; overdue: boolean }) {
   );
 }
 
+// Ledger #347 fix round (staff-lens MED + LOW): the session state is one of
+// three things, not two. "unknown" is the state before the first
+// GET /api/auth/session answer lands (or after a transient failure — see the
+// effect below), and it renders THE SAME as "signedIn": the Sign-out slot
+// stays visible and reserves its layout space the whole time, so mounting
+// this nav fresh on 56 separate page files never shifts every other nav link
+// sideways once the fetch resolves. Only a POSITIVE "signedOut" answer hides
+// it (via CSS visibility, which keeps the reserved space AND drops the
+// button from hit-testing/tab order — no separate disabled handling needed).
+type SessionState = 'unknown' | 'signedIn' | 'signedOut';
+
 export function OperatorNav({
   active,
   inboxOpenLeads = 0,
@@ -54,6 +65,57 @@ export function OperatorNav({
   const [open, setOpen] = useState(false);
   const router = useRouter();
   const isActive = (item: NavItem) => item.match.includes(active);
+
+  // This nav is shared chrome rendered on every operator page, several of
+  // which do not fetch the operator session themselves — so it has no
+  // server-provided session state to start from. It used to render "Sign
+  // out" unconditionally, which lied on a signed-out browser (nothing to
+  // sign out of). It is confirmed via GET /api/auth/session, which reports
+  // the true session state directly (never through the dormancy-aware
+  // requireOperator()) so this stays honest even while the gate is
+  // deliberately off.
+  //
+  // A 401 from /api/auth/session is a REAL, meaningful answer (the perimeter
+  // itself says "no session") and is treated as signedOut, not as an error.
+  // A genuine network/server hiccup is retried once and otherwise leaves the
+  // state at 'unknown' — it must never flip a real session to signedOut just
+  // because one fetch blipped, which would silently strand a signed-in
+  // staffer with no way to sign out until their next page load.
+  const [sessionState, setSessionState] = useState<SessionState>('unknown');
+  useEffect(() => {
+    let cancelled = false;
+
+    const check = (attempt: number): void => {
+      fetch('/api/auth/session')
+        .then(res => {
+          if (res.status === 401) return { signedIn: false }; // real answer, not a failure
+          if (!res.ok) throw new Error(`/api/auth/session ${res.status}`);
+          return res.json() as Promise<{ signedIn?: boolean }>;
+        })
+        .then(body => {
+          if (!cancelled) setSessionState(body.signedIn === true ? 'signedIn' : 'signedOut');
+        })
+        .catch(() => {
+          if (cancelled) return;
+          if (attempt < 1) {
+            check(attempt + 1); // one retry on a transient failure
+          }
+          // Retry exhausted: leave sessionState at 'unknown'. Per the bias
+          // above, 'unknown' renders the same as 'signedIn' (visible) —
+          // showing Sign out to someone with no session is harmless (the
+          // logout call just no-ops and redirects to /login); hiding it from
+          // someone who IS signed in is the outcome to avoid.
+        });
+    };
+    check(0);
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Only a CONFIRMED signedOut hides the control. 'unknown' stays visible.
+  const hideSignOut = sessionState === 'signedOut';
 
   const linkStyle = (item: NavItem) =>
     isActive(item)
@@ -103,7 +165,13 @@ export function OperatorNav({
               </Link>
             </li>
           ))}
-          <li>
+          {/* Always mounted (ledger #347 fix round) — reserves its layout
+              width so every link to its left never jumps once the session
+              check resolves. `visibility: hidden` (not a conditional
+              unmount) keeps the space, drops it from hit-testing, AND
+              removes it from the tab order — no separate disabled handling
+              needed. */}
+          <li style={{ visibility: hideSignOut ? 'hidden' : 'visible' }}>
             <button
               type="button"
               onClick={signOut}
@@ -154,7 +222,11 @@ export function OperatorNav({
               </Link>
             </li>
           ))}
-          <li>
+          {/* Same always-mounted / visibility-hidden treatment as the
+              desktop copy above — this dropdown only opens on a click, so it
+              is not the layout-shift MED, but it stays tri-state-consistent
+              with its sibling rather than reintroducing the two-state bug. */}
+          <li style={{ visibility: hideSignOut ? 'hidden' : 'visible' }}>
             <button
               type="button"
               onClick={() => {

@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import type { DueFollowUp } from '@/lib/dashboard/inbox/types';
 
 const REASON_LABEL: Record<string, string> = {
@@ -95,6 +96,8 @@ export function FollowUpStrip({ initialItems }: { initialItems: DueFollowUp[] })
     setItems(reconcileDueFollowUps(initialItems, busyIdsRef.current));
   }, [initialItems]);
 
+  const router = useRouter();
+
   const markDone = useCallback(async (item: DueFollowUp) => {
     setBusyIds((prev) => withRowFlagSet(prev, item.id));
     setItems((prev) => prev.filter((i) => i.id !== item.id)); // optimistic
@@ -107,12 +110,19 @@ export function FollowUpStrip({ initialItems }: { initialItems: DueFollowUp[] })
       // Restore the item if the write was rejected, so a failure is visible
       // rather than silently vanishing (mirrors DuplicatesList's merge()).
       if (!res.ok) setItems((prev) => [item, ...prev]);
+      // Row 365: the route ALSO resolves this follow-up's anchored inbox item
+      // server-side (#252 slice E), but nothing told the page — the item sat
+      // visibly open in the main list until the next 25s poll. Same idiom as
+      // InboxList/InWorksSection: re-render InboxPage's server component so
+      // every list on the page reflects the resolution now. Only on success;
+      // the restore path above has nothing to re-read.
+      else router.refresh();
     } catch {
       setItems((prev) => [item, ...prev]);
     } finally {
       setBusyIds((prev) => withRowFlagCleared(prev, item.id));
     }
-  }, []);
+  }, [router]);
 
   if (items.length === 0) return null;
 
