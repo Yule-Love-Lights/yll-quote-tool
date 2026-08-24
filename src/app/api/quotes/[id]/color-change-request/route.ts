@@ -28,6 +28,7 @@ import {
   isKnownColorSchemeId,
   sanitizeCustomPattern,
   getColorScheme,
+  type ColorScheme,
 } from '@/lib/design/colorSchemes';
 import { resolveColorChoice } from '@/lib/inventory/resolveInstalls';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
@@ -70,11 +71,15 @@ type QuoteRow = {
 };
 
 /** Human label for the requested colour, for the inbox preview + the staff panel. */
-export function colorChangeLabel(colorSchemeId: string, customPattern: string[]): string {
+export function colorChangeLabel(
+  colorSchemeId: string,
+  customPattern: string[],
+  schemes?: ColorScheme[],
+): string {
   if (colorSchemeId === CUSTOM_SCHEME_ID || customPattern.length > 0) {
     return `Custom pattern (${customPattern.length} colour${customPattern.length === 1 ? '' : 's'})`;
   }
-  return getColorScheme(colorSchemeId).label;
+  return getColorScheme(colorSchemeId, schemes).label;
 }
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -149,7 +154,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       ? DEFAULT_COLOR_SCHEME_ID
       : requestedSchemeId;
   const colorIds = resolveColorChoice(colorSchemeId, customPattern, activeSchemes);
-  const label = colorChangeLabel(colorSchemeId, customPattern);
+  const label = colorChangeLabel(
+    colorSchemeId,
+    customPattern,
+    isPermanent ? activeSchemes : undefined,
+  );
 
   // Record the request on the quote (the source of truth the staff apply reads).
   const pendingColorRequest = {

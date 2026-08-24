@@ -10,8 +10,9 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { type NextRequest } from 'next/server';
 import { DEFAULT_COLOR_SCHEMES, DEFAULT_BUILDABLE_COLOR_IDS } from '@/lib/design/colorSchemes';
 
-const { sbRef, ingestTouchMock, hl } = vi.hoisted(() => ({
+const { sbRef, settingsRef, ingestTouchMock, hl } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
+  settingsRef: { current: null as unknown },
   ingestTouchMock: vi.fn(async (_touch: unknown, _now: unknown) => ({ ok: true, itemId: 'inbox-item-1' })),
   hl: {
     configured: { value: true },
@@ -25,10 +26,7 @@ vi.mock('@/lib/supabase', () => ({
 }));
 vi.mock('@/lib/rateLimit', () => ({ rateLimitResponse: () => null }));
 vi.mock('@/lib/appSettings', () => ({
-  getAppSettings: async () => ({
-    swatches: { schemes: DEFAULT_COLOR_SCHEMES, buildableColorIds: DEFAULT_BUILDABLE_COLOR_IDS },
-    permanentSwatches: { schemes: DEFAULT_COLOR_SCHEMES, buildableColorIds: DEFAULT_BUILDABLE_COLOR_IDS },
-  }),
+  getAppSettings: async () => settingsRef.current,
 }));
 vi.mock('@/lib/dashboard/inbox/store', () => ({ ingestTouch: ingestTouchMock }));
 vi.mock('@/lib/integrations/highlevel', () => ({
@@ -124,6 +122,10 @@ function bookedQuote(overrides: Row = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   sbRef.current = null;
+  settingsRef.current = {
+    swatches: { schemes: DEFAULT_COLOR_SCHEMES, buildableColorIds: DEFAULT_BUILDABLE_COLOR_IDS },
+    permanentSwatches: { schemes: DEFAULT_COLOR_SCHEMES, buildableColorIds: DEFAULT_BUILDABLE_COLOR_IDS },
+  };
   hl.configured.value = true;
   delete process.env.HIGHLEVEL_INTERNAL_CONTACT_ID;
 });
@@ -175,6 +177,59 @@ describe('POST /api/quotes/[id]/color-change-request', () => {
     const touch = ingestTouchMock.mock.calls[0][0] as { source: string; externalId: string };
     expect(touch.source).toBe('quotetool');
     expect(touch.externalId).toBe(`${ID}:color-request`);
+  });
+
+  it('labels a Permanent-only configured scheme with its live display name', async () => {
+    process.env.HIGHLEVEL_INTERNAL_CONTACT_ID = 'internal-1';
+    const permanentScheme = { id: 'permanent-ocean', label: 'Ocean Twinkle', colorIds: ['blue'] };
+    settingsRef.current = {
+      swatches: { schemes: DEFAULT_COLOR_SCHEMES, buildableColorIds: DEFAULT_BUILDABLE_COLOR_IDS },
+      permanentSwatches: {
+        schemes: [DEFAULT_COLOR_SCHEMES[0], permanentScheme],
+        buildableColorIds: DEFAULT_BUILDABLE_COLOR_IDS,
+      },
+    };
+    const { client, updates } = makeSb(bookedQuote({ service_type: 'permanent' }));
+    sbRef.current = client;
+
+    const res = await POST(req({ colorSchemeId: permanentScheme.id }), ctx());
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ label: 'Ocean Twinkle' });
+    const snapshot = updates[0].approval_snapshot as {
+      pendingColorRequest: { colorSchemeId: string; label: string; colorIds: string[] };
+    };
+    expect(snapshot.pendingColorRequest).toMatchObject({
+      colorSchemeId: permanentScheme.id,
+      label: 'Ocean Twinkle',
+      colorIds: ['blue'],
+    });
+    const touch = ingestTouchMock.mock.calls[0][0] as { preview: string; raw: { label: string } };
+    expect(touch.preview).toContain('Ocean Twinkle');
+    expect(touch.raw.label).toBe('Ocean Twinkle');
+    expect(hl.sendEmail).toHaveBeenCalledOnce();
+    expect(hl.sendEmail.mock.calls[0][0].html).toContain('Ocean Twinkle');
+  });
+
+  it('does not change the existing Holiday label behavior in this Permanent-only fix', async () => {
+    const renamedHolidayScheme = {
+      ...DEFAULT_COLOR_SCHEMES.find((scheme) => scheme.id === 'warm-white')!,
+      label: 'Settings Ivory',
+    };
+    settingsRef.current = {
+      swatches: {
+        schemes: [DEFAULT_COLOR_SCHEMES[0], renamedHolidayScheme],
+        buildableColorIds: DEFAULT_BUILDABLE_COLOR_IDS,
+      },
+      permanentSwatches: { schemes: DEFAULT_COLOR_SCHEMES, buildableColorIds: DEFAULT_BUILDABLE_COLOR_IDS },
+    };
+    const { client } = makeSb(bookedQuote({ service_type: 'holiday' }));
+    sbRef.current = client;
+
+    const res = await POST(req({ colorSchemeId: 'warm-white' }), ctx());
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ label: 'Warm White' });
   });
 
   it('still succeeds (request saved) when the inbox ping throws', async () => {
