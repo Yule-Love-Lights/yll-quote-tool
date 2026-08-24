@@ -4448,8 +4448,9 @@ export default function QuoteBuilder({
       // THIS save (route.ts only sends the key when updateQuote set it —
       // absent/falsy on every normal save, including a brand-new insert).
       if (data.identityFrozen === true) setIdentityFrozenNotice(true);
-      setResult(data.result);
-      setBaselineResult(data.baseline ?? data.result); // #104 "was $X" source
+      // The result is deliberately NOT exposed here. It is set AFTER the
+      // satellite plan is durably stored (below), so a failed plan save cannot
+      // leave a Send-ready quote on screen beside its own error banner.
       const newQuoteId = typeof data.quoteId === 'string' ? data.quoteId : null;
       // Only overwrite savedQuoteId on a real id (#110 W3-004 / #80-105). A 200
       // response with quoteId:null means the server-side save/update failed
