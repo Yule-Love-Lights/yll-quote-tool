@@ -1,0 +1,2518 @@
+{
+  "generatedAt": "2026-08-24T13:47:33.877Z",
+  "model": "claude-sonnet-4-6",
+  "runsPerPhoto": 3,
+  "totalCalls": 78,
+  "callFailures": 0,
+  "photosCount": 26,
+  "objectCounts": {
+    "front_door": 51,
+    "garage_door": 27
+  },
+  "runResults": [
+    {
+      "exampleId": "13e3b41f-cb4a-4dbe-bfd9-d2f0905a4602",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          304,
+          218,
+          30,
+          62
+        ],
+        "confidence": 0.62
+      },
+      "doorPpf": 9.299999999999999
+    },
+    {
+      "exampleId": "13e3b41f-cb4a-4dbe-bfd9-d2f0905a4602",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          302,
+          208,
+          30,
+          72
+        ],
+        "confidence": 0.62
+      },
+      "doorPpf": 10.799999999999999
+    },
+    {
+      "exampleId": "13e3b41f-cb4a-4dbe-bfd9-d2f0905a4602",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          304,
+          218,
+          28,
+          62
+        ],
+        "confidence": 0.62
+      },
+      "doorPpf": 9.299999999999999
+    },
+    {
+      "exampleId": "5f504e9b-f933-4226-98db-2b2b78bb36d1",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          304,
+          211,
+          30,
+          62
+        ],
+        "confidence": 0.55
+      },
+      "doorPpf": 9.299999999999999
+    },
+    {
+      "exampleId": "5f504e9b-f933-4226-98db-2b2b78bb36d1",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          302,
+          202,
+          30,
+          68
+        ],
+        "confidence": 0.52
+      },
+      "doorPpf": 10.2
+    },
+    {
+      "exampleId": "5f504e9b-f933-4226-98db-2b2b78bb36d1",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          304,
+          211,
+          30,
+          62
+        ],
+        "confidence": 0.62
+      },
+      "doorPpf": 9.299999999999999
+    },
+    {
+      "exampleId": "bc6f6af4-0308-477c-9cd7-3bde1438f0e6",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          304,
+          211,
+          30,
+          62
+        ],
+        "confidence": 0.62
+      },
+      "doorPpf": 9.299999999999999
+    },
+    {
+      "exampleId": "bc6f6af4-0308-477c-9cd7-3bde1438f0e6",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          304,
+          211,
+          30,
+          68
+        ],
+        "confidence": 0.62
+      },
+      "doorPpf": 10.2
+    },
+    {
+      "exampleId": "bc6f6af4-0308-477c-9cd7-3bde1438f0e6",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          304,
+          220,
+          28,
+          60
+        ],
+        "confidence": 0.52
+      },
+      "doorPpf": 9
+    },
+    {
+      "exampleId": "af0709ba-6fdc-4055-ae85-0a1363134435",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          305,
+          220,
+          30,
+          65
+        ],
+        "confidence": 0.6
+      },
+      "doorPpf": 9.75
+    },
+    {
+      "exampleId": "af0709ba-6fdc-4055-ae85-0a1363134435",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          304,
+          218,
+          30,
+          62
+        ],
+        "confidence": 0.55
+      },
+      "doorPpf": 9.299999999999999
+    },
+    {
+      "exampleId": "af0709ba-6fdc-4055-ae85-0a1363134435",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          304,
+          220,
+          28,
+          60
+        ],
+        "confidence": 0.52
+      },
+      "doorPpf": 9
+    },
+    {
+      "exampleId": "1113306a-f060-49a9-bfe5-8c0926779a3b",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          304,
+          220,
+          30,
+          60
+        ],
+        "confidence": 0.52
+      },
+      "doorPpf": 9
+    },
+    {
+      "exampleId": "1113306a-f060-49a9-bfe5-8c0926779a3b",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          304,
+          220,
+          30,
+          60
+        ],
+        "confidence": 0.55
+      },
+      "doorPpf": 9
+    },
+    {
+      "exampleId": "1113306a-f060-49a9-bfe5-8c0926779a3b",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          306,
+          216,
+          28,
+          62
+        ],
+        "confidence": 0.52
+      },
+      "doorPpf": 9.299999999999999
+    },
+    {
+      "exampleId": "2cb61848-a696-4087-a383-c50a202f7a1e",
+      "address": "65 Forest Road, Kings Park, NY, 11701",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "single",
+        "bbox": [
+          183,
+          195,
+          95,
+          58
+        ],
+        "confidence": 0.62
+      },
+      "doorPpf": 10.555555555555555
+    },
+    {
+      "exampleId": "2cb61848-a696-4087-a383-c50a202f7a1e",
+      "address": "65 Forest Road, Kings Park, NY, 11701",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "single",
+        "bbox": [
+          176,
+          195,
+          83,
+          55
+        ],
+        "confidence": 0.6
+      },
+      "doorPpf": 9.222222222222221
+    },
+    {
+      "exampleId": "2cb61848-a696-4087-a383-c50a202f7a1e",
+      "address": "65 Forest Road, Kings Park, NY, 11701",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "single",
+        "bbox": [
+          174,
+          195,
+          95,
+          60
+        ],
+        "confidence": 0.62
+      },
+      "doorPpf": 10.555555555555555
+    },
+    {
+      "exampleId": "b6f41405-1d58-4e41-82f8-bc70fee2a784",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          304,
+          220,
+          30,
+          62
+        ],
+        "confidence": 0.6
+      },
+      "doorPpf": 9.299999999999999
+    },
+    {
+      "exampleId": "b6f41405-1d58-4e41-82f8-bc70fee2a784",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          304,
+          220,
+          28,
+          60
+        ],
+        "confidence": 0.52
+      },
+      "doorPpf": 9
+    },
+    {
+      "exampleId": "b6f41405-1d58-4e41-82f8-bc70fee2a784",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          305,
+          211,
+          30,
+          68
+        ],
+        "confidence": 0.62
+      },
+      "doorPpf": 10.2
+    },
+    {
+      "exampleId": "bb88ce1e-97d3-40eb-a084-70429d13d875",
+      "address": "73 Plymouth Blvd, Smithtown, NY, 11787",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "single",
+        "bbox": [
+          186,
+          197,
+          82,
+          54
+        ],
+        "confidence": 0.52
+      },
+      "doorPpf": 9.11111111111111
+    },
+    {
+      "exampleId": "bb88ce1e-97d3-40eb-a084-70429d13d875",
+      "address": "73 Plymouth Blvd, Smithtown, NY, 11787",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "single",
+        "bbox": [
+          185,
+          195,
+          95,
+          65
+        ],
+        "confidence": 0.52
+      },
+      "doorPpf": 10.555555555555555
+    },
+    {
+      "exampleId": "bb88ce1e-97d3-40eb-a084-70429d13d875",
+      "address": "73 Plymouth Blvd, Smithtown, NY, 11787",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "single",
+        "bbox": [
+          192,
+          195,
+          95,
+          70
+        ],
+        "confidence": 0.52
+      },
+      "doorPpf": 10.555555555555555
+    },
+    {
+      "exampleId": "54868b0c-f325-4a3f-abf3-472392a93c5c",
+      "address": "65 Forest Road, Kings Park, NY, 11701",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "single",
+        "bbox": [
+          175,
+          195,
+          95,
+          65
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 10.555555555555555
+    },
+    {
+      "exampleId": "54868b0c-f325-4a3f-abf3-472392a93c5c",
+      "address": "65 Forest Road, Kings Park, NY, 11701",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "single",
+        "bbox": [
+          170,
+          195,
+          95,
+          65
+        ],
+        "confidence": 0.62
+      },
+      "doorPpf": 10.555555555555555
+    },
+    {
+      "exampleId": "54868b0c-f325-4a3f-abf3-472392a93c5c",
+      "address": "65 Forest Road, Kings Park, NY, 11701",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "single",
+        "bbox": [
+          172,
+          193,
+          95,
+          62
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 10.555555555555555
+    },
+    {
+      "exampleId": "3e42e861-7991-4b85-a728-5bf72fb9afc8",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          305,
+          220,
+          30,
+          70
+        ],
+        "confidence": 0.55
+      },
+      "doorPpf": 10.5
+    },
+    {
+      "exampleId": "3e42e861-7991-4b85-a728-5bf72fb9afc8",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          304,
+          220,
+          30,
+          60
+        ],
+        "confidence": 0.52
+      },
+      "doorPpf": 9
+    },
+    {
+      "exampleId": "3e42e861-7991-4b85-a728-5bf72fb9afc8",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          305,
+          220,
+          30,
+          65
+        ],
+        "confidence": 0.62
+      },
+      "doorPpf": 9.75
+    },
+    {
+      "exampleId": "01947610-88a8-427d-9953-efd83ac12606",
+      "address": "191 Main Pkwy W, Plainview, New York, 11803",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "single",
+        "bbox": [
+          184,
+          185,
+          96,
+          70
+        ],
+        "confidence": 0.55
+      },
+      "doorPpf": 10.666666666666666
+    },
+    {
+      "exampleId": "01947610-88a8-427d-9953-efd83ac12606",
+      "address": "191 Main Pkwy W, Plainview, New York, 11803",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "single",
+        "bbox": [
+          394,
+          175,
+          112,
+          95
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 12.444444444444445
+    },
+    {
+      "exampleId": "01947610-88a8-427d-9953-efd83ac12606",
+      "address": "191 Main Pkwy W, Plainview, New York, 11803",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "single",
+        "bbox": [
+          215,
+          190,
+          95,
+          75
+        ],
+        "confidence": 0.55
+      },
+      "doorPpf": 10.555555555555555
+    },
+    {
+      "exampleId": "977b85e4-12ec-47c0-af1e-fd6ee5b77c79",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          304,
+          218,
+          30,
+          62
+        ],
+        "confidence": 0.55
+      },
+      "doorPpf": 9.299999999999999
+    },
+    {
+      "exampleId": "977b85e4-12ec-47c0-af1e-fd6ee5b77c79",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          304,
+          220,
+          30,
+          60
+        ],
+        "confidence": 0.62
+      },
+      "doorPpf": 9
+    },
+    {
+      "exampleId": "977b85e4-12ec-47c0-af1e-fd6ee5b77c79",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          305,
+          220,
+          30,
+          65
+        ],
+        "confidence": 0.62
+      },
+      "doorPpf": 9.75
+    },
+    {
+      "exampleId": "6d00c46a-38a5-4567-999b-1d06e5221d3a",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          304,
+          218,
+          30,
+          62
+        ],
+        "confidence": 0.62
+      },
+      "doorPpf": 9.299999999999999
+    },
+    {
+      "exampleId": "6d00c46a-38a5-4567-999b-1d06e5221d3a",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          305,
+          218,
+          30,
+          62
+        ],
+        "confidence": 0.55
+      },
+      "doorPpf": 9.299999999999999
+    },
+    {
+      "exampleId": "6d00c46a-38a5-4567-999b-1d06e5221d3a",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          304,
+          218,
+          28,
+          62
+        ],
+        "confidence": 0.62
+      },
+      "doorPpf": 9.299999999999999
+    },
+    {
+      "exampleId": "3c08ea50-946a-4d2b-b644-f7772fc27c1b",
+      "address": "741 Naple ave, Franklin square, 11010",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          299,
+          194,
+          38,
+          70
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 10.5
+    },
+    {
+      "exampleId": "3c08ea50-946a-4d2b-b644-f7772fc27c1b",
+      "address": "741 Naple ave, Franklin square, 11010",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          296,
+          195,
+          42,
+          75
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 11.25
+    },
+    {
+      "exampleId": "3c08ea50-946a-4d2b-b644-f7772fc27c1b",
+      "address": "741 Naple ave, Franklin square, 11010",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          299,
+          195,
+          38,
+          72
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 10.799999999999999
+    },
+    {
+      "exampleId": "76c210d7-6085-4c69-b1b5-15b38a6f8fd5",
+      "address": "741 Naple ave, Franklin square, 11010",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          318,
+          175,
+          38,
+          72
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 10.799999999999999
+    },
+    {
+      "exampleId": "76c210d7-6085-4c69-b1b5-15b38a6f8fd5",
+      "address": "741 Naple ave, Franklin square, 11010",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          311,
+          194,
+          40,
+          72
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 10.799999999999999
+    },
+    {
+      "exampleId": "76c210d7-6085-4c69-b1b5-15b38a6f8fd5",
+      "address": "741 Naple ave, Franklin square, 11010",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          318,
+          175,
+          35,
+          68
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 10.2
+    },
+    {
+      "exampleId": "2dfdb01a-6eb1-44a1-a7f0-08b44a88ef10",
+      "address": "8 Munsee Way Commack, NY 11725",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "double",
+        "bbox": [
+          62,
+          195,
+          182,
+          108
+        ],
+        "confidence": 0.82
+      },
+      "doorPpf": 11.375
+    },
+    {
+      "exampleId": "2dfdb01a-6eb1-44a1-a7f0-08b44a88ef10",
+      "address": "8 Munsee Way Commack, NY 11725",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "double",
+        "bbox": [
+          91,
+          195,
+          152,
+          112
+        ],
+        "confidence": 0.82
+      },
+      "doorPpf": 9.5
+    },
+    {
+      "exampleId": "2dfdb01a-6eb1-44a1-a7f0-08b44a88ef10",
+      "address": "8 Munsee Way Commack, NY 11725",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "double",
+        "bbox": [
+          91,
+          195,
+          152,
+          98
+        ],
+        "confidence": 0.82
+      },
+      "doorPpf": 9.5
+    },
+    {
+      "exampleId": "7fb0b765-2b79-4210-9a10-900082fa32fe",
+      "address": "194 brittle lane hicksville ny 11802",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          283,
+          168,
+          42,
+          98
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 14.7
+    },
+    {
+      "exampleId": "7fb0b765-2b79-4210-9a10-900082fa32fe",
+      "address": "194 brittle lane hicksville ny 11802",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          290,
+          165,
+          42,
+          95
+        ],
+        "confidence": 0.6
+      },
+      "doorPpf": 14.25
+    },
+    {
+      "exampleId": "7fb0b765-2b79-4210-9a10-900082fa32fe",
+      "address": "194 brittle lane hicksville ny 11802",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          290,
+          168,
+          42,
+          98
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 14.7
+    },
+    {
+      "exampleId": "203f3cff-a903-4eea-8043-206c30c4b127",
+      "address": "59 Bayberry Drive, Huntington 11743",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "single",
+        "bbox": [
+          91,
+          152,
+          78,
+          52
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 8.666666666666666
+    },
+    {
+      "exampleId": "203f3cff-a903-4eea-8043-206c30c4b127",
+      "address": "59 Bayberry Drive, Huntington 11743",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "single",
+        "bbox": [
+          118,
+          155,
+          72,
+          52
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 8
+    },
+    {
+      "exampleId": "203f3cff-a903-4eea-8043-206c30c4b127",
+      "address": "59 Bayberry Drive, Huntington 11743",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "single",
+        "bbox": [
+          27,
+          155,
+          88,
+          55
+        ],
+        "confidence": 0.62
+      },
+      "doorPpf": 9.777777777777779
+    },
+    {
+      "exampleId": "e4c82582-9833-419e-b8da-139b5d0c39e6",
+      "address": "30 Crescent Beach Rd",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "single",
+        "bbox": [
+          218,
+          212,
+          78,
+          58
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 8.666666666666666
+    },
+    {
+      "exampleId": "e4c82582-9833-419e-b8da-139b5d0c39e6",
+      "address": "30 Crescent Beach Rd",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "single",
+        "bbox": [
+          218,
+          198,
+          78,
+          58
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 8.666666666666666
+    },
+    {
+      "exampleId": "e4c82582-9833-419e-b8da-139b5d0c39e6",
+      "address": "30 Crescent Beach Rd",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "single",
+        "bbox": [
+          218,
+          198,
+          80,
+          58
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 8.88888888888889
+    },
+    {
+      "exampleId": "f22adf9f-58d7-427b-bd4f-eff8f3bd1307",
+      "address": "277 division ave, Hicksville",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          296,
+          175,
+          38,
+          72
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 10.799999999999999
+    },
+    {
+      "exampleId": "f22adf9f-58d7-427b-bd4f-eff8f3bd1307",
+      "address": "277 division ave, Hicksville",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          290,
+          182,
+          38,
+          72
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 10.799999999999999
+    },
+    {
+      "exampleId": "f22adf9f-58d7-427b-bd4f-eff8f3bd1307",
+      "address": "277 division ave, Hicksville",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          291,
+          175,
+          38,
+          72
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 10.799999999999999
+    },
+    {
+      "exampleId": "f76fda42-6adc-4b20-8807-b63b62dbf506",
+      "address": "7 Pumpkin Rd, Saint James",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          248,
+          172,
+          36,
+          68
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 10.2
+    },
+    {
+      "exampleId": "f76fda42-6adc-4b20-8807-b63b62dbf506",
+      "address": "7 Pumpkin Rd, Saint James",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          248,
+          175,
+          38,
+          68
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 10.2
+    },
+    {
+      "exampleId": "f76fda42-6adc-4b20-8807-b63b62dbf506",
+      "address": "7 Pumpkin Rd, Saint James",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          248,
+          175,
+          38,
+          68
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 10.2
+    },
+    {
+      "exampleId": "a41d2a31-322a-45f5-8f40-e29d7744c854",
+      "address": "844 park Avenue Manhasset NY, Manhasset",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          290,
+          195,
+          38,
+          62
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 9.299999999999999
+    },
+    {
+      "exampleId": "a41d2a31-322a-45f5-8f40-e29d7744c854",
+      "address": "844 park Avenue Manhasset NY, Manhasset",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          291,
+          183,
+          38,
+          72
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 10.799999999999999
+    },
+    {
+      "exampleId": "a41d2a31-322a-45f5-8f40-e29d7744c854",
+      "address": "844 park Avenue Manhasset NY, Manhasset",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          291,
+          194,
+          38,
+          62
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 9.299999999999999
+    },
+    {
+      "exampleId": "dc8fbe62-3980-4467-9a5d-69a261039d3a",
+      "address": "12 Jamar Ln, Ronkonkoma",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          334,
+          148,
+          38,
+          98
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 14.7
+    },
+    {
+      "exampleId": "dc8fbe62-3980-4467-9a5d-69a261039d3a",
+      "address": "12 Jamar Ln, Ronkonkoma",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          334,
+          148,
+          38,
+          82
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 12.299999999999999
+    },
+    {
+      "exampleId": "dc8fbe62-3980-4467-9a5d-69a261039d3a",
+      "address": "12 Jamar Ln, Ronkonkoma",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          334,
+          142,
+          38,
+          72
+        ],
+        "confidence": 0.62
+      },
+      "doorPpf": 10.799999999999999
+    },
+    {
+      "exampleId": "524e010d-fe79-48e0-a2b3-1b9435adf7bd",
+      "address": "1058 Northern Blvd, Baldwin, NY 11510, USA",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "double",
+        "bbox": [
+          152,
+          218,
+          118,
+          62
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 7.375
+    },
+    {
+      "exampleId": "524e010d-fe79-48e0-a2b3-1b9435adf7bd",
+      "address": "1058 Northern Blvd, Baldwin, NY 11510, USA",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "double",
+        "bbox": [
+          152,
+          198,
+          132,
+          68
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 8.25
+    },
+    {
+      "exampleId": "524e010d-fe79-48e0-a2b3-1b9435adf7bd",
+      "address": "1058 Northern Blvd, Baldwin, NY 11510, USA",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "double",
+        "bbox": [
+          152,
+          193,
+          120,
+          62
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 7.5
+    },
+    {
+      "exampleId": "cbb7fa95-a5bc-407b-bda8-a4a2350314fc",
+      "address": "7 Country Lake Ct, Centerport NY 11721, United States",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          302,
+          183,
+          58,
+          97
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 14.549999999999999
+    },
+    {
+      "exampleId": "cbb7fa95-a5bc-407b-bda8-a4a2350314fc",
+      "address": "7 Country Lake Ct, Centerport NY 11721, United States",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          291,
+          195,
+          58,
+          120
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 18
+    },
+    {
+      "exampleId": "cbb7fa95-a5bc-407b-bda8-a4a2350314fc",
+      "address": "7 Country Lake Ct, Centerport NY 11721, United States",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "front_door",
+        "garageDoorWidth": null,
+        "bbox": [
+          300,
+          195,
+          62,
+          120
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 18
+    },
+    {
+      "exampleId": "181c562a-4d2e-4b01-86a6-e0beacc64297",
+      "address": "38 rider avenue Malverne NY 11565",
+      "runIndex": 0,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "single",
+        "bbox": [
+          189,
+          172,
+          95,
+          68
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 10.555555555555555
+    },
+    {
+      "exampleId": "181c562a-4d2e-4b01-86a6-e0beacc64297",
+      "address": "38 rider avenue Malverne NY 11565",
+      "runIndex": 1,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "single",
+        "bbox": [
+          183,
+          168,
+          88,
+          62
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 9.777777777777779
+    },
+    {
+      "exampleId": "181c562a-4d2e-4b01-86a6-e0beacc64297",
+      "address": "38 rider avenue Malverne NY 11565",
+      "runIndex": 2,
+      "ok": true,
+      "raw": {
+        "object": "garage_door",
+        "garageDoorWidth": "single",
+        "bbox": [
+          185,
+          167,
+          95,
+          62
+        ],
+        "confidence": 0.72
+      },
+      "doorPpf": 10.555555555555555
+    }
+  ],
+  "referencesByExample": [
+    {
+      "exampleId": "13e3b41f-cb4a-4dbe-bfd9-d2f0905a4602",
+      "rooflinePpf": 7.024000000000001,
+      "yardstickPpf": 7.023999999999999,
+      "santasFootage": 40
+    },
+    {
+      "exampleId": "5f504e9b-f933-4226-98db-2b2b78bb36d1",
+      "rooflinePpf": 7.024000000000001,
+      "yardstickPpf": 7.023999999999999,
+      "santasFootage": 40
+    },
+    {
+      "exampleId": "bc6f6af4-0308-477c-9cd7-3bde1438f0e6",
+      "rooflinePpf": 7.028799999999999,
+      "yardstickPpf": 7.0280000000000005,
+      "santasFootage": 40
+    },
+    {
+      "exampleId": "af0709ba-6fdc-4055-ae85-0a1363134435",
+      "rooflinePpf": 7.028800000000001,
+      "yardstickPpf": 7.0280000000000005,
+      "santasFootage": 40
+    },
+    {
+      "exampleId": "1113306a-f060-49a9-bfe5-8c0926779a3b",
+      "rooflinePpf": 7.028800000000001,
+      "yardstickPpf": 7.0280000000000005,
+      "santasFootage": 40
+    },
+    {
+      "exampleId": "2cb61848-a696-4087-a383-c50a202f7a1e",
+      "rooflinePpf": 4.187810744256844,
+      "yardstickPpf": 7.202,
+      "santasFootage": 60
+    },
+    {
+      "exampleId": "b6f41405-1d58-4e41-82f8-bc70fee2a784",
+      "rooflinePpf": 7.028800000000001,
+      "yardstickPpf": 7.0280000000000005,
+      "santasFootage": 40
+    },
+    {
+      "exampleId": "bb88ce1e-97d3-40eb-a084-70429d13d875",
+      "rooflinePpf": 5.446784104080645,
+      "yardstickPpf": 5.606277548568389,
+      "santasFootage": 45
+    },
+    {
+      "exampleId": "54868b0c-f325-4a3f-abf3-472392a93c5c",
+      "rooflinePpf": 4.187186857279929,
+      "yardstickPpf": 4.188000000000001,
+      "santasFootage": 60
+    },
+    {
+      "exampleId": "3e42e861-7991-4b85-a728-5bf72fb9afc8",
+      "rooflinePpf": 7.028800000000001,
+      "yardstickPpf": 7.0280000000000005,
+      "santasFootage": 40
+    },
+    {
+      "exampleId": "01947610-88a8-427d-9953-efd83ac12606",
+      "rooflinePpf": null,
+      "yardstickPpf": 8.972,
+      "santasFootage": 65
+    },
+    {
+      "exampleId": "977b85e4-12ec-47c0-af1e-fd6ee5b77c79",
+      "rooflinePpf": 7.028800000000001,
+      "yardstickPpf": 7.0280000000000005,
+      "santasFootage": 40
+    },
+    {
+      "exampleId": "6d00c46a-38a5-4567-999b-1d06e5221d3a",
+      "rooflinePpf": 7.028800000000001,
+      "yardstickPpf": 7.0280000000000005,
+      "santasFootage": 40
+    },
+    {
+      "exampleId": "3c08ea50-946a-4d2b-b644-f7772fc27c1b",
+      "rooflinePpf": 4.58098328407188,
+      "yardstickPpf": 6.656000000000001,
+      "santasFootage": 55
+    },
+    {
+      "exampleId": "76c210d7-6085-4c69-b1b5-15b38a6f8fd5",
+      "rooflinePpf": 4.58098328407188,
+      "yardstickPpf": 6.656000000000001,
+      "santasFootage": 55
+    },
+    {
+      "exampleId": "2dfdb01a-6eb1-44a1-a7f0-08b44a88ef10",
+      "rooflinePpf": null,
+      "yardstickPpf": 11.755459155296652,
+      "santasFootage": 0
+    },
+    {
+      "exampleId": "7fb0b765-2b79-4210-9a10-900082fa32fe",
+      "rooflinePpf": null,
+      "yardstickPpf": 9.309999999999999,
+      "santasFootage": 80
+    },
+    {
+      "exampleId": "203f3cff-a903-4eea-8043-206c30c4b127",
+      "rooflinePpf": null,
+      "yardstickPpf": 6.136,
+      "santasFootage": 0
+    },
+    {
+      "exampleId": "e4c82582-9833-419e-b8da-139b5d0c39e6",
+      "rooflinePpf": null,
+      "yardstickPpf": 4.944,
+      "santasFootage": 45
+    },
+    {
+      "exampleId": "f22adf9f-58d7-427b-bd4f-eff8f3bd1307",
+      "rooflinePpf": 4.498222872535137,
+      "yardstickPpf": 6.56,
+      "santasFootage": 80
+    },
+    {
+      "exampleId": "f76fda42-6adc-4b20-8807-b63b62dbf506",
+      "rooflinePpf": 3.3388003684280614,
+      "yardstickPpf": 4.2517752626637275,
+      "santasFootage": 105
+    },
+    {
+      "exampleId": "a41d2a31-322a-45f5-8f40-e29d7744c854",
+      "rooflinePpf": null,
+      "yardstickPpf": 6.3420000000000005,
+      "santasFootage": 95
+    },
+    {
+      "exampleId": "dc8fbe62-3980-4467-9a5d-69a261039d3a",
+      "rooflinePpf": 7.1104474003388916,
+      "yardstickPpf": 7.1659999999999995,
+      "santasFootage": 95
+    },
+    {
+      "exampleId": "524e010d-fe79-48e0-a2b3-1b9435adf7bd",
+      "rooflinePpf": 5.223659479251281,
+      "yardstickPpf": 10.3654979859667,
+      "santasFootage": 55
+    },
+    {
+      "exampleId": "cbb7fa95-a5bc-407b-bda8-a4a2350314fc",
+      "rooflinePpf": 9.230665307852641,
+      "yardstickPpf": 8.791476515367677,
+      "santasFootage": 70
+    },
+    {
+      "exampleId": "181c562a-4d2e-4b01-86a6-e0beacc64297",
+      "rooflinePpf": 6.4369696709502895,
+      "yardstickPpf": 5.62,
+      "santasFootage": 85
+    }
+  ],
+  "photoVariances": [
+    {
+      "exampleId": "13e3b41f-cb4a-4dbe-bfd9-d2f0905a4602",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "objectsPicked": [
+        "front_door",
+        "front_door",
+        "front_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        9.299999999999999,
+        10.799999999999999,
+        9.299999999999999
+      ],
+      "ppfMean": 9.799999999999999,
+      "ppfStdev": 0.7071067811865476,
+      "ppfCv": 0.07215375318230079
+    },
+    {
+      "exampleId": "5f504e9b-f933-4226-98db-2b2b78bb36d1",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "objectsPicked": [
+        "front_door",
+        "front_door",
+        "front_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        9.299999999999999,
+        10.2,
+        9.299999999999999
+      ],
+      "ppfMean": 9.6,
+      "ppfStdev": 0.4242640687119287,
+      "ppfCv": 0.04419417382415924
+    },
+    {
+      "exampleId": "bc6f6af4-0308-477c-9cd7-3bde1438f0e6",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "objectsPicked": [
+        "front_door",
+        "front_door",
+        "front_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        9.299999999999999,
+        10.2,
+        9
+      ],
+      "ppfMean": 9.5,
+      "ppfStdev": 0.5099019513592783,
+      "ppfCv": 0.053673889616766134
+    },
+    {
+      "exampleId": "af0709ba-6fdc-4055-ae85-0a1363134435",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "objectsPicked": [
+        "front_door",
+        "front_door",
+        "front_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        9.75,
+        9.299999999999999,
+        9
+      ],
+      "ppfMean": 9.35,
+      "ppfStdev": 0.3082207001484489,
+      "ppfCv": 0.032964780764539986
+    },
+    {
+      "exampleId": "1113306a-f060-49a9-bfe5-8c0926779a3b",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "objectsPicked": [
+        "front_door",
+        "front_door",
+        "front_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        9,
+        9,
+        9.299999999999999
+      ],
+      "ppfMean": 9.1,
+      "ppfStdev": 0.141421356237309,
+      "ppfCv": 0.015540808377726265
+    },
+    {
+      "exampleId": "2cb61848-a696-4087-a383-c50a202f7a1e",
+      "address": "65 Forest Road, Kings Park, NY, 11701",
+      "objectsPicked": [
+        "garage_door",
+        "garage_door",
+        "garage_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        10.555555555555555,
+        9.222222222222221,
+        10.555555555555555
+      ],
+      "ppfMean": 10.111111111111112,
+      "ppfStdev": 0.6285393610547092,
+      "ppfCv": 0.062163233510905296
+    },
+    {
+      "exampleId": "b6f41405-1d58-4e41-82f8-bc70fee2a784",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "objectsPicked": [
+        "front_door",
+        "front_door",
+        "front_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        9.299999999999999,
+        9,
+        10.2
+      ],
+      "ppfMean": 9.499999999999998,
+      "ppfStdev": 0.5099019513592783,
+      "ppfCv": 0.05367388961676615
+    },
+    {
+      "exampleId": "bb88ce1e-97d3-40eb-a084-70429d13d875",
+      "address": "73 Plymouth Blvd, Smithtown, NY, 11787",
+      "objectsPicked": [
+        "garage_door",
+        "garage_door",
+        "garage_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        9.11111111111111,
+        10.555555555555555,
+        10.555555555555555
+      ],
+      "ppfMean": 10.074074074074074,
+      "ppfStdev": 0.6809176411426014,
+      "ppfCv": 0.06759108937812587
+    },
+    {
+      "exampleId": "54868b0c-f325-4a3f-abf3-472392a93c5c",
+      "address": "65 Forest Road, Kings Park, NY, 11701",
+      "objectsPicked": [
+        "garage_door",
+        "garage_door",
+        "garage_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        10.555555555555555,
+        10.555555555555555,
+        10.555555555555555
+      ],
+      "ppfMean": 10.555555555555555,
+      "ppfStdev": 0,
+      "ppfCv": 0
+    },
+    {
+      "exampleId": "3e42e861-7991-4b85-a728-5bf72fb9afc8",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "objectsPicked": [
+        "front_door",
+        "front_door",
+        "front_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        10.5,
+        9,
+        9.75
+      ],
+      "ppfMean": 9.75,
+      "ppfStdev": 0.6123724356957945,
+      "ppfCv": 0.06280742930213276
+    },
+    {
+      "exampleId": "01947610-88a8-427d-9953-efd83ac12606",
+      "address": "191 Main Pkwy W, Plainview, New York, 11803",
+      "objectsPicked": [
+        "garage_door",
+        "garage_door",
+        "garage_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        10.666666666666666,
+        12.444444444444445,
+        10.555555555555555
+      ],
+      "ppfMean": 11.222222222222221,
+      "ppfStdev": 0.8654312181887353,
+      "ppfCv": 0.0771176333039467
+    },
+    {
+      "exampleId": "977b85e4-12ec-47c0-af1e-fd6ee5b77c79",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "objectsPicked": [
+        "front_door",
+        "front_door",
+        "front_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        9.299999999999999,
+        9,
+        9.75
+      ],
+      "ppfMean": 9.35,
+      "ppfStdev": 0.3082207001484489,
+      "ppfCv": 0.032964780764539986
+    },
+    {
+      "exampleId": "6d00c46a-38a5-4567-999b-1d06e5221d3a",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "objectsPicked": [
+        "front_door",
+        "front_door",
+        "front_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        9.299999999999999,
+        9.299999999999999,
+        9.299999999999999
+      ],
+      "ppfMean": 9.299999999999999,
+      "ppfStdev": 0,
+      "ppfCv": 0
+    },
+    {
+      "exampleId": "3c08ea50-946a-4d2b-b644-f7772fc27c1b",
+      "address": "741 Naple ave, Franklin square, 11010",
+      "objectsPicked": [
+        "front_door",
+        "front_door",
+        "front_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        10.5,
+        11.25,
+        10.799999999999999
+      ],
+      "ppfMean": 10.85,
+      "ppfStdev": 0.3082207001484489,
+      "ppfCv": 0.02840743780170036
+    },
+    {
+      "exampleId": "76c210d7-6085-4c69-b1b5-15b38a6f8fd5",
+      "address": "741 Naple ave, Franklin square, 11010",
+      "objectsPicked": [
+        "front_door",
+        "front_door",
+        "front_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        10.799999999999999,
+        10.799999999999999,
+        10.2
+      ],
+      "ppfMean": 10.6,
+      "ppfStdev": 0.28284271247461884,
+      "ppfCv": 0.026683274761756495
+    },
+    {
+      "exampleId": "2dfdb01a-6eb1-44a1-a7f0-08b44a88ef10",
+      "address": "8 Munsee Way Commack, NY 11725",
+      "objectsPicked": [
+        "garage_door",
+        "garage_door",
+        "garage_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        11.375,
+        9.5,
+        9.5
+      ],
+      "ppfMean": 10.125,
+      "ppfStdev": 0.8838834764831844,
+      "ppfCv": 0.08729713347982068
+    },
+    {
+      "exampleId": "7fb0b765-2b79-4210-9a10-900082fa32fe",
+      "address": "194 brittle lane hicksville ny 11802",
+      "objectsPicked": [
+        "front_door",
+        "front_door",
+        "front_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        14.7,
+        14.25,
+        14.7
+      ],
+      "ppfMean": 14.549999999999999,
+      "ppfStdev": 0.21213203435596392,
+      "ppfCv": 0.014579521261578278
+    },
+    {
+      "exampleId": "203f3cff-a903-4eea-8043-206c30c4b127",
+      "address": "59 Bayberry Drive, Huntington 11743",
+      "objectsPicked": [
+        "garage_door",
+        "garage_door",
+        "garage_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        8.666666666666666,
+        8,
+        9.777777777777779
+      ],
+      "ppfMean": 8.814814814814815,
+      "ppfStdev": 0.7332959212304941,
+      "ppfCv": 0.08318903308077034
+    },
+    {
+      "exampleId": "e4c82582-9833-419e-b8da-139b5d0c39e6",
+      "address": "30 Crescent Beach Rd",
+      "objectsPicked": [
+        "garage_door",
+        "garage_door",
+        "garage_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        8.666666666666666,
+        8.666666666666666,
+        8.88888888888889
+      ],
+      "ppfMean": 8.74074074074074,
+      "ppfStdev": 0.10475656017578529,
+      "ppfCv": 0.01198486069807713
+    },
+    {
+      "exampleId": "f22adf9f-58d7-427b-bd4f-eff8f3bd1307",
+      "address": "277 division ave, Hicksville",
+      "objectsPicked": [
+        "front_door",
+        "front_door",
+        "front_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        10.799999999999999,
+        10.799999999999999,
+        10.799999999999999
+      ],
+      "ppfMean": 10.799999999999999,
+      "ppfStdev": 0,
+      "ppfCv": 0
+    },
+    {
+      "exampleId": "f76fda42-6adc-4b20-8807-b63b62dbf506",
+      "address": "7 Pumpkin Rd, Saint James",
+      "objectsPicked": [
+        "front_door",
+        "front_door",
+        "front_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        10.2,
+        10.2,
+        10.2
+      ],
+      "ppfMean": 10.2,
+      "ppfStdev": 0,
+      "ppfCv": 0
+    },
+    {
+      "exampleId": "a41d2a31-322a-45f5-8f40-e29d7744c854",
+      "address": "844 park Avenue Manhasset NY, Manhasset",
+      "objectsPicked": [
+        "front_door",
+        "front_door",
+        "front_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        9.299999999999999,
+        10.799999999999999,
+        9.299999999999999
+      ],
+      "ppfMean": 9.799999999999999,
+      "ppfStdev": 0.7071067811865476,
+      "ppfCv": 0.07215375318230079
+    },
+    {
+      "exampleId": "dc8fbe62-3980-4467-9a5d-69a261039d3a",
+      "address": "12 Jamar Ln, Ronkonkoma",
+      "objectsPicked": [
+        "front_door",
+        "front_door",
+        "front_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        14.7,
+        12.299999999999999,
+        10.799999999999999
+      ],
+      "ppfMean": 12.6,
+      "ppfStdev": 1.6062378404209012,
+      "ppfCv": 0.12747919368419852
+    },
+    {
+      "exampleId": "524e010d-fe79-48e0-a2b3-1b9435adf7bd",
+      "address": "1058 Northern Blvd, Baldwin, NY 11510, USA",
+      "objectsPicked": [
+        "garage_door",
+        "garage_door",
+        "garage_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        7.375,
+        8.25,
+        7.5
+      ],
+      "ppfMean": 7.708333333333333,
+      "ppfStdev": 0.38640077064565437,
+      "ppfCv": 0.050127667543220025
+    },
+    {
+      "exampleId": "cbb7fa95-a5bc-407b-bda8-a4a2350314fc",
+      "address": "7 Country Lake Ct, Centerport NY 11721, United States",
+      "objectsPicked": [
+        "front_door",
+        "front_door",
+        "front_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        14.549999999999999,
+        18,
+        18
+      ],
+      "ppfMean": 16.849999999999998,
+      "ppfStdev": 1.6263455967290599,
+      "ppfCv": 0.09651902651211039
+    },
+    {
+      "exampleId": "181c562a-4d2e-4b01-86a6-e0beacc64297",
+      "address": "38 rider avenue Malverne NY 11565",
+      "objectsPicked": [
+        "garage_door",
+        "garage_door",
+        "garage_door"
+      ],
+      "agreesOnObject": true,
+      "ppfValues": [
+        10.555555555555555,
+        9.777777777777779,
+        10.555555555555555
+      ],
+      "ppfMean": 10.296296296296298,
+      "ppfStdev": 0.3666479606152464,
+      "ppfCv": 0.03560969401658867
+    }
+  ],
+  "ratioRows": [
+    {
+      "exampleId": "13e3b41f-cb4a-4dbe-bfd9-d2f0905a4602",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "doorPpfMean": 9.799999999999999,
+      "rooflinePpf": 7.024000000000001,
+      "yardstickPpf": 7.023999999999999,
+      "ratioVsRoofline": 1.3952164009111614,
+      "ratioVsYardstick": 1.3952164009111618
+    },
+    {
+      "exampleId": "5f504e9b-f933-4226-98db-2b2b78bb36d1",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "doorPpfMean": 9.6,
+      "rooflinePpf": 7.024000000000001,
+      "yardstickPpf": 7.023999999999999,
+      "ratioVsRoofline": 1.3667425968109337,
+      "ratioVsYardstick": 1.3667425968109341
+    },
+    {
+      "exampleId": "bc6f6af4-0308-477c-9cd7-3bde1438f0e6",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "doorPpfMean": 9.5,
+      "rooflinePpf": 7.028799999999999,
+      "yardstickPpf": 7.0280000000000005,
+      "ratioVsRoofline": 1.3515820623719557,
+      "ratioVsYardstick": 1.3517359134889015
+    },
+    {
+      "exampleId": "af0709ba-6fdc-4055-ae85-0a1363134435",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "doorPpfMean": 9.35,
+      "rooflinePpf": 7.028800000000001,
+      "yardstickPpf": 7.0280000000000005,
+      "ratioVsRoofline": 1.330241292966082,
+      "ratioVsYardstick": 1.3303927148548662
+    },
+    {
+      "exampleId": "1113306a-f060-49a9-bfe5-8c0926779a3b",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "doorPpfMean": 9.1,
+      "rooflinePpf": 7.028800000000001,
+      "yardstickPpf": 7.0280000000000005,
+      "ratioVsRoofline": 1.2946733439562939,
+      "ratioVsYardstick": 1.294820717131474
+    },
+    {
+      "exampleId": "2cb61848-a696-4087-a383-c50a202f7a1e",
+      "address": "65 Forest Road, Kings Park, NY, 11701",
+      "doorPpfMean": 10.111111111111112,
+      "rooflinePpf": 4.187810744256844,
+      "yardstickPpf": 7.202,
+      "ratioVsRoofline": 2.414414530307386,
+      "ratioVsYardstick": 1.4039310068190936
+    },
+    {
+      "exampleId": "b6f41405-1d58-4e41-82f8-bc70fee2a784",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "doorPpfMean": 9.499999999999998,
+      "rooflinePpf": 7.028800000000001,
+      "yardstickPpf": 7.0280000000000005,
+      "ratioVsRoofline": 1.351582062371955,
+      "ratioVsYardstick": 1.351735913488901
+    },
+    {
+      "exampleId": "bb88ce1e-97d3-40eb-a084-70429d13d875",
+      "address": "73 Plymouth Blvd, Smithtown, NY, 11787",
+      "doorPpfMean": 10.074074074074074,
+      "rooflinePpf": 5.446784104080645,
+      "yardstickPpf": 5.606277548568389,
+      "ratioVsRoofline": 1.8495453246488578,
+      "ratioVsYardstick": 1.7969274597627751
+    },
+    {
+      "exampleId": "54868b0c-f325-4a3f-abf3-472392a93c5c",
+      "address": "65 Forest Road, Kings Park, NY, 11701",
+      "doorPpfMean": 10.555555555555555,
+      "rooflinePpf": 4.187186857279929,
+      "yardstickPpf": 4.188000000000001,
+      "ratioVsRoofline": 2.520918200056787,
+      "ratioVsYardstick": 2.5204287381937807
+    },
+    {
+      "exampleId": "3e42e861-7991-4b85-a728-5bf72fb9afc8",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "doorPpfMean": 9.75,
+      "rooflinePpf": 7.028800000000001,
+      "yardstickPpf": 7.0280000000000005,
+      "ratioVsRoofline": 1.3871500113817434,
+      "ratioVsYardstick": 1.3873079112122937
+    },
+    {
+      "exampleId": "01947610-88a8-427d-9953-efd83ac12606",
+      "address": "191 Main Pkwy W, Plainview, New York, 11803",
+      "doorPpfMean": 11.222222222222221,
+      "rooflinePpf": null,
+      "yardstickPpf": 8.972,
+      "ratioVsRoofline": null,
+      "ratioVsYardstick": 1.2508049734977955
+    },
+    {
+      "exampleId": "977b85e4-12ec-47c0-af1e-fd6ee5b77c79",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "doorPpfMean": 9.35,
+      "rooflinePpf": 7.028800000000001,
+      "yardstickPpf": 7.0280000000000005,
+      "ratioVsRoofline": 1.330241292966082,
+      "ratioVsYardstick": 1.3303927148548662
+    },
+    {
+      "exampleId": "6d00c46a-38a5-4567-999b-1d06e5221d3a",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "doorPpfMean": 9.299999999999999,
+      "rooflinePpf": 7.028800000000001,
+      "yardstickPpf": 7.0280000000000005,
+      "ratioVsRoofline": 1.3231277031641244,
+      "ratioVsYardstick": 1.3232783153101875
+    },
+    {
+      "exampleId": "3c08ea50-946a-4d2b-b644-f7772fc27c1b",
+      "address": "741 Naple ave, Franklin square, 11010",
+      "doorPpfMean": 10.85,
+      "rooflinePpf": 4.58098328407188,
+      "yardstickPpf": 6.656000000000001,
+      "ratioVsRoofline": 2.368487140681248,
+      "ratioVsYardstick": 1.630108173076923
+    },
+    {
+      "exampleId": "76c210d7-6085-4c69-b1b5-15b38a6f8fd5",
+      "address": "741 Naple ave, Franklin square, 11010",
+      "doorPpfMean": 10.6,
+      "rooflinePpf": 4.58098328407188,
+      "yardstickPpf": 6.656000000000001,
+      "ratioVsRoofline": 2.3139137042600213,
+      "ratioVsYardstick": 1.5925480769230766
+    },
+    {
+      "exampleId": "2dfdb01a-6eb1-44a1-a7f0-08b44a88ef10",
+      "address": "8 Munsee Way Commack, NY 11725",
+      "doorPpfMean": 10.125,
+      "rooflinePpf": null,
+      "yardstickPpf": 11.755459155296652,
+      "ratioVsRoofline": null,
+      "ratioVsYardstick": 0.8613019590509132
+    },
+    {
+      "exampleId": "7fb0b765-2b79-4210-9a10-900082fa32fe",
+      "address": "194 brittle lane hicksville ny 11802",
+      "doorPpfMean": 14.549999999999999,
+      "rooflinePpf": null,
+      "yardstickPpf": 9.309999999999999,
+      "ratioVsRoofline": null,
+      "ratioVsYardstick": 1.5628356605800215
+    },
+    {
+      "exampleId": "203f3cff-a903-4eea-8043-206c30c4b127",
+      "address": "59 Bayberry Drive, Huntington 11743",
+      "doorPpfMean": 8.814814814814815,
+      "rooflinePpf": null,
+      "yardstickPpf": 6.136,
+      "ratioVsRoofline": null,
+      "ratioVsYardstick": 1.4365734704717756
+    },
+    {
+      "exampleId": "e4c82582-9833-419e-b8da-139b5d0c39e6",
+      "address": "30 Crescent Beach Rd",
+      "doorPpfMean": 8.74074074074074,
+      "rooflinePpf": null,
+      "yardstickPpf": 4.944,
+      "ratioVsRoofline": null,
+      "ratioVsYardstick": 1.767949178952415
+    },
+    {
+      "exampleId": "f22adf9f-58d7-427b-bd4f-eff8f3bd1307",
+      "address": "277 division ave, Hicksville",
+      "doorPpfMean": 10.799999999999999,
+      "rooflinePpf": 4.498222872535137,
+      "yardstickPpf": 6.56,
+      "ratioVsRoofline": 2.4009481757655258,
+      "ratioVsYardstick": 1.646341463414634
+    },
+    {
+      "exampleId": "f76fda42-6adc-4b20-8807-b63b62dbf506",
+      "address": "7 Pumpkin Rd, Saint James",
+      "doorPpfMean": 10.2,
+      "rooflinePpf": 3.3388003684280614,
+      "yardstickPpf": 4.2517752626637275,
+      "ratioVsRoofline": 3.0549894795903163,
+      "ratioVsYardstick": 2.3989979173098916
+    },
+    {
+      "exampleId": "a41d2a31-322a-45f5-8f40-e29d7744c854",
+      "address": "844 park Avenue Manhasset NY, Manhasset",
+      "doorPpfMean": 9.799999999999999,
+      "rooflinePpf": null,
+      "yardstickPpf": 6.3420000000000005,
+      "ratioVsRoofline": null,
+      "ratioVsYardstick": 1.5452538631346575
+    },
+    {
+      "exampleId": "dc8fbe62-3980-4467-9a5d-69a261039d3a",
+      "address": "12 Jamar Ln, Ronkonkoma",
+      "doorPpfMean": 12.6,
+      "rooflinePpf": 7.1104474003388916,
+      "yardstickPpf": 7.1659999999999995,
+      "ratioVsRoofline": 1.772040392198031,
+      "ratioVsYardstick": 1.7583030979626013
+    },
+    {
+      "exampleId": "524e010d-fe79-48e0-a2b3-1b9435adf7bd",
+      "address": "1058 Northern Blvd, Baldwin, NY 11510, USA",
+      "doorPpfMean": 7.708333333333333,
+      "rooflinePpf": 5.223659479251281,
+      "yardstickPpf": 10.3654979859667,
+      "ratioVsRoofline": 1.4756577001145155,
+      "ratioVsYardstick": 0.7436529671578962
+    },
+    {
+      "exampleId": "cbb7fa95-a5bc-407b-bda8-a4a2350314fc",
+      "address": "7 Country Lake Ct, Centerport NY 11721, United States",
+      "doorPpfMean": 16.849999999999998,
+      "rooflinePpf": 9.230665307852641,
+      "yardstickPpf": 8.791476515367677,
+      "ratioVsRoofline": 1.825437218015639,
+      "ratioVsYardstick": 1.9166291316988517
+    },
+    {
+      "exampleId": "181c562a-4d2e-4b01-86a6-e0beacc64297",
+      "address": "38 rider avenue Malverne NY 11565",
+      "doorPpfMean": 10.296296296296298,
+      "rooflinePpf": 6.4369696709502895,
+      "yardstickPpf": 5.62,
+      "ratioVsRoofline": 1.5995564407834557,
+      "ratioVsYardstick": 1.8320811915117967
+    }
+  ],
+  "absurdCases": [
+    {
+      "exampleId": "13e3b41f-cb4a-4dbe-bfd9-d2f0905a4602",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 1,
+      "object": "front_door",
+      "bboxHeightPx": 72,
+      "rooflinePpf": 7.024000000000001,
+      "impliedHeightFt": 10.250569476082003
+    },
+    {
+      "exampleId": "5f504e9b-f933-4226-98db-2b2b78bb36d1",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 1,
+      "object": "front_door",
+      "bboxHeightPx": 68,
+      "rooflinePpf": 7.024000000000001,
+      "impliedHeightFt": 9.681093394077447
+    },
+    {
+      "exampleId": "bc6f6af4-0308-477c-9cd7-3bde1438f0e6",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 1,
+      "object": "front_door",
+      "bboxHeightPx": 68,
+      "rooflinePpf": 7.028799999999999,
+      "impliedHeightFt": 9.674482130662419
+    },
+    {
+      "exampleId": "af0709ba-6fdc-4055-ae85-0a1363134435",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 0,
+      "object": "front_door",
+      "bboxHeightPx": 65,
+      "rooflinePpf": 7.028800000000001,
+      "impliedHeightFt": 9.247666742544956
+    },
+    {
+      "exampleId": "b6f41405-1d58-4e41-82f8-bc70fee2a784",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 2,
+      "object": "front_door",
+      "bboxHeightPx": 68,
+      "rooflinePpf": 7.028800000000001,
+      "impliedHeightFt": 9.674482130662415
+    },
+    {
+      "exampleId": "3e42e861-7991-4b85-a728-5bf72fb9afc8",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 0,
+      "object": "front_door",
+      "bboxHeightPx": 70,
+      "rooflinePpf": 7.028800000000001,
+      "impliedHeightFt": 9.959025722740723
+    },
+    {
+      "exampleId": "3e42e861-7991-4b85-a728-5bf72fb9afc8",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 2,
+      "object": "front_door",
+      "bboxHeightPx": 65,
+      "rooflinePpf": 7.028800000000001,
+      "impliedHeightFt": 9.247666742544956
+    },
+    {
+      "exampleId": "977b85e4-12ec-47c0-af1e-fd6ee5b77c79",
+      "address": "6 Birch Road, Amityville, New York, 11701",
+      "runIndex": 2,
+      "object": "front_door",
+      "bboxHeightPx": 65,
+      "rooflinePpf": 7.028800000000001,
+      "impliedHeightFt": 9.247666742544956
+    },
+    {
+      "exampleId": "3c08ea50-946a-4d2b-b644-f7772fc27c1b",
+      "address": "741 Naple ave, Franklin square, 11010",
+      "runIndex": 0,
+      "object": "front_door",
+      "bboxHeightPx": 70,
+      "rooflinePpf": 4.58098328407188,
+      "impliedHeightFt": 15.280562197943537
+    },
+    {
+      "exampleId": "3c08ea50-946a-4d2b-b644-f7772fc27c1b",
+      "address": "741 Naple ave, Franklin square, 11010",
+      "runIndex": 1,
+      "object": "front_door",
+      "bboxHeightPx": 75,
+      "rooflinePpf": 4.58098328407188,
+      "impliedHeightFt": 16.372030926368076
+    },
+    {
+      "exampleId": "3c08ea50-946a-4d2b-b644-f7772fc27c1b",
+      "address": "741 Naple ave, Franklin square, 11010",
+      "runIndex": 2,
+      "object": "front_door",
+      "bboxHeightPx": 72,
+      "rooflinePpf": 4.58098328407188,
+      "impliedHeightFt": 15.717149689313352
+    },
+    {
+      "exampleId": "76c210d7-6085-4c69-b1b5-15b38a6f8fd5",
+      "address": "741 Naple ave, Franklin square, 11010",
+      "runIndex": 0,
+      "object": "front_door",
+      "bboxHeightPx": 72,
+      "rooflinePpf": 4.58098328407188,
+      "impliedHeightFt": 15.717149689313352
+    },
+    {
+      "exampleId": "76c210d7-6085-4c69-b1b5-15b38a6f8fd5",
+      "address": "741 Naple ave, Franklin square, 11010",
+      "runIndex": 1,
+      "object": "front_door",
+      "bboxHeightPx": 72,
+      "rooflinePpf": 4.58098328407188,
+      "impliedHeightFt": 15.717149689313352
+    },
+    {
+      "exampleId": "76c210d7-6085-4c69-b1b5-15b38a6f8fd5",
+      "address": "741 Naple ave, Franklin square, 11010",
+      "runIndex": 2,
+      "object": "front_door",
+      "bboxHeightPx": 68,
+      "rooflinePpf": 4.58098328407188,
+      "impliedHeightFt": 14.843974706573722
+    },
+    {
+      "exampleId": "f22adf9f-58d7-427b-bd4f-eff8f3bd1307",
+      "address": "277 division ave, Hicksville",
+      "runIndex": 0,
+      "object": "front_door",
+      "bboxHeightPx": 72,
+      "rooflinePpf": 4.498222872535137,
+      "impliedHeightFt": 16.00632117177017
+    },
+    {
+      "exampleId": "f22adf9f-58d7-427b-bd4f-eff8f3bd1307",
+      "address": "277 division ave, Hicksville",
+      "runIndex": 1,
+      "object": "front_door",
+      "bboxHeightPx": 72,
+      "rooflinePpf": 4.498222872535137,
+      "impliedHeightFt": 16.00632117177017
+    },
+    {
+      "exampleId": "f22adf9f-58d7-427b-bd4f-eff8f3bd1307",
+      "address": "277 division ave, Hicksville",
+      "runIndex": 2,
+      "object": "front_door",
+      "bboxHeightPx": 72,
+      "rooflinePpf": 4.498222872535137,
+      "impliedHeightFt": 16.00632117177017
+    },
+    {
+      "exampleId": "f76fda42-6adc-4b20-8807-b63b62dbf506",
+      "address": "7 Pumpkin Rd, Saint James",
+      "runIndex": 0,
+      "object": "front_door",
+      "bboxHeightPx": 68,
+      "rooflinePpf": 3.3388003684280614,
+      "impliedHeightFt": 20.36659653060211
+    },
+    {
+      "exampleId": "f76fda42-6adc-4b20-8807-b63b62dbf506",
+      "address": "7 Pumpkin Rd, Saint James",
+      "runIndex": 1,
+      "object": "front_door",
+      "bboxHeightPx": 68,
+      "rooflinePpf": 3.3388003684280614,
+      "impliedHeightFt": 20.36659653060211
+    },
+    {
+      "exampleId": "f76fda42-6adc-4b20-8807-b63b62dbf506",
+      "address": "7 Pumpkin Rd, Saint James",
+      "runIndex": 2,
+      "object": "front_door",
+      "bboxHeightPx": 68,
+      "rooflinePpf": 3.3388003684280614,
+      "impliedHeightFt": 20.36659653060211
+    },
+    {
+      "exampleId": "dc8fbe62-3980-4467-9a5d-69a261039d3a",
+      "address": "12 Jamar Ln, Ronkonkoma",
+      "runIndex": 0,
+      "object": "front_door",
+      "bboxHeightPx": 98,
+      "rooflinePpf": 7.1104474003388916,
+      "impliedHeightFt": 13.782536383762464
+    },
+    {
+      "exampleId": "dc8fbe62-3980-4467-9a5d-69a261039d3a",
+      "address": "12 Jamar Ln, Ronkonkoma",
+      "runIndex": 1,
+      "object": "front_door",
+      "bboxHeightPx": 82,
+      "rooflinePpf": 7.1104474003388916,
+      "impliedHeightFt": 11.532326361923694
+    },
+    {
+      "exampleId": "dc8fbe62-3980-4467-9a5d-69a261039d3a",
+      "address": "12 Jamar Ln, Ronkonkoma",
+      "runIndex": 2,
+      "object": "front_door",
+      "bboxHeightPx": 72,
+      "rooflinePpf": 7.1104474003388916,
+      "impliedHeightFt": 10.125945098274464
+    },
+    {
+      "exampleId": "cbb7fa95-a5bc-407b-bda8-a4a2350314fc",
+      "address": "7 Country Lake Ct, Centerport NY 11721, United States",
+      "runIndex": 0,
+      "object": "front_door",
+      "bboxHeightPx": 97,
+      "rooflinePpf": 9.230665307852641,
+      "impliedHeightFt": 10.508451640802196
+    },
+    {
+      "exampleId": "cbb7fa95-a5bc-407b-bda8-a4a2350314fc",
+      "address": "7 Country Lake Ct, Centerport NY 11721, United States",
+      "runIndex": 1,
+      "object": "front_door",
+      "bboxHeightPx": 120,
+      "rooflinePpf": 9.230665307852641,
+      "impliedHeightFt": 13.000146359755295
+    },
+    {
+      "exampleId": "cbb7fa95-a5bc-407b-bda8-a4a2350314fc",
+      "address": "7 Country Lake Ct, Centerport NY 11721, United States",
+      "runIndex": 2,
+      "object": "front_door",
+      "bboxHeightPx": 120,
+      "rooflinePpf": 9.230665307852641,
+      "impliedHeightFt": 13.000146359755295
+    }
+  ]
+}
