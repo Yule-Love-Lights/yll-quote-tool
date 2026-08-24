@@ -30,6 +30,7 @@ import { costOverridesFromBistroCatalog } from '@/lib/inventory/bistroCatalog';
 import { getColorScheme, CUSTOM_SCHEME_ID } from '@/lib/design/colorSchemes';
 import { depositDeclineReasonText } from '@/lib/integrations/quoteMessages';
 import { VaultRegistrationNotice } from '@/components/admin/VaultRegistrationNotice';
+import { PortalImageVisibilityControls } from '@/components/admin/PortalImageVisibilityControls';
 import { isVaultRegisterEnabled } from '@/lib/integrations/valorVault';
 
 // Read-only operator detail for a single quote (PR1 of #83 ops console).
@@ -303,6 +304,16 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
               ))}
             </div>
           </div>
+        )}
+
+        {design && (
+          <PortalImageVisibilityControls
+            designId={design.id}
+            portalShowStreetView={design.portalShowStreetView}
+            portalShowSatelliteView={design.portalShowSatelliteView}
+            hasStreetImage={design.hasStreetImage}
+            hasSatelliteImage={design.hasSatelliteImage}
+          />
         )}
 
         {/* Timeline */}
