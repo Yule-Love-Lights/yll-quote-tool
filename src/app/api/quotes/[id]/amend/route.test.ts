@@ -94,7 +94,15 @@ function makeSb(
     single: async () => ({ data: quote, error: quote ? null : { message: 'no rows' } }),
     maybeSingle: async () => ({ data: fresh, error: null }),
     then: (resolve: (v: unknown) => void) => {
-      const data = updating && table === 'quotes' ? quoteUpdateRows : null;
+      // Row 339: resyncInvoiceToAgreedTotal's invoices write now carries a
+      // `.select('id')` CAS (see quoteAmendInvoiceSync.ts) and reads its own
+      // data.length to detect a lost race — so an 'invoices' update must
+      // resolve a matched row here too, not just the 'quotes' table's own
+      // update, or every real (non-race) resync in this file would look like
+      // a lost race. None of these tests exercise the CAS-loss path itself
+      // (that's covered directly in quoteAmendInvoiceSync.test.ts) — this
+      // fake always reports a hit.
+      const data = updating ? (table === 'quotes' ? quoteUpdateRows : [{ id: 'inv-updated' }]) : null;
       updating = false;
       resolve({ data, error: null });
     },

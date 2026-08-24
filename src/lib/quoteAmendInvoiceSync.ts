@@ -172,8 +172,19 @@ export async function resyncInvoiceToAgreedTotal(args: ResyncInvoiceArgs): Promi
     paidAtPatch.paid_at = null;
   }
 
+  // Row 339 (LOW, #830/#862 shape): the B10 re-read above narrows the window
+  // between reading the invoice and writing it, but — per that comment —
+  // does not eliminate it: two amendments close enough together could each
+  // pass their OWN B10 re-read before either write lands, and without a
+  // guard on the write itself, whichever write reaches Postgres LAST would
+  // silently win regardless of which amendment is actually the newer one.
+  // `.eq('updated_at', invoiceForSync.updated_at)` closes that: it's an
+  // optimistic-lock filter on the exact row version this function just read,
+  // not a heuristic — `invoices_updated_at_trigger` (FULL-SCHEMA.sql) stamps
+  // `updated_at` on every write, so any write that lands in the gap changes
+  // it and this filter then matches zero rows instead of overwriting.
   const sb = getSupabaseServiceClient()!;
-  const { error: invErr } = await sb
+  const { data: invRows, error: invErr } = await sb
     .from('invoices')
     .update({
       subtotal: totals.subtotal,
@@ -186,13 +197,28 @@ export async function resyncInvoiceToAgreedTotal(args: ResyncInvoiceArgs): Promi
       status: reconciledStatus,
       ...paidAtPatch,
     })
-    .eq('id', invoiceForSync.id);
+    .eq('id', invoiceForSync.id)
+    .eq('updated_at', invoiceForSync.updated_at)
+    .select('id');
   if (invErr) {
     // The amendment/decline is already recorded; an invoice-sync failure is
     // reconcilable (re-run it / edit the invoice manually). Surface it.
     // invoicedBalance/invoicedTotal deliberately stay null: the row still
     // holds its PRE-resync figures, so neither number is the billed one.
     console.error(`${logPrefix} invoice re-sync failed:`, invErr);
+    return outcome;
+  }
+  if (!invRows || invRows.length === 0) {
+    // Lost the race: something else (another amendment's resync, a balance
+    // webhook, a manual invoice edit) committed a write to this invoice
+    // between the B10 re-read and this write. Best-effort, same as the
+    // invErr branch above — the caller's own already-recorded change (the
+    // amendment trail entry, or the decline) is never undone, and we must
+    // NOT blindly overwrite whatever just won with figures computed against
+    // a version of the invoice that's no longer current.
+    console.error(
+      `${logPrefix} invoice re-sync lost a concurrent race (invoice ${invoiceForSync.id}, updated_at moved past ${invoiceForSync.updated_at}) — leaving the winning write in place`,
+    );
     return outcome;
   }
   outcome.invoicedBalance = totals.balance;

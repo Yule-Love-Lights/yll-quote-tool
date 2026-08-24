@@ -40,11 +40,15 @@ vi.mock('@/lib/invoices', async (importOriginal) => {
 
 import { resyncInvoiceToAgreedTotal, computeInvoiceResyncTotals } from './quoteAmendInvoiceSync';
 
-// Minimal fake matching the ONE direct call this module makes itself:
-// sb.from('invoices').update({...}).eq('id', invoiceForSync.id) — no
-// .select(), so `.eq()` must itself be awaitable (a thenable).
-function makeSb() {
+// Minimal fake matching the direct call this module makes itself:
+// sb.from('invoices').update({...}).eq('id', ...).eq('updated_at', ...).select('id')
+// — row 339's CAS. `opts.staleUpdatedAt: true` simulates a lost race: some
+// other write already changed the invoice's updated_at between the B10
+// re-read and this write, so the `.eq('updated_at', ...)` filter matches
+// zero rows (the real Postgres behavior an optimistic-lock filter produces).
+function makeSb(opts: { staleUpdatedAt?: boolean } = {}) {
   const updates: Array<Record<string, unknown>> = [];
+  const eqArgs: Array<[string, unknown]> = [];
   const b: Record<string, unknown> = {};
   Object.assign(b, {
     from: () => b,
@@ -52,10 +56,15 @@ function makeSb() {
       updates.push(payload);
       return b;
     },
-    eq: () => b,
-    then: (resolve: (v: unknown) => void) => resolve({ data: [{ id: 'inv-1' }], error: null }),
+    eq: (column: string, value: unknown) => {
+      eqArgs.push([column, value]);
+      return b;
+    },
+    select: () => b,
+    then: (resolve: (v: unknown) => void) =>
+      resolve({ data: opts.staleUpdatedAt ? [] : [{ id: 'inv-1' }], error: null }),
   });
-  return { client: b, updates };
+  return { client: b, updates, eqArgs };
 }
 
 beforeEach(() => {
@@ -180,6 +189,113 @@ describe('resyncInvoiceToAgreedTotal — declining a DECREASE reopens an already
     });
 
     expect(sb.updates[0]).toMatchObject({ status: 'awaiting_payment' });
+    expect(appendRetiredTxnMock).not.toHaveBeenCalled();
+  });
+});
+
+// Row 339 (LOW, #830/#862 shape): resyncInvoiceToAgreedTotal's own B10
+// re-read narrows the window between reading the invoice and writing it, but
+// (per that comment) does not eliminate it — a second write could still land
+// in the gap between the re-read and this write. The CAS below closes that
+// gap: the write also filters on the invoice's `updated_at` from the SAME
+// re-read, so a write that lands after a concurrent change matches zero rows
+// instead of silently overwriting it with now-stale totals.
+describe('resyncInvoiceToAgreedTotal — CAS on the invoices write (row 339)', () => {
+  it('sends the updated_at filter alongside the id filter, from the freshly re-read invoice', async () => {
+    const sb = makeSb();
+    sbRef.current = sb.client;
+    const invoice: InvoiceRow = {
+      id: 'inv-1',
+      invoice_number: 1,
+      job_id: 'job-1',
+      quote_id: 'quote-1',
+      customer_id: null,
+      subtotal: 1000,
+      discount: 0,
+      tax: 0,
+      total: 1000,
+      deposit_applied: 500,
+      balance: 500,
+      credit_note: 0,
+      tax_overridden: false,
+      status: 'draft',
+      valor_balance_txn_id: null,
+      valor_receipt_url: null,
+      valor_txn_log: null,
+      payment_preference: null,
+      created_at: '2026-07-01T00:00:00.000Z',
+      paid_at: null,
+      updated_at: '2026-08-20T10:00:00.000Z',
+    };
+    // The B10 re-read returns the SAME row (freshly re-fetched) — its
+    // updated_at is what the CAS filter must key on.
+    getInvoiceByJobMock.mockResolvedValueOnce(invoice);
+
+    const outcome = await resyncInvoiceToAgreedTotal({
+      jobId: 'job-1',
+      invoice,
+      result: { total: 1200 },
+      depositPaid: 500,
+      newTotal: 1200,
+      logPrefix: '[test]',
+      retiredReason: 'amend-reopen',
+    });
+
+    expect(sb.eqArgs).toContainEqual(['id', 'inv-1']);
+    expect(sb.eqArgs).toContainEqual(['updated_at', '2026-08-20T10:00:00.000Z']);
+    expect(outcome).toEqual({
+      invoicedBalance: 700,
+      invoicedTotal: 1200,
+      previousInvoicedTotal: 1000,
+    });
+  });
+
+  it('returns a null outcome and skips the Valor rotation when a concurrent write already changed the invoice (CAS lost)', async () => {
+    const sb = makeSb({ staleUpdatedAt: true });
+    sbRef.current = sb.client;
+    // A PAID invoice whose reopen would normally retire a live Valor txn —
+    // proving the CAS loss short-circuits BEFORE that side effect, not just
+    // before the returned totals.
+    const invoice: InvoiceRow = {
+      id: 'inv-1',
+      invoice_number: 1,
+      job_id: 'job-1',
+      quote_id: 'quote-1',
+      customer_id: null,
+      subtotal: 2000,
+      discount: 0,
+      tax: 0,
+      total: 2000,
+      deposit_applied: 1000,
+      balance: 0,
+      credit_note: 0,
+      tax_overridden: false,
+      status: 'paid',
+      valor_balance_txn_id: 'txn-123',
+      valor_receipt_url: 'https://valor.example/r/txn-123',
+      valor_txn_log: null,
+      payment_preference: null,
+      created_at: '2026-07-01T00:00:00.000Z',
+      paid_at: '2026-08-01T00:00:00.000Z',
+      updated_at: '2026-08-01T00:00:00.000Z',
+    };
+    getInvoiceByJobMock.mockResolvedValueOnce(invoice);
+
+    const outcome = await resyncInvoiceToAgreedTotal({
+      jobId: 'job-1',
+      invoice,
+      result: { total: 2400 },
+      depositPaid: 1000,
+      newTotal: 2400,
+      logPrefix: '[test]',
+      retiredReason: 'amend-decline-reopen',
+    });
+
+    expect(outcome).toEqual({
+      invoicedBalance: null,
+      invoicedTotal: null,
+      previousInvoicedTotal: null,
+    });
     expect(appendRetiredTxnMock).not.toHaveBeenCalled();
   });
 });
