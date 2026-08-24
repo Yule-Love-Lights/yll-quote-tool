@@ -2566,6 +2566,16 @@ export default function QuoteBuilder({
       gingerbreadLines?: LineSegment[];
       satelliteSantasLines?: LineSegment[];
       satelliteGingerbreadLines?: LineSegment[];
+      satelliteSantasFootage?: number;
+      satelliteGingerbreadFootage?: number;
+      // SHADOW MODE (deterministic-satellite-footage): informational only —
+      // never fed back into form/pricing state, just surfaced in the notes
+      // banner below so staff can see when the model's stated satellite
+      // footage disagrees with what its own drawn lines measure.
+      satelliteSantasFootageDisagrees?: boolean;
+      satelliteGingerbreadFootageDisagrees?: boolean;
+      computedSatelliteSantasFootage?: number | null;
+      computedSatelliteGingerbreadFootage?: number | null;
       preferredSource?: 'street' | 'satellite';
       miniLightDetections?: { type: 'tree' | 'bush' | 'column' | 'railing'; wrapStyle: 'canopy' | 'trunk'; stringCount: number; box: DetectionBox }[];
       wreathDetections?: { size: string; tier: string; box: DetectionBox }[];
@@ -2693,7 +2703,22 @@ export default function QuoteBuilder({
     // Claude may flag satellite as the better measurement source (e.g. rear
     // rooflines invisible from the street) — surface that tab if so.
     setViewMode(r.preferredSource === 'satellite' ? 'satellite' : 'design');
-    setAnalysisNotes(`${r.notes} (confidence: ${r.confidence})`);
+    // SHADOW MODE (deterministic-satellite-footage): informational-only
+    // banner text when the model's stated satellite footage disagrees with
+    // what its own drawn lines measure — never changes any form/pricing
+    // field, purely a "double-check this one" nudge for staff.
+    const disagreementNote = [
+      r.satelliteSantasFootageDisagrees && r.computedSatelliteSantasFootage != null
+        ? `Santa's: model said ${r.satelliteSantasFootage ?? '?'}ft, drawn lines measure ~${r.computedSatelliteSantasFootage}ft`
+        : null,
+      r.satelliteGingerbreadFootageDisagrees && r.computedSatelliteGingerbreadFootage != null
+        ? `Gingerbread: model said ${r.satelliteGingerbreadFootage ?? '?'}ft, drawn lines measure ~${r.computedSatelliteGingerbreadFootage}ft`
+        : null,
+    ].filter(Boolean).join('; ');
+    setAnalysisNotes(
+      `${r.notes} (confidence: ${r.confidence})` +
+      (disagreementNote ? ` ⚠ satellite footage disagreement — ${disagreementNote}` : ''),
+    );
     setPhotoBase64(data.photoBase64 ?? null);
     setPhotoMediaType(data.photoMediaType ?? null);
     setFewShotCount(data.fewShotCount ?? 0);
