@@ -176,8 +176,15 @@ export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
             // on the one path it was written for, and made the failed-refetch
             // wording above fire on every ordinary date change. Mark the view
             // busy here, where the state change actually originates.
+            // Delta-verify on this fix round: guard the no-op. A native date
+            // input can fire change with the value it already has (retype, spin
+            // back); setDate would then be a no-op, the fetch effect's deps
+            // ([date, token]) would never change, and nothing would ever flip
+            // `loading` back — a permanently stuck "Refreshing…".
+            const next = e.target.value;
+            if (next === date) return;
             setLoading(true);
-            setDate(e.target.value);
+            setDate(next);
           }}
           className="border border-gray-300 rounded-md px-3 py-1.5 text-sm"
         />
