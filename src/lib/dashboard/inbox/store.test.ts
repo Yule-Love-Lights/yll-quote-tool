@@ -489,6 +489,7 @@ vi.mock('@/lib/supabase', () => ({
 }));
 
 import {
+  ANCHORED_ITEM_RESOLVABLE_STATUS,
   closeFollowUpsForResolvedItem,
   closeQuoteInboxNoise,
   completeTerminalQuoteItems,
@@ -6700,5 +6701,97 @@ describe('reverseItemState (row 312 — reclassified + wrong-occurrence guard)',
       { method: 'order', args: ['created_at', { ascending: false }] },
       { method: 'order', args: ['id', { ascending: false }] },
     ]);
+  });
+});
+
+// ─── Row 366: markItemHandledLocal's expectedStatus CAS ─────────────────────
+// The followup route reads an item's status, gates POSITIVELY on 'unresponded',
+// then writes. The default write guard is a NEGATIVE .neq('status','handled'),
+// which refuses an already-handled row but happily overwrites one that moved to
+// 'completed'/'dismissed' in the gap — silently RESURRECTING it to 'handled'.
+// expectedStatus carries the caller's positive check into the UPDATE itself.
+describe('markItemHandledLocal — expectedStatus positive CAS (row 366)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  const ITEM_ID = 'item-366';
+  const OPERATOR_ID = '11111111-2222-3333-4444-555555555555';
+  const NOW = new Date('2026-08-24T12:00:00Z');
+
+  /** 1st .from('inbox_items') = priorStateOf's SELECT, 2nd = the UPDATE chain. */
+  function makeSbFor(itemUpdateResult: { data: unknown; error: null | { message: string } }) {
+    const { builder: priorBuilder } = makeBuilder({ data: null, error: null });
+    const { builder: updateBuilder, calls: updateCalls } = makeBuilder(itemUpdateResult);
+    const { builder: activityBuilder, calls: activityCalls } = makeBuilder({ data: null, error: null });
+    let inboxCallCount = 0;
+    const from = (table: string) => {
+      if (table === 'inbox_items') {
+        inboxCallCount += 1;
+        return inboxCallCount === 1 ? priorBuilder : updateBuilder;
+      }
+      if (table === 'dashboard_activity') return activityBuilder;
+      throw new Error(`unexpected table: ${table}`);
+    };
+    return { from, updateCalls, activityCalls };
+  }
+
+  const OK_ROW = { source: 'ghl', external_id: 'ext-1', source_message_id: null, dashboard_contacts: null };
+
+  it('with expectedStatus, the UPDATE guards on .eq(status, expected) and NEVER on the negative .neq', async () => {
+    const { from, updateCalls } = makeSbFor({ data: OK_ROW, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemHandledLocal(ITEM_ID, OPERATOR_ID, NOW, { expectedStatus: 'unresponded' });
+    expect(res.ok).toBe(true);
+
+    expect(updateCalls.filter((c) => c.method === 'eq')).toEqual([
+      { method: 'eq', args: ['id', ITEM_ID] },
+      { method: 'eq', args: ['status', 'unresponded'] },
+    ]);
+    expect(updateCalls.some((c) => c.method === 'neq')).toBe(false);
+  });
+
+  it('without expectedStatus the guard is unchanged — .neq(status, handled), no status .eq (the other two callers)', async () => {
+    const { from, updateCalls } = makeSbFor({ data: OK_ROW, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemHandledLocal(ITEM_ID, OPERATOR_ID, NOW);
+    expect(res.ok).toBe(true);
+
+    expect(updateCalls).toContainEqual({ method: 'neq', args: ['status', 'handled'] });
+    expect(updateCalls.filter((c) => c.method === 'eq')).toEqual([{ method: 'eq', args: ['id', ITEM_ID] }]);
+  });
+
+  it('a lost race (the row moved on, so the guarded UPDATE matches nothing) refuses with a message naming the expected status', async () => {
+    const { from, activityCalls } = makeSbFor({ data: null, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemHandledLocal(ITEM_ID, OPERATOR_ID, NOW, { expectedStatus: 'unresponded' });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toBe('Item not found or no longer unresponded');
+
+    // The refusal is audited, same as the default guard's refusal path.
+    const insertCall = activityCalls.find((c) => c.method === 'insert');
+    expect(insertCall!.args[0]).toMatchObject({
+      action: 'action_failed',
+      detail: { action: 'handled', error: 'Item not found or no longer unresponded' },
+    });
+  });
+
+  it('the default refusal message is untouched for callers that pass no expectedStatus', async () => {
+    const { from } = makeSbFor({ data: null, error: null });
+    sbRef.current = { from };
+
+    const res = await markItemHandledLocal(ITEM_ID, OPERATOR_ID, NOW);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toBe('Item not found or already handled');
+  });
+
+  it('the constant the followup gate reads is the same one it passes as the CAS — they cannot drift', () => {
+    expect(ANCHORED_ITEM_RESOLVABLE_STATUS).toBe('unresponded');
+    expect(shouldResolveAnchoredItem('done', ANCHORED_ITEM_RESOLVABLE_STATUS)).toBe(true);
+    expect(shouldResolveAnchoredItem('done', 'completed')).toBe(false);
+    expect(shouldResolveAnchoredItem('done', 'dismissed')).toBe(false);
   });
 });

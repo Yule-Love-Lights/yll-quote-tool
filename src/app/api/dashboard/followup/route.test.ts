@@ -121,7 +121,12 @@ describe('POST /api/dashboard/followup — #252 slice E anchored-item coupling',
     expect(markFollowUpDoneMock).toHaveBeenCalledWith(FOLLOWUP_ID, 'op-1');
     expect(getItemStatusMock).toHaveBeenCalledWith(ITEM_ID);
     expect(markItemHandledLocalMock).toHaveBeenCalledTimes(1);
-    expect(markItemHandledLocalMock).toHaveBeenCalledWith(ITEM_ID, 'op-1', expect.any(Date));
+    // Row 366: the positive status the gate checked is carried into the write
+    // as its CAS — without it, an item that moves to completed/dismissed in the
+    // read→write gap is silently resurrected to 'handled'.
+    expect(markItemHandledLocalMock).toHaveBeenCalledWith(ITEM_ID, 'op-1', expect.any(Date), {
+      expectedStatus: 'unresponded',
+    });
     expect(runHandledWritebackMock).toHaveBeenCalledTimes(1);
     expect(runHandledWritebackMock).toHaveBeenCalledWith(
       { source: 'ghl', externalId: 'ext-1', sourceMessageId: null, ghlContactId: 'ghl-1', displayName: 'Alice' },
@@ -214,6 +219,26 @@ describe('POST /api/dashboard/followup — #252 slice E anchored-item coupling',
 
     expect(res.status).toBe(200);
     expect(json).toEqual({ ok: true });
+  });
+
+  it('a REFUSED anchored-item CAS (someone else resolved it in the gap) skips the write-back, logs, and still returns 200', async () => {
+    // Row 366 fix round: with the positive CAS, this refusal is now the normal
+    // outcome of a lost race — the item moved to completed/dismissed between the
+    // status read and the write, so it must NOT be stamped handled, and nothing
+    // downstream may run as if it had been.
+    markFollowUpDoneMock.mockResolvedValueOnce({ ok: true, inboxItemId: ITEM_ID });
+    getItemStatusMock.mockResolvedValueOnce('unresponded');
+    markItemHandledLocalMock.mockResolvedValueOnce({ ok: false, error: 'Item not found or no longer unresponded' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const res = await POST(makeReq({ id: FOLLOWUP_ID }));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(runHandledWritebackMock).not.toHaveBeenCalled();
+    expect(recordWritebackMock).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('falls back to operator id for the write-back label when email is absent', async () => {

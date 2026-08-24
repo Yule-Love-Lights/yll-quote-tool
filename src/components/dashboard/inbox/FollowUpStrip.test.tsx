@@ -8,8 +8,15 @@
 // static render can't drive the async click-then-fetch flow (no jsdom in
 // this repo).
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
+
+// Row 365: markDone now calls router.refresh() so the anchored inbox item the
+// route resolves server-side (#252 slice E) leaves the main list immediately
+// instead of lingering until the next 25s poll. useRouter throws outside an
+// app-router context and this component calls it unconditionally (hook-order
+// rules), so it is mocked here — same shape as InboxList.test.tsx's own mock.
+vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: () => {} }) }));
 import { FollowUpStrip, withRowFlagSet, withRowFlagCleared, reconcileDueFollowUps } from './FollowUpStrip';
 import type { DueFollowUp } from '@/lib/dashboard/inbox/types';
 
