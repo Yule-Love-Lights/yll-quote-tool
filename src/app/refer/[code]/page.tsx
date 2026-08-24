@@ -13,6 +13,7 @@
 
 import { notFound } from 'next/navigation';
 import { getReferralByCode, REFERRAL_CREDIT_USD, REFERRAL_FRIEND_SPRITZERS } from '@/lib/referrals';
+import { spritzerRetailValueUsd } from '@/lib/referralSpritzerValue';
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import { getDesignByQuote } from '@/lib/designs';
 import {
@@ -46,6 +47,14 @@ import { ReferHero, type HeroResolution } from './ReferHero';
 // live reviews aren't configured.
 const GMB_REVIEWS_URL =
   'https://www.google.com/search?q=Yule+Love+Lights#mpd=~18273026046139841384/customers/reviews';
+
+// naldo/referral-link-preview: "2 free 16 inch spritzers" is trade jargon a
+// homeowner has no way to price on their own. Dollarized once here, from the
+// quote builder's own per-size rate, never a separate hardcoded number.
+const SPRITZER_VALUE_USD = spritzerRetailValueUsd(
+  REFERRAL_FRIEND_SPRITZERS.count,
+  REFERRAL_FRIEND_SPRITZERS.sizeInches,
+);
 
 // #41 adversarial-review LOW fix: this page is personalized per referral code
 // (a different customer's hero photo + gallery fallback each time). Force
@@ -193,10 +202,11 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
                 For you
               </p>
               <p className="font-display text-[24px] font-semibold text-[#F4ECD8]">
-                {REFERRAL_FRIEND_SPRITZERS.count} free {REFERRAL_FRIEND_SPRITZERS.sizeInches}&quot; spritzers
+                {formatUsd(SPRITZER_VALUE_USD)} in free lighting
               </p>
               <p className="mt-2 text-[14px] text-[#A89F87] leading-[1.6]">
-                On your first booked install. No purchase needed to get your free quote.
+                {REFERRAL_FRIEND_SPRITZERS.count} staked spotlights for your yard ({REFERRAL_FRIEND_SPRITZERS.sizeInches}
+                &quot; spritzers) on your first booked install. No purchase needed to get your free quote.
               </p>
             </div>
             <div className="rounded-2xl bg-[#0D1519] border border-[#1F2A23] p-6">
@@ -204,10 +214,11 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
                 For {firstName}
               </p>
               <p className="font-display text-[24px] font-semibold text-[#F4ECD8]">
-                {formatUsd(REFERRAL_CREDIT_USD)} off next season
+                {formatUsd(REFERRAL_CREDIT_USD)} off any job
               </p>
               <p className="mt-2 text-[14px] text-[#A89F87] leading-[1.6]">
-                Once you book your install, they get their credit automatically.
+                Good toward any Yule Love Lights service: holiday, permanent, event and wedding
+                lighting, or bistro. Once you book, they get their credit automatically.
               </p>
             </div>
           </div>
@@ -223,7 +234,10 @@ export default async function ReferPage({ params }: { params: Promise<Params> })
           >
             Tell us where to look.
           </h2>
-          <ReferralForm code={code} friendSpritzers={REFERRAL_FRIEND_SPRITZERS} />
+          <ReferralForm
+            code={code}
+            friendSpritzers={{ ...REFERRAL_FRIEND_SPRITZERS, valueUsd: SPRITZER_VALUE_USD }}
+          />
         </div>
       </section>
 

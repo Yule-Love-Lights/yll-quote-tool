@@ -88,8 +88,8 @@ function stripRatesSnapshots(result: RebookSource['result']): RebookSource['resu
 }
 
 // #41 adversarial-review HIGH fix: a rebooked quote must RE-EARN and
-// RE-APPLY its own referral credit next season, never inherit the source
-// quote's. Without this, cloning an approved quote that had a referral
+// RE-APPLY its own referral credit on its own next booking, never inherit
+// the source quote's. Without this, cloning an approved quote that had a referral
 // credit applied would carry the `discount` + `referralCredit` provenance
 // straight onto the new DRAFT — which still shows "credit applied" even
 // though this new quote's credited rows/consumedRowIds belong to the OLD

@@ -16,11 +16,18 @@ describe('ReferralSection', () => {
     expect(html).not.toContain('$150');
   });
 
-  it('states both sides of the offer: referrer credit + friend spritzers', () => {
+  it('states both sides of the offer: referrer credit (dollarized, good toward any service) + friend spritzers (dollarized)', () => {
     const html = renderToStaticMarkup(<ReferralSection referralLink={null} {...PROPS} />);
-    expect(html).toContain('$125 off');
-    expect(html).toContain('2 free 16&quot; spritzers');
+    expect(html).toContain('$125 credit');
+    expect(html).toContain('any Yule Love Lights service');
+    expect(html).toContain('$170 in free lighting');
+    expect(html).toContain('2 staked spotlights');
+    expect(html).toContain('16&quot; spritzers');
     expect(html).toContain('first booked');
+    // The old undollarized phrasing and the stale "next season" framing must
+    // both be gone (naldo/referral-link-preview).
+    expect(html).not.toContain('2 free 16&quot; spritzers');
+    expect(html).not.toContain('next season');
   });
 
   it('renders the personal referral link + copy control when one is available', () => {
