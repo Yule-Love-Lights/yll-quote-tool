@@ -48,7 +48,9 @@ import {
   listLocationCustomFields,
   createLocationCustomField,
   upsertContactCustomField,
+  getContactInternal,
 } from './highlevel';
+import type { HighLevelContact } from './types';
 
 export const EVENT_DATE_FIELD_NAME = 'Event Date';
 
@@ -255,5 +257,56 @@ export async function pushEventDateToGhl(
     return await Promise.race([pushEventDateToGhlInner(contactId, eventDate), deadline]);
   } finally {
     clearTimeout(timer!);
+  }
+}
+
+/**
+ * Read the CURRENT value of the "Event Date" custom field off the linked GHL
+ * contact (ledger #314) — used at APPROVAL time to detect drift instead of
+ * assuming an earlier push (at send, or at a later staff save — see
+ * src/app/api/quote/route.ts's isUpdate branch) actually landed. Both of
+ * those pushes are fire-and-forget / fail-soft (see this file's own header
+ * and pushEventDateToGhl's doc comment above) — a missing customFields scope,
+ * a GHL 500, or the 6s push deadline tripping leaves nothing that retries, so
+ * a persisted "we attempted a push" marker would only prove an attempt was
+ * made, never that GHL actually agrees. Reading GHL's own current value
+ * checks the real thing being reconciled.
+ *
+ * THREE-STATE return contract (#314 fix round, technical-lens MED — the
+ * original two-state null-means-everything contract collapsed "the field is
+ * genuinely empty" and "the read failed" into the same value, which let a
+ * transient GHL failure masquerade as confirmed-empty at the one call site
+ * that treats confirmed-empty as a green light to push):
+ *   - a `string` — the field was read successfully and holds that value.
+ *   - `null` — the field was read successfully and is genuinely empty (the
+ *     contact carries no matching custom field, or its value isn't a
+ *     string). This is a CONFIRMED result: we did talk to GHL and it agrees
+ *     the field is unset.
+ *   - `undefined` — we could NOT confirm anything either way: no contactId,
+ *     HighLevel isn't configured, the field id can't be resolved (missing
+ *     scope, the empty-list parse-bug guard, etc.), or the GHL read itself
+ *     errored/timed out. Never throws.
+ * Callers MUST treat `undefined` as "unknown, do not act on it" — only a
+ * confirmed `null` licenses a fallback push. See getContactInternal's own
+ * timeout, which is the same real-AbortController-bounded ghlFetch (#264,
+ * 10s) every other GHL call in this app already goes through — no separate
+ * deadline wrapper needed here (unlike pushEventDateToGhl's Promise.race,
+ * added before ghlFetch had real cancellation).
+ */
+export async function getEventDateFromGhl(
+  contactId: string | null | undefined,
+): Promise<string | null | undefined> {
+  if (!contactId) return undefined;
+  if (!isHighLevelConfigured()) return undefined;
+  try {
+    const fieldId = await resolveEventDateFieldId();
+    if (!fieldId) return undefined;
+    const { raw } = await getContactInternal(contactId);
+    const fields = (raw as HighLevelContact).customFields;
+    const match = fields?.find((f) => f.id === fieldId);
+    return typeof match?.value === 'string' ? match.value : null;
+  } catch (err) {
+    console.error(`[ghlEventDate] failed to read the current "${EVENT_DATE_FIELD_NAME}" value:`, err);
+    return undefined;
   }
 }

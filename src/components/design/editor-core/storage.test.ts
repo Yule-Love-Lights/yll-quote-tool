@@ -19,7 +19,7 @@ describe('editor scene storage', () => {
     };
     const fetchMock = vi
       .fn()
-      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ version: 2 }) })
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({ design: { id: DESIGN_ID, scene } }),
@@ -35,7 +35,7 @@ describe('editor scene storage', () => {
       `/api/designs/${DESIGN_ID}`,
       expect.objectContaining({
         method: 'PUT',
-        body: JSON.stringify({ scene }),
+        body: JSON.stringify({ scene, version: null }),
       }),
     );
     expect(brightnessForPhoto(reopened.scene, null)).toBe(80);

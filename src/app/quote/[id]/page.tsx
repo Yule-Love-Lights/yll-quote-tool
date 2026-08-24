@@ -66,6 +66,11 @@ export default async function EditQuotePage({ params }: { params: Promise<{ id: 
         designId: design?.id ?? null,
         sentAt: quote.quote_sent_at,
         approvedAt: quote.customer_approved_at,
+        // Row 338 fix-round HIGH/MED (staff lens): the sticky freeze signal
+        // (wasEverApproved, quoteStatus.ts) reads this jsonb — getQuoteRaw
+        // already selects it. Raw passthrough so the builder computes
+        // wasEverApproved itself instead of duplicating the OR logic here.
+        approvalSnapshot: quote.approval_snapshot,
         // Canonical status + display number for the header pill/ID (BUG-1/BUG-2,
         // S22): getQuoteRaw already selects these. deriveStatus in the builder
         // prefers a persisted declined/cancelled over the timestamps.

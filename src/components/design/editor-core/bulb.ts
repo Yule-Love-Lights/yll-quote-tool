@@ -1,42 +1,22 @@
 import Konva from "konva";
 import type { BulbType } from "@/lib/design/sceneTypes";
 import { colorOf } from "./colors";
+import { bulbDims, LIGHT_SCALE_DEFAULT } from "./lightScale";
 
-// Real-world bulb sizes (foot units, used to scale relative to the yardstick).
-// Numbers are intentionally a touch larger than real life for visibility.
-const TYPE: Record<
-  BulbType,
-  { radiusFt: number; haloMul: number; coreSoftness: number; minPx: number }
-> = {
-  // Big classic Christmas bulb: visible, soft warm halo.
-  c9:        { radiusFt: 0.065, haloMul: 2.6, coreSoftness: 0.5,  minPx: 3 },
-  // Permanent lights have a special renderer (cone). This entry is a fallback only.
-  permanent: { radiusFt: 0.035, haloMul: 2.0, coreSoftness: 0.35, minPx: 2 },
-  // Mini lights: small but with a clear glow halo — visible like little stars.
-  mini:      { radiusFt: 0.028, haloMul: 2.1, coreSoftness: 0.25, minPx: 1.8 },
-  // Bistro / Edison-style bulbs: bigger, warmer, more pronounced halo. The
-  // signature outdoor-patio / cafe look — these are 5–10× the visual weight
-  // of a mini, so they need a chunky radius + big soft glow.
-  bistro:    { radiusFt: 0.11,  haloMul: 3.0, coreSoftness: 0.55, minPx: 4.5 },
-};
-
-export function bulbDims(bulbType: BulbType, pxPerFoot: number) {
-  const t = TYPE[bulbType];
-  const radius = Math.max(t.minPx, t.radiusFt * pxPerFoot);
-  return {
-    radius,
-    glowRadius: radius * t.haloMul,
-    coreSoftness: t.coreSoftness,
-  };
-}
+// The real-world bulb-size table and `bulbDims` now live in `lightScale.ts` —
+// a Konva-free module so the sizing math is unit-testable (same split as
+// `yardstick-scale.ts`). Re-exported here so existing import sites are
+// unchanged.
+export { bulbDims };
 
 export function createBulb(
   bulbType: BulbType,
   colorId: string,
   pxPerFoot: number,
+  lightScale: number = LIGHT_SCALE_DEFAULT,
 ): Konva.Group {
   const color = colorOf(colorId);
-  const { radius, glowRadius, coreSoftness } = bulbDims(bulbType, pxPerFoot);
+  const { radius, glowRadius, coreSoftness } = bulbDims(bulbType, pxPerFoot, lightScale);
 
   const group = new Konva.Group({ listening: false });
 

@@ -1,22 +1,22 @@
 // #110 W6-011: GET/PUT /api/designs/[id] (the editor's continuously-called
-// autosave endpoint — updateDesignScene / linkDesignToQuote /
+// autosave endpoint — updateDesignSceneGuarded / linkDesignToQuote /
 // updateDesignSatelliteLines) had zero route-level test coverage, unlike its
 // sibling design sub-routes. requireOperator, Supabase config, and lib/designs
-// mocked.
+// mocked. (updateDesignScene became updateDesignSceneGuarded — ledger row 260.)
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
 
 const {
   getDesignWithPhoto,
-  updateDesignScene,
+  updateDesignSceneGuarded,
   linkDesignToQuote,
   updateDesignSatelliteLines,
   requireOperatorMock,
   isConfigured,
 } = vi.hoisted(() => ({
   getDesignWithPhoto: vi.fn(),
-  updateDesignScene: vi.fn(),
+  updateDesignSceneGuarded: vi.fn(),
   linkDesignToQuote: vi.fn(),
   updateDesignSatelliteLines: vi.fn(),
   requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
@@ -25,7 +25,7 @@ const {
 
 vi.mock('@/lib/designs', () => ({
   getDesignWithPhoto,
-  updateDesignScene,
+  updateDesignSceneGuarded,
   linkDesignToQuote,
   updateDesignSatelliteLines,
   isValidDesignId: (id: unknown) =>
@@ -59,8 +59,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   requireOperatorMock.mockResolvedValue(null);
   isConfigured.current = true;
-  getDesignWithPhoto.mockResolvedValue({ id: VALID_ID, scene: validScene });
-  updateDesignScene.mockResolvedValue(true);
+  getDesignWithPhoto.mockResolvedValue({ id: VALID_ID, scene: validScene, version: 1 });
+  updateDesignSceneGuarded.mockResolvedValue({ ok: true, version: 2 });
   linkDesignToQuote.mockResolvedValue(true);
   updateDesignSatelliteLines.mockResolvedValue(true);
 });
@@ -104,7 +104,7 @@ describe('PUT /api/designs/[id]', () => {
     requireOperatorMock.mockResolvedValueOnce(denied401());
     const res = await PUT(makeReq({ scene: validScene }), ctx());
     expect(res.status).toBe(401);
-    expect(updateDesignScene).not.toHaveBeenCalled();
+    expect(updateDesignSceneGuarded).not.toHaveBeenCalled();
   });
 
   it('503s when Supabase service role is not configured', async () => {
@@ -134,7 +134,19 @@ describe('PUT /api/designs/[id]', () => {
   it('400s a malformed scene', async () => {
     const res = await PUT(makeReq({ scene: { items: [] } }), ctx()); // missing yardsticks
     expect(res.status).toBe(400);
-    expect(updateDesignScene).not.toHaveBeenCalled();
+    expect(updateDesignSceneGuarded).not.toHaveBeenCalled();
+  });
+
+  it('400s a non-integer version alongside a scene', async () => {
+    const res = await PUT(makeReq({ scene: validScene, version: 1.5 }), ctx());
+    expect(res.status).toBe(400);
+    expect(updateDesignSceneGuarded).not.toHaveBeenCalled();
+  });
+
+  it('400s a string version alongside a scene', async () => {
+    const res = await PUT(makeReq({ scene: validScene, version: '3' }), ctx());
+    expect(res.status).toBe(400);
+    expect(updateDesignSceneGuarded).not.toHaveBeenCalled();
   });
 
   it('400s a malformed satelliteLines (no array channel / a non-array channel)', async () => {
@@ -169,17 +181,30 @@ describe('PUT /api/designs/[id]', () => {
     expect(linkDesignToQuote).not.toHaveBeenCalled();
   });
 
-  it('saves a scene-only update successfully', async () => {
+  it('saves a scene-only update successfully, round-tripping version through the CAS guard', async () => {
+    const res = await PUT(makeReq({ scene: validScene, version: 4 }), ctx());
+    expect(res.status).toBe(200);
+    expect(updateDesignSceneGuarded).toHaveBeenCalledWith(VALID_ID, validScene, 4);
+    const json = await res.json();
+    expect(json.ok).toBe(true);
+    expect(json.version).toBe(2); // whatever updateDesignSceneGuarded's mock returned
+  });
+
+  it('saves a scene carrying per-photo brightness through the CAS guard', async () => {
     const perPhotoScene = {
       ...validScene,
       brightness: 20,
       extraPhotoBrightness: { 'left-photo': 65 },
     };
-    const res = await PUT(makeReq({ scene: perPhotoScene }), ctx());
+    const res = await PUT(makeReq({ scene: perPhotoScene, version: 4 }), ctx());
     expect(res.status).toBe(200);
-    expect(updateDesignScene).toHaveBeenCalledWith(VALID_ID, perPhotoScene);
-    const json = await res.json();
-    expect(json.ok).toBe(true);
+    expect(updateDesignSceneGuarded).toHaveBeenCalledWith(VALID_ID, perPhotoScene, 4);
+  });
+
+  it('treats an omitted version as null (the adopt path) rather than crashing', async () => {
+    const res = await PUT(makeReq({ scene: validScene }), ctx());
+    expect(res.status).toBe(200);
+    expect(updateDesignSceneGuarded).toHaveBeenCalledWith(VALID_ID, validScene, undefined);
   });
 
   it('saves satelliteLines successfully', async () => {
@@ -200,9 +225,20 @@ describe('PUT /api/designs/[id]', () => {
     expect(res.status).toBe(409);
   });
 
-  it('500s when updateDesignScene reports failure', async () => {
-    updateDesignScene.mockResolvedValueOnce(false);
+  it('500s when updateDesignSceneGuarded reports a non-conflict failure', async () => {
+    updateDesignSceneGuarded.mockResolvedValueOnce({ ok: false, reason: 'error' });
     const res = await PUT(makeReq({ scene: validScene }), ctx());
     expect(res.status).toBe(500);
+  });
+
+  // Ledger row 260: a lost CAS race must come back as a DISTINGUISHABLE 409 —
+  // not a generic 500 — so the editor can block-and-offer-reload instead of
+  // its ordinary auto-retry (which would just resend the same stale overwrite).
+  it('409s a scene conflict (lost the compare-and-swap race)', async () => {
+    updateDesignSceneGuarded.mockResolvedValueOnce({ ok: false, reason: 'conflict' });
+    const res = await PUT(makeReq({ scene: validScene, version: 3 }), ctx());
+    expect(res.status).toBe(409);
+    const json = await res.json();
+    expect(json.conflict).toBe(true);
   });
 });

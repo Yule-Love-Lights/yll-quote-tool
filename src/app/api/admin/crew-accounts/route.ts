@@ -8,6 +8,7 @@ import {
   validateCrewAccount,
 } from '@/lib/auth/crewAccounts';
 import { TelegramUserIdTakenError, updateCrewMember } from '@/lib/crewMembers';
+import { asJsonObject, parseTelegramUserId, TELEGRAM_USER_ID_ERROR } from '@/lib/telegramUserId';
 
 export const runtime = 'nodejs';
 
@@ -53,18 +54,11 @@ type CrewRow = {
   active: boolean;
   auth_user_id: string | null;
   telegram_user_id: string | null;
+  is_office: boolean;
 };
 
-/**
- * Telegram user ids are positive integers. Digits-only keeps a pasted @handle
- * ("@sonson") from being stored as a link that can never match, because the
- * webhook resolves the sender from `String(msg.from.id)`.
- *
- * A LEADING ZERO is rejected for the same reason: `String(Number)` never
- * produces one, so "0123456789" is a typo that would store cleanly and then
- * silently never match a single inbound message.
- */
-const TELEGRAM_USER_ID_RE = /^[1-9]\d{0,19}$/;
+// The id rule lives in one place (src/lib/telegramUserId.ts) because the office
+// door writes the same column; two copies is how the two doors start disagreeing.
 
 export async function GET() {
   const auth = await requireAdmin();
@@ -75,9 +69,17 @@ export async function GET() {
     return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
   }
 
+  // Office staff (is_office = true) are excluded here because this is the
+  // FIELD-crew door, not because they are barred from Telegram — they are not
+  // (Naldo, 2026-08-24: every staff member gets a Telegram connection). They
+  // sign in with an OPERATOR login rather than a crew login, and their pay row,
+  // rate and Telegram link all live together on the Office staff panel. Listing
+  // them here would invite minting a second, crew-role login for someone who
+  // already has an operator one, which is the part that stays forbidden.
   const { data, error } = await sb
     .from('crew_members')
     .select('id, display_name, active, auth_user_id, telegram_user_id')
+    .eq('is_office', false)
     .order('display_name', { ascending: true });
 
   if (error) {
@@ -106,7 +108,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
   }
 
-  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+  const body = asJsonObject(await req.json().catch(() => null));
   const input = {
     crewMemberId: String(body?.crewMemberId ?? '').trim(),
     email: String(body?.email ?? '').trim(),
@@ -120,7 +122,7 @@ export async function POST(req: NextRequest) {
   // index would reject a second link anyway, but a clear message beats a 23505.
   const { data: existing, error: lookupError } = await sb
     .from('crew_members')
-    .select('id, display_name, active, auth_user_id')
+    .select('id, display_name, active, auth_user_id, is_office')
     .eq('id', input.crewMemberId)
     .maybeSingle();
 
@@ -130,6 +132,16 @@ export async function POST(req: NextRequest) {
   }
   const crew = existing as unknown as CrewRow | null;
   if (!crew) return NextResponse.json({ error: 'Crew member not found' }, { status: 404 });
+  // Sibling-guard parity with the GET filter: this panel is for FIELD crew only.
+  // Refuse to mint a crew-role login for OFFICE staff by raw id even though the
+  // UI no longer lists them — office staff sign in with their operator login, and
+  // a second crew-role login is exactly what the is_office flag exists to prevent.
+  if (crew.is_office) {
+    return NextResponse.json(
+      { error: `${crew.display_name} is office staff — they sign in with an operator login, not a crew login.` },
+      { status: 409 },
+    );
+  }
   if (crew.auth_user_id) {
     return NextResponse.json(
       { error: `${crew.display_name} already has a login.` },
@@ -204,33 +216,32 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
   }
 
-  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+  const body = asJsonObject(await req.json().catch(() => null));
   const crewMemberId = String(body?.crewMemberId ?? '').trim();
   if (!crewMemberId) {
     return NextResponse.json({ error: 'Choose a crew member.' }, { status: 400 });
   }
 
-  const raw = body?.telegramUserId;
   // Absent is NOT the same as null here: null/'' means "unlink", while a missing
   // key means the caller sent nothing to change and is almost certainly a bug.
-  if (raw === undefined) {
-    return NextResponse.json({ error: 'telegramUserId is required (send null to unlink).' }, { status: 400 });
-  }
-  const trimmed = raw === null ? '' : String(raw).trim();
-  const telegramUserId = trimmed === '' ? null : trimmed;
-  if (telegramUserId !== null && !TELEGRAM_USER_ID_RE.test(telegramUserId)) {
+  // Both doors that write this column share one parser so they cannot drift.
+  const parsed = parseTelegramUserId(body?.telegramUserId);
+  if (!parsed.ok) {
     return NextResponse.json(
       {
         error:
-          'That is not a Telegram user id. It is a number, not an @handle — the crew member can get theirs from @userinfobot.',
+          parsed.reason === 'missing'
+            ? 'telegramUserId is required (send null to unlink).'
+            : TELEGRAM_USER_ID_ERROR,
       },
       { status: 400 },
     );
   }
+  const telegramUserId = parsed.telegramUserId;
 
   const { data: existing, error: lookupError } = await sb
     .from('crew_members')
-    .select('id, display_name, active, auth_user_id, telegram_user_id')
+    .select('id, display_name, active, auth_user_id, telegram_user_id, is_office')
     .eq('id', crewMemberId)
     .maybeSingle();
 
@@ -240,6 +251,20 @@ export async function PATCH(req: NextRequest) {
   }
   const crew = existing as unknown as CrewRow | null;
   if (!crew) return NextResponse.json({ error: 'Crew member not found' }, { status: 404 });
+  // ROUTING, not prohibition (corrected 2026-08-24 by Naldo: EVERY staff member
+  // gets a Telegram connection, office included — the earlier "the Telegram clock
+  // is for field crew" rule was wrong). Office staff link Telegram on the Office
+  // staff panel (`PATCH /api/admin/office-staff`), which is also where their pay
+  // row and rate live. This route stays the FIELD-crew door so one row is never
+  // writable from two places; it refuses an office id and says where to go.
+  if (crew.is_office) {
+    return NextResponse.json(
+      {
+        error: `${crew.display_name} is office staff — link their Telegram under Office staff time clock, not here.`,
+      },
+      { status: 409 },
+    );
+  }
 
   try {
     const updated = await updateCrewMember(crewMemberId, { telegramUserId });

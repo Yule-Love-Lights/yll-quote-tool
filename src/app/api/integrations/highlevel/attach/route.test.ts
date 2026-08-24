@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 
 // ── Mocks (hoisted so the vi.mock factories can see them) ───────────────────
-const { sbRef, hl, attachQuoteToCustomerMock } = vi.hoisted(() => ({
+const { sbRef, hl, attachQuoteToCustomerMock, requireOperatorMock, getOperatorMock } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
   hl: {
     findOrCreate: vi.fn(async () => ({ opportunity: { id: 'opp-1' }, created: false })),
@@ -17,11 +17,20 @@ const { sbRef, hl, attachQuoteToCustomerMock } = vi.hoisted(() => ({
   // #214 (d): the route re-resolves the customers link after a successful
   // link write — mocked so these unit tests never touch a customers table.
   attachQuoteToCustomerMock: vi.fn(async () => null as null | { customerId: string; propertyId: string }),
+  // Row 326 residual (b): the refusal-audit write calls getOperator() directly
+  // (not gated behind requireOperator's AUTH_GATE_ENABLED dormancy), so it must
+  // be mocked explicitly — mirrors staff-decline/route.test.ts's pattern.
+  requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
+  getOperatorMock: vi.fn(async () => null as { email: string | null } | null),
 }));
 
 vi.mock('@/lib/supabase', () => ({
   isSupabaseServiceConfigured: () => true,
   getSupabaseServiceClient: () => sbRef.current,
+}));
+vi.mock('@/lib/auth/supabaseServer', () => ({
+  requireOperator: requireOperatorMock,
+  getOperator: getOperatorMock,
 }));
 
 // #214: importOriginal keeps quoteRowToIdentity (pure sentinel translation)
@@ -58,7 +67,30 @@ import { POST } from './route';
 function makeSb(
   quote: Record<string, unknown> | null,
   updateErr: { message: string } | null = null,
-  opts: { identityCasMatch?: boolean } = {},
+  opts: {
+    identityCasMatch?: boolean;
+    // Fix-round HIGH (data-loss bug): makes any `.select('approval_snapshot')`
+    // read (readApprovalSnapshot — used at all four refusal call sites AND
+    // inside logIdentityRefusal's own internal retry) fail, so the bail-out
+    // path is actually reachable in the test harness. Never affects the
+    // wide-column quote/detach pre-read (a different `.select(...)` string),
+    // so the freeze branches themselves are unaffected.
+    approvalSnapshotReadFails?: boolean;
+    // Row 326 fix-round MED: how many times logIdentityRefusal's own value
+    // CAS (the approval_snapshot equality filter) reports "0 rows matched"
+    // before it succeeds — 0 (default) matches immediately, 1 misses once
+    // then succeeds on the internal retry, 2 exhausts both attempts (gives
+    // up, no entry ever lands).
+    auditCasMissCount?: number;
+    // Row 326 final-round LOW (coverage gap, delta-verify-found): successive
+    // `.select('approval_snapshot')` reads return successive entries from
+    // this array (last entry repeats once exhausted) instead of the fixed
+    // `quote.approval_snapshot` — lets a test prove the retry's re-read
+    // returns a DIFFERENT (fresher) value than the site-level read that fed
+    // attempt 0, so a regression that reused the stale snapshot on retry is
+    // actually caught instead of silently passing.
+    approvalSnapshotSequence?: unknown[];
+  } = {},
 ) {
   // identityCasMatch controls whether a CAS write's `.is(...)` conditions
   // would match in a real DB — false simulates approval/booking having
@@ -72,8 +104,24 @@ function makeSb(
   // not frozen) so every pre-#839 test above, which never touches this
   // option, keeps behaving exactly as before.
   const casMatch = opts.identityCasMatch ?? true;
+  let auditCasMissesRemaining = opts.auditCasMissCount ?? 0;
   let isUpdate = false;
-  const builder: Record<string, unknown> = {};
+  let pendingUpdatePayload: Record<string, unknown> | undefined;
+  let lastSelectCols: string | undefined;
+  let approvalSnapshotReadCount = 0;
+  // Row 326 final-round LOW: records every value-CAS filter argument (in
+  // call order) so a test can assert WHICH snapshot each write attempt
+  // actually CASed on — the retry-freshness gap the delta-verify found would
+  // otherwise pass silently (a stale-snapshot retry still "succeeds" in this
+  // fake unless the test inspects the filter value itself).
+  const auditCasFilters: string[] = [];
+  // Row 326 residual (b): records every update() payload (in call order) so
+  // tests can assert on the audit-marker write's shape without adding a
+  // fourth chain kind — the marker write is a plain
+  // from().update(payload).eq() with no .select()/.maybeSingle() follow-up,
+  // so it resolves through makeUpdateChain()'s `then` below like the others.
+  const updateCalls: Record<string, unknown>[] = [];
+  const builder: Record<string, unknown> = { updateCalls, auditCasFilters };
   function makeUpdateChain() {
     let hasIsFilter = false;
     const chain: Record<string, unknown> = {
@@ -91,21 +139,65 @@ function makeSb(
     };
     return chain;
   }
+  // Fix-round MED: logIdentityRefusal's write is a DIFFERENT chain shape from
+  // the route's other CAS writes above — a value CAS (`.eq('approval_snapshot',
+  // JSON.stringify(prior))` instead of `.is(...)`), and it's awaited directly
+  // after `.select('id')` with NO `.maybeSingle()` (array-returning, like the
+  // real amend/free-items siblings). Dispatched below whenever the update
+  // payload carries an `approval_snapshot` key — no other write in this route
+  // ever does.
+  function makeAuditWriteChain() {
+    const chain: Record<string, unknown> = {
+      eq: (_col: string, value: unknown) => {
+        auditCasFilters.push(String(value));
+        return chain;
+      },
+      select: () => chain,
+      then: (resolve: (v: { data: unknown[] | null; error: unknown }) => void) => {
+        if (updateErr) return resolve({ data: null, error: updateErr });
+        if (auditCasMissesRemaining > 0) {
+          auditCasMissesRemaining -= 1;
+          return resolve({ data: [], error: null }); // 0 rows matched
+        }
+        return resolve({ data: [{ id: 'matched' }], error: null });
+      },
+    };
+    return chain;
+  }
   Object.assign(builder, {
     from: () => builder,
-    select: () => builder,
-    update: () => {
+    select: (cols?: string) => {
+      lastSelectCols = cols;
+      return builder;
+    },
+    update: (payload: Record<string, unknown>) => {
+      updateCalls.push(payload);
       isUpdate = true;
+      pendingUpdatePayload = payload;
       return builder;
     },
     eq: () => {
       if (isUpdate) {
         isUpdate = false;
-        return makeUpdateChain();
+        const payload = pendingUpdatePayload;
+        pendingUpdatePayload = undefined;
+        return payload && 'approval_snapshot' in payload ? makeAuditWriteChain() : makeUpdateChain();
       }
       return builder;
     },
-    maybeSingle: async () => ({ data: quote, error: null }),
+    maybeSingle: async () => {
+      if (lastSelectCols === 'approval_snapshot') {
+        if (opts.approvalSnapshotReadFails) {
+          return { data: null, error: { message: 'db read failed (simulated)' } };
+        }
+        if (opts.approvalSnapshotSequence) {
+          const idx = Math.min(approvalSnapshotReadCount, opts.approvalSnapshotSequence.length - 1);
+          approvalSnapshotReadCount += 1;
+          return { data: { approval_snapshot: opts.approvalSnapshotSequence[idx] }, error: null };
+        }
+      }
+      return { data: quote, error: null };
+    },
   });
   return builder;
 }
@@ -172,6 +264,31 @@ describe('HighLevel attach — detach (#172)', () => {
   // (simulating approval landing mid-flight, between the read and the write).
   it('CAS-blocks the detach write when approval lands between the pre-read and the write (#839 round-2 delta-verify MED)', async () => {
     sbRef.current = makeSb(HOLIDAY_QUOTE, null, { identityCasMatch: false });
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, detach: true }));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json).toEqual({ detached: false, identityFrozen: true });
+  });
+
+  // Row 338 (identity-freeze STICKY hatch): the pre-detach freeze check
+  // reads customer_approved_at/deposit_paid_at directly off the pre-read row
+  // — both null on a REVIVED quote (#116's revive write clears
+  // customer_approved_at) — but approval_snapshot still carries the marker
+  // from the ORIGINAL approval. `identityCasMatch` is left at its default
+  // (true — CAS would MATCH) so this isolates the PRE-READ bail specifically:
+  // if wasEverApproved were reverted, the pre-read check would pass this
+  // quote through, the CAS write would then also match (nothing there is
+  // frozen either), and the Clear would silently succeed.
+  it('refuses a detach on a REVIVED quote whose approval_snapshot still carries approvedAt, even though the live columns read null (row 338)', async () => {
+    sbRef.current = makeSb({
+      ...HOLIDAY_QUOTE,
+      is_test: false,
+      customer_approved_at: null,
+      deposit_paid_at: null,
+      approval_snapshot: { approvedAt: '2026-06-01T00:00:00Z' },
+    });
 
     const res = await POST(makeReq({ quoteId: QUOTE_ID, detach: true }));
     const json = await res.json();
@@ -425,6 +542,38 @@ describe('HighLevel attach — post-link customers re-resolution (#214)', () => 
     expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
   });
 
+  // Row 338 (identity-freeze STICKY hatch): #116's revive write clears
+  // customer_approved_at on a declined→sent revive, so a quote that was
+  // approved-then-declined-then-revived would read as UNFROZEN by
+  // deposit_paid_at/customer_approved_at alone — the queueAttach click path
+  // (this route, fired directly on a confirmed contact pick, ahead of any
+  // Calculate) would silently repoint it. approval_snapshot still carries
+  // the marker from the ORIGINAL approval (staff-decline only ADDS a key via
+  // spread, never removes one — see wasEverApproved's comment in
+  // quoteStatus.ts), so the pre-read bail check must catch this even with
+  // both live lifecycle columns null.
+  it('refuses the WHOLE re-link on a REVIVED quote whose approval_snapshot still carries approvedAt, even though the live columns read null (row 338)', async () => {
+    sbRef.current = makeSb(
+      {
+        ...HOLIDAY_QUOTE,
+        is_test: false,
+        customer_approved_at: null,
+        deposit_paid_at: null,
+        approval_snapshot: { approvedAt: '2026-06-01T00:00:00Z' },
+        customer_id: 'cust-frozen',
+      },
+      null,
+    );
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1', ...CONTACT_FIELDS }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.linked).toBe(false);
+    expect(json.identityFrozen).toBe(true);
+    expect(hl.findOrCreate).not.toHaveBeenCalled(); // bails BEFORE any GHL work
+    expect(attachQuoteToCustomerMock).not.toHaveBeenCalled();
+  });
+
   // #839 fix-round MED (delta-verify — TOCTOU): the early freeze check above
   // (lines ~165-180) reads the quote row BEFORE findOrCreateOpportunityForContact's
   // GHL network round trip (hundreds of ms). If the quote becomes approved/
@@ -494,6 +643,299 @@ describe('HighLevel attach — post-link customers re-resolution (#214)', () => 
     const json = await res.json();
     expect(res.status).toBe(200);
     expect(json.linked).toBe(true);
+  });
+});
+
+// Row 326 residual (b): until now a refused identity change (either freeze
+// point, either action) left only a console.warn — server logs only, not
+// owner-queryable. Every refusal now merges an entry onto
+// approval_snapshot.identityChangeRefusals (append-only, mirrors
+// amend/route.ts's amendments[]) in the SAME database write, so an owner can
+// later query WHO tried WHAT on an approved/booked quote and WHEN — the
+// missing half of row 251's own near-miss.
+describe('HighLevel attach — refusal audit trace (row 326 residual b)', () => {
+  function updatesOf(): Record<string, unknown>[] {
+    return (sbRef.current as unknown as { updateCalls: Record<string, unknown>[] }).updateCalls;
+  }
+  function refusalsFrom(payload: Record<string, unknown> | undefined): Record<string, unknown>[] {
+    const snapshot = payload?.approval_snapshot as Record<string, unknown> | undefined;
+    return (snapshot?.identityChangeRefusals as Record<string, unknown>[] | undefined) ?? [];
+  }
+
+  it('writes an identityChangeRefusals entry (and preserves prior snapshot content) when the pre-read freeze refuses an attach', async () => {
+    getOperatorMock.mockResolvedValueOnce({ email: 'staff@yulelovelights.com' });
+    sbRef.current = makeSb({
+      ...HOLIDAY_QUOTE,
+      is_test: false,
+      customer_approved_at: '2026-08-10T00:00:00Z',
+      approval_snapshot: { approvedAt: '2026-08-10T00:00:00Z' },
+    });
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toEqual({ linked: false, identityFrozen: true });
+
+    const refusalWrite = updatesOf().find((p) => refusalsFrom(p).length > 0);
+    expect(refusalWrite).toBeDefined();
+    const [entry] = refusalsFrom(refusalWrite);
+    expect(entry).toMatchObject({
+      by: 'staff@yulelovelights.com',
+      action: 'attach',
+      attemptedContactId: 'contact-1',
+      stage: 'pre-read',
+    });
+    // The pre-existing approval_snapshot content (the original approval
+    // marker) must survive the merge — never clobbered by the audit write.
+    expect((refusalWrite!.approval_snapshot as Record<string, unknown>).approvedAt).toBe(
+      '2026-08-10T00:00:00Z',
+    );
+  });
+
+  it('writes an identityChangeRefusals entry when the pre-read freeze refuses a detach', async () => {
+    getOperatorMock.mockResolvedValueOnce({ email: 'staff@yulelovelights.com' });
+    sbRef.current = makeSb({
+      ...HOLIDAY_QUOTE,
+      is_test: false,
+      customer_approved_at: '2026-08-10T00:00:00Z',
+      // A frozen quote's approval_snapshot is always populated by /approve —
+      // see logIdentityRefusal's own null-base guard: an absent snapshot now
+      // means "unconfirmed," not "empty," and the write is skipped.
+      approval_snapshot: { approvedAt: '2026-08-10T00:00:00Z' },
+    });
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, detach: true }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toEqual({ detached: false, identityFrozen: true });
+
+    const refusalWrite = updatesOf().find((p) => refusalsFrom(p).length > 0);
+    const [entry] = refusalsFrom(refusalWrite);
+    expect(entry).toMatchObject({
+      by: 'staff@yulelovelights.com',
+      action: 'detach',
+      attemptedContactId: null,
+      stage: 'pre-read',
+    });
+  });
+
+  it('writes a write-time-stage entry when the attach CAS refusal fires (approval landed during the GHL round trip)', async () => {
+    // approval_snapshot must be a CONFIRMED (non-null) value here — the
+    // write-time site's readApprovalSnapshot call feeds logIdentityRefusal,
+    // whose own null-base guard now refuses to write on an unconfirmed
+    // snapshot (fix-round HIGH, the data-loss bug).
+    sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false, approval_snapshot: {} }, null, {
+      identityCasMatch: false,
+    });
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toEqual({ linked: false, identityFrozen: true });
+
+    const refusalWrite = updatesOf().find((p) => refusalsFrom(p).length > 0);
+    const [entry] = refusalsFrom(refusalWrite);
+    expect(entry).toMatchObject({ action: 'attach', attemptedContactId: 'contact-1', stage: 'write-time' });
+  });
+
+  it('writes a write-time-stage entry when the detach CAS refusal fires', async () => {
+    sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false, approval_snapshot: {} }, null, {
+      identityCasMatch: false,
+    });
+
+    const res = await POST(makeReq({ quoteId: QUOTE_ID, detach: true }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toEqual({ detached: false, identityFrozen: true });
+
+    const refusalWrite = updatesOf().find((p) => refusalsFrom(p).length > 0);
+    const [entry] = refusalsFrom(refusalWrite);
+    expect(entry).toMatchObject({ action: 'detach', attemptedContactId: null, stage: 'write-time' });
+  });
+
+  it('never writes an audit entry when the attach succeeds normally (not frozen)', async () => {
+    sbRef.current = makeSb(HOLIDAY_QUOTE, null);
+
+    await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+    expect(updatesOf().some((p) => refusalsFrom(p).length > 0)).toBe(false);
+  });
+
+  it('never writes an audit entry when a detach succeeds normally (not frozen)', async () => {
+    sbRef.current = makeSb(HOLIDAY_QUOTE, null);
+
+    await POST(makeReq({ quoteId: QUOTE_ID, detach: true }));
+    expect(updatesOf().some((p) => refusalsFrom(p).length > 0)).toBe(false);
+  });
+
+  // Fix-round HIGH (data-loss bug, review-caught): a failed approval_snapshot
+  // re-read must SKIP the audit write entirely, never fall back to `{}` and
+  // write that back — doing so would REPLACE the real frozen agreement
+  // (total, deposit, line items, approvedAt/staffApproved, colour selection)
+  // with just the new audit entry. Covers all four refusal sites.
+  describe('a failed approval_snapshot read never triggers a write (never clobbers the frozen agreement)', () => {
+    it('attach pre-read freeze: skips the audit write, refusal response unchanged', async () => {
+      sbRef.current = makeSb(
+        {
+          ...HOLIDAY_QUOTE,
+          is_test: false,
+          customer_approved_at: '2026-08-10T00:00:00Z',
+          approval_snapshot: { approvedAt: '2026-08-10T00:00:00Z' },
+        },
+        null,
+        { approvalSnapshotReadFails: true },
+      );
+
+      const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+      const json = await res.json();
+      expect(res.status).toBe(200);
+      expect(json).toEqual({ linked: false, identityFrozen: true });
+      // No update call ever carries approval_snapshot — logIdentityRefusal
+      // was never even invoked (the site-level bail-out fired first).
+      expect(updatesOf().some((p) => 'approval_snapshot' in p)).toBe(false);
+    });
+
+    it('detach pre-read freeze: skips the audit write, refusal response unchanged', async () => {
+      sbRef.current = makeSb(
+        {
+          ...HOLIDAY_QUOTE,
+          is_test: false,
+          customer_approved_at: '2026-08-10T00:00:00Z',
+          approval_snapshot: { approvedAt: '2026-08-10T00:00:00Z' },
+        },
+        null,
+        { approvalSnapshotReadFails: true },
+      );
+
+      const res = await POST(makeReq({ quoteId: QUOTE_ID, detach: true }));
+      const json = await res.json();
+      expect(res.status).toBe(200);
+      expect(json).toEqual({ detached: false, identityFrozen: true });
+      expect(updatesOf().some((p) => 'approval_snapshot' in p)).toBe(false);
+    });
+
+    it('attach write-time CAS refusal: skips the audit write, refusal response unchanged', async () => {
+      sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false, approval_snapshot: {} }, null, {
+        identityCasMatch: false,
+        approvalSnapshotReadFails: true,
+      });
+
+      const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+      const json = await res.json();
+      expect(res.status).toBe(200);
+      expect(json).toEqual({ linked: false, identityFrozen: true });
+      expect(updatesOf().some((p) => 'approval_snapshot' in p)).toBe(false);
+    });
+
+    it('detach write-time CAS refusal: skips the audit write, refusal response unchanged', async () => {
+      sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false, approval_snapshot: {} }, null, {
+        identityCasMatch: false,
+        approvalSnapshotReadFails: true,
+      });
+
+      const res = await POST(makeReq({ quoteId: QUOTE_ID, detach: true }));
+      const json = await res.json();
+      expect(res.status).toBe(200);
+      expect(json).toEqual({ detached: false, identityFrozen: true });
+      expect(updatesOf().some((p) => 'approval_snapshot' in p)).toBe(false);
+    });
+  });
+
+  // Row 326 fix-round MED: the value CAS is optimistic concurrency, not a
+  // freeze check — a lost race must retry once against a freshly re-read
+  // snapshot, and only give up (silently — the refusal response is
+  // untouched either way) after a second miss.
+  describe('the audit write itself retries once on a lost optimistic-concurrency race', () => {
+    it('retries once and lands the entry when the first CAS attempt loses the race', async () => {
+      getOperatorMock.mockResolvedValueOnce({ email: 'staff@yulelovelights.com' });
+      sbRef.current = makeSb(
+        {
+          ...HOLIDAY_QUOTE,
+          is_test: false,
+          customer_approved_at: '2026-08-10T00:00:00Z',
+          approval_snapshot: { approvedAt: '2026-08-10T00:00:00Z' },
+        },
+        null,
+        { auditCasMissCount: 1 },
+      );
+
+      const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+      const json = await res.json();
+      expect(res.status).toBe(200);
+      expect(json).toEqual({ linked: false, identityFrozen: true });
+
+      // Two attempted writes carrying approval_snapshot: the lost first
+      // attempt, then the retry that actually lands.
+      const attempts = updatesOf().filter((p) => 'approval_snapshot' in p);
+      expect(attempts.length).toBe(2);
+      const [entry] = refusalsFrom(attempts[1]);
+      expect(entry).toMatchObject({ by: 'staff@yulelovelights.com', action: 'attach', stage: 'pre-read' });
+    });
+
+    // Row 326 final-round LOW (delta-verify coverage gap): the retry must
+    // CAS on a FRESHLY re-read snapshot, not silently reuse the stale value
+    // from attempt 0 — a stale-snapshot retry would always CAS on the same
+    // (already-losing) value, and would drop whatever a concurrent
+    // legitimate write (amend/pay/apply-color-request) had just added.
+    // Neither the CAS-miss-count nor the payload-shape assertions above
+    // would catch that regression (the miss counter fires on call COUNT,
+    // not on the filter's actual value) — this test inspects the filter
+    // value and a distinguishing key directly.
+    it('CASes the retry on the FRESH re-read, not the stale first-attempt snapshot, and preserves a concurrent write', async () => {
+      const baseSnapshot = { approvedAt: '2026-08-10T00:00:00Z' };
+      // Simulates a concurrent legitimate write (e.g. amend/pay) landing
+      // between attempt 0 and the retry's re-read.
+      const concurrentSnapshot = { approvedAt: '2026-08-10T00:00:00Z', someOtherKey: 'x' };
+      sbRef.current = makeSb({ ...HOLIDAY_QUOTE, is_test: false, customer_approved_at: '2026-08-10T00:00:00Z' }, null, {
+        auditCasMissCount: 1,
+        approvalSnapshotSequence: [baseSnapshot, concurrentSnapshot],
+      });
+
+      const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+      const json = await res.json();
+      expect(res.status).toBe(200);
+      expect(json).toEqual({ linked: false, identityFrozen: true });
+
+      const auditCasFilters = (sbRef.current as unknown as { auditCasFilters: string[] }).auditCasFilters;
+      expect(auditCasFilters.length).toBe(2);
+      // Attempt 0 CASed on the site-level (first) read...
+      expect(auditCasFilters[0]).toBe(JSON.stringify(baseSnapshot));
+      // ...and the retry MUST CAS on the fresh re-read, not the stale value
+      // attempt 0 used. A retry that reused `baseSnapshot` here would fail
+      // this line while every other assertion in this file stays green.
+      expect(auditCasFilters[1]).toBe(JSON.stringify(concurrentSnapshot));
+
+      const attempts = updatesOf().filter((p) => 'approval_snapshot' in p);
+      expect(attempts.length).toBe(2);
+      const landedPayload = attempts[1].approval_snapshot as Record<string, unknown>;
+      // The concurrent write's key must survive — a stale-snapshot retry
+      // would silently drop it.
+      expect(landedPayload.someOtherKey).toBe('x');
+      const [entry] = refusalsFrom(attempts[1]);
+      expect(entry).toMatchObject({ action: 'attach', stage: 'pre-read' });
+    });
+
+    it('gives up silently (no clobber, response unchanged) after losing the race twice', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      sbRef.current = makeSb(
+        {
+          ...HOLIDAY_QUOTE,
+          is_test: false,
+          customer_approved_at: '2026-08-10T00:00:00Z',
+          approval_snapshot: { approvedAt: '2026-08-10T00:00:00Z' },
+        },
+        null,
+        { auditCasMissCount: 2 },
+      );
+
+      const res = await POST(makeReq({ quoteId: QUOTE_ID, contactId: 'contact-1' }));
+      const json = await res.json();
+      expect(res.status).toBe(200);
+      expect(json).toEqual({ linked: false, identityFrozen: true });
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('lost the optimistic-concurrency race twice'),
+      );
+      warnSpy.mockRestore();
+    });
   });
 });
 

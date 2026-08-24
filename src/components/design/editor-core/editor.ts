@@ -5,7 +5,7 @@ import Konva from "konva";
 // THIS folder (./). Everything else in this file is byte-identical with the
 // design tool's canonical editor.ts — keep it that way.
 import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, isItemOnPhoto, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type SideOfHouse, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, isMiniGroupable, pruneOrphanedMiniGroups, removeItemsForPhoto, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
-import { createEditorApi } from "./storage";
+import { createEditorApi, SceneConflictError } from "./storage";
 import { COLORS, setPalette } from "./colors";
 import { renderStrand, strandLengthPx } from "./strand";
 import { createWreath } from "./wreath";
@@ -16,6 +16,7 @@ import { renderText, fontsReady, FONT_OPTIONS, DEFAULT_TEXT_SIZE_IN, type FontFa
 import { createCustom } from "./custom";
 import { createPole } from "./pole";
 import { renderMiniArea } from "./miniArea";
+import { LIGHT_SCALE_MAX, LIGHT_SCALE_MIN, normalizeLightScale } from "./lightScale";
 import { preloadAssets } from "./assets";
 import { renderYardstick, pxPerFoot, yardstickLabel } from "./yardstick";
 import { DEFAULT_KEYMAP, resolveAction, type KeyMap } from "./keymap";
@@ -36,6 +37,7 @@ import { isLineDrawContext } from "./drawContext";
 import { surfaceOptionsForBulbType } from "./surfaceOptions";
 import { sideOfHouseOptions } from "./sideOfHouseOptions";
 import { brightnessForPhoto, setBrightnessForPhoto } from "@/lib/design/photoBrightness";
+import { seedGroupStringCount } from "./miniGroupBilling";
 
 // Default real-world width for newly-placed custom uploads — about 3 feet,
 // big enough to spot on the photo, small enough to resize down with the
@@ -342,6 +344,12 @@ export async function renderEditor(
             <div class="neutral-tick" title="Neutral — original photo brightness"></div>
           </div>
           <span class="icon" title="Brighter">${sunSvg()}</span>
+          <span class="ctl-sep"></span>
+          <span class="ctl-label" title="How big the lights are drawn. Presentation only: this does not change footage or price.">Light size</span>
+          <div class="slider-wrap narrow">
+            <input type="range" min="${LIGHT_SCALE_MIN}" max="${LIGHT_SCALE_MAX}" step="0.1" value="1" id="light-scale" title="Double-click to reset to 1.0x" />
+          </div>
+          <span class="ctl-value" id="light-scale-val">1.0x</span>
         </div>
         <div class="stage-empty" id="empty"${activeBgUrl ? ' style="display:none"' : ""}>
           <div>${activePhotoId ? "This photo couldn't be loaded." : "Upload a photo of the house to get started."}</div>
@@ -357,7 +365,14 @@ export async function renderEditor(
   `;
 
   // --- State ---
-  let scene: Scene = { ...design.scene, brightness: design.scene.brightness ?? 50 };
+  let scene: Scene = {
+    ...design.scene,
+    brightness: design.scene.brightness ?? 50,
+    // Normalize on load, not just on edit: an older design has no field at
+    // all, and a hand-edited scene JSON could carry 0 (invisible lights) or a
+    // huge number. Seeding it here means every later read is already sane.
+    lightScale: normalizeLightScale(design.scene.lightScale),
+  };
   // #88/#117: a permanent (or permanent-bistro) quote's design is locked to
   // one bulb type so the operator only ever draws that type's runs.
   const initialBulbType: BulbType = opts.permanentOnly ? "permanent" : opts.bistroOnly ? "bistro" : "c9";
@@ -793,7 +808,7 @@ export async function renderEditor(
       if (!onActivePhoto(item)) continue;
       let g: Konva.Group;
       if (isStrand(item)) {
-        g = renderStrand(item, ppfForStrand(item));
+        g = renderStrand(item, ppfForStrand(item), activeLightScale());
         g.draggable(true);
         g.on("transformend dragend", () => bakeTransformIntoStrand(g, item.id));
       } else if (isWreath(item)) {
@@ -807,7 +822,7 @@ export async function renderEditor(
         g.draggable(true);
         g.on("transformend dragend", () => bakeTransformIntoGarland(g, item.id));
       } else if (isSpritzer(item)) {
-        g = createSpritzer(item, ppfForActiveYardstick());
+        g = createSpritzer(item, ppfForActiveYardstick(), activeLightScale());
         g.on("transformend dragend", () => bakeTransformIntoSpritzer(g, item.id));
       } else if (isText(item)) {
         g = renderText(item, ppfForActiveYardstick());
@@ -830,7 +845,7 @@ export async function renderEditor(
           g.draggable(false);
         }
       } else if (isMiniArea(item)) {
-        g = renderMiniArea(item, ppfForActiveYardstick());
+        g = renderMiniArea(item, ppfForActiveYardstick(), activeLightScale());
         g.draggable(true);
         g.on("transformend dragend", () => bakeTransformIntoMiniArea(g, item.id));
       } else {
@@ -909,6 +924,15 @@ export async function renderEditor(
   // (They don't have an own-yardstick concept yet — that'd be an easy add later.)
   function ppfForActiveYardstick(): number {
     return pxPerFoot(activeYs());
+  }
+
+  // The scene's light-size multiplier, read fresh on every render so the
+  // slider updates the canvas live. Presentation only: this feeds the bulb
+  // renderers and nothing that computes footage or price. Deliberately NOT
+  // folded into ppfForActiveYardstick above, because px/ft is the money
+  // number (footage = strand px / px/ft) and must stay untouched.
+  function activeLightScale(): number {
+    return normalizeLightScale(scene.lightScale);
   }
 
   // #13: all photo-scoped, like allStrands above.
@@ -1509,22 +1533,71 @@ export async function renderEditor(
   let pendingSave = false;
   let retryTimer: number | null = null;
   let saveSeq = 0;
+  // Ledger row 260: true once the server has rejected a save with a scene
+  // version conflict (a concurrent writer — another tab, another operator, a
+  // server-side re-seed — won the race). Saving is BLOCKED from here on; the
+  // operator must reload to see the current design before editing again. This
+  // is deliberately the only way out — reload-and-reapply-the-edit is a real
+  // design decision this fix doesn't make; see showConflictBanner().
+  let conflicted = false;
+  // Ledger row 260: every doSave() call chains onto this tail instead of
+  // firing its own overlapping PUT. Without this, two saves in flight at once
+  // (a slow autosave overlapping a forced #741 corrective save, or a retry
+  // racing a fresh edit) would both read the SAME `design.version` and send
+  // it — the CAS then rejects whichever lands second with a 409 that's
+  // actually just this client's own earlier write, not a real external
+  // conflict. Serializing means each queued save always uses the freshest
+  // scene + the freshest known version, and a caller awaiting doSave()'s
+  // return value (flushSave) genuinely waits for everything queued so far.
+  let saveTail: Promise<void> = Promise.resolve();
   const savingEl = root.querySelector("#saving") as HTMLElement;
-  async function doSave() {
+  function doSave(): Promise<void> {
+    saveTail = saveTail.then(() => (conflicted ? undefined : runSave()));
+    return saveTail;
+  }
+  async function runSave() {
     // AUDIT FIX (editor-autosave-honest-failure): the PUT can throw on any
     // non-2xx. Previously pendingSave was cleared BEFORE the await and there was
     // no try/catch, so a failed save dropped the billable edit while the pill
     // still read "Saved". Keep pendingSave true until the write actually lands;
     // on failure surface an honest state + schedule a backoff retry (the PUT
     // writes the whole scene, so a later retry self-heals).
-    // AUDIT FIX (W3-008): a slow PUT overlapping a later scheduleSave()/retry
-    // could let an older response's success/failure side effects land after a
-    // newer one's, reverting the "Saved" state (or a retry timer) to a stale
-    // save. Only the LATEST doSave() call may apply side effects.
+    // AUDIT FIX (W3-008): saves are now serialized (see doSave()), so this is
+    // belt-and-suspenders rather than load-bearing — kept as a cheap guard
+    // against a future regression that reintroduces overlap.
     const seq = ++saveSeq;
     try {
-      await api.updateDesign(design.id, { scene, name: design.name });
-    } catch {
+      const result = await api.updateDesign(design.id, { scene, name: design.name, version: design.version ?? null });
+      if (typeof result.version === "number") design.version = result.version;
+    } catch (err) {
+      if (err instanceof SceneConflictError) {
+        // Fix round (HIGH, four-lens review): this branch must run BEFORE the
+        // `destroyed` early-return below. destroy()'s final teardown flush
+        // calls runSave() with `destroyed` already true — and this function
+        // always RESOLVES rather than rejects on a caught error, so
+        // destroy()'s own `flushSave().catch(...)` (which sets the same
+        // marker) never fires either. Without this, a conflict on that last
+        // flush was swallowed completely: no banner (nothing left to show it
+        // to — correct), but also no recovery marker, so the operator's last
+        // edit vanished with no trace. Record the marker for the CURRENT
+        // save attempt (seq === saveSeq — a stale/superseded attempt has
+        // already been overtaken by a newer save and recording it here would
+        // be a false positive) regardless of destroyed; UI updates still
+        // only happen on the live (non-destroyed) path below.
+        if (seq === saveSeq) {
+          try { localStorage.setItem("editorUnsavedDesign", design.id); } catch { /* storage unavailable */ }
+        }
+        if (destroyed || seq !== saveSeq) return;
+        // Ledger row 260: a lost race, NOT a transient failure — do not retry
+        // (retrying would just resend the same now-stale overwrite forever).
+        // Block further saves and tell the operator plainly.
+        conflicted = true;
+        pendingSave = false; // the queued edit is NOT persisted, but nothing further will attempt it — see showConflictBanner()
+        if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+        savingEl.textContent = "Save blocked — reload";
+        showConflictBanner();
+        return;
+      }
       if (destroyed || seq !== saveSeq) return;
       pendingSave = true; // edit not persisted — keep it queued
       savingEl.textContent = "Save failed — retry";
@@ -1544,7 +1617,47 @@ export async function renderEditor(
       if (savingEl.textContent === "Saved") savingEl.textContent = "";
     }, 1500);
   }
+  // Ledger row 260: a persistent, non-auto-dismissing notice — unlike
+  // showTransientNotice, this stays until the operator reloads. Styled INLINE
+  // for the same reason showTransientNotice is (see its comment above): this
+  // file travels unchanged into the standalone design tool, which has no rule
+  // for a class this repo invents.
+  function showConflictBanner() {
+    if (root.querySelector("#scene-conflict-banner")) return; // already shown
+    const host = root.querySelector(".editor");
+    if (!host) return;
+    const banner = document.createElement("div");
+    banner.id = "scene-conflict-banner";
+    banner.style.cssText = [
+      "position:fixed", "top:12px", "left:50%", "transform:translateX(-50%)", "z-index:9999",
+      "max-width:min(90vw,480px)", "padding:10px 14px", "border-radius:8px",
+      "background:#7a1f1f", "color:#fff2f2", "border:1px solid rgba(255,255,255,0.25)",
+      "box-shadow:0 4px 14px rgba(0,0,0,0.35)", "font-size:13px", "line-height:1.4",
+      "text-align:center",
+    ].join(";");
+    banner.textContent = "This design changed elsewhere — your recent edits here are NOT saved. ";
+    const btn = document.createElement("button");
+    btn.textContent = "Reload";
+    btn.style.cssText = "margin-left:6px;text-decoration:underline;cursor:pointer;background:none;border:none;color:inherit;font:inherit;padding:0;";
+    // Fix round (MED, four-lens review): a bare reload() here silently
+    // discarded more than just this banner's already-lost scene edit — this
+    // editor is often EMBEDDED in a page with its OWN unrelated unsaved form
+    // state (the quote builder's pricing overrides, line items) that a
+    // reload would wipe with no warning at all. A confirm is the simplest
+    // guard, not a state-preservation system — consistent with this file's
+    // constraint of staying framework-free (it travels unchanged into the
+    // standalone design tool, which has no rule for a class this repo
+    // invents).
+    btn.addEventListener("click", () => {
+      if (window.confirm("Reload now? Any other unsaved changes on this page will also be lost.")) {
+        window.location.reload();
+      }
+    });
+    banner.appendChild(btn);
+    host.prepend(banner);
+  }
   function scheduleSave() {
+    if (conflicted) return; // #260: blocked until reload — see showConflictBanner()
     if (saveTimer) clearTimeout(saveTimer);
     pendingSave = true;
     savingEl.textContent = "Saving…";
@@ -1737,13 +1850,16 @@ export async function renderEditor(
     // PUT the still-un-spliced scene, landing AFTER the server's own prune
     // write and silently reverting it. Force an immediate corrective save of
     // the now-spliced scene right after processing: it cancels any debounce
-    // timer so the PUT goes out now rather than later, and — because doSave()
-    // only applies the LATEST saveSeq's outcome (AUDIT FIX W3-008) — this
-    // becomes the save whose success updates the "Saved" pill even if an
-    // earlier stale PUT is still in flight. This narrows the race rather than
-    // closing it outright (no row lock — a slower stale PUT could in theory
-    // still land after this one), same trade-off already accepted by the
-    // pre-delete flush in DesignEditor.deletePhoto and seedDesignFromAnalysis.
+    // timer so the PUT goes out now rather than later. Ledger row 260: doSave()
+    // now SERIALIZES every save (see its comment above) rather than letting an
+    // earlier stale PUT race a later one concurrently, so this corrective save
+    // simply queues after whatever's already in flight and always uses the
+    // freshest `scene` + `design.version` when its turn comes — no separate
+    // staleness reasoning needed here anymore. Kept as a forced immediate save
+    // (rather than relying on the 600ms debounce) purely to close the WINDOW
+    // before the next edit, same trade-off already accepted by the pre-delete
+    // flush in DesignEditor.deletePhoto and seedDesignFromAnalysis.
+    if (conflicted) return; // #260: blocked until reload — see showConflictBanner()
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
     pendingSave = true;
     savingEl.textContent = "Saving…";
@@ -2786,7 +2902,7 @@ export async function renderEditor(
       sb.querySelector("#sel-delete")?.addEventListener("click", deleteSelected);
       if (canGroup) {
         sb.querySelector("#sel-group-mini-mixed")?.addEventListener("click", () => {
-          groupSelectedMini(miniCandidates, miniCandidates[0].surface ?? "bush", miniCandidates[0].stringCount ?? 1);
+          groupSelectedMini(miniCandidates, miniCandidates[0].surface ?? "bush", seedGroupStringCount(miniCandidates, miniCandidates[0].stringCount ?? 1));
         });
       }
       return;
@@ -3151,7 +3267,17 @@ export async function renderEditor(
         // Railing or Curtain across a multi-selection means ONE grouped unit built
         // from these strands — emit a single MiniGroupItem (projection bills one
         // "Railing – N strings" / "Curtain Lights – N strings") instead of tagging
-        // each strand as its own billed unit. Default the string count to the member count.
+        // each strand as its own billed unit. #334: seed via seedGroupStringCount,
+        // fallback sel.length (this site's historical seed, unchanged) — each
+        // strand carries its own staff-editable stringCount (the #sel-stringcount
+        // field above, shown whenever a selection's surface is bush/tree/column/
+        // railing/curtain). Summing only fires when a member carries an explicit
+        // count above 1 (a staffer set real per-strand counts before re-tagging to
+        // Railing/Curtain); otherwise this seeds exactly sel.length, same as
+        // before — a prod sweep found 84% of grouped members sit at the untouched
+        // default of 1, where summing would silently OVER-bill (see
+        // miniGroupBilling.ts), so the ordinary trace-then-group workflow is left
+        // alone on purpose.
         // #227 FIX 2: exclude a selection containing a #13 linked twin — grouping
         // a twin (a render-only depiction of a canonical strand on ANOTHER photo)
         // lets a later delete of that OTHER photo's canonical cascade-prune the
@@ -3161,7 +3287,7 @@ export async function renderEditor(
         // `linkedToId` items), so falling through to a plain surface tag below is
         // harmless — it just doesn't create a group to resurrect.
         if ((v === "railing" || v === "curtain") && sel.length >= 2 && sel.every(isMiniGroupable)) {
-          groupSelectedMini(sel, v, sel.length);
+          groupSelectedMini(sel, v, seedGroupStringCount(sel, sel.length));
           return;
         }
         updateSelected((s) => ({ ...s, surface: v ? (v as Surface) : null }));
@@ -3199,7 +3325,7 @@ export async function renderEditor(
       });
     }
     sb.querySelector("#sel-group-mini")?.addEventListener("click", () => {
-      groupSelectedMini(sel, sel[0].surface ?? "bush", sel[0].stringCount ?? 1);
+      groupSelectedMini(sel, sel[0].surface ?? "bush", seedGroupStringCount(sel, sel[0].stringCount ?? 1));
     });
     sb.querySelector("#sel-delete")!.addEventListener("click", deleteSelected);
   }
@@ -3902,7 +4028,7 @@ export async function renderEditor(
     }
 
     sb.querySelector("#sel-group-mini-area")?.addEventListener("click", () => {
-      groupSelectedMini(sel, sel[0].surface ?? "bush", sel[0].stringCount ?? 1);
+      groupSelectedMini(sel, sel[0].surface ?? "bush", seedGroupStringCount(sel, sel[0].stringCount ?? 1));
     });
 
     sb.querySelector("#sel-ma-duplicate")?.addEventListener("click", () => {
@@ -3934,6 +4060,20 @@ export async function renderEditor(
   // mix strand + miniArea members, not just strands). A `function` (not a
   // `const`) so it's hoisted — every sidebar panel that offers "Group as one
   // quote unit" (strand-only, scattershot-only, mixed) calls this same one.
+  // #334: every call site seeds `stringCount` via miniGroupBilling's
+  // seedGroupStringCount(members, fallback), passing ITS OWN pre-existing
+  // fallback (members[0].stringCount for the three "Group as one quote unit"
+  // buttons; sel.length for the railing/curtain dropdown above — these are
+  // NOT harmonised on purpose). seedGroupStringCount sums the members' own
+  // counts ONLY when at least one member carries an explicit count above 1;
+  // otherwise it returns the caller's fallback unchanged. This is conditional,
+  // not unconditional summing: a prod sweep found 84% of grouped members sit
+  // at the untouched default of 1 (staff trace N segments, group them, then
+  // type the true count on the GROUP), so summing every time would silently
+  // OVER-bill the common case. The minority case this exists for is row 334's
+  // actual bug — a member with a real explicit count (e.g. a 4-string
+  // scattershot) grouped alongside members at the default, previously seeding
+  // just the first member's count instead of preserving the explicit one.
   function groupSelectedMini(members: (StrandItem | MiniAreaItem)[], surface: Surface, stringCount: number) {
     // #227 FIX 2 belt-and-braces: every call site already filters to
     // isMiniGroupable (which excludes linkedToId), but guard here too
@@ -4725,6 +4865,42 @@ export async function renderEditor(
     scene = setBrightnessForPhoto(scene, extraPhotoIds, activePhotoId, 50);
     drawTint();
     scheduleSave();
+    commit();
+  });
+
+  // --- Light-size slider ---
+  // Same shape as brightness above, with one difference: brightness only
+  // repaints the tint layer, while light size changes the drawn items, so
+  // this redraws the canvas instead. requestCanvasRedraw is rAF-throttled, so
+  // dragging costs one rebuild per frame rather than one per input event.
+  const lightScaleEl = root.querySelector("#light-scale") as HTMLInputElement;
+  const lightScaleValEl = root.querySelector("#light-scale-val") as HTMLElement;
+  function showLightScale(v: number) {
+    lightScaleEl.value = String(v);
+    lightScaleValEl.textContent = `${v.toFixed(1)}x`;
+  }
+  function applyLightScale(value: number) {
+    const v = normalizeLightScale(value);
+    scene = { ...scene, lightScale: v };
+    showLightScale(v);
+    requestCanvasRedraw();
+    scheduleSave();
+  }
+  // Seed the control from the saved scene WITHOUT saving or redrawing: this
+  // runs on every open, and calling applyLightScale here would dirty the
+  // design (and queue an autosave) just because someone looked at it.
+  showLightScale(normalizeLightScale(scene.lightScale));
+  lightScaleEl.addEventListener("input", () => {
+    applyLightScale(Number(lightScaleEl.value));
+  });
+  // Snapshot for undo only once the user releases the slider, so a drag is one
+  // undo step and not fifty.
+  lightScaleEl.addEventListener("change", () => {
+    commit();
+  });
+  // Double-click resets to 1.0x — lights drawn at their real-world size.
+  lightScaleEl.addEventListener("dblclick", () => {
+    applyLightScale(1);
     commit();
   });
 
