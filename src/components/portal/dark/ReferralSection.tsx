@@ -58,10 +58,11 @@ export function ReferralSection({
           <p className="mt-4 text-[16px] md:text-[17px] text-[#A89F87] leading-[1.65]">
             You get {formatUsd(creditUsd)} credit for every friend who books an install, good
             toward any Yule Love Lights service: holiday, permanent, event and wedding lighting,
-            or bistro. It stacks, so there is no limit on how many friends you refer. Your friend
-            gets {formatUsd(spritzerValueUsd)} in free lighting on their first booked install,{' '}
-            {spritzerCount} staked spotlights for their yard ({spritzerSizeInches}&quot;
-            spritzers).
+            or bistro. It stacks, so there is no limit on how many friends you refer. When you
+            redeem, your whole balance applies together to one job, so save it for something big
+            enough to use it all. Your friend gets {formatUsd(spritzerValueUsd)} in free lighting
+            on their first booked install, {spritzerCount} staked spotlights for their yard (
+            {spritzerSizeInches}&quot; spritzers).
           </p>
           {referralLink ? (
             <>

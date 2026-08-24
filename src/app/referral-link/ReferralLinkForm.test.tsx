@@ -212,6 +212,16 @@ describe('ReferralLinkReady (naldo/referral-link-personalized, review fix 1; cop
     expect(html).toContain('books');
   });
 
+  // Review fix 6: consumeCredits (src/lib/referrals.ts) flips the referrer's
+  // ENTIRE booked balance to spent in one shot, capped at the job subtotal
+  // -- a $250 balance applied to a $180 job burns all $250. The referrer
+  // never sees the balance screen staff do, so the sell copy that promotes
+  // stacking now discloses it applies together against one job.
+  it('discloses that the whole balance applies together to one job when redeemed (never alarming, no accrual-logic change)', () => {
+    const html = renderToStaticMarkup(<ReferralLinkReady link={LINK} name="Riley" {...REWARD_TERMS} />);
+    expect(html).toContain('applies together to one job');
+  });
+
   it('dollarizes the friend spritzer reward and still names the physical item (never hardcodes 170)', () => {
     const html = renderToStaticMarkup(<ReferralLinkReady link={LINK} name="Riley" {...REWARD_TERMS} />);
     expect(html).toContain('$170 in free lighting');

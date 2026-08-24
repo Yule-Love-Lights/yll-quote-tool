@@ -30,6 +30,17 @@ describe('ReferralSection', () => {
     expect(html).not.toContain('next season');
   });
 
+  // Review fix 6: consumeCredits (src/lib/referrals.ts) flips the referrer's
+  // ENTIRE booked balance to spent in one shot, capped at the job subtotal,
+  // so a bigger balance than the job costs loses the difference. This page
+  // promotes stacking ("It stacks, so there is no limit...") with no
+  // warning of that, so it now discloses that a redemption applies the
+  // whole balance together to one job.
+  it('discloses that the whole balance applies together to one job when redeemed (never alarming, no accrual-logic change)', () => {
+    const html = renderToStaticMarkup(<ReferralSection referralLink={null} {...PROPS} />);
+    expect(html).toContain('applies together to one job');
+  });
+
   it('renders the personal referral link + copy control when one is available', () => {
     const html = renderToStaticMarkup(
       <ReferralSection referralLink="https://quote.yulelovelights.com/refer/ABCD1234" {...PROPS} />,
