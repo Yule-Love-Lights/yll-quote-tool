@@ -983,10 +983,13 @@ export function refundDueEmailHtml(input: {
 
 export const REFERRAL_EARNED_EMAIL_SUBJECT = 'You just earned a referral credit! 🎁';
 
+// Review fix 4: this is the exact moment a referrer is most likely to
+// assume they were given money. Both the SMS and the email now say
+// plainly, right next to the amount, that it is a credit, not cash.
 export function referralEarnedSmsBody(friendFirstName: string, amountUsd: number, referLink: string): string {
   return `Great news! ${friendFirstName} just booked with Yule Love Lights, so you've earned ${usd(
     amountUsd,
-  )} in referral credit, good toward any job. Refer another friend anytime: ${referLink}`;
+  )} in referral credit, good toward any job. It's a credit, not cash. Refer another friend anytime: ${referLink}`;
 }
 
 export function referralEarnedEmailHtml(friendFirstName: string, amountUsd: number, referLink: string): string {
@@ -995,7 +998,7 @@ export function referralEarnedEmailHtml(friendFirstName: string, amountUsd: numb
     `<p>Great news!</p>`,
     `<p><strong>${friend}</strong> just booked with Yule Love Lights, so you've earned <strong>${usd(
       amountUsd,
-    )}</strong> in referral credit, good toward any Yule Love Lights service: holiday, permanent, event and wedding lighting, or bistro.</p>`,
+    )}</strong> in referral credit, good toward any Yule Love Lights service: holiday, permanent, event and wedding lighting, or bistro. It's a credit, not cash, applied when you book your next job.</p>`,
     `<p>There's no limit, refer another friend anytime:</p>`,
     `<p><a href="${escapeHtml(referLink)}">${escapeHtml(referLink)}</a></p>`,
     `<p>Thank you for spreading the word,<br>Yule Love Lights</p>`,

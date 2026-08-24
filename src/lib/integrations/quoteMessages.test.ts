@@ -29,6 +29,8 @@ import {
   receiptSmsBody,
   receiptEmailHtml,
   referralLinkEmailHtml,
+  referralEarnedSmsBody,
+  referralEarnedEmailHtml,
   colorChangeAppliedEmailHtml,
 } from './quoteMessages';
 
@@ -1009,6 +1011,24 @@ describe('greeting casing sweep (row 315): every customer greeting routes throug
     });
     expect(receiptEmailHtml(args('susan'))).toContain('Hi Susan,');
     expect(receiptEmailHtml(args('Susan'))).toContain('Hi Susan,');
+  });
+
+  // Review fix 4: the SMS/email fired the moment a referrer actually earns
+  // are the exact moment someone assumes they were given money, so both
+  // must say plainly, next to the amount, that it is a credit, not cash.
+  it('referralEarnedSmsBody states the credit-not-cash distinction next to the amount', () => {
+    const body = referralEarnedSmsBody('Riley', 125, 'https://x/refer/abc');
+    expect(body).toContain('$125');
+    expect(body).toContain("It's a credit, not cash");
+    expect(body).not.toContain('—');
+  });
+
+  it('referralEarnedEmailHtml states the credit-not-cash distinction next to the amount', () => {
+    const html = referralEarnedEmailHtml('Riley', 125, 'https://x/refer/abc');
+    expect(html).toContain('$125');
+    expect(html).toContain('credit, not cash');
+    expect(html).toContain('any Yule Love Lights service');
+    expect(html).not.toContain('—');
   });
 
   const REFERRAL_LINK_REWARD_TERMS = { creditUsd: 125, spritzerCount: 2, spritzerSizeInches: 16 };
