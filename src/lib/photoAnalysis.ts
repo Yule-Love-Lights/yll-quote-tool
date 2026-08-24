@@ -429,15 +429,16 @@ When a satellite image is supplied, also produce polylines in the SATELLITE imag
 FIRST, FIND THE ROAD. The "front" is the public street the house fronts onto — CORRELATE WITH THE STREET-VIEW IMAGE to confirm which roof edge that is. Do NOT assume the nearest paved surface is the road: a neighbor's driveway, a shared driveway, a side street, or a back alley is NOT the front. If you cannot confidently tell which edge faces the real road, return empty arrays rather than guessing the front.
 
 THEN split ONLY the front roof section:
-- satelliteSantasLines = the FRONT roof edge that faces the road (the street-facing eave/gutter). Usually one straight segment.
-- satelliteGingerbreadLines = the RIDGE of that front section PLUS its two SIDE edges (the left/right roof edges nearest the front).
+- satelliteSantasLines = the FRONT roof edge(s) that face the road (the street-facing eave/gutter). This is an ARRAY — do not force it to one entry. A plain rectangular front is one segment; a front with a garage wing, bump-out, ell, or any section set back or forward from the main body needs a SEPARATE segment for each, the same way the street-view MULTI-RUN rule above (rule 3) already splits those into separate entries. Two edges at different depths cannot be one polyline. A bigger or more cut-up house gets MORE segments here, never fewer — this array should scale with the house the same way santasLines does on the street photo.
+- satelliteGingerbreadLines = the RIDGE of that front section PLUS its two SIDE edges (the left/right roof edges nearest the front) — same array-not-single-line rule: one segment per distinct run.
 - DO NOT trace the BACK roof edge, and do NOT run the side edges all the way around to the backyard — stop them at the front section. No backyard lines, ever.
 
-HOW TO TRACE THE SATELLITE ROOFLINE — follow these rules strictly. If you can't follow them for this image, return an EMPTY array ("satelliteSantasLines": []) instead of guessing:
+HOW TO TRACE THE SATELLITE ROOFLINE — follow these rules strictly:
 - Snap polyline points ONLY to the ACTUAL ROOF EDGE (visible shingle seam / gutter line where the roof plane ends and the wall/ground begins). Lighter roofing material against the yard or driveway is usually the edge.
 - DO NOT trace the property boundary, the lot outline, driveways, sidewalks, pools, decks, patios, pergolas, sheds, detached garages, or landscaping. ONLY the primary structure's roof.
-- If the roof is L-shaped / U-shaped / T-shaped / has a courtyard, USE ENOUGH POINTS to hug every inside corner. A bounding box is WRONG — it will overstate footage. 8-20 points is typical for a modest cut-up; commercial can need 40+.
-- Shadows and tree canopy can obscure an edge. If you can't see the edge, DO NOT guess — skip that segment or return an empty array.
+- If the roof is L-shaped / U-shaped / T-shaped / has a courtyard, USE ENOUGH POINTS to hug every inside corner within a single connected run, AND add a separate polyline entry for any wing or section a single connected line can't reach. A bounding box is WRONG — it will overstate footage. 8-20 points is typical for a modest cut-up; commercial can need 40+.
+- Shadows and tree canopy can obscure an edge. If you can't see ONE specific run, skip only that run and KEEP the segments you can see — do not empty the whole array because one part is unclear.
+- A complex or large roofline is NOT by itself a reason to return fewer or empty segments — the more distinct roof planes you can see, the more segments you should return. Reserve an empty array for when you genuinely cannot see the roof at all (see below), not for "this one is complicated."
 - Ridges on the satellite image appear as the BRIGHTEST lines running along the roof's peak (the sunlit side meets the shaded side). Trace along those peak lines, not across the slopes.
 - FOOTAGE MUST BE DERIVED FROM THE POLYLINE. Do not invent a number and then draw a polyline to match. Compute: for each segment, sum sqrt((x2-x1)^2 + (y2-y1)^2) in normalized coords, multiply by 640 to get pixels, multiply by the feet-per-pixel scale. Sum across segments. Round to the nearest 5ft. If your polyline is empty, footage is 0.
 
@@ -451,7 +452,7 @@ Set "preferredSource" to "satellite" when:
 - Street view is heavily obscured by trees, fences, or setback.
 Otherwise set it to "street".
 
-If you could not reliably trace the satellite roofline (heavy tree cover, low contrast, image unclear), set satelliteSantasLines to [] and satelliteGingerbreadLines to []. Note this in the "notes" field. The user will trace it manually — an empty array is MUCH better than a wrong one.
+Only return fully empty satelliteSantasLines/satelliteGingerbreadLines arrays when the roof itself is genuinely not visible in the image (heavy tree cover, low contrast, image unclear, wrong house framed) — say which of these it is in the "notes" field. Do NOT return empty because the roof has many planes or looks complicated; that case gets MORE segments, not zero. The user will trace manually only what you truly could not see — an empty array is for "I cannot see this roof," not for "this roof is hard."
 
 ${OUTPUT_JSON_SCHEMA}`;
 
