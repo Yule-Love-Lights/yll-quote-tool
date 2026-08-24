@@ -18,7 +18,15 @@ vi.mock('@supabase/ssr', () => ({
   }),
 }));
 
-import { roleOf, nameOf, getOperator, requireOperator, requireAdmin, withAuthFetchTimeout } from './supabaseServer';
+import {
+  roleOf,
+  nameOf,
+  getOperator,
+  requireOperator,
+  requireAdmin,
+  withAuthFetchTimeout,
+  authGateEngaged,
+} from './supabaseServer';
 
 beforeEach(() => {
   userRef.current = null;
@@ -105,26 +113,51 @@ describe('getOperator', () => {
   });
 });
 
+// ─── authGateEngaged — the single dormancy predicate (ledger #347) ──────────
+// Engaged by DEFAULT; dormant ONLY on the explicit AUTH_GATE_ENABLED='false'
+// opt-out. Deliberately NOT a function of whether Supabase env is configured —
+// see the doc comment on authGateEngaged() for why that would be a new
+// fail-open on a prod misconfig.
+describe('authGateEngaged', () => {
+  it('is engaged when the flag is unset (the new default)', () => {
+    delete process.env.AUTH_GATE_ENABLED;
+    expect(authGateEngaged()).toBe(true);
+  });
+
+  it('is engaged when the flag is exactly "true"', () => {
+    process.env.AUTH_GATE_ENABLED = 'true';
+    expect(authGateEngaged()).toBe(true);
+  });
+
+  it('is engaged for any value other than the literal string "false" (e.g. a typo)', () => {
+    process.env.AUTH_GATE_ENABLED = 'False';
+    expect(authGateEngaged()).toBe(true);
+  });
+
+  it('is dormant ONLY when the flag is exactly "false"', () => {
+    process.env.AUTH_GATE_ENABLED = 'false';
+    expect(authGateEngaged()).toBe(false);
+  });
+});
+
 // ─── requireOperator — dormancy-aware per-route guard ───────────────────────
-// The per-route counterpart of the middleware perimeter. DORMANT unless
-// AUTH_GATE_ENABLED==='true', so adding it to routes is a no-op until go-live —
-// critical because the Supabase auth env isn't configured until Slice 4, and a
-// hard getOperator() gate would 401 every operator route while still dormant.
+// The per-route counterpart of the middleware perimeter. Engaged by default
+// (ledger #347); dormant ONLY on the explicit AUTH_GATE_ENABLED='false' opt-out.
 describe('requireOperator', () => {
-  it('allows (returns null) when the gate is dormant — even with no session', async () => {
-    // gate off (default in beforeEach)
+  it('returns a 401 when the gate is engaged by DEFAULT (flag unset) and no operator is present', async () => {
+    // gate flag unset (default in beforeEach) — must still enforce.
     userRef.current = null;
+    const res = await requireOperator();
+    expect(res).not.toBeNull();
+    expect(res?.status).toBe(401);
+  });
+
+  it('allows (returns null) when engaged by default and an operator is authenticated', async () => {
+    userRef.current = { id: 'u1', email: 'a@x.com', app_metadata: { role: 'admin' } };
     expect(await requireOperator()).toBeNull();
   });
 
-  it('does not even consult Supabase when dormant (works with env unset)', async () => {
-    delete process.env.SUPABASE_URL;
-    delete process.env.SUPABASE_ANON_KEY;
-    userRef.current = null;
-    expect(await requireOperator()).toBeNull();
-  });
-
-  it('returns a 401 response when the gate is enabled and no operator is present', async () => {
+  it('returns a 401 response when the gate is explicitly "true" and no operator is present', async () => {
     process.env.AUTH_GATE_ENABLED = 'true';
     userRef.current = null;
     const res = await requireOperator();
@@ -132,7 +165,7 @@ describe('requireOperator', () => {
     expect(res?.status).toBe(401);
   });
 
-  it('returns a 401 when the gate is enabled and the session is invalid', async () => {
+  it('returns a 401 when the gate is engaged and the session is invalid', async () => {
     process.env.AUTH_GATE_ENABLED = 'true';
     userRef.current = { id: 'u1' };
     userRef.error = { message: 'bad jwt' };
@@ -140,10 +173,36 @@ describe('requireOperator', () => {
     expect(res?.status).toBe(401);
   });
 
-  it('allows (returns null) when the gate is enabled and an operator is authenticated', async () => {
+  it('allows (returns null) when the gate is explicitly "true" and an operator is authenticated', async () => {
     process.env.AUTH_GATE_ENABLED = 'true';
     userRef.current = { id: 'u1', email: 'a@x.com', app_metadata: { role: 'admin' } };
     expect(await requireOperator()).toBeNull();
+  });
+
+  it('allows (returns null) when deliberately opted OUT (AUTH_GATE_ENABLED=false) — even with no session', async () => {
+    process.env.AUTH_GATE_ENABLED = 'false';
+    userRef.current = null;
+    expect(await requireOperator()).toBeNull();
+  });
+
+  it('does not even consult Supabase when deliberately opted out (works with env unset)', async () => {
+    process.env.AUTH_GATE_ENABLED = 'false';
+    delete process.env.SUPABASE_URL;
+    delete process.env.SUPABASE_ANON_KEY;
+    userRef.current = null;
+    expect(await requireOperator()).toBeNull();
+  });
+
+  // THE new-fail-open regression test: missing Supabase env must NOT be
+  // treated as "can't check, so allow" — engaged-by-default + unconfigured
+  // env must still 401, because getOperator() fails closed on a null client.
+  it('fails CLOSED — not open — when engaged (default) and Supabase env is missing', async () => {
+    delete process.env.SUPABASE_URL;
+    delete process.env.SUPABASE_ANON_KEY;
+    userRef.current = { id: 'u1', app_metadata: { role: 'admin' } }; // would-be operator, irrelevant — no client to check them with
+    const res = await requireOperator();
+    expect(res).not.toBeNull();
+    expect(res?.status).toBe(401);
   });
 });
 
