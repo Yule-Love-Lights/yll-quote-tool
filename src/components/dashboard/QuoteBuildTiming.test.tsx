@@ -15,6 +15,7 @@ describe('QuoteBuildTiming', () => {
             averageSeconds: 754,
             medianSeconds: 600,
             p90Seconds: 1500,
+            excludedCount: 0,
           },
         ]}
       />,

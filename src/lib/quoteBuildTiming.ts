@@ -22,7 +22,25 @@ export type QuoteBuildTimingStat = {
   averageSeconds: number;
   medianSeconds: number;
   p90Seconds: number;
+  /** Sessions left OUT of the figures above for running past the idle cap. */
+  excludedCount: number;
 };
+
+// Ledger row 374. A session is wall-clock: it runs from accepting the contact
+// until the quote is first sent, and nothing pauses it. A staffer who opens a
+// draft before lunch and sends it after records the whole span, so without a
+// cap the average measures interruption rather than effort, and a single
+// resumed draft dominates a person's number.
+//
+// Sessions past this length are EXCLUDED from the figures rather than clamped.
+// Clamping would invent a duration that nobody actually worked; excluding says
+// honestly that the session was not a clean measurement. The count of excluded
+// sessions is reported alongside, so the exclusion is visible rather than a
+// silent trim.
+//
+// Two hours is deliberately generous for a task normally measured in minutes.
+// Change this one constant to retune it.
+export const QUOTE_BUILD_IDLE_CAP_SECONDS = 2 * 60 * 60;
 
 export type StartQuoteBuildSessionResult =
   | { ok: true; kind: 'started' | 'existing'; row: QuoteBuildSessionRow }
@@ -355,7 +373,13 @@ function median(sorted: number[]): number {
 export function computeQuoteBuildTimingStats(rows: QuoteBuildSessionRow[]): QuoteBuildTimingStat[] {
   const groups = new Map<
     string,
-    { operatorId: string | null; operatorLabel: string; labelAt: number; durations: number[] }
+    {
+      operatorId: string | null;
+      operatorLabel: string;
+      labelAt: number;
+      durations: number[];
+      excludedCount: number;
+    }
   >();
 
   for (const row of rows) {
@@ -369,18 +393,35 @@ export function computeQuoteBuildTimingStats(rows: QuoteBuildSessionRow[]): Quot
       operatorLabel: row.started_by_label,
       labelAt: sent,
       durations: [],
+      excludedCount: 0,
     };
     if (sent > group.labelAt) {
       group.operatorLabel = row.started_by_label;
       group.labelAt = sent;
     }
-    group.durations.push((sent - started) / 1000);
+    const seconds = (sent - started) / 1000;
+    if (seconds > QUOTE_BUILD_IDLE_CAP_SECONDS) group.excludedCount += 1;
+    else group.durations.push(seconds);
     groups.set(key, group);
   }
 
   return [...groups.values()]
     .map((group) => {
       const sorted = [...group.durations].sort((a, b) => a - b);
+      // A staffer whose every session ran past the cap still appears, with a
+      // zero count and the excluded tally, rather than vanishing from the table
+      // as though they had built nothing.
+      if (sorted.length === 0) {
+        return {
+          operatorId: group.operatorId,
+          operatorLabel: group.operatorLabel,
+          count: 0,
+          averageSeconds: 0,
+          medianSeconds: 0,
+          p90Seconds: 0,
+          excludedCount: group.excludedCount,
+        };
+      }
       return {
         operatorId: group.operatorId,
         operatorLabel: group.operatorLabel,
@@ -388,6 +429,7 @@ export function computeQuoteBuildTimingStats(rows: QuoteBuildSessionRow[]): Quot
         averageSeconds: sorted.reduce((sum, value) => sum + value, 0) / sorted.length,
         medianSeconds: median(sorted),
         p90Seconds: percentile(sorted, 0.9),
+        excludedCount: group.excludedCount,
       };
     })
     .sort((a, b) => a.operatorLabel.localeCompare(b.operatorLabel));
