@@ -41,7 +41,11 @@ import {
 import { getInvoiceByJob, type InvoicePricingInput } from '@/lib/invoices';
 import { roundMoney as round2 } from '@/lib/money';
 import { resolveAgreedTotal, amendedAgreedTotal } from '@/lib/agreedTotal';
-import { resyncInvoiceToAgreedTotal, computeInvoiceResyncTotals } from '@/lib/quoteAmendInvoiceSync';
+import {
+  resyncInvoiceToAgreedTotal,
+  computeInvoiceResyncTotals,
+  priorBalanceCollectedUsd,
+} from '@/lib/quoteAmendInvoiceSync';
 import { getJobByQuote } from '@/lib/jobs';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { sendSms, sendEmail, isHighLevelConfigured } from '@/lib/integrations/highlevel';
@@ -280,17 +284,28 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // *successful* re-sync could, and silently, which is the bug FIX A fixed.
   const invoiceForBasis = (job ? await getInvoiceByJob(job.id) : null) ?? invoice;
   if (invoiceForBasis && invoiceForBasis.status !== 'cancelled' && quote.result) {
+    // Row 341 fix round 3 (technical-lens HIGH): pass priorBalanceCollectedUsd
+    // derived from this SAME fresh invoiceForBasis read, so the stamped
+    // invoice_basis.new_balance agrees with what the re-sync below actually
+    // writes to the invoices row — both call computeInvoiceResyncTotals with
+    // the identical fifth argument, from the identical row.
     const planned = computeInvoiceResyncTotals(
       quote.result,
       depositPaid,
       newTotal,
       invoiceForBasis.tax_overridden,
+      priorBalanceCollectedUsd(invoiceForBasis),
     );
     if (typeof invoiceForBasis.total === 'number' && Number.isFinite(invoiceForBasis.total)) {
       amendment.invoice_basis = {
         previous_total: invoiceForBasis.total,
         new_total: planned.total,
         delta: round2(planned.total - invoiceForBasis.total),
+        // Row 341 fix round 3: read by resolveAmendmentBasis (amend.ts) so the
+        // customer notice/portal card/staff alert all quote this SAME
+        // balance-beyond-deposit-aware figure instead of recomputing a
+        // deposit-only one.
+        new_balance: planned.balance,
       };
     }
   }
@@ -347,19 +362,31 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // now shared with /amend-decline (src/lib/quoteAmendInvoiceSync.ts) — a
   // decline used to leave the invoice frozen at the rejected figures.
   //
-  // FIX A (fix round 4): this is now a PURE side effect on the invoices table
-  // — its return value is unused. The figures the customer notice quotes (and
-  // the figures already persisted in amendment.invoice_basis, above) are the
-  // PLANNED numbers computed before write 1, not this call's outcome; see the
-  // comment above the pre-write computation for why the two can't diverge in
-  // the case that matters (a successful re-sync), and what happens when they
-  // theoretically could (an unsuccessful one).
+  // FIX A (fix round 4): the figures the customer notice quotes (and the
+  // figures already persisted in amendment.invoice_basis, above) are the
+  // PLANNED numbers computed before write 1, not this call's outcome — see
+  // the comment above the pre-write computation for why that's still correct
+  // for what the customer is TOLD (the agreed total, not the invoice row).
+  //
+  // Row 341 (staff-lens HIGH, this fix round): the return value is NOT
+  // discarded any more — a lost CAS race (resyncInvoiceToAgreedTotal now
+  // retries once, then gives up) means the invoices row was never updated to
+  // match `amendment.invoice_basis`, even though that basis is already
+  // persisted above. `invoiceResyncFailed` surfaces that to the operator in
+  // THIS response, synchronously, so "Record amendment" can never read as a
+  // clean success when the linked invoice is actually stale — the collection
+  // routes (charge-balance) still read the invoice row directly, so a
+  // staffer who doesn't see this flag could otherwise charge the STALE
+  // balance. A durable marker on the quote (resyncInvoiceToAgreedTotal's own
+  // best-effort flagInvoiceResyncFailed) covers the case nobody reads this
+  // particular response.
   //
   // Delta-verify MEDIUM-HIGH (fix round 5): gates on `invoiceForBasis` — the
   // SAME fresh read the invoice_basis stamp above used — not a separately
   // stale `invoice`. See that read's own comment for why sharing it matters.
+  let invoiceResyncFailed = false;
   if (invoiceForBasis && invoiceForBasis.status !== 'cancelled' && quote.result) {
-    await resyncInvoiceToAgreedTotal({
+    const resyncOutcome = await resyncInvoiceToAgreedTotal({
       jobId: job ? job.id : null,
       invoice: invoiceForBasis,
       result: quote.result,
@@ -368,6 +395,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       logPrefix: '[api/quotes/:id/amend]',
       retiredReason: 'amend-reopen',
     });
+    invoiceResyncFailed = !resyncOutcome.resynced;
   }
 
   // Optional, STAFF-INITIATED customer notice of the change (SPEC §4.4 re-consent
@@ -485,6 +513,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     isTest: !!quote.is_test,
     notified,
     notifyError,
+    // Row 341: true when a linked invoice existed but the write above never
+    // landed (lost its CAS race twice) — the operator must NOT treat this
+    // amendment as fully reflected on the invoice; reconcile manually before
+    // trusting "Charge remaining balance" against this order.
+    invoiceResyncFailed,
     amendment: {
       previous_total: amendment.previous_total,
       new_total: amendment.new_total,

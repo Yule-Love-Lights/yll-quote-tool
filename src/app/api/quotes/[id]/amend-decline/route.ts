@@ -228,12 +228,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // this endpoint report a failure back to the customer. getJobByQuote /
   // getInvoiceByJob already fail safe to null on a read error (same contract
   // /amend relies on), so no extra try/catch is needed beyond that.
+  //
+  // Row 341 (staff-lens HIGH, this fix round): the return value is captured
+  // (it used to be discarded) — a lost CAS race (resyncInvoiceToAgreedTotal
+  // retries once, then gives up) leaves the invoice at the REFUSED, too-high
+  // total the customer just declined, and the collection routes still read
+  // that row directly. `invoiceResyncFailed` in this response tells staff so
+  // — a durable marker on the quote (resyncInvoiceToAgreedTotal's own
+  // best-effort flagInvoiceResyncFailed) covers the case nobody reads it.
+  let invoiceResyncFailed = false;
   if (quote.result) {
     const job = await getJobByQuote(id);
     const invoice = job ? await getInvoiceByJob(job.id) : null;
     if (invoice && invoice.status !== 'cancelled') {
       const newTotal = resolveAgreedTotal(nextSnapshot, quote.result);
-      await resyncInvoiceToAgreedTotal({
+      const resyncOutcome = await resyncInvoiceToAgreedTotal({
         jobId: job!.id,
         invoice,
         result: quote.result,
@@ -242,6 +251,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         logPrefix: '[api/quotes/:id/amend-decline]',
         retiredReason: 'amend-decline-reopen',
       });
+      invoiceResyncFailed = !resyncOutcome.resynced;
     }
   }
 
@@ -299,5 +309,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     // Confirms isAmendmentConsentPending(declined) === isAmendmentConsentPending(pending) —
     // a declined increase is still un-settleable (see amend.ts).
     stillBlocksSettlement: isAmendmentConsentPending(declined) && declined.delta > 0,
+    // Row 341: true when a linked invoice existed but the re-sync above never
+    // landed — the invoice may still sit at the REFUSED total. Staff must
+    // reconcile manually before collecting against this order.
+    invoiceResyncFailed,
   });
 }

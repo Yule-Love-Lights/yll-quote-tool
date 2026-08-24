@@ -553,6 +553,24 @@ describe('resolveAmendmentBasis — one basis for total/balance/delta, never mix
     expect(round2ForTest(basis.newTotalUsd - basis.deltaUsd)).toBe(basis.previousTotalUsd);
   });
 
+  // Row 341 fix round 3 (technical-lens HIGH): before this fix, newBalanceUsd
+  // was ALWAYS recomputed as newTotal − deposit_applied — even when
+  // invoice_basis carried a stamped new_balance that correctly netted out a
+  // settled balance payment beyond the deposit. That meant the invoice row
+  // and the customer-facing message (SMS/email/portal, which both read this
+  // function) could disagree: the same $500 deposit + $500 webhook-settled
+  // balance + $1400 amended total fixture quoteAmendInvoiceSync.test.ts pins
+  // for the invoice side (real balance owed $400, not the deposit-only $900).
+  it('prefers a stamped invoice_basis.new_balance over the deposit-only recompute — the customer message must agree with the invoice, not just the total/delta', () => {
+    const entry: AmendmentTrailEntry = {
+      ...trailOnly,
+      deposit_applied: 500,
+      invoice_basis: { previous_total: 1000, new_total: 1400, delta: 400, new_balance: 400 },
+    };
+    const basis = resolveAmendmentBasis(entry);
+    expect(basis.newBalanceUsd).toBe(400); // NOT 1400 − 500 = 900
+  });
+
   it('a malformed invoice_basis (a bad shape unreachable through any current write path) falls back to the trail — FIX C', () => {
     const malformed: AmendmentTrailEntry = {
       ...trailOnly,
