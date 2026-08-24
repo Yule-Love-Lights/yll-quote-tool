@@ -227,13 +227,37 @@ export function StaffAccounts() {
   const operatorLabel = (o: EligibleOperator) => o.name ?? o.email ?? 'Unnamed operator';
   const action = 'text-xs text-gray-500 underline disabled:opacity-50';
 
+  // Grouped for readability, NOT split back into two panels: same row shape and
+  // the same five actions in both groups, so there is still only one thing to
+  // learn. The office/field difference is who they sign in as, which is what the
+  // group heading says.
+  //
+  // The hints describe what the office/field flag ACTUALLY controls, which is
+  // only one thing: whether someone is offered as assignable crew when
+  // scheduling a job. It does NOT decide how they clock in, and it does NOT
+  // follow from what kind of login they hold — an admin can sit in either group
+  // (Jason does), and both groups can use both clocks. Saying "field crew sign
+  // in with a crew login" was wrong the moment a real row disproved it.
+  const groups = [
+    {
+      label: 'Office',
+      hint: 'Not offered when assigning crew to a job. Clocks in the same ways as everyone else.',
+      rows: staff.filter((s) => s.isOffice),
+    },
+    {
+      label: 'Field crew',
+      hint: 'Offered when assigning crew to a job. Clocks in the same ways as everyone else.',
+      rows: staff.filter((s) => !s.isOffice),
+    },
+  ];
+
   return (
     <section className="mt-8 border-t border-gray-200 pt-6">
       <h2 className="text-base font-semibold text-gray-900">Staff</h2>
       <p className="text-sm text-gray-500 mt-1">
-        Everyone who clocks in, office and field. Office staff clock in from the dashboard with
-        their operator login. Field crew use their own crew login. Either one can also clock in by
-        texting the bot once their Telegram is linked.
+        Everyone who clocks in. Anyone here can clock in from the dashboard header, or by texting
+        the bot once their Telegram is linked. The only difference between the two groups below is
+        whether they are offered when you assign crew to a job.
       </p>
       <p className="text-xs text-gray-500 mt-2">
         Linking Telegram is necessary but not enough on its own: the bot only reads chats on its
@@ -246,52 +270,71 @@ export function StaffAccounts() {
         <p className="text-sm text-gray-500 mt-4">Loading staff…</p>
       ) : (
         <>
-          <ul className="mt-4 divide-y divide-gray-100 border border-gray-200 rounded-md">
-            {staff.map((s) => (
-              <li key={s.id} className="flex flex-wrap items-center justify-between gap-3 px-3 py-2 text-sm">
-                <span className="min-w-0">
-                  <span className="text-gray-900">{s.displayName}</span>
-                  <span className="ml-2 text-xs text-gray-400">{s.isOffice ? 'Office' : 'Field'}</span>
-                  {s.email && <span className="ml-2 text-xs text-gray-400">{s.email}</span>}
-                  <span className="ml-2 text-xs text-gray-500">{fmtUsd(s.baseRateCents)}/hr</span>
-                  {!s.hasLogin && <span className="ml-2 text-xs text-amber-700">No login yet</span>}
-                  {s.loginMissing && <span className="ml-2 text-xs text-red-600">login deleted</span>}
-                  <span className={s.telegramUserId ? 'ml-2 text-xs text-green-700' : 'ml-2 text-xs text-amber-700'}>
-                    {s.telegramUserId ? 'Telegram linked' : 'No Telegram'}
-                  </span>
-                </span>
-                <span className="flex shrink-0 items-center gap-3">
-                  <span className={s.active ? 'text-xs text-green-700' : 'text-xs text-amber-700'}>
-                    {s.active ? 'Active' : 'Inactive'}
-                  </span>
-                  <button type="button" disabled={rowBusyId === s.id} onClick={() => editRate(s)} className={action}>
-                    Edit rate
-                  </button>
-                  <button type="button" disabled={rowBusyId === s.id} onClick={() => editTelegram(s)} className={action}>
-                    {s.telegramUserId ? 'Change Telegram' : 'Link Telegram'}
-                  </button>
-                  {s.telegramUserId && (
-                    <button type="button" disabled={rowBusyId === s.id} onClick={() => unlinkTelegram(s)} className={action}>
-                      Unlink
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    disabled={rowBusyId === s.id || !s.hasLogin}
-                    title={s.hasLogin ? undefined : 'This person has no login yet.'}
-                    onClick={() => resetPassword(s)}
-                    className={action}
-                  >
-                    Reset password
-                  </button>
-                  <button type="button" disabled={rowBusyId === s.id} onClick={() => toggleActive(s)} className={action}>
-                    {s.active ? 'Deactivate' : 'Activate'}
-                  </button>
-                </span>
-              </li>
-            ))}
-            {staff.length === 0 && <li className="px-3 py-2 text-sm text-gray-500">No staff yet.</li>}
-          </ul>
+          {groups.map(({ label, rows, hint }) => (
+            <div key={label} className="mt-4">
+              <h3 className="text-sm font-semibold text-gray-900">{label}</h3>
+              <p className="text-xs text-gray-500 mb-2">{hint}</p>
+              <ul className="divide-y divide-gray-100 border border-gray-200 rounded-md">
+                {rows.map((s) => (
+                  <li key={s.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-2 text-sm">
+                    <span className="min-w-0 truncate">
+                      <span className="text-gray-900">{s.displayName}</span>
+                      {s.email && <span className="ml-2 text-xs text-gray-400">{s.email}</span>}
+                      <span className="ml-2 text-xs text-gray-500">{fmtUsd(s.baseRateCents)}/hr</span>
+                      {!s.hasLogin && <span className="ml-2 text-xs text-amber-700">No login yet</span>}
+                      {s.loginMissing && <span className="ml-2 text-xs text-red-600">login deleted</span>}
+                      <span className={s.telegramUserId ? 'ml-2 text-xs text-green-700' : 'ml-2 text-xs text-amber-700'}>
+                        {s.telegramUserId ? 'Telegram linked' : 'No Telegram'}
+                      </span>
+                    </span>
+                    {/*
+                      Fixed slots, same order on every row. Unlink is always
+                      rendered and merely HIDDEN when there is no Telegram to
+                      unlink: `visibility: hidden` reserves its width (and drops
+                      it from hit-testing and tab order), so one person having a
+                      link does not shove every other row's buttons out of
+                      alignment, which is what made this list look ragged.
+                    */}
+                    <span className="flex shrink-0 items-center gap-3 whitespace-nowrap">
+                      <span className={s.active ? 'text-xs text-green-700' : 'text-xs text-amber-700'}>
+                        {s.active ? 'Active' : 'Inactive'}
+                      </span>
+                      <button type="button" disabled={rowBusyId === s.id} onClick={() => editRate(s)} className={action}>
+                        Edit rate
+                      </button>
+                      <button type="button" disabled={rowBusyId === s.id} onClick={() => editTelegram(s)} className={action}>
+                        {s.telegramUserId ? 'Change Telegram' : 'Link Telegram'}
+                      </button>
+                      <button
+                        type="button"
+                        aria-hidden={!s.telegramUserId}
+                        tabIndex={s.telegramUserId ? undefined : -1}
+                        style={s.telegramUserId ? undefined : { visibility: 'hidden' }}
+                        disabled={rowBusyId === s.id || !s.telegramUserId}
+                        onClick={() => unlinkTelegram(s)}
+                        className={action}
+                      >
+                        Unlink
+                      </button>
+                      <button
+                        type="button"
+                        disabled={rowBusyId === s.id || !s.hasLogin}
+                        title={s.hasLogin ? undefined : 'This person has no login yet.'}
+                        onClick={() => resetPassword(s)}
+                        className={action}
+                      >
+                        Reset password
+                      </button>
+                      <button type="button" disabled={rowBusyId === s.id} onClick={() => toggleActive(s)} className={action}>
+                        {s.active ? 'Deactivate' : 'Activate'}
+                      </button>
+                    </span>
+                  </li>
+                ))}
+                {rows.length === 0 && <li className="px-3 py-2 text-sm text-gray-500">Nobody yet.</li>}
+              </ul>
+            </div>
+          ))}
 
           <form onSubmit={submit} className="mt-4 space-y-3">
             <h3 className="text-sm font-semibold text-gray-900">Add someone</h3>
