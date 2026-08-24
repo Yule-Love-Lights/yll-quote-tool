@@ -11,7 +11,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { isSupabaseConfigured } from '@/lib/supabase';
 import { getQuoteRaw } from '@/lib/quotes';
-import { deriveStatus } from '@/lib/quoteStatus';
+import { deriveStatus, isTerminalBrowseStatus } from '@/lib/quoteStatus';
 import { getJobByQuote } from '@/lib/jobs';
 import { getInvoiceByJob } from '@/lib/invoices';
 
@@ -39,10 +39,30 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ quo
 
   const job = await getJobByQuote(quoteId);
   const invoice = job ? await getInvoiceByJob(job.id) : null;
+  const quoteStatus = deriveStatus(quote);
+
+  // Row 340: a revive (declined/abandoned → sent, see /send's canRevive)
+  // reseeds the customer's portal from whatever browsing_selection they last
+  // saved BEFORE declining/abandoning, with no staff visibility into that —
+  // surface a summary here so PipelineActionsMenu can tell the operator
+  // BEFORE they click Send. Positive-match gate (isTerminalBrowseStatus,
+  // the same declined/abandoned set canRevive/canTransition use) — a
+  // leftover browsing_selection on any OTHER status (a live sent/viewed
+  // quote's real in-progress selection) is not this feature's concern and
+  // must never surface here as if it were stale.
+  const rawSelection = quote.browsing_selection;
+  const staleBrowsingSelection =
+    isTerminalBrowseStatus(quoteStatus) && rawSelection
+      ? {
+          packageId: typeof rawSelection.packageId === 'string' ? rawSelection.packageId : null,
+          itemCount: Array.isArray(rawSelection.selectedItemIds) ? rawSelection.selectedItemIds.length : 0,
+          savedAt: quote.browsing_selection_updated_at ?? null,
+        }
+      : null;
 
   return NextResponse.json({
     quoteId,
-    quoteStatus: deriveStatus(quote),
+    quoteStatus,
     isTest: !!quote.is_test,
     depositPaid: !!quote.deposit_paid_at,
     // View-only portal (#176): threaded through so pipelineActions() can
@@ -50,5 +70,6 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ quo
     viewOnly: !!quote.view_only,
     job: job ? { id: job.id, status: job.status } : null,
     invoice: invoice ? { id: invoice.id, status: invoice.status, balance: invoice.balance } : null,
+    staleBrowsingSelection,
   });
 }

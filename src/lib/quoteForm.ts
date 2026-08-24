@@ -562,23 +562,33 @@ export function contactRelinkConfirmMessage(
 
 /**
  * #839 fix-round (BYPASS 3, customer+technical lenses): window.confirm copy
- * for clearHighLevelContact (the contact chip's "Change"/clear button) on an
- * APPROVED/booked quote. Detach itself never touches quotes.customer_id —
+ * for clearHighLevelContact (the contact chip's "Change"/clear button) on a
+ * quote whose identity has EVER been frozen (deposit_paid_at ||
+ * customer_approved_at || wasEverApproved — pass the sticky signal, not the
+ * bare current customer_approved_at; row 338 fixed a caller that passed the
+ * non-sticky one, which let a revived previously-approved quote skip this
+ * confirm entirely). Detach itself never touches quotes.customer_id —
  * route.ts's `detach:true` branch is a bare two-column null-out
  * (highlevel_contact_id/highlevel_opportunity_id), no attachQuoteToCustomer
  * call — so this is a narrower risk than contactRelinkConfirmMessage above:
  * clearing never changes who the quote BELONGS to (billing/jobs/invoices
  * read customer_id, untouched here). The real, honest consequence is losing
  * the HighLevel card/stage/date sync for this contact until a new pick.
- * Returns null pre-approval — an everyday draft/sent correction needs no
- * prompt, matching contactRelinkConfirmMessage's own posture.
+ * Returns null when the identity was never frozen — an everyday draft/sent
+ * correction needs no prompt, matching contactRelinkConfirmMessage's own
+ * posture.
  *
- * A server-side block was considered and rejected: unlike a re-pick, detach
- * has a legitimate approved-quote use (undoing a wrong link before booking),
- * and it structurally cannot cause the customer-misattribution class of harm
- * the #251/#839 freezes exist for. A confirm — not a block — is the right
- * shape here; see the write-site comment in attach/route.ts for the sibling
- * design note on the (deliberately unfrozen) GHL-link write itself.
+ * Row 338 correction: an earlier version of this comment said a
+ * server-side block was "considered and rejected" for detach and that
+ * detach "structurally cannot cause" the #251/#839 freezes' harm class.
+ * That's no longer the whole story — route.ts's `detach:true` branch DOES
+ * refuse under the same sticky CAS as the attach write (closing the exact
+ * decline-revive hole this doc used to wave off). This confirm is still the
+ * right FIRST line of defense (instant, no round trip); the server refusal
+ * is the real backstop, and clearHighLevelContact's response read now
+ * restores the UI on that refusal instead of trusting the optimistic clear.
+ * See the write-site comment in attach/route.ts for the sibling design note
+ * on the (deliberately unfrozen pre-freeze) GHL-link write itself.
  */
 export function clearContactConfirmMessage(isApproved: boolean): string | null {
   if (!isApproved) return null;
