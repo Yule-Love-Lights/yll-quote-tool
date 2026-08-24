@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { calculateQuote, QuoteInputs, MINI_LIGHT_TYPES, normalizedDepositOverride } from '@/lib/pricing/pricingEngine';
 import { saveQuote, updateQuote, getQuoteRaw, Customer } from '@/lib/quotes';
-import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
+import { deriveStatus, repriceSignalCanFire, type QuoteStatus } from '@/lib/quoteStatus';
 import { getDesign, isValidDesignId } from '@/lib/designs';
 import { applyProjectionToInputs } from '@/lib/design/projectScene';
 import {
@@ -1039,7 +1039,19 @@ export async function POST(req: NextRequest) {
     // for an unrelated NCE-tag gate a few lines above, not this case). is_test
     // exempt, matching every other freeze/signal in this file.
     let repricedAfterApproval:
-      | { previousTotalUsd: number; newTotalUsd: number; deltaUsd: number; portalShowsFrozenPrice: boolean }
+      | {
+          previousTotalUsd: number;
+          newTotalUsd: number;
+          deltaUsd: number;
+          portalShowsFrozenPrice: boolean;
+          // Second fix round (staff-lens HIGH): the REASON portalShowsFrozenPrice
+          // is false, distinguished for QuoteBuilder.tsx's notice — an accepted
+          // amendment (always a BOOKED quote; the remedy is the amend flow, since
+          // decline/revive/re-send structurally refuses a booked order) vs a
+          // missing frozen-pricing snapshot (remedy depends on status; see the
+          // notice copy).
+          hasAcceptedAmendment: boolean;
+        }
       | undefined;
     // Fix round (technical-lens MED): the ORIGINAL gate here (`!existing
     // .deposit_paid_at`) covered only the approved-not-booked window. But
@@ -1053,76 +1065,64 @@ export async function POST(req: NextRequest) {
     // going forward (see its own latestAcceptedAmendment comment) — so a
     // further scene edit that changes the total WITHOUT then being recorded
     // through the sanctioned /amend + /amend-consent flow silently changes
-    // what the portal shows, with no staff signal and no consent trail. This
-    // widens the gate to also cover that case: `amendRepriceAllowed` is only
-    // ever true when the earlier REPRICE_LOCKED_STATUSES check let a booked
-    // quote's save through, so `saved && isUpdate` reaching this point with
-    // `existing.deposit_paid_at` set already implies the bypass was used —
-    // no separate check needed.
+    // what the portal shows, with no staff signal and no consent trail.
+    //
+    // Second fix round (technical-lens HIGH): the gate itself now reads
+    // repriceSignalCanFire(deriveStatus(existing)) — lib/quoteStatus.ts's
+    // shared predicate ('approved' or 'booked') — the SAME one the admin
+    // quote detail page's "Repriced since approval" pill reads, so the
+    // write-fires condition here and the pill-shows condition there can
+    // never independently drift apart again. (They did, once: this gate
+    // widened to cover 'booked' one fix round before the pill did, and the
+    // pill went dark for exactly the booked-and-amended case this gate
+    // exists to cover.) Safe to derive from status alone here because of an
+    // invariant the EARLIER REPRICE_LOCKED_STATUSES check already
+    // established: a 'booked' status can only reach this line when
+    // amendRepriceAllowed was true (a false amendRepriceAllowed on a
+    // booked/terminal status already 409'd above) — so
+    // `deriveStatus(existing) === 'booked'` at this point implies the bypass
+    // was used, no separate check needed.
     if (
       saved &&
       isUpdate &&
       existing?.customer_approved_at &&
-      (!existing.deposit_paid_at || amendRepriceAllowed) &&
+      repriceSignalCanFire(deriveStatus(existing)) &&
       !existing.is_test
     ) {
-      // The customer's actual agreed total — resolveAgreedTotal (the SAME
-      // canonical basis invoicing/tax-override/free-items/apply-color-request
-      // already use): the last NON-DECLINED amendment's new_total when one
-      // exists (the booked-and-previously-amended case this gate now also
-      // covers), else approval_snapshot.customerSelection.currentTotalUsd
-      // (the approved-not-booked case, unchanged from before), else the
-      // stored full result/total for an old/legacy snapshot.
-      const previousTotalUsd = resolveAgreedTotal(
-        // QuoteRaw's approval_snapshot.customerSelection is typed narrower
-        // (only the color fields getQuoteRaw's other callers need) than
-        // AgreedTotalSnapshot's currentTotalUsd — same underlying jsonb
-        // column, real values, just a type-modeling gap. resolveAgreedTotal
-        // itself is fully defensive (finiteMoney guards every rung), so this
-        // mirrors apply-color-request.ts's own call exactly, just cast
-        // instead of locally re-typed.
+      const newTotalUsd = roundMoney(result.total);
+      // Cheap pre-check against the request-start `existing` snapshot, purely
+      // to decide whether this save is even a CANDIDATE — avoids an extra DB
+      // round-trip on the overwhelmingly common case (a save that doesn't
+      // reprice anything). Nothing derived from this pre-check is shown to
+      // staff or persisted; see the fresh recompute below.
+      const preliminaryPrevious = resolveAgreedTotal(
         existing.approval_snapshot as AgreedTotalSnapshot,
         existing.result ?? { total: existing.total ?? 0 },
       );
-      const newTotalUsd = roundMoney(result.total);
-      const deltaUsd = roundMoney(newTotalUsd - previousTotalUsd);
       // Sub-cent float noise is not a real reprice (mirrors amend.ts's own
       // ONE_CENT threshold for the same reason).
-      if (Math.abs(deltaUsd) >= 0.01) {
-        // Fix round (staff-lens HIGH): whether the portal is ACTUALLY still
-        // showing the approved figure. adapter.ts's quoteRowToPortalQuote
-        // freezes the portal to approval_snapshot.pricing only when it's
-        // present AND no amendment has been accepted yet, else it falls BACK
-        // to live row.result — the very number this save just changed. This
-        // mirrors adapter.ts's latestAcceptedAmendment condition exactly (the
-        // same latestConsentAmendment lookup, same accepted-status check) so
-        // the two can never disagree on which case they're in.
-        const hasAcceptedAmendment =
-          latestConsentAmendment(existing.approval_snapshot?.amendments)?.consent?.status === 'accepted';
-        const portalShowsFrozenPrice = !hasAcceptedAmendment && Boolean(existing.approval_snapshot?.pricing);
-        repricedAfterApproval = { previousTotalUsd, newTotalUsd, deltaUsd, portalShowsFrozenPrice };
-        // Durable audit record — best-effort AND CAS'd (fix round, technical/
-        // admin-lens HIGH). The original version here did a blind read
-        // (`existing`, captured at request start) then write, with no
-        // conditional — exactly the shape apply-color-request.ts's dismiss
-        // action and color-change-request.ts warn against for this SAME
-        // column: a concurrent writer (most concretely apply-color-request /
-        // color-change-request, which touch approval_snapshot on this same
-        // pre-booking-adjacent window) could land in between our read and our
-        // write, and the blind write would silently drop THEIR change — a
-        // customer's pendingColorRequest or a staff apply's customerSelection
-        // — while only adding an audit line. Mirrors apply-color-request.ts's
-        // CAS idiom: re-fetch fresh right before writing, CAS on that fresh
-        // value via `.eq('approval_snapshot', JSON.stringify(freshSnapshot))`.
-        // On a lost race we do NOT retry-loop: this entry is pure audit
-        // metadata (the reprice itself already landed via updateQuote above,
-        // independent of this write), so dropping ONE trail entry when a
-        // concurrent writer won the race is the accepted, survivable outcome
-        // — same tradeoff the original comment already named, now enforced
-        // by a CAS instead of assumed by a blind write. What must NEVER
-        // happen is this write clobbering the concurrent writer's own
-        // change, which the CAS now prevents structurally.
+      if (Math.abs(roundMoney(newTotalUsd - preliminaryPrevious)) >= 0.01) {
+        // Second fix round (technical-lens MED): the first fix round computed
+        // previousTotalUsd/hasAcceptedAmendment/portalShowsFrozenPrice from
+        // `existing` (request-start) for the STAFF-FACING NOTICE, then
+        // separately re-fetched approval_snapshot FRESH, right before the
+        // write, only as the CAS merge target — so a concurrent
+        // approval_snapshot writer landing in that window (another staffer
+        // recording+accepting an amendment, a customer's colour-change
+        // request) could make the notice staff saw and the entry actually
+        // persisted describe two DIFFERENT bases. The CAS itself was always
+        // safe (it can't clobber the concurrent write), but the STORY told
+        // about it could go stale.
+        //
+        // Fixed by fetching once, here, and deriving BOTH the notice and the
+        // audit entry from this SAME snapshot. `existing`-basis numbers are
+        // the fallback only when the service client is unavailable or this
+        // fetch errors — preserving "the signal never silently depends on
+        // the audit write succeeding" for that narrow case, where there is
+        // no persisted entry to disagree with in the first place.
         const sb = getSupabaseServiceClient();
+        let basisSnapshot = existing.approval_snapshot;
+        let fetchFailed = false;
         if (sb) {
           const { data: freshRow, error: freshErr } = await sb
             .from('quotes')
@@ -1130,12 +1130,80 @@ export async function POST(req: NextRequest) {
             .eq('id', quoteId as string)
             .maybeSingle<{ approval_snapshot: typeof existing.approval_snapshot }>();
           if (freshErr) {
+            fetchFailed = true;
             console.error(
               '[quote/route] row 344: could not re-fetch approval_snapshot for the reprice audit entry:',
               freshErr.message,
             );
           } else {
-            const freshSnapshot = freshRow?.approval_snapshot ?? existing.approval_snapshot ?? {};
+            basisSnapshot = freshRow?.approval_snapshot ?? existing.approval_snapshot ?? {};
+          }
+        }
+        // The customer's actual agreed total — resolveAgreedTotal (the SAME
+        // canonical basis invoicing/tax-override/free-items/apply-color-request
+        // already use): the last NON-DECLINED amendment's new_total when one
+        // exists (the booked-and-previously-amended case this gate covers),
+        // else approval_snapshot.customerSelection.currentTotalUsd (the
+        // approved-not-booked case), else the stored full result/total for an
+        // old/legacy snapshot. Re-derived from `basisSnapshot` (fresh when
+        // available) rather than reusing preliminaryPrevious above, so a
+        // concurrent write that already changed the agreed total is reflected
+        // here too.
+        const previousTotalUsd = resolveAgreedTotal(
+          // QuoteRaw's approval_snapshot.customerSelection is typed narrower
+          // (only the color fields getQuoteRaw's other callers need) than
+          // AgreedTotalSnapshot's currentTotalUsd — same underlying jsonb
+          // column, real values, just a type-modeling gap. resolveAgreedTotal
+          // itself is fully defensive (finiteMoney guards every rung), so this
+          // mirrors apply-color-request.ts's own call exactly, just cast
+          // instead of locally re-typed.
+          basisSnapshot as AgreedTotalSnapshot,
+          existing.result ?? { total: existing.total ?? 0 },
+        );
+        const deltaUsd = roundMoney(newTotalUsd - previousTotalUsd);
+        // Re-check against the FRESH basis: a concurrent write in the window
+        // above may have already absorbed this exact change (e.g. another
+        // staffer's amendment landed with the same new_total), in which case
+        // there's nothing left to signal or persist.
+        if (Math.abs(deltaUsd) >= 0.01) {
+          // Fix round (staff-lens HIGH): whether the portal is ACTUALLY still
+          // showing the approved figure. adapter.ts's quoteRowToPortalQuote
+          // freezes the portal to approval_snapshot.pricing only when it's
+          // present AND no amendment has been accepted yet, else it falls BACK
+          // to live row.result — the very number this save just changed. This
+          // mirrors adapter.ts's latestAcceptedAmendment condition exactly (the
+          // same latestConsentAmendment lookup, same accepted-status check) so
+          // the two can never disagree on which case they're in.
+          const hasAcceptedAmendment =
+            latestConsentAmendment(basisSnapshot?.amendments)?.consent?.status === 'accepted';
+          const portalShowsFrozenPrice = !hasAcceptedAmendment && Boolean(basisSnapshot?.pricing);
+          repricedAfterApproval = { previousTotalUsd, newTotalUsd, deltaUsd, portalShowsFrozenPrice, hasAcceptedAmendment };
+          // Durable audit record — best-effort AND CAS'd (fix round, technical/
+          // admin-lens HIGH). Only attempted when we actually have a fresh,
+          // error-free basis to CAS against (sb-null / fetch-error already
+          // logged above); the STAFF SIGNAL just above is never gated on this
+          // succeeding. The original version here did a blind read (`existing`,
+          // captured at request start) then write, with no conditional —
+          // exactly the shape apply-color-request.ts's dismiss action and
+          // color-change-request.ts warn against for this SAME column: a
+          // concurrent writer (most concretely apply-color-request /
+          // color-change-request, which touch approval_snapshot on this same
+          // pre-booking-adjacent window) could land in between our read and our
+          // write, and the blind write would silently drop THEIR change — a
+          // customer's pendingColorRequest or a staff apply's customerSelection
+          // — while only adding an audit line. Mirrors apply-color-request.ts's
+          // CAS idiom: CAS on the SAME basisSnapshot everything above was
+          // derived from, via `.eq('approval_snapshot', JSON.stringify(
+          // basisSnapshot))`. On a lost race we do NOT retry-loop: this entry
+          // is pure audit metadata (the reprice itself already landed via
+          // updateQuote above, independent of this write), so dropping ONE
+          // trail entry when a concurrent writer won the race is the accepted,
+          // survivable outcome — same tradeoff the original comment already
+          // named, now enforced by a CAS instead of assumed by a blind write.
+          // What must NEVER happen is this write clobbering the concurrent
+          // writer's own change, which the CAS prevents structurally.
+          if (sb && !fetchFailed) {
+            const freshSnapshot = basisSnapshot ?? {};
             const priorEntries = Array.isArray(freshSnapshot.postApprovalReprices)
               ? freshSnapshot.postApprovalReprices
               : [];

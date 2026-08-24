@@ -1715,6 +1715,7 @@ describe('POST /api/quote — staff signal + audit trail for a post-approval rep
         newTotalUsd: number;
         deltaUsd: number;
         portalShowsFrozenPrice: boolean;
+        hasAcceptedAmendment: boolean;
       };
     };
     // The engine isn't mocked — cross-check against whatever it actually
@@ -1730,6 +1731,9 @@ describe('POST /api/quote — staff signal + audit trail for a post-approval rep
       // price (staff-lens HIGH fix; see the companion test below for the
       // frozen-pricing-present case).
       portalShowsFrozenPrice: false,
+      // No amendments at all pre-deposit — the OTHER reason
+      // portalShowsFrozenPrice can be false (second fix round, staff-lens HIGH).
+      hasAcceptedAmendment: false,
     });
     // Durable audit entry appended to approval_snapshot.postApprovalReprices —
     // the SAME sb.update() the GHL event-date stamp uses (mocked once, module-
@@ -1913,6 +1917,7 @@ describe('POST /api/quote — staff signal for a scene-driven reprice of a BOOKE
         newTotalUsd: number;
         deltaUsd: number;
         portalShowsFrozenPrice: boolean;
+        hasAcceptedAmendment: boolean;
       };
     };
     expect(body.repricedAfterApproval).toBeDefined();
@@ -1924,7 +1929,48 @@ describe('POST /api/quote — staff signal for a scene-driven reprice of a BOOKE
       // row.result (never frozen) — the portal is already showing this new,
       // unrecorded price.
       portalShowsFrozenPrice: false,
+      // The REASON portalShowsFrozenPrice is false here (second fix round,
+      // staff-lens HIGH) — distinguishes this from the "no frozen pricing at
+      // all" case below, so QuoteBuilder.tsx's notice can diagnose correctly.
+      hasAcceptedAmendment: true,
     });
+  });
+
+  // Second fix round (technical-lens MED): the notice figures and the
+  // persisted audit entry must come from the SAME basis. Simulate a
+  // concurrent writer (another staffer recording+accepting a SECOND
+  // amendment) landing between request-start (`existing`, which the mock
+  // reads via getRaw) and the CAS re-fetch (freshApprovalSnapshotRef, per the
+  // supabase mock's own doc comment above) — the notice's previousTotalUsd
+  // AND the persisted entry's previous_total must both reflect the FRESH
+  // amendment's new_total (1500), never the stale existing-based one (1200).
+  it('the notice and the persisted audit entry agree on the SAME (fresh) basis when a concurrent amendment lands mid-request', async () => {
+    rawRef.current = { ...BOOKED_AMENDED_ROW };
+    const CONCURRENT_SECOND_AMENDMENT = { new_total: 1500, delta: 300, consent: { status: 'accepted' } };
+    freshApprovalSnapshotRef.current = { amendments: [ACCEPTED_AMENDMENT, CONCURRENT_SECOND_AMENDMENT] };
+    const res = await POST(
+      makeReq({
+        inputs: { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' },
+        quoteId: REAL_UUID,
+        amendReprice: true,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      result: { total: number };
+      repricedAfterApproval?: { previousTotalUsd: number; deltaUsd: number };
+    };
+    // The notice: basis is the FRESH latest amendment (1500), not the stale
+    // one existing (request-start) still held (1200).
+    expect(body.repricedAfterApproval?.previousTotalUsd).toBe(1500);
+    expect(body.repricedAfterApproval?.deltaUsd).toBe(body.result.total - 1500);
+    // The persisted entry: same basis, same numbers — not a second, different
+    // one computed some other way.
+    const payload = sbUpdatePayloads.at(-1) as { approval_snapshot: { postApprovalReprices: Array<{ previous_total: number; new_total: number; delta: number }> } };
+    const persisted = payload.approval_snapshot.postApprovalReprices.at(-1)!;
+    expect(persisted.previous_total).toBe(1500);
+    expect(persisted.new_total).toBe(body.result.total);
+    expect(persisted.delta).toBe(body.result.total - 1500);
   });
 
   it('is inert (no signal) when this save does NOT reach the amendReprice bypass — a booked quote WITHOUT the flag still 409s before this code', async () => {

@@ -97,6 +97,29 @@ export function deriveStatus(q: QuoteStatusRow): QuoteStatus {
 }
 
 /**
+ * Row 344 fix round (technical-lens HIGH — a write-fires-here/pill-shows-there
+ * drift): the two statuses in which a scene-driven post-approval reprice can
+ * still land without the customer's re-consent, per /api/quote's own gate
+ * (`existing.customer_approved_at && (!existing.deposit_paid_at ||
+ * amendRepriceAllowed)`) — 'approved' (not yet booked), or 'booked' ONLY via
+ * the operator-only amendReprice bypass (which requires exactly this status;
+ * see route.ts's amendRepriceAllowed comment). Every OTHER status is either
+ * pre-approval (no signal possible) or terminal (the write can't reach it —
+ * REPRICE_LOCKED_STATUSES/canTransition already refuse it there).
+ *
+ * Shared here so the write-side gate (route.ts) and any UI that shows staff
+ * "this quote diverged from what the customer approved" (the admin quote
+ * detail page's pill) read the SAME predicate instead of two hand-kept
+ * conditions that can silently drift apart — which is exactly how this
+ * function came to exist: the write's gate widened to cover 'booked' one fix
+ * round before the page's pill did, and the pill went dark for the highest-
+ * money-risk case (a booked, already-amended order) until a review caught it.
+ */
+export function repriceSignalCanFire(status: QuoteStatus): boolean {
+  return status === 'approved' || status === 'booked';
+}
+
+/**
  * #263: the ONE definition of "a legacy_rebook ('YLL Neighbor') quote that's
  * still a genuinely parked, unsent draft" — every surface that needs to
  * hide or bucket these (the inbox's listOpenItems/listEscalatableItems +
