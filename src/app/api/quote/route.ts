@@ -1037,7 +1037,7 @@ export async function POST(req: NextRequest) {
     // for an unrelated NCE-tag gate a few lines above, not this case). is_test
     // exempt, matching every other freeze/signal in this file.
     let repricedAfterApproval:
-      | { previousTotalUsd: number; newTotalUsd: number; deltaUsd: number }
+      | { previousTotalUsd: number; newTotalUsd: number; deltaUsd: number; portalShowsFrozenPrice: boolean }
       | undefined;
     if (saved && isUpdate && existing?.customer_approved_at && !existing.deposit_paid_at && !existing.is_test) {
       // The customer's actual agreed total: the frozen snapshot figure (what
@@ -1050,7 +1050,23 @@ export async function POST(req: NextRequest) {
       // Sub-cent float noise is not a real reprice (mirrors amend.ts's own
       // ONE_CENT threshold for the same reason).
       if (Math.abs(deltaUsd) >= 0.01) {
-        repricedAfterApproval = { previousTotalUsd, newTotalUsd, deltaUsd };
+        // Fix round (staff-lens HIGH): whether the portal is ACTUALLY still
+        // showing the approved figure. adapter.ts's quoteRowToPortalQuote
+        // freezes the portal to approval_snapshot.pricing only when it's
+        // present, else it falls BACK to live row.result — the very number
+        // this save just changed. That fallback fires whenever a staff
+        // approve() froze a minimal snapshot with no pricing (that route's
+        // own documented behavior) or the approval predates this field
+        // existing at all. This mirrors adapter.ts's own condition exactly:
+        // customer_approved_at is already guaranteed by this gate, and an
+        // accepted amendment is impossible here (the sanctioned amend flow
+        // requires deposit_paid_at, which this gate excludes) — so the
+        // adapter's fallback reduces to "is approval_snapshot.pricing
+        // present." A quote where it's absent is showing the NEW price
+        // right now, with no re-consent — the notice below must say that,
+        // not the reassuring default.
+        const portalShowsFrozenPrice = Boolean(existing.approval_snapshot?.pricing);
+        repricedAfterApproval = { previousTotalUsd, newTotalUsd, deltaUsd, portalShowsFrozenPrice };
         // Durable audit record — best-effort AND CAS'd (fix round, technical/
         // admin-lens HIGH). The original version here did a blind read
         // (`existing`, captured at request start) then write, with no

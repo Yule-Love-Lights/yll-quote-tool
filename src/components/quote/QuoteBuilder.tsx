@@ -1043,6 +1043,12 @@ export default function QuoteBuilder({
     previousTotalUsd: number;
     newTotalUsd: number;
     deltaUsd: number;
+    // Fix round (staff-lens HIGH): whether the portal is actually still
+    // frozen to the approved figure (adapter.ts falls back to the LIVE
+    // result — the number this save just changed — whenever
+    // approval_snapshot.pricing is absent, e.g. a staff-approve() snapshot
+    // predating that field). The notice text below must say which is true.
+    portalShowsFrozenPrice: boolean;
   } | null>(null);
   // FIX A (#237 fix round, staff-lens HIGH): mirrors ghlSyncWarning's shape
   // (send route field: eventDateSyncError) for a DIFFERENT failure surface —
@@ -4683,7 +4689,8 @@ export default function QuoteBuilder({
         data.repricedAfterApproval &&
         typeof data.repricedAfterApproval.previousTotalUsd === 'number' &&
         typeof data.repricedAfterApproval.newTotalUsd === 'number' &&
-        typeof data.repricedAfterApproval.deltaUsd === 'number'
+        typeof data.repricedAfterApproval.deltaUsd === 'number' &&
+        typeof data.repricedAfterApproval.portalShowsFrozenPrice === 'boolean'
       ) {
         setPostApprovalRepriceNotice(data.repricedAfterApproval);
       }
@@ -7520,7 +7527,10 @@ export default function QuoteBuilder({
               <p className="mb-3 text-xs text-amber-700">
                 {`Heads up — this quote was already approved by the customer at ${usd(postApprovalRepriceNotice.previousTotalUsd)}, and this save `}
                 {postApprovalRepriceNotice.deltaUsd > 0 ? 'raised' : 'lowered'}
-                {` the price to ${usd(postApprovalRepriceNotice.newTotalUsd)} (${postApprovalRepriceNotice.deltaUsd > 0 ? '+' : ''}${usd(postApprovalRepriceNotice.deltaUsd)}). The portal still shows what they approved — the customer's approval no longer reflects this quote's current price until you decline, revive, and re-send it.`}
+                {` the price to ${usd(postApprovalRepriceNotice.newTotalUsd)} (${postApprovalRepriceNotice.deltaUsd > 0 ? '+' : ''}${usd(postApprovalRepriceNotice.deltaUsd)}). `}
+                {postApprovalRepriceNotice.portalShowsFrozenPrice
+                  ? "The portal still shows what they approved — the customer's approval no longer reflects this quote's current price until you decline, revive, and re-send it."
+                  : "The portal has NO frozen price on file for this approval, so it is already showing the customer this NEW price — with no re-consent. Call/text before they see it, or decline, revive, and re-send."}
               </p>
             )}
 

@@ -1701,7 +1701,12 @@ describe('POST /api/quote — staff signal + audit trail for a post-approval rep
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       result: { total: number };
-      repricedAfterApproval?: { previousTotalUsd: number; newTotalUsd: number; deltaUsd: number };
+      repricedAfterApproval?: {
+        previousTotalUsd: number;
+        newTotalUsd: number;
+        deltaUsd: number;
+        portalShowsFrozenPrice: boolean;
+      };
     };
     // The engine isn't mocked — cross-check against whatever it actually
     // priced rather than hardcoding a dollar figure.
@@ -1711,6 +1716,11 @@ describe('POST /api/quote — staff signal + audit trail for a post-approval rep
       previousTotalUsd: 1000, // read from approval_snapshot.customerSelection.currentTotalUsd, NOT existing.total
       newTotalUsd: body.result.total,
       deltaUsd: body.result.total - 1000,
+      // APPROVED_UNBOOKED_ROW's snapshot carries no `pricing` field — the
+      // adapter's fallback fires, so the portal is already showing the NEW
+      // price (staff-lens HIGH fix; see the companion test below for the
+      // frozen-pricing-present case).
+      portalShowsFrozenPrice: false,
     });
     // Durable audit entry appended to approval_snapshot.postApprovalReprices —
     // the SAME sb.update() the GHL event-date stamp uses (mocked once, module-
@@ -1729,6 +1739,24 @@ describe('POST /api/quote — staff signal + audit trail for a post-approval rep
         ],
       },
     });
+  });
+
+  it('reports portalShowsFrozenPrice: true when the snapshot DOES carry frozen pricing', async () => {
+    rawRef.current = {
+      ...APPROVED_UNBOOKED_ROW,
+      approval_snapshot: {
+        customerSelection: { currentTotalUsd: 1000 },
+        // Presence alone is what adapter.ts checks (row.approval_snapshot?.pricing
+        // ?? null) — shape doesn't matter to this route, only to the adapter.
+        pricing: { total: 1000 },
+      } as unknown as (typeof APPROVED_UNBOOKED_ROW)['approval_snapshot'],
+    };
+    const res = await POST(
+      makeReq({ inputs: { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' }, quoteId: REAL_UUID }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { repricedAfterApproval?: { portalShowsFrozenPrice: boolean } };
+    expect(body.repricedAfterApproval?.portalShowsFrozenPrice).toBe(true);
   });
 
   // Row 344 fix round (technical/admin-lens HIGH — negative control): the
