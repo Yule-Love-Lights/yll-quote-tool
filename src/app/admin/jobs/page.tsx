@@ -9,6 +9,7 @@ import { JOB_STATUSES, type JobStatus } from '@/lib/jobStatus';
 import { JobStatusBadge, JOB_STATUS_LABELS } from '@/components/admin/JobStatusBadge';
 import { NceBadge } from '@/components/admin/NceBadge';
 import { PipelineActionsMenu } from '@/components/admin/PipelineActionsMenu';
+import { JobsListSkeleton } from './JobsListSkeleton';
 
 // Operator BILLING list of jobs (ledger #83). A job is auto-created when a quote
 // is booked (deposit paid) and flows to_schedule → installed → requires_invoicing
@@ -87,7 +88,11 @@ export default function JobsAdminPage() {
           <div className="bg-red-50 border border-red-200 rounded-md p-3 text-sm text-red-700 mb-4">{error}</div>
         )}
 
-        {loading && <p className="text-sm text-gray-500">Loading…</p>}
+        {/* Same rich skeleton the route's loading.tsx shows (row 332, mirrors
+            #171b) — was a bare "Loading…" line, which made the route-transition
+            skeleton morph into something sparser before morphing again into the
+            real table once the client-side GET /api/jobs fetch resolved. */}
+        {loading && <JobsListSkeleton />}
 
         {!loading && items.length === 0 && (
           <div className="bg-white border border-gray-200 rounded-lg p-8 text-center">

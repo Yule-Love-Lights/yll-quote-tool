@@ -40,12 +40,178 @@ import {
 } from '@/lib/integrations/highlevel';
 import { resolvePipelineStages } from '@/lib/integrations/ghlPipelineMap';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
-import { requireOperator } from '@/lib/auth/supabaseServer';
+import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
 import { attachQuoteToCustomer, quoteRowToIdentity } from '@/lib/customers';
+import { wasEverApproved } from '@/lib/quoteStatus';
 
 export const runtime = 'nodejs';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Row 326 residual (b): a durable audit trace for a #251/#338/#839 identity
+// freeze REFUSAL — until now the only record was a console.warn (server logs
+// only, not owner-queryable). Mirrors the established approval_snapshot
+// audit-marker idiom (staff-decline's `staffDeclined`, the send route's
+// `browsingSelectionCleared`), but as an append-only ARRAY like
+// amend/route.ts's `amendments[]` — a refusal can legitimately repeat (staff
+// retrying, or trying a different contact), and each attempt is worth
+// keeping, not just the latest. Best-effort for the CALLER: never blocks or
+// changes the refusal response, which is built and returned regardless of
+// whether this write ever lands.
+//
+// CAS — two DIFFERENT things, do not conflate them (fix-round MED): a CAS on
+// the FREEZE fields (customer_approved_at/deposit_paid_at/approval_snapshot->
+// approvedAt|staffApproved, like the route's own identity/detach writes
+// above) would be wrong here — it would refuse to log the very refusal this
+// exists to record. What's actually required, and IS present below, is a CAS
+// on the approval_snapshot VALUE — optimistic concurrency, orthogonal to
+// whether the row is frozen — exactly like every other approval_snapshot
+// writer in this codebase (amend/route.ts, free-items/route.ts, amend-
+// consent, color-change-request, apply-color-request). This fires on
+// approved/booked quotes, precisely where amend/pay/apply-color-request are
+// all live and writing the SAME jsonb column that also carries the frozen
+// total, deposit and line items — a read-modify-write with no value CAS
+// could silently drop one of those concurrent legitimate writes.
+type IdentityRefusalEntry = {
+  by: string | null;
+  at: string;
+  action: 'attach' | 'detach';
+  attemptedContactId: string | null;
+  // Minimal display snapshot (LOW fix-round ask) so the record stays
+  // readable if the GHL contact is later deleted/merged. Cheap because it's
+  // already on the attach request body (contactName/contactEmail/
+  // contactPhone) — no extra API call. null for detach (no contact in that
+  // request) and whenever the attach body carried none of the three fields.
+  attemptedContact: { name: string | null; email: string | null; phone: string | null } | null;
+  stage: 'pre-read' | 'write-time';
+};
+
+// Fix-round HIGH: the ONE place that reads approval_snapshot fresh, for both
+// the call sites below and logIdentityRefusal's own internal retry. Returns
+// a tri-state that keeps "row found, column may legitimately be null" apart
+// from "we could not confirm the row's current state" (a DB error, or no row
+// matched the id) — collapsing those two into a bare `unknown` is exactly
+// what let a discarded read error turn into a destructive write (see
+// logIdentityRefusal's own comment below).
+async function readApprovalSnapshot(
+  client: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  quoteId: string,
+): Promise<{ ok: true; snapshot: unknown } | { ok: false }> {
+  const { data, error } = await client
+    .from('quotes')
+    .select('approval_snapshot')
+    .eq('id', quoteId)
+    .maybeSingle<{ approval_snapshot: unknown }>();
+  if (error || !data) return { ok: false };
+  return { ok: true, snapshot: data.approval_snapshot };
+}
+
+async function logIdentityRefusal(
+  client: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  quoteId: string,
+  baseSnapshot: unknown,
+  entry: Pick<IdentityRefusalEntry, 'action' | 'attemptedContactId' | 'attemptedContact' | 'stage'>,
+): Promise<void> {
+  try {
+    const operator = await getOperator();
+    const newEntry: IdentityRefusalEntry = {
+      by: operator?.email ?? null,
+      at: new Date().toISOString(),
+      ...entry,
+    };
+    let snapshot: unknown = baseSnapshot;
+    // Up to 2 attempts (initial + one retry on a lost optimistic-concurrency
+    // race). Mirrors the sibling idiom's single-retry posture — their retry
+    // is "ask the caller to resubmit" (a 409); ours is silent, since this is
+    // a background audit write, never the action the caller is waiting on.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      // Fix-round HIGH (data-loss bug, caught by review): every caller below
+      // now passes either a confirmed row read or the `{ ok: false }` case
+      // filtered out BEFORE this function is even called — but this function
+      // must not depend on every future caller getting that right. `null`/
+      // `undefined` here is a BUG SIGNAL, never "the snapshot is legitimately
+      // empty" — a caller whose fresh read failed (RLS denial, timeout, a
+      // connection blip; none of these throw, they return `{ data: null,
+      // error }`) must never have that coerced into `{}` and then WRITTEN
+      // BACK, which would REPLACE — not merge onto — the real
+      // approval_snapshot: the agreed total, deposit, frozen line items,
+      // approvedAt/staffApproved, and the customer's colour selection. The
+      // value CAS below is a SECOND, independent guard against exactly this
+      // (a filter on `JSON.stringify({})` will not match a populated or a
+      // genuinely-NULL column either) — never rely on the CAS alone; this
+      // check is the real fix. Losing an audit line is an acceptable
+      // outcome; this function must never risk the frozen agreement to
+      // record one.
+      if (snapshot == null) {
+        console.warn(
+          `[api/integrations/highlevel/attach] identity-refusal audit SKIPPED for quote ${quoteId} (attempt ${attempt}) — no confirmed approval_snapshot to merge onto; refusing to risk overwriting the frozen agreement.`,
+        );
+        return;
+      }
+      const prior = typeof snapshot === 'object' ? (snapshot as Record<string, unknown>) : {};
+      const priorRefusals = Array.isArray(prior.identityChangeRefusals) ? prior.identityChangeRefusals : [];
+      const newSnapshot = { ...prior, identityChangeRefusals: [...priorRefusals, newEntry] };
+      const { data, error } = await client
+        .from('quotes')
+        .update({ approval_snapshot: newSnapshot })
+        .eq('id', quoteId)
+        // Value CAS — mirrors amend/route.ts + free-items/route.ts exactly.
+        // PostgREST string-interpolates filter values; JSON.stringify is
+        // required or the object serializes to "[object Object]" and this
+        // filter can never match (see either sibling's identical comment).
+        .eq('approval_snapshot', JSON.stringify(prior))
+        .select('id');
+      if (error) {
+        console.warn(
+          `[api/integrations/highlevel/attach] identity-refusal audit write failed for quote ${quoteId}:`,
+          error.message,
+        );
+        return;
+      }
+      if (data && data.length > 0) return; // landed
+      if (attempt === 0) {
+        // Lost the race — something else (most likely the customer's own
+        // /approve or /pay, or a staff amend) wrote approval_snapshot in the
+        // gap. Re-read fresh and retry once against the CURRENT value. A
+        // failed re-read (or no row) sets `snapshot` to `undefined`, which
+        // the top-of-loop check above catches on the next iteration —
+        // never silently coerced to `{}` here.
+        const fresh = await readApprovalSnapshot(client, quoteId);
+        snapshot = fresh.ok ? fresh.snapshot : undefined;
+        continue;
+      }
+      // Second miss: give up. This is a best-effort AUDIT write, not the
+      // refusal itself — the refusal response is already built by the
+      // caller independent of this function, so losing this race twice
+      // costs one missing audit line, never a lost refusal.
+      console.warn(
+        `[api/integrations/highlevel/attach] identity-refusal audit write lost the optimistic-concurrency race twice for quote ${quoteId}; entry not recorded.`,
+      );
+      return;
+    }
+  } catch (err) {
+    console.warn(
+      `[api/integrations/highlevel/attach] identity-refusal audit write threw for quote ${quoteId}:`,
+      err,
+    );
+  }
+}
+
+// Fix-round LOW: a minimal display snapshot for the refused contact, cheap
+// because it's already on the attach request body (the #214 review's
+// picked-contact fields) — no extra GHL call. null when none of the three
+// fields are present (detach never carries these; a legacy attach caller
+// might not either).
+function attemptedContactFromBody(body: {
+  contactName?: string;
+  contactEmail?: string;
+  contactPhone?: string;
+}): { name: string | null; email: string | null; phone: string | null } | null {
+  const name = typeof body.contactName === 'string' ? body.contactName.trim() || null : null;
+  const email = typeof body.contactEmail === 'string' ? body.contactEmail.trim() || null : null;
+  const phone = typeof body.contactPhone === 'string' ? body.contactPhone.trim() || null : null;
+  return name || email || phone ? { name, email, phone } : null;
+}
 
 export async function POST(req: NextRequest) {
   const denied = await requireOperator();
@@ -108,13 +274,46 @@ export async function POST(req: NextRequest) {
     const detachClient = getSupabaseServiceClient()!;
     const { data: detachRow } = await detachClient
       .from('quotes')
-      .select('is_test, deposit_paid_at, customer_approved_at')
+      .select('is_test, deposit_paid_at, customer_approved_at, approval_snapshot')
       .eq('id', body.quoteId)
-      .maybeSingle<{ is_test: boolean; deposit_paid_at: string | null; customer_approved_at: string | null }>();
-    if (detachRow && !detachRow.is_test && (detachRow.deposit_paid_at || detachRow.customer_approved_at)) {
+      .maybeSingle<{
+        is_test: boolean;
+        deposit_paid_at: string | null;
+        customer_approved_at: string | null;
+        approval_snapshot: unknown;
+      }>();
+    // Row 338: OR in the sticky wasEverApproved signal — see its own comment
+    // in quoteStatus.ts. Without it, a decline→revive cycle (which clears
+    // customer_approved_at) would let a Clear click through here even though
+    // this quote was frozen at some point in its history.
+    if (
+      detachRow &&
+      !detachRow.is_test &&
+      (detachRow.deposit_paid_at || detachRow.customer_approved_at || wasEverApproved(detachRow))
+    ) {
       console.warn(
-        `[api/integrations/highlevel/attach] #251 identity freeze — quote ${body.quoteId} is approved/booked; refused a detach.`,
+        `[api/integrations/highlevel/attach] #251/#338 identity freeze — quote ${body.quoteId} is approved/booked (or was); refused a detach.`,
       );
+      // Fix-round MED (site-consistency): re-read fresh right before logging
+      // rather than reusing `detachRow` — same discipline as the write-time
+      // site below, so all four refusal sites behave identically. A failed
+      // re-read (or the row vanishing) SKIPS the audit write entirely
+      // (readApprovalSnapshot's `{ ok: false }`) rather than risking a
+      // clobber; logIdentityRefusal's own null-check is the second,
+      // independent guard against the same mistake.
+      const read = await readApprovalSnapshot(detachClient, body.quoteId);
+      if (read.ok) {
+        await logIdentityRefusal(detachClient, body.quoteId, read.snapshot, {
+          action: 'detach',
+          attemptedContactId: null,
+          attemptedContact: null,
+          stage: 'pre-read',
+        });
+      } else {
+        console.warn(
+          `[api/integrations/highlevel/attach] identity-refusal audit SKIPPED for quote ${body.quoteId} — could not confirm the current approval_snapshot before logging.`,
+        );
+      }
       return NextResponse.json({ detached: false, identityFrozen: true });
     }
     // #839 round-2 delta-verify MED (sibling-guard parity, same class as the
@@ -135,7 +334,14 @@ export async function POST(req: NextRequest) {
       .update({ highlevel_contact_id: null, highlevel_opportunity_id: null })
       .eq('id', body.quoteId);
     if (applyCas) {
-      detachWrite = detachWrite.is('customer_approved_at', null).is('deposit_paid_at', null);
+      // Row 338: same two extra json-path legs as quotes.ts's identity CAS —
+      // see that block's comment for why these two keys (not a bare
+      // approval_snapshot non-null check) are the sticky signal.
+      detachWrite = detachWrite
+        .is('customer_approved_at', null)
+        .is('deposit_paid_at', null)
+        .is('approval_snapshot->approvedAt', null)
+        .is('approval_snapshot->staffApproved', null);
     }
     const { data: detachWriteRow, error: detachErr } = await detachWrite.select('id').maybeSingle();
     if (detachErr) {
@@ -150,6 +356,29 @@ export async function POST(req: NextRequest) {
       console.warn(
         `[api/integrations/highlevel/attach] #839 identity freeze (write-time) — quote ${body.quoteId} became approved/booked during the detach round trip; refused the detach.`,
       );
+      // Fix-round HIGH (data-loss bug): re-read fresh and CHECK the read
+      // error before logging — `detachRow` is now known-stale (the CAS
+      // mismatch just proved something else wrote this row), and blindly
+      // passing a failed-read fallback (`?? null` swallowing the error) into
+      // a read-modify-write would REPLACE the real approval_snapshot — the
+      // frozen total, deposit, line items, approvedAt/staffApproved and the
+      // customer's colour selection — with just the new audit entry. Skip
+      // the audit write entirely on a failed read rather than risk that;
+      // logIdentityRefusal's own null-check (and its value CAS) are the
+      // second and third independent guards against the same mistake.
+      const read = await readApprovalSnapshot(detachClient, body.quoteId);
+      if (read.ok) {
+        await logIdentityRefusal(detachClient, body.quoteId, read.snapshot, {
+          action: 'detach',
+          attemptedContactId: null,
+          attemptedContact: null,
+          stage: 'write-time',
+        });
+      } else {
+        console.warn(
+          `[api/integrations/highlevel/attach] identity-refusal audit SKIPPED for quote ${body.quoteId} — could not confirm the current approval_snapshot before logging.`,
+        );
+      }
       return NextResponse.json({ detached: false, identityFrozen: true });
     }
     return NextResponse.json({ detached: true });
@@ -174,7 +403,8 @@ export async function POST(req: NextRequest) {
     // re-resolution's IDENTITY comes from the request body's contact
     // fields, never from this row — see the block below. customer_approved_at
     // rides along for the #251/#839 approved-freeze parity fix (same block).
-    .select('id, service_type, legacy_rebook, is_test, customer_id, deposit_paid_at, customer_approved_at')
+    // approval_snapshot rides along for row 338's wasEverApproved sticky check.
+    .select('id, service_type, legacy_rebook, is_test, customer_id, deposit_paid_at, customer_approved_at, approval_snapshot')
     .eq('id', body.quoteId)
     .maybeSingle<{
       id: string;
@@ -184,6 +414,7 @@ export async function POST(req: NextRequest) {
       customer_id: string | null;
       deposit_paid_at: string | null;
       customer_approved_at: string | null;
+      approval_snapshot: unknown;
     }>();
   if (quoteErr) {
     console.warn(
@@ -195,16 +426,63 @@ export async function POST(req: NextRequest) {
   // BEFORE any GHL card is found/created. The customers re-resolution further
   // down already refuses on an approved/booked quote, and the ruling extends
   // that to this route's own highlevel_contact_id/highlevel_opportunity_id
-  // write — so the whole endpoint is a no-op past approval and corrections go
-  // through the amend flow. Placed here, not at the write site, so a frozen
+  // write — so the whole endpoint is a no-op past approval. There is no
+  // in-app correction path (row 338: the amend flow only re-prices a booked
+  // order's totals, it has no identity fields); a wrong link needs a manual
+  // DB fix. Placed here, not at the write site, so a frozen
   // quote never leaves an orphaned card on GHL's side that our row won't
   // reference. Fails OPEN when the pre-read failed (quoteRow null): a read
   // hiccup must not block a legitimate link on an unapproved quote, matching
   // the service_type fallback's posture directly above.
-  if (quoteRow && !quoteRow.is_test && (quoteRow.deposit_paid_at || quoteRow.customer_approved_at)) {
+  // Row 338: OR in the sticky wasEverApproved signal — see its comment in
+  // quoteStatus.ts. Closes the queueAttach half of the revive→decline→revive
+  // hole: this route fires directly on a confirmed contact pick, before any
+  // Calculate ever reaches quotes.ts's own freeze.
+  //
+  // Row 326 residual (a) — DELIBERATELY NOT special-cased: a quote that was
+  // approved/booked with `customer_id == null` (never linked to a customer
+  // row at all) still refuses here, exactly like an already-linked quote.
+  // Considered and rejected a narrower "only refuse when customer_id is
+  // already set" carve-out: attachQuoteToCustomer resolves identity from the
+  // PICKED CONTACT's own name/email/phone (the request body), which this
+  // route cannot verify against the quote's approval-time identity — a
+  // never-linked quote has no CURRENT link to protect, but a wrong pick would
+  // still permanently misattribute the quote's customer_id (and everything
+  // that snapshots it — jobs, invoices, GHL tenure), which is the exact harm
+  // #251 exists to prevent. quotes.ts's own sibling freeze (updateQuote,
+  // `wouldReattach = identityChanged || hlChanged || stored.customer_id ==
+  // null`) makes the identical call — a never-linked quote is eligible for
+  // `wouldReattach` but is STILL blocked when `frozen`, not carved out — so
+  // narrowing only THIS route would break the "widen both together" sibling
+  // contract documented at the #839 fix-round comment below. The sanctioned
+  // remedy stays the one already documented above: a manual DB fix, now with
+  // an audit trail (`logIdentityRefusal` below) to actually surface the need
+  // for one, instead of a console.warn nobody reads.
+  if (
+    quoteRow &&
+    !quoteRow.is_test &&
+    (quoteRow.deposit_paid_at || quoteRow.customer_approved_at || wasEverApproved(quoteRow))
+  ) {
     console.warn(
-      `[api/integrations/highlevel/attach] #251 identity freeze — quote ${body.quoteId} is approved/booked; refused a contact re-link (contact ${body.contactId}).`,
+      `[api/integrations/highlevel/attach] #251/#338 identity freeze — quote ${body.quoteId} is approved/booked (or was); refused a contact re-link (contact ${body.contactId}).`,
     );
+    // Fix-round MED (site-consistency): re-read fresh right before logging
+    // rather than reusing `quoteRow` — same discipline at all four refusal
+    // sites now. A failed re-read SKIPS the audit write (never risks a
+    // clobber); logIdentityRefusal's own null-check is the second guard.
+    const preReadFresh = await readApprovalSnapshot(sb, body.quoteId);
+    if (preReadFresh.ok) {
+      await logIdentityRefusal(sb, body.quoteId, preReadFresh.snapshot, {
+        action: 'attach',
+        attemptedContactId: body.contactId,
+        attemptedContact: attemptedContactFromBody(body),
+        stage: 'pre-read',
+      });
+    } else {
+      console.warn(
+        `[api/integrations/highlevel/attach] identity-refusal audit SKIPPED for quote ${body.quoteId} — could not confirm the current approval_snapshot before logging.`,
+      );
+    }
     return NextResponse.json({ linked: false, identityFrozen: true });
   }
   // Legacy rebook (#156): legacy_rebook wins regardless of service_type,
@@ -282,7 +560,13 @@ export async function POST(req: NextRequest) {
       })
       .eq('id', body.quoteId);
     if (applyCas) {
-      identityWrite = identityWrite.is('customer_approved_at', null).is('deposit_paid_at', null);
+      // Row 338: same two extra json-path legs as quotes.ts's identity CAS
+      // and this route's own detach CAS above — see either comment for why.
+      identityWrite = identityWrite
+        .is('customer_approved_at', null)
+        .is('deposit_paid_at', null)
+        .is('approval_snapshot->approvedAt', null)
+        .is('approval_snapshot->staffApproved', null);
     }
     const { data: identityRow, error: updateErr } = await identityWrite.select('id').maybeSingle();
     if (updateErr) {
@@ -302,6 +586,29 @@ export async function POST(req: NextRequest) {
       console.warn(
         `[api/integrations/highlevel/attach] #839 identity freeze (write-time) — quote ${body.quoteId} became approved/booked during the GHL round trip; refused the contact link (contact ${body.contactId}).`,
       );
+      // Fix-round HIGH (data-loss bug): re-read fresh and CHECK the read
+      // error — `quoteRow` is now known-stale (the CAS mismatch just proved
+      // something else wrote this row), and blindly passing a failed-read
+      // fallback (`?? null` swallowing the error) into a read-modify-write
+      // would REPLACE the real approval_snapshot — the frozen total,
+      // deposit, line items, approvedAt/staffApproved and the customer's
+      // colour selection — with just the new audit entry. Skip the audit
+      // write entirely on a failed read; logIdentityRefusal's own
+      // null-check (and its value CAS) are the second and third
+      // independent guards against the same mistake.
+      const writeFresh = await readApprovalSnapshot(sb, body.quoteId);
+      if (writeFresh.ok) {
+        await logIdentityRefusal(sb, body.quoteId, writeFresh.snapshot, {
+          action: 'attach',
+          attemptedContactId: body.contactId,
+          attemptedContact: attemptedContactFromBody(body),
+          stage: 'write-time',
+        });
+      } else {
+        console.warn(
+          `[api/integrations/highlevel/attach] identity-refusal audit SKIPPED for quote ${body.quoteId} — could not confirm the current approval_snapshot before logging.`,
+        );
+      }
       return NextResponse.json({ linked: false, identityFrozen: true });
     }
 

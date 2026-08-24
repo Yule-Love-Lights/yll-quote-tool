@@ -190,6 +190,20 @@ export async function getContact(contactId: string): Promise<CrmContact> {
   return toCrmContact(json.contact);
 }
 
+// Server-only variant that returns the RAW HighLevel record (never forward to
+// the browser — see CrmContactInternal's own doc comment). Added for #314's
+// approval-time event-date reconciliation (ghlEventDate.ts's
+// getEventDateFromGhl): the public getContact() above redacts customFields
+// via toCrmContact's default overload, but #314 needs to read the CURRENT
+// value of a specific custom field to detect drift from an earlier silent
+// push failure. Reuses the SAME `{ includeRaw: true }` overload already
+// declared on toCrmContact below (previously unused) rather than adding a
+// second contact-fetch path.
+export async function getContactInternal(contactId: string): Promise<CrmContactInternal> {
+  const json = await ghlFetch<{ contact: HighLevelContact }>(`/contacts/${encodeURIComponent(contactId)}`);
+  return toCrmContact(json.contact, { includeRaw: true });
+}
+
 // ─── Contact create ───────────────────────────────────────────────────────
 // Creates a brand-new GHL contact — used by the referral landing page (#41
 // /refer/<code> submit) to get a referred lead into HighLevel immediately, so

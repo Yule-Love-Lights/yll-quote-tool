@@ -12,6 +12,7 @@ import { StaffNotesPanel } from '@/components/admin/StaffNotesPanel';
 import { reconcileInvoice } from '@/lib/invoices';
 import { isSupersededPendingAmendment, resolveAmendmentBasis } from '@/lib/amend';
 import type { JobDetail } from '@/lib/jobs';
+import { JobsListSkeleton } from '../JobsListSkeleton';
 
 // Operator BILLING detail for one job (ledger #83): customer, the booking-time
 // line-item snapshot, and the invoice. "Mark installed & create invoice" runs the
@@ -178,7 +179,13 @@ export default function JobDetailPage() {
           </Link>
         </div>
 
-        {loading && <p className="text-sm text-gray-500">Loading…</p>}
+        {/* This detail route has no loading.tsx of its own — it inherits
+            ../loading.tsx (the list shape) during a route transition, so
+            reusing that SAME shared skeleton here (row 332, mirrors #171b)
+            avoids adding a second, mismatched morph on top of the one that
+            already exists between the inherited list skeleton and this
+            page's own detail content. */}
+        {loading && <JobsListSkeleton />}
         {error && (
           <div className="bg-red-50 border border-red-200 rounded-md p-3 text-sm text-red-700">{error}</div>
         )}

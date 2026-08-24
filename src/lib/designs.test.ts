@@ -40,10 +40,12 @@ import {
   addDesignExtraPhoto,
   removeDesignExtraPhoto,
   updateDesignExtraPhotoTitle,
+  updateDesignSceneGuarded,
   getDesignWithPhoto,
   getDesignByQuote,
   isValidDesignId,
   type DesignExtraPhoto,
+  type DesignScene,
 } from './designs';
 
 // ─── design upload size cap (audit #22) ─────────────────────────────────────
@@ -207,8 +209,16 @@ function makeExtrasSb(row: {
   extra_photos?: DesignExtraPhoto[] | null;
   scene?: { yardsticks: unknown[]; items: Array<Record<string, unknown>> };
   photo_path?: string | null;
+  // Ledger row 260: the scene CAS counter this row starts at (default 1,
+  // matching the migration's NOT NULL DEFAULT 1).
+  version?: number;
   onSceneRefetch?: (state: { row: Record<string, unknown> }) => void;
   onExtraPhotosRefetch?: (state: { row: Record<string, unknown> }) => void;
+  // Ledger row 260: fires when a scene/version .update(...) call is made —
+  // i.e. AFTER the fresh read has already returned, simulating a concurrent
+  // writer landing in the narrow window between this attempt's read and its
+  // CAS write (as opposed to onSceneRefetch, which fires DURING the read).
+  onSceneWriteAttempt?: (state: { row: Record<string, unknown> }) => void;
 }) {
   const state = {
     row: {
@@ -220,6 +230,7 @@ function makeExtrasSb(row: {
       scene: row.scene ?? { yardsticks: [], items: [] },
       extra_photos: row.extra_photos ?? null,
       updated_at: 'v0',
+      version: row.version ?? 1,
     } as Record<string, unknown>,
     uploadedPaths: [] as string[],
     removedPaths: [] as string[][],
@@ -267,6 +278,7 @@ function makeExtrasSb(row: {
       },
       update: (payload: Record<string, unknown>) => {
         updatePayload = payload;
+        if ('version' in payload && row.onSceneWriteAttempt) row.onSceneWriteAttempt(state);
         return b;
       },
       eq: (col: string, val: unknown) => {
@@ -287,30 +299,32 @@ function makeExtrasSb(row: {
         if (selectCols === 'extra_photos, scene') {
           return { data: { extra_photos: state.row.extra_photos, scene: state.row.scene }, error: null };
         }
-        if (selectCols === 'scene') {
+        if (selectCols === 'scene, version') {
+          // Ledger row 260: the prune's FRESH re-read (now scene + the CAS
+          // counter together) — inject the concurrent writer's effect right
+          // here, as if it committed between the top-of-function read
+          // (select('extra_photos, scene')) and this dedicated re-read.
           state.sceneOnlyReads += 1;
-          // The prune's FRESH re-read — inject the concurrent autosave's
-          // effect right here, as if it committed between the top-of-function
-          // read (select('extra_photos, scene')) and this dedicated re-read.
           if (row.onSceneRefetch) row.onSceneRefetch(state);
-          return { data: { scene: state.row.scene }, error: null };
+          return { data: { scene: state.row.scene, version: state.row.version }, error: null };
         }
         return { data: { ...state.row }, error: null };
       },
       then: (resolve: (v: unknown) => void) => {
         if (updatePayload) {
-          // Optimistic-concurrency guard: an .eq('updated_at', snapshot) that
-          // no longer matches the CURRENT row means another writer won the
-          // race — the update matches zero rows (mirrors real Postgres).
-          const preconditionOk = eqFilters
-            .filter(([col]) => col === 'updated_at')
-            .every(([, val]) => val === state.row.updated_at);
+          // Optimistic-concurrency guard: every .eq(...) precondition on this
+          // write must still match the CURRENT row, or another writer won the
+          // race — the update matches zero rows (mirrors real Postgres). This
+          // covers BOTH extra_photos' updated_at guard and the scene CAS's
+          // version guard (ledger row 260) with the same generic check —
+          // `id` is always present and always matches in this single-row mock.
+          const preconditionOk = eqFilters.every(([col, val]) => state.row[col] === val);
           if (preconditionOk) {
             Object.assign(state.row, updatePayload);
             state.row.updated_at = `v${++updateCounter}`;
           }
           if (selectAfterUpdate) {
-            resolve({ data: preconditionOk ? [{ id: state.row.id }] : [], error: null });
+            resolve({ data: preconditionOk ? [{ id: state.row.id, version: state.row.version }] : [], error: null });
           } else {
             resolve({ error: null });
           }
@@ -499,6 +513,46 @@ describe('extra street photos (#13)', () => {
     expect(items.map(i => i.id).sort()).toEqual(['autosaved', 'i2']);
   });
 
+  // Ledger row 260: the fresh read alone (W2-016 above) isn't enough once the
+  // WRITE itself is a compare-and-swap — a writer that lands in the narrow
+  // gap between this attempt's read and its CAS write must not make
+  // removeDesignExtraPhoto give up. #741 defect 3's whole point was that this
+  // prune must actually happen (an un-pruned scene resurrects dead-billing
+  // miniGroups and dangling items) — a fail-fast 409 here would be a
+  // regression, so a lost race must retry from a fresh read instead.
+  it('retries the scene prune write when a concurrent writer wins the version race (ledger row 260)', async () => {
+    let writeAttempts = 0;
+    const { client, state } = makeExtrasSb({
+      extra_photos: [{ id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 10, h: 10, title: null }],
+      scene: {
+        yardsticks: [],
+        items: [
+          { id: 'i1', kind: 'wreath', photoId: PHOTO_A },
+          { id: 'i2', kind: 'wreath' },
+        ],
+      },
+      onSceneWriteAttempt: (s) => {
+        writeAttempts += 1;
+        if (writeAttempts === 1) {
+          // Simulate a concurrent writer's version bump landing between THIS
+          // attempt's fresh read and its CAS write — the write must lose the
+          // race (0 rows matched), and the caller must retry from a fresh
+          // read rather than giving up.
+          const r = s.row as { version: number };
+          r.version += 1;
+        }
+      },
+    });
+    sbRef.current = client;
+
+    const result = await removeDesignExtraPhoto(ID, PHOTO_A);
+    expect(result.ok).toBe(true);
+    expect(writeAttempts).toBe(2); // attempt 1 lost the race; attempt 2 (fresh read) won
+    const items = (state.row.scene as { items: Array<{ id: string }> }).items;
+    expect(items.map(i => i.id)).toEqual(['i2']);
+    expect(state.row.version).toBe(3); // 1 (start) -> 2 (concurrent bump) -> 3 (this write)
+  });
+
   it('removeDesignExtraPhoto returns false for an unknown photo id', async () => {
     const { client, state } = makeExtrasSb({ extra_photos: [] });
     sbRef.current = client;
@@ -610,6 +664,148 @@ describe('extra street photos (#13)', () => {
   });
 });
 
+// Ledger row 260: updateDesignSceneGuarded — the compare-and-swap scene
+// write. A minimal, purpose-built fake distinct from makeExtrasSb (that one's
+// tailored to extra_photos' updated_at-based guard); this one models the
+// query shapes updateDesignSceneGuarded issues:
+//   guarded:      .update({scene,version}).eq('id',id).eq('version',expected).select('version')
+//   adopt (read): .select('version').eq('id',id).maybeSingle()  -- fresh version read
+//   adopt (CAS):  .update({scene,version}).eq('id',id).eq('version',<the fresh read>).select('version')
+// Fix round (HIGH, four-lens review): adopt used to be a THIRD, unguarded
+// shape (`.update({scene,version:1}).eq('id',id).select('version').maybeSingle()`)
+// that wrote unconditionally and reset the counter to 1. It now issues a
+// plain read, then reuses the SAME guarded-CAS shape as the normal path —
+// so the fake needs no adopt-specific branch beyond the plain-select case it
+// already had for other callers (falls into the `!updatePayload` arm below).
+function makeSceneOnlySb(initial: { scene: DesignScene; version: number }) {
+  const state = { row: { id: ID, scene: initial.scene, version: initial.version } as Record<string, unknown> };
+  function tableBuilder() {
+    let updatePayload: Record<string, unknown> | null = null;
+    const eqFilters: Array<[string, unknown]> = [];
+    const b: Record<string, unknown> = {};
+    Object.assign(b, {
+      update: (payload: Record<string, unknown>) => { updatePayload = payload; return b; },
+      eq: (col: string, val: unknown) => { eqFilters.push([col, val]); return b; },
+      select: (_cols?: string) => b,
+      maybeSingle: async () => {
+        // Only the ADOPT path calls .maybeSingle() after .update() — no
+        // 'version' eq filter, so the precondition is vacuously true (an
+        // unconditional write, by design).
+        const preconditionOk = eqFilters.every(([col, val]) => state.row[col] === val);
+        if (updatePayload && preconditionOk) Object.assign(state.row, updatePayload);
+        if (!updatePayload) return { data: { ...state.row }, error: null };
+        return { data: preconditionOk ? { version: state.row.version } : null, error: null };
+      },
+      then: (resolve: (v: unknown) => void) => {
+        if (!updatePayload) { resolve({ data: undefined, error: null }); return; }
+        const preconditionOk = eqFilters.every(([col, val]) => state.row[col] === val);
+        if (preconditionOk) Object.assign(state.row, updatePayload);
+        resolve({ data: preconditionOk ? [{ version: state.row.version }] : [], error: null });
+      },
+    });
+    return b;
+  }
+  return { client: { from: () => tableBuilder() }, state };
+}
+
+describe('updateDesignSceneGuarded (ledger row 260 — scene compare-and-swap)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('wins the CAS: version matches, scene writes, version bumps by exactly 1', async () => {
+    const scene: DesignScene = { yardsticks: [], items: [{ id: 'i1', kind: 'wreath' } as never] };
+    const { client, state } = makeSceneOnlySb({ scene: { yardsticks: [], items: [] }, version: 5 });
+    sbRef.current = client;
+
+    const outcome = await updateDesignSceneGuarded(ID, scene, 5);
+
+    expect(outcome).toEqual({ ok: true, version: 6 });
+    expect(state.row.version).toBe(6);
+    expect(state.row.scene).toEqual(scene);
+  });
+
+  it('loses the race: a concurrent writer already moved the version — reports conflict, does NOT touch the row', async () => {
+    const scene: DesignScene = { yardsticks: [], items: [{ id: 'i1', kind: 'wreath' } as never] };
+    // The row is already at version 6 (a concurrent write already landed) by
+    // the time this caller — still holding a stale read of 5 — attempts its write.
+    const { client, state } = makeSceneOnlySb({ scene: { yardsticks: [], items: [{ id: 'concurrent' } as never] }, version: 6 });
+    sbRef.current = client;
+
+    const outcome = await updateDesignSceneGuarded(ID, scene, 5);
+
+    expect(outcome).toEqual({ ok: false, reason: 'conflict' });
+    // The concurrent writer's data must survive untouched — this is the whole
+    // point of the guard: a lost race must never silently overwrite.
+    expect(state.row.version).toBe(6);
+    expect(state.row.scene).toEqual({ yardsticks: [], items: [{ id: 'concurrent' }] });
+  });
+
+  it('adopts when expectedVersion is null: reads the CURRENT version fresh, then CASes against it (does not reset the counter)', async () => {
+    const scene: DesignScene = { yardsticks: [], items: [{ id: 'i1', kind: 'wreath' } as never] };
+    const { client, state } = makeSceneOnlySb({ scene: { yardsticks: [], items: [] }, version: 47 });
+    sbRef.current = client;
+
+    const outcome = await updateDesignSceneGuarded(ID, scene, null);
+
+    expect(outcome).toEqual({ ok: true, version: 48 });
+    expect(state.row.version).toBe(48);
+    expect(state.row.scene).toEqual(scene);
+  });
+
+  it('adopts when expectedVersion is undefined too (a caller with no prior read) — same read-then-CAS path', async () => {
+    const scene: DesignScene = { yardsticks: [], items: [] };
+    const { client } = makeSceneOnlySb({ scene: { yardsticks: [], items: [] }, version: 3 });
+    sbRef.current = client;
+
+    const outcome = await updateDesignSceneGuarded(ID, scene, undefined);
+
+    expect(outcome).toEqual({ ok: true, version: 4 });
+  });
+
+  it('adopt path closes the read-then-write race: a writer that lands between the fresh read and the CAS wins, this caller loses and reports conflict instead of clobbering (fix-round HIGH, negative-controlled)', async () => {
+    const scene: DesignScene = { yardsticks: [], items: [{ id: 'i1', kind: 'wreath' } as never] };
+    const concurrentScene: DesignScene = { yardsticks: [], items: [{ id: 'concurrent' } as never] };
+    // Models the row as it actually stands in Postgres by the time the CAS
+    // fires: a concurrent writer already bumped it to version 6. The adopt
+    // branch's OWN read (below) still reports the stale value it saw a
+    // moment earlier (5) — exactly the window the fix closes.
+    const state: Record<string, unknown> = { id: ID, scene: concurrentScene, version: 6 };
+    let readCount = 0;
+    const client = {
+      from: () => {
+        const eqFilters: Array<[string, unknown]> = [];
+        let updatePayload: Record<string, unknown> | null = null;
+        const b: Record<string, unknown> = {};
+        Object.assign(b, {
+          update: (payload: Record<string, unknown>) => { updatePayload = payload; return b; },
+          eq: (col: string, val: unknown) => { eqFilters.push([col, val]); return b; },
+          select: (_cols?: string) => b,
+          maybeSingle: async () => {
+            readCount++;
+            return { data: { version: 5 }, error: null }; // stale-by-the-time-it-matters read
+          },
+          then: (resolve: (v: unknown) => void) => {
+            const preconditionOk = eqFilters.every(([col, val]) => state[col] === val);
+            if (preconditionOk) Object.assign(state, updatePayload);
+            resolve({ data: preconditionOk ? [{ version: state.version }] : [], error: null });
+          },
+        });
+        return b;
+      },
+    };
+    sbRef.current = client;
+
+    const outcome = await updateDesignSceneGuarded(ID, scene, null);
+
+    expect(readCount).toBe(1);
+    expect(outcome).toEqual({ ok: false, reason: 'conflict' });
+    // The concurrent writer's data must survive untouched.
+    expect(state.version).toBe(6);
+    expect(state.scene).toEqual(concurrentScene);
+  });
+});
+
 // W4-033: getDesignWithPhoto (the editor GET / portal-adjacent load) must
 // select ONLY the columns toDesignWithPhoto reads — never seed_analysis (the
 // raw AI-analysis jsonb the portal/editor never render) or a raw select('*').
@@ -686,6 +882,9 @@ describe('getDesignWithPhoto column narrowing (W4-033)', () => {
       satelliteLines: { santas: [], gingerbread: [], c9: [] },
       extraPhotos: [{ id: PHOTO_A, url: `signed:${ID}/extra-${PHOTO_A}.jpg`, w: 20, h: 10, title: 'Side', source: null }],
       photoTitle: 'Front',
+      // narrowRow (below) carries no `version` — proving toDesignWithPhoto's
+      // `row.version ?? 1` default (ledger row 260) rather than a real column.
+      version: 1,
     });
   });
 });
