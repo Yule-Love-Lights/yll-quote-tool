@@ -51,6 +51,12 @@ export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
   // for the newly-picked day's data.
   const [loadedDate, setLoadedDate] = useState<string | null>(null);
 
+  // Row 364: "the data on screen belongs to a different day than the picker
+  // shows". Derived from loadedDate, NOT from `loading` — a FAILED refetch
+  // flips loading false while the stale content stays, and that is exactly the
+  // path that needs the warning most.
+  const stale = loadedDate !== null && loadedDate !== date;
+
   const refresh = useCallback(() => {
     setLoading(true);
     setToken((n) => n + 1);
@@ -158,10 +164,16 @@ export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
               refetch, not a mutate() refresh), it names both days explicitly
               so the still-visible content is never mistaken for the
               newly-picked day's data. */}
-          {loading && (
-            <p role="status" aria-busy="true" className="mb-4 text-xs text-gray-500">
-              {loadedDate && loadedDate !== date
-                ? `Loading ${date}… (showing ${loadedDate} below)`
+          {(loading || stale) && (
+            <p
+              role="status"
+              aria-busy={loading}
+              className={`mb-4 text-xs ${stale && !loading ? 'text-amber-800' : 'text-gray-500'}`}
+            >
+              {stale
+                ? loading
+                  ? `Loading ${date}… (showing ${loadedDate} below)`
+                  : `Could not load ${date} — showing ${loadedDate} below.`
                 : 'Refreshing…'}
             </p>
           )}
