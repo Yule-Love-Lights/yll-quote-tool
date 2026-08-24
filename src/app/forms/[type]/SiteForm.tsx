@@ -136,7 +136,6 @@ export default function SiteForm({ formType, formVariant, theme, compact }: Prop
     for (const key of [
       'holidayMemory',
       'lightingMemory',
-      'suggestions',
       'role',
       'message',
       'nomineeName',
@@ -386,12 +385,6 @@ export default function SiteForm({ formType, formVariant, theme, compact }: Prop
                 What is your favorite holiday lighting memory?
               </label>
               <textarea id="lightingMemory" name="lightingMemory" style={areaStyle} />
-            </div>
-            <div>
-              <label style={labelStyle} htmlFor="suggestions">
-                Do you have any suggestions for what else should be on the application form?
-              </label>
-              <textarea id="suggestions" name="suggestions" style={areaStyle} />
             </div>
           </>
         )}
