@@ -5478,6 +5478,10 @@ describe('markItemHandledLocal / dismissItem / markItemCompleted — handled_by 
     const res = await markItemHandledLocal(ITEM_ID, OPERATOR_ID, NOW);
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toBe('connection reset');
+    // Fix round 2 (MED): a genuine DB error is NOT a CAS refusal — refused
+    // must read false so a caller (reply/route.ts) never treats an unknown
+    // failure as "the item was resolved elsewhere."
+    if (!res.ok) expect(res.refused).toBe(false);
   });
 
   it('dismissItem writes the real operator uuid to handled_by on the normal path', async () => {
@@ -6810,6 +6814,9 @@ describe('markItemHandledLocal — expectedStatus positive CAS (row 366)', () =>
     const res = await markItemHandledLocal(ITEM_ID, OPERATOR_ID, NOW, { expectedStatus: 'unresponded' });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toBe('Item not found or no longer unresponded');
+    // Fix round 2 (MED): a lost race is a real CAS refusal (0 rows matched
+    // the WHERE) — refused must read true.
+    if (!res.ok) expect(res.refused).toBe(true);
 
     // The refusal is audited, same as the default guard's refusal path.
     const insertCall = activityCalls.find((c) => c.method === 'insert');

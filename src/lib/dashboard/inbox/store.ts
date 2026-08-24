@@ -1098,7 +1098,16 @@ export type HandledTarget = {
   ghlContactId: string | null;
   displayName: string | null;
 };
-export type MarkHandledResult = { ok: true; target: HandledTarget } | { ok: false; error: string };
+// Row 366 fix round 2 (MED): `refused` distinguishes WHY ok is false — true
+// for a legitimate CAS refusal (the WHERE clause matched zero rows: the item
+// really did move to a status this call didn't expect, e.g. another operator's
+// concurrent Mark-completed/Dismiss), false for a genuine backend failure
+// (service role unconfigured, or the query itself errored) where nothing is
+// actually known about the item's current status. Callers that need to tell a
+// benign lost-race apart from a real failure (reply/route.ts, since its send
+// already fired and can't be undone either way) read this instead of trying to
+// pattern-match the `error` string.
+export type MarkHandledResult = { ok: true; target: HandledTarget } | { ok: false; error: string; refused: boolean };
 
 /**
  * Stamp an item handled locally FIRST (attribution never depends on the external
@@ -1136,7 +1145,7 @@ export async function markItemHandledLocal(
   opts?: { expectedStatus?: string | string[] },
 ): Promise<MarkHandledResult> {
   const sb = getSupabaseServiceClient();
-  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  if (!sb) return { ok: false, error: 'Supabase service role not configured', refused: false };
   const expectedStatus = opts?.expectedStatus ?? null;
   const from = await priorStateOf(sb, itemId);
   const update = sb
@@ -1152,7 +1161,7 @@ export async function markItemHandledLocal(
     .maybeSingle();
   if (error) {
     await recordActionFailed(itemId, operatorId, 'handled', error.message);
-    return { ok: false, error: error.message };
+    return { ok: false, error: error.message, refused: false };
   }
   if (!data) {
     // Row 311 fix-round FIX 4: hoisted, mirroring the sibling guard functions'
@@ -1162,7 +1171,7 @@ export async function markItemHandledLocal(
       ? 'Item not found or already handled'
       : `Item not found or no longer ${Array.isArray(expectedStatus) ? expectedStatus.join('/') : expectedStatus}`;
     await recordActionFailed(itemId, operatorId, 'handled', msg);
-    return { ok: false, error: msg };
+    return { ok: false, error: msg, refused: true };
   }
   const row = data as unknown as Record<string, unknown>;
   const c = (row.dashboard_contacts as Record<string, unknown> | null) ?? null;
@@ -1750,6 +1759,14 @@ export async function ensureFollowUp(input: {
     // its nag through a completely separate path (quoteFollowUpDecision
     // returning 'close', sync.ts) that never reads item status at all, so
     // that closure is unaffected either way.
+    //
+    // KNOWN UNCOVERED GAP (flagged by the fix-round-2 delta-verify, raised
+    // with the dev as a product call — not fixed here, and this skip set is
+    // NOT to be weakened to work around it): staff replies once (item becomes
+    // 'handled'), the customer then goes quiet — no new inbound message ever
+    // arrives — and the quote itself never reaches a terminal status either.
+    // That case is outside BOTH escape hatches above, so it is never
+    // automatically re-chased again.
     const { data: item, error: itemErr } = await sb.from('inbox_items').select('status').eq('id', input.inboxItemId).maybeSingle();
     if (itemErr) {
       console.error('[inbox] ensureFollowUp: item status lookup failed (skipping item):', itemErr.message);

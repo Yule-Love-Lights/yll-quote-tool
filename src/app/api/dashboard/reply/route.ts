@@ -130,15 +130,26 @@ export async function POST(req: NextRequest) {
   if (local.ok) {
     const sync = await runHandledWriteback(local.target, operator.email ?? operator.id);
     await recordWriteback(itemId, sync);
-  } else {
+  } else if (local.refused) {
     // Finding 1 fix round: the send above (line ~82) already fired — it can't
     // be unsent, so this is NOT a request failure. But the CAS was refused
-    // (the item moved to completed/dismissed between the composer opening and
-    // Send), so the item's local status did NOT become 'handled'.
-    // markItemHandledLocal already wrote an `action_failed` audit row; this
-    // just makes the same event visible in the server log. `resolved: false`
-    // below is what tells the client the status write didn't land.
+    // (the item genuinely moved to completed/dismissed between the composer
+    // opening and Send — local.refused:true means the WHERE clause matched
+    // zero rows, real evidence of that, not a guess), so the item's local
+    // status did NOT become 'handled'. markItemHandledLocal already wrote an
+    // `action_failed` audit row; this just makes the same event visible in
+    // the server log. `resolved: false, refused: true` below is what tells
+    // the client the status write didn't land AND that it's a benign lost
+    // race, not an unknown failure.
     console.warn('[api/dashboard/reply] message sent, but the status CAS was refused (item resolved elsewhere in the meantime):', local.error);
+  } else {
+    // Fix round 2 (MED): local.refused:false here means this was NOT a CAS
+    // refusal — a genuine backend failure (service role unconfigured, or the
+    // write itself errored) that tells us nothing about the item's real
+    // current status. Unlike the refused branch above, there is no evidence
+    // the item was actually resolved by anyone — treating it the same way
+    // would hide a still-open item as if it were a harmless lost race.
+    console.error('[api/dashboard/reply] message sent, but the status write failed for a reason OTHER than a lost race — item status is uncertain:', local.error);
   }
 
   // Sent in-tool → snooze as "Followed" (awaiting their reply). Best-effort: a
@@ -147,16 +158,22 @@ export async function POST(req: NextRequest) {
   // followed_up_at even if the item was already snoozed is correct (the
   // customer's waiting clock restarts because we genuinely just wrote to
   // them). See markItemFollowed's own doc comment for the full A/B split.
-  // (When `local.ok` is false the item is terminal, so markItemFollowed's own
-  // `.in('status', ['unresponded','handled'])` guard refuses this too — a
-  // harmless no-op, not a second failure to handle.)
+  // (On a refused CAS the item is genuinely terminal, so markItemFollowed's
+  // own `.in('status', ['unresponded','handled'])` guard refuses this too —
+  // harmless. On a genuine backend failure above, the item's status column
+  // itself was never touched by the failed write, so if it was really
+  // 'handled'/'unresponded' before this call, this guard still succeeds
+  // normally — also correct, not a second failure to handle.)
   await markItemFollowed(itemId, operator.id, new Date(), { allowRestamp: true });
 
-  // Finding 1 fix round: `resolved` reports whether markItemHandledLocal's CAS
-  // actually landed. `ok` stays true unconditionally — the send above is real
-  // and irreversible either way — but a refused CAS means the item is still
-  // in its terminal (completed/dismissed) state, not 'handled'/'awaiting'.
-  // ReplyComposer/InWorksSection use this to avoid optimistically moving a
-  // terminal row into the "awaiting" group (see their own doc comments).
-  return NextResponse.json({ ok: true, resolved: local.ok });
+  // Finding 1 + fix round 2: `resolved` reports whether markItemHandledLocal's
+  // CAS actually landed. `ok` stays true unconditionally — the send above is
+  // real and irreversible either way. When `resolved` is false, `refused`
+  // tells the client WHY: true for a benign lost race (the item really was
+  // resolved elsewhere — safe to stop showing it as open), false for a
+  // genuine failure (the item's true state is uncertain — must NOT be treated
+  // as resolved). ReplyComposer/InWorksSection read both fields to avoid
+  // either optimistically moving a terminal row into "awaiting" or silently
+  // hiding a row that may still need attention (see their own doc comments).
+  return NextResponse.json(local.ok ? { ok: true, resolved: true } : { ok: true, resolved: false, refused: local.refused });
 }

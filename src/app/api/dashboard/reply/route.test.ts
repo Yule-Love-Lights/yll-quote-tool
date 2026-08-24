@@ -177,21 +177,42 @@ describe('POST /api/dashboard/reply — success', () => {
 });
 
 describe('POST /api/dashboard/reply — Finding 1 (stale-composer race: CAS refused)', () => {
-  it('still sends (cannot unsend) but reports resolved:false, and skips the writeback, when the item was resolved elsewhere first', async () => {
-    markItemHandledLocalMock.mockResolvedValueOnce({ ok: false, error: 'Item not found or no longer unresponded/handled' });
+  it('still sends (cannot unsend) but reports resolved:false, refused:true, and skips the writeback, when the item was resolved elsewhere first', async () => {
+    markItemHandledLocalMock.mockResolvedValueOnce({ ok: false, error: 'Item not found or no longer unresponded/handled', refused: true });
     const { chain } = makeSb([{ data: { id: ITEM_ID }, error: null }]);
     sbRef.current = chain;
     const res = await POST(makeReq({ itemId: ITEM_ID, text: 'hello there' }));
     const json = await res.json();
     expect(res.status).toBe(200);
     expect(sendSmsMock).toHaveBeenCalledTimes(1);
-    expect(json).toEqual({ ok: true, resolved: false });
+    // Fix round 2 (MED): `refused:true` is what tells the client this is a
+    // benign lost race, not an unknown failure — distinct from the sibling
+    // test below (a real DB error) which must read refused:false.
+    expect(json).toEqual({ ok: true, resolved: false, refused: true });
     // No target coordinates on a refused CAS — nothing to write back to.
     expect(runHandledWritebackMock).not.toHaveBeenCalled();
     expect(recordWritebackMock).not.toHaveBeenCalled();
     // The snooze attempt still fires — markItemFollowed's own status guard
     // refuses it harmlessly (a terminal item is not a legal Follow source).
     expect(markItemFollowedMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('POST /api/dashboard/reply — fix round 2 (MED): a genuine backend error is NOT a refusal', () => {
+  it('still sends (cannot unsend) but reports resolved:false, refused:false, when the status write fails for a reason OTHER than a lost race', async () => {
+    markItemHandledLocalMock.mockResolvedValueOnce({ ok: false, error: 'connection reset', refused: false });
+    const { chain } = makeSb([{ data: { id: ITEM_ID }, error: null }]);
+    sbRef.current = chain;
+    const res = await POST(makeReq({ itemId: ITEM_ID, text: 'hello there' }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(sendSmsMock).toHaveBeenCalledTimes(1);
+    // The whole point of this fix round: this must NOT be indistinguishable
+    // from the CAS-refused test above — refused:false is the signal that
+    // tells the client the item's true status is UNCONFIRMED, not resolved.
+    expect(json).toEqual({ ok: true, resolved: false, refused: false });
+    expect(runHandledWritebackMock).not.toHaveBeenCalled();
+    expect(recordWritebackMock).not.toHaveBeenCalled();
   });
 });
 
