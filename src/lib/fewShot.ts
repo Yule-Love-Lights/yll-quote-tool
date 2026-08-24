@@ -28,6 +28,27 @@ import { type FewShotExample } from './photoAnalysis';
 // tokens) grows. Bump/lower here; nothing else changes.
 export const FEW_SHOT_LIMIT = 8;
 
+// Mini-light detection (bush/tree/column/railing wraps) is the analyzer's
+// WORST surface — measured across the live 42-example corpus: 38% exact
+// count match / 2.50 avg count miss, worse than wreaths (55%/0.83), spritzers
+// (50%/1.38), or roofline segments. Whole-photo similarity retrieval has no
+// way to prefer examples that actually carry comparable mini-light ground
+// truth — a house can be matched on siding/framing/style to 8 examples that
+// between them have almost no wrapped bushes/trees to teach from. Reserve a
+// SMALL minority of the few-shot slots for the richest mini-light examples
+// found beyond the pure-similarity core (see biasForMiniLights below), so the
+// model always sees calibrated strand counts and box placements without
+// displacing the majority of genuinely-closest-match teaching (rooflines,
+// wreaths, spritzers, garland). 2 of 8 (25%) guarantees real mini-light
+// signal on every call while leaving 75% of slots fully similarity-driven.
+export const MINI_RESERVED_SLOTS = 2;
+
+// How many similarity candidates to fetch before biasing — must exceed
+// FEW_SHOT_LIMIT or there's no pool beyond the pure-similarity core to search
+// for mini-rich rows in. 3x FEW_SHOT_LIMIT leaves real room to find them
+// without scoring the whole corpus (44 rows today) on every analyze call.
+export const MINI_BIAS_POOL_SIZE = FEW_SHOT_LIMIT * 3;
+
 // Product reference close-ups (wreath/spritzer/garland) are separate from house
 // EXAMPLES and don't count toward FEW_SHOT_LIMIT.
 const REFERENCE_PER_TYPE = 2;
@@ -86,6 +107,57 @@ export function selectFewShot(sources: FewShotSources, limit: number): FewShotEx
   // Earliest (least weight) → latest (most weight): training, then design with
   // its closest match last.
   return [...training, ...[...design].reverse()];
+}
+
+// How "rich" in mini-light ground truth one candidate is — just the detection
+// COUNT (locations to teach box placement from), matching the metric this was
+// measured against (exact-count match / avg count miss). Not weighted by
+// stringCount: a house with 4 sparsely-strung locations is still more useful
+// to teach FROM than a house with 0.
+function miniLightRichness(example: FewShotExample): number {
+  return example.miniLightDetections.length;
+}
+
+// PURE: bias a similarity-ordered candidate pool (closest-first) toward
+// examples with real mini-light ground truth, WITHOUT displacing the
+// pure-similarity "core" (the true closest matches, which anchor the
+// strongest teaching signal — selectFewShot puts the closest match LAST,
+// i.e. most-weighted). Reserves `reservedSlots` of the final `limit` for the
+// most mini-light-rich candidates found beyond that core, so the model sees
+// calibrated mini strand counts/boxes even when the closest-LOOKING houses
+// happen to have none. Falls back to plain similarity order (a no-op) when
+// there's no pool to search (candidates already ≤ limit), reservation is
+// off, or nothing beyond the core has any mini-light detections at all.
+export function biasForMiniLights(
+  candidates: FewShotExample[],
+  limit: number,
+  reservedSlots: number,
+): FewShotExample[] {
+  if (candidates.length <= limit || reservedSlots <= 0) return candidates.slice(0, limit);
+  const reserved = Math.min(reservedSlots, limit);
+  const coreCount = limit - reserved;
+  const core = candidates.slice(0, coreCount);
+  const pool = candidates.slice(coreCount);
+
+  const richPicks = pool
+    .map((example, idx) => ({ example, idx, richness: miniLightRichness(example) }))
+    .filter((c) => c.richness > 0)
+    // Richest first; ties go to the more-similar (lower original index) candidate.
+    .sort((a, b) => b.richness - a.richness || a.idx - b.idx)
+    .slice(0, reserved)
+    .map((c) => c.example);
+
+  const picked = new Set<FewShotExample>([...core, ...richPicks]);
+  // Top up any reserved slots richPicks couldn't fill (fewer mini-rich rows
+  // than reservedSlots) with the next most-similar unused pool candidates —
+  // pool always has > reservedSlots entries here, so this always reaches
+  // `limit`. Filtering the ORIGINAL candidates array (not core/richPicks
+  // directly) keeps the output in similarity order.
+  for (const c of pool) {
+    if (picked.size >= limit) break;
+    picked.add(c);
+  }
+  return candidates.filter((c) => picked.has(c));
 }
 
 // W5-008 (#110 wave 5): PURE cap on TOTAL few-shot photo count (not example
@@ -150,8 +222,15 @@ export async function assembleFewShot(
   //    'similarity', never recovering to recency.
   const projectDesign = (rows: TrainingExampleRow[]) =>
     rows.map(exampleToFewShot).filter((e): e is FewShotExample => e != null);
+  // Fetch a larger similarity pool (MINI_BIAS_POOL_SIZE) than the final
+  // FEW_SHOT_LIMIT so biasForMiniLights has real candidates beyond the
+  // pure-similarity core to search for mini-light-rich rows in.
   const similarDesign = queryVec
-    ? projectDesign(await getSimilarTrainingExamples(queryVec, FEW_SHOT_LIMIT))
+    ? biasForMiniLights(
+        projectDesign(await getSimilarTrainingExamples(queryVec, MINI_BIAS_POOL_SIZE)),
+        FEW_SHOT_LIMIT,
+        MINI_RESERVED_SLOTS,
+      )
     : [];
   const usedSimilarity = similarDesign.length > 0;
   const design = usedSimilarity

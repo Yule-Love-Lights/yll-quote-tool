@@ -1,6 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { selectFewShot, FEW_SHOT_LIMIT, capFewShotImages, TOTAL_FEW_SHOT_IMAGE_CAP } from './fewShot';
-import type { FewShotExample, TrainingExamplePhoto } from './photoAnalysis';
+import {
+  selectFewShot,
+  FEW_SHOT_LIMIT,
+  capFewShotImages,
+  TOTAL_FEW_SHOT_IMAGE_CAP,
+  biasForMiniLights,
+  MINI_RESERVED_SLOTS,
+  MINI_BIAS_POOL_SIZE,
+} from './fewShot';
+import type { FewShotExample, TrainingExamplePhoto, MiniLightDetection } from './photoAnalysis';
 
 // --- Mocks for assembleFewShot's dependencies (audit Finding #57) ---------
 // Keep every collaborator inert so we can isolate the embed → similarity →
@@ -37,6 +45,19 @@ function ex(source: FewShotExample['source'], id: number, photoCount = 0): FewSh
   };
 }
 const ids = (xs: FewShotExample[]) => xs.map((x) => x.santasFootage);
+
+// Same as ex(), but with `miniCount` synthetic MiniLightDetections so
+// biasForMiniLights has real richness to rank on.
+function exWithMini(source: FewShotExample['source'], id: number, miniCount: number): FewShotExample {
+  const detections: MiniLightDetection[] = Array.from({ length: miniCount }, () => ({
+    type: 'bush',
+    wrapStyle: 'canopy',
+    stringCount: 1,
+    box: [0, 0, 0.1, 0.1],
+    label: 'bush',
+  }));
+  return { ...ex(source, id), miniLightDetections: detections };
+}
 
 describe('selectFewShot', () => {
   it('FEW_SHOT_LIMIT is 8', () => {
@@ -116,6 +137,84 @@ describe('capFewShotImages', () => {
 
   it('empty input → []', () => {
     expect(capFewShotImages([], 24)).toEqual([]);
+  });
+});
+
+// Retrieval-mini-bias: whole-photo similarity has no way to prefer candidates
+// that actually carry mini-light ground truth. biasForMiniLights reserves a
+// small slice of the final slots for the richest mini-light examples found
+// BEYOND the pure-similarity core, without displacing the majority of
+// genuinely-closest-match teaching.
+describe('biasForMiniLights', () => {
+  it('constants: reserved slots is a small minority of the limit, pool exceeds the limit', () => {
+    expect(MINI_RESERVED_SLOTS).toBeGreaterThan(0);
+    expect(MINI_RESERVED_SLOTS).toBeLessThan(FEW_SHOT_LIMIT);
+    expect(MINI_BIAS_POOL_SIZE).toBeGreaterThan(FEW_SHOT_LIMIT);
+  });
+
+  it('candidate pool already ≤ limit: returned unchanged (nothing to bias)', () => {
+    const candidates = [exWithMini('design', 0, 0), exWithMini('design', 1, 3)];
+    expect(biasForMiniLights(candidates, 8, 2)).toEqual(candidates);
+  });
+
+  it('reservedSlots 0: pure similarity order, first `limit` returned untouched', () => {
+    const candidates = Array.from({ length: 10 }, (_, i) => exWithMini('design', i, i === 9 ? 5 : 0));
+    const out = biasForMiniLights(candidates, 8, 0);
+    expect(ids(out)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]); // richest candidate (idx 9) never considered
+  });
+
+  it('swaps mini-rich candidates from beyond the core into the reserved slots, preserving similarity order', () => {
+    // idx 0-5 = core (no mini work); idx 6,7 = empty; idx 8,9 = mini-rich.
+    const candidates = [
+      exWithMini('design', 0, 0), exWithMini('design', 1, 0), exWithMini('design', 2, 0),
+      exWithMini('design', 3, 0), exWithMini('design', 4, 0), exWithMini('design', 5, 0),
+      exWithMini('design', 6, 0), exWithMini('design', 7, 0),
+      exWithMini('design', 8, 2), exWithMini('design', 9, 4),
+    ];
+    const out = biasForMiniLights(candidates, 8, 2);
+    // Core (0-5) always kept; empty 6,7 dropped in favor of richer 8,9 — order preserved.
+    expect(ids(out)).toEqual([0, 1, 2, 3, 4, 5, 8, 9]);
+    expect(out.every((e) => candidates.includes(e))).toBe(true);
+  });
+
+  it('never drops the pure-similarity core (closest matches always survive)', () => {
+    const candidates = Array.from({ length: 12 }, (_, i) => exWithMini('design', i, i >= 10 ? 3 : 0));
+    const out = biasForMiniLights(candidates, 8, 2);
+    // coreCount = limit(8) - reserved(2) = 6 → idx 0-5 must all be present.
+    for (let i = 0; i < 6; i++) expect(ids(out)).toContain(i);
+  });
+
+  it('fewer mini-rich candidates than reserved slots: tops up with next-most-similar', () => {
+    const candidates = [
+      exWithMini('design', 0, 0), exWithMini('design', 1, 0), exWithMini('design', 2, 0),
+      exWithMini('design', 3, 0), exWithMini('design', 4, 0), exWithMini('design', 5, 0),
+      exWithMini('design', 6, 1), // only ONE rich candidate beyond the core
+      exWithMini('design', 7, 0), exWithMini('design', 8, 0),
+    ];
+    const out = biasForMiniLights(candidates, 8, 2);
+    expect(out).toHaveLength(8);
+    expect(ids(out)).toContain(6); // the one rich candidate made it in
+  });
+
+  it('no mini-rich candidates anywhere beyond the core: falls back to plain top-`limit` similarity', () => {
+    const candidates = Array.from({ length: 10 }, (_, i) => exWithMini('design', i, 0));
+    const out = biasForMiniLights(candidates, 8, 2);
+    expect(ids(out)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+  });
+
+  it('ties in richness break toward the more-similar (lower-index) candidate', () => {
+    const candidates = [
+      exWithMini('design', 0, 0), exWithMini('design', 1, 0), exWithMini('design', 2, 0),
+      exWithMini('design', 3, 0), exWithMini('design', 4, 0), exWithMini('design', 5, 0),
+      exWithMini('design', 6, 2), exWithMini('design', 7, 2), exWithMini('design', 8, 2),
+    ];
+    const out = biasForMiniLights(candidates, 8, 2);
+    // 3 candidates tie at richness 2; the 2 reserved slots go to the 2 most similar (6, 7).
+    expect(ids(out)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+  });
+
+  it('empty input → []', () => {
+    expect(biasForMiniLights([], 8, 2)).toEqual([]);
   });
 });
 
