@@ -29,6 +29,7 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { isReferralSelfServeEnabled } from '@/lib/referralSelfServeFlag';
+import { CompactTrustRow } from '@/components/portal/dark/CompactTrustRow';
 import { ReferralLinkForm } from './ReferralLinkForm';
 
 // The flag is a runtime server env read, never statically pre-render this page.
@@ -62,6 +63,18 @@ export default async function ReferralLinkPage({
             Send friends and neighbors our way. When they book, you get $125 off your next job. They get 2 free
             16&quot; spritzers.
           </p>
+          {/* Trust row (naldo/referral-link-preview, PIECE 1): the same
+              compact rating / license / guarantee signals the referral
+              landing page itself shows above its fold (ReferHero.tsx), so
+              someone deciding whether to bother generating a link sees the
+              same proof their friend will see. Kept to this one line on
+              purpose: this page has a single job, and the heavier trust
+              sections (logo marquee, review carousel, guarantee cards) are
+              built to carry a stranger through a whole buying decision,
+              which is not what a returning contact clicking one link needs. */}
+          <div className="mt-6">
+            <CompactTrustRow />
+          </div>
         </div>
         <ReferralLinkForm contactId={contactId} />
       </div>
