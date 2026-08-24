@@ -28,7 +28,7 @@ import { isUuid } from './validate';
 import { appendIdentifiers, findDuplicatePairs, mergeContacts, resolveIdentity } from './identity';
 import { decideInboxState } from './reducer';
 import { isAnsweredByDirection } from './escalation';
-import { FOLLOWUP_REASONS, isDueToday, quoteSentNoReplyFollowUp } from './followups';
+import { FOLLOWUP_REASONS, isDueToday, mayReChaseHandled, quoteSentNoReplyFollowUp } from './followups';
 import type { MetricItem, WindowKey, ReopenCounts } from './responseMetrics';
 import { addSuppressedSenders, removeSuppressedSenders } from './suppression';
 import { applyBucketFilter, inverseOf, type ReverseAction } from './lifecycle';
@@ -1768,18 +1768,25 @@ export async function ensureFollowUp(input: {
   // fail open by skipping just this item, log, and let the next tick (5 min
   // later) retry — never let one item's read failure take down the batch.
   try {
+    // Row 385: this lookup used to filter `.eq('status','pending')` and select
+    // only `id`. It now fetches the ONE row for this (item, reason) whatever its
+    // status — the table's `unique (inbox_item_id, reason)` constraint guarantees
+    // at most one — because the re-chase decision below needs that row's
+    // `updated_at` (when the nag was last touched), and a second query for it
+    // would be wasteful. The pending early-return is preserved exactly: a
+    // pending row still means "don't duplicate".
     const { data, error: pendingErr } = await sb
       .from('follow_ups')
-      .select('id')
+      .select('id, status, updated_at')
       .eq('inbox_item_id', input.inboxItemId)
       .eq('reason', input.reason)
-      .eq('status', 'pending')
       .limit(1);
     if (pendingErr) {
       console.error('[inbox] ensureFollowUp: pending lookup failed (skipping item):', pendingErr.message);
       return 'failed';
     }
-    if (data && data.length > 0) return 'skipped'; // a pending one already exists — don't duplicate
+    const existingNudge = (data as { id: string; status: string; updated_at: string | null }[] | null)?.[0] ?? null;
+    if (existingNudge?.status === 'pending') return 'skipped'; // a pending one already exists — don't duplicate
 
     // #252 churn gate: quoteFollowUpDecision (quotetool.ts) derives kind:'create'
     // from the QUOTE's own fields alone — never the anchored item's status — so
@@ -1811,21 +1818,53 @@ export async function ensureFollowUp(input: {
     // returning 'close', sync.ts) that never reads item status at all, so
     // that closure is unaffected either way.
     //
-    // KNOWN UNCOVERED GAP (flagged by the fix-round-2 delta-verify, raised
-    // with the dev as a product call — not fixed here, and this skip set is
-    // NOT to be weakened to work around it): staff replies once (item becomes
-    // 'handled'), the customer then goes quiet — no new inbound message ever
-    // arrives — and the quote itself never reaches a terminal status either.
-    // That case is outside BOTH escape hatches above, so it is never
-    // automatically re-chased again.
-    const { data: item, error: itemErr } = await sb.from('inbox_items').select('status').eq('id', input.inboxItemId).maybeSingle();
+    // THAT GAP IS NOW CLOSED (row 385, Jason's ruling 2026-08-24). This
+    // paragraph used to read "KNOWN UNCOVERED GAP ... not fixed here, and this
+    // skip set is NOT to be weakened to work around it", describing the case
+    // where staff reply once, the customer goes quiet, no new inbound ever
+    // arrives, and the quote never reaches a terminal status — outside BOTH
+    // escape hatches above, so nothing ever re-chased it. The 'handled' skip
+    // below is now TIME-CONDITIONAL rather than absolute, which closes exactly
+    // that case without weakening anything: see mayReChaseHandled (followups.ts)
+    // for why the quiet window is anchored to the nag's own updated_at and not
+    // to handled_at. 'completed' and 'dismissed' remain absolute skips.
+    const { data: item, error: itemErr } = await sb.from('inbox_items').select('status, handled_at').eq('id', input.inboxItemId).maybeSingle();
     if (itemErr) {
       console.error('[inbox] ensureFollowUp: item status lookup failed (skipping item):', itemErr.message);
       return 'failed';
     }
-    const itemStatus = (item as { status: string } | null)?.status ?? null;
-    if (itemStatus === 'completed' || itemStatus === 'dismissed' || itemStatus === 'handled') return 'skipped';
+    const itemRow = item as { status: string; handled_at: string | null } | null;
+    const itemStatus = itemRow?.status ?? null;
+    // 'completed' and 'dismissed' stay HARD skips: those are staff saying the
+    // conversation is finished, and nothing about elapsed time changes that.
+    if (itemStatus === 'completed' || itemStatus === 'dismissed') return 'skipped';
+    // Row 385: 'handled' is the one status where silence is meaningful — staff
+    // replied and the customer never wrote back (a real inbound would have
+    // reopened the item to 'unresponded'). Skip while the quiet window is still
+    // running; once it has elapsed, fall through and let the upsert below re-arm
+    // the nag. See mayReChaseHandled for why the anchor is the nag's own
+    // updated_at rather than handled_at — anchoring on handled_at would undo
+    // every Done click five minutes later, which is the bug row 287(b) fixed.
+    let isReChase = false;
+    if (itemStatus === 'handled') {
+      const canReChase = mayReChaseHandled({
+        lastNudgeAt: existingNudge?.updated_at ? new Date(existingNudge.updated_at) : null,
+        handledAt: itemRow?.handled_at ? new Date(itemRow.handled_at) : null,
+        now: new Date(),
+      });
+      if (!canReChase) return 'skipped';
+      isReChase = true;
+    }
     const fu = quoteSentNoReplyFollowUp({ contactId: input.contactId, inboxItemId: input.inboxItemId, sentAt: input.sentAt, afterDays: input.afterDays });
+    // Row 385 (staff-lens MED): a RE-CHASE is due NOW, not on the long-past date
+    // the original send implies. quoteSentNoReplyFollowUp derives due_at from
+    // `sentAt + afterDays`, so re-arming a nag for a quote sent 90 days ago would
+    // stamp a due date 87 days in the past. Two things go wrong with that: the
+    // digest reports it as 87 days overdue when staff have in fact been prompt
+    // (opsDigest reads due_at), and listDueFollowUps sorts oldest-first under a
+    // 100-row cap, so ancient re-chases would crowd genuinely-fresh nags out of
+    // the strip. It became due the moment the quiet window elapsed, which is now.
+    const dueAt = isReChase ? new Date() : fu.dueAt;
     // WT-43: UPSERT, not insert. The table has `unique (inbox_item_id, reason)`
     // with no status predicate, so once a prior nudge is marked 'done' a plain
     // insert 23505s (swallowed by supabase-js into {error}) and the nudge never
@@ -1836,7 +1875,7 @@ export async function ensureFollowUp(input: {
       {
         contact_id: fu.contactId,
         inbox_item_id: fu.inboxItemId,
-        due_at: fu.dueAt.toISOString(),
+        due_at: dueAt.toISOString(),
         reason: fu.reason,
         status: fu.status,
         assigned_to: fu.assignedTo,
