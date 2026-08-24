@@ -5523,15 +5523,34 @@ describe('markItemHandledLocal / dismissItem / markItemCompleted — handled_by 
     const { from, updateCalls } = makeSbFor({ data: { dashboard_contacts: null }, error: null });
     sbRef.current = { from };
 
-    await dismissItem(ITEM_ID, OPERATOR_ID, NOW, { expectedStatus: ['unresponded', 'handled'] });
+    await dismissItem(ITEM_ID, OPERATOR_ID, NOW, { expectedStatus: 'unresponded' });
 
-    // The positive guard carries the caller's real legal-status set into the
-    // write's own WHERE clause...
-    const inCall = updateCalls.find((c) => c.method === 'in');
-    expect(inCall).toBeDefined();
-    expect(inCall!.args).toEqual(['status', ['unresponded', 'handled']]);
+    // The positive guard carries the caller's real legal status into the write's
+    // own WHERE clause. Two .eq calls now: the id, and the status.
+    const statusEq = updateCalls.filter((c) => c.method === 'eq').find((c) => c.args[0] === 'status');
+    expect(statusEq).toBeDefined();
+    expect(statusEq!.args).toEqual(['status', 'unresponded']);
     // ...and the negative default is gone, not merely added to.
     expect(updateCalls.find((c) => c.method === 'neq')).toBeUndefined();
+  });
+
+  // FIX ROUND, and the reason this test exists: the first cut passed
+  // ['unresponded','handled'], derived from which buckets EXIST rather than from
+  // which bucket actually feeds the Dismiss button. 'handled' is precisely the
+  // status this guard exists to refuse — a row a colleague answered in the
+  // read/write gap IS 'handled' — so including it reopened the very race the row
+  // is about. Two review lenses converged on it independently. This pins the
+  // corrected contract so it cannot drift back.
+  it('dismissItem still supports an ARRAY expectedStatus, and handled is not in the dismissable set', async () => {
+    const { from, updateCalls } = makeSbFor({ data: { dashboard_contacts: null }, error: null });
+    sbRef.current = { from };
+
+    await dismissItem(ITEM_ID, OPERATOR_ID, NOW, { expectedStatus: ['unresponded'] });
+
+    const inCall = updateCalls.find((c) => c.method === 'in');
+    expect(inCall).toBeDefined();
+    expect(inCall!.args).toEqual(['status', ['unresponded']]);
+    expect(inCall!.args[1] as string[]).not.toContain('handled');
   });
 
   it('dismissItem REFUSES (never suppresses the sender) when the row moved out of a dismissable status', async () => {

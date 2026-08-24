@@ -1208,11 +1208,11 @@ export async function markItemHandledLocal(
  * A caller that knows the fixed set of statuses its UI surface can legally be in
  * should pass `expectedStatus`, swapping the negative guard for a positive
  * `.eq(...)`/`.in(...)` carried across the read→write gap as one atomic
- * UPDATE...WHERE. Every surface that renders Dismiss (InboxList, InWorksSection)
- * is fed by the needs_reply / awaiting_reply / handled buckets, and
- * applyBucketFilter (lifecycle.ts) excludes completed/dismissed from all three
- * by construction — so the real legal set is {'unresponded','handled'}, the same
- * set /api/dashboard/reply already passes.
+ * UPDATE...WHERE. The only Dismiss control in the app is InboxList's "Not a
+ * lead", fed by listOpenItems → applyBucketFilter(..., 'needs_reply') →
+ * `status = 'unresponded'`, so that is the whole legal set (see the route).
+ * Note that 'handled' must NOT be in it: a row a colleague answered in the
+ * read→write gap is exactly what this guard exists to refuse.
  *
  * `refused: true` distinguishes a lost CAS race (the WHERE matched zero rows —
  * real evidence the row moved) from a backend failure, mirroring
