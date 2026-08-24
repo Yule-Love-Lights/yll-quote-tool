@@ -14,13 +14,16 @@
 import {
   exampleToFewShot,
   getRecentTrainingExamples,
-  getSimilarTrainingExamples,
+  getSimilarTrainingExamplesLite,
+  getTrainingExamplesByIds,
   getCorpusBiasNote,
   type TrainingExampleRow,
+  type LiteTrainingExampleRow,
 } from './trainingExamples';
 import { getTrainingFewShot, type StoredTrainingHouse } from './training';
 import { getReferenceAssetsForAnalysis, type StoredReferenceAsset } from './referenceAssets';
 import { embedImage, isEmbeddingConfigured } from './embeddings';
+import { sceneToFewShotPieces } from './design/sceneToFewShot';
 import { type FewShotExample } from './photoAnalysis';
 
 // The one tunable knob: how many house examples to feed per analyze call.
@@ -43,10 +46,15 @@ export const FEW_SHOT_LIMIT = 8;
 // signal on every call while leaving 75% of slots fully similarity-driven.
 export const MINI_RESERVED_SLOTS = 2;
 
-// How many similarity candidates to fetch before biasing — must exceed
+// How many similarity candidates to RANK before biasing — must exceed
 // FEW_SHOT_LIMIT or there's no pool beyond the pure-similarity core to search
-// for mini-rich rows in. 3x FEW_SHOT_LIMIT leaves real room to find them
-// without scoring the whole corpus (44 rows today) on every analyze call.
+// for mini-rich rows in. 3x FEW_SHOT_LIMIT leaves real room to find them.
+// Safe to widen further: ranking goes through getSimilarTrainingExamplesLite
+// (id + final_scene + photo dims only, ~7 KB/row measured), NOT the full
+// base64-carrying row (~981 KB/row avg, up to ~4.9 MB on one row, measured
+// live 2026-08-24) — only the FINAL FEW_SHOT_LIMIT winners get hydrated to
+// full rows (getTrainingExamplesByIds), so this constant no longer controls
+// how many megabytes of images cross the wire per analyze call.
 export const MINI_BIAS_POOL_SIZE = FEW_SHOT_LIMIT * 3;
 
 // Product reference close-ups (wreath/spritzer/garland) are separate from house
@@ -109,15 +117,6 @@ export function selectFewShot(sources: FewShotSources, limit: number): FewShotEx
   return [...training, ...[...design].reverse()];
 }
 
-// How "rich" in mini-light ground truth one candidate is — just the detection
-// COUNT (locations to teach box placement from), matching the metric this was
-// measured against (exact-count match / avg count miss). Not weighted by
-// stringCount: a house with 4 sparsely-strung locations is still more useful
-// to teach FROM than a house with 0.
-function miniLightRichness(example: FewShotExample): number {
-  return example.miniLightDetections.length;
-}
-
 // PURE: bias a similarity-ordered candidate pool (closest-first) toward
 // examples with real mini-light ground truth, WITHOUT displacing the
 // pure-similarity "core" (the true closest matches, which anchor the
@@ -128,11 +127,16 @@ function miniLightRichness(example: FewShotExample): number {
 // happen to have none. Falls back to plain similarity order (a no-op) when
 // there's no pool to search (candidates already ≤ limit), reservation is
 // off, or nothing beyond the core has any mini-light detections at all.
-export function biasForMiniLights(
-  candidates: FewShotExample[],
+// Generic + a `richnessOf` accessor (rather than reading `.miniLightDetections`
+// directly) so this can rank either a lightweight pre-hydration row or a
+// fully-hydrated FewShotExample — see assembleFewShot, which biases the
+// LIGHTWEIGHT pool (no base64 images) and hydrates only the winners.
+export function biasForMiniLights<T>(
+  candidates: T[],
   limit: number,
   reservedSlots: number,
-): FewShotExample[] {
+  richnessOf: (item: T) => number,
+): T[] {
   if (candidates.length <= limit || reservedSlots <= 0) return candidates.slice(0, limit);
   const reserved = Math.min(reservedSlots, limit);
   const coreCount = limit - reserved;
@@ -140,14 +144,14 @@ export function biasForMiniLights(
   const pool = candidates.slice(coreCount);
 
   const richPicks = pool
-    .map((example, idx) => ({ example, idx, richness: miniLightRichness(example) }))
+    .map((example, idx) => ({ example, idx, richness: richnessOf(example) }))
     .filter((c) => c.richness > 0)
     // Richest first; ties go to the more-similar (lower original index) candidate.
     .sort((a, b) => b.richness - a.richness || a.idx - b.idx)
     .slice(0, reserved)
     .map((c) => c.example);
 
-  const picked = new Set<FewShotExample>([...core, ...richPicks]);
+  const picked = new Set<T>([...core, ...richPicks]);
   // Top up any reserved slots richPicks couldn't fill (fewer mini-rich rows
   // than reservedSlots) with the next most-similar unused pool candidates —
   // pool always has > reservedSlots entries here, so this always reaches
@@ -158,6 +162,19 @@ export function biasForMiniLights(
     picked.add(c);
   }
   return candidates.filter((c) => picked.has(c));
+}
+
+// richnessOf for the LIGHTWEIGHT pre-hydration pool (LiteTrainingExampleRow):
+// project just enough of final_scene to count mini-light detections — just
+// the detection COUNT (locations to teach box placement from), matching the
+// metric this was measured against (exact-count match / avg count miss). Not
+// weighted by stringCount: a house with 4 sparsely-strung locations is still
+// more useful to teach FROM than a house with 0. Non-projectable rows (no
+// photo dims) score 0 — same "can't teach from it" treatment exampleToFewShot
+// gives them at hydration time.
+function sceneMiniRichness(row: LiteTrainingExampleRow): number {
+  if (!row.street_w || !row.street_h || row.street_w <= 0 || row.street_h <= 0) return 0;
+  return sceneToFewShotPieces(row.final_scene, row.street_w, row.street_h).miniLightDetections.length;
 }
 
 // W5-008 (#110 wave 5): PURE cap on TOTAL few-shot photo count (not example
@@ -222,16 +239,29 @@ export async function assembleFewShot(
   //    'similarity', never recovering to recency.
   const projectDesign = (rows: TrainingExampleRow[]) =>
     rows.map(exampleToFewShot).filter((e): e is FewShotExample => e != null);
-  // Fetch a larger similarity pool (MINI_BIAS_POOL_SIZE) than the final
-  // FEW_SHOT_LIMIT so biasForMiniLights has real candidates beyond the
-  // pure-similarity core to search for mini-light-rich rows in.
-  const similarDesign = queryVec
-    ? biasForMiniLights(
-        projectDesign(await getSimilarTrainingExamples(queryVec, MINI_BIAS_POOL_SIZE)),
-        FEW_SHOT_LIMIT,
-        MINI_RESERVED_SLOTS,
-      )
-    : [];
+
+  // Rank a WIDE pool (MINI_BIAS_POOL_SIZE) CHEAPLY — the lite RPC never sends
+  // base64 images over the wire — then hydrate only the FEW_SHOT_LIMIT ids
+  // biasForMiniLights actually keeps. Ranking the full pool via the base64-
+  // carrying row used to cost ~23.5 MB/analyze call (24 × ~981 KB avg) with
+  // two thirds of it discarded immediately; this keeps the wide-pool ranking
+  // (needed for the mini-light bias to have real material to search) while
+  // the bytes-over-the-wire stay pinned to FEW_SHOT_LIMIT full rows, same as
+  // before this feature existed.
+  let similarDesign: FewShotExample[] = [];
+  if (queryVec) {
+    const litePool = await getSimilarTrainingExamplesLite(queryVec, MINI_BIAS_POOL_SIZE);
+    const selectedLite = biasForMiniLights(litePool, FEW_SHOT_LIMIT, MINI_RESERVED_SLOTS, sceneMiniRichness);
+    const selectedIds = selectedLite.map((c) => c.id);
+    const hydrated = await getTrainingExamplesByIds(selectedIds);
+    const hydratedById = new Map(hydrated.map((r) => [r.id, r]));
+    // getTrainingExamplesByIds (.in()) doesn't preserve order — re-sort to
+    // the similarity/bias order selectedIds already carries.
+    const orderedRows = selectedIds
+      .map((id) => hydratedById.get(id))
+      .filter((r): r is TrainingExampleRow => r != null);
+    similarDesign = projectDesign(orderedRows);
+  }
   const usedSimilarity = similarDesign.length > 0;
   const design = usedSimilarity
     ? similarDesign

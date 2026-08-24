@@ -56,10 +56,9 @@ loadEnvLocal();
 async function main(): Promise<void> {
   const { getSupabaseServiceClient } = await import('../../src/lib/supabase');
   const { sceneToFewShotPieces } = await import('../../src/lib/design/sceneToFewShot');
-  const { getSimilarTrainingExamples, exampleToFewShot } = await import('../../src/lib/trainingExamples');
+  const { getSimilarTrainingExamplesLite } = await import('../../src/lib/trainingExamples');
   const { biasForMiniLights, FEW_SHOT_LIMIT, MINI_RESERVED_SLOTS, MINI_BIAS_POOL_SIZE } = await import('../../src/lib/fewShot');
   const { isEmbeddingConfigured } = await import('../../src/lib/embeddings');
-  type FewShotExample = Awaited<ReturnType<typeof exampleToFewShot>>;
 
   const sb = getSupabaseServiceClient();
   if (!sb) {
@@ -152,9 +151,21 @@ async function main(): Promise<void> {
   const embeddedRows = rows.filter((r) => r.embedding != null);
   console.log('Rows with a stored embedding (self-as-query proxy pool): ' + embeddedRows.length);
 
-  const projectDesign = (candRows: TrainingExampleRow[]) =>
-    candRows.map(exampleToFewShot).filter((e): e is NonNullable<FewShotExample> => e != null);
-  const miniRichness = (e: NonNullable<FewShotExample>) => e.miniLightDetections.length;
+  // Orchestrator finding (2026-08-24): the ORIGINAL version of this script,
+  // and the ORIGINAL version of assembleFewShot's similarity branch, ranked
+  // the wide MINI_BIAS_POOL_SIZE pool via the FULL-row RPC (base64 images
+  // included) -- ~981 KB avg/row measured live, so a 24-row pool cost ~23.5
+  // MB/analyze call just to RANK candidates, two thirds of it discarded
+  // immediately. This script now measures the FIXED code path directly: the
+  // lite RPC (id/final_scene/photo dims only, no images) ranks the wide pool,
+  // and richness is computed straight from final_scene -- no base64 fetch
+  // anywhere in this measurement, matching what assembleFewShot now does
+  // before it hydrates only the final FEW_SHOT_LIMIT winners.
+  const richnessFromLite = (row: { final_scene: unknown; street_w: number | null; street_h: number | null }) => {
+    if (!row.street_w || !row.street_h || row.street_w <= 0 || row.street_h <= 0) return 0;
+    return sceneToFewShotPieces(row.final_scene as Parameters<typeof sceneToFewShotPieces>[0], row.street_w, row.street_h)
+      .miniLightDetections.length;
+  };
 
   let queriesRun = 0;
   let preRichExamplesSum = 0;
@@ -171,18 +182,17 @@ async function main(): Promise<void> {
     const vec = typeof queryVec === 'string' ? (JSON.parse(queryVec) as number[]) : queryVec;
     if (!Array.isArray(vec)) continue;
 
-    const poolRows = (await getSimilarTrainingExamples(vec, MINI_BIAS_POOL_SIZE + 1)).filter(
+    const poolRows = (await getSimilarTrainingExamplesLite(vec, MINI_BIAS_POOL_SIZE + 1)).filter(
       (r) => r.id !== queryRow.id,
     );
     if (poolRows.length < FEW_SHOT_LIMIT) continue;
     queriesRun++;
 
-    const pool = projectDesign(poolRows);
-    const preBias = pool.slice(0, FEW_SHOT_LIMIT);
-    const postBias = biasForMiniLights(pool, FEW_SHOT_LIMIT, MINI_RESERVED_SLOTS);
+    const preBias = poolRows.slice(0, FEW_SHOT_LIMIT);
+    const postBias = biasForMiniLights(poolRows, FEW_SHOT_LIMIT, MINI_RESERVED_SLOTS, richnessFromLite);
 
-    const preRich = preBias.filter((e) => miniRichness(e) > 0).length;
-    const postRich = postBias.filter((e) => miniRichness(e) > 0).length;
+    const preRich = preBias.filter((e) => richnessFromLite(e) > 0).length;
+    const postRich = postBias.filter((e) => richnessFromLite(e) > 0).length;
     preRichExamplesSum += preRich;
     postRichExamplesSum += postRich;
     if (preRich > 0) preAnyRichQueries++;
@@ -195,6 +205,20 @@ async function main(): Promise<void> {
       if (postRich > 0) postAnyRichMiniNeedy++;
     }
   }
+
+  // Bytes-per-analyze-call report (orchestrator ask): row sizes measured live
+  // via direct SQL against training_examples 2026-08-24 (avg full row images
+  // = 981.3 KB, avg lite row / final_scene = 6.8 KB -- see PR body for the
+  // exact query). Named here so the math is auditable, not asserted.
+  const AVG_FULL_ROW_KB = 981.3;
+  const AVG_LITE_ROW_KB = 6.8;
+  const beforeFeatureKb = FEW_SHOT_LIMIT * AVG_FULL_ROW_KB; // pre-mini-bias baseline: 8 full rows
+  const afterRegressionKb = MINI_BIAS_POOL_SIZE * AVG_FULL_ROW_KB; // the bug: 24 full rows just to rank
+  const afterFixKb = MINI_BIAS_POOL_SIZE * AVG_LITE_ROW_KB + FEW_SHOT_LIMIT * AVG_FULL_ROW_KB; // lite-rank + hydrate 8
+  console.log('\n=== Bytes fetched per analyze call (similarity branch), row sizes measured live ===');
+  console.log('before this feature (8 full rows):        ~' + (beforeFeatureKb / 1024).toFixed(2) + ' MB');
+  console.log('after this feature AS FLAGGED (24 full rows): ~' + (afterRegressionKb / 1024).toFixed(2) + ' MB  <- the regression');
+  console.log('after the fix (24 lite + 8 full rows):     ~' + (afterFixKb / 1024).toFixed(2) + ' MB\n');
 
   console.log('Queries evaluated (had >=' + FEW_SHOT_LIMIT + ' similarity neighbors beyond self): ' + queriesRun);
   console.log('  of which the query house itself has real mini-light work: ' + miniNeedyQueries + '\n');
@@ -242,6 +266,12 @@ async function main(): Promise<void> {
             pctQueriesWithAnyRich: queriesRun ? postAnyRichQueries / queriesRun : null,
             pctMiniNeedyWithAnyRich: miniNeedyQueries ? postAnyRichMiniNeedy / miniNeedyQueries : null,
           },
+        },
+        bytesPerAnalyzeCallKb: {
+          note: 'row sizes measured live via SQL 2026-08-24, not fetched by this script',
+          beforeThisFeature: beforeFeatureKb,
+          afterThisFeatureAsFlagged: afterRegressionKb,
+          afterTheFix: afterFixKb,
         },
       },
       null,

@@ -244,6 +244,58 @@ export async function getSimilarTrainingExamples(
   return (data ?? []) as TrainingExampleRow[];
 }
 
+// Lightweight shape for similarity RANKING only -- no base64 image columns.
+// A full TrainingExampleRow averages ~981 KB (street + satellite photos,
+// measured live 2026-08-24); this shape averages ~7 KB (final_scene is jsonb,
+// measured ~6.8 KB avg -- cheap enough that a maintained count column isn't
+// needed). Used to widen the similarity candidate POOL for biasForMiniLights
+// (fewShot.ts's MINI_BIAS_POOL_SIZE) without paying full-row bytes for
+// candidates that get discarded immediately after ranking.
+export type LiteTrainingExampleRow = {
+  id: string;
+  final_scene: DesignScene;
+  street_w: number | null;
+  street_h: number | null;
+};
+
+// Same ranking as getSimilarTrainingExamples (cosine distance, closest
+// first), but via the sibling match_training_examples_lite RPC, which
+// SELECTs only id/final_scene/street_w/street_h server-side -- the base64
+// photo columns never cross the wire for this call. Never a substitute for
+// getSimilarTrainingExamples: only enough to RANK + score mini-light
+// richness; hydrate the final selected ids with getTrainingExamplesByIds.
+export async function getSimilarTrainingExamplesLite(
+  queryEmbedding: number[],
+  limit = 8,
+): Promise<LiteTrainingExampleRow[]> {
+  const sb = getSb();
+  if (!sb) return [];
+  const { data, error } = await sb.rpc('match_training_examples_lite', {
+    query_embedding: queryEmbedding,
+    match_count: limit,
+  });
+  if (error) {
+    console.error('getSimilarTrainingExamplesLite error:', error);
+    return [];
+  }
+  return (data ?? []) as LiteTrainingExampleRow[];
+}
+
+// Hydrate a small, already-decided set of ids to full rows (base64 photos
+// included) -- the second half of the rank-cheap/hydrate-only-the-winners
+// split. `.in()` does NOT preserve the input id order; callers that care
+// about similarity order (fewShot.ts does) must re-sort by their own id list.
+export async function getTrainingExamplesByIds(ids: string[]): Promise<TrainingExampleRow[]> {
+  const sb = getSb();
+  if (!sb || ids.length === 0) return [];
+  const { data, error } = await sb.from('training_examples').select('*').in('id', ids);
+  if (error) {
+    console.error('getTrainingExamplesByIds error:', error);
+    return [];
+  }
+  return (data ?? []) as TrainingExampleRow[];
+}
+
 // #8 Stage C (C2): the corpus-wide systematic-bias calibration note for the
 // analyzer prompt. Builds seed→final metric pairs across the seeded examples and
 // aggregates them (see seedFinalStats). Returns null until there are enough
