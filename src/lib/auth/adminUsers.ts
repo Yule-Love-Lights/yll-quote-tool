@@ -83,6 +83,24 @@ export async function listOperatorAccounts(sb: SupabaseClient): Promise<Operator
  * before the role is flattened — matching the standing pitfall about auditing
  * every consumer of the role primitive when a new population shares the store.
  */
+/**
+ * Every auth account keyed by id, crew logins INCLUDED, for surfaces that must
+ * show a login's email whatever population it belongs to.
+ *
+ * `isCrew` is carried explicitly because `roleOf` flattens 'crew' to 'operator',
+ * so the returned `role` alone cannot tell the two apart. Callers that must not
+ * offer a crew login (the office picker) use `listNonCrewOperators` instead;
+ * this one is for display and for resolving a linked login.
+ */
+export async function listAllAccountsById(
+  sb: SupabaseClient,
+): Promise<Map<string, OperatorAccount & { isCrew: boolean }>> {
+  const rows = await listAllRawUsers(sb);
+  return new Map(
+    rows.map((u) => [u.id, { ...toOperatorAccount(u), isCrew: isCrewAccount(u.app_metadata) }]),
+  );
+}
+
 export async function listNonCrewOperators(sb: SupabaseClient): Promise<OperatorAccount[]> {
   return (await listAllRawUsers(sb))
     .filter((u) => !isCrewAccount(u.app_metadata))

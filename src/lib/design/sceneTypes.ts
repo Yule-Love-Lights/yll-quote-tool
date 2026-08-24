@@ -266,7 +266,11 @@ export type MiniAreaItem = ItemBase & MiniBilling & {
 // are skipped in their own per-item projection.
 export type MiniGroupItem = ItemBase & MiniBilling & {
   kind: 'miniGroup';
-  memberIds: string[]; // the member strand ids
+  memberIds: string[]; // member strand and/or scattershot ids
+  // One physical mini-light unit needs one authoritative install pattern.
+  // Group edits mirror this value onto the visual member items; absent on a
+  // legacy group means the existing warm-white fulfillment default.
+  colorPattern?: string[];
 };
 
 export type SceneItem =

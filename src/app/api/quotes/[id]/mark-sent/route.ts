@@ -44,6 +44,7 @@ import {
   type QuoteStatus,
 } from '@/lib/quoteStatus';
 import { attachQuoteToCustomer, propagateQuoteTagsToCustomer, quoteRowToIdentity } from '@/lib/customers';
+import { queueQuoteBuildSessionCompletion } from '@/lib/quoteBuildTiming';
 
 export const runtime = 'nodejs';
 
@@ -164,6 +165,10 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       { error: 'Cannot mark this quote sent anymore', code: 'invalid-status' },
       { status: 409 },
     );
+  }
+
+  if (!quote.is_test) {
+    queueQuoteBuildSessionCompletion({ quoteId: id, timerId: null, sentAt });
   }
 
   // NCE + YLL Neighbor tag propagation (#198) — mirrors the real /send
