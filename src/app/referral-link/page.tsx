@@ -92,25 +92,13 @@ export default async function ReferralLinkPage({
           </div>
         </div>
 
-        {/* Sample preview (naldo/referral-link-preview, PIECE 3a): the
-            enticement. Shows the no-database /refer/preview route (PIECE 2)
-            in a phone-shaped frame so a visitor sees exactly what their
-            friend receives before they bother generating anything.
-            Review fix 1: the caption used to say "This is what your friend
-            sees", which is only true for a recipient with no approved
-            design on file. resolveHero (src/app/refer/[code]/page.tsx)
-            shows a referrer's OWN rendered house whenever they have an
-            approved quote with a photo and haven't opted out, so the
-            wording now stays true for that group too, while still selling
-            the idea to everyone else. */}
-        <div className="mb-10 text-center">
-          <PhoneFrame src="/refer/preview" title="A sample of what your friend receives" />
-          <p className="mt-4 text-[13px] text-[#A89F87]">
-            A sample of the page. If you already have a design with us, your friend sees your
-            own home lit up instead.
-          </p>
-        </div>
-
+        {/* Review fix 3: the form used to sit BELOW the ~505px sample phone
+            frame, pushing the email field/submit button roughly 900-1000px
+            down at 375px wide -- well past one scroll. The form is the
+            primary action (getting a link is the entire point of this
+            page), so it now renders right after the intro block, with the
+            sample preview moved below it as supporting proof rather than a
+            gate in front of the CTA. */}
         <ReferralLinkForm
           contactId={contactId}
           creditUsd={REFERRAL_CREDIT_USD}
@@ -119,6 +107,27 @@ export default async function ReferralLinkPage({
           spritzerSizeInches={REFERRAL_FRIEND_SPRITZERS.sizeInches}
           spritzerValueUsd={SPRITZER_VALUE_USD}
         />
+
+        {/* Sample preview (naldo/referral-link-preview, PIECE 3a): the
+            enticement. Shows the no-database /refer/preview route (PIECE 2)
+            in a phone-shaped frame so a visitor sees exactly what their
+            friend receives. Moved below the form (review fix 3): still one
+            scroll away, but no longer standing in front of the primary
+            action.
+            Review fix 1: the caption used to say "This is what your friend
+            sees", which is only true for a recipient with no approved
+            design on file. resolveHero (src/app/refer/[code]/page.tsx)
+            shows a referrer's OWN rendered house whenever they have an
+            approved quote with a photo and haven't opted out, so the
+            wording now stays true for that group too, while still selling
+            the idea to everyone else. */}
+        <div className="mt-10 text-center">
+          <PhoneFrame src="/refer/preview" title="A sample of what your friend receives" />
+          <p className="mt-4 text-[13px] text-[#A89F87]">
+            A sample of the page. If you already have a design with us, your friend sees your
+            own home lit up instead.
+          </p>
+        </div>
       </div>
     </main>
   );
