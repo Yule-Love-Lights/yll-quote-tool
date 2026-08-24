@@ -90,6 +90,7 @@ const { dbRef, stateRef } = vi.hoisted(() => ({
       error: null as { message: string } | null,
       inserted: [] as Record<string, unknown>[],
       updated: [] as Record<string, unknown>[],
+      blockedDeleteIds: [] as string[],
     },
   },
 }));
@@ -168,6 +169,22 @@ function makeDb() {
           );
           return builder;
         },
+        delete: () => ({
+          eq: (col: keyof Row, val: unknown) => {
+            const idx = stateRef.current.rows.findIndex((row) => row[col] === val);
+            if (idx === -1) return Promise.resolve({ error: stateRef.current.error });
+            // Modelled on the real schema: shifts / shift_breaks / job_segments /
+            // job_assignments all reference crew_members with NO ACTION, so a row
+            // with any recorded work makes Postgres refuse with 23503.
+            if (stateRef.current.blockedDeleteIds.includes(String(val))) {
+              return Promise.resolve({
+                error: { code: '23503', message: 'violates foreign key constraint "shifts_crew_member_id_fkey"' },
+              });
+            }
+            stateRef.current.rows.splice(idx, 1);
+            return Promise.resolve({ error: null });
+          },
+        }),
         order: () => Promise.resolve({ data: filtered, error: stateRef.current.error }),
         maybeSingle: () => Promise.resolve({ data: filtered[0] ?? null, error: stateRef.current.error }),
         insert: (payload: Record<string, unknown>) => {
@@ -295,6 +312,7 @@ beforeEach(() => {
     error: null,
     inserted: [],
     updated: [],
+    blockedDeleteIds: [],
   };
   dbRef.current = makeDb();
 });
@@ -314,6 +332,9 @@ import {
   setStaffRate,
   setStaffTelegram,
   setStaffType,
+  deleteStaffMember,
+  getStaffMember,
+  StaffHasRecordsError,
   TelegramUserIdTakenError,
   updateCrewMember,
 } from './crewMembers';
@@ -835,5 +856,44 @@ describe('setStaffType', () => {
   it('returns null for an id that matches no staff row', async () => {
     stateRef.current.rows = [CREW_OFFICE];
     await expect(setStaffType('nobody', true)).resolves.toBeNull();
+  });
+});
+
+describe('deleteStaffMember', () => {
+  it('removes a row that has no work behind it, and hands back what was deleted', async () => {
+    stateRef.current.rows = [CREW_1, CREW_OFFICE];
+    const removed = await deleteStaffMember('crew-office');
+    expect(removed?.displayName).toBe('Kelly');
+    expect(removed?.authUserId).toBe('op-kelly'); // caller needs this to clean up a crew login
+    expect(stateRef.current.rows.map((r) => r.id)).toEqual(['crew-1']);
+  });
+
+  it('REFUSES anyone with recorded time, because the database refuses it (23503)', async () => {
+    stateRef.current.rows = [CREW_1, CREW_OFFICE];
+    stateRef.current.blockedDeleteIds = ['crew-1'];
+    await expect(deleteStaffMember('crew-1')).rejects.toBeInstanceOf(StaffHasRecordsError);
+    // Nothing was removed — their payroll history keeps them alive.
+    expect(stateRef.current.rows.map((r) => r.id)).toEqual(['crew-1', 'crew-office']);
+  });
+
+  it('names the person in the refusal and points at Deactivate instead', async () => {
+    stateRef.current.rows = [CREW_1];
+    stateRef.current.blockedDeleteIds = ['crew-1'];
+    await expect(deleteStaffMember('crew-1')).rejects.toThrow(/SonSon[\s\S]*Deactivate/);
+  });
+
+  it('returns null for an id that matches nothing, without deleting anything', async () => {
+    stateRef.current.rows = [CREW_1];
+    await expect(deleteStaffMember('nobody')).resolves.toBeNull();
+    expect(stateRef.current.rows).toHaveLength(1);
+  });
+});
+
+describe('getStaffMember', () => {
+  it('finds a row in either population and maps it', async () => {
+    stateRef.current.rows = [CREW_1, CREW_OFFICE];
+    expect((await getStaffMember('crew-1'))?.isOffice).toBe(false);
+    expect((await getStaffMember('crew-office'))?.isOffice).toBe(true);
+    await expect(getStaffMember('nobody')).resolves.toBeNull();
   });
 });

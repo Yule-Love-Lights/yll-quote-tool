@@ -13,8 +13,8 @@ import { isValidTelegramUserId } from '@/lib/telegramUserId';
  * "everything needs to be exactly the same to make it easier to understand".
  *
  * Every row gets the same actions — Edit rate, Link/Change/Unlink Telegram,
- * Reset password, Move between office and field, Activate/Deactivate — and the
- * office/field difference is a GROUP HEADING, not a different screen.
+ * Reset password, Move between office and field, Activate/Deactivate, Remove —
+ * and the office/field difference is a GROUP HEADING, not a different screen.
  *
  * The one place the two genuinely differ is ADDING someone: office staff link an
  * existing operator login, field crew get a crew-role login created. That is a
@@ -229,6 +229,43 @@ export function StaffAccounts() {
     );
   }
 
+  async function removeStaff(row: StaffRow) {
+    // Irreversible, so the confirm names exactly what goes and what stays, and
+    // points at the reversible alternative first. Anyone with recorded time is
+    // refused server-side by the database's own foreign keys, so the worst a
+    // mis-click can do to a real worker is show them that refusal.
+    const alsoLogin = !row.isOffice && row.hasLogin ? ' Their crew login is deleted too.' : '';
+    if (
+      !window.confirm(
+        `Remove ${row.displayName} completely? This cannot be undone.${alsoLogin} If they have ever clocked in, this will be refused and you should Deactivate instead, which keeps their records.`,
+      )
+    ) {
+      return;
+    }
+    setRowBusyId(row.id);
+    setError(null);
+    setDone(null);
+    try {
+      const res = await fetch('/api/admin/staff', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ crewMemberId: row.id }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string; loginDeleted?: boolean };
+      if (!res.ok) throw new Error(data.error ?? 'Failed to remove them');
+      setDone(
+        data.loginDeleted
+          ? `${row.displayName} and their crew login were removed.`
+          : `${row.displayName} was removed.`,
+      );
+      reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to remove them');
+    } finally {
+      setRowBusyId(null);
+    }
+  }
+
   function toggleActive(row: StaffRow) {
     if (
       row.active &&
@@ -361,6 +398,14 @@ export function StaffAccounts() {
                       </button>
                       <button type="button" disabled={rowBusyId === s.id} onClick={() => toggleActive(s)} className={action}>
                         {s.active ? 'Deactivate' : 'Activate'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={rowBusyId === s.id}
+                        onClick={() => void removeStaff(s)}
+                        className="text-xs text-red-600 underline disabled:opacity-50"
+                      >
+                        Remove
                       </button>
                     </span>
                   </li>

@@ -18,11 +18,13 @@ const {
   setStaffRate,
   setStaffTelegram,
   setStaffType,
+  deleteStaffMember,
   listNonCrewOperators,
   listAllAccountsById,
   OperatorAlreadyLinkedError,
   OfficeDisplayNameTakenError,
   TelegramUserIdTakenError,
+  StaffHasRecordsError,
 } = vi.hoisted(() => {
   // Real error subclasses so the route's instanceof mapping is tested for the
   // right reason (a plain object would fall through to the wrong branch).
@@ -36,6 +38,12 @@ const {
     constructor(displayName: string) {
       super(`The name "${displayName}" is already in use by another staff member.`);
       this.name = 'OfficeDisplayNameTakenError';
+    }
+  }
+  class StaffHasRecordsError extends Error {
+    constructor(displayName: string) {
+      super(`${displayName} has recorded time or job history, so they cannot be removed. Deactivate them instead, which keeps their records and stops them clocking in.`);
+      this.name = 'StaffHasRecordsError';
     }
   }
   class TelegramUserIdTakenError extends Error {
@@ -56,11 +64,13 @@ const {
     setStaffRate: vi.fn(),
     setStaffTelegram: vi.fn(),
     setStaffType: vi.fn(),
+    deleteStaffMember: vi.fn(),
     listNonCrewOperators: vi.fn(),
     listAllAccountsById: vi.fn(),
     OperatorAlreadyLinkedError,
     OfficeDisplayNameTakenError,
     TelegramUserIdTakenError,
+    StaffHasRecordsError,
   };
 });
 
@@ -84,12 +94,14 @@ vi.mock('@/lib/crewMembers', () => ({
   setStaffRate,
   setStaffTelegram,
   setStaffType,
+  deleteStaffMember,
+  StaffHasRecordsError,
   OperatorAlreadyLinkedError,
   OfficeDisplayNameTakenError,
   TelegramUserIdTakenError,
 }));
 
-import { GET, PATCH, POST } from './route';
+import { DELETE, GET, PATCH, POST } from './route';
 
 const OP_ANN = { id: 'op-ann', name: 'Ann', email: 'ann@x.com', role: 'operator' as const, createdAt: null, lastSignInAt: null };
 const OP_KELLY = { id: 'op-kelly', name: 'Kelly', email: 'kelly@x.com', role: 'operator' as const, createdAt: null, lastSignInAt: null };
@@ -97,7 +109,7 @@ const OP_KELLY = { id: 'op-kelly', name: 'Kelly', email: 'kelly@x.com', role: 'o
 const OFFICE = { id: 'crew-office', displayName: 'Kelly', active: true, authUserId: 'op-kelly', baseRateCents: 2500, telegramUserId: null, isOffice: true };
 const FIELD = { id: 'crew-1', displayName: 'SonSon', active: true, authUserId: 'crew-auth-1', baseRateCents: 1600, telegramUserId: '111', isOffice: false };
 
-const body = (method: 'POST' | 'PATCH', b: unknown) =>
+const body = (method: 'POST' | 'PATCH' | 'DELETE', b: unknown) =>
   new NextRequest('http://localhost/api/admin/staff', {
     method,
     body: JSON.stringify(b),
@@ -134,6 +146,7 @@ beforeEach(() => {
   setStaffRate.mockResolvedValue({ ...OFFICE, baseRateCents: 3000 });
   setStaffTelegram.mockResolvedValue({ ...OFFICE, telegramUserId: '987654321' });
   setStaffType.mockResolvedValue({ ...OFFICE, isOffice: false });
+  deleteStaffMember.mockResolvedValue(OFFICE);
 });
 
 describe('GET /api/admin/staff', () => {
@@ -414,5 +427,58 @@ describe('PATCH /api/admin/staff — password reset', () => {
     const res = await PATCH(patch({ crewMemberId: 'crew-office', password: 'newpassword1' }));
     expect(res.status).toBe(500);
     expect(((await res.json()) as { error: string }).error).toBe('Failed to reset the password');
+  });
+});
+
+describe('DELETE /api/admin/staff', () => {
+  it('blocks a non-admin caller and never deletes', async () => {
+    requireAdmin.mockResolvedValueOnce({ response: NextResponse.json({ error: 'x' }, { status: 403 }) });
+    const res = await DELETE(body('DELETE', { crewMemberId: 'crew-office' }));
+    expect(res.status).toBe(403);
+    expect(deleteStaffMember).not.toHaveBeenCalled();
+  });
+
+  it('removes a row and LEAVES an operator login alone', async () => {
+    // Kelly's login is an operator account in its own right. Removing her pay
+    // row must not delete the account she signs in to the dashboard with.
+    const res = await DELETE(body('DELETE', { crewMemberId: 'crew-office' }));
+    expect(res.status).toBe(200);
+    expect(deleteStaffMember).toHaveBeenCalledWith('crew-office');
+    expect(deleteUser).not.toHaveBeenCalled();
+    expect(((await res.json()) as { loginDeleted: boolean }).loginDeleted).toBe(false);
+  });
+
+  it('deletes the CREW login alongside, because it exists only for that row', async () => {
+    deleteStaffMember.mockResolvedValueOnce(FIELD); // authUserId crew-auth-1, isCrew true
+    const res = await DELETE(body('DELETE', { crewMemberId: 'crew-1' }));
+    expect(res.status).toBe(200);
+    expect(deleteUser).toHaveBeenCalledWith('crew-auth-1');
+    expect(((await res.json()) as { loginDeleted: boolean }).loginDeleted).toBe(true);
+  });
+
+  it('409s anyone with recorded time, with a message pointing at Deactivate', async () => {
+    deleteStaffMember.mockRejectedValueOnce(new StaffHasRecordsError('SonSon'));
+    const res = await DELETE(body('DELETE', { crewMemberId: 'crew-1' }));
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toMatch(/Deactivate/);
+    expect(deleteUser).not.toHaveBeenCalled();
+  });
+
+  it('still reports success when the login cleanup itself fails', async () => {
+    // The pay row is already gone at that point; failing the whole call would
+    // tell the admin nothing happened when something did.
+    deleteStaffMember.mockResolvedValueOnce(FIELD);
+    deleteUser.mockResolvedValueOnce({ error: { message: 'gotrue down' } });
+    const res = await DELETE(body('DELETE', { crewMemberId: 'crew-1' }));
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { loginDeleted: boolean }).loginDeleted).toBe(false);
+  });
+
+  it('404s an unknown id, 400s a missing id, 503s with no service client', async () => {
+    deleteStaffMember.mockResolvedValueOnce(null);
+    expect((await DELETE(body('DELETE', { crewMemberId: 'nobody' }))).status).toBe(404);
+    expect((await DELETE(body('DELETE', {}))).status).toBe(400);
+    sbRef.current = null;
+    expect((await DELETE(body('DELETE', { crewMemberId: 'crew-office' }))).status).toBe(503);
   });
 });

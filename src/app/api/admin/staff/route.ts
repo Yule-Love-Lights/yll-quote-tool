@@ -8,6 +8,8 @@ import { dollarsToCents } from '@/lib/hourlyRate';
 import { asJsonObject, parseTelegramUserId, TELEGRAM_USER_ID_ERROR } from '@/lib/telegramUserId';
 import {
   createFieldCrewMember,
+  deleteStaffMember,
+  StaffHasRecordsError,
   linkOfficeStaff,
   linkStaffLogin,
   listAllStaff,
@@ -30,7 +32,9 @@ export const runtime = 'nodejs';
  *   GET   /api/admin/staff → every staff member, office and field, with their
  *                            login, rate, Telegram link and active state
  *   POST  /api/admin/staff → add a person, either type
- *   PATCH /api/admin/staff → edit one thing: rate, Telegram, password or active
+ *   PATCH /api/admin/staff → edit one thing: rate, Telegram, password, type
+ *                            or active
+ *   DELETE /api/admin/staff → remove a staff row that has no work behind it
  *
  * WHY ONE ROUTE. This replaces `/api/admin/crew-accounts` (field) and
  * `/api/admin/office-staff` (office), which did the same job in two different
@@ -326,5 +330,70 @@ export async function PATCH(req: NextRequest) {
     }
     console.error('PATCH /api/admin/staff:', e instanceof Error ? e.message : e);
     return NextResponse.json({ error: 'Failed to update the staff member' }, { status: 500 });
+  }
+}
+
+/**
+ * Remove a staff member.
+ *
+ * NOT the normal way to retire someone — deactivating keeps their pay records
+ * and stops them clocking in. This is for a duplicate or mis-typed row, which
+ * otherwise sits in the list forever holding a unique display name.
+ *
+ * Anyone with recorded time or job history is refused, and that refusal comes
+ * from the database's own foreign keys rather than a check this route could
+ * forget: `shifts`, `shift_breaks`, `job_segments` and `job_assignments` all
+ * reference `crew_members` with NO ACTION.
+ *
+ * THE LOGIN IS ONLY DELETED WHEN IT IS A CREW LOGIN, because a crew-role login
+ * exists solely to serve this staff row. An OPERATOR or ADMIN login is left
+ * alone: it is a person's account in its own right, it may still be needed for
+ * the dashboard, and removing accounts is the Staff accounts table's job.
+ */
+export async function DELETE(req: NextRequest) {
+  const auth = await requireAdmin();
+  if ('response' in auth) return auth.response;
+
+  const sb = getSupabaseServiceClient();
+  if (!sb) {
+    return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
+  }
+
+  const body = asJsonObject(await req.json().catch(() => null));
+  const crewMemberId = String(body?.crewMemberId ?? '').trim();
+  if (!crewMemberId) {
+    return NextResponse.json({ error: 'Choose a staff member.' }, { status: 400 });
+  }
+
+  try {
+    const removed = await deleteStaffMember(crewMemberId);
+    if (!removed) {
+      return NextResponse.json({ error: 'That is not a staff member.' }, { status: 404 });
+    }
+
+    let loginDeleted = false;
+    if (removed.authUserId) {
+      const accounts = await listAllAccountsById(sb);
+      const account = accounts.get(removed.authUserId);
+      // Only a crew-role login is cleaned up here. Deleting an operator or admin
+      // account as a side effect of removing a pay row would be a much bigger
+      // action than the admin asked for.
+      if (account?.isCrew) {
+        const { error } = await sb.auth.admin.deleteUser(removed.authUserId);
+        if (error) {
+          console.error('DELETE /api/admin/staff login cleanup:', error.message);
+        } else {
+          loginDeleted = true;
+        }
+      }
+    }
+
+    return NextResponse.json({ removed, loginDeleted });
+  } catch (e) {
+    if (e instanceof StaffHasRecordsError) {
+      return NextResponse.json({ error: e.message }, { status: 409 });
+    }
+    console.error('DELETE /api/admin/staff:', e instanceof Error ? e.message : e);
+    return NextResponse.json({ error: 'Failed to remove the staff member' }, { status: 500 });
   }
 }

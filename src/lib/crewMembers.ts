@@ -90,6 +90,28 @@ export class OperatorAlreadyLinkedError extends Error {
   }
 }
 
+/**
+ * Thrown when a staff row cannot be deleted because real work points at it.
+ *
+ * `shifts`, `shift_breaks`, `job_segments` and `job_assignments` all reference
+ * `crew_members` with NO ACTION, so Postgres refuses the delete itself (23503).
+ * That refusal is the actual safety property here: it means a person with any
+ * recorded time or job history CANNOT be deleted out from under their own
+ * payroll, however the delete is attempted.
+ */
+export class StaffHasRecordsError extends Error {
+  constructor(displayName: string) {
+    super(
+      `${displayName} has recorded time or job history, so they cannot be removed. Deactivate them instead, which keeps their records and stops them clocking in.`,
+    );
+    this.name = 'StaffHasRecordsError';
+  }
+}
+
+function isForeignKeyViolation(error: { code?: string } | null): boolean {
+  return error?.code === '23503';
+}
+
 /** Thrown when an office-staff display name collides with an existing row. */
 export class OfficeDisplayNameTakenError extends Error {
   constructor(displayName: string) {
@@ -512,6 +534,50 @@ export async function setStaffRate(id: string, baseRateCents: number): Promise<S
  */
 export async function setStaffType(id: string, isOffice: boolean): Promise<StaffMember | null> {
   return patchStaffRow(id, { is_office: isOffice });
+}
+
+/**
+ * Look one staff row up by id, whichever population it is in.
+ * Returns null when nothing matches.
+ */
+export async function getStaffMember(id: string): Promise<StaffMember | null> {
+  const db = getSupabaseServiceClient();
+  if (!db) return null;
+  const { data, error } = await db
+    .from('crew_members')
+    .select(STAFF_SELECT)
+    .eq('id', id.trim())
+    .maybeSingle();
+  if (error || !data) return null;
+  return toStaffMember(data as StaffRow);
+}
+
+/**
+ * Delete a staff row outright, for a mistake that has no history behind it.
+ *
+ * This is deliberately NOT the normal way to retire someone: deactivating keeps
+ * their pay records, and anyone with recorded time is refused here by the
+ * database's own foreign keys (see StaffHasRecordsError). Removal exists for the
+ * duplicate or mis-typed row created minutes ago, which otherwise sits in the
+ * list forever holding a unique display name.
+ *
+ * Returns the row that was deleted, or null if the id matched nothing.
+ */
+export async function deleteStaffMember(id: string): Promise<StaffMember | null> {
+  const db = getSupabaseServiceClient();
+  if (!db) throw new Error('Supabase service role not configured');
+
+  const existing = await getStaffMember(id);
+  if (!existing) return null;
+
+  const { error } = await db.from('crew_members').delete().eq('id', id.trim());
+  if (error) {
+    if (isForeignKeyViolation(error as { code?: string })) {
+      throw new StaffHasRecordsError(existing.displayName);
+    }
+    throw new Error(`deleteStaffMember: ${error.message}`);
+  }
+  return existing;
 }
 
 /** Attach a freshly created login to a staff row that has none yet. */
