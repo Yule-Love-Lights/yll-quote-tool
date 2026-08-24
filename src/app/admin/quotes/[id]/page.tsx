@@ -128,6 +128,23 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
 
   const amendments = quote.approval_snapshot?.amendments ?? [];
 
+  // Row 344 fix round (staff-lens HIGH): the audit trail route.ts appends to
+  // on a scene-driven reprice of an approved-not-booked quote was written
+  // and read back NOWHERE — a staffer who navigated away lost every trace of
+  // the divergence between the portal (frozen/stale) and the live total.
+  // Surfaced here the same way the amendment trail above already is: a
+  // header pill while the divergence is still LIVE (status still 'approved',
+  // i.e. not yet booked/declined/revived-and-resent) + a persistent panel
+  // listing every entry, so the trail survives a page reload even after the
+  // quote moves on.
+  const postApprovalReprices = (quote.approval_snapshot?.postApprovalReprices ?? []) as Array<{
+    at: string;
+    by: string | null;
+    previous_total: number;
+    new_total: number;
+    delta: number;
+  }>;
+
   // #163 Slice B — a pending customer colour-change request (set by the portal
   // "Request colour change" button). Staff Apply (re-freeze) or Dismiss it.
   const pendingColorRequest = quote.approval_snapshot?.pendingColorRequest as
@@ -229,6 +246,16 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
           {quote.view_only && (
             <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-100 text-sky-700">
               View-only
+            </span>
+          )}
+          {/* Row 344 fix round (staff-lens HIGH): the divergence is still LIVE
+              only while the quote sits approved-and-unbooked — once booked
+              (or declined/revived) the portal question this pill flags has
+              already been resolved one way or another, so it stops showing
+              here (the panel below still keeps the historical trail). */}
+          {status === 'approved' && postApprovalReprices.length > 0 && (
+            <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">
+              Repriced since approval ({postApprovalReprices.length})
             </span>
           )}
           {/* Staff-only toggle (detail page only, not the /admin/quotes list) —
@@ -610,6 +637,30 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
                   </li>
                 );
               })}
+            </ol>
+          </div>
+        )}
+
+        {/* Row 344 fix round (staff-lens HIGH): the durable audit trail for a
+            scene-driven reprice of an approved-not-booked quote — mirrors the
+            Amendments panel's shape immediately above. Shown whenever any
+            entries exist, even after the quote has moved past 'approved'
+            (booked/declined/etc.), so the record survives — only the header
+            pill above is scoped to the still-live divergence. */}
+        {postApprovalReprices.length > 0 && (
+          <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
+              Repriced since approval ({postApprovalReprices.length})
+            </h2>
+            <ol className="space-y-3 text-sm">
+              {postApprovalReprices.map((r, i) => (
+                <li key={i} className="border-t border-gray-100 pt-2 first:border-0 first:pt-0">
+                  <p className="text-gray-500 text-xs">
+                    {fmtDate(r.at)} · by {r.by ?? 'unknown'} ·{' '}
+                    {r.delta >= 0 ? '+' : '−'}{money(Math.abs(r.delta))} · {money(r.previous_total)} → {money(r.new_total)}
+                  </p>
+                </li>
+              ))}
             </ol>
           </div>
         )}
