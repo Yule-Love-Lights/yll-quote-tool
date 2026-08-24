@@ -37,6 +37,21 @@ export type TelegramUserIdParse =
   | { ok: true; telegramUserId: string | null }
   | { ok: false; reason: 'missing' | 'invalid' };
 
+/**
+ * Narrow a parsed JSON request body to a plain object, or null.
+ *
+ * `req.json()` happily returns a JSON PRIMITIVE for a body like `42`, `true` or
+ * `"x"`, and a route that then does `'key' in body` throws a TypeError rather
+ * than returning its own 400. Optional chaining (`body?.key`) hides the problem
+ * on some lines and not others, so the narrowing happens once, here, at the
+ * edge. Arrays are rejected too: a request body is an object or it is a
+ * client bug.
+ */
+export function asJsonObject(raw: unknown): Record<string, unknown> | null {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  return raw as Record<string, unknown>;
+}
+
 export function parseTelegramUserId(raw: unknown): TelegramUserIdParse {
   if (raw === undefined) return { ok: false, reason: 'missing' };
   const trimmed = raw === null ? '' : String(raw).trim();

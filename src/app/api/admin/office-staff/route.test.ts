@@ -302,6 +302,29 @@ describe('PATCH /api/admin/office-staff', () => {
     expect(setOfficeStaffRate).not.toHaveBeenCalled();
   });
 
+  it('400s a JSON PRIMITIVE body, and keeps doing so if the id check is ever reordered', async () => {
+    // req.json() returns 42 / true / "x" happily for those bodies, and
+    // `'telegramUserId' in 42` genuinely throws a TypeError (verified in node).
+    // A premerge lens read that as a live 500; it is NOT — the crewMemberId
+    // check runs first and String((42)?.crewMemberId ?? '') is '', so the route
+    // already answered 400. Confirmed by negative control: reverting the
+    // asJsonObject narrowing leaves this test green. The narrowing is kept as
+    // defence in depth so the `in` line stays safe no matter what order these
+    // checks end up in, and this test pins the 400 either way.
+    for (const primitive of [42, true, '"x"']) {
+      const req = new NextRequest('http://localhost/api/admin/office-staff', {
+        method: 'PATCH',
+        body: typeof primitive === 'string' ? primitive : JSON.stringify(primitive),
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const res = await PATCH(req);
+      expect(res.status).toBe(400);
+    }
+    expect(setOfficeStaffTelegram).not.toHaveBeenCalled();
+    expect(setOfficeStaffActive).not.toHaveBeenCalled();
+    expect(setOfficeStaffRate).not.toHaveBeenCalled();
+  });
+
   it('404s when no office row matched — an unknown id OR a field-crew id (by-construction guard)', async () => {
     setOfficeStaffActive.mockResolvedValueOnce(null);
     const res = await PATCH(patch({ crewMemberId: 'crew-field', active: false }));

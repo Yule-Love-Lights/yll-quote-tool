@@ -8,7 +8,7 @@ import {
   validateCrewAccount,
 } from '@/lib/auth/crewAccounts';
 import { TelegramUserIdTakenError, updateCrewMember } from '@/lib/crewMembers';
-import { isValidTelegramUserId, TELEGRAM_USER_ID_ERROR } from '@/lib/telegramUserId';
+import { asJsonObject, parseTelegramUserId, TELEGRAM_USER_ID_ERROR } from '@/lib/telegramUserId';
 
 export const runtime = 'nodejs';
 
@@ -108,7 +108,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
   }
 
-  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+  const body = asJsonObject(await req.json().catch(() => null));
   const input = {
     crewMemberId: String(body?.crewMemberId ?? '').trim(),
     email: String(body?.email ?? '').trim(),
@@ -216,23 +216,28 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
   }
 
-  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+  const body = asJsonObject(await req.json().catch(() => null));
   const crewMemberId = String(body?.crewMemberId ?? '').trim();
   if (!crewMemberId) {
     return NextResponse.json({ error: 'Choose a crew member.' }, { status: 400 });
   }
 
-  const raw = body?.telegramUserId;
   // Absent is NOT the same as null here: null/'' means "unlink", while a missing
   // key means the caller sent nothing to change and is almost certainly a bug.
-  if (raw === undefined) {
-    return NextResponse.json({ error: 'telegramUserId is required (send null to unlink).' }, { status: 400 });
+  // Both doors that write this column share one parser so they cannot drift.
+  const parsed = parseTelegramUserId(body?.telegramUserId);
+  if (!parsed.ok) {
+    return NextResponse.json(
+      {
+        error:
+          parsed.reason === 'missing'
+            ? 'telegramUserId is required (send null to unlink).'
+            : TELEGRAM_USER_ID_ERROR,
+      },
+      { status: 400 },
+    );
   }
-  const trimmed = raw === null ? '' : String(raw).trim();
-  const telegramUserId = trimmed === '' ? null : trimmed;
-  if (telegramUserId !== null && !isValidTelegramUserId(telegramUserId)) {
-    return NextResponse.json({ error: TELEGRAM_USER_ID_ERROR }, { status: 400 });
-  }
+  const telegramUserId = parsed.telegramUserId;
 
   const { data: existing, error: lookupError } = await sb
     .from('crew_members')

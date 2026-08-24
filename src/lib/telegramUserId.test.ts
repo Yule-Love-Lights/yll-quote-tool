@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isValidTelegramUserId, parseTelegramUserId } from './telegramUserId';
+import { asJsonObject, isValidTelegramUserId, parseTelegramUserId } from './telegramUserId';
 
 describe('isValidTelegramUserId', () => {
   it('accepts a positive integer id of realistic length', () => {
@@ -46,5 +46,24 @@ describe('parseTelegramUserId', () => {
   it('reports an invalid id distinctly from a missing one', () => {
     expect(parseTelegramUserId('@sonson')).toEqual({ ok: false, reason: 'invalid' });
     expect(parseTelegramUserId('0123')).toEqual({ ok: false, reason: 'invalid' });
+  });
+});
+
+describe('asJsonObject', () => {
+  it('passes a plain object through', () => {
+    expect(asJsonObject({ a: 1 })).toEqual({ a: 1 });
+  });
+
+  it('narrows a JSON PRIMITIVE body to null, so `in` can never be reached on it', () => {
+    // req.json() returns these happily for a body of `42` / `true` / `"x"`.
+    // Before this guard, `'key' in body` threw a TypeError and the route
+    // answered 500 instead of its own 400.
+    for (const primitive of [42, true, 'x', null]) {
+      expect(asJsonObject(primitive)).toBeNull();
+    }
+  });
+
+  it('rejects an array — a request body is an object or it is a client bug', () => {
+    expect(asJsonObject([1, 2])).toBeNull();
   });
 });

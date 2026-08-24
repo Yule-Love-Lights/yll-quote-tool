@@ -4,7 +4,7 @@ import { requireAdmin } from '@/lib/auth/supabaseServer';
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import { listNonCrewOperators } from '@/lib/auth/adminUsers';
 import { dollarsToCents } from '@/lib/hourlyRate';
-import { parseTelegramUserId, TELEGRAM_USER_ID_ERROR } from '@/lib/telegramUserId';
+import { asJsonObject, parseTelegramUserId, TELEGRAM_USER_ID_ERROR } from '@/lib/telegramUserId';
 import {
   linkOfficeStaff,
   listLinkedAuthUserIds,
@@ -105,7 +105,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
   }
 
-  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+  // Narrowed to a plain object (or null): a JSON primitive body like `42` would
+  // otherwise reach the `in` operator below and throw a TypeError instead of
+  // returning this route's own 400.
+  const body = asJsonObject(await req.json().catch(() => null));
   const authUserId = String(body?.authUserId ?? '').trim();
   if (!authUserId) {
     return NextResponse.json({ error: 'Choose an operator to set up.' }, { status: 400 });
@@ -170,7 +173,10 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: 'Supabase service role not configured' }, { status: 503 });
   }
 
-  const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+  // Narrowed to a plain object (or null): a JSON primitive body like `42` would
+  // otherwise reach the `in` operator below and throw a TypeError instead of
+  // returning this route's own 400.
+  const body = asJsonObject(await req.json().catch(() => null));
   const crewMemberId = String(body?.crewMemberId ?? '').trim();
   if (!crewMemberId) {
     return NextResponse.json({ error: 'Choose an office staff member.' }, { status: 400 });
