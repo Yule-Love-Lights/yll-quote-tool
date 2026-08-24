@@ -27,6 +27,24 @@ const money = (n: number | null | undefined) =>
 const fmtDate = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
 
+// Fix round 3 (Finding LOW, PR #926): pure extraction of the cancel action
+// message, mirroring ColorRequestPanel.tsx's applyOutcomeFromResponse — this
+// repo's pattern for testing a fetch-response-driven string without
+// jsdom/testing-library. Widened to cue on `stockNeedsAttention` (a
+// stock-reversal caveat — most importantly the PENDING_STOCK_SNAPSHOT refusal
+// note) in addition to `refundNeeded`, mirroring PipelineActionsMenu.tsx's
+// cancelAlertMessage.
+export function cancelActionMessage(body: {
+  alreadyCancelled?: boolean;
+  refundNeeded?: boolean;
+  stockNeedsAttention?: boolean;
+  note?: string;
+}): string {
+  if (body.alreadyCancelled) return 'Already cancelled.';
+  const cue = body.refundNeeded || body.stockNeedsAttention ? '⚠️ ' : '';
+  return `${cue}Order cancelled.${body.note ? ` ${body.note}` : ''}`;
+}
+
 export default function JobDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id;
@@ -160,17 +178,10 @@ export default function JobDetailPage() {
       const res = await fetch(`/api/jobs/${id}/cancel`, { method: 'POST' });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? 'Failed');
-      setActionMsg(
-        body.alreadyCancelled
-          ? 'Already cancelled.'
-          // #110 W7-001: surface the route's refund note on EVERY cancel. The old
-          // code only warned on a paid INVOICE (body.refundedInvoice), so a
-          // booked-but-not-invoiced order whose 50% DEPOSIT was already charged
-          // (the common pre-install cancel) showed a bare "Order cancelled." while
-          // a real refund was owed. The route already computes refundedDeposit +
-          // refundNeeded + a note; consume them, with a ⚠️ cue when a refund is due.
-          : `${body.refundNeeded ? '⚠️ ' : ''}Order cancelled.${body.note ? ` ${body.note}` : ''}`,
-      );
+      // #110 W7-001 / fix round 3 (Finding LOW, PR #926): surface the route's
+      // refund + stock-reversal notes on every cancel, with a ⚠️ cue — see
+      // cancelActionMessage's doc comment above.
+      setActionMsg(cancelActionMessage(body));
       await load();
     } catch (err) {
       setActionMsg(err instanceof Error ? err.message : 'Failed');

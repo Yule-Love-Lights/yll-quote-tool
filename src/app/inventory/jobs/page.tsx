@@ -188,6 +188,18 @@ function JobCard({ card, onMove, onOpen }: { card: FulfillmentCard; onMove: (id:
   );
 }
 
+// Fix round 3 (Finding MED, PR #926): pure extraction of `PrepareResult.short`
+// from the /prepare response body, mirroring ColorRequestPanel.tsx's
+// applyOutcomeFromResponse — this repo's pattern for testing a fetch response
+// shape without jsdom/testing-library (see that file's tests; this repo's
+// component tests use exactly this extraction-plus-pure-test approach).
+// Defensive against a malformed/missing body (non-array `short`, non-string
+// entries) — a bad body degrades to "nothing flagged short", never a throw.
+export function shortSkusFromPrepareResponse(body: unknown): string[] {
+  const short = (body as { short?: unknown } | null)?.short;
+  return Array.isArray(short) ? short.filter((s): s is string => typeof s === 'string') : [];
+}
+
 function WorkOrderModal({ id, onClose }: { id: string; onClose: () => void }) {
   const [data, setData] = useState<WorkOrder | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -205,6 +217,14 @@ function WorkOrderModal({ id, onClose }: { id: string; onClose: () => void }) {
   };
 
   const [prepareStatus, setPrepareStatus] = useState<'idle' | 'preparing' | 'error'>('idle');
+  // Fix round 3 (Finding MED, PR #926): PrepareResult's `short` field — SKUs
+  // the on-hand floor clamped, so this prep deducted LESS than the job needed
+  // — reaches staff via the WhatsApp bot's reply text already; this modal is
+  // the PRIMARY staff surface for the same action and was silently dropping
+  // it. Populated once from the prepare response and kept for the rest of
+  // this modal session (the field is ephemeral — not persisted on the job
+  // row — so it can't be recovered from a later `load()`/reopen).
+  const [prepareShort, setPrepareShort] = useState<string[]>([]);
 
   const load = useCallback(async () => {
     try {
@@ -228,6 +248,10 @@ function WorkOrderModal({ id, onClose }: { id: string; onClose: () => void }) {
     try {
       const res = await fetch(`/api/inventory/jobs/${id}/prepare`, { method: 'POST' });
       if (!res.ok) throw new Error('prepare failed');
+      // Fix round 3: capture `short` before the reload below replaces `data` —
+      // it's not part of the work-order shape `load()` re-fetches.
+      const json = await res.json().catch(() => null);
+      setPrepareShort(shortSkusFromPrepareResponse(json));
       setPrepareStatus('idle');
       await load(); // refresh on-hand + the prepped flag
     } catch {
@@ -297,7 +321,18 @@ function WorkOrderModal({ id, onClose }: { id: string; onClose: () => void }) {
 
               <div className="mb-3">
                 {data.job.stockDecrementedAt ? (
-                  <span className="text-sm font-medium" style={{ color: '#1f7a4d' }}>✓ Stock deducted — job prepped</span>
+                  <div className="flex flex-col gap-1">
+                    <span className="text-sm font-medium" style={{ color: '#1f7a4d' }}>✓ Stock deducted — job prepped</span>
+                    {/* Fix round 3 (Finding MED): same amber already used below
+                        for a per-SKU on-hand shortage (m.short) — reused here,
+                        not a new pattern, so a clamped prep doesn't read as a
+                        full one on the surface staff actually use. */}
+                    {prepareShort.length > 0 && (
+                      <span className="text-xs font-medium" style={{ color: '#b45309' }}>
+                        ⚠ Short on {prepareShort.length} SKU{prepareShort.length === 1 ? '' : 's'} (not enough on-hand): {prepareShort.join(', ')} — check stock before loading.
+                      </span>
+                    )}
+                  </div>
                 ) : (
                   <button
                     type="button"
