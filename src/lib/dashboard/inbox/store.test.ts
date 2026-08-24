@@ -3440,6 +3440,44 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
       expect(fake.rows).toHaveLength(1); // upsert, never a duplicate
     });
 
+    // Staff-lens MED: a re-chase is due NOW. quoteSentNoReplyFollowUp derives
+    // due_at from sentAt + afterDays, so re-arming a nag for a quote sent 90 days
+    // ago would stamp a due date 87 days in the PAST — the digest would report
+    // staff as 87 days overdue when they had been prompt, and listDueFollowUps
+    // sorts oldest-first under a 100-row cap, so ancient re-chases would crowd
+    // fresh nags out of the strip.
+    it('stamps a re-chase as due NOW, not on the original quotes long-past due date', async () => {
+      const fake = makeFollowUpsFake([
+        { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'done', updated_at: daysAgo(8) },
+      ]);
+      wire(fake, 'handled', daysAgo(9));
+      const before = Date.now();
+
+      const created = await ensureFollowUp({
+        inboxItemId: 'item-1',
+        contactId: 'c1',
+        reason: 'quote_sent_no_reply',
+        sentAt: new Date(Date.now() - 90 * 86_400_000),
+      });
+
+      expect(created).toBe('created');
+      const dueAt = Date.parse(String(fake.rows[0].due_at));
+      expect(dueAt).toBeGreaterThanOrEqual(before);
+      expect(dueAt).toBeLessThanOrEqual(Date.now());
+    });
+
+    // ...but a FIRST nag still follows the configured cadence off the send date.
+    it('leaves a first-time nag on the original sentAt + afterDays cadence', async () => {
+      const fake = makeFollowUpsFake([]);
+      wire(fake, 'unresponded', null);
+      const sentAt = new Date(Date.now() - 10 * 86_400_000);
+
+      await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt, afterDays: 3 });
+
+      const dueAt = Date.parse(String(fake.rows[0].due_at));
+      expect(dueAt).toBe(sentAt.getTime() + 3 * 86_400_000);
+    });
+
     it('does NOT re-arm a handled item while the quiet window is still running', async () => {
       const fake = makeFollowUpsFake([
         { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'done', updated_at: daysAgo(1) },
