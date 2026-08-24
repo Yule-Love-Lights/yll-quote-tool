@@ -18,13 +18,14 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
 
-const { requireOperatorMock, sbRef, attachQuoteToCustomerMock, propagateMock } = vi.hoisted(() => ({
+const { requireOperatorMock, sbRef, attachQuoteToCustomerMock, propagateMock, queueQuoteBuildSessionCompletionMock } = vi.hoisted(() => ({
   requireOperatorMock: vi.fn(async (): Promise<NextResponse | null> => null),
   sbRef: { current: null as unknown },
   // #198: mocked so the existing DRAFT_QUOTE fixture (no tags set) never
   // reaches these, and the tag-propagation tests below can assert on them.
   attachQuoteToCustomerMock: vi.fn(async () => null as null | { customerId: string; propertyId: string }),
   propagateMock: vi.fn(async () => {}),
+  queueQuoteBuildSessionCompletionMock: vi.fn(),
 }));
 
 // #214: importOriginal keeps quoteRowToIdentity (pure sentinel translation)
@@ -42,6 +43,10 @@ vi.mock('@/lib/auth/supabaseServer', () => ({
 vi.mock('@/lib/supabase', () => ({
   isSupabaseServiceConfigured: () => true,
   getSupabaseServiceClient: () => sbRef.current,
+}));
+
+vi.mock('@/lib/quoteBuildTiming', () => ({
+  queueQuoteBuildSessionCompletion: queueQuoteBuildSessionCompletionMock,
 }));
 
 import { POST } from './route';
@@ -162,6 +167,22 @@ describe('POST /api/quotes/[id]/mark-sent — happy path', () => {
     // Guard: the write is filtered to still-markable rows.
     expect(orArgs[0]).toContain('status.in.(draft,changes_requested)');
     expect(orArgs[0]).toContain('status.is.null');
+    expect(queueQuoteBuildSessionCompletionMock).toHaveBeenCalledOnce();
+    expect(queueQuoteBuildSessionCompletionMock).toHaveBeenCalledWith({
+      quoteId: ID,
+      timerId: null,
+      sentAt: json.sentAt,
+    });
+  });
+
+  it('does not record test-quote timing', async () => {
+    const { client } = makeSb({ ...DRAFT_QUOTE, is_test: true });
+    sbRef.current = client;
+
+    const res = await POST(makeReq(), ctx());
+
+    expect(res.status).toBe(200);
+    expect(queueQuoteBuildSessionCompletionMock).not.toHaveBeenCalled();
   });
 });
 
