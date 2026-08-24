@@ -10,6 +10,11 @@ const { getCachedAddressImagery, getAddressSatelliteImagery, NoStreetViewError }
   NoStreetViewError: class NoStreetViewError extends Error {},
 }));
 
+// ledger #347: requireOperator is now engaged by default (it used to be
+// dormant unless AUTH_GATE_ENABLED==='true'). This suite tests the route's own
+// imagery-fallback logic, not auth, so stub it authorized like the rest of the
+// route.ts test suites do.
+vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: vi.fn(async () => null) }));
 vi.mock('@/lib/claude', () => ({ isClaudeConfigured: () => true }));
 vi.mock('@/lib/photoAnalysis', () => ({
   analyzePhoto: vi.fn(),
