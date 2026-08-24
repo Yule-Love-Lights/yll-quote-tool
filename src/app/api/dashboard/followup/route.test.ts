@@ -221,6 +221,26 @@ describe('POST /api/dashboard/followup — #252 slice E anchored-item coupling',
     expect(json).toEqual({ ok: true });
   });
 
+  it('a REFUSED anchored-item CAS (someone else resolved it in the gap) skips the write-back, logs, and still returns 200', async () => {
+    // Row 366 fix round: with the positive CAS, this refusal is now the normal
+    // outcome of a lost race — the item moved to completed/dismissed between the
+    // status read and the write, so it must NOT be stamped handled, and nothing
+    // downstream may run as if it had been.
+    markFollowUpDoneMock.mockResolvedValueOnce({ ok: true, inboxItemId: ITEM_ID });
+    getItemStatusMock.mockResolvedValueOnce('unresponded');
+    markItemHandledLocalMock.mockResolvedValueOnce({ ok: false, error: 'Item not found or no longer unresponded' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const res = await POST(makeReq({ id: FOLLOWUP_ID }));
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(runHandledWritebackMock).not.toHaveBeenCalled();
+    expect(recordWritebackMock).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it('falls back to operator id for the write-back label when email is absent', async () => {
     getOperatorMock.mockResolvedValueOnce({ id: 'op-2', email: null, role: 'operator', name: null });
     markFollowUpDoneMock.mockResolvedValueOnce({ ok: true, inboxItemId: ITEM_ID });

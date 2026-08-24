@@ -13,6 +13,41 @@ import { useCallback, useEffect, useState } from 'react';
  * will use, so the derivation only has to be right once.
  */
 
+/**
+ * Row 364: what the one-line status note above the sections should say, given
+ * the three inputs that decide it. Pure and exported so the whole state machine
+ * is unit-testable without a DOM (this repo has no jsdom).
+ *
+ * `stale` — loadedDate is set and is NOT the day in the picker — means the
+ * content below belongs to a DIFFERENT day than the one selected. That must be
+ * said on BOTH the in-flight path and the failed path; gating it on `loading`
+ * alone (the bug this row fixes) made the warning vanish exactly when a failed
+ * refetch left the previous day's crew and capacity numbers on screen under a
+ * newly-picked date.
+ */
+export type ScheduleStatusNote = { text: string; tone: 'busy' | 'error' } | null;
+
+/** The sections below are showing a day OTHER than the one in the picker.
+ *  Shared by the warning text and by the write guard in mutate(): everything
+ *  this view writes is stamped with the PICKER's date, so while this is true a
+ *  click would assign crew to a day the operator is not looking at. */
+export function isStaleDay(date: string, loadedDate: string | null): boolean {
+  return loadedDate !== null && loadedDate !== date;
+}
+
+export function scheduleStatusNote(
+  loading: boolean,
+  date: string,
+  loadedDate: string | null,
+): ScheduleStatusNote {
+  if (isStaleDay(date, loadedDate)) {
+    return loading
+      ? { text: `Loading ${date}… (showing ${loadedDate} below)`, tone: 'busy' }
+      : { text: `Could not load ${date} — showing ${loadedDate} below.`, tone: 'error' };
+  }
+  return loading ? { text: 'Refreshing…', tone: 'busy' } : null;
+}
+
 type ScheduledJob = {
   jobId: string;
   jobNumber: number | null;
@@ -51,11 +86,8 @@ export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
   // for the newly-picked day's data.
   const [loadedDate, setLoadedDate] = useState<string | null>(null);
 
-  // Row 364: "the data on screen belongs to a different day than the picker
-  // shows". Derived from loadedDate, NOT from `loading` — a FAILED refetch
-  // flips loading false while the stale content stays, and that is exactly the
-  // path that needs the warning most.
-  const stale = loadedDate !== null && loadedDate !== date;
+  const stale = isStaleDay(date, loadedDate);
+  const statusNote = scheduleStatusNote(loading, date, loadedDate);
 
   const refresh = useCallback(() => {
     setLoading(true);
@@ -99,6 +131,15 @@ export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
   }, [date, token]);
 
   async function mutate(method: 'POST' | 'DELETE', jobId: string, crewMemberId: string) {
+    // Row 364 fix round (staff lens HIGH): the jobs rendered below belong to
+    // loadedDate, but every write here is stamped with the PICKER's `date`. On
+    // a failed date-change refetch the two disagree, so a click would assign
+    // crew to a day nobody is looking at. The controls are disabled in that
+    // state; this is the guard behind them.
+    if (stale) {
+      setError(`Still showing ${loadedDate}. Load ${date} before assigning crew.`);
+      return;
+    }
     try {
       const res = await fetch('/api/ops/schedule', {
         method,
@@ -127,7 +168,17 @@ export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
           id="schedule-date"
           type="date"
           value={date}
-          onChange={(e) => setDate(e.target.value)}
+          onChange={(e) => {
+            // Row 364 fix round: `loading` was ONLY ever set by refresh() (the
+            // assign/unassign path), never by a date change — so the whole
+            // date-change fetch ran with loading=false. That left #897's
+            // "Loading {date}… (showing {loadedDate} below)" label unreachable
+            // on the one path it was written for, and made the failed-refetch
+            // wording above fire on every ordinary date change. Mark the view
+            // busy here, where the state change actually originates.
+            setLoading(true);
+            setDate(e.target.value);
+          }}
           className="border border-gray-300 rounded-md px-3 py-1.5 text-sm"
         />
       </div>
@@ -164,17 +215,13 @@ export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
               refetch, not a mutate() refresh), it names both days explicitly
               so the still-visible content is never mistaken for the
               newly-picked day's data. */}
-          {(loading || stale) && (
+          {statusNote && (
             <p
               role="status"
-              aria-busy={loading}
-              className={`mb-4 text-xs ${stale && !loading ? 'text-amber-800' : 'text-gray-500'}`}
+              aria-busy={statusNote.tone === 'busy'}
+              className={`mb-4 text-xs ${statusNote.tone === 'error' ? 'text-amber-800' : 'text-gray-500'}`}
             >
-              {stale
-                ? loading
-                  ? `Loading ${date}… (showing ${loadedDate} below)`
-                  : `Could not load ${date} — showing ${loadedDate} below.`
-                : 'Refreshing…'}
+              {statusNote.text}
             </p>
           )}
           <section className="mb-6">
@@ -226,15 +273,18 @@ export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
                           key={id}
                           type="button"
                           onClick={() => mutate('DELETE', j.jobId, id)}
-                          className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-50"
-                          title="Remove from this job"
+                          disabled={stale}
+                          className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-50 disabled:opacity-50"
+                          title={stale ? `Showing ${loadedDate}, not ${date}` : 'Remove from this job'}
                         >
                           {nameOf(id)} ×
                         </button>
                       ))}
                       <select
-                        className="text-xs border border-gray-300 rounded px-2 py-1"
+                        className="text-xs border border-gray-300 rounded px-2 py-1 disabled:opacity-50"
                         value=""
+                        disabled={stale}
+                        title={stale ? `Showing ${loadedDate}, not ${date}` : undefined}
                         onChange={(e) => {
                           if (e.target.value) mutate('POST', j.jobId, e.target.value);
                         }}
@@ -270,8 +320,10 @@ export function ScheduleDay({ crew }: { crew: CrewMember[] }) {
                       <span className="ml-2 text-xs text-gray-400">{j.status}</span>
                     </span>
                     <select
-                      className="text-xs border border-gray-300 rounded px-2 py-1"
+                      className="text-xs border border-gray-300 rounded px-2 py-1 disabled:opacity-50"
                       value=""
+                      disabled={stale}
+                      title={stale ? `Showing ${loadedDate}, not ${date}` : undefined}
                       onChange={(e) => {
                         if (e.target.value) mutate('POST', j.jobId, e.target.value);
                       }}

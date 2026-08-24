@@ -58,6 +58,15 @@ export async function POST(req: NextRequest) {
         if (local.ok) {
           const sync = await runHandledWriteback(local.target, operator?.email ?? operator?.id ?? 'operator');
           await recordWriteback(res.inboxItemId, sync);
+        } else {
+          // Row 366 fix round (staff lens MED): a refusal here is USUALLY benign
+          // — a colleague resolved the item between the read and the write, and
+          // the guard is doing its job. But a real DB failure lands here too,
+          // and this half is deliberately swallowed so it never fails the Done.
+          // markItemHandledLocal already writes an `action_failed` activity row;
+          // this makes the same event visible in the server log rather than only
+          // in an audit table nobody watches.
+          console.warn('[api/dashboard/followup] anchored item left unresolved:', local.error);
         }
       }
     } catch (e) {
