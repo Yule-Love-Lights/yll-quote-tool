@@ -40,6 +40,13 @@ export function BotTeamManager() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Row 346 fix round: load() also re-runs after every add/edit/delete (see
+  // addUser/act below), each of which already has its OWN busy cue (the
+  // `adding`/`busy` disabled-button states on the form + row buttons). Gate
+  // the skeleton to the FIRST load only so those actions don't also blank
+  // the whole table out from under an already-correct busy indicator —
+  // set once, on the first successful load, never reset.
+  const [loadedOnce, setLoadedOnce] = useState(false);
 
   const [telegramUserId, setTelegramUserId] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -54,6 +61,7 @@ export function BotTeamManager() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
       setUsers(data.users ?? []);
+      setLoadedOnce(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load the roster');
     } finally {
@@ -243,12 +251,23 @@ export function BotTeamManager() {
               </tr>
             </thead>
             <tbody>
-              {loading ? (
-                <tr>
-                  <td colSpan={5} className="px-4 py-6 text-gray-400">
-                    Loading…
-                  </td>
-                </tr>
+              {loading && !loadedOnce ? (
+                // row 346, mirrors row 332/#171b: was a bare "Loading…" cell on
+                // FIRST load — placeholder rows matching this table's own row
+                // height so there's no morph from empty text into real rows.
+                // Gated to first load only (see loadedOnce above) — a fix-round
+                // lens caught the earlier version of this also firing after
+                // every add/edit/delete, blanking an already-good table under
+                // an action that already has its own busy cue.
+                <>
+                  {[0, 1, 2].map((i) => (
+                    <tr key={i} className="border-t border-gray-100">
+                      <td colSpan={5} className="px-4 py-2.5">
+                        <div role={i === 0 ? 'status' : undefined} aria-busy={i === 0 ? true : undefined} className="h-5 animate-pulse rounded bg-black/10" />
+                      </td>
+                    </tr>
+                  ))}
+                </>
               ) : users.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="px-4 py-6 text-gray-400">

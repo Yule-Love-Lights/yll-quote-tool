@@ -25,6 +25,7 @@ import { sceneToFewShotPieces } from '@/lib/design/sceneToFewShot';
 import AnnotatedPhoto, { type OverlayBox } from '@/components/training/AnnotatedPhoto';
 import PermanentExamplesTab from '@/components/training/PermanentExamplesTab';
 import { OperatorShell } from '@/components/OperatorShell';
+import { TrainingRowsSkeleton } from '../TrainingRowsSkeleton';
 
 const RED = '#ef4444'; // Santa's / front
 const BLUE = '#3b82f6'; // Gingerbread / ridge+sides
@@ -197,7 +198,11 @@ export default function TrainingExamplesPage() {
           </div>
         )}
 
-        {loading && <p className="text-sm text-gray-500">Loading…</p>}
+        {/* Same skeleton the route's loading.tsx shows (row 332, mirrors
+            #171b) — was a bare "Loading…" line, which made the route-transition
+            skeleton morph into something sparser before morphing again into the
+            real list once the client-side GET fetch resolved. */}
+        {loading && <TrainingRowsSkeleton />}
 
         {!loading && items.length === 0 && (
           <div className="bg-white border border-gray-200 rounded-lg p-8 text-center">

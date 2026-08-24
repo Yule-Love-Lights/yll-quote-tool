@@ -5,6 +5,7 @@ import Link from 'next/link';
 import type { TrainingListItem } from '@/lib/training';
 import { OperatorShell } from '@/components/OperatorShell';
 import { SettingsSubNav } from '@/components/dashboard/SettingsSubNav';
+import { TrainingRowsSkeleton } from './TrainingRowsSkeleton';
 
 export default function TrainingListPage() {
   const [items, setItems] = useState<TrainingListItem[]>([]);
@@ -89,7 +90,11 @@ export default function TrainingListPage() {
           </div>
         )}
 
-        {loading && <p className="text-sm text-gray-500">Loading…</p>}
+        {/* Same skeleton the route's loading.tsx shows (row 332, mirrors
+            #171b) — was a bare "Loading…" line, which made the route-transition
+            skeleton morph into something sparser before morphing again into the
+            real list once the client-side GET /api/training fetch resolved. */}
+        {loading && <TrainingRowsSkeleton />}
 
         {!loading && items.length === 0 && (
           <div className="bg-white border border-gray-200 rounded-lg p-8 text-center">

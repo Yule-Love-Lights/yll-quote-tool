@@ -1,4 +1,4 @@
-﻿---
+---
 name: session-log
 description: Running per-session log for the AI Quote Tool — the continuity thread between sessions. Read the latest entry first.
 metadata: 
@@ -6,6 +6,8 @@ metadata:
   type: log
   originSessionId: 834b8d13-f89f-476d-bae1-0a9ab5613799
 ---
+
+> **FROZEN 2026-08-21 (fragment migration).** This file is historical. New session entries go to `docs/context/journal/S<N>-jason.md`; `bash scripts/build-docs.sh` rebuilds `JOURNAL.md`. Never append here.
 
 ### S43 (Jason) — 2026-08-20 — INBOX LANE (concurrent with S44): the #252 EPIC COMPLETED (slice C+H) and the ENTIRE S41 review-debt backlog cleared — EIGHT PRs merged+live, two consented prod ops incl. a 1.13M-row audit purge — close PR jason/s43-close
 

@@ -73,6 +73,7 @@ function makeDesign(overrides: Partial<DesignWithPhoto> = {}): DesignWithPhoto {
     hasSatelliteImage: false,
     portalShowStreetView: true,
     portalShowSatelliteView: true,
+    version: 1,
     ...overrides,
   };
 }

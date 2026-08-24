@@ -129,6 +129,11 @@ export type DesignRow = {
   // artifact so a hidden image can be edited or shown again later.
   portal_show_street_view: boolean;
   portal_show_satellite_view: boolean;
+  // Compare-and-swap counter for the scene write (ledger row 260) — NOT NULL
+  // DEFAULT 1 in Postgres, so every row read after the migration applies
+  // carries a real integer. Optional here only so a pre-migration test fixture
+  // (or a row read before the migration ships) doesn't need to supply one.
+  version?: number;
 };
 
 // What the GET route hands the editor: the row plus a freshly-signed,
@@ -172,6 +177,11 @@ export type DesignWithPhoto = {
   hasSatelliteImage: boolean;
   portalShowStreetView: boolean;
   portalShowSatelliteView: boolean;
+  // Compare-and-swap counter (ledger row 260) — the editor round-trips this
+  // on every scene PUT so the server can detect a lost race. Always a real
+  // integer on the wire (defaulted to 1 in toDesignWithPhoto if the row
+  // somehow carries none) so the client never has to reason about null here.
+  version: number;
 };
 
 export type DesignPortalVisibility = Pick<
@@ -283,6 +293,10 @@ export async function createDesign(opts: {
             : null;
       if (seed && photo.width > 0 && photo.height > 0) {
         const scene = seedSceneFromAnalysis(newDesignScene(), seed, photo.width, photo.height);
+        // Ledger row 260: EXEMPT from the CAS guard on purpose — `id` was
+        // inserted a few lines above and has not been returned to any caller
+        // yet, so nothing else can possibly hold a reference to race a write
+        // against it.
         await updateDesignScene(id, scene);
         // #90: surface garland runs seeded with no scale so the builder can warn
         // staff to set their section counts (silent fallback to 1 = under-bill).
@@ -295,6 +309,8 @@ export async function createDesign(opts: {
           ...newDesignScene(),
           yardsticks: [makeDefaultYardstick(photo.width, photo.height)],
         };
+        // Ledger row 260: EXEMPT — same reasoning as the seedSceneFromAnalysis
+        // branch above (a fresh, not-yet-visible row).
         await updateDesignScene(id, scene);
       }
     } catch (err) {
@@ -331,7 +347,7 @@ export async function getDesign(id: string): Promise<DesignRow | null> {
 // (trainingExamples.ts captureTrainingExample, the seed-roofline/seed-analysis
 // routes) and narrowing it would regress those.
 const DESIGN_WITH_PHOTO_COLUMNS =
-  'id, quote_id, scene, photo_path, photo_w, photo_h, satellite_path, satellite_w, satellite_h, satellite_feet_per_pixel, satellite_lines, extra_photos, photo_title, portal_show_street_view, portal_show_satellite_view';
+  'id, quote_id, scene, photo_path, photo_w, photo_h, satellite_path, satellite_w, satellite_h, satellite_feet_per_pixel, satellite_lines, extra_photos, photo_title, portal_show_street_view, portal_show_satellite_view, version';
 
 type DesignWithPhotoRow = Pick<
   DesignRow,
@@ -350,6 +366,7 @@ type DesignWithPhotoRow = Pick<
   | 'photo_title'
   | 'portal_show_street_view'
   | 'portal_show_satellite_view'
+  | 'version'
 >;
 
 // Attach a signed URL for the base photo (+ satellite + extras) to an
@@ -394,6 +411,12 @@ async function toDesignWithPhoto(row: DesignWithPhotoRow): Promise<DesignWithPho
     hasSatelliteImage: !!row.satellite_path,
     portalShowStreetView: row.portal_show_street_view ?? true,
     portalShowSatelliteView: row.portal_show_satellite_view ?? true,
+    // Ledger row 260: defend against a missing/undefined version on the way
+    // out (a fixture, or a row read before the migration ships) rather than
+    // ever handing the client `undefined` — the editor treats a genuinely
+    // absent version as "unknown" (see updateDesignSceneGuarded), and it's
+    // simpler for every caller if that's a deliberate choice, not a leak.
+    version: row.version ?? 1,
   };
 }
 
@@ -522,7 +545,13 @@ export async function listSampleDesigns(limit = 6): Promise<SampleDesign[]> {
   return usable;
 }
 
-// Autosave path: overwrite the scene jsonb. The DB trigger bumps updated_at.
+// UNGUARDED overwrite of the scene jsonb — no compare-and-swap. Ledger row
+// 260: this is now an EXEMPT path, not the general-purpose scene writer.
+// Every other writer goes through updateDesignSceneGuarded below. The two
+// remaining callers (createDesign's photo/roofline seed, right after the row
+// insert) are safe unconditional writes because the design id doesn't exist
+// anywhere else yet — no editor session, no other route, nothing could
+// possibly be racing a write against a row nobody has seen.
 export async function updateDesignScene(id: string, scene: DesignScene): Promise<boolean> {
   const sb = getSb();
   if (!sb) return false;
@@ -570,6 +599,78 @@ export async function updateDesignPortalVisibility(
     portalShowStreetView: data.portal_show_street_view,
     portalShowSatelliteView: data.portal_show_satellite_view,
   };
+// Ledger row 260: the compare-and-swap scene write. `expectedVersion` is the
+// version the caller last read; the write is
+//   UPDATE designs SET version = version + 1, scene = $scene
+//   WHERE id = $id AND version = $expectedVersion
+// computed as `expectedVersion + 1` client-side (not a raw SQL increment) so
+// this is trivially mockable and so the RETURNED version is known without a
+// second read. Zero rows updated means a concurrent writer already moved the
+// version out from under this caller — reported as `conflict` so the route
+// can 409 instead of silently losing whichever write arrived second.
+//
+// `expectedVersion == null` (a request with no version at all — a browser
+// tab whose bundle predates this feature, or a caller that genuinely has no
+// prior read) ADOPTS instead of bricking the save. Fix round (four-lens
+// review, HIGH): the original adopt branch was an unconditional write that
+// also reset version to 1 — a stale pre-deploy tab, or the standalone design
+// tool (which never sends a version at all), could clobber a concurrent
+// legitimate write AND poison the counter so the NEXT real CAS spuriously
+// conflicts. Adopt now reads the row's version fresh immediately before
+// writing, then CASes against that read — same shape as the read-then-CAS
+// retry loop removeDesignExtraPhoto's scene prune already uses (line ~1210
+// above). A write racing this read now correctly loses (reports 'conflict')
+// instead of winning; the counter is never reset.
+export type UpdateSceneOutcome =
+  | { ok: true; version: number }
+  | { ok: false; reason: 'conflict' }
+  | { ok: false; reason: 'error' };
+
+async function casWriteScene(
+  sb: NonNullable<ReturnType<typeof getSb>>,
+  id: string,
+  scene: DesignScene,
+  expectedVersion: number,
+): Promise<UpdateSceneOutcome> {
+  const { data, error } = await sb
+    .from('designs')
+    .update({ scene, version: expectedVersion + 1 })
+    .eq('id', id)
+    .eq('version', expectedVersion)
+    .select('version');
+  if (error) {
+    console.error('Supabase updateDesignSceneGuarded error:', error);
+    return { ok: false, reason: 'error' };
+  }
+  if (!Array.isArray(data) || data.length === 0) {
+    return { ok: false, reason: 'conflict' };
+  }
+  return { ok: true, version: (data[0] as { version: number }).version };
+}
+
+export async function updateDesignSceneGuarded(
+  id: string,
+  scene: DesignScene,
+  expectedVersion: number | null | undefined,
+): Promise<UpdateSceneOutcome> {
+  const sb = getSb();
+  if (!sb) return { ok: false, reason: 'error' };
+
+  if (expectedVersion == null) {
+    const { data: currentRow, error: readError } = await sb
+      .from('designs')
+      .select('version')
+      .eq('id', id)
+      .maybeSingle();
+    if (readError) {
+      console.error('Supabase updateDesignSceneGuarded (adopt read) error:', readError);
+      return { ok: false, reason: 'error' };
+    }
+    if (!currentRow) return { ok: false, reason: 'error' }; // no such design
+    return casWriteScene(sb, id, scene, (currentRow as { version: number }).version);
+  }
+
+  return casWriteScene(sb, id, scene, expectedVersion);
 }
 
 // Link an existing design to a quote (set when the operator clicks "Calculate
@@ -1169,23 +1270,37 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
   // pruned CANONICAL (#13): a twin on another photo depicting an item that just
   // died with this photo would otherwise dangle (render-only, unlinked forever).
   //
-  // W2-016: re-read the scene FRESH right here, immediately before the prune
-  // write, instead of reusing the snapshot from the top of this function. The
-  // editor autosaves the scene independently (updateDesignScene) — using the
-  // stale initial-read snapshot would clobber a concurrent autosave that lands
-  // in the gap between this function's start and its prune write. A fresh
-  // read-then-write still has a (much smaller) window, matching the same
-  // last-write-wins risk the rest of the scene-autosave path already accepts.
+  // W2-016 / ledger row 260: read scene+version FRESH each attempt,
+  // immediately before the prune write, instead of reusing the snapshot from
+  // the top of this function — the editor autosaves the scene independently,
+  // and a stale snapshot would clobber a concurrent autosave landing in the
+  // gap between this function's start and its prune write. Row 260 closes the
+  // WRITE side of that race too: the write is now a compare-and-swap
+  // (updateDesignSceneGuarded) with bounded retries, not a plain overwrite.
+  // A fail-fast 409 here would RESURRECT the #741 bug this function exists to
+  // fix — the deleted photo's items (and any miniGroup they carried) would
+  // linger un-pruned and keep billing. A concurrent write landing mid-retry is
+  // exactly what the retry (re-read, recompute the prune, retry the CAS) is
+  // for; mirrors updateExtraPhotosAtomic's guarded-retry shape above, against
+  // the scene column instead of extra_photos.
+  const MAX_SCENE_PRUNE_RETRIES = 5;
   let prunedMiniGroups: PrunedMiniGroupReport[] = [];
   try {
-    const { data: freshData, error: freshErr } = await sb
-      .from('designs')
-      .select('scene')
-      .eq('id', id)
-      .maybeSingle();
-    if (freshErr) throw new Error(`scene re-read: ${freshErr.message}`);
-    const freshScene = (freshData as { scene?: DesignScene | null } | null)?.scene ?? scene;
-    if (freshScene && Array.isArray(freshScene.items) && freshScene.items.some(it => it.photoId === photoId)) {
+    let settled = false;
+    for (let attempt = 0; attempt < MAX_SCENE_PRUNE_RETRIES && !settled; attempt++) {
+      const { data: freshData, error: freshErr } = await sb
+        .from('designs')
+        .select('scene, version')
+        .eq('id', id)
+        .maybeSingle();
+      if (freshErr) throw new Error(`scene re-read: ${freshErr.message}`);
+      const freshRow = freshData as { scene?: DesignScene | null; version?: number | null } | null;
+      const freshScene = freshRow?.scene ?? scene;
+      const freshVersion = freshRow?.version ?? null;
+      if (!freshScene || !Array.isArray(freshScene.items) || !freshScene.items.some(it => it.photoId === photoId)) {
+        settled = true; // nothing (left) to prune — including a retry where a concurrent write already dropped these items
+        break;
+      }
       const prunedIds = new Set(freshScene.items.filter(it => it.photoId === photoId).map(it => it.id));
       // #227: pruneOrphanedMiniGroups drops any miniGroup left with zero
       // surviving member strands by this photo delete (it would otherwise
@@ -1199,11 +1314,19 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
         it => it.photoId !== photoId && !(it.linkedToId && prunedIds.has(it.linkedToId)),
       ));
       const afterGroupIds = new Set(keptItems.filter(isMiniGroup).map(g => g.id));
-      prunedMiniGroups = beforeGroups
-        .filter(g => !afterGroupIds.has(g.id))
-        .map(g => ({ surface: g.surface ?? null, stringCount: g.stringCount ?? 1 }));
-      await updateDesignScene(id, { ...freshScene, items: keptItems });
+      const outcome = await updateDesignSceneGuarded(id, { ...freshScene, items: keptItems }, freshVersion);
+      if (outcome.ok) {
+        prunedMiniGroups = beforeGroups
+          .filter(g => !afterGroupIds.has(g.id))
+          .map(g => ({ surface: g.surface ?? null, stringCount: g.stringCount ?? 1 }));
+        settled = true;
+        break;
+      }
+      if (outcome.reason === 'error') throw new Error('scene prune write failed');
+      // 'conflict' — another writer (an editor autosave, a re-seed) won the
+      // race; loop and retry from a fresh read.
     }
+    if (!settled) throw new Error('scene prune: too many concurrent-update retries');
   } catch (err) {
     console.error('removeDesignExtraPhoto: scene prune failed:', err);
   }

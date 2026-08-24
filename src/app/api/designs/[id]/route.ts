@@ -12,7 +12,7 @@ import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import {
   getDesignWithPhoto,
-  updateDesignScene,
+  updateDesignSceneGuarded,
   linkDesignToQuote,
   updateDesignSatelliteLines,
   updateDesignPortalVisibility,
@@ -91,7 +91,8 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     return NextResponse.json({ error: 'Request body must be an object' }, { status: 400 });
   }
 
-  const { scene, quoteId, satelliteLines, portalShowStreetView, portalShowSatelliteView } = body;
+  const { scene, quoteId, satelliteLines, version, portalShowStreetView, portalShowSatelliteView } =
+    body;
   const hasStreetVisibility = Object.prototype.hasOwnProperty.call(body, 'portalShowStreetView');
   const hasSatelliteVisibility = Object.prototype.hasOwnProperty.call(body, 'portalShowSatelliteView');
   if (
@@ -112,6 +113,15 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
   if (scene !== undefined && !isSceneShape(scene)) {
     return NextResponse.json({ error: 'scene must be an object with items[] and yardsticks[]' }, { status: 400 });
   }
+  // Ledger row 260: version is the compare-and-swap precondition for `scene`
+  // — omitted/null means the caller doesn't know it (an old cached bundle, or
+  // a design never previously read) and updateDesignSceneGuarded adopts
+  // rather than rejecting the request outright. Only checked when `scene` is
+  // present — quoteId-only / satelliteLines-only PUTs touch different columns
+  // and never race the scene guard.
+  if (scene !== undefined && version !== undefined && version !== null && !(typeof version === 'number' && Number.isInteger(version))) {
+    return NextResponse.json({ error: 'version must be an integer or null' }, { status: 400 });
+  }
   if (quoteId !== undefined && !isValidDesignId(quoteId)) {
     return NextResponse.json({ error: 'Invalid quoteId' }, { status: 400 });
   }
@@ -130,9 +140,22 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
 
   try {
     let portalVisibility: DesignPortalVisibility | null = null;
+    let newVersion: number | undefined;
     if (scene !== undefined) {
-      const ok = await updateDesignScene(id, scene as DesignScene);
-      if (!ok) return NextResponse.json({ error: 'Failed to save scene' }, { status: 500 });
+      const outcome = await updateDesignSceneGuarded(id, scene as DesignScene, version as number | null | undefined);
+      if (!outcome.ok) {
+        if (outcome.reason === 'conflict') {
+          // Distinguishable body (`conflict: true`) so the editor can tell
+          // this apart from an ordinary save failure and block-and-offer-
+          // reload instead of silently retrying the same stale overwrite.
+          return NextResponse.json(
+            { error: 'This design changed elsewhere — reload to see the latest version', conflict: true },
+            { status: 409 },
+          );
+        }
+        return NextResponse.json({ error: 'Failed to save scene' }, { status: 500 });
+      }
+      newVersion = outcome.version;
     }
     if (quoteId !== undefined) {
       const ok = await linkDesignToQuote(id, quoteId as string);
@@ -160,7 +183,11 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
         return NextResponse.json({ error: 'Failed to save portal visibility' }, { status: 500 });
       }
     }
-    return NextResponse.json({ ok: true, ...(portalVisibility ?? {}) });
+    return NextResponse.json({
+      ok: true,
+      ...(portalVisibility ?? {}),
+      ...(newVersion !== undefined ? { version: newVersion } : {}),
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Update failed';
     console.error('PUT /api/designs/[id] error:', err);

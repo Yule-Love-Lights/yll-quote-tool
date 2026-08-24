@@ -77,14 +77,22 @@ export function isVerified(r: SelfServeMetricsRow): boolean {
  * Pure compute: in-range accuracy + median miss over the VERIFIED rows. No I/O.
  *
  * `minimum` is the customer-facing job floor (BUSINESS_RULES.minimumQuoteAmount).
- * The shown low is clamped up to it before scoring. Reason: the S47 fix floors the
- * shown low at this minimum (customerEstimateRange), but a handful of PRE-fix rows
- * were stored with a sub-minimum low (a $1,000 home showed a $900 low it could never
- * be charged). Clamping here scores every row against the range CURRENT logic would
- * show, so the go/no-go tile doesn't mix pre/post-fix eras — WITHOUT rewriting what
- * each row stored (the stored low still records what that customer was actually
- * shown). Only the low was ever sub-minimum; the high is always >= the minimum by
- * construction, so this can never invert the band.
+ * The shown low is clamped up to it before scoring, so every row scores against the
+ * range CURRENT logic would show and the go/no-go tile can't mix eras. The stored low
+ * is never rewritten (it still records what that customer was actually shown).
+ *
+ * The era it guards is real but narrow: telemetry landed 2026-07-19 and the low-floor
+ * fix (8a93f386) landed 2026-07-21, and in that two-day window computeEstimateRange's
+ * -10% margin re-introduced a sub-minimum low, so a $1,000 home would have stored a
+ * $900 low it could never be charged.
+ *
+ * Measured 2026-08-21: this clamps nothing today. self_serve_estimates has 0 rows and
+ * no quote carries inputs.meta.source = 'self_serve_estimate', so no such row was ever
+ * written. Kept as a cheap guard, not a repair for known-bad data.
+ *
+ * It cannot invert the band: BOTH writers floor the total at the minimum before
+ * bracketing (pre-fix via Math.max(priced.total, minimum) in the route, post-fix
+ * inside customerEstimateRange), so the high is always >= 1.1 * minimum.
  */
 export function computeSelfServeMetrics(
   rows: SelfServeMetricsRow[],
