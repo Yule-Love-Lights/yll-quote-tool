@@ -5,12 +5,14 @@
 
 import { OperatorShell } from '@/components/OperatorShell';
 import { ScheduleDay } from '@/components/ops/ScheduleDay';
-import { listActiveCrewMembers } from '@/lib/crewMembers';
+import { listActiveFieldCrew } from '@/lib/crewMembers';
 
 export const dynamic = 'force-dynamic';
 
 export default async function SchedulePage() {
-  const crew = await listActiveCrewMembers().catch(() => []);
+  // FIELD crew only — office staff (operators) are not dispatchable to jobs, so
+  // they must not appear in the assign/book dropdowns (office/field flag).
+  const crew = await listActiveFieldCrew().catch(() => []);
 
   return (
     <OperatorShell active="jobs">
