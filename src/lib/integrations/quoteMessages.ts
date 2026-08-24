@@ -1040,11 +1040,17 @@ export function referralLinkEmailHtml(input: {
     `<p>Hi ${name},</p>`,
     `<p>Here's your personal Yule Love Lights referral link:</p>`,
     `<p><a href="${link}">${link}</a></p>`,
+    // Review fix 9: "you get $X in credit... They get $Y in free lighting"
+    // used to sit in one sentence, reading as a direct comparison. Split
+    // into two paragraphs, leading with what the referrer gets, and the
+    // friend's reward framed as something being GIVEN rather than a
+    // competing prize.
     `<p>Send it to a friend or neighbor. When they book with us, you get <strong>${usd(
       input.creditUsd,
     )} in credit</strong> toward any Yule Love Lights service, holiday, permanent, event and wedding lighting, or bistro, good for ${
       input.creditExpiryYears
-    } years from when they book. They get <strong>${usd(
+    } years from when they book.</p>`,
+    `<p>You will also be giving them <strong>${usd(
       spritzerValueUsd,
     )} in free lighting</strong> on their first install, ${input.spritzerCount} staked ${
       input.spritzerSizeInches

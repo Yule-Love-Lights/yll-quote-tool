@@ -1089,6 +1089,20 @@ describe('greeting casing sweep (row 315): every customer greeting routes throug
     expect(htmlWithDifferentExpiry).not.toContain('good for 2 years');
   });
 
+  // Review fix 9: "you get $X in credit... They get $Y in free lighting"
+  // used to read as a direct comparison in one sentence. Now split into two
+  // paragraphs, and the friend's reward is framed as something the
+  // referrer is GIVING, not a competing prize.
+  it('referralLinkEmailHtml does not present the referrer credit and the friend gift as a side-by-side comparison', () => {
+    const html = referralLinkEmailHtml({
+      firstName: 'Susan',
+      referralUrl: 'https://x/refer/abc',
+      ...REFERRAL_LINK_REWARD_TERMS,
+    });
+    expect(html).not.toContain('book. They get');
+    expect(html).toContain('also be giving them');
+  });
+
   it('colorChangeAppliedEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {
     expect(colorChangeAppliedEmailHtml('susan', 'Warm White')).toContain('Hi Susan,');
     expect(colorChangeAppliedEmailHtml('Susan', 'Warm White')).toContain('Hi Susan,');

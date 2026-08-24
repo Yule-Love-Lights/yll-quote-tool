@@ -41,6 +41,16 @@ describe('ReferralSection', () => {
     expect(html).toContain('applies together to one job');
   });
 
+  // Review fix 9: "You get $125 credit... Your friend gets $170 in free
+  // lighting" used to read as a direct comparison in one sentence. Now
+  // split into two paragraphs, and the friend's reward is framed as
+  // something the referrer is GIVING, not a competing prize.
+  it('does not present the referrer credit and the friend gift as a side-by-side comparison', () => {
+    const html = renderToStaticMarkup(<ReferralSection referralLink={null} {...PROPS} />);
+    expect(html).not.toContain('bistro. Your friend gets');
+    expect(html).toContain('giving your friend');
+  });
+
   it('renders the personal referral link + copy control when one is available', () => {
     const html = renderToStaticMarkup(
       <ReferralSection referralLink="https://quote.yulelovelights.com/refer/ABCD1234" {...PROPS} />,

@@ -72,10 +72,19 @@ export default async function ReferralLinkPage({
           <h1 className="font-display text-[32px] leading-[1.1] md:text-[42px] md:leading-[1.1] font-semibold text-[#F4ECD8] tracking-[-0.02em]">
             Get your referral link
           </h1>
+          {/* Review fix 9: "you get $125 credit... They get $170 in free
+              lighting" used to sit in one sentence, reading as a direct
+              comparison ("why does my friend get more than me?"). Split
+              into two paragraphs, leading with what the referrer gets, and
+              the friend's reward framed as something being GIVEN rather
+              than a competing prize. */}
           <p className="mt-4 text-[16px] md:text-[17px] text-[#E0D7C1] leading-[1.6]">
             Send friends and neighbors our way. When they book, you get {formatUsd(REFERRAL_CREDIT_USD)}{' '}
             credit toward any Yule Love Lights service, holiday, permanent, event and wedding
-            lighting, or bistro. They get {formatUsd(SPRITZER_VALUE_USD)} in free lighting on their
+            lighting, or bistro.
+          </p>
+          <p className="mt-3 text-[16px] md:text-[17px] text-[#E0D7C1] leading-[1.6]">
+            You are also giving them {formatUsd(SPRITZER_VALUE_USD)} in free lighting on their
             first install: {REFERRAL_FRIEND_SPRITZERS.count} staked spotlights for their yard.
           </p>
           {/* Trust row (naldo/referral-link-preview, PIECE 1): the same

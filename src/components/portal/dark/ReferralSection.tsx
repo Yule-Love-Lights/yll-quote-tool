@@ -55,13 +55,22 @@ export function ReferralSection({
             </span>{' '}
             toward any job.
           </h2>
+          {/* Review fix 9: "You get $125 credit... Your friend gets $170 in
+              free lighting" used to sit in one sentence, reading as a
+              direct comparison ("why does my friend get more than me?").
+              Split into two paragraphs, leading with what the referrer
+              gets, and the friend's reward framed as something being
+              GIVEN rather than a competing prize. */}
           <p className="mt-4 text-[16px] md:text-[17px] text-[#A89F87] leading-[1.65]">
             You get {formatUsd(creditUsd)} credit for every friend who books an install, good
             toward any Yule Love Lights service: holiday, permanent, event and wedding lighting,
             or bistro. It stacks, so there is no limit on how many friends you refer. When you
             redeem, your whole balance applies together to one job, so save it for something big
-            enough to use it all. Your friend gets {formatUsd(spritzerValueUsd)} in free lighting
-            on their first booked install, {spritzerCount} staked spotlights for their yard (
+            enough to use it all.
+          </p>
+          <p className="mt-3 text-[16px] md:text-[17px] text-[#A89F87] leading-[1.65]">
+            You are also giving your friend {formatUsd(spritzerValueUsd)} in free lighting on
+            their first booked install, {spritzerCount} staked spotlights for their yard (
             {spritzerSizeInches}&quot; spritzers).
           </p>
           {referralLink ? (
