@@ -17,6 +17,9 @@ const mini = (id: string, colors: string[], surface = 'bush'): SceneItem =>
 const area = (id: string, colors: string[], surface = 'bush', groupId?: string): SceneItem =>
   ({ kind: 'miniArea', id, surface, shape: 'box', colorPattern: colors, stringCount: 1, groupId, yardstickId: null }) as unknown as SceneItem;
 
+const group = (id: string, colors: string[]): SceneItem =>
+  ({ kind: 'miniGroup', id, surface: 'railing', memberIds: [], colorPattern: colors, stringCount: 3, yardstickId: null }) as unknown as SceneItem;
+
 // build OfferedColors directly for resolver tests
 const offered = (minis: string[], spritzers: Partial<Record<QuoteSpritzerSize, string[]>>): OfferedColors => ({
   miniHas: (id) => minis.includes(id),
@@ -77,6 +80,17 @@ describe('resolveInstalls — strand path', () => {
     const o = offered(ALL_MINI, { '24': SPRITZER_24 });
     const got = resolveInstalls([mini('b1', ['red', 'green', 'cool-white'])], null, o);
     expect(got.get('b1')).toMatchObject({ kind: 'strand', sku: '43346' });
+  });
+
+  it('an as-designed mini group resolves from its authored pattern', () => {
+    const o = offered(ALL_MINI, { '24': SPRITZER_24 });
+    const got = resolveInstalls([group('g1', ['red', 'green', 'cool-white'])], null, o);
+    expect(got.get('g1')).toEqual({
+      kind: 'strand',
+      sku: '43346',
+      colorIds: ['red', 'green', 'cool-white'],
+      patternId: 'grinch',
+    });
   });
 });
 

@@ -241,6 +241,7 @@ export function projectMaterials(
     } else if (isMiniGroup(item)) {
       surface = asMiniSurface(item.surface);
       stringCount = intAtLeast1(item.stringCount);
+      paletteId = item.colorPattern?.[0] ?? DEFAULT_PALETTE;
     }
     if (surface) {
       const decision = installs.get(item.id);
