@@ -55,6 +55,7 @@ vi.mock('@/lib/inventory/jobs', async (importOriginal) => {
 vi.mock('@/lib/inventory/onHand', () => ({ adjustOnHandAtomic: adjustOnHandAtomicMock }));
 
 import { POST } from './route';
+import { PENDING_STOCK_SNAPSHOT } from '@/lib/inventory/jobs';
 
 const ID = '11111111-1111-1111-1111-111111111111';
 const denied401 = () => NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -431,6 +432,8 @@ describe('POST /api/jobs/[id]/cancel', () => {
 
       expect(adjustOnHandAtomicMock).not.toHaveBeenCalled();
       expect(json.stockReturned).toEqual([]);
+      // Fix round 3 (Finding LOW): nothing to reconcile — no ⚠️ cue.
+      expect(json.stockNeedsAttention).toBe(false);
     });
 
     it('skips the real reversal for a TEST job even if it was marked prepped (never touched real stock)', async () => {
@@ -466,6 +469,9 @@ describe('POST /api/jobs/[id]/cancel', () => {
       expect(adjustOnHandAtomicMock).not.toHaveBeenCalled();
       expect(json.stockReturned).toEqual([]);
       expect(json.note).toMatch(/no trackable on-hand stock/i);
+      // Fix round 3 (Finding LOW): a "check manually" caveat is exactly what
+      // the ⚠️ cue is for, even though it isn't the PENDING_STOCK_SNAPSHOT case.
+      expect(json.stockNeedsAttention).toBe(true);
     });
 
     it('does not fail the cancel when the work-order read throws (best-effort)', async () => {
@@ -519,5 +525,133 @@ describe('POST /api/jobs/[id]/cancel', () => {
       expect(adjustOnHandAtomicMock).not.toHaveBeenCalled();
       expect(json.stockReturned).toEqual([]);
     });
+  });
+});
+
+// Row 325: cancel must reverse the job's OWN stock_deductions snapshot
+// (persisted by prepareJobMaterials at prep time), not recompute the
+// materials projection live — a live recompute silently drifts from what
+// prep actually deducted if the materials rules change in between prep and
+// cancel. These tests give the mocked work order a stockDeductions snapshot
+// that DISAGREES with wo.materials.materials, so a pass proves the snapshot
+// path — not the old recomputation — is what actually ran.
+describe('POST /api/jobs/[id]/cancel — Row 325 stock_deductions snapshot', () => {
+  it('reverses the SNAPSHOT quantities, not a live recompute off the current materials projection', async () => {
+    getJobWorkOrderMock.mockResolvedValueOnce({
+      job: {
+        stockDecrementedAt: '2026-01-05T00:00:00Z',
+        isTest: false,
+        // The snapshot says 5 of SKU-A was deducted at prep time.
+        stockDeductions: [{ sku: 'SKU-A', before: 20, deducted: 5, after: 15 }],
+      },
+      materials: {
+        // The CURRENT live projection disagrees — it would compute a
+        // different quantity today (e.g. a materials-rule change since
+        // prep). If the route were still recomputing live, it would return
+        // 9, not 5.
+        materials: [{ sku: 'SKU-A', name: 'Item A', qty: 9, onHand: 20, short: false }],
+        unbound: [],
+        totalLines: 1,
+      },
+    });
+
+    const res = await POST(req, ctx());
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(adjustOnHandAtomicMock).toHaveBeenCalledWith(sbRef.current, 'SKU-A', 5);
+    expect(adjustOnHandAtomicMock).not.toHaveBeenCalledWith(sbRef.current, 'SKU-A', 9);
+    expect(json.stockReturned).toEqual([{ sku: 'SKU-A', qty: 5 }]);
+    // No legacy caveat — a real snapshot was available and used.
+    expect(json.note).not.toMatch(/no per-prep snapshot/i);
+    // Fix round 3 (Finding LOW): no caveat rode along, so the ⚠️ cue this
+    // flag drives on the two admin consumers should NOT fire.
+    expect(json.stockNeedsAttention).toBe(false);
+  });
+
+  it('falls back to a live reconstruction AND flags it, for a legacy job prepped before the snapshot column existed', async () => {
+    getJobWorkOrderMock.mockResolvedValueOnce({
+      job: {
+        stockDecrementedAt: '2026-01-05T00:00:00Z',
+        isTest: false,
+        stockDeductions: null, // legacy job — prepped before Row 325 shipped
+      },
+      materials: {
+        materials: [{ sku: 'SKU-A', name: 'Item A', qty: 5, onHand: 20, short: false }],
+        unbound: [],
+        totalLines: 1,
+      },
+    });
+
+    const res = await POST(req, ctx());
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(adjustOnHandAtomicMock).toHaveBeenCalledWith(sbRef.current, 'SKU-A', 5);
+    expect(json.stockReturned).toEqual([{ sku: 'SKU-A', qty: 5 }]);
+    expect(json.note).toMatch(/no per-prep snapshot/i);
+    expect(json.note).toMatch(/may not exactly match/i);
+    // Fix round 3 (Finding LOW): the legacy-reconstruction caveat is exactly
+    // the kind of thing the ⚠️ cue should draw the eye to.
+    expect(json.stockNeedsAttention).toBe(true);
+  });
+
+  it('Finding 1 (fix round 2): refuses to auto-reverse and flags a human note for the PENDING sentinel state — never treats it as legacy', async () => {
+    // A job prepped by CURRENT code whose durable snapshot write never landed
+    // (a transient failure right after prep — see jobs.ts's
+    // PENDING_STOCK_SNAPSHOT doc). This must NOT fall into the legacy
+    // live-reconstruction branch: unlike a true legacy job, a snapshot for
+    // this job's real deduction could exist somewhere but wasn't captured, so
+    // guessing via a live recompute risks the exact over/under-credit bug Row
+    // 325 exists to prevent.
+    getJobWorkOrderMock.mockResolvedValueOnce({
+      job: {
+        stockDecrementedAt: '2026-01-05T00:00:00Z',
+        isTest: false,
+        stockDeductions: PENDING_STOCK_SNAPSHOT,
+      },
+      materials: {
+        // If this were mistakenly treated as legacy, it would reconstruct 9
+        // of SKU-A from this live projection — proving the refusal actually
+        // fired (not merely a no-op that happened to look the same).
+        materials: [{ sku: 'SKU-A', name: 'Item A', qty: 9, onHand: 20, short: false }],
+        unbound: [],
+        totalLines: 1,
+      },
+    });
+
+    const res = await POST(req, ctx());
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(adjustOnHandAtomicMock).not.toHaveBeenCalled();
+    expect(json.stockReturned).toEqual([]);
+    expect(json.note).toMatch(/never durably recorded/i);
+    expect(json.note).toMatch(/check on-hand manually/i);
+    // Distinct message from the true-legacy caveat — this is not "reconstructed
+    // and may not match", it's "nothing was reconstructed at all".
+    expect(json.note).not.toMatch(/no per-prep snapshot/i);
+    expect(json.note).not.toMatch(/may not exactly match/i);
+    // Fix round 3 (Finding LOW): this is exactly the case the widened ⚠️ cue
+    // exists for — a human needs to look, even though no refund is owed.
+    expect(json.stockNeedsAttention).toBe(true);
+  });
+
+  it('clears stock_deductions in the same atomic reversal-claim update (mirrors clearing stock_decremented_at)', async () => {
+    getJobWorkOrderMock.mockResolvedValueOnce({
+      job: {
+        stockDecrementedAt: '2026-01-05T00:00:00Z',
+        isTest: false,
+        stockDeductions: [{ sku: 'SKU-A', before: 20, deducted: 5, after: 15 }],
+      },
+      materials: { materials: [], unbound: [], totalLines: 0 },
+    });
+
+    await POST(req, ctx());
+
+    const jobsUpdate = sb.updates.find(
+      (u) => 'stock_decremented_at' in u && u.stock_decremented_at === null,
+    );
+    expect(jobsUpdate).toEqual({ stock_decremented_at: null, stock_deductions: null });
   });
 });
