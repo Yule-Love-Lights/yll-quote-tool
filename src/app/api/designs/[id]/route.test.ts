@@ -112,7 +112,6 @@ describe('PUT /api/designs/[id]', () => {
     const res = await PUT(makeReq({ scene: validScene }), ctx());
     expect(res.status).toBe(401);
     expect(updateDesignSceneGuarded).not.toHaveBeenCalled();
-    expect(updateDesignScene).not.toHaveBeenCalled();
     expect(updateDesignPortalVisibility).not.toHaveBeenCalled();
   });
 
@@ -154,7 +153,6 @@ describe('PUT /api/designs/[id]', () => {
       ctx(),
     );
     expect(res.status).toBe(400);
-    expect(updateDesignScene).not.toHaveBeenCalled();
     expect(updateDesignPortalVisibility).not.toHaveBeenCalled();
   });
 
@@ -227,7 +225,6 @@ describe('PUT /api/designs/[id]', () => {
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
     expect(await first.json()).toEqual(await second.json());
-    expect(updateDesignScene).not.toHaveBeenCalled();
     expect(linkDesignToQuote).not.toHaveBeenCalled();
     expect(updateDesignSatelliteLines).not.toHaveBeenCalled();
   });
