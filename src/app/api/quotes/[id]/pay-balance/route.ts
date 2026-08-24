@@ -16,6 +16,12 @@
 // view_only). This is the ONE deliberate NCE-facing message on the customer
 // portal; the client (portal/[quoteId]/pay-balance/page.tsx) branches on
 // this code to show nceBalanceBlockedError() instead of the generic copy.
+//
+// Row 378: a stale invoice (an amendment whose invoice re-sync lost its CAS
+// race) is REFUSED here rather than charged — 409 {code:'invoice-stale'}, the
+// customer-side mirror of charge-balance's staff-side guard. The client
+// branches on this code to show invoiceStaleError(); staff get a Telegram ping
+// so the refusal is not a dead end. See the guard itself, below the re-check.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { rateLimitResponse } from '@/lib/rateLimit';
@@ -23,6 +29,10 @@ import { createHostedPageSale, isValorConfigured, ValorError } from '@/lib/integ
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 import { getJobByQuote } from '@/lib/jobs';
 import { getInvoiceByJob } from '@/lib/invoices';
+import { resolveAgreedTotal, type AgreedTotalSnapshot } from '@/lib/agreedTotal';
+import { computeInvoiceResyncTotals, priorBalanceCollectedUsd } from '@/lib/quoteAmendInvoiceSync';
+import type { InvoicePricingInput } from '@/lib/invoices';
+import { notifyTelegramAudience } from '@/lib/integrations/telegramRouting';
 
 export const runtime = 'nodejs';
 
@@ -39,6 +49,11 @@ type QuoteRow = {
   // NCE (#199): an NCE trade job's balance settles through NCE, not Valor —
   // see the check right after the fetch below.
   is_nce: boolean;
+  // Row 378: the pricing basis the reconciliation guard below recomputes the
+  // expected balance from — the SAME three inputs charge-balance's guard uses.
+  result: InvoicePricingInput & { total: number } | null;
+  approval_snapshot: AgreedTotalSnapshot;
+  deposit_amount_usd: number | null;
 };
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -64,7 +79,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const sb = getSupabaseServiceClient()!;
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
-    .select('id, customer_name, customer_email, is_test, view_only, is_nce')
+    .select('id, customer_name, customer_email, is_test, view_only, is_nce, result, approval_snapshot, deposit_amount_usd')
     .eq('id', id)
     .single<QuoteRow>();
   if (fetchErr || !quote) {
@@ -155,9 +170,91 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
+  // Row 378 (S48 wrap customer lens): RECONCILIATION guard — the customer half
+  // of the pair whose STAFF half shipped in S48 (row 341, PR #927, at
+  // charge-balance/route.ts's `invoice-stale` check). Until now this route
+  // handed `invoice.balance` straight to Valor with no cross-check, so after an
+  // /amend or /amend-decline whose invoice re-sync LOST its CAS race (twice —
+  // resyncInvoiceToAgreedTotal retries once, then gives up, leaving the row
+  // wrong indefinitely with nothing to self-heal it), a staff charge was
+  // refused while the customer clicking their own pay-link was charged the
+  // stale figure with no warning. Same defect, opposite sign of the same coin.
+  //
+  // Re-read the invoice FIRST so the row we validate is the row we charge. The
+  // read at the top of this request is now stale — real time has passed through
+  // the job/invoice lookups and the view_only/NCE re-check above — and
+  // validating row A while charging row B would be a guard in name only. This
+  // also closes, for the customer path, the #173 upward-re-sync window that
+  // charge-balance's own post-claim re-read closes for staff.
+  const freshInvoice = job ? await getInvoiceByJob(job.id) : null;
+  if (!freshInvoice) {
+    // Fail CLOSED (#187 review FIX 3's posture): a vanished/unreadable invoice
+    // must never fall through to the stale figure read at the top.
+    console.error(`[api/quotes/:id/pay-balance] invoice for quote ${id} vanished on the pre-Valor re-read`);
+    return NextResponse.json({ error: 'No invoice for this order yet', code: 'no-invoice' }, { status: 409 });
+  }
+  if (freshInvoice.status === 'cancelled') {
+    return NextResponse.json({ error: 'This invoice was cancelled', code: 'cancelled' }, { status: 400 });
+  }
+  if (freshInvoice.status === 'paid' || freshInvoice.balance <= 0) {
+    return NextResponse.json({ error: 'No balance due', code: 'no-balance' }, { status: 409 });
+  }
+
+  // Recomputes the SAME expected balance a successful re-sync would have
+  // written, through the SAME single formula charge-balance uses
+  // (computeInvoiceResyncTotals, fed by resolveAgreedTotal and
+  // priorBalanceCollectedUsd) — one formula, never a second re-derivation that
+  // could drift. Skipped when the quote has no `result`: there is nothing to
+  // recompute against, and that is the permissive default every other
+  // quote-gated check in this route already takes on missing data.
+  //
+  // NO override here, deliberately. charge-balance's guard is SOFT because an
+  // operator can eyeball the figure and knowingly proceed (`overrideStale`); a
+  // customer has no way to verify anything, so on this route the refusal is
+  // hard. The release valve is a human reconciling the invoice, which is
+  // exactly what the copy and the staff alert below drive.
+  if (quote.result) {
+    const agreedTotal = resolveAgreedTotal(quote.approval_snapshot, quote.result);
+    const expected = computeInvoiceResyncTotals(
+      quote.result,
+      quote.deposit_amount_usd ?? 0,
+      agreedTotal,
+      freshInvoice.tax_overridden,
+      priorBalanceCollectedUsd(freshInvoice),
+    );
+    if (Math.abs(expected.balance - freshInvoice.balance) > 0.01) {
+      console.error(
+        `[api/quotes/:id/pay-balance] REFUSED stale invoice for quote ${id}: ` +
+          `invoice.balance=${freshInvoice.balance} expected=${expected.balance} agreedTotal=${agreedTotal}`,
+      );
+      // Best-effort staff alert so a refused customer payment is not a silent
+      // dead end — nobody else is watching this path, and the customer has just
+      // been told to text us. notifyTelegramAudience never throws and no-ops
+      // when the bot is dormant/unconfigured, so this cannot break the response.
+      await notifyTelegramAudience(
+        'jobs',
+        `Balance payment BLOCKED — invoice out of sync
+` +
+          `${quote.customer_name ?? 'A customer'} tried to pay $${freshInvoice.balance} but the order's ` +
+          `current agreed total works out to $${expected.balance}.
+` +
+          `A prior amendment's invoice sync likely did not land. Reconcile the invoice, then tell them it's ready.
+` +
+          `Quote: ${id}`,
+      );
+      return NextResponse.json(
+        {
+          error: 'We need to confirm the final amount on this order before taking payment.',
+          code: 'invoice-stale',
+        },
+        { status: 409 },
+      );
+    }
+  }
+
   try {
     const { url } = await createHostedPageSale({
-      amountUsd: invoice.balance,
+      amountUsd: freshInvoice.balance,
       orderRef,
       successUrl,
       failureUrl,
@@ -165,7 +262,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       customerName: quote.customer_name,
       orderDescription: 'Yule Love Lights balance',
     });
-    return NextResponse.json({ ok: true, redirectUrl: url, amountUsd: invoice.balance, orderRef });
+    return NextResponse.json({ ok: true, redirectUrl: url, amountUsd: freshInvoice.balance, orderRef });
   } catch (err) {
     const msg = err instanceof ValorError ? err.message : err instanceof Error ? err.message : 'Unknown Valor error';
     console.error('[api/quotes/:id/pay-balance] createHostedPageSale failed:', msg);

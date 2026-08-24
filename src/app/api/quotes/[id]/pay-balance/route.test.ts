@@ -12,7 +12,9 @@ const {
   getJobByQuoteMock,
   getInvoiceByJobMock,
   rateLimitMock,
+  notifyTelegramAudienceMock,
 } = vi.hoisted(() => ({
+  notifyTelegramAudienceMock: vi.fn(async (_audience: string, _text: string) => {}),
   sbRef: { current: null as unknown },
   createHostedPageSaleMock: vi.fn(async () => ({ url: 'https://valor.example/pay', uid: 'u1', raw: {} })),
   isValorConfiguredMock: vi.fn(() => true),
@@ -32,7 +34,13 @@ vi.mock('@/lib/integrations/valor', () => ({
   ValorError: class ValorError extends Error {},
 }));
 vi.mock('@/lib/jobs', () => ({ getJobByQuote: getJobByQuoteMock }));
-vi.mock('@/lib/invoices', () => ({ getInvoiceByJob: getInvoiceByJobMock }));
+vi.mock('@/lib/invoices', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  getInvoiceByJob: getInvoiceByJobMock,
+}));
+vi.mock('@/lib/integrations/telegramRouting', () => ({
+  notifyTelegramAudience: notifyTelegramAudienceMock,
+}));
 
 import { POST } from './route';
 
@@ -195,5 +203,136 @@ describe('POST /api/quotes/[id]/pay-balance', () => {
     expect(createHostedPageSaleMock).toHaveBeenCalledWith(
       expect.objectContaining({ successUrl: `https://portal.test/portal/${ID}/approved?balance=paid` }),
     );
+  });
+
+  // ---- Row 378: the reconciliation guard (customer mirror of charge-balance) ----
+  //
+  // Fixtures are hand-computed against the REAL formula so the assertions stay
+  // independent of it (asserting whatever computeInvoiceResyncTotals returns
+  // would be circular). With result.total 2000, deposit 1000 and an invoice at
+  // total 2000 / deposit_applied 1000 / balance 1000, priorBalanceCollectedUsd
+  // is 2000-1000-1000 = 0 and the expected balance is 2000-1000 = 1000, so the
+  // untouched case reconciles exactly. An amendment to 2400 that never reached
+  // the invoice moves the expected balance to 2400-1000 = 1400 while the row
+  // still says 1000: a $400 under-collection if it were charged as-is.
+  const PRICED = { total: 2000, taxAmount: 0, subtotalBeforeDiscount: 2000, discountAmount: 0 };
+  const INVOICE_IN_SYNC = {
+    id: 'inv-1',
+    status: 'awaiting_payment',
+    balance: 1000,
+    total: 2000,
+    deposit_applied: 1000,
+    tax_overridden: false,
+  };
+  const PRICED_QUOTE = {
+    ...QUOTE,
+    result: PRICED,
+    deposit_amount_usd: 1000,
+    approval_snapshot: { customerSelection: { currentTotalUsd: 2000 } },
+  };
+  const AMENDED = (status: string) => ({
+    ...PRICED_QUOTE,
+    approval_snapshot: {
+      customerSelection: { currentTotalUsd: 2000 },
+      amendments: [{ new_total: 2400, consent: { status } }],
+    },
+  });
+
+  it('charges normally when the invoice still reconciles with the agreed total (no false positive)', async () => {
+    sbRef.current = makeSb(PRICED_QUOTE);
+    getInvoiceByJobMock.mockResolvedValue(INVOICE_IN_SYNC);
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.amountUsd).toBe(1000);
+    expect(createHostedPageSaleMock).toHaveBeenCalledWith(expect.objectContaining({ amountUsd: 1000 }));
+    expect(notifyTelegramAudienceMock).not.toHaveBeenCalled();
+  });
+
+  it('409s (invoice-stale) rather than charge a balance an amendment left behind', async () => {
+    sbRef.current = makeSb(AMENDED('accepted'));
+    getInvoiceByJobMock.mockResolvedValue(INVOICE_IN_SYNC);
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('invoice-stale');
+    // The whole point: no charge is opened at Valor for the stale $1000.
+    expect(createHostedPageSaleMock).not.toHaveBeenCalled();
+    // ...and the customer-facing text leaks neither figure nor the mechanism.
+    expect(json.error).not.toMatch(/1000|1400|amend|sync|stale/i);
+  });
+
+  it('pings staff with BOTH figures when it refuses, so the refusal is not a dead end', async () => {
+    sbRef.current = makeSb(AMENDED('accepted'));
+    getInvoiceByJobMock.mockResolvedValue(INVOICE_IN_SYNC);
+    await POST(req(), ctx());
+    expect(notifyTelegramAudienceMock).toHaveBeenCalledTimes(1);
+    const [audience, text] = notifyTelegramAudienceMock.mock.calls[0];
+    expect(audience).toBe('jobs');
+    expect(text).toContain('1000');
+    expect(text).toContain('1400');
+    expect(text).toContain(ID);
+  });
+
+  // A DECLINED amendment is a price the customer refused, so it must NOT become
+  // the agreed total, otherwise every decline would block that customer's
+  // perfectly valid payment forever. resolveAgreedTotal skips it; this pins that
+  // the guard inherits the skip rather than re-deriving its own precedence.
+  it('does not refuse over an amendment the customer DECLINED', async () => {
+    sbRef.current = makeSb(AMENDED('declined'));
+    getInvoiceByJobMock.mockResolvedValue(INVOICE_IN_SYNC);
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+    expect(createHostedPageSaleMock).toHaveBeenCalledWith(expect.objectContaining({ amountUsd: 1000 }));
+  });
+
+  // The permissive default every other quote-gated check in this route takes:
+  // with no priced result there is nothing to reconcile against, so the guard
+  // stands aside rather than blocking a legacy row from paying.
+  it('skips the guard entirely when the quote has no priced result', async () => {
+    sbRef.current = makeSb({ ...QUOTE, result: null, deposit_amount_usd: 1000, approval_snapshot: null });
+    getInvoiceByJobMock.mockResolvedValue(INVOICE_IN_SYNC);
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+    expect(notifyTelegramAudienceMock).not.toHaveBeenCalled();
+  });
+
+  // The row we validate must be the row we charge: the pre-Valor re-read means
+  // a balance that moved UPWARD mid-request is collected in full, instead of
+  // silently under-collecting the figure read at the top of the request (#173's
+  // window, which charge-balance closes for staff and this closes for customers).
+  it('charges the FRESH balance when the invoice moves between the two reads', async () => {
+    sbRef.current = makeSb(QUOTE);
+    getInvoiceByJobMock
+      .mockResolvedValueOnce({ ...INVOICE_IN_SYNC, balance: 1000 })
+      .mockResolvedValueOnce({ ...INVOICE_IN_SYNC, balance: 1400 });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.amountUsd).toBe(1400);
+    expect(createHostedPageSaleMock).toHaveBeenCalledWith(expect.objectContaining({ amountUsd: 1400 }));
+  });
+
+  // Fail CLOSED, never fall through to the stale figure read at the top.
+  it('409s rather than charge the stale figure when the invoice vanishes on the re-read', async () => {
+    sbRef.current = makeSb(QUOTE);
+    getInvoiceByJobMock.mockResolvedValueOnce(INVOICE_IN_SYNC).mockResolvedValueOnce(null);
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('no-invoice');
+    expect(createHostedPageSaleMock).not.toHaveBeenCalled();
+  });
+
+  it('409s rather than charge when the invoice is settled between the two reads', async () => {
+    sbRef.current = makeSb(QUOTE);
+    getInvoiceByJobMock
+      .mockResolvedValueOnce(INVOICE_IN_SYNC)
+      .mockResolvedValueOnce({ ...INVOICE_IN_SYNC, status: 'paid', balance: 0 });
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('no-balance');
+    expect(createHostedPageSaleMock).not.toHaveBeenCalled();
   });
 });
