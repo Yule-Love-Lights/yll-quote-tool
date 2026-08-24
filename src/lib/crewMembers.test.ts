@@ -312,6 +312,7 @@ import {
   OperatorAlreadyLinkedError,
   setOfficeStaffActive,
   setOfficeStaffRate,
+  setOfficeStaffTelegram,
   TelegramUserIdTakenError,
   updateCrewMember,
 } from './crewMembers';
@@ -647,7 +648,7 @@ describe('listOfficeStaff', () => {
   it('returns only is_office rows, mapped to the panel shape', async () => {
     stateRef.current.rows = [CREW_1, CREW_OFFICE, CREW_2];
     await expect(listOfficeStaff()).resolves.toEqual([
-      { id: 'crew-office', displayName: 'Kelly', active: true, authUserId: 'op-kelly', baseRateCents: 2500 },
+      { id: 'crew-office', displayName: 'Kelly', active: true, authUserId: 'op-kelly', baseRateCents: 2500, telegramUserId: null },
     ]);
   });
 
@@ -683,7 +684,7 @@ describe('linkOfficeStaff', () => {
   it('creates an is_office, hourly, non-P4P row linked to the operator', async () => {
     stateRef.current.rows = [];
     const member = await linkOfficeStaff({ authUserId: 'op-ann', displayName: 'Ann', baseRateCents: 2500 });
-    expect(member).toEqual({ id: 'generated-1', displayName: 'Ann', active: true, authUserId: 'op-ann', baseRateCents: 2500 });
+    expect(member).toEqual({ id: 'generated-1', displayName: 'Ann', active: true, authUserId: 'op-ann', baseRateCents: 2500, telegramUserId: null });
 
     const written = stateRef.current.inserted[0];
     expect(written).toMatchObject({
@@ -730,6 +731,7 @@ describe('setOfficeStaffActive', () => {
       active: false,
       authUserId: 'op-kelly',
       baseRateCents: 2500,
+      telegramUserId: null,
     });
     expect(stateRef.current.rows.find((r) => r.id === 'crew-office')?.active).toBe(false);
   });
@@ -753,6 +755,7 @@ describe('setOfficeStaffRate', () => {
       active: true,
       authUserId: 'op-kelly',
       baseRateCents: 3000,
+      telegramUserId: null,
     });
     expect(stateRef.current.rows.find((r) => r.id === 'crew-office')?.base_rate_cents).toBe(3000);
   });
@@ -762,5 +765,37 @@ describe('setOfficeStaffRate', () => {
     const member = await setOfficeStaffRate('crew-1', 9999);
     expect(member).toBeNull();
     expect(stateRef.current.rows.find((r) => r.id === 'crew-1')?.base_rate_cents).toBe(1600);
+  });
+});
+
+describe('setOfficeStaffTelegram', () => {
+  it('links a Telegram id on an OFFICE row — office staff text the bot too', async () => {
+    stateRef.current.rows = [CREW_OFFICE];
+    const member = await setOfficeStaffTelegram('crew-office', '987654321');
+    expect(member?.telegramUserId).toBe('987654321');
+    expect(stateRef.current.rows.find((r) => r.id === 'crew-office')?.telegram_user_id).toBe('987654321');
+  });
+
+  it('unlinks on null', async () => {
+    stateRef.current.rows = [{ ...CREW_OFFICE, telegram_user_id: '987654321' }];
+    const member = await setOfficeStaffTelegram('crew-office', null);
+    expect(member?.telegramUserId).toBeNull();
+  });
+
+  it('maps a collision with ANOTHER member to TelegramUserIdTakenError, never returning their row', async () => {
+    // CREW_1 (field crew) already holds '111'. Handing it to the office row
+    // would split one Telegram account across two pay identities.
+    stateRef.current.rows = [CREW_1, CREW_OFFICE];
+    await expect(setOfficeStaffTelegram('crew-office', '111')).rejects.toBeInstanceOf(
+      TelegramUserIdTakenError,
+    );
+    expect(stateRef.current.rows.find((r) => r.id === 'crew-office')?.telegram_user_id).toBeNull();
+  });
+
+  it('returns null for a FIELD-crew id — the office door never writes a field-crew row', async () => {
+    stateRef.current.rows = [CREW_1, CREW_OFFICE];
+    const member = await setOfficeStaffTelegram('crew-1', '999');
+    expect(member).toBeNull();
+    expect(stateRef.current.rows.find((r) => r.id === 'crew-1')?.telegram_user_id).toBe('111');
   });
 });
