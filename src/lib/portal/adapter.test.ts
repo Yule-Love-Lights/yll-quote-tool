@@ -2189,9 +2189,22 @@ describe('quoteRowToPortalQuote — amendment consent card money basis (delta-ve
 // line-item prices from the FROZEN approval_snapshot.pricing, never the
 // live row.result, which keeps changing as staff edit the scene/footage
 // after approval. Before this fix, `row.result` was the only source the
-// adapter ever read — these tests fail against that old behavior (each
-// asserts the FROZEN $2,000 custom-item price, not the drifted-to-live
-// $2,900 one) and pass against the fix.
+// adapter ever read, unconditionally.
+//
+// LOW fix round (technical lens — this comment previously overclaimed "these
+// tests fail against that old behavior" for the whole block): only the first
+// two tests below actually discriminate pre-fix vs post-fix code — verified
+// by reverting the fix locally (`frozenPricing = null`) and re-running this
+// file, which failed exactly those two and only those two. The remaining
+// three ("falls back to the live result...", "an ACCEPTED amendment
+// promotes...", "a never-approved quote always reads...") all assert
+// custom?.price === 2900 (the live/drifted figure) — a value the OLD
+// always-live code already produced trivially in every one of those three
+// scenarios too, since it never looked at approval_snapshot.pricing at all.
+// They're real, valuable coverage of the FALLBACK / no-regression paths the
+// fix's own frozenPricing condition carves out (missing snapshot, an
+// accepted amendment, never-approved) — just not pre-fix regression tests
+// for row 344 itself.
 describe('quoteRowToPortalQuote — frozen pricing basis on an approved quote (row 344)', () => {
   // The customer approved at $2,000 (one custom line item). Staff then edited
   // the scene/footage — simulated here by a DIFFERENT live `row.result` ($2,900
