@@ -5664,6 +5664,95 @@ describe('markItemHandledLocal / dismissItem / markItemCompleted — handled_by 
     expect(updateCall!.args[0]).toMatchObject({ handled_by: null });
   });
 
+  // ── Row 387: dismiss gets the POSITIVE CAS its sibling got in row 366 ──────
+  //
+  // Why this one mattered more than parity tidiness: the negative
+  // `.neq('status','dismissed')` default passes on a row that has meanwhile
+  // become 'handled', so a stale click flips a GENUINELY ANSWERED lead to
+  // dismissed — and dismiss also calls addSuppressedSenders, so that customer's
+  // future messages get auto-filtered out of the default view.
+
+  it('dismissItem uses a POSITIVE status CAS when the caller supplies expectedStatus', async () => {
+    const { from, updateCalls } = makeSbFor({ data: { dashboard_contacts: null }, error: null });
+    sbRef.current = { from };
+
+    await dismissItem(ITEM_ID, OPERATOR_ID, NOW, { expectedStatus: 'unresponded' });
+
+    // The positive guard carries the caller's real legal status into the write's
+    // own WHERE clause. Two .eq calls now: the id, and the status.
+    const statusEq = updateCalls.filter((c) => c.method === 'eq').find((c) => c.args[0] === 'status');
+    expect(statusEq).toBeDefined();
+    expect(statusEq!.args).toEqual(['status', 'unresponded']);
+    // ...and the negative default is gone, not merely added to.
+    expect(updateCalls.find((c) => c.method === 'neq')).toBeUndefined();
+  });
+
+  // FIX ROUND, and the reason this test exists: the first cut passed
+  // ['unresponded','handled'], derived from which buckets EXIST rather than from
+  // which bucket actually feeds the Dismiss button. 'handled' is precisely the
+  // status this guard exists to refuse — a row a colleague answered in the
+  // read/write gap IS 'handled' — so including it reopened the very race the row
+  // is about. Two review lenses converged on it independently. This pins the
+  // corrected contract so it cannot drift back.
+  it('dismissItem still supports an ARRAY expectedStatus, and handled is not in the dismissable set', async () => {
+    const { from, updateCalls } = makeSbFor({ data: { dashboard_contacts: null }, error: null });
+    sbRef.current = { from };
+
+    await dismissItem(ITEM_ID, OPERATOR_ID, NOW, { expectedStatus: ['unresponded'] });
+
+    const inCall = updateCalls.find((c) => c.method === 'in');
+    expect(inCall).toBeDefined();
+    expect(inCall!.args).toEqual(['status', ['unresponded']]);
+    expect(inCall!.args[1] as string[]).not.toContain('handled');
+  });
+
+  it('dismissItem REFUSES (never suppresses the sender) when the row moved out of a dismissable status', async () => {
+    // data:null = the CAS matched zero rows, i.e. the item is no longer
+    // 'unresponded'/'handled' — someone resolved it in the read→write gap.
+    const { from, activityCalls } = makeSbFor({ data: null, error: null });
+    sbRef.current = { from };
+
+    const res = await dismissItem(ITEM_ID, OPERATOR_ID, NOW, { expectedStatus: ['unresponded', 'handled'] });
+
+    expect(res.ok).toBe(false);
+    // `refused` distinguishes a lost race from a backend failure, so the route
+    // can answer 409 rather than 503.
+    expect(res.refused).toBe(true);
+    expect(res.error).toMatch(/no longer unresponded\/handled/);
+    // THE POINT: no 'dismissed' activity row, and execution never reaches
+    // addSuppressedSenders — a refused dismiss must not silently suppress a
+    // real customer's future messages. An 'action_failed' audit row IS written
+    // (mirroring markItemHandledLocal's refusal path), so assert on the ACTION
+    // rather than on the absence of any insert at all.
+    const inserted = activityCalls.filter((c) => c.method === 'insert').map((c) => c.args[0]);
+    expect(inserted.some((a) => (a as { action?: string }).action === 'dismissed')).toBe(false);
+    expect(inserted.some((a) => (a as { action?: string }).action === 'action_failed')).toBe(true);
+  });
+
+  it('dismissItem keeps its legacy benign no-op when no expectedStatus is supplied', async () => {
+    const { from } = makeSbFor({ data: null, error: null });
+    sbRef.current = { from };
+
+    const res = await dismissItem(ITEM_ID, OPERATOR_ID, NOW);
+
+    // Under the `.neq('status','dismissed')` default a zero-row match can only
+    // mean "already dismissed", which is genuinely benign — unchanged.
+    expect(res.ok).toBe(true);
+    expect(res.refused).toBeUndefined();
+  });
+
+  it('dismissItem still reports a real DB error as a failure, not a refusal', async () => {
+    const { from } = makeSbFor({ data: null, error: { message: 'connection reset' } });
+    sbRef.current = { from };
+
+    const res = await dismissItem(ITEM_ID, OPERATOR_ID, NOW, { expectedStatus: ['unresponded', 'handled'] });
+
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe('connection reset');
+    // Not a lost race — the route must answer 503, not 409.
+    expect(res.refused).toBeUndefined();
+  });
+
   it('markItemCompleted writes the real operator uuid to handled_by on the normal path', async () => {
     const { from, updateCalls, activityCalls } = makeSbFor({ data: [{ id: ITEM_ID }], error: null });
     sbRef.current = { from };
