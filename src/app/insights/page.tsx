@@ -6,6 +6,9 @@ import { MonthlyRevenueChart, ServiceDonut } from '@/components/dashboard/insigh
 import { listItemsForMetrics, getReopenCounts, getOperatorLabels } from '@/lib/dashboard/inbox/store';
 import { computeResponseAnalytics, withOperatorLabels } from '@/lib/dashboard/inbox/responseMetrics';
 import { ResponseAnalytics } from '@/components/dashboard/inbox/ResponseAnalytics';
+import { QuoteBuildTiming } from '@/components/dashboard/QuoteBuildTiming';
+import { listQuoteBuildTimingStats } from '@/lib/quoteBuildTiming';
+import { getOperator } from '@/lib/auth/supabaseServer';
 
 export const dynamic = 'force-dynamic';
 
@@ -57,10 +60,12 @@ export default async function InsightsPage() {
   const quotes = result.rows;
   const capped = result.capped;
   const now = new Date();
-  const [metricsRes, reopen, repLabels] = await Promise.all([
+  const quoteBuildTimingPromise = getOperator().then(listQuoteBuildTimingStats);
+  const [metricsRes, reopen, repLabels, quoteBuildTiming] = await Promise.all([
     listItemsForMetrics(),
     getReopenCounts(now),
     getOperatorLabels(),
+    quoteBuildTimingPromise,
   ]);
   const analytics = metricsRes.ok
     ? withOperatorLabels(computeResponseAnalytics(metricsRes.items, reopen, now, metricsRes.truncated), repLabels)
@@ -105,6 +110,10 @@ export default async function InsightsPage() {
           <ServiceDonut slices={byService} />
         </div>
         {analytics && <ResponseAnalytics data={analytics} />}
+        <QuoteBuildTiming
+          stats={quoteBuildTiming.ok ? quoteBuildTiming.stats : []}
+          error={quoteBuildTiming.ok ? null : quoteBuildTiming.error}
+        />
       </div>
     </OperatorShell>
   );

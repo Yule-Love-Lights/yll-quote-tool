@@ -36,7 +36,7 @@ import type {
   Tier,
   WrapStyle,
 } from './sceneTypes';
-import { isStrand, isMiniArea, pruneOrphanedMiniGroups } from './sceneTypes';
+import { isStrand, isMiniArea, isMiniGroup, pruneOrphanedMiniGroups } from './sceneTypes';
 import {
   seedRooflineStrands,
   sanitizeSeedLines,
@@ -558,11 +558,17 @@ export function seedSceneFromAnalysis(
     // the same visible feature on a re-analyze is the COMMON case, not the
     // exception. Snapshot the dropped members' groupIds here, before the
     // `kept` filter below removes them, so a same-id strand/miniArea coming
-    // back can have its group membership reattached instead of billing twice.
+    // back can have its group membership and install pattern reattached.
     const droppedGroupIds = new Map<string, string>();
     for (const i of existing) {
       if (i.id.startsWith(SEED_PREFIX) && (isStrand(i) || isMiniArea(i)) && i.groupId) droppedGroupIds.set(i.id, i.groupId);
     }
+    const groupPatterns = new Map(
+      existing
+        .filter(isMiniGroup)
+        .filter((group) => group.colorPattern?.length)
+        .map((group) => [group.id, group.colorPattern!] as const),
+    );
     // Replace previously AI-seeded PER-UNIT items: seed-* ids that are not
     // roofline strands (those belong to the tag rule above) and not permanent
     // runs (the #140 block above owns those). Staff items — any id without the
@@ -576,9 +582,12 @@ export function seedSceneFromAnalysis(
     // yardstick but no calibrated roofline isn't silently billed as 1 section.
     // No scale of any kind → null → the deliberate 1-section default.
     const garlandPpf = ppf ?? firstYardstickPpf(out);
-    const fresh = detectionItems(seed.detections!, photoW, photoH, garlandPpf).map((i) =>
-      (isStrand(i) || isMiniArea(i)) && droppedGroupIds.has(i.id) ? { ...i, groupId: droppedGroupIds.get(i.id) } : i,
-    );
+    const fresh = detectionItems(seed.detections!, photoW, photoH, garlandPpf).map((i) => {
+      if ((!isStrand(i) && !isMiniArea(i)) || !droppedGroupIds.has(i.id)) return i;
+      const groupId = droppedGroupIds.get(i.id)!;
+      const colorPattern = groupPatterns.get(groupId);
+      return { ...i, groupId, ...(colorPattern ? { colorPattern: [...colorPattern] } : {}) };
+    });
     // #227: this is the ONE seed-analysis block that can drop a mini strand —
     // and a staff-created MiniGroupItem (a railing/curtain grouped from
     // AI-detected seed-mini-N strands, its own id NOT seed-prefixed so it
