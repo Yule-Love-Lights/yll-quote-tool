@@ -11,6 +11,7 @@ type Row = {
   language: string;
   active: boolean;
   is_office: boolean;
+  auth_user_id: string | null;
   created_at: string | null;
   updated_at: string | null;
 };
@@ -26,6 +27,7 @@ const CREW_1: Row = {
   language: 'en',
   active: true,
   is_office: false,
+  auth_user_id: null,
   created_at: '2026-08-07T00:00:00.000Z',
   updated_at: '2026-08-07T00:00:00.000Z',
 };
@@ -41,6 +43,7 @@ const CREW_2: Row = {
   language: 'es',
   active: true,
   is_office: false,
+  auth_user_id: null,
   created_at: '2026-08-07T00:00:00.000Z',
   updated_at: '2026-08-07T00:00:00.000Z',
 };
@@ -56,6 +59,7 @@ const CREW_3: Row = {
   language: 'en',
   active: false,
   is_office: false,
+  auth_user_id: null,
   created_at: '2026-08-07T00:00:00.000Z',
   updated_at: '2026-08-07T00:00:00.000Z',
 };
@@ -73,6 +77,7 @@ const CREW_OFFICE: Row = {
   language: 'en',
   active: true,
   is_office: true,
+  auth_user_id: 'op-kelly',
   created_at: '2026-08-07T00:00:00.000Z',
   updated_at: '2026-08-07T00:00:00.000Z',
 };
@@ -105,6 +110,7 @@ function rowFromPayload(payload: Record<string, unknown>, id: string): Row {
     language: String(payload.language ?? 'en'),
     active: payload.active === undefined ? true : Boolean(payload.active),
     is_office: payload.is_office === undefined ? false : Boolean(payload.is_office),
+    auth_user_id: (payload.auth_user_id as string | null | undefined) ?? null,
     created_at: '2026-08-07T00:00:00.000Z',
     updated_at: '2026-08-07T00:00:00.000Z',
   };
@@ -125,6 +131,8 @@ function mergeRow(existing: Row, payload: Record<string, unknown>): Row {
     language: payload.language === undefined ? existing.language : String(payload.language),
     active: payload.active === undefined ? existing.active : Boolean(payload.active),
     is_office: payload.is_office === undefined ? existing.is_office : Boolean(payload.is_office),
+    auth_user_id:
+      payload.auth_user_id === undefined ? existing.auth_user_id : (payload.auth_user_id as string | null),
     updated_at: '2026-08-07T00:00:00.000Z',
   };
 }
@@ -164,6 +172,27 @@ function makeDb() {
         maybeSingle: () => Promise.resolve({ data: filtered[0] ?? null, error: stateRef.current.error }),
         insert: (payload: Record<string, unknown>) => {
           stateRef.current.inserted.push(payload);
+          // auth_user_id partial-unique index — modelled first so linkOfficeStaff's
+          // auth-first error priority is exercised against realistic Postgres.
+          if (payload.auth_user_id != null) {
+            const authDuplicate = stateRef.current.rows.find(
+              (row) => row.auth_user_id === payload.auth_user_id,
+            );
+            if (authDuplicate) {
+              return {
+                select: () => ({
+                  maybeSingle: () =>
+                    Promise.resolve({
+                      data: null,
+                      error: {
+                        code: '23505',
+                        message: 'duplicate key value violates unique constraint "crew_members_auth_user_id_key"',
+                      },
+                    }),
+                }),
+              };
+            }
+          }
           const duplicate = stateRef.current.rows.find(
             (row) => normalizeDisplayName(row.display_name) === normalizeDisplayName(String(payload.display_name)),
           );
@@ -192,74 +221,66 @@ function makeDb() {
         },
         update: (payload: Record<string, unknown>) => {
           stateRef.current.updated.push(payload);
-          return {
-            eq: (col: keyof Row, val: unknown) => {
-              const idx = stateRef.current.rows.findIndex((row) => row[col] === val);
-              if (idx === -1) {
+          // Accumulate every chained .eq() filter, so both the single-filter
+          // update (updateCrewMember: .eq('id')) and the by-construction office
+          // guard (setOfficeStaffActive: .eq('id').eq('is_office', true)) resolve
+          // against the SAME code path. The write only happens at maybeSingle().
+          const filters: Array<[keyof Row, unknown]> = [];
+          const resolve = (): { data: Row | null; error: { code?: string; message: string } | null } => {
+            const idx = stateRef.current.rows.findIndex((row) =>
+              filters.every(([col, val]) => row[col] === val),
+            );
+            if (idx === -1) return { data: null, error: stateRef.current.error };
+
+            if (payload.display_name !== undefined) {
+              const collision = stateRef.current.rows.find(
+                (row, i) =>
+                  i !== idx &&
+                  normalizeDisplayName(row.display_name) === normalizeDisplayName(String(payload.display_name)),
+              );
+              if (collision) {
                 return {
-                  select: () => ({
-                    maybeSingle: () => Promise.resolve({ data: null, error: stateRef.current.error }),
-                  }),
+                  data: null,
+                  error: {
+                    code: '23505',
+                    message: 'duplicate key value violates unique constraint "crew_members_display_name_key"',
+                  },
                 };
               }
+            }
 
-              if (payload.display_name !== undefined) {
-                const collision = stateRef.current.rows.find(
-                  (row, i) =>
-                    i !== idx &&
-                    normalizeDisplayName(row.display_name) === normalizeDisplayName(String(payload.display_name)),
-                );
-                if (collision) {
-                  return {
-                    select: () => ({
-                      maybeSingle: () =>
-                        Promise.resolve({
-                          data: null,
-                          error: {
-                            code: '23505',
-                            message: 'duplicate key value violates unique constraint "crew_members_display_name_key"',
-                          },
-                        }),
-                    }),
-                  };
-                }
+            // The OTHER partial unique index on this table. Modelled here so the
+            // telegram-collision path is exercised against realistic Postgres
+            // behaviour rather than a hand-thrown error.
+            if (payload.telegram_user_id !== undefined && payload.telegram_user_id !== null) {
+              const collision = stateRef.current.rows.find(
+                (row, i) => i !== idx && row.telegram_user_id === String(payload.telegram_user_id),
+              );
+              if (collision) {
+                return {
+                  data: null,
+                  error: {
+                    code: '23505',
+                    message: 'duplicate key value violates unique constraint "crew_members_telegram_user_id_key"',
+                  },
+                };
               }
+            }
 
-              // The OTHER partial unique index on this table. Modelled here so the
-              // telegram-collision path is exercised against realistic Postgres
-              // behaviour rather than a hand-thrown error.
-              if (payload.telegram_user_id !== undefined && payload.telegram_user_id !== null) {
-                const collision = stateRef.current.rows.find(
-                  (row, i) => i !== idx && row.telegram_user_id === String(payload.telegram_user_id),
-                );
-                if (collision) {
-                  return {
-                    select: () => ({
-                      maybeSingle: () =>
-                        Promise.resolve({
-                          data: null,
-                          error: {
-                            code: '23505',
-                            message:
-                              'duplicate key value violates unique constraint "crew_members_telegram_user_id_key"',
-                          },
-                        }),
-                    }),
-                  };
-                }
-              }
-
-              const existing = stateRef.current.rows[idx];
-              const row = mergeRow(existing, payload);
-              stateRef.current.rows[idx] = row;
-
-              return {
-                select: () => ({
-                  maybeSingle: () => Promise.resolve({ data: row, error: stateRef.current.error }),
-                }),
-              };
-            },
+            const existing = stateRef.current.rows[idx];
+            const row = mergeRow(existing, payload);
+            stateRef.current.rows[idx] = row;
+            return { data: row, error: stateRef.current.error };
           };
+
+          const chain = {
+            eq: (col: keyof Row, val: unknown) => {
+              filters.push([col, val]);
+              return chain;
+            },
+            select: () => ({ maybeSingle: () => Promise.resolve(resolve()) }),
+          };
+          return chain;
         },
       };
 
@@ -282,8 +303,15 @@ import {
   getCrewMember,
   getCrewMemberByTelegramUserId,
   insertCrewMember,
+  linkOfficeStaff,
   listActiveCrewMembers,
   listActiveFieldCrew,
+  listLinkedAuthUserIds,
+  listOfficeStaff,
+  OfficeDisplayNameTakenError,
+  OperatorAlreadyLinkedError,
+  setOfficeStaffActive,
+  setOfficeStaffRate,
   TelegramUserIdTakenError,
   updateCrewMember,
 } from './crewMembers';
@@ -607,5 +635,132 @@ describe('updateCrewMember', () => {
     // Nothing was mutated by the rejected attempt.
     const untouched = stateRef.current.rows.find((row) => row.id === 'crew-1');
     expect(untouched?.display_name).toBe('SonSon');
+  });
+});
+
+describe('listOfficeStaff', () => {
+  it('returns [] when Supabase is not configured', async () => {
+    dbRef.current = null;
+    await expect(listOfficeStaff()).resolves.toEqual([]);
+  });
+
+  it('returns only is_office rows, mapped to the panel shape', async () => {
+    stateRef.current.rows = [CREW_1, CREW_OFFICE, CREW_2];
+    await expect(listOfficeStaff()).resolves.toEqual([
+      { id: 'crew-office', displayName: 'Kelly', active: true, authUserId: 'op-kelly', baseRateCents: 2500 },
+    ]);
+  });
+
+  it('returns [] and swallows a query error (never throws into the panel)', async () => {
+    stateRef.current.error = { message: 'db down' };
+    await expect(listOfficeStaff()).resolves.toEqual([]);
+  });
+});
+
+describe('listLinkedAuthUserIds', () => {
+  it('returns an empty set when Supabase is not configured', async () => {
+    dbRef.current = null;
+    await expect(listLinkedAuthUserIds()).resolves.toEqual(new Set());
+  });
+
+  it('collects every non-null auth_user_id across field crew AND office staff', async () => {
+    // CREW_1/2/3 have null auth_user_id; only the office row is linked here.
+    stateRef.current.rows = [CREW_1, CREW_2, CREW_3, CREW_OFFICE];
+    const ids = await listLinkedAuthUserIds();
+    expect(ids.has('op-kelly')).toBe(true);
+    expect(ids.size).toBe(1);
+  });
+});
+
+describe('linkOfficeStaff', () => {
+  it('throws when Supabase is not configured', async () => {
+    dbRef.current = null;
+    await expect(
+      linkOfficeStaff({ authUserId: 'op-new', displayName: 'Ann', baseRateCents: 2500 }),
+    ).rejects.toThrow('Supabase service role not configured');
+  });
+
+  it('creates an is_office, hourly, non-P4P row linked to the operator', async () => {
+    stateRef.current.rows = [];
+    const member = await linkOfficeStaff({ authUserId: 'op-ann', displayName: 'Ann', baseRateCents: 2500 });
+    expect(member).toEqual({ id: 'generated-1', displayName: 'Ann', active: true, authUserId: 'op-ann', baseRateCents: 2500 });
+
+    const written = stateRef.current.inserted[0];
+    expect(written).toMatchObject({
+      display_name: 'Ann',
+      base_rate_cents: 2500,
+      is_office: true,
+      auth_user_id: 'op-ann',
+      pay_mode: 'hourly',
+      in_p4p_pool: false,
+      active: true,
+    });
+  });
+
+  it('maps an auth_user_id collision to OperatorAlreadyLinkedError (the operator is already set up)', async () => {
+    // CREW_OFFICE already holds auth_user_id 'op-kelly'.
+    stateRef.current.rows = [CREW_OFFICE];
+    await expect(
+      linkOfficeStaff({ authUserId: 'op-kelly', displayName: 'Kelly Two', baseRateCents: 2500 }),
+    ).rejects.toBeInstanceOf(OperatorAlreadyLinkedError);
+  });
+
+  it('maps a display-name collision to OfficeDisplayNameTakenError', async () => {
+    stateRef.current.rows = [CREW_1]; // "SonSon", auth null
+    await expect(
+      linkOfficeStaff({ authUserId: 'op-new', displayName: 'SonSon', baseRateCents: 2500 }),
+    ).rejects.toBeInstanceOf(OfficeDisplayNameTakenError);
+  });
+});
+
+describe('setOfficeStaffActive', () => {
+  it('throws when Supabase is not configured', async () => {
+    dbRef.current = null;
+    await expect(setOfficeStaffActive('crew-office', false)).rejects.toThrow(
+      'Supabase service role not configured',
+    );
+  });
+
+  it('deactivates an office row and returns the updated shape', async () => {
+    stateRef.current.rows = [CREW_OFFICE];
+    const member = await setOfficeStaffActive('crew-office', false);
+    expect(member).toEqual({
+      id: 'crew-office',
+      displayName: 'Kelly',
+      active: false,
+      authUserId: 'op-kelly',
+      baseRateCents: 2500,
+    });
+    expect(stateRef.current.rows.find((r) => r.id === 'crew-office')?.active).toBe(false);
+  });
+
+  it('returns null for a FIELD-crew id — the is_office filter is part of the write (sibling guard by construction)', async () => {
+    stateRef.current.rows = [CREW_1, CREW_OFFICE]; // CREW_1 is field crew
+    const member = await setOfficeStaffActive('crew-1', false);
+    expect(member).toBeNull();
+    // The field-crew row was NOT touched — no way to toggle it through this door.
+    expect(stateRef.current.rows.find((r) => r.id === 'crew-1')?.active).toBe(true);
+  });
+});
+
+describe('setOfficeStaffRate', () => {
+  it('updates an office row rate (integer cents) and returns the updated shape', async () => {
+    stateRef.current.rows = [CREW_OFFICE];
+    const member = await setOfficeStaffRate('crew-office', 3000);
+    expect(member).toEqual({
+      id: 'crew-office',
+      displayName: 'Kelly',
+      active: true,
+      authUserId: 'op-kelly',
+      baseRateCents: 3000,
+    });
+    expect(stateRef.current.rows.find((r) => r.id === 'crew-office')?.base_rate_cents).toBe(3000);
+  });
+
+  it('returns null for a FIELD-crew id — never edits a field-crew rate through this door', async () => {
+    stateRef.current.rows = [CREW_1, CREW_OFFICE];
+    const member = await setOfficeStaffRate('crew-1', 9999);
+    expect(member).toBeNull();
+    expect(stateRef.current.rows.find((r) => r.id === 'crew-1')?.base_rate_cents).toBe(1600);
   });
 });

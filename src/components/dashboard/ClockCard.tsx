@@ -55,6 +55,7 @@ type Load =
   | { status: 'loading' }
   | { status: 'signedout' }
   | { status: 'unlinked' }
+  | { status: 'inactive' }
   | { status: 'error' }
   | { status: 'ready'; state: ClockState };
 
@@ -88,7 +89,14 @@ export function ClockCard() {
         const res = await fetch('/api/office/clock', { method: 'GET' });
         if (cancelled) return;
         if (res.status === 401) return setLoad({ status: 'signedout' });
-        if (res.status === 403) return setLoad({ status: 'unlinked' });
+        if (res.status === 403) {
+          // Two 403s look the same by status. The body's reason tells apart a
+          // login that was never linked from one that was deactivated, which read
+          // very differently to the person staring at the header.
+          const body = (await res.json().catch(() => ({}))) as { reason?: string };
+          if (cancelled) return;
+          return setLoad({ status: body.reason === 'inactive' ? 'inactive' : 'unlinked' });
+        }
         if (!res.ok) return setLoad({ status: 'error' });
         const state = (await res.json()) as ClockState;
         if (!cancelled) setLoad({ status: 'ready', state });
@@ -110,8 +118,18 @@ export function ClockCard() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ action }),
       });
-      const body = (await res.json().catch(() => null)) as (ClockState & { error?: string }) | null;
+      const body = (await res.json().catch(() => null)) as
+        | (ClockState & { error?: string; reason?: string })
+        | null;
       if (!res.ok) {
+        // A 403 mid-session means the account was just deactivated or unlinked
+        // (e.g. an admin changed it in another tab). Transition to that state's
+        // messaging instead of leaving stale live-looking buttons that keep
+        // failing with a generic error.
+        if (res.status === 403) {
+          setLoad({ status: body?.reason === 'inactive' ? 'inactive' : 'unlinked' });
+          return;
+        }
         setError(body?.error ?? 'Something went wrong. Try again.');
         return;
       }
@@ -148,6 +166,36 @@ export function ClockCard() {
         >
           Time clock — login not linked
         </span>
+        <button
+          type="button"
+          onClick={() => setReload((n) => n + 1)}
+          className="text-sm underline"
+          style={{ color: 'var(--op-accent)' }}
+        >
+          refresh
+        </button>
+      </Pill>
+    );
+  }
+
+  if (load.status === 'inactive') {
+    return (
+      <Pill>
+        <span
+          className="text-sm"
+          style={dim}
+          title="Your staff record is inactive — ask an admin to reactivate it before clocking in."
+        >
+          Time clock — account inactive
+        </span>
+        <button
+          type="button"
+          onClick={() => setReload((n) => n + 1)}
+          className="text-sm underline"
+          style={{ color: 'var(--op-accent)' }}
+        >
+          refresh
+        </button>
       </Pill>
     );
   }
