@@ -40,31 +40,68 @@ vi.mock('@/lib/invoices', async (importOriginal) => {
 
 import { resyncInvoiceToAgreedTotal, computeInvoiceResyncTotals } from './quoteAmendInvoiceSync';
 
-// Minimal fake matching the direct call this module makes itself:
-// sb.from('invoices').update({...}).eq('id', ...).eq('updated_at', ...).select('id')
-// — row 339's CAS. `opts.staleUpdatedAt: true` simulates a lost race: some
-// other write already changed the invoice's updated_at between the B10
-// re-read and this write, so the `.eq('updated_at', ...)` filter matches
-// zero rows (the real Postgres behavior an optimistic-lock filter produces).
-function makeSb(opts: { staleUpdatedAt?: boolean } = {}) {
-  const updates: Array<Record<string, unknown>> = [];
+// Table-aware fake matching the two calls this module (+ its row-341 marker
+// helper) make against Supabase:
+//   sb.from('invoices').update({...}).eq('id',...).eq('updated_at',...).select('id')
+//     — row 339's CAS write. `invoiceUpdateResults` is a queue, one entry
+//     consumed per CALL (so a retry's second attempt can behave differently
+//     from the first) — 'raced' simulates a lost race (the real Postgres
+//     behavior an optimistic-lock filter produces: 0 rows, no error); the
+//     queue's LAST entry repeats once exhausted. Defaults to always-'ok'.
+//   sb.from('quotes').select('approval_snapshot').eq('id',...).maybeSingle()
+//     then sb.from('quotes').update({approval_snapshot:...}).eq('id',...)
+//     — row 341's flagInvoiceResyncFailed, only reached when the resync
+//     ultimately fails. `quoteApprovalSnapshot` seeds the select's result.
+function makeSb(
+  opts: {
+    invoiceUpdateResults?: Array<'ok' | 'raced'>;
+    quoteApprovalSnapshot?: Record<string, unknown> | null;
+  } = {},
+) {
+  const invoiceUpdates: Array<Record<string, unknown>> = [];
+  const quoteUpdates: Array<Record<string, unknown>> = [];
   const eqArgs: Array<[string, unknown]> = [];
+  const results = opts.invoiceUpdateResults ?? ['ok'];
+  let invoiceCallIndex = 0;
+  let table = '';
+  let mode: 'select' | 'update' = 'select';
   const b: Record<string, unknown> = {};
   Object.assign(b, {
-    from: () => b,
+    from: (t: string) => {
+      table = t;
+      mode = 'select';
+      return b;
+    },
     update: (payload: Record<string, unknown>) => {
-      updates.push(payload);
+      mode = 'update';
+      if (table === 'invoices') invoiceUpdates.push(payload);
+      else if (table === 'quotes') quoteUpdates.push(payload);
       return b;
     },
     eq: (column: string, value: unknown) => {
-      eqArgs.push([column, value]);
+      if (table === 'invoices') eqArgs.push([column, value]);
       return b;
     },
     select: () => b,
-    then: (resolve: (v: unknown) => void) =>
-      resolve({ data: opts.staleUpdatedAt ? [] : [{ id: 'inv-1' }], error: null }),
+    maybeSingle: async () => ({
+      data: table === 'quotes' ? { approval_snapshot: opts.quoteApprovalSnapshot ?? null } : null,
+      error: null,
+    }),
+    then: (resolve: (v: unknown) => void) => {
+      if (table === 'invoices' && mode === 'update') {
+        const outcome = results[Math.min(invoiceCallIndex, results.length - 1)];
+        invoiceCallIndex++;
+        resolve({ data: outcome === 'ok' ? [{ id: 'inv-1' }] : [], error: null });
+        return;
+      }
+      if (table === 'quotes' && mode === 'update') {
+        resolve({ data: [{ id: 'quote-1' }], error: null });
+        return;
+      }
+      resolve({ data: null, error: null });
+    },
   });
-  return { client: b, updates, eqArgs };
+  return { client: b, invoiceUpdates, quoteUpdates, eqArgs };
 }
 
 beforeEach(() => {
@@ -121,7 +158,7 @@ describe('resyncInvoiceToAgreedTotal — declining a DECREASE reopens an already
 
     // The invoice write reopens it: more is owed (2400 − 1000 = 1400 > 0),
     // so status leaves 'paid' for 'awaiting_payment' and paid_at clears.
-    expect(sb.updates[0]).toMatchObject({
+    expect(sb.invoiceUpdates[0]).toMatchObject({
       status: 'awaiting_payment',
       total: 2400,
       balance: 1400,
@@ -132,6 +169,7 @@ describe('resyncInvoiceToAgreedTotal — declining a DECREASE reopens an already
       invoicedBalance: 1400,
       invoicedTotal: 2400,
       previousInvoicedTotal: 2000, // the REAL pre-resync invoice total — never reconstructed
+      resynced: true,
     });
 
     // #170(b): reopening a PAID invoice starts a new charge cycle — the
@@ -188,7 +226,7 @@ describe('resyncInvoiceToAgreedTotal — declining a DECREASE reopens an already
       retiredReason: 'amend-decline-reopen',
     });
 
-    expect(sb.updates[0]).toMatchObject({ status: 'awaiting_payment' });
+    expect(sb.invoiceUpdates[0]).toMatchObject({ status: 'awaiting_payment' });
     expect(appendRetiredTxnMock).not.toHaveBeenCalled();
   });
 });
@@ -247,11 +285,96 @@ describe('resyncInvoiceToAgreedTotal — CAS on the invoices write (row 339)', (
       invoicedBalance: 700,
       invoicedTotal: 1200,
       previousInvoicedTotal: 1000,
+      resynced: true,
     });
   });
 
-  it('returns a null outcome and skips the Valor rotation when a concurrent write already changed the invoice (CAS lost)', async () => {
-    const sb = makeSb({ staleUpdatedAt: true });
+  it('retries ONCE against a fresh read after a lost race, and succeeds when the second attempt lands — reopening an invoice the Valor balance webhook just settled at the STALE (pre-amendment) balance (row 341)', async () => {
+    // First invoices-table update call loses the CAS (0 rows); the retry's
+    // second call lands.
+    const sb = makeSb({ invoiceUpdateResults: ['raced', 'ok'] });
+    sbRef.current = sb.client;
+
+    const invoiceAtAmendTime: InvoiceRow = {
+      id: 'inv-1',
+      invoice_number: 1,
+      job_id: 'job-1',
+      quote_id: 'quote-1',
+      customer_id: null,
+      subtotal: 1000,
+      discount: 0,
+      tax: 0,
+      total: 1000,
+      deposit_applied: 500,
+      balance: 500,
+      credit_note: 0,
+      tax_overridden: false,
+      status: 'draft',
+      valor_balance_txn_id: null,
+      valor_receipt_url: null,
+      valor_txn_log: null,
+      payment_preference: null,
+      created_at: '2026-07-01T00:00:00.000Z',
+      paid_at: null,
+      updated_at: '2026-08-20T10:00:00.000Z',
+    };
+    // Between the first (lost) write attempt and the retry's re-read, the
+    // Valor balance webhook (handleBalancePayment) settles the invoice at the
+    // STALE balance it saw — status/balance/paid_at/txn fields move, total/
+    // tax/subtotal do NOT (the webhook never writes them; matches its real
+    // write shape in src/app/api/integrations/valor/webhook/route.ts).
+    const webhookSettledInvoice: InvoiceRow = {
+      ...invoiceAtAmendTime,
+      status: 'paid',
+      balance: 0,
+      paid_at: '2026-08-20T10:00:05.000Z',
+      valor_balance_txn_id: 'txn-webhook',
+      valor_receipt_url: 'https://valor.example/r/txn-webhook',
+      updated_at: '2026-08-20T10:00:05.000Z',
+    };
+    getInvoiceByJobMock
+      .mockResolvedValueOnce(invoiceAtAmendTime) // the initial B10 re-read
+      .mockResolvedValueOnce(webhookSettledInvoice); // the retry's re-read
+
+    const outcome = await resyncInvoiceToAgreedTotal({
+      jobId: 'job-1',
+      invoice: invoiceAtAmendTime,
+      result: { total: 1400 },
+      depositPaid: 500,
+      newTotal: 1400, // the amended, HIGHER agreed total — more is now owed
+      logPrefix: '[test]',
+      retiredReason: 'amend-reopen',
+    });
+
+    expect(getInvoiceByJobMock).toHaveBeenCalledTimes(2);
+    expect(sb.invoiceUpdates).toHaveLength(2);
+    // The retry recomputed against the webhook-settled row: more is owed
+    // (1400 − 500 = 900 > 0) and the row now reads 'paid', so reconciledStatus
+    // reopens it to 'awaiting_payment' instead of leaving it 'paid' at a
+    // figure the customer no longer owes.
+    expect(sb.invoiceUpdates[1]).toMatchObject({ status: 'awaiting_payment', total: 1400, balance: 900 });
+    expect(outcome).toEqual({
+      invoicedBalance: 900,
+      invoicedTotal: 1400,
+      previousInvoicedTotal: 1000, // webhookSettledInvoice.total — the webhook never touched it
+      resynced: true,
+    });
+    // The reopen also retires the webhook's OWN settled txn (#170(b)) — proof
+    // the retry recomputed off the webhook-settled row's real fields, not the
+    // stale first read.
+    expect(appendRetiredTxnMock).toHaveBeenCalledTimes(1);
+    expect(appendRetiredTxnMock).toHaveBeenCalledWith(
+      'inv-1',
+      expect.objectContaining({ txnId: 'txn-webhook', reason: 'amend-reopen' }),
+      { clearLive: { expectTxnId: 'txn-webhook' } },
+    );
+  });
+
+  it('gives up after the retry ALSO loses the race — resynced:false, no Valor rotation, and a durable invoiceResyncFailed marker on the quote (row 341, CAS lost twice)', async () => {
+    const sb = makeSb({
+      invoiceUpdateResults: ['raced', 'raced'],
+      quoteApprovalSnapshot: { amendments: [{ amended_at: 'x' }] },
+    });
     sbRef.current = sb.client;
     // A PAID invoice whose reopen would normally retire a live Valor txn —
     // proving the CAS loss short-circuits BEFORE that side effect, not just
@@ -279,7 +402,7 @@ describe('resyncInvoiceToAgreedTotal — CAS on the invoices write (row 339)', (
       paid_at: '2026-08-01T00:00:00.000Z',
       updated_at: '2026-08-01T00:00:00.000Z',
     };
-    getInvoiceByJobMock.mockResolvedValueOnce(invoice);
+    getInvoiceByJobMock.mockResolvedValue(invoice); // both the B10 read and the one retry see it unchanged
 
     const outcome = await resyncInvoiceToAgreedTotal({
       jobId: 'job-1',
@@ -291,12 +414,30 @@ describe('resyncInvoiceToAgreedTotal — CAS on the invoices write (row 339)', (
       retiredReason: 'amend-decline-reopen',
     });
 
+    expect(getInvoiceByJobMock).toHaveBeenCalledTimes(2); // the B10 read + the one retry
+    expect(sb.invoiceUpdates).toHaveLength(2); // both attempts genuinely tried the write
     expect(outcome).toEqual({
       invoicedBalance: null,
       invoicedTotal: null,
       previousInvoicedTotal: null,
+      resynced: false,
     });
     expect(appendRetiredTxnMock).not.toHaveBeenCalled();
+    // Row 341: a durable, best-effort marker lands on the quote (mirrors the
+    // Valor webhook's own flagBalanceUnderpayment/duplicatePayment shape) so
+    // the failure is discoverable even though nothing in THIS response saw
+    // it directly.
+    expect(sb.quoteUpdates).toHaveLength(1);
+    expect(sb.quoteUpdates[0]).toMatchObject({
+      approval_snapshot: {
+        amendments: [{ amended_at: 'x' }], // the existing snapshot content is preserved, not clobbered
+        invoiceResyncFailed: expect.objectContaining({
+          invoiceId: 'inv-1',
+          attemptedTotal: 2400,
+          attemptedBalance: 1400,
+        }),
+      },
+    });
   });
 });
 

@@ -38,7 +38,16 @@ vi.mock('@/lib/supabase', () => ({
   getSupabaseServiceClient: () => sbRef.current,
 }));
 vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: requireOperatorMock }));
-vi.mock('@/lib/invoices', () => ({ getInvoice: getInvoiceMock, appendRetiredTxn: appendRetiredTxnMock }));
+// Row 341: partially mocked (not replaced outright) — the route now
+// transitively imports quoteAmendInvoiceSync.ts (the reconciliation guard),
+// which imports the REAL computeInvoiceTotals from this same module. Only
+// getInvoice/appendRetiredTxn are the DB-backed calls this route makes
+// directly and need mocking; everything else (computeInvoiceTotals, types)
+// stays real.
+vi.mock('@/lib/invoices', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/invoices')>();
+  return { ...actual, getInvoice: getInvoiceMock, appendRetiredTxn: appendRetiredTxnMock };
+});
 vi.mock('@/lib/jobs', () => ({ getJob: getJobMock, setJobStatus: setJobStatusMock }));
 vi.mock('@/lib/integrations/valorBalance', () => ({
   chargeBalanceOnFile: chargeMock,
@@ -397,6 +406,64 @@ describe('POST /api/invoices/[id]/charge-balance', () => {
     getInvoiceMock.mockResolvedValueOnce({ ...INVOICE, payment_preference: 'cash_check' });
     sbRef.current = makeSb(QUOTE, SETTLE_OK);
     const res = await POST(req({ overridePreference: true }), ctx());
+    expect(res.status).toBe(200);
+    expect(chargeMock).toHaveBeenCalled();
+  });
+});
+
+// ─── Row 341: reconciliation guard against a STALE (never resynced) invoice ─
+// A quote whose `result`/deposit compute to an EXPECTED balance of $1,400
+// (computeInvoiceResyncTotals({total:2400}, 1000, 2400, false) — the exact
+// fixture quoteAmendInvoiceSync.test.ts pins for the same formula), on a
+// quote with no amendments (resolveAgreedTotal falls through to
+// result.total = 2400). INVOICE's default balance ($2,500) disagrees with
+// that expectation — simulating an amend/amend-decline whose invoice resync
+// lost its CAS race twice and left the row stale.
+const QUOTE_WITH_AGREED_TOTAL = {
+  ...QUOTE,
+  result: { total: 2400 },
+  deposit_amount_usd: 1000,
+};
+describe('POST /api/invoices/[id]/charge-balance — reconciliation guard against a stale invoice (row 341)', () => {
+  it('409s (invoice-stale) and releases the claim, without charging, when the invoice balance disagrees with the agreed total', async () => {
+    sbRef.current = makeSb(QUOTE_WITH_AGREED_TOTAL);
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.reason).toBe('invoice-stale');
+    expect(chargeMock).not.toHaveBeenCalled();
+    // Claim, then release (CAS on the exact sentinel) — no settle/txn-record call.
+    const calls = invoiceCallsOf(sbRef.current);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].patch).toMatchObject({ valor_balance_txn_id: null });
+  });
+
+  it('charges anyway with the explicit overrideStale, even though the invoice disagrees with the agreed total', async () => {
+    sbRef.current = makeSb(QUOTE_WITH_AGREED_TOTAL, SETTLE_OK);
+    const res = await POST(req({ overrideStale: true }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toMatchObject({ ok: true, charged: true });
+    expect(chargeMock).toHaveBeenCalled();
+  });
+
+  it('does NOT block when the invoice balance matches the recomputed agreed-total figure', async () => {
+    getInvoiceMock.mockResolvedValue({ ...INVOICE, balance: 1400 }); // matches the $1,400 expectation
+    chargeMock.mockResolvedValueOnce({ ok: true, chargedUsd: 1400, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
+    sbRef.current = makeSb(QUOTE_WITH_AGREED_TOTAL, SETTLE_OK);
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toMatchObject({ ok: true, charged: true });
+    expect(chargeMock).toHaveBeenCalledWith(expect.objectContaining({ amountUsd: 1400 }));
+  });
+
+  it('skips the guard entirely (no result on the quote) — the pre-existing default fixture behavior is unaffected', async () => {
+    // QUOTE (no `result`) — every other test file in this suite uses this
+    // fixture and none of them set `result`, so the guard failing OPEN here
+    // is what kept the whole existing suite green after this fix round.
+    sbRef.current = makeSb(QUOTE, SETTLE_OK);
+    const res = await POST(req(), ctx());
     expect(res.status).toBe(200);
     expect(chargeMock).toHaveBeenCalled();
   });

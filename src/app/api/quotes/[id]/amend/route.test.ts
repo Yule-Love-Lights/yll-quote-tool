@@ -70,6 +70,13 @@ function makeSb(
   quote: Row | null,
   fresh: Row | null = quote,
   quoteUpdateRows: Row[] = [{ id: ID }],
+  // Row 341: lets a test simulate resyncInvoiceToAgreedTotal's CAS losing —
+  // pass [] to make every 'invoices' update match zero rows (both the first
+  // attempt AND the one retry, since this fake has no per-call sequencing;
+  // that's fine for a test proving the ROUTE surfaces resynced:false, since
+  // the module's own retry-then-succeed behavior is covered directly in
+  // quoteAmendInvoiceSync.test.ts).
+  invoiceUpdateRows: Row[] = [{ id: 'inv-updated' }],
 ) {
   const updates: { quotes: Row[]; invoices: Row[] } = { quotes: [], invoices: [] };
   const eqCalls: Array<[string, unknown]> = [];
@@ -99,10 +106,9 @@ function makeSb(
       // data.length to detect a lost race — so an 'invoices' update must
       // resolve a matched row here too, not just the 'quotes' table's own
       // update, or every real (non-race) resync in this file would look like
-      // a lost race. None of these tests exercise the CAS-loss path itself
-      // (that's covered directly in quoteAmendInvoiceSync.test.ts) — this
-      // fake always reports a hit.
-      const data = updating ? (table === 'quotes' ? quoteUpdateRows : [{ id: 'inv-updated' }]) : null;
+      // a lost race. Defaults to always reporting a hit; row 341's failure
+      // test overrides `invoiceUpdateRows` to [] to simulate a lost race.
+      const data = updating ? (table === 'quotes' ? quoteUpdateRows : invoiceUpdateRows) : null;
       updating = false;
       resolve({ data, error: null });
     },
@@ -780,6 +786,42 @@ describe('POST /api/quotes/[id]/amend', () => {
     // internal fallback (freshInvoice ?? invoice) used the SAME originalInvoice.
     expect(sb.updates.invoices).toHaveLength(1);
     expect(sb.updates.invoices[0]).toMatchObject({ total: 5600, balance: 3100, status: 'draft' });
+  });
+
+  // Row 341 (staff-lens HIGH, this fix round): the route used to discard
+  // resyncInvoiceToAgreedTotal's return value entirely and report `ok:true`
+  // unconditionally. Simulate the invoices-table CAS losing on every attempt
+  // (invoiceUpdateRows: []) — the amendment trail entry is still recorded
+  // (already-persisted invoice_basis, unchanged), but the response must now
+  // say the invoice itself was NOT updated.
+  it('surfaces invoiceResyncFailed:true when the invoice CAS write never lands, without failing the amendment itself', async () => {
+    const sb = makeSb(BOOKED_QUOTE, BOOKED_QUOTE, [{ id: ID }], []);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue({ id: 'job-1' });
+    const staleInvoice = { id: 'inv-1', balance: 2500, status: 'draft' as const, tax_overridden: false, total: 4900 };
+    getInvoiceByJobMock.mockResolvedValue(staleInvoice); // every getInvoiceByJob call (incl. the retry) sees it unchanged
+
+    const res = await POST(req({ reason: 'extra wreath' }), ctx());
+    const json = await res.json();
+
+    // The amendment is still recorded — a resync failure never undoes it.
+    expect(res.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.invoiceResyncFailed).toBe(true);
+    // Both attempts (the initial write + the one retry) genuinely tried.
+    expect(sb.updates.invoices).toHaveLength(2);
+  });
+
+  it('leaves invoiceResyncFailed:false when there is no linked invoice to sync at all', async () => {
+    const sb = makeSb(BOOKED_QUOTE);
+    sbRef.current = sb.client;
+    getJobByQuoteMock.mockResolvedValue(null);
+    getInvoiceByJobMock.mockResolvedValue(null);
+
+    const res = await POST(req({ reason: 'extra wreath' }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.invoiceResyncFailed).toBe(false);
   });
 
   it('falls back to the trail balance when there is no invoice yet', async () => {
