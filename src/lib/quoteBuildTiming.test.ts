@@ -435,14 +435,41 @@ describe('quote build session persistence', () => {
     expect(quoteIs).toHaveBeenCalledWith('quote_id', null);
   });
 
-  it('completes the quote-linked timer once at the supplied first-send timestamp', async () => {
+  it('completes the quote-linked timer once at the supplied first-send timestamp, for the staffer who STARTED it', async () => {
     const maybeSingle = vi.fn(async () => ({ data: { id: TIMER_ID }, error: null }));
     const abortSignal = vi.fn(() => ({ maybeSingle }));
     const select = vi.fn(() => ({ abortSignal }));
     const is = vi.fn(() => ({ select }));
-    const eq = vi.fn(() => ({ is }));
+    // completion now chains TWO .eq() calls: quote_id AND started_by, so the
+    // session can only be closed by the staffer who started it.
+    const eq = vi.fn();
+    eq.mockImplementation(() => ({ is, eq }));
     const update = vi.fn(() => ({ eq }));
     sbRef.current = { from: vi.fn(() => ({ update })) };
+
+    await expect(
+      completeQuoteBuildSession({
+        quoteId: QUOTE_ID,
+        timerId: null,
+        operatorId: OPERATOR_ID,
+        sentAt: '2026-08-21T12:10:00.000Z',
+      }),
+    ).resolves.toBe(true);
+    expect(update).toHaveBeenCalledWith({ sent_at: '2026-08-21T12:10:00.000Z' });
+    expect(eq).toHaveBeenCalledWith('quote_id', QUOTE_ID);
+    expect(eq).toHaveBeenCalledWith('started_by', OPERATOR_ID);
+    expect(is).toHaveBeenCalledWith('sent_at', null);
+  });
+
+  // Admin and staff lenses, converging HIGH: completion used to match on
+  // quote_id alone, so a second staffer sending a draft the first staffer had
+  // started stamped the FIRST staffer's session with the SECOND staffer's send
+  // time. /insights then credited or blamed the wrong named person silently.
+  it('does NOT complete a session started by a DIFFERENT staffer, and records nothing rather than a wrong row', async () => {
+    const from = vi.fn(() => {
+      throw new Error('must not touch the table without an operator identity');
+    });
+    sbRef.current = { from };
 
     await expect(
       completeQuoteBuildSession({
@@ -451,10 +478,8 @@ describe('quote build session persistence', () => {
         operatorId: null,
         sentAt: '2026-08-21T12:10:00.000Z',
       }),
-    ).resolves.toBe(true);
-    expect(update).toHaveBeenCalledWith({ sent_at: '2026-08-21T12:10:00.000Z' });
-    expect(eq).toHaveBeenCalledWith('quote_id', QUOTE_ID);
-    expect(is).toHaveBeenCalledWith('sent_at', null);
+    ).resolves.toBe(false);
+    expect(from).not.toHaveBeenCalled();
   });
 
   it('requires the starting staff identity before an unlinked timer can be completed', async () => {

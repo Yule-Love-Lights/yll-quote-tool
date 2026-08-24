@@ -257,14 +257,27 @@ export async function linkQuoteBuildSession(input: {
   }
 }
 
-async function completeLinkedSession(quoteId: string, sentAt: string): Promise<boolean> {
+async function completeLinkedSession(
+  quoteId: string,
+  sentAt: string,
+  operatorId: string | null,
+): Promise<boolean> {
   const sb = getSupabaseServiceClient();
   if (!sb) return false;
+  // Admin-lens HIGH: this used to match on quote_id alone. When a second
+  // staffer reopened and sent a draft the first staffer had started, the
+  // FIRST staffer's session was stamped with the SECOND staffer's send time,
+  // so /insights credited or blamed the wrong named person with no signal
+  // that it had happened. The session only completes for the person who
+  // started it. A handover therefore records NO row rather than a wrong one:
+  // a missing measurement is honest, a misattributed one is not.
+  if (!operatorId) return false;
   const { data, error } = await withDbTimeout((signal) =>
     sb
       .from('quote_build_sessions')
       .update({ sent_at: sentAt })
       .eq('quote_id', quoteId)
+      .eq('started_by', operatorId)
       .is('sent_at', null)
       .select('id')
       .abortSignal(signal)
@@ -284,7 +297,7 @@ export async function completeQuoteBuildSession(input: {
   sentAt: string;
 }): Promise<boolean> {
   try {
-    if (await completeLinkedSession(input.quoteId, input.sentAt)) return true;
+    if (await completeLinkedSession(input.quoteId, input.sentAt, input.operatorId)) return true;
     if (!input.timerId || !input.operatorId) return false;
 
     const sb = getSupabaseServiceClient();
@@ -303,7 +316,7 @@ export async function completeQuoteBuildSession(input: {
     );
     if (!error && data) return true;
     if (error?.code === '23505') {
-      return await completeLinkedSession(input.quoteId, input.sentAt);
+      return await completeLinkedSession(input.quoteId, input.sentAt, input.operatorId);
     }
     if (error) console.warn('[quoteBuildTiming] fallback completion failed:', error.message);
     return false;
