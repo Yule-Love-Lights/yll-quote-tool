@@ -38,6 +38,7 @@ type StaffRow = {
   email: string | null;
   loginMissing: boolean;
   role: 'admin' | 'operator' | null;
+  isCrewLogin: boolean;
 };
 
 type EligibleOperator = { id: string; name: string | null; email: string | null };
@@ -234,10 +235,13 @@ export function StaffAccounts() {
     // points at the reversible alternative first. Anyone with recorded time is
     // refused server-side by the database's own foreign keys, so the worst a
     // mis-click can do to a real worker is show them that refusal.
-    const alsoLogin = !row.isOffice && row.hasLogin ? ' Their crew login is deleted too.' : '';
+    // Based on the REAL login type, not on the office/field group: the server
+    // deletes a login only when it is a crew one, and those two facts can differ
+    // (someone moved between groups keeps whatever login they already had).
+    const alsoLogin = row.isCrewLogin ? ' Their crew login is deleted too.' : '';
     if (
       !window.confirm(
-        `Remove ${row.displayName} completely? This cannot be undone.${alsoLogin} If they have ever clocked in, this will be refused and you should Deactivate instead, which keeps their records.`,
+        `Remove ${row.displayName} completely? This cannot be undone.${alsoLogin} If they have any recorded time or job history, this will be refused and you should Deactivate instead, which keeps their records.`,
       )
     ) {
       return;
@@ -315,9 +319,14 @@ export function StaffAccounts() {
     <section className="mt-8 border-t border-gray-200 pt-6">
       <h2 className="text-base font-semibold text-gray-900">Staff</h2>
       <p className="text-sm text-gray-500 mt-1">
-        Everyone who clocks in. Anyone here can clock in from the dashboard header, or by texting
-        the bot once their Telegram is linked. The only difference between the two groups below is
-        whether they are offered when you assign crew to a job.
+        Everyone who clocks in. The two groups below differ in one way only: whether they are
+        offered when you assign crew to a job.
+      </p>
+      <p className="text-sm text-gray-500 mt-2">
+        How someone clocks in depends on their LOGIN, not on their group. An operator or admin
+        login can clock in from the dashboard header, and by texting the bot once Telegram is
+        linked. A crew login cannot use the dashboard at all, by design, so texting the bot is
+        their only way in. Each row says which login it has.
       </p>
       <p className="text-xs text-gray-500 mt-2">
         Linking Telegram is necessary but not enough on its own: the bot only reads chats on its
@@ -336,8 +345,16 @@ export function StaffAccounts() {
               <p className="text-xs text-gray-500 mb-2">{hint}</p>
               <ul className="divide-y divide-gray-100 border border-gray-200 rounded-md">
                 {rows.map((s) => (
-                  <li key={s.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-2 text-sm">
-                    <span className="min-w-0 truncate">
+                  <li key={s.id} className="px-3 py-2 text-sm">
+                    {/*
+                      Two lines, not one. Seven actions plus the name, email,
+                      rate, login type and Telegram state do not fit side by side
+                      in this page's max-w-3xl column, and squeezing the identity
+                      half to a sliver is the opposite of the readability this
+                      panel was rebuilt for. Actions sit on their own line, where
+                      they align across rows for free.
+                    */}
+                    <div className="min-w-0">
                       <span className="text-gray-900">{s.displayName}</span>
                       {s.role === 'admin' && (
                         <span
@@ -354,7 +371,12 @@ export function StaffAccounts() {
                       <span className={s.telegramUserId ? 'ml-2 text-xs text-green-700' : 'ml-2 text-xs text-amber-700'}>
                         {s.telegramUserId ? 'Telegram linked' : 'No Telegram'}
                       </span>
-                    </span>
+                      {s.hasLogin && (
+                        <span className="ml-2 text-xs text-gray-400">
+                          {s.isCrewLogin ? 'Crew login — texts the bot only' : 'Operator login — dashboard or bot'}
+                        </span>
+                      )}
+                    </div>
                     {/*
                       Fixed slots, same order on every row. Unlink is always
                       rendered and merely HIDDEN when there is no Telegram to
@@ -363,7 +385,7 @@ export function StaffAccounts() {
                       link does not shove every other row's buttons out of
                       alignment, which is what made this list look ragged.
                     */}
-                    <span className="flex shrink-0 items-center gap-3 whitespace-nowrap">
+                    <div className="mt-1 flex flex-wrap items-center gap-3">
                       <span className={s.active ? 'text-xs text-green-700' : 'text-xs text-amber-700'}>
                         {s.active ? 'Active' : 'Inactive'}
                       </span>
@@ -407,7 +429,7 @@ export function StaffAccounts() {
                       >
                         Remove
                       </button>
-                    </span>
+                    </div>
                   </li>
                 ))}
                 {rows.length === 0 && <li className="px-3 py-2 text-sm text-gray-500">Nobody yet.</li>}

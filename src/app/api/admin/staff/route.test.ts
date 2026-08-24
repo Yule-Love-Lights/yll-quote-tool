@@ -19,6 +19,7 @@ const {
   setStaffTelegram,
   setStaffType,
   deleteStaffMember,
+  getStaffMember,
   listNonCrewOperators,
   listAllAccountsById,
   OperatorAlreadyLinkedError,
@@ -65,6 +66,7 @@ const {
     setStaffTelegram: vi.fn(),
     setStaffType: vi.fn(),
     deleteStaffMember: vi.fn(),
+    getStaffMember: vi.fn(),
     listNonCrewOperators: vi.fn(),
     listAllAccountsById: vi.fn(),
     OperatorAlreadyLinkedError,
@@ -95,6 +97,7 @@ vi.mock('@/lib/crewMembers', () => ({
   setStaffTelegram,
   setStaffType,
   deleteStaffMember,
+  getStaffMember,
   StaffHasRecordsError,
   OperatorAlreadyLinkedError,
   OfficeDisplayNameTakenError,
@@ -147,6 +150,7 @@ beforeEach(() => {
   setStaffTelegram.mockResolvedValue({ ...OFFICE, telegramUserId: '987654321' });
   setStaffType.mockResolvedValue({ ...OFFICE, isOffice: false });
   deleteStaffMember.mockResolvedValue(OFFICE);
+  getStaffMember.mockResolvedValue(OFFICE);
 });
 
 describe('GET /api/admin/staff', () => {
@@ -480,5 +484,78 @@ describe('DELETE /api/admin/staff', () => {
     expect((await DELETE(body('DELETE', {}))).status).toBe(400);
     sbRef.current = null;
     expect((await DELETE(body('DELETE', { crewMemberId: 'crew-office' }))).status).toBe(503);
+  });
+});
+
+describe('PATCH move to office — the crew-login dead end', () => {
+  it('REFUSES moving a crew-login person to office, and says what to do instead', async () => {
+    // SonSon holds a crew login. getOfficeClockCaller refuses crew logins, so
+    // flipping the flag would drop him off the job-assignment roster and give
+    // him nothing back — a dead end reached through the repair action itself.
+    getStaffMember.mockResolvedValueOnce(FIELD);
+    const res = await PATCH(patch({ crewMemberId: 'crew-1', isOffice: true }));
+    expect(res.status).toBe(409);
+    const err = ((await res.json()) as { error: string }).error;
+    expect(err).toMatch(/crew login/);
+    expect(err).toMatch(/operator account|remove this row/i);
+    expect(setStaffType).not.toHaveBeenCalled();
+  });
+
+  it('ALLOWS moving an operator-login person to office', async () => {
+    getStaffMember.mockResolvedValueOnce(OFFICE); // op-kelly, isCrew false
+    setStaffType.mockResolvedValueOnce({ ...OFFICE, isOffice: true });
+    expect((await PATCH(patch({ crewMemberId: 'crew-office', isOffice: true }))).status).toBe(200);
+    expect(setStaffType).toHaveBeenCalledWith('crew-office', true);
+  });
+
+  it('ALLOWS moving someone with no login at all to office', async () => {
+    getStaffMember.mockResolvedValueOnce({ ...FIELD, authUserId: null });
+    setStaffType.mockResolvedValueOnce({ ...FIELD, isOffice: true });
+    expect((await PATCH(patch({ crewMemberId: 'crew-1', isOffice: true }))).status).toBe(200);
+    expect(setStaffType).toHaveBeenCalledWith('crew-1', true);
+  });
+
+  it('never guards the move to FIELD — a crew login is exactly right there', async () => {
+    setStaffType.mockResolvedValueOnce({ ...FIELD, isOffice: false });
+    expect((await PATCH(patch({ crewMemberId: 'crew-1', isOffice: false }))).status).toBe(200);
+    expect(getStaffMember).not.toHaveBeenCalled();
+    expect(setStaffType).toHaveBeenCalledWith('crew-1', false);
+  });
+
+  it('404s a move for an id that matches no staff row', async () => {
+    getStaffMember.mockResolvedValueOnce(null);
+    expect((await PATCH(patch({ crewMemberId: 'nobody', isOffice: true }))).status).toBe(404);
+  });
+});
+
+describe('failure paths after an irreversible write', () => {
+  it('DELETE still reports success when the login LOOKUP throws — the row is already gone', async () => {
+    // Reporting 500 here would tell the admin nothing happened when the pay row
+    // was in fact deleted and cannot be restored.
+    deleteStaffMember.mockResolvedValueOnce(FIELD);
+    listAllAccountsById.mockRejectedValueOnce(new Error('gotrue down'));
+    const res = await DELETE(body('DELETE', { crewMemberId: 'crew-1' }));
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { loginDeleted: boolean }).loginDeleted).toBe(false);
+  });
+
+  it('POST field rolls the orphan login back when the attach THROWS, not just when it loses the race', async () => {
+    linkStaffLogin.mockRejectedValueOnce(new Error('db exploded'));
+    const res = await POST(
+      post({ type: 'field', displayName: 'Little James', email: 'lj@x.com', password: 'password123', hourlyRate: '17' }),
+    );
+    expect(res.status).toBe(500);
+    // Without the rollback the login would sit orphaned, invisible to the panel
+    // and holding the email so the same person could never be added again.
+    expect(deleteUser).toHaveBeenCalledWith('new-auth');
+  });
+});
+
+describe('GET exposes the login TYPE, which decides how someone can clock in', () => {
+  it('marks a crew login as such and an operator login as not', async () => {
+    const res = await GET();
+    const b = (await res.json()) as { staff: Array<{ id: string; isCrewLogin: boolean }> };
+    expect(b.staff.find((x) => x.id === 'crew-1')?.isCrewLogin).toBe(true);
+    expect(b.staff.find((x) => x.id === 'crew-office')?.isCrewLogin).toBe(false);
   });
 });

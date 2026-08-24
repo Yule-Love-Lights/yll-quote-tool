@@ -9,6 +9,7 @@ import { asJsonObject, parseTelegramUserId, TELEGRAM_USER_ID_ERROR } from '@/lib
 import {
   createFieldCrewMember,
   deleteStaffMember,
+  getStaffMember,
   StaffHasRecordsError,
   linkOfficeStaff,
   linkStaffLogin,
@@ -99,6 +100,11 @@ export async function GET() {
           // so grouping by role would pull people out of the group that says
           // who can be assigned to a job.
           role: account?.role ?? null,
+          // Whether the LOGIN is a crew-role one. This decides two things the
+          // office can see: a crew login cannot use the dashboard clock at all
+          // (getOfficeClockCaller refuses it), and it is the only kind of login
+          // that gets deleted alongside the staff row.
+          isCrewLogin: account?.isCrew ?? false,
           // The linked login no longer exists (deleted from the accounts store).
           // Surfaced so an orphaned pay row is visible rather than silently
           // showing as a normal active staffer.
@@ -208,10 +214,25 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const linkedMember = await linkStaffLogin(member.id, created.user.id);
+    // ANY failure to attach leaves the freshly minted login orphaned: invisible
+    // in this panel (nothing points at it) and holding the email address, so the
+    // same person cannot be added again. Roll it back on a lost compare-and-swap
+    // AND on a thrown error, not just the former.
+    let linkedMember;
+    try {
+      linkedMember = await linkStaffLogin(member.id, created.user.id);
+    } catch (linkError) {
+      await sb.auth.admin.deleteUser(created.user.id).catch(() => {});
+      console.error(
+        'POST /api/admin/staff link:',
+        linkError instanceof Error ? linkError.message : linkError,
+      );
+      return NextResponse.json(
+        { error: `${displayName} was added, but the login could not be attached and was rolled back.` },
+        { status: 500 },
+      );
+    }
     if (!linkedMember) {
-      // Lost the compare-and-swap, so this auth user is an orphan. Delete it
-      // rather than leave a login nobody can reach.
       await sb.auth.admin.deleteUser(created.user.id).catch(() => {});
       return NextResponse.json(
         { error: `${displayName} was added, but the login could not be attached and was rolled back.` },
@@ -315,7 +336,30 @@ export async function PATCH(req: NextRequest) {
       }
       member = await setStaffTelegram(crewMemberId, parsed.telegramUserId);
     } else if (hasType) {
-      member = await setStaffType(crewMemberId, body!.isOffice as boolean);
+      const toOffice = body!.isOffice as boolean;
+      if (toOffice) {
+        // Moving to office is only meaningful for someone who can actually work
+        // as office staff. A CREW-role login is refused by the dashboard clock
+        // (getOfficeClockCaller returns is_crew), so flipping the flag alone
+        // would drop them from the job-assignment roster while giving them
+        // nothing back — a dead end reached through the UI's own repair action.
+        const target = await getStaffMember(crewMemberId);
+        if (!target) {
+          return NextResponse.json({ error: 'That is not a staff member.' }, { status: 404 });
+        }
+        if (target.authUserId) {
+          const accounts = await listAllAccountsById(sb);
+          if (accounts.get(target.authUserId)?.isCrew) {
+            return NextResponse.json(
+              {
+                error: `${target.displayName} signs in with a crew login, which cannot use the dashboard clock. Moving them to office would only take them off the job-assignment list. Give them an operator account under Staff accounts first, or remove this row and add them as office.`,
+              },
+              { status: 409 },
+            );
+          }
+        }
+      }
+      member = await setStaffType(crewMemberId, toOffice);
     } else {
       member = await setStaffActive(crewMemberId, body!.active as boolean);
     }
@@ -371,20 +415,27 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: 'That is not a staff member.' }, { status: 404 });
     }
 
+    // The row is ALREADY GONE by this point and cannot be restored, so nothing
+    // below may turn into a failure response: telling the admin the removal
+    // failed when it succeeded is worse than telling them the login lingers.
     let loginDeleted = false;
     if (removed.authUserId) {
-      const accounts = await listAllAccountsById(sb);
-      const account = accounts.get(removed.authUserId);
-      // Only a crew-role login is cleaned up here. Deleting an operator or admin
-      // account as a side effect of removing a pay row would be a much bigger
-      // action than the admin asked for.
-      if (account?.isCrew) {
-        const { error } = await sb.auth.admin.deleteUser(removed.authUserId);
-        if (error) {
-          console.error('DELETE /api/admin/staff login cleanup:', error.message);
-        } else {
+      try {
+        const accounts = await listAllAccountsById(sb);
+        const account = accounts.get(removed.authUserId);
+        // Only a crew-role login is cleaned up here. Deleting an operator or
+        // admin account as a side effect of removing a pay row would be a much
+        // bigger action than the admin asked for.
+        if (account?.isCrew) {
+          const { error } = await sb.auth.admin.deleteUser(removed.authUserId);
+          if (error) throw new Error(error.message);
           loginDeleted = true;
         }
+      } catch (cleanupError) {
+        console.error(
+          'DELETE /api/admin/staff login cleanup:',
+          cleanupError instanceof Error ? cleanupError.message : cleanupError,
+        );
       }
     }
 
