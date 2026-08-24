@@ -6,9 +6,11 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
+import { DEFAULT_BUILDABLE_COLOR_IDS, DEFAULT_COLOR_SCHEMES } from '@/lib/design/colorSchemes';
 
-const { sbRef, requireOperatorMock, getOperatorMock, sendSmsMock, sendEmailMock, hlConfiguredRef } = vi.hoisted(() => ({
+const { sbRef, settingsRef, requireOperatorMock, getOperatorMock, sendSmsMock, sendEmailMock, hlConfiguredRef } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
+  settingsRef: { current: null as unknown },
   requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
   getOperatorMock: vi.fn(async (): Promise<unknown> => ({ name: 'naldo' })),
   sendSmsMock: vi.fn(async (): Promise<unknown> => ({})),
@@ -32,15 +34,9 @@ vi.mock('@/lib/auth/supabaseServer', () => ({
   requireOperator: requireOperatorMock,
   getOperator: getOperatorMock,
 }));
-vi.mock('@/lib/appSettings', async () => {
-  const { DEFAULT_COLOR_SCHEMES, DEFAULT_BUILDABLE_COLOR_IDS } = await import('@/lib/design/colorSchemes');
-  return {
-    getAppSettings: async () => ({
-      swatches: { schemes: DEFAULT_COLOR_SCHEMES, buildableColorIds: DEFAULT_BUILDABLE_COLOR_IDS },
-      permanentSwatches: { schemes: DEFAULT_COLOR_SCHEMES, buildableColorIds: DEFAULT_BUILDABLE_COLOR_IDS },
-    }),
-  };
-});
+vi.mock('@/lib/appSettings', () => ({
+  getAppSettings: async () => settingsRef.current,
+}));
 
 import { POST } from './route';
 
@@ -145,6 +141,10 @@ beforeEach(() => {
   requireOperatorMock.mockResolvedValue(null);
   getOperatorMock.mockResolvedValue({ name: 'naldo' });
   sbRef.current = null;
+  settingsRef.current = {
+    swatches: { schemes: DEFAULT_COLOR_SCHEMES, buildableColorIds: DEFAULT_BUILDABLE_COLOR_IDS },
+    permanentSwatches: { schemes: DEFAULT_COLOR_SCHEMES, buildableColorIds: DEFAULT_BUILDABLE_COLOR_IDS },
+  };
   hlConfiguredRef.current = false;
 });
 
@@ -214,6 +214,75 @@ describe('POST /api/quotes/[id]/apply-color-request', () => {
     };
     expect(snap.customerSelection.colorSchemeId).toBe('as-designed');
     expect(snap.customerSelection.customPattern).toEqual([]);
+  });
+
+  it('uses the live Permanent scheme label in the amendment and response', async () => {
+    hlConfiguredRef.current = true;
+    const permanentScheme = { id: 'permanent-ocean', label: 'Ocean Twinkle', colorIds: ['blue'] };
+    settingsRef.current = {
+      swatches: { schemes: DEFAULT_COLOR_SCHEMES, buildableColorIds: DEFAULT_BUILDABLE_COLOR_IDS },
+      permanentSwatches: {
+        schemes: [DEFAULT_COLOR_SCHEMES[0], permanentScheme],
+        buildableColorIds: DEFAULT_BUILDABLE_COLOR_IDS,
+      },
+    };
+    const { client, updates } = makeSb(
+      bookedQuote(
+        {
+          service_type: 'permanent',
+          customer_name: 'Jordan Smith',
+          highlevel_contact_id: 'hl-1',
+          is_test: false,
+        },
+        { colorSchemeId: permanentScheme.id, customPattern: [], colorIds: ['blue'], label: 'stale label' },
+      ),
+    );
+    sbRef.current = client;
+
+    const res = await POST(req({ action: 'apply' }), ctx());
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.label).toBe('Ocean Twinkle');
+    const snapshot = updates.quotes[0].approval_snapshot as {
+      customerSelection: { colorSchemeId: string; colorIds: string[] };
+      amendments: Array<{ reason: string }>;
+    };
+    expect(snapshot.customerSelection).toMatchObject({
+      colorSchemeId: permanentScheme.id,
+      colorIds: ['blue'],
+    });
+    expect(snapshot.amendments[0].reason).toContain('Ocean Twinkle');
+    const [sms] = (sendSmsMock.mock.calls as unknown as Array<[{ message: string }]>)[0];
+    const [email] = (sendEmailMock.mock.calls as unknown as Array<[{ html: string }]>)[0];
+    expect(sms.message).toContain('Ocean Twinkle');
+    expect(email.html).toContain('Ocean Twinkle');
+  });
+
+  it('does not change the existing Holiday label behavior in this Permanent-only fix', async () => {
+    const renamedHolidayScheme = {
+      ...DEFAULT_COLOR_SCHEMES.find((scheme) => scheme.id === 'warm-white')!,
+      label: 'Settings Ivory',
+    };
+    settingsRef.current = {
+      swatches: {
+        schemes: [DEFAULT_COLOR_SCHEMES[0], renamedHolidayScheme],
+        buildableColorIds: DEFAULT_BUILDABLE_COLOR_IDS,
+      },
+      permanentSwatches: { schemes: DEFAULT_COLOR_SCHEMES, buildableColorIds: DEFAULT_BUILDABLE_COLOR_IDS },
+    };
+    const { client } = makeSb(
+      bookedQuote(
+        { service_type: 'holiday' },
+        { colorSchemeId: 'warm-white', customPattern: [], colorIds: ['warm-white'], label: 'stale label' },
+      ),
+    );
+    sbRef.current = client;
+
+    const res = await POST(req({ action: 'apply' }), ctx());
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).label).toBe('Warm White');
   });
 
   it('409s when the order is terminal (cancelled)', async () => {

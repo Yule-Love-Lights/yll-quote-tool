@@ -49,19 +49,26 @@ function partition(messages: GmailMessageLite[]): {
   lastInboundAt: Date | null;
   lastOutboundAt: Date | null;
   latest: GmailMessageLite | null;
+  /** The customer's own last (highest-`at`) inbound message, or null when the
+   *  thread has no inbound message at all. #303: kept distinct from `latest`
+   *  (which can be one of OUR messages) so callers can target the message the
+   *  Handled write-back should act on without ever picking our own reply. */
+  lastInbound: GmailMessageLite | null;
 } {
   let lastInboundAt: Date | null = null;
   let lastOutboundAt: Date | null = null;
   let latest: GmailMessageLite | null = null;
+  let lastInbound: GmailMessageLite | null = null;
   for (const m of messages) {
     if (m.fromMe) {
       if (!lastOutboundAt || m.at > lastOutboundAt) lastOutboundAt = m.at;
     } else if (!lastInboundAt || m.at > lastInboundAt) {
       lastInboundAt = m.at;
+      lastInbound = m;
     }
     if (!latest || m.at > latest.at) latest = m;
   }
-  return { lastInboundAt, lastOutboundAt, latest };
+  return { lastInboundAt, lastOutboundAt, latest, lastInbound };
 }
 
 /** True when the thread's last message is from the customer (awaiting our reply). */
@@ -163,7 +170,7 @@ export function mapGmailThread(raw: RawGmailThread, identity: GmailIdentity): Gm
 }
 
 export function normalizeGmailThread(thread: GmailThreadLite, suppressed?: Set<string>): NormalizedTouch {
-  const { lastInboundAt, lastOutboundAt, latest } = partition(thread.messages);
+  const { lastInboundAt, lastOutboundAt, latest, lastInbound } = partition(thread.messages);
   const answered = isAnsweredByOutbound({ lastInboundAt, lastOutboundAt });
   const email = thread.from?.email ? normalizeEmail(thread.from.email) : null;
   const senderEmail = thread.from?.email;
@@ -226,7 +233,10 @@ export function normalizeGmailThread(thread: GmailThreadLite, suppressed?: Set<s
   return {
     source: 'gmail',
     externalId: thread.threadId,
-    sourceMessageId: null,
+    // #303: the CUSTOMER's last inbound message id — never `latest`, which
+    // can be one of OUR own sent messages once we've replied. Null only when
+    // the thread has no inbound message at all (e.g. an internal note-to-self).
+    sourceMessageId: lastInbound?.id ?? null,
     direction: answered ? 'outbound' : 'inbound',
     channel: 'email',
     lastMessageAt: latest ? latest.at : new Date(0),

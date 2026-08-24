@@ -292,6 +292,22 @@ export type Scene = {
   yardsticks: Yardstick[];
   items: SceneItem[];
   brightness?: number; // 0 = darkest, 50 = neutral, 100 = lightest
+  /**
+   * How big the lights are DRAWN, as a multiplier (0.5–4, default 1). Purely
+   * presentational, exactly like `brightness` above: it changes the picture
+   * staff and the customer see and it changes nothing that is priced.
+   *
+   * It exists because a whole-house photo runs 10–25 px/ft, below the floor
+   * where a bulb's real-world size takes over, so every light pins to a few
+   * pixels and the yardstick cannot make it any bigger. The yardstick is NOT
+   * the workaround: `pxPerFoot` also drives bulb spacing and divides strand
+   * pixel length into billed footage, so stretching it for a nicer picture
+   * corrupts the quote. This field is the separate knob.
+   *
+   * Absent/invalid reads as 1 via `normalizeLightScale` — see
+   * `editor-core/lightScale.ts` for the sizing math and the money-safety rule.
+   */
+  lightScale?: number;
 };
 
 // One extra street photo as the editor sees it (#13 multi-image): a signed URL
@@ -322,6 +338,11 @@ export type Design = {
   // tool's own storage doesn't supply it and the editor treats absent as "no
   // extras", so both apps compile/run unchanged without it.
   extraPhotos?: EditorExtraPhoto[];
+  // Compare-and-swap counter for the scene write (ledger row 260). Optional +
+  // additive — the standalone design tool's own storage doesn't supply it;
+  // absent/null is treated as "unknown version" (adopt, don't guard) by the
+  // storage seam and the server, so both apps compile/run unchanged without it.
+  version?: number | null;
 };
 
 // One entry in the custom-graphic library (deferred in Phase 1).

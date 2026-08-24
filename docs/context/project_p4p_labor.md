@@ -49,6 +49,7 @@ hourly while the numbers prove themselves, then the switch flips.
 | System of record | Quote tool. Copilot retires after parity (today it only holds Jason's clock). |
 | Scheduling | FULL calendar in the quote tool: drag-drop, crew assignment, capacity from budgeted hours, dispatch view. |
 | Time clock | All three, phased: (1) Telegram bot per-job clock, (2) day-clock with office review and split, (3) web clock in the Operations Hub later. |
+| Office clock | DECIDED 2026-08-23 (S66): office staff (operators, not P4P crew) clock themselves via an OFFICE web clock in the dashboard header (`source:'office'`, PR #873), resolved from their operator session by `getOfficeClockCaller`. The office clock CAN live in both tools at once — the Quote Tool stays the system of record for time, and a Hub-side office clock can be built later reading the same canonical `shifts` ledger. This is a separate lane from the crew Hub web clock (time-clock phase 3), which is unchanged. Office/field is distinguished by `crew_members.is_office` (PR #893); office staff never enter the P4P pools. |
 | Labor revenue on blended prices | Per-category labor % (roofline X%, wreaths Y%, ...). Computed from the pre-tax labor subtotal only. |
 | Labor revenue % to the team | UNKNOWN on purpose. Naldo does not know the business's number yet. Shadow mode measures it; the weekly ritual sets and tunes it. Dial starts at 33%. |
 | Rollout | Shadow mode first. Crew stays hourly, sees the would-be numbers, pay flips only when trusted. |

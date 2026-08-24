@@ -228,7 +228,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const label =
     colorSchemeId === CUSTOM_SCHEME_ID || customPattern.length > 0
       ? `Custom pattern (${customPattern.length} colour${customPattern.length === 1 ? '' : 's'})`
-      : getColorScheme(colorSchemeId).label;
+      : getColorScheme(colorSchemeId, isPermanent ? activeSchemes : undefined).label;
 
   // Zero-delta amendment: colour is $0, so the agreed total is unchanged. The
   // entry rides the audit trail; requiresReconsent / blocksSettlement stay false.
