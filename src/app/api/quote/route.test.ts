@@ -143,15 +143,71 @@ vi.mock('next/server', async (importOriginal) => {
 // quotes.ghl_event_date_pushed via a fresh getSupabaseServiceClient() call
 // inside the after() task — mocked here the same way approve/send route
 // tests mock the data layer, capturing update payloads.
-const { sbUpdatePayloads } = vi.hoisted(() => ({ sbUpdatePayloads: [] as Array<Record<string, unknown>> }));
+//
+// Row 344 fix round (technical/admin-lens HIGH): the post-approval-reprice
+// audit write now re-fetches approval_snapshot fresh and CASes on it (see
+// route.ts's row-344 comment), mirroring apply-color-request.ts's own CAS
+// idiom. The chain is now `.select('approval_snapshot').eq('id',
+// ...).maybeSingle()` for the re-fetch, and
+// `.update(...).eq('id', ...).eq('approval_snapshot', json).select('id')`
+// for the conditional write — so the mock builder needs to be a generic
+// chainable/thenable, not the single-`.eq()`-then-object the old GHL-only
+// shape supported. `freshApprovalSnapshotRef` lets a test simulate a
+// concurrent writer landing between the route's read and its write (default
+// undefined = "nothing concurrent", which makes the re-fetch return null and
+// the route fall back to `existing.approval_snapshot` — i.e. every
+// pre-existing assertion below keeps working unmodified). `casResultRef`
+// controls whether the conditional update behaves as having WON or LOST
+// that race (default 'win' = updatedRows non-empty).
+const { sbUpdatePayloads, freshApprovalSnapshotRef, casResultRef } = vi.hoisted(() => ({
+  sbUpdatePayloads: [] as Array<Record<string, unknown>>,
+  freshApprovalSnapshotRef: { current: undefined as Record<string, unknown> | undefined },
+  casResultRef: { current: 'win' as 'win' | 'lose' },
+}));
 vi.mock('@/lib/supabase', () => ({
   getSupabaseServiceClient: () => ({
-    from: () => ({
-      update: (payload: Record<string, unknown>) => {
-        sbUpdatePayloads.push(payload);
-        return { eq: async () => ({ error: null }) };
-      },
-    }),
+    from: () => {
+      let isUpdate = false;
+      let hasSelect = false;
+      const builder: {
+        select: (cols: string) => typeof builder;
+        eq: (col: string, val: unknown) => typeof builder;
+        update: (payload: Record<string, unknown>) => typeof builder;
+        maybeSingle: () => Promise<{ data: unknown; error: null }>;
+        then: (resolve: (v: { data: unknown; error: null }) => void) => void;
+      } = {
+        select: (_cols: string) => {
+          hasSelect = true;
+          return builder;
+        },
+        eq: (_col: string, _val: unknown) => builder,
+        update: (payload: Record<string, unknown>) => {
+          isUpdate = true;
+          sbUpdatePayloads.push(payload);
+          return builder;
+        },
+        maybeSingle: async () => ({
+          data:
+            freshApprovalSnapshotRef.current !== undefined
+              ? { approval_snapshot: freshApprovalSnapshotRef.current }
+              : null,
+          error: null,
+        }),
+        // Only the write chains (update().eq()...select()) ever resolve via
+        // `await builder` directly (no terminal .maybeSingle()) — the plain
+        // GHL-stamp update (no .select()) resolves { error: null } same as
+        // before; the row-344 CAS write (has .select('id')) resolves a rows
+        // array so the route can detect a lost race.
+        then: (resolve) => {
+          if (isUpdate && hasSelect) {
+            resolve({ data: casResultRef.current === 'win' ? [{ id: 'x' }] : [], error: null });
+          } else {
+            resolve({ data: null, error: null });
+          }
+        },
+      };
+      return builder;
+    },
   }),
 }));
 
@@ -231,6 +287,8 @@ beforeEach(() => {
   afterCallCount.current = 0;
   lastAfterTask.current = null;
   sbUpdatePayloads.length = 0;
+  freshApprovalSnapshotRef.current = undefined;
+  casResultRef.current = 'win';
   getDesignMock.mockResolvedValue(null);
   completeQuoteBuildSession.mockResolvedValue(true);
   linkQuoteBuildSession.mockResolvedValue(true);
@@ -1671,6 +1729,60 @@ describe('POST /api/quote — staff signal + audit trail for a post-approval rep
         ],
       },
     });
+  });
+
+  // Row 344 fix round (technical/admin-lens HIGH — negative control): the
+  // original code built its update payload straight off `existing`, the row
+  // read at REQUEST START. Prove the fix actually re-reads: land a
+  // concurrent writer's field (a customer's pendingColorRequest, exactly the
+  // apply-color-request.ts/color-change-request.ts column this HIGH named)
+  // in the mocked re-fetch and assert it survives into the write instead of
+  // being silently dropped by a stale-based payload.
+  it('re-fetches approval_snapshot fresh right before writing — a concurrent writer field survives the merge', async () => {
+    rawRef.current = { ...APPROVED_UNBOOKED_ROW };
+    freshApprovalSnapshotRef.current = {
+      customerSelection: { currentTotalUsd: 1000 },
+      pendingColorRequest: { colorSchemeId: 'red' },
+    };
+    const res = await POST(
+      makeReq({ inputs: { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' }, quoteId: REAL_UUID }),
+    );
+    expect(res.status).toBe(200);
+    const payload = sbUpdatePayloads.at(-1) as { approval_snapshot: Record<string, unknown> };
+    // The concurrent writer's field made it into the write — proof the base
+    // was the FRESH re-fetch, not the stale `existing` snapshot (which never
+    // had pendingColorRequest at all).
+    expect(payload.approval_snapshot.pendingColorRequest).toEqual({ colorSchemeId: 'red' });
+    expect(payload.approval_snapshot.postApprovalReprices).toHaveLength(1);
+  });
+
+  it('drops the audit entry (no retry, no clobber) when it loses the CAS race to a concurrent approval_snapshot writer', async () => {
+    rawRef.current = { ...APPROVED_UNBOOKED_ROW };
+    casResultRef.current = 'lose';
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const res = await POST(
+        makeReq({ inputs: { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' }, quoteId: REAL_UUID }),
+      );
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        repricedAfterApproval?: { previousTotalUsd: number; newTotalUsd: number; deltaUsd: number };
+      };
+      // The reprice SIGNAL never depends on the best-effort audit write
+      // succeeding (matches the route's own "propagated even if the write
+      // failed" comment).
+      expect(body.repricedAfterApproval).toBeDefined();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('reprice audit entry dropped'),
+        REAL_UUID,
+      );
+      // Exactly one write attempt — a lost race is accepted and dropped,
+      // never blindly retried (which could itself re-clobber whatever the
+      // concurrent writer just landed).
+      expect(sbUpdatePayloads).toHaveLength(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('does NOT signal or write an audit entry when the resubmit does not actually change the total', async () => {

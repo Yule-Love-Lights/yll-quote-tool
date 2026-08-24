@@ -1051,41 +1051,79 @@ export async function POST(req: NextRequest) {
       // ONE_CENT threshold for the same reason).
       if (Math.abs(deltaUsd) >= 0.01) {
         repricedAfterApproval = { previousTotalUsd, newTotalUsd, deltaUsd };
-        // Durable audit record — best-effort: the quote itself already saved
-        // above (updateQuote), so a failure here only drops this ONE trail
-        // entry, never the reprice itself. A plain re-read-then-write (not a
-        // CAS) is the same risk tradeoff this file already accepts for the
-        // GHL event-date stamp just below: approval_snapshot changes on this
-        // narrow pre-booking window are rare (customer_approved_at can only
-        // be SET once, guarded atomically elsewhere, and the amend/consent
-        // routes only ever touch a BOOKED quote's snapshot) and this is an
-        // internal staff tool, not a high-concurrency public endpoint.
+        // Durable audit record — best-effort AND CAS'd (fix round, technical/
+        // admin-lens HIGH). The original version here did a blind read
+        // (`existing`, captured at request start) then write, with no
+        // conditional — exactly the shape apply-color-request.ts's dismiss
+        // action and color-change-request.ts warn against for this SAME
+        // column: a concurrent writer (most concretely apply-color-request /
+        // color-change-request, which touch approval_snapshot on this same
+        // pre-booking-adjacent window) could land in between our read and our
+        // write, and the blind write would silently drop THEIR change — a
+        // customer's pendingColorRequest or a staff apply's customerSelection
+        // — while only adding an audit line. Mirrors apply-color-request.ts's
+        // CAS idiom: re-fetch fresh right before writing, CAS on that fresh
+        // value via `.eq('approval_snapshot', JSON.stringify(freshSnapshot))`.
+        // On a lost race we do NOT retry-loop: this entry is pure audit
+        // metadata (the reprice itself already landed via updateQuote above,
+        // independent of this write), so dropping ONE trail entry when a
+        // concurrent writer won the race is the accepted, survivable outcome
+        // — same tradeoff the original comment already named, now enforced
+        // by a CAS instead of assumed by a blind write. What must NEVER
+        // happen is this write clobbering the concurrent writer's own
+        // change, which the CAS now prevents structurally.
         const sb = getSupabaseServiceClient();
         if (sb) {
-          const priorEntries = Array.isArray(existing.approval_snapshot?.postApprovalReprices)
-            ? existing.approval_snapshot!.postApprovalReprices
-            : [];
-          const entry = {
-            at: new Date().toISOString(),
-            by: operator?.email ?? null,
-            previous_total: previousTotalUsd,
-            new_total: newTotalUsd,
-            delta: deltaUsd,
-          };
-          const { error: repriceAuditError } = await sb
+          const { data: freshRow, error: freshErr } = await sb
             .from('quotes')
-            .update({
-              approval_snapshot: {
-                ...(existing.approval_snapshot ?? {}),
-                postApprovalReprices: [...priorEntries, entry],
-              },
-            })
-            .eq('id', quoteId as string);
-          if (repriceAuditError) {
+            .select('approval_snapshot')
+            .eq('id', quoteId as string)
+            .maybeSingle<{ approval_snapshot: typeof existing.approval_snapshot }>();
+          if (freshErr) {
             console.error(
-              '[quote/route] row 344: failed to record post-approval reprice audit entry:',
-              repriceAuditError.message,
+              '[quote/route] row 344: could not re-fetch approval_snapshot for the reprice audit entry:',
+              freshErr.message,
             );
+          } else {
+            const freshSnapshot = freshRow?.approval_snapshot ?? existing.approval_snapshot ?? {};
+            const priorEntries = Array.isArray(freshSnapshot.postApprovalReprices)
+              ? freshSnapshot.postApprovalReprices
+              : [];
+            const entry = {
+              at: new Date().toISOString(),
+              by: operator?.email ?? null,
+              previous_total: previousTotalUsd,
+              new_total: newTotalUsd,
+              delta: deltaUsd,
+            };
+            const { data: repriceAuditRows, error: repriceAuditError } = await sb
+              .from('quotes')
+              .update({
+                approval_snapshot: {
+                  ...freshSnapshot,
+                  postApprovalReprices: [...priorEntries, entry],
+                },
+              })
+              .eq('id', quoteId as string)
+              // Serialize jsonb explicitly — PostgREST string-interpolates
+              // filter values (mirrors apply-color-request.ts).
+              .eq('approval_snapshot', JSON.stringify(freshSnapshot))
+              .select('id');
+            if (repriceAuditError) {
+              console.error(
+                '[quote/route] row 344: failed to record post-approval reprice audit entry:',
+                repriceAuditError.message,
+              );
+            } else if (!repriceAuditRows || repriceAuditRows.length === 0) {
+              // Lost the race to a concurrent approval_snapshot writer (e.g.
+              // apply-color-request / color-change-request). Accepted,
+              // survivable: drop this one audit entry rather than clobber
+              // whatever they just wrote.
+              console.warn(
+                '[quote/route] row 344: reprice audit entry dropped — approval_snapshot changed concurrently for quote',
+                quoteId,
+              );
+            }
           }
         }
       }
