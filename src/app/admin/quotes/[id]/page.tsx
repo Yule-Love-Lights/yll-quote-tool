@@ -12,6 +12,7 @@ import { ViewOnlyToggle } from '@/components/admin/ViewOnlyToggle';
 import { MarkAsSentButton } from '@/components/admin/MarkAsSentButton';
 import { FreeItemsPanel } from '@/components/admin/FreeItemsPanel';
 import { ColorRequestPanel } from '@/components/admin/ColorRequestPanel';
+import { StaffNotesPanel } from '@/components/admin/StaffNotesPanel';
 import { buildPortalLineItems } from '@/lib/portal/adapter';
 import { BUSINESS_RULES, resolveLineItemLabel, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { getQuoteRaw } from '@/lib/quotes';
@@ -283,6 +284,8 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
             <p className="text-sm text-gray-500 mt-1">Chosen light color: {chosenLightColor}</p>
           )}
         </div>
+
+        <StaffNotesPanel key={id} quoteId={id} />
 
         {/* Design photos (#13 PR5) — read-only thumbnails, base + extras. */}
         {photoThumbs.length > 0 && (
