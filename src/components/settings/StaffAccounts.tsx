@@ -12,12 +12,19 @@ import { isValidTelegramUserId } from '@/lib/telegramUserId';
  * the two old panels: they did the same job in two different shapes, so
  * "everything needs to be exactly the same to make it easier to understand".
  *
- * Every row gets the same four actions — Edit rate, Link/Unlink Telegram, Reset
- * password, Activate/Deactivate — and the office/field difference is a LABEL,
- * not a different screen. The only place the two genuinely differ is adding
- * someone, because office staff link an existing operator login while field crew
- * get a new crew login created, and that is a permission boundary rather than a
- * presentation choice.
+ * Every row gets the same actions — Edit rate, Link/Change/Unlink Telegram,
+ * Reset password, Move between office and field, Activate/Deactivate — and the
+ * office/field difference is a GROUP HEADING, not a different screen.
+ *
+ * The one place the two genuinely differ is ADDING someone: office staff link an
+ * existing operator login, field crew get a crew-role login created. That is a
+ * permission boundary, not a presentation choice.
+ *
+ * Admin access is a BADGE, deliberately not a third group. Role and
+ * dispatchability are independent facts — Jason is an admin sitting on a field
+ * row — so grouping by role would pull people out of the group that answers
+ * "who can I assign to this job", which is the only thing the office/field flag
+ * actually controls. Roles are granted in the Staff accounts table above.
  */
 
 type StaffRow = {
@@ -30,6 +37,7 @@ type StaffRow = {
   hasLogin: boolean;
   email: string | null;
   loginMissing: boolean;
+  role: 'admin' | 'operator' | null;
 };
 
 type EligibleOperator = { id: string; name: string | null; email: string | null };
@@ -206,6 +214,21 @@ export function StaffAccounts() {
     void patchRow(row, { password: input }, `${row.displayName}'s password was reset. Give it to them directly.`);
   }
 
+  function moveType(row: StaffRow) {
+    // The flag's only effect is the job-assignment roster, so the confirm says
+    // exactly that rather than implying something about their login or clock.
+    const next = !row.isOffice;
+    const message = next
+      ? `Move ${row.displayName} to office? They will no longer be offered when you assign crew to a job.`
+      : `Move ${row.displayName} to field crew? They will start being offered when you assign crew to a job.`;
+    if (!window.confirm(message)) return;
+    void patchRow(
+      row,
+      { isOffice: next },
+      `${row.displayName} is now ${next ? 'office' : 'field crew'}.`,
+    );
+  }
+
   function toggleActive(row: StaffRow) {
     if (
       row.active &&
@@ -279,6 +302,14 @@ export function StaffAccounts() {
                   <li key={s.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-2 text-sm">
                     <span className="min-w-0 truncate">
                       <span className="text-gray-900">{s.displayName}</span>
+                      {s.role === 'admin' && (
+                        <span
+                          className="ml-2 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700"
+                          title="Can manage accounts and settings. Change this under Staff accounts above."
+                        >
+                          Admin
+                        </span>
+                      )}
                       {s.email && <span className="ml-2 text-xs text-gray-400">{s.email}</span>}
                       <span className="ml-2 text-xs text-gray-500">{fmtUsd(s.baseRateCents)}/hr</span>
                       {!s.hasLogin && <span className="ml-2 text-xs text-amber-700">No login yet</span>}
@@ -324,6 +355,9 @@ export function StaffAccounts() {
                         className={action}
                       >
                         Reset password
+                      </button>
+                      <button type="button" disabled={rowBusyId === s.id} onClick={() => moveType(s)} className={action}>
+                        {s.isOffice ? 'Move to field' : 'Move to office'}
                       </button>
                       <button type="button" disabled={rowBusyId === s.id} onClick={() => toggleActive(s)} className={action}>
                         {s.active ? 'Deactivate' : 'Activate'}

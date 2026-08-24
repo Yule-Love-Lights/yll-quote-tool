@@ -17,6 +17,7 @@ import {
   setStaffActive,
   setStaffRate,
   setStaffTelegram,
+  setStaffType,
   TelegramUserIdTakenError,
 } from '@/lib/crewMembers';
 
@@ -89,6 +90,11 @@ export async function GET() {
           telegramUserId: s.telegramUserId,
           hasLogin: s.authUserId !== null,
           email: account?.email ?? null,
+          // Role is shown as a BADGE, not as a third group: role and
+          // dispatchability are independent (Jason is an admin on a field row),
+          // so grouping by role would pull people out of the group that says
+          // who can be assigned to a job.
+          role: account?.role ?? null,
           // The linked login no longer exists (deleted from the accounts store).
           // Surfaced so an orphaned pay row is visible rather than silently
           // showing as a normal active staffer.
@@ -241,10 +247,11 @@ export async function PATCH(req: NextRequest) {
   const hasRate = body?.hourlyRate !== undefined;
   const hasTelegram = body !== null && 'telegramUserId' in body;
   const hasPassword = body?.password !== undefined;
+  const hasType = typeof body?.isOffice === 'boolean';
   const hasActive = typeof body?.active === 'boolean';
-  if (!hasRate && !hasTelegram && !hasPassword && !hasActive) {
+  if (!hasRate && !hasTelegram && !hasPassword && !hasType && !hasActive) {
     return NextResponse.json(
-      { error: 'Nothing to update. Send active, hourlyRate, telegramUserId or password.' },
+      { error: 'Nothing to update. Send active, isOffice, hourlyRate, telegramUserId or password.' },
       { status: 400 },
     );
   }
@@ -303,6 +310,8 @@ export async function PATCH(req: NextRequest) {
         );
       }
       member = await setStaffTelegram(crewMemberId, parsed.telegramUserId);
+    } else if (hasType) {
+      member = await setStaffType(crewMemberId, body!.isOffice as boolean);
     } else {
       member = await setStaffActive(crewMemberId, body!.active as boolean);
     }

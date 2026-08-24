@@ -313,6 +313,7 @@ import {
   setStaffActive,
   setStaffRate,
   setStaffTelegram,
+  setStaffType,
   TelegramUserIdTakenError,
   updateCrewMember,
 } from './crewMembers';
@@ -809,5 +810,30 @@ describe('setStaffTelegram', () => {
     const member = await setStaffTelegram('crew-1', '999');
     expect(member?.telegramUserId).toBe('999');
     expect(stateRef.current.rows.find((r) => r.id === 'crew-1')?.telegram_user_id).toBe('999');
+  });
+});
+
+describe('setStaffType', () => {
+  it('moves a field row to office, which is what takes them off the assignable roster', async () => {
+    stateRef.current.rows = [CREW_1, CREW_OFFICE];
+    const member = await setStaffType('crew-1', true);
+    expect(member?.isOffice).toBe(true);
+    // listActiveFieldCrew is the flag's only functional reader, so the point of
+    // the move is that they stop appearing there.
+    const field = await listActiveFieldCrew();
+    expect(field.map((c) => c.id)).not.toContain('crew-1');
+  });
+
+  it('moves an office row to field, the recovery direction this exists for', async () => {
+    stateRef.current.rows = [CREW_1, CREW_OFFICE];
+    const member = await setStaffType('crew-office', false);
+    expect(member?.isOffice).toBe(false);
+    const field = await listActiveFieldCrew();
+    expect(field.map((c) => c.id)).toContain('crew-office');
+  });
+
+  it('returns null for an id that matches no staff row', async () => {
+    stateRef.current.rows = [CREW_OFFICE];
+    await expect(setStaffType('nobody', true)).resolves.toBeNull();
   });
 });

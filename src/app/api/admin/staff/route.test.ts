@@ -17,6 +17,7 @@ const {
   setStaffActive,
   setStaffRate,
   setStaffTelegram,
+  setStaffType,
   listNonCrewOperators,
   listAllAccountsById,
   OperatorAlreadyLinkedError,
@@ -54,6 +55,7 @@ const {
     setStaffActive: vi.fn(),
     setStaffRate: vi.fn(),
     setStaffTelegram: vi.fn(),
+    setStaffType: vi.fn(),
     listNonCrewOperators: vi.fn(),
     listAllAccountsById: vi.fn(),
     OperatorAlreadyLinkedError,
@@ -81,6 +83,7 @@ vi.mock('@/lib/crewMembers', () => ({
   setStaffActive,
   setStaffRate,
   setStaffTelegram,
+  setStaffType,
   OperatorAlreadyLinkedError,
   OfficeDisplayNameTakenError,
   TelegramUserIdTakenError,
@@ -130,6 +133,7 @@ beforeEach(() => {
   setStaffActive.mockResolvedValue({ ...OFFICE, active: false });
   setStaffRate.mockResolvedValue({ ...OFFICE, baseRateCents: 3000 });
   setStaffTelegram.mockResolvedValue({ ...OFFICE, telegramUserId: '987654321' });
+  setStaffType.mockResolvedValue({ ...OFFICE, isOffice: false });
 });
 
 describe('GET /api/admin/staff', () => {
@@ -157,6 +161,17 @@ describe('GET /api/admin/staff', () => {
       ['crew-1', false, 'sonson@x.com'],
     ]);
     expect(b.staff.every((s) => s.hasLogin && !s.loginMissing)).toBe(true);
+  });
+
+  it('exposes the login role so an admin shows as a BADGE, not as a third group', async () => {
+    listAllAccountsById.mockResolvedValue(
+      new Map([['op-kelly', { ...OP_KELLY, role: 'admin', isCrew: false }]]),
+    );
+    listAllStaff.mockResolvedValue([OFFICE]);
+    const res = await GET();
+    const b = (await res.json()) as { staff: Array<{ role: string | null; isOffice: boolean }> };
+    // The admin stays in their own office/field group; role rides alongside it.
+    expect(b.staff[0]).toMatchObject({ role: 'admin', isOffice: true });
   });
 
   it('excludes already-linked operators from the picker', async () => {
@@ -322,6 +337,22 @@ describe('PATCH /api/admin/staff', () => {
     expect(res.status).toBe(409);
   });
 
+  it('moves someone between office and field — the mis-set-type recovery path', async () => {
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', isOffice: false }));
+    expect(res.status).toBe(200);
+    expect(setStaffType).toHaveBeenCalledWith('crew-office', false);
+    expect(setStaffActive).not.toHaveBeenCalled();
+
+    setStaffType.mockResolvedValueOnce({ ...FIELD, isOffice: true });
+    expect((await PATCH(patch({ crewMemberId: 'crew-1', isOffice: true }))).status).toBe(200);
+    expect(setStaffType).toHaveBeenCalledWith('crew-1', true);
+  });
+
+  it('404s a move when no staff row matched', async () => {
+    setStaffType.mockResolvedValueOnce(null);
+    expect((await PATCH(patch({ crewMemberId: 'nobody', isOffice: true }))).status).toBe(404);
+  });
+
   it('404s when no staff row matched', async () => {
     setStaffActive.mockResolvedValueOnce(null);
     expect((await PATCH(patch({ crewMemberId: 'nobody', active: false }))).status).toBe(404);
@@ -331,6 +362,7 @@ describe('PATCH /api/admin/staff', () => {
     expect((await PATCH(patch({ active: false }))).status).toBe(400);
     expect((await PATCH(patch({ crewMemberId: 'crew-office' }))).status).toBe(400);
     expect(setStaffActive).not.toHaveBeenCalled();
+    expect(setStaffType).not.toHaveBeenCalled();
   });
 
   it('400s a JSON primitive body rather than reaching the `in` operator on it', async () => {

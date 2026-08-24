@@ -498,6 +498,22 @@ export async function setStaffRate(id: string, baseRateCents: number): Promise<S
   return patchStaffRow(id, { base_rate_cents: baseRateCents });
 }
 
+/**
+ * Move a staff member between office and field.
+ *
+ * This exists for RECOVERY, not because office staff go out on jobs (Naldo,
+ * 2026-08-24: they never will). Without it a type set wrongly at setup could not
+ * be corrected in the app at all — the row cannot simply be re-added, because
+ * the display name is unique and the operator no longer appears in the picker
+ * once linked, so the only fix was a hand-written UPDATE.
+ *
+ * The flag's only functional reader is `listActiveFieldCrew`, so this changes
+ * exactly one thing: whether they are offered when assigning crew to a job.
+ */
+export async function setStaffType(id: string, isOffice: boolean): Promise<StaffMember | null> {
+  return patchStaffRow(id, { is_office: isOffice });
+}
+
 /** Attach a freshly created login to a staff row that has none yet. */
 export async function linkStaffLogin(id: string, authUserId: string): Promise<StaffMember | null> {
   const db = getSupabaseServiceClient();
