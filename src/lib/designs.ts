@@ -599,6 +599,8 @@ export async function updateDesignPortalVisibility(
     portalShowStreetView: data.portal_show_street_view,
     portalShowSatelliteView: data.portal_show_satellite_view,
   };
+}
+
 // Ledger row 260: the compare-and-swap scene write. `expectedVersion` is the
 // version the caller last read; the write is
 //   UPDATE designs SET version = version + 1, scene = $scene
