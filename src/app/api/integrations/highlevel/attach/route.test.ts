@@ -33,11 +33,12 @@ vi.mock('@/lib/auth/supabaseServer', () => ({
   getOperator: getOperatorMock,
 }));
 
-// ledger #347: requireOperator is now engaged by default (it used to be
-// dormant unless AUTH_GATE_ENABLED==='true'). This suite is about the attach
-// route's own logic, not auth, so stub it authorized like the other route.ts
-// test suites do.
-vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: vi.fn(async () => null) }));
+// ledger #347: requireOperator is engaged by default (it used to be dormant
+// unless AUTH_GATE_ENABLED==='true'), so requireOperatorMock above stubs it
+// authorized like every other route.ts suite. It is mocked in the SAME
+// vi.mock factory as getOperator on purpose: a second vi.mock() for the same
+// module silently REPLACES the first, which is exactly how the row 326 audit
+// tests broke when #347 and #326 were combined -- getOperator lost its mock.
 
 // #214: importOriginal keeps quoteRowToIdentity (pure sentinel translation)
 // REAL — only the DB-touching fn is mocked.
