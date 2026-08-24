@@ -13,17 +13,17 @@
 // src/lib/auth/operatorGate.ts (pure + unit-tested); this file wires it to the
 // request and chooses the rejection (401 for APIs, redirect to /login for pages).
 //
-// ⚠️ Ships DORMANT (AUTH_GATE_ENABLED!=='true' → no-op) so it's safe to merge +
-// review without changing behavior. Go-live = seed the first admin, log in to
-// verify, then flip AUTH_GATE_ENABLED=true in Vercel (zero-lockout — see #81).
+// Engaged by default. Dormant ONLY on the explicit AUTH_GATE_ENABLED=false
+// opt-out (ledger #347) — see authGateEngaged()'s doc comment in
+// supabaseServer.ts for why dormancy is never inferred from the Supabase env
+// being unconfigured (that would be a NEW fail-open on a prod misconfig).
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isCrewPath, isPublicPath } from '@/lib/auth/operatorGate';
-import { createMiddlewareSupabase, isCrewAccount } from '@/lib/auth/supabaseServer';
+import { authGateEngaged, createMiddlewareSupabase, isCrewAccount } from '@/lib/auth/supabaseServer';
 
 export async function proxy(req: NextRequest) {
-  // DORMANT BY DEFAULT.
-  if (process.env.AUTH_GATE_ENABLED !== 'true') return NextResponse.next();
+  if (!authGateEngaged()) return NextResponse.next(); // deliberately opted out
 
   const { pathname } = req.nextUrl;
   if (isPublicPath(pathname, req.method)) return NextResponse.next();
