@@ -25,6 +25,8 @@ import {
 import type { QuoteBuildStartReason } from '@/lib/quoteBuildTimerClient';
 import { getSupabaseServiceClient } from '@/lib/supabase';
 import { roundMoney } from '@/lib/money';
+import { resolveAgreedTotal, type AgreedTotalSnapshot } from '@/lib/agreedTotal';
+import { latestConsentAmendment } from '@/lib/amend';
 
 const VALID_DIFFICULTIES = ['easy', 'medium', 'hard'];
 const VALID_TAKEDOWNS = ['included', 'premium'];
@@ -1039,12 +1041,49 @@ export async function POST(req: NextRequest) {
     let repricedAfterApproval:
       | { previousTotalUsd: number; newTotalUsd: number; deltaUsd: number; portalShowsFrozenPrice: boolean }
       | undefined;
-    if (saved && isUpdate && existing?.customer_approved_at && !existing.deposit_paid_at && !existing.is_test) {
-      // The customer's actual agreed total: the frozen snapshot figure (what
-      // they SAW and signed) when present, else the stored row total for an
-      // old/staff-approved snapshot that predates currentTotalUsd.
-      const rawFrozenTotal = existing.approval_snapshot?.customerSelection?.currentTotalUsd;
-      const previousTotalUsd = typeof rawFrozenTotal === 'number' ? rawFrozenTotal : (existing.total ?? 0);
+    // Fix round (technical-lens MED): the ORIGINAL gate here (`!existing
+    // .deposit_paid_at`) covered only the approved-not-booked window. But
+    // QuoteBuilder.tsx sends `amendReprice: true` on EVERY save of a booked
+    // quote (not only the one save that immediately follows an accepted
+    // amendment), and this route's own `amendRepriceAllowed` carve-out
+    // (above) lets that save through the REPRICE_LOCKED_STATUSES freeze — so
+    // a booked quote CAN reach this point too, whenever amendRepriceAllowed
+    // let it. Once ANY amendment has been accepted, adapter.ts's
+    // quoteRowToPortalQuote treats row.result as UNCONDITIONALLY authoritative
+    // going forward (see its own latestAcceptedAmendment comment) — so a
+    // further scene edit that changes the total WITHOUT then being recorded
+    // through the sanctioned /amend + /amend-consent flow silently changes
+    // what the portal shows, with no staff signal and no consent trail. This
+    // widens the gate to also cover that case: `amendRepriceAllowed` is only
+    // ever true when the earlier REPRICE_LOCKED_STATUSES check let a booked
+    // quote's save through, so `saved && isUpdate` reaching this point with
+    // `existing.deposit_paid_at` set already implies the bypass was used —
+    // no separate check needed.
+    if (
+      saved &&
+      isUpdate &&
+      existing?.customer_approved_at &&
+      (!existing.deposit_paid_at || amendRepriceAllowed) &&
+      !existing.is_test
+    ) {
+      // The customer's actual agreed total — resolveAgreedTotal (the SAME
+      // canonical basis invoicing/tax-override/free-items/apply-color-request
+      // already use): the last NON-DECLINED amendment's new_total when one
+      // exists (the booked-and-previously-amended case this gate now also
+      // covers), else approval_snapshot.customerSelection.currentTotalUsd
+      // (the approved-not-booked case, unchanged from before), else the
+      // stored full result/total for an old/legacy snapshot.
+      const previousTotalUsd = resolveAgreedTotal(
+        // QuoteRaw's approval_snapshot.customerSelection is typed narrower
+        // (only the color fields getQuoteRaw's other callers need) than
+        // AgreedTotalSnapshot's currentTotalUsd — same underlying jsonb
+        // column, real values, just a type-modeling gap. resolveAgreedTotal
+        // itself is fully defensive (finiteMoney guards every rung), so this
+        // mirrors apply-color-request.ts's own call exactly, just cast
+        // instead of locally re-typed.
+        existing.approval_snapshot as AgreedTotalSnapshot,
+        existing.result ?? { total: existing.total ?? 0 },
+      );
       const newTotalUsd = roundMoney(result.total);
       const deltaUsd = roundMoney(newTotalUsd - previousTotalUsd);
       // Sub-cent float noise is not a real reprice (mirrors amend.ts's own
@@ -1053,19 +1092,14 @@ export async function POST(req: NextRequest) {
         // Fix round (staff-lens HIGH): whether the portal is ACTUALLY still
         // showing the approved figure. adapter.ts's quoteRowToPortalQuote
         // freezes the portal to approval_snapshot.pricing only when it's
-        // present, else it falls BACK to live row.result — the very number
-        // this save just changed. That fallback fires whenever a staff
-        // approve() froze a minimal snapshot with no pricing (that route's
-        // own documented behavior) or the approval predates this field
-        // existing at all. This mirrors adapter.ts's own condition exactly:
-        // customer_approved_at is already guaranteed by this gate, and an
-        // accepted amendment is impossible here (the sanctioned amend flow
-        // requires deposit_paid_at, which this gate excludes) — so the
-        // adapter's fallback reduces to "is approval_snapshot.pricing
-        // present." A quote where it's absent is showing the NEW price
-        // right now, with no re-consent — the notice below must say that,
-        // not the reassuring default.
-        const portalShowsFrozenPrice = Boolean(existing.approval_snapshot?.pricing);
+        // present AND no amendment has been accepted yet, else it falls BACK
+        // to live row.result — the very number this save just changed. This
+        // mirrors adapter.ts's latestAcceptedAmendment condition exactly (the
+        // same latestConsentAmendment lookup, same accepted-status check) so
+        // the two can never disagree on which case they're in.
+        const hasAcceptedAmendment =
+          latestConsentAmendment(existing.approval_snapshot?.amendments)?.consent?.status === 'accepted';
+        const portalShowsFrozenPrice = !hasAcceptedAmendment && Boolean(existing.approval_snapshot?.pricing);
         repricedAfterApproval = { previousTotalUsd, newTotalUsd, deltaUsd, portalShowsFrozenPrice };
         // Durable audit record — best-effort AND CAS'd (fix round, technical/
         // admin-lens HIGH). The original version here did a blind read

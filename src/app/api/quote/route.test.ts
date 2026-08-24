@@ -78,6 +78,15 @@ const {
       approval_snapshot?: {
         customerSelection?: { currentTotalUsd?: number };
         postApprovalReprices?: unknown[];
+        // MED fix round: a booked-and-amended quote's accepted amendment
+        // trail, read by resolveAgreedTotal + the hasAcceptedAmendment
+        // check (mirrors the real AmendmentTrailEntry/consent shape).
+        amendments?: Array<{
+          new_total: number;
+          delta: number;
+          consent?: { status?: string | null } | null;
+        }>;
+        pricing?: unknown;
       } | null;
     } | null,
   },
@@ -1859,6 +1868,91 @@ describe('POST /api/quote — staff signal + audit trail for a post-approval rep
     const body = (await res.json()) as { repricedAfterApproval?: unknown };
     expect(body.repricedAfterApproval).toBeUndefined();
     expect(sbUpdatePayloads).toHaveLength(0);
+  });
+});
+
+// Row 344 fix round (technical-lens MED): QuoteBuilder.tsx sends
+// `amendReprice: true` on EVERY save of a booked quote, not only the one
+// save that immediately follows an accepted amendment. Once ANY amendment
+// has been accepted, adapter.ts treats live row.result as unconditionally
+// authoritative for the portal from then on — so a FURTHER scene edit that
+// changes the total via this bypass, without a NEW amendment being recorded
+// through /amend + /amend-consent, used to silently re-diverge what the
+// portal shows with zero staff signal. The fix widens the SAME
+// repricedAfterApproval gate to also cover this window, using
+// resolveAgreedTotal (not the raw customerSelection figure) as the
+// "previous" basis so an already-amended quote compares against what was
+// actually last agreed, not the pre-amendment original.
+describe('POST /api/quote — staff signal for a scene-driven reprice of a BOOKED, already-amended quote (row 344 fix round MED)', () => {
+  const ACCEPTED_AMENDMENT = { new_total: 1200, delta: 200, consent: { status: 'accepted' } };
+  const BOOKED_AMENDED_ROW = {
+    quote_sent_at: '2026-01-01T00:00:00Z',
+    customer_approved_at: '2026-01-02T00:00:00Z',
+    deposit_paid_at: '2026-01-03T00:00:00Z',
+    viewed_at: '2026-01-01T00:00:00Z',
+    status: 'booked' as const,
+    is_test: false,
+    total: 1200,
+    approval_snapshot: { amendments: [ACCEPTED_AMENDMENT] },
+  };
+
+  it('surfaces repricedAfterApproval, basis = the AMENDMENT total (not customerSelection/existing.total), portalShowsFrozenPrice: false', async () => {
+    rawRef.current = { ...BOOKED_AMENDED_ROW };
+    const res = await POST(
+      makeReq({
+        inputs: { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' },
+        quoteId: REAL_UUID,
+        amendReprice: true,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      result: { total: number };
+      repricedAfterApproval?: {
+        previousTotalUsd: number;
+        newTotalUsd: number;
+        deltaUsd: number;
+        portalShowsFrozenPrice: boolean;
+      };
+    };
+    expect(body.repricedAfterApproval).toBeDefined();
+    expect(body.repricedAfterApproval).toEqual({
+      previousTotalUsd: 1200, // the ACCEPTED amendment's new_total, via resolveAgreedTotal
+      newTotalUsd: body.result.total,
+      deltaUsd: body.result.total - 1200,
+      // Once an amendment is accepted, adapter.ts ALWAYS shows live
+      // row.result (never frozen) — the portal is already showing this new,
+      // unrecorded price.
+      portalShowsFrozenPrice: false,
+    });
+  });
+
+  it('is inert (no signal) when this save does NOT reach the amendReprice bypass — a booked quote WITHOUT the flag still 409s before this code', async () => {
+    rawRef.current = { ...BOOKED_AMENDED_ROW };
+    const res = await POST(
+      makeReq({ inputs: { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' }, quoteId: REAL_UUID }),
+    );
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { repricedAfterApproval?: unknown };
+    expect(body.repricedAfterApproval).toBeUndefined();
+  });
+
+  it('a booked quote with NO amendment yet (first-ever amendReprice preview) still uses the pre-amendment logic: pricing presence gates portalShowsFrozenPrice', async () => {
+    rawRef.current = {
+      ...BOOKED_AMENDED_ROW,
+      approval_snapshot: { pricing: { total: 1000 } }, // no amendments recorded yet
+      total: 1000,
+    };
+    const res = await POST(
+      makeReq({
+        inputs: { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' },
+        quoteId: REAL_UUID,
+        amendReprice: true,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { repricedAfterApproval?: { portalShowsFrozenPrice: boolean } };
+    expect(body.repricedAfterApproval?.portalShowsFrozenPrice).toBe(true);
   });
 });
 
