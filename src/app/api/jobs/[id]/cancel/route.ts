@@ -17,7 +17,7 @@ import { releaseAccrualOnCancel } from '@/lib/referrals';
 // WT-31: reuse the SAME work-order projection + deduction math the prepare
 // path (prepareJobMaterials) uses, read-only — this route never writes to
 // src/lib/inventory/jobs.ts.
-import { getJobWorkOrder, computeStockDeductions } from '@/lib/inventory/jobs';
+import { getJobWorkOrder, computeStockDeductions, PENDING_STOCK_SNAPSHOT } from '@/lib/inventory/jobs';
 import { adjustOnHandAtomic } from '@/lib/inventory/onHand';
 
 export const runtime = 'nodejs';
@@ -61,11 +61,26 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // WT-31: a cancelled job that already had its materials PREPPED (on-hand
   // decremented at prep — #82 Phase 2) leaves stock permanently short unless
   // the deduction is reversed. Best-effort — the job is already cancelled
-  // either way. Reuses getJobWorkOrder + computeStockDeductions (the SAME
-  // projection + deduction math the prepare path uses) to reconstruct what
-  // prep took off stock — the closest available reconstruction, since no
-  // per-job deduction ledger is kept. Test jobs (ledger #93) never touched
-  // real on-hand at prep, so there's nothing to return for them.
+  // either way. Row 325: reverses the job's OWN stock_deductions snapshot
+  // (persisted by prepareJobMaterials at prep time) — the exact quantities
+  // that were actually taken off stock — rather than recomputing the
+  // materials projection live, which would silently drift from what prep
+  // really deducted if the materials rules changed in between. Three states
+  // for wo.job.stockDeductions (see PENDING_STOCK_SNAPSHOT's doc in jobs.ts):
+  //  - a real snapshot (array)      → reverse it exactly, below.
+  //  - null                         → TRUE legacy: prepped before this
+  //    snapshot column existed at all. Falls back to the old live
+  //    reconstruction via getJobWorkOrder + computeStockDeductions and says
+  //    so in the note — the only state where that reconstruction is safe,
+  //    because it's the only state where no snapshot ever could have existed.
+  //  - PENDING_STOCK_SNAPSHOT ('pending') → prepped by CURRENT code, but its
+  //    accurate follow-up write never landed (fix round 2, Finding 1). This
+  //    is NOT the legacy case: reconstructing live here would repeat the
+  //    exact over/under-credit bug this snapshot exists to prevent, just
+  //    through a transient-failure door instead of a race. Refuse to
+  //    auto-reverse; flag it for a human instead.
+  // Test jobs (ledger #93) never touched real on-hand at prep, so there's
+  // nothing to return for them.
   const stockReturned: { sku: string; qty: number }[] = [];
   let stockReturnNote: string | null = null;
   try {
@@ -81,30 +96,51 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       // (the INVERSE of prepareJobMaterials's NULL→now claim); only the caller
       // that flips it non-null → NULL runs the return. The job is terminal
       // (cancelled), so it's never re-prepped and the cleared marker is inert.
+      // Clearing stock_deductions unconditionally here also closes out the
+      // pending-sentinel state below — a cancelled job never carries it.
       const { data: claimed } = await stockSb
         .from('jobs')
-        .update({ stock_decremented_at: null })
+        .update({ stock_decremented_at: null, stock_deductions: null })
         .eq('id', id)
         .not('stock_decremented_at', 'is', null)
         .select('id')
         .maybeSingle();
       if (claimed) {
-        const deductions = computeStockDeductions(wo.materials.materials);
-        if (deductions.length) {
-          for (const d of deductions) {
-            try {
-              // Positive delta returns exactly what a prep would deduct today —
-              // mirrors prepareJobMaterials's negative delta (adjustOnHandAtomic
-              // in onHand.ts).
-              await adjustOnHandAtomic(stockSb, d.sku, d.deducted);
-              stockReturned.push({ sku: d.sku, qty: d.deducted });
-            } catch (err) {
-              console.error(`[api/jobs/:id/cancel] stock return failed for ${d.sku}:`, err);
-            }
-          }
-        } else {
+        const snapshot = wo.job.stockDeductions;
+        if (snapshot === PENDING_STOCK_SNAPSHOT) {
+          // Finding 1: refuse, don't guess. A wrong stock credit is worse
+          // than a refusal that asks a human to look.
           stockReturnNote =
-            'Materials were marked prepped for this job — no trackable on-hand stock to reverse automatically; check manually.';
+            'This job was prepped, but the exact stock it deducted was never durably recorded (a transient save failure right after prep) — nothing was automatically returned to stock. Check on-hand manually against this job\'s materials before restocking.';
+        } else {
+          // Row 325: prefer the snapshot prep actually deducted. Only fall
+          // back to a live reconstruction when no snapshot exists AT ALL — a
+          // true legacy job prepped before this column shipped (see the
+          // block comment above; PENDING_STOCK_SNAPSHOT is excluded by the
+          // branch above and never reaches here).
+          const usingSnapshot = snapshot != null;
+          const deductions = usingSnapshot ? snapshot : computeStockDeductions(wo.materials.materials);
+          if (deductions.length) {
+            for (const d of deductions) {
+              try {
+                // Positive delta returns exactly what prep deducted — mirrors
+                // prepareJobMaterials's negative delta (adjustOnHandAtomic in
+                // onHand.ts).
+                await adjustOnHandAtomic(stockSb, d.sku, d.deducted);
+                stockReturned.push({ sku: d.sku, qty: d.deducted });
+              } catch (err) {
+                console.error(`[api/jobs/:id/cancel] stock return failed for ${d.sku}:`, err);
+              }
+            }
+          } else {
+            stockReturnNote =
+              'Materials were marked prepped for this job — no trackable on-hand stock to reverse automatically; check manually.';
+          }
+          if (!usingSnapshot) {
+            const legacyNote =
+              'No per-prep snapshot was recorded for this job (prepped before this fix shipped) — the reversal was reconstructed from the CURRENT materials projection and may not exactly match what prep originally deducted.';
+            stockReturnNote = stockReturnNote ? `${stockReturnNote} ${legacyNote}` : legacyNote;
+          }
         }
       }
     }
@@ -250,9 +286,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
   // WT-31: surface the stock reversal (or the fallback note when nothing
   // trackable could be reversed) the same way the refund note is surfaced.
+  // Row 325: these are independent now (not else-if) — a legacy-job caveat
+  // (stockReturnNote) can accompany an actual "Returned to stock" line, not
+  // just replace it, since the reconstruction path can still return SOMETHING
+  // while being worth flagging as unverified.
   if (stockReturned.length) {
     notes.push(`Returned to stock: ${stockReturned.map((s) => `${s.qty}×${s.sku}`).join(', ')}.`);
-  } else if (stockReturnNote) {
+  }
+  if (stockReturnNote) {
     notes.push(stockReturnNote);
   }
   return NextResponse.json({
@@ -263,6 +304,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     refundNeeded,
     quoteCancelled,
     stockReturned,
+    // Fix round 3 (Finding LOW, PR #926): a precomputed flag, same shape as
+    // `refundNeeded`, so callers don't have to string-match `note` to decide
+    // whether to draw the eye. True whenever ANY stock-reversal caveat rode
+    // along — the true-legacy live-reconstruction note, the "nothing
+    // trackable" note, or (the case this fix round exists for) the
+    // PENDING_STOCK_SNAPSHOT refusal note. All three mean a human should
+    // look, not just read past the note in the middle of a longer sentence.
+    stockNeedsAttention: !!stockReturnNote,
     note: notes.join(' '),
   });
 }
