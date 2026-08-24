@@ -307,12 +307,12 @@ import {
   listActiveCrewMembers,
   listActiveFieldCrew,
   listLinkedAuthUserIds,
-  listOfficeStaff,
+  listAllStaff,
   OfficeDisplayNameTakenError,
   OperatorAlreadyLinkedError,
-  setOfficeStaffActive,
-  setOfficeStaffRate,
-  setOfficeStaffTelegram,
+  setStaffActive,
+  setStaffRate,
+  setStaffTelegram,
   TelegramUserIdTakenError,
   updateCrewMember,
 } from './crewMembers';
@@ -639,22 +639,26 @@ describe('updateCrewMember', () => {
   });
 });
 
-describe('listOfficeStaff', () => {
+describe('listAllStaff', () => {
   it('returns [] when Supabase is not configured', async () => {
     dbRef.current = null;
-    await expect(listOfficeStaff()).resolves.toEqual([]);
+    await expect(listAllStaff()).resolves.toEqual([]);
   });
 
-  it('returns only is_office rows, mapped to the panel shape', async () => {
-    stateRef.current.rows = [CREW_1, CREW_OFFICE, CREW_2];
-    await expect(listOfficeStaff()).resolves.toEqual([
-      { id: 'crew-office', displayName: 'Kelly', active: true, authUserId: 'op-kelly', baseRateCents: 2500, telegramUserId: null },
+  it('returns EVERY staff row, office and field alike, with the type as data', async () => {
+    // One panel manages both populations now, so this deliberately does NOT
+    // filter on is_office; the type is carried on each row as `isOffice`.
+    stateRef.current.rows = [CREW_1, CREW_OFFICE];
+    const all = await listAllStaff();
+    expect(all.map((m) => [m.id, m.isOffice])).toEqual([
+      ['crew-1', false],
+      ['crew-office', true],
     ]);
   });
 
   it('returns [] and swallows a query error (never throws into the panel)', async () => {
     stateRef.current.error = { message: 'db down' };
-    await expect(listOfficeStaff()).resolves.toEqual([]);
+    await expect(listAllStaff()).resolves.toEqual([]);
   });
 });
 
@@ -684,7 +688,7 @@ describe('linkOfficeStaff', () => {
   it('creates an is_office, hourly, non-P4P row linked to the operator', async () => {
     stateRef.current.rows = [];
     const member = await linkOfficeStaff({ authUserId: 'op-ann', displayName: 'Ann', baseRateCents: 2500 });
-    expect(member).toEqual({ id: 'generated-1', displayName: 'Ann', active: true, authUserId: 'op-ann', baseRateCents: 2500, telegramUserId: null });
+    expect(member).toEqual({ id: 'generated-1', displayName: 'Ann', active: true, authUserId: 'op-ann', baseRateCents: 2500, telegramUserId: null, isOffice: true });
 
     const written = stateRef.current.inserted[0];
     expect(written).toMatchObject({
@@ -714,17 +718,17 @@ describe('linkOfficeStaff', () => {
   });
 });
 
-describe('setOfficeStaffActive', () => {
+describe('setStaffActive', () => {
   it('throws when Supabase is not configured', async () => {
     dbRef.current = null;
-    await expect(setOfficeStaffActive('crew-office', false)).rejects.toThrow(
+    await expect(setStaffActive('crew-office', false)).rejects.toThrow(
       'Supabase service role not configured',
     );
   });
 
   it('deactivates an office row and returns the updated shape', async () => {
     stateRef.current.rows = [CREW_OFFICE];
-    const member = await setOfficeStaffActive('crew-office', false);
+    const member = await setStaffActive('crew-office', false);
     expect(member).toEqual({
       id: 'crew-office',
       displayName: 'Kelly',
@@ -732,23 +736,30 @@ describe('setOfficeStaffActive', () => {
       authUserId: 'op-kelly',
       baseRateCents: 2500,
       telegramUserId: null,
+      isOffice: true,
     });
     expect(stateRef.current.rows.find((r) => r.id === 'crew-office')?.active).toBe(false);
   });
 
-  it('returns null for a FIELD-crew id — the is_office filter is part of the write (sibling guard by construction)', async () => {
-    stateRef.current.rows = [CREW_1, CREW_OFFICE]; // CREW_1 is field crew
-    const member = await setOfficeStaffActive('crew-1', false);
-    expect(member).toBeNull();
-    // The field-crew row was NOT touched — no way to toggle it through this door.
-    expect(stateRef.current.rows.find((r) => r.id === 'crew-1')?.active).toBe(true);
+  it('deactivates a FIELD-crew row too — one door manages both populations', async () => {
+    // Superseded the old office-only guard on purpose: field crew had no way to
+    // be deactivated in-app at all, which is half of why the two panels differed.
+    stateRef.current.rows = [CREW_1, CREW_OFFICE];
+    const member = await setStaffActive('crew-1', false);
+    expect(member?.isOffice).toBe(false);
+    expect(stateRef.current.rows.find((r) => r.id === 'crew-1')?.active).toBe(false);
+  });
+
+  it('returns null for an id that matches no staff row at all', async () => {
+    stateRef.current.rows = [CREW_OFFICE];
+    await expect(setStaffActive('nobody', false)).resolves.toBeNull();
   });
 });
 
-describe('setOfficeStaffRate', () => {
+describe('setStaffRate', () => {
   it('updates an office row rate (integer cents) and returns the updated shape', async () => {
     stateRef.current.rows = [CREW_OFFICE];
-    const member = await setOfficeStaffRate('crew-office', 3000);
+    const member = await setStaffRate('crew-office', 3000);
     expect(member).toEqual({
       id: 'crew-office',
       displayName: 'Kelly',
@@ -756,29 +767,30 @@ describe('setOfficeStaffRate', () => {
       authUserId: 'op-kelly',
       baseRateCents: 3000,
       telegramUserId: null,
+      isOffice: true,
     });
     expect(stateRef.current.rows.find((r) => r.id === 'crew-office')?.base_rate_cents).toBe(3000);
   });
 
-  it('returns null for a FIELD-crew id — never edits a field-crew rate through this door', async () => {
+  it('edits a FIELD-crew rate too — crew rows previously showed no rate at all', async () => {
     stateRef.current.rows = [CREW_1, CREW_OFFICE];
-    const member = await setOfficeStaffRate('crew-1', 9999);
-    expect(member).toBeNull();
-    expect(stateRef.current.rows.find((r) => r.id === 'crew-1')?.base_rate_cents).toBe(1600);
+    const member = await setStaffRate('crew-1', 9999);
+    expect(member?.baseRateCents).toBe(9999);
+    expect(stateRef.current.rows.find((r) => r.id === 'crew-1')?.base_rate_cents).toBe(9999);
   });
 });
 
-describe('setOfficeStaffTelegram', () => {
+describe('setStaffTelegram', () => {
   it('links a Telegram id on an OFFICE row — office staff text the bot too', async () => {
     stateRef.current.rows = [CREW_OFFICE];
-    const member = await setOfficeStaffTelegram('crew-office', '987654321');
+    const member = await setStaffTelegram('crew-office', '987654321');
     expect(member?.telegramUserId).toBe('987654321');
     expect(stateRef.current.rows.find((r) => r.id === 'crew-office')?.telegram_user_id).toBe('987654321');
   });
 
   it('unlinks on null', async () => {
     stateRef.current.rows = [{ ...CREW_OFFICE, telegram_user_id: '987654321' }];
-    const member = await setOfficeStaffTelegram('crew-office', null);
+    const member = await setStaffTelegram('crew-office', null);
     expect(member?.telegramUserId).toBeNull();
   });
 
@@ -786,16 +798,16 @@ describe('setOfficeStaffTelegram', () => {
     // CREW_1 (field crew) already holds '111'. Handing it to the office row
     // would split one Telegram account across two pay identities.
     stateRef.current.rows = [CREW_1, CREW_OFFICE];
-    await expect(setOfficeStaffTelegram('crew-office', '111')).rejects.toBeInstanceOf(
+    await expect(setStaffTelegram('crew-office', '111')).rejects.toBeInstanceOf(
       TelegramUserIdTakenError,
     );
     expect(stateRef.current.rows.find((r) => r.id === 'crew-office')?.telegram_user_id).toBeNull();
   });
 
-  it('returns null for a FIELD-crew id — the office door never writes a field-crew row', async () => {
+  it('relinks a FIELD-crew Telegram id through the same door', async () => {
     stateRef.current.rows = [CREW_1, CREW_OFFICE];
-    const member = await setOfficeStaffTelegram('crew-1', '999');
-    expect(member).toBeNull();
-    expect(stateRef.current.rows.find((r) => r.id === 'crew-1')?.telegram_user_id).toBe('111');
+    const member = await setStaffTelegram('crew-1', '999');
+    expect(member?.telegramUserId).toBe('999');
+    expect(stateRef.current.rows.find((r) => r.id === 'crew-1')?.telegram_user_id).toBe('999');
   });
 });
