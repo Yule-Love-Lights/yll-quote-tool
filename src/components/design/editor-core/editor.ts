@@ -338,9 +338,10 @@ export async function renderEditor(
       <div class="stage-wrap" id="stage-wrap">
         <div id="stage-host" style="position:absolute;inset:0"></div>
         <div class="brightness" id="brightness-ui">
+          <span class="ctl-label" title="Brightness applies to the photo you are viewing. Every other photo in this design keeps its own setting, so darkening a multi-photo design means adjusting each tab.">Brightness (this photo)</span>
           <span class="icon" title="Darker">${moonSvg()}</span>
           <div class="slider-wrap">
-            <input type="range" min="0" max="100" value="50" id="brightness" title="Double-click to reset to neutral" />
+            <input type="range" min="0" max="100" value="50" id="brightness" title="This photo only. Double-click to reset to neutral." />
             <div class="neutral-tick" title="Neutral — original photo brightness"></div>
           </div>
           <span class="icon" title="Brighter">${sunSvg()}</span>
