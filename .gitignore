@@ -46,6 +46,7 @@ next-env.d.ts
 .claude/*
 !.claude/skills/
 !.claude/commands/
+!.claude/agents/
 # ...and shared project-scope settings (permission allow-rules the whole team gets)
 !.claude/settings.json
 
@@ -66,3 +67,6 @@ __pycache__/
 
 # video transcripts (third-party content; the skill writes these to a scratchpad)
 video-transcripts/
+
+# per-worktree session marker written by scripts/session-open.sh, local only
+.session-id

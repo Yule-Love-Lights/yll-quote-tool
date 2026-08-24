@@ -11,6 +11,8 @@ import {
   clearNceOrNeighborOnServiceTypeSwitch,
   legacyRebookConfirmMessage,
   nceConfirmMessage,
+  contactRelinkConfirmMessage,
+  clearContactConfirmMessage,
   initialNceDepositProvenance,
 } from './quoteForm';
 import type { QuoteInputs } from './pricing/pricingEngine';
@@ -827,6 +829,67 @@ describe('nceConfirmMessage (#215 builder chip confirm)', () => {
         expect(msg).toContain('propagation is one-way');
       });
     });
+  });
+});
+
+// #251 (live incident, 2026-08-11): contactRelinkConfirmMessage is the copy
+// behind pickHighLevelContact's new window.confirm — a stale/mistaken
+// contact re-pick on an already-linked quote silently re-pointed an APPROVED
+// quote's customer_id + highlevel_contact_id to a different real customer.
+describe('contactRelinkConfirmMessage (#251 builder contact-pick confirm)', () => {
+  it('returns null when nothing is linked yet (first-time pick)', () => {
+    expect(contactRelinkConfirmMessage('hl-new', 'Richard Arroyo', null, false)).toBeNull();
+  });
+
+  it('returns null on a same-contact no-op re-pick (currentContactId === newContactId)', () => {
+    expect(contactRelinkConfirmMessage('hl-1', 'Jane Doe', 'hl-1', false)).toBeNull();
+    expect(contactRelinkConfirmMessage('hl-1', 'Jane Doe', 'hl-1', true)).toBeNull();
+  });
+
+  it('returns a confirm message when a DIFFERENT contact is already linked (unapproved: customer link also at stake)', () => {
+    const msg = contactRelinkConfirmMessage('hl-new', 'Richard Arroyo', 'hl-old', false);
+    expect(msg).not.toBeNull();
+    expect(msg).toContain('Richard Arroyo');
+    expect(msg).toContain('DIFFERENT HighLevel contact');
+    expect(msg).toContain('changes which customer this quote');
+  });
+
+  // #839 fix-round re-check: once BOTH the quotes.ts and attach/route.ts
+  // freezes ship (same fix round), a confirmed re-pick on an approved quote
+  // no longer moves customer_id — the copy must not claim it still does.
+  it('the approved-quote copy names the frozen customer link + the HL card move, NOT a billing/customer risk', () => {
+    const unapproved = contactRelinkConfirmMessage('hl-new', 'Richard Arroyo', 'hl-old', false)!;
+    const approved = contactRelinkConfirmMessage('hl-new', 'Richard Arroyo', 'hl-old', true)!;
+    expect(unapproved).not.toContain('already been approved');
+    expect(approved).toContain('already been approved');
+    // Accurate: the customer record is frozen and stated as such.
+    expect(approved).toContain('is frozen and will NOT move');
+    // No longer accurate post-fix — must not appear.
+    expect(approved).not.toContain('signed terms');
+    expect(approved).not.toContain('risks attributing');
+    // Still accurate: the HL card/contact link itself does still move.
+    expect(approved).toContain('HighLevel contact/card link to the new contact');
+  });
+});
+
+// #839 fix-round (BYPASS 3): clearContactConfirmMessage is the copy behind
+// clearHighLevelContact's new window.confirm — the Clear/"Change" button
+// fired POST .../attach {detach:true} with zero server-side guard.
+describe('clearContactConfirmMessage (#839 builder Clear-contact confirm)', () => {
+  it('returns null pre-approval (an everyday draft/sent correction needs no prompt)', () => {
+    expect(clearContactConfirmMessage(false)).toBeNull();
+  });
+
+  it('returns a confirm message once the quote is approved', () => {
+    const msg = clearContactConfirmMessage(true);
+    expect(msg).not.toBeNull();
+    expect(msg).toContain('already been approved');
+  });
+
+  it('states honestly that the customer/billing link is UNaffected — detach never touches customer_id', () => {
+    const msg = clearContactConfirmMessage(true)!;
+    expect(msg).toContain('does NOT change which customer this quote belongs to');
+    expect(msg).toContain('billing, jobs, and invoices are unaffected');
   });
 });
 

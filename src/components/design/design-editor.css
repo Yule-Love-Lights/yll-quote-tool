@@ -146,6 +146,23 @@
   .editor .brightness input[type="range"] {
     width: 100%; accent-color: var(--accent); position: relative; z-index: 1; background: transparent;
   }
+  /* Light-size control, sharing the brightness pill. Both are per-design
+     presentation settings, so one bar keeps them together instead of
+     stacking a second floating pill over the photo. Narrower than the
+     brightness slider on purpose: its range is 0.5x to 4x, so it needs far
+     less travel to be precise, and the pill has to stay off the edges of a
+     laptop-width stage. */
+  .editor .brightness .ctl-sep {
+    width: 1px; height: 18px; background: var(--border); flex: none;
+  }
+  .editor .brightness .ctl-label { font-size: 11px; white-space: nowrap; }
+  .editor .brightness .slider-wrap.narrow { width: 130px; }
+  /* Fixed width + tabular figures so the readout doesn't shift the whole pill
+     sideways as the number changes while dragging. */
+  .editor .brightness .ctl-value {
+    font-size: 11px; font-variant-numeric: tabular-nums;
+    width: 34px; text-align: right; color: var(--text);
+  }
 
   .editor .topbar .tool-toggle { display: flex; gap: 0; }
   .editor .topbar .tool-toggle button { border-radius: 0; border-right-width: 0; padding: 6px 12px; }

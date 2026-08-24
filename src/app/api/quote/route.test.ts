@@ -18,7 +18,11 @@ const { save, update, getRaw, rawRef, operatorRef } = vi.hoisted(() => ({
   update: vi.fn(
     async (
       ..._args: unknown[]
-    ): Promise<{ id: string; priorInputs?: { event?: { eventDate?: string } } | null }> => ({ id: 'existing-id' }),
+    ): Promise<{
+      id: string;
+      priorInputs?: { event?: { eventDate?: string } } | null;
+      identityFrozen?: boolean;
+    }> => ({ id: 'existing-id' }),
   ),
   // getQuoteRaw is consulted only on the update branch (W1-003 booked-re-price
   // gate). rawRef.current is the row the mock returns; null = row not found,
@@ -41,7 +45,15 @@ const { save, update, getRaw, rawRef, operatorRef } = vi.hoisted(() => ({
       // incoming change on an already-approved quote.
       // FIX B (#237 fix round): event.eventDate — the stored PRIOR value the
       // re-push gate compares the incoming save against.
-      inputs?: { depositPercent?: number; event?: { eventDate?: string } } | null;
+      // Row 331+341: the stored line-price/label overrides + bistro run
+      // footage, read back the same way for the post-approval freeze tests.
+      inputs?: {
+        depositPercent?: number;
+        event?: { eventDate?: string };
+        lineItemPriceOverrides?: Record<string, { amount: number; reason?: string }>;
+        labelOverrides?: Record<string, string>;
+        permanentBistro?: { poles?: number; bistro?: { id?: string; footage: number }[] };
+      } | null;
       // FIX B (#237 fix round): the two other gates the re-push needs.
       is_test?: boolean;
       highlevel_contact_id?: string | null;
@@ -78,17 +90,41 @@ vi.mock('@/lib/integrations/ghlEventDate', async (importOriginal) => ({
 // below keeps working unmodified; afterCallCount lets ONE test additionally
 // assert the call was actually routed through after(), not just that the
 // push still fires (a bare void call would make these tests pass too).
-const { afterCallCount } = vi.hoisted(() => ({ afterCallCount: { current: 0 } }));
+// #314 fix round: lastAfterTask captures the SAME task's promise (still fired
+// immediately/undrained, so every existing pushEventDateMock assertion below
+// keeps working unmodified) so a test that cares about the stamp write
+// (which chains an extra couple of awaits past pushEventDateToGhl itself)
+// can explicitly `await lastAfterTask.current` before asserting on it.
+const { afterCallCount, lastAfterTask } = vi.hoisted(() => ({
+  afterCallCount: { current: 0 },
+  lastAfterTask: { current: null as Promise<void> | null },
+}));
 vi.mock('next/server', async (importOriginal) => {
   const actual = await importOriginal<typeof import('next/server')>();
   return {
     ...actual,
     after: (task: () => Promise<void> | void) => {
       afterCallCount.current++;
-      void task();
+      lastAfterTask.current = Promise.resolve(task());
     },
   };
 });
+
+// #314 fix round (staff-lens HIGH): a confirmed push now stamps
+// quotes.ghl_event_date_pushed via a fresh getSupabaseServiceClient() call
+// inside the after() task — mocked here the same way approve/send route
+// tests mock the data layer, capturing update payloads.
+const { sbUpdatePayloads } = vi.hoisted(() => ({ sbUpdatePayloads: [] as Array<Record<string, unknown>> }));
+vi.mock('@/lib/supabase', () => ({
+  getSupabaseServiceClient: () => ({
+    from: () => ({
+      update: (payload: Record<string, unknown>) => {
+        sbUpdatePayloads.push(payload);
+        return { eq: async () => ({ error: null }) };
+      },
+    }),
+  }),
+}));
 
 // No design linked in most tests → isValidDesignId false, getDesign untouched.
 // W1-010: designIdRef.current flips this per-test so the design-projection
@@ -164,6 +200,8 @@ beforeEach(() => {
   operatorRef.current = null;
   designIdRef.current = false;
   afterCallCount.current = 0;
+  lastAfterTask.current = null;
+  sbUpdatePayloads.length = 0;
   getDesignMock.mockResolvedValue(null);
   // Default the update-branch row to a plain draft (no lifecycle timestamps) so
   // the existing UUID→update tests still re-price; booked/terminal cases set it.
@@ -576,6 +614,24 @@ describe('POST /api/quote — validation hardening', () => {
     expect(res.status).toBe(200);
     expect(update).toHaveBeenCalledTimes(1);
     expect(save).not.toHaveBeenCalled();
+  });
+
+  // #839 fix-round MED: updateQuote's identityFrozen flag (set when the #251
+  // freeze actually refused a would-be reattach) must reach the client so the
+  // builder can show a notice instead of the save silently succeeding.
+  it('propagates identityFrozen:true from updateQuote onto the response', async () => {
+    update.mockResolvedValueOnce({ id: 'existing-id', identityFrozen: true });
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.identityFrozen).toBe(true);
+  });
+
+  it('omits identityFrozen from the response when updateQuote did not set it', async () => {
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json.identityFrozen).toBeUndefined();
   });
 
   it('rejects an over-cap input array (length 501) with 400', async () => {
@@ -1498,6 +1554,221 @@ describe('POST /api/quote — deposit percent locked post-approval (#177 fix 3b)
   });
 });
 
+describe('POST /api/quote — post-approval freeze for price/label/bistro-footage overrides (rows 331+341)', () => {
+  // Mirrors the #177 fix 3b deposit-percent-locked suite exactly: scoped ONLY
+  // to these three fields actually changing — an unrelated field edit on an
+  // approved-but-unbooked quote still re-prices fine (proven by the W1-003
+  // "still re-prices an approved-but-unbooked quote in place" test above,
+  // which sends no overrides at all and is unaffected by this freeze).
+
+  it('rejects a CHANGED lineItemPriceOverrides amount on an approved quote with 409', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      inputs: { lineItemPriceOverrides: { 'mini-1': { amount: 100 } } },
+    };
+    const res = await POST(
+      makeReq({
+        inputs: { ...validInputs(), lineItemPriceOverrides: { 'mini-1': { amount: 250 } } },
+        quoteId: REAL_UUID,
+      }),
+    );
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; code?: string };
+    expect(body.code).toBe('price-override-locked');
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('rejects ADDING a lineItemPriceOverrides entry on an approved quote that had none', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      inputs: {},
+    };
+    const res = await POST(
+      makeReq({
+        inputs: { ...validInputs(), lineItemPriceOverrides: { 'mini-1': { amount: 250 } } },
+        quoteId: REAL_UUID,
+      }),
+    );
+    expect(res.status).toBe(409);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('allows an UNCHANGED lineItemPriceOverrides resubmit on an approved quote (routine recalculate)', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      inputs: { lineItemPriceOverrides: { 'mini-1': { amount: 100 } } },
+    };
+    const res = await POST(
+      makeReq({
+        inputs: { ...validInputs(), lineItemPriceOverrides: { 'mini-1': { amount: 100 } } },
+        quoteId: REAL_UUID,
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows a lineItemPriceOverrides change on a NOT-YET-APPROVED (sent) quote', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: null,
+      deposit_paid_at: null,
+      viewed_at: null,
+      status: 'sent',
+      inputs: { lineItemPriceOverrides: { 'mini-1': { amount: 100 } } },
+    };
+    const res = await POST(
+      makeReq({
+        inputs: { ...validInputs(), lineItemPriceOverrides: { 'mini-1': { amount: 250 } } },
+        quoteId: REAL_UUID,
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows a lineItemPriceOverrides change on an approved TEST quote (is_test exempt, matching #251/#177)', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      is_test: true,
+      inputs: { lineItemPriceOverrides: { 'mini-1': { amount: 100 } } },
+    };
+    const res = await POST(
+      makeReq({
+        inputs: { ...validInputs(), lineItemPriceOverrides: { 'mini-1': { amount: 250 } } },
+        quoteId: REAL_UUID,
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a CHANGED labelOverrides value on an approved quote with 409', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      inputs: { labelOverrides: { 'mini-1': 'Front Left' } },
+    };
+    const res = await POST(
+      makeReq({
+        inputs: { ...validInputs(), labelOverrides: { 'mini-1': 'Renamed' } },
+        quoteId: REAL_UUID,
+      }),
+    );
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; code?: string };
+    expect(body.code).toBe('label-override-locked');
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('allows an UNCHANGED labelOverrides resubmit on an approved quote', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      inputs: { labelOverrides: { 'mini-1': 'Front Left' } },
+    };
+    const res = await POST(
+      makeReq({
+        inputs: { ...validInputs(), labelOverrides: { 'mini-1': 'Front Left' } },
+        quoteId: REAL_UUID,
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a CHANGED permanentBistro run footage on an approved permanent_bistro quote with 409', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      service_type: 'permanent_bistro',
+      inputs: { permanentBistro: { bistro: [{ id: 'run-1', footage: 40 }] } },
+    };
+    const inputs = { ...validInputs(), permanentBistro: { bistro: [{ id: 'run-1', footage: 65 }] } };
+    const res = await POST(makeReq({ serviceType: 'permanent_bistro', inputs, quoteId: REAL_UUID }));
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; code?: string };
+    expect(body.code).toBe('bistro-footage-locked');
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('rejects ADDING a new bistro run on an approved permanent_bistro quote', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      service_type: 'permanent_bistro',
+      inputs: { permanentBistro: { bistro: [{ id: 'run-1', footage: 40 }] } },
+    };
+    const inputs = {
+      ...validInputs(),
+      permanentBistro: { bistro: [{ id: 'run-1', footage: 40 }, { id: 'run-2', footage: 20 }] },
+    };
+    const res = await POST(makeReq({ serviceType: 'permanent_bistro', inputs, quoteId: REAL_UUID }));
+    expect(res.status).toBe(409);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('allows an UNCHANGED permanentBistro resubmit on an approved quote (routine recalculate)', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      service_type: 'permanent_bistro',
+      inputs: { permanentBistro: { bistro: [{ id: 'run-1', footage: 40 }] } },
+    };
+    const inputs = { ...validInputs(), permanentBistro: { bistro: [{ id: 'run-1', footage: 40 }] } };
+    const res = await POST(makeReq({ serviceType: 'permanent_bistro', inputs, quoteId: REAL_UUID }));
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows a permanentBistro footage change on a NOT-YET-APPROVED (sent) permanent_bistro quote', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: null,
+      deposit_paid_at: null,
+      viewed_at: null,
+      status: 'sent',
+      service_type: 'permanent_bistro',
+      inputs: { permanentBistro: { bistro: [{ id: 'run-1', footage: 40 }] } },
+    };
+    const inputs = { ...validInputs(), permanentBistro: { bistro: [{ id: 'run-1', footage: 65 }] } };
+    const res = await POST(makeReq({ serviceType: 'permanent_bistro', inputs, quoteId: REAL_UUID }));
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+});
+
 // FIX B (#237 fix round, staff/admin-lens HIGH/MED): the everyday reschedule
 // — customer confirms/reschedules AFTER the quote already sent, staff edit
 // the event date and hit Save (not Send) — used to leave GHL holding a stale
@@ -1529,6 +1800,32 @@ describe('POST /api/quote — event-date GHL re-push on save (FIX B, #237 fix ro
     // would still make the assertion above pass (the mocked after() fires
     // the task either way), but afterCallCount would stay 0.
     expect(afterCallCount.current).toBe(1);
+  });
+
+  // #314 fix round (staff-lens HIGH): a confirmed push stamps
+  // quotes.ghl_event_date_pushed — the marker the approve route's own
+  // reconcile compares against instead of GHL's live value.
+  it('stamps ghl_event_date_pushed when the re-push is confirmed', async () => {
+    rawRef.current = { ...SENT_EVENT_ROW };
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, serviceType: 'event', inputs: { ...validInputs(), event: { eventDate: '2026-12-25' } } }),
+    );
+    expect(res.status).toBe(200);
+    await lastAfterTask.current;
+
+    expect(sbUpdatePayloads).toContainEqual({ ghl_event_date_pushed: '12/25/2026' });
+  });
+
+  it('does NOT stamp ghl_event_date_pushed when the push fails', async () => {
+    pushEventDateMock.mockResolvedValueOnce({ pushed: false });
+    rawRef.current = { ...SENT_EVENT_ROW };
+    const res = await POST(
+      makeReq({ quoteId: REAL_UUID, serviceType: 'event', inputs: { ...validInputs(), event: { eventDate: '2026-12-25' } } }),
+    );
+    expect(res.status).toBe(200);
+    await lastAfterTask.current;
+
+    expect(sbUpdatePayloads).toHaveLength(0);
   });
 
   it('does NOT re-push when the date is unchanged (a routine unrelated re-save)', async () => {

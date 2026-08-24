@@ -534,6 +534,17 @@ describe('POST /api/quotes/[id]/amend', () => {
     expect(billed).not.toBe(json.amendment.new_balance);
     expect(sentSmsMessage()).toContain(usdText(billed));
     expect(sentSmsMessage()).not.toContain(usdText(json.amendment.new_balance));
+
+    // Row 313(b) fix: the admin quotes/jobs detail pages' own amendment
+    // renders read display_delta/display_new_total/display_new_balance
+    // (routed through the SAME resolveAmendmentBasis this SMS/email used
+    // above) instead of the raw trail fields — assert those display_* fields
+    // agree with what was actually billed, and diverge from the raw trail
+    // figures, exactly like the SMS/email do.
+    expect(json.amendment.display_new_balance).toBe(billed);
+    expect(json.amendment.display_new_balance).not.toBe(json.amendment.new_balance);
+    expect(json.amendment.display_new_total).not.toBe(json.amendment.new_total);
+    expect(json.amendment.display_delta).not.toBe(json.amendment.delta);
   });
 
   // FIX4 (review HIGH, money): the SMS/email must state a delta that

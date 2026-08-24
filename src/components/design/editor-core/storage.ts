@@ -35,7 +35,23 @@ type DesignPatch = Partial<{
   photoPath: string | null;
   photoW: number | null;
   photoH: number | null;
+  // Ledger row 260: the version this save's `scene` was read against — the
+  // compare-and-swap precondition for the PUT below. null/undefined = unknown
+  // (the design was never read, or came from a pre-#260 caller).
+  version: number | null;
 }>;
+
+// Ledger row 260: thrown by updateDesign when the server's compare-and-swap
+// rejects the write (409, a concurrent writer already moved the version) —
+// distinguished from a generic save failure so the editor can block-and-
+// offer-reload instead of its ordinary auto-retry (which would just resend
+// the same stale overwrite forever).
+export class SceneConflictError extends Error {
+  constructor() {
+    super('Design changed elsewhere — scene version conflict');
+    this.name = 'SceneConflictError';
+  }
+}
 
 export type EditorApi = {
   getDesign(id: string): Promise<Design>;
@@ -59,6 +75,7 @@ function toEditorDesign(id: string, api: {
   photoW?: number | null;
   photoH?: number | null;
   extraPhotos?: Design['extraPhotos'];
+  version?: number | null;
 }): Design {
   return {
     id,
@@ -73,6 +90,9 @@ function toEditorDesign(id: string, api: {
     updatedAt: 0,
     // #13: extra street photos ride along so the editor can mount on one.
     extraPhotos: api.extraPhotos ?? [],
+    // Ledger row 260: carried through so doSave() can round-trip it as the
+    // CAS precondition on the next save.
+    version: api.version ?? null,
   };
 }
 
@@ -88,19 +108,29 @@ export function createEditorApi(designId: string): EditorApi {
     async updateDesign(id, patch) {
       // Only the scene is persisted in Phase 1. Photo metadata is already
       // persisted by the photo route; name/background are unused.
+      let newVersion: number | null | undefined = patch.version;
       if (patch.scene) {
         const res = await fetch(`/api/designs/${id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ scene: patch.scene }),
+          body: JSON.stringify({ scene: patch.scene, version: patch.version ?? null }),
         });
+        // Ledger row 260: a 409 means the server's compare-and-swap rejected
+        // this write (a concurrent writer already moved the version) — throw
+        // a distinguishable error so doSave() can tell this apart from an
+        // ordinary network/5xx failure and NOT auto-retry the same overwrite.
+        if (res.status === 409) throw new SceneConflictError();
         if (!res.ok) throw new Error(`save scene failed: ${res.status}`);
+        const data = await res.json().catch(() => ({}));
+        if (typeof data.version === 'number') newVersion = data.version;
       }
-      // The editor ignores this return value; hand back a minimal Design.
+      // The editor reads `version` off this return value (see doSave()); the
+      // rest is ignored — hand back a minimal Design.
       return toEditorDesign(id, {
         scene: patch.scene,
         photoW: patch.photoW ?? null,
         photoH: patch.photoH ?? null,
+        version: newVersion,
       });
     },
 

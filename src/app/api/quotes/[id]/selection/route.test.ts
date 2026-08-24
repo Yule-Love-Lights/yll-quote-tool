@@ -236,21 +236,24 @@ describe('POST /api/quotes/[id]/selection', () => {
     expect(state.lastUpdatePayload).toBeNull();
   });
 
-  it('skips as approved and NEVER writes once customer_approved_at is set — the frozen snapshot always wins', async () => {
-    state.quote = {
-      id: 'q1',
-      customer_approved_at: '2026-01-02T00:00:00Z',
-      quote_sent_at: '2026-01-01T00:00:00Z',
-      status: 'approved',
-    };
-    const res = await POST(makeReq(VALID_BODY), ctx());
-    const json = await res.json();
-    expect(res.status).toBe(200);
-    expect(json.skipped).toBe('approved');
-    expect(state.lastUpdatePayload).toBeNull();
-  });
+  it.each(['approved', 'booked'] as const)(
+    'skips as approved and NEVER writes once customer_approved_at is set (status %s) — the frozen snapshot always wins, the lock holds regardless of the row-236/row-239 compose fix below',
+    async (status) => {
+      state.quote = {
+        id: 'q1',
+        customer_approved_at: '2026-01-02T00:00:00Z',
+        quote_sent_at: '2026-01-01T00:00:00Z',
+        status,
+      };
+      const res = await POST(makeReq(VALID_BODY), ctx());
+      const json = await res.json();
+      expect(res.status).toBe(200);
+      expect(json.skipped).toBe('approved');
+      expect(state.lastUpdatePayload).toBeNull();
+    },
+  );
 
-  it.each(['declined', 'cancelled', 'abandoned', 'changes_requested'] as const)(
+  it.each(['cancelled', 'changes_requested'] as const)(
     'FIX D: skips as inactive and never writes when status is %s (defense-in-depth — the client already blocks this)',
     async (status) => {
       state.quote = { id: 'q1', customer_approved_at: null, quote_sent_at: '2026-01-01T00:00:00Z', status };
@@ -259,6 +262,33 @@ describe('POST /api/quotes/[id]/selection', () => {
       expect(res.status).toBe(200);
       expect(json.skipped).toBe('inactive');
       expect(state.lastUpdatePayload).toBeNull();
+    },
+  );
+
+  // Row 236 x row 239 compose fix: declined/abandoned stay portal-BROWSABLE
+  // (row 236 — Jason's ruling), so their selection edits must actually
+  // persist instead of silently reverting on reload. Before this fix these
+  // two fell into the same "skipped: inactive" bucket as cancelled/
+  // changes_requested above, even though the client's <SelectionProvider>
+  // stays mounted and interactive for them — a real customer-facing silent
+  // no-op.
+  it.each(['declined', 'abandoned'] as const)(
+    'row 236 x row 239: ACCEPTS and persists a selection on a still-browsable %s quote',
+    async (status) => {
+      state.quote = { id: 'q1', customer_approved_at: null, quote_sent_at: '2026-01-01T00:00:00Z', status };
+      const res = await POST(makeReq(VALID_BODY), ctx());
+      const json = await res.json();
+      expect(res.status).toBe(200);
+      expect(json.ok).toBe(true);
+      expect(json.skipped).toBeUndefined();
+      expect(state.lastEqId).toBe(VALID_ID);
+      expect(state.lastIsFilter).toEqual(['customer_approved_at', null]);
+      expect(state.lastUpdatePayload).toMatchObject({
+        browsing_selection: {
+          packageId: 'D',
+          selectedItemIds: ['item-1', 'item-2'],
+        },
+      });
     },
   );
 

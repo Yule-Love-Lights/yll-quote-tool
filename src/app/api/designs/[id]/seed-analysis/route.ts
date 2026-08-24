@@ -14,7 +14,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
-import { getDesign, updateDesignScene, isValidDesignId, EMPTY_SCENE } from '@/lib/designs';
+import { getDesign, updateDesignSceneGuarded, isValidDesignId, EMPTY_SCENE } from '@/lib/designs';
 import {
   seedSceneFromAnalysis,
   sanitizeAnalysisSeed,
@@ -76,8 +76,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // seedFromAnalysis.test.ts.
   const beforeGroups = (row.scene ?? EMPTY_SCENE).items.filter(isMiniGroup);
   const scene = seedSceneFromAnalysis(row.scene ?? EMPTY_SCENE, seed, row.photo_w, row.photo_h);
-  const ok = await updateDesignScene(id, scene);
-  if (!ok) {
+  // Ledger row 260: CAS'd on the version this route just read via getDesign()
+  // above. "The builder closes/remounts the editor around this" (see the file
+  // header) was always a soft, client-enforced invariant — this makes it a
+  // real guarantee instead of an accepted risk.
+  const outcome = await updateDesignSceneGuarded(id, scene, row.version ?? null);
+  if (!outcome.ok) {
+    if (outcome.reason === 'conflict') {
+      return NextResponse.json(
+        { error: 'The design changed elsewhere while re-analyzing — reopen it and try again', conflict: true },
+        { status: 409 },
+      );
+    }
     return NextResponse.json({ error: 'Failed to save the seeded scene' }, { status: 500 });
   }
   const afterGroupIds = new Set(scene.items.filter(isMiniGroup).map((g) => g.id));

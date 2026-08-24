@@ -139,7 +139,10 @@ Save the framed question for the transcript.
 ### step 2: convene the council (5 sub-agents in parallel)
 
 
-Spawn all 5 advisors simultaneously as sub-agents. Each gets:
+Spawn all 5 advisors simultaneously as sub-agents, each with an explicit model:
+advisors run Sonnet 5 per the AGENTS.md routing table. Never let a spawn inherit
+the session model (in a Fable session an unpinned spawn bills at the top rate).
+Each gets:
 
 
 1. Their advisor identity and thinking style (from the descriptions above)
@@ -190,7 +193,9 @@ This is the step that makes the council more than just "ask 5 times." It's the c
 Collect all 5 advisor responses. Anonymize them as Response A through E (randomize which advisor maps to which letter so there's no positional bias).
 
 
-Spawn 5 new sub-agents, one for each advisor. Each reviewer sees all 5 anonymized responses and answers three questions:
+Spawn 5 new sub-agents, one for each advisor, each with an explicit model
+(reviewers run Sonnet 5, same routing rule as step 2). Each reviewer sees all 5
+anonymized responses and answers three questions:
 
 
 1. Which response is the strongest and why? (pick one)
@@ -261,7 +266,7 @@ Keep your review under 200 words. Be direct.
 ### step 4: chairman synthesis
 
 
-This is the final step. One agent gets everything: the original question, all 5 advisor responses (now de-anonymized so you can see which advisor said what), and all 5 peer reviews.
+This is the final step. One agent gets everything: the original question, all 5 advisor responses (now de-anonymized so you can see which advisor said what), and all 5 peer reviews. The chairman spawn carries an explicit model: Opus per the routing table; per AGENTS.md's named Fable-eligible cases, the single chairman synthesis call may take Fable instead (the council is already ask-first).
 
 
 The chairman's job is to produce the final council output. It follows this structure:
@@ -459,4 +464,4 @@ Only save a transcript if the user asks for it or if the question is significant
 
 - **Don't council trivial questions.** If the user asks something with one right answer, just answer it. The council is for genuine uncertainty where multiple perspectives add value.
 
-- **The visual report matters.** Most users will scan the report, not read the full transcript. Make the HTML output clean and scannable.
+- **The verdict lives in chat.** Present the full verdict in conversation per step 5; no HTML report and no files unless the user asks for one. (Resolved 2026-08-21: this file used to demand an HTML report here while step 5 banned it; chat-only wins.)
