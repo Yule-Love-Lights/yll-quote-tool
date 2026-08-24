@@ -56,6 +56,19 @@ function asNum(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : 0;
 }
 
+// BANDING PITFALL (learned the hard way, keep this note): band by staff-final
+// SANTAS footage alone, NOT santas+gingerbread total. My first attempt banded
+// by `staffTotalFootage` (this script's `band` field) and got a materially
+// different, WRONG distribution (n=1,2,27,8 across the four bands below,
+// dominated by the 100-199ft band) that did not match the independently
+// reported bias numbers at all. Re-banding by `staffSantasFootage` alone
+// (filtering to rows where it's >0, i.e. the santas package was actually
+// quoted) reproduces the reported distribution (n=14,16,6,2) and bias
+// percentages (-3.5%/-20.2%/-43.8%/-72.5%) almost exactly. The prompt's own
+// TYPICAL LI HOUSE SIZES table characterizes house size by the FRONT edge
+// (santas) alone, not by santas+gingerbread combined -- that's the metric
+// that matches. See the per-row `staffSantasFootage` field in the JSON output
+// if you need to re-band without re-running the query.
 const SIZE_BANDS: { label: string; min: number; max: number }[] = [
   { label: 'under 50ft', min: 0, max: 50 },
   { label: '50-99ft', min: 50, max: 100 },
@@ -199,7 +212,7 @@ async function main() {
     `street santas segments — max ${Math.max(...perRow.map((r) => r.aiSantasSegStreet), 0)}`,
   );
 
-  console.log(`\n=== BY STAFF-FINAL SIZE BAND (total santas+gingerbread footage) ===`);
+  console.log(`\n=== BY STAFF-FINAL SIZE BAND (total santas+gingerbread footage — reference only, see BANDING PITFALL comment above) ===`);
   console.log(
     'band'.padEnd(12),
     'n'.padEnd(4),
@@ -233,12 +246,54 @@ async function main() {
     );
   }
 
-  // The orchestrator's specific claim: zero overlap between "has satellite
-  // geometry" and "over ~105ft final footage".
+  console.log(`
+=== BY STAFF-FINAL SANTAS FOOTAGE BAND (the metric that reproduces the reported bias numbers) ===`);
+  console.log(
+    'band'.padEnd(12),
+    'n'.padEnd(4),
+    'aiSantasFtg'.padEnd(12),
+    'staffSantasFtg'.padEnd(15),
+    'bias%',
+  );
+  const santasRows = perRow.filter((r) => r.staffSantasFootage > 0);
+  const aiSantasChosen = (r: PerRow) =>
+    r.preferredSource === 'satellite' ? r.aiSatSantasFootage : r.aiSantasFootage;
+  for (const band of SIZE_BANDS) {
+    const rs = santasRows.filter((r) => r.staffSantasFootage >= band.min && r.staffSantasFootage < band.max);
+    if (rs.length === 0) continue;
+    const aiFtg = avg(rs.map(aiSantasChosen));
+    const staffFtg = avg(rs.map((r) => r.staffSantasFootage));
+    const bias = ((aiFtg - staffFtg) / staffFtg) * 100;
+    console.log(
+      band.label.padEnd(12),
+      String(rs.length).padEnd(4),
+      aiFtg.toFixed(1).padEnd(12),
+      staffFtg.toFixed(1).padEnd(15),
+      `${bias >= 0 ? '+' : ''}${bias.toFixed(1)}%`,
+    );
+  }
+
+  // Banded by SANTAS footage (see BANDING PITFALL comment above) -- this is
+  // the metric that reproduces the reported "zero overlap" finding exactly.
+  const over105Santas = perRow.filter((r) => r.staffSantasFootage > 105);
+  const over105SantasWithSatGeom = over105Santas.filter((r) => r.hasSatelliteGeometry);
+  console.log(
+    `\nHouses with staff-final SANTAS footage > 105ft: n=${over105Santas.length}, of which ${over105SantasWithSatGeom.length} have ANY AI satellite geometry.`,
+  );
+  const withSatGeomS = perRow.filter((r) => r.hasSatelliteGeometry);
+  const withoutSatGeomS = perRow.filter((r) => !r.hasSatelliteGeometry);
+  console.log(
+    `Houses WITH satellite geometry: n=${withSatGeomS.length}, avg staff-final SANTAS footage ${avg(withSatGeomS.map((r) => r.staffSantasFootage)).toFixed(1)}ft, max ${Math.max(...withSatGeomS.map((r) => r.staffSantasFootage), 0).toFixed(0)}ft`,
+  );
+  console.log(
+    `Houses WITHOUT satellite geometry: n=${withoutSatGeomS.length}, avg staff-final SANTAS footage ${avg(withoutSatGeomS.map((r) => r.staffSantasFootage)).toFixed(1)}ft, max ${Math.max(...withoutSatGeomS.map((r) => r.staffSantasFootage), 0).toFixed(0)}ft`,
+  );
+
+  // Reference only (total-footage banding -- see BANDING PITFALL comment above).
   const over105 = perRow.filter((r) => r.staffTotalFootage > 105);
   const over105WithSatGeom = over105.filter((r) => r.hasSatelliteGeometry);
   console.log(
-    `\nHouses with staff-final footage > 105ft: n=${over105.length}, of which ${over105WithSatGeom.length} have ANY AI satellite geometry.`,
+    `\n(reference, total-footage banding) Houses with staff-final footage > 105ft: n=${over105.length}, of which ${over105WithSatGeom.length} have ANY AI satellite geometry.`,
   );
   const withSatGeom = perRow.filter((r) => r.hasSatelliteGeometry);
   const withoutSatGeom = perRow.filter((r) => !r.hasSatelliteGeometry);
