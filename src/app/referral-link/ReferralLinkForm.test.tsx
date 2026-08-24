@@ -124,6 +124,15 @@ describe('ReferralLinkReady (naldo/referral-link-personalized, review fix 1; cop
     expect(html).toContain(`src="${LINK}"`);
   });
 
+  // Review fix 7: PhoneFrame's `title` prop lands on an aria-hidden,
+  // tabIndex={-1} iframe (PhoneFrame.tsx), so it reaches nobody. This is
+  // the ONLY visible signal that this second phone frame is now the
+  // person's real, live page, not another copy of the sample they just saw.
+  it('gives the live phone frame a visible caption (its title attribute is aria-hidden and reaches nobody)', () => {
+    const html = renderToStaticMarkup(<ReferralLinkReady link={LINK} name="Riley" {...REWARD_TERMS} />);
+    expect(html).toContain('This is your real page, live right now.');
+  });
+
   it('the link and Copy button still render if the phone frame is absent (the frame is decoration, the link is the deliverable)', () => {
     // PhoneFrame degrades to `null` on a failed load (see PhoneFrame.test.tsx),
     // which can only remove ITSELF from the tree if it is a sibling of

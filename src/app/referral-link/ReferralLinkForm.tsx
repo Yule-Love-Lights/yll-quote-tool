@@ -236,8 +236,15 @@ export function ReferralLinkReady({
           generated anything (page.tsx), so they can see it live, house
           render and all, before they send it to anyone. Decorative only:
           the link, Copy, and Share controls above already work with no
-          dependency on this rendering. */}
+          dependency on this rendering.
+          Review fix 7: PhoneFrame's `title` prop lands on the iframe, which
+          is aria-hidden with tabIndex={-1} (see PhoneFrame.tsx), so that
+          title never reaches anyone. Someone who saw the near-identical
+          sample phone minutes ago (page.tsx) had no visible cue this one is
+          now their real page. Added a caption below it, mirroring exactly
+          how the sample block captions itself on page.tsx. */}
       <PhoneFrame src={link} title="Your referral page, live" className="mt-6" />
+      <p className="mt-4 text-[13px] text-[#A89F87]">This is your real page, live right now.</p>
 
       <p className="mt-5 text-[13px] text-[#A89F87] leading-[1.5]">
         Forwarded to you? This link belongs to {name || 'someone else'}.{' '}
