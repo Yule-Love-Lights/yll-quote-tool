@@ -469,6 +469,77 @@ describe('POST /api/invoices/[id]/charge-balance — reconciliation guard agains
   });
 });
 
+// ─── Row 341 fix round 3: the guard's own priorBalanceCollectedUsd wiring ───
+// The four tests above exercise `if (quote.result && !overrideStale)` (the
+// BRANCH), but every `getInvoiceMock` fixture they use omits `total`/
+// `deposit_applied`, so `priorBalanceCollectedUsd(freshInvoice)` always
+// evaluates to 0 in all of them — identical to the pre-fix-round-3 formula.
+// A regression that dropped the 5th argument entirely would still pass all
+// four (confirmed by negative control below). These three give the specific
+// argument executable coverage, using the SAME $500-deposit/$500-settled
+// worked example `quoteAmendInvoiceSync.test.ts` pins for the resync side —
+// deposit $500, $500 already collected beyond it (so $1,000 genuinely in
+// hand), agreed total raised to $1,400 → real balance owed $400, not the
+// deposit-only $900.
+const QUOTE_WITH_SETTLED_BALANCE = {
+  ...QUOTE,
+  result: { total: 1400 },
+  deposit_amount_usd: 500,
+};
+describe('POST /api/invoices/[id]/charge-balance — reconciliation guard nets out a settled balance payment (row 341 fix round 3)', () => {
+  it('does NOT false-409 a correctly-resynced invoice with a settled balance beyond the deposit — the case this fix round exists to protect', async () => {
+    // Already resynced to the CORRECT (fixed-formula) figure: total 1400,
+    // balance 400 (1000 already collected — 500 deposit + 500 settled —
+    // netted against the 1400 total), deposit_applied still just 500 (never
+    // mutated). Pre-fix, `expected` would have computed 900 (deposit-only)
+    // here and false-409'd this legitimately-collectable invoice.
+    getInvoiceMock.mockResolvedValue({ ...INVOICE, total: 1400, balance: 400, deposit_applied: 500 });
+    // mockResolvedValue (persistent), not Once — a prior test's unconsumed
+    // Once value (e.g. if an earlier test in this describe block never
+    // reaches chargeMock) would otherwise leak into this one via the shared
+    // FIFO once-queue vi.clearAllMocks() does not drain.
+    chargeMock.mockResolvedValue({ ok: true, chargedUsd: 400, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
+    sbRef.current = makeSb(QUOTE_WITH_SETTLED_BALANCE, SETTLE_OK);
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toMatchObject({ ok: true, charged: true });
+    expect(chargeMock).toHaveBeenCalledWith(expect.objectContaining({ amountUsd: 400 }));
+  });
+
+  it('409s (invoice-stale) on a genuinely stale invoice even when money was already collected beyond the deposit — the settled balance does not mask real staleness', async () => {
+    // NEVER resynced to the new 1400 agreed total: still sitting at the OLD
+    // total (1000), with 300 collected beyond the deposit (500 deposit +
+    // partial 300 → balance 200 remaining on the OLD total). The correctly-
+    // netted expected balance on the NEW total is 600 (1400 − 500 deposit −
+    // 300 already-collected), which disagrees with the invoice's actual 200
+    // — genuine staleness, not the settled-balance case above.
+    getInvoiceMock.mockResolvedValue({ ...INVOICE, total: 1000, balance: 200, deposit_applied: 500 });
+    sbRef.current = makeSb(QUOTE_WITH_SETTLED_BALANCE);
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.reason).toBe('invoice-stale');
+    expect(chargeMock).not.toHaveBeenCalled();
+    // Pins the CORRECTED expected figure (600) in the response, not the
+    // pre-fix deposit-only one (900) — proves the guard's own diagnosis uses
+    // the fixed formula, not just that it happens to disagree.
+    expect(json.error).toContain('expected $600');
+  });
+
+  it('charges anyway with the explicit overrideStale, even on the genuinely-stale settled-balance invoice above', async () => {
+    getInvoiceMock.mockResolvedValue({ ...INVOICE, total: 1000, balance: 200, deposit_applied: 500 });
+    // mockResolvedValue (persistent) — same reasoning as the test above.
+    chargeMock.mockResolvedValue({ ok: true, chargedUsd: 200, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
+    sbRef.current = makeSb(QUOTE_WITH_SETTLED_BALANCE, SETTLE_OK);
+    const res = await POST(req({ overrideStale: true }), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(json).toMatchObject({ ok: true, charged: true });
+    expect(chargeMock).toHaveBeenCalledWith(expect.objectContaining({ amountUsd: 200 })); // the stale figure ON FILE — overrideStale means "charge it anyway"
+  });
+});
+
 // ─── #199: NCE trade-settled balance ────────────────────────────────────────
 describe('POST /api/invoices/[id]/charge-balance — NCE trade-settled balance (#199)', () => {
   it('409s (nce-blocked) without charging when the quote is NCE-tagged', async () => {
