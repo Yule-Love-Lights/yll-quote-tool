@@ -34,6 +34,17 @@ describe('buildReferralShareMessage', () => {
   it('never uses an em dash (voice rules)', () => {
     expect(buildReferralShareMessage(LINK, 2, 16, 170)).not.toContain('—');
   });
+
+  // Review fix 8: this is the exact text a customer SENDS, the single
+  // most-read sentence in the whole program (it's what lands in a
+  // neighbor's phone). Every sibling copy block on the page was rewritten
+  // to any-service framing; this one said "the holiday lights I'm getting"
+  // and got missed.
+  it('never says "holiday lights" -- service-neutral, like every other copy block on this page', () => {
+    const msg = buildReferralShareMessage(LINK, 2, 16, 170);
+    expect(msg.toLowerCase()).not.toContain('holiday lights');
+    expect(msg).toContain('Yule Love Lights');
+  });
 });
 
 describe('ReferralShareButton', () => {

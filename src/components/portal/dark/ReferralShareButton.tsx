@@ -37,14 +37,24 @@ function getCanShareServerSnapshot(): boolean {
 
 /** The exact text composed for both the native share sheet and the SMS
  *  fallback, so both paths send an identical message. Exported for direct
- *  testing of the composition (count/size/link all show up correctly). */
+ *  testing of the composition (count/size/link all show up correctly).
+ *
+ *  Review fix 8: this opened with "Check out the holiday lights I'm getting
+ *  from Yule Love Lights!" -- every sibling copy block on this page was
+ *  rewritten to any-service framing (holiday, permanent, event and wedding,
+ *  or bistro), but this exact sentence, the one a customer actually SENDS,
+ *  used a different phrase and got missed. It's also the single most-read
+ *  line in the whole program: it's what lands in a neighbor's phone.
+ *  Reworded service-neutral and in a plain, texted-by-a-person voice
+ *  instead of a formal service list, which would read like a company wrote
+ *  it. */
 export function buildReferralShareMessage(
   link: string,
   spritzerCount: number,
   spritzerSizeInches: number,
   spritzerValueUsd: number,
 ): string {
-  return `Check out the holiday lights I'm getting from Yule Love Lights! Use my link and get ${formatUsd(
+  return `Check out Yule Love Lights, they do beautiful outdoor lighting! Use my link and get ${formatUsd(
     spritzerValueUsd,
   )} in free lighting on your first booked install, ${spritzerCount} staked spotlights for your yard (${spritzerSizeInches}" spritzers): ${link}`;
 }
