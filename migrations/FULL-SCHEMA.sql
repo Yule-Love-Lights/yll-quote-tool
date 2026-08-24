@@ -503,6 +503,9 @@ alter table designs
   -- 2026-07-02 a staff title for the BASE photo (renameable "Photo 1" tab,
   -- like the extras' own titles). Nullable — null renders as "Photo 1".
   add column if not exists photo_title text,
+  -- 2026-08-21 independent customer-portal image visibility controls.
+  add column if not exists portal_show_street_view boolean not null default true,
+  add column if not exists portal_show_satellite_view boolean not null default true,
   -- 2026-08-20 compare-and-swap guard for the scene autosave (ledger row
   -- 260, migrations/2026-08-20-designs-scene-version.sql). Every scene write
   -- goes UPDATE ... WHERE version = <last-read value> SET version =
@@ -2412,7 +2415,84 @@ alter table public.quotes
 comment on column public.quotes.browsing_selection is
   'Customer''s LIVE, still-editable portal selection (ledger row 239) — packageId/selectedItemIds/rushSelected/takedownSelected/installTiming/colorSchemeId/customPattern/permanentEffect. NOT the frozen agreement (see approval_snapshot); never trusted for money math; reconciled against live packages/lineItems on read (resolveBrowsingSelectionSeed). Written only pre-approval by /api/quotes/[id]/selection.';
 
+
 -- ---------------------------------------------------------------------
+-- staff_notes (2026-08-21, migrations/2026-08-21-staff-notes.sql) —
+-- append-only internal notes shared by a quote and its linked job/invoice
+-- admin pages. Service-role only; no browser policies.
+-- ---------------------------------------------------------------------
+create table if not exists public.staff_notes (
+  id                  uuid primary key default gen_random_uuid(),
+  quote_id            uuid not null references public.quotes(id) on delete cascade,
+  body                text not null,
+  created_by          uuid references auth.users(id) on delete set null,
+  created_by_label    text not null,
+  created_at          timestamptz not null default now(),
+  client_request_id   uuid not null,
+
+  constraint staff_notes_body_valid
+    check (body = btrim(body) and char_length(body) between 1 and 2000),
+  constraint staff_notes_created_by_label_valid
+    check (
+      created_by_label = btrim(created_by_label)
+      and char_length(created_by_label) between 1 and 320
+    ),
+  constraint staff_notes_quote_request_unique
+    unique (quote_id, client_request_id)
+);
+
+create index if not exists staff_notes_quote_created_idx
+  on public.staff_notes (quote_id, created_at desc, id desc);
+
+create index if not exists staff_notes_created_by_idx
+  on public.staff_notes (created_by)
+  where created_by is not null;
+
+alter table public.staff_notes enable row level security;
+
+revoke all on public.staff_notes from anon, authenticated, service_role;
+grant select, insert on public.staff_notes to service_role;
+
+comment on table public.staff_notes is
+  'Internal staff-only quote timeline, also shown on the linked job and invoice. Never customer-facing.';
+
+-- ---------------------------------------------------------------------
+-- quote_build_sessions (2026-08-21, migrations/2026-08-21-quote-build-sessions.sql)
+-- - server-timed staff quote-building sessions, from accepted/prefilled
+-- contact through the quote's first real sent transition. Private service-role
+-- analytics only; test quotes, retries, and resends do not complete rows.
+-- ---------------------------------------------------------------------
+create table if not exists public.quote_build_sessions (
+  id                uuid primary key,
+  started_at        timestamptz not null default now(),
+  start_reason      text not null
+                      check (start_reason in ('contact_selected', 'prefilled_open')),
+  started_by        uuid references auth.users(id) on delete set null,
+  started_by_label  text not null
+                      check (char_length(btrim(started_by_label)) between 1 and 200),
+  quote_id          uuid references public.quotes(id) on delete cascade,
+  sent_at           timestamptz,
+
+  constraint quote_build_sessions_valid_completion
+    check (sent_at is null or (quote_id is not null and sent_at >= started_at))
+);
+
+create unique index if not exists quote_build_sessions_quote_id_uidx
+  on public.quote_build_sessions (quote_id)
+  where quote_id is not null;
+
+create index if not exists quote_build_sessions_started_by_idx
+  on public.quote_build_sessions (started_by);
+
+create index if not exists quote_build_sessions_sent_at_idx
+  on public.quote_build_sessions (sent_at desc, id)
+  where sent_at is not null;
+
+alter table public.quote_build_sessions enable row level security;
+
+revoke all on table public.quote_build_sessions from public, anon, authenticated, service_role;
+grant select, insert, update on table public.quote_build_sessions to service_role;
+
 -- quotes.ghl_event_date_pushed (2026-08-22,
 -- migrations/2026-08-22-quotes-ghl-event-date-pushed.sql) — ledger #314 fix
 -- round (staff-lens HIGH): the MM/DD/YYYY value last CONFIRMED pushed to

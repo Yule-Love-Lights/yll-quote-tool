@@ -12,6 +12,7 @@ const {
   updateDesignSceneGuarded,
   linkDesignToQuote,
   updateDesignSatelliteLines,
+  updateDesignPortalVisibility,
   requireOperatorMock,
   isConfigured,
 } = vi.hoisted(() => ({
@@ -19,6 +20,7 @@ const {
   updateDesignSceneGuarded: vi.fn(),
   linkDesignToQuote: vi.fn(),
   updateDesignSatelliteLines: vi.fn(),
+  updateDesignPortalVisibility: vi.fn(),
   requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
   isConfigured: { current: true },
 }));
@@ -28,6 +30,7 @@ vi.mock('@/lib/designs', () => ({
   updateDesignSceneGuarded,
   linkDesignToQuote,
   updateDesignSatelliteLines,
+  updateDesignPortalVisibility,
   isValidDesignId: (id: unknown) =>
     typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id),
 }));
@@ -63,6 +66,10 @@ beforeEach(() => {
   updateDesignSceneGuarded.mockResolvedValue({ ok: true, version: 2 });
   linkDesignToQuote.mockResolvedValue(true);
   updateDesignSatelliteLines.mockResolvedValue(true);
+  updateDesignPortalVisibility.mockResolvedValue({
+    portalShowStreetView: true,
+    portalShowSatelliteView: true,
+  });
 });
 
 describe('GET /api/designs/[id]', () => {
@@ -105,17 +112,20 @@ describe('PUT /api/designs/[id]', () => {
     const res = await PUT(makeReq({ scene: validScene }), ctx());
     expect(res.status).toBe(401);
     expect(updateDesignSceneGuarded).not.toHaveBeenCalled();
+    expect(updateDesignPortalVisibility).not.toHaveBeenCalled();
   });
 
   it('503s when Supabase service role is not configured', async () => {
     isConfigured.current = false;
     const res = await PUT(makeReq({ scene: validScene }), ctx());
     expect(res.status).toBe(503);
+    expect(updateDesignPortalVisibility).not.toHaveBeenCalled();
   });
 
   it('400s an invalid id', async () => {
     const res = await PUT(makeReq({ scene: validScene }), ctx('not-a-uuid'));
     expect(res.status).toBe(400);
+    expect(updateDesignPortalVisibility).not.toHaveBeenCalled();
   });
 
   it('400s invalid JSON', async () => {
@@ -124,11 +134,105 @@ describe('PUT /api/designs/[id]', () => {
     expect(res.status).toBe(400);
   });
 
-  it('400s when none of scene/quoteId/satelliteLines are provided', async () => {
+  it('400s when no supported update field is provided', async () => {
     const res = await PUT(makeReq({}), ctx());
     expect(res.status).toBe(400);
     const json = await res.json();
     expect(json.error).toMatch(/nothing to update/i);
+  });
+
+  it.each(['false', null, undefined])('400s a present non-boolean portal visibility value (%s)', async (value) => {
+    const res = await PUT(makeReq({ portalShowStreetView: value }), ctx());
+    expect(res.status).toBe(400);
+    expect(updateDesignPortalVisibility).not.toHaveBeenCalled();
+  });
+
+  it('validates portal visibility before saving any other field', async () => {
+    const res = await PUT(
+      makeReq({ scene: validScene, portalShowSatelliteView: 'false' }),
+      ctx(),
+    );
+    expect(res.status).toBe(400);
+    expect(updateDesignPortalVisibility).not.toHaveBeenCalled();
+  });
+
+  it('updates only the submitted portal visibility flag and returns canonical state', async () => {
+    updateDesignPortalVisibility.mockResolvedValueOnce({
+      portalShowStreetView: false,
+      portalShowSatelliteView: true,
+    });
+
+    const res = await PUT(makeReq({ portalShowStreetView: false }), ctx());
+
+    expect(res.status).toBe(200);
+    expect(updateDesignPortalVisibility).toHaveBeenCalledTimes(1);
+    expect(updateDesignPortalVisibility).toHaveBeenCalledWith(VALID_ID, {
+      portalShowStreetView: false,
+    });
+    expect(await res.json()).toEqual({
+      ok: true,
+      portalShowStreetView: false,
+      portalShowSatelliteView: true,
+    });
+  });
+
+  it('updates both portal visibility flags atomically through one helper call', async () => {
+    updateDesignPortalVisibility.mockResolvedValueOnce({
+      portalShowStreetView: false,
+      portalShowSatelliteView: false,
+    });
+
+    const res = await PUT(
+      makeReq({ portalShowStreetView: false, portalShowSatelliteView: false }),
+      ctx(),
+    );
+
+    expect(res.status).toBe(200);
+    expect(updateDesignPortalVisibility).toHaveBeenCalledTimes(1);
+    expect(updateDesignPortalVisibility).toHaveBeenCalledWith(VALID_ID, {
+      portalShowStreetView: false,
+      portalShowSatelliteView: false,
+    });
+  });
+
+  it('does not stale-overwrite street visibility in a satellite-only request', async () => {
+    updateDesignPortalVisibility.mockResolvedValueOnce({
+      portalShowStreetView: false,
+      portalShowSatelliteView: true,
+    });
+
+    const res = await PUT(makeReq({ portalShowSatelliteView: true }), ctx());
+
+    expect(res.status).toBe(200);
+    expect(updateDesignPortalVisibility).toHaveBeenCalledWith(VALID_ID, {
+      portalShowSatelliteView: true,
+    });
+    expect(await res.json()).toMatchObject({
+      portalShowStreetView: false,
+      portalShowSatelliteView: true,
+    });
+  });
+
+  it('is safe to repeat the same portal visibility request', async () => {
+    updateDesignPortalVisibility.mockResolvedValue({
+      portalShowStreetView: false,
+      portalShowSatelliteView: true,
+    });
+
+    const first = await PUT(makeReq({ portalShowStreetView: false }), ctx());
+    const second = await PUT(makeReq({ portalShowStreetView: false }), ctx());
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(await first.json()).toEqual(await second.json());
+    expect(linkDesignToQuote).not.toHaveBeenCalled();
+    expect(updateDesignSatelliteLines).not.toHaveBeenCalled();
+  });
+
+  it('500s when portal visibility persistence fails', async () => {
+    updateDesignPortalVisibility.mockResolvedValueOnce(null);
+    const res = await PUT(makeReq({ portalShowSatelliteView: false }), ctx());
+    expect(res.status).toBe(500);
   });
 
   it('400s a malformed scene', async () => {
@@ -190,10 +294,41 @@ describe('PUT /api/designs/[id]', () => {
     expect(json.version).toBe(2); // whatever updateDesignSceneGuarded's mock returned
   });
 
+  it('saves a scene carrying per-photo brightness through the CAS guard', async () => {
+    const perPhotoScene = {
+      ...validScene,
+      brightness: 20,
+      extraPhotoBrightness: { 'left-photo': 65 },
+    };
+    const res = await PUT(makeReq({ scene: perPhotoScene, version: 4 }), ctx());
+    expect(res.status).toBe(200);
+    expect(updateDesignSceneGuarded).toHaveBeenCalledWith(VALID_ID, perPhotoScene, 4);
+  });
+
   it('treats an omitted version as null (the adopt path) rather than crashing', async () => {
     const res = await PUT(makeReq({ scene: validScene }), ctx());
     expect(res.status).toBe(200);
     expect(updateDesignSceneGuarded).toHaveBeenCalledWith(VALID_ID, validScene, undefined);
+  });
+
+  it('preserves a mini-group color pattern in the opaque scene update', async () => {
+    const scene = {
+      yardsticks: [],
+      items: [{
+        id: 'group-1',
+        kind: 'miniGroup',
+        yardstickId: null,
+        memberIds: ['member-1', 'member-2'],
+        surface: 'railing',
+        stringCount: 3,
+        colorPattern: ['red', 'green'],
+      }],
+    };
+
+    const res = await PUT(makeReq({ scene }), ctx());
+
+    expect(res.status).toBe(200);
+    expect(updateDesignSceneGuarded).toHaveBeenCalledWith(VALID_ID, scene, undefined);
   });
 
   it('saves satelliteLines successfully', async () => {

@@ -2,11 +2,12 @@
  * Validation for a Telegram user id, shared by every admin door that writes
  * `crew_members.telegram_user_id`.
  *
- * There are two such doors now: `/api/admin/crew-accounts` (field crew) and
- * `/api/admin/office-staff` (office staff). They must agree byte for byte on
- * what a valid id is, because they write the SAME column, guarded by the same
- * partial unique index, and read back by the same webhook lookup. Two copies of
- * this rule is how one door starts accepting something the other rejects.
+ * There is ONE such door today, `/api/admin/staff`. There were briefly two, and
+ * keeping them agreeing byte for byte on what a valid id is — same column, same
+ * partial unique index, same webhook lookup reading it back — is part of why
+ * they were merged. This module stays separate anyway: the rule belongs with the
+ * column rather than with whichever route happens to write it, and the webhook
+ * that consumes the value lives somewhere else entirely.
  *
  * Telegram user ids are positive integers. Digits-only keeps a pasted @handle
  * ("@sonson") from being stored as a link that can never match, because the

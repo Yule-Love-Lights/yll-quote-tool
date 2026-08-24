@@ -9,7 +9,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-const { sbRef, hl, attachQuoteToCustomerMock, propagateMock, getOperatorMock } = vi.hoisted(() => ({
+const { sbRef, hl, attachQuoteToCustomerMock, propagateMock, getOperatorMock, queueQuoteBuildSessionCompletionMock } = vi.hoisted(() => ({
   sbRef: { current: null as unknown },
   // Row 340 fix round: the browsing-selection-clear audit stamp reads the
   // operator's email via getOperator() (mirrors staff-decline's own test
@@ -21,6 +21,7 @@ const { sbRef, hl, attachQuoteToCustomerMock, propagateMock, getOperatorMock } =
   // can assert on it directly.
   attachQuoteToCustomerMock: vi.fn(async () => null as null | { customerId: string; propertyId: string }),
   propagateMock: vi.fn(async () => {}),
+  queueQuoteBuildSessionCompletionMock: vi.fn(),
   hl: {
     updateOpportunity: vi.fn(async () => ({ id: 'opp_1' })),
     createOpportunity: vi.fn(async () => ({ id: 'opp_new' })),
@@ -56,6 +57,10 @@ vi.mock('@/lib/supabase', () => ({
 
 vi.mock('@/lib/rateLimit', () => ({
   rateLimitResponse: () => null,
+}));
+
+vi.mock('@/lib/quoteBuildTiming', () => ({
+  queueQuoteBuildSessionCompletion: queueQuoteBuildSessionCompletionMock,
 }));
 
 // #214: importOriginal keeps quoteRowToIdentity (pure sentinel translation)
@@ -321,6 +326,7 @@ function makeConcurrentSendSb(
 }
 
 const ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+const TIMER_ID = '11111111-2222-4333-8444-555555555555';
 
 function makeReq(retryGhl = false): NextRequest {
   const params = new URLSearchParams();
@@ -364,6 +370,50 @@ beforeEach(() => {
   process.env.HIGHLEVEL_PIPELINE_ID = 'pipeline_1';
   resetEventDateFieldCacheForTests();
   getOperatorMock.mockResolvedValue({ email: 'operator@example.com' });
+});
+
+describe('POST /api/quotes/[id]/send — quote build timing', () => {
+  it('completes the supplied timer once on the first real local-send stamp', async () => {
+    const { client } = makeSb({ ...FRESH_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ quoteBuildTimerId: TIMER_ID }), { params });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(queueQuoteBuildSessionCompletionMock).toHaveBeenCalledOnce();
+    expect(queueQuoteBuildSessionCompletionMock).toHaveBeenCalledWith({
+      quoteId: ID,
+      timerId: TIMER_ID,
+      sentAt: json.sentAt,
+    });
+  });
+
+  it.each([
+    ['test send', { ...FRESH_QUOTE, is_test: true, highlevel_contact_id: null, highlevel_opportunity_id: null }, false],
+    ['already sent', { ...FRESH_QUOTE, quote_sent_at: '2026-08-20T12:00:00.000Z', status: 'sent' }, false],
+    ['changes-requested resend', { ...FRESH_QUOTE, quote_sent_at: '2026-08-20T12:00:00.000Z', status: 'changes_requested' }, false],
+    ['delivery retry', { ...FRESH_QUOTE, quote_sent_at: '2026-08-20T12:00:00.000Z', status: 'sent' }, true],
+  ])('does not add a timing sample for a %s', async (_label, quote, retryDelivery) => {
+    const { client } = makeSb(quote);
+    sbRef.current = client;
+
+    await POST(makeReqWithBody({ quoteBuildTimerId: TIMER_ID }, retryDelivery), { params });
+
+    expect(queueQuoteBuildSessionCompletionMock).not.toHaveBeenCalled();
+  });
+
+  it('ignores a malformed optional timer id instead of blocking customer delivery', async () => {
+    const { client } = makeSb({ ...FRESH_QUOTE });
+    sbRef.current = client;
+
+    const res = await POST(makeReqWithBody({ quoteBuildTimerId: 'bad' }), { params });
+
+    expect(res.status).toBe(200);
+    expect(queueQuoteBuildSessionCompletionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ quoteId: ID, timerId: null }),
+    );
+  });
 });
 
 describe('POST /api/quotes/[id]/send — GHL sync state', () => {

@@ -12,6 +12,7 @@ import { ViewOnlyToggle } from '@/components/admin/ViewOnlyToggle';
 import { MarkAsSentButton } from '@/components/admin/MarkAsSentButton';
 import { FreeItemsPanel } from '@/components/admin/FreeItemsPanel';
 import { ColorRequestPanel } from '@/components/admin/ColorRequestPanel';
+import { StaffNotesPanel } from '@/components/admin/StaffNotesPanel';
 import { buildPortalLineItems } from '@/lib/portal/adapter';
 import { BUSINESS_RULES, resolveLineItemLabel, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { getQuoteRaw } from '@/lib/quotes';
@@ -29,6 +30,7 @@ import { costOverridesFromBistroCatalog } from '@/lib/inventory/bistroCatalog';
 import { getColorScheme, CUSTOM_SCHEME_ID } from '@/lib/design/colorSchemes';
 import { depositDeclineReasonText } from '@/lib/integrations/quoteMessages';
 import { VaultRegistrationNotice } from '@/components/admin/VaultRegistrationNotice';
+import { PortalImageVisibilityControls } from '@/components/admin/PortalImageVisibilityControls';
 import { isVaultRegisterEnabled } from '@/lib/integrations/valorVault';
 
 // Read-only operator detail for a single quote (PR1 of #83 ops console).
@@ -284,6 +286,8 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
           )}
         </div>
 
+        <StaffNotesPanel key={id} quoteId={id} />
+
         {/* Design photos (#13 PR5) — read-only thumbnails, base + extras. */}
         {photoThumbs.length > 0 && (
           <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
@@ -300,6 +304,16 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
               ))}
             </div>
           </div>
+        )}
+
+        {design && (
+          <PortalImageVisibilityControls
+            designId={design.id}
+            portalShowStreetView={design.portalShowStreetView}
+            portalShowSatelliteView={design.portalShowSatelliteView}
+            hasStreetImage={design.hasStreetImage}
+            hasSatelliteImage={design.hasSatelliteImage}
+          />
         )}
 
         {/* Timeline */}

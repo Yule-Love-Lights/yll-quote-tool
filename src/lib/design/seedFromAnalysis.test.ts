@@ -226,6 +226,7 @@ describe('seedSceneFromAnalysis — replacement rules', () => {
     expect(group).toBeTruthy(); // not orphaned — the id is present
     const member = out.items.find((i) => i.id === memberId) as StrandItem;
     expect(member.groupId).toBe(grp.id); // reattached, not dangling — projectScene's per-strand skip fires
+    expect(member.colorPattern).toEqual(['warm-white']); // legacy groups without a pattern keep the old default
     // Exactly one strand with this id — no accidental duplicate.
     expect(out.items.filter((i) => i.id === memberId)).toHaveLength(1);
   });
@@ -255,6 +256,7 @@ describe('seedSceneFromAnalysis — replacement rules', () => {
       wrapStyle: 'canopy',
       stringCount: 2,
       included: true,
+      colorPattern: ['red', 'green'],
     };
     const grouped: Scene = {
       ...seeded,
@@ -278,6 +280,7 @@ describe('seedSceneFromAnalysis — replacement rules', () => {
     const member = out.items.find((i) => i.id === memberId);
     expect(member && isMiniArea(member)).toBe(true); // the fresh item really is a miniArea now
     expect((member as MiniAreaItem).groupId).toBe(grp.id); // reattached across the kind change
+    expect((member as MiniAreaItem).colorPattern).toEqual(['red', 'green']);
     // Exactly one item with this id — no accidental duplicate, no double-bill.
     expect(out.items.filter((i) => i.id === memberId)).toHaveLength(1);
   });

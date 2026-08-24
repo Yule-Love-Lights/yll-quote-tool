@@ -11,8 +11,7 @@ import { SettingsSubNav } from '@/components/dashboard/SettingsSubNav';
 import { getOperator } from '@/lib/auth/supabaseServer';
 import { AccountsManager } from '@/components/settings/AccountsManager';
 import { ChangeMyPassword } from '@/components/settings/ChangeMyPassword';
-import { CrewLogins } from '@/components/settings/CrewLogins';
-import { OfficeStaff } from '@/components/settings/OfficeStaff';
+import { StaffAccounts } from '@/components/settings/StaffAccounts';
 
 export const dynamic = 'force-dynamic';
 
@@ -49,18 +48,12 @@ export default async function AccountsPage() {
                   <AccountsManager currentUserId={operator.id} />
                 </section>
                 {/*
-                  Office staff onboarding (row 354): turn an existing operator into
-                  a time-clock user, replacing the hand-written SQL. Admin-only,
-                  matching /api/admin/office-staff.
+                  ONE staff panel (row 354, unified 2026-08-24). Replaces the
+                  separate OfficeStaff and CrewLogins panels, which did the same
+                  job in two different shapes. Admin-only, matching every handler
+                  in /api/admin/staff.
                 */}
-                <OfficeStaff />
-                {/*
-                  Was imported but never rendered, so the whole crew panel — login
-                  creation (row 279/296) AND the Telegram link (row 318) — had no
-                  reachable surface at all. Admin-only, matching every handler in
-                  /api/admin/crew-accounts.
-                */}
-                <CrewLogins />
+                <StaffAccounts />
               </>
             )}
           </div>

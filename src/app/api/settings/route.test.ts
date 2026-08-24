@@ -25,6 +25,10 @@ vi.mock('@/lib/appSettings', async () => {
   return { ...actual, putAppSettings: putSpy };
 });
 
+// ledger #347: requireOperator is now engaged by default — stub it authorized
+// like the other route.ts test suites do; this suite is about boundary validation.
+vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: vi.fn(async () => null) }));
+
 import { PUT } from './route';
 
 function makeReq(body: unknown): NextRequest {

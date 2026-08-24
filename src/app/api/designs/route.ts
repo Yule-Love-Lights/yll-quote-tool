@@ -12,7 +12,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
-import { createDesign, getDesignWithPhoto, isValidDesignId } from '@/lib/designs';
+import { createDesign, getDesignByQuote, getDesignWithPhoto, isValidDesignId } from '@/lib/designs';
 import { sanitizeSeedLines } from '@/lib/design/seedRoofline';
 import { sanitizeAnalysisSeed } from '@/lib/design/seedFromAnalysis';
 import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
@@ -43,12 +43,26 @@ export async function POST(req: NextRequest) {
   }
   const photoBase64 = typeof body.photoBase64 === 'string' ? body.photoBase64 : null;
   const photoMediaType = typeof body.photoMediaType === 'string' ? body.photoMediaType : null;
+  const isBlankQuoteLinkedCreate =
+    typeof quoteId === 'string' &&
+    photoBase64 === null &&
+    body.seedLines === undefined &&
+    body.seedAnalysis === undefined &&
+    body.seedDefaultYardstick !== true;
 
   // Actor audit trail (#90): stamp the creating operator (null while the auth
   // gate is dormant / no session).
   const operator = await getOperator();
 
   try {
+    // Idempotent retry: a lost create response must not strand this browser on
+    // the quote_id uniqueness constraint. Reuse the already-linked design.
+    if (isBlankQuoteLinkedCreate) {
+      const existing = await getDesignByQuote(quoteId);
+      if (existing) {
+        return NextResponse.json({ design: existing, garlandSectionsUnestimated: 0 });
+      }
+    }
     const created = await createDesign({
       quoteId: (quoteId as string | undefined) ?? null,
       photoBase64,
@@ -63,6 +77,14 @@ export async function POST(req: NextRequest) {
       createdBy: operator?.id ?? null,
     });
     if (!created) {
+      // Two creates can pass the lookup together; the unique quote_id index
+      // lets one win. Return that winner to the losing request.
+      if (isBlankQuoteLinkedCreate) {
+        const existing = await getDesignByQuote(quoteId);
+        if (existing) {
+          return NextResponse.json({ design: existing, garlandSectionsUnestimated: 0 });
+        }
+      }
       return NextResponse.json({ error: 'Failed to create design' }, { status: 500 });
     }
     const design = await getDesignWithPhoto(created.id);

@@ -18,6 +18,7 @@ import { useLazyMountOnVisible } from '../useLazyMountOnVisible';
 import { LogoWatermark } from '../LogoWatermark';
 import type { PortalDesign } from '../types';
 import { isItemOnPhoto, type BulbColor } from '@/lib/design/sceneTypes';
+import { brightnessForPhoto } from '@/lib/design/photoBrightness';
 import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
 import { portalPhotos } from '@/lib/portal/photos';
 import { canCustomerRecolor, type ServiceType } from '@/lib/serviceType';
@@ -69,7 +70,11 @@ export function DesignReprise({
   const [photoIdx, setPhotoIdx] = useState(0);
   const active = photos[Math.min(photoIdx, photos.length - 1)];
   const activeScene = useMemo(
-    () => ({ ...design.scene, items: design.scene.items.filter((i) => isItemOnPhoto(i, active.id)) }),
+    () => ({
+      ...design.scene,
+      brightness: brightnessForPhoto(design.scene, active.id),
+      items: design.scene.items.filter((i) => isItemOnPhoto(i, active.id)),
+    }),
     [design.scene, active.id],
   );
   const step = (d: 1 | -1) => setPhotoIdx((i) => (i + d + photos.length) % photos.length);

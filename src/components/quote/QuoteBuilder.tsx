@@ -62,6 +62,14 @@ import { deriveSideMeasure } from '@/lib/permanent/satelliteMeasure';
 import { roundFootageUpTo5 } from '@/lib/permanent/types';
 import { deriveTrackAccessories, hasAccessorySignal } from '@/lib/permanent/trackAccessories';
 import {
+  reconcilePermanentSideField,
+  derivePermanentSideFootageBaseline,
+  mergePermanentSideFootageBaseline,
+  type PermanentSideFootageBaseline,
+  type PermanentSideFieldKey,
+  type PermanentSideFieldReconcileResult,
+} from '@/lib/permanent/reconcileSideFootage';
+import {
   reconcileBistroFootage,
   deriveBistroFootageMap,
   roundBistroFootageOnBlur,
@@ -81,6 +89,15 @@ import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
 import { track } from '@/lib/analytics/posthog';
 import { loadQuoteDraft, saveQuoteDraft, clearQuoteDraft, customerIsEmpty, draftAutosaveActive } from '@/lib/quoteDraft';
 import { downscaleForUpload, downscaleForUploadAsBlob, readUploadErrorMessage } from '@/lib/clientImage';
+import {
+  parkSatelliteContext,
+  persistSatelliteMeasurements,
+  saveAnalysisContext,
+  satelliteContextAfterPhotoChange,
+  satelliteLinesHaveContent,
+  type DesignAnalysisContext,
+  type InFlightSatelliteSave,
+} from '@/components/quote/persistSatelliteMeasurements';
 // Row 269: pure, client-safe helpers shared with PipelineActionsMenu.tsx —
 // pipelineSendOutcome.ts has zero imports of its own (no React, no
 // Supabase), so pulling it in here does not drag anything server-only into
@@ -93,6 +110,11 @@ import {
   type ChannelDeliveryClassification,
   type RetryGate,
 } from '@/components/admin/pipelineSendOutcome';
+import {
+  createQuoteBuildTimerClient,
+  quoteBuildTimerEligible,
+  shouldStartPrefilledQuoteTimer,
+} from '@/lib/quoteBuildTimerClient';
 
 // The Konva design editor touches the DOM/canvas, so load it client-only.
 const DesignEditor = dynamic(() => import('@/components/design/DesignEditor'), { ssr: false });
@@ -726,6 +748,26 @@ export default function QuoteBuilder({
         status: initialQuote.status ?? null,
       })
     : null;
+  const quoteBuildTimerRef = useRef<ReturnType<typeof createQuoteBuildTimerClient> | null>(null);
+  if (quoteBuildTimerRef.current === null) {
+    quoteBuildTimerRef.current = createQuoteBuildTimerClient();
+  }
+  const quoteBuildTimingEligible = quoteBuildTimerEligible({ isTest, viewOnly, status: savedStatus });
+  const hasPrefilledContact =
+    !!initialQuote?.highlevelContactId || (!initialQuote && !!prefill?.ghlContactId);
+  useEffect(() => {
+    if (
+      shouldStartPrefilledQuoteTimer({
+        hasPrefilledContact,
+        isTest,
+        viewOnly,
+        status: savedStatus,
+      })
+    ) {
+      void quoteBuildTimerRef.current?.start('prefilled_open', initialQuote?.quoteId);
+    }
+  }, [hasPrefilledContact, initialQuote?.quoteId, isTest, savedStatus, viewOnly]);
+
   // Row 338 fix-round HIGH/MED (staff lens): the STICKY identity-freeze
   // signal, mirroring the exact three-way OR route.ts's #251/#839 CAS gates
   // check server-side (deposit_paid_at || customer_approved_at ||
@@ -1171,6 +1213,7 @@ export default function QuoteBuilder({
   // Bumped when the design's scene/photo changes outside the editor (roofline
   // seed, photo replacement) so a remount reloads it.
   const [designEditorKey, setDesignEditorKey] = useState(0);
+  const [designPhotoRevision, setDesignPhotoRevision] = useState(0);
   // The live design scene, fetched after each Calculate so the Quote Breakdown
   // can map each line-item row → its scene item(s) and show the "recommended"
   // checkbox (#12). Empty/no-design → only custom rows are toggleable (their
@@ -1224,13 +1267,7 @@ export default function QuoteBuilder({
   // the satellite image/scale, persisted server-side so training capture
   // can assemble "what the AI originally said" from a reopened quote.
   // Parked here when the design doesn't exist yet (same dance as the seed).
-  type AnalysisContext = {
-    analysis?: Record<string, unknown>;
-    satelliteBase64?: string;
-    satelliteMediaType?: string;
-    satelliteFeetPerPixel?: number | null;
-  };
-  const pendingContextRef = useRef<AnalysisContext | null>(null);
+  const pendingContextRef = useRef<DesignAnalysisContext | null>(null);
   // #204 review round: which address the currently-parked pendingContextRef
   // satellite was pulled for — client-only bookkeeping, NEVER sent to the
   // server (pushAnalysisContext's payload shape is unchanged). Stamped by
@@ -1247,17 +1284,29 @@ export default function QuoteBuilder({
   // manual satellite upload) read the CURRENT id at fire time, not the stale
   // one captured in their closure when a design was created mid-flight.
   const designIdRef = useRef<string | null>(initialQuote?.designId ?? null);
-  const pushAnalysisContext = async (id: string, ctx: AnalysisContext) => {
+  const designPhotoOperationRef = useRef<Promise<void> | null>(null);
+  const designPhotoChangeInProgressRef = useRef(false);
+  const quoteSaveInProgressRef = useRef(false);
+  const satelliteChangeInProgressRef = useRef(false);
+  // Satellite uploads clear any older saved trace. Keep the latest request so
+  // Calculate can wait for it (or retry it) before writing the new lines.
+  const satelliteContextSaveRef = useRef<InFlightSatelliteSave | null>(null);
+  const pushAnalysisContext = async (id: string, ctx: DesignAnalysisContext) => {
     if (!ctx.analysis && !ctx.satelliteBase64) return;
+    const save = ctx.satelliteBase64
+      ? (satelliteContextSaveRef.current?.promise ?? Promise.resolve())
+          .catch(() => {})
+          .then(() => saveAnalysisContext(id, ctx))
+      : saveAnalysisContext(id, ctx);
+    if (ctx.satelliteBase64) {
+      satelliteContextSaveRef.current = { designId: id, context: ctx, promise: save };
+    }
     try {
-      await fetch(`/api/designs/${id}/analysis-context`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(ctx),
-      });
+      await save;
     } catch {
       // Non-fatal: quoting works without provenance; only training capture
-      // loses the "original analysis" half for this design.
+      // loses the "original analysis" half for this design. Calculate retries
+      // satellite payloads because their image must precede the saved trace.
     }
   };
   // "Save as training example" feedback (#8 Stage A) — covers both the
@@ -1405,8 +1454,15 @@ export default function QuoteBuilder({
   // pending roofline seed); photo changes later (camera recapture / re-lookup)
   // → replace the existing design's base photo in place.
   useEffect(() => {
-    if (!photoBase64 || !photoMediaType) return;
-    if (designPhotoRef.current === photoBase64) return;
+    if (!photoBase64 || !photoMediaType) {
+      designPhotoChangeInProgressRef.current = false;
+      return;
+    }
+    if (designPhotoRef.current === photoBase64) {
+      designPhotoChangeInProgressRef.current = false;
+      return;
+    }
+    designPhotoChangeInProgressRef.current = true;
     let stale = false;
     const push = async () => {
       setDesignBusy(true);
@@ -1449,6 +1505,7 @@ export default function QuoteBuilder({
               pendingContextRef.current = null;
               void pushAnalysisContext(id, ctx);
             }
+            designIdRef.current = id;
             setDesignId(id);
           }
         } else {
@@ -1480,12 +1537,18 @@ export default function QuoteBuilder({
         if (!stale) setDesignBusy(false);
       }
     };
-    void push();
+    const operation = push();
+    designPhotoOperationRef.current = operation;
+    void operation.then(() => {
+      if (designPhotoOperationRef.current === operation) {
+        designPhotoChangeInProgressRef.current = false;
+      }
+    });
     return () => {
       stale = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [photoBase64, photoMediaType, designId]);
+  }, [photoBase64, photoMediaType, designId, designPhotoRevision]);
 
   // Keep the designId ref in lockstep with state for async closures (L6).
   useEffect(() => {
@@ -1597,6 +1660,7 @@ export default function QuoteBuilder({
   const imgContainerRef = useRef<HTMLDivElement>(null);
   const [addMode, setAddMode] = useState<LineType | null>(null);
   const [pendingPoints, setPendingPoints] = useState<[number, number][]>([]);
+  const satelliteTraceVersionRef = useRef(0);
   // Scroll-wheel zoom + drag-to-pan for the satellite measurement box (#26).
   // Pan/zoom are paused while placing points (addMode) so clicks add points.
   const satWrapperRef = useRef<HTMLDivElement>(null);
@@ -1626,6 +1690,13 @@ export default function QuoteBuilder({
   // share one derive effect. See reconcileFootage.ts and the rehydrate-seed
   // comment in getSetter below.
   const prevHolidayDerivedRef = useRef<HolidayFootageBaseline>({});
+  // Row 345: baseline reconcile for the four permanent house sides' footage +
+  // corners (8 fields) — the scalar analog of prevHolidayDerivedRef above,
+  // for the OTHER shared-effect derive that had the same flaw (permanentSatLines
+  // holds all four sides in one object, so redrawing one side re-fires the
+  // whole effect). See reconcileSideFootage.ts and the rehydrate-seed comment
+  // in getSetter(side) below.
+  const prevPermSideDerivedRef = useRef<PermanentSideFootageBaseline>({});
 
   // Recompute footages from the SATELLITE lines (#35: the only line-measurement
   // source — deterministic feet-per-pixel × image pixel width). When there's no
@@ -1795,9 +1866,65 @@ export default function QuoteBuilder({
     });
   };
 
+  // Row 345 reopen-clobber guard (mirrors seedHolidayBaselineIfFrozen above,
+  // and #244's bistro seed): while still frozen (#142), prevPermSideDerivedRef
+  // has never been seeded for these PERSISTED sides — rehydrate sets
+  // permanentSatLines directly and never runs the derive effect while frozen.
+  // Without this seed, the FIRST post-reopen edit on ANY one of the four
+  // sides would see the OTHER three as having no recorded baseline, treat
+  // them as new, and stamp their freshly re-derived footage/corners over any
+  // saved manual override. Called before thawing, from the isPermanentSide
+  // getSetter branch below (for every side, not just the touched one), so
+  // every field's baseline is seeded together. Seeds from the CURRENT
+  // (pre-edit) lines/scale/aspect, same as the bistro seed.
+  const seedPermanentSideBaselineIfFrozen = () => {
+    if (!permDeriveFrozenRef.current) return;
+    const sides = {} as Record<PermanentSideKey, { hasLines: boolean; footage: number | null; corners: number }>;
+    for (const side of PERMANENT_SIDES) {
+      const lines = permanentSatLines[side];
+      const m = deriveSideMeasure(lines, satelliteFeetPerPixel, satelliteAspect);
+      sides[side] = { hasLines: lines.length > 0, footage: m.footage, corners: m.corners };
+    }
+    prevPermSideDerivedRef.current = derivePermanentSideFootageBaseline(sides);
+  };
+
+  // Row 345 finding 2: permDeriveFrozenRef is shared by THREE independent
+  // consumers — the permanent-side footage/corners derive above (line
+  // ~1942), the permanent accessories derive (line ~2032, no baseline
+  // concept of its own), and the permanent_bistro derive (its own baseline,
+  // prevBistroDerivedRef, seeded separately in the 'bistro' branch below).
+  // Every site that thaws the ref is a place the footage/corners derive can
+  // next fire from — an UNRELATED touch (a bistro edit, a Recount click)
+  // still shares this one ref, so if the seed above isn't called first,
+  // that next footage/corners run sees an EMPTY baseline for all four
+  // sides, treats every one of them as brand-new, and stamps fresh
+  // geometry over any hand-typed override — even on a side nobody touched.
+  // Reachable exactly this way through the "Recount from drawn lines"
+  // button (PermanentSection's accessories recount, wired to onRecount
+  // below), which used to clear the ref directly with no seed at all.
+  // Route every thaw through this helper instead of setting the ref
+  // directly, so the seed can never be forgotten at a new call site again.
+  //
+  // ONE class of exception, three sites (verified by grep at the 2026-08-24
+  // master re-sync, after #849/#866/#871/#874 added two more): a thaw that
+  // WIPES all four sides' lines wholesale in the same breath — the fresh
+  // analyze below, and the two satellite-replacement paths (manual upload,
+  // address re-pull, both of which warn the operator that traced footage will
+  // reset). Those stay PLAIN thaws on purpose. There is no override worth
+  // preserving across a wipe the operator just confirmed, and the next derive
+  // run sees hasLines=false with hadLinesPrev=true, so the reconcile's own
+  // delete-transition resets each field to 0 — which is exactly what the
+  // confirm dialog promised. Seeding there would be wrong, not merely
+  // redundant; see the fresh-analyze site's own comment for the full case.
+  const thawPermDerive = () => {
+    seedPermanentSideBaselineIfFrozen();
+    permDeriveFrozenRef.current = false;
+  };
+
   // Line setters — satellite-only now (#35): street lines are gone, the design
   // owns the street-side visuals.
   const getSetter = (type: LineType): ((updater: (lines: LineSegment[]) => LineSegment[]) => void) => {
+    satelliteTraceVersionRef.current += 1;
     // #142 thaw (holiday): the operator touched the lines, so footage may follow
     // the visible geometry again — same live-session rule as the permanent
     // branches below. Until then the rehydrate freeze keeps a reopened quote's
@@ -1846,16 +1973,22 @@ export default function QuoteBuilder({
         }
         // #142 thaw: the operator touched the lines — footage follows the
         // visible geometry again (live-session rules), mirroring the
-        // permanent-side branch below.
-        permDeriveFrozenRef.current = false;
+        // permanent-side branch below. Also seeds the permanent-SIDE baseline
+        // (row 345 finding 2) even though this branch only fires on a
+        // permanent_bistro quote — permDeriveFrozenRef is shared, and it's
+        // strictly safer for a later service-type switch back to 'permanent'
+        // to inherit a real seeded baseline than an empty one.
+        thawPermDerive();
         setSatelliteBistroLines(updater);
       };
     }
     if (isPermanentSide(type)) {
       return (updater) => {
-        // #142: the operator touched the lines — thaw the rehydrate freeze so
-        // footage/counts follow the visible geometry again (live-session rules).
-        permDeriveFrozenRef.current = false;
+        // Row 345 reopen-clobber guard: seed the reconcile baseline from the
+        // CURRENT (pre-edit) lines BEFORE thawing — see
+        // seedPermanentSideBaselineIfFrozen's own comment above. No-ops when
+        // not frozen (a live session already has a real baseline).
+        thawPermDerive();
         setPermanentSatLines((pl) => ({ ...pl, [type]: updater(pl[type]) }));
       };
     }
@@ -1876,36 +2009,114 @@ export default function QuoteBuilder({
   // pulls have it); corners are scale-free. A side with no lines this session is
   // left alone (a manual/persisted value wins); removing the last run resets it
   // to 0. Mirrors the holiday hadRef reset pattern above.
+  //
+  // Row 345 fix (sibling of the row 333 holiday fix above): this effect shares
+  // ONE dependency list across all four sides (permanentSatLines is one object
+  // holding all four), so redrawing e.g. the front roofline re-fires the whole
+  // effect — the OLD logic compared each field's CURRENT BILLED value straight
+  // against its freshly re-derived target with no baseline, so it couldn't tell
+  // "staff typed an override on an untouched side" apart from "this side's own
+  // geometry changed," and silently clobbered the former. Same flaw, same fix:
+  // reconcilePermanentSideField (reconcileSideFootage.ts) reconciles each of
+  // the 8 fields (footage + corners × 4 sides) against its OWN baseline.
+  //
+  // Compute the reconcile + the baseline update HERE, synchronously, using the
+  // render-closure `form.permanent` — not inside the setForm functional
+  // updater. React StrictMode dev double-invokes a setState updater to check
+  // purity: it discards the FIRST call's return value, but not any side effect
+  // the call performed. Mutating prevPermSideDerivedRef from inside the
+  // updater would let the discarded first call pre-advance the baseline, so
+  // the kept second call would compare against an already-advanced baseline
+  // and misclassify a genuine redraw as a standing override, silently
+  // no-op'ing it (dev-only; prod never double-invokes). Mirrors the holiday
+  // and bistro fixes' own S46 finding-2 comment.
   useEffect(() => {
     if (form.serviceType !== 'permanent') return;
     if (permDeriveFrozenRef.current) return; // #142: rehydrated, untouched — saved values win
-    const t = {} as Record<PermanentSideKey, { footage: number | null; corners: number | null }>;
-    for (const side of PERMANENT_SIDES) {
-      const lines = permanentSatLines[side];
-      const has = lines.length > 0;
-      const m = deriveSideMeasure(lines, satelliteFeetPerPixel, satelliteAspect);
-      t[side] = {
-        footage: has ? m.footage : hadPermLinesRef.current[side] ? 0 : null,
-        corners: has ? m.corners : hadPermLinesRef.current[side] ? 0 : null,
-      };
-      hadPermLinesRef.current[side] = has;
-    }
+    const baseline = prevPermSideDerivedRef.current;
+    const hasScale = satelliteFeetPerPixel != null;
+    const p = form.permanent;
+
+    const front = deriveSideMeasure(permanentSatLines.front, satelliteFeetPerPixel, satelliteAspect);
+    const left = deriveSideMeasure(permanentSatLines.left, satelliteFeetPerPixel, satelliteAspect);
+    const right = deriveSideMeasure(permanentSatLines.right, satelliteFeetPerPixel, satelliteAspect);
+    const back = deriveSideMeasure(permanentSatLines.back, satelliteFeetPerPixel, satelliteAspect);
+    const hasFront = permanentSatLines.front.length > 0;
+    const hasLeft = permanentSatLines.left.length > 0;
+    const hasRight = permanentSatLines.right.length > 0;
+    const hasBack = permanentSatLines.back.length > 0;
+    const hadFrontPrev = hadPermLinesRef.current.front;
+    const hadLeftPrev = hadPermLinesRef.current.left;
+    const hadRightPrev = hadPermLinesRef.current.right;
+    const hadBackPrev = hadPermLinesRef.current.back;
+    hadPermLinesRef.current = { front: hasFront, left: hasLeft, right: hasRight, back: hasBack };
+
+    // Row 345 finding 1 fix: `active` (in-scope — always true here, the
+    // effect's own gate above already confirmed serviceType === 'permanent')
+    // is now separate from `canDerive` (whether a fresh value exists this
+    // run). Footage's canDerive is gated on a known satellite scale
+    // (deriveSideMeasure returns footage: null with none — a manual
+    // satellite upload); corners is scale-free and always derivable while
+    // its side has lines. See reconcileSideFootage.ts's header comment for
+    // why folding these into one flag (the pre-fix design) made a
+    // no-scale delete-transition unreachable.
+    const frontFootage = reconcilePermanentSideField({ active: true, canDerive: hasScale, hasLines: hasFront, hadLinesPrev: hadFrontPrev, freshValue: front.footage ?? 0, currentBilled: p.frontFootage, baseline: baseline.frontFootage });
+    const frontCorners = reconcilePermanentSideField({ active: true, canDerive: true, hasLines: hasFront, hadLinesPrev: hadFrontPrev, freshValue: front.corners, currentBilled: p.frontCorners, baseline: baseline.frontCorners });
+    const leftFootage = reconcilePermanentSideField({ active: true, canDerive: hasScale, hasLines: hasLeft, hadLinesPrev: hadLeftPrev, freshValue: left.footage ?? 0, currentBilled: p.leftFootage, baseline: baseline.leftFootage });
+    const leftCorners = reconcilePermanentSideField({ active: true, canDerive: true, hasLines: hasLeft, hadLinesPrev: hadLeftPrev, freshValue: left.corners, currentBilled: p.leftCorners, baseline: baseline.leftCorners });
+    const rightFootage = reconcilePermanentSideField({ active: true, canDerive: hasScale, hasLines: hasRight, hadLinesPrev: hadRightPrev, freshValue: right.footage ?? 0, currentBilled: p.rightFootage, baseline: baseline.rightFootage });
+    const rightCorners = reconcilePermanentSideField({ active: true, canDerive: true, hasLines: hasRight, hadLinesPrev: hadRightPrev, freshValue: right.corners, currentBilled: p.rightCorners, baseline: baseline.rightCorners });
+    const backFootage = reconcilePermanentSideField({ active: true, canDerive: hasScale, hasLines: hasBack, hadLinesPrev: hadBackPrev, freshValue: back.footage ?? 0, currentBilled: p.backFootage, baseline: baseline.backFootage });
+    const backCorners = reconcilePermanentSideField({ active: true, canDerive: true, hasLines: hasBack, hadLinesPrev: hadBackPrev, freshValue: back.corners, currentBilled: p.backCorners, baseline: baseline.backCorners });
+
+    // MERGE into the previous baseline (row 333 finding 1 precedent) — but
+    // unlike the holiday merge above, EVERY field passes active: true here.
+    // Row 345 finding 1 fix moved "leave an undeliverable field's baseline
+    // alone" INTO reconcilePermanentSideField itself (the canDerive: false
+    // branch echoes the baseline back unchanged), so this merge no longer
+    // needs its own scale-gated skip — and must not have one: a
+    // scale-gated skip would silently un-apply the delete-transition's
+    // explicit baseline clear (nextBaseline: undefined) whenever a side had
+    // no known scale, resurrecting finding 1 at the merge layer instead of
+    // the reconcile layer. See mergePermanentSideFootageBaseline's own
+    // comment in reconcileSideFootage.ts.
+    const activeByField: Record<PermanentSideFieldKey, boolean> = {
+      frontFootage: true, frontCorners: true,
+      leftFootage: true, leftCorners: true,
+      rightFootage: true, rightCorners: true,
+      backFootage: true, backCorners: true,
+    };
+    const resultsByField: Record<PermanentSideFieldKey, PermanentSideFieldReconcileResult> = {
+      frontFootage, frontCorners, leftFootage, leftCorners, rightFootage, rightCorners, backFootage, backCorners,
+    };
+    prevPermSideDerivedRef.current = mergePermanentSideFootageBaseline(baseline, activeByField, resultsByField);
+
+    const anyTarget = Object.values(resultsByField).some((r) => r.target != null);
+    if (!anyTarget) return;
+    // defer so the form update isn't synchronous within the effect (flushes before paint)
     queueMicrotask(() =>
       setForm((f) => {
         if (f.serviceType !== 'permanent') return f;
-        const p = f.permanent;
-        let n = p;
-        if (t.front.footage != null && n.frontFootage !== t.front.footage) n = { ...n, frontFootage: t.front.footage };
-        if (t.front.corners != null && n.frontCorners !== t.front.corners) n = { ...n, frontCorners: t.front.corners };
-        if (t.left.footage != null && n.leftFootage !== t.left.footage) n = { ...n, leftFootage: t.left.footage };
-        if (t.left.corners != null && n.leftCorners !== t.left.corners) n = { ...n, leftCorners: t.left.corners };
-        if (t.right.footage != null && n.rightFootage !== t.right.footage) n = { ...n, rightFootage: t.right.footage };
-        if (t.right.corners != null && n.rightCorners !== t.right.corners) n = { ...n, rightCorners: t.right.corners };
-        if (t.back.footage != null && n.backFootage !== t.back.footage) n = { ...n, backFootage: t.back.footage };
-        if (t.back.corners != null && n.backCorners !== t.back.corners) n = { ...n, backCorners: t.back.corners };
-        return n === p ? f : { ...f, permanent: n };
+        const cur = f.permanent;
+        let n = cur;
+        if (frontFootage.target != null) n = { ...n, frontFootage: frontFootage.target };
+        if (frontCorners.target != null) n = { ...n, frontCorners: frontCorners.target };
+        if (leftFootage.target != null) n = { ...n, leftFootage: leftFootage.target };
+        if (leftCorners.target != null) n = { ...n, leftCorners: leftCorners.target };
+        if (rightFootage.target != null) n = { ...n, rightFootage: rightFootage.target };
+        if (rightCorners.target != null) n = { ...n, rightCorners: rightCorners.target };
+        if (backFootage.target != null) n = { ...n, backFootage: backFootage.target };
+        if (backCorners.target != null) n = { ...n, backCorners: backCorners.target };
+        return n === cur ? f : { ...f, permanent: n };
       }),
     );
+    // form.permanent.{front,left,right,back}{Footage,Corners} are read
+    // intentionally (row 345 fix, mirrors the holiday/bistro effects above)
+    // but must NOT be dependencies — this effect derives from satellite
+    // GEOMETRY only; adding the billed fields would re-fire it on every
+    // manual override/service-type change too, which is exactly the
+    // over-firing this reconcile exists to survive.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [permanentSatLines, satelliteFeetPerPixel, satelliteAspect, form.serviceType]);
 
   // #140: derive the Extensions/Splitters card counts from the DRAWN geometry —
@@ -2276,6 +2487,11 @@ export default function QuoteBuilder({
   const handlePhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (quoteSaveInProgressRef.current) {
+      e.target.value = '';
+      setAnalysisError('Wait for the quote save to finish, then select the street photo.');
+      return;
+    }
     setPhotoFile(file);
     setPhotoPreview(URL.createObjectURL(file));
     setAnalysisNotes(null);
@@ -2316,18 +2532,13 @@ export default function QuoteBuilder({
     // googleAddress: googleAddress only changes on a fresh successful
     // geocode, so it would still read "house A" here and miss an
     // edited-but-not-yet-re-pulled address.
-    const currentAddress = form.customer.address.trim();
-    const parked = pendingContextRef.current;
-    if (parked?.satelliteBase64 != null && pendingSatelliteAddressRef.current === currentAddress) {
-      pendingContextRef.current = {
-        satelliteBase64: parked.satelliteBase64,
-        satelliteMediaType: parked.satelliteMediaType,
-        satelliteFeetPerPixel: parked.satelliteFeetPerPixel,
-      };
-    } else {
-      pendingContextRef.current = null;
-      pendingSatelliteAddressRef.current = null;
-    }
+    const preservedSatellite = satelliteContextAfterPhotoChange(
+      pendingContextRef.current,
+      pendingSatelliteAddressRef.current,
+      form.customer.address,
+    );
+    pendingContextRef.current = preservedSatellite.context;
+    pendingSatelliteAddressRef.current = preservedSatellite.address;
   };
 
   // Manual satellite upload (#9): a second photo slot so manually-photographed
@@ -2338,40 +2549,67 @@ export default function QuoteBuilder({
     const input = e.target;
     const file = input.files?.[0];
     if (!file) return;
-    // Replacing an auto-measured Google satellite (known scale) discards its
-    // measurement — confirm before clobbering it. Manual-over-manual is silent.
-    if (satellitePreview != null && satelliteFeetPerPixel != null) {
+    if (quoteSaveInProgressRef.current || satelliteChangeInProgressRef.current) {
+      input.value = '';
+      setAnalysisError('Wait for the current satellite or quote save to finish, then try again.');
+      return;
+    }
+    const hasAnyLines = satelliteLinesHaveContent({
+      santas: satelliteSantasLines,
+      gingerbread: satelliteGingerbreadLines,
+      c9: satelliteC9Lines,
+      stake: satelliteStakeLines,
+      bistro: satelliteBistroLines,
+      permanent: permanentSatLines,
+    });
+    // Every replacement invalidates existing geometry. A Google-scale image
+    // also invalidates its measured footage even when nothing was drawn.
+    if (satellitePreview != null && (satelliteFeetPerPixel != null || hasAnyLines)) {
       const ok = window.confirm(
-        'Replace the Google satellite (with its measured scale) with this uploaded image? The traced roofline + footage will reset.',
+        'Replace the satellite image? The traced roofline + footage will reset.',
       );
       if (!ok) { input.value = ''; return; }
     }
     input.value = ''; // allow re-picking the same file
+    satelliteChangeInProgressRef.current = true;
     void (async () => {
-      // #186: downscale before base64-encoding — see clientImage.ts.
-      const { dataUrl, mediaType } = await downscaleForUpload(file);
-      const comma = dataUrl.indexOf(',');
-      const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
-      setSatellitePreview(dataUrl);
-      setSatelliteSantasLines([]);
-      setSatelliteGingerbreadLines([]);
-      setSatelliteC9Lines([]);
-      setSatelliteStakeLines([]);
-      // #117 LOW: a new satellite image invalidates any runs drawn on the old
-      // one — clear so they don't overlay/rescale onto this image.
-      setSatelliteBistroLines([]);
-      hadBistroLinesRef.current = false;
-      setSatelliteFeetPerPixel(null); // manual = no known scale
-      const satCtx = { satelliteBase64: base64, satelliteMediaType: mediaType, satelliteFeetPerPixel: null };
-      // Read the CURRENT design id (L6) — a design may have been created while
-      // downscaleForUpload was decoding. uploadDesignSatellite also clears the
-      // design's stale satellite_lines so a captured example can't overlay old
-      // Google lines on the new image (M4).
-      const id = designIdRef.current;
-      if (id) {
-        void pushAnalysisContext(id, satCtx);
-      } else {
-        pendingContextRef.current = { ...(pendingContextRef.current ?? {}), ...satCtx };
+      try {
+        // #186: downscale before base64-encoding — see clientImage.ts.
+        const { dataUrl, mediaType } = await downscaleForUpload(file);
+        const comma = dataUrl.indexOf(',');
+        const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+        setSatellitePreview(dataUrl);
+        setSatelliteSantasLines([]);
+        setSatelliteGingerbreadLines([]);
+        setSatelliteC9Lines([]);
+        setSatelliteStakeLines([]);
+        setSatelliteBistroLines([]);
+        hadBistroLinesRef.current = false;
+        holidayDeriveFrozenRef.current = false;
+        permDeriveFrozenRef.current = false;
+        setPermanentSatLines({ front: [], left: [], right: [], back: [] });
+        setSatelliteFeetPerPixel(null); // manual = no known scale
+        const satCtx = { satelliteBase64: base64, satelliteMediaType: mediaType, satelliteFeetPerPixel: null };
+        // Read the CURRENT design id (L6) — a design may have been created while
+        // downscaleForUpload was decoding. uploadDesignSatellite also clears the
+        // design's stale satellite_lines so a captured example can't overlay old
+        // Google lines on the new image (M4).
+        const id = designIdRef.current;
+        if (id) {
+          void pushAnalysisContext(id, satCtx);
+        } else {
+          const parked = parkSatelliteContext(
+            pendingContextRef.current,
+            satCtx,
+            form.customer.address,
+          );
+          pendingContextRef.current = parked.context;
+          pendingSatelliteAddressRef.current = parked.address;
+        }
+      } catch {
+        setAnalysisError("Couldn't read that satellite image. Try selecting it again.");
+      } finally {
+        satelliteChangeInProgressRef.current = false;
       }
     })();
   };
@@ -2409,6 +2647,13 @@ export default function QuoteBuilder({
       // effect will push this photo into the design as its new base.)
       pendingSeedRef.current = null;
       setPhotoPreview(`data:${data.photoMediaType};base64,${data.photoBase64}`);
+      const photoNeedsSave = !!(
+        data.photoBase64 &&
+        data.photoMediaType &&
+        designPhotoRef.current !== data.photoBase64
+      );
+      designPhotoChangeInProgressRef.current = photoNeedsSave;
+      if (photoNeedsSave) setDesignPhotoRevision((revision) => revision + 1);
       setPhotoBase64(data.photoBase64);
       setPhotoMediaType(data.photoMediaType);
       setSvHeading(nextHeading);
@@ -2449,6 +2694,13 @@ export default function QuoteBuilder({
       }
       pendingSeedRef.current = null;
       setPhotoPreview(`data:${data.photoMediaType};base64,${data.photoBase64}`);
+      const photoNeedsSave = !!(
+        data.photoBase64 &&
+        data.photoMediaType &&
+        designPhotoRef.current !== data.photoBase64
+      );
+      designPhotoChangeInProgressRef.current = photoNeedsSave;
+      if (photoNeedsSave) setDesignPhotoRevision((revision) => revision + 1);
       setPhotoBase64(data.photoBase64);
       setPhotoMediaType(data.photoMediaType);
       setSvLat(data.camLat);
@@ -2669,7 +2921,7 @@ export default function QuoteBuilder({
     };
     // Provenance for training capture (#8 Stage A): the RAW analysis + the
     // satellite image/scale, persisted onto the design (parked until it exists).
-    const ctx: AnalysisContext = {
+    const ctx: DesignAnalysisContext = {
       analysis: r as unknown as Record<string, unknown>,
       ...(data.satelliteBase64
         ? {
@@ -2694,6 +2946,13 @@ export default function QuoteBuilder({
     // rooflines invisible from the street) — surface that tab if so.
     setViewMode(r.preferredSource === 'satellite' ? 'satellite' : 'design');
     setAnalysisNotes(`${r.notes} (confidence: ${r.confidence})`);
+    const photoNeedsSave = !!(
+      data.photoBase64 &&
+      data.photoMediaType &&
+      designPhotoRef.current !== data.photoBase64
+    );
+    designPhotoChangeInProgressRef.current = photoNeedsSave;
+    if (photoNeedsSave) setDesignPhotoRevision((revision) => revision + 1);
     setPhotoBase64(data.photoBase64 ?? null);
     setPhotoMediaType(data.photoMediaType ?? null);
     setFewShotCount(data.fewShotCount ?? 0);
@@ -2728,13 +2987,14 @@ export default function QuoteBuilder({
     // before replacing when anything's drawn, clear EVERY satellite line
     // array on apply; silent when nothing's drawn yet (the common case — the
     // first pull on a fresh quote).
-    const hasAnyLines =
-      satelliteSantasLines.length > 0 ||
-      satelliteGingerbreadLines.length > 0 ||
-      satelliteC9Lines.length > 0 ||
-      satelliteStakeLines.length > 0 ||
-      satelliteBistroLines.length > 0 ||
-      PERMANENT_SIDES.some((s) => permanentSatLines[s].length > 0);
+    const hasAnyLines = satelliteLinesHaveContent({
+      santas: satelliteSantasLines,
+      gingerbread: satelliteGingerbreadLines,
+      c9: satelliteC9Lines,
+      stake: satelliteStakeLines,
+      bistro: satelliteBistroLines,
+      permanent: permanentSatLines,
+    });
     if (hasAnyLines) {
       const ok = window.confirm(
         'Replaces the satellite image — traced roofline + footage will reset. Continue?',
@@ -2746,6 +3006,8 @@ export default function QuoteBuilder({
       setSatelliteStakeLines([]);
       setSatelliteBistroLines([]);
       hadBistroLinesRef.current = false;
+      holidayDeriveFrozenRef.current = false;
+      permDeriveFrozenRef.current = false;
       setPermanentSatLines({ front: [], left: [], right: [], back: [] });
     }
     setGoogleAddress(data.formattedAddress ?? null);
@@ -2775,8 +3037,9 @@ export default function QuoteBuilder({
       if (id) {
         void pushAnalysisContext(id, satCtx);
       } else {
-        pendingContextRef.current = { ...(pendingContextRef.current ?? {}), ...satCtx };
-        pendingSatelliteAddressRef.current = pulledForAddress;
+        const parked = parkSatelliteContext(pendingContextRef.current, satCtx, pulledForAddress);
+        pendingContextRef.current = parked.context;
+        pendingSatelliteAddressRef.current = parked.address;
       }
     }
     return true;
@@ -2791,11 +3054,16 @@ export default function QuoteBuilder({
   // (hasSatellitePayload) keeps this pulled scale intact through that later
   // analyze (see analysisSatellitePayload.ts / the #204 ordering test).
   const handlePullSatellite = async () => {
+    if (quoteSaveInProgressRef.current || satelliteChangeInProgressRef.current) {
+      setAnalysisError('Wait for the current satellite or quote save to finish, then try again.');
+      return;
+    }
     const addr = form.customer.address.trim();
     if (!addr) {
       setAnalysisError('Enter the property address above first.');
       return;
     }
+    satelliteChangeInProgressRef.current = true;
     setLookingUp(true);
     setAnalysisError(null);
     setAnalysisWarning(null);
@@ -2819,16 +3087,22 @@ export default function QuoteBuilder({
     } catch (err) {
       setAnalysisError(err instanceof Error ? err.message : 'Satellite pull failed');
     } finally {
+      satelliteChangeInProgressRef.current = false;
       setLookingUp(false);
     }
   };
 
   const handleLookupAddress = async () => {
+    if (quoteSaveInProgressRef.current || satelliteChangeInProgressRef.current) {
+      setAnalysisError('Wait for the current satellite or quote save to finish, then try again.');
+      return;
+    }
     const addr = form.customer.address.trim();
     if (!addr) {
       setAnalysisError('Enter the property address above first.');
       return;
     }
+    satelliteChangeInProgressRef.current = true;
     setLookingUp(true);
     setAnalysisError(null);
     setAnalysisWarning(null);
@@ -2877,6 +3151,13 @@ export default function QuoteBuilder({
         // Imagery loaded WITHOUT a holiday seed: permanent/bistro (which skip the
         // holiday analyzer/seed by design) or the fail-safe (analyzer down). The street
         // photo creates the design; the satellite + its scale stay for measuring.
+        const photoNeedsSave = !!(
+          data.photoBase64 &&
+          data.photoMediaType &&
+          designPhotoRef.current !== data.photoBase64
+        );
+        designPhotoChangeInProgressRef.current = photoNeedsSave;
+        if (photoNeedsSave) setDesignPhotoRevision((revision) => revision + 1);
         setPhotoBase64(data.photoBase64 ?? null);
         setPhotoMediaType(data.photoMediaType ?? null);
         setSatelliteFeetPerPixel(data.satelliteFeetPerPixel ?? null);
@@ -2905,7 +3186,10 @@ export default function QuoteBuilder({
               'Replaces the satellite image — traced bistro runs + footage will reset. Continue?',
             );
           if (!keepExisting) {
-            permDeriveFrozenRef.current = false;
+            // Row 345 finding 2: thaw via the shared helper (seeds the
+            // permanent-SIDE baseline too) rather than clearing the ref
+            // directly — see thawPermDerive's own comment.
+            thawPermDerive();
             hadBistroLinesRef.current = satelliteBistroLines.length > 0;
             setSatelliteBistroLines([]);
           } else {
@@ -2973,6 +3257,27 @@ export default function QuoteBuilder({
           if (seeded && seededSides.length > 0) {
             // #142: a fresh analyze is a NEW live session — thaw any rehydrate
             // freeze so the seeded lines drive footage/counts immediately.
+            //
+            // Row 345 finding 2: deliberately a PLAIN thaw, not
+            // thawPermDerive() — seeding the baseline first would be WRONG
+            // here, not just unnecessary. The thaw sites that DO seed
+            // preserve the current lines (a manual edit touches one side,
+            // Recount re-derives from what's already drawn); this one
+            // REPLACES all four sides wholesale with a fresh AI re-trace two
+            // lines below — the same wipe-then-thaw shape as the two
+            // satellite-replacement paths above, which is exactly the
+            // "geometry changed" case the reconcile is supposed to let win
+            // outright. Seeding from the pre-replace (old/frozen) lines
+            // would only matter in the rare coincidence where the AI
+            // re-derives a side to the exact same footage/corners as
+            // before — and in that one case seeding would make a stale
+            // hand-typed override survive a fresh re-analysis the operator
+            // explicitly asked for, which is the opposite of "drive
+            // footage/counts immediately" above. Leaving the baseline
+            // un-seeded here means every side starts this run with no
+            // recorded baseline, so the reconcile's "brand-new" branch
+            // takes the AI's fresh values unconditionally — the correct
+            // behavior for a full re-analyze.
             permDeriveFrozenRef.current = false;
             setPermanentSatLines({
               front: seeded.front ?? [],
@@ -3040,17 +3345,23 @@ export default function QuoteBuilder({
     } catch (err) {
       setAnalysisError(err instanceof Error ? err.message : 'Address lookup failed');
     } finally {
+      satelliteChangeInProgressRef.current = false;
       setLookingUp(false);
     }
   };
 
   const handleAnalyzePhoto = async () => {
     if (!photoFile) return;
+    if (quoteSaveInProgressRef.current || designPhotoChangeInProgressRef.current) {
+      setAnalysisError('Wait for the current photo or quote save to finish, then try again.');
+      return;
+    }
     // #88/#117: permanent + permanent bistro design MANUALLY — no holiday
     // auto-measure/seed. Load the uploaded photo into a bare design (no
     // Anthropic call, no santas/gingerbread roofline drawn) so the operator
     // draws the runs themselves. Mirrors the analyzer-outage fail-safe below.
     if (form.serviceType === 'permanent' || form.serviceType === 'permanent_bistro') {
+      designPhotoChangeInProgressRef.current = true;
       // Read the base64 from the File itself — photoPreview is a blob: object URL
       // (URL.createObjectURL), NOT a data URL, so it can't be split for base64.
       // #186: downscale before base64-encoding — see clientImage.ts.
@@ -3059,11 +3370,20 @@ export default function QuoteBuilder({
       try {
         ({ dataUrl, mediaType } = await downscaleForUpload(photoFile));
       } catch {
+        designPhotoChangeInProgressRef.current = false;
         setAnalysisError("Couldn't read that photo. Try selecting it again.");
+        return;
+      }
+      if (quoteSaveInProgressRef.current) {
+        designPhotoChangeInProgressRef.current = false;
+        setAnalysisError('Quote save started before the photo was ready. Load the photo again.');
         return;
       }
       const comma = dataUrl.indexOf(',');
       const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+      const photoNeedsSave = designPhotoRef.current !== base64;
+      designPhotoChangeInProgressRef.current = photoNeedsSave;
+      if (photoNeedsSave) setDesignPhotoRevision((revision) => revision + 1);
       pendingSeedRef.current = null;
       setAnalysisError(null);
       setAnalysisWarning(null);
@@ -3118,8 +3438,17 @@ export default function QuoteBuilder({
         // FAIL-SAFE: analyzer unavailable. Load the uploaded photo into the editor
         // (it isn't loaded until now — handlePhotoSelect nulls photoBase64) so
         // staff design MANUALLY. Skip the seed.
-        setPhotoBase64(data.photoBase64 ?? null);
-        setPhotoMediaType(data.photoMediaType ?? null);
+        const nextPhotoBase64 = data.photoBase64 ?? null;
+        const nextPhotoMediaType = data.photoMediaType ?? null;
+        const photoNeedsSave = !!(
+          nextPhotoBase64 &&
+          nextPhotoMediaType &&
+          designPhotoRef.current !== nextPhotoBase64
+        );
+        designPhotoChangeInProgressRef.current = photoNeedsSave;
+        if (photoNeedsSave) setDesignPhotoRevision((revision) => revision + 1);
+        setPhotoBase64(nextPhotoBase64);
+        setPhotoMediaType(nextPhotoMediaType);
         setFewShotCount(0);
         setViewMode('design');
         setAnalysisWarning(
@@ -3405,6 +3734,9 @@ export default function QuoteBuilder({
       identityEverFrozen,
     );
     if (confirmMsg && !window.confirm(confirmMsg)) return;
+    if (quoteBuildTimingEligible) {
+      void quoteBuildTimerRef.current?.start('contact_selected', savedQuoteId);
+    }
     everLinkedContactIdRef.current = c.id;
     setHighLevelContact(c);
     const hlAddress = [c.address1, c.city, c.state, c.postalCode].filter(Boolean).join(', ');
@@ -3802,7 +4134,13 @@ export default function QuoteBuilder({
     }
 
     try {
-      const res = await fetch(`/api/quotes/${savedQuoteId}/send`, { method: 'POST' });
+      void quoteBuildTimerRef.current?.link(savedQuoteId);
+      const quoteBuildTimerId = quoteBuildTimerRef.current?.currentId();
+      const res = await fetch(`/api/quotes/${savedQuoteId}/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ quoteBuildTimerId }),
+      });
       const data = await res.json();
       const failedChannels = Array.isArray(data.failedChannels)
         ? data.failedChannels.filter((value: unknown): value is 'sms' | 'email' => value === 'sms' || value === 'email')
@@ -4167,6 +4505,14 @@ export default function QuoteBuilder({
     // and may also clear the #102 $/ft on that line.
     formOverride?: QuoteFormData,
   ): Promise<boolean> => {
+    if (quoteSaveInProgressRef.current) return false;
+    if (satelliteChangeInProgressRef.current || designPhotoChangeInProgressRef.current) {
+      setResult(null);
+      setError('Wait for the house images to finish loading, then Calculate again.');
+      return false;
+    }
+    const satelliteTraceVersionAtStart = satelliteTraceVersionRef.current;
+    quoteSaveInProgressRef.current = true;
     setLoading(true);
     setError(null);
     // Premerge finding 3 fix: keep the last-known-good result/baseline around
@@ -4213,6 +4559,7 @@ export default function QuoteBuilder({
     // rows piling up in /admin/quotes (#31).
     const existingQuoteId = savedQuoteId;
     const inputs = buildQuoteInputs(formOverride ?? form, rooflineChoiceOverride);
+    const quoteBuildTimer = quoteBuildTimerRef.current?.current();
 
     try {
       // Flush a pending design edit first (#8 M6): /api/quote projects the
@@ -4282,6 +4629,7 @@ export default function QuoteBuilder({
             isNceTouchedRef.current,
             existingQuoteId ? 'update' : 'insert',
           ),
+          ...(quoteBuildTimer ? quoteBuildTimer : {}),
         }),
       });
       const data = await res.json();
@@ -4314,8 +4662,9 @@ export default function QuoteBuilder({
       // THIS save (route.ts only sends the key when updateQuote set it —
       // absent/falsy on every normal save, including a brand-new insert).
       if (data.identityFrozen === true) setIdentityFrozenNotice(true);
-      setResult(data.result);
-      setBaselineResult(data.baseline ?? data.result); // #104 "was $X" source
+      // The result is deliberately NOT exposed here. It is set AFTER the
+      // satellite plan is durably stored (below), so a failed plan save cannot
+      // leave a Send-ready quote on screen beside its own error banner.
       const newQuoteId = typeof data.quoteId === 'string' ? data.quoteId : null;
       // Only overwrite savedQuoteId on a real id (#110 W3-004 / #80-105). A 200
       // response with quoteId:null means the server-side save/update failed
@@ -4325,6 +4674,7 @@ export default function QuoteBuilder({
       // guard already used by recommendRoofline below.
       if (newQuoteId) {
         setSavedQuoteId(newQuoteId);
+        void quoteBuildTimerRef.current?.link(newQuoteId);
         // Draft autosave (quote-forms-partial-save): the saved row is now the
         // store of record, so drop the local draft + hide the restored note.
         clearQuoteDraft();
@@ -4345,7 +4695,7 @@ export default function QuoteBuilder({
       // satelliteLines mirror the builder's own line shape, same as permanent).
       const bistroSatelliteActive =
         form.serviceType === 'permanent_bistro' && satelliteBistroLines.length > 0;
-      if (designId && (holidaySatelliteActive || permanentSatelliteActive || bistroSatelliteActive)) {
+      if (newQuoteId && (holidaySatelliteActive || permanentSatelliteActive || bistroSatelliteActive)) {
         const satelliteLines = permanentSatelliteActive
           ? {
               front: permanentSatLines.front,
@@ -4363,12 +4713,48 @@ export default function QuoteBuilder({
                 ...(satFootage.santas != null ? { santasFootage: satFootage.santas } : {}),
                 ...(satFootage.ginger != null ? { gingerbreadFootage: satFootage.ginger } : {}),
               };
-        void fetch(`/api/designs/${designId}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ satelliteLines }),
-        }).catch(() => {});
+        try {
+          // A photo lookup may already be creating or updating the design.
+          // Reuse that row and let it drain any parked satellite first.
+          if (designPhotoOperationRef.current) await designPhotoOperationRef.current;
+          // The photo operation can start a background satellite save, so read
+          // both refs only AFTER that operation has settled.
+          const inFlightSatelliteSave = satelliteContextSaveRef.current;
+          const parkedSatelliteContext = pendingContextRef.current?.satelliteBase64
+            ? pendingContextRef.current
+            : null;
+          const satelliteContext = parkedSatelliteContext ?? inFlightSatelliteSave?.context ?? null;
+          await persistSatelliteMeasurements({
+            designId: designIdRef.current ?? designId,
+            quoteId: newQuoteId,
+            satelliteContext,
+            satelliteLines,
+            inFlightSatelliteSave,
+            onDesignCreated: (id) => {
+              designIdRef.current = id;
+              setDesignId(id);
+            },
+          });
+          if (pendingContextRef.current === satelliteContext) {
+            pendingContextRef.current = null;
+            pendingSatelliteAddressRef.current = null;
+          }
+          if (satelliteContextSaveRef.current === inFlightSatelliteSave) {
+            satelliteContextSaveRef.current = null;
+          }
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : 'Unknown satellite save error';
+          throw new Error(`Quote saved, but its satellite plan did not save: ${detail}`);
+        }
       }
+      // Do not expose a sendable result until the customer-facing satellite
+      // plan is durably stored. A failed image/trace save leaves an explicit
+      // retry error instead of a quote that looks ready to send.
+      if (satelliteTraceVersionRef.current !== satelliteTraceVersionAtStart) {
+        throw new Error('Quote saved, but the satellite trace changed while saving. Click Calculate again.');
+      }
+      setResult(data.result);
+      setBaselineResult(data.baseline ?? data.result); // #104 "was $X" source
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
       // Attach to HL opportunity in parallel, if an HL contact was picked
       // (skipped when this quote+contact pair is already attached).
@@ -4390,6 +4776,7 @@ export default function QuoteBuilder({
       setError(err instanceof Error ? err.message : 'Something went wrong');
       return false;
     } finally {
+      quoteSaveInProgressRef.current = false;
       setLoading(false);
     }
   };
@@ -5105,7 +5492,7 @@ export default function QuoteBuilder({
                   <button
                     type="button"
                     onClick={handlePullSatellite}
-                    disabled={lookingUp || !form.customer.address.trim()}
+                    disabled={lookingUp || loading || !form.customer.address.trim()}
                     title={
                       form.customer.address.trim()
                         ? 'No Street View at this address? Skip straight to the satellite image + real scale — instant, no AI. Draw channels by hand.'
@@ -5118,7 +5505,7 @@ export default function QuoteBuilder({
                   <button
                     type="button"
                     onClick={handleLookupAddress}
-                    disabled={lookingUp || !form.customer.address.trim()}
+                    disabled={lookingUp || loading || !form.customer.address.trim()}
                     title={form.customer.address.trim() ? undefined : 'Enter the property address above first.'}
                     className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium text-sm px-4 py-2 rounded-md whitespace-nowrap"
                   >
@@ -5184,6 +5571,7 @@ export default function QuoteBuilder({
                 type="file"
                 accept="image/*"
                 onChange={handlePhotoSelect}
+                disabled={loading}
                 className="block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-green-50 file:text-green-700 hover:file:bg-green-100"
               />
               {photoPreview && photoFile && (
@@ -5193,7 +5581,7 @@ export default function QuoteBuilder({
                   <button
                     type="button"
                     onClick={handleAnalyzePhoto}
-                    disabled={analyzing}
+                    disabled={analyzing || loading}
                     className="bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white font-medium py-2 px-4 rounded-md text-sm"
                   >
                     {analyzing
@@ -5216,6 +5604,7 @@ export default function QuoteBuilder({
                   type="file"
                   accept="image/*"
                   onChange={handleSatelliteSelect}
+                  disabled={loading}
                   className="block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
                 />
                 {satellitePreview != null && satelliteFeetPerPixel == null && (
@@ -6114,7 +6503,18 @@ export default function QuoteBuilder({
               form={form}
               setForm={setForm}
               onRecount={() => {
-                permDeriveFrozenRef.current = false; // #142: Recount = explicit re-derive
+                // #142: Recount = explicit re-derive. Row 345 finding 2: this
+                // button only intends to hand the ACCESSORIES count back to
+                // auto (see recountAccessories in PermanentSection.tsx), but
+                // permDeriveFrozenRef is shared with the footage/corners
+                // derive above — clearing it directly here used to leave
+                // that derive's baseline permanently empty (seeded only from
+                // the isPermanentSide getSetter, which requires frozen ===
+                // true, so it could never fire again after this ran). Route
+                // through the shared helper so an unrelated Recount click
+                // can't clobber every side's footage/corners override on the
+                // operator's NEXT line edit.
+                thawPermDerive();
               }}
               // PS-B1: a billed side (footage > 0) with no drawn satellite trace
               // never shows on the portal's roof map — surface that mismatch
