@@ -6,7 +6,7 @@
 
 import type { CSSProperties } from 'react';
 import { notFound, redirect } from 'next/navigation';
-import { getOperator } from '@/lib/auth/supabaseServer';
+import { authGateEngaged, getOperator } from '@/lib/auth/supabaseServer';
 import { getQuoteRaw } from '@/lib/quotes';
 import { deriveStatus } from '@/lib/quoteStatus';
 import { permanentBomFromQuote, includedPermanentSidesFromSnapshot } from '@/lib/permanent/bomFromQuote';
@@ -33,9 +33,10 @@ const money = (n: number) =>
 export default async function PermanentBomPrintPage({ params }: { params: Promise<{ id: string }> }) {
   // Defense in depth behind the middleware perimeter — re-check at render so this
   // staff order sheet (customer PII + margin data) never serves anonymously even
-  // if the perimeter is bypassed. Dormant until the auth gate is live (matches
-  // the #81 operator-page pattern).
-  if (process.env.AUTH_GATE_ENABLED === 'true' && !(await getOperator())) {
+  // if the perimeter is bypassed. Engaged by default; dormant only on the
+  // explicit AUTH_GATE_ENABLED=false opt-out (ledger #347, matches the #81
+  // operator-page pattern).
+  if (authGateEngaged() && !(await getOperator())) {
     redirect('/login?from=/admin/quotes');
   }
   const { id } = await params;

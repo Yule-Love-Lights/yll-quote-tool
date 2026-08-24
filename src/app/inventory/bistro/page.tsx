@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
-import { getOperator } from '@/lib/auth/supabaseServer';
+import { authGateEngaged, getOperator } from '@/lib/auth/supabaseServer';
 import { OperatorShell } from '@/components/OperatorShell';
 import { InventorySubNav } from '@/components/inventory/InventorySubNav';
 import { BISTRO_CATALOG, type BistroSupplier } from '@/lib/inventory/bistroCatalog';
@@ -23,7 +23,9 @@ const SUPPLIER_ORDER: BistroSupplier[] = ['thunder', 'home-depot', 'amazon'];
 const money = (n: number) => (n > 0 ? `$${n.toFixed(2)}` : '—');
 
 export default async function BistroInventoryPage() {
-  if (process.env.AUTH_GATE_ENABLED === 'true' && !(await getOperator())) {
+  // Engaged by default; dormant only on the explicit AUTH_GATE_ENABLED=false
+  // opt-out (ledger #347).
+  if (authGateEngaged() && !(await getOperator())) {
     redirect('/login?from=/inventory/bistro');
   }
 

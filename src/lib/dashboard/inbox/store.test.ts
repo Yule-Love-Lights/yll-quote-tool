@@ -499,12 +499,14 @@ import {
   findOrphanedFollowUpItems,
   findViewOnlyFollowUpItems,
   getItemStatus,
+  getGmailWritebackRetryTarget,
   getReopenCounts,
   isColorRequestExternalId,
   isHiddenLegacyRebookQuote,
   isReversibleActivity,
   listActivity,
   listDueFollowUps,
+  listGmailWritebackFailures,
   listInWorks,
   listOpenItems,
   listEscalatableItems,
@@ -517,6 +519,7 @@ import {
   needsLookReason,
   quoteIdPrefix,
   recordSuppressedFollowUp,
+  recordWriteback,
   reverseItemState,
   sweepOrphanedFollowUps,
   sweepResolvedItemFollowUps,
@@ -1208,6 +1211,393 @@ describe('getReopenCounts — window pairs run concurrently (#185)', () => {
     expect(result['30']).toEqual({ handled: 3, reopened: 1 });
     expect(callIndex).toBe(6);
     expect(fromCalls.every((t) => t === 'dashboard_activity')).toBe(true);
+  });
+});
+
+// ─── listGmailWritebackFailures / getGmailWritebackRetryTarget — Gmail
+// write-back failure visibility + retry (#342, fix round) ───────────────────
+//
+// recordWriteback (untested I/O glue, per this file's own convention) has
+// always persisted runHandledWriteback's per-channel outcome into
+// handled_channel_sync; nothing ever read it back. listGmailWritebackFailures
+// is the read side (drives the /inbox banner); getGmailWritebackRetryTarget
+// is the write-back RETRY side (drives the retry-gmail-sync route). Round 1
+// shipped a bare count via `count:'exact', head:true` with no drill-down and
+// no exit — a staff-lens BLOCK caught both, plus a MED where a query FAILURE
+// (not just "nothing failed") silently rendered as a confident 0/all-clear.
+// This round fixes all three.
+
+// Fix round MED 3: recordWriteback used to discard its own update() error —
+// the same silent-failure shape one hop upstream of the { count } bug. Now
+// logged (still fire-and-forget/best-effort, so it stays void) rather than
+// silent.
+describe('recordWriteback (#342 fix round MED 3 — a failed persist is no longer silent)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('logs an error when the update() call itself fails', async () => {
+    const { builder } = makeBuilder({ data: null, error: { message: 'update rejected' } });
+    sbRef.current = { from: () => builder };
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await recordWriteback('item-1', { gmailLabel: 'failed' });
+
+    expect(spy).toHaveBeenCalledWith(
+      '[inbox] recordWriteback failed to persist handled_channel_sync:',
+      'update rejected',
+    );
+    spy.mockRestore();
+  });
+
+  it('does NOT log anything when the update() succeeds', async () => {
+    const { builder } = makeBuilder({ data: null, error: null });
+    sbRef.current = { from: () => builder };
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await recordWriteback('item-1', { gmailLabel: 'ok' });
+
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+});
+
+describe('listGmailWritebackFailures (#342 fix round — drill-down + honest error state)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  // listGmailWritebackFailures now fires 3 PARALLEL .from('inbox_items')
+  // calls (the page query, then the failedCount and unconfiguredCount
+  // head:true queries) via Promise.all — call order is still deterministic
+  // (the array literal is built synchronously before any await), so this
+  // routes by call index, same pattern as getReopenCounts' own test above.
+  // `results[i]` may be omitted for a test that only cares about an earlier
+  // call (e.g. the page-query-fails case never reaches the other two).
+  function makeRouter(results: Array<{ data: unknown; error: null | { message: string }; count?: number | null }>) {
+    const builders = results.map((r) => makeBuilder(r));
+    let i = 0;
+    return {
+      sb: {
+        from: () => {
+          const b = builders[i] ?? builders[builders.length - 1];
+          i += 1;
+          return b.builder;
+        },
+      },
+      builders,
+    };
+  }
+
+  it('returns the all-clear shape (not an error) when Supabase is unconfigured', async () => {
+    const res = await listGmailWritebackFailures();
+    expect(res).toEqual({ ok: true, items: [], total: 0, failedCount: 0, unconfiguredCount: 0, truncated: false });
+  });
+
+  it('ok:false with the page query\'s error message on a real query failure — NOT a silent 0 (the round-1 MED)', async () => {
+    const { sb } = makeRouter([{ data: null, error: { message: 'connection reset' }, count: null }]);
+    sbRef.current = sb;
+
+    const res = await listGmailWritebackFailures();
+
+    expect(res).toEqual({ ok: false, error: 'connection reset' });
+  });
+
+  it('ok:false when the failedCount query fails, even though the page query itself succeeded', async () => {
+    const { sb } = makeRouter([
+      { data: [], error: null, count: 0 },
+      { data: null, error: { message: 'failedCount query down' }, count: null },
+      { data: null, error: null, count: 0 },
+    ]);
+    sbRef.current = sb;
+
+    const res = await listGmailWritebackFailures();
+
+    expect(res).toEqual({ ok: false, error: 'failedCount query down' });
+  });
+
+  it('ok:false when the unconfiguredCount query fails, even though the other two succeeded', async () => {
+    const { sb } = makeRouter([
+      { data: [], error: null, count: 0 },
+      { data: null, error: null, count: 0 },
+      { data: null, error: { message: 'unconfiguredCount query down' }, count: null },
+    ]);
+    sbRef.current = sb;
+
+    const res = await listGmailWritebackFailures();
+
+    expect(res).toEqual({ ok: false, error: 'unconfiguredCount query down' });
+  });
+
+  it('returns the all-clear shape when nothing has failed', async () => {
+    const { sb } = makeRouter([
+      { data: [], error: null, count: 0 },
+      { data: null, error: null, count: 0 },
+      { data: null, error: null, count: 0 },
+    ]);
+    sbRef.current = sb;
+
+    const res = await listGmailWritebackFailures();
+
+    expect(res).toEqual({ ok: true, items: [], total: 0, failedCount: 0, unconfiguredCount: 0, truncated: false });
+  });
+
+  it('maps failing rows to id/label/error/status, filters status=handled + gmailLabel in [failed,unconfigured], and flags truncation when total exceeds the page', async () => {
+    const rows = [
+      {
+        id: 'i1',
+        handled_channel_sync: { gmailLabel: 'failed', gmailLabelError: 'invalid_grant: token expired' },
+        dashboard_contacts: { display_name: 'Jane Doe', primary_email: 'jane@example.com' },
+      },
+      {
+        id: 'i2',
+        handled_channel_sync: { gmailLabel: 'failed', gmailLabelError: 'rate limited' },
+        dashboard_contacts: { display_name: null, primary_email: 'bob@example.com' },
+      },
+      {
+        id: 'i3',
+        handled_channel_sync: { gmailLabel: 'failed' }, // no gmailLabelError stored
+        dashboard_contacts: null, // no linked contact at all
+      },
+    ];
+    // Page: 5 total (failed+unconfigured combined), only 3 returned (limit 3).
+    const { sb, builders } = makeRouter([
+      { data: rows, error: null, count: 5 },
+      { data: null, error: null, count: 5 },
+      { data: null, error: null, count: 0 },
+    ]);
+    sbRef.current = sb;
+
+    const res = await listGmailWritebackFailures(3);
+
+    expect(res).toEqual({
+      ok: true,
+      items: [
+        { id: 'i1', label: 'Jane Doe', error: 'invalid_grant: token expired', status: 'failed' },
+        { id: 'i2', label: 'bob@example.com', error: 'rate limited', status: 'failed' }, // falls back to email
+        { id: 'i3', label: 'Unknown contact', error: null, status: 'failed' }, // falls back to placeholder
+      ],
+      total: 5,
+      failedCount: 5,
+      unconfiguredCount: 0,
+      truncated: true, // 5 total > 3 returned
+    });
+    const pageCalls = builders[0].calls;
+    expect(pageCalls.some((c) => c.method === 'eq' && c.args[0] === 'status' && c.args[1] === 'handled')).toBe(true);
+    expect(
+      pageCalls.some(
+        (c) =>
+          c.method === 'in' &&
+          c.args[0] === 'handled_channel_sync->>gmailLabel' &&
+          Array.isArray(c.args[1]) &&
+          (c.args[1] as string[]).sort().join(',') === 'failed,unconfigured',
+      ),
+    ).toBe(true);
+    expect(pageCalls.some((c) => c.method === 'limit' && c.args[0] === 3)).toBe(true);
+  });
+
+  it('truncated is false when every failing row fits in the page', async () => {
+    const rows = [{ id: 'i1', handled_channel_sync: { gmailLabel: 'failed' }, dashboard_contacts: null }];
+    const { sb } = makeRouter([
+      { data: rows, error: null, count: 1 },
+      { data: null, error: null, count: 1 },
+      { data: null, error: null, count: 0 },
+    ]);
+    sbRef.current = sb;
+
+    const res = await listGmailWritebackFailures(25);
+
+    expect(res.ok && res.truncated).toBe(false);
+  });
+
+  // Fix round MED 1: a total Gmail outage sets gmailLabel:'unconfigured'
+  // (sync.ts) instead of leaving the field unset — this must be counted, not
+  // read as an all-clear.
+  it('includes rows whose write-back never even attempted (gmailLabel="unconfigured"), tagged with status "unconfigured" and a null error', async () => {
+    const rows = [
+      {
+        id: 'i1',
+        handled_channel_sync: { gmailLabel: 'unconfigured' },
+        dashboard_contacts: { display_name: 'Jane Doe', primary_email: null },
+      },
+    ];
+    const { sb } = makeRouter([
+      { data: rows, error: null, count: 1 },
+      { data: null, error: null, count: 0 },
+      { data: null, error: null, count: 1 },
+    ]);
+    sbRef.current = sb;
+
+    const res = await listGmailWritebackFailures();
+
+    expect(res).toEqual({
+      ok: true,
+      items: [{ id: 'i1', label: 'Jane Doe', error: null, status: 'unconfigured' }],
+      total: 1,
+      failedCount: 0,
+      unconfiguredCount: 1,
+      truncated: false,
+    });
+  });
+
+  // Second fix round (delta-verify MED): the gap that let the mixed-headline
+  // bug through — no fixture ever exercised a mixed failed+unconfigured
+  // population. Deliberately makes the TRUE per-status counts differ from
+  // BOTH the combined `total` (12) AND from what a naive count of the
+  // 3-row page would suggest, so this can only pass if failedCount/
+  // unconfiguredCount genuinely come from their own queries.
+  it('mixed population: failedCount and unconfiguredCount are independent TRUE counts, neither equal to combined `total` nor to the page size', async () => {
+    const rows = [
+      {
+        id: 'i1',
+        handled_channel_sync: { gmailLabel: 'failed', gmailLabelError: 'boom' },
+        dashboard_contacts: { display_name: 'Jane Doe', primary_email: null },
+      },
+      {
+        id: 'i2',
+        handled_channel_sync: { gmailLabel: 'unconfigured' },
+        dashboard_contacts: { display_name: 'Bob Baker', primary_email: null },
+      },
+    ];
+    const { sb } = makeRouter([
+      { data: rows, error: null, count: 12 }, // combined total (page capped at 2)
+      { data: null, error: null, count: 9 }, // TRUE failed count
+      { data: null, error: null, count: 3 }, // TRUE unconfigured count
+    ]);
+    sbRef.current = sb;
+
+    const res = await listGmailWritebackFailures(2);
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.total).toBe(12);
+    expect(res.failedCount).toBe(9);
+    expect(res.unconfiguredCount).toBe(3);
+    // Sanity: neither count equals the 2-row page size — proves they came
+    // from their own queries, not from counting `items`.
+    expect(res.items.length).toBe(2);
+    expect(res.failedCount).not.toBe(res.items.length);
+    expect(res.unconfiguredCount).not.toBe(res.items.length);
+  });
+});
+
+describe('getGmailWritebackRetryTarget (#342 fix round — safe replay of a failed write-back)', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('refuses when Supabase is unconfigured', async () => {
+    const res = await getGmailWritebackRetryTarget('item-1');
+    expect(res).toEqual({ ok: false, error: 'Supabase service role not configured' });
+  });
+
+  it('refuses on a query error', async () => {
+    const { builder } = makeBuilder({ data: null, error: { message: 'db down' } });
+    sbRef.current = { from: () => builder };
+
+    const res = await getGmailWritebackRetryTarget('item-1');
+
+    expect(res).toEqual({ ok: false, error: 'db down' });
+  });
+
+  it('refuses when the item does not exist', async () => {
+    const { builder } = makeBuilder({ data: null, error: null });
+    sbRef.current = { from: () => builder };
+
+    const res = await getGmailWritebackRetryTarget('item-1');
+
+    expect(res).toEqual({ ok: false, error: 'Item not found' });
+  });
+
+  it('refuses an item whose stored sync is NOT a recorded Gmail failure — cannot be aimed at an unrelated item', async () => {
+    const { builder } = makeBuilder({
+      data: {
+        source: 'gmail',
+        external_id: 'thr-1:msg-1',
+        source_message_id: 'msg-1',
+        status: 'handled',
+        handled_channel_sync: { gmailLabel: 'ok' },
+        dashboard_contacts: { ghl_contact_id: null, display_name: 'Jane Doe' },
+      },
+      error: null,
+    });
+    sbRef.current = { from: () => builder };
+
+    const res = await getGmailWritebackRetryTarget('item-1');
+
+    expect(res).toEqual({ ok: false, error: 'This item has no recorded Gmail write-back failure to retry' });
+  });
+
+  // Fix round MED 2: reopen resets status to 'unresponded' but leaves the
+  // STALE handled_channel_sync in place (store.ts's upsert omits it, so it's
+  // preserved verbatim) — this must be refused, not replayed.
+  it('refuses a row that is no longer Handled (reopened), even though its stale sync still says failed', async () => {
+    const { builder } = makeBuilder({
+      data: {
+        source: 'gmail',
+        external_id: 'thr-1:msg-1',
+        source_message_id: 'msg-1',
+        status: 'unresponded', // reopened — reducer.ts resets this on a newer inbound
+        handled_channel_sync: { gmailLabel: 'failed', gmailLabelError: 'invalid_grant' }, // stale, never cleared
+        dashboard_contacts: { ghl_contact_id: 'ghl-1', display_name: 'Jane Doe' },
+      },
+      error: null,
+    });
+    sbRef.current = { from: () => builder };
+
+    const res = await getGmailWritebackRetryTarget('item-1');
+
+    expect(res).toEqual({ ok: false, error: 'This item is no longer Handled — its Gmail write-back state is stale' });
+  });
+
+  it('builds a HandledTarget from a genuinely-failed row', async () => {
+    const { builder } = makeBuilder({
+      data: {
+        source: 'gmail',
+        external_id: 'thr-1:msg-1',
+        source_message_id: 'msg-1',
+        status: 'handled',
+        handled_channel_sync: { gmailLabel: 'failed', gmailLabelError: 'invalid_grant' },
+        dashboard_contacts: { ghl_contact_id: 'ghl-1', display_name: 'Jane Doe' },
+      },
+      error: null,
+    });
+    sbRef.current = { from: () => builder };
+
+    const res = await getGmailWritebackRetryTarget('item-1');
+
+    expect(res).toEqual({
+      ok: true,
+      target: {
+        source: 'gmail',
+        externalId: 'thr-1:msg-1',
+        sourceMessageId: 'msg-1',
+        ghlContactId: 'ghl-1',
+        displayName: 'Jane Doe',
+      },
+    });
+  });
+
+  // Fix round MED 1: once a token is restored, a row that failed only
+  // because Gmail was entirely unconfigured is just as retryable as one that
+  // threw a real error.
+  it('accepts an "unconfigured" row for retry, not just "failed"', async () => {
+    const { builder } = makeBuilder({
+      data: {
+        source: 'gmail',
+        external_id: 'thr-1:msg-1',
+        source_message_id: 'msg-1',
+        status: 'handled',
+        handled_channel_sync: { gmailLabel: 'unconfigured' },
+        dashboard_contacts: { ghl_contact_id: 'ghl-1', display_name: 'Jane Doe' },
+      },
+      error: null,
+    });
+    sbRef.current = { from: () => builder };
+
+    const res = await getGmailWritebackRetryTarget('item-1');
+
+    expect(res.ok).toBe(true);
   });
 });
 

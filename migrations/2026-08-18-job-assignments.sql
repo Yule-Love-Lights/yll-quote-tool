@@ -27,10 +27,10 @@
 -- (brand-new table, indexes on an empty table, RLS-enable-zero-policies on that
 -- new table).
 --
--- ⚠️ NOT YET APPLIED to prod as of this commit: the Supabase MCP session lost
--- its access token mid-work. Nothing reads or writes this table until the
--- scheduling UI is used, so applying it is not urgent, but the schedule page
--- will error until it exists. Paste this file into the SQL editor to apply.
+-- APPLIED to prod 2026-08-20 (S61) and verified by query, not the tool's success
+-- message: 7 columns, 5 indexes, RLS enabled with 0 policies, 1 trigger, 0 rows.
+-- (It shipped in PR #802 marked NOT YET APPLIED because the Supabase MCP had lost
+-- its access token mid-session; applied a few days later once the token was back.)
 -- =====================================================================
 
 create table if not exists public.job_assignments (

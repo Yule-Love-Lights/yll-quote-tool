@@ -242,7 +242,27 @@ function makeConcurrentSendSb(
           return query;
         },
         or: (conditions: string) => {
-          const predicates = conditions.split(',').map((condition) => {
+          const splitConditions = (value: string) => {
+            const result: string[] = [];
+            let depth = 0;
+            let start = 0;
+            for (let index = 0; index < value.length; index += 1) {
+              if (value[index] === '(') depth += 1;
+              if (value[index] === ')') depth -= 1;
+              if (value[index] === ',' && depth === 0) {
+                result.push(value.slice(start, index));
+                start = index + 1;
+              }
+            }
+            result.push(value.slice(start));
+            return result;
+          };
+          const predicateFor = (condition: string): ((row: Record<string, unknown>) => boolean) => {
+            const andMatch = condition.match(/^and\((.*)\)$/);
+            if (andMatch) {
+              const predicates = splitConditions(andMatch[1]).map(predicateFor);
+              return (row) => predicates.every((predicate) => predicate(row));
+            }
             const nullMatch = condition.match(/^([a-z_]+)\.is\.null$/);
             if (nullMatch) return (row: Record<string, unknown>) => row[nullMatch[1]] == null;
             const beforeMatch = condition.match(/^([a-z_]+)\.lt\.(.+)$/);
@@ -251,7 +271,8 @@ function makeConcurrentSendSb(
               return typeof value === 'string' && value < beforeMatch[2];
             };
             throw new Error(`unsupported .or() condition in concurrent send fake: ${condition}`);
-          });
+          };
+          const predicates = splitConditions(conditions).map(predicateFor);
           orFilters.push((row) => predicates.some((predicate) => predicate(row)));
           return query;
         },
@@ -1346,6 +1367,158 @@ describe('POST /api/quotes/[id]/send — portal and delivery gates', () => {
 
       expect(responses.map((response) => response.status).sort((a, b) => a - b)).toEqual([200, 409]);
       expect(bodies).toContainEqual(expect.objectContaining({ code: 'send-conflict' }));
+    });
+
+    it.each([
+      ['fresh', { ...FRESH_QUOTE }],
+      ['changes_requested resend', {
+        ...FRESH_QUOTE,
+        quote_sent_at: '2026-07-18T12:00:00.000Z',
+        ghl_stage_synced_at: '2026-07-18T12:00:01.000Z',
+        status: 'changes_requested',
+      }],
+      ['declined revival', {
+        ...FRESH_QUOTE,
+        quote_sent_at: '2026-07-18T12:00:00.000Z',
+        ghl_stage_synced_at: '2026-07-18T12:00:01.000Z',
+        status: 'declined',
+      }],
+      ['abandoned revival', {
+        ...FRESH_QUOTE,
+        quote_sent_at: '2026-07-18T12:00:00.000Z',
+        ghl_stage_synced_at: '2026-07-18T12:00:01.000Z',
+        status: 'abandoned',
+      }],
+    ] as const)('blocks retryDelivery while a %s is still delivering', async (_label, quote) => {
+      const { client } = makeConcurrentSendSb(quote, { readBarrier: false });
+      sbRef.current = client;
+      let releaseSms!: () => void;
+      const smsGate = new Promise<void>((resolve) => { releaseSms = resolve; });
+      hl.sendSms.mockImplementationOnce(async () => {
+        await smsGate;
+        return undefined;
+      });
+
+      const send = POST(makeReqWithBody({ channel: 'sms' }), { params });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(hl.sendSms).toHaveBeenCalledTimes(1);
+
+      try {
+        const retry = await POST(makeReqWithBody({ channel: 'sms' }, true), { params });
+        const retryJson = await retry.json();
+
+        expect(retry.status).toBe(409);
+        expect(retryJson.code).toBe('send-conflict');
+        expect(hl.sendSms).toHaveBeenCalledTimes(1);
+      } finally {
+        releaseSms();
+        await send;
+      }
+    });
+
+    it('blocks retryGhl while an initial send is still synchronizing GHL', async () => {
+      const { client } = makeConcurrentSendSb({ ...FRESH_QUOTE }, { readBarrier: false });
+      sbRef.current = client;
+      let releaseGhl!: () => void;
+      const ghlGate = new Promise<void>((resolve) => { releaseGhl = resolve; });
+      hl.updateOpportunity.mockImplementationOnce(async () => {
+        await ghlGate;
+        return { id: 'opp_1' };
+      });
+
+      const send = POST(makeReqWithBody({ channel: 'email' }), { params });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(hl.updateOpportunity).toHaveBeenCalledTimes(1);
+
+      try {
+        const retry = await POST(makeReq(true), { params });
+        const retryJson = await retry.json();
+
+        expect(retry.status).toBe(409);
+        expect(retryJson.code).toBe('send-conflict');
+        expect(hl.updateOpportunity).toHaveBeenCalledTimes(1);
+      } finally {
+        releaseGhl();
+        await send;
+      }
+    });
+
+    it.each(['changes_requested', 'declined', 'abandoned'] as const)(
+      'does not let a %s send overwrite an in-flight delivery claim',
+      async (status) => {
+        const { client, liveQuote } = makeConcurrentSendSb({ ...FRESH_QUOTE }, { readBarrier: false });
+        sbRef.current = client;
+        let releaseSms!: () => void;
+        const smsGate = new Promise<void>((resolve) => { releaseSms = resolve; });
+        hl.sendSms.mockImplementationOnce(async () => {
+          await smsGate;
+          return undefined;
+        });
+
+        const first = POST(makeReqWithBody({ channel: 'sms' }), { params });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(hl.sendSms).toHaveBeenCalledTimes(1);
+
+        liveQuote.status = status;
+        try {
+          const second = await POST(makeReqWithBody({ channel: 'sms' }), { params });
+          const secondJson = await second.json();
+
+          expect(second.status).toBe(409);
+          expect(secondJson.code).toBe('send-conflict');
+          expect(hl.sendSms).toHaveBeenCalledTimes(1);
+        } finally {
+          releaseSms();
+          await first;
+        }
+      },
+    );
+
+    it('does not let a resend overwrite an in-flight GHL claim', async () => {
+      const { client, liveQuote } = makeConcurrentSendSb({ ...FRESH_QUOTE }, { readBarrier: false });
+      sbRef.current = client;
+      let releaseGhl!: () => void;
+      const ghlGate = new Promise<void>((resolve) => { releaseGhl = resolve; });
+      hl.updateOpportunity.mockImplementationOnce(async () => {
+        await ghlGate;
+        return { id: 'opp_1' };
+      });
+
+      const first = POST(makeReqWithBody({ channel: 'email' }), { params });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(hl.updateOpportunity).toHaveBeenCalledTimes(1);
+
+      liveQuote.status = 'changes_requested';
+      try {
+        const second = await POST(makeReqWithBody({ channel: 'email' }), { params });
+        const secondJson = await second.json();
+
+        expect(second.status).toBe(409);
+        expect(secondJson.code).toBe('send-conflict');
+        expect(hl.updateOpportunity).toHaveBeenCalledTimes(1);
+      } finally {
+        releaseGhl();
+        await first;
+      }
+    });
+
+    it('reclaims expired effect claims before a resend', async () => {
+      const { client, liveQuote } = makeConcurrentSendSb({
+        ...FRESH_QUOTE,
+        quote_sent_at: '2026-07-18T12:00:00.000Z',
+        ghl_stage_synced_at: '2026-07-18T12:00:01.000Z',
+        status: 'changes_requested',
+        delivery_retry_claimed_at: '2020-01-01T00:00:00.000Z',
+        ghl_retry_claimed_at: '2020-01-01T00:00:00.000Z',
+      }, { readBarrier: false });
+      sbRef.current = client;
+
+      const response = await POST(makeReqWithBody({ channel: 'sms' }), { params });
+
+      expect(response.status).toBe(200);
+      expect(hl.sendSms).toHaveBeenCalledTimes(1);
+      expect(liveQuote.delivery_retry_claimed_at).toBeNull();
+      expect(liveQuote.ghl_retry_claimed_at).toBeNull();
     });
 
     it('does not reclaim an unexpired delivery retry lease', async () => {

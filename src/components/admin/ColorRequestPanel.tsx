@@ -14,11 +14,24 @@ import { useRouter } from 'next/navigation';
 // the route reports the customer-notify legs (smsSent/emailSent) and whether
 // notify was skipped entirely (test quote / no linked contact). A failed send
 // means the colour changed but the customer doesn't know — staff calls them.
-type ApplyOutcome = {
+export type ApplyOutcome = {
+  label: string;
   smsSent: boolean;
   emailSent: boolean;
   notifySkipped: boolean;
 };
+
+export function applyOutcomeFromResponse(
+  body: Partial<ApplyOutcome>,
+  fallbackLabel: string,
+): ApplyOutcome {
+  return {
+    label: typeof body.label === 'string' ? body.label : fallbackLabel,
+    smsSent: body.smsSent === true,
+    emailSent: body.emailSent === true,
+    notifySkipped: body.notifySkipped === true,
+  };
+}
 
 export function ColorRequestPanel({ quoteId, label }: { quoteId: string; label: string }) {
   const router = useRouter();
@@ -45,11 +58,7 @@ export function ColorRequestPanel({ quoteId, label }: { quoteId: string; label: 
         // would unmount it (pendingColorRequest is cleared server-side) and
         // staff would never learn a send failed.
         const b = (await res.json().catch(() => ({}))) as Partial<ApplyOutcome>;
-        setApplied({
-          smsSent: b.smsSent === true,
-          emailSent: b.emailSent === true,
-          notifySkipped: b.notifySkipped === true,
-        });
+        setApplied(applyOutcomeFromResponse(b, label));
         return;
       }
       router.refresh();
@@ -79,7 +88,7 @@ export function ColorRequestPanel({ quoteId, label }: { quoteId: string; label: 
       <div className="bg-white border border-amber-300 rounded-lg p-4 mb-4">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-amber-700 mb-2">Colour change applied</h2>
         <p className="text-sm text-gray-700 mb-2">
-          The order&apos;s colour is now <span className="font-medium">{label}</span>.
+          The order&apos;s colour is now <span className="font-medium">{applied.label}</span>.
         </p>
         {applied.notifySkipped && (
           <p className="text-xs text-gray-500 mb-3">

@@ -17,6 +17,10 @@ vi.mock('@/lib/referenceAssets', () => ({
   deleteReferenceAsset: lib.deleteReferenceAsset,
 }));
 
+// ledger #347: requireOperator is now engaged by default — stub it authorized
+// like the other route.ts test suites do; this suite is about the UUID guard.
+vi.mock('@/lib/auth/supabaseServer', () => ({ requireOperator: vi.fn(async () => null) }));
+
 import { DELETE } from './route';
 
 const req = {} as unknown as NextRequest;
