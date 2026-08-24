@@ -4165,6 +4165,14 @@ export async function renderEditor(
         <div style="color:var(--text-dim);font-size:12px;margin-bottom:4px">
           ${memberLabel} billed as one mini-light unit. Edit its appearance and billed attributes here, or ungroup to bill the members separately.
         </div>
+        ${liveMembers.length > 0 && liveMembers.length !== sCount ? `
+        <div style="margin-bottom:4px;font-size:11px;color:var(--warn)">
+          Billed as ${sCount} string${sCount === 1 ? "" : "s"} across ${liveMembers.length} drawn item${liveMembers.length === 1 ? "" : "s"}. Adding or removing members never changes the billed number — set it in String count below.
+        </div>` : ""}
+        ${opts.showQuoteBinding && addableMembers.length === 0 ? `
+        <div style="margin-bottom:4px;font-size:11px;color:var(--text-dim)">
+          To add more items to this group, select the group and the ungrouped mini items together.
+        </div>` : ""}
       </section>
       ${opts.showQuoteBinding && addableMembers.length > 0 ? `
       <section>
