@@ -7,7 +7,7 @@
 import { redirect } from 'next/navigation';
 import { OperatorShell } from '@/components/OperatorShell';
 import { SettingsSubNav } from '@/components/dashboard/SettingsSubNav';
-import { getOperator } from '@/lib/auth/supabaseServer';
+import { authGateEngaged, getOperator } from '@/lib/auth/supabaseServer';
 import { isTelegramBotEnabled, isTelegramConfigured } from '@/lib/integrations/telegram';
 import { TELEGRAM_AUDIENCES, TELEGRAM_AUDIENCE_LABELS } from '@/lib/integrations/telegramRouting';
 import { TelegramRoutingManager } from '@/components/settings/TelegramRoutingManager';
@@ -15,9 +15,10 @@ import { TelegramRoutingManager } from '@/components/settings/TelegramRoutingMan
 export const dynamic = 'force-dynamic';
 
 export default async function TelegramSettingsPage() {
-  // #81 defense-in-depth (dormant until AUTH_GATE_ENABLED), same as the other
-  // operator settings pages.
-  if (process.env.AUTH_GATE_ENABLED === 'true' && !(await getOperator())) {
+  // #81 defense-in-depth — engaged by default; dormant only on the explicit
+  // AUTH_GATE_ENABLED=false opt-out (ledger #347), same as the other operator
+  // settings pages.
+  if (authGateEngaged() && !(await getOperator())) {
     redirect('/login?from=/settings/telegram');
   }
 

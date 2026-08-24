@@ -7,7 +7,7 @@ export const runtime = 'nodejs';
 
 // Operator-only billing list of invoices (ledger #83). Service-role only (reads
 // under RLS). Gated by the #81 perimeter; also calls requireOperator() as defense
-// in depth — dormant until AUTH_GATE_ENABLED.
+// in depth — engaged by default (ledger #347).
 export async function GET() {
   const denied = await requireOperator();
   if (denied) return denied;
