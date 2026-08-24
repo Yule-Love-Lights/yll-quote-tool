@@ -284,6 +284,7 @@ export type OfficeStaffMember = {
   active: boolean;
   authUserId: string | null;
   baseRateCents: number;
+  telegramUserId: string | null;
 };
 
 type OfficeRow = {
@@ -292,12 +293,19 @@ type OfficeRow = {
   active: boolean;
   auth_user_id: string | null;
   base_rate_cents: number;
+  telegram_user_id: string | null;
 };
 
 // base_rate_cents is selected back (not just written) so the office can SEE the
 // rate that was saved and catch a decimal-point typo, and so the rate can be
 // edited in-app rather than by hand SQL.
-const OFFICE_SELECT = 'id, display_name, active, auth_user_id, base_rate_cents';
+//
+// telegram_user_id is here because EVERY staff member texts the bot, not only
+// field crew (Naldo's ruling, 2026-08-24). The office panel is the door for
+// office staff; `/api/admin/crew-accounts` remains the field-crew door. The
+// webhook lookup (`getCrewMemberByTelegramUserId`) never filtered on is_office,
+// so the runtime already supported this; only the admin doors did not.
+const OFFICE_SELECT = 'id, display_name, active, auth_user_id, base_rate_cents, telegram_user_id';
 
 function toOfficeStaffMember(row: OfficeRow): OfficeStaffMember {
   return {
@@ -306,6 +314,7 @@ function toOfficeStaffMember(row: OfficeRow): OfficeStaffMember {
     active: row.active,
     authUserId: row.auth_user_id,
     baseRateCents: row.base_rate_cents,
+    telegramUserId: row.telegram_user_id,
   };
 }
 
@@ -410,13 +419,37 @@ async function patchOfficeStaffRow(
     .eq('is_office', true)
     .select(OFFICE_SELECT)
     .maybeSingle();
-  if (error) throw new Error(`patchOfficeStaffRow: ${error.message}`);
+  if (error) {
+    // Sibling-guard parity with updateCrewMember: a partial-unique collision on
+    // telegram_user_id is a real "that account already belongs to someone else"
+    // the office can act on, not a generic write failure. Never recover by
+    // returning the other row; that would hand back someone else's pay identity.
+    if (isTelegramUserIdUniqueViolation(error as { code?: string; message?: string })) {
+      throw new TelegramUserIdTakenError(String(payload.telegram_user_id));
+    }
+    throw new Error(`patchOfficeStaffRow: ${error.message}`);
+  }
   return data ? toOfficeStaffMember(data as OfficeRow) : null;
 }
 
 /** Activate or deactivate an office staff member. */
 export async function setOfficeStaffActive(id: string, active: boolean): Promise<OfficeStaffMember | null> {
   return patchOfficeStaffRow(id, { active });
+}
+
+/**
+ * Link (or unlink) an office staff member's Telegram account.
+ *
+ * Pass null to unlink. Every staff member texts the bot, office included, and
+ * the webhook resolves a punch through this column, so this is a PAY-IDENTITY
+ * write: whoever holds the linked Telegram account can clock in as this person.
+ * Admin-only at the route, and never accepted from the staff member themselves.
+ */
+export async function setOfficeStaffTelegram(
+  id: string,
+  telegramUserId: string | null,
+): Promise<OfficeStaffMember | null> {
+  return patchOfficeStaffRow(id, { telegram_user_id: telegramUserId });
 }
 
 /**

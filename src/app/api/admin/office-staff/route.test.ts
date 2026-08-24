@@ -14,9 +14,11 @@ const {
   linkOfficeStaff,
   setOfficeStaffActive,
   setOfficeStaffRate,
+  setOfficeStaffTelegram,
   listNonCrewOperators,
   OperatorAlreadyLinkedError,
   OfficeDisplayNameTakenError,
+  TelegramUserIdTakenError,
 } = vi.hoisted(() => {
   // Real error subclasses so the route's instanceof mapping is tested for the
   // right reason (a plain object would 500 through the wrong branch).
@@ -24,6 +26,12 @@ const {
     constructor() {
       super('That operator is already set up as staff.');
       this.name = 'OperatorAlreadyLinkedError';
+    }
+  }
+  class TelegramUserIdTakenError extends Error {
+    constructor(id: string) {
+      super(`Telegram account ${id} is already linked to another crew member`);
+      this.name = 'TelegramUserIdTakenError';
     }
   }
   class OfficeDisplayNameTakenError extends Error {
@@ -40,9 +48,11 @@ const {
     linkOfficeStaff: vi.fn(),
     setOfficeStaffActive: vi.fn(),
     setOfficeStaffRate: vi.fn(),
+    setOfficeStaffTelegram: vi.fn(),
     listNonCrewOperators: vi.fn(),
     OperatorAlreadyLinkedError,
     OfficeDisplayNameTakenError,
+    TelegramUserIdTakenError,
   };
 });
 
@@ -55,6 +65,8 @@ vi.mock('@/lib/crewMembers', () => ({
   linkOfficeStaff,
   setOfficeStaffActive,
   setOfficeStaffRate,
+  setOfficeStaffTelegram,
+  TelegramUserIdTakenError,
   OperatorAlreadyLinkedError,
   OfficeDisplayNameTakenError,
 }));
@@ -87,6 +99,7 @@ beforeEach(() => {
   linkOfficeStaff.mockResolvedValue({ id: 'crew-new', displayName: 'Ann', active: true, authUserId: 'op-ann', baseRateCents: 2250 });
   setOfficeStaffActive.mockResolvedValue({ id: 'crew-office', displayName: 'Kelly', active: false, authUserId: 'op-kelly', baseRateCents: 2500 });
   setOfficeStaffRate.mockResolvedValue({ id: 'crew-office', displayName: 'Kelly', active: true, authUserId: 'op-kelly', baseRateCents: 3000 });
+  setOfficeStaffTelegram.mockResolvedValue({ id: 'crew-office', displayName: 'Kelly', active: true, authUserId: 'op-kelly', baseRateCents: 2500, telegramUserId: '987654321' });
 });
 
 describe('GET /api/admin/office-staff', () => {
@@ -105,7 +118,7 @@ describe('GET /api/admin/office-staff', () => {
 
   it('joins office staff to their operator and excludes already-linked operators from the picker', async () => {
     listOfficeStaff.mockResolvedValue([
-      { id: 'crew-office', displayName: 'Kelly', active: true, authUserId: 'op-kelly', baseRateCents: 2500 },
+      { id: 'crew-office', displayName: 'Kelly', active: true, authUserId: 'op-kelly', baseRateCents: 2500, telegramUserId: null },
     ]);
     listLinkedAuthUserIds.mockResolvedValue(new Set(['op-kelly']));
     const res = await GET();
@@ -122,6 +135,7 @@ describe('GET /api/admin/office-staff', () => {
         active: true,
         authUserId: 'op-kelly',
         baseRateCents: 2500,
+        telegramUserId: null,
         operatorEmail: 'kelly@x.com',
         operatorName: 'Kelly',
         operatorMissing: false,
@@ -133,7 +147,7 @@ describe('GET /api/admin/office-staff', () => {
 
   it('flags an office row whose operator login was deleted (dangling) instead of hiding it', async () => {
     listOfficeStaff.mockResolvedValue([
-      { id: 'crew-ghost', displayName: 'Gone', active: true, authUserId: 'op-deleted', baseRateCents: 2000 },
+      { id: 'crew-ghost', displayName: 'Gone', active: true, authUserId: 'op-deleted', baseRateCents: 2000, telegramUserId: null },
     ]);
     listLinkedAuthUserIds.mockResolvedValue(new Set(['op-deleted']));
     // op-deleted is NOT among listNonCrewOperators (deleted from the accounts store).
@@ -243,6 +257,40 @@ describe('PATCH /api/admin/office-staff', () => {
   it('404s a rate edit when no office row matched (unknown or field-crew id)', async () => {
     setOfficeStaffRate.mockResolvedValueOnce(null);
     const res = await PATCH(patch({ crewMemberId: 'crew-field', hourlyRate: '20' }));
+    expect(res.status).toBe(404);
+  });
+
+  it('links an office staffer Telegram — office staff text the bot too (Naldo 2026-08-24)', async () => {
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', telegramUserId: '987654321' }));
+    expect(res.status).toBe(200);
+    expect(setOfficeStaffTelegram).toHaveBeenCalledWith('crew-office', '987654321');
+    expect(setOfficeStaffActive).not.toHaveBeenCalled();
+    expect(setOfficeStaffRate).not.toHaveBeenCalled();
+  });
+
+  it('treats null as UNLINK, not a validation error', async () => {
+    setOfficeStaffTelegram.mockResolvedValueOnce({ id: 'crew-office', displayName: 'Kelly', active: true, authUserId: 'op-kelly', baseRateCents: 2500, telegramUserId: null });
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', telegramUserId: null }));
+    expect(res.status).toBe(200);
+    expect(setOfficeStaffTelegram).toHaveBeenCalledWith('crew-office', null);
+  });
+
+  it('REFUSES an @handle and a leading zero, without writing', async () => {
+    expect((await PATCH(patch({ crewMemberId: 'crew-office', telegramUserId: '@kelly' }))).status).toBe(400);
+    expect((await PATCH(patch({ crewMemberId: 'crew-office', telegramUserId: '0123' }))).status).toBe(400);
+    expect(setOfficeStaffTelegram).not.toHaveBeenCalled();
+  });
+
+  it('maps a Telegram collision to 409, not 500', async () => {
+    setOfficeStaffTelegram.mockRejectedValueOnce(new TelegramUserIdTakenError('111'));
+    const res = await PATCH(patch({ crewMemberId: 'crew-office', telegramUserId: '111' }));
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toContain('already linked');
+  });
+
+  it('404s a Telegram link when no office row matched (unknown or field-crew id)', async () => {
+    setOfficeStaffTelegram.mockResolvedValueOnce(null);
+    const res = await PATCH(patch({ crewMemberId: 'crew-field', telegramUserId: '987654321' }));
     expect(res.status).toBe(404);
   });
 
