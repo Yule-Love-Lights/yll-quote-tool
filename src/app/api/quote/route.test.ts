@@ -1841,6 +1841,44 @@ describe('POST /api/quote — staff signal + audit trail for a post-approval rep
     expect(sbUpdatePayloads).toHaveLength(0);
   });
 
+  // Third fix round (technical-lens MED): a prior version of this route gated
+  // the fresh fetch behind a cheap pre-check comparing newTotalUsd against
+  // resolveAgreedTotal(existing.approval_snapshot, ...) — the STALE,
+  // request-start snapshot. If a concurrent writer changed the TRUE agreed
+  // basis, and this save's own new total happened to coincide with the STALE
+  // previous value, that pre-check read "no change" and silently skipped the
+  // fetch, the notice, AND the audit write — even though a real, unrecorded
+  // divergence existed against the fresh basis. Construct exactly that shape:
+  // validInputs() alone reprices to $0 (established above), so a STALE
+  // snapshot claiming currentTotalUsd: 0 makes a stale-basis pre-check see
+  // zero delta — while the FRESH snapshot (a concurrent staff correction)
+  // claims 300, a REAL $300 divergence the fix must still catch.
+  it('a concurrent write must not be masked by a stale-vs-new coincidence — the notice and the audit entry fire against the FRESH basis, not the stale one', async () => {
+    rawRef.current = { ...APPROVED_UNBOOKED_ROW };
+    rawRef.current.total = 0;
+    rawRef.current.approval_snapshot = { customerSelection: { currentTotalUsd: 0 } }; // stale: matches newTotalUsd (0)
+    freshApprovalSnapshotRef.current = { customerSelection: { currentTotalUsd: 300 } }; // fresh: does NOT match
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      repricedAfterApproval?: { previousTotalUsd: number; newTotalUsd: number; deltaUsd: number };
+    };
+    // Fires — a stale-basis pre-check would have suppressed this entirely.
+    expect(body.repricedAfterApproval).toBeDefined();
+    expect(body.repricedAfterApproval).toEqual({
+      previousTotalUsd: 300, // the FRESH basis, not the stale 0
+      newTotalUsd: 0,
+      deltaUsd: -300,
+      portalShowsFrozenPrice: false,
+      hasAcceptedAmendment: false,
+    });
+    const payload = sbUpdatePayloads.at(-1) as { approval_snapshot: { postApprovalReprices: Array<{ previous_total: number; new_total: number; delta: number }> } };
+    const persisted = payload.approval_snapshot.postApprovalReprices.at(-1)!;
+    expect(persisted.previous_total).toBe(300);
+    expect(persisted.new_total).toBe(0);
+    expect(persisted.delta).toBe(-300);
+  });
+
   it('is_test quotes are exempt — no signal, no audit write', async () => {
     rawRef.current = { ...APPROVED_UNBOOKED_ROW, is_test: true };
     const res = await POST(
