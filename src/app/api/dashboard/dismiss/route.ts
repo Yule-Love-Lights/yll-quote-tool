@@ -30,7 +30,23 @@ export async function POST(req: NextRequest) {
   const operator = await getOperator();
   // handled_by is a uuid FK (auth.users) — NULL, never the string 'system', on
   // the narrow path where the auth gate is dormant and no operator resolved.
-  const res = await dismissItem(itemId, operator?.id ?? null, new Date());
-  if (!res.ok) return NextResponse.json({ error: res.error }, { status: 503 });
+  // Row 387: every surface that renders Dismiss (InboxList, InWorksSection) is
+  // fed by the needs_reply / awaiting_reply / handled buckets, and
+  // applyBucketFilter excludes completed/dismissed from all three by
+  // construction — so those two are the only statuses an operator can legally
+  // dismiss FROM. Passing them swaps dismissItem's negative
+  // `.neq('status','dismissed')` default (which a row that moved to
+  // 'handled'/'completed' sails straight through, flipping an answered lead to
+  // dismissed AND suppressing that customer's future messages) for a positive
+  // CAS. Same set /api/dashboard/reply passes, for the same reason.
+  const res = await dismissItem(itemId, operator?.id ?? null, new Date(), {
+    expectedStatus: ['unresponded', 'handled'],
+  });
+  // 409, not 503: `refused` means the CAS matched zero rows — real evidence the
+  // item moved on (another operator resolved it, or an auto-complete tick did),
+  // not a backend failure. The client already renders the route's own error text
+  // for a non-ok response and refreshes the row, so this surfaces as "someone
+  // else already dealt with this" rather than a generic failure.
+  if (!res.ok) return NextResponse.json({ error: res.error }, { status: res.refused ? 409 : 503 });
   return NextResponse.json({ ok: true });
 }

@@ -1190,24 +1190,75 @@ export async function markItemHandledLocal(
 
 /** `operatorId` must be a real auth.users uuid, or null — see markItemHandledLocal's
  *  doc comment; inbox_items.handled_by never accepts a display name/email string. */
-export async function dismissItem(itemId: string, operatorId: string | null, now: Date): Promise<{ ok: boolean; error?: string }> {
+/**
+ * Row 387: same POSITIVE-CAS treatment markItemHandledLocal got in row 366, and
+ * the consequence here is worse, which is why this was worth doing rather than
+ * leaving as parity tidiness.
+ *
+ * The default guard is the NEGATIVE `.neq('status','dismissed')`. That passes on
+ * a row which has meanwhile become 'handled' or 'completed' — so a stale click
+ * (an operator whose earlier action's fetch threw, or a second operator racing
+ * the first) silently flips a GENUINELY ANSWERED lead to dismissed. And dismiss
+ * does not stop at the status: it also calls addSuppressedSenders, so that
+ * customer's future messages are auto-filtered out of the default view.
+ * InboxList's own comment at the `unreachableActions` lock describes exactly
+ * this path (InboxList.tsx, the `lockedTo` block) — the UI added a client-side
+ * lock to avoid it, but the server had no guard at all behind it.
+ *
+ * A caller that knows the fixed set of statuses its UI surface can legally be in
+ * should pass `expectedStatus`, swapping the negative guard for a positive
+ * `.eq(...)`/`.in(...)` carried across the read→write gap as one atomic
+ * UPDATE...WHERE. Every surface that renders Dismiss (InboxList, InWorksSection)
+ * is fed by the needs_reply / awaiting_reply / handled buckets, and
+ * applyBucketFilter (lifecycle.ts) excludes completed/dismissed from all three
+ * by construction — so the real legal set is {'unresponded','handled'}, the same
+ * set /api/dashboard/reply already passes.
+ *
+ * `refused: true` distinguishes a lost CAS race (the WHERE matched zero rows —
+ * real evidence the row moved) from a backend failure, mirroring
+ * MarkHandledResult. Without `expectedStatus` the legacy no-match behaviour is
+ * unchanged: a benign `{ ok: true }` no-op, since under `.neq` a zero-row match
+ * can only mean "already dismissed".
+ */
+export async function dismissItem(
+  itemId: string,
+  operatorId: string | null,
+  now: Date,
+  opts?: { expectedStatus?: string | string[] },
+): Promise<{ ok: boolean; error?: string; refused?: boolean }> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const expectedStatus = opts?.expectedStatus ?? null;
   const from = await priorStateOf(sb, itemId);
-  const { data, error } = await sb
+  const update = sb
     .from('inbox_items')
     .update({ status: 'dismissed', handled_by: operatorId, handled_at: now.toISOString(), updated_at: now.toISOString() })
-    .eq('id', itemId)
-    .neq('status', 'dismissed')
+    .eq('id', itemId);
+  const { data, error } = await (expectedStatus === null
+    ? update.neq('status', 'dismissed')
+    : Array.isArray(expectedStatus)
+      ? update.in('status', expectedStatus)
+      : update.eq('status', expectedStatus))
     .select('dashboard_contacts ( primary_email, primary_phone )')
     .maybeSingle();
   if (error) {
     await recordActionFailed(itemId, operatorId, 'dismissed', error.message);
     return { ok: false, error: error.message };
   }
-  // Already dismissed → no-op: don't log a duplicate reversible row or re-suppress
-  // (a stray reverse of that row would un-suppress a still-dismissed sender).
-  if (!data) return { ok: true };
+  if (!data) {
+    // With a POSITIVE guard a zero-row match means the row is no longer in a
+    // legally-dismissable state — REFUSE, and critically do NOT fall through to
+    // addSuppressedSenders below, which would suppress a real customer over a
+    // dismiss that never happened.
+    if (expectedStatus !== null) {
+      const msg = `Item not found or no longer ${Array.isArray(expectedStatus) ? expectedStatus.join('/') : expectedStatus}`;
+      await recordActionFailed(itemId, operatorId, 'dismissed', msg);
+      return { ok: false, error: msg, refused: true };
+    }
+    // Already dismissed → no-op: don't log a duplicate reversible row or re-suppress
+    // (a stray reverse of that row would un-suppress a still-dismissed sender).
+    return { ok: true };
+  }
   await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'dismissed', inbox_item_id: itemId, detail: { from } });
   const c = (data as { dashboard_contacts?: { primary_email?: string | null; primary_phone?: string | null } } | null)?.dashboard_contacts;
   if (c) await addSuppressedSenders([c.primary_email ?? null, c.primary_phone ?? null]);
