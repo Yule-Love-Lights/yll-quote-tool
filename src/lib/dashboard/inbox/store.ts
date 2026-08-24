@@ -1108,21 +1108,32 @@ export type MarkHandledResult = { ok: true; target: HandledTarget } | { ok: fals
  * nullable `uuid` column ("NULL when system auto-resolved" per its schema
  * comment); never pass a display name/email string here.
  *
- * Row 366: the default guard is the NEGATIVE `.neq('status','handled')` — right
- * for a caller whose whole intent is "handle this, whatever it currently is"
- * (/api/dashboard/handled, /api/dashboard/reply). A caller that first READ the
- * status and gated on a specific value must pass `expectedStatus`, which swaps
- * that guard for a POSITIVE `.eq('status', expectedStatus)` so the check it made
- * is carried across the read→write gap. Without it, a row that moved to
- * 'completed'/'dismissed' in that gap passes `.neq('status','handled')` and gets
- * silently RESURRECTED to 'handled' (the followup route's own hazard — see
- * shouldResolveAnchoredItem below).
+ * Row 366: the default guard is the NEGATIVE `.neq('status','handled')`. A
+ * caller that first READ the status (or knows the fixed set of statuses its own
+ * UI surface can legally be in) should pass `expectedStatus` — a single value or
+ * an array — which swaps that guard for a POSITIVE `.eq(...)`/`.in(...)` so the
+ * check is carried across the read→write gap as one atomic UPDATE...WHERE.
+ * Without it, a row that moved to 'completed'/'dismissed' in that gap passes
+ * `.neq('status','handled')` and gets silently RESURRECTED to 'handled'.
+ *
+ * Row 320(c): the doc here previously claimed the negative default was
+ * correct for /api/dashboard/handled and /api/dashboard/reply because their
+ * "whole intent is handle this, whatever it currently is" — that claim was
+ * never actually checked against those routes' real UI reachability and does
+ * not hold. /api/dashboard/handled's button only ever renders on a
+ * listOpenItems row (bucket 'needs_reply': status==='unresponded'); ReplyComposer
+ * only ever renders on a needs_reply/awaiting_reply/handled row, i.e. status
+ * ∈ {'unresponded','handled'} (applyBucketFilter, lifecycle.ts, excludes
+ * completed/dismissed by construction). Neither caller legitimately expects
+ * to resolve a 'completed'/'dismissed' row — a stale click/composer racing a
+ * concurrent Mark-completed/Dismiss should be REFUSED, not resurrect the
+ * terminal row — so both now pass their real legal-status set below.
  */
 export async function markItemHandledLocal(
   itemId: string,
   operatorId: string | null,
   now: Date,
-  opts?: { expectedStatus?: string },
+  opts?: { expectedStatus?: string | string[] },
 ): Promise<MarkHandledResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
@@ -1134,7 +1145,9 @@ export async function markItemHandledLocal(
     .eq('id', itemId);
   const { data, error } = await (expectedStatus === null
     ? update.neq('status', 'handled')
-    : update.eq('status', expectedStatus))
+    : Array.isArray(expectedStatus)
+      ? update.in('status', expectedStatus)
+      : update.eq('status', expectedStatus))
     .select('source, external_id, source_message_id, dashboard_contacts ( ghl_contact_id, display_name )')
     .maybeSingle();
   if (error) {
@@ -1147,7 +1160,7 @@ export async function markItemHandledLocal(
     // this repeated the literal twice.
     const msg = expectedStatus === null
       ? 'Item not found or already handled'
-      : `Item not found or no longer ${expectedStatus}`;
+      : `Item not found or no longer ${Array.isArray(expectedStatus) ? expectedStatus.join('/') : expectedStatus}`;
     await recordActionFailed(itemId, operatorId, 'handled', msg);
     return { ok: false, error: msg };
   }
@@ -1755,17 +1768,27 @@ export async function ensureFollowUp(input: {
 
 /** Mark a pending follow-up for an item done (e.g. the quote got approved).
  *  Returns how many rows were closed (0 when there was none) so callers can keep
- *  an accurate metric. */
+ *  an accurate metric.
+ *
+ *  Row 320(b): this used to discard the query's `error` entirely, so a genuine
+ *  DB failure here was indistinguishable from the legitimate "nothing pending
+ *  to close" no-op — both silently returned 0, with no breadcrumb. Its sibling
+ *  sweeps (sweepOrphanedFollowUps, sweepResolvedItemFollowUps) both check and
+ *  log this same query's error (#825/#310's precedent); this now matches. */
 export async function closeFollowUp(inboxItemId: string, reason: string): Promise<number> {
   const sb = getSupabaseServiceClient();
   if (!sb) return 0;
-  const { data } = await sb
+  const { data, error } = await sb
     .from('follow_ups')
     .update({ status: 'done' })
     .eq('inbox_item_id', inboxItemId)
     .eq('reason', reason)
     .eq('status', 'pending')
     .select('id');
+  if (error) {
+    console.error('[inbox] closeFollowUp failed:', error.message);
+    return 0;
+  }
   return data ? data.length : 0;
 }
 

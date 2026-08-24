@@ -111,7 +111,22 @@ export async function POST(req: NextRequest) {
   }
 
   // Stamp handled locally first (attribution never depends on the write-back).
-  const local = await markItemHandledLocal(itemId, operator.id, new Date());
+  //
+  // Row 320(c) (the "stale-composer race"): ReplyComposer only ever renders on
+  // a needs_reply / awaiting_reply / handled row (InboxList.tsx,
+  // InWorksSection.tsx) — i.e. status ∈ {'unresponded','handled'} by
+  // construction (lifecycle.ts's applyBucketFilter excludes completed/
+  // dismissed from every one of those buckets). If the item moved to
+  // 'completed'/'dismissed' between the operator opening the composer and
+  // hitting Send (another operator's Mark-completed/Dismiss, or an
+  // auto-complete tick), the message above has already gone out and can't be
+  // unsent — but the status write below must be REFUSED, not resurrect the
+  // terminal row to 'handled'. expectedStatus carries that real legal-status
+  // set into the write's own CAS instead of the negative
+  // `.neq('status','handled')` default, which would have let it through.
+  const local = await markItemHandledLocal(itemId, operator.id, new Date(), {
+    expectedStatus: ['unresponded', 'handled'],
+  });
   if (local.ok) {
     const sync = await runHandledWriteback(local.target, operator.email ?? operator.id);
     await recordWriteback(itemId, sync);

@@ -158,6 +158,13 @@ describe('POST /api/dashboard/reply — success', () => {
     expect(sendSmsMock).toHaveBeenCalledTimes(1);
     expect(markItemHandledLocalMock).toHaveBeenCalledTimes(1);
     expect(markItemFollowedMock).toHaveBeenCalledTimes(1);
+    // Row 320(c): the stale-composer-race fix — a positive expectedStatus set
+    // (not the default negative `.neq('status','handled')` guard) must reach
+    // the write, or a status that moved to completed/dismissed since the
+    // composer opened would get silently resurrected to 'handled'.
+    expect(markItemHandledLocalMock).toHaveBeenCalledWith(ITEM_ID, 'op-1', expect.any(Date), {
+      expectedStatus: ['unresponded', 'handled'],
+    });
     // Row 311 fix-round FIX 1: a real send must pass allowRestamp:true, or the
     // caller-differentiation fix is inert — see markItemFollowed's doc comment.
     expect(markItemFollowedMock).toHaveBeenCalledWith(ITEM_ID, 'op-1', expect.any(Date), { allowRestamp: true });
