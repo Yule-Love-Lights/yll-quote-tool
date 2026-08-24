@@ -130,6 +130,15 @@ export async function POST(req: NextRequest) {
   if (local.ok) {
     const sync = await runHandledWriteback(local.target, operator.email ?? operator.id);
     await recordWriteback(itemId, sync);
+  } else {
+    // Finding 1 fix round: the send above (line ~82) already fired — it can't
+    // be unsent, so this is NOT a request failure. But the CAS was refused
+    // (the item moved to completed/dismissed between the composer opening and
+    // Send), so the item's local status did NOT become 'handled'.
+    // markItemHandledLocal already wrote an `action_failed` audit row; this
+    // just makes the same event visible in the server log. `resolved: false`
+    // below is what tells the client the status write didn't land.
+    console.warn('[api/dashboard/reply] message sent, but the status CAS was refused (item resolved elsewhere in the meantime):', local.error);
   }
 
   // Sent in-tool → snooze as "Followed" (awaiting their reply). Best-effort: a
@@ -138,7 +147,16 @@ export async function POST(req: NextRequest) {
   // followed_up_at even if the item was already snoozed is correct (the
   // customer's waiting clock restarts because we genuinely just wrote to
   // them). See markItemFollowed's own doc comment for the full A/B split.
+  // (When `local.ok` is false the item is terminal, so markItemFollowed's own
+  // `.in('status', ['unresponded','handled'])` guard refuses this too — a
+  // harmless no-op, not a second failure to handle.)
   await markItemFollowed(itemId, operator.id, new Date(), { allowRestamp: true });
 
-  return NextResponse.json({ ok: true });
+  // Finding 1 fix round: `resolved` reports whether markItemHandledLocal's CAS
+  // actually landed. `ok` stays true unconditionally — the send above is real
+  // and irreversible either way — but a refused CAS means the item is still
+  // in its terminal (completed/dismissed) state, not 'handled'/'awaiting'.
+  // ReplyComposer/InWorksSection use this to avoid optimistically moving a
+  // terminal row into the "awaiting" group (see their own doc comments).
+  return NextResponse.json({ ok: true, resolved: local.ok });
 }

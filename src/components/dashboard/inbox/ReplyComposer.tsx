@@ -21,7 +21,12 @@ export function ReplyComposer({
    *  caller has it — seeds the toggle's initial choice. Optional so callers
    *  that don't track it (InboxList) keep working unchanged. */
   channel?: string | null;
-  onSent: () => void;
+  /** Finding 1 fix round: `resolved` mirrors the reply route's own `resolved`
+   *  field — true in the ordinary case, false when the send fired (can't be
+   *  unsent) but the item's status CAS was refused because it was already
+   *  resolved elsewhere. Callers use this to avoid treating a terminal row as
+   *  if it were newly "awaiting reply" (see InWorksSection's onSent). */
+  onSent: (resolved: boolean) => void;
 }) {
   const [draftText, setDraftText] = useState('');
   const [draftBusy, setDraftBusy] = useState(false);
@@ -67,9 +72,11 @@ export function ReplyComposer({
           channel: source === 'quotetool' ? replyChannel : undefined,
         }),
       });
-      const data = (await res.json()) as { ok?: boolean; error?: string };
+      const data = (await res.json()) as { ok?: boolean; resolved?: boolean; error?: string };
       if (data.ok) {
-        onSent();
+        // `resolved` defaults true for back-compat with any older cached
+        // response shape — only an explicit `false` means the CAS was refused.
+        onSent(data.resolved !== false);
       } else {
         setError(data.error ?? 'Failed to send reply.');
       }

@@ -1733,13 +1733,30 @@ export async function ensureFollowUp(input: {
     // suppress branch, which exists because decision.kind is recomputed per tick.
     // Costs one read, and only on the path that would otherwise write: the
     // early-return above already covers the steady state.
+    //
+    // Row 287(b) (Jason's ruling, same "HANDLED MEANS DONE" principle as row
+    // 252's shouldResolveAnchoredItem): 'handled' now skips too, not just
+    // 'completed'/'dismissed'. Before this, a follow-up an operator had
+    // explicitly marked Done re-armed to 'pending' on the very next reconcile
+    // tick (≤5 min later) for any item merely 'handled' — every OTHER
+    // sent-but-unapproved-quote tick re-requests kind:'create', so the "Done"
+    // action was silently undone almost immediately, reading to staff as a
+    // broken button. The escape hatch that keeps this from silently dropping a
+    // genuinely-open conversation: a real NEW inbound message reopens the item
+    // to 'unresponded' (ingestTouch's reducer, see this file's own comments
+    // near 'reopened'), which is outside this skip set and resumes normal
+    // re-arming immediately — so this only silences the nag while nothing new
+    // has actually happened. A quote's own approval/decline/going-dead closes
+    // its nag through a completely separate path (quoteFollowUpDecision
+    // returning 'close', sync.ts) that never reads item status at all, so
+    // that closure is unaffected either way.
     const { data: item, error: itemErr } = await sb.from('inbox_items').select('status').eq('id', input.inboxItemId).maybeSingle();
     if (itemErr) {
       console.error('[inbox] ensureFollowUp: item status lookup failed (skipping item):', itemErr.message);
       return 'failed';
     }
     const itemStatus = (item as { status: string } | null)?.status ?? null;
-    if (itemStatus === 'completed' || itemStatus === 'dismissed') return 'skipped';
+    if (itemStatus === 'completed' || itemStatus === 'dismissed' || itemStatus === 'handled') return 'skipped';
     const fu = quoteSentNoReplyFollowUp({ contactId: input.contactId, inboxItemId: input.inboxItemId, sentAt: input.sentAt, afterDays: input.afterDays });
     // WT-43: UPSERT, not insert. The table has `unique (inbox_item_id, reason)`
     // with no status predicate, so once a prior nudge is marked 'done' a plain

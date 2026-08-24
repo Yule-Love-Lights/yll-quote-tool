@@ -4,6 +4,9 @@ import {
   friendlyAutoReason,
   isPermanentReverseRefusal,
   reverseCompletedConfirmMessage,
+  reverseDismissedConfirmMessage,
+  requiresReverseConfirmation,
+  reverseConfirmMessage,
   withRowFlagSet,
   withRowFlagCleared,
 } from './ActivityLog';
@@ -106,5 +109,45 @@ describe('reverseCompletedConfirmMessage (row 320g)', () => {
     const msg = reverseCompletedConfirmMessage().toLowerCase();
     expect(msg).toContain('does not re-open');
     expect(msg).toContain('follow-up');
+  });
+});
+
+// Finding 2 (sibling-guard parity): dismissItem closes a pending follow-up
+// nag exactly like markItemCompleted does, and reverseItemState never
+// restores follow_ups on either path — the row-320(g) confirm covered only
+// 'completed' and missed this identically-shaped sibling.
+describe('requiresReverseConfirmation (Finding 2)', () => {
+  it('requires confirmation for both completed and dismissed', () => {
+    expect(requiresReverseConfirmation('completed')).toBe(true);
+    expect(requiresReverseConfirmation('dismissed')).toBe(true);
+  });
+  it('does not require confirmation for actions with no follow-up-nag side effect', () => {
+    expect(requiresReverseConfirmation('handled')).toBe(false);
+    expect(requiresReverseConfirmation('followed')).toBe(false);
+    expect(requiresReverseConfirmation('reclassified')).toBe(false);
+  });
+});
+
+describe('reverseDismissedConfirmMessage (Finding 2)', () => {
+  it('names both halves honestly: the dismissal reverses (and un-suppresses the sender), the follow-up nag does not', () => {
+    const msg = reverseDismissedConfirmMessage().toLowerCase();
+    expect(msg).toContain('does not re-open');
+    expect(msg).toContain('follow-up');
+    expect(msg).toContain('un-suppresses');
+  });
+  // 'completed' has no unsuppress analog (inverseOf('completed', ...) always
+  // sets unsuppress:false, lifecycle.ts) — the two messages must differ, not
+  // share one generic string that overclaims for 'completed'.
+  it('is worded differently from the completed message (dismissed restores suppression, completed does not)', () => {
+    expect(reverseDismissedConfirmMessage()).not.toBe(reverseCompletedConfirmMessage());
+  });
+});
+
+describe('reverseConfirmMessage dispatch (Finding 2)', () => {
+  it('routes dismissed to the dismissed-specific wording', () => {
+    expect(reverseConfirmMessage('dismissed')).toBe(reverseDismissedConfirmMessage());
+  });
+  it('routes completed (and anything else) to the completed wording', () => {
+    expect(reverseConfirmMessage('completed')).toBe(reverseCompletedConfirmMessage());
   });
 });

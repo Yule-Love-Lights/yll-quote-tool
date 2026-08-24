@@ -3379,9 +3379,18 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
       expect(fake.rows[0].status).toBe('done');
     });
 
-    // The regression that would hurt most: a still-open conversation must keep
-    // getting its nag re-armed exactly as before this gate existed.
-    it('re-arms a done row to pending when the item is only handled', async () => {
+    // Row 287(b) (Jason's ruling — supersedes this test's OLD assertion): this
+    // used to assert the OPPOSITE — 'created' / flipped to 'pending' — on the
+    // theory that a merely-'handled' item is still a "still-open conversation"
+    // that must keep getting nagged. That read of 'handled' was wrong: per
+    // "HANDLED MEANS DONE" (the same principle row 252's
+    // shouldResolveAnchoredItem already applies the other direction), an
+    // operator explicitly marking the follow-up Done on a 'handled' item is a
+    // real assertion the task is dealt with, and re-arming it on the very next
+    // tick just undid their click. A genuinely new customer message reopens
+    // the item to 'unresponded' (outside this skip set) and resumes normal
+    // re-arming — see ensureFollowUp's own doc comment.
+    it('leaves a done row done when the item is only handled (does not re-arm)', async () => {
       const fake = makeFollowUpsFake([
         { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'done' },
       ]);
@@ -3389,8 +3398,8 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
 
       const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
 
-      expect(created).toBe('created');
-      expect(fake.rows[0].status).toBe('pending');
+      expect(created).toBe('skipped');
+      expect(fake.rows[0].status).toBe('done');
     });
 
     it('re-arms a done row to pending when the item is unresponded', async () => {

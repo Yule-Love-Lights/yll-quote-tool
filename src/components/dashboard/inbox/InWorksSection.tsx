@@ -473,13 +473,24 @@ export function InWorksSection({
             itemId={item.id}
             source={item.source}
             channel={item.channel}
-            onSent={() => {
+            onSent={(resolved) => {
               setComposerFor(null);
-              // A sent reply stamps the item handled + followed (snoozed awaiting
-              // their reply) — its true group is always "awaiting" afterward. On an
-              // already-awaiting row this is a no-op (it must NOT disappear); on a
-              // handled row it moves there instead of vanishing.
-              moveGroup(item.id, group, 'awaiting');
+              if (resolved) {
+                // A sent reply stamps the item handled + followed (snoozed awaiting
+                // their reply) — its true group is always "awaiting" afterward. On an
+                // already-awaiting row this is a no-op (it must NOT disappear); on a
+                // handled row it moves there instead of vanishing.
+                moveGroup(item.id, group, 'awaiting');
+              } else {
+                // Finding 1 fix round: the reply route's status CAS was refused —
+                // the message went out (can't be unsent) but this item was
+                // concurrently resolved elsewhere (another operator's Mark
+                // completed/Dismiss, or an auto-complete tick) between opening the
+                // composer and clicking Send. Its true status is now terminal
+                // (completed/dismissed), not 'awaiting' — remove it from this
+                // section instead of falsely showing it as still awaiting reply.
+                removeFromGroup(item.id, group);
+              }
             }}
           />
         )}

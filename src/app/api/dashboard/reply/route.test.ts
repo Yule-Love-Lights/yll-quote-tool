@@ -154,7 +154,9 @@ describe('POST /api/dashboard/reply — success', () => {
     const res = await POST(makeReq({ itemId: ITEM_ID, text: 'hello there' }));
     const json = await res.json();
     expect(res.status).toBe(200);
-    expect(json).toEqual({ ok: true });
+    // Finding 1 fix round: `resolved` reports whether markItemHandledLocal's
+    // CAS actually landed — true here (the ordinary, uncontested path).
+    expect(json).toEqual({ ok: true, resolved: true });
     expect(sendSmsMock).toHaveBeenCalledTimes(1);
     expect(markItemHandledLocalMock).toHaveBeenCalledTimes(1);
     expect(markItemFollowedMock).toHaveBeenCalledTimes(1);
@@ -171,6 +173,25 @@ describe('POST /api/dashboard/reply — success', () => {
     // The pre-send claim wrote a claim timestamp before any send happened.
     expect(updateCalls.length).toBeGreaterThanOrEqual(1);
     expect(updateCalls[0]).toHaveProperty('reply_claimed_at');
+  });
+});
+
+describe('POST /api/dashboard/reply — Finding 1 (stale-composer race: CAS refused)', () => {
+  it('still sends (cannot unsend) but reports resolved:false, and skips the writeback, when the item was resolved elsewhere first', async () => {
+    markItemHandledLocalMock.mockResolvedValueOnce({ ok: false, error: 'Item not found or no longer unresponded/handled' });
+    const { chain } = makeSb([{ data: { id: ITEM_ID }, error: null }]);
+    sbRef.current = chain;
+    const res = await POST(makeReq({ itemId: ITEM_ID, text: 'hello there' }));
+    const json = await res.json();
+    expect(res.status).toBe(200);
+    expect(sendSmsMock).toHaveBeenCalledTimes(1);
+    expect(json).toEqual({ ok: true, resolved: false });
+    // No target coordinates on a refused CAS — nothing to write back to.
+    expect(runHandledWritebackMock).not.toHaveBeenCalled();
+    expect(recordWritebackMock).not.toHaveBeenCalled();
+    // The snooze attempt still fires — markItemFollowed's own status guard
+    // refuses it harmlessly (a terminal item is not a legal Follow source).
+    expect(markItemFollowedMock).toHaveBeenCalledTimes(1);
   });
 });
 

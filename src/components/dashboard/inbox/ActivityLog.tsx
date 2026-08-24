@@ -88,6 +88,34 @@ export function reverseCompletedConfirmMessage(): string {
   return 'Reverse this completed item?\n\nThis undoes the status change, but does not re-open any follow-up nag that closed when it was completed.';
 }
 
+/** Finding 2 (sibling-guard parity on the Reverse confirm): dismissItem
+ *  (store.ts) calls closeFollowUpsForResolvedItem exactly the same way
+ *  markItemCompleted/completeTerminalQuoteItems do — a dismissed row can have
+ *  closed a pending follow-up nag too, and reverseItemState (store.ts) never
+ *  touches follow_ups on either path. The row-320(g) confirm above covered
+ *  only 'completed' and missed this identically-shaped sibling. Unlike
+ *  'completed', reversing a dismissal ALSO un-suppresses the sender
+ *  (inverseOf('dismissed', ...) sets unsuppress:true, lifecycle.ts —
+ *  'completed's inverse never does), so this message says so rather than
+ *  reusing the completed wording verbatim. Pure + exported for the same
+ *  no-jsdom reason as reverseCompletedConfirmMessage. */
+export function reverseDismissedConfirmMessage(): string {
+  return 'Reverse this "not a lead" dismissal?\n\nThis restores the item and un-suppresses the sender, but does not re-open any follow-up nag that closed when it was dismissed.';
+}
+
+/** Finding 2: the set of Reverse actions that need a confirm at all — both
+ *  share the follow-up-nag caveat above. Pure + exported so this gate itself
+ *  (not just the message wording) is testable without jsdom. */
+const RESOLVED_ACTIONS_NEEDING_REVERSE_CONFIRM: ReadonlySet<string> = new Set(['completed', 'dismissed']);
+
+export function requiresReverseConfirmation(action: string): boolean {
+  return RESOLVED_ACTIONS_NEEDING_REVERSE_CONFIRM.has(action);
+}
+
+export function reverseConfirmMessage(action: string): string {
+  return action === 'dismissed' ? reverseDismissedConfirmMessage() : reverseCompletedConfirmMessage();
+}
+
 function friendlyActor(actor: string | null, actorName: string | null): string {
   if (actorName) return actorName;
   if (!actor || actor === 'system') return 'System';
@@ -120,12 +148,13 @@ export function ActivityLog({ initialRows }: { initialRows: ActivityRow[] }) {
   const [reversedIds, setReversedIds] = useState<Set<string>>(new Set());
 
   async function handleReverse(activityId: string, action: string) {
-    // Row 320(g): confirm before reversing a 'completed' row — see
-    // reverseCompletedConfirmMessage's doc above for why this is scoped to
-    // 'completed' specifically (the manual Mark-completed confirm already
-    // warns about this; this is the ONLY other place a completed row's
-    // reversal can be triggered from).
-    if (action === 'completed' && !window.confirm(reverseCompletedConfirmMessage())) return;
+    // Row 320(g) + Finding 2: confirm before reversing a 'completed' OR
+    // 'dismissed' row — see requiresReverseConfirmation/reverseConfirmMessage's
+    // docs above for why both share the same follow-up-nag caveat (this is
+    // the ONLY place either row's reversal can be triggered from outside the
+    // manual Mark-completed confirm, which 'dismissed' never passes through
+    // either).
+    if (requiresReverseConfirmation(action) && !window.confirm(reverseConfirmMessage(action))) return;
     setBusyIds((prev) => withRowFlagSet(prev, activityId));
     setErrorById((prev) => {
       const next = { ...prev };
