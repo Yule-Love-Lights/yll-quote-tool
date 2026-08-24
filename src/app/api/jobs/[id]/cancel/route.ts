@@ -304,6 +304,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     refundNeeded,
     quoteCancelled,
     stockReturned,
+    // Fix round 3 (Finding LOW, PR #926): a precomputed flag, same shape as
+    // `refundNeeded`, so callers don't have to string-match `note` to decide
+    // whether to draw the eye. True whenever ANY stock-reversal caveat rode
+    // along — the true-legacy live-reconstruction note, the "nothing
+    // trackable" note, or (the case this fix round exists for) the
+    // PENDING_STOCK_SNAPSHOT refusal note. All three mean a human should
+    // look, not just read past the note in the middle of a longer sentence.
+    stockNeedsAttention: !!stockReturnNote,
     note: notes.join(' '),
   });
 }

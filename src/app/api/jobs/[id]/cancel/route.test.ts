@@ -432,6 +432,8 @@ describe('POST /api/jobs/[id]/cancel', () => {
 
       expect(adjustOnHandAtomicMock).not.toHaveBeenCalled();
       expect(json.stockReturned).toEqual([]);
+      // Fix round 3 (Finding LOW): nothing to reconcile — no ⚠️ cue.
+      expect(json.stockNeedsAttention).toBe(false);
     });
 
     it('skips the real reversal for a TEST job even if it was marked prepped (never touched real stock)', async () => {
@@ -467,6 +469,9 @@ describe('POST /api/jobs/[id]/cancel', () => {
       expect(adjustOnHandAtomicMock).not.toHaveBeenCalled();
       expect(json.stockReturned).toEqual([]);
       expect(json.note).toMatch(/no trackable on-hand stock/i);
+      // Fix round 3 (Finding LOW): a "check manually" caveat is exactly what
+      // the ⚠️ cue is for, even though it isn't the PENDING_STOCK_SNAPSHOT case.
+      expect(json.stockNeedsAttention).toBe(true);
     });
 
     it('does not fail the cancel when the work-order read throws (best-effort)', async () => {
@@ -559,6 +564,9 @@ describe('POST /api/jobs/[id]/cancel — Row 325 stock_deductions snapshot', () 
     expect(json.stockReturned).toEqual([{ sku: 'SKU-A', qty: 5 }]);
     // No legacy caveat — a real snapshot was available and used.
     expect(json.note).not.toMatch(/no per-prep snapshot/i);
+    // Fix round 3 (Finding LOW): no caveat rode along, so the ⚠️ cue this
+    // flag drives on the two admin consumers should NOT fire.
+    expect(json.stockNeedsAttention).toBe(false);
   });
 
   it('falls back to a live reconstruction AND flags it, for a legacy job prepped before the snapshot column existed', async () => {
@@ -583,6 +591,9 @@ describe('POST /api/jobs/[id]/cancel — Row 325 stock_deductions snapshot', () 
     expect(json.stockReturned).toEqual([{ sku: 'SKU-A', qty: 5 }]);
     expect(json.note).toMatch(/no per-prep snapshot/i);
     expect(json.note).toMatch(/may not exactly match/i);
+    // Fix round 3 (Finding LOW): the legacy-reconstruction caveat is exactly
+    // the kind of thing the ⚠️ cue should draw the eye to.
+    expect(json.stockNeedsAttention).toBe(true);
   });
 
   it('Finding 1 (fix round 2): refuses to auto-reverse and flags a human note for the PENDING sentinel state — never treats it as legacy', async () => {
@@ -621,6 +632,9 @@ describe('POST /api/jobs/[id]/cancel — Row 325 stock_deductions snapshot', () 
     // and may not match", it's "nothing was reconstructed at all".
     expect(json.note).not.toMatch(/no per-prep snapshot/i);
     expect(json.note).not.toMatch(/may not exactly match/i);
+    // Fix round 3 (Finding LOW): this is exactly the case the widened ⚠️ cue
+    // exists for — a human needs to look, even though no refund is owed.
+    expect(json.stockNeedsAttention).toBe(true);
   });
 
   it('clears stock_deductions in the same atomic reversal-claim update (mirrors clearing stock_decremented_at)', async () => {
