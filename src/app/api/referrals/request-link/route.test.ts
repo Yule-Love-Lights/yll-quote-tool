@@ -112,6 +112,10 @@ vi.mock('@/lib/referrals', () => ({
   ensureReferralCode,
   hasReferralCode,
   REFERRAL_CREDIT_USD: 125,
+  // Review fix 5: referralLinkEmailHtml now takes a real creditExpiryYears
+  // param (src/lib/integrations/quoteMessages.ts), sourced here the same
+  // way REFERRAL_CREDIT_USD already is.
+  REFERRAL_CREDIT_EXPIRY_YEARS: 2,
   REFERRAL_FRIEND_SPRITZERS: { count: 2, sizeInches: 16 },
 }));
 vi.mock('@/lib/integrations/telegramNotify', () => ({ appBaseUrl: () => 'https://quote.example.com' }));

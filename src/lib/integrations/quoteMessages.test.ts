@@ -1031,7 +1031,7 @@ describe('greeting casing sweep (row 315): every customer greeting routes throug
     expect(html).not.toContain('—');
   });
 
-  const REFERRAL_LINK_REWARD_TERMS = { creditUsd: 125, spritzerCount: 2, spritzerSizeInches: 16 };
+  const REFERRAL_LINK_REWARD_TERMS = { creditUsd: 125, creditExpiryYears: 2, spritzerCount: 2, spritzerSizeInches: 16 };
 
   it('referralLinkEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {
     const referralUrl = 'https://x/refer/abc';
@@ -1064,6 +1064,29 @@ describe('greeting casing sweep (row 315): every customer greeting routes throug
     expect(html).toContain('$170 in free lighting');
     expect(html).not.toContain('next YLL job');
     expect(html).not.toContain('—');
+  });
+
+  // Review fix 5: this email is sent before any friend has booked, so a
+  // bare "good for 2 years" reads as "from today." The expiry actually
+  // stamps at the friend's booking (accrueOnBooking, src/lib/referrals.ts).
+  // Also proves the year count is a real parameter, never a hardcoded
+  // "two years" literal (it used to be one).
+  it('referralLinkEmailHtml derives the expiry years from a real parameter and says the clock starts at the friend\'s booking', () => {
+    const html = referralLinkEmailHtml({
+      firstName: 'Susan',
+      referralUrl: 'https://x/refer/abc',
+      ...REFERRAL_LINK_REWARD_TERMS,
+    });
+    expect(html).toContain('good for 2 years from when they book');
+
+    const htmlWithDifferentExpiry = referralLinkEmailHtml({
+      firstName: 'Susan',
+      referralUrl: 'https://x/refer/abc',
+      ...REFERRAL_LINK_REWARD_TERMS,
+      creditExpiryYears: 3,
+    });
+    expect(htmlWithDifferentExpiry).toContain('good for 3 years from when they book');
+    expect(htmlWithDifferentExpiry).not.toContain('good for 2 years');
   });
 
   it('colorChangeAppliedEmailHtml capitalises a lowercase name and leaves an already-capitalised one alone', () => {

@@ -1025,6 +1025,11 @@ export function referralLinkEmailHtml(input: {
   firstName?: string | null;
   referralUrl: string;
   creditUsd: number;
+  // Review fix 5: was a hardcoded "two years" literal below, which could
+  // silently drift from the real REFERRAL_CREDIT_EXPIRY_YEARS constant.
+  // Caller passes the real constant (src/app/api/referrals/request-link/
+  // route.ts), same pattern as creditUsd/spritzerCount above it.
+  creditExpiryYears: number;
   spritzerCount: number;
   spritzerSizeInches: number;
 }): string {
@@ -1037,7 +1042,9 @@ export function referralLinkEmailHtml(input: {
     `<p><a href="${link}">${link}</a></p>`,
     `<p>Send it to a friend or neighbor. When they book with us, you get <strong>${usd(
       input.creditUsd,
-    )} in credit</strong> toward any Yule Love Lights service, holiday, permanent, event and wedding lighting, or bistro, good for two years. They get <strong>${usd(
+    )} in credit</strong> toward any Yule Love Lights service, holiday, permanent, event and wedding lighting, or bistro, good for ${
+      input.creditExpiryYears
+    } years from when they book. They get <strong>${usd(
       spritzerValueUsd,
     )} in free lighting</strong> on their first install, ${input.spritzerCount} staked ${
       input.spritzerSizeInches

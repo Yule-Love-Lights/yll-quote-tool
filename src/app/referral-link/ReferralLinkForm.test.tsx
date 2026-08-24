@@ -203,6 +203,15 @@ describe('ReferralLinkReady (naldo/referral-link-personalized, review fix 1; cop
     expect(html).toContain(`good for ${REWARD_TERMS.creditExpiryYears} years`);
   });
 
+  // Review fix 5: this screen is shown before any friend has booked, so
+  // "good for 2 years" alone reads as "from today." The expiry actually
+  // stamps at the FRIEND's booking (accrueOnBooking, src/lib/referrals.ts).
+  it('makes clear the expiry clock starts at the friend\'s booking, not today', () => {
+    const html = renderToStaticMarkup(<ReferralLinkReady link={LINK} name="Riley" {...REWARD_TERMS} />);
+    expect(html).toContain('from when your friend');
+    expect(html).toContain('books');
+  });
+
   it('dollarizes the friend spritzer reward and still names the physical item (never hardcodes 170)', () => {
     const html = renderToStaticMarkup(<ReferralLinkReady link={LINK} name="Riley" {...REWARD_TERMS} />);
     expect(html).toContain('$170 in free lighting');

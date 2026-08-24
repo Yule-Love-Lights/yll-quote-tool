@@ -199,7 +199,8 @@ export function ReferralLinkReady({
       <p className="mt-2 text-[13px] text-[#A89F87]">
         Refer two, that is {formatUsd(creditUsd * 2)} off. Already have holiday lights with us? Put
         it toward permanent lighting, an event, or a bistro install instead, whatever is next for
-        you. It is a credit, not cash, good for {creditExpiryYears} years.
+        you. It is a credit, not cash, good for {creditExpiryYears} years from when your friend
+        books, not from today.
       </p>
 
       <p className="mt-6 text-[15px] text-[#E0D7C1] leading-[1.6]">
