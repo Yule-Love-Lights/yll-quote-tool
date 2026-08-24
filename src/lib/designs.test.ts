@@ -43,6 +43,7 @@ import {
   updateDesignSceneGuarded,
   getDesignWithPhoto,
   getDesignByQuote,
+  updateDesignPortalVisibility,
   isValidDesignId,
   type DesignExtraPhoto,
   type DesignScene,
@@ -632,7 +633,7 @@ describe('extra street photos (#13)', () => {
     expect(stored.find(p => p.id === PHOTO_B)).toBeTruthy(); // not dropped
   });
 
-  it('getDesignWithPhoto returns [] extras for pre-migration rows and signed entries when present', async () => {
+  it('getDesignWithPhoto returns signed extras and reports customer-visible street imagery', async () => {
     const bare = makeExtrasSb({ extra_photos: null });
     sbRef.current = bare.client;
     const withoutExtras = await getDesignWithPhoto(ID);
@@ -646,6 +647,22 @@ describe('extra street photos (#13)', () => {
     expect(withExtras?.extraPhotos).toEqual([
       { id: PHOTO_A, url: `signed:${ID}/extra-${PHOTO_A}.jpg`, w: 20, h: 10, title: 'Side', source: null },
     ]);
+    expect(withExtras?.hasStreetImage).toBe(true);
+
+    const internalOnly = makeExtrasSb({
+      extra_photos: [
+        {
+          id: PHOTO_B,
+          path: `${ID}/extra-${PHOTO_B}.jpg`,
+          w: 20,
+          h: 10,
+          title: 'Install',
+          source: 'crew',
+        },
+      ],
+    });
+    sbRef.current = internalOnly.client;
+    expect((await getDesignWithPhoto(ID))?.hasStreetImage).toBe(false);
   });
 
   it('preserves source: crew through the loader so portalPhotos can filter install photos', async () => {
@@ -832,6 +849,8 @@ describe('getDesignWithPhoto column narrowing (W4-033)', () => {
       satellite_lines: { santas: [], gingerbread: [], c9: [] },
       extra_photos: [{ id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 20, h: 10, title: 'Side' }],
       photo_title: 'Front',
+      portal_show_street_view: false,
+      portal_show_satellite_view: true,
       // Deliberately NO seed_analysis / created_at / updated_at — a real
       // narrowed select() from Supabase wouldn't return them either, so their
       // absence here proves toDesignWithPhoto doesn't need them.
@@ -867,6 +886,8 @@ describe('getDesignWithPhoto column narrowing (W4-033)', () => {
     expect(selectedCols).not.toBe('*');
     expect(selectedCols).not.toMatch(/seed_analysis/);
     expect(selectedCols).toMatch(/satellite_feet_per_pixel/); // #142: the builder rehydrate reads it
+    expect(selectedCols).toMatch(/portal_show_street_view/);
+    expect(selectedCols).toMatch(/portal_show_satellite_view/);
     // The full DesignWithPhoto shape is still populated from the narrowed row.
     expect(result).toEqual({
       id: ID,
@@ -882,6 +903,10 @@ describe('getDesignWithPhoto column narrowing (W4-033)', () => {
       satelliteLines: { santas: [], gingerbread: [], c9: [] },
       extraPhotos: [{ id: PHOTO_A, url: `signed:${ID}/extra-${PHOTO_A}.jpg`, w: 20, h: 10, title: 'Side', source: null }],
       photoTitle: 'Front',
+      hasStreetImage: true,
+      hasSatelliteImage: true,
+      portalShowStreetView: false,
+      portalShowSatelliteView: true,
       // narrowRow (below) carries no `version` — proving toDesignWithPhoto's
       // `row.version ?? 1` default (ledger row 260) rather than a real column.
       version: 1,
@@ -935,6 +960,10 @@ describe('getDesignByQuote (W2-031 / W4-033)', () => {
     expect(queryCount).toBe(1);
     expect(result?.id).toBe(ID);
     expect(result?.quoteId).toBe('quote-1');
+    expect(result?.portalShowStreetView).toBe(true);
+    expect(result?.portalShowSatelliteView).toBe(true);
+    expect(result?.hasStreetImage).toBe(false);
+    expect(result?.hasSatelliteImage).toBe(false);
   });
 
   it('returns null when no design is linked to the quote', async () => {
@@ -952,6 +981,103 @@ describe('getDesignByQuote (W2-031 / W4-033)', () => {
     sbRef.current = client;
 
     expect(await getDesignByQuote('quote-none')).toBeNull();
+  });
+});
+
+describe('updateDesignPortalVisibility', () => {
+  function makeVisibilitySb(
+    initial: { portal_show_street_view: boolean; portal_show_satellite_view: boolean },
+    opts: { error?: { message: string } | null; missing?: boolean } = {},
+  ) {
+    const state = { ...initial };
+    const updates: Record<string, unknown>[] = [];
+    let selected = '';
+    const client = {
+      from: (table: string) => {
+        expect(table).toBe('designs');
+        const b: Record<string, unknown> = {};
+        Object.assign(b, {
+          update: (payload: Record<string, unknown>) => {
+            updates.push(payload);
+            Object.assign(state, payload);
+            return b;
+          },
+          eq: (column: string, value: string) => {
+            expect(column).toBe('id');
+            expect(value).toBe(ID);
+            return b;
+          },
+          select: (columns: string) => {
+            selected = columns;
+            return b;
+          },
+          maybeSingle: async () => ({
+            data: opts.missing ? null : state,
+            error: opts.error ?? null,
+          }),
+        });
+        return b;
+      },
+    };
+    return { client, state, updates, selected: () => selected };
+  }
+
+  it('writes only the supplied street flag and returns both canonical values', async () => {
+    const fake = makeVisibilitySb({
+      portal_show_street_view: true,
+      portal_show_satellite_view: false,
+    });
+    sbRef.current = fake.client;
+
+    const result = await updateDesignPortalVisibility(ID, { portalShowStreetView: false });
+
+    expect(fake.updates).toEqual([{ portal_show_street_view: false }]);
+    expect(fake.selected()).toBe('portal_show_street_view, portal_show_satellite_view');
+    expect(result).toEqual({
+      portalShowStreetView: false,
+      portalShowSatelliteView: false,
+    });
+  });
+
+  it('writes only the supplied satellite flag and is idempotent on retry', async () => {
+    const fake = makeVisibilitySb({
+      portal_show_street_view: false,
+      portal_show_satellite_view: true,
+    });
+    sbRef.current = fake.client;
+
+    const first = await updateDesignPortalVisibility(ID, { portalShowSatelliteView: false });
+    const second = await updateDesignPortalVisibility(ID, { portalShowSatelliteView: false });
+
+    expect(fake.updates).toEqual([
+      { portal_show_satellite_view: false },
+      { portal_show_satellite_view: false },
+    ]);
+    expect(first).toEqual(second);
+    expect(second).toEqual({
+      portalShowStreetView: false,
+      portalShowSatelliteView: false,
+    });
+  });
+
+  it('returns null when the database update errors or matches no design', async () => {
+    const errored = makeVisibilitySb(
+      { portal_show_street_view: true, portal_show_satellite_view: true },
+      { error: { message: 'write failed' } },
+    );
+    sbRef.current = errored.client;
+    await expect(
+      updateDesignPortalVisibility(ID, { portalShowStreetView: false }),
+    ).resolves.toBeNull();
+
+    const missing = makeVisibilitySb(
+      { portal_show_street_view: true, portal_show_satellite_view: true },
+      { missing: true },
+    );
+    sbRef.current = missing.client;
+    await expect(
+      updateDesignPortalVisibility(ID, { portalShowStreetView: false }),
+    ).resolves.toBeNull();
   });
 });
 

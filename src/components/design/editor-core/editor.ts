@@ -37,6 +37,7 @@ import {
 import { isLineDrawContext } from "./drawContext";
 import { surfaceOptionsForBulbType } from "./surfaceOptions";
 import { sideOfHouseOptions } from "./sideOfHouseOptions";
+import { brightnessForPhoto, setBrightnessForPhoto } from "@/lib/design/photoBrightness";
 import { seedGroupStringCount } from "./miniGroupBilling";
 
 // Default real-world width for newly-placed custom uploads — about 3 feet,
@@ -233,6 +234,7 @@ export async function renderEditor(
   const activeExtra = activePhotoId
     ? (design.extraPhotos ?? []).find((p) => p.id === activePhotoId) ?? null
     : null;
+  const extraPhotoIds = (design.extraPhotos ?? []).map((p) => p.id);
   const activeBgUrl = activePhotoId ? (activeExtra?.url ?? null) : design.photoUrl;
   // An item belongs to the mounted photo when its photoId matches (absent/null
   // = the base photo).
@@ -337,9 +339,10 @@ export async function renderEditor(
       <div class="stage-wrap" id="stage-wrap">
         <div id="stage-host" style="position:absolute;inset:0"></div>
         <div class="brightness" id="brightness-ui">
+          <span class="ctl-label" title="Brightness applies to the photo you are viewing. Every other photo in this design keeps its own setting, so darkening a multi-photo design means adjusting each tab.">Brightness (this photo)</span>
           <span class="icon" title="Darker">${moonSvg()}</span>
           <div class="slider-wrap">
-            <input type="range" min="0" max="100" value="50" id="brightness" title="Double-click to reset to neutral" />
+            <input type="range" min="0" max="100" value="50" id="brightness" title="This photo only. Double-click to reset to neutral." />
             <div class="neutral-tick" title="Neutral — original photo brightness"></div>
           </div>
           <span class="icon" title="Brighter">${sunSvg()}</span>
@@ -710,7 +713,7 @@ export async function renderEditor(
       tintLayer.batchDraw();
       return;
     }
-    const b = scene.brightness ?? 50;
+    const b = brightnessForPhoto(scene, activePhotoId);
     if (b === 50) {
       tintLayer.batchDraw();
       return;
@@ -4969,9 +4972,9 @@ export async function renderEditor(
 
   // --- Brightness slider ---
   const brightnessEl = root.querySelector("#brightness") as HTMLInputElement;
-  brightnessEl.value = String(scene.brightness ?? 50);
+  brightnessEl.value = String(brightnessForPhoto(scene, activePhotoId));
   brightnessEl.addEventListener("input", () => {
-    scene = { ...scene, brightness: Number(brightnessEl.value) };
+    scene = setBrightnessForPhoto(scene, extraPhotoIds, activePhotoId, Number(brightnessEl.value));
     drawTint();
     scheduleSave();
   });
@@ -4982,7 +4985,7 @@ export async function renderEditor(
   // Double-click resets to neutral (50) — the original photo brightness.
   brightnessEl.addEventListener("dblclick", () => {
     brightnessEl.value = "50";
-    scene = { ...scene, brightness: 50 };
+    scene = setBrightnessForPhoto(scene, extraPhotoIds, activePhotoId, 50);
     drawTint();
     scheduleSave();
     commit();

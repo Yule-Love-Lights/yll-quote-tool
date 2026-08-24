@@ -7,6 +7,7 @@
 import type { Scene } from '@/lib/design/sceneTypes';
 import type { PermanentWarranty } from '@/lib/permanent/types';
 import type { SceneEffect } from '@/lib/design/permanentScenes';
+import type { PortalImageVisibility } from '@/lib/portal/imageVisibility';
 
 export type PackageId = 'A' | 'B' | 'C' | 'D';
 
@@ -270,6 +271,7 @@ export type PortalSatelliteLines = {
 
 export type PortalDesign = {
   scene: Scene;
+  imageVisibility: PortalImageVisibility;
   photoUrl: string | null;
   photoW: number | null;
   photoH: number | null;

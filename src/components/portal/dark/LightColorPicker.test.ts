@@ -12,7 +12,24 @@ import {
   schemeChangedProps,
   customColorsOpenedProps,
   customColorAddedProps,
+  colorPickerIntro,
+  bookedColorRequestIntro,
 } from './LightColorPicker';
+
+describe('no-preview copy', () => {
+  it('does not promise a live recolor when the house design is hidden', () => {
+    expect(colorPickerIntro(false, false)).toBe(
+      'Pick the color or pattern you’d like for your lights.',
+    );
+    expect(bookedColorRequestIntro(false)).toContain('Choose any colour above');
+    expect(bookedColorRequestIntro(false)).not.toMatch(/preview/i);
+  });
+
+  it('keeps the live-preview copy when the house design is visible', () => {
+    expect(colorPickerIntro(false, true)).toMatch(/recolors instantly above/i);
+    expect(bookedColorRequestIntro(true)).toMatch(/preview any colour above/i);
+  });
+});
 
 describe('daylightToggledProps (PostHog Wave 2)', () => {
   it('carries quote_id/service_type + the NEW on-state', () => {

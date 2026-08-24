@@ -19,6 +19,7 @@ import { applyOurRecommendation } from './derivePackages';
 import { isWisetackFinancingEnabled, getWisetackPrequalUrl } from '@/lib/integrations/wisetack';
 import { financedBalanceUsd } from '@/lib/financing/eligibility';
 import { resolveAgreedTotal } from '@/lib/agreedTotal';
+import { resolvePortalImageVisibility } from './imageVisibility';
 
 export class PortalConfigError extends Error {
   constructor(message: string) {
@@ -106,21 +107,28 @@ export async function loadPortalQuote(id: string): Promise<PortalQuote | null> {
         if (!designResult.ok) throw designResult.err;
         const design = designResult.design;
         if (design) {
+          const imageVisibility = resolvePortalImageVisibility(
+            design.portalShowStreetView,
+            design.portalShowSatelliteView,
+          );
           portal.design = {
             scene: design.scene,
-            photoUrl: design.photoUrl,
-            photoW: design.photoW,
-            photoH: design.photoH,
+            imageVisibility,
+            // Redact hidden private-storage artifacts before this customer
+            // payload is serialized. Staff design reads keep the full URLs.
+            photoUrl: imageVisibility.street ? design.photoUrl : null,
+            photoW: imageVisibility.street ? design.photoW : null,
+            photoH: imageVisibility.street ? design.photoH : null,
             // Satellite roof view (#51) — carried through so WhatsIncluded can
             // show the top-down image + roofline lines. Null/absent fields make
             // the section hide.
-            satelliteUrl: design.satelliteUrl,
-            satelliteW: design.satelliteW,
-            satelliteH: design.satelliteH,
-            satelliteLines: design.satelliteLines,
+            satelliteUrl: imageVisibility.satellite ? design.satelliteUrl : null,
+            satelliteW: imageVisibility.satellite ? design.satelliteW : null,
+            satelliteH: imageVisibility.satellite ? design.satelliteH : null,
+            satelliteLines: imageVisibility.satellite ? design.satelliteLines : null,
             // #13 multi-image: extra photos (signed URLs) for the hero strip,
             // reprise arrows, and the all-photos gallery.
-            extraPhotos: design.extraPhotos,
+            extraPhotos: imageVisibility.street ? design.extraPhotos : [],
           };
           // Link line items ⇄ scene items so the portal can hide a drawn item
           // when its line item is toggled off (#27 D). Additive — same ids, just

@@ -480,7 +480,7 @@ export default async function PortalPage({
         {/* 3.5 All photos, lit, at once (#13 multi-image — 🧪 trial placement:
             between the totals box above and Your Protection below). Renders
             nothing for single-photo designs. */}
-        {quote.design && (
+        {quote.design?.imageVisibility.street && (
           <PhotoGallery
             design={quote.design}
             palette={appSettings.colors}
