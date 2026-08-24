@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import { isLineDrawContext } from "./drawContext";
 import { sumMiniStringCount, seedGroupStringCount } from "./miniGroupBilling";
 import type { StrandItem, MiniAreaItem } from "@/lib/design/sceneTypes";
@@ -216,5 +217,21 @@ describe("seedGroupStringCount", () => {
   it("a single outlier explicit count among many defaults still sums the whole group (documented residual)", () => {
     const members = [...Array.from({ length: 22 }, () => strand(1)), strand(2)];
     expect(seedGroupStringCount(members, members[0].stringCount ?? 1)).toBe(24); // 22*1 + 2, not the fallback (1)
+  });
+});
+
+describe("scattershot select-all wiring", () => {
+  it("uses the active-photo collection for both the count and selected ids", () => {
+    // editor.ts cannot be imported in this headless suite because Konva's Node
+    // entrypoint requires the optional `canvas` package. Keep this narrow
+    // source assertion beside the pure isItemOnPhoto coverage in sceneTypes.
+    const source = readFileSync(new URL("./editor.ts", import.meta.url), "utf8");
+    const start = source.indexOf("function renderSelectedMiniAreaSidebar");
+    const end = source.indexOf("function groupSelectedMini", start);
+    const panel = source.slice(start, end);
+
+    expect(panel).toContain("const selectableMiniAreas = allMiniAreas();");
+    expect(panel).toContain("selectableMiniAreas.length");
+    expect(panel).toContain("selectableMiniAreas.map((area) => area.id)");
   });
 });
