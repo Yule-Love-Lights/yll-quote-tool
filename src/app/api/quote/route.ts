@@ -16,6 +16,13 @@ import { calculatePermanentBistro } from '@/lib/permanentBistro/pricing';
 import { getAppSettings } from '@/lib/appSettings';
 import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
 import { pushEventDateToGhl, formatEventDateForGhl } from '@/lib/integrations/ghlEventDate';
+import {
+  completeQuoteBuildSession,
+  linkQuoteBuildSession,
+  quoteBuildSessionTargetState,
+  startQuoteBuildSession,
+} from '@/lib/quoteBuildTiming';
+import type { QuoteBuildStartReason } from '@/lib/quoteBuildTimerClient';
 import { getSupabaseServiceClient } from '@/lib/supabase';
 
 const VALID_DIFFICULTIES = ['easy', 'medium', 'hard'];
@@ -56,6 +63,7 @@ const MAX_LABEL_OVERRIDE_LEN = 200;
 // string (GHL's own ids run well under this) — cap it generously so a clean
 // 400 beats persisting an oversized/garbage value into highlevel_contact_id.
 const MAX_HL_CONTACT_ID_LEN = 100;
+const QUOTE_BUILD_START_REASONS: QuoteBuildStartReason[] = ['contact_selected', 'prefilled_open'];
 
 // Audit fix (quote-route-validation): allowed enum sets for the typed per-unit
 // arrays, mirroring the pricingEngine types. A malformed element is a clean 400
@@ -150,6 +158,7 @@ function bistroFootageEqual(a: unknown, b: unknown): boolean {
 }
 
 export async function POST(req: NextRequest) {
+  const quoteSaveStartedAt = new Date().toISOString();
   const denied = await requireOperator();
   if (denied) return denied;
   let body: unknown;
@@ -175,7 +184,29 @@ export async function POST(req: NextRequest) {
     highlevelContactId: rawHighlevelContactId,
     legacyRebook: rawLegacyRebook,
     isNce: rawIsNce,
+    quoteBuildTimerId: rawQuoteBuildTimerId,
+    quoteBuildStartReason: rawQuoteBuildStartReason,
   } = body as Record<string, unknown>;
+
+  const hasQuoteBuildTimer = rawQuoteBuildTimerId !== undefined || rawQuoteBuildStartReason !== undefined;
+  if (hasQuoteBuildTimer) {
+    if (typeof rawQuoteBuildTimerId !== 'string' || !UUID_RE.test(rawQuoteBuildTimerId)) {
+      return NextResponse.json({ error: 'quoteBuildTimerId must be a valid UUID' }, { status: 400 });
+    }
+    if (
+      typeof rawQuoteBuildStartReason !== 'string' ||
+      !QUOTE_BUILD_START_REASONS.includes(rawQuoteBuildStartReason as QuoteBuildStartReason)
+    ) {
+      return NextResponse.json(
+        { error: 'quoteBuildStartReason must be contact_selected or prefilled_open' },
+        { status: 400 },
+      );
+    }
+  }
+  const quoteBuildTimerId = typeof rawQuoteBuildTimerId === 'string' ? rawQuoteBuildTimerId : null;
+  const quoteBuildStartReason = typeof rawQuoteBuildStartReason === 'string'
+    ? rawQuoteBuildStartReason as QuoteBuildStartReason
+    : null;
 
   // Amend deadlock fix: an explicit, operator-only re-price mode for a BOOKED order.
   // Only an exact `true` enables it; any other value falls through to the normal
@@ -943,6 +974,46 @@ export async function POST(req: NextRequest) {
           gatedLegacyRebook,
           gatedIsNce,
         );
+
+    if (saved && quoteBuildTimerId && quoteBuildStartReason && operator) {
+      const timerTargetEligible = isUpdate
+        ? existing?.is_test === false && existing.view_only === false && deriveStatus(existing) === 'draft'
+        : !isTest;
+      if (timerTargetEligible) {
+        const started = await startQuoteBuildSession({
+          timerId: quoteBuildTimerId,
+          startReason: quoteBuildStartReason,
+          operator,
+          quoteId: saved.id,
+          startedAt: quoteSaveStartedAt,
+        });
+        let linked = false;
+        if (
+          started.ok &&
+          started.row.id === quoteBuildTimerId &&
+          (started.row.quote_id === null || started.row.quote_id === saved.id)
+        ) {
+          linked = started.row.quote_id === saved.id || await linkQuoteBuildSession({
+            timerId: quoteBuildTimerId,
+            quoteId: saved.id,
+            operatorId: operator.id,
+          });
+        }
+        if (linked) {
+          const latestTarget = await quoteBuildSessionTargetState(saved.id);
+          if (latestTarget?.kind === 'sent' && started.ok && started.row.sent_at == null) {
+            await completeQuoteBuildSession({
+              quoteId: saved.id,
+              timerId: quoteBuildTimerId,
+              operatorId: operator.id,
+              sentAt: latestTarget.sentAt,
+            });
+          }
+        } else {
+          console.warn('[quote/route] quote build timer could not be linked after save');
+        }
+      }
+    }
 
     // FIX B (#237 fix round, staff/admin-lens HIGH/MED — the two lenses
     // converged on the same gap from different angles, see the fix round's

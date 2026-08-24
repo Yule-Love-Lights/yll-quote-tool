@@ -90,6 +90,7 @@ const { dbRef, stateRef } = vi.hoisted(() => ({
       error: null as { message: string } | null,
       inserted: [] as Record<string, unknown>[],
       updated: [] as Record<string, unknown>[],
+      blockedDeleteIds: [] as string[],
     },
   },
 }));
@@ -168,6 +169,22 @@ function makeDb() {
           );
           return builder;
         },
+        delete: () => ({
+          eq: (col: keyof Row, val: unknown) => {
+            const idx = stateRef.current.rows.findIndex((row) => row[col] === val);
+            if (idx === -1) return Promise.resolve({ error: stateRef.current.error });
+            // Modelled on the real schema: shifts / shift_breaks / job_segments /
+            // job_assignments all reference crew_members with NO ACTION, so a row
+            // with any recorded work makes Postgres refuse with 23503.
+            if (stateRef.current.blockedDeleteIds.includes(String(val))) {
+              return Promise.resolve({
+                error: { code: '23503', message: 'violates foreign key constraint "shifts_crew_member_id_fkey"' },
+              });
+            }
+            stateRef.current.rows.splice(idx, 1);
+            return Promise.resolve({ error: null });
+          },
+        }),
         order: () => Promise.resolve({ data: filtered, error: stateRef.current.error }),
         maybeSingle: () => Promise.resolve({ data: filtered[0] ?? null, error: stateRef.current.error }),
         insert: (payload: Record<string, unknown>) => {
@@ -295,6 +312,7 @@ beforeEach(() => {
     error: null,
     inserted: [],
     updated: [],
+    blockedDeleteIds: [],
   };
   dbRef.current = makeDb();
 });
@@ -307,12 +325,16 @@ import {
   listActiveCrewMembers,
   listActiveFieldCrew,
   listLinkedAuthUserIds,
-  listOfficeStaff,
+  listAllStaff,
   OfficeDisplayNameTakenError,
   OperatorAlreadyLinkedError,
-  setOfficeStaffActive,
-  setOfficeStaffRate,
-  setOfficeStaffTelegram,
+  setStaffActive,
+  setStaffRate,
+  setStaffTelegram,
+  setStaffType,
+  deleteStaffMember,
+  getStaffMember,
+  StaffHasRecordsError,
   TelegramUserIdTakenError,
   updateCrewMember,
 } from './crewMembers';
@@ -639,22 +661,26 @@ describe('updateCrewMember', () => {
   });
 });
 
-describe('listOfficeStaff', () => {
+describe('listAllStaff', () => {
   it('returns [] when Supabase is not configured', async () => {
     dbRef.current = null;
-    await expect(listOfficeStaff()).resolves.toEqual([]);
+    await expect(listAllStaff()).resolves.toEqual([]);
   });
 
-  it('returns only is_office rows, mapped to the panel shape', async () => {
-    stateRef.current.rows = [CREW_1, CREW_OFFICE, CREW_2];
-    await expect(listOfficeStaff()).resolves.toEqual([
-      { id: 'crew-office', displayName: 'Kelly', active: true, authUserId: 'op-kelly', baseRateCents: 2500, telegramUserId: null },
+  it('returns EVERY staff row, office and field alike, with the type as data', async () => {
+    // One panel manages both populations now, so this deliberately does NOT
+    // filter on is_office; the type is carried on each row as `isOffice`.
+    stateRef.current.rows = [CREW_1, CREW_OFFICE];
+    const all = await listAllStaff();
+    expect(all.map((m) => [m.id, m.isOffice])).toEqual([
+      ['crew-1', false],
+      ['crew-office', true],
     ]);
   });
 
   it('returns [] and swallows a query error (never throws into the panel)', async () => {
     stateRef.current.error = { message: 'db down' };
-    await expect(listOfficeStaff()).resolves.toEqual([]);
+    await expect(listAllStaff()).resolves.toEqual([]);
   });
 });
 
@@ -684,7 +710,7 @@ describe('linkOfficeStaff', () => {
   it('creates an is_office, hourly, non-P4P row linked to the operator', async () => {
     stateRef.current.rows = [];
     const member = await linkOfficeStaff({ authUserId: 'op-ann', displayName: 'Ann', baseRateCents: 2500 });
-    expect(member).toEqual({ id: 'generated-1', displayName: 'Ann', active: true, authUserId: 'op-ann', baseRateCents: 2500, telegramUserId: null });
+    expect(member).toEqual({ id: 'generated-1', displayName: 'Ann', active: true, authUserId: 'op-ann', baseRateCents: 2500, telegramUserId: null, isOffice: true });
 
     const written = stateRef.current.inserted[0];
     expect(written).toMatchObject({
@@ -714,17 +740,17 @@ describe('linkOfficeStaff', () => {
   });
 });
 
-describe('setOfficeStaffActive', () => {
+describe('setStaffActive', () => {
   it('throws when Supabase is not configured', async () => {
     dbRef.current = null;
-    await expect(setOfficeStaffActive('crew-office', false)).rejects.toThrow(
+    await expect(setStaffActive('crew-office', false)).rejects.toThrow(
       'Supabase service role not configured',
     );
   });
 
   it('deactivates an office row and returns the updated shape', async () => {
     stateRef.current.rows = [CREW_OFFICE];
-    const member = await setOfficeStaffActive('crew-office', false);
+    const member = await setStaffActive('crew-office', false);
     expect(member).toEqual({
       id: 'crew-office',
       displayName: 'Kelly',
@@ -732,23 +758,30 @@ describe('setOfficeStaffActive', () => {
       authUserId: 'op-kelly',
       baseRateCents: 2500,
       telegramUserId: null,
+      isOffice: true,
     });
     expect(stateRef.current.rows.find((r) => r.id === 'crew-office')?.active).toBe(false);
   });
 
-  it('returns null for a FIELD-crew id — the is_office filter is part of the write (sibling guard by construction)', async () => {
-    stateRef.current.rows = [CREW_1, CREW_OFFICE]; // CREW_1 is field crew
-    const member = await setOfficeStaffActive('crew-1', false);
-    expect(member).toBeNull();
-    // The field-crew row was NOT touched — no way to toggle it through this door.
-    expect(stateRef.current.rows.find((r) => r.id === 'crew-1')?.active).toBe(true);
+  it('deactivates a FIELD-crew row too — one door manages both populations', async () => {
+    // Superseded the old office-only guard on purpose: field crew had no way to
+    // be deactivated in-app at all, which is half of why the two panels differed.
+    stateRef.current.rows = [CREW_1, CREW_OFFICE];
+    const member = await setStaffActive('crew-1', false);
+    expect(member?.isOffice).toBe(false);
+    expect(stateRef.current.rows.find((r) => r.id === 'crew-1')?.active).toBe(false);
+  });
+
+  it('returns null for an id that matches no staff row at all', async () => {
+    stateRef.current.rows = [CREW_OFFICE];
+    await expect(setStaffActive('nobody', false)).resolves.toBeNull();
   });
 });
 
-describe('setOfficeStaffRate', () => {
+describe('setStaffRate', () => {
   it('updates an office row rate (integer cents) and returns the updated shape', async () => {
     stateRef.current.rows = [CREW_OFFICE];
-    const member = await setOfficeStaffRate('crew-office', 3000);
+    const member = await setStaffRate('crew-office', 3000);
     expect(member).toEqual({
       id: 'crew-office',
       displayName: 'Kelly',
@@ -756,29 +789,30 @@ describe('setOfficeStaffRate', () => {
       authUserId: 'op-kelly',
       baseRateCents: 3000,
       telegramUserId: null,
+      isOffice: true,
     });
     expect(stateRef.current.rows.find((r) => r.id === 'crew-office')?.base_rate_cents).toBe(3000);
   });
 
-  it('returns null for a FIELD-crew id — never edits a field-crew rate through this door', async () => {
+  it('edits a FIELD-crew rate too — crew rows previously showed no rate at all', async () => {
     stateRef.current.rows = [CREW_1, CREW_OFFICE];
-    const member = await setOfficeStaffRate('crew-1', 9999);
-    expect(member).toBeNull();
-    expect(stateRef.current.rows.find((r) => r.id === 'crew-1')?.base_rate_cents).toBe(1600);
+    const member = await setStaffRate('crew-1', 9999);
+    expect(member?.baseRateCents).toBe(9999);
+    expect(stateRef.current.rows.find((r) => r.id === 'crew-1')?.base_rate_cents).toBe(9999);
   });
 });
 
-describe('setOfficeStaffTelegram', () => {
+describe('setStaffTelegram', () => {
   it('links a Telegram id on an OFFICE row — office staff text the bot too', async () => {
     stateRef.current.rows = [CREW_OFFICE];
-    const member = await setOfficeStaffTelegram('crew-office', '987654321');
+    const member = await setStaffTelegram('crew-office', '987654321');
     expect(member?.telegramUserId).toBe('987654321');
     expect(stateRef.current.rows.find((r) => r.id === 'crew-office')?.telegram_user_id).toBe('987654321');
   });
 
   it('unlinks on null', async () => {
     stateRef.current.rows = [{ ...CREW_OFFICE, telegram_user_id: '987654321' }];
-    const member = await setOfficeStaffTelegram('crew-office', null);
+    const member = await setStaffTelegram('crew-office', null);
     expect(member?.telegramUserId).toBeNull();
   });
 
@@ -786,16 +820,80 @@ describe('setOfficeStaffTelegram', () => {
     // CREW_1 (field crew) already holds '111'. Handing it to the office row
     // would split one Telegram account across two pay identities.
     stateRef.current.rows = [CREW_1, CREW_OFFICE];
-    await expect(setOfficeStaffTelegram('crew-office', '111')).rejects.toBeInstanceOf(
+    await expect(setStaffTelegram('crew-office', '111')).rejects.toBeInstanceOf(
       TelegramUserIdTakenError,
     );
     expect(stateRef.current.rows.find((r) => r.id === 'crew-office')?.telegram_user_id).toBeNull();
   });
 
-  it('returns null for a FIELD-crew id — the office door never writes a field-crew row', async () => {
+  it('relinks a FIELD-crew Telegram id through the same door', async () => {
     stateRef.current.rows = [CREW_1, CREW_OFFICE];
-    const member = await setOfficeStaffTelegram('crew-1', '999');
-    expect(member).toBeNull();
-    expect(stateRef.current.rows.find((r) => r.id === 'crew-1')?.telegram_user_id).toBe('111');
+    const member = await setStaffTelegram('crew-1', '999');
+    expect(member?.telegramUserId).toBe('999');
+    expect(stateRef.current.rows.find((r) => r.id === 'crew-1')?.telegram_user_id).toBe('999');
+  });
+});
+
+describe('setStaffType', () => {
+  it('moves a field row to office, which is what takes them off the assignable roster', async () => {
+    stateRef.current.rows = [CREW_1, CREW_OFFICE];
+    const member = await setStaffType('crew-1', true);
+    expect(member?.isOffice).toBe(true);
+    // listActiveFieldCrew is the flag's only functional reader, so the point of
+    // the move is that they stop appearing there.
+    const field = await listActiveFieldCrew();
+    expect(field.map((c) => c.id)).not.toContain('crew-1');
+  });
+
+  it('moves an office row to field, the recovery direction this exists for', async () => {
+    stateRef.current.rows = [CREW_1, CREW_OFFICE];
+    const member = await setStaffType('crew-office', false);
+    expect(member?.isOffice).toBe(false);
+    const field = await listActiveFieldCrew();
+    expect(field.map((c) => c.id)).toContain('crew-office');
+  });
+
+  it('returns null for an id that matches no staff row', async () => {
+    stateRef.current.rows = [CREW_OFFICE];
+    await expect(setStaffType('nobody', true)).resolves.toBeNull();
+  });
+});
+
+describe('deleteStaffMember', () => {
+  it('removes a row that has no work behind it, and hands back what was deleted', async () => {
+    stateRef.current.rows = [CREW_1, CREW_OFFICE];
+    const removed = await deleteStaffMember('crew-office');
+    expect(removed?.displayName).toBe('Kelly');
+    expect(removed?.authUserId).toBe('op-kelly'); // caller needs this to clean up a crew login
+    expect(stateRef.current.rows.map((r) => r.id)).toEqual(['crew-1']);
+  });
+
+  it('REFUSES anyone with recorded time, because the database refuses it (23503)', async () => {
+    stateRef.current.rows = [CREW_1, CREW_OFFICE];
+    stateRef.current.blockedDeleteIds = ['crew-1'];
+    await expect(deleteStaffMember('crew-1')).rejects.toBeInstanceOf(StaffHasRecordsError);
+    // Nothing was removed — their payroll history keeps them alive.
+    expect(stateRef.current.rows.map((r) => r.id)).toEqual(['crew-1', 'crew-office']);
+  });
+
+  it('names the person in the refusal and points at Deactivate instead', async () => {
+    stateRef.current.rows = [CREW_1];
+    stateRef.current.blockedDeleteIds = ['crew-1'];
+    await expect(deleteStaffMember('crew-1')).rejects.toThrow(/SonSon[\s\S]*Deactivate/);
+  });
+
+  it('returns null for an id that matches nothing, without deleting anything', async () => {
+    stateRef.current.rows = [CREW_1];
+    await expect(deleteStaffMember('nobody')).resolves.toBeNull();
+    expect(stateRef.current.rows).toHaveLength(1);
+  });
+});
+
+describe('getStaffMember', () => {
+  it('finds a row in either population and maps it', async () => {
+    stateRef.current.rows = [CREW_1, CREW_OFFICE];
+    expect((await getStaffMember('crew-1'))?.isOffice).toBe(false);
+    expect((await getStaffMember('crew-office'))?.isOffice).toBe(true);
+    await expect(getStaffMember('nobody')).resolves.toBeNull();
   });
 });

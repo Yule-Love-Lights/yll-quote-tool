@@ -85,6 +85,7 @@ describe('isPublicPath — customer-facing allowlist', () => {
       '/api/settings',
       '/api/designs',
       '/api/designs/abc',
+      '/api/quote-build-sessions',
       '/api/training',
       '/api/integrations/highlevel/contacts', // CRITICAL #2
       '/api/integrations/highlevel/attach',
