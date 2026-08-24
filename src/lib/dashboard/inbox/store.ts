@@ -1107,16 +1107,34 @@ export type MarkHandledResult = { ok: true; target: HandledTarget } | { ok: fals
  * must be a real auth.users uuid, or null — inbox_items.handled_by is a
  * nullable `uuid` column ("NULL when system auto-resolved" per its schema
  * comment); never pass a display name/email string here.
+ *
+ * Row 366: the default guard is the NEGATIVE `.neq('status','handled')` — right
+ * for a caller whose whole intent is "handle this, whatever it currently is"
+ * (/api/dashboard/handled, /api/dashboard/reply). A caller that first READ the
+ * status and gated on a specific value must pass `expectedStatus`, which swaps
+ * that guard for a POSITIVE `.eq('status', expectedStatus)` so the check it made
+ * is carried across the read→write gap. Without it, a row that moved to
+ * 'completed'/'dismissed' in that gap passes `.neq('status','handled')` and gets
+ * silently RESURRECTED to 'handled' (the followup route's own hazard — see
+ * shouldResolveAnchoredItem below).
  */
-export async function markItemHandledLocal(itemId: string, operatorId: string | null, now: Date): Promise<MarkHandledResult> {
+export async function markItemHandledLocal(
+  itemId: string,
+  operatorId: string | null,
+  now: Date,
+  opts?: { expectedStatus?: string },
+): Promise<MarkHandledResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const expectedStatus = opts?.expectedStatus ?? null;
   const from = await priorStateOf(sb, itemId);
-  const { data, error } = await sb
+  const update = sb
     .from('inbox_items')
     .update({ status: 'handled', handled_by: operatorId, handled_at: now.toISOString(), updated_at: now.toISOString() })
-    .eq('id', itemId)
-    .neq('status', 'handled')
+    .eq('id', itemId);
+  const { data, error } = await (expectedStatus === null
+    ? update.neq('status', 'handled')
+    : update.eq('status', expectedStatus))
     .select('source, external_id, source_message_id, dashboard_contacts ( ghl_contact_id, display_name )')
     .maybeSingle();
   if (error) {
@@ -1127,7 +1145,9 @@ export async function markItemHandledLocal(itemId: string, operatorId: string | 
     // Row 311 fix-round FIX 4: hoisted, mirroring the sibling guard functions'
     // own `const msg = '...'` pattern (markItemFollowed / markItemCompleted) —
     // this repeated the literal twice.
-    const msg = 'Item not found or already handled';
+    const msg = expectedStatus === null
+      ? 'Item not found or already handled'
+      : `Item not found or no longer ${expectedStatus}`;
     await recordActionFailed(itemId, operatorId, 'handled', msg);
     return { ok: false, error: msg };
   }
@@ -2590,9 +2610,17 @@ export async function getItemStatus(itemId: string): Promise<string | null> {
  * `.neq('status','handled')` guard: that guard alone would let a
  * completed/dismissed item get resurrected to 'handled', which this function
  * exists to prevent.
+ *
+ * Row 366: this predicate reads a status fetched EARLIER, so on its own it only
+ * narrows the race window — it cannot close it. The caller must ALSO pass
+ * `expectedStatus: ANCHORED_ITEM_RESOLVABLE_STATUS` to markItemHandledLocal, so
+ * the same positive value becomes the write's own CAS. Both halves share the
+ * constant below on purpose: the check and the write can never drift apart.
  */
+export const ANCHORED_ITEM_RESOLVABLE_STATUS = 'unresponded';
+
 export function shouldResolveAnchoredItem(followUpStatus: string, itemStatus: string | null): boolean {
-  return followUpStatus === 'done' && itemStatus === 'unresponded';
+  return followUpStatus === 'done' && itemStatus === ANCHORED_ITEM_RESOLVABLE_STATUS;
 }
 
 // ─── Response-time / SLA analytics ──────────────────────────────────────────

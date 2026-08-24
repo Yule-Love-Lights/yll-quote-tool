@@ -121,7 +121,12 @@ describe('POST /api/dashboard/followup — #252 slice E anchored-item coupling',
     expect(markFollowUpDoneMock).toHaveBeenCalledWith(FOLLOWUP_ID, 'op-1');
     expect(getItemStatusMock).toHaveBeenCalledWith(ITEM_ID);
     expect(markItemHandledLocalMock).toHaveBeenCalledTimes(1);
-    expect(markItemHandledLocalMock).toHaveBeenCalledWith(ITEM_ID, 'op-1', expect.any(Date));
+    // Row 366: the positive status the gate checked is carried into the write
+    // as its CAS — without it, an item that moves to completed/dismissed in the
+    // read→write gap is silently resurrected to 'handled'.
+    expect(markItemHandledLocalMock).toHaveBeenCalledWith(ITEM_ID, 'op-1', expect.any(Date), {
+      expectedStatus: 'unresponded',
+    });
     expect(runHandledWritebackMock).toHaveBeenCalledTimes(1);
     expect(runHandledWritebackMock).toHaveBeenCalledWith(
       { source: 'ghl', externalId: 'ext-1', sourceMessageId: null, ghlContactId: 'ghl-1', displayName: 'Alice' },
