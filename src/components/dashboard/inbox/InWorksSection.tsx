@@ -484,6 +484,24 @@ export function InWorksSection({
                 Reply in Gmail
               </span>
             ) : (
+              // Fix round 2 delta-verify LOW (decided, not fixed): after an
+              // 'error' outcome (onSent below) this button stays live and
+              // un-disabled — the operator CAN reopen the composer and send a
+              // second message before the first send's status write is
+              // confirmed. Left live on purpose rather than adding a
+              // dedicated per-row lock: (1) the note's own copy leads with
+              // "Reply sent" — a careful reader has no reason to read this as
+              // "try again"; (2) the server's REPLY_CLAIM_WINDOW_MS 20s claim
+              // guard (reply/route.ts) already blocks a genuine rapid
+              // double-click regardless of this button's disabled state; (3)
+              // reopening always mounts a FRESH, blank composer (composerFor
+              // toggling to null unmounts it) — there is no pre-filled
+              // duplicate text one click away, only real re-typing/re-AI-draft
+              // friction; (4) the residual — an inattentive operator
+              // deliberately re-sending after >20s — costs the customer one
+              // extra text, not money or data corruption, and a dedicated
+              // lock flag would add real machinery (a new per-row map, wiring
+              // in two files) for a narrow, already-mitigated risk.
               <button
                 type="button"
                 onClick={() => setComposerFor(composerFor === item.id ? null : item.id)}

@@ -16,7 +16,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: () => {} }) }));
 
-import { InboxList, isGroupExpanded, canToggleGroup, withRowFlagSet, withRowFlagCleared, withItemRestored, omitKey, errorNoteFor, retiresFollowUp, colorRequestConfirmMessage } from './InboxList';
+import { InboxList, isGroupExpanded, canToggleGroup, withRowFlagSet, withRowFlagCleared, withItemRestored, omitKey, errorNoteFor, retiresFollowUp, colorRequestConfirmMessage, replyRowAction, replyOutcomeMessage } from './InboxList';
 import type { OpenInboxItem } from '@/lib/dashboard/inbox/types';
 import type { InboxGroup } from '@/lib/dashboard/inbox/groupInboxItems';
 
@@ -650,5 +650,44 @@ describe('retiresFollowUp (row 309 — which actions can retire a due follow-up)
   it('is false for handled and followed — neither is a terminal transition', () => {
     expect(retiresFollowUp('/api/dashboard/handled')).toBe(false);
     expect(retiresFollowUp('/api/dashboard/followed')).toBe(false);
+  });
+});
+
+// Fix round 3 (MED): this file was the THIRD, unaudited ReplyComposer
+// consumer — onComposerSent ignored the outcome entirely and removed the row
+// on ANY send, including 'error', where the write's outcome is unconfirmed
+// and the item is most likely still genuinely 'unresponded'. Pure-function
+// coverage of the DECISION, mirroring InWorksSection.test.tsx's identical
+// coverage of its own copy — the useState wiring itself stays untested (no
+// jsdom in this repo, same constraint as every other stateful branch here).
+describe('replyRowAction (fix round 3 — what a reply outcome does to the row)', () => {
+  it('resolved leaves the open queue immediately — the item is no longer unresponded', () => {
+    expect(replyRowAction('resolved')).toBe('move');
+  });
+
+  it('refused (a genuine CAS refusal) flags AND removes the row — but only once dismissed, never synchronously', () => {
+    expect(replyRowAction('refused')).toBe('flag-and-remove');
+  });
+
+  it('error (an unknown failure, not a refusal) flags the row but KEEPS it — removing would hide a still-open lead from the primary open queue', () => {
+    expect(replyRowAction('error')).toBe('flag-and-keep');
+  });
+});
+
+describe('replyOutcomeMessage (fix round 3 — worded identically to InWorksSection.tsx)', () => {
+  it('refused reads as a settled fact: the item really was resolved elsewhere', () => {
+    const msg = replyOutcomeMessage('refused').toLowerCase();
+    expect(msg).toContain('already resolved');
+    expect(msg).not.toContain("couldn't confirm");
+  });
+
+  it('error reads as a genuine unknown, not a confirmed resolution — must not claim the item was resolved', () => {
+    const msg = replyOutcomeMessage('error').toLowerCase();
+    expect(msg).toContain("couldn't confirm");
+    expect(msg).not.toContain('already resolved');
+  });
+
+  it('the two messages are different strings — a staffer must not see the same note for both', () => {
+    expect(replyOutcomeMessage('refused')).not.toBe(replyOutcomeMessage('error'));
   });
 });
