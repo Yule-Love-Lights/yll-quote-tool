@@ -73,7 +73,20 @@ function formatNoteTime(value: string): string {
   return new Date(value).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
 }
 
-export function StaffNotesList({ notes, loading }: { notes: StaffNote[]; loading: boolean }) {
+export function StaffNotesList({
+  notes,
+  loading,
+  loadFailed = false,
+  onRetry,
+}: {
+  notes: StaffNote[];
+  loading: boolean;
+  // Staff-lens MED: without this, a failed FETCH rendered the same
+  // "No internal notes yet." as a genuinely empty timeline, so a staffer could
+  // trust an empty panel on a quote that actually has notes they needed to see.
+  loadFailed?: boolean;
+  onRetry?: () => void;
+}) {
   return (
     <div aria-live="polite">
       <span className="inline-block mb-3 rounded bg-gray-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-gray-600">
@@ -81,10 +94,23 @@ export function StaffNotesList({ notes, loading }: { notes: StaffNote[]; loading
       </span>
       {loading ? (
         <p className="text-sm text-gray-500">Loading notes…</p>
+      ) : loadFailed && notes.length === 0 ? (
+        <div role="alert" className="text-sm text-red-700">
+          <p>Could not load notes. This quote may still have notes that are not shown.</p>
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="mt-2 rounded-md border border-red-300 px-2 py-1 text-xs font-medium text-red-700"
+            >
+              Try again
+            </button>
+          )}
+        </div>
       ) : notes.length === 0 ? (
         <p className="text-sm text-gray-500">No internal notes yet.</p>
       ) : (
-        <ol className="space-y-3">
+        <ol className="max-h-80 space-y-3 overflow-y-auto">
           {notes.map((note) => (
             <li key={note.id} className="border-t border-gray-100 pt-3 first:border-0 first:pt-0">
               <p className="whitespace-pre-wrap text-sm text-gray-800">{note.body}</p>
@@ -105,8 +131,10 @@ export function StaffNotesPanel({ quoteId }: { quoteId: string }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const pendingSubmissionRef = useRef<StaffNoteSubmission | null>(null);
   const loadGenerationRef = useRef(0);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -118,6 +146,7 @@ export function StaffNotesPanel({ quoteId }: { quoteId: string }) {
       setLoading(true);
       setSaving(false);
       setError(null);
+      setLoadFailed(false);
       pendingSubmissionRef.current = null;
       void loadStaffNotes(quoteId)
         .then((loaded) => {
@@ -128,6 +157,7 @@ export function StaffNotesPanel({ quoteId }: { quoteId: string }) {
         .catch((err) => {
           if (!cancelled && generation === loadGenerationRef.current) {
             setError(err instanceof Error ? err.message : 'Could not load notes');
+            setLoadFailed(true);
           }
         })
         .finally(() => {
@@ -137,7 +167,7 @@ export function StaffNotesPanel({ quoteId }: { quoteId: string }) {
     return () => {
       cancelled = true;
     };
-  }, [quoteId]);
+  }, [quoteId, reloadKey]);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -165,11 +195,19 @@ export function StaffNotesPanel({ quoteId }: { quoteId: string }) {
     <section className="mb-4 rounded-lg border border-gray-200 bg-white p-4">
       <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Internal notes</h2>
       <p className="mb-3 mt-1 text-xs text-gray-500">Shared across this quote, its job, and its invoice.</p>
-      <StaffNotesList notes={notes} loading={loading} />
+      <StaffNotesList
+        notes={notes}
+        loading={loading}
+        loadFailed={loadFailed}
+        onRetry={() => setReloadKey((n) => n + 1)}
+      />
       <form onSubmit={submit} className="mt-4 border-t border-gray-100 pt-4">
         <label htmlFor={`staff-note-${quoteId}`} className="mb-1 block text-sm font-medium text-gray-700">
           Add an internal note
         </label>
+        <p className="mb-1 text-xs text-gray-500">
+          Notes are permanent. They cannot be edited or deleted once added.
+        </p>
         <textarea
           id={`staff-note-${quoteId}`}
           value={draft}
