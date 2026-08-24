@@ -172,7 +172,7 @@ function colorables(items: SceneItem[]): Colorable[] {
       if (!MINI_SURFACES.has(item.surface ?? '')) continue;
       out.push({ id: item.id, type: 'mini', colors: item.colorPattern ?? [], size: DEFAULT_SPRITZER_SIZE });
     } else if (isMiniGroup(item)) {
-      out.push({ id: item.id, type: 'mini', colors: [], size: DEFAULT_SPRITZER_SIZE }); // members carry colors; bills as default
+      out.push({ id: item.id, type: 'mini', colors: item.colorPattern ?? [], size: DEFAULT_SPRITZER_SIZE });
     }
   }
   return out;

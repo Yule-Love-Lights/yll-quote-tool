@@ -101,6 +101,11 @@ import {
   type ChannelDeliveryClassification,
   type RetryGate,
 } from '@/components/admin/pipelineSendOutcome';
+import {
+  createQuoteBuildTimerClient,
+  quoteBuildTimerEligible,
+  shouldStartPrefilledQuoteTimer,
+} from '@/lib/quoteBuildTimerClient';
 
 // The Konva design editor touches the DOM/canvas, so load it client-only.
 const DesignEditor = dynamic(() => import('@/components/design/DesignEditor'), { ssr: false });
@@ -734,6 +739,26 @@ export default function QuoteBuilder({
         status: initialQuote.status ?? null,
       })
     : null;
+  const quoteBuildTimerRef = useRef<ReturnType<typeof createQuoteBuildTimerClient> | null>(null);
+  if (quoteBuildTimerRef.current === null) {
+    quoteBuildTimerRef.current = createQuoteBuildTimerClient();
+  }
+  const quoteBuildTimingEligible = quoteBuildTimerEligible({ isTest, viewOnly, status: savedStatus });
+  const hasPrefilledContact =
+    !!initialQuote?.highlevelContactId || (!initialQuote && !!prefill?.ghlContactId);
+  useEffect(() => {
+    if (
+      shouldStartPrefilledQuoteTimer({
+        hasPrefilledContact,
+        isTest,
+        viewOnly,
+        status: savedStatus,
+      })
+    ) {
+      void quoteBuildTimerRef.current?.start('prefilled_open', initialQuote?.quoteId);
+    }
+  }, [hasPrefilledContact, initialQuote?.quoteId, isTest, savedStatus, viewOnly]);
+
   // Row 338 fix-round HIGH/MED (staff lens): the STICKY identity-freeze
   // signal, mirroring the exact three-way OR route.ts's #251/#839 CAS gates
   // check server-side (deposit_paid_at || customer_approved_at ||
@@ -3570,6 +3595,9 @@ export default function QuoteBuilder({
       identityEverFrozen,
     );
     if (confirmMsg && !window.confirm(confirmMsg)) return;
+    if (quoteBuildTimingEligible) {
+      void quoteBuildTimerRef.current?.start('contact_selected', savedQuoteId);
+    }
     everLinkedContactIdRef.current = c.id;
     setHighLevelContact(c);
     const hlAddress = [c.address1, c.city, c.state, c.postalCode].filter(Boolean).join(', ');
@@ -3967,7 +3995,13 @@ export default function QuoteBuilder({
     }
 
     try {
-      const res = await fetch(`/api/quotes/${savedQuoteId}/send`, { method: 'POST' });
+      void quoteBuildTimerRef.current?.link(savedQuoteId);
+      const quoteBuildTimerId = quoteBuildTimerRef.current?.currentId();
+      const res = await fetch(`/api/quotes/${savedQuoteId}/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ quoteBuildTimerId }),
+      });
       const data = await res.json();
       const failedChannels = Array.isArray(data.failedChannels)
         ? data.failedChannels.filter((value: unknown): value is 'sms' | 'email' => value === 'sms' || value === 'email')
@@ -4378,6 +4412,7 @@ export default function QuoteBuilder({
     // rows piling up in /admin/quotes (#31).
     const existingQuoteId = savedQuoteId;
     const inputs = buildQuoteInputs(formOverride ?? form, rooflineChoiceOverride);
+    const quoteBuildTimer = quoteBuildTimerRef.current?.current();
 
     try {
       // Flush a pending design edit first (#8 M6): /api/quote projects the
@@ -4447,6 +4482,7 @@ export default function QuoteBuilder({
             isNceTouchedRef.current,
             existingQuoteId ? 'update' : 'insert',
           ),
+          ...(quoteBuildTimer ? quoteBuildTimer : {}),
         }),
       });
       const data = await res.json();
@@ -4490,6 +4526,7 @@ export default function QuoteBuilder({
       // guard already used by recommendRoofline below.
       if (newQuoteId) {
         setSavedQuoteId(newQuoteId);
+        void quoteBuildTimerRef.current?.link(newQuoteId);
         // Draft autosave (quote-forms-partial-save): the saved row is now the
         // store of record, so drop the local draft + hide the restored note.
         clearQuoteDraft();

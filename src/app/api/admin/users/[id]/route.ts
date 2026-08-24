@@ -143,11 +143,15 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     // DELETE needs the guard for a SECOND reason PATCH does not have:
     // `crew_members.auth_user_id` has no foreign key to `auth.users`, so
     // deleting the auth user here does NOT clear the pointer. The column keeps
-    // a dangling id, `GET /api/admin/crew-accounts` still reports
-    // `hasLogin: true` for that person, and `POST /api/admin/crew-accounts`
-    // refuses to mint a replacement with a 409 because it only tests the column
-    // for truthiness — never whether the id still resolves. That crew member is
-    // then locked out permanently, recoverable only by a manual SQL UPDATE.
+    // a dangling id, and `POST /api/admin/staff` refuses to mint a replacement
+    // with a 409 because it only tests the column for truthiness — never
+    // whether the id still resolves. That person is then locked out
+    // permanently, recoverable only by a manual SQL UPDATE.
+    //
+    // `GET /api/admin/staff` now at least SURFACES the state as
+    // `loginMissing: true` (the row shows "login deleted"), so it is visible
+    // rather than silent — but making it recoverable is still open, as ledger
+    // row 359.
     // Crew rows render as a plain "operator" in the accounts table, so this was
     // one routine "remove the operator who never signed in" click away.
     if (isCrewAccount(target.user.app_metadata)) {

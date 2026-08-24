@@ -2413,6 +2413,42 @@ comment on column public.quotes.browsing_selection is
   'Customer''s LIVE, still-editable portal selection (ledger row 239) — packageId/selectedItemIds/rushSelected/takedownSelected/installTiming/colorSchemeId/customPattern/permanentEffect. NOT the frozen agreement (see approval_snapshot); never trusted for money math; reconciled against live packages/lineItems on read (resolveBrowsingSelectionSeed). Written only pre-approval by /api/quotes/[id]/selection.';
 
 -- ---------------------------------------------------------------------
+-- quote_build_sessions (2026-08-21, migrations/2026-08-21-quote-build-sessions.sql)
+-- - server-timed staff quote-building sessions, from accepted/prefilled
+-- contact through the quote's first real sent transition. Private service-role
+-- analytics only; test quotes, retries, and resends do not complete rows.
+-- ---------------------------------------------------------------------
+create table if not exists public.quote_build_sessions (
+  id                uuid primary key,
+  started_at        timestamptz not null default now(),
+  start_reason      text not null
+                      check (start_reason in ('contact_selected', 'prefilled_open')),
+  started_by        uuid references auth.users(id) on delete set null,
+  started_by_label  text not null
+                      check (char_length(btrim(started_by_label)) between 1 and 200),
+  quote_id          uuid references public.quotes(id) on delete cascade,
+  sent_at           timestamptz,
+
+  constraint quote_build_sessions_valid_completion
+    check (sent_at is null or (quote_id is not null and sent_at >= started_at))
+);
+
+create unique index if not exists quote_build_sessions_quote_id_uidx
+  on public.quote_build_sessions (quote_id)
+  where quote_id is not null;
+
+create index if not exists quote_build_sessions_started_by_idx
+  on public.quote_build_sessions (started_by);
+
+create index if not exists quote_build_sessions_sent_at_idx
+  on public.quote_build_sessions (sent_at desc, id)
+  where sent_at is not null;
+
+alter table public.quote_build_sessions enable row level security;
+
+revoke all on table public.quote_build_sessions from public, anon, authenticated, service_role;
+grant select, insert, update on table public.quote_build_sessions to service_role;
+
 -- quotes.ghl_event_date_pushed (2026-08-22,
 -- migrations/2026-08-22-quotes-ghl-event-date-pushed.sql) — ledger #314 fix
 -- round (staff-lens HIGH): the MM/DD/YYYY value last CONFIRMED pushed to
