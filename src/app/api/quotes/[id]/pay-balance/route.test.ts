@@ -57,25 +57,70 @@ type Row = Record<string, unknown>;
 // mid-request, or `opts.recheckDeleted` (#187 review FIX 3, #660) forces
 // `data: null` to simulate the row being deleted BETWEEN the first fetch and
 // the re-check (the first fetch still succeeds normally with `quote`).
+//
+// Row 378 fix round: the guard's refusal path also reads the quote's
+// approval_snapshot and CASes a `paymentBlocked` marker onto it, so the builder
+// now records the columns each `.select()` asked for. `maybeSingle()` serves the
+// SNAPSHOT row when the caller selected `approval_snapshot`, and the view_only/
+// is_nce re-check row otherwise — without that the marker read would silently
+// receive the re-check shape and every snapshot assertion below would be
+// meaningless. `update()` returns its own chainable so the main builder never
+// has to be thenable (which would make any stray `await` on a partial chain
+// resolve to something).
 function makeSb(
   quote: Row | null,
-  opts: { recheckViewOnly?: boolean; recheckIsNce?: boolean; recheckDeleted?: boolean } = {},
+  opts: {
+    recheckViewOnly?: boolean;
+    recheckIsNce?: boolean;
+    recheckDeleted?: boolean;
+    /** The quote's stored approval_snapshot, as the marker read sees it. */
+    snapshot?: Record<string, unknown> | null;
+    /** Force the marker's CAS write to report a lost race (0 rows updated). */
+    snapshotCasLost?: boolean;
+  } = {},
 ) {
   const b: Record<string, unknown> = {};
+  const updates: Record<string, unknown>[] = [];
+  const upd: Record<string, unknown> = {};
+  Object.assign(upd, {
+    eq: () => upd,
+    select: async () => ({ data: opts.snapshotCasLost ? [] : [{ id: 'q1' }], error: null }),
+  });
+  let lastSelect = '';
   Object.assign(b, {
+    __updates: updates,
     from: () => b,
-    select: () => b,
+    select: (cols?: string) => {
+      lastSelect = cols ?? '';
+      return b;
+    },
     eq: () => b,
+    update: (payload: Record<string, unknown>) => {
+      updates.push(payload);
+      return upd;
+    },
     single: async () => ({ data: quote, error: quote ? null : { message: 'no rows' } }),
-    maybeSingle: async () => ({
-      data:
-        quote && !opts.recheckDeleted
-          ? { view_only: opts.recheckViewOnly ?? quote.view_only, is_nce: opts.recheckIsNce ?? quote.is_nce ?? false }
-          : null,
-      error: null,
-    }),
+    maybeSingle: async () => {
+      if (lastSelect.includes('approval_snapshot')) {
+        return { data: { approval_snapshot: opts.snapshot ?? null }, error: null };
+      }
+      return {
+        data:
+          quote && !opts.recheckDeleted
+            ? { view_only: opts.recheckViewOnly ?? quote.view_only, is_nce: opts.recheckIsNce ?? quote.is_nce ?? false }
+            : null,
+        error: null,
+      };
+    },
   });
   return b;
+}
+
+/** The approval_snapshot payloads the route CASed during a request. */
+function markerWrites(sb: unknown): Record<string, unknown>[] {
+  return ((sb as { __updates: Record<string, unknown>[] }).__updates ?? []).filter(
+    (u) => 'approval_snapshot' in u,
+  );
 }
 
 const QUOTE = { id: ID, customer_name: 'Alice', customer_email: 'a@x.com', is_test: false, view_only: false, is_nce: false };
@@ -269,9 +314,65 @@ describe('POST /api/quotes/[id]/pay-balance', () => {
     expect(notifyTelegramAudienceMock).toHaveBeenCalledTimes(1);
     const [audience, text] = notifyTelegramAudienceMock.mock.calls[0];
     expect(audience).toBe('jobs');
-    expect(text).toContain('1000');
-    expect(text).toContain('1400');
-    expect(text).toContain(ID);
+    // Both figures, formatted to cents — a bare `$1000` reads as an odd number
+    // next to every other money figure staff see in these alerts.
+    expect(text).toContain('$1000.00');
+    expect(text).toContain('$1400.00');
+    // A clickable order link, not a bare UUID an office person cannot act on
+    // (this repo's convention for every other staff "needs attention" alert).
+    expect(text).toContain('https://portal.test/admin/invoices/inv-1');
+    // ...and the remedy names the path that actually works today.
+    expect(text).toMatch(/Record amendment/i);
+  });
+
+  it('records a durable paymentBlocked marker so the block survives a dormant bot', async () => {
+    const sb = makeSb(AMENDED('accepted'), { snapshot: { customerSelection: { currentTotalUsd: 2000 } } });
+    sbRef.current = sb;
+    getInvoiceByJobMock.mockResolvedValue(INVOICE_IN_SYNC);
+    await POST(req(), ctx());
+    const writes = markerWrites(sb);
+    expect(writes).toHaveLength(1);
+    const snap = writes[0].approval_snapshot as Record<string, unknown>;
+    const blocked = snap.paymentBlocked as Record<string, unknown>;
+    expect(blocked).toMatchObject({ invoiceId: 'inv-1', storedBalance: 1000, expectedBalance: 1400 });
+    expect(typeof blocked.at).toBe('string');
+    // The pre-existing snapshot content must survive the marker write — this
+    // column carries the customer's agreed money basis.
+    expect(snap.customerSelection).toEqual({ currentTotalUsd: 2000 });
+  });
+
+  it('does not page staff twice for the same order inside the cooldown', async () => {
+    sbRef.current = makeSb(AMENDED('accepted'), {
+      snapshot: { paymentBlocked: { at: new Date().toISOString() } },
+    });
+    getInvoiceByJobMock.mockResolvedValue(INVOICE_IN_SYNC);
+    const res = await POST(req(), ctx());
+    // Still refused — the cooldown suppresses the ALERT, never the guard.
+    expect(res.status).toBe(409);
+    expect(createHostedPageSaleMock).not.toHaveBeenCalled();
+    expect(notifyTelegramAudienceMock).not.toHaveBeenCalled();
+  });
+
+  it('pings again once the cooldown has expired', async () => {
+    sbRef.current = makeSb(AMENDED('accepted'), {
+      snapshot: { paymentBlocked: { at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString() } },
+    });
+    getInvoiceByJobMock.mockResolvedValue(INVOICE_IN_SYNC);
+    await POST(req(), ctx());
+    expect(notifyTelegramAudienceMock).toHaveBeenCalledTimes(1);
+  });
+
+  // The marker is best-effort forensics; the customer's refusal is not. A lost
+  // CAS race (a concurrent amend wrote the snapshot in the gap) must drop the
+  // marker without retrying, blind-overwriting, or changing the response.
+  it('still refuses cleanly when the marker write loses its CAS race', async () => {
+    sbRef.current = makeSb(AMENDED('accepted'), { snapshot: {}, snapshotCasLost: true });
+    getInvoiceByJobMock.mockResolvedValue(INVOICE_IN_SYNC);
+    const res = await POST(req(), ctx());
+    const json = await res.json();
+    expect(res.status).toBe(409);
+    expect(json.code).toBe('invoice-stale');
+    expect(createHostedPageSaleMock).not.toHaveBeenCalled();
   });
 
   // A DECLINED amendment is a price the customer refused, so it must NOT become

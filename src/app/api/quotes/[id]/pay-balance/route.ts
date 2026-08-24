@@ -21,7 +21,9 @@
 // race) is REFUSED here rather than charged — 409 {code:'invoice-stale'}, the
 // customer-side mirror of charge-balance's staff-side guard. The client
 // branches on this code to show invoiceStaleError(); staff get a Telegram ping
-// so the refusal is not a dead end. See the guard itself, below the re-check.
+// so the refusal is not a dead end, and a durable `paymentBlocked` marker lands
+// on the quote's approval_snapshot so the block survives a dormant bot. See the
+// guard itself, below the re-check.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { rateLimitResponse } from '@/lib/rateLimit';
@@ -55,6 +57,85 @@ type QuoteRow = {
   approval_snapshot: AgreedTotalSnapshot;
   deposit_amount_usd: number | null;
 };
+
+// How long a blocked-payment alert stays "already reported" for. A refused
+// customer can re-click, bookmark the link and come back tomorrow, or simply
+// reload — each of those re-runs the guard, and without this every one of them
+// would page the office again about the SAME order. A channel that gets spammed
+// gets muted, which silently recreates the dead end the alert exists to prevent
+// (staff-lens MED). One ping per order per hour is enough to be noticed and few
+// enough to stay trustworthy.
+const PAYMENT_BLOCKED_ALERT_COOLDOWN_MS = 60 * 60 * 1000;
+
+/**
+ * Row 378 fix round (staff + admin lenses CONVERGED on this): record a blocked
+ * payment DURABLY on the quote, and report whether the office was already told
+ * about this order recently.
+ *
+ * Before this, a refused payment existed only as a `console.error` nobody reads
+ * and a Telegram ping that silently no-ops when the bot is dormant, unconfigured,
+ * or the audience routes to zero chats — so a customer could be unable to pay us
+ * and NOTHING in the product would know. Two independent review lenses reached
+ * that finding from different questions, which is what makes it a class rather
+ * than a nit.
+ *
+ * Deliberately mirrors flagInvoiceResyncFailed (quoteAmendInvoiceSync.ts) rather
+ * than inventing a second idiom: same approval_snapshot home, same read-then-CAS
+ * on the serialized prior value, same DROP-on-lost-race. approval_snapshot holds
+ * money data (customerSelection, amendments, invoice_basis) and this write is
+ * reachable from a PUBLIC customer route, so it must never blind-overwrite a
+ * concurrent amend: a missing forensic marker is survivable, a clobbered snapshot
+ * is not. A quote whose snapshot is NULL never gets a marker (the CAS cannot
+ * match null against '{}') — the same accepted limitation the sibling carries,
+ * and unreachable in practice, since an invoiced quote was approved.
+ *
+ * Never throws: the customer's 409 must be returned whatever happens here.
+ */
+async function recordPaymentBlocked(
+  sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  quoteId: string,
+  invoiceId: string,
+  storedBalance: number,
+  expectedBalance: number,
+): Promise<{ alertedRecently: boolean }> {
+  try {
+    const { data: quoteRow } = await sb
+      .from('quotes')
+      .select('approval_snapshot')
+      .eq('id', quoteId)
+      .maybeSingle<{ approval_snapshot: Record<string, unknown> | null }>();
+    const priorSnapshot = quoteRow?.approval_snapshot ?? {};
+    const priorBlocked = (priorSnapshot as { paymentBlocked?: { at?: string } }).paymentBlocked;
+    const priorAt = priorBlocked?.at ? Date.parse(priorBlocked.at) : NaN;
+    const alertedRecently =
+      Number.isFinite(priorAt) && Date.now() - priorAt < PAYMENT_BLOCKED_ALERT_COOLDOWN_MS;
+
+    const nextSnapshot = {
+      ...priorSnapshot,
+      paymentBlocked: { invoiceId, storedBalance, expectedBalance, at: new Date().toISOString() },
+    };
+    const { data: updated, error } = await sb
+      .from('quotes')
+      .update({ approval_snapshot: nextSnapshot })
+      .eq('id', quoteId)
+      // Serialize jsonb explicitly — PostgREST string-interpolates filter values,
+      // so passing the object would compare against "[object Object]" and never
+      // match (same reasoning as every sibling CAS in this repo).
+      .eq('approval_snapshot', JSON.stringify(priorSnapshot))
+      .select('id');
+    if (error) {
+      console.error('[api/quotes/:id/pay-balance] failed to record the blocked payment on the quote:', error);
+    } else if (!updated || updated.length === 0) {
+      console.warn(
+        `[api/quotes/:id/pay-balance] paymentBlocked marker lost a concurrent write to quote ${quoteId}'s approval_snapshot — dropped (best-effort, not retried)`,
+      );
+    }
+    return { alertedRecently };
+  } catch (err) {
+    console.error('[api/quotes/:id/pay-balance] failed to record the blocked payment on the quote:', err);
+    return { alertedRecently: false };
+  }
+}
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   if (!isSupabaseServiceConfigured()) {
@@ -227,21 +308,48 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         `[api/quotes/:id/pay-balance] REFUSED stale invoice for quote ${id}: ` +
           `invoice.balance=${freshInvoice.balance} expected=${expected.balance} agreedTotal=${agreedTotal}`,
       );
+      // Durable first, alert second — the marker is the part that survives a
+      // dormant bot, and it doubles as the dedupe key for the ping below.
+      const { alertedRecently } = await recordPaymentBlocked(
+        sb,
+        id,
+        freshInvoice.id,
+        freshInvoice.balance,
+        expected.balance,
+      );
       // Best-effort staff alert so a refused customer payment is not a silent
       // dead end — nobody else is watching this path, and the customer has just
       // been told to text us. notifyTelegramAudience never throws and no-ops
       // when the bot is dormant/unconfigured, so this cannot break the response.
-      await notifyTelegramAudience(
-        'jobs',
-        `Balance payment BLOCKED — invoice out of sync
+      //
+      // Money is formatted to cents inline rather than through quoteMessages.ts's
+      // usdExact: that helper is module-private inside src/lib/integrations/**, a
+      // SHARED-ownership path, and exporting it would need a cross-owner heads-up
+      // for what is a purely cosmetic fix here.
+      //
+      // The remedy line names the path that ACTUALLY works today. A review traced
+      // every route and screen for a "reconcile the invoice" action and found none
+      // exists — resyncInvoiceToAgreedTotal is called only by /amend and
+      // /amend-decline — so telling staff to "reconcile the invoice" (which the
+      // staff-side sibling's copy still does, alongside naming an "edit the invoice
+      // directly" capability that does not exist anywhere) points at nothing.
+      // Recording a $0-change amendment re-runs the invoice sync and is the real
+      // fix until a dedicated action exists (ledger row 388).
+      if (!alertedRecently) {
+        await notifyTelegramAudience(
+          'jobs',
+          `Balance payment BLOCKED — invoice out of sync
 ` +
-          `${quote.customer_name ?? 'A customer'} tried to pay $${freshInvoice.balance} but the order's ` +
-          `current agreed total works out to $${expected.balance}.
+            `${quote.customer_name ?? 'A customer'}${quote.customer_email ? ` (${quote.customer_email})` : ''} ` +
+            `tried to pay $${freshInvoice.balance.toFixed(2)}, but this order's current agreed total makes it ` +
+            `$${expected.balance.toFixed(2)}.
 ` +
-          `A prior amendment's invoice sync likely did not land. Reconcile the invoice, then tell them it's ready.
+            `A prior amendment's invoice sync did not land. To fix: open the order below, then Record amendment ` +
+            `with a $0 change — that re-runs the invoice sync. Then tell them it's ready to pay.
 ` +
-          `Quote: ${id}`,
-      );
+            `${baseUrl}/admin/invoices/${freshInvoice.id}`,
+        );
+      }
       return NextResponse.json(
         {
           error: 'We need to confirm the final amount on this order before taking payment.',
