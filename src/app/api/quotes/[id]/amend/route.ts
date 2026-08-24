@@ -41,7 +41,11 @@ import {
 import { getInvoiceByJob, type InvoicePricingInput } from '@/lib/invoices';
 import { roundMoney as round2 } from '@/lib/money';
 import { resolveAgreedTotal, amendedAgreedTotal } from '@/lib/agreedTotal';
-import { resyncInvoiceToAgreedTotal, computeInvoiceResyncTotals } from '@/lib/quoteAmendInvoiceSync';
+import {
+  resyncInvoiceToAgreedTotal,
+  computeInvoiceResyncTotals,
+  priorBalanceCollectedUsd,
+} from '@/lib/quoteAmendInvoiceSync';
 import { getJobByQuote } from '@/lib/jobs';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { sendSms, sendEmail, isHighLevelConfigured } from '@/lib/integrations/highlevel';
@@ -280,17 +284,28 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // *successful* re-sync could, and silently, which is the bug FIX A fixed.
   const invoiceForBasis = (job ? await getInvoiceByJob(job.id) : null) ?? invoice;
   if (invoiceForBasis && invoiceForBasis.status !== 'cancelled' && quote.result) {
+    // Row 341 fix round 3 (technical-lens HIGH): pass priorBalanceCollectedUsd
+    // derived from this SAME fresh invoiceForBasis read, so the stamped
+    // invoice_basis.new_balance agrees with what the re-sync below actually
+    // writes to the invoices row — both call computeInvoiceResyncTotals with
+    // the identical fifth argument, from the identical row.
     const planned = computeInvoiceResyncTotals(
       quote.result,
       depositPaid,
       newTotal,
       invoiceForBasis.tax_overridden,
+      priorBalanceCollectedUsd(invoiceForBasis),
     );
     if (typeof invoiceForBasis.total === 'number' && Number.isFinite(invoiceForBasis.total)) {
       amendment.invoice_basis = {
         previous_total: invoiceForBasis.total,
         new_total: planned.total,
         delta: round2(planned.total - invoiceForBasis.total),
+        // Row 341 fix round 3: read by resolveAmendmentBasis (amend.ts) so the
+        // customer notice/portal card/staff alert all quote this SAME
+        // balance-beyond-deposit-aware figure instead of recomputing a
+        // deposit-only one.
+        new_balance: planned.balance,
       };
     }
   }

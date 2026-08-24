@@ -108,7 +108,7 @@ import type { QuoteStatus } from '@/lib/quoteStatus';
 // Row 341 (staff-lens HIGH): the reconciliation guard below recomputes the
 // SAME invoice-basis figures resyncInvoiceToAgreedTotal would have written,
 // from the quote's CURRENT agreed total — the one place both formulas live.
-import { computeInvoiceResyncTotals } from '@/lib/quoteAmendInvoiceSync';
+import { computeInvoiceResyncTotals, priorBalanceCollectedUsd } from '@/lib/quoteAmendInvoiceSync';
 import { resolveAgreedTotal } from '@/lib/agreedTotal';
 // #173: same EPSILON-nudged + finite-guarded round-to-cents invoices.ts/amend.ts/
 // balanceCollection.ts already alias as round2 — used to keep the stale-balance
@@ -470,11 +470,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // already takes on missing data.
   if (quote.result && !overrideStale) {
     const agreedTotal = resolveAgreedTotal(quote.approval_snapshot, quote.result);
+    // Row 341 fix round 3 (technical-lens HIGH): pass priorBalanceCollectedUsd
+    // derived from this SAME freshInvoice read — without it, `expected` used
+    // the deposit-only formula while a genuinely-resynced invoice (after this
+    // fix round) now nets out a settled balance payment, so a correctly
+    // resynced invoice with money already collected beyond the deposit would
+    // fail this guard as "stale" every time (a false 409, not a real one).
     const expected = computeInvoiceResyncTotals(
       quote.result,
       quote.deposit_amount_usd ?? 0,
       agreedTotal,
       freshInvoice.tax_overridden,
+      priorBalanceCollectedUsd(freshInvoice),
     );
     if (Math.abs(expected.balance - freshInvoice.balance) > 0.01) {
       await releaseClaim('invoice stale vs the quote agreed total');

@@ -36,6 +36,36 @@ import {
 import { canTransition, type InvoiceStatus } from '@/lib/invoiceStatus';
 import { roundMoney as round2 } from '@/lib/money';
 
+// Row 341 fix round 2 (technical-lens HIGH, real, re-derived independently):
+// how much has ACTUALLY been collected on an invoice BEYOND the immutable
+// deposit — a settled balance payment on the row being reopened. `balance =
+// total − deposit_applied` (computeInvoiceTotals' formula) is only correct
+// while nothing but the deposit has ever been collected; once a REAL balance
+// payment has landed (the Valor balance webhook settling it, a manual
+// mark-paid, cash), invoice.balance drops to 0 while total stays put, and
+// `total − balance` stops equalling `deposit_applied` alone — the gap IS
+// money genuinely already in hand that a re-price must not re-demand.
+// `total − balance` is the general invariant: on an untouched invoice it
+// equals deposit_applied (nothing extra collected, gap = 0); on a settled
+// one it equals the full total (everything collected). Subtracting
+// deposit_applied from that gives exactly the EXTRA amount, independent of
+// status. Defensive: returns 0 (the pre-fix, safe no-op) unless total,
+// balance, AND deposit_applied are all present finite numbers — a caller
+// with a partial/legacy row must never derive a fabricated "extra collected"
+// figure from missing data (see the call sites' own comments).
+export function priorBalanceCollectedUsd(invoiceRow: {
+  total?: number | null;
+  balance?: number | null;
+  deposit_applied?: number | null;
+}): number {
+  const finite = (n: unknown): number | null => (typeof n === 'number' && Number.isFinite(n) ? n : null);
+  const total = finite(invoiceRow.total);
+  const balance = finite(invoiceRow.balance);
+  const depositApplied = finite(invoiceRow.deposit_applied);
+  if (total === null || balance === null || depositApplied === null) return 0;
+  return round2(Math.max(0, total - balance - depositApplied));
+}
+
 // FIX A (delta-verify HIGH, fix round 4): the exact money formula
 // resyncInvoiceToAgreedTotal uses to re-price the invoice — pulled out so the
 // amend route can compute the SAME figures BEFORE it persists the amendment
@@ -49,6 +79,16 @@ export function computeInvoiceResyncTotals(
   depositPaidUsd: number,
   newTotal: number,
   taxOverridden: boolean,
+  // Row 341 fix round 2 (technical-lens HIGH): money ALREADY collected
+  // beyond the deposit — pass priorBalanceCollectedUsd(freshInvoiceRow).
+  // Optional, defaults to 0 (the pre-fix, still-correct behavior for the
+  // common case: nothing beyond the deposit has ever been collected), so
+  // every call site/test written before this parameter existed is
+  // unaffected. Every REAL call site (resyncInvoiceToAgreedTotal's own
+  // write, amend/route.ts's pre-write basis stamp, charge-balance's
+  // reconciliation guard) now passes it, so all three agree BY
+  // CONSTRUCTION — one formula, not three independent re-derivations.
+  priorBalanceCollectedUsd = 0,
 ): InvoiceTotals {
   // #125-1: when tax is overridden, computeInvoiceTotals subtracts
   // pricing.taxAmount from the total — so the whole-quote tax against a
@@ -58,11 +98,25 @@ export function computeInvoiceResyncTotals(
   const fullTotal = result.total ?? 0;
   const scaledTax =
     fullTotal > 0 ? round2((result.taxAmount ?? 0) * (newTotal / fullTotal)) : (result.taxAmount ?? 0);
-  return computeInvoiceTotals(
+  const base = computeInvoiceTotals(
     { ...result, taxAmount: scaledTax, total: newTotal },
     depositPaidUsd,
     { taxOverridden },
   );
+  if (priorBalanceCollectedUsd <= 0) return base;
+  // Extra money collected beyond the deposit reduces balance/credit_note
+  // FURTHER — `deposit_applied` itself is left UNTOUCHED. It is not a
+  // generic "amount applied" bucket: it is displayed to customers, verbatim,
+  // as literally "the deposit" (the invoice PDF's "Deposit collected" line,
+  // docModels.ts; the admin invoice/job/quote pages' "−{deposit_applied}"
+  // line item; the portal's receipt-availability gate). Lumping a
+  // previously-collected BALANCE payment into that field would misreport a
+  // real transaction as part of the deposit on every receipt this invoice
+  // ever produces going forward.
+  const totalApplied = round2(base.deposit_applied + priorBalanceCollectedUsd);
+  const balance = round2(Math.max(0, base.total - totalApplied));
+  const credit_note = round2(Math.max(0, totalApplied - base.total));
+  return { ...base, balance, credit_note };
 }
 
 export type InvoiceResyncOutcome = {
@@ -163,6 +217,16 @@ export async function resyncInvoiceToAgreedTotal(args: ResyncInvoiceArgs): Promi
   // owes.
   const MAX_ATTEMPTS = 2;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    // Row 341 fix round 2 (LOW 4): deliberately NOT flagged, unlike every
+    // other early return below. A cancelled invoice is the system working
+    // AS DESIGNED — both callers already check `status !== 'cancelled'`
+    // BEFORE ever calling this function, so reaching this branch means the
+    // invoice was cancelled in the narrow gap between that check and this
+    // re-read. Nothing is owed on a cancelled invoice and nothing should
+    // ever collect against it; a marker here would read as "something needs
+    // fixing" on a row that is exactly correct as left. Contrast the illegal-
+    // transition and lost-race branches below, which DO flag — those are
+    // genuine "we expected to sync and couldn't" outcomes.
     if (invoiceForSync.status === 'cancelled') {
       return outcome; // don't resurrect a cancelled invoice
     }
@@ -174,7 +238,21 @@ export async function resyncInvoiceToAgreedTotal(args: ResyncInvoiceArgs): Promi
     // place (computeInvoiceResyncTotals, above) — the amend route's pre-write
     // invoice_basis stamp calls the exact same function on the exact same
     // inputs, so the two can't silently diverge into two different numbers.
-    const totals = computeInvoiceResyncTotals(result, depositPaid, newTotal, invoiceForSync.tax_overridden);
+    // Row 341 fix round 2 (technical-lens HIGH): pass priorBalanceCollectedUsd
+    // derived from THIS iteration's freshly re-read `invoiceForSync` — a
+    // balance payment the Valor webhook (or a manual mark-paid) settled since
+    // the original deposit is real money already in hand, and the retry path
+    // below reaches exactly that state (the webhook settles the stale
+    // balance in the gap between attempts). Recomputed every iteration so a
+    // retry's totals reflect the row it ACTUALLY re-read, not the first
+    // attempt's now-stale figure.
+    const totals = computeInvoiceResyncTotals(
+      result,
+      depositPaid,
+      newTotal,
+      invoiceForSync.tax_overridden,
+      priorBalanceCollectedUsd(invoiceForSync),
+    );
     // Reconcile the invoice STATUS to the new balance (review MEDIUM): a
     // re-sync that raises the total on an already-paid invoice reopens it to
     // awaiting_payment (more is owed); a re-sync that lowers the total to what
@@ -199,6 +277,11 @@ export async function resyncInvoiceToAgreedTotal(args: ResyncInvoiceArgs): Promi
       console.error(
         `${logPrefix} illegal invoice transition ${invoiceForSync.status} → ${reconciledStatus} (invoice ${invoiceForSync.id}) — skipping re-sync`,
       );
+      // Row 341 fix round 2 (LOW 4): flagged, unlike the cancelled-invoice
+      // exit above — this is a genuine "expected to sync, couldn't" outcome
+      // (a should-never-happen guard actually firing), not correct-as-
+      // designed behavior.
+      await flagInvoiceResyncFailed(invoiceForSync, totals, logPrefix);
       return outcome;
     }
 
@@ -346,17 +429,35 @@ export async function resyncInvoiceToAgreedTotal(args: ResyncInvoiceArgs): Promi
 
 // Row 341: a durable, best-effort trace for the (now rare, after the retry
 // above) case where a resync is attempted but the invoice ends up NOT
-// updated. Mirrors the exact shape the Valor balance webhook already uses
-// for the same "money didn't land as expected, leave a forensic marker"
-// situation (flagBalanceUnderpayment / the duplicate-payment stamps,
-// src/app/api/integrations/valor/webhook/route.ts) rather than inventing a
-// new pattern: a small object merged into quotes.approval_snapshot, keyed by
-// name, overwritten by any later occurrence (a running history isn't needed
-// here — this is a "something's wrong, go look" flag, not an audit log).
-// Read-modify-write, not a CAS: like its two precedents, losing a race on
-// THIS write only means an even-later marker wins, which is fine for a
-// forensic flag. Never throws — a failure here must never turn a best-effort
-// trace into a request failure.
+// updated. The SHAPE (a small object merged into quotes.approval_snapshot,
+// keyed by name, overwritten by any later occurrence — a running history
+// isn't needed here, this is a "something's wrong, go look" flag, not an
+// audit log) mirrors the Valor balance webhook's own
+// flagBalanceUnderpayment/duplicate-payment stamps
+// (src/app/api/integrations/valor/webhook/route.ts). The WRITE ITSELF does
+// NOT mirror them: those are blind read-modify-writes with no CAS (an
+// out-of-scope pre-existing gap in that file, not touched here) — this one
+// CASes on the exact prior snapshot it read, matching every OTHER writer of
+// this column instead (amend, amend-consent, amend-decline,
+// color-change-request, apply-color-request, free-items — see the function
+// below for why). Never throws — a failure here must never turn a
+// best-effort trace into a request failure.
+// Row 341 fix round 2 (technical-lens HIGH, real, re-derived independently):
+// the ORIGINAL version of this function was a blind read-modify-write — a
+// select, then an unconditional update carrying only `.eq('id', ...)`. Every
+// OTHER writer of quotes.approval_snapshot in this codebase (amend,
+// amend-consent, amend-decline, color-change-request, apply-color-request,
+// free-items) instead re-fetches fresh and CASes with
+// `.eq('approval_snapshot', JSON.stringify(prior))` — color-change-request's
+// own comment names exactly why (F-014): a blind write here could silently
+// REVERT a customer's concurrently-recorded pendingColorRequest, a frozen
+// pricing snapshot, or any other field a concurrent writer just added,
+// because the write always overwrites the WHOLE column with whatever this
+// function read moments earlier. Matches the sibling idiom exactly below. A
+// lost race is handled by DROPPING the marker (never retried, never
+// overwrites blind) — a missing forensic marker is survivable (the
+// response-level `invoiceResyncFailed` flag already told the acting
+// operator synchronously); clobbering a customer's snapshot is not.
 async function flagInvoiceResyncFailed(
   invoiceForSync: InvoiceRow,
   totals: InvoiceTotals,
@@ -371,20 +472,38 @@ async function flagInvoiceResyncFailed(
       .select('approval_snapshot')
       .eq('id', invoiceForSync.quote_id)
       .maybeSingle<{ approval_snapshot: Record<string, unknown> | null }>();
-    await sb
+    const priorSnapshot = quoteRow?.approval_snapshot ?? {};
+    const nextSnapshot = {
+      ...priorSnapshot,
+      invoiceResyncFailed: {
+        invoiceId: invoiceForSync.id,
+        attemptedTotal: totals.total,
+        attemptedBalance: totals.balance,
+        at: new Date().toISOString(),
+      },
+    };
+    const { data: updated, error } = await sb
       .from('quotes')
-      .update({
-        approval_snapshot: {
-          ...(quoteRow?.approval_snapshot ?? {}),
-          invoiceResyncFailed: {
-            invoiceId: invoiceForSync.id,
-            attemptedTotal: totals.total,
-            attemptedBalance: totals.balance,
-            at: new Date().toISOString(),
-          },
-        },
-      })
-      .eq('id', invoiceForSync.quote_id);
+      .update({ approval_snapshot: nextSnapshot })
+      .eq('id', invoiceForSync.quote_id)
+      // Serialize jsonb explicitly — PostgREST string-interpolates filter
+      // values; passing the object directly would produce "[object Object]"
+      // and never match (same reasoning as every sibling CAS in this repo).
+      .eq('approval_snapshot', JSON.stringify(priorSnapshot))
+      .select('id');
+    if (error) {
+      console.error(`${logPrefix} failed to flag the invoice re-sync failure on the quote:`, error);
+      return;
+    }
+    if (!updated || updated.length === 0) {
+      // Lost the race — something else wrote approval_snapshot in the gap
+      // between the read above and this write. Drop the marker; do NOT
+      // retry (a retry-then-clobber loop is exactly the hazard this CAS
+      // exists to avoid) and do NOT blind-overwrite the winner.
+      console.warn(
+        `${logPrefix} invoiceResyncFailed marker lost a concurrent write to quote ${invoiceForSync.quote_id}'s approval_snapshot — dropped (best-effort, not retried)`,
+      );
+    }
   } catch (err) {
     console.error(`${logPrefix} failed to flag the invoice re-sync failure on the quote:`, err);
   }

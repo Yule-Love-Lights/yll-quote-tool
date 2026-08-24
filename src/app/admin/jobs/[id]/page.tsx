@@ -125,7 +125,17 @@ export default function JobDetailPage() {
             ? ' Customer must re-approve the new total before the balance is charged.'
             : '') +
           (d.overpayment ? ' Overpayment — refund manually in Valor.' : '') +
-          notifyNote,
+          notifyNote +
+          // Row 341 fix round 3 (MED finding): the route computes and returns
+          // this flag specifically so a lost invoice re-sync (a losing CAS
+          // race, twice) doesn't read as a clean success — before this, no
+          // caller ever read it, so the warning it exists to surface never
+          // reached anyone. A durable marker also lands on the quote
+          // (quoteAmendInvoiceSync.ts's flagInvoiceResyncFailed) for the case
+          // nobody sees this response, but THIS is the synchronous one.
+          (body.invoiceResyncFailed
+            ? ' ⚠️ The linked invoice could not be re-synced — reconcile it manually before charging the balance.'
+            : ''),
       );
       setAmendReason('');
       await load();

@@ -56,11 +56,16 @@ function makeSb(
   opts: {
     invoiceUpdateResults?: Array<'ok' | 'raced'>;
     quoteApprovalSnapshot?: Record<string, unknown> | null;
+    // Row 341 fix round 3 (negative control for the flagInvoiceResyncFailed
+    // CAS): 'raced' simulates the same 0-rows-no-error shape the invoices
+    // CAS uses when a concurrent write already changed approval_snapshot.
+    quoteUpdateResult?: 'ok' | 'raced';
   } = {},
 ) {
   const invoiceUpdates: Array<Record<string, unknown>> = [];
   const quoteUpdates: Array<Record<string, unknown>> = [];
   const eqArgs: Array<[string, unknown]> = [];
+  const quoteEqArgs: Array<[string, unknown]> = [];
   const results = opts.invoiceUpdateResults ?? ['ok'];
   let invoiceCallIndex = 0;
   let table = '';
@@ -80,6 +85,7 @@ function makeSb(
     },
     eq: (column: string, value: unknown) => {
       if (table === 'invoices') eqArgs.push([column, value]);
+      else if (table === 'quotes') quoteEqArgs.push([column, value]);
       return b;
     },
     select: () => b,
@@ -95,13 +101,14 @@ function makeSb(
         return;
       }
       if (table === 'quotes' && mode === 'update') {
-        resolve({ data: [{ id: 'quote-1' }], error: null });
+        const raced = opts.quoteUpdateResult === 'raced';
+        resolve({ data: raced ? [] : [{ id: 'quote-1' }], error: null });
         return;
       }
       resolve({ data: null, error: null });
     },
   });
-  return { client: b, invoiceUpdates, quoteUpdates, eqArgs };
+  return { client: b, invoiceUpdates, quoteUpdates, eqArgs, quoteEqArgs };
 }
 
 beforeEach(() => {
@@ -156,17 +163,22 @@ describe('resyncInvoiceToAgreedTotal — declining a DECREASE reopens an already
       retiredReason: 'amend-decline-reopen',
     });
 
-    // The invoice write reopens it: more is owed (2400 − 1000 = 1400 > 0),
-    // so status leaves 'paid' for 'awaiting_payment' and paid_at clears.
+    // The invoice write reopens it — but paidInvoice was already SETTLED at
+    // 2000 (deposit 1000 + a real balance payment of 1000, balance: 0 below),
+    // so that extra 1000 is money already in hand, not owed again: real
+    // balance owed = 2400 (new total) − 2000 (already collected) = 400. Row
+    // 341 fix round 3 (priorBalanceCollectedUsd): before this fix the code
+    // computed 2400 − 1000 (deposit only) = 1400, a ~1000 double-charge on a
+    // customer who had already paid in full for the prior total.
     expect(sb.invoiceUpdates[0]).toMatchObject({
       status: 'awaiting_payment',
       total: 2400,
-      balance: 1400,
+      balance: 400,
       paid_at: null,
     });
 
     expect(outcome).toEqual({
-      invoicedBalance: 1400,
+      invoicedBalance: 400,
       invoicedTotal: 2400,
       previousInvoicedTotal: 2000, // the REAL pre-resync invoice total — never reconstructed
       resynced: true,
@@ -348,13 +360,20 @@ describe('resyncInvoiceToAgreedTotal — CAS on the invoices write (row 339)', (
 
     expect(getInvoiceByJobMock).toHaveBeenCalledTimes(2);
     expect(sb.invoiceUpdates).toHaveLength(2);
-    // The retry recomputed against the webhook-settled row: more is owed
-    // (1400 − 500 = 900 > 0) and the row now reads 'paid', so reconciledStatus
-    // reopens it to 'awaiting_payment' instead of leaving it 'paid' at a
-    // figure the customer no longer owes.
-    expect(sb.invoiceUpdates[1]).toMatchObject({ status: 'awaiting_payment', total: 1400, balance: 900 });
+    // The retry recomputed against the webhook-settled row: the webhook
+    // itself already collected 500 beyond the deposit (deposit 500 + the
+    // webhook's own settled balance 500 = 1000 already in hand), so the real
+    // amount still owed on the amended 1400 total is 1400 − 1000 = 400, not
+    // 1400 − 500 (deposit only) = 900. Row 341 fix round 3
+    // (priorBalanceCollectedUsd): before this fix the code ignored the
+    // webhook's own payment and would have re-billed the customer for money
+    // already collected in the SAME retry that exists specifically to react
+    // to that webhook settlement. The row now reads 'paid' pre-resync, so
+    // reconciledStatus still reopens it to 'awaiting_payment' (something —
+    // 400 — remains owed on the new total).
+    expect(sb.invoiceUpdates[1]).toMatchObject({ status: 'awaiting_payment', total: 1400, balance: 400 });
     expect(outcome).toEqual({
-      invoicedBalance: 900,
+      invoicedBalance: 400,
       invoicedTotal: 1400,
       previousInvoicedTotal: 1000, // webhookSettledInvoice.total — the webhook never touched it
       resynced: true,
@@ -434,10 +453,97 @@ describe('resyncInvoiceToAgreedTotal — CAS on the invoices write (row 339)', (
         invoiceResyncFailed: expect.objectContaining({
           invoiceId: 'inv-1',
           attemptedTotal: 2400,
-          attemptedBalance: 1400,
+          // Same already-settled invoice as the "declining a DECREASE"
+          // test above (total 2000, deposit_applied 1000, balance 0 — 1000
+          // already collected beyond the deposit): the attempted balance is
+          // 2400 − 2000 = 400, not the deposit-only 2400 − 1000 = 1400.
+          attemptedBalance: 400,
         }),
       },
     });
+  });
+});
+
+// Row 341 fix round 3 (technical-lens HIGH): flagInvoiceResyncFailed used to
+// be a blind read-modify-write of quotes.approval_snapshot; it now CASes on
+// the exact snapshot it read, matching every other writer of that column.
+// These tests exercise the CAS itself, which the "gives up" test above never
+// did — that test only ever hit the always-succeeds branch of the mock.
+describe('flagInvoiceResyncFailed — CAS on approval_snapshot (row 341 fix round 3)', () => {
+  const invoice: InvoiceRow = {
+    id: 'inv-1',
+    invoice_number: 1,
+    job_id: 'job-1',
+    quote_id: 'quote-1',
+    customer_id: null,
+    subtotal: 2000,
+    discount: 0,
+    tax: 0,
+    total: 2000,
+    deposit_applied: 1000,
+    balance: 0,
+    credit_note: 0,
+    tax_overridden: false,
+    status: 'paid',
+    valor_balance_txn_id: 'txn-123',
+    valor_receipt_url: 'https://valor.example/r/txn-123',
+    valor_txn_log: null,
+    payment_preference: null,
+    created_at: '2026-07-01T00:00:00.000Z',
+    paid_at: '2026-08-01T00:00:00.000Z',
+    updated_at: '2026-08-01T00:00:00.000Z',
+  };
+
+  it('CASes the marker write on the exact prior snapshot it read', async () => {
+    const sb = makeSb({
+      invoiceUpdateResults: ['raced', 'raced'],
+      quoteApprovalSnapshot: { amendments: [{ amended_at: 'x' }] },
+    });
+    sbRef.current = sb.client;
+    getInvoiceByJobMock.mockResolvedValue(invoice);
+
+    await resyncInvoiceToAgreedTotal({
+      jobId: 'job-1',
+      invoice,
+      result: { total: 2400 },
+      depositPaid: 1000,
+      newTotal: 2400,
+      logPrefix: '[test]',
+      retiredReason: 'amend-decline-reopen',
+    });
+
+    expect(sb.quoteEqArgs).toContainEqual(['id', 'quote-1']);
+    expect(sb.quoteEqArgs).toContainEqual([
+      'approval_snapshot',
+      JSON.stringify({ amendments: [{ amended_at: 'x' }] }),
+    ]);
+  });
+
+  it('drops the marker (does not throw, does not retry) when the CAS loses a concurrent write to approval_snapshot', async () => {
+    const sb = makeSb({
+      invoiceUpdateResults: ['raced', 'raced'],
+      quoteApprovalSnapshot: { amendments: [{ amended_at: 'x' }] },
+      quoteUpdateResult: 'raced',
+    });
+    sbRef.current = sb.client;
+    getInvoiceByJobMock.mockResolvedValue(invoice);
+
+    // Must not throw — a lost marker is best-effort, never a request failure.
+    const outcome = await resyncInvoiceToAgreedTotal({
+      jobId: 'job-1',
+      invoice,
+      result: { total: 2400 },
+      depositPaid: 1000,
+      newTotal: 2400,
+      logPrefix: '[test]',
+      retiredReason: 'amend-decline-reopen',
+    });
+
+    expect(outcome.resynced).toBe(false);
+    // Exactly ONE attempt at the marker write — a lost CAS race is dropped,
+    // never retried and never blind-overwritten (unlike the invoices CAS,
+    // which retries once against a fresh read).
+    expect(sb.quoteUpdates).toHaveLength(1);
   });
 });
 

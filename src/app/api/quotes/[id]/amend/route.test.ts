@@ -669,7 +669,15 @@ describe('POST /api/quotes/[id]/amend', () => {
     const quoteWrite = sb.updates.quotes[0];
     const snap = quoteWrite.approval_snapshot as { amendments?: Array<{ invoice_basis?: unknown }> };
     const persisted = snap.amendments?.[snap.amendments.length - 1];
-    expect(persisted?.invoice_basis).toEqual({ previous_total: 4598.21, new_total: 5150, delta: 551.79 });
+    expect(persisted?.invoice_basis).toEqual({
+      previous_total: 4598.21,
+      new_total: 5150,
+      delta: 551.79,
+      // liveInvoice carries no deposit_applied/total of its own to derive a
+      // prior-collected figure from, so this is the deposit-only formula:
+      // 5150 (new_total) − 2500 (BOOKED_QUOTE's deposit_amount_usd) = 2650.
+      new_balance: 2650,
+    });
 
     // The SMS agrees with that SAME stamp — not with the trail basis (5600 /
     // 600.00), which is what a resync-outcome-driven notify would have sent
@@ -711,7 +719,14 @@ describe('POST /api/quotes/[id]/amend', () => {
       amendments?: Array<{ invoice_basis?: { previous_total: number; new_total: number; delta: number } }>;
     };
     const persisted = snap.amendments?.[snap.amendments!.length - 1];
-    expect(persisted?.invoice_basis).toEqual({ previous_total: 4900, new_total: 5600, delta: 700 });
+    expect(persisted?.invoice_basis).toEqual({
+      previous_total: 4900,
+      new_total: 5600,
+      delta: 700,
+      // freshInvoice has no deposit_applied/total of its own — deposit-only:
+      // 5600 − 2500 (BOOKED_QUOTE's deposit_amount_usd) = 3100.
+      new_balance: 3100,
+    });
   });
 
   // Delta-verify MEDIUM-HIGH (fix round 5): a null→non-null transition across
@@ -743,7 +758,14 @@ describe('POST /api/quotes/[id]/amend', () => {
       amendments?: Array<{ invoice_basis?: { previous_total: number; new_total: number; delta: number } }>;
     };
     const persisted = snap.amendments?.[snap.amendments!.length - 1];
-    expect(persisted?.invoice_basis).toEqual({ previous_total: 4000, new_total: 5600, delta: 1600 });
+    expect(persisted?.invoice_basis).toEqual({
+      previous_total: 4000,
+      new_total: 5600,
+      delta: 1600,
+      // Deposit-only (no deposit_applied/total on this fixture's invoice):
+      // 5600 − 2500 (BOOKED_QUOTE's deposit_amount_usd) = 3100.
+      new_balance: 3100,
+    });
 
     // The re-sync ALSO fired — not skipped on the stale (null) initial read.
     expect(sb.updates.invoices).toHaveLength(1);
@@ -781,7 +803,14 @@ describe('POST /api/quotes/[id]/amend', () => {
     };
     const persisted = snap.amendments?.[snap.amendments!.length - 1];
     // Stamped from the ORIGINAL read (5000), not silently dropped.
-    expect(persisted?.invoice_basis).toEqual({ previous_total: 5000, new_total: 5600, delta: 600 });
+    expect(persisted?.invoice_basis).toEqual({
+      previous_total: 5000,
+      new_total: 5600,
+      delta: 600,
+      // Deposit-only (no deposit_applied/total on this fixture's invoice):
+      // 5600 − 2500 (BOOKED_QUOTE's deposit_amount_usd) = 3100.
+      new_balance: 3100,
+    });
     // Re-sync also ran (not skipped) — resyncInvoiceToAgreedTotal's own
     // internal fallback (freshInvoice ?? invoice) used the SAME originalInvoice.
     expect(sb.updates.invoices).toHaveLength(1);
@@ -1077,6 +1106,10 @@ describe('POST /api/quotes/[id]/amend → portal read path — card/SMS/email mo
       previous_total: 4598.21,
       new_total: 5150,
       delta: 551.79,
+      // Deposit-only (no deposit_applied on this fixture's invoice):
+      // 5150 − 2500 (BOOKED_QUOTE's deposit_amount_usd) = 2650 — matches the
+      // invoice write asserted at "2) The invoice was actually billed" above.
+      new_balance: 2650,
     });
 
     // 4) Feed that EXACT persisted row back through the REAL portal read
