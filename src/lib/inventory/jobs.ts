@@ -161,12 +161,23 @@ export type WorkOrderJob = {
   customerName: string | null;
   customerAddress: string | null;
   stockDecrementedAt: string | null; // #82 Phase 2 — set once prep deducts stock
-  // Row 325: the exact deductions prepareJobMaterials took off on-hand, so the
-  // cancel route can reverse the SAME numbers instead of recomputing the
-  // materials projection live. Null when never prepped, or when prepped
-  // before this snapshot column existed (legacy — cancel falls back to a
-  // live reconstruction for those and says so).
-  stockDeductions: StockDeduction[] | null;
+  // Row 325 (fix round 2, Finding 1): the exact deductions prepareJobMaterials
+  // took off on-hand, so the cancel route can reverse the SAME numbers
+  // instead of recomputing the materials projection live. Three states:
+  //  - null            → never prepped, OR prepped before this snapshot
+  //                      column existed at all (true legacy — cancel falls
+  //                      back to a live reconstruction and says so).
+  //  - PENDING_STOCK_SNAPSHOT ('pending') → prepped by CURRENT code (the
+  //                      claim stamps this atomically), but the accurate
+  //                      follow-up snapshot write never landed — a transient
+  //                      failure. Cancel does NOT reconstruct for this state
+  //                      (unlike true legacy): it refuses to auto-reverse and
+  //                      asks a human to reconcile, because a live recompute
+  //                      here would silently repeat the exact bug this
+  //                      snapshot exists to prevent.
+  //  - StockDeduction[] → the real, durable snapshot; cancel reverses it
+  //                      exactly, empty array included (nothing tracked).
+  stockDeductions: StockDeduction[] | typeof PENDING_STOCK_SNAPSHOT | null;
   // Test Quote (ledger #93): derived from the linked quote. Drives the TEST
   // badge + makes prepareJobMaterials no-op the real on-hand deduction.
   isTest: boolean;
@@ -329,7 +340,10 @@ export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
     .select('stock_decremented_at, stock_deductions')
     .eq('id', id)
     .maybeSingle();
-  const sdRow = sd as { stock_decremented_at: string | null; stock_deductions: StockDeduction[] | null } | null;
+  const sdRow = sd as {
+    stock_decremented_at: string | null;
+    stock_deductions: StockDeduction[] | typeof PENDING_STOCK_SNAPSHOT | null;
+  } | null;
   const stockDecrementedAt = sdRow?.stock_decremented_at ?? null;
   const stockDeductions = sdRow?.stock_deductions ?? null;
 
@@ -467,6 +481,21 @@ export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
 
 export type StockDeduction = { sku: string; before: number; deducted: number; after: number };
 
+// Row 325 fix-round Finding 1: `stock_deductions` is written in TWO steps (the
+// atomic claim, then a separate follow-up snapshot write — see
+// prepareJobMaterials below for why). If the follow-up ever fails, a `null`
+// column was indistinguishable from a genuine pre-Row-325 LEGACY job (never
+// snapshotted at all, prepped before this column existed) — and cancel's
+// legacy branch would silently reconstruct the reversal from a LIVE materials
+// recompute, the exact over/under-credit bug Row 325 exists to prevent, now
+// reachable through an ordinary transient write failure instead of a race.
+// This sentinel closes the ambiguity: the claim stamps it atomically WITH
+// stock_decremented_at, so `null` can only mean "prepped by code that
+// predates this column" and this sentinel means "prepped by current code, but
+// the accurate snapshot never landed." See WorkOrderJob.stockDeductions below
+// and the cancel route for how each of the three states is handled.
+export const PENDING_STOCK_SNAPSHOT = 'pending' as const;
+
 // Pure: given the job's aggregated materials (with their current on-hand), what
 // comes off stock when prepped. Only TRACKED skus (onHand !== null) with a real
 // need are deducted; on-hand floors at 0 (never negative).
@@ -484,7 +513,12 @@ export function computeStockDeductions(
 
 export type PrepareResult =
   | { ok: true; alreadyDone: true }
-  | { ok: true; alreadyDone: false; deductions: StockDeduction[] }
+  // Finding 2 (fix round 2): `short` lists the SKUs whose deducted amount is
+  // LESS than what the job actually needed (the on-hand floor-at-0 clamp bit
+  // — see the deduction loop below), so a clamped prep — which looks
+  // identical to a full one in a bare SKU count — isn't silent. Empty when
+  // nothing was short.
+  | { ok: true; alreadyDone: false; deductions: StockDeduction[]; short: string[] }
   // Row 329 fix: the atomic CLAIM update itself failed (a real DB error, not
   // just "someone else already claimed it" — see prepareJobMaterials below).
   // Nothing was deducted and the job was not marked prepped; safe to retry.
@@ -540,11 +574,19 @@ export async function prepareJobMaterials(id: string): Promise<PrepareResult | n
   // alreadyDone, reporting success for a claim that never happened and never
   // deducted anything. Nothing was written in either failure branch here (a
   // failed WHERE-guarded UPDATE writes nothing), so both are safely retryable.
+  // Finding 1 (fix round 2): stamp PENDING_STOCK_SNAPSHOT here, in the SAME
+  // atomic write as the claim, so `stock_deductions` is never ambiguously
+  // null for a job this code claimed — null is reserved for jobs claimed by
+  // code that predates this column entirely. The real snapshot overwrites
+  // this in the follow-up write below; if that write never lands, the
+  // sentinel itself is the durable signal that a human needs to reconcile
+  // (see the cancel route).
   const { data: claimed, error: claimError } = await db
     .from('jobs')
     .update({
       stock_decremented_at: new Date().toISOString(),
       fulfillment_stage: 'ready_for_install',
+      stock_deductions: PENDING_STOCK_SNAPSHOT,
     })
     .eq('id', id)
     .is('stock_decremented_at', null)
@@ -567,7 +609,13 @@ export async function prepareJobMaterials(id: string): Promise<PrepareResult | n
   // applied (`applied`), not from `intendedDeductions` — only entries where the
   // clamp didn't zero the write are worth persisting (mirrors
   // computeStockDeductions' own "skip zero-change" filter).
+  //
+  // Finding 2: track which SKUs the clamp bit — a SKU whose |applied| came in
+  // under what was intended (including one that clamped all the way to 0,
+  // which drops out of actualDeductions entirely above) means the prep was
+  // SHORT for that SKU: staff loaded a truck believing they had full stock.
   const actualDeductions: StockDeduction[] = [];
+  const short: string[] = [];
   for (const d of intendedDeductions) {
     try {
       // Atomic NEGATIVE delta (mirrors receiveOrder's positive delta) so a job
@@ -577,10 +625,14 @@ export async function prepareJobMaterials(id: string): Promise<PrepareResult | n
       // delta — phantom stock. See adjustOnHandAtomic in onHand.ts.
       const { before, after, applied } = await adjustOnHandAtomic(db, d.sku, -d.deducted);
       if (applied !== 0) actualDeductions.push({ sku: d.sku, before, deducted: -applied, after });
+      if (-applied < d.deducted) short.push(d.sku);
     } catch (err) {
       // A single failed write shouldn't unwind the claim; staff can reconcile
-      // that SKU manually on the Stock tab. Log for visibility.
+      // that SKU manually on the Stock tab. Log for visibility. A write that
+      // never landed at all is the most extreme "short" case (0 of what was
+      // intended), so it counts too.
       console.error(`prepareJobMaterials: on-hand write failed for ${d.sku}:`, err);
+      short.push(d.sku);
     }
   }
 
@@ -589,16 +641,31 @@ export async function prepareJobMaterials(id: string): Promise<PrepareResult | n
   // AFTER the claim wins (so a concurrent prep can't double-deduct). Row 325's
   // "same atomic update as the claim" guarantee is therefore no longer
   // possible for an ACCURATE snapshot; this write follows immediately after,
-  // scoped to the row this call already owns (no re-claim needed). If it
-  // fails, stock_deductions is left at its pre-claim value (null, for a
-  // never-before-prepped job) rather than a wrong number — cancel's existing
-  // legacy-reconstruction fallback (stockDeductions == null) then applies, an
-  // approximation rather than a frozen wrong snapshot.
+  // scoped to the row this call already owns (no re-claim needed).
+  //
+  // Finding 1 (fix round 2): also guarded by `.not('stock_decremented_at',
+  // 'is', null)` — a CONCURRENT cancel can only run after the claim above
+  // (stock_decremented_at was non-null the instant it won), and cancel's own
+  // reversal-claim clears that column back to null. If a cancel's clear lands
+  // in the window between the claim and this write, this WHERE no longer
+  // matches and the write correctly no-ops instead of resurrecting a stray
+  // stock_deductions value on a job cancel just terminally cleared (Finding 3
+  // — this scoping is what makes that currently-inert race impossible instead
+  // of merely unreachable today).
+  //
+  // If this write fails outright, stock_deductions is left at
+  // PENDING_STOCK_SNAPSHOT (stamped atomically with the claim above) rather
+  // than a wrong number OR the ambiguous pre-fix null — cancel's dedicated
+  // pending-snapshot branch (stockDeductions === PENDING_STOCK_SNAPSHOT) then
+  // refuses to auto-reverse and asks a human to reconcile, rather than
+  // silently reconstructing from a live recompute (the Row 329 bug, reopened
+  // through this exact door — see Finding 1).
   try {
     const { error: snapErr } = await db
       .from('jobs')
       .update({ stock_deductions: actualDeductions })
       .eq('id', id)
+      .not('stock_decremented_at', 'is', null)
       .select('id')
       .maybeSingle();
     if (snapErr) {
@@ -608,5 +675,5 @@ export async function prepareJobMaterials(id: string): Promise<PrepareResult | n
     console.error(`prepareJobMaterials: stock_deductions snapshot write failed for job ${id}:`, err);
   }
 
-  return { ok: true, alreadyDone: false, deductions: actualDeductions };
+  return { ok: true, alreadyDone: false, deductions: actualDeductions, short };
 }

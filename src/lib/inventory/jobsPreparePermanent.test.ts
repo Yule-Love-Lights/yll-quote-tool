@@ -61,6 +61,9 @@ function makeDb() {
         is() {
           return b;
         },
+        not() {
+          return b;
+        },
         async maybeSingle() {
           if (table === 'jobs' && state.op === 'update') {
             return { data: { id: jobRow?.id ?? 'j1' }, error: null };

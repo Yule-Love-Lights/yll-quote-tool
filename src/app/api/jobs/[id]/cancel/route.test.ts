@@ -55,6 +55,7 @@ vi.mock('@/lib/inventory/jobs', async (importOriginal) => {
 vi.mock('@/lib/inventory/onHand', () => ({ adjustOnHandAtomic: adjustOnHandAtomicMock }));
 
 import { POST } from './route';
+import { PENDING_STOCK_SNAPSHOT } from '@/lib/inventory/jobs';
 
 const ID = '11111111-1111-1111-1111-111111111111';
 const denied401 = () => NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -582,6 +583,44 @@ describe('POST /api/jobs/[id]/cancel — Row 325 stock_deductions snapshot', () 
     expect(json.stockReturned).toEqual([{ sku: 'SKU-A', qty: 5 }]);
     expect(json.note).toMatch(/no per-prep snapshot/i);
     expect(json.note).toMatch(/may not exactly match/i);
+  });
+
+  it('Finding 1 (fix round 2): refuses to auto-reverse and flags a human note for the PENDING sentinel state — never treats it as legacy', async () => {
+    // A job prepped by CURRENT code whose durable snapshot write never landed
+    // (a transient failure right after prep — see jobs.ts's
+    // PENDING_STOCK_SNAPSHOT doc). This must NOT fall into the legacy
+    // live-reconstruction branch: unlike a true legacy job, a snapshot for
+    // this job's real deduction could exist somewhere but wasn't captured, so
+    // guessing via a live recompute risks the exact over/under-credit bug Row
+    // 325 exists to prevent.
+    getJobWorkOrderMock.mockResolvedValueOnce({
+      job: {
+        stockDecrementedAt: '2026-01-05T00:00:00Z',
+        isTest: false,
+        stockDeductions: PENDING_STOCK_SNAPSHOT,
+      },
+      materials: {
+        // If this were mistakenly treated as legacy, it would reconstruct 9
+        // of SKU-A from this live projection — proving the refusal actually
+        // fired (not merely a no-op that happened to look the same).
+        materials: [{ sku: 'SKU-A', name: 'Item A', qty: 9, onHand: 20, short: false }],
+        unbound: [],
+        totalLines: 1,
+      },
+    });
+
+    const res = await POST(req, ctx());
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(adjustOnHandAtomicMock).not.toHaveBeenCalled();
+    expect(json.stockReturned).toEqual([]);
+    expect(json.note).toMatch(/never durably recorded/i);
+    expect(json.note).toMatch(/check on-hand manually/i);
+    // Distinct message from the true-legacy caveat — this is not "reconstructed
+    // and may not match", it's "nothing was reconstructed at all".
+    expect(json.note).not.toMatch(/no per-prep snapshot/i);
+    expect(json.note).not.toMatch(/may not exactly match/i);
   });
 
   it('clears stock_deductions in the same atomic reversal-claim update (mirrors clearing stock_decremented_at)', async () => {
