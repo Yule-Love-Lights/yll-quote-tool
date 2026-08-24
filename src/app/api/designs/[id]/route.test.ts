@@ -190,6 +190,17 @@ describe('PUT /api/designs/[id]', () => {
     expect(json.version).toBe(2); // whatever updateDesignSceneGuarded's mock returned
   });
 
+  it('saves a scene carrying per-photo brightness through the CAS guard', async () => {
+    const perPhotoScene = {
+      ...validScene,
+      brightness: 20,
+      extraPhotoBrightness: { 'left-photo': 65 },
+    };
+    const res = await PUT(makeReq({ scene: perPhotoScene, version: 4 }), ctx());
+    expect(res.status).toBe(200);
+    expect(updateDesignSceneGuarded).toHaveBeenCalledWith(VALID_ID, perPhotoScene, 4);
+  });
+
   it('treats an omitted version as null (the adopt path) rather than crashing', async () => {
     const res = await PUT(makeReq({ scene: validScene }), ctx());
     expect(res.status).toBe(200);

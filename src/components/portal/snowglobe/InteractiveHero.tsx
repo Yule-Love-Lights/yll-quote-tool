@@ -30,6 +30,7 @@ import { PackagesViewTracker } from '../PackagesViewTracker';
 import { track } from '@/lib/analytics/posthog';
 import type { PortalPackage, PackageId, PortalDesign } from '../types';
 import { isItemOnPhoto, type BulbColor } from '@/lib/design/sceneTypes';
+import { brightnessForPhoto } from '@/lib/design/photoBrightness';
 import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
 import type { ServiceType } from '@/lib/serviceType';
 import { portalPhotos } from '@/lib/portal/photos';
@@ -111,7 +112,11 @@ export function InteractiveHero({
   const activeScene = useMemo(
     () =>
       design
-        ? { ...design.scene, items: design.scene.items.filter((i) => isItemOnPhoto(i, activePhotoId)) }
+        ? {
+            ...design.scene,
+            brightness: brightnessForPhoto(design.scene, activePhotoId),
+            items: design.scene.items.filter((i) => isItemOnPhoto(i, activePhotoId)),
+          }
         : null,
     [design, activePhotoId],
   );
