@@ -1904,6 +1904,18 @@ export default function QuoteBuilder({
   // below), which used to clear the ref directly with no seed at all.
   // Route every thaw through this helper instead of setting the ref
   // directly, so the seed can never be forgotten at a new call site again.
+  //
+  // ONE class of exception, three sites (verified by grep at the 2026-08-24
+  // master re-sync, after #849/#866/#871/#874 added two more): a thaw that
+  // WIPES all four sides' lines wholesale in the same breath — the fresh
+  // analyze below, and the two satellite-replacement paths (manual upload,
+  // address re-pull, both of which warn the operator that traced footage will
+  // reset). Those stay PLAIN thaws on purpose. There is no override worth
+  // preserving across a wipe the operator just confirmed, and the next derive
+  // run sees hasLines=false with hadLinesPrev=true, so the reconcile's own
+  // delete-transition resets each field to 0 — which is exactly what the
+  // confirm dialog promised. Seeding there would be wrong, not merely
+  // redundant; see the fresh-analyze site's own comment for the full case.
   const thawPermDerive = () => {
     seedPermanentSideBaselineIfFrozen();
     permDeriveFrozenRef.current = false;
@@ -3247,12 +3259,13 @@ export default function QuoteBuilder({
             // freeze so the seeded lines drive footage/counts immediately.
             //
             // Row 345 finding 2: deliberately a PLAIN thaw, not
-            // thawPermDerive() — this is the one site where seeding the
-            // baseline first would be WRONG, not just unnecessary. Every
-            // other thaw site preserves the CURRENT lines (a manual edit
-            // touches one side, Recount re-derives from what's already
-            // drawn); this one REPLACES all four sides wholesale with a
-            // fresh AI re-trace two lines below, which is exactly the
+            // thawPermDerive() — seeding the baseline first would be WRONG
+            // here, not just unnecessary. The thaw sites that DO seed
+            // preserve the current lines (a manual edit touches one side,
+            // Recount re-derives from what's already drawn); this one
+            // REPLACES all four sides wholesale with a fresh AI re-trace two
+            // lines below — the same wipe-then-thaw shape as the two
+            // satellite-replacement paths above, which is exactly the
             // "geometry changed" case the reconcile is supposed to let win
             // outright. Seeding from the pre-replace (old/frozen) lines
             // would only matter in the rare coincidence where the AI
