@@ -521,3 +521,84 @@ describe('POST /api/jobs/[id]/cancel', () => {
     });
   });
 });
+
+// Row 325: cancel must reverse the job's OWN stock_deductions snapshot
+// (persisted by prepareJobMaterials at prep time), not recompute the
+// materials projection live — a live recompute silently drifts from what
+// prep actually deducted if the materials rules change in between prep and
+// cancel. These tests give the mocked work order a stockDeductions snapshot
+// that DISAGREES with wo.materials.materials, so a pass proves the snapshot
+// path — not the old recomputation — is what actually ran.
+describe('POST /api/jobs/[id]/cancel — Row 325 stock_deductions snapshot', () => {
+  it('reverses the SNAPSHOT quantities, not a live recompute off the current materials projection', async () => {
+    getJobWorkOrderMock.mockResolvedValueOnce({
+      job: {
+        stockDecrementedAt: '2026-01-05T00:00:00Z',
+        isTest: false,
+        // The snapshot says 5 of SKU-A was deducted at prep time.
+        stockDeductions: [{ sku: 'SKU-A', before: 20, deducted: 5, after: 15 }],
+      },
+      materials: {
+        // The CURRENT live projection disagrees — it would compute a
+        // different quantity today (e.g. a materials-rule change since
+        // prep). If the route were still recomputing live, it would return
+        // 9, not 5.
+        materials: [{ sku: 'SKU-A', name: 'Item A', qty: 9, onHand: 20, short: false }],
+        unbound: [],
+        totalLines: 1,
+      },
+    });
+
+    const res = await POST(req, ctx());
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(adjustOnHandAtomicMock).toHaveBeenCalledWith(sbRef.current, 'SKU-A', 5);
+    expect(adjustOnHandAtomicMock).not.toHaveBeenCalledWith(sbRef.current, 'SKU-A', 9);
+    expect(json.stockReturned).toEqual([{ sku: 'SKU-A', qty: 5 }]);
+    // No legacy caveat — a real snapshot was available and used.
+    expect(json.note).not.toMatch(/no per-prep snapshot/i);
+  });
+
+  it('falls back to a live reconstruction AND flags it, for a legacy job prepped before the snapshot column existed', async () => {
+    getJobWorkOrderMock.mockResolvedValueOnce({
+      job: {
+        stockDecrementedAt: '2026-01-05T00:00:00Z',
+        isTest: false,
+        stockDeductions: null, // legacy job — prepped before Row 325 shipped
+      },
+      materials: {
+        materials: [{ sku: 'SKU-A', name: 'Item A', qty: 5, onHand: 20, short: false }],
+        unbound: [],
+        totalLines: 1,
+      },
+    });
+
+    const res = await POST(req, ctx());
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(adjustOnHandAtomicMock).toHaveBeenCalledWith(sbRef.current, 'SKU-A', 5);
+    expect(json.stockReturned).toEqual([{ sku: 'SKU-A', qty: 5 }]);
+    expect(json.note).toMatch(/no per-prep snapshot/i);
+    expect(json.note).toMatch(/may not exactly match/i);
+  });
+
+  it('clears stock_deductions in the same atomic reversal-claim update (mirrors clearing stock_decremented_at)', async () => {
+    getJobWorkOrderMock.mockResolvedValueOnce({
+      job: {
+        stockDecrementedAt: '2026-01-05T00:00:00Z',
+        isTest: false,
+        stockDeductions: [{ sku: 'SKU-A', before: 20, deducted: 5, after: 15 }],
+      },
+      materials: { materials: [], unbound: [], totalLines: 0 },
+    });
+
+    await POST(req, ctx());
+
+    const jobsUpdate = sb.updates.find(
+      (u) => 'stock_decremented_at' in u && u.stock_decremented_at === null,
+    );
+    expect(jobsUpdate).toEqual({ stock_decremented_at: null, stock_deductions: null });
+  });
+});

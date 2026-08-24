@@ -161,6 +161,12 @@ export type WorkOrderJob = {
   customerName: string | null;
   customerAddress: string | null;
   stockDecrementedAt: string | null; // #82 Phase 2 — set once prep deducts stock
+  // Row 325: the exact deductions prepareJobMaterials took off on-hand, so the
+  // cancel route can reverse the SAME numbers instead of recomputing the
+  // materials projection live. Null when never prepped, or when prepped
+  // before this snapshot column existed (legacy — cancel falls back to a
+  // live reconstruction for those and says so).
+  stockDeductions: StockDeduction[] | null;
   // Test Quote (ledger #93): derived from the linked quote. Drives the TEST
   // badge + makes prepareJobMaterials no-op the real on-hand deduction.
   isTest: boolean;
@@ -312,8 +318,20 @@ export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
   if (!job) return null;
 
   // The #82 stock-prep flag lives outside the billing JobRow — read it directly.
-  const { data: sd } = await db.from('jobs').select('stock_decremented_at').eq('id', id).maybeSingle();
-  const stockDecrementedAt = (sd as { stock_decremented_at: string | null } | null)?.stock_decremented_at ?? null;
+  // Row 325: stock_deductions rides along in the SAME read — the per-job
+  // snapshot of exactly what prepareJobMaterials deducted (see that function),
+  // so the cancel route can reverse the real deduction instead of recomputing
+  // the materials projection live. Null for a job that was never prepped, OR
+  // for a job prepped BEFORE this column existed (see the cancel route's
+  // fallback for that legacy case).
+  const { data: sd } = await db
+    .from('jobs')
+    .select('stock_decremented_at, stock_deductions')
+    .eq('id', id)
+    .maybeSingle();
+  const sdRow = sd as { stock_decremented_at: string | null; stock_deductions: StockDeduction[] | null } | null;
+  const stockDecrementedAt = sdRow?.stock_decremented_at ?? null;
+  const stockDeductions = sdRow?.stock_deductions ?? null;
 
   // Materials from the job's linked design (by quote_id), mirroring the 2d view.
   let scene: Scene = { yardsticks: [], items: [] };
@@ -437,6 +455,7 @@ export async function getJobWorkOrder(id: string): Promise<WorkOrder | null> {
       customerName,
       customerAddress,
       stockDecrementedAt,
+      stockDeductions,
       isTest,
     },
     materials,
@@ -490,10 +509,27 @@ export async function prepareJobMaterials(id: string): Promise<PrepareResult | n
   const wo = await getJobWorkOrder(id);
   if (!wo) return null; // missing job or a transient read failure — no claim, retryable
 
+  // Won the claim → deduct on-hand for the job's tracked materials.
+  // Test Quote safety (ledger #93): a test job advances through prep + the Kanban
+  // exactly like a real one (the claim below marks it prepped + advances the
+  // stage), but it must NEVER touch real on-hand. Skip the deduction entirely
+  // — an empty result, so the UI shows "prepped" with no phantom stock change.
+  //
+  // Row 325: computed BEFORE the claim (pure — reads only wo.materials, no DB
+  // write) so it can be persisted in the SAME atomic update as the claim
+  // itself, below. That snapshot is what cancel reverses from, instead of
+  // recomputing the materials projection live at cancel time (which silently
+  // drifts if the materials rules change in between — the bug this fixes).
+  const deductions = !wo.job.isTest ? computeStockDeductions(wo.materials.materials) : [];
+
   // Atomic claim — only the caller that flips NULL → now() proceeds to deduct.
   const { data: claimed } = await db
     .from('jobs')
-    .update({ stock_decremented_at: new Date().toISOString(), fulfillment_stage: 'ready_for_install' })
+    .update({
+      stock_decremented_at: new Date().toISOString(),
+      fulfillment_stage: 'ready_for_install',
+      stock_deductions: deductions,
+    })
     .eq('id', id)
     .is('stock_decremented_at', null)
     .select('id')
@@ -506,12 +542,6 @@ export async function prepareJobMaterials(id: string): Promise<PrepareResult | n
     return { ok: true, alreadyDone: true };
   }
 
-  // Won the claim → deduct on-hand for the job's tracked materials.
-  // Test Quote safety (ledger #93): a test job advances through prep + the Kanban
-  // exactly like a real one (the claim above already marked it prepped + advanced
-  // the stage), but it must NEVER touch real on-hand. Skip the deduction entirely
-  // — an empty result, so the UI shows "prepped" with no phantom stock change.
-  const deductions = !wo.job.isTest ? computeStockDeductions(wo.materials.materials) : [];
   for (const d of deductions) {
     try {
       // Atomic NEGATIVE delta (mirrors receiveOrder's positive delta) so a job

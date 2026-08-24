@@ -32,14 +32,25 @@ import { prepareJobMaterials } from './jobs';
 // A db fake whose chains all terminate in .maybeSingle(): the atomic claim
 // (jobs UPDATE → select('id')), the stock_decremented_at read, the design read,
 // and the quote read (which carries is_test).
-function makeDb({ claimWins = true, onClaim }: { claimWins?: boolean; onClaim?: () => void } = {}) {
+function makeDb({
+  claimWins = true,
+  onClaim,
+  onClaimPayload,
+}: {
+  claimWins?: boolean;
+  onClaim?: () => void;
+  onClaimPayload?: (payload: Record<string, unknown>) => void;
+} = {}) {
   return {
     from(table: string) {
       const state = { table, op: 'select' as 'select' | 'update', cols: '' };
       const b = {
-        update() {
+        update(payload: Record<string, unknown>) {
           state.op = 'update';
-          if (table === 'jobs') onClaim?.();
+          if (table === 'jobs') {
+            onClaim?.();
+            onClaimPayload?.(payload);
+          }
           return b;
         },
         select(cols?: string) {
@@ -126,5 +137,36 @@ describe('prepareJobMaterials — Test Quote stock safety (#93)', () => {
     expect(res).toBeNull();
     expect(claimAttempted).toBe(false);
     expect(adjustOnHandAtomic).not.toHaveBeenCalled();
+  });
+});
+
+describe('prepareJobMaterials — Row 325 stock_deductions snapshot', () => {
+  it('persists the exact deductions in the SAME atomic claim update, so cancel can reverse them without recomputing', async () => {
+    let claimPayload: Record<string, unknown> | null = null;
+    currentDb = makeDb({ onClaimPayload: (p) => { claimPayload = p; } });
+    quoteRow = { ...quoteRow, is_test: false };
+    const res = await prepareJobMaterials('j1');
+    expect(res).toEqual({
+      ok: true,
+      alreadyDone: false,
+      deductions: [{ sku: 'SKU-A', before: 10, deducted: 2, after: 8 }],
+    });
+    // The claim write (stock_decremented_at + fulfillment_stage) carries the
+    // snapshot in the SAME call — no separate write, no window where the
+    // claim lands but the snapshot doesn't.
+    expect(claimPayload).not.toBeNull();
+    expect(claimPayload!.stock_deductions).toEqual([
+      { sku: 'SKU-A', before: 10, deducted: 2, after: 8 },
+    ]);
+    expect(claimPayload!.stock_decremented_at).toEqual(expect.any(String));
+  });
+
+  it('persists an EMPTY snapshot for a test job (never touches real on-hand, but the shape stays consistent)', async () => {
+    let claimPayload: Record<string, unknown> | null = null;
+    currentDb = makeDb({ onClaimPayload: (p) => { claimPayload = p; } });
+    quoteRow = { ...quoteRow, is_test: true };
+    const res = await prepareJobMaterials('j1');
+    expect(res).toEqual({ ok: true, alreadyDone: false, deductions: [] });
+    expect(claimPayload!.stock_deductions).toEqual([]);
   });
 });
