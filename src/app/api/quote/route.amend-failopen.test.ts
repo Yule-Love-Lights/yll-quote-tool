@@ -174,3 +174,113 @@ describe('POST /api/quote — operator amend re-price carve-out (audit fix a)', 
     expect(update).not.toHaveBeenCalled();
   });
 });
+
+// Premerge finding 1 (S46 fix round): the suite above proves amendReprice
+// unlocks the GENERAL W1-003 reprice lock on a booked order, but every case
+// sends validInputs() — which never sets lineItemPriceOverrides/labelOverrides/
+// permanentBistro — against a bookedRow() with no stored overrides either. Both
+// sides are always equal, so the row 331+341 price/label/bistro-footage freeze
+// (route.ts:~718-751) was never actually exercised by amendReprice:true; it
+// would 409 even under amendReprice before the fix. These tests set DIFFERING
+// values on both sides so the freeze's own equality checks are the thing under
+// test.
+describe('POST /api/quote — operator amend re-price carve-out ALSO covers price/label/bistro-footage (row 331+341 fix)', () => {
+  it('an amendReprice CHANGED lineItemPriceOverrides on a booked order is allowed (200, updateQuote runs)', async () => {
+    rawRef.current = {
+      ...bookedRow(),
+      inputs: { lineItemPriceOverrides: { 'mini-1': { amount: 100 } } },
+    } as typeof rawRef.current;
+    const res = await POST(
+      makeReq({
+        inputs: { ...validInputs(), lineItemPriceOverrides: { 'mini-1': { amount: 250 } } },
+        quoteId: REAL_UUID,
+        amendReprice: true,
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  it('an amendReprice CHANGED labelOverrides on a booked order is allowed (200, updateQuote runs)', async () => {
+    rawRef.current = {
+      ...bookedRow(),
+      inputs: { labelOverrides: { 'mini-1': 'Front Left' } },
+    } as typeof rawRef.current;
+    const res = await POST(
+      makeReq({
+        inputs: { ...validInputs(), labelOverrides: { 'mini-1': 'Renamed' } },
+        quoteId: REAL_UUID,
+        amendReprice: true,
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  it('an amendReprice CHANGED permanentBistro run footage on a booked permanent_bistro order is allowed (200)', async () => {
+    rawRef.current = {
+      ...bookedRow(),
+      service_type: 'permanent_bistro',
+      inputs: { permanentBistro: { bistro: [{ id: 'run-1', footage: 40 }] } },
+    } as typeof rawRef.current;
+    const res = await POST(
+      makeReq({
+        serviceType: 'permanent_bistro',
+        inputs: { ...validInputs(), permanentBistro: { bistro: [{ id: 'run-1', footage: 65 }] } },
+        quoteId: REAL_UUID,
+        amendReprice: true,
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  // Negative control (same booked row + same differing overrides, WITHOUT
+  // amendReprice) — proves the carve-out is scoped to the flag, not a blanket
+  // widening of the freeze for every booked order. A booked order without
+  // amendReprice never even reaches the price/label/bistro block: it 409s
+  // earlier, on the general W1-003 REPRICE_LOCKED_STATUSES gate ('quote-locked').
+  it('the SAME changed lineItemPriceOverrides on a booked order WITHOUT amendReprice still 409s (carve-out is flag-scoped)', async () => {
+    rawRef.current = {
+      ...bookedRow(),
+      inputs: { lineItemPriceOverrides: { 'mini-1': { amount: 100 } } },
+    } as typeof rawRef.current;
+    const res = await POST(
+      makeReq({
+        inputs: { ...validInputs(), lineItemPriceOverrides: { 'mini-1': { amount: 250 } } },
+        quoteId: REAL_UUID,
+      }),
+    );
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; code?: string };
+    expect(body.code).toBe('quote-locked');
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  // Finding 2's boundary: an approved-but-NOT-booked quote has no amend record
+  // possible (amend/route.ts requires deposit_paid_at) — amendReprice must NOT
+  // carve out the freeze there even if a caller sent the flag anyway.
+  it('amendReprice:true on an APPROVED-but-not-booked quote does NOT carve out the price freeze (409)', async () => {
+    rawRef.current = {
+      quote_sent_at: '2026-01-01T00:00:00Z',
+      customer_approved_at: '2026-01-02T00:00:00Z',
+      deposit_paid_at: null,
+      viewed_at: '2026-01-01T00:00:00Z',
+      status: 'approved',
+      service_type: null,
+      result: null,
+      inputs: { lineItemPriceOverrides: { 'mini-1': { amount: 100 } } },
+    } as typeof rawRef.current;
+    const res = await POST(
+      makeReq({
+        inputs: { ...validInputs(), lineItemPriceOverrides: { 'mini-1': { amount: 250 } } },
+        quoteId: REAL_UUID,
+        amendReprice: true,
+      }),
+    );
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; code?: string };
+    expect(body.code).toBe('price-override-locked');
+    expect(update).not.toHaveBeenCalled();
+  });
+});

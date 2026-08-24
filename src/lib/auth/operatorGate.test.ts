@@ -371,3 +371,20 @@ describe('the crew API is NOT public — it needs a session, just a crew one', (
     expect(isPublicPath('/api/ops/midnight-close', 'GET')).toBe(true);
   });
 });
+
+describe('the office web clock is operator-only, not public and not crew', () => {
+  it('keeps /api/office/clock off the public allowlist for every method', () => {
+    // It writes payroll; a signed-out request must 401 at the perimeter (and the
+    // route fails closed too). This locks in the S57 pitfall: an operator route
+    // silently omitted from classification serves the login shell / 401s.
+    for (const method of ['GET', 'POST', 'OPTIONS']) {
+      expect(isPublicPath('/api/office/clock', method), method).toBe(false);
+    }
+  });
+
+  it('is NOT the crew surface — office time is the separate source:office lane', () => {
+    // If it were crew-classified, the perimeter would 403 the operator sessions
+    // (Naldo/Kelly/Ann/Khaye) that are the whole point of this route.
+    expect(isCrewPath('/api/office/clock')).toBe(false);
+  });
+})

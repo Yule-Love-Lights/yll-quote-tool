@@ -1,5 +1,6 @@
 import Konva from "konva";
 import { colorOf } from "./colors";
+import { LIGHT_SCALE_DEFAULT, normalizeLightScale } from "./lightScale";
 
 // Defaults tuned to match real perm-light installs and Jason's preferred look.
 export const PERM_DEFAULTS = {
@@ -20,12 +21,20 @@ export function createPermanentLight(
   opacity: number,
   showCoverage: boolean,
   showBeam: boolean,
+  lightScale: number = LIGHT_SCALE_DEFAULT,
 ): Konva.Group {
   const color = colorOf(colorId);
   const beamLength = Math.max(8, beamLengthFt * pxPerFoot);
   const beamWidth = Math.max(4, beamWidthFt * pxPerFoot);
   const distanceToSurface = Math.max(0, distanceToSurfaceFt * pxPerFoot);
-  const fixtureRadius = Math.max(1.5, 0.04 * pxPerFoot);
+  // Only the FIXTURE takes the scene's light-size multiplier. The beam's
+  // length and width come from `beamLengthFt`/`beamWidthFt`, which the
+  // operator already sets per strand in the sidebar, so they have a control
+  // for the cone and never had one for the puck — and on a wide house photo
+  // the puck sits at its 1.5 px floor, which is invisible and is the whole
+  // reason the multiplier exists. Matters most with `showBeam` off (#88's
+  // puck-dots-only look), where the puck IS the entire light.
+  const fixtureRadius = Math.max(1.5, 0.04 * pxPerFoot) * normalizeLightScale(lightScale);
 
   const group = new Konva.Group({ listening: false, opacity });
 
