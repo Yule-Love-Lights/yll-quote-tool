@@ -3334,22 +3334,30 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
   // later in the same tick, so the end state looked correct while the row
   // churned forever.
   describe('ensureFollowUp — does not re-arm a nag whose anchored item is already resolved (#252)', () => {
-    /** inbox_items stub for ensureFollowUp's `.select('status').eq('id').maybeSingle()`. */
-    function makeItemStatusFake(status: string | null) {
+    /** inbox_items stub for ensureFollowUp's
+     *  `.select('status, handled_at').eq('id').maybeSingle()`. Row 385 widened
+     *  that select: `handled_at` is the FALLBACK quiet-window anchor used when no
+     *  follow_ups row exists yet to read `updated_at` from. */
+    function makeItemStatusFake(status: string | null, handledAt: string | null = null) {
       return {
         select: () => ({
           eq: () => ({
-            maybeSingle: () => Promise.resolve({ data: status === null ? null : { status }, error: null }),
+            maybeSingle: () =>
+              Promise.resolve({ data: status === null ? null : { status, handled_at: handledAt }, error: null }),
           }),
         }),
       };
     }
 
-    function wire(fake: ReturnType<typeof makeFollowUpsFake>, status: string | null) {
+    function wire(
+      fake: ReturnType<typeof makeFollowUpsFake>,
+      status: string | null,
+      handledAt: string | null = null,
+    ) {
       sbRef.current = {
         from: (table: string) => {
           if (table === 'follow_ups') return fake.table();
-          if (table === 'inbox_items') return makeItemStatusFake(status);
+          if (table === 'inbox_items') return makeItemStatusFake(status, handledAt);
           return genericTable();
         },
       };
@@ -3390,16 +3398,161 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
     // tick just undid their click. A genuinely new customer message reopens
     // the item to 'unresponded' (outside this skip set) and resumes normal
     // re-arming — see ensureFollowUp's own doc comment.
-    it('leaves a done row done when the item is only handled (does not re-arm)', async () => {
+    // Row 385 STRENGTHENED THIS FIXTURE. It previously supplied neither
+    // `follow_ups.updated_at` nor `inbox_items.handled_at`, which still passed
+    // after row 385 — but only by landing on the new "no anchor at all" branch,
+    // NOT by proving a recently-handled item stays quiet. That is a test passing
+    // for the wrong reason, so both anchors are now explicit and RECENT: this
+    // pins the actual row 287(b) guarantee, that clicking Done is not undone on
+    // the next reconcile tick five minutes later.
+    it('leaves a done row done when the item is only handled and was handled RECENTLY (does not re-arm)', async () => {
+      const justNow = new Date().toISOString();
       const fake = makeFollowUpsFake([
-        { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'done' },
+        { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'done', updated_at: justNow },
       ]);
-      wire(fake, 'handled');
+      wire(fake, 'handled', justNow);
 
       const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
 
       expect(created).toBe('skipped');
       expect(fake.rows[0].status).toBe('done');
+    });
+
+    // ── Row 385: the handled-but-quiet re-chase ──────────────────────────────
+    // The gap S48's #928 delta-verify flagged: staff reply once (item becomes
+    // 'handled'), the customer never writes back, and the quote never reaches a
+    // terminal status. A new inbound would reopen the item to 'unresponded' and a
+    // resolved quote closes the nag elsewhere — but this case fell outside both,
+    // so nothing ever re-chased it. Jason's ruling 2026-08-24: re-chase after
+    // 7 days of silence.
+    const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
+
+    it('RE-ARMS a handled item once the quiet window has elapsed', async () => {
+      const fake = makeFollowUpsFake([
+        { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'done', updated_at: daysAgo(8) },
+      ]);
+      wire(fake, 'handled', daysAgo(9));
+
+      const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
+
+      expect(created).toBe('created');
+      expect(fake.rows[0].status).toBe('pending');
+      expect(fake.rows).toHaveLength(1); // upsert, never a duplicate
+    });
+
+    // Staff-lens MED: a re-chase is due NOW. quoteSentNoReplyFollowUp derives
+    // due_at from sentAt + afterDays, so re-arming a nag for a quote sent 90 days
+    // ago would stamp a due date 87 days in the PAST — the digest would report
+    // staff as 87 days overdue when they had been prompt, and listDueFollowUps
+    // sorts oldest-first under a 100-row cap, so ancient re-chases would crowd
+    // fresh nags out of the strip.
+    it('stamps a re-chase as due NOW, not on the original quotes long-past due date', async () => {
+      const fake = makeFollowUpsFake([
+        { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'done', updated_at: daysAgo(8) },
+      ]);
+      wire(fake, 'handled', daysAgo(9));
+      const before = Date.now();
+
+      const created = await ensureFollowUp({
+        inboxItemId: 'item-1',
+        contactId: 'c1',
+        reason: 'quote_sent_no_reply',
+        sentAt: new Date(Date.now() - 90 * 86_400_000),
+      });
+
+      expect(created).toBe('created');
+      const dueAt = Date.parse(String(fake.rows[0].due_at));
+      expect(dueAt).toBeGreaterThanOrEqual(before);
+      expect(dueAt).toBeLessThanOrEqual(Date.now());
+    });
+
+    // ...but a FIRST nag still follows the configured cadence off the send date.
+    it('leaves a first-time nag on the original sentAt + afterDays cadence', async () => {
+      const fake = makeFollowUpsFake([]);
+      wire(fake, 'unresponded', null);
+      const sentAt = new Date(Date.now() - 10 * 86_400_000);
+
+      await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt, afterDays: 3 });
+
+      const dueAt = Date.parse(String(fake.rows[0].due_at));
+      expect(dueAt).toBe(sentAt.getTime() + 3 * 86_400_000);
+    });
+
+    it('does NOT re-arm a handled item while the quiet window is still running', async () => {
+      const fake = makeFollowUpsFake([
+        { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'done', updated_at: daysAgo(1) },
+      ]);
+      wire(fake, 'handled', daysAgo(30));
+
+      const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
+
+      // The nag's own last-touched time wins over a much older handled_at — that
+      // is the whole design. Anchoring on handled_at would re-arm here, five
+      // minutes after an operator clicked Done, which is the bug row 287(b) fixed.
+      expect(created).toBe('skipped');
+      expect(fake.rows[0].status).toBe('done');
+    });
+
+    it('falls back to handled_at when no nag row exists yet to anchor on', async () => {
+      const fake = makeFollowUpsFake([]);
+      wire(fake, 'handled', daysAgo(8));
+
+      const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
+
+      expect(created).toBe('created');
+      expect(fake.rows).toHaveLength(1);
+      expect(fake.rows[0].status).toBe('pending');
+    });
+
+    it('leaves a handled item alone when there is no anchor to measure silence from', async () => {
+      const fake = makeFollowUpsFake([]);
+      wire(fake, 'handled', null);
+
+      const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
+
+      expect(created).toBe('skipped');
+      expect(fake.rows).toHaveLength(0);
+    });
+
+    // completed/dismissed are staff saying the conversation is FINISHED. No
+    // amount of elapsed time re-opens those — only 'handled' has a quiet window.
+    it('never re-chases a completed item, however long ago it was closed', async () => {
+      const fake = makeFollowUpsFake([
+        { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'done', updated_at: daysAgo(400) },
+      ]);
+      wire(fake, 'completed', daysAgo(400));
+
+      const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
+
+      expect(created).toBe('skipped');
+      expect(fake.rows[0].status).toBe('done');
+    });
+
+    it('never re-chases a dismissed item, however long ago it was closed', async () => {
+      const fake = makeFollowUpsFake([
+        { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'done', updated_at: daysAgo(400) },
+      ]);
+      wire(fake, 'dismissed', daysAgo(400));
+
+      const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
+
+      expect(created).toBe('skipped');
+      expect(fake.rows[0].status).toBe('done');
+    });
+
+    // The pending early-return must still win even past the quiet window —
+    // otherwise a live nag would be rewritten on every tick.
+    it('still returns skipped for a PENDING row even past the quiet window', async () => {
+      const fake = makeFollowUpsFake([
+        { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'pending', updated_at: daysAgo(30) },
+      ]);
+      wire(fake, 'handled', daysAgo(30));
+
+      const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
+
+      expect(created).toBe('skipped');
+      expect(fake.rows).toHaveLength(1);
+      expect(fake.rows[0].status).toBe('pending');
     });
 
     it('re-arms a done row to pending when the item is unresponded', async () => {
