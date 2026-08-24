@@ -1030,6 +1030,20 @@ export default function QuoteBuilder({
   // string) so a real freeze shows a small notice instead of a save that
   // silently succeeds with a stale customer link.
   const [identityFrozenNotice, setIdentityFrozenNotice] = useState(false);
+  // Row 344 Part B: mirrors identityFrozenNotice's shape one line up — the
+  // server (route.ts) only sends `repricedAfterApproval` when THIS save
+  // actually changed the total of an approved-not-booked quote (a footage
+  // edit, a mini-light regroup, or any other scene-driven change; the four
+  // fields with their own hard lock — deposit%/price/label/bistro-footage —
+  // never reach here). Sticky once shown, same as identityFrozenNotice: it
+  // describes what THIS save just did, not a live/re-checked warning, so it
+  // is never cleared back to null by a later save that happens not to
+  // reprice anything.
+  const [postApprovalRepriceNotice, setPostApprovalRepriceNotice] = useState<{
+    previousTotalUsd: number;
+    newTotalUsd: number;
+    deltaUsd: number;
+  } | null>(null);
   // FIX A (#237 fix round, staff-lens HIGH): mirrors ghlSyncWarning's shape
   // (send route field: eventDateSyncError) for a DIFFERENT failure surface —
   // the event-date GHL custom-field push can fail independently of the stage
@@ -4662,6 +4676,17 @@ export default function QuoteBuilder({
       // THIS save (route.ts only sends the key when updateQuote set it —
       // absent/falsy on every normal save, including a brand-new insert).
       if (data.identityFrozen === true) setIdentityFrozenNotice(true);
+      // Row 344 Part B: surface a scene-driven reprice of an approved-
+      // not-booked quote the same way — route.ts only sends this key when
+      // the save actually changed the total (see its own comment).
+      if (
+        data.repricedAfterApproval &&
+        typeof data.repricedAfterApproval.previousTotalUsd === 'number' &&
+        typeof data.repricedAfterApproval.newTotalUsd === 'number' &&
+        typeof data.repricedAfterApproval.deltaUsd === 'number'
+      ) {
+        setPostApprovalRepriceNotice(data.repricedAfterApproval);
+      }
       // The result is deliberately NOT exposed here. It is set AFTER the
       // satellite plan is durably stored (below), so a failed plan save cannot
       // leave a Send-ready quote on screen beside its own error banner.
@@ -7488,6 +7513,14 @@ export default function QuoteBuilder({
                 HighLevel link on this quote were left exactly as the customer approved them, and nothing on this
                 save changed who the quote belongs to. There is no in-app way to move an approved quote to a
                 different customer — if this needs correcting, contact support for a manual fix rather than re-saving.
+              </p>
+            )}
+
+            {postApprovalRepriceNotice && (
+              <p className="mb-3 text-xs text-amber-700">
+                {`Heads up — this quote was already approved by the customer at ${usd(postApprovalRepriceNotice.previousTotalUsd)}, and this save `}
+                {postApprovalRepriceNotice.deltaUsd > 0 ? 'raised' : 'lowered'}
+                {` the price to ${usd(postApprovalRepriceNotice.newTotalUsd)} (${postApprovalRepriceNotice.deltaUsd > 0 ? '+' : ''}${usd(postApprovalRepriceNotice.deltaUsd)}). The portal still shows what they approved — the customer's approval no longer reflects this quote's current price until you decline, revive, and re-send it.`}
               </p>
             )}
 

@@ -72,6 +72,13 @@ const {
       is_test?: boolean;
       view_only?: boolean;
       highlevel_contact_id?: string | null;
+      // Row 344 Part B: the stored total + frozen approval snapshot, read
+      // back to detect + record a post-approval reprice.
+      total?: number | null;
+      approval_snapshot?: {
+        customerSelection?: { currentTotalUsd?: number };
+        postApprovalReprices?: unknown[];
+      } | null;
     } | null,
   },
   operatorRef: { current: null as { id: string; email: string | null; role: string } | null },
@@ -1606,6 +1613,112 @@ describe('POST /api/quote — booked-quote re-price gate (W1-003)', () => {
     const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
     expect(res.status).toBe(200);
     expect(update).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Row 344 Part B: a scene-driven reprice (e.g. footage/corners, or a
+// mini-light regroup routed through Calculate) of an approved-not-yet-booked
+// quote is still ALLOWED (proven above — this row is not a new refusal), but
+// must now surface a staff-facing signal + a durable audit entry. Mirrors the
+// #177/row-331 suites' shape: base fixture approved-not-booked, one field
+// changes the total, assert on the RESPONSE + the audit write instead of a
+// 409.
+describe('POST /api/quote — staff signal + audit trail for a post-approval reprice (row 344 Part B)', () => {
+  const APPROVED_UNBOOKED_ROW = {
+    quote_sent_at: '2026-01-01T00:00:00Z',
+    customer_approved_at: '2026-01-02T00:00:00Z',
+    deposit_paid_at: null,
+    viewed_at: '2026-01-01T00:00:00Z',
+    status: 'approved' as const,
+    is_test: false,
+    total: 1000,
+    approval_snapshot: { customerSelection: { currentTotalUsd: 1000 } },
+  };
+
+  it('surfaces repricedAfterApproval + writes an audit entry when a footage edit actually moves the total', async () => {
+    rawRef.current = { ...APPROVED_UNBOOKED_ROW };
+    const res = await POST(
+      makeReq({ inputs: { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' }, quoteId: REAL_UUID }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      result: { total: number };
+      repricedAfterApproval?: { previousTotalUsd: number; newTotalUsd: number; deltaUsd: number };
+    };
+    // The engine isn't mocked — cross-check against whatever it actually
+    // priced rather than hardcoding a dollar figure.
+    expect(body.result.total).toBeGreaterThan(0);
+    expect(body.repricedAfterApproval).toBeDefined();
+    expect(body.repricedAfterApproval).toEqual({
+      previousTotalUsd: 1000, // read from approval_snapshot.customerSelection.currentTotalUsd, NOT existing.total
+      newTotalUsd: body.result.total,
+      deltaUsd: body.result.total - 1000,
+    });
+    // Durable audit entry appended to approval_snapshot.postApprovalReprices —
+    // the SAME sb.update() the GHL event-date stamp uses (mocked once, module-
+    // wide), so assert on payload shape rather than call count.
+    expect(sbUpdatePayloads).toContainEqual({
+      approval_snapshot: {
+        customerSelection: { currentTotalUsd: 1000 },
+        postApprovalReprices: [
+          {
+            at: expect.any(String),
+            by: null, // no operator set in this test (operatorRef.current stays null)
+            previous_total: 1000,
+            new_total: body.result.total,
+            delta: body.result.total - 1000,
+          },
+        ],
+      },
+    });
+  });
+
+  it('does NOT signal or write an audit entry when the resubmit does not actually change the total', async () => {
+    rawRef.current = { ...APPROVED_UNBOOKED_ROW };
+    // Same footage as `total: 1000` implies nothing changed — validInputs()
+    // (all-zero) already proved elsewhere in this file to reprice to the
+    // SAME total the "still re-prices an approved-but-unbooked quote in
+    // place" fixture used, so pin previousTotalUsd to match it exactly: 0.
+    rawRef.current.total = 0;
+    rawRef.current.approval_snapshot = { customerSelection: { currentTotalUsd: 0 } };
+    const res = await POST(makeReq({ inputs: validInputs(), quoteId: REAL_UUID }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { repricedAfterApproval?: unknown };
+    expect(body.repricedAfterApproval).toBeUndefined();
+    expect(sbUpdatePayloads).toHaveLength(0);
+  });
+
+  it('is_test quotes are exempt — no signal, no audit write', async () => {
+    rawRef.current = { ...APPROVED_UNBOOKED_ROW, is_test: true };
+    const res = await POST(
+      makeReq({ inputs: { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' }, quoteId: REAL_UUID }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { repricedAfterApproval?: unknown };
+    expect(body.repricedAfterApproval).toBeUndefined();
+    expect(sbUpdatePayloads).toHaveLength(0);
+  });
+
+  it('a BOOKED quote (deposit already paid) never reaches this check — that reprice is either locked or the sanctioned amendReprice path', async () => {
+    rawRef.current = { ...APPROVED_UNBOOKED_ROW, status: 'booked' as const, deposit_paid_at: '2026-01-03T00:00:00Z' };
+    const res = await POST(
+      makeReq({ inputs: { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' }, quoteId: REAL_UUID }),
+    );
+    // Booked + not amendReprice → REPRICE_LOCKED_STATUSES 409s before this
+    // route ever reaches the row-344 check, so the audit write never fires.
+    expect(res.status).toBe(409);
+    expect(sbUpdatePayloads).toHaveLength(0);
+  });
+
+  it('an unapproved (draft/sent) quote is never signaled — this is a post-approval-only concern', async () => {
+    rawRef.current = { ...APPROVED_UNBOOKED_ROW, customer_approved_at: null, status: 'sent' as const };
+    const res = await POST(
+      makeReq({ inputs: { ...validInputs(), santasFootage: 100, santasDifficulty: 'easy' }, quoteId: REAL_UUID }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { repricedAfterApproval?: unknown };
+    expect(body.repricedAfterApproval).toBeUndefined();
+    expect(sbUpdatePayloads).toHaveLength(0);
   });
 });
 

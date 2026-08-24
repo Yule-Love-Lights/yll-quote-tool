@@ -24,6 +24,7 @@ import {
 } from '@/lib/quoteBuildTiming';
 import type { QuoteBuildStartReason } from '@/lib/quoteBuildTimerClient';
 import { getSupabaseServiceClient } from '@/lib/supabase';
+import { roundMoney } from '@/lib/money';
 
 const VALID_DIFFICULTIES = ['easy', 'medium', 'hard'];
 const VALID_TAKEDOWNS = ['included', 'premium'];
@@ -1015,6 +1016,81 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // Row 344 Part B: a scene-driven reprice of an APPROVED, NOT-YET-BOOKED
+    // quote. deposit%/price-override/label-override/bistro-footage are
+    // already hard-locked above (the #177 / row-331 freezes); this covers
+    // every OTHER field that can move `result.total` here — PermanentSection
+    // per-side footage/corners, holiday roofline footage, and any
+    // design-projected change. That LAST category includes a mini-light
+    // GROUPING edit (editor.ts's groupSelectedMini): grouping only touches
+    // the SCENE via its own scheduleSave() and has no billing effect on its
+    // own — the billed count only changes once the next Calculate re-projects
+    // the scene through applyProjectionToInputs (above) and reaches this
+    // exact route — so this one check covers both of row 344's named
+    // triggers, not just the footage fields.
+    //
+    // Deliberately NOT a refusal: staff legitimately correct a footage/
+    // measurement error on an approved-not-booked quote, and the sanctioned
+    // amend flow requires deposit_paid_at, so it can't reach this pre-booking
+    // window at all — there is no other path. Until now this happened with
+    // NO staff-facing signal and NO audit trail (only a console.warn existed
+    // for an unrelated NCE-tag gate a few lines above, not this case). is_test
+    // exempt, matching every other freeze/signal in this file.
+    let repricedAfterApproval:
+      | { previousTotalUsd: number; newTotalUsd: number; deltaUsd: number }
+      | undefined;
+    if (saved && isUpdate && existing?.customer_approved_at && !existing.deposit_paid_at && !existing.is_test) {
+      // The customer's actual agreed total: the frozen snapshot figure (what
+      // they SAW and signed) when present, else the stored row total for an
+      // old/staff-approved snapshot that predates currentTotalUsd.
+      const rawFrozenTotal = existing.approval_snapshot?.customerSelection?.currentTotalUsd;
+      const previousTotalUsd = typeof rawFrozenTotal === 'number' ? rawFrozenTotal : (existing.total ?? 0);
+      const newTotalUsd = roundMoney(result.total);
+      const deltaUsd = roundMoney(newTotalUsd - previousTotalUsd);
+      // Sub-cent float noise is not a real reprice (mirrors amend.ts's own
+      // ONE_CENT threshold for the same reason).
+      if (Math.abs(deltaUsd) >= 0.01) {
+        repricedAfterApproval = { previousTotalUsd, newTotalUsd, deltaUsd };
+        // Durable audit record — best-effort: the quote itself already saved
+        // above (updateQuote), so a failure here only drops this ONE trail
+        // entry, never the reprice itself. A plain re-read-then-write (not a
+        // CAS) is the same risk tradeoff this file already accepts for the
+        // GHL event-date stamp just below: approval_snapshot changes on this
+        // narrow pre-booking window are rare (customer_approved_at can only
+        // be SET once, guarded atomically elsewhere, and the amend/consent
+        // routes only ever touch a BOOKED quote's snapshot) and this is an
+        // internal staff tool, not a high-concurrency public endpoint.
+        const sb = getSupabaseServiceClient();
+        if (sb) {
+          const priorEntries = Array.isArray(existing.approval_snapshot?.postApprovalReprices)
+            ? existing.approval_snapshot!.postApprovalReprices
+            : [];
+          const entry = {
+            at: new Date().toISOString(),
+            by: operator?.email ?? null,
+            previous_total: previousTotalUsd,
+            new_total: newTotalUsd,
+            delta: deltaUsd,
+          };
+          const { error: repriceAuditError } = await sb
+            .from('quotes')
+            .update({
+              approval_snapshot: {
+                ...(existing.approval_snapshot ?? {}),
+                postApprovalReprices: [...priorEntries, entry],
+              },
+            })
+            .eq('id', quoteId as string);
+          if (repriceAuditError) {
+            console.error(
+              '[quote/route] row 344: failed to record post-approval reprice audit entry:',
+              repriceAuditError.message,
+            );
+          }
+        }
+      }
+    }
+
     // FIX B (#237 fix round, staff/admin-lens HIGH/MED — the two lenses
     // converged on the same gap from different angles, see the fix round's
     // brief): the send route only ever pushed an event quote's date to GHL
@@ -1169,6 +1245,12 @@ export async function POST(req: NextRequest) {
       // insert — saveQuote never sets it) so the builder can show a small
       // notice instead of the save silently succeeding with a stale link.
       ...(saved?.identityFrozen ? { identityFrozen: true } : {}),
+      // Row 344 Part B — set only when THIS save actually reprices an
+      // approved-not-booked quote (see the computation above). The builder
+      // shows a staff-facing notice off this; propagated even if the
+      // best-effort audit-trail write above failed, so the signal never
+      // silently depends on that write succeeding.
+      ...(repricedAfterApproval ? { repricedAfterApproval } : {}),
     });
   } catch (err) {
     console.error('Quote calculation error:', err);
