@@ -30,6 +30,8 @@ import {
   clearNceOrNeighborOnServiceTypeSwitch,
   legacyRebookConfirmMessage,
   nceConfirmMessage,
+  contactRelinkConfirmMessage,
+  clearContactConfirmMessage,
   initialNceDepositProvenance,
 } from '@/lib/quoteForm';
 import type { CrmContact } from '@/lib/integrations/types';
@@ -39,7 +41,7 @@ import {
   SERVICE_TYPE_LABELS,
   canCarryNceOrYllNeighborTag,
 } from '@/lib/serviceType';
-import { deriveStatus, APPROVED_DISPLAYS_AS, type QuoteStatus } from '@/lib/quoteStatus';
+import { deriveStatus, APPROVED_DISPLAYS_AS, wasEverApproved, type QuoteStatus } from '@/lib/quoteStatus';
 import { EventSection } from './EventSection';
 import { OperatorShell } from '@/components/OperatorShell';
 import HighLevelContactAutocomplete from '@/components/admin/HighLevelContactAutocomplete';
@@ -59,6 +61,19 @@ import { hasSatellitePayload } from '@/lib/design/analysisSatellitePayload';
 import { deriveSideMeasure } from '@/lib/permanent/satelliteMeasure';
 import { roundFootageUpTo5 } from '@/lib/permanent/types';
 import { deriveTrackAccessories, hasAccessorySignal } from '@/lib/permanent/trackAccessories';
+import {
+  reconcileBistroFootage,
+  deriveBistroFootageMap,
+  roundBistroFootageOnBlur,
+} from '@/lib/permanentBistro/reconcileFootage';
+import {
+  reconcileHolidayFootageField,
+  deriveHolidayFootageBaseline,
+  mergeHolidayFootageBaseline,
+  type HolidayFootageBaseline,
+  type HolidayFootageFieldKey,
+  type HolidayFieldReconcileResult,
+} from '@/lib/holidayFootage/reconcileFootage';
 import { isStrand, isLinkedTwin, type Surface } from '@/lib/design/sceneTypes';
 import { useImageZoomPan } from '@/lib/useImageZoomPan';
 import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/inventory/resolveInstalls';
@@ -136,6 +151,7 @@ function EditablePrice({
   baseAmount,
   overridden,
   disabled,
+  lockedReason,
   onCommit,
   onReset,
 }: {
@@ -143,6 +159,11 @@ function EditablePrice({
   baseAmount: number;
   overridden: boolean;
   disabled: boolean;
+  // Row 331: when set, `disabled` is true BECAUSE the quote is past approval
+  // (not merely `loading`) — shown as the click target's title instead of the
+  // normal "click to edit" hint, so the disabled state explains itself rather
+  // than reading as a stuck/broken control.
+  lockedReason?: string;
   onCommit: (n: number) => void;
   onReset: () => void;
 }) {
@@ -196,9 +217,16 @@ function EditablePrice({
           }}
           disabled={disabled}
           title={
-            showBase
-              ? `Custom price for this quote — reset to ${usd(baseAmount)}`
-              : 'Custom price for this quote — reset'
+            // Premerge finding 5 fix: when disabled BECAUSE of the freeze
+            // (lockedReason set), explain that instead of the normal reset
+            // hint — mirrors the main price button's own lockedReason ??
+            // fallback a few lines below, which this reset button had been
+            // missing.
+            disabled && lockedReason
+              ? lockedReason
+              : showBase
+                ? `Custom price for this quote — reset to ${usd(baseAmount)}`
+                : 'Custom price for this quote — reset'
           }
           className="text-[10px] font-semibold uppercase tracking-wide text-amber-600 hover:text-amber-800 disabled:opacity-40 cursor-pointer"
         >
@@ -213,7 +241,7 @@ function EditablePrice({
           start();
         }}
         disabled={disabled}
-        title="Click to set a custom price for this quote"
+        title={lockedReason ?? 'Click to set a custom price for this quote'}
         className={`font-medium tabular-nums rounded px-1 -mx-1 hover:bg-green-50 disabled:cursor-not-allowed cursor-text ${
           overridden ? 'text-amber-700' : 'text-gray-900'
         }`}
@@ -247,6 +275,7 @@ function EditableLabel({
   baseLabel,
   overridden,
   disabled,
+  lockedReason,
   onCommit,
   onReset,
 }: {
@@ -254,6 +283,8 @@ function EditableLabel({
   baseLabel: string;
   overridden: boolean;
   disabled: boolean;
+  // Row 331: mirrors EditablePrice's lockedReason exactly.
+  lockedReason?: string;
   onCommit: (s: string) => void;
   onReset: () => void;
 }) {
@@ -308,9 +339,14 @@ function EditableLabel({
           }}
           disabled={disabled}
           title={
-            showBase
-              ? `Custom name for this quote — reset to "${baseLabel}"`
-              : 'Custom name for this quote — reset'
+            // Premerge finding 5 fix (sibling parity with EditablePrice's
+            // identical fix): explain the freeze when that's why it's
+            // disabled, instead of the normal reset hint.
+            disabled && lockedReason
+              ? lockedReason
+              : showBase
+                ? `Custom name for this quote — reset to "${baseLabel}"`
+                : 'Custom name for this quote — reset'
           }
           className="text-[10px] font-semibold uppercase tracking-wide text-amber-600 hover:text-amber-800 disabled:opacity-40 cursor-pointer"
         >
@@ -325,7 +361,7 @@ function EditableLabel({
           start();
         }}
         disabled={disabled}
-        title="Click to rename this item for this quote"
+        title={lockedReason ?? 'Click to rename this item for this quote'}
         className={`rounded px-1 -mx-1 hover:bg-green-50 disabled:cursor-not-allowed cursor-text ${
           overridden ? 'text-amber-700 font-medium' : ''
         }`}
@@ -514,6 +550,15 @@ export type QuoteBuilderInitial = {
   status?: QuoteStatus | null;
   viewedAt?: string | null;
   depositPaidAt?: string | null;
+  // Row 338 fix-round HIGH (staff lens): the sticky identity-freeze signal
+  // (wasEverApproved, quoteStatus.ts) reads this — the same jsonb the
+  // server's #251/#839 CAS checks. approvedAt/depositPaidAt above are the
+  // NON-sticky columns a decline->revive cycle nulls; this is what lets the
+  // Clear/re-pick confirm dialogs (and their gates) agree with the server on
+  // a revived previously-approved quote. Raw passthrough (not a
+  // server-derived boolean) so the client reuses the one pure function
+  // instead of a second copy of the OR logic.
+  approvalSnapshot?: unknown;
   quoteNumber?: number | null;
   // Test Quote (ledger #93): a reopened test quote stays in TEST MODE — derived
   // from the saved row, never re-read from the URL on edit (is_test is immutable).
@@ -690,6 +735,24 @@ export default function QuoteBuilder({
         status: initialQuote.status ?? null,
       })
     : null;
+  // Row 338 fix-round HIGH/MED (staff lens): the STICKY identity-freeze
+  // signal, mirroring the exact three-way OR route.ts's #251/#839 CAS gates
+  // check server-side (deposit_paid_at || customer_approved_at ||
+  // wasEverApproved(row)) — is_test bypasses it, same as the server. The
+  // Clear confirm gate and the re-pick confirm's wording used to key off
+  // initialQuote?.approvedAt alone, which a decline->revive cycle nulls; a
+  // revived previously-approved quote showed the weak "different contact"
+  // warning (or no Clear-confirm at all) instead of the frozen one, even
+  // though the server would refuse the write either way. Computed once from
+  // the loaded row (mount-hydrate convention, matches isTest/viewOnly
+  // above) — it describes history the session can't clear.
+  const identityEverFrozen =
+    !isTest &&
+    !!(
+      initialQuote?.depositPaidAt ||
+      initialQuote?.approvedAt ||
+      wasEverApproved({ approval_snapshot: initialQuote?.approvalSnapshot ?? null })
+    );
   // #215: mirrors LegacyRebookToggle's/NceToggle's own `status !== 'draft'`
   // check (the admin siblings — both ultimately read deriveStatus) so EITHER
   // chip's confirm can show the SAME "already left draft" caveats once a
@@ -701,6 +764,56 @@ export default function QuoteBuilder({
   // reading it too — it was never actually Neighbor-specific, just the
   // generic "has this quote left draft" signal.
   const quoteLeftDraft = savedStatus != null && savedStatus !== 'draft';
+  // Premerge finding 3 (S46 fix round): a stale tab's rejected 409 must not
+  // vaporize the rendered breakdown (every price/label/footage control lives
+  // inside `{result && (...)}`). When runQuote gets one of the three lock
+  // codes back it restores the last-known-good result and flips this true so
+  // the tab self-corrects to server truth (frozen controls, honest copy)
+  // instead of staying editable and re-erroring forever. This also covers
+  // finding 4's predicate-mismatch case (a staff-decline-after-approval quote
+  // whose savedStatus/approvedAt read stale in THIS tab).
+  const [staleApprovalFrozen, setStaleApprovalFrozen] = useState(false);
+  // Row 331+341: post-approval freeze for the three click-to-edit override
+  // surfaces that auto-persist with no separate Calculate/confirm step and no
+  // "already approved" warning of their own — EditablePrice (#104),
+  // EditableLabel (S44), and #244's per-run bistro footage. is_test exempt,
+  // matching the server's #251/#177 freezes — a test quote stays fully
+  // editable regardless of lifecycle stamps.
+  //
+  // Premerge finding 1+4 fix: drive this off `initialQuote.approvedAt` (the
+  // loaded row's real customer_approved_at) rather than the derived
+  // `savedStatus`, so it matches the server's exact predicate — a
+  // staff-declined-after-approval quote (staff-decline never clears
+  // customer_approved_at; deriveStatus reports 'declined', not 'approved') no
+  // longer shows editable controls that then 409 (finding 4). And carve out
+  // the booked-amend case: the client already sends `amendReprice: true`
+  // unconditionally whenever savedStatus === 'booked' (see the runQuote fetch
+  // body below), which the server now honors for these three fields too — so
+  // the sanctioned amend path (edit here + Calculate, then record the
+  // amendment) must NOT be disabled, or a booked order has no correction path
+  // at all (finding 1). An approved-but-not-yet-booked quote has no such
+  // carve-out (no amend record is possible pre-booking — amend/route.ts
+  // requires deposit_paid_at) and stays hard-locked; see POST_APPROVAL_LOCK_REASON
+  // for its actual path (decline → revive → edit → re-send).
+  const bookedAmendEligible = savedStatus === 'booked';
+  const postApprovalFrozen =
+    (!isTest && !!initialQuote?.approvedAt && !bookedAmendEligible) || staleApprovalFrozen;
+  // Premerge finding 2 fix: this copy only ever shows when postApprovalFrozen
+  // is true, which (per the carve-out above) now excludes the booked-amend
+  // case entirely — so this is always the "re-approval needed" path, never
+  // the amend flow (amend requires a booked/deposit-paid order, which this
+  // predicate no longer reaches). Traced the actual mechanism (there is no
+  // dedicated "revive" route): staff-decline (approved→declined is a legal
+  // transition — quoteStatus.ts's ALLOWED_TRANSITIONS) declines the quote,
+  // which per #124 does NOT clear customer_approved_at; "revive" is then just
+  // a RE-SEND (POST /api/quotes/[id]/send) on that declined quote — canRevive
+  // gates it, and send/route.ts's isRevive branch explicitly clears
+  // customer_approved_at + viewed_at so deriveStatus reads 'sent' again,
+  // reopening the quote for editing. That resend is the sanctioned way to
+  // change a price/label/footage that was already customer-approved but
+  // never booked.
+  const POST_APPROVAL_LOCK_REASON =
+    "Locked after approval — a price, label, or footage change here needs re-approval. Decline this quote, revive it, make the change, and re-send; the customer's prior approval no longer applies once you do.";
   const quoteNumber = initialQuote?.quoteNumber ?? null;
   // PS-G2: the booked quote's job id (null pre-booking) — drives the "Amend
   // order" banner below, which links to the job page's Record-amendment
@@ -877,6 +990,13 @@ export default function QuoteBuilder({
   // for the ?retryGhl reconcile bucket). Surfaced so the operator knows + can
   // retry, instead of the old falsely-confident "stage moved to Bid Sent".
   const [ghlSyncWarning, setGhlSyncWarning] = useState<string | null>(null);
+  // #839 fix-round MED (staff+technical lenses): the #251 identity freeze
+  // used to be log-only when it actually refused a would-be reattach on an
+  // approved/booked quote — this mirrors ghlSyncWarning's shape (a boolean
+  // is enough; the copy is fixed, unlike ghlSyncWarning's server-supplied
+  // string) so a real freeze shows a small notice instead of a save that
+  // silently succeeds with a stale customer link.
+  const [identityFrozenNotice, setIdentityFrozenNotice] = useState(false);
   // FIX A (#237 fix round, staff-lens HIGH): mirrors ghlSyncWarning's shape
   // (send route field: eventDateSyncError) for a DIFFERENT failure surface —
   // the event-date GHL custom-field push can fail independently of the stage
@@ -909,6 +1029,23 @@ export default function QuoteBuilder({
   // operator pick still overwrites via the attach flow as usual.
   const [dbLinked, setDbLinked] = useState<boolean>(
     !!initialQuote?.highlevelContactId || (!initialQuote && !!prefill?.ghlContactId),
+  );
+  // #839 fix-round HIGH (customer+technical lenses, BYPASS 2): session memory
+  // of the last contact this quote was ACTUALLY linked to, independent of
+  // dbLinked/highlevelContact — because clearHighLevelContact synchronously
+  // resets BOTH of those (setHighLevelContact(null); setDbLinked(false)), so
+  // the ordinary correction sequence "Clear, then pick contact B" made
+  // pickHighLevelContact's currentContactId resolve null and skip the #251
+  // confirm entirely, even on an approved/booked quote — a clear-then-pick
+  // bypassed the whole Fix 2 guard. Seeded on mount (same precedence
+  // dbLinked's own seed uses: the reopened quote's saved link, else a
+  // lead-prefill's), and updated ONLY on a successful pick — never on Clear —
+  // so a clear-then-pick still confirms against the contact that was linked
+  // seconds ago. Same convention as isNceRef/legacyRebookRef above: a ref
+  // mirror kept synchronously current so a callback a few lines down never
+  // reads a stale value.
+  const everLinkedContactIdRef = useRef<string | null>(
+    initialQuote?.highlevelContactId ?? (!initialQuote ? (prefill?.ghlContactId ?? null) : null),
   );
 
   // ─── Draft autosave (quote-forms-partial-save) ───────────────────────────
@@ -1261,6 +1398,19 @@ export default function QuoteBuilder({
           window.alert("An unsaved edit made during the re-analyze was discarded (it hadn't saved yet).");
         }
         setDesignEditorKey((k) => k + 1);
+      } else {
+        // Fix round (HIGH, four-lens review): `if (res.ok)` used to have no
+        // else — a non-ok response (most commonly the #260 CAS's 409 when the
+        // scene changed elsewhere during this multi-second analyze round
+        // trip) fell through with nothing done. The catch below only sees
+        // NETWORK errors (a thrown fetch); an ordinary HTTP error status
+        // isn't one, so the AI-detected layout silently never applied and the
+        // operator had no way to know. Surface the route's own message
+        // (already actionable — e.g. "...reopen it and try again" on a
+        // conflict) via the same designError banner the design-photo effect
+        // above already uses for this design.
+        const data = await res.json().catch(() => ({}));
+        setDesignError(data.error ?? 'The AI-detected layout could not be applied — reopen the design and try again');
       }
     } catch {
       // Non-fatal: the design still works, it just isn't pre-designed.
@@ -1493,6 +1643,20 @@ export default function QuoteBuilder({
   // Permanent Bistro Lighting (#117): mirrors hadC9LinesRef — deleting the last
   // bistro run resets the billed array to [] instead of leaving a stale value.
   const hadBistroLinesRef = useRef(false);
+  // #244: per-run reconcile baseline (run id -> its derived footage as of the
+  // last reconcile) — the array analog of the holiday/permanent scalar
+  // "already equals the target" check, but keyed by id so ONE run's redraw
+  // can't clobber an override on ANOTHER. See reconcileFootage.ts and the
+  // rehydrate-seed comment in getSetter('bistro') below.
+  const prevBistroDerivedRef = useRef<Record<string, number>>({});
+  // Row 333: baseline reconcile for the four holiday satellite footage
+  // fields (santas/gingerbread/C9/stake) — the scalar analog of
+  // prevBistroDerivedRef above. Each field's baseline is the derived footage
+  // recorded at its own last reconcile, so redrawing ONE field's lines can't
+  // clobber a hand-typed override on an UNTOUCHED field even though all four
+  // share one derive effect. See reconcileFootage.ts and the rehydrate-seed
+  // comment in getSetter below.
+  const prevHolidayDerivedRef = useRef<HolidayFootageBaseline>({});
 
   // Recompute footages from the SATELLITE lines (#35: the only line-measurement
   // source — deterministic feet-per-pixel × image pixel width). When there's no
@@ -1512,16 +1676,16 @@ export default function QuoteBuilder({
     // street-traced roofline sets a real AI footage estimate with no satellite
     // lines drawn; without this guard this effect unconditionally zeroed it.
     const hasC9Lines = satelliteC9Lines.length > 0;
-    const c9Target = hasC9Lines ? c9Ft : hadC9LinesRef.current ? 0 : null;
+    const hadC9Prev = hadC9LinesRef.current;
     hadC9LinesRef.current = hasC9Lines;
     const hasStakeLines = satelliteStakeLines.length > 0;
-    const stakeTarget = hasStakeLines ? stakeFt : hadStakeLinesRef.current ? 0 : null;
+    const hadStakePrev = hadStakeLinesRef.current;
     hadStakeLinesRef.current = hasStakeLines;
     const hasSantasLines = satelliteSantasLines.length > 0;
-    const santasTarget = hasSantasLines ? sFt : hadSantasLinesRef.current ? 0 : null;
+    const hadSantasPrev = hadSantasLinesRef.current;
     hadSantasLinesRef.current = hasSantasLines;
     const hasGingerbreadLines = satelliteGingerbreadLines.length > 0;
-    const gingerbreadTarget = hasGingerbreadLines ? gFt : hadGingerbreadLinesRef.current ? 0 : null;
+    const hadGingerbreadPrev = hadGingerbreadLinesRef.current;
     hadGingerbreadLinesRef.current = hasGingerbreadLines;
     // #142-style rehydrate freeze (holiday). Deliberately placed AFTER the four
     // had*LinesRef updates: the refs must record the hydrated geometry even while
@@ -1529,26 +1693,93 @@ export default function QuoteBuilder({
     // resets that footage to 0 instead of leaving a stale value. Loading a quote
     // must never move its billed numbers — only an actual edit may.
     if (holidayDeriveFrozenRef.current) return;
+    // C9 Custom-Runs + Stake are HOLIDAY-only (the event/permanent engines don't
+    // price winterWonderland/stakeLighting — event allow-list is santas/gingerbread
+    // rooflines only). Never derive those two fields from a satellite draw on a
+    // non-holiday quote, or footage would silently persist unbilled (finding #1).
+    //
+    // Row 333 fix (S46 premerge, finding 2, technical MED): compute the
+    // reconcile + the baseline update HERE, synchronously, using the
+    // render-closure `form` — not inside the setForm functional updater
+    // using `f`. React StrictMode dev double-invokes a setState updater to
+    // check purity: it discards the FIRST call's return value, but not any
+    // side effect the call performed. Mutating prevHolidayDerivedRef from
+    // inside the updater let the discarded first call pre-advance the
+    // baseline, so the kept second call compared against an
+    // already-advanced baseline and misclassified a genuine redraw as a
+    // standing override, silently no-op'ing it (dev-only; prod never
+    // double-invokes). The updater below is now a pure function of `f` with
+    // no side effects, so being double-invoked is harmless. Mirrors the
+    // prevBistroDerivedRef fix below.
+    const isHoliday = form.serviceType === 'holiday';
+    // Row 333: baseline-keyed per-field reconcile (reconcileFootage.ts) —
+    // replaces the old direct billed-vs-fresh-target comparison, which
+    // couldn't tell "staff typed an override" apart from "this field's own
+    // geometry changed" and so clobbered an untouched field's override
+    // whenever a DIFFERENT field's lines redrew (all four share this one
+    // effect/dependency list).
+    const baseline = prevHolidayDerivedRef.current;
+    const santas = reconcileHolidayFootageField({
+      active: true,
+      hasLines: hasSantasLines,
+      hadLinesPrev: hadSantasPrev,
+      freshFt: sFt,
+      currentBilled: form.santasFootage,
+      baseline: baseline.santas,
+    });
+    const gingerbread = reconcileHolidayFootageField({
+      active: true,
+      hasLines: hasGingerbreadLines,
+      hadLinesPrev: hadGingerbreadPrev,
+      freshFt: gFt,
+      currentBilled: form.gingerbreadFootage,
+      baseline: baseline.gingerbread,
+    });
+    const c9 = reconcileHolidayFootageField({
+      active: isHoliday,
+      hasLines: hasC9Lines,
+      hadLinesPrev: hadC9Prev,
+      freshFt: c9Ft,
+      currentBilled: form.winterWonderlandFootage,
+      baseline: baseline.c9,
+    });
+    const stake = reconcileHolidayFootageField({
+      active: isHoliday,
+      hasLines: hasStakeLines,
+      hadLinesPrev: hadStakePrev,
+      freshFt: stakeFt,
+      currentBilled: form.stakeLightingFootage,
+      baseline: baseline.stake,
+    });
+    // Row 333 fix (finding 1, staff HIGH): MERGE into the previous baseline —
+    // an inactive field (C9/stake off-holiday) keeps its existing baseline
+    // key untouched, so toggling service type away and back can't drop it.
+    // See mergeHolidayFootageBaseline's own comment for the full defect.
+    const activeByField: Record<HolidayFootageFieldKey, boolean> = {
+      santas: true,
+      gingerbread: true,
+      c9: isHoliday,
+      stake: isHoliday,
+    };
+    const resultsByField: Record<HolidayFootageFieldKey, HolidayFieldReconcileResult> = {
+      santas, gingerbread, c9, stake,
+    };
+    prevHolidayDerivedRef.current = mergeHolidayFootageBaseline(baseline, activeByField, resultsByField);
+    if (santas.target == null && gingerbread.target == null && c9.target == null && stake.target == null) return;
     // defer so the form update isn't synchronous within the effect (flushes before paint)
-    queueMicrotask(() => setForm(f => {
-      // C9 Custom-Runs + Stake are HOLIDAY-only (the event/permanent engines don't
-      // price winterWonderland/stakeLighting — event allow-list is santas/gingerbread
-      // rooflines only). Never derive those two fields from a satellite draw on a
-      // non-holiday quote, or footage would silently persist unbilled (finding #1).
-      const isHoliday = f.serviceType === 'holiday';
-      const sameSantas = santasTarget == null || f.santasFootage === santasTarget;
-      const sameGingerbread = gingerbreadTarget == null || f.gingerbreadFootage === gingerbreadTarget;
-      const sameC9 = c9Target == null || f.winterWonderlandFootage === c9Target || !isHoliday;
-      const sameStake = stakeTarget == null || f.stakeLightingFootage === stakeTarget || !isHoliday;
-      if (sameSantas && sameGingerbread && sameC9 && sameStake) return f;
-      return {
-        ...f,
-        ...(santasTarget != null ? { santasFootage: santasTarget } : {}),
-        ...(gingerbreadTarget != null ? { gingerbreadFootage: gingerbreadTarget } : {}),
-        ...(c9Target != null && isHoliday ? { winterWonderlandFootage: c9Target } : {}),
-        ...(stakeTarget != null && isHoliday ? { stakeLightingFootage: stakeTarget } : {}),
-      };
-    }));
+    queueMicrotask(() => setForm(f => ({
+      ...f,
+      ...(santas.target != null ? { santasFootage: santas.target } : {}),
+      ...(gingerbread.target != null ? { gingerbreadFootage: gingerbread.target } : {}),
+      ...(c9.target != null ? { winterWonderlandFootage: c9.target } : {}),
+      ...(stake.target != null ? { stakeLightingFootage: stake.target } : {}),
+    })));
+    // form.{santasFootage,gingerbreadFootage,winterWonderlandFootage,stakeLightingFootage,serviceType}
+    // are read intentionally (S46 finding 2 fix) but must NOT be dependencies —
+    // this effect derives from satellite GEOMETRY only; adding the billed
+    // fields would re-fire it on every manual override/service-type change
+    // too, which is exactly the over-firing this reconcile exists to survive.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [satelliteSantasLines, satelliteGingerbreadLines, satelliteC9Lines, satelliteStakeLines, satelliteFeetPerPixel, satelliteAspect]);
 
   // Footage readout for the satellite tab.
@@ -1566,6 +1797,35 @@ export default function QuoteBuilder({
       ? roundFootageUpTo5(polylineLength([line], satelliteAspect) * SAT_PX * satelliteFeetPerPixel)
       : null;
 
+  // Row 333: same rounding formula as the holiday derive effect below, factored
+  // out so the getSetter thaw-seed (right below) can't drift from it. 0 when
+  // there's no satellite scale yet, matching the derive effect's own early bail.
+  const computeHolidaySatFt = (lines: LineSegment[]): number =>
+    satelliteFeetPerPixel != null
+      ? Math.round(polylineLength(lines, satelliteAspect) * SAT_PX * satelliteFeetPerPixel / 5) * 5
+      : 0;
+
+  // Row 333 reopen-clobber guard (mirrors #244's bistro seed above): while
+  // still frozen (#142), prevHolidayDerivedRef has never been seeded for
+  // these PERSISTED fields — rehydrate sets the satellite line arrays
+  // directly and never runs the derive effect while frozen. Without this
+  // seed, the FIRST post-reopen edit on ANY one of the four fields would see
+  // the OTHER three as having no recorded baseline, treat them as new, and
+  // stamp their freshly re-derived footage over any saved manual override.
+  // Called before thawing, from all four holiday-line getSetter branches
+  // below (not just the touched one), so every field's baseline is seeded
+  // together.
+  const seedHolidayBaselineIfFrozen = () => {
+    if (!holidayDeriveFrozenRef.current) return;
+    const isHoliday = form.serviceType === 'holiday';
+    prevHolidayDerivedRef.current = deriveHolidayFootageBaseline({
+      santas: { hasLines: satelliteSantasLines.length > 0, freshFt: computeHolidaySatFt(satelliteSantasLines) },
+      gingerbread: { hasLines: satelliteGingerbreadLines.length > 0, freshFt: computeHolidaySatFt(satelliteGingerbreadLines) },
+      c9: { active: isHoliday, hasLines: satelliteC9Lines.length > 0, freshFt: computeHolidaySatFt(satelliteC9Lines) },
+      stake: { active: isHoliday, hasLines: satelliteStakeLines.length > 0, freshFt: computeHolidaySatFt(satelliteStakeLines) },
+    });
+  };
+
   // Line setters — satellite-only now (#35): street lines are gone, the design
   // owns the street-side visuals.
   const getSetter = (type: LineType): ((updater: (lines: LineSegment[]) => LineSegment[]) => void) => {
@@ -1576,24 +1836,46 @@ export default function QuoteBuilder({
     // saved footage exactly as staff left it.
     if (type === 'santas') {
       return (updater) => {
+        seedHolidayBaselineIfFrozen();
         holidayDeriveFrozenRef.current = false;
         setSatelliteSantasLines(updater);
       };
     }
     if (type === 'gingerbread') {
       return (updater) => {
+        seedHolidayBaselineIfFrozen();
         holidayDeriveFrozenRef.current = false;
         setSatelliteGingerbreadLines(updater);
       };
     }
     if (type === 'stake') {
       return (updater) => {
+        seedHolidayBaselineIfFrozen();
         holidayDeriveFrozenRef.current = false;
         setSatelliteStakeLines(updater);
       };
     }
     if (type === 'bistro') {
       return (updater) => {
+        // #244 reopen-clobber guard: while still frozen (#142), the reconcile
+        // baseline (prevBistroDerivedRef) has never been seeded for these
+        // PERSISTED runs — rehydrate sets satelliteBistroLines directly and
+        // never runs the derive effect while frozen. Without this seed, the
+        // FIRST post-reopen edit would see every existing run as having no
+        // recorded baseline, treat all of them as "new", and stamp their
+        // freshly re-derived footage straight over any saved manual override
+        // (the S24 reopen-clobber class). Seed from the CURRENT (pre-edit)
+        // lines/scale/aspect — by the time a human can click-drag a line, the
+        // satellite <img> has already fired onLoad and corrected
+        // satelliteAspect away from its 1:1 default. The seed decision itself
+        // is the pure, tested deriveBistroFootageMap (reconcileFootage.ts,
+        // #244 premerge finding 3) — this repo has no component-render
+        // harness for QuoteBuilder.tsx, so the regression coverage lives on
+        // that extracted function, composed with reconcileBistroFootage in
+        // reconcileFootage.test.ts's rehydrate -> first-edit -> derive test.
+        if (permDeriveFrozenRef.current) {
+          prevBistroDerivedRef.current = deriveBistroFootageMap(satelliteBistroLines, bistroRunFootage);
+        }
         // #142 thaw: the operator touched the lines — footage follows the
         // visible geometry again (live-session rules), mirroring the
         // permanent-side branch below.
@@ -1611,6 +1893,7 @@ export default function QuoteBuilder({
     }
     // C9 custom runs — same holiday thaw as the three branches above.
     return (updater) => {
+      seedHolidayBaselineIfFrozen();
       holidayDeriveFrozenRef.current = false;
       setSatelliteC9Lines(updater);
     };
@@ -1724,45 +2007,70 @@ export default function QuoteBuilder({
     form.permanent?.accessoriesSource,
   ]);
 
-  // Permanent Bistro Lighting (#117): derive each drawn run's OWN footage (per
-  // run — never summed into one side total, unlike permanent) from its
-  // satellite trace, and write the array straight onto form.permanentBistro.bistro
-  // — the BILLING source (the Design tab's bistro strand there stays visual-only,
-  // mirroring permanent's split; see the route's design-projection exemption).
-  // Guard chain: NOT frozen (#142 rehydrate) AND a known satellite scale AND a
-  // LIVE satellite session (satellitePreview != null — the S24/S25 clobber-class
-  // guard: a reopened-but-untouched quote must never have its saved footage
+  // Permanent Bistro Lighting (#117, editable footage #244): derive each
+  // drawn run's OWN footage (per run — never summed into one side total,
+  // unlike permanent) from its satellite trace, and RECONCILE it onto
+  // form.permanentBistro.bistro — the BILLING source (the Design tab's
+  // bistro strand there stays visual-only, mirroring permanent's split; see
+  // the route's design-projection exemption). Guard chain: NOT frozen (#142
+  // rehydrate) AND a known satellite scale AND a LIVE satellite session
+  // (satellitePreview != null — the S24/S25 clobber-class guard: a
+  // reopened-but-untouched quote must never have its saved footage
   // overwritten by "nothing drawn this session" math).
+  //
+  // #244: unlike the holiday/permanent scalar derives, this is an ARRAY —
+  // redrawing ANY run re-fires this whole effect (satelliteBistroLines is
+  // one shared array), so a naive "always overwrite" would clobber a
+  // hand-typed override on every OTHER, untouched run. reconcileBistroFootage
+  // (pure, tested) reconciles BY RUN ID against prevBistroDerivedRef (the
+  // per-id "last known derived value" baseline): an untouched run's override
+  // survives; a run whose OWN geometry changed has its override reset (staff
+  // redraw wins — the same call as the holiday precedent). See getSetter
+  // ('bistro') above for how the baseline is seeded on a reopened quote's
+  // first post-rehydrate edit, so this can't clobber a saved override on load.
   useEffect(() => {
     if (form.serviceType !== 'permanent_bistro') return;
     if (permDeriveFrozenRef.current) return; // #142: rehydrated, untouched — saved values win
     if (satelliteFeetPerPixel == null) return; // no known scale — manual typing only
     if (satellitePreview == null) return; // no live satellite session — nothing to derive from
     const hasLines = satelliteBistroLines.length > 0;
-    // Each run carries its stable id (#117 MED) so the billed line item id
-    // follows the run across a mid-list delete, not its position.
-    const runs = hasLines
-      ? satelliteBistroLines.map((line) => ({
-          footage: roundFootageUpTo5(polylineLength([line], satelliteAspect) * SAT_PX * satelliteFeetPerPixel),
-          id: line.id,
-        }))
-      : hadBistroLinesRef.current
-        ? [] // had runs, all deleted — reset the billed array to empty
-        : null; // never drawn this session — leave the saved array alone
+    // Never drawn this session (no lines now, and none were had) — leave the
+    // saved array alone rather than resetting it to empty.
+    if (!hasLines && !hadBistroLinesRef.current) return;
     hadBistroLinesRef.current = hasLines;
-    if (runs == null) return;
+    // Each run carries its stable id (#117 MED) so the billed line item id
+    // (and this reconcile's override tracking) follows the run across a
+    // mid-list delete, not its position. Empty when the last run was just
+    // deleted — reconcileBistroFootage resets the billed array to [] too.
+    const freshRuns = satelliteBistroLines.map((line) => ({
+      id: line.id,
+      footage: roundFootageUpTo5(polylineLength([line], satelliteAspect) * SAT_PX * satelliteFeetPerPixel),
+    }));
+    // Row 333 fix (S46 premerge, finding 2, technical MED — sibling parity
+    // with the holiday effect above): compute the reconcile and mutate
+    // prevBistroDerivedRef HERE, synchronously, using the render-closure
+    // `form` — not inside the setForm functional updater using `f`. See the
+    // holiday effect's comment above for the full StrictMode
+    // double-invoke-of-a-setState-updater explanation this mirrors.
+    const priorBaseline = prevBistroDerivedRef.current;
+    const { next, nextBaseline } = reconcileBistroFootage(freshRuns, form.permanentBistro.bistro, priorBaseline);
+    prevBistroDerivedRef.current = nextBaseline;
+    const cur = form.permanentBistro.bistro;
+    const same =
+      cur.length === next.length &&
+      cur.every((b, i) => b.footage === next[i].footage && b.id === next[i].id);
+    if (same) return;
     queueMicrotask(() =>
       setForm((f) => {
         if (f.serviceType !== 'permanent_bistro') return f;
-        const next = runs.map((r) => ({ footage: r.footage, ...(r.id ? { id: r.id } : {}) }));
-        const cur = f.permanentBistro.bistro;
-        const same =
-          cur.length === next.length &&
-          cur.every((b, i) => b.footage === next[i].footage && b.id === next[i].id);
-        if (same) return f;
         return { ...f, permanentBistro: { ...f.permanentBistro, bistro: next } };
       }),
     );
+    // form.permanentBistro.bistro is read intentionally (S46 finding 2 fix)
+    // but must NOT be a dependency — same reasoning as the holiday effect
+    // above: this effect derives from satellite GEOMETRY only, and adding
+    // the billed array would re-fire it on every override too.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [satelliteBistroLines, satelliteFeetPerPixel, satelliteAspect, satellitePreview, form.serviceType]);
 
   // #142: REHYDRATE the satellite tab on a reopened permanent (or, #117,
@@ -1925,6 +2233,37 @@ export default function QuoteBuilder({
   const updateLineLabel = (type: LineType, lineIdx: number, label: string) => {
     const setter = getSetter(type);
     setter(lines => lines.map((line, i) => i === lineIdx ? { ...line, label } : line));
+  };
+
+  // #244: hand-edit a bistro run's BILLED footage, keyed by its stable run
+  // id — mirrors the holiday `set('santasFootage', ...)` idiom but targets
+  // one entry inside form.permanentBistro.bistro instead of a top-level
+  // scalar. Does NOT touch satelliteBistroLines/scale, so it never re-fires
+  // the derive effect above (typing an override is not a redraw). Upserts:
+  // most edits update an existing entry, but with no satellite scale the
+  // derive effect never creates one (its top-level guard), so a fully manual
+  // entry is created here on first edit.
+  const updateBistroRunFootage = (runId: string | undefined, footage: number) => {
+    if (!runId) return; // no stable id — nothing to target (see reconcileFootage.ts)
+    setForm((f) => {
+      if (f.serviceType !== 'permanent_bistro') return f;
+      const idx = f.permanentBistro.bistro.findIndex((b) => b.id === runId);
+      const bistro =
+        idx >= 0
+          ? f.permanentBistro.bistro.map((b, i) => (i === idx ? { ...b, footage } : b))
+          : [...f.permanentBistro.bistro, { id: runId, footage }];
+      return { ...f, permanentBistro: { ...f.permanentBistro, bistro } };
+    });
+  };
+
+  // #244: a run's BILLED footage — the value form.permanentBistro.bistro
+  // actually carries for this run's id (which may be a hand-typed override),
+  // falling back to the pure geometry-derived value when no billed entry
+  // exists yet (e.g. no satellite scale — manual-only — or the derive
+  // effect's queued microtask hasn't landed yet).
+  const billedBistroFootage = (line: LineSegment): number | null => {
+    const entry = line.id ? form.permanentBistro.bistro.find((b) => b.id === line.id) : undefined;
+    return entry ? entry.footage : bistroRunFootage(line);
   };
 
   const handleImageClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -2650,10 +2989,43 @@ export default function QuoteBuilder({
         // into new billing footage — the operator redraws on the new image. Thaw
         // the rehydrate freeze (fresh live session) and flag hadBistroLines so the
         // derive resets the billed array to empty; then a redraw bills correctly.
+        // #244 premerge finding 2 (staff, MED): unlike applyPulledSatellite's
+        // "Pull satellite" sibling above (which window.confirms before
+        // clearing ANY drawn satellite line, including bistro), this path
+        // discarded bistro runs/overrides unconditionally. #244 raises the
+        // stakes — this can now silently drop a staff-TYPED footage override,
+        // not just re-derivable geometry. Mirror the sibling's confirm; a
+        // decline KEEPS the existing runs/overrides (the new image/scale
+        // above still apply — same tradeoff the #117 comment already accepts
+        // for geometry alone). Silent when nothing would be lost.
         if (form.serviceType === 'permanent_bistro') {
-          permDeriveFrozenRef.current = false;
-          hadBistroLinesRef.current = satelliteBistroLines.length > 0;
-          setSatelliteBistroLines([]);
+          const hasBistroToLose =
+            satelliteBistroLines.length > 0 || form.permanentBistro.bistro.length > 0;
+          const keepExisting =
+            hasBistroToLose &&
+            !window.confirm(
+              'Replaces the satellite image — traced bistro runs + footage will reset. Continue?',
+            );
+          if (!keepExisting) {
+            permDeriveFrozenRef.current = false;
+            hadBistroLinesRef.current = satelliteBistroLines.length > 0;
+            setSatelliteBistroLines([]);
+          } else {
+            // #244 delta-verify HIGH (money-silent): unlike applyPulledSatellite,
+            // this function already called setSatelliteFeetPerPixel(the NEW
+            // scale) above, BEFORE this confirm ever ran — so a decline can't be
+            // a true no-op the way the sibling's is. Without freezing here, the
+            // kept satelliteBistroLines/overrides re-derive on the next effect
+            // pass against the NEW scale; since the freshly-derived footage now
+            // differs from prevBistroDerivedRef's baseline, reconcileBistroFootage's
+            // "this run's geometry changed -> redraw wins" branch fires and
+            // silently stamps the new-scale value over a hand-typed override
+            // (e.g. 35ft -> ~22ft), reversing the explicit Cancel. Freeze the
+            // derive (#142 idiom) so the kept billed array stays exactly as the
+            // operator left it; a later real line edit thaws it as usual via
+            // getSetter('bistro').
+            permDeriveFrozenRef.current = true;
+          }
         }
         // #443 fix (S23): persist the satellite IMAGE onto the design so the portal
         // can show the "Where the lights go" view. Holiday does this in
@@ -3130,8 +3502,37 @@ export default function QuoteBuilder({
   // silently ignore HL's data because a prior value (including browser
   // autofill or a stray keystroke) was sitting in the field.
   const pickHighLevelContact = (c: CrmContact) => {
-    setHighLevelContact(c);
     const hlName = c.fullName || [c.firstName, c.lastName].filter(Boolean).join(' ');
+    // #251 (live incident, 2026-08-11): confirm BEFORE any state changes when
+    // this quote is already linked to a DIFFERENT contact — see
+    // contactRelinkConfirmMessage's own doc for why highlevelContact?.id is
+    // preferred over the persisted dbLinked/initialQuote fallback, and why
+    // both are in scope. window.confirm is synchronous, so returning here
+    // happens before setHighLevelContact, before attachSeqRef is bumped, and
+    // before the tag-lookup fetch below ever fires — a decline is a true
+    // no-op, not just a skipped final step.
+    // #839 fix-round HIGH (BYPASS 2): prefer everLinkedContactIdRef over the
+    // live dbLinked/highlevelContact state — those are SESSION state and a
+    // Clear click resets both, which would silently drop this comparison to
+    // null on a clear-then-pick sequence. The ref remembers the last contact
+    // this quote was actually linked to regardless of an intervening Clear.
+    const currentContactId =
+      everLinkedContactIdRef.current ??
+      highlevelContact?.id ??
+      (dbLinked ? (initialQuote?.highlevelContactId ?? null) : null);
+    const confirmMsg = contactRelinkConfirmMessage(
+      c.id,
+      hlName || 'this contact',
+      currentContactId,
+      // Row 338 fix-round MED (staff lens): the STICKY signal, not the
+      // non-sticky approvedAt alone — a revived previously-approved quote
+      // must still get the frozen warning, matching what the server (which
+      // checks the same sticky OR) will actually do with this pick.
+      identityEverFrozen,
+    );
+    if (confirmMsg && !window.confirm(confirmMsg)) return;
+    everLinkedContactIdRef.current = c.id;
+    setHighLevelContact(c);
     const hlAddress = [c.address1, c.city, c.state, c.postalCode].filter(Boolean).join(', ');
     setForm(f => ({
       ...f,
@@ -3217,7 +3618,31 @@ export default function QuoteBuilder({
   };
 
   const clearHighLevelContact = () => {
+    // #839 fix-round HIGH (BYPASS 3, customer+technical lenses): a client
+    // confirm, not a hard block, is the deliberate shape here — see
+    // clearContactConfirmMessage's own doc for the reasoning. window.confirm
+    // is synchronous, so returning here is a true no-op — nothing below has
+    // run yet. Row 338 correction: this comment used to say the route has
+    // "no server-side guard at all" — false as of this PR. route.ts's
+    // detach branch DOES refuse under the same sticky freeze CAS as the
+    // attach write (identityEverFrozen below matches it); the confirm here
+    // is the fast first line of defense, and the response-read restore a
+    // few lines down is the real backstop for whatever the confirm's
+    // point-in-time gate can't see (a revive racing this click, is_test's
+    // bypass shape changing mid-session, etc).
+    const clearMsg = clearContactConfirmMessage(identityEverFrozen);
+    if (clearMsg && !window.confirm(clearMsg)) return;
     attachSeqRef.current++;
+    const clearSeq = attachSeqRef.current;
+    const freshClear = () => clearSeq === attachSeqRef.current;
+    // Row 338 fix-round HIGH (staff lens): captured BEFORE the optimistic
+    // flip below so a server-side identityFrozen refusal (read from the
+    // detach response further down) can restore the UI to what the DB
+    // actually still has — the detach fetch used to be pure best-effort
+    // with no read of its own result, so the UI showed "unlinked" even when
+    // the server had refused and the link was still live.
+    const previousContact = highlevelContact;
+    const previousFormHlId = form.highlevelContactId;
     setHighLevelContact(null);
     // #214 (c): a real undo clears the FORM's hl link too — leaving a
     // prefill/reopen-seeded id here would put the dropped contact right back
@@ -3239,14 +3664,33 @@ export default function QuoteBuilder({
       setDbLinked(false);
       attachPromiseRef.current = (attachPromiseRef.current ?? Promise.resolve(false)).then(async () => {
         try {
-          await fetch('/api/integrations/highlevel/attach', {
+          const res = await fetch('/api/integrations/highlevel/attach', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ quoteId: savedQuoteId, detach: true }),
           });
+          const data = await res.json().catch(() => null);
+          // Row 338 fix-round HIGH: the server refused (frozen quote — the
+          // detach branch's CAS, or a revive/approve landing in the race
+          // window between the pre-read and the write) — restore the
+          // optimistic flip above so the UI agrees with the DB instead of
+          // silently claiming "unlinked" while the link is still live.
+          // Only when this is still the LATEST clear/pick (freshClear): a
+          // newer pick already owns the visible state and must not be
+          // clobbered by a slow, now-superseded response.
+          if (data?.identityFrozen === true && freshClear()) {
+            setHighLevelContact(previousContact);
+            setForm(f => ({ ...f, highlevelContactId: previousFormHlId }));
+            setDbLinked(true);
+            setAttachStatus('skipped');
+            setAttachError(
+              'This quote is approved or booked, so its customer identity is locked — the link was not cleared. There is no in-app way to unlink an approved quote to relink it elsewhere; contact support for a manual fix rather than retrying.',
+            );
+          }
         } catch {
-          // Best-effort — a failed detach leaves the old link in place, which
-          // the visible "linked from a previous session" note then reflects.
+          // Best-effort — a network failure leaves the old link in place,
+          // which the visible "linked from a previous session" note then
+          // reflects (unchanged from before this fix).
         }
         return false;
       });
@@ -3329,6 +3773,20 @@ export default function QuoteBuilder({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `Attach failed (${res.status})`);
+      // Row 338 fix-round HIGH (staff lens): a frozen refusal (route.ts's
+      // #251/#839 CAS gates) used to fall into the generic linked:false
+      // branch below and claim "Card attached... try again" — false (nothing
+      // attached) and a retry can never succeed once the quote is frozen.
+      // Read the flag first and throw a distinct, honest error the catch
+      // block routes to the non-alarming 'skipped' status (matching the
+      // identityFrozenNotice banner's copy voice) instead of 'error'.
+      if (data.identityFrozen === true) {
+        const frozenErr = new Error(
+          'This quote is approved or booked, so its customer identity is locked — this contact wasn’t linked and nothing changed. There is no in-app way to relink an approved quote to a different customer; contact support for a manual fix rather than retrying.',
+        ) as Error & { identityFrozen?: boolean };
+        frozenErr.identityFrozen = true;
+        throw frozenErr;
+      }
       if (data.linked === false) {
         throw new Error('Card attached in HighLevel but the quote link didn’t save — try again.');
       }
@@ -3340,7 +3798,8 @@ export default function QuoteBuilder({
       return true;
     } catch (err) {
       if (fresh()) {
-        setAttachStatus('error');
+        const frozen = err instanceof Error && (err as Error & { identityFrozen?: boolean }).identityFrozen === true;
+        setAttachStatus(frozen ? 'skipped' : 'error');
         setAttachError(err instanceof Error ? err.message : 'Attach failed');
       }
       return false;
@@ -3844,6 +4303,11 @@ export default function QuoteBuilder({
     quoteSaveInProgressRef.current = true;
     setLoading(true);
     setError(null);
+    // Premerge finding 3 fix: keep the last-known-good result/baseline around
+    // so a rejected save can restore them instead of leaving the breakdown
+    // vaporized (see the 409 handling below).
+    const prevResult = result;
+    const prevBaseline = baselineResult;
     setResult(null);
     // #172: keep a genuinely-attached chip through a recalculation — the
     // save-flow's lastAttachKey guard skips re-attaching the same pair, so
@@ -3856,6 +4320,10 @@ export default function QuoteBuilder({
     setSendStatus('idle');
     setSendError(null);
     setAlreadySentAt(null);
+    // #839 fix-round MED: reset before every Calculate — a PRIOR call's freeze
+    // must not keep showing after a later call that didn't hit it (e.g. an
+    // unrelated field edit right after a frozen attempt).
+    setIdentityFrozenNotice(false);
     // #241: reset alongside its siblings. Not visible today (the notice that
     // reads it is gated on sendStatus === 'already-sent', which this same block
     // clears, and both places that re-enter that status reset this flag first)
@@ -3951,11 +4419,37 @@ export default function QuoteBuilder({
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Request failed');
+      if (!res.ok) {
+        // Premerge finding 3 fix: a 409 from one of the three post-approval
+        // lock codes (route.ts:~716-737) means a stale tab tried to save a
+        // price/label/bistro-footage edit against a quote that's since been
+        // approved (or, per finding 4, whose approval this tab's own derived
+        // state hadn't caught up to). setResult(null) above already nulled
+        // the breakdown; every price/label/footage control lives inside
+        // `{result && (...)}`, so leaving it null here would strand the tab
+        // on a red banner with no way back short of a full reload (losing any
+        // other unsaved edits). Restore the last-known-good result/baseline
+        // and flip the tab to frozen so the controls lock with the honest
+        // post-approval copy — the tab self-corrects to server truth instead
+        // of staying editable and re-erroring on every retry.
+        const LOCK_CODES = new Set(['price-override-locked', 'label-override-locked', 'bistro-footage-locked']);
+        if (res.status === 409 && typeof data?.code === 'string' && LOCK_CODES.has(data.code)) {
+          setResult(prevResult);
+          setBaselineResult(prevBaseline);
+          setStaleApprovalFrozen(true);
+        }
+        throw new Error(data.error ?? 'Request failed');
+      }
       // #41 adversarial-review HIGH fix: the real save-succeeded signal — a
       // 200 with persisted:false means the DB write failed even though
       // pricing succeeded (see /api/quote's own persisted: saved !== null).
       const persisted = data.persisted === true;
+      // #839 fix-round MED: surface the #251 freeze when it actually fired on
+      // THIS save (route.ts only sends the key when updateQuote set it —
+      // absent/falsy on every normal save, including a brand-new insert).
+      if (data.identityFrozen === true) setIdentityFrozenNotice(true);
+      setResult(data.result);
+      setBaselineResult(data.baseline ?? data.result); // #104 "was $X" source
       const newQuoteId = typeof data.quoteId === 'string' ? data.quoteId : null;
       // Only overwrite savedQuoteId on a real id (#110 W3-004 / #80-105). A 200
       // response with quoteId:null means the server-side save/update failed
@@ -4271,6 +4765,12 @@ export default function QuoteBuilder({
       const getData = await getRes.json();
       if (!getRes.ok) throw new Error(getData.error ?? 'Could not load the design');
       const scene: Scene = getData?.design?.scene ?? { yardsticks: [], items: [] };
+      // Ledger row 260: round-trip the version this scene was read at as the
+      // PUT's compare-and-swap precondition — this is a read-modify-write on
+      // a scene we just flushed + fetched fresh, but another tab/operator
+      // could still land a write in the gap, and the guard is what turns that
+      // into an honest error instead of a silent overwrite.
+      const readVersion: number | null = typeof getData?.design?.version === 'number' ? getData.design.version : null;
       const targets = new Set(sceneItemIds);
       const items = Array.isArray(scene.items) ? scene.items : [];
       const patched: Scene = {
@@ -4290,7 +4790,7 @@ export default function QuoteBuilder({
       const putRes = await fetch(`/api/designs/${designId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scene: patched }),
+        body: JSON.stringify({ scene: patched, version: readVersion }),
       });
       if (!putRes.ok) {
         const putData = await putRes.json().catch(() => ({}));
@@ -5519,22 +6019,49 @@ export default function QuoteBuilder({
                             <span className="w-4 h-1 rounded" style={{ backgroundColor: '#14b8a6' }}></span>
                             <span className="text-sm font-semibold text-gray-800">
                               Bistro Runs — {satelliteBistroLines.reduce(
-                                (sum, line) => sum + (bistroRunFootage(line) ?? 0),
+                                (sum, line) => sum + (billedBistroFootage(line) ?? 0),
                                 0,
                               )}ft total
                             </span>
                           </div>
+                          <p className="text-xs text-gray-400 ml-6 mb-2">
+                            Auto-measured from photo. Adjust if needed.
+                          </p>
                           {satelliteBistroLines.length > 0 ? (
                             <ul className="space-y-1 ml-6">
                               {satelliteBistroLines.map((line, i) => {
-                                const ft = bistroRunFootage(line);
+                                const ft = billedBistroFootage(line);
                                 return (
-                                  <li key={`bistro-${i}`} className="flex items-center gap-2 text-xs">
-                                    <span className="flex-1 text-gray-500">
-                                      Run {i + 1} — {ft != null ? `${ft} ft` : 'no scale'} ({line.points.length} pts)
+                                  <li key={line.id ?? `bistro-${i}`} className="flex items-center gap-2 text-xs">
+                                    <span className="text-gray-500 whitespace-nowrap">
+                                      Run {i + 1} ({line.points.length} pts)
                                     </span>
+                                    {line.id ? (
+                                      <>
+                                        <input
+                                          className="w-20 border border-gray-300 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-teal-500 disabled:bg-gray-100 disabled:text-gray-400"
+                                          type="number" min="0" placeholder="0"
+                                          value={ft || ''}
+                                          disabled={postApprovalFrozen}
+                                          title={postApprovalFrozen ? POST_APPROVAL_LOCK_REASON : undefined}
+                                          onChange={(e) => updateBistroRunFootage(line.id, Math.max(0, Number(e.target.value) || 0))}
+                                          onBlur={() => {
+                                            // #244 premerge finding 1 (HIGH, money — #139 parity):
+                                            // round a hand-typed override up to the next 5ft step on
+                                            // blur, same as PermanentSection's roundFootageOnBlur —
+                                            // calculatePermanentBistro never re-rounds, so an
+                                            // un-rounded override silently under-bills.
+                                            const rounded = roundBistroFootageOnBlur(ft);
+                                            if (rounded != null) updateBistroRunFootage(line.id, rounded);
+                                          }}
+                                        />
+                                        <span className="text-gray-400">ft</span>
+                                      </>
+                                    ) : (
+                                      <span className="flex-1 text-gray-500">{ft != null ? `${ft} ft` : 'no scale'}</span>
+                                    )}
                                     <button type="button" onClick={() => deleteLine('bistro', i)}
-                                      className="text-red-400 hover:text-red-600 font-bold">×</button>
+                                      className="ml-auto text-red-400 hover:text-red-600 font-bold">×</button>
                                   </li>
                                 );
                               })}
@@ -6380,7 +6907,8 @@ export default function QuoteBuilder({
                         amount={result.rooflineOptions.santas.amount}
                         baseAmount={baselineResult?.rooflineOptions?.santas?.amount ?? result.rooflineOptions.santas.amount}
                         overridden={Object.prototype.hasOwnProperty.call(form.lineItemPriceOverrides, 'roofline-santas')}
-                        disabled={loading}
+                        disabled={loading || postApprovalFrozen}
+                        lockedReason={postApprovalFrozen ? POST_APPROVAL_LOCK_REASON : undefined}
                         onCommit={(n) => commitLinePrice('roofline-santas', n)}
                         onReset={() => resetLinePrice('roofline-santas')}
                       />
@@ -6402,7 +6930,8 @@ export default function QuoteBuilder({
                         amount={result.rooflineOptions.gingerbread.amount}
                         baseAmount={baselineResult?.rooflineOptions?.gingerbread?.amount ?? result.rooflineOptions.gingerbread.amount}
                         overridden={Object.prototype.hasOwnProperty.call(form.lineItemPriceOverrides, 'roofline-gingerbread')}
-                        disabled={loading}
+                        disabled={loading || postApprovalFrozen}
+                        lockedReason={postApprovalFrozen ? POST_APPROVAL_LOCK_REASON : undefined}
                         onCommit={(n) => commitLinePrice('roofline-gingerbread', n)}
                         onReset={() => resetLinePrice('roofline-gingerbread')}
                       />
@@ -6538,7 +7067,8 @@ export default function QuoteBuilder({
                       amount={item.amount}
                       baseAmount={baseById.get(item.id) ?? item.amount}
                       overridden={Object.prototype.hasOwnProperty.call(form.lineItemPriceOverrides, item.id)}
-                      disabled={loading}
+                      disabled={loading || postApprovalFrozen}
+                      lockedReason={postApprovalFrozen ? POST_APPROVAL_LOCK_REASON : undefined}
                       onCommit={(n) => commitLinePrice(item.id!, n)}
                       onReset={() => resetLinePrice(item.id!)}
                     />
@@ -6570,7 +7100,8 @@ export default function QuoteBuilder({
                             label={resolvedLabel.label}
                             baseLabel={item.label}
                             overridden={resolvedLabel.overridden}
-                            disabled={loading}
+                            disabled={loading || postApprovalFrozen}
+                            lockedReason={postApprovalFrozen ? POST_APPROVAL_LOCK_REASON : undefined}
                             onCommit={(s) => commitLineLabel(item.id!, s)}
                             onReset={() => resetLineLabel(item.id!)}
                           />
@@ -6705,6 +7236,32 @@ export default function QuoteBuilder({
                   <span className="text-amber-700">{attachError}</span>
                 )}
               </div>
+            )}
+
+            {/* #839 fix-round MED: the #251 identity freeze used to be
+                log-only when it actually refused a would-be reattach — this
+                is that surfaced. Not nested in the highlevelContact-gated
+                block above: it can fire even when highlevelContact is null
+                (a reopened quote's DB link isn't hydrated into that state —
+                #172), and it describes the save that just ran, not the
+                current chip.
+                Row 338 fix: the original copy told staff to "Use the amend
+                flow to move it to a different customer" — traced and found
+                false. The amend flow (/api/quotes/[id]/amend) only re-prices
+                a booked order's totals; it has no identity fields at all and
+                never writes customer_id/highlevel_contact_id/customer_name/
+                etc. There is currently no in-app way to move a frozen quote
+                to a different customer (the code-level remedy is a manual DB
+                correction — see the "WT-55 manual merge" comments in
+                quotes.ts/customers.ts), so the copy now says that honestly
+                instead of pointing at a flow that can't do it. */}
+            {identityFrozenNotice && (
+              <p className="mb-3 text-xs text-amber-700">
+                This quote is approved or booked, so its customer stayed put — the name, contact details and
+                HighLevel link on this quote were left exactly as the customer approved them, and nothing on this
+                save changed who the quote belongs to. There is no in-app way to move an approved quote to a
+                different customer — if this needs correcting, contact support for a manual fix rather than re-saving.
+              </p>
             )}
 
             {hasNoPricedItems && (

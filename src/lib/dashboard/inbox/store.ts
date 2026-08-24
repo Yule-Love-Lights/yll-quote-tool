@@ -20,6 +20,7 @@ import type {
   InboxStatus,
   NormalizedTouch,
   OpenInboxItem,
+  PendingColorRequestItem,
   StoredContact,
 } from './types';
 import { normalizeEmail, normalizePhone } from './normalize';
@@ -674,6 +675,89 @@ export function quoteIdPrefix(externalId: string): string {
 }
 
 /**
+ * Row 321: true when a quotetool item's external_id carries the color-request
+ * suffix apply-color-request/color-change-request mint (`${quoteId}:color-
+ * request` — see quoteIdPrefix's own doc above). Used both to exclude a live
+ * request from #317's terminal auto-complete (completeTerminalQuoteItems
+ * below) and to badge/confirm-gate the row in the /inbox UI (InboxList.tsx,
+ * InWorksSection.tsx) so the ordinary Handled/Mark-completed buttons can't
+ * silently bury it — see ledger row 321's Kristie Tibbetts case (a plain Mark
+ * completed left her request unfulfilled and invisible for three weeks).
+ */
+export function isColorRequestExternalId(externalId: string): boolean {
+  return externalId.endsWith(':color-request');
+}
+
+/**
+ * Row 321 fix-round FIX 1 (technical HIGH + staff MED, converged): batch-
+ * fetches which of `quoteIds` currently has a LIVE
+ * `approval_snapshot.pendingColorRequest` — the shared seam listOpenItems and
+ * listInWorks both call so a `:color-request`-shaped item's badge/confirm-gate
+ * tracks the REAL live state of the request, not merely its external_id's
+ * shape. Before this fix `isColorRequest` was pure shape (isColorRequestExternalId
+ * alone), which caused two bugs the review converged on: (a) IN_WORKS_SELECT
+ * never selected external_id at all, so the InWorksSection "awaiting" bucket
+ * read isColorRequest:false unconditionally — an ordinary Handled -> Followed
+ * (snooze) -> Mark completed sequence could bury a still-pending request with
+ * no confirm and no server check; (b) shape alone meant the badge/confirm kept
+ * warning FOREVER even after staff applied the colour via ColorRequestPanel,
+ * training operators to click through a confirm that no longer meant anything.
+ *
+ * Mirrors fetchHiddenLegacyRebookQuoteIds's batched-not-per-row pattern (ONE
+ * query for every candidate id) but is DELIBERATELY independent of
+ * EXCLUDE_LEGACY_REBOOK_FROM_INBOX / fetchHiddenLegacyRebookQuoteIds — that
+ * flag exists to hide parked YLL Neighbor drafts and its own doc comment says
+ * it flips off once #157 ships; coupling the color-request badge's
+ * correctness to an unrelated feature flag would silently break the badge the
+ * day that flag flips.
+ *
+ * Fails SAFE the OPPOSITE direction from fetchHiddenLegacyRebookQuoteIds's own
+ * fail-open: `failed:true` here must make the caller show MORE badges/
+ * confirms (over-warn), never fewer — a query error is not proof a pending
+ * request was resolved, and silently dropping the guard on a real error is
+ * exactly the live-prod failure row 321 exists to close. See
+ * isLiveColorRequestItem below for how the caller applies `failed`.
+ */
+async function fetchLiveColorRequestQuoteIds(
+  sb: NonNullable<ReturnType<typeof getSupabaseServiceClient>>,
+  quoteIds: readonly string[],
+): Promise<{ liveIds: Set<string>; failed: boolean }> {
+  if (quoteIds.length === 0) return { liveIds: new Set(), failed: false };
+  const { data, error } = await sb.from('quotes').select('id, approval_snapshot').in('id', quoteIds);
+  if (error) {
+    console.error('[inbox] color-request liveness lookup failed:', error.message);
+    return { liveIds: new Set(), failed: true };
+  }
+  const liveIds = new Set(
+    ((data ?? []) as { id: string; approval_snapshot: { pendingColorRequest?: unknown } | null }[])
+      .filter((q) => !!q.approval_snapshot?.pendingColorRequest)
+      .map((q) => String(q.id)),
+  );
+  return { liveIds, failed: false };
+}
+
+/**
+ * Row 321 fix-round FIX 1: the shared "should this row badge/confirm-gate as
+ * a live colour request" decision — shape (isColorRequestExternalId) AND
+ * liveness (fetchLiveColorRequestQuoteIds's result), never shape alone. A
+ * bare "quote sent" item (no `:color-request` suffix) is never flagged by
+ * this, even if its quote happens to carry a pendingColorRequest — the badge
+ * stays scoped to the item that actually represents the customer's ask, same
+ * as before this fix. `lookup.failed` fails SAFE (over-warn): every
+ * shape-matching row reads as still-live rather than silently dropping the
+ * guard — see fetchLiveColorRequestQuoteIds's own doc for why. Pure — no
+ * I/O — so it's directly unit-testable without a DB.
+ */
+function isLiveColorRequestItem(
+  source: unknown,
+  externalId: string,
+  lookup: { liveIds: ReadonlySet<string>; failed: boolean },
+): boolean {
+  if (source !== 'quotetool' || !isColorRequestExternalId(externalId)) return false;
+  return lookup.failed || lookup.liveIds.has(quoteIdPrefix(externalId));
+}
+
+/**
  * #157: drop items whose backing quote id is in `hiddenQuoteIds`. Only a
  * 'quotetool' item can match — its external_id is the quote id, optionally
  * suffixed `:color-request` (quoteIdPrefix strips it, #183 BUG 1) — so every
@@ -867,6 +951,21 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
     for (const [cid, n] of tally) if (n > 1) returning.add(cid);
   }
 
+  // Row 321 fix-round FIX 1: batched liveness lookup, scoped to the
+  // color-request-shaped quotetool ids on THIS PAGE (trimmed, post legacy-
+  // exclusion/slice — the actual page about to render) — ONE query, never
+  // per-row. See fetchLiveColorRequestQuoteIds's own doc for the fail-safe
+  // direction and why this is independent of the legacy-rebook flag above.
+  const colorRequestQuoteIds = [
+    ...new Set(
+      (trimmed as unknown as Record<string, unknown>[])
+        .filter((r) => r.source === 'quotetool' && isColorRequestExternalId(String(r.external_id ?? '')))
+        .map((r) => quoteIdPrefix(String(r.external_id)))
+        .filter(isUuid),
+    ),
+  ];
+  const colorRequestLookup = await fetchLiveColorRequestQuoteIds(sb, colorRequestQuoteIds);
+
   const items = (trimmed as unknown as Record<string, unknown>[]).map((row): OpenInboxItem => {
     const c = (row.dashboard_contacts as Record<string, unknown> | null) ?? null;
     return {
@@ -890,6 +989,11 @@ export async function listOpenItems(limit = 100): Promise<OpenItemsResult> {
             phone: (c.primary_phone as string | null) ?? null,
           }
         : null,
+      // Row 321: badges + confirm-gates Handled/Mark-completed in InboxList.tsx
+      // so a still-live colour request can't be silently buried by them. Fix-
+      // round FIX 1: now driven by the batched LIVENESS lookup above, not
+      // shape alone — see isLiveColorRequestItem's own doc.
+      isColorRequest: isLiveColorRequestItem(row.source, String(row.external_id ?? ''), colorRequestLookup),
     };
   });
   // count is null only if Postgrest didn't return one (shouldn't happen with
@@ -1172,7 +1276,239 @@ export async function markItemFollowed(
 export async function recordWriteback(itemId: string, sync: unknown): Promise<void> {
   const sb = getSupabaseServiceClient();
   if (!sb) return;
-  await sb.from('inbox_items').update({ handled_channel_sync: sync }).eq('id', itemId);
+  // #342 fix round (technical lens MED 3): this used to discard the update's
+  // own error — the same silent-failure shape the row exists to fix, one hop
+  // upstream of the read side. A failed PERSIST of the computed write-back
+  // outcome is now at least logged (still fire-and-forget/best-effort by
+  // design, per this function's callers, so it stays void — but no longer
+  // silent).
+  const { error } = await sb.from('inbox_items').update({ handled_channel_sync: sync }).eq('id', itemId);
+  if (error) console.error('[inbox] recordWriteback failed to persist handled_channel_sync:', error.message);
+}
+
+export type GmailWritebackFailure = {
+  id: string;
+  /** Display name, falling back to email, falling back to a placeholder —
+   *  never blank, so the /inbox banner always names WHO is affected. */
+  label: string;
+  /** handled_channel_sync.gmailLabelError, when the row's catch block
+   *  recorded one. Already bounded to 500 chars at the source (sync.ts's
+   *  errMsg) — not re-truncated here. Always null for 'unconfigured' (there
+   *  is no per-item error — the whole channel was down). */
+  error: string | null;
+  /** 'failed' = a live token attempted the write-back and it threw.
+   *  'unconfigured' = Gmail had no credentials at all when this ran (#342
+   *  fix round MED 1) — a systemic outage, not a per-item error, and worth
+   *  its own copy in the UI rather than being read as "N write-backs failed". */
+  status: 'failed' | 'unconfigured';
+};
+
+export type GmailWritebackFailuresResult =
+  | {
+      ok: true;
+      items: GmailWritebackFailure[];
+      /** Combined (failed + unconfigured) TRUE count — drives ONLY the
+       *  truncation check below, never rendered as-is. Fix round MED
+       *  (delta-verify): a mixed population printed under this one number
+       *  made a condition-specific headline ("Gmail isn't connected —
+       *  {total}") state a count that included rows the sentence wasn't
+       *  describing. Use failedCount/unconfiguredCount for anything a
+       *  human reads. */
+      total: number;
+      /** TRUE (unbounded, not just the returned page) count of
+       *  gmailLabel==='failed' rows — from a separate head:true query, not
+       *  derived from `items` (which is capped at `limit`), because the
+       *  whole point of this fix is a correct number under truncation. */
+      failedCount: number;
+      /** Same as failedCount, for gmailLabel==='unconfigured'. */
+      unconfiguredCount: number;
+      truncated: boolean;
+    }
+  | { ok: false; error: string };
+
+const GMAIL_WRITEBACK_FAILURES_LIMIT = 25;
+
+/**
+ * #342 fix round (staff lens BLOCK, 2 HIGH): recordWriteback (above) has
+ * always persisted runHandledWriteback's per-channel outcome into
+ * handled_channel_sync — but nothing ever READ it, so a broken Gmail token
+ * failed silently while staff kept marking items Handled. PR #886 took the
+ * Gmail branch from ~4 lead-forward rows to the overwhelming majority of
+ * Gmail traffic (sync.ts's runHandledWriteback doc comment), so a dead token
+ * is now a fleet-wide blind spot, not a corner case.
+ *
+ * Returns the actual FAILING ROWS (id + a human label + the stored error),
+ * not just a count — round 1 shipped a bare `count:'exact', head:true`
+ * number with no way to learn WHICH items were affected. Bounded to
+ * GMAIL_WRITEBACK_FAILURES_LIMIT (most-recently-handled first, since those
+ * are the ones a token fix should retry first); `total` is the TRUE
+ * unbounded count (Postgres/PostgREST's exact count ignores .limit()), and
+ * `truncated` says whether the list under-represents it.
+ *
+ * No time window: these are Handled items whose external Gmail state never
+ * actually synced, which stays true until either a fixed token successfully
+ * retries the write-back (see the retry-gmail-sync route) or an operator
+ * acknowledges it — not something that ages out on its own.
+ *
+ * Round-1 bug this fixes in itself: `const { count } = await sb...` used to
+ * discard `error` — a query FAILURE made `count` null, `?? 0` turned that
+ * into a confident "0 failures", and the banner went dark on a broken
+ * monitor. Now a query error returns `ok:false` so the caller can render a
+ * "couldn't check" state instead of a false all-clear (the exact bug class
+ * this whole row exists to fix, reproduced inside the first fix — caught by
+ * the staff lens's MED finding).
+ *
+ * Fix round (technical lens, 2 more MEDs):
+ *   - MED 1: also matches gmailLabel==='unconfigured' (sync.ts now records
+ *     this instead of leaving the field unset when Gmail has no credentials
+ *     at all) — a total outage must not read as zero failures.
+ *   - MED 2: scoped to status='handled'. Reopening a Handled item resets
+ *     status to 'unresponded' (reducer.ts) but the upsert OMITS
+ *     handled_channel_sync on reopen, so the stale sync state is preserved
+ *     verbatim (store.ts's ingestTouch upsert comment, ~line 571) — without
+ *     this filter, a reopened-then-still-open item could keep tripping the
+ *     banner for a write-back that no longer describes its current state.
+ *     Verified against prod: 0 rows currently in that state, but 188
+ *     all-time reopen events make it a real latent case, not theoretical.
+ *
+ * Second fix round (delta-verify MED): the banner used to headline with
+ * `total` (failed+unconfigured combined) under BOTH condition-specific
+ * sentences — "Gmail isn't connected — {total}" stated a number that, in a
+ * mixed population, counted rows the sentence wasn't describing. No fixture
+ * exercised a mixed population, so nothing caught it. Runs two additional
+ * head:true count queries (in parallel with the page query) so
+ * failedCount/unconfiguredCount are TRUE unbounded numbers — not derived
+ * from the capped `items` page, which would under-count exactly the
+ * truncated-and-mixed case that exposed the bug.
+ */
+export async function listGmailWritebackFailures(
+  limit = GMAIL_WRITEBACK_FAILURES_LIMIT,
+): Promise<GmailWritebackFailuresResult> {
+  const sb = getSupabaseServiceClient();
+  // Unconfigured (no service-role key, e.g. local dev) mirrors this file's
+  // existing convention (getReopenCounts et al.): "no data available" is not
+  // itself a monitoring failure, so this returns the all-clear shape, not
+  // ok:false.
+  if (!sb) return { ok: true, items: [], total: 0, failedCount: 0, unconfiguredCount: 0, truncated: false };
+
+  const [pageRes, failedRes, unconfiguredRes] = await Promise.all([
+    sb
+      .from('inbox_items')
+      .select('id, handled_channel_sync, dashboard_contacts ( display_name, primary_email )', { count: 'exact' })
+      .eq('status', 'handled')
+      .in('handled_channel_sync->>gmailLabel', ['failed', 'unconfigured'])
+      .order('handled_at', { ascending: false })
+      .limit(limit),
+    sb
+      .from('inbox_items')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'handled')
+      .eq('handled_channel_sync->>gmailLabel', 'failed'),
+    sb
+      .from('inbox_items')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'handled')
+      .eq('handled_channel_sync->>gmailLabel', 'unconfigured'),
+  ]);
+
+  if (pageRes.error) {
+    console.error('[inbox] listGmailWritebackFailures query failed:', pageRes.error.message);
+    return { ok: false, error: pageRes.error.message };
+  }
+  if (failedRes.error) {
+    console.error('[inbox] listGmailWritebackFailures failedCount query failed:', failedRes.error.message);
+    return { ok: false, error: failedRes.error.message };
+  }
+  if (unconfiguredRes.error) {
+    console.error('[inbox] listGmailWritebackFailures unconfiguredCount query failed:', unconfiguredRes.error.message);
+    return { ok: false, error: unconfiguredRes.error.message };
+  }
+
+  const rows = (pageRes.data ?? []) as unknown as Array<{
+    id: string;
+    handled_channel_sync: Record<string, unknown> | null;
+    dashboard_contacts: { display_name: string | null; primary_email: string | null } | null;
+  }>;
+  const items: GmailWritebackFailure[] = rows.map((r) => {
+    const c = r.dashboard_contacts;
+    const label = c?.display_name || c?.primary_email || 'Unknown contact';
+    const status = r.handled_channel_sync?.gmailLabel === 'unconfigured' ? 'unconfigured' : 'failed';
+    const err = status === 'unconfigured' ? null : r.handled_channel_sync?.gmailLabelError;
+    return { id: r.id, label, error: typeof err === 'string' ? err : null, status };
+  });
+  const total = pageRes.count ?? items.length;
+  const failedCount = failedRes.count ?? 0;
+  const unconfiguredCount = unconfiguredRes.count ?? 0;
+  return { ok: true, items, total, failedCount, unconfiguredCount, truncated: total > items.length };
+}
+
+export type GmailWritebackRetryTarget =
+  | { ok: true; target: HandledTarget }
+  | { ok: false; error: string };
+
+/**
+ * #342 fix round: the coordinates runHandledWriteback (sync.ts) needs to
+ * RETRY the Gmail write-back for an already-Handled item — deliberately NOT
+ * markItemHandledLocal's job (that stamps status='handled' with a
+ * `.neq('status','handled')` guard against double-apply; this item is
+ * already handled, only the external write-back is being reattempted, so
+ * that guard doesn't apply and must not be reused here).
+ *
+ * Refuses (ok:false) unless the row's OWN stored handled_channel_sync
+ * currently says gmailLabel==='failed' or 'unconfigured' — so this can't be
+ * repurposed into a generic "fire a write-back at any item id" endpoint; it
+ * only ever replays a write-back that is known to be missing or broken.
+ * ('unconfigured' added in the fix round alongside sync.ts's MED 1 fix —
+ * once a token is restored, a row that failed only because Gmail was
+ * entirely unconfigured is just as retryable as one that threw.)
+ *
+ * Also requires status='handled' (fix round MED 2, same reasoning as
+ * listGmailWritebackFailures' own doc comment): a reopened item's stale
+ * write-back outcome is not something this route should replay.
+ *
+ * Re-running runHandledWriteback here is safe to call more than once:
+ *   - GHL mark-read: a plain PUT {status:'read'} — setting an already-read
+ *     conversation read again is a no-op.
+ *   - GHL tags: POST /contacts/{id}/tags MERGES (documented + verified
+ *     against the live API — see addContactTags' own doc comment in
+ *     highlevel.ts), so re-adding a tag the contact already has is a no-op.
+ *   - Gmail modifyMessage: add/remove-label is Gmail's own idempotent
+ *     primitive — adding a label already present, or removing UNREAD that's
+ *     already removed, both no-op. getOrCreateLabel finds-before-creates.
+ * None of the three write-back steps has any OTHER side effect (no email
+ * sent, no activity-log row from runHandledWriteback itself), so replaying
+ * the exact same call is safe.
+ */
+export async function getGmailWritebackRetryTarget(itemId: string): Promise<GmailWritebackRetryTarget> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const { data, error } = await sb
+    .from('inbox_items')
+    .select('source, external_id, source_message_id, status, handled_channel_sync, dashboard_contacts ( ghl_contact_id, display_name )')
+    .eq('id', itemId)
+    .maybeSingle();
+  if (error) return { ok: false, error: error.message };
+  if (!data) return { ok: false, error: 'Item not found' };
+
+  const row = data as unknown as Record<string, unknown>;
+  if (row.status !== 'handled') {
+    return { ok: false, error: 'This item is no longer Handled — its Gmail write-back state is stale' };
+  }
+  const sync = (row.handled_channel_sync as Record<string, unknown> | null) ?? null;
+  if (sync?.gmailLabel !== 'failed' && sync?.gmailLabel !== 'unconfigured') {
+    return { ok: false, error: 'This item has no recorded Gmail write-back failure to retry' };
+  }
+  const c = (row.dashboard_contacts as Record<string, unknown> | null) ?? null;
+  return {
+    ok: true,
+    target: {
+      source: row.source as InboxSource,
+      externalId: row.external_id as string,
+      sourceMessageId: (row.source_message_id as string | null) ?? null,
+      ghlContactId: (c?.ghl_contact_id as string | null) ?? null,
+      displayName: (c?.display_name as string | null) ?? null,
+    },
+  };
 }
 
 // ─── Escalation support ─────────────────────────────────────────────────────
@@ -1663,6 +1999,15 @@ async function fetchReversedItemIds(
 // CURRENTLY in the needs_reply bucket (an unanswered inbound) — the live case
 // is Susan Pace-Burke's `:color-request` item, unanswered, on a BOOKED quote.
 //
+// A SECOND HARD CONSTRAINT (row 321, S43 wrap CUSTOMER lens HIGH — LIVE PROD
+// CASE): once staff clicks plain "Handled" (not the actual apply/dismiss
+// flow) on a `:color-request` item, THIS constraint above no longer protects
+// it — status is 'handled', not needs_reply. See the FIX below the FIX-1/
+// FIX-2 pair for the added guard: never complete a `:color-request` item
+// while its quote's `approval_snapshot.pendingColorRequest` is still live.
+// Kristie Tibbetts' request sat unfulfilled and invisible for three weeks
+// this exact way.
+//
 // FIX 1 (row 317 fix-round, customer MED + technical HIGH, one fix):
 // eligibility is narrower than "not needs_reply" — it is POSITIVELY
 // `status === 'handled'`, nothing else. bucketOf's 'awaiting_reply' bucket
@@ -1731,14 +2076,14 @@ export async function completeTerminalQuoteItems(
   try {
     const { data, error } = await sb
       .from('inbox_items')
-      .select('id, status, followed_up_at')
+      .select('id, external_id, status, followed_up_at')
       .eq('source', 'quotetool')
       .in('external_id', [quoteId, `${quoteId}:color-request`]);
     if (error) {
       console.warn('[inbox] terminal-quote auto-complete: item lookup failed (non-fatal):', error.message);
       return { completed: 0, failed: true };
     }
-    const rows = (data ?? []) as { id: string; status: InboxStatus; followed_up_at: string | null }[];
+    const rows = (data ?? []) as { id: string; external_id: string; status: InboxStatus; followed_up_at: string | null }[];
     if (!rows.length) return { completed: 0, failed: false };
 
     // FIX 1 (row 317 fix-round): status === 'handled' is the ONLY eligible
@@ -1747,6 +2092,39 @@ export async function completeTerminalQuoteItems(
     // followed_up_at set), which this must exclude.
     const eligibleByStatus = rows.filter((r) => r.status === 'handled');
     if (!eligibleByStatus.length) return { completed: 0, failed: false };
+
+    // FIX (row 321, S43 wrap CUSTOMER lens HIGH): #838 (FIX 1 immediately
+    // above) means a plain "Handled" click now makes a `:color-request` item
+    // auto-completable — but the customer's request is still sitting live on
+    // `quotes.approval_snapshot.pendingColorRequest`, unapplied, until staff
+    // works it through ColorRequestPanel. Excluded here BEFORE the write, not
+    // merely badged in the UI, because the whole point of this function is
+    // that it runs unattended (a cron reconcile tick), with no operator in
+    // the loop to see a badge. Only fetches the quote when a color-request-
+    // shaped candidate is actually present (the common case — most terminal
+    // quotes never had one) — never a per-row query, mirrors
+    // fetchReversedItemIds' batched-not-per-row convention just below. Fails
+    // CLOSED on a lookup error (same rationale as fetchReversedItemIds' own
+    // doc): a query error is not proof the request was resolved, and silently
+    // completing a possibly-still-pending request is exactly wrong to fail
+    // open on.
+    const colorRequestExternalId = `${quoteId}:color-request`;
+    let eligibleByColorRequest = eligibleByStatus;
+    if (eligibleByStatus.some((r) => r.external_id === colorRequestExternalId)) {
+      const { data: quoteRow, error: quoteErr } = await sb
+        .from('quotes')
+        .select('approval_snapshot')
+        .eq('id', quoteId)
+        .maybeSingle<{ approval_snapshot: { pendingColorRequest?: unknown } | null }>();
+      if (quoteErr) {
+        console.warn('[inbox] terminal-quote auto-complete: pending-color-request lookup failed (non-fatal):', quoteErr.message);
+        return { completed: 0, failed: true };
+      }
+      if (quoteRow?.approval_snapshot?.pendingColorRequest) {
+        eligibleByColorRequest = eligibleByStatus.filter((r) => r.external_id !== colorRequestExternalId);
+      }
+    }
+    if (!eligibleByColorRequest.length) return { completed: 0, failed: false };
 
     // FIX 2 (row 317 fix-round, staff HIGH + admin MED converged): a row an
     // operator explicitly Reversed is a deliberate human override of the auto
@@ -1760,10 +2138,10 @@ export async function completeTerminalQuoteItems(
     // so this skip never blocks a genuinely new touch from resolving normally.
     const { reversedIds, failed: reversedLookupFailed } = await fetchReversedItemIds(
       sb,
-      eligibleByStatus.map((r) => r.id),
+      eligibleByColorRequest.map((r) => r.id),
     );
     if (reversedLookupFailed) return { completed: 0, failed: true };
-    const eligible = eligibleByStatus.filter((r) => !reversedIds.has(r.id));
+    const eligible = eligibleByColorRequest.filter((r) => !reversedIds.has(r.id));
     if (!eligible.length) return { completed: 0, failed: false };
 
     const nowIso = now.toISOString();
@@ -2067,6 +2445,80 @@ export async function listDueFollowUps(now: Date): Promise<DueFollowUpsResult> {
   return { ok: true, items };
 }
 
+export type PendingColorRequestsResult =
+  | { ok: true; items: PendingColorRequestItem[] }
+  | { ok: false; error: string };
+
+/**
+ * Row 321 (S43 wrap CUSTOMER lens, HIGH — LIVE PROD CASE): the ONLY existing
+ * view of a pending colour request was `ColorRequestPanel`, gated on
+ * `approval_snapshot?.pendingColorRequest` and rendered only on that ONE
+ * quote's own /admin/quotes/[id] page — nothing else in the app surfaced it,
+ * so once the inbox item that announced it left the board (Handled/Mark
+ * completed, or #317's terminal auto-complete), the request became invisible
+ * with no trace but a generic activity row. Kristie Tibbetts' colour request
+ * sat unfulfilled for three weeks this way (her inbox item was marked
+ * completed on 08-18; her quote's pendingColorRequest is still set today).
+ *
+ * This reads pendingColorRequest DIRECTLY off `quotes.approval_snapshot` —
+ * independent of any inbox_items row's status — so a hidden/completed/
+ * dismissed inbox item can never suppress it. Feeds a standing /inbox section
+ * (PendingColorRequestsSection) that lists every quote with a live request
+ * and links to the admin page where ColorRequestPanel can act on it.
+ *
+ * Bounded + single query, same chokepoint filters (is_test/view_only) as
+ * listQuotesForDashboard (queries.ts) — the live population is 2 quotes
+ * today; `limit` guards the pathological case without ever fetching more than
+ * one page over the wire. `.not('approval_snapshot->pendingColorRequest',
+ * 'is', null)` filters server-side (confirmed against prod: matches exactly
+ * the 2 live requests, `EXPLAIN` shows one Seq Scan over the ~190-row quotes
+ * table — no per-row fetch, no N+1).
+ *
+ * Row 321 fix-round FIX 5 (customer LOW): `.order('id', ...)` paired with
+ * `.limit()` — this repo's established convention (the #185 precedent, e.g.
+ * the returning-proxy count query above) — so the capped subset is
+ * DETERMINISTIC. Without it, the in-memory oldest-first sort below only holds
+ * within an ARBITRARY (unordered-query) subset once the live population ever
+ * exceeds `limit`; a request could nondeterministically drop off the list
+ * between loads.
+ */
+export async function listPendingColorRequests(limit = 200): Promise<PendingColorRequestsResult> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const { data, error } = await sb
+    .from('quotes')
+    .select('id, customer_name, quote_number, approval_snapshot')
+    .eq('is_test', false)
+    .eq('view_only', false)
+    .not('approval_snapshot->pendingColorRequest', 'is', null)
+    .order('id', { ascending: true })
+    .limit(limit);
+  if (error) return { ok: false, error: error.message };
+  const items = ((data ?? []) as {
+    id: string;
+    customer_name: string | null;
+    quote_number: number | null;
+    approval_snapshot: { pendingColorRequest?: { label?: string; requestedAt?: string } } | null;
+  }[])
+    .map((r): PendingColorRequestItem | null => {
+      const pending = r.approval_snapshot?.pendingColorRequest;
+      if (!pending) return null; // defensive — the query filter above already excludes these
+      return {
+        quoteId: String(r.id),
+        quoteNumber: r.quote_number,
+        customerName: r.customer_name,
+        label: pending.label || 'Colour change',
+        requestedAt: pending.requestedAt ?? null,
+      };
+    })
+    .filter((i): i is PendingColorRequestItem => i !== null)
+    // Oldest request first — the longest-waiting customer surfaces at the top,
+    // matching every other /inbox strip's stalest-first convention. A tiny
+    // in-memory sort over a population capped at `limit` (2 rows today).
+    .sort((a, b) => (a.requestedAt ?? '').localeCompare(b.requestedAt ?? ''));
+  return { ok: true, items };
+}
+
 /** `operatorId` must be a real auth.users uuid, or null — mirrors
  *  markItemHandledLocal's doc comment / the sibling-guard-parity convention:
  *  the route's fallback is `operator?.id ?? null`, never the literal string
@@ -2078,8 +2530,14 @@ export async function listDueFollowUps(now: Date): Promise<DueFollowUpsResult> {
 export async function markFollowUpDone(id: string, operatorId: string | null): Promise<{ ok: boolean; error?: string }> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
-  const { error } = await sb.from('follow_ups').update({ status: 'done' }).eq('id', id);
+  // #323: CAS on status='pending', matching closeFollowUp's guard on the same
+  // table. Two tabs / two operators racing to click Done on one follow-up must
+  // not both succeed and both log a dashboard_activity row — the loser's
+  // update matches zero rows, and that's an honest no-op (the row is already
+  // 'done', which is the caller's desired end state), not an error.
+  const { data, error } = await sb.from('follow_ups').update({ status: 'done' }).eq('id', id).eq('status', 'pending').select('id');
   if (error) return { ok: false, error: error.message };
+  if (!data || data.length === 0) return { ok: true };
   await sb.from('dashboard_activity').insert({ actor: operatorId ?? 'system', action: 'handled', detail: { followUpId: id } });
   return { ok: true };
 }
@@ -2271,6 +2729,18 @@ export type InWorksItem = {
   // fire. Non-null is the single displayed reason — see needsLookReason's own
   // doc comment for why only one shows when a row trips more than one rule.
   needsLookReason: string | null;
+  /** Row 321: true when this item both LOOKS like a colour request (a
+   *  `quotetool` item whose external_id carries the `:color-request` suffix)
+   *  AND its backing quote still carries a LIVE
+   *  `approval_snapshot.pendingColorRequest` — badges + confirm-gates "Mark
+   *  completed" in InWorksSection.tsx. Applies to BOTH the 'awaiting' and
+   *  'handled' buckets — fix-round FIX 1 added external_id to
+   *  IN_WORKS_SELECT for both precisely to close the HIGH where the
+   *  'awaiting' bucket read this as false unconditionally; do not narrow it
+   *  back to handled-only. See isLiveColorRequestItem for the shape+liveness
+   *  rule, including its fail-safe over-warn direction on a lookup error.
+   *  Optional so existing fixtures that omit it read as false. */
+  isColorRequest?: boolean;
 };
 export type InWorksResult =
   | {
@@ -2285,18 +2755,25 @@ export type InWorksResult =
     }
   | { ok: false; error: string };
 
+// Row 321 fix-round FIX 1 (technical HIGH): external_id now selected for BOTH
+// buckets — it used to be handled-only ("avoid churning the shared select"),
+// which is exactly what let the HIGH through: the 'awaiting' bucket (the
+// Handled -> Followed/snooze path) read isColorRequest:false unconditionally
+// no matter what, because the column was never fetched at all. That earlier
+// scoping call is overruled here; every InWorksItem now carries external_id.
 const IN_WORKS_SELECT =
-  'id, source, channel, preview, followed_up_at, handled_at, status, dashboard_contacts ( display_name )';
+  'id, source, external_id, channel, preview, followed_up_at, handled_at, status, dashboard_contacts ( display_name )';
 
-// #307: the 'handled' bucket alone also needs external_id (to derive the
-// backing quote id, quoteIdPrefix) and direction (rule b) to compute "Needs a
-// look" — the 'awaiting' bucket's query stays on the narrower IN_WORKS_SELECT
-// since none of the three rules apply there (out of scope for this change).
-const IN_WORKS_HANDLED_SELECT = IN_WORKS_SELECT + ', external_id, direction';
+// #307: the 'handled' bucket alone also needs direction (rule b) to compute
+// "Needs a look" — the 'awaiting' bucket's query stays on the narrower
+// IN_WORKS_SELECT since none of the three needsLookReason rules apply there
+// (out of scope for that change; unrelated to external_id above).
+const IN_WORKS_HANDLED_SELECT = IN_WORKS_SELECT + ', direction';
 
 function mapInWorksRow(
   rows: unknown[],
   tsKey: 'followed_up_at' | 'handled_at',
+  colorRequestLookup: { liveIds: ReadonlySet<string>; failed: boolean },
   reasonFor?: (row: Record<string, unknown>) => string | null,
 ): InWorksItem[] {
   return (rows ?? []).map((r) => {
@@ -2310,6 +2787,10 @@ function mapInWorksRow(
       customerName: (c?.display_name as string | null) ?? null,
       lastActivityAt: (row[tsKey] as string | null) ?? null,
       needsLookReason: reasonFor ? reasonFor(row) : null,
+      // Row 321 fix-round FIX 1: shape AND liveness, for BOTH buckets now
+      // that external_id is selected on both — see isLiveColorRequestItem's
+      // own doc for the fail-safe direction on a lookup error.
+      isColorRequest: isLiveColorRequestItem(row.source, String(row.external_id ?? ''), colorRequestLookup),
     };
   });
 }
@@ -2459,6 +2940,7 @@ export async function listInWorks(limit = 200): Promise<InWorksResult> {
   if (aw.error) return { ok: false, error: aw.error.message };
   if (hd.error) return { ok: false, error: hd.error.message };
 
+  const awaitingRows = (aw.data ?? []) as unknown as Record<string, unknown>[];
   const handledRows = (hd.data ?? []) as unknown as Record<string, unknown>[];
   const handledIds = handledRows.map((r) => String(r.id));
   // #307: only a 'quotetool' item's external_id backs a quote id — same gate
@@ -2471,14 +2953,28 @@ export async function listInWorks(limit = 200): Promise<InWorksResult> {
         .filter(isUuid),
     ),
   ];
-  const [quoteStatusResult, pendingFollowUpResult] = await Promise.all([
+  // Row 321 fix-round FIX 1: color-request liveness ids come from BOTH
+  // buckets — unlike quotetoolQuoteIds above (needsLookReason only applies to
+  // the handled bucket), the HIGH this fix closes is specifically the
+  // AWAITING bucket never carrying isColorRequest at all. ONE query covers
+  // both buckets combined, not one per bucket.
+  const colorRequestQuoteIds = [
+    ...new Set(
+      [...awaitingRows, ...handledRows]
+        .filter((r) => r.source === 'quotetool' && isColorRequestExternalId(String(r.external_id ?? '')))
+        .map((r) => quoteIdPrefix(String(r.external_id)))
+        .filter(isUuid),
+    ),
+  ];
+  const [quoteStatusResult, pendingFollowUpResult, colorRequestLookup] = await Promise.all([
     fetchQuoteStatusesById(sb, quotetoolQuoteIds),
     fetchPendingFollowUpItemIds(sb, handledIds),
+    fetchLiveColorRequestQuoteIds(sb, colorRequestQuoteIds),
   ]);
   const quoteStatusById = quoteStatusResult.statuses;
   const pendingFollowUpItemIds = pendingFollowUpResult.ids;
 
-  const handled = mapInWorksRow(handledRows, 'handled_at', (row) => {
+  const handled = mapInWorksRow(handledRows, 'handled_at', colorRequestLookup, (row) => {
     const quoteStatus =
       row.source === 'quotetool'
         ? (quoteStatusById.get(quoteIdPrefix(String(row.external_id))) ?? null)
@@ -2492,7 +2988,7 @@ export async function listInWorks(limit = 200): Promise<InWorksResult> {
 
   return {
     ok: true,
-    awaiting: mapInWorksRow(aw.data ?? [], 'followed_up_at'),
+    awaiting: mapInWorksRow(awaitingRows, 'followed_up_at', colorRequestLookup),
     handled,
     evidenceIncomplete: quoteStatusResult.failed || pendingFollowUpResult.failed,
   };
@@ -2516,7 +3012,28 @@ export async function listInWorks(limit = 200): Promise<InWorksResult> {
  * two forms are provably identical, but a negative pair fails OPEN on a
  * future 5th status (silently allowed through) while positive fails CLOSED
  * (silently blocked, the safe direction — a blocked completion is visible to
- * the operator via the ok:false path; a wrongly-allowed clobber is not). */
+ * the operator via the ok:false path; a wrongly-allowed clobber is not).
+ *
+ * Row 321 fix-round FIX 1(b) (server-side backstop): a client window.confirm()
+ * is not a guard — it can be stale, bypassed, or raced. Before the status-
+ * guarded UPDATE runs, a `:color-request`-shaped item whose quote still has a
+ * live approval_snapshot.pendingColorRequest is REFUSED, mirroring
+ * completeTerminalQuoteItems' own hard exclusion of the same shape (see that
+ * function's doc). Chosen over allow-with-audit: the whole point of this
+ * feature is that a colour request stays actionable until ColorRequestPanel
+ * resolves it (apply/dismiss) — completing the INBOX message while
+ * pendingColorRequest stays set would reproduce Kristie Tibbetts' exact bug
+ * with an audit trail bolted on, not fix it. An operator who genuinely
+ * resolved this by phone records that via ColorRequestPanel's own Dismiss
+ * flow (which prompts for a reason) — that clears pendingColorRequest and
+ * this guard then passes normally on the next attempt. markItemHandledLocal
+ * deliberately does NOT get the same guard: 'handled' is not terminal — the
+ * item stays fully tracked (badge + confirm both still apply) in
+ * InWorksSection's 'handled'/'awaiting' buckets either way, so nothing is
+ * buried by that action alone; only Mark completed actually removes the item
+ * from every inbox list. Fails CLOSED on its own lookup error, same
+ * direction as completeTerminalQuoteItems' pendingColorRequest check: a query
+ * error is not proof the request was resolved. */
 export async function markItemCompleted(
   itemId: string,
   operatorId: string | null,
@@ -2525,6 +3042,39 @@ export async function markItemCompleted(
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const from = await priorStateOf(sb, itemId);
+
+  // Row 321 fix-round FIX 1(b): a targeted, separate `inbox_items` lookup for
+  // external_id — never folded into priorStateOf above, which is shared by
+  // three OTHER actions whose dashboard_activity `detail.from` shape this
+  // must not change. This select itself runs on EVERY markItemCompleted call
+  // — a second inbox_items round-trip alongside priorStateOf's own, on the
+  // general hot path (not just shape-matching items); only the follow-on
+  // 'quotes' query below is conditional, firing solely when the item is
+  // actually shape-matching. Accepted tradeoff, not an oversight: folding
+  // this into priorStateOf would risk that shared `detail.from` contract for
+  // its three other callers, and an extra small select on every completion
+  // is cheaper than that risk.
+  const target = await sb.from('inbox_items').select('external_id').eq('id', itemId).maybeSingle();
+  const targetExternalId = String((target.data as { external_id?: string | null } | null)?.external_id ?? '');
+  if (isColorRequestExternalId(targetExternalId)) {
+    const quoteId = quoteIdPrefix(targetExternalId);
+    const { data: quoteRow, error: quoteErr } = await sb
+      .from('quotes')
+      .select('approval_snapshot')
+      .eq('id', quoteId)
+      .maybeSingle<{ approval_snapshot: { pendingColorRequest?: unknown } | null }>();
+    if (quoteErr) {
+      const msg = "Could not confirm the colour request is resolved — try again";
+      await recordActionFailed(itemId, operatorId, 'completed', msg);
+      return { ok: false, error: msg };
+    }
+    if (quoteRow?.approval_snapshot?.pendingColorRequest) {
+      const msg = "This customer has a pending colour change request — resolve it from the quote's admin page first";
+      await recordActionFailed(itemId, operatorId, 'completed', msg);
+      return { ok: false, error: msg };
+    }
+  }
+
   const { data, error } = await sb
     .from('inbox_items')
     .update({

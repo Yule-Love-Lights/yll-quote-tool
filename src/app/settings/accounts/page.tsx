@@ -12,6 +12,7 @@ import { getOperator } from '@/lib/auth/supabaseServer';
 import { AccountsManager } from '@/components/settings/AccountsManager';
 import { ChangeMyPassword } from '@/components/settings/ChangeMyPassword';
 import { CrewLogins } from '@/components/settings/CrewLogins';
+import { OfficeStaff } from '@/components/settings/OfficeStaff';
 
 export const dynamic = 'force-dynamic';
 
@@ -42,10 +43,25 @@ export default async function AccountsPage() {
           <div className="flex flex-col gap-8">
             <ChangeMyPassword name={operator.name} email={operator.email} />
             {isAdmin && (
-              <section>
-                <h2 className="text-[15px] font-semibold text-gray-900 mb-3">Staff accounts</h2>
-                <AccountsManager currentUserId={operator.id} />
-              </section>
+              <>
+                <section>
+                  <h2 className="text-[15px] font-semibold text-gray-900 mb-3">Staff accounts</h2>
+                  <AccountsManager currentUserId={operator.id} />
+                </section>
+                {/*
+                  Office staff onboarding (row 354): turn an existing operator into
+                  a time-clock user, replacing the hand-written SQL. Admin-only,
+                  matching /api/admin/office-staff.
+                */}
+                <OfficeStaff />
+                {/*
+                  Was imported but never rendered, so the whole crew panel — login
+                  creation (row 279/296) AND the Telegram link (row 318) — had no
+                  reachable surface at all. Admin-only, matching every handler in
+                  /api/admin/crew-accounts.
+                */}
+                <CrewLogins />
+              </>
             )}
           </div>
         ) : (

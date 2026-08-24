@@ -1,4 +1,5 @@
 import { OperatorShell } from '@/components/OperatorShell';
+import { TrainingRowsSkeleton } from './TrainingRowsSkeleton';
 
 // Wrapped in the operator chrome (#171a reconcile — /training and every
 // nested sub-route, new/references/archive/examples, had no loading.tsx of
@@ -20,14 +21,8 @@ export default function Loading() {
   return (
     <OperatorShell active="training">
       <div className="max-w-5xl mx-auto">
-        <div role="status" aria-busy="true">
-          <div className="mb-6 h-8 w-64 animate-pulse rounded-lg bg-black/10" />
-          <div className="space-y-2">
-            <div className="h-16 animate-pulse rounded-lg bg-black/10" />
-            <div className="h-16 animate-pulse rounded-lg bg-black/10" />
-            <div className="h-16 animate-pulse rounded-lg bg-black/10" />
-          </div>
-        </div>
+        <div className="mb-6 h-8 w-64 animate-pulse rounded-lg bg-black/10" />
+        <TrainingRowsSkeleton />
       </div>
     </OperatorShell>
   );

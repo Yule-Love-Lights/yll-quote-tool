@@ -183,9 +183,10 @@ brief to a file in the scratchpad and pass it by reference in the prompt text
    between your own read and this agent's as a real finding, not noise — resolve
    it before telling Naldo the work is good.
 
-9. **Review.** Apply the repo's standing four-lens pre-merge review (customer,
-   staff, admin, technical) sized to the risk. Disposition every finding: fix,
-   accept with a stated reason, or defer to a ledger row.
+9. **Review.** Apply the repo's standing risk-scaled pre-merge lens review
+   (AGENTS.md "Review gates": full four for money, customer-facing, auth,
+   migration, or shared-path diffs; fewer for lower-risk diffs). Disposition
+   every finding: fix, accept with a stated reason, or defer to a ledger row.
 
 10. **Correct via Codex, not yourself — with a stop condition.** If Codex's work
     falls short, write a correction brief naming the exact defect and dispatch

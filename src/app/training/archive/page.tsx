@@ -14,6 +14,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { OperatorShell } from '@/components/OperatorShell';
 import { SettingsSubNav } from '@/components/dashboard/SettingsSubNav';
+import { TrainingRowsSkeleton } from '../TrainingRowsSkeleton';
 
 type Status = {
   properties: { total: number; withImagery: number; failed: number; pending: number };
@@ -183,7 +184,11 @@ export default function ArchiveImageryPage() {
           <div className="bg-red-50 border border-red-200 rounded-md p-3 text-sm text-red-700 mb-4">{error}</div>
         )}
 
-        {loading && !status && <p className="text-sm text-gray-500">Loading…</p>}
+        {/* Same skeleton the route's loading.tsx shows (row 332, mirrors
+            #171b) — was a bare "Loading…" line, which made the route-transition
+            skeleton morph into something sparser before morphing again into the
+            real content once the client-side GET fetch resolved. */}
+        {loading && !status && <TrainingRowsSkeleton />}
 
         {status && (
           <>

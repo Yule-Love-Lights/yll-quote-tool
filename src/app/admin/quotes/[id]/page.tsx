@@ -16,7 +16,7 @@ import { buildPortalLineItems } from '@/lib/portal/adapter';
 import { BUSINESS_RULES, resolveLineItemLabel, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { getQuoteRaw } from '@/lib/quotes';
 import { deriveStatus, APPROVED_DISPLAYS_AS, type QuoteStatus } from '@/lib/quoteStatus';
-import { requiresReconsent, isSupersededPendingAmendment } from '@/lib/amend';
+import { requiresReconsent, isSupersededPendingAmendment, resolveAmendmentBasis } from '@/lib/amend';
 import { getJobByQuote } from '@/lib/jobs';
 import { getInvoiceByJob } from '@/lib/invoices';
 import { getDesignByQuote } from '@/lib/designs';
@@ -563,6 +563,15 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
                         : status === 'pending'
                           ? { label: 'Pending customer response', cls: 'bg-amber-100 text-amber-700' }
                           : null;
+                // Row 313(b) fix: read the SAME resolveAmendmentBasis figure
+                // the portal card / customer notice / amend-decline staff
+                // alert already use (invoice_basis when the amend route
+                // stamped one, else the raw trail) instead of the raw
+                // a.delta/a.new_total/a.new_balance, which disagree with the
+                // Linked invoice card's own invoice.balance above on a
+                // tax-overridden invoice (amend.ts's resolveAmendmentBasis
+                // doc comment).
+                const { deltaUsd, newTotalUsd, newBalanceUsd } = resolveAmendmentBasis(a);
                 return (
                   <li key={i} className="border-t border-gray-100 pt-2 first:border-0 first:pt-0">
                     <div className="flex items-start justify-between gap-2">
@@ -575,8 +584,8 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
                     </div>
                     <p className="text-gray-500 text-xs">
                       {fmtDate(a.amended_at)} · by {a.by} ·{' '}
-                      {a.delta >= 0 ? '+' : '−'}{money(Math.abs(a.delta))} → new total{' '}
-                      {money(a.new_total)} · balance {money(a.new_balance)}
+                      {deltaUsd >= 0 ? '+' : '−'}{money(Math.abs(deltaUsd))} → new total{' '}
+                      {money(newTotalUsd)} · balance {money(newBalanceUsd)}
                     </p>
                     {a.consent?.status === 'declined' && (
                       <p className="mt-1 text-xs text-red-700">

@@ -38,7 +38,7 @@
 //   staff signal. When Valor lands (#38), the payment step runs before this and
 //   the receipt + any GHL move fire on payment-confirmed instead.
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { rateLimitResponse } from '@/lib/rateLimit';
 import {
   sendSms,
@@ -79,6 +79,7 @@ import {
   minimumOrderSubtotal,
   orderMinimumStatus,
 } from '@/lib/portal/derivePackages';
+import { formatEventDateForGhl, getEventDateFromGhl, pushEventDateToGhl } from '@/lib/integrations/ghlEventDate';
 // #110 W1-064: shared plain round-to-cents (was copy-pasted here / derivePackages).
 // Aliased to `round2` so call sites are byte-identical.
 import { roundMoney as round2 } from '@/lib/money';
@@ -128,6 +129,12 @@ type QuoteRow = {
   // View-only portal (#176): a staff-flagged browse-only quote can never be
   // approved — see the check right after the status-machine gate below.
   view_only: boolean;
+  // #314 fix round (staff-lens HIGH): MM/DD/YYYY value last CONFIRMED pushed
+  // to GHL's "Event Date" custom field (any push site — send, the builder's
+  // date-changing save, or a prior approval). The reconcile below compares
+  // against THIS, never against GHL's live value — see the reconcile block's
+  // own comment for why. Null on a legacy row (never confirmed pushed).
+  ghl_event_date_pushed: string | null;
 };
 
 type ApproveBody = {
@@ -334,7 +341,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { data: quote, error: fetchErr } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, total, result, inputs, highlevel_contact_id, customer_approved_at, status, deposit_paid_at, viewed_at, quote_sent_at, is_test, service_type, view_only',
+      'id, customer_name, customer_address, customer_phone, customer_email, total, result, inputs, highlevel_contact_id, customer_approved_at, status, deposit_paid_at, viewed_at, quote_sent_at, is_test, service_type, view_only, ghl_event_date_pushed',
     )
     .eq('id', id)
     .single<QuoteRow>();
@@ -703,6 +710,130 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       { error: 'Quote already approved', code: 'already-approved' },
       { status: 409 },
     );
+  }
+
+  // Event-date GHL reconciliation (ledger #314). Approval is the last
+  // moment before a job becomes real — #807 already pushes an EVENT quote's
+  // date to GHL on send and re-pushes it on every date-changing save
+  // (src/app/api/quote/route.ts's isUpdate branch), but both of those pushes
+  // are fire-and-forget / fail-soft (see ghlEventDate.ts's file header): a
+  // missing customFields scope, a GHL 500, or the 6s push deadline tripping
+  // leaves nothing that retries, so weeks later the CRM can still be stale
+  // even though every prior attempt "should" have caught it.
+  //
+  // #314 fix round (staff-lens HIGH): this used to reconcile against GHL's
+  // OWN current value (getEventDateFromGhl) and push on ANY mismatch — which
+  // reverts a staff correction made DIRECTLY in GHL (their real scheduling
+  // workflow: fix the date on a call, the customer approves minutes later,
+  // and the fix gets silently stomped back to the quote's stale value). The
+  // comparison basis is now `ghl_event_date_pushed` — the MM/DD/YYYY value we
+  // last CONFIRMED a push landed, stamped by every push site (this block,
+  // #807's send-time push, #807's update-branch re-push) — never GHL's live
+  // value. Push fires only when OUR side has moved since the last confirmed
+  // push (an earlier push attempt failed silently, or the quote was resaved
+  // with a new date after the last confirmed push); it never fires merely
+  // because GHL currently disagrees with us.
+  //
+  // Legacy rows (ghl_event_date_pushed is null — approved, or last pushed,
+  // before this column existed) have no push history to compare against.
+  // Conservative fallback: read GHL's current value and push ONLY on a
+  // CONFIRMED-empty read — never overwrite a non-empty value we have no
+  // record of having put there ourselves. getEventDateFromGhl is only
+  // called from this one branch now; once every legacy row picks up a
+  // ghl_event_date_pushed stamp from a later push, this branch stops firing
+  // on its own.
+  //
+  // #314 fix round #2 (delta-verify MED — this fix round partially REOPENED
+  // the HIGH it exists to close): getEventDateFromGhl used to collapse
+  // "confirmed empty" and "the read itself failed" into the same `null`, so
+  // `shouldPush = !currentGhlValue` treated a transient GHL outage (a 500, a
+  // network blip, a scope problem on the GET) as confirmed-empty and pushed
+  // anyway — the independently-fallible write could then succeed and stomp a
+  // real staff-set GHL value, exactly the class of bug this PR exists to
+  // prevent. getEventDateFromGhl now returns `undefined` (not `null`) for
+  // any inconclusive read; only a CONFIRMED `null` licenses the fallback
+  // push below. An inconclusive read pushes nothing and leaves the row for a
+  // later reconcile — a missed push is recoverable, a stomped staff edit is
+  // not.
+  //
+  // Same positive-match gate as #807 (`=== 'event'`, never `!== 'permanent'`,
+  // per this repo's standing rule) + !is_test + a linked contact + a valid
+  // formatted date.
+  //
+  // #314 fix round (technical HIGH + customer MED): wrapped in `after()`,
+  // 1:1 with src/app/api/quote/route.ts's own event-date push (see that
+  // file's FIX A comment for the full reasoning against a bare detached
+  // call). This used to be awaited INLINE, ahead of the confirmation
+  // SMS/email below — chaining up to ~26-30s of GHL round trips (a possible
+  // read + a possible write, each internally deadline-bounded) onto the
+  // customer's approval response for zero customer-visible benefit. There is
+  // nothing to await FOR: approval is already durably recorded by the
+  // guarded UPDATE above, and this reconcile's own outcome is independent of
+  // that record and never throws (see getEventDateFromGhl /
+  // pushEventDateToGhl's own doc comments).
+  if (isEvent && !quote.is_test && quote.highlevel_contact_id) {
+    const formattedEventDate = formatEventDateForGhl(quote.inputs?.event?.eventDate);
+    const pushedMarker = quote.ghl_event_date_pushed;
+    if (formattedEventDate && formattedEventDate !== pushedMarker) {
+      const contactId = quote.highlevel_contact_id;
+      const rawEventDate = quote.inputs?.event?.eventDate;
+      after(async () => {
+        let shouldPush = true;
+        if (pushedMarker === null) {
+          const currentGhlValue = await getEventDateFromGhl(contactId);
+          if (currentGhlValue === undefined) {
+            // Inconclusive read (no contactId, not configured, field
+            // resolution failed, or the GHL call itself errored/timed out)
+            // — NOT the same as a confirmed-empty field. Do not push: a
+            // false "empty" reading here is exactly what let a transient
+            // GHL failure stomp a real staff-set value (#314 fix round #2).
+            shouldPush = false;
+            console.log(
+              `[api/quotes/:id/approve] event-date reconcile (#314) SKIPPED quote ${id}: legacy row (no push history) and GHL's current value could not be confirmed (inconclusive read) — leaving for a later reconcile`,
+            );
+          } else {
+            // A confirmed read: null = GHL agrees the field is genuinely
+            // empty (push is safe); a string = GHL already holds a
+            // non-empty value (never overwrite it here).
+            shouldPush = currentGhlValue === null;
+            if (!shouldPush) {
+              // #314 fix round (admin lens MED): log the skip, matching the
+              // logging style of the failure branches below.
+              console.log(
+                `[api/quotes/:id/approve] event-date reconcile (#314) SKIPPED quote ${id}: legacy row (no push history) and GHL already holds a non-empty value ("${currentGhlValue}")`,
+              );
+            }
+          }
+        }
+        if (!shouldPush) return;
+
+        const { pushed } = await pushEventDateToGhl(contactId, rawEventDate);
+        if (!pushed) {
+          console.error(
+            `[api/quotes/:id/approve] event-date reconcile (#314) FAILED to push quote ${id}'s event date ("${formattedEventDate}") to GHL`,
+          );
+          return;
+        }
+
+        const { error: stampErr } = await sb
+          .from('quotes')
+          .update({ ghl_event_date_pushed: formattedEventDate })
+          .eq('id', id);
+        if (stampErr) {
+          console.error(
+            `[api/quotes/:id/approve] event-date reconcile (#314) pushed "${formattedEventDate}" to GHL for quote ${id} but failed to stamp ghl_event_date_pushed:`,
+            stampErr.message,
+          );
+        } else {
+          // #314 fix round (admin lens MED): log the successful push —
+          // quote id, old marker, new value — matching the failure branches'
+          // logging style. Previously a successful push left zero trace.
+          console.log(
+            `[api/quotes/:id/approve] event-date reconcile (#314) pushed quote ${id}'s event date to GHL: "${pushedMarker ?? '(none)'}" -> "${formattedEventDate}"`,
+          );
+        }
+      });
+    }
   }
 
   // Approval is now recorded. Notify the customer and ourselves — all
