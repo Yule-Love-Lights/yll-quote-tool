@@ -62,6 +62,14 @@ import { deriveSideMeasure } from '@/lib/permanent/satelliteMeasure';
 import { roundFootageUpTo5 } from '@/lib/permanent/types';
 import { deriveTrackAccessories, hasAccessorySignal } from '@/lib/permanent/trackAccessories';
 import {
+  reconcilePermanentSideField,
+  derivePermanentSideFootageBaseline,
+  mergePermanentSideFootageBaseline,
+  type PermanentSideFootageBaseline,
+  type PermanentSideFieldKey,
+  type PermanentSideFieldReconcileResult,
+} from '@/lib/permanent/reconcileSideFootage';
+import {
   reconcileBistroFootage,
   deriveBistroFootageMap,
   roundBistroFootageOnBlur,
@@ -1626,6 +1634,13 @@ export default function QuoteBuilder({
   // share one derive effect. See reconcileFootage.ts and the rehydrate-seed
   // comment in getSetter below.
   const prevHolidayDerivedRef = useRef<HolidayFootageBaseline>({});
+  // Row 345: baseline reconcile for the four permanent house sides' footage +
+  // corners (8 fields) — the scalar analog of prevHolidayDerivedRef above,
+  // for the OTHER shared-effect derive that had the same flaw (permanentSatLines
+  // holds all four sides in one object, so redrawing one side re-fires the
+  // whole effect). See reconcileSideFootage.ts and the rehydrate-seed comment
+  // in getSetter(side) below.
+  const prevPermSideDerivedRef = useRef<PermanentSideFootageBaseline>({});
 
   // Recompute footages from the SATELLITE lines (#35: the only line-measurement
   // source — deterministic feet-per-pixel × image pixel width). When there's no
@@ -1795,6 +1810,28 @@ export default function QuoteBuilder({
     });
   };
 
+  // Row 345 reopen-clobber guard (mirrors seedHolidayBaselineIfFrozen above,
+  // and #244's bistro seed): while still frozen (#142), prevPermSideDerivedRef
+  // has never been seeded for these PERSISTED sides — rehydrate sets
+  // permanentSatLines directly and never runs the derive effect while frozen.
+  // Without this seed, the FIRST post-reopen edit on ANY one of the four
+  // sides would see the OTHER three as having no recorded baseline, treat
+  // them as new, and stamp their freshly re-derived footage/corners over any
+  // saved manual override. Called before thawing, from the isPermanentSide
+  // getSetter branch below (for every side, not just the touched one), so
+  // every field's baseline is seeded together. Seeds from the CURRENT
+  // (pre-edit) lines/scale/aspect, same as the bistro seed.
+  const seedPermanentSideBaselineIfFrozen = () => {
+    if (!permDeriveFrozenRef.current) return;
+    const sides = {} as Record<PermanentSideKey, { hasLines: boolean; footage: number | null; corners: number }>;
+    for (const side of PERMANENT_SIDES) {
+      const lines = permanentSatLines[side];
+      const m = deriveSideMeasure(lines, satelliteFeetPerPixel, satelliteAspect);
+      sides[side] = { hasLines: lines.length > 0, footage: m.footage, corners: m.corners };
+    }
+    prevPermSideDerivedRef.current = derivePermanentSideFootageBaseline(sides);
+  };
+
   // Line setters — satellite-only now (#35): street lines are gone, the design
   // owns the street-side visuals.
   const getSetter = (type: LineType): ((updater: (lines: LineSegment[]) => LineSegment[]) => void) => {
@@ -1853,6 +1890,11 @@ export default function QuoteBuilder({
     }
     if (isPermanentSide(type)) {
       return (updater) => {
+        // Row 345 reopen-clobber guard: seed the reconcile baseline from the
+        // CURRENT (pre-edit) lines BEFORE thawing — see
+        // seedPermanentSideBaselineIfFrozen's own comment above. No-ops when
+        // not frozen (a live session already has a real baseline).
+        seedPermanentSideBaselineIfFrozen();
         // #142: the operator touched the lines — thaw the rehydrate freeze so
         // footage/counts follow the visible geometry again (live-session rules).
         permDeriveFrozenRef.current = false;
@@ -1876,36 +1918,103 @@ export default function QuoteBuilder({
   // pulls have it); corners are scale-free. A side with no lines this session is
   // left alone (a manual/persisted value wins); removing the last run resets it
   // to 0. Mirrors the holiday hadRef reset pattern above.
+  //
+  // Row 345 fix (sibling of the row 333 holiday fix above): this effect shares
+  // ONE dependency list across all four sides (permanentSatLines is one object
+  // holding all four), so redrawing e.g. the front roofline re-fires the whole
+  // effect — the OLD logic compared each field's CURRENT BILLED value straight
+  // against its freshly re-derived target with no baseline, so it couldn't tell
+  // "staff typed an override on an untouched side" apart from "this side's own
+  // geometry changed," and silently clobbered the former. Same flaw, same fix:
+  // reconcilePermanentSideField (reconcileSideFootage.ts) reconciles each of
+  // the 8 fields (footage + corners × 4 sides) against its OWN baseline.
+  //
+  // Compute the reconcile + the baseline update HERE, synchronously, using the
+  // render-closure `form.permanent` — not inside the setForm functional
+  // updater. React StrictMode dev double-invokes a setState updater to check
+  // purity: it discards the FIRST call's return value, but not any side effect
+  // the call performed. Mutating prevPermSideDerivedRef from inside the
+  // updater would let the discarded first call pre-advance the baseline, so
+  // the kept second call would compare against an already-advanced baseline
+  // and misclassify a genuine redraw as a standing override, silently
+  // no-op'ing it (dev-only; prod never double-invokes). Mirrors the holiday
+  // and bistro fixes' own S46 finding-2 comment.
   useEffect(() => {
     if (form.serviceType !== 'permanent') return;
     if (permDeriveFrozenRef.current) return; // #142: rehydrated, untouched — saved values win
-    const t = {} as Record<PermanentSideKey, { footage: number | null; corners: number | null }>;
-    for (const side of PERMANENT_SIDES) {
-      const lines = permanentSatLines[side];
-      const has = lines.length > 0;
-      const m = deriveSideMeasure(lines, satelliteFeetPerPixel, satelliteAspect);
-      t[side] = {
-        footage: has ? m.footage : hadPermLinesRef.current[side] ? 0 : null,
-        corners: has ? m.corners : hadPermLinesRef.current[side] ? 0 : null,
-      };
-      hadPermLinesRef.current[side] = has;
-    }
+    const baseline = prevPermSideDerivedRef.current;
+    const hasScale = satelliteFeetPerPixel != null;
+    const p = form.permanent;
+
+    const front = deriveSideMeasure(permanentSatLines.front, satelliteFeetPerPixel, satelliteAspect);
+    const left = deriveSideMeasure(permanentSatLines.left, satelliteFeetPerPixel, satelliteAspect);
+    const right = deriveSideMeasure(permanentSatLines.right, satelliteFeetPerPixel, satelliteAspect);
+    const back = deriveSideMeasure(permanentSatLines.back, satelliteFeetPerPixel, satelliteAspect);
+    const hasFront = permanentSatLines.front.length > 0;
+    const hasLeft = permanentSatLines.left.length > 0;
+    const hasRight = permanentSatLines.right.length > 0;
+    const hasBack = permanentSatLines.back.length > 0;
+    const hadFrontPrev = hadPermLinesRef.current.front;
+    const hadLeftPrev = hadPermLinesRef.current.left;
+    const hadRightPrev = hadPermLinesRef.current.right;
+    const hadBackPrev = hadPermLinesRef.current.back;
+    hadPermLinesRef.current = { front: hasFront, left: hasLeft, right: hasRight, back: hasBack };
+
+    // Footage is gated on a known satellite scale (deriveSideMeasure returns
+    // footage: null with none — a manual satellite upload); corners is
+    // scale-free and always active while its side has lines.
+    const frontFootage = reconcilePermanentSideField({ active: hasScale, hasLines: hasFront, hadLinesPrev: hadFrontPrev, freshValue: front.footage ?? 0, currentBilled: p.frontFootage, baseline: baseline.frontFootage });
+    const frontCorners = reconcilePermanentSideField({ active: true, hasLines: hasFront, hadLinesPrev: hadFrontPrev, freshValue: front.corners, currentBilled: p.frontCorners, baseline: baseline.frontCorners });
+    const leftFootage = reconcilePermanentSideField({ active: hasScale, hasLines: hasLeft, hadLinesPrev: hadLeftPrev, freshValue: left.footage ?? 0, currentBilled: p.leftFootage, baseline: baseline.leftFootage });
+    const leftCorners = reconcilePermanentSideField({ active: true, hasLines: hasLeft, hadLinesPrev: hadLeftPrev, freshValue: left.corners, currentBilled: p.leftCorners, baseline: baseline.leftCorners });
+    const rightFootage = reconcilePermanentSideField({ active: hasScale, hasLines: hasRight, hadLinesPrev: hadRightPrev, freshValue: right.footage ?? 0, currentBilled: p.rightFootage, baseline: baseline.rightFootage });
+    const rightCorners = reconcilePermanentSideField({ active: true, hasLines: hasRight, hadLinesPrev: hadRightPrev, freshValue: right.corners, currentBilled: p.rightCorners, baseline: baseline.rightCorners });
+    const backFootage = reconcilePermanentSideField({ active: hasScale, hasLines: hasBack, hadLinesPrev: hadBackPrev, freshValue: back.footage ?? 0, currentBilled: p.backFootage, baseline: baseline.backFootage });
+    const backCorners = reconcilePermanentSideField({ active: true, hasLines: hasBack, hadLinesPrev: hadBackPrev, freshValue: back.corners, currentBilled: p.backCorners, baseline: baseline.backCorners });
+
+    // MERGE into the previous baseline (row 333 finding 1 precedent) — a
+    // footage field with no known scale this run keeps its existing baseline
+    // key untouched, so switching to a manual satellite upload and back can't
+    // drop it (see reconcileSideFootage.ts's own comment for the full hazard:
+    // handleSatelliteSelect resets satelliteFeetPerPixel to null mid-session
+    // without clearing permanentSatLines).
+    const activeByField: Record<PermanentSideFieldKey, boolean> = {
+      frontFootage: hasScale, frontCorners: true,
+      leftFootage: hasScale, leftCorners: true,
+      rightFootage: hasScale, rightCorners: true,
+      backFootage: hasScale, backCorners: true,
+    };
+    const resultsByField: Record<PermanentSideFieldKey, PermanentSideFieldReconcileResult> = {
+      frontFootage, frontCorners, leftFootage, leftCorners, rightFootage, rightCorners, backFootage, backCorners,
+    };
+    prevPermSideDerivedRef.current = mergePermanentSideFootageBaseline(baseline, activeByField, resultsByField);
+
+    const anyTarget = Object.values(resultsByField).some((r) => r.target != null);
+    if (!anyTarget) return;
+    // defer so the form update isn't synchronous within the effect (flushes before paint)
     queueMicrotask(() =>
       setForm((f) => {
         if (f.serviceType !== 'permanent') return f;
-        const p = f.permanent;
-        let n = p;
-        if (t.front.footage != null && n.frontFootage !== t.front.footage) n = { ...n, frontFootage: t.front.footage };
-        if (t.front.corners != null && n.frontCorners !== t.front.corners) n = { ...n, frontCorners: t.front.corners };
-        if (t.left.footage != null && n.leftFootage !== t.left.footage) n = { ...n, leftFootage: t.left.footage };
-        if (t.left.corners != null && n.leftCorners !== t.left.corners) n = { ...n, leftCorners: t.left.corners };
-        if (t.right.footage != null && n.rightFootage !== t.right.footage) n = { ...n, rightFootage: t.right.footage };
-        if (t.right.corners != null && n.rightCorners !== t.right.corners) n = { ...n, rightCorners: t.right.corners };
-        if (t.back.footage != null && n.backFootage !== t.back.footage) n = { ...n, backFootage: t.back.footage };
-        if (t.back.corners != null && n.backCorners !== t.back.corners) n = { ...n, backCorners: t.back.corners };
-        return n === p ? f : { ...f, permanent: n };
+        const cur = f.permanent;
+        let n = cur;
+        if (frontFootage.target != null) n = { ...n, frontFootage: frontFootage.target };
+        if (frontCorners.target != null) n = { ...n, frontCorners: frontCorners.target };
+        if (leftFootage.target != null) n = { ...n, leftFootage: leftFootage.target };
+        if (leftCorners.target != null) n = { ...n, leftCorners: leftCorners.target };
+        if (rightFootage.target != null) n = { ...n, rightFootage: rightFootage.target };
+        if (rightCorners.target != null) n = { ...n, rightCorners: rightCorners.target };
+        if (backFootage.target != null) n = { ...n, backFootage: backFootage.target };
+        if (backCorners.target != null) n = { ...n, backCorners: backCorners.target };
+        return n === cur ? f : { ...f, permanent: n };
       }),
     );
+    // form.permanent.{front,left,right,back}{Footage,Corners} are read
+    // intentionally (row 345 fix, mirrors the holiday/bistro effects above)
+    // but must NOT be dependencies — this effect derives from satellite
+    // GEOMETRY only; adding the billed fields would re-fire it on every
+    // manual override/service-type change too, which is exactly the
+    // over-firing this reconcile exists to survive.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [permanentSatLines, satelliteFeetPerPixel, satelliteAspect, form.serviceType]);
 
   // #140: derive the Extensions/Splitters card counts from the DRAWN geometry —
