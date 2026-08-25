@@ -892,12 +892,23 @@ export default function QuoteBuilder({
   // form snapshot that last actually reached the database, seeded here with
   // the mount value because that IS the server truth at mount.
   //
-  // SCOPE, stated honestly: beforeunload covers an accidental refresh, a tab
-  // close and navigating away. It does NOT cover a silent browser tab discard
-  // (Chrome Memory Saver), which never runs the handler — that case needs
-  // edit-mode autosave and is tracked separately, because the existing draft
-  // autosave is deliberately gated OFF for reopened quotes (reopen-safety) and
-  // turning it on is its own design with its own clobber risk.
+  // SCOPE, stated honestly — corrected after a premerge staff-lens HIGH caught
+  // this very comment overstating its reach. `beforeunload` covers an
+  // accidental refresh, a tab close, and leaving for a DIFFERENT SITE. It does
+  // NOT cover:
+  //   - IN-APP navigation. Every OperatorNav link is a next/link client-side
+  //     transition, which unmounts this component without ever firing
+  //     beforeunload, and there is no route-leave interceptor in the app.
+  //     Clicking Inbox mid-edit is an extremely ordinary action. The visible
+  //     banner below is the only guard on that path today, which is why it is
+  //     sticky rather than parked inline where it can scroll out of sight.
+  //   - A silent browser tab discard (Chrome Memory Saver), which never runs
+  //     the handler at all.
+  // Both remaining gaps need the same real answer — edit-mode autosave — which
+  // is its own design because the existing draft autosave is deliberately
+  // gated OFF for reopened quotes (reopen-safety) and turning it on carries
+  // its own clobber risk. Tracked as a separate ledger row, not smuggled in
+  // here.
   // Both halves are STATE, not refs: the indicator below is rendered from
   // them, and a ref mutation would not re-render, leaving a stale warning on
   // screen after a successful save until something else happened to re-render.
@@ -910,10 +921,31 @@ export default function QuoteBuilder({
     currentForm: currentFormSerialized,
     lastPersistedForm,
   });
-  // One capture-phase handler for the whole builder. A DOM input event fires
-  // only for genuine operator typing/selection — a programmatic setForm (the
-  // permanent-side derive, the satellite/footage effects, the draft restore)
-  // never produces one, which is exactly the distinction the guard needs.
+  // One capture-phase handler for the whole builder, latching on ANY human
+  // interaction — typing, selection, pointer, keyboard.
+  //
+  // Premerge staff-lens HIGH: the first cut latched on `input`/`change` only,
+  // which missed the tool's PRIMARY footage-editing mechanism. Drawing a
+  // roofline, dragging a line endpoint, or deleting a line mutates `form`
+  // through an effect driven by pointer/click handlers — no input event is
+  // ever dispatched — so redrawing a trace on a reopened quote and navigating
+  // away reproduced the exact row-406 loss with no warning at all. The
+  // narrow latch encoded my own assumption that row 406 was about typing;
+  // the row's own exposure is any unsaved edit.
+  //
+  // Widening the latch is safe because it is NOT the part that prevents false
+  // positives — the comparison against the persisted snapshot is. A click
+  // that changes nothing in the payload (opening a section, a contact search)
+  // still reports clean, and a click that DOES change the payload is a
+  // genuine unsaved edit that deserves the warning. What the latch alone
+  // still buys is silence on the programmatic mount-time derives, which run
+  // with no human interaction of any kind.
+  //
+  // (This also settles a premerge disagreement between two lenses about the
+  // HighLevel contact pick: it is a <button onClick>, so it dispatches no
+  // input event, but reaching it requires typing in the search box first, so
+  // the old latch was already set. Under the widened latch the question is
+  // moot either way.)
   const markUserTouched = () => {
     if (userTouchedRef.current) return;
     userTouchedRef.current = true;
@@ -5052,6 +5084,24 @@ export default function QuoteBuilder({
       setResult(data.result);
       setBaselineResult(data.baseline ?? data.result); // #104
       if (typeof data.quoteId === 'string') setSavedQuoteId(data.quoteId);
+      // Row 406 premerge (THREE lenses converged — admin, staff, technical):
+      // recommendRoofline is the builder's SECOND /api/quote writer, and the
+      // unsaved-changes baseline lived only in runQuote's success branch. The
+      // roofline radio is a real input, so `userTouched` latches, and this
+      // call then changes form.rooflineChoice and SAVES it — leaving the
+      // banner and the leave-site prompt armed forever after a routine
+      // one-click action that had already persisted. A warning that can only
+      // accumulate is exactly how staff learn to ignore warnings.
+      //
+      // The sibling-guard parity rule in AGENTS.md Pitfalls, one more time:
+      // this file's own #214 and #198 fix rounds both caught recommendRoofline
+      // missing something runQuote had. Gated on `persisted` for the same
+      // reason runQuote is — a 200 that failed to write must not clear a
+      // warning about work still at risk. The snapshot is the one this call
+      // actually sent: `form` as captured above, with the new choice.
+      if (data.persisted === true) {
+        setLastPersistedForm(stableStringify({ ...form, rooflineChoice: choice }));
+      }
     } catch (err) {
       // #110 W3-005: revert the optimistic rooflineChoice write on failure —
       // otherwise form.rooflineChoice stays desynced from the billed
@@ -5242,7 +5292,13 @@ export default function QuoteBuilder({
           Capture (not bubble) so a child that stops propagation cannot hide an
           edit from the guard, and on the inner wrapper rather than the shell so
           the nav's own controls never mark a quote dirty. */}
-      <div className="max-w-3xl mx-auto" onInputCapture={markUserTouched} onChangeCapture={markUserTouched}>
+      <div
+        className="max-w-3xl mx-auto"
+        onInputCapture={markUserTouched}
+        onChangeCapture={markUserTouched}
+        onPointerDownCapture={markUserTouched}
+        onKeyDownCapture={markUserTouched}
+      >
 
         {/* TEST MODE banner (#93) — persistent while building/driving a test
             quote. Violet (not error-red / warning-amber) so it reads clearly as
@@ -7235,10 +7291,16 @@ export default function QuoteBuilder({
               Calculate because Calculate IS the save — the operator needs to
               see "not saved yet" at the moment they are deciding whether they
               are done. Amber, not red: nothing is broken, there is simply work
-              on screen that the database does not have. */}
+              on screen that the database does not have.
+
+              STICKY, per a premerge staff-lens HIGH: parked inline near the
+              bottom of a ~7900-line form it was easy to never see, and it is
+              the ONLY guard on in-app navigation (next/link transitions never
+              fire beforeunload). Pinning it to the viewport bottom means the
+              operator sees it wherever they are in the form. */}
           {hasUnsavedEdits && (
             <div
-              className="mb-2 rounded-lg border px-3 py-2 text-sm flex items-start gap-2"
+              className="sticky bottom-3 z-20 mb-2 rounded-lg border px-3 py-2 text-sm flex items-start gap-2 shadow-md"
               style={{ borderColor: '#f59e0b', backgroundColor: '#fffbeb', color: '#92400e' }}
               role="status"
             >
