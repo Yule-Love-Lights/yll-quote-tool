@@ -459,6 +459,57 @@ describe('extra street photos (#13)', () => {
     expect(scene.items.map(i => i.id)).toEqual(['i2']); // untouched — no item prune ran
   });
 
+  // Row 371 fix round (staff lens HIGH): the prune bumps the row's CAS version,
+  // and the editor only ever learns a new version from its OWN save response —
+  // so a delete of an INACTIVE tab (which does not remount the editor) left the
+  // live editor a version behind, and its next save, of an unrelated edit on a
+  // surviving photo, lost the CAS and hit "Save blocked — reload". Handing the
+  // post-prune version back is what lets the client adopt it.
+  it('returns the version its scene prune wrote, so a still-mounted editor can adopt it', async () => {
+    const { client, state } = makeExtrasSb({
+      extra_photos: [{ id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 10, h: 10, title: null }],
+      scene: { yardsticks: [], items: [{ id: 'i1', kind: 'wreath', photoId: PHOTO_A }] },
+    });
+    sbRef.current = client;
+
+    const result = await removeDesignExtraPhoto(ID, PHOTO_A);
+
+    expect(result.ok).toBe(true);
+    expect(result.version).toBe(2); // the fake starts at 1; the CAS write bumps it
+    expect(state.row.version).toBe(2);
+  });
+
+  // The case that previously wrote NOTHING at all, so there was no version to
+  // hand back and the client could not have been stale — row 371's brightness
+  // prune makes it a real write, which is exactly why it must report one.
+  it('returns a version for a brightness-only prune too (the photo had no drawn items)', async () => {
+    const { client } = makeExtrasSb({
+      extra_photos: [{ id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 10, h: 10, title: null }],
+      scene: { yardsticks: [], items: [], extraPhotoBrightness: { [PHOTO_A]: 70 } },
+    });
+    sbRef.current = client;
+
+    const result = await removeDesignExtraPhoto(ID, PHOTO_A);
+
+    expect(result.ok).toBe(true);
+    expect(result.version).toBe(2);
+  });
+
+  // ...and a delete that prunes nothing reports null rather than a stale number
+  // the client would then adopt as if it were current.
+  it('reports a null version when the delete had no scene prune to write', async () => {
+    const { client } = makeExtrasSb({
+      extra_photos: [{ id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 10, h: 10, title: null }],
+      scene: { yardsticks: [], items: [{ id: 'i2', kind: 'wreath', photoId: PHOTO_B }] },
+    });
+    sbRef.current = client;
+
+    const result = await removeDesignExtraPhoto(ID, PHOTO_A);
+
+    expect(result.ok).toBe(true);
+    expect(result.version).toBeNull();
+  });
+
   it('removeDesignExtraPhoto also prunes twins of a pruned canonical (#13)', async () => {
     const { client, state } = makeExtrasSb({
       extra_photos: [{ id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 10, h: 10, title: null }],

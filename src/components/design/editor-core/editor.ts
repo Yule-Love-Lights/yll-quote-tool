@@ -1831,7 +1831,19 @@ export async function renderEditor(
   // otherwise dangle, render-only, forever), then prune any miniGroup left
   // with zero surviving members. Once this returns, the resident scene
   // matches server truth, so a later teardown flush is harmless.
-  function removePhotoItems(photoId: string) {
+  function removePhotoItems(photoId: string, serverVersion?: number | null) {
+    // Row 371 (staff lens HIGH): adopt the version the server's own prune just
+    // wrote, BEFORE the no-op early-return below. `design.version` is otherwise
+    // only ever refreshed from this editor's own save response (runSave), so a
+    // server-side prune left this still-mounted editor one version behind and
+    // the next save — of a completely unrelated edit, on a surviving photo —
+    // lost the CAS and hit the "Save blocked — reload" banner, discarding that
+    // edit. Adopting a version that is merely OLD is safe: it can only lose the
+    // CAS again, which is the correct outcome for a genuine outside write.
+    // Ordered first on purpose: a deleted photo carrying NO drawn items still
+    // bumps the version (its brightness entry is pruned), and that is exactly
+    // the case the early-return below skips.
+    if (typeof serverVersion === 'number') design.version = serverVersion;
     const nextItems = removeItemsForPhoto(scene.items, photoId);
     if (nextItems === scene.items) return; // nothing tagged to this photo — no-op
 
@@ -6153,7 +6165,7 @@ export async function renderEditor(
 export type EditorHandle = (() => void) & {
   flushSave?: () => Promise<void>;
   discardPending?: () => boolean;
-  removePhotoItems?: (photoId: string) => void;
+  removePhotoItems?: (photoId: string, serverVersion?: number | null) => void;
 };
 
 function loadHTMLImage(url: string): Promise<HTMLImageElement> {

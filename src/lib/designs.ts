@@ -1219,8 +1219,19 @@ export async function addDesignExtraPhoto(
 // staff-facing "these were removed" notice — mirrors the #255 seed-analysis
 // route's identical shape so QuoteBuilder can render both with one message.
 export type PrunedMiniGroupReport = { surface: string | null; stringCount: number };
-type RemoveDesignExtraPhotoResult = { ok: boolean; prunedMiniGroups: PrunedMiniGroupReport[] };
-const REMOVE_EXTRA_PHOTO_FAILED: RemoveDesignExtraPhotoResult = { ok: false, prunedMiniGroups: [] };
+type RemoveDesignExtraPhotoResult = {
+  ok: boolean;
+  prunedMiniGroups: PrunedMiniGroupReport[];
+  /** Row 371 (staff lens HIGH): the design's version AFTER this function's own
+   *  scene prune, or null when it wrote nothing. The editor tracks `version`
+   *  and only ever refreshes it from its OWN save response (editor.ts's
+   *  runSave), so a server-side prune silently left the still-mounted editor a
+   *  version behind — its next save then lost the CAS and tripped the
+   *  "Save blocked — reload" banner, discarding a live edit. Handing the new
+   *  version back lets the client adopt it instead. */
+  version: number | null;
+};
+const REMOVE_EXTRA_PHOTO_FAILED: RemoveDesignExtraPhotoResult = { ok: false, prunedMiniGroups: [], version: null };
 
 // Remove one extra photo: its storage object, its array entry, AND every scene
 // item drawn on it (an item tagged to a deleted photo would otherwise be
@@ -1296,6 +1307,7 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
   // the scene column instead of extra_photos.
   const MAX_SCENE_PRUNE_RETRIES = 5;
   let prunedMiniGroups: PrunedMiniGroupReport[] = [];
+  let prunedVersion: number | null = null; // row 371: see RemoveDesignExtraPhotoResult
   try {
     let settled = false;
     for (let attempt = 0; attempt < MAX_SCENE_PRUNE_RETRIES && !settled; attempt++) {
@@ -1333,6 +1345,7 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
           freshVersion,
         );
         if (outcome.ok) {
+          prunedVersion = outcome.version;
           settled = true;
           break;
         }
@@ -1366,6 +1379,7 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
         freshVersion,
       );
       if (outcome.ok) {
+        prunedVersion = outcome.version;
         prunedMiniGroups = beforeGroups
           .filter(g => !afterGroupIds.has(g.id))
           .map(g => ({ surface: g.surface ?? null, stringCount: g.stringCount ?? 1 }));
@@ -1381,7 +1395,7 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
     console.error('removeDesignExtraPhoto: scene prune failed:', err);
   }
 
-  return { ok: true, prunedMiniGroups };
+  return { ok: true, prunedMiniGroups, version: prunedVersion };
 }
 
 // Rename the BASE photo (#13) — null/empty clears back to "Photo 1".
