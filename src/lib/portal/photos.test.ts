@@ -8,6 +8,7 @@ function design(over: Partial<PortalDesign> = {}): PortalDesign {
     photoUrl: 'https://example.com/base.jpg',
     photoW: 800,
     photoH: 600,
+    imageVisibility: { state: 'both', street: true, satellite: true },
     ...over,
   };
 }
@@ -97,6 +98,16 @@ describe('portalPhotos (#110 W4-019)', () => {
 
   it('handles a missing extraPhotos array the same as an empty one', () => {
     expect(portalPhotos(design({ extraPhotos: undefined }))).toHaveLength(1);
+  });
+
+  it('returns no house photos when staff hide the street/design view', () => {
+    const d = design({
+      imageVisibility: { state: 'satellite-only', street: false, satellite: true },
+      extraPhotos: [
+        { id: 'a', url: 'https://example.com/a.jpg', w: 100, h: 50, title: 'Side' },
+      ],
+    });
+    expect(portalPhotos(d)).toEqual([]);
   });
 
   it('a staff title always wins over the numbered fallback', () => {

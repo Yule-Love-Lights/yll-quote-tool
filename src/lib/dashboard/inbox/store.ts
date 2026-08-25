@@ -28,7 +28,7 @@ import { isUuid } from './validate';
 import { appendIdentifiers, findDuplicatePairs, mergeContacts, resolveIdentity } from './identity';
 import { decideInboxState } from './reducer';
 import { isAnsweredByDirection } from './escalation';
-import { FOLLOWUP_REASONS, isDueToday, quoteSentNoReplyFollowUp } from './followups';
+import { FOLLOWUP_REASONS, isDueToday, mayReChaseHandled, quoteSentNoReplyFollowUp, reChaseAnchor } from './followups';
 import type { MetricItem, WindowKey, ReopenCounts } from './responseMetrics';
 import { addSuppressedSenders, removeSuppressedSenders } from './suppression';
 import { applyBucketFilter, inverseOf, type ReverseAction } from './lifecycle';
@@ -1098,7 +1098,16 @@ export type HandledTarget = {
   ghlContactId: string | null;
   displayName: string | null;
 };
-export type MarkHandledResult = { ok: true; target: HandledTarget } | { ok: false; error: string };
+// Row 366 fix round 2 (MED): `refused` distinguishes WHY ok is false — true
+// for a legitimate CAS refusal (the WHERE clause matched zero rows: the item
+// really did move to a status this call didn't expect, e.g. another operator's
+// concurrent Mark-completed/Dismiss), false for a genuine backend failure
+// (service role unconfigured, or the query itself errored) where nothing is
+// actually known about the item's current status. Callers that need to tell a
+// benign lost-race apart from a real failure (reply/route.ts, since its send
+// already fired and can't be undone either way) read this instead of trying to
+// pattern-match the `error` string.
+export type MarkHandledResult = { ok: true; target: HandledTarget } | { ok: false; error: string; refused: boolean };
 
 /**
  * Stamp an item handled locally FIRST (attribution never depends on the external
@@ -1107,29 +1116,62 @@ export type MarkHandledResult = { ok: true; target: HandledTarget } | { ok: fals
  * must be a real auth.users uuid, or null — inbox_items.handled_by is a
  * nullable `uuid` column ("NULL when system auto-resolved" per its schema
  * comment); never pass a display name/email string here.
+ *
+ * Row 366: the default guard is the NEGATIVE `.neq('status','handled')`. A
+ * caller that first READ the status (or knows the fixed set of statuses its own
+ * UI surface can legally be in) should pass `expectedStatus` — a single value or
+ * an array — which swaps that guard for a POSITIVE `.eq(...)`/`.in(...)` so the
+ * check is carried across the read→write gap as one atomic UPDATE...WHERE.
+ * Without it, a row that moved to 'completed'/'dismissed' in that gap passes
+ * `.neq('status','handled')` and gets silently RESURRECTED to 'handled'.
+ *
+ * Row 320(c): the doc here previously claimed the negative default was
+ * correct for /api/dashboard/handled and /api/dashboard/reply because their
+ * "whole intent is handle this, whatever it currently is" — that claim was
+ * never actually checked against those routes' real UI reachability and does
+ * not hold. /api/dashboard/handled's button only ever renders on a
+ * listOpenItems row (bucket 'needs_reply': status==='unresponded'); ReplyComposer
+ * only ever renders on a needs_reply/awaiting_reply/handled row, i.e. status
+ * ∈ {'unresponded','handled'} (applyBucketFilter, lifecycle.ts, excludes
+ * completed/dismissed by construction). Neither caller legitimately expects
+ * to resolve a 'completed'/'dismissed' row — a stale click/composer racing a
+ * concurrent Mark-completed/Dismiss should be REFUSED, not resurrect the
+ * terminal row — so both now pass their real legal-status set below.
  */
-export async function markItemHandledLocal(itemId: string, operatorId: string | null, now: Date): Promise<MarkHandledResult> {
+export async function markItemHandledLocal(
+  itemId: string,
+  operatorId: string | null,
+  now: Date,
+  opts?: { expectedStatus?: string | string[] },
+): Promise<MarkHandledResult> {
   const sb = getSupabaseServiceClient();
-  if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  if (!sb) return { ok: false, error: 'Supabase service role not configured', refused: false };
+  const expectedStatus = opts?.expectedStatus ?? null;
   const from = await priorStateOf(sb, itemId);
-  const { data, error } = await sb
+  const update = sb
     .from('inbox_items')
     .update({ status: 'handled', handled_by: operatorId, handled_at: now.toISOString(), updated_at: now.toISOString() })
-    .eq('id', itemId)
-    .neq('status', 'handled')
+    .eq('id', itemId);
+  const { data, error } = await (expectedStatus === null
+    ? update.neq('status', 'handled')
+    : Array.isArray(expectedStatus)
+      ? update.in('status', expectedStatus)
+      : update.eq('status', expectedStatus))
     .select('source, external_id, source_message_id, dashboard_contacts ( ghl_contact_id, display_name )')
     .maybeSingle();
   if (error) {
     await recordActionFailed(itemId, operatorId, 'handled', error.message);
-    return { ok: false, error: error.message };
+    return { ok: false, error: error.message, refused: false };
   }
   if (!data) {
     // Row 311 fix-round FIX 4: hoisted, mirroring the sibling guard functions'
     // own `const msg = '...'` pattern (markItemFollowed / markItemCompleted) —
     // this repeated the literal twice.
-    const msg = 'Item not found or already handled';
+    const msg = expectedStatus === null
+      ? 'Item not found or already handled'
+      : `Item not found or no longer ${Array.isArray(expectedStatus) ? expectedStatus.join('/') : expectedStatus}`;
     await recordActionFailed(itemId, operatorId, 'handled', msg);
-    return { ok: false, error: msg };
+    return { ok: false, error: msg, refused: true };
   }
   const row = data as unknown as Record<string, unknown>;
   const c = (row.dashboard_contacts as Record<string, unknown> | null) ?? null;
@@ -1148,24 +1190,75 @@ export async function markItemHandledLocal(itemId: string, operatorId: string | 
 
 /** `operatorId` must be a real auth.users uuid, or null — see markItemHandledLocal's
  *  doc comment; inbox_items.handled_by never accepts a display name/email string. */
-export async function dismissItem(itemId: string, operatorId: string | null, now: Date): Promise<{ ok: boolean; error?: string }> {
+/**
+ * Row 387: same POSITIVE-CAS treatment markItemHandledLocal got in row 366, and
+ * the consequence here is worse, which is why this was worth doing rather than
+ * leaving as parity tidiness.
+ *
+ * The default guard is the NEGATIVE `.neq('status','dismissed')`. That passes on
+ * a row which has meanwhile become 'handled' or 'completed' — so a stale click
+ * (an operator whose earlier action's fetch threw, or a second operator racing
+ * the first) silently flips a GENUINELY ANSWERED lead to dismissed. And dismiss
+ * does not stop at the status: it also calls addSuppressedSenders, so that
+ * customer's future messages are auto-filtered out of the default view.
+ * InboxList's own comment at the `unreachableActions` lock describes exactly
+ * this path (InboxList.tsx, the `lockedTo` block) — the UI added a client-side
+ * lock to avoid it, but the server had no guard at all behind it.
+ *
+ * A caller that knows the fixed set of statuses its UI surface can legally be in
+ * should pass `expectedStatus`, swapping the negative guard for a positive
+ * `.eq(...)`/`.in(...)` carried across the read→write gap as one atomic
+ * UPDATE...WHERE. The only Dismiss control in the app is InboxList's "Not a
+ * lead", fed by listOpenItems → applyBucketFilter(..., 'needs_reply') →
+ * `status = 'unresponded'`, so that is the whole legal set (see the route).
+ * Note that 'handled' must NOT be in it: a row a colleague answered in the
+ * read→write gap is exactly what this guard exists to refuse.
+ *
+ * `refused: true` distinguishes a lost CAS race (the WHERE matched zero rows —
+ * real evidence the row moved) from a backend failure, mirroring
+ * MarkHandledResult. Without `expectedStatus` the legacy no-match behaviour is
+ * unchanged: a benign `{ ok: true }` no-op, since under `.neq` a zero-row match
+ * can only mean "already dismissed".
+ */
+export async function dismissItem(
+  itemId: string,
+  operatorId: string | null,
+  now: Date,
+  opts?: { expectedStatus?: string | string[] },
+): Promise<{ ok: boolean; error?: string; refused?: boolean }> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
+  const expectedStatus = opts?.expectedStatus ?? null;
   const from = await priorStateOf(sb, itemId);
-  const { data, error } = await sb
+  const update = sb
     .from('inbox_items')
     .update({ status: 'dismissed', handled_by: operatorId, handled_at: now.toISOString(), updated_at: now.toISOString() })
-    .eq('id', itemId)
-    .neq('status', 'dismissed')
+    .eq('id', itemId);
+  const { data, error } = await (expectedStatus === null
+    ? update.neq('status', 'dismissed')
+    : Array.isArray(expectedStatus)
+      ? update.in('status', expectedStatus)
+      : update.eq('status', expectedStatus))
     .select('dashboard_contacts ( primary_email, primary_phone )')
     .maybeSingle();
   if (error) {
     await recordActionFailed(itemId, operatorId, 'dismissed', error.message);
     return { ok: false, error: error.message };
   }
-  // Already dismissed → no-op: don't log a duplicate reversible row or re-suppress
-  // (a stray reverse of that row would un-suppress a still-dismissed sender).
-  if (!data) return { ok: true };
+  if (!data) {
+    // With a POSITIVE guard a zero-row match means the row is no longer in a
+    // legally-dismissable state — REFUSE, and critically do NOT fall through to
+    // addSuppressedSenders below, which would suppress a real customer over a
+    // dismiss that never happened.
+    if (expectedStatus !== null) {
+      const msg = `Item not found or no longer ${Array.isArray(expectedStatus) ? expectedStatus.join('/') : expectedStatus}`;
+      await recordActionFailed(itemId, operatorId, 'dismissed', msg);
+      return { ok: false, error: msg, refused: true };
+    }
+    // Already dismissed → no-op: don't log a duplicate reversible row or re-suppress
+    // (a stray reverse of that row would un-suppress a still-dismissed sender).
+    return { ok: true };
+  }
   await sb.from('dashboard_activity').insert({ actor: operatorId, action: 'dismissed', inbox_item_id: itemId, detail: { from } });
   const c = (data as { dashboard_contacts?: { primary_email?: string | null; primary_phone?: string | null } } | null)?.dashboard_contacts;
   if (c) await addSuppressedSenders([c.primary_email ?? null, c.primary_phone ?? null]);
@@ -1675,18 +1768,25 @@ export async function ensureFollowUp(input: {
   // fail open by skipping just this item, log, and let the next tick (5 min
   // later) retry — never let one item's read failure take down the batch.
   try {
+    // Row 385: this lookup used to filter `.eq('status','pending')` and select
+    // only `id`. It now fetches the ONE row for this (item, reason) whatever its
+    // status — the table's `unique (inbox_item_id, reason)` constraint guarantees
+    // at most one — because the re-chase decision below needs that row's
+    // `updated_at` (when the nag was last touched), and a second query for it
+    // would be wasteful. The pending early-return is preserved exactly: a
+    // pending row still means "don't duplicate".
     const { data, error: pendingErr } = await sb
       .from('follow_ups')
-      .select('id')
+      .select('id, status, updated_at')
       .eq('inbox_item_id', input.inboxItemId)
       .eq('reason', input.reason)
-      .eq('status', 'pending')
       .limit(1);
     if (pendingErr) {
       console.error('[inbox] ensureFollowUp: pending lookup failed (skipping item):', pendingErr.message);
       return 'failed';
     }
-    if (data && data.length > 0) return 'skipped'; // a pending one already exists — don't duplicate
+    const existingNudge = (data as { id: string; status: string; updated_at: string | null }[] | null)?.[0] ?? null;
+    if (existingNudge?.status === 'pending') return 'skipped'; // a pending one already exists — don't duplicate
 
     // #252 churn gate: quoteFollowUpDecision (quotetool.ts) derives kind:'create'
     // from the QUOTE's own fields alone — never the anchored item's status — so
@@ -1700,14 +1800,81 @@ export async function ensureFollowUp(input: {
     // suppress branch, which exists because decision.kind is recomputed per tick.
     // Costs one read, and only on the path that would otherwise write: the
     // early-return above already covers the steady state.
-    const { data: item, error: itemErr } = await sb.from('inbox_items').select('status').eq('id', input.inboxItemId).maybeSingle();
+    //
+    // Row 287(b) (Jason's ruling, same "HANDLED MEANS DONE" principle as row
+    // 252's shouldResolveAnchoredItem): 'handled' now skips too, not just
+    // 'completed'/'dismissed'. Before this, a follow-up an operator had
+    // explicitly marked Done re-armed to 'pending' on the very next reconcile
+    // tick (≤5 min later) for any item merely 'handled' — every OTHER
+    // sent-but-unapproved-quote tick re-requests kind:'create', so the "Done"
+    // action was silently undone almost immediately, reading to staff as a
+    // broken button. The escape hatch that keeps this from silently dropping a
+    // genuinely-open conversation: a real NEW inbound message reopens the item
+    // to 'unresponded' (ingestTouch's reducer, see this file's own comments
+    // near 'reopened'), which is outside this skip set and resumes normal
+    // re-arming immediately — so this only silences the nag while nothing new
+    // has actually happened. A quote's own approval/decline/going-dead closes
+    // its nag through a completely separate path (quoteFollowUpDecision
+    // returning 'close', sync.ts) that never reads item status at all, so
+    // that closure is unaffected either way.
+    //
+    // THAT GAP IS NOW CLOSED (row 385, Jason's ruling 2026-08-24). This
+    // paragraph used to read "KNOWN UNCOVERED GAP ... not fixed here, and this
+    // skip set is NOT to be weakened to work around it", describing the case
+    // where staff reply once, the customer goes quiet, no new inbound ever
+    // arrives, and the quote never reaches a terminal status — outside BOTH
+    // escape hatches above, so nothing ever re-chased it. The 'handled' skip
+    // below is now TIME-CONDITIONAL rather than absolute, which closes exactly
+    // that case without weakening anything: see mayReChaseHandled (followups.ts)
+    // for why the quiet window is anchored to the nag's own updated_at and not
+    // to handled_at. 'completed' and 'dismissed' remain absolute skips.
+    const { data: item, error: itemErr } = await sb.from('inbox_items').select('status, handled_at').eq('id', input.inboxItemId).maybeSingle();
     if (itemErr) {
       console.error('[inbox] ensureFollowUp: item status lookup failed (skipping item):', itemErr.message);
       return 'failed';
     }
-    const itemStatus = (item as { status: string } | null)?.status ?? null;
+    const itemRow = item as { status: string; handled_at: string | null } | null;
+    const itemStatus = itemRow?.status ?? null;
+    // 'completed' and 'dismissed' stay HARD skips: those are staff saying the
+    // conversation is finished, and nothing about elapsed time changes that.
     if (itemStatus === 'completed' || itemStatus === 'dismissed') return 'skipped';
+    // Row 385: 'handled' is the one status where silence is meaningful — staff
+    // replied and the customer never wrote back (a real inbound would have
+    // reopened the item to 'unresponded'). Skip while the quiet window is still
+    // running; once it has elapsed, fall through and let the upsert below re-arm
+    // the nag. See mayReChaseHandled for why the anchor is the nag's own
+    // updated_at rather than handled_at — anchoring on handled_at would undo
+    // every Done click five minutes later, which is the bug row 287(b) fixed.
+    let isReChase = false;
+    // Row 390: the silence-start anchor, when this write IS a re-chase — kept
+    // outside the `if` so it's undefined (never touched) rather than
+    // possibly-stale for the ordinary first-nudge path. Persisted below as
+    // follow_ups.re_chase_since so FollowUpStrip can tell a re-chase apart
+    // from a first-time nudge instead of rendering both identically.
+    let reChaseSince: Date | null = null;
+    if (itemStatus === 'handled') {
+      const anchorInputs = {
+        lastNudgeAt: existingNudge?.updated_at ? new Date(existingNudge.updated_at) : null,
+        handledAt: itemRow?.handled_at ? new Date(itemRow.handled_at) : null,
+      };
+      const canReChase = mayReChaseHandled({ ...anchorInputs, now: new Date() });
+      if (!canReChase) return 'skipped';
+      isReChase = true;
+      // reChaseAnchor mirrors mayReChaseHandled's own anchor computation
+      // exactly (same helper, same inputs) — canReChase being true already
+      // proves this anchor is non-null and finite, so no re-guard needed here.
+      reChaseSince = reChaseAnchor(anchorInputs);
+    }
     const fu = quoteSentNoReplyFollowUp({ contactId: input.contactId, inboxItemId: input.inboxItemId, sentAt: input.sentAt, afterDays: input.afterDays });
+    // Row 385 (staff-lens MED): a RE-CHASE is due NOW, not on the long-past date
+    // the original send implies. quoteSentNoReplyFollowUp derives due_at from
+    // `sentAt + afterDays`, so re-arming a nag for a quote sent 90 days ago would
+    // stamp a due date 87 days in the past. Two things go wrong with that: the
+    // digest reports it as 87 days overdue when staff have in fact been prompt
+    // (opsDigest reads due_at), and listDueFollowUps sorts oldest-first under a
+    // 100-row cap, so ancient re-chases would crowd genuinely-fresh nags out of
+    // the strip. It became due the moment the quiet window elapsed, which is now.
+    const dueAt = isReChase ? new Date() : fu.dueAt;
     // WT-43: UPSERT, not insert. The table has `unique (inbox_item_id, reason)`
     // with no status predicate, so once a prior nudge is marked 'done' a plain
     // insert 23505s (swallowed by supabase-js into {error}) and the nudge never
@@ -1718,11 +1885,16 @@ export async function ensureFollowUp(input: {
       {
         contact_id: fu.contactId,
         inbox_item_id: fu.inboxItemId,
-        due_at: fu.dueAt.toISOString(),
+        due_at: dueAt.toISOString(),
         reason: fu.reason,
         status: fu.status,
         assigned_to: fu.assignedTo,
         created_by: fu.createdBy,
+        // Row 390: explicit null on every non-re-chase write (not merely
+        // omitted) so a row's flag can't go stale — e.g. a done re-chase row
+        // later re-armed as an ordinary fresh nudge (a genuinely new "quote
+        // sent" cycle) must not keep reporting the OLD silence window.
+        re_chase_since: isReChase ? reChaseSince!.toISOString() : null,
       },
       { onConflict: 'inbox_item_id,reason' },
     );
@@ -1735,17 +1907,27 @@ export async function ensureFollowUp(input: {
 
 /** Mark a pending follow-up for an item done (e.g. the quote got approved).
  *  Returns how many rows were closed (0 when there was none) so callers can keep
- *  an accurate metric. */
+ *  an accurate metric.
+ *
+ *  Row 320(b): this used to discard the query's `error` entirely, so a genuine
+ *  DB failure here was indistinguishable from the legitimate "nothing pending
+ *  to close" no-op — both silently returned 0, with no breadcrumb. Its sibling
+ *  sweeps (sweepOrphanedFollowUps, sweepResolvedItemFollowUps) both check and
+ *  log this same query's error (#825/#310's precedent); this now matches. */
 export async function closeFollowUp(inboxItemId: string, reason: string): Promise<number> {
   const sb = getSupabaseServiceClient();
   if (!sb) return 0;
-  const { data } = await sb
+  const { data, error } = await sb
     .from('follow_ups')
     .update({ status: 'done' })
     .eq('inbox_item_id', inboxItemId)
     .eq('reason', reason)
     .eq('status', 'pending')
     .select('id');
+  if (error) {
+    console.error('[inbox] closeFollowUp failed:', error.message);
+    return 0;
+  }
   return data ? data.length : 0;
 }
 
@@ -2421,7 +2603,7 @@ export async function listDueFollowUps(now: Date): Promise<DueFollowUpsResult> {
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const { data, error } = await sb
     .from('follow_ups')
-    .select('id, reason, due_at, dashboard_contacts ( display_name, primary_phone, primary_email )')
+    .select('id, reason, due_at, re_chase_since, dashboard_contacts ( display_name, primary_phone, primary_email )')
     .eq('status', 'pending')
     .order('due_at', { ascending: true })
     .limit(100);
@@ -2440,6 +2622,10 @@ export async function listDueFollowUps(now: Date): Promise<DueFollowUpsResult> {
         contactName: (c?.display_name as string | null) ?? null,
         contactPhone: (c?.primary_phone as string | null) ?? null,
         contactEmail: (c?.primary_email as string | null) ?? null,
+        // Row 390: non-null only for a re-chase (row 385's re-arm after 7
+        // quiet days on a handled item) — see ensureFollowUp's own write of
+        // this column for the full reasoning.
+        reChaseSince: (r.re_chase_since as string | null) ?? null,
       };
     });
   return { ok: true, items };
@@ -2519,6 +2705,10 @@ export async function listPendingColorRequests(limit = 200): Promise<PendingColo
   return { ok: true, items };
 }
 
+export type MarkFollowUpDoneResult =
+  | { ok: true; inboxItemId: string | null }
+  | { ok: false; error: string };
+
 /** `operatorId` must be a real auth.users uuid, or null — mirrors
  *  markItemHandledLocal's doc comment / the sibling-guard-parity convention:
  *  the route's fallback is `operator?.id ?? null`, never the literal string
@@ -2526,8 +2716,13 @@ export async function listPendingColorRequests(limit = 200): Promise<PendingColo
  *  uuid-typed column if a future change (e.g. coupling this to an
  *  inbox_items.handled_by write) reuses operatorId that way. dashboard_activity
  *  .actor stays a free-text column (schema comment: "auth.users id (as text)
- *  or 'system'"), so a null operator still logs as the literal 'system' there. */
-export async function markFollowUpDone(id: string, operatorId: string | null): Promise<{ ok: boolean; error?: string }> {
+ *  or 'system'"), so a null operator still logs as the literal 'system' there.
+ *
+ *  Returns the follow-up's anchored `inbox_item_id` (or null for a manual
+ *  follow-up with no anchor) so a caller can decide whether to ALSO resolve
+ *  that item — see shouldResolveAnchoredItem and #252 slice E (the followup
+ *  route is today's only caller of that coupling). */
+export async function markFollowUpDone(id: string, operatorId: string | null): Promise<MarkFollowUpDoneResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   // #323: CAS on status='pending', matching closeFollowUp's guard on the same
@@ -2535,11 +2730,63 @@ export async function markFollowUpDone(id: string, operatorId: string | null): P
   // not both succeed and both log a dashboard_activity row — the loser's
   // update matches zero rows, and that's an honest no-op (the row is already
   // 'done', which is the caller's desired end state), not an error.
-  const { data, error } = await sb.from('follow_ups').update({ status: 'done' }).eq('id', id).eq('status', 'pending').select('id');
+  //
+  // #252 slice E revival: the SAME CAS also protects the anchor-resolution
+  // coupling below it — a lost race returns inboxItemId: null, so the caller
+  // (the followup route) never attempts to resolve the anchored item on the
+  // losing side, and never logs a second dashboard_activity row for it either.
+  const { data, error } = await sb
+    .from('follow_ups')
+    .update({ status: 'done' })
+    .eq('id', id)
+    .eq('status', 'pending')
+    .select('id, inbox_item_id');
   if (error) return { ok: false, error: error.message };
-  if (!data || data.length === 0) return { ok: true };
+  if (!data || data.length === 0) return { ok: true, inboxItemId: null };
   await sb.from('dashboard_activity').insert({ actor: operatorId ?? 'system', action: 'handled', detail: { followUpId: id } });
-  return { ok: true };
+  const row = data[0] as { inbox_item_id: string | null };
+  return { ok: true, inboxItemId: row.inbox_item_id ?? null };
+}
+
+/** Read an inbox item's current status. Used by a caller deciding whether a
+ *  coupled action (e.g. #252 slice E's follow-up-done -> item-handled) is
+ *  still eligible. Returns null when the item doesn't exist or the client is
+ *  unavailable — the caller's gate (shouldResolveAnchoredItem) treats that as
+ *  "not eligible", never as license to act. */
+export async function getItemStatus(itemId: string): Promise<string | null> {
+  const sb = getSupabaseServiceClient();
+  if (!sb) return null;
+  const { data } = await sb.from('inbox_items').select('status').eq('id', itemId).maybeSingle();
+  return (data as { status: string } | null)?.status ?? null;
+}
+
+/**
+ * Whether marking a follow-up should ALSO resolve its anchored inbox item.
+ * #252 slice E: an operator clicking Done on a follow-up asserts the
+ * underlying conversation was dealt with — leaving the item open elsewhere
+ * (still 'unresponded') while the strip clears is the incoherence this slice
+ * exists to fix (Jason's ruling, ledger row 252: HANDLED MEANS DONE).
+ *
+ * Scoped narrowly on purpose: (1) only a follow-up actually marked 'done' —
+ * never a 'dismissed' one (follow_ups.status supports 'dismissed' per its
+ * CHECK constraint, though no code path sets it today; this keeps that
+ * future-safe without building it). (2) only an item still 'unresponded' — an
+ * item already handled/completed/dismissed is left untouched. This is a
+ * POSITIVE check, not reliance on markItemHandledLocal's own narrower
+ * `.neq('status','handled')` guard: that guard alone would let a
+ * completed/dismissed item get resurrected to 'handled', which this function
+ * exists to prevent.
+ *
+ * Row 366: this predicate reads a status fetched EARLIER, so on its own it only
+ * narrows the race window — it cannot close it. The caller must ALSO pass
+ * `expectedStatus: ANCHORED_ITEM_RESOLVABLE_STATUS` to markItemHandledLocal, so
+ * the same positive value becomes the write's own CAS. Both halves share the
+ * constant below on purpose: the check and the write can never drift apart.
+ */
+export const ANCHORED_ITEM_RESOLVABLE_STATUS = 'unresponded';
+
+export function shouldResolveAnchoredItem(followUpStatus: string, itemStatus: string | null): boolean {
+  return followUpStatus === 'done' && itemStatus === ANCHORED_ITEM_RESOLVABLE_STATUS;
 }
 
 // ─── Response-time / SLA analytics ──────────────────────────────────────────

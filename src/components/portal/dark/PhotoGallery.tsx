@@ -23,6 +23,7 @@ import { useLazyMountOnVisible } from '../useLazyMountOnVisible';
 import { LogoWatermark } from '../LogoWatermark';
 import type { PortalDesign } from '../types';
 import { isItemOnPhoto, type BulbColor, type Scene } from '@/lib/design/sceneTypes';
+import { brightnessForPhoto } from '@/lib/design/photoBrightness';
 import type { RenderSettings } from '@/components/design/editor-core/renderSettings';
 import { portalPhotos, type PortalGalleryPhoto } from '@/lib/portal/photos';
 
@@ -52,7 +53,11 @@ export function PhotoGallery({ design, palette, renderSettings }: PhotoGalleryPr
       new Map(
         photos.map((p) => [
           p.id ?? 'base',
-          { ...design.scene, items: design.scene.items.filter((i) => isItemOnPhoto(i, p.id)) },
+          {
+            ...design.scene,
+            brightness: brightnessForPhoto(design.scene, p.id),
+            items: design.scene.items.filter((i) => isItemOnPhoto(i, p.id)),
+          },
         ]),
       ),
     [design.scene, photos],

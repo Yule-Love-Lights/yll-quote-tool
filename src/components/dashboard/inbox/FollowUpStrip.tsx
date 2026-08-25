@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import type { DueFollowUp } from '@/lib/dashboard/inbox/types';
 
 const REASON_LABEL: Record<string, string> = {
@@ -68,6 +69,25 @@ export function reconcileDueFollowUps(
   return freshItems.filter((f) => !busyIds[f.id]);
 }
 
+/** Row 390: the marker rendered next to a due follow-up whose `reChaseSince`
+ *  is set — row 385's re-arm of a "quote sent, no reply" nudge after 7 quiet
+ *  days on an item staff already marked handled. Before this, a re-chase
+ *  rendered identically to a brand-new nudge, so staff had no way to tell
+ *  "we never chased this" from "we chased once and they went quiet again" —
+ *  which changes what they'd actually say to the customer. Returns null for
+ *  an ordinary first-time nudge (reChaseSince null) or an unparseable
+ *  timestamp — same "no basis, stay conservative" read as followups.ts's
+ *  mayReChaseHandled, so a bad value degrades to "no badge" rather than a
+ *  garbled one. Pure and exported, mirroring this file's other exported pure
+ *  helpers. */
+export function reChaseLabel(reChaseSince: string | null, now: Date): string | null {
+  if (!reChaseSince) return null;
+  const since = Date.parse(reChaseSince);
+  if (!Number.isFinite(since)) return null;
+  const quietDays = Math.max(0, Math.floor((now.getTime() - since) / 86_400_000));
+  return `Re-chase — quiet ${quietDays}d`;
+}
+
 export function FollowUpStrip({ initialItems }: { initialItems: DueFollowUp[] }) {
   const [items, setItems] = useState<DueFollowUp[]>(initialItems);
   const [busyIds, setBusyIds] = useState<Record<string, boolean>>({});
@@ -95,6 +115,8 @@ export function FollowUpStrip({ initialItems }: { initialItems: DueFollowUp[] })
     setItems(reconcileDueFollowUps(initialItems, busyIdsRef.current));
   }, [initialItems]);
 
+  const router = useRouter();
+
   const markDone = useCallback(async (item: DueFollowUp) => {
     setBusyIds((prev) => withRowFlagSet(prev, item.id));
     setItems((prev) => prev.filter((i) => i.id !== item.id)); // optimistic
@@ -107,12 +129,19 @@ export function FollowUpStrip({ initialItems }: { initialItems: DueFollowUp[] })
       // Restore the item if the write was rejected, so a failure is visible
       // rather than silently vanishing (mirrors DuplicatesList's merge()).
       if (!res.ok) setItems((prev) => [item, ...prev]);
+      // Row 365: the route ALSO resolves this follow-up's anchored inbox item
+      // server-side (#252 slice E), but nothing told the page — the item sat
+      // visibly open in the main list until the next 25s poll. Same idiom as
+      // InboxList/InWorksSection: re-render InboxPage's server component so
+      // every list on the page reflects the resolution now. Only on success;
+      // the restore path above has nothing to re-read.
+      else router.refresh();
     } catch {
       setItems((prev) => [item, ...prev]);
     } finally {
       setBusyIds((prev) => withRowFlagCleared(prev, item.id));
     }
-  }, []);
+  }, [router]);
 
   if (items.length === 0) return null;
 
@@ -125,23 +154,39 @@ export function FollowUpStrip({ initialItems }: { initialItems: DueFollowUp[] })
         Follow-ups due today ({items.length})
       </h2>
       <ul className="space-y-2">
-        {items.map((f) => (
-          <li key={f.id} className="flex items-center justify-between gap-3 text-sm">
-            <span style={{ color: 'var(--op-text)' }}>
-              <strong>{f.contactName ?? 'Unknown contact'}</strong>
-              <span style={{ color: 'var(--op-text-2)' }}> · {REASON_LABEL[f.reason] ?? f.reason}</span>
-            </span>
-            <button
-              type="button"
-              disabled={!!busyIds[f.id]}
-              onClick={() => markDone(f)}
-              className="px-3 py-1 rounded-md text-sm disabled:opacity-50"
-              style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
-            >
-              Done
-            </button>
-          </li>
-        ))}
+        {items.map((f) => {
+          // Row 390: computed per row, per render — day-granularity, no live
+          // ticking needed (unlike InboxList's "waiting Xm" labels), so a
+          // plain Date.now() snapshot is enough and keeps this component free
+          // of an extra interval/state pair.
+          const rechase = reChaseLabel(f.reChaseSince, new Date());
+          return (
+            <li key={f.id} className="flex items-center justify-between gap-3 text-sm">
+              <span style={{ color: 'var(--op-text)' }}>
+                <strong>{f.contactName ?? 'Unknown contact'}</strong>
+                <span style={{ color: 'var(--op-text-2)' }}> · {REASON_LABEL[f.reason] ?? f.reason}</span>
+                {rechase && (
+                  <span
+                    className="ml-2 px-1.5 py-0.5 rounded text-xs font-medium"
+                    style={{ background: 'var(--op-bg)', color: 'var(--op-text-2)', border: '1px solid var(--op-border)' }}
+                    title="Staff already replied once; the customer went quiet again after this many days."
+                  >
+                    {rechase}
+                  </span>
+                )}
+              </span>
+              <button
+                type="button"
+                disabled={!!busyIds[f.id]}
+                onClick={() => markDone(f)}
+                className="px-3 py-1 rounded-md text-sm disabled:opacity-50"
+                style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
+              >
+                Done
+              </button>
+            </li>
+          );
+        })}
       </ul>
     </section>
   );

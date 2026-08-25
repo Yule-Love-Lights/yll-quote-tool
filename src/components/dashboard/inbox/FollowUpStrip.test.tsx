@@ -8,9 +8,16 @@
 // static render can't drive the async click-then-fetch flow (no jsdom in
 // this repo).
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { FollowUpStrip, withRowFlagSet, withRowFlagCleared, reconcileDueFollowUps } from './FollowUpStrip';
+
+// Row 365: markDone now calls router.refresh() so the anchored inbox item the
+// route resolves server-side (#252 slice E) leaves the main list immediately
+// instead of lingering until the next 25s poll. useRouter throws outside an
+// app-router context and this component calls it unconditionally (hook-order
+// rules), so it is mocked here — same shape as InboxList.test.tsx's own mock.
+vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: () => {} }) }));
+import { FollowUpStrip, withRowFlagSet, withRowFlagCleared, reconcileDueFollowUps, reChaseLabel } from './FollowUpStrip';
 import type { DueFollowUp } from '@/lib/dashboard/inbox/types';
 
 const baseItem: DueFollowUp = {
@@ -20,6 +27,7 @@ const baseItem: DueFollowUp = {
   contactName: 'Jane Doe',
   contactPhone: null,
   contactEmail: null,
+  reChaseSince: null,
 };
 
 describe('FollowUpStrip (initial render)', () => {
@@ -45,6 +53,56 @@ describe('FollowUpStrip (initial render)', () => {
   it('a fresh render never shows a disabled Done button — busyIds always starts empty', () => {
     const html = renderToStaticMarkup(<FollowUpStrip initialItems={[baseItem]} />);
     expect(html).not.toContain('disabled=""');
+  });
+
+  // Row 390: a first-time nudge (reChaseSince null, baseItem's own default)
+  // renders no re-chase badge at all — this is the case the ledger row says
+  // must stay visually plain.
+  it('renders no re-chase badge for an ordinary first-time nudge', () => {
+    const html = renderToStaticMarkup(<FollowUpStrip initialItems={[baseItem]} />);
+    expect(html).not.toContain('Re-chase');
+  });
+
+  // Row 390: the actual fix — a re-chase (reChaseSince set) is now visually
+  // distinct from a first-time nudge, with the silence duration shown.
+  it('renders a re-chase badge with the silence duration for a re-armed nudge', () => {
+    const nineDaysAgo = new Date(Date.now() - 9 * 86_400_000).toISOString();
+    const html = renderToStaticMarkup(
+      <FollowUpStrip initialItems={[{ ...baseItem, reChaseSince: nineDaysAgo }]} />,
+    );
+    expect(html).toContain('Re-chase — quiet 9d');
+  });
+});
+
+// Row 390: reChaseLabel is the exact pure primitive the render above calls —
+// tells a re-chase apart from a first-time nudge (null reChaseSince) and
+// renders the silence duration, so staff can tell "we never chased this"
+// from "we chased once and they went quiet again". Pure and exported per
+// this file's own testing convention (no jsdom — extract + test the pure
+// piece, mirroring reconcileDueFollowUps below).
+describe('reChaseLabel (row 390 — re-chase marker + silence duration)', () => {
+  const now = new Date('2026-08-25T12:00:00Z');
+
+  it('returns null for an ordinary first-time nudge (reChaseSince null)', () => {
+    expect(reChaseLabel(null, now)).toBeNull();
+  });
+
+  it('returns null for an unparseable timestamp — degrades to "no badge", never a garbled one', () => {
+    expect(reChaseLabel('not-a-date', now)).toBeNull();
+  });
+
+  it('reports whole days of silence, floored', () => {
+    const sevenAndAHalfDaysAgo = new Date(now.getTime() - 7.5 * 86_400_000).toISOString();
+    expect(reChaseLabel(sevenAndAHalfDaysAgo, now)).toBe('Re-chase — quiet 7d');
+  });
+
+  it('reports 0d rather than a negative number for a since-time in the future (clock skew)', () => {
+    const inTheFuture = new Date(now.getTime() + 60_000).toISOString();
+    expect(reChaseLabel(inTheFuture, now)).toBe('Re-chase — quiet 0d');
+  });
+
+  it('reports exactly 0d the instant the re-chase fires', () => {
+    expect(reChaseLabel(now.toISOString(), now)).toBe('Re-chase — quiet 0d');
   });
 });
 

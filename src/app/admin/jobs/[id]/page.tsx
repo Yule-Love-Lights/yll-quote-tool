@@ -8,8 +8,10 @@ import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { JobStatusBadge } from '@/components/admin/JobStatusBadge';
 import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
 import { NceBadge } from '@/components/admin/NceBadge';
+import { StaffNotesPanel } from '@/components/admin/StaffNotesPanel';
 import { reconcileInvoice } from '@/lib/invoices';
 import { isSupersededPendingAmendment, resolveAmendmentBasis } from '@/lib/amend';
+import { priorCollectedWarning } from '@/lib/quoteAmendInvoiceSync';
 import type { JobDetail } from '@/lib/jobs';
 import { JobsListSkeleton } from '../JobsListSkeleton';
 
@@ -25,6 +27,24 @@ const money = (n: number | null | undefined) =>
     : `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtDate = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
+
+// Fix round 3 (Finding LOW, PR #926): pure extraction of the cancel action
+// message, mirroring ColorRequestPanel.tsx's applyOutcomeFromResponse — this
+// repo's pattern for testing a fetch-response-driven string without
+// jsdom/testing-library. Widened to cue on `stockNeedsAttention` (a
+// stock-reversal caveat — most importantly the PENDING_STOCK_SNAPSHOT refusal
+// note) in addition to `refundNeeded`, mirroring PipelineActionsMenu.tsx's
+// cancelAlertMessage.
+export function cancelActionMessage(body: {
+  alreadyCancelled?: boolean;
+  refundNeeded?: boolean;
+  stockNeedsAttention?: boolean;
+  note?: string;
+}): string {
+  if (body.alreadyCancelled) return 'Already cancelled.';
+  const cue = body.refundNeeded || body.stockNeedsAttention ? '⚠️ ' : '';
+  return `${cue}Order cancelled.${body.note ? ` ${body.note}` : ''}`;
+}
 
 export default function JobDetailPage() {
   const params = useParams<{ id: string }>();
@@ -124,7 +144,17 @@ export default function JobDetailPage() {
             ? ' Customer must re-approve the new total before the balance is charged.'
             : '') +
           (d.overpayment ? ' Overpayment — refund manually in Valor.' : '') +
-          notifyNote,
+          notifyNote +
+          // Row 341 fix round 3 (MED finding): the route computes and returns
+          // this flag specifically so a lost invoice re-sync (a losing CAS
+          // race, twice) doesn't read as a clean success — before this, no
+          // caller ever read it, so the warning it exists to surface never
+          // reached anyone. A durable marker also lands on the quote
+          // (quoteAmendInvoiceSync.ts's flagInvoiceResyncFailed) for the case
+          // nobody sees this response, but THIS is the synchronous one.
+          (body.invoiceResyncFailed
+            ? ' ⚠️ The linked invoice could not be re-synced — reconcile it manually before charging the balance.'
+            : ''),
       );
       setAmendReason('');
       await load();
@@ -149,17 +179,10 @@ export default function JobDetailPage() {
       const res = await fetch(`/api/jobs/${id}/cancel`, { method: 'POST' });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? 'Failed');
-      setActionMsg(
-        body.alreadyCancelled
-          ? 'Already cancelled.'
-          // #110 W7-001: surface the route's refund note on EVERY cancel. The old
-          // code only warned on a paid INVOICE (body.refundedInvoice), so a
-          // booked-but-not-invoiced order whose 50% DEPOSIT was already charged
-          // (the common pre-install cancel) showed a bare "Order cancelled." while
-          // a real refund was owed. The route already computes refundedDeposit +
-          // refundNeeded + a note; consume them, with a ⚠️ cue when a refund is due.
-          : `${body.refundNeeded ? '⚠️ ' : ''}Order cancelled.${body.note ? ` ${body.note}` : ''}`,
-      );
+      // #110 W7-001 / fix round 3 (Finding LOW, PR #926): surface the route's
+      // refund + stock-reversal notes on every cancel, with a ⚠️ cue — see
+      // cancelActionMessage's doc comment above.
+      setActionMsg(cancelActionMessage(body));
       await load();
     } catch (err) {
       setActionMsg(err instanceof Error ? err.message : 'Failed');
@@ -237,6 +260,8 @@ export default function JobDetailPage() {
                 </div>
               )}
             </div>
+
+            {data.job.quote_id && <StaffNotesPanel key={data.job.quote_id} quoteId={data.job.quote_id} />}
 
             <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
               <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
@@ -438,6 +463,33 @@ export default function JobDetailPage() {
                 portal; the order itself stays booked. Until they sign it, collecting the balance is blocked
                 for a price INCREASE only (a decrease never blocks, and the invoice page can override).
               </p>
+              {/* Row 395 fix round 2 (delta-verify MED, real): moved here from
+                  /admin/invoices/[id] (Jason's ruling), but relocating alone
+                  didn't fix what row 395 was actually about — this panel
+                  rendered unconditionally on every view, same as the removed
+                  page, just on a screen staff open more often. Measured
+                  against prod: all 4 real invoices satisfy
+                  priorBalanceCollectedUsd > 0, so "smaller population" was
+                  never true either.
+                  Gated on amendReason having content, not just data.invoice
+                  existing — this is the actual point of use: the inferred
+                  figure only drives money once computeInvoiceResyncTotals
+                  runs on submit, and typing a reason is the operator
+                  starting exactly that. An untouched page (the common case —
+                  most visits here are to LOOK, not amend) now stays quiet.
+                  Sits ABOVE the textarea, same as before: it appears the
+                  instant a reason is typed, before the sibling "customer
+                  sees this" caution has been read past. */}
+              {data.invoice &&
+                amendReason.trim().length > 0 &&
+                (() => {
+                  const priorNote = priorCollectedWarning(data.invoice!);
+                  return priorNote ? (
+                    <div className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                      {priorNote}
+                    </div>
+                  ) : null;
+                })()}
               {/* Jason 2026-08-19: this reason is NOT an internal note — the portal's
                   AmendmentConsentCard renders it verbatim to the customer while the
                   re-consent is pending (src/components/portal/snowglobe/AmendmentConsentCard.tsx).

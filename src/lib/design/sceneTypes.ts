@@ -266,7 +266,11 @@ export type MiniAreaItem = ItemBase & MiniBilling & {
 // are skipped in their own per-item projection.
 export type MiniGroupItem = ItemBase & MiniBilling & {
   kind: 'miniGroup';
-  memberIds: string[]; // the member strand ids
+  memberIds: string[]; // member strand and/or scattershot ids
+  // One physical mini-light unit needs one authoritative install pattern.
+  // Group edits mirror this value onto the visual member items; absent on a
+  // legacy group means the existing warm-white fulfillment default.
+  colorPattern?: string[];
 };
 
 export type SceneItem =
@@ -288,6 +292,9 @@ export type Scene = {
   yardsticks: Yardstick[];
   items: SceneItem[];
   brightness?: number; // 0 = darkest, 50 = neutral, 100 = lightest
+  // Extra street photos have independent brightness. Missing entries inherit
+  // the base photo's `brightness`, preserving every legacy scene unchanged.
+  extraPhotoBrightness?: Record<string, number>;
   /**
    * How big the lights are DRAWN, as a multiplier (0.5–4, default 1). Purely
    * presentational, exactly like `brightness` above: it changes the picture

@@ -126,9 +126,16 @@ export async function runWhatsAppCommand(cmd: WhatsAppCommand): Promise<string> 
       if (!card) return `No active job #${cmd.jobNumber}.`;
       const r = await prepareJobMaterials(card.id);
       if (!r) return `Couldn't prep job #${cmd.jobNumber}.`;
+      if (!r.ok) return `Couldn't prep job #${cmd.jobNumber} — ${r.error}`;
       if (r.alreadyDone) return `Job #${cmd.jobNumber} was already prepped — stock not deducted again.`;
       const n = r.deductions.length;
-      return `Job #${cmd.jobNumber} prepped — deducted ${n} SKU${n === 1 ? '' : 's'} from stock. Now Ready For Install.`;
+      // Finding 2 (fix round 2): a clamped deduction (on-hand ran out mid-prep)
+      // looks identical to a full one in a bare SKU count — flag it so staff
+      // don't load a truck believing the job is fully stocked.
+      const shortNote = r.short.length
+        ? ` SHORT on ${r.short.length} SKU${r.short.length === 1 ? '' : 's'} (not enough on-hand): ${r.short.join(', ')} — check stock before loading.`
+        : '';
+      return `Job #${cmd.jobNumber} prepped — deducted ${n} SKU${n === 1 ? '' : 's'} from stock. Now Ready For Install.${shortNote}`;
     }
 
     case 'stock': {

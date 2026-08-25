@@ -221,19 +221,49 @@ export const getOperator = cache(async (): Promise<Operator | null> => {
 });
 
 /**
+ * Whether the operator auth gate is ENGAGED (enforcing) for this process.
+ * Consulted by `requireOperator`, `src/proxy.ts`, and the handful of
+ * server-component pages that defense-in-depth re-check `getOperator()`
+ * themselves — one predicate, so all of them agree.
+ *
+ * Historically the gate shipped dormant-by-default (engaged only when
+ * `AUTH_GATE_ENABLED==='true'`), because the Supabase auth env wasn't
+ * configured until go-live and a hard gate would have 401'd every operator
+ * route in the meantime. Go-live has happened — production always runs with
+ * the gate on — so that justification no longer applies, and the flag now
+ * flips the OTHER way: the gate is engaged by default, and dormancy is a
+ * single deliberate opt-out.
+ *
+ * Dormancy is intentionally NOT inferred from whether SUPABASE_URL /
+ * SUPABASE_ANON_KEY are configured. That would create a NEW fail-open: if
+ * those vars went missing in production (a misconfigured deploy), "engage
+ * only when configured" would silently open the entire operator surface
+ * exactly when something has already gone wrong. Instead, "engaged but
+ * unconfigured" already fails CLOSED on its own — `getOperator()` returns
+ * null when `createRouteSupabase()` can't build a client (see its "fails
+ * closed when Supabase env is unconfigured" test), and
+ * `createMiddlewareSupabase` does the same for `proxy.ts` — so there is no
+ * scenario where a missing env var should ever open the gate.
+ *
+ *   AUTH_GATE_ENABLED=false  -> deliberately OFF (the only dormant case)
+ *   anything else (unset, 'true', or any other value) -> ENGAGED (default)
+ */
+export function authGateEngaged(): boolean {
+  return process.env.AUTH_GATE_ENABLED !== 'false';
+}
+
+/**
  * Per-route operator guard — the route-handler counterpart of the middleware
- * perimeter (defense in depth). DORMANT unless AUTH_GATE_ENABLED==='true':
- * returns null (allow) when the gate is off, so wiring it into a route changes
- * nothing until go-live — important because the Supabase auth env isn't
- * configured until then, and a hard getOperator() gate would 401 every operator
- * route while still dormant. When enabled, requires a valid operator session and
- * otherwise returns a 401 the handler should return directly:
+ * perimeter (defense in depth). Dormant ONLY on the explicit
+ * `AUTH_GATE_ENABLED=false` opt-out (see `authGateEngaged` above); engaged by
+ * default. When engaged, requires a valid operator session and otherwise
+ * returns a 401 the handler should return directly:
  *
  *   const denied = await requireOperator();
  *   if (denied) return denied;
  */
 export async function requireOperator(): Promise<NextResponse | null> {
-  if (process.env.AUTH_GATE_ENABLED !== 'true') return null; // dormant — allow
+  if (!authGateEngaged()) return null; // deliberately opted out — allow
   const operator = await getOperator();
   if (!operator) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   return null;

@@ -553,6 +553,28 @@ describe('listInvoicesForAdmin', () => {
     const cards = await listInvoicesForAdmin();
     expect(cards[0].isNce).toBe(false);
   });
+
+  // Row 396 (LOW): joins the linked quote's raw approval_snapshot, so
+  // /admin/invoices can derive isStaleInvoiceSnapshot(...) the same way the
+  // dashboard board already does — this list previously never learned
+  // `stale` at all.
+  it('joins the linked quote\'s approval_snapshot verbatim, null when absent', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [
+        { id: 'i1', invoice_number: 1000, job_id: 'j1', quote_id: 'q1', total: 1000, deposit_applied: 500, balance: 500, credit_note: 0, status: 'draft', created_at: '2026-06-02', paid_at: null },
+        { id: 'i2', invoice_number: 1001, job_id: null, quote_id: null, total: 2000, deposit_applied: 1000, balance: 0, credit_note: 0, status: 'paid', created_at: '2026-06-01', paid_at: '2026-06-03' },
+      ],
+      quotes: [
+        { id: 'q1', customer_name: 'Alice', is_test: false, approval_snapshot: { paymentBlocked: { at: 'x' } } },
+      ],
+    });
+    sbRef.current = fake.client;
+
+    const cards = await listInvoicesForAdmin();
+    expect(cards[0]).toMatchObject({ id: 'i1', quoteApprovalSnapshot: { paymentBlocked: { at: 'x' } } });
+    // No linked quote at all — never crashes, defaults to null.
+    expect(cards[1]).toMatchObject({ id: 'i2', quoteApprovalSnapshot: null });
+  });
 });
 
 describe('setInvoiceTaxOverride', () => {

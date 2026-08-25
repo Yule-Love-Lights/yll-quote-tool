@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { friendlyAction, friendlyAutoReason, isPermanentReverseRefusal, withRowFlagSet, withRowFlagCleared } from './ActivityLog';
+import {
+  friendlyAction,
+  friendlyAutoReason,
+  isPermanentReverseRefusal,
+  reverseCompletedConfirmMessage,
+  reverseDismissedConfirmMessage,
+  requiresReverseConfirmation,
+  reverseConfirmMessage,
+  withRowFlagSet,
+  withRowFlagCleared,
+} from './ActivityLog';
 
 // row 312(b): the 26 S41 'reclassified' data-op rows rendered as the raw
 // action string — no ACTION_LABEL entry existed. Pure-function test only
@@ -17,6 +27,16 @@ describe('friendlyAction', () => {
     expect(friendlyAction('completed')).toBe('Completed');
     expect(friendlyAction('dismissed')).toBe('Not a lead');
     expect(friendlyAction('reversed')).toBe('Reversed');
+  });
+
+  // Row 320(e): color-change-request/route.ts's staff-email failure now writes
+  // the generic action_failed shape with detail.action='color_request_email'
+  // (friendlyAction(row.detail.action) reads this same map) — and the OLD
+  // top-level literal it used to write directly stays labelled too, so
+  // historical rows already in dashboard_activity keep rendering.
+  it('labels the reconciled color_request_email verb and keeps the legacy top-level literal labelled', () => {
+    expect(friendlyAction('color_request_email')).toBe('Colour-change staff email');
+    expect(friendlyAction('color_request_email_failed')).toBe('Colour-change staff email failed');
   });
 });
 
@@ -77,5 +97,57 @@ describe('withRowFlagSet / withRowFlagCleared (row 305 — per-row busy map)', (
   it('clearing a flag for an id that was never set is a no-op that returns the SAME object reference', () => {
     const busyIds: Record<string, boolean> = { rowA: true };
     expect(withRowFlagCleared(busyIds, 'rowB')).toBe(busyIds);
+  });
+});
+
+// Row 320(g): the /inbox/activity Reverse button had no confirm at all for a
+// 'completed' row — the ONLY warning that a Reverse doesn't re-open a closed
+// follow-up nag lived in InWorksSection's manual Mark-completed confirm,
+// which an auto-completed row (no needsLookReason gate) never passes through.
+describe('reverseCompletedConfirmMessage (row 320g)', () => {
+  it('names both halves honestly: the status change reverses, the follow-up nag does not', () => {
+    const msg = reverseCompletedConfirmMessage().toLowerCase();
+    expect(msg).toContain('does not re-open');
+    expect(msg).toContain('follow-up');
+  });
+});
+
+// Finding 2 (sibling-guard parity): dismissItem closes a pending follow-up
+// nag exactly like markItemCompleted does, and reverseItemState never
+// restores follow_ups on either path — the row-320(g) confirm covered only
+// 'completed' and missed this identically-shaped sibling.
+describe('requiresReverseConfirmation (Finding 2)', () => {
+  it('requires confirmation for both completed and dismissed', () => {
+    expect(requiresReverseConfirmation('completed')).toBe(true);
+    expect(requiresReverseConfirmation('dismissed')).toBe(true);
+  });
+  it('does not require confirmation for actions with no follow-up-nag side effect', () => {
+    expect(requiresReverseConfirmation('handled')).toBe(false);
+    expect(requiresReverseConfirmation('followed')).toBe(false);
+    expect(requiresReverseConfirmation('reclassified')).toBe(false);
+  });
+});
+
+describe('reverseDismissedConfirmMessage (Finding 2)', () => {
+  it('names both halves honestly: the dismissal reverses (and un-suppresses the sender), the follow-up nag does not', () => {
+    const msg = reverseDismissedConfirmMessage().toLowerCase();
+    expect(msg).toContain('does not re-open');
+    expect(msg).toContain('follow-up');
+    expect(msg).toContain('un-suppresses');
+  });
+  // 'completed' has no unsuppress analog (inverseOf('completed', ...) always
+  // sets unsuppress:false, lifecycle.ts) — the two messages must differ, not
+  // share one generic string that overclaims for 'completed'.
+  it('is worded differently from the completed message (dismissed restores suppression, completed does not)', () => {
+    expect(reverseDismissedConfirmMessage()).not.toBe(reverseCompletedConfirmMessage());
+  });
+});
+
+describe('reverseConfirmMessage dispatch (Finding 2)', () => {
+  it('routes dismissed to the dismissed-specific wording', () => {
+    expect(reverseConfirmMessage('dismissed')).toBe(reverseDismissedConfirmMessage());
+  });
+  it('routes completed (and anything else) to the completed wording', () => {
+    expect(reverseConfirmMessage('completed')).toBe(reverseCompletedConfirmMessage());
   });
 });

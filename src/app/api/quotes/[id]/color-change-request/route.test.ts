@@ -318,7 +318,12 @@ describe('POST /api/quotes/[id]/color-change-request', () => {
     });
 
     // ── row 308: send-failure visibility ─────────────────────────────────────
-    it('logs a dashboard_activity row when the staff email send fails, linked to the inbox item', async () => {
+    // Row 320(e): reconciled onto the generic action_failed shape
+    // (recordActionFailed's convention, store.ts) — detail.action names WHICH
+    // action failed, same as every other write-failure in this codebase, so
+    // ActivityLog's action_failed-detail block (which reads detail.error)
+    // renders this one's error too, not just the bare label.
+    it('logs a generic action_failed dashboard_activity row when the staff email send fails, linked to the inbox item', async () => {
       process.env.HIGHLEVEL_INTERNAL_CONTACT_ID = 'internal-1';
       hl.sendEmail.mockRejectedValueOnce(new Error('GHL down'));
       const { client, activityInserts } = makeSb(bookedQuote());
@@ -328,11 +333,12 @@ describe('POST /api/quotes/[id]/color-change-request', () => {
       expect(res.status).toBe(200);
       expect(activityInserts).toHaveLength(1);
       expect(activityInserts[0].actor).toBe('system');
-      expect(activityInserts[0].action).toBe('color_request_email_failed');
+      expect(activityInserts[0].action).toBe('action_failed');
       // Linked to the same item ingestTouch just created (mocked to return
       // itemId 'inbox-item-1') so staff can trace the failure back to it.
       expect(activityInserts[0].inbox_item_id).toBe('inbox-item-1');
-      const detail = activityInserts[0].detail as { quoteId: string; error: string };
+      const detail = activityInserts[0].detail as { action: string; quoteId: string; error: string };
+      expect(detail.action).toBe('color_request_email');
       expect(detail.quoteId).toBe(ID);
       expect(detail.error).toBe('GHL down'); // hlErrorMessage-extracted, not the raw Error object
     });

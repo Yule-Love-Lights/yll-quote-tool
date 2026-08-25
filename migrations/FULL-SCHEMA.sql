@@ -24,6 +24,13 @@
 -- verified the header count against a fresh `ls migrations/*.sql` rather
 -- than trusting either number, per the "re-derive, don't hand-increment"
 -- line above.
+-- 2026-08-24-jobs-stock-deductions-snapshot.sql (row 325, ADD COLUMN on the
+-- existing jobs table) and 2026-08-24-inventory-orders-enable-rls.sql (row
+-- 329, RLS enable on the existing inventory_orders table) both folded in the
+-- SAME PR that added them (94 files per a fresh `ls migrations/*.sql`, still
+-- 38 live tables — neither adds a new table). Both migrations are UNAPPLIED
+-- to prod as of that PR — see each one's own header + this file's
+-- inventory_orders posture note for why.
 -- WHY THIS PASS EXISTED: the S58 post-close six-lens review (mislabelled S59 until the 2026-08-19 correction) found this file no longer was
 -- what its own header claimed. It said "64 dated migrations" and "30 LIVE"
 -- tables while 81 migrations and 37 live tables existed, and TWO tables
@@ -43,18 +50,20 @@
 -- Previous refresh: 2026-08-03 @ commit bf2ed09, through
 -- 2026-08-03-dashboard-activity-action-idx.sql (64 files, ledger #188).
 --
--- Tables (38 LIVE + 2 REMOVED tombstones below; RLS ENABLED on 37 of the 38
--- live ones — #90 defense in depth). The one exception, inventory_orders,
--- ships RLS DISABLED — see its own posture bullet below, not silently
--- "fixed" here. Three RLS postures coexist by design (see
--- migrations/2026-06-28-dashboard-tables.sql header + the W2-006 note in
--- 2026-06-28-enable-rls-all-tables.sql):
+-- Tables (38 LIVE + 2 REMOVED tombstones below; RLS ENABLED on all 38 live
+-- ones as of 2026-08-24-inventory-orders-enable-rls.sql (ledger row 329) —
+-- #90 defense in depth. inventory_orders was the one exception (RLS
+-- DISABLED) from its 2026-07-06 creation until that fix; see its own posture
+-- bullet below for the history and the "UNAPPLIED to prod" caveat. Three RLS
+-- postures coexist by design (see migrations/2026-06-28-dashboard-tables.sql
+-- header + the W2-006 note in 2026-06-28-enable-rls-all-tables.sql):
 --   * "classic" PII/service-role-only tables (quotes, designs, training_houses,
 --     reference_assets, training_examples, app_settings, custom_uploads,
---     inventory_catalog, inventory_on_hand, customers, properties, jobs,
---     invoices, quote_view_events, permanent_training_examples, referrals,
---     website_leads, self_serve_estimates, self_serve_analyzer_budget,
---     job_material_actuals, bot_pending_actions, bot_audit_log, bot_users):
+--     inventory_catalog, inventory_on_hand, inventory_orders, customers,
+--     properties, jobs, invoices, quote_view_events,
+--     permanent_training_examples, referrals, website_leads,
+--     self_serve_estimates, self_serve_analyzer_budget, job_material_actuals,
+--     bot_pending_actions, bot_audit_log, bot_users):
 --     RLS enabled with NO policies. Every path uses the service-role client,
 --     which bypasses RLS — anon/authenticated get nothing.
 --   * dashboard tables (dashboard_contacts, inbox_items, follow_ups,
@@ -64,16 +73,20 @@
 --     authenticated; service_role gets ALL on every table (bypasses RLS
 --     anyway; policy exists for documentation/intent).
 --   * inventory_orders (added 2026-07-06-inventory-orders.sql, table #21
---     below): RLS DISABLED entirely — NOT "enabled with no policies" like its
---     inventory_catalog / inventory_on_hand siblings, despite that migration's
---     own header comment claiming it "matches" them. That claim is stale:
---     inventory_catalog and inventory_on_hand were both swept to RLS-ENABLED
---     by 2026-06-28-enable-rls-all-tables.sql, which predates
---     inventory_orders' creation by over a week and so never touched it. This
---     file mirrors what the real dated migrations actually did — flagged as a
---     live discrepancy (2026-08-03 regen, ledger #188), not corrected;
---     correcting it needs its own dated migration + a product call, not a
---     silent edit here.
+--     below) shipped RLS DISABLED entirely — NOT "enabled with no policies"
+--     like its inventory_catalog / inventory_on_hand siblings, despite that
+--     migration's own header comment claiming it "matches" them. That claim
+--     was stale: inventory_catalog and inventory_on_hand were both swept to
+--     RLS-ENABLED by 2026-06-28-enable-rls-all-tables.sql, which predates
+--     inventory_orders' creation by over a week and so never touched it.
+--     Flagged as a live discrepancy at the 2026-08-03 regen (ledger #188),
+--     then fixed by row 329 (2026-08-24-inventory-orders-enable-rls.sql):
+--     every real consumer (src/lib/inventory/orders.ts) already used the
+--     service-role client exclusively, so RLS-enabled-with-no-policies
+--     changes no code path and folds it into the "classic" bucket above. As
+--     of the PR that added that migration it is UNAPPLIED to prod (an RLS
+--     change on an existing table is ask-first per AGENTS.md, not
+--     auto-applied) — this file describes the schema once it IS applied.
 --
 --    1. quotes              — one per quote
 --    2. quote_view_events   — per-view read-receipt log (2026-06-25)
@@ -99,7 +112,8 @@
 --       written anywhere in src/ as of this regen — table exists, wiring doesn't)
 --   20. sync_cursors        — per-source sync state/health, server-only (#58)
 --   21. inventory_orders    — on-order ledger for the supplier auto PO (P8/
---       #110 W7-002; 2026-07-06). RLS DISABLED — see the posture note above.
+--       #110 W7-002; 2026-07-06). RLS ENABLED, no policies (row 329,
+--       2026-08-24) — see the posture note above.
 --   22. permanent_training_examples — the PERMANENT-lighting AI training
 --       loop, satellite-primary embedding + retrieval (#141; 2026-07-08)
 --   23. referrals           — referral program ledger: link/mention
@@ -148,11 +162,12 @@
 -- statement; the 6 dashboard tables created later that day ship RLS-enabled
 -- from their own CREATE). So a fresh in-order rebuild THROUGH 2026-06-28 is
 -- safe: no table live as of that date is left RLS-disabled at the end. (This
--- no longer holds for the file as a WHOLE as of the 2026-08-03 regen —
--- inventory_orders, created 2026-07-06, ships RLS-disabled; see its own
--- posture bullet near the top of this file. Not a W2-006-shaped footgun
--- (no later blanket-enable migration exists to have "already covered" it) —
--- a distinct, newer gap.) The FOOTGUN W2-006 actually flags is
+-- did not hold for the file as a WHOLE between the 2026-08-03 regen and
+-- 2026-08-24: inventory_orders, created 2026-07-06, shipped RLS-disabled in
+-- between; see its own posture bullet near the top of this file. Not a
+-- W2-006-shaped footgun while it lasted (no later blanket-enable migration
+-- existed to have "already covered" it) — a distinct gap, closed by
+-- 2026-08-24-inventory-orders-enable-rls.sql / ledger row 329.) The FOOTGUN W2-006 actually flags is
 -- different — re-running any ONE of the older create-table files by itself
 -- (e.g. re-importing the Thunder catalog per inventory-catalog.sql's own
 -- instructions) still re-disables RLS on that single table, because each
@@ -579,6 +594,9 @@ alter table designs
   -- 2026-07-02 a staff title for the BASE photo (renameable "Photo 1" tab,
   -- like the extras' own titles). Nullable — null renders as "Photo 1".
   add column if not exists photo_title text,
+  -- 2026-08-21 independent customer-portal image visibility controls.
+  add column if not exists portal_show_street_view boolean not null default true,
+  add column if not exists portal_show_satellite_view boolean not null default true,
   -- 2026-08-20 compare-and-swap guard for the scene autosave (ledger row
   -- 260, migrations/2026-08-20-designs-scene-version.sql). Every scene write
   -- goes UPDATE ... WHERE version = <last-read value> SET version =
@@ -993,6 +1011,14 @@ create table if not exists public.jobs (
   -- exactly once per job (idempotent "prepare"). NULL = not yet prepped.
   stock_decremented_at timestamptz,
 
+  -- Row 325 (2026-08-24): the exact StockDeduction[] prepareJobMaterials
+  -- deducted at prep time, so a cancel-reversal returns exactly what prep
+  -- took off the shelf instead of recomputing the materials projection live
+  -- (which silently drifts if the materials rules change in between). NULL
+  -- when never prepped, or when prepped before this column existed (the
+  -- cancel route falls back to a live reconstruction for those legacy jobs).
+  stock_deductions jsonb,
+
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now()
 );
@@ -1324,6 +1350,13 @@ create table if not exists public.follow_ups (
   created_by    uuid references auth.users(id) on delete set null,  -- NULL when system-created
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now(),
+  -- Row 390 (2026-08-25): non-null only when this pending nudge is a
+  -- RE-CHASE (row 385's re-arm after 7 quiet days on a handled item) - the
+  -- silence-start anchor (followups.ts's reChaseAnchor), so the "due today"
+  -- strip can tell a re-chase apart from a first-time nudge and show how
+  -- long the customer has been quiet. See migrations/2026-08-25-follow-ups-
+  -- re-chase-since.sql for the full reasoning.
+  re_chase_since timestamptz null,
   constraint follow_ups_status_check check (status in ('pending','done','dismissed')),
   -- One system follow-up per (item, reason): makes ensureFollowUp idempotent
   -- at the DB layer. NULLs are distinct in Postgres, so manual follow-ups
@@ -1453,9 +1486,10 @@ create trigger sync_cursors_updated_at before update on public.sync_cursors
 -- =====================================================================
 -- Tables 22-31 — everything that landed after the 2026-07-03 regen
 -- (2026-08-03 regen, ledger #188). Back to the "classic" service-role-only
--- posture (RLS enabled, no policies) except inventory_orders — see its own
--- note. Not part of the #58 dashboard-tables banner above; sequenced here
--- purely by migration date.
+-- posture (RLS enabled, no policies) — INCLUDING inventory_orders as of
+-- 2026-08-24-inventory-orders-enable-rls.sql (ledger row 329); see its own
+-- note below. Not part of the #58 dashboard-tables banner above; sequenced
+-- here purely by migration date.
 -- =====================================================================
 
 -- ---------------------------------------------------------------------
@@ -1467,10 +1501,17 @@ create trigger sync_cursors_updated_at before update on public.sync_cursors
 --     [{sku, qty}] set at receive time (may differ from `lines` on a short
 --     shipment).
 --
---     RLS DISABLED (not "enabled, no policies") — see the posture note at
---     the top of this file. A real discrepancy with its inventory_catalog /
---     inventory_on_hand siblings, faithfully carried over from
---     2026-07-06-inventory-orders.sql, not corrected here.
+--     RLS ENABLED, no policies (row 329, 2026-08-24) — brought in line with
+--     its inventory_catalog / inventory_on_hand siblings; every consumer
+--     (src/lib/inventory/orders.ts) already used the service-role client
+--     exclusively, so this closes the anon-key hole with no code path
+--     affected. Previously shipped RLS-DISABLED since its 2026-07-06
+--     creation — see the posture note at the top of this file for that
+--     history. NOTE: as of the PR that added the 2026-08-24 migration, that
+--     migration is UNAPPLIED to prod (an RLS change on an existing table is
+--     ask-first per AGENTS.md, not auto-applied) — this file describes the
+--     schema once it IS applied, per this file's own convention of
+--     reflecting migrations/*.sql in date order.
 -- ---------------------------------------------------------------------
 create table if not exists inventory_orders (
   id              uuid primary key default gen_random_uuid(),
@@ -1484,7 +1525,7 @@ create table if not exists inventory_orders (
   job_count       int not null default 0
 );
 
-alter table inventory_orders disable row level security;
+alter table inventory_orders enable row level security;
 
 create index if not exists inventory_orders_status_open_idx
   on inventory_orders (status)
@@ -2488,7 +2529,84 @@ alter table public.quotes
 comment on column public.quotes.browsing_selection is
   'Customer''s LIVE, still-editable portal selection (ledger row 239) — packageId/selectedItemIds/rushSelected/takedownSelected/installTiming/colorSchemeId/customPattern/permanentEffect. NOT the frozen agreement (see approval_snapshot); never trusted for money math; reconciled against live packages/lineItems on read (resolveBrowsingSelectionSeed). Written only pre-approval by /api/quotes/[id]/selection.';
 
+
 -- ---------------------------------------------------------------------
+-- staff_notes (2026-08-21, migrations/2026-08-21-staff-notes.sql) —
+-- append-only internal notes shared by a quote and its linked job/invoice
+-- admin pages. Service-role only; no browser policies.
+-- ---------------------------------------------------------------------
+create table if not exists public.staff_notes (
+  id                  uuid primary key default gen_random_uuid(),
+  quote_id            uuid not null references public.quotes(id) on delete cascade,
+  body                text not null,
+  created_by          uuid references auth.users(id) on delete set null,
+  created_by_label    text not null,
+  created_at          timestamptz not null default now(),
+  client_request_id   uuid not null,
+
+  constraint staff_notes_body_valid
+    check (body = btrim(body) and char_length(body) between 1 and 2000),
+  constraint staff_notes_created_by_label_valid
+    check (
+      created_by_label = btrim(created_by_label)
+      and char_length(created_by_label) between 1 and 320
+    ),
+  constraint staff_notes_quote_request_unique
+    unique (quote_id, client_request_id)
+);
+
+create index if not exists staff_notes_quote_created_idx
+  on public.staff_notes (quote_id, created_at desc, id desc);
+
+create index if not exists staff_notes_created_by_idx
+  on public.staff_notes (created_by)
+  where created_by is not null;
+
+alter table public.staff_notes enable row level security;
+
+revoke all on public.staff_notes from anon, authenticated, service_role;
+grant select, insert on public.staff_notes to service_role;
+
+comment on table public.staff_notes is
+  'Internal staff-only quote timeline, also shown on the linked job and invoice. Never customer-facing.';
+
+-- ---------------------------------------------------------------------
+-- quote_build_sessions (2026-08-21, migrations/2026-08-21-quote-build-sessions.sql)
+-- - server-timed staff quote-building sessions, from accepted/prefilled
+-- contact through the quote's first real sent transition. Private service-role
+-- analytics only; test quotes, retries, and resends do not complete rows.
+-- ---------------------------------------------------------------------
+create table if not exists public.quote_build_sessions (
+  id                uuid primary key,
+  started_at        timestamptz not null default now(),
+  start_reason      text not null
+                      check (start_reason in ('contact_selected', 'prefilled_open')),
+  started_by        uuid references auth.users(id) on delete set null,
+  started_by_label  text not null
+                      check (char_length(btrim(started_by_label)) between 1 and 200),
+  quote_id          uuid references public.quotes(id) on delete cascade,
+  sent_at           timestamptz,
+
+  constraint quote_build_sessions_valid_completion
+    check (sent_at is null or (quote_id is not null and sent_at >= started_at))
+);
+
+create unique index if not exists quote_build_sessions_quote_id_uidx
+  on public.quote_build_sessions (quote_id)
+  where quote_id is not null;
+
+create index if not exists quote_build_sessions_started_by_idx
+  on public.quote_build_sessions (started_by);
+
+create index if not exists quote_build_sessions_sent_at_idx
+  on public.quote_build_sessions (sent_at desc, id)
+  where sent_at is not null;
+
+alter table public.quote_build_sessions enable row level security;
+
+revoke all on table public.quote_build_sessions from public, anon, authenticated, service_role;
+grant select, insert, update on table public.quote_build_sessions to service_role;
+
 -- quotes.ghl_event_date_pushed (2026-08-22,
 -- migrations/2026-08-22-quotes-ghl-event-date-pushed.sql) — ledger #314 fix
 -- round (staff-lens HIGH): the MM/DD/YYYY value last CONFIRMED pushed to
@@ -2505,3 +2623,46 @@ alter table public.quotes
 
 comment on column public.quotes.ghl_event_date_pushed is
   'MM/DD/YYYY value last CONFIRMED pushed to GHL''s "Event Date" custom field (ledger #314). Stamped by every push site (send route, quote/route.ts''s date-changing update, the approve route reconcile) on a successful push. Compared against the quote''s current formatted event date to detect "our side changed since the last push" — never compared against GHL''s live value, which would silently revert a staff correction made directly in GHL. Null = legacy/never-confirmed-pushed row.';
+
+-- ---------------------------------------------------------------------
+-- job_stock_movements (2026-08-25, migrations/2026-08-25-job-stock-
+-- movements.sql, ledger row 386, renamed row 397) — durable, append-only
+-- audit of stock taken off / put back on the shelf per JOB PREP OR
+-- JOB-CANCEL REVERSAL specifically — it does NOT cover every stock-changing
+-- event in the app. prepareJobMaterials's jobs.stock_deductions snapshot and
+-- the cancel route's reversal of it are both CLEARED back to null the
+-- instant cancel finishes using them (so the same job can be re-prepped
+-- later) — this table is the durable record that clearing destroys, written
+-- by src/lib/inventory/jobStockMovements.ts's recordJobStockMovements, one
+-- row per SKU per prep or cancel-reversal event. Never read/updated/cleared
+-- by either caller. Supplier receipts and crew true-ups are NOT written here
+-- — they already persist durably elsewhere (inventory_orders.received_lines
+-- for receipts, job_material_actuals for true-ups) and never destroyed their
+-- own record the way prep/cancel did, so there is no single complete
+-- on-hand-movement ledger today; see the migration file's own header for the
+-- full reasoning. RLS ENABLED, ZERO POLICIES - service-role only, matching
+-- job_segments / job_assignments / shifts / crew_members.
+-- ---------------------------------------------------------------------
+create table if not exists public.job_stock_movements (
+  id         uuid primary key default gen_random_uuid(),
+  job_id     uuid not null references public.jobs(id) on delete cascade,
+  sku        text not null,
+
+  -- Signed: negative = taken off the shelf (prep), positive = returned
+  -- (cancel reversal) — mirrors adjustOnHandAtomic's own signed `delta`
+  -- (src/lib/inventory/onHand.ts).
+  qty_delta  integer not null,
+  before_qty integer not null,
+  after_qty  integer not null,
+
+  reason     text not null check (reason in ('prep', 'cancel_reversal')),
+  created_at timestamptz not null default now()
+);
+
+create index if not exists job_stock_movements_job_id_idx
+  on public.job_stock_movements (job_id);
+
+create index if not exists job_stock_movements_created_at_idx
+  on public.job_stock_movements (created_at desc);
+
+alter table public.job_stock_movements enable row level security;
