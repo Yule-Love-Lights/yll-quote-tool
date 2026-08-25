@@ -27,7 +27,7 @@ import { catalogCostOverrides, listCatalog } from '@/lib/inventory/catalog';
 import { PermanentBomPanel } from '@/components/permanent/PermanentBomPanel';
 import { bistroBomFromQuote } from '@/lib/permanentBistro/bomFromQuote';
 import { costOverridesFromBistroCatalog } from '@/lib/inventory/bistroCatalog';
-import { getColorScheme, CUSTOM_SCHEME_ID } from '@/lib/design/colorSchemes';
+import { chosenLightColorLabel } from '@/lib/design/chosenColorLabel';
 import { depositDeclineReasonText } from '@/lib/integrations/quoteMessages';
 import { VaultRegistrationNotice } from '@/components/admin/VaultRegistrationNotice';
 import { PortalImageVisibilityControls } from '@/components/admin/PortalImageVisibilityControls';
@@ -90,18 +90,6 @@ function relativeTimeFromNow(iso: string): string {
   return `${days} day${days === 1 ? '' : 's'} ago`;
 }
 
-// #155 — the light color/pattern a legacy-rebook customer approved with, for
-// the admin detail card. null when the quote hasn't been approved yet (no
-// customerSelection to read) — the card renders nothing in that case.
-function chosenLightColorLabel(
-  sel: { colorSchemeId?: string; customPattern?: string[] } | undefined,
-): string | null {
-  if (!sel) return null;
-  const hasCustomPattern = Array.isArray(sel.customPattern) && sel.customPattern.length > 0;
-  if (sel.colorSchemeId === CUSTOM_SCHEME_ID || hasCustomPattern) return 'Custom pattern';
-  if (sel.colorSchemeId) return getColorScheme(sel.colorSchemeId).label;
-  return null;
-}
 
 export default async function QuoteDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;

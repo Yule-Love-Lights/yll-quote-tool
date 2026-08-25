@@ -22,6 +22,7 @@ import { listJobsForCustomer } from '@/lib/jobs';
 import { listInvoicesForCustomer } from '@/lib/invoices';
 import { JobStatusBadge } from '@/components/admin/JobStatusBadge';
 import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
+import { getApprovedColorLabels } from '@/lib/design/approvedColorLabels';
 
 export const dynamic = 'force-dynamic';
 
@@ -124,6 +125,10 @@ export default async function CustomerDetailPage({
   // the resolved customer_id OR belonging to one of the quotes already shown
   // above — the second leg covers legacy rows whose customer_id is still null.
   const quoteIds = quotes.map(q => q.id);
+  // Row 362: the approved light colour per quote, so this profile answers
+  // "what colour did they want?" without opening each quote. Best-effort — an
+  // empty map renders the table exactly as it did before.
+  const colorLabels = await getApprovedColorLabels(quoteIds);
   const jobs = await listJobsForCustomer(customerId, quoteIds);
   const invoices = await listInvoicesForCustomer(customerId, quoteIds);
 
@@ -291,6 +296,7 @@ export default async function CustomerDetailPage({
                   <th className="text-left px-4 py-2 font-semibold">Created</th>
                   <th className="text-left px-3 py-2 font-semibold">Quote</th>
                   <th className="text-left px-3 py-2 font-semibold">Status</th>
+                  <th className="text-left px-3 py-2 font-semibold">Light colour</th>
                   <th className="text-right px-3 py-2 font-semibold">Total</th>
                   <th className="px-3 py-2"></th>
                 </tr>
@@ -306,6 +312,12 @@ export default async function CustomerDetailPage({
                           back to the truncated UUID on legacy rows (BUG-2, S22). */}
                       <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap" style={{ color: 'var(--op-text-dim)' }} title={`Quote ID: ${q.id}`}>{q.quote_number != null ? `#${q.quote_number}` : q.id.slice(0, 8)}</td>
                       <td className="px-3 py-2.5"><CustomerStatusBadge status={statusOf(q)} /></td>
+                      {/* Row 362: em dash, not blank, so "no approved colour
+                          yet" is visibly different from a column that failed to
+                          load. */}
+                      <td className="px-3 py-2.5 whitespace-nowrap" style={{ color: 'var(--op-text-2)' }}>
+                        {colorLabels.get(q.id) ?? '—'}
+                      </td>
                       <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--op-text)' }}>{fmtMoney(q.total)}</td>
                       <td className="px-3 py-2.5 text-right">
                         <Link href={`/quote/${q.id}`} className="text-xs hover:underline mr-2" style={{ color: 'var(--op-primary)' }}>Open</Link>

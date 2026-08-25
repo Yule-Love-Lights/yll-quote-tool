@@ -18,6 +18,7 @@ import { estimateLaborForQuote } from './laborEstimate';
 import type { LineItem } from './pricing/pricingEngine';
 import { asServiceType } from './serviceType';
 import type { AmendmentTrailEntry } from './amend';
+import { chosenLightColorLabelFromSnapshot } from '@/lib/design/chosenColorLabel';
 
 // The job row as the billing side reads/writes it. `fulfillment_stage` is the
 // #82 axis — present in the type for completeness but owned by inventory.
@@ -238,6 +239,17 @@ export async function listJobsForAdmin(limit = 500): Promise<JobAdminCard[]> {
 // quote's customer identity + is_test/is_nce, and the linked invoice (if one exists yet).
 export type JobDetail = {
   job: JobRow;
+  /**
+   * Row 362: the light colour/pattern the customer APPROVED, as an
+   * operator-facing label ("Champagne", "Custom pattern", "Staff's pick").
+   * null when the linked quote has no approved selection, or there is no
+   * linked quote at all.
+   *
+   * The crew builds from this screen, so the colour has to be readable here
+   * and not only on the quote page — a booked order whose colour lives one
+   * click away is how a customer ends up with the wrong lights on the house.
+   */
+  lightColorLabel: string | null;
   customerName: string | null;
   customerEmail: string | null;
   customerPhone: string | null;
@@ -293,6 +305,7 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
   let quoteServiceType: string | null = null;
   let intendedDepositUsd: number | null = null;
   let amendments: AmendmentTrailEntry[] = [];
+  let lightColorLabel: string | null = null;
   if (job.quote_id) {
     const { data } = await db
       .from('quotes')
@@ -307,7 +320,7 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
         is_nce: boolean | null;
         service_type: string | null;
         deposit_amount_usd: number | null;
-        approval_snapshot: { amendments?: AmendmentTrailEntry[] } | null;
+        approval_snapshot: { amendments?: AmendmentTrailEntry[]; customerSelection?: { colorSchemeId?: string; customPattern?: string[] } } | null;
       }>();
     if (data) {
       customerName = data.customer_name ?? null;
@@ -321,12 +334,16 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
       amendments = Array.isArray(data.approval_snapshot?.amendments)
         ? data.approval_snapshot.amendments
         : [];
+      // Row 362: same snapshot this join already reads for the amendment
+      // trail — no extra query.
+      lightColorLabel = chosenLightColorLabelFromSnapshot(data.approval_snapshot);
     }
   }
 
   const invoice = await getInvoiceByJob(id);
   return {
     job,
+    lightColorLabel,
     customerName,
     customerEmail,
     customerPhone,

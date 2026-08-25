@@ -426,6 +426,20 @@ export default function InvoiceDetailPage() {
               <p className="text-sm text-gray-500">
                 {[data.customerPhone, data.customerEmail].filter(Boolean).join(' · ') || '—'}
               </p>
+              {/* Row 362: the approved light colour, where staff verify an
+                  order before taking money for it. Internal only — it is NOT
+                  on the customer-facing invoice document (docModels.ts does not
+                  read this field). */}
+              {data.lightColorLabel && (
+                <p className="mt-2 text-sm">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                    Light colour
+                  </span>{' '}
+                  <span className="ml-1 inline-block rounded px-2 py-0.5 text-sm font-medium bg-amber-50 text-amber-900 border border-amber-200">
+                    {data.lightColorLabel}
+                  </span>
+                </p>
+              )}
               <div className="mt-2 flex flex-wrap gap-3 text-sm">
                 {inv.job_id && (
                   <Link href={`/admin/jobs/${inv.job_id}`} className="text-blue-700 hover:underline">

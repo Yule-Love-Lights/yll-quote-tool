@@ -279,6 +279,7 @@ function makeInvoiceRow(overrides: Partial<InvoiceRow> = {}): InvoiceRow {
 function makeDetail(invoiceOverrides: Partial<InvoiceRow> = {}, detailOverrides: Partial<InvoiceDetail> = {}): InvoiceDetail {
   return {
     invoice: makeInvoiceRow(invoiceOverrides),
+    lightColorLabel: null,
     customerName: 'Alice Anderson',
     customerEmail: 'alice@example.com',
     customerPhone: '555-0100',
