@@ -305,6 +305,33 @@ describe('PUT /api/designs/[id]', () => {
     expect(updateDesignSceneGuarded).toHaveBeenCalledWith(VALID_ID, perPhotoScene, 4);
   });
 
+  // Row 348 FIX ROUND: the per-photo map filters rather than coerces, and this
+  // pins why. `brightnessForPhoto` reads
+  // `extraPhotoBrightness?.[photoId] ?? baseBrightness`, so a null/garbage entry
+  // INHERITS the scene's brightness. `clampBrightness` returns 50 for anything
+  // non-numeric — correct for the scene-level field (which already defaults with
+  // `?? 50`) but wrong per photo, where it would silently pin that photo at 50
+  // and stop it inheriting. Dropping the unusable entry preserves the inherit
+  // behaviour exactly, since a missing key reads identically to a null one.
+  it('DROPS a non-numeric per-photo brightness so it keeps inheriting the base, never pins it to 50', async () => {
+    const scene = {
+      ...validScene,
+      brightness: 80,
+      extraPhotoBrightness: { 'left-photo': null, 'mid-photo': undefined, 'right-photo': 40 },
+    } as unknown as Record<string, unknown>;
+    const res = await PUT(makeReq({ scene, version: 4 }), ctx());
+    expect(res.status).toBe(200);
+    const persisted = (updateDesignSceneGuarded as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][1] as {
+      extraPhotoBrightness: Record<string, number>;
+      brightness: number;
+    };
+    // The unusable entries are gone entirely — NOT rewritten to 50.
+    expect(persisted.extraPhotoBrightness).toEqual({ 'right-photo': 40 });
+    expect(persisted.extraPhotoBrightness['left-photo']).toBeUndefined();
+    // ...and the scene-level value still clamps normally.
+    expect(persisted.brightness).toBe(80);
+  });
+
   // Row 348 (admin LOW): a caller-supplied brightness outside [0,100] must be
   // clamped before it reaches storage — nothing downstream clamps it on read
   // the way lightScale is (see photoBrightness.ts's clampBrightness comment).

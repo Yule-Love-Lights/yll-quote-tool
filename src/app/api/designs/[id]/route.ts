@@ -158,13 +158,24 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
         ...(rawScene.brightness !== undefined
           ? { brightness: clampBrightness(rawScene.brightness) }
           : {}),
+        // Row 348 fix round: the per-photo map must FILTER, not map-and-coerce.
+        // `clampBrightness` returns 50 for anything non-numeric, which is right
+        // for the scene-level field (brightnessForPhoto already defaults it with
+        // `scene.brightness ?? 50`, so null -> 50 changes nothing) but WRONG per
+        // photo: the lookup is `extraPhotoBrightness?.[photoId] ?? baseBrightness`,
+        // so a null/garbage entry currently falls back to the SCENE's brightness,
+        // not to 50. Mapping it through the clamp would silently pin that photo
+        // at 50 and stop it inheriting — a visible tint change on every render
+        // path, portal included, introduced by a guard meant to prevent exactly
+        // that class of thing. Dropping the non-numeric entry preserves the
+        // inherit-from-base behaviour exactly (a missing key reads the same as a
+        // null one) and discards nothing real, since the value was never usable.
         ...(rawScene.extraPhotoBrightness
           ? {
               extraPhotoBrightness: Object.fromEntries(
-                Object.entries(rawScene.extraPhotoBrightness).map(([photoId, b]) => [
-                  photoId,
-                  clampBrightness(b),
-                ]),
+                Object.entries(rawScene.extraPhotoBrightness)
+                  .filter(([, b]) => typeof b === 'number' && Number.isFinite(b))
+                  .map(([photoId, b]) => [photoId, clampBrightness(b)]),
               ),
             }
           : {}),
