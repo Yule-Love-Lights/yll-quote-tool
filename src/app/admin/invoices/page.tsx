@@ -208,8 +208,15 @@ function InvoicesAdminPageContent() {
                       <div className="flex items-center gap-1.5">
                         <InvoiceStatusBadge status={inv.status} />
                         {isStaleInvoiceSnapshot(inv.quoteApprovalSnapshot) && (
+                          // Staff-lens finding (row 396 delta-verify): the old copy said
+                          // "See the amend panel on the linked order" — a promised remedy
+                          // that doesn't always exist. /amend 409s "no-change" when there's
+                          // no real price delta, so an invoiceResyncFailed marker with
+                          // nothing left to re-price can't be cleared there at all
+                          // (clearing it needs its own change — deferred to a ledger row).
+                          // Say what the ⚠ MEANS, not how to fix it.
                           <span
-                            title="Unreconciled — this invoice may not match the agreed total. See the amend panel on the linked order."
+                            title="Unreconciled — this invoice may not match the agreed total. Verify against the linked order before collecting the balance."
                             aria-label="Unreconciled invoice"
                             className="text-amber-600"
                           >
