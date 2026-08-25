@@ -3,9 +3,11 @@ import { getOperator } from '@/lib/auth/supabaseServer';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import {
   STAFF_NOTE_MAX_LENGTH,
+  STAFF_NOTE_REASON_MAX_LENGTH,
   appendStaffNote,
   listStaffNotes,
   quoteExistsForStaffNotes,
+  redactStaffNote,
 } from '@/lib/staffNotes';
 
 export const runtime = 'nodejs';
@@ -126,4 +128,83 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'That request id was already used for another note' }, { status: 409 });
   }
   return NextResponse.json({ error: 'Failed to save staff note' }, { status: 500 });
+}
+
+/**
+ * Row 372: withdraw a note (a tombstone, not a delete — see redactStaffNote).
+ *
+ * PATCH rather than DELETE on purpose: the row is not going anywhere, and a
+ * DELETE that leaves the record standing would describe itself wrongly to the
+ * next person reading this file.
+ *
+ * WHO MAY: your own note is yours to withdraw; anyone else's takes an admin.
+ * The rule itself is mayRedactStaffNote (staffNotes.ts) and is enforced in the
+ * lib against the author read from the row — not here, and never against
+ * anything a request body supplied. This route only forwards the session's
+ * role and turns a refusal into a 403.
+ *
+ * (An earlier version of this comment said any operator may withdraw any note.
+ * That was the shipped behaviour for one commit, and the admin lens was right
+ * that it was wrong: the erasure is irreversible and total, and this repo gates
+ * irreversible actions on an admin. Requiring an admin for ALL of them was also
+ * wrong — the common case is someone fixing their own mistake seconds later,
+ * which must not wait on the owner being awake.)
+ */
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const context = await contextForStaffNotes(params);
+  if (!context.ok) return context.response;
+
+  let payload: { noteId?: unknown; reason?: unknown };
+  try {
+    payload = (await req.json()) as typeof payload;
+  } catch {
+    payload = {};
+  }
+  if (typeof payload.noteId !== 'string' || !UUID_RE.test(payload.noteId)) {
+    return NextResponse.json({ error: 'A valid noteId is required' }, { status: 400 });
+  }
+  // A reason is optional — the reason may itself be the sensitive part — but
+  // if one is given it is held to the same shape as the note body.
+  if (payload.reason !== undefined && payload.reason !== null && typeof payload.reason !== 'string') {
+    return NextResponse.json({ error: 'Reason must be text' }, { status: 400 });
+  }
+  const reason = typeof payload.reason === 'string' ? payload.reason.trim() : '';
+  if (reason.length > STAFF_NOTE_REASON_MAX_LENGTH) {
+    return NextResponse.json(
+      { error: `Reason must be ${STAFF_NOTE_REASON_MAX_LENGTH} characters or fewer` },
+      { status: 400 },
+    );
+  }
+
+  const result = await redactStaffNote({
+    quoteId: context.id,
+    noteId: payload.noteId,
+    redactedBy: context.operator.id,
+    redactedByLabel: context.operator.name ?? context.operator.email ?? 'Staff',
+    // Row 372: the author-or-admin rule is enforced in the lib, against the
+    // note's real author — the role is all it needs from the session.
+    redactedByRole: context.operator.role,
+    reason: reason || null,
+  });
+
+  // An already-withdrawn note is a 200, not a conflict: the caller asked for a
+  // state the note is already in, and a second click should not read as an
+  // error. The body carries the ORIGINAL withdrawal, so the UI shows who
+  // actually did it rather than the person who clicked twice.
+  if (result.kind === 'redacted' || result.kind === 'already-redacted') {
+    return NextResponse.json(
+      { note: result.note, alreadyRedacted: result.kind === 'already-redacted' },
+      { status: 200, headers: { 'Cache-Control': 'private, no-store' } },
+    );
+  }
+  if (result.kind === 'not-found') {
+    return NextResponse.json({ error: 'Note not found on this quote' }, { status: 404 });
+  }
+  if (result.kind === 'forbidden') {
+    return NextResponse.json(
+      { error: 'Only the staff member who wrote a note, or an admin, can withdraw it' },
+      { status: 403 },
+    );
+  }
+  return NextResponse.json({ error: 'Failed to withdraw the note' }, { status: 500 });
 }
