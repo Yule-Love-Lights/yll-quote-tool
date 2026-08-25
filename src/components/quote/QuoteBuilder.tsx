@@ -1726,6 +1726,19 @@ export default function QuoteBuilder({
   // whole effect). See reconcileSideFootage.ts and the rehydrate-seed comment
   // in getSetter(side) below.
   const prevPermSideDerivedRef = useRef<PermanentSideFootageBaseline>({});
+  // Row 379 (S48 #921 delta-verify MED): the satellite scale that
+  // prevPermSideDerivedRef's FOOTAGE entries were actually computed under —
+  // `undefined` until first seeded/derived. Footage is scale-derived
+  // (deriveSideMeasure); corners is not. Reading this alongside a fresh
+  // derive run lets the effect below tell "this side's own geometry changed"
+  // apart from "the satellite scale changed out from under an untouched
+  // baseline" — the latter is reachable across a service-type switch (reopen
+  // permanent frozen -> switch to permanent_bistro before the first edit
+  // thaws it -> a fresh street lookup pulls a NEW scale and thaws via
+  // thawPermDerive -> switch back to permanent), and without this, a pure
+  // scale artifact looks identical to a redraw and silently reprices the
+  // side. See reconcileSideFootage.ts's `scaleChanged` for the actual guard.
+  const prevPermSideScaleRef = useRef<number | null | undefined>(undefined);
 
   // Recompute footages from the SATELLITE lines (#35: the only line-measurement
   // source — deterministic feet-per-pixel × image pixel width). When there's no
@@ -1906,15 +1919,25 @@ export default function QuoteBuilder({
   // getSetter branch below (for every side, not just the touched one), so
   // every field's baseline is seeded together. Seeds from the CURRENT
   // (pre-edit) lines/scale/aspect, same as the bistro seed.
-  const seedPermanentSideBaselineIfFrozen = () => {
+  //
+  // Row 379: `scale` defaults to the current closure's satelliteFeetPerPixel,
+  // but a caller that JUST called setSatelliteFeetPerPixel(newScale) earlier
+  // in the SAME synchronous handler (a fresh address lookup) must pass that
+  // new value explicitly — setState doesn't flush mid-handler, so the
+  // closure's satelliteFeetPerPixel is still the OLD scale at this point,
+  // and seeding under it would stamp the baseline with a scale that's
+  // already stale the instant this function returns. See the
+  // permanent_bistro fresh-lookup call site below for the reachable case.
+  const seedPermanentSideBaselineIfFrozen = (scale: number | null = satelliteFeetPerPixel) => {
     if (!permDeriveFrozenRef.current) return;
     const sides = {} as Record<PermanentSideKey, { hasLines: boolean; footage: number | null; corners: number }>;
     for (const side of PERMANENT_SIDES) {
       const lines = permanentSatLines[side];
-      const m = deriveSideMeasure(lines, satelliteFeetPerPixel, satelliteAspect);
+      const m = deriveSideMeasure(lines, scale, satelliteAspect);
       sides[side] = { hasLines: lines.length > 0, footage: m.footage, corners: m.corners };
     }
     prevPermSideDerivedRef.current = derivePermanentSideFootageBaseline(sides);
+    prevPermSideScaleRef.current = scale;
   };
 
   // Row 345 finding 2: permDeriveFrozenRef is shared by THREE independent
@@ -1936,17 +1959,29 @@ export default function QuoteBuilder({
   //
   // ONE class of exception, three sites (verified by grep at the 2026-08-24
   // master re-sync, after #849/#866/#871/#874 added two more): a thaw that
-  // WIPES all four sides' lines wholesale in the same breath — the fresh
+  // REPLACES all four sides' lines wholesale in the same breath — the fresh
   // analyze below, and the two satellite-replacement paths (manual upload,
   // address re-pull, both of which warn the operator that traced footage will
-  // reset). Those stay PLAIN thaws on purpose. There is no override worth
-  // preserving across a wipe the operator just confirmed, and the next derive
-  // run sees hasLines=false with hadLinesPrev=true, so the reconcile's own
-  // delete-transition resets each field to 0 — which is exactly what the
-  // confirm dialog promised. Seeding there would be wrong, not merely
-  // redundant; see the fresh-analyze site's own comment for the full case.
-  const thawPermDerive = () => {
-    seedPermanentSideBaselineIfFrozen();
+  // reset). Those stay PLAIN thaws on purpose, but by TWO DIFFERENT safety
+  // mechanisms, not one — row 399 shipped from conflating them:
+  //   - The two satellite-replacement paths wipe every side to `[]` FIRST.
+  //     The next derive run sees hasLines=false with hadLinesPrev=true, so
+  //     the reconcile's own delete-transition resets each field to 0 before
+  //     canDerive/scaleChanged are ever consulted — safe regardless of any
+  //     scale change alongside it.
+  //   - The fresh-analyze site does NOT wipe first — it replaces with the
+  //     AI's fresh (usually non-empty) trace directly, so hasLines is often
+  //     TRUE on the very next run. That path is safe only because it ALSO
+  //     resets prevPermSideDerivedRef/prevPermSideScaleRef to their
+  //     brand-new (unseeded) state in the same breath (row 399 fix) — see
+  //     that site's own comment for why seeding there would be wrong, not
+  //     merely unnecessary.
+  // Row 379: `scale` (when passed) forwards straight to
+  // seedPermanentSideBaselineIfFrozen — see that function's own comment for
+  // why the permanent_bistro fresh-lookup call site below must pass one
+  // explicitly instead of relying on the default.
+  const thawPermDerive = (scale?: number | null) => {
+    seedPermanentSideBaselineIfFrozen(scale);
     permDeriveFrozenRef.current = false;
   };
 
@@ -2064,6 +2099,14 @@ export default function QuoteBuilder({
     if (permDeriveFrozenRef.current) return; // #142: rehydrated, untouched — saved values win
     const baseline = prevPermSideDerivedRef.current;
     const hasScale = satelliteFeetPerPixel != null;
+    // Row 379: baseline's footage entries were computed under
+    // prevPermSideScaleRef.current — if that's not undefined (something has
+    // been seeded/derived before) and it disagrees with the scale in effect
+    // THIS run, any freshValue/baseline mismatch below is a scale artifact,
+    // not proof this side was redrawn. See reconcileSideFootage.ts's
+    // `scaleChanged` doc for what the guard actually does with this.
+    const scaleChanged =
+      prevPermSideScaleRef.current !== undefined && prevPermSideScaleRef.current !== satelliteFeetPerPixel;
     const p = form.permanent;
 
     const front = deriveSideMeasure(permanentSatLines.front, satelliteFeetPerPixel, satelliteAspect);
@@ -2089,13 +2132,13 @@ export default function QuoteBuilder({
     // its side has lines. See reconcileSideFootage.ts's header comment for
     // why folding these into one flag (the pre-fix design) made a
     // no-scale delete-transition unreachable.
-    const frontFootage = reconcilePermanentSideField({ active: true, canDerive: hasScale, hasLines: hasFront, hadLinesPrev: hadFrontPrev, freshValue: front.footage ?? 0, currentBilled: p.frontFootage, baseline: baseline.frontFootage });
+    const frontFootage = reconcilePermanentSideField({ active: true, canDerive: hasScale, hasLines: hasFront, hadLinesPrev: hadFrontPrev, freshValue: front.footage ?? 0, currentBilled: p.frontFootage, baseline: baseline.frontFootage, scaleChanged });
     const frontCorners = reconcilePermanentSideField({ active: true, canDerive: true, hasLines: hasFront, hadLinesPrev: hadFrontPrev, freshValue: front.corners, currentBilled: p.frontCorners, baseline: baseline.frontCorners });
-    const leftFootage = reconcilePermanentSideField({ active: true, canDerive: hasScale, hasLines: hasLeft, hadLinesPrev: hadLeftPrev, freshValue: left.footage ?? 0, currentBilled: p.leftFootage, baseline: baseline.leftFootage });
+    const leftFootage = reconcilePermanentSideField({ active: true, canDerive: hasScale, hasLines: hasLeft, hadLinesPrev: hadLeftPrev, freshValue: left.footage ?? 0, currentBilled: p.leftFootage, baseline: baseline.leftFootage, scaleChanged });
     const leftCorners = reconcilePermanentSideField({ active: true, canDerive: true, hasLines: hasLeft, hadLinesPrev: hadLeftPrev, freshValue: left.corners, currentBilled: p.leftCorners, baseline: baseline.leftCorners });
-    const rightFootage = reconcilePermanentSideField({ active: true, canDerive: hasScale, hasLines: hasRight, hadLinesPrev: hadRightPrev, freshValue: right.footage ?? 0, currentBilled: p.rightFootage, baseline: baseline.rightFootage });
+    const rightFootage = reconcilePermanentSideField({ active: true, canDerive: hasScale, hasLines: hasRight, hadLinesPrev: hadRightPrev, freshValue: right.footage ?? 0, currentBilled: p.rightFootage, baseline: baseline.rightFootage, scaleChanged });
     const rightCorners = reconcilePermanentSideField({ active: true, canDerive: true, hasLines: hasRight, hadLinesPrev: hadRightPrev, freshValue: right.corners, currentBilled: p.rightCorners, baseline: baseline.rightCorners });
-    const backFootage = reconcilePermanentSideField({ active: true, canDerive: hasScale, hasLines: hasBack, hadLinesPrev: hadBackPrev, freshValue: back.footage ?? 0, currentBilled: p.backFootage, baseline: baseline.backFootage });
+    const backFootage = reconcilePermanentSideField({ active: true, canDerive: hasScale, hasLines: hasBack, hadLinesPrev: hadBackPrev, freshValue: back.footage ?? 0, currentBilled: p.backFootage, baseline: baseline.backFootage, scaleChanged });
     const backCorners = reconcilePermanentSideField({ active: true, canDerive: true, hasLines: hasBack, hadLinesPrev: hadBackPrev, freshValue: back.corners, currentBilled: p.backCorners, baseline: baseline.backCorners });
 
     // MERGE into the previous baseline (row 333 finding 1 precedent) — but
@@ -2119,6 +2162,13 @@ export default function QuoteBuilder({
       frontFootage, frontCorners, leftFootage, leftCorners, rightFootage, rightCorners, backFootage, backCorners,
     };
     prevPermSideDerivedRef.current = mergePermanentSideFootageBaseline(baseline, activeByField, resultsByField);
+    // Row 379: record the scale THIS run's footage entries are now
+    // consistent with, but only when a real scale actually drove them
+    // (hasScale) — when it's false every footage field just echoed its prior
+    // value through unchanged (the canDerive: false branch), so the scale
+    // that value is still denominated in hasn't changed and this ref must
+    // not be overwritten with the current (no-scale) null.
+    if (hasScale) prevPermSideScaleRef.current = satelliteFeetPerPixel;
 
     const anyTarget = Object.values(resultsByField).some((r) => r.target != null);
     if (!anyTarget) return;
@@ -2136,6 +2186,21 @@ export default function QuoteBuilder({
         if (rightCorners.target != null) n = { ...n, rightCorners: rightCorners.target };
         if (backFootage.target != null) n = { ...n, backFootage: backFootage.target };
         if (backCorners.target != null) n = { ...n, backCorners: backCorners.target };
+        // Row 400: whichever fields THIS run actually stamped just got
+        // written by the system, not staff — mark them 'auto'. A field
+        // whose target stayed null (a standing override held, canDerive
+        // was false, or nothing changed) is left alone; its existing
+        // provenance, if any, survives untouched.
+        const stampedFields = (Object.keys(resultsByField) as PermanentSideFieldKey[]).filter(
+          (k) => resultsByField[k].target != null,
+        );
+        if (stampedFields.length > 0) {
+          const nextSource: Partial<Record<PermanentSideFieldKey, 'auto' | 'manual'>> = {
+            ...(n.sideMeasureSource ?? {}),
+          };
+          for (const k of stampedFields) nextSource[k] = 'auto';
+          n = { ...n, sideMeasureSource: nextSource };
+        }
         return n === cur ? f : { ...f, permanent: n };
       }),
     );
@@ -3218,7 +3283,14 @@ export default function QuoteBuilder({
             // Row 345 finding 2: thaw via the shared helper (seeds the
             // permanent-SIDE baseline too) rather than clearing the ref
             // directly — see thawPermDerive's own comment.
-            thawPermDerive();
+            //
+            // Row 379: pass the scale EXPLICITLY. setSatelliteFeetPerPixel
+            // (the new scale, above) already fired this render — the
+            // closure's satelliteFeetPerPixel is still the OLD value until
+            // React flushes, so seeding off the default would stamp the
+            // permanent-side baseline with a scale that's already stale,
+            // reachable straight through this exact switch-to-bistro path.
+            thawPermDerive(data.satelliteFeetPerPixel ?? null);
             hadBistroLinesRef.current = satelliteBistroLines.length > 0;
             setSatelliteBistroLines([]);
           } else {
@@ -3293,21 +3365,55 @@ export default function QuoteBuilder({
             // preserve the current lines (a manual edit touches one side,
             // Recount re-derives from what's already drawn); this one
             // REPLACES all four sides wholesale with a fresh AI re-trace two
-            // lines below — the same wipe-then-thaw shape as the two
-            // satellite-replacement paths above, which is exactly the
-            // "geometry changed" case the reconcile is supposed to let win
-            // outright. Seeding from the pre-replace (old/frozen) lines
-            // would only matter in the rare coincidence where the AI
+            // lines below — exactly the "geometry changed" case the
+            // reconcile is supposed to let win outright, even over a
+            // standing override. Seeding from the pre-replace (old/frozen)
+            // lines would only matter in the rare coincidence where the AI
             // re-derives a side to the exact same footage/corners as
             // before — and in that one case seeding would make a stale
             // hand-typed override survive a fresh re-analysis the operator
             // explicitly asked for, which is the opposite of "drive
-            // footage/counts immediately" above. Leaving the baseline
-            // un-seeded here means every side starts this run with no
-            // recorded baseline, so the reconcile's "brand-new" branch
-            // takes the AI's fresh values unconditionally — the correct
-            // behavior for a full re-analyze.
+            // footage/counts immediately" above.
+            //
+            // Row 399 (was a live money bug, not a documentation exercise):
+            // this comment used to ASSERT that leaving the baseline
+            // un-seeded was enough to make every side "start this run with
+            // no recorded baseline" — false. Nothing here reset
+            // prevPermSideDerivedRef/prevPermSideScaleRef, so a SECOND
+            // analyze in the same session (e.g. the operator corrects a
+            // typo'd address and re-runs) inherited the FIRST analyze's
+            // baseline + scale. Since almost any two different addresses
+            // geocode to two different latitudes, satelliteFeetPerPixel
+            // (set above) differs -> scaleChanged computes true against
+            // that stale baseline -> reconcilePermanentSideField's
+            // `scaleChanged && baseline != null` branch fires FIRST and
+            // treats the second address's real (different-house) footage
+            // as a pure scale artifact, silently keeping the FIRST
+            // address's wrong number forever (see
+            // reconcileSideFootage.test.ts's "second address" regression).
+            // Actually resetting both refs here is what makes "every side
+            // starts this run with no recorded baseline" true, so
+            // scaleChanged short-circuits to false (prevPermSideScaleRef
+            // reads back as `undefined`) and the reconcile's brand-new
+            // branch takes the AI's fresh values unconditionally, exactly
+            // as this comment always claimed.
+            //
+            // Known tradeoff, left alone on purpose (row 399 delta-verify):
+            // a reopened quote that got a manual line edit first (so a real
+            // override is on record), then a re-analyze for a DIFFERENT
+            // address, DOES lose that standing override here — same as it
+            // always has, even same-scale, before this fix existed. Unlike
+            // the two satellite-replacement paths above (handleSatelliteSelect,
+            // applyPulledSatellite), which window.confirm before discarding
+            // anything drawn/overridden, this path has NO confirm dialog —
+            // the operator gets no warning before a re-analyze silently wipes
+            // a hand-typed number. Not introduced by row 399 (the same-scale
+            // case already clobbered silently), so left unchanged; just
+            // flagging it here so the next reader treats the silence as a
+            // known gap, not an oversight.
             permDeriveFrozenRef.current = false;
+            prevPermSideDerivedRef.current = {};
+            prevPermSideScaleRef.current = undefined;
             setPermanentSatLines({
               front: seeded.front ?? [],
               left: seeded.left ?? [],

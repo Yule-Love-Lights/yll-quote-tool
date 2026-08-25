@@ -481,8 +481,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid permanent.trackColor' }, { status: 400 });
     }
     // #192 — per-side track style override (optional). An unknown key is
-    // silently ignored (mirrors sideSource's leniency); a PRESENT recognized
-    // side key must carry a valid TrackStyle value.
+    // silently ignored; a PRESENT recognized side key must carry a valid
+    // TrackStyle value.
     if (pf.trackStyleBySide !== undefined) {
       if (!isObj(pf.trackStyleBySide) || Array.isArray(pf.trackStyleBySide)) {
         return NextResponse.json({ error: 'permanent.trackStyleBySide must be an object if provided' }, { status: 400 });
@@ -541,6 +541,27 @@ export async function POST(req: NextRequest) {
     for (const f of ['splittersNeeded', 'jumpBoosters'] as const) {
       if (pf[f] !== undefined && !isNonNegNumber(pf[f])) {
         return NextResponse.json({ error: `permanent.${f} must be a non-negative number if provided` }, { status: 400 });
+      }
+    }
+    // Row 400: per-field footage/corners provenance, mirrors accessoriesSource
+    // above — an unknown key is silently ignored; a PRESENT recognized key
+    // must be 'auto' or 'manual'.
+    if (pf.sideMeasureSource !== undefined) {
+      if (!isObj(pf.sideMeasureSource) || Array.isArray(pf.sideMeasureSource)) {
+        return NextResponse.json({ error: 'permanent.sideMeasureSource must be an object if provided' }, { status: 400 });
+      }
+      const measureFields = [
+        'frontFootage', 'frontCorners', 'leftFootage', 'leftCorners',
+        'rightFootage', 'rightCorners', 'backFootage', 'backCorners',
+      ] as const;
+      for (const k of measureFields) {
+        const v = (pf.sideMeasureSource as Record<string, unknown>)[k];
+        if (v !== undefined && v !== 'auto' && v !== 'manual') {
+          return NextResponse.json(
+            { error: `permanent.sideMeasureSource.${k} must be 'auto' or 'manual' if provided` },
+            { status: 400 },
+          );
+        }
       }
     }
   }

@@ -135,6 +135,20 @@ export type PermanentSideFieldReconcileInput = {
   currentBilled: number;
   /** The derived value recorded at the last reconcile (or seeded at a reopened quote's rehydrate-thaw). */
   baseline: number | undefined;
+  /**
+   * Row 379 (S48 #921 delta-verify MED): true when `baseline` was captured
+   * under a DIFFERENT satellite scale than the one that produced this run's
+   * `freshValue` — reachable across a service-type switch (reopen a
+   * permanent quote frozen -> switch to permanent_bistro before the first
+   * edit thaws it -> a fresh street lookup pulls a new scale and thaws ->
+   * switch back to permanent). `freshValue !== baseline` in that case is a
+   * SCALE artifact, not evidence this field's own geometry changed, so it
+   * must not be trusted the way a real redraw is. Only meaningful for
+   * footage (scale-derived); corners is scale-free and callers should always
+   * pass false (the default) for it. Optional + defaulted so every existing
+   * call site (which has no scale-provenance concept) is unaffected.
+   */
+  scaleChanged?: boolean;
 };
 
 export type PermanentSideFieldReconcileResult = {
@@ -147,7 +161,7 @@ export type PermanentSideFieldReconcileResult = {
 export function reconcilePermanentSideField(
   input: PermanentSideFieldReconcileInput,
 ): PermanentSideFieldReconcileResult {
-  const { active, hasLines, hadLinesPrev, canDerive, freshValue, currentBilled, baseline } = input;
+  const { active, hasLines, hadLinesPrev, canDerive, freshValue, currentBilled, baseline, scaleChanged = false } = input;
   if (!active) return { target: null, nextBaseline: undefined };
   if (!hasLines) {
     // Fires REGARDLESS of canDerive — a side with no known scale still needs
@@ -163,6 +177,19 @@ export function reconcilePermanentSideField(
     // scale (an address re-pull) resumes the override comparison exactly
     // where it left off instead of treating the field as brand-new.
     return { target: null, nextBaseline: baseline };
+  }
+  if (scaleChanged && baseline != null) {
+    // Row 379: `baseline` was captured under a scale that is no longer the
+    // one in effect. `freshValue !== baseline` here proves nothing about
+    // this side's own geometry — it may be purely the scale difference — so
+    // don't let it win the way a real redraw does (`target: freshValue`
+    // below would silently rescale/clobber a standing override on a side
+    // nobody touched). Resync the baseline to this run's fresh value under
+    // the NEW scale and leave the billed value exactly as the operator left
+    // it; the next run compares like-for-like again. If baseline is null
+    // there's nothing to resync against — falls through to the brand-new
+    // auto-populate branch below, same as any first-ever derive.
+    return { target: null, nextBaseline: freshValue };
   }
   if (baseline == null || freshValue !== baseline) {
     // Brand-new derive, or this field's own geometry changed since the last
