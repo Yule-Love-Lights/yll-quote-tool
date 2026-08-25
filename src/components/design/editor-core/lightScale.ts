@@ -77,27 +77,39 @@ export function spritzerLightDims(
   lightScale: number = LIGHT_SCALE_DEFAULT,
 ) {
   const scale = normalizeLightScale(lightScale);
-  const tipRadius = Math.max(1.5, radiusPx * 0.028) * scale;
-  // Row 350: the centre hub belongs HERE, with the tips it sits under, rather
-  // than in spritzer.ts on its own. Row 347 scaled the tips and rays but left
-  // the hub fixed at `max(4, radiusPx * 0.18)` — deliberately, so it would not
-  // swallow the rays on a large spritzer. The side effect the S65 wrap staff
-  // lens computed: on a whole-house shot (a 24" spritzer at 10 px/ft is only
-  // 10px in radius) the tips sit on their 1.5px FLOOR, so at 4x they reach 6px
-  // while the hub stays at its own 4px floor — ray-end dots visibly bigger
-  // than the light source they spray from, on the portal too.
+
+  // Row 350. Row 347 scaled the tips and rays with the slider but left the
+  // centre hub fixed, so on a whole-house shot — where BOTH sit on their pixel
+  // floors — the tip dots overtook the hub they spray from. Fixing that from
+  // one side only moves the problem, so both ends are bounded here, against
+  // the spray radius the tips have to live inside.
   //
-  // So the hub scales with the tips, under a ceiling that keeps row 347's
-  // original concern intact:
-  //   • never smaller than a tip dot — that IS the artifact;
-  //   • never past ~a third of the spray, so the rays still read as rays;
-  //   • and, because the ceiling can never fall below the unscaled base, the
-  //     default (scale 1) renders exactly the number it always did.
+  // Every bound is written so that at scale 1 it cannot bind: each ceiling is
+  // floored at that dimension's own unscaled value. A design nobody has
+  // touched the slider on renders exactly the pixels it always did.
+  const unscaledTip = Math.max(1.5, radiusPx * 0.028);
+  // A tip dot never grows past ~40% of the spray. Without this, the 1.5px
+  // FLOOR times 4x puts 6px dots on a 6px-radius spritzer — dots wider than
+  // the spray that is supposed to contain them.
+  const tipRadius = Math.min(unscaledTip * scale, Math.max(unscaledTip, radiusPx * 0.42));
+
+  // The hub scales too, under a ceiling that keeps row 347's own concern
+  // intact — a hub that swallows the rays reads as one blob rather than as a
+  // light spraying outward. Three bounds, and the reason for each:
+  //   • at least a tip dot: that IS the artifact this row exists to remove;
+  //   • at most ~45% of the spray, so the outer half still reads as rays;
+  //   • never below the unscaled base, which is what preserves scale 1.
+  //
+  // Consequence worth knowing rather than discovering: on a spritzer bigger
+  // than ~22px the hub reaches that ceiling around 2.5x and then holds while
+  // the tips keep growing. That is the ceiling doing its job, not the slider
+  // breaking, and it is pinned by test so it stays a decision.
   const centerBase = Math.max(4, radiusPx * 0.18);
   const centerRadius = Math.min(
     centerBase * scale,
-    Math.max(centerBase, tipRadius, radiusPx * 0.35),
+    Math.max(centerBase, tipRadius, radiusPx * 0.45),
   );
+
   return {
     tipRadius,
     tipHaloRadius: tipRadius * 2.6,

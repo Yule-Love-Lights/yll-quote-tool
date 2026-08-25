@@ -195,21 +195,59 @@ describe("spritzerLightDims", () => {
 
   it("fixes the exact reported case: a 24 inch spritzer at 10 px/ft, slider at 4x", () => {
     const d = spritzerLightDims(10, 4); // (24/12 * 10) / 2 = radiusPx 10
-    expect(d.tipRadius).toBe(6); // max(1.5, 0.28) * 4
-    // Before row 350 the hub stayed at 4 here — smaller than the tip dots.
+    // Unbounded, the 1.5px tip FLOOR times 4x gave 6px dots against a hub
+    // stuck at its own 4px floor. Both ends moved: the dots are now held to
+    // 42% of the spray, and the hub sits above them.
+    expect(d.tipRadius).toBeCloseTo(4.2, 5);
     expect(OLD_CENTER(10)).toBe(4);
     expect(d.centerRadius).toBeGreaterThanOrEqual(d.tipRadius);
   });
 
+  // Customer lens MED: fixing only the hub widened a band at the SMALL end
+  // where the hub covered the entire spray — because it was chasing tips that
+  // were themselves bigger than the spray. Bounding the tips closed it.
+  it("never lets the lit parts outgrow the spray that contains them", () => {
+    for (let r = 5; r <= 240; r += 1) {
+      for (const scale of [LIGHT_SCALE_MIN, 1, 2, 2.5, 3, LIGHT_SCALE_MAX]) {
+        const d = spritzerLightDims(r, scale);
+        const shortestRay = r * 0.93; // spritzer.ts draws rays at 93%-101% of r
+        expect(d.centerRadius).toBeLessThanOrEqual(shortestRay);
+        expect(d.tipRadius).toBeLessThanOrEqual(r * 0.42);
+      }
+    }
+  });
+
+  it("leaves the tips untouched at the default scale, where the cap must not bind", () => {
+    for (const r of [2, 6, 10, 22, 60, 240]) {
+      expect(spritzerLightDims(r, 1).tipRadius).toBe(Math.max(1.5, r * 0.028));
+    }
+  });
+
   it("still refuses to let the hub swallow the rays on a large spritzer", () => {
     // Row 347 left the hub unscaled for this reason; the ceiling is what
-    // preserves it. Rays run out to ~radiusPx, so a third of that still reads
-    // as a core sitting under a spray, not as one big blob.
+    // preserves it. Rays run out to ~radiusPx, so a hub under half of that
+    // still reads as a core sitting beneath a spray, not as one big blob.
     for (const r of [60, 120, 240]) {
       const d = spritzerLightDims(r, LIGHT_SCALE_MAX);
-      expect(d.centerRadius).toBeLessThanOrEqual(Math.max(OLD_CENTER(r), r * 0.35));
+      expect(d.centerRadius).toBeLessThanOrEqual(Math.max(OLD_CENTER(r), r * 0.45));
       expect(d.centerRadius).toBeLessThan(r * 0.5);
     }
+  });
+
+  // Staff lens MED: on a spritzer past ~22px the hub reaches its ceiling
+  // around 2.5x and then holds while the tips keep growing. Pinned so that
+  // stays a decision somebody made rather than a slider that looks broken.
+  it("holds the hub at its ceiling above ~2.5x on a large spritzer, by design", () => {
+    const atCeiling = spritzerLightDims(60, 2.5).centerRadius;
+    expect(atCeiling).toBeCloseTo(60 * 0.45, 10); // float math: 10.8 * 2.5
+
+    expect(spritzerLightDims(60, 3).centerRadius).toBeCloseTo(atCeiling, 10);
+    expect(spritzerLightDims(60, LIGHT_SCALE_MAX).centerRadius).toBeCloseTo(atCeiling, 10);
+    // ...while the tips genuinely keep moving across that same stretch, so the
+    // slider is never doing nothing at all.
+    expect(spritzerLightDims(60, LIGHT_SCALE_MAX).tipRadius).toBeGreaterThan(
+      spritzerLightDims(60, 2.5).tipRadius,
+    );
   });
 
   it("grows the hub with the slider, so the fix is not just a frozen hub", () => {
@@ -224,9 +262,11 @@ describe("spritzerLightDims", () => {
   // On a SMALL spritzer the hub sits on its own 4px floor and only starts
   // moving once the tips would otherwise overtake it. Pinned so the flatness
   // reads as deliberate rather than as the fix failing to fire.
-  it("holds a small spritzer's hub at its floor until the tips reach it", () => {
-    expect(spritzerLightDims(10, 2).centerRadius).toBe(4); // tips are 3px here
-    expect(spritzerLightDims(10, LIGHT_SCALE_MAX).centerRadius).toBe(6); // tips are 6px
+  it("holds a small spritzer's hub near its floor, just above the capped tips", () => {
+    expect(spritzerLightDims(10, 2).centerRadius).toBe(4.5); // ceiling: 0.45 * 10
+    const max = spritzerLightDims(10, LIGHT_SCALE_MAX);
+    expect(max.centerRadius).toBe(4.5);
+    expect(max.centerRadius).toBeGreaterThan(max.tipRadius);
   });
 });
 
