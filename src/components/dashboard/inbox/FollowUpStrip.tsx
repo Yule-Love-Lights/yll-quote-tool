@@ -170,7 +170,12 @@ export function FollowUpStrip({
       style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' }}
     >
       <h2 className="text-sm font-semibold mb-2" style={{ color: 'var(--op-text)' }}>
-        Follow-ups due today ({items.length})
+        {/* Row 391 fix round (staff lens MED): when the page is capped, a bare
+            live count reads as the whole job and drifts against the notice
+            below as staff clear rows. "N of TOTAL" keeps both honest — the
+            first number is what is on screen right now, the second is how many
+            are actually due. Uncapped, it stays the single number it was. */}
+        Follow-ups due today ({hiddenFollowUpNotice(initialItems.length, totalDue) ? `${items.length} of ${totalDue}` : items.length})
       </h2>
       <ul className="space-y-2">
         {items.map((f) => {

@@ -202,6 +202,14 @@ describe('FollowUpStrip (cap notice)', () => {
     expect(html).not.toContain('not shown yet');
   });
 
+  it('shows "N of TOTAL" in the header only when the page is capped', () => {
+    const capped = renderToStaticMarkup(<FollowUpStrip initialItems={[baseItem]} totalDue={42} />);
+    expect(capped).toContain('Follow-ups due today (1 of 42)');
+
+    const whole = renderToStaticMarkup(<FollowUpStrip initialItems={[baseItem]} totalDue={1} />);
+    expect(whole).toContain('Follow-ups due today (1)');
+  });
+
   it('renders the notice when more are due than the page carries', () => {
     const html = renderToStaticMarkup(<FollowUpStrip initialItems={[baseItem]} totalDue={42} />);
     expect(html).toContain('Showing the oldest 1 — 41 more due and not shown yet.');

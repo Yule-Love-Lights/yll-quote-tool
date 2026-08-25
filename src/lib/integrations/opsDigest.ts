@@ -524,12 +524,26 @@ function overdueLabel(days: number): string {
 }
 
 /** Render up to `cap` lines via `toLine`, then an exact "+N more" when the
- *  list runs longer — N is always `items.length - shown.length`, so it can
- *  never drift from what was actually left off. */
-function renderCapped<T>(items: T[], cap: number, toLine: (item: T) => string): string[] {
+ *  list runs longer.
+ *
+ *  Row 391: `trueTotal` exists because a named list can ALREADY be a partial
+ *  view of its own subject. `overdueFollowUps` comes from listDueFollowUps,
+ *  which is itself page-capped, so `items.length` is not the population — and
+ *  a digest reading "137 follow-ups due" above five names and "+95 more" (the
+ *  page's own 100, minus the five shown) would account for 100 of 137 and
+ *  drop the rest with no disclosure. Every other caller passes a complete
+ *  list, so the default keeps their arithmetic exactly as it was. */
+function renderCapped<T>(
+  items: T[],
+  cap: number,
+  toLine: (item: T) => string,
+  trueTotal: number = items.length,
+): string[] {
   const shown = items.slice(0, cap);
   const lines = shown.map(toLine);
-  const overflow = items.length - shown.length;
+  // Floored at items.length: a total that somehow reads LOW must never make
+  // "+N more" undercount the names this very message is about to print.
+  const overflow = Math.max(trueTotal, items.length) - shown.length;
   if (overflow > 0) lines.push(`+${overflow} more`);
   return lines;
 }
@@ -594,7 +608,14 @@ export function opsDigestMessage(data: OpsDigestData, baseUrl: string): string {
   // one, it was provably unreachable, and it was removed.
   if (data.overdueFollowUps && data.overdueFollowUps.length) {
     lines.push(
-      ...renderCapped(data.overdueFollowUps, NAMED_LIST_CAP, (f) => `• ${f.displayName} — ${overdueLabel(f.daysOverdue)}`),
+      // Row 391: the "+N more" counts against the REAL due total (the count
+      // printed one line above), not against this already-capped page.
+      ...renderCapped(
+        data.overdueFollowUps,
+        NAMED_LIST_CAP,
+        (f) => `• ${f.displayName} — ${overdueLabel(f.daysOverdue)}`,
+        data.inboxFollowUpsDueCount ?? data.overdueFollowUps.length,
+      ),
     );
   }
   lines.push(`→ ${base}/inbox`);

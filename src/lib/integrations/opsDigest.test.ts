@@ -276,6 +276,36 @@ describe('collectOpsDigest — #229 named details', () => {
     ]);
   });
 
+  // Row 391 fix round (admin lens MED): the named list's own "+N more" trailer
+  // was computed from the page array, so a digest could read "137 follow-ups
+  // due" above five names and "+95 more" — accounting for 100 and silently
+  // dropping 37. It now counts against the real total printed on the line above.
+  it('the named list overflow counts against the REAL total, not the capped page', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-06T11:30:00Z'));
+    const item = (i: number) => ({
+      id: `f${i}`,
+      reason: 'quote_sent_no_reply',
+      dueAt: '2026-08-05T12:00:00Z',
+      contactName: `Person ${i}`,
+      contactPhone: null,
+      contactEmail: null,
+    });
+    listDueFollowUps.mockResolvedValue({
+      ok: true,
+      totalDue: 137,
+      truncated: true,
+      items: Array.from({ length: 8 }, (_, i) => item(i)),
+    });
+    const data = await collectOpsDigest();
+    const msg = opsDigestMessage(data, 'https://x');
+    expect(msg).toContain('137 follow-ups due');
+    // 137 due, NAMED_LIST_CAP names printed — the trailer covers the rest.
+    const shown = (msg.match(/• Person \d+ —/g) ?? []).length;
+    expect(msg).toContain(`+${137 - shown} more`);
+    expect(msg).not.toContain(`+${8 - shown} more`);
+  });
+
   // Row 391: the named list is capped at listDueFollowUps' page size, but the
   // COUNT must be the real total. Before this, the digest read the count off
   // items.length, so a backlog past the cap reported a flat "100 due" forever
