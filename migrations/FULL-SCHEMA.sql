@@ -1274,6 +1274,13 @@ create table if not exists public.follow_ups (
   created_by    uuid references auth.users(id) on delete set null,  -- NULL when system-created
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now(),
+  -- Row 390 (2026-08-25): non-null only when this pending nudge is a
+  -- RE-CHASE (row 385's re-arm after 7 quiet days on a handled item) - the
+  -- silence-start anchor (followups.ts's reChaseAnchor), so the "due today"
+  -- strip can tell a re-chase apart from a first-time nudge and show how
+  -- long the customer has been quiet. See migrations/2026-08-25-follow-ups-
+  -- re-chase-since.sql for the full reasoning.
+  re_chase_since timestamptz null,
   constraint follow_ups_status_check check (status in ('pending','done','dismissed')),
   -- One system follow-up per (item, reason): makes ensureFollowUp idempotent
   -- at the DB layer. NULLs are distinct in Postgres, so manual follow-ups

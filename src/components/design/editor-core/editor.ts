@@ -544,6 +544,16 @@ export async function renderEditor(
     selectedIds.clear();
     scheduleSave();
     redrawScene();
+    // Row 348: redrawScene() only rebuilds the drawn items (bulbs resize via
+    // activeLightScale(), read fresh off the reverted `scene`) — it never
+    // touches the two slider controls or the tint layer. Left alone, both
+    // sliders keep showing the pre-undo value (and, for brightness, the
+    // canvas keeps the pre-undo tint too, since drawTint() also wasn't
+    // called), so it reads as "did my undo actually work?" right where
+    // staff most reach for Ctrl+Z. Resync all three explicitly.
+    showLightScale(activeLightScale());
+    brightnessEl.value = String(brightnessForPhoto(scene, activePhotoId));
+    drawTint();
     updateUndoRedoButtons();
   }
 
@@ -555,6 +565,10 @@ export async function renderEditor(
     selectedIds.clear();
     scheduleSave();
     redrawScene();
+    // Row 348: same resync as undo() above — see its comment.
+    showLightScale(activeLightScale());
+    brightnessEl.value = String(brightnessForPhoto(scene, activePhotoId));
+    drawTint();
     updateUndoRedoButtons();
   }
 

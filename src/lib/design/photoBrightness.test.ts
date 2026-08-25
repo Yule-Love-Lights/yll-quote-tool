@@ -1,9 +1,31 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { Scene } from './sceneTypes';
-import { brightnessForPhoto, setBrightnessForPhoto } from './photoBrightness';
+import { brightnessForPhoto, clampBrightness, setBrightnessForPhoto } from './photoBrightness';
 
 const LEGACY_SCENE: Scene = { yardsticks: [], items: [], brightness: 35 };
+
+// Row 348 (S49 wrap admin lens): the PUT route clamps brightness at write
+// time with this helper, since nothing clamps it at read time the way
+// normalizeLightScale clamps lightScale on every render path.
+describe('clampBrightness', () => {
+  it('falls back to neutral (50) for anything that is not a real number', () => {
+    for (const bad of [undefined, null, '80', '', {}, [], true, NaN, Infinity, -Infinity]) {
+      expect(clampBrightness(bad)).toBe(50);
+    }
+  });
+
+  it('clamps into [0,100] instead of trusting the stored value', () => {
+    expect(clampBrightness(-50)).toBe(0);
+    expect(clampBrightness(9000)).toBe(100);
+  });
+
+  it('passes an in-range value through untouched', () => {
+    expect(clampBrightness(0)).toBe(0);
+    expect(clampBrightness(35)).toBe(35);
+    expect(clampBrightness(100)).toBe(100);
+  });
+});
 
 describe('per-photo design brightness', () => {
   it('keeps the existing scene brightness as the fallback for legacy designs', () => {
@@ -83,5 +105,24 @@ describe('per-photo design brightness', () => {
     expect(gallery).toContain('brightness: brightnessForPhoto(design.scene, p.id)');
     expect(gallery).toContain("scene={scenesByPhotoId.get(p.id ?? 'base')!}");
     expect(gallery).toContain('scene={scene}');
+  });
+
+  // Row 348: undo()/redo() reassign `scene` and call redrawScene(), which
+  // fixes the CANVAS (bulbs resize via activeLightScale()), but neither used
+  // to resync the brightness slider or repaint its tint — Konva canvas code
+  // has no component-render test infra here (see lightScale.test.ts's own
+  // note on why editor.ts can't be imported in this headless environment), so
+  // this pins the fix as source text the way the test above already does.
+  it('resyncs the brightness control + tint in both undo() and redo()', () => {
+    const source = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
+    const editor = source('../../components/design/editor-core/editor.ts');
+    const [undoBody] = editor.match(/function undo\(\) \{[\s\S]*?\n  \}/) ?? [''];
+    const [redoBody] = editor.match(/function redo\(\) \{[\s\S]*?\n  \}/) ?? [''];
+
+    for (const body of [undoBody, redoBody]) {
+      expect(body).toContain('redrawScene();');
+      expect(body).toContain('brightnessEl.value = String(brightnessForPhoto(scene, activePhotoId));');
+      expect(body).toContain('drawTint();');
+    }
   });
 });

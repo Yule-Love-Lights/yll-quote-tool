@@ -28,7 +28,7 @@ import { isUuid } from './validate';
 import { appendIdentifiers, findDuplicatePairs, mergeContacts, resolveIdentity } from './identity';
 import { decideInboxState } from './reducer';
 import { isAnsweredByDirection } from './escalation';
-import { FOLLOWUP_REASONS, isDueToday, mayReChaseHandled, quoteSentNoReplyFollowUp } from './followups';
+import { FOLLOWUP_REASONS, isDueToday, mayReChaseHandled, quoteSentNoReplyFollowUp, reChaseAnchor } from './followups';
 import type { MetricItem, WindowKey, ReopenCounts } from './responseMetrics';
 import { addSuppressedSenders, removeSuppressedSenders } from './suppression';
 import { applyBucketFilter, inverseOf, type ReverseAction } from './lifecycle';
@@ -1846,14 +1846,24 @@ export async function ensureFollowUp(input: {
     // updated_at rather than handled_at — anchoring on handled_at would undo
     // every Done click five minutes later, which is the bug row 287(b) fixed.
     let isReChase = false;
+    // Row 390: the silence-start anchor, when this write IS a re-chase — kept
+    // outside the `if` so it's undefined (never touched) rather than
+    // possibly-stale for the ordinary first-nudge path. Persisted below as
+    // follow_ups.re_chase_since so FollowUpStrip can tell a re-chase apart
+    // from a first-time nudge instead of rendering both identically.
+    let reChaseSince: Date | null = null;
     if (itemStatus === 'handled') {
-      const canReChase = mayReChaseHandled({
+      const anchorInputs = {
         lastNudgeAt: existingNudge?.updated_at ? new Date(existingNudge.updated_at) : null,
         handledAt: itemRow?.handled_at ? new Date(itemRow.handled_at) : null,
-        now: new Date(),
-      });
+      };
+      const canReChase = mayReChaseHandled({ ...anchorInputs, now: new Date() });
       if (!canReChase) return 'skipped';
       isReChase = true;
+      // reChaseAnchor mirrors mayReChaseHandled's own anchor computation
+      // exactly (same helper, same inputs) — canReChase being true already
+      // proves this anchor is non-null and finite, so no re-guard needed here.
+      reChaseSince = reChaseAnchor(anchorInputs);
     }
     const fu = quoteSentNoReplyFollowUp({ contactId: input.contactId, inboxItemId: input.inboxItemId, sentAt: input.sentAt, afterDays: input.afterDays });
     // Row 385 (staff-lens MED): a RE-CHASE is due NOW, not on the long-past date
@@ -1880,6 +1890,11 @@ export async function ensureFollowUp(input: {
         status: fu.status,
         assigned_to: fu.assignedTo,
         created_by: fu.createdBy,
+        // Row 390: explicit null on every non-re-chase write (not merely
+        // omitted) so a row's flag can't go stale — e.g. a done re-chase row
+        // later re-armed as an ordinary fresh nudge (a genuinely new "quote
+        // sent" cycle) must not keep reporting the OLD silence window.
+        re_chase_since: isReChase ? reChaseSince!.toISOString() : null,
       },
       { onConflict: 'inbox_item_id,reason' },
     );
@@ -2588,7 +2603,7 @@ export async function listDueFollowUps(now: Date): Promise<DueFollowUpsResult> {
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
   const { data, error } = await sb
     .from('follow_ups')
-    .select('id, reason, due_at, dashboard_contacts ( display_name, primary_phone, primary_email )')
+    .select('id, reason, due_at, re_chase_since, dashboard_contacts ( display_name, primary_phone, primary_email )')
     .eq('status', 'pending')
     .order('due_at', { ascending: true })
     .limit(100);
@@ -2607,6 +2622,10 @@ export async function listDueFollowUps(now: Date): Promise<DueFollowUpsResult> {
         contactName: (c?.display_name as string | null) ?? null,
         contactPhone: (c?.primary_phone as string | null) ?? null,
         contactEmail: (c?.primary_email as string | null) ?? null,
+        // Row 390: non-null only for a re-chase (row 385's re-arm after 7
+        // quiet days on a handled item) — see ensureFollowUp's own write of
+        // this column for the full reasoning.
+        reChaseSince: (r.re_chase_since as string | null) ?? null,
       };
     });
   return { ok: true, items };

@@ -77,12 +77,22 @@ export function mayReChaseHandled(input: {
   now: Date;
   quietDays?: number;
 }): boolean {
-  const anchor = input.lastNudgeAt ?? input.handledAt;
+  const anchor = reChaseAnchor(input);
   if (!anchor) return false;
   const anchorMs = anchor.getTime();
   if (!Number.isFinite(anchorMs)) return false;
   const quietDays = input.quietDays ?? RECHASE_QUIET_DAYS;
   return input.now.getTime() - anchorMs >= quietDays * 86_400_000;
+}
+
+/** Row 390: the exact silence-start anchor mayReChaseHandled measures from,
+ *  pulled out so a caller that DOES re-chase (ensureFollowUp, store.ts) can
+ *  persist the same value (follow_ups.re_chase_since) instead of
+ *  re-deriving — or worse, approximating — it from timestamps later. Kept as
+ *  a tiny separate function rather than inlined so the two callers can never
+ *  silently drift onto two different definitions of "the anchor". */
+export function reChaseAnchor(input: { lastNudgeAt: Date | null; handledAt: Date | null }): Date | null {
+  return input.lastNudgeAt ?? input.handledAt;
 }
 
 /**
