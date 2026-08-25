@@ -551,6 +551,109 @@ describe('flagInvoiceResyncFailed — CAS on approval_snapshot (row 341 fix roun
   });
 });
 
+describe('resyncInvoiceToAgreedTotal — clears the stale-invoice markers on a SUCCESSFUL resync (row 394)', () => {
+  const invoice: InvoiceRow = {
+    id: 'inv-1',
+    invoice_number: 1,
+    job_id: 'job-1',
+    quote_id: 'quote-1',
+    customer_id: null,
+    subtotal: 2000,
+    discount: 0,
+    tax: 0,
+    total: 2000,
+    deposit_applied: 1000,
+    balance: 1000,
+    credit_note: 0,
+    tax_overridden: false,
+    status: 'awaiting_payment',
+    valor_balance_txn_id: null,
+    valor_receipt_url: null,
+    valor_txn_log: null,
+    payment_preference: null,
+    created_at: '2026-07-01T00:00:00.000Z',
+    paid_at: null,
+    updated_at: '2026-08-01T00:00:00.000Z',
+  };
+
+  it('clears BOTH paymentBlocked and invoiceResyncFailed, preserving every other snapshot key', async () => {
+    const priorSnapshot = {
+      amendments: [{ amended_at: 'x' }],
+      paymentBlocked: { invoiceId: 'inv-1', storedBalance: 1000, expectedBalance: 1400, at: 'a', lastAlertedAt: 'a' },
+      invoiceResyncFailed: { invoiceId: 'inv-1', attemptedTotal: 2400, attemptedBalance: 1400, at: 'b' },
+    };
+    const sb = makeSb({ quoteApprovalSnapshot: priorSnapshot });
+    sbRef.current = sb.client;
+    getInvoiceByJobMock.mockResolvedValue(invoice);
+
+    const outcome = await resyncInvoiceToAgreedTotal({
+      jobId: 'job-1',
+      invoice,
+      result: { total: 2400 },
+      depositPaid: 1000,
+      newTotal: 2400,
+      logPrefix: '[test]',
+      retiredReason: 'amend-reopen',
+    });
+
+    expect(outcome.resynced).toBe(true);
+    // Exactly one quotes-table write: the marker clear (flagInvoiceResyncFailed
+    // never runs on a success path).
+    expect(sb.quoteUpdates).toHaveLength(1);
+    expect(sb.quoteUpdates[0]).toEqual({
+      approval_snapshot: { amendments: [{ amended_at: 'x' }] },
+    });
+    // CASed on the EXACT prior snapshot this call read, same idiom as every
+    // other approval_snapshot writer in this file.
+    expect(sb.quoteEqArgs).toContainEqual(['approval_snapshot', JSON.stringify(priorSnapshot)]);
+  });
+
+  it('is a no-op (no quotes-table write) when neither marker is present', async () => {
+    const priorSnapshot = { amendments: [{ amended_at: 'x' }] };
+    const sb = makeSb({ quoteApprovalSnapshot: priorSnapshot });
+    sbRef.current = sb.client;
+    getInvoiceByJobMock.mockResolvedValue(invoice);
+
+    const outcome = await resyncInvoiceToAgreedTotal({
+      jobId: 'job-1',
+      invoice,
+      result: { total: 2400 },
+      depositPaid: 1000,
+      newTotal: 2400,
+      logPrefix: '[test]',
+      retiredReason: 'amend-reopen',
+    });
+
+    expect(outcome.resynced).toBe(true);
+    expect(sb.quoteUpdates).toHaveLength(0);
+  });
+
+  it('drops the clear (does not throw, does not retry, resync still reports success) when the CAS loses a concurrent write', async () => {
+    const priorSnapshot = {
+      amendments: [{ amended_at: 'x' }],
+      paymentBlocked: { invoiceId: 'inv-1', storedBalance: 1000, expectedBalance: 1400, at: 'a', lastAlertedAt: 'a' },
+    };
+    const sb = makeSb({ quoteApprovalSnapshot: priorSnapshot, quoteUpdateResult: 'raced' });
+    sbRef.current = sb.client;
+    getInvoiceByJobMock.mockResolvedValue(invoice);
+
+    const outcome = await resyncInvoiceToAgreedTotal({
+      jobId: 'job-1',
+      invoice,
+      result: { total: 2400 },
+      depositPaid: 1000,
+      newTotal: 2400,
+      logPrefix: '[test]',
+      retiredReason: 'amend-reopen',
+    });
+
+    // The resync itself still succeeded — a lost marker-clear race is
+    // best-effort and must never turn a real success into a failure.
+    expect(outcome.resynced).toBe(true);
+    expect(sb.quoteUpdates).toHaveLength(1); // one attempt, not retried
+  });
+});
+
 // FIX A (fix round 4): computeInvoiceResyncTotals is the money formula PULLED
 // OUT of resyncInvoiceToAgreedTotal so the amend route can compute the SAME
 // invoice-basis figures BEFORE it persists the amendment trail entry (see

@@ -369,6 +369,25 @@ export async function resyncInvoiceToAgreedTotal(args: ResyncInvoiceArgs): Promi
       // reflecting these figures.
       outcome.resynced = true;
 
+      // Row 394 fix (two independent reviewers, HIGH): a successful re-sync
+      // is the only PROVABLE resolution for isStaleInvoiceSnapshot's two
+      // markers, and this branch just wrote the invoice to exactly the
+      // figures resolveAgreedTotal(<the caller's current snapshot>,
+      // quote.result) resolves to — both amend/route.ts and
+      // amend-decline/route.ts derive `newTotal` (this function's own
+      // parameter) that way, from the snapshot state that is already
+      // persisted by the time this call runs. That is the identical
+      // condition both markers exist to flag a violation of:
+      //   - invoiceResyncFailed: trivially resolved — this IS the
+      //     successful resync (possibly a later one than the failed one).
+      //   - paymentBlocked: pay-balance's guard 409s a payment when
+      //     invoice.balance disagrees with that same resolveAgreedTotal-
+      //     derived figure. A successful resync makes that disagreement
+      //     false by construction, so the condition that tripped the guard
+      //     no longer holds.
+      // Best-effort, never blocks the caller's own success.
+      await clearInvoiceStaleMarkers(invoiceForSync, logPrefix);
+
       // #170(b): reopening a PAID invoice starts a NEW charge cycle — retire the
       // settled txn to valor_txn_log and clear the live slot, or the next card
       // charge 409s 'already-charged' against LAST cycle's txn (the misleading
@@ -526,5 +545,57 @@ async function flagInvoiceResyncFailed(
     }
   } catch (err) {
     console.error(`${logPrefix} failed to flag the invoice re-sync failure on the quote:`, err);
+  }
+}
+
+// Row 394 fix: the CLEAR side of isStaleInvoiceSnapshot's two markers,
+// called only from resyncInvoiceToAgreedTotal's own success branch above —
+// see the comment at that call site for which markers a successful resync
+// actually proves resolved (both) and why. Same shape as
+// flagInvoiceResyncFailed: read-then-CAS on the exact prior snapshot, drop
+// (never retry, never blind-overwrite) on a lost race, never throws. Scoped
+// to exactly the two marker keys — every other approval_snapshot field
+// (amendments, invoice_basis, pendingColorRequest, ...) rides through
+// untouched, via object-rest-destructure rather than a blind merge.
+async function clearInvoiceStaleMarkers(invoiceForSync: InvoiceRow, logPrefix: string): Promise<void> {
+  if (!invoiceForSync.quote_id) return;
+  try {
+    const sb = getSupabaseServiceClient();
+    if (!sb) return;
+    const { data: quoteRow } = await sb
+      .from('quotes')
+      .select('approval_snapshot')
+      .eq('id', invoiceForSync.quote_id)
+      .maybeSingle<{ approval_snapshot: Record<string, unknown> | null }>();
+    const priorSnapshot = quoteRow?.approval_snapshot ?? null;
+    if (!priorSnapshot || (!priorSnapshot.paymentBlocked && !priorSnapshot.invoiceResyncFailed)) {
+      return; // nothing to clear
+    }
+    const nextSnapshot = Object.fromEntries(
+      Object.entries(priorSnapshot).filter(([key]) => key !== 'paymentBlocked' && key !== 'invoiceResyncFailed'),
+    );
+    const { data: updated, error } = await sb
+      .from('quotes')
+      .update({ approval_snapshot: nextSnapshot })
+      .eq('id', invoiceForSync.quote_id)
+      // Serialize jsonb explicitly — PostgREST string-interpolates filter
+      // values; passing the object directly would produce "[object Object]"
+      // and never match (same reasoning as every sibling CAS in this repo).
+      .eq('approval_snapshot', JSON.stringify(priorSnapshot))
+      .select('id');
+    if (error) {
+      console.error(`${logPrefix} failed to clear the stale-invoice markers on the quote:`, error);
+      return;
+    }
+    if (!updated || updated.length === 0) {
+      // Lost the race — drop the clear; do NOT retry and do NOT
+      // blind-overwrite whatever concurrent write just landed. The marker
+      // simply stays until the NEXT successful resync clears it.
+      console.warn(
+        `${logPrefix} stale-invoice marker clear lost a concurrent write to quote ${invoiceForSync.quote_id}'s approval_snapshot — dropped (best-effort, not retried)`,
+      );
+    }
+  } catch (err) {
+    console.error(`${logPrefix} failed to clear the stale-invoice markers on the quote:`, err);
   }
 }
