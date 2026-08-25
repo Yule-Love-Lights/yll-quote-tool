@@ -1854,6 +1854,11 @@ export async function renderEditor(
     // pure helper the server prune uses, so the two cannot drift.
     const prunedScene = removeBrightnessForPhoto(scene, photoId);
     const nextItems = removeItemsForPhoto(scene.items, photoId);
+    // Both comparisons are REFERENCE checks by contract: removeItemsForPhoto and
+    // removeBrightnessForPhoto each return the scene/array they were given when
+    // there is nothing to remove (see their own docs). If either ever starts
+    // returning a fresh object unconditionally, this no-op check silently stops
+    // being one and every photo delete commits an empty undo step.
     if (nextItems === scene.items && prunedScene === scene) return; // nothing on this photo at all — no-op
 
     // #741 defect 1 (round 2, HIGH): also scrub every EXISTING undo/redo

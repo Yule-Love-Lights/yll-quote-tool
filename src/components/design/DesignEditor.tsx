@@ -170,8 +170,14 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
       }
       flushRef.current = handle.flushSave ? () => handle!.flushSave!() : null;
       discardRef.current = handle.discardPending ? () => handle!.discardPending!() : null;
+      // Row 371 (delta-verify HIGH): forward serverVersion. This wrapper
+      // silently dropped it, which made the whole post-delete version adoption
+      // inert — tsc cannot catch it, because a narrower function is assignable
+      // to a wider one. The ref's own type carries the parameter, so name it
+      // here rather than relying on the arity matching by accident.
       removePhotoItemsRef.current = handle.removePhotoItems
-        ? (photoId: string) => handle!.removePhotoItems!(photoId)
+        ? (photoId: string, serverVersion?: number | null) =>
+            handle!.removePhotoItems!(photoId, serverVersion)
         : null;
       onReadyRef.current?.(flushRef.current, discardRef.current);
     })();
