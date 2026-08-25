@@ -460,11 +460,17 @@ export async function collectOpsDigest(): Promise<OpsDigestData> {
   // calendarDaysOverdue (ET calendar-day diff), NOT daysBetween (elapsed-ms)
   // — it must agree with isDueToday, the calendar-day rule that decided
   // this row belongs in the list at all.
-  const dueFollowUps = await safeCount(async () => {
+  // Row 391: keep the whole result, not just `items` — the named list below is
+  // capped at listDueFollowUps' page size, but the COUNT must be the real
+  // total. Reading it off `items.length` made the digest silently report "100
+  // follow-ups due" once a backlog crossed the cap, no matter how many there
+  // really were, and disagree with the inbox strip's own "N more not shown".
+  const dueFollowUpsRes = await safeCount(async () => {
     const res = await listDueFollowUps(now);
-    return res.ok ? res.items : null;
+    return res.ok ? res : null;
   }, 'due follow-ups');
-  const inboxFollowUpsDueCount = dueFollowUps ? dueFollowUps.length : null;
+  const dueFollowUps = dueFollowUpsRes ? dueFollowUpsRes.items : null;
+  const inboxFollowUpsDueCount = dueFollowUpsRes ? dueFollowUpsRes.totalDue : null;
   const overdueFollowUps = dueFollowUps
     ? safeBuild(
         () =>

@@ -88,7 +88,26 @@ export function reChaseLabel(reChaseSince: string | null, now: Date): string | n
   return `Re-chase — quiet ${quietDays}d`;
 }
 
-export function FollowUpStrip({ initialItems }: { initialItems: DueFollowUp[] }) {
+/** Row 391: the notice under a capped list. PURE and exported so the wording is
+ *  unit-testable without rendering, and so the "how many are missing" arithmetic
+ *  lives in exactly one place. `shown` is the strip's CURRENT list length, which
+ *  shrinks as staff clear rows — but `totalDue` was measured at page load, so
+ *  the difference is only trustworthy as "at least this many more", never as a
+ *  live number. Returns null when nothing is hidden. */
+export function hiddenFollowUpNotice(shown: number, totalDue: number): string | null {
+  const hidden = totalDue - shown;
+  if (hidden <= 0) return null;
+  return `Showing the oldest ${shown} — ${hidden} more due and not shown yet.`;
+}
+
+export function FollowUpStrip({
+  initialItems,
+  totalDue,
+}: {
+  initialItems: DueFollowUp[];
+  /** Row 391: the real count of due follow-ups, which can exceed the page cap. */
+  totalDue: number;
+}) {
   const [items, setItems] = useState<DueFollowUp[]>(initialItems);
   const [busyIds, setBusyIds] = useState<Record<string, boolean>>({});
   // Mirrors busyIds for the reconcile effect below, which must fire ONLY when
@@ -188,6 +207,13 @@ export function FollowUpStrip({ initialItems }: { initialItems: DueFollowUp[] })
           );
         })}
       </ul>
+      {/* Row 391: anchored on initialItems.length (the page as SERVED), not the
+          live list — clearing rows must not make the "N more" figure climb. */}
+      {hiddenFollowUpNotice(initialItems.length, totalDue) && (
+        <p className="mt-2 text-xs" style={{ color: 'var(--op-text-2)' }}>
+          {hiddenFollowUpNotice(initialItems.length, totalDue)}
+        </p>
+      )}
     </section>
   );
 }

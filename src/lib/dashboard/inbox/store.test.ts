@@ -539,7 +539,9 @@ function makeBuilder(result: { data: unknown; error: null | { message: string };
   // listInWorks (.not('followed_up_at','is',null) / .not('status','in',...)).
   // #208: 'neq' added for markItemHandledLocal/dismissItem's double-apply guard
   // (.neq('status','handled'|'dismissed')).
-  for (const m of ['select', 'eq', 'neq', 'order', 'limit', 'in', 'or', 'is', 'update', 'not', 'gte', 'insert']) {
+  // Row 391: 'lt' added for listDueFollowUps' due-window bound (.lt('due_at', <ET
+  // start of tomorrow>)), which is what makes its exact count mean "due".
+  for (const m of ['select', 'eq', 'neq', 'order', 'limit', 'in', 'or', 'is', 'update', 'not', 'gte', 'insert', 'lt']) {
     self[m] = (...args: unknown[]) => {
       calls.push({ method: m, args });
       return self;
@@ -2824,6 +2826,65 @@ describe('listDueFollowUps — contact fallback + due-window (#229)', () => {
     expect(result.items).toHaveLength(1);
     expect(result.items[0].contactName).toBe('YLL Neighbor Lead');
     expect(fromCalls).toBe(1); // no second (quotes) lookup — the anchoring machinery is gone
+  });
+
+  // ── Row 391: the 100-row cap is applied by the DB BEFORE the isDueToday
+  // filter, oldest-first, so a backlog crowds today's fresh nags off the page.
+  // The strip and the digest both need the REAL total, not the page length.
+  it('reports totalDue from the exact count, not the page length, and flags the page as truncated', async () => {
+    const rows = [dueRow({ id: 'fu-a' }), dueRow({ id: 'fu-b' })];
+    const { builder } = makeBuilder({ data: rows, error: null, count: 137 });
+    sbRef.current = { from: () => builder };
+
+    const result = await listDueFollowUps(NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items).toHaveLength(2);
+    expect(result.totalDue).toBe(137);
+    expect(result.truncated).toBe(true);
+  });
+
+  it('is not truncated when the count matches what the page carries', async () => {
+    const { builder } = makeBuilder({ data: [dueRow({})], error: null, count: 1 });
+    sbRef.current = { from: () => builder };
+
+    const result = await listDueFollowUps(NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.totalDue).toBe(1);
+    expect(result.truncated).toBe(false);
+  });
+
+  // A count lower than the page (a null count, or a row completed between the
+  // count and the fetch) must never produce a negative "N more not shown".
+  it('floors totalDue at the page length when the count is missing or lags', async () => {
+    const rows = [dueRow({ id: 'fu-a' }), dueRow({ id: 'fu-b' })];
+    const { builder: noCount } = makeBuilder({ data: rows, error: null, count: null });
+    sbRef.current = { from: () => noCount };
+    const missing = await listDueFollowUps(NOW);
+    expect(missing.ok && missing.totalDue).toBe(2);
+    expect(missing.ok && missing.truncated).toBe(false);
+
+    const { builder: lagging } = makeBuilder({ data: rows, error: null, count: 1 });
+    sbRef.current = { from: () => lagging };
+    const lag = await listDueFollowUps(NOW);
+    expect(lag.ok && lag.totalDue).toBe(2);
+    expect(lag.ok && lag.truncated).toBe(false);
+  });
+
+  // The count only means "due" because the QUERY carries the same window the
+  // isDueToday filter applies: pending rows due before ET midnight tonight.
+  it('bounds the query at the ET start of tomorrow, so the count cannot include a future-dated nag', async () => {
+    const { builder, calls } = makeBuilder({ data: [dueRow({})], error: null, count: 1 });
+    sbRef.current = { from: () => builder };
+
+    await listDueFollowUps(NOW); // Aug 6 2026, 15:00Z — ET is UTC-4 in August
+    const lt = calls.find((c) => c.method === 'lt');
+    expect(lt).toBeDefined();
+    expect(lt!.args[0]).toBe('due_at');
+    // ET midnight ending Aug 6 = Aug 7 00:00 ET = Aug 7 04:00Z (EDT, UTC-4).
+    expect(lt!.args[1]).toBe('2026-08-07T04:00:00.000Z');
+    expect(calls.find((c) => c.method === 'select')!.args[1]).toEqual({ count: 'exact' });
   });
 });
 
