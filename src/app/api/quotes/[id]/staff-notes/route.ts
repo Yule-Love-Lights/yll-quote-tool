@@ -3,9 +3,11 @@ import { getOperator } from '@/lib/auth/supabaseServer';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import {
   STAFF_NOTE_MAX_LENGTH,
+  STAFF_NOTE_REASON_MAX_LENGTH,
   appendStaffNote,
   listStaffNotes,
   quoteExistsForStaffNotes,
+  redactStaffNote,
 } from '@/lib/staffNotes';
 
 export const runtime = 'nodejs';
@@ -126,4 +128,66 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'That request id was already used for another note' }, { status: 409 });
   }
   return NextResponse.json({ error: 'Failed to save staff note' }, { status: 500 });
+}
+
+/**
+ * Row 372: withdraw a note (a tombstone, not a delete — see redactStaffNote).
+ *
+ * PATCH rather than DELETE on purpose: the row is not going anywhere, and a
+ * DELETE that leaves the record standing would describe itself wrongly to the
+ * next person reading this file.
+ *
+ * Any signed-in operator may withdraw any note on a quote they can already
+ * read, matching who can WRITE one — a note written in error, or one naming
+ * someone who should not be named, should not wait on a specific person being
+ * available. The withdrawal is attributed, which is what makes that safe.
+ */
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const context = await contextForStaffNotes(params);
+  if (!context.ok) return context.response;
+
+  let payload: { noteId?: unknown; reason?: unknown };
+  try {
+    payload = (await req.json()) as typeof payload;
+  } catch {
+    payload = {};
+  }
+  if (typeof payload.noteId !== 'string' || !UUID_RE.test(payload.noteId)) {
+    return NextResponse.json({ error: 'A valid noteId is required' }, { status: 400 });
+  }
+  // A reason is optional — the reason may itself be the sensitive part — but
+  // if one is given it is held to the same shape as the note body.
+  if (payload.reason !== undefined && payload.reason !== null && typeof payload.reason !== 'string') {
+    return NextResponse.json({ error: 'Reason must be text' }, { status: 400 });
+  }
+  const reason = typeof payload.reason === 'string' ? payload.reason.trim() : '';
+  if (reason.length > STAFF_NOTE_REASON_MAX_LENGTH) {
+    return NextResponse.json(
+      { error: `Reason must be ${STAFF_NOTE_REASON_MAX_LENGTH} characters or fewer` },
+      { status: 400 },
+    );
+  }
+
+  const result = await redactStaffNote({
+    quoteId: context.id,
+    noteId: payload.noteId,
+    redactedBy: context.operator.id,
+    redactedByLabel: context.operator.name ?? context.operator.email ?? 'Staff',
+    reason: reason || null,
+  });
+
+  // An already-withdrawn note is a 200, not a conflict: the caller asked for a
+  // state the note is already in, and a second click should not read as an
+  // error. The body carries the ORIGINAL withdrawal, so the UI shows who
+  // actually did it rather than the person who clicked twice.
+  if (result.kind === 'redacted' || result.kind === 'already-redacted') {
+    return NextResponse.json(
+      { note: result.note, alreadyRedacted: result.kind === 'already-redacted' },
+      { status: 200, headers: { 'Cache-Control': 'private, no-store' } },
+    );
+  }
+  if (result.kind === 'not-found') {
+    return NextResponse.json({ error: 'Note not found on this quote' }, { status: 404 });
+  }
+  return NextResponse.json({ error: 'Failed to withdraw the note' }, { status: 500 });
 }

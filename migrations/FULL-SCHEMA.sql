@@ -2467,6 +2467,14 @@ create table if not exists public.staff_notes (
   created_by_label    text not null,
   created_at          timestamptz not null default now(),
   client_request_id   uuid not null,
+  -- Row 372 (2026-08-25, migrations/2026-08-25-staff-notes-redaction.sql):
+  -- a withdrawn note keeps its row and its attribution; only the body is
+  -- replaced by a tombstone. Non-null redacted_at means body is that
+  -- tombstone, not what was originally written.
+  redacted_at         timestamptz,
+  redacted_by         uuid references auth.users(id) on delete set null,
+  redacted_by_label   text,
+  redacted_reason     text,
 
   constraint staff_notes_body_valid
     check (body = btrim(body) and char_length(body) between 1 and 2000),
@@ -2490,6 +2498,11 @@ alter table public.staff_notes enable row level security;
 
 revoke all on public.staff_notes from anon, authenticated, service_role;
 grant select, insert on public.staff_notes to service_role;
+-- Row 372: column-scoped on purpose — a redaction may rewrite the body and
+-- stamp itself, and may NOT re-attribute, re-date, or reuse the idempotency
+-- key of a note. Enforced by Postgres, not by the application.
+grant update (body, redacted_at, redacted_by, redacted_by_label, redacted_reason)
+  on public.staff_notes to service_role;
 
 comment on table public.staff_notes is
   'Internal staff-only quote timeline, also shown on the linked job and invoice. Never customer-facing.';

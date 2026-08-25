@@ -9,6 +9,17 @@ export const STAFF_NOTE_MAX_LENGTH = 2000;
  *  paired with an explicit "hasMore" and a control that fetches the next one. */
 export const STAFF_NOTES_PAGE_SIZE = 20;
 
+/** Row 372: what a withdrawn note's body becomes. The row and its attribution
+ *  survive — the timeline still shows that something was written and taken
+ *  back — but the text itself is gone, which is the whole point of a
+ *  redaction. Deliberately a plain sentence rather than a marker string: it is
+ *  read by staff on a customer's timeline, not parsed. */
+export const REDACTED_NOTE_BODY = '[Note withdrawn]';
+
+/** Row 372: the longest reason we will store. Same order as the note body's
+ *  own limit; a reason is prose, not an essay. */
+export const STAFF_NOTE_REASON_MAX_LENGTH = 500;
+
 /** Row 373: where the NEXT page starts. Keyset, not offset: notes are
  *  append-only and read newest-first, so an offset window would silently SKIP a
  *  note whenever one was added between two page reads — the exact class of
@@ -24,6 +35,11 @@ export type StaffNote = {
   createdBy: string | null;
   createdByLabel: string;
   createdAt: string;
+  /** Row 372: non-null when this note was withdrawn — `body` is then the
+   *  tombstone, not what was written. */
+  redactedAt: string | null;
+  redactedByLabel: string | null;
+  redactedReason: string | null;
 };
 
 type StaffNoteRow = {
@@ -34,6 +50,9 @@ type StaffNoteRow = {
   created_by_label: string;
   created_at: string;
   client_request_id: string;
+  redacted_at: string | null;
+  redacted_by_label: string | null;
+  redacted_reason: string | null;
 };
 
 type AppendStaffNoteInput = {
@@ -49,7 +68,8 @@ export type AppendStaffNoteResult =
   | { kind: 'conflict' | 'not-found' | 'error' };
 
 const STAFF_NOTE_COLUMNS =
-  'id, quote_id, body, created_by, created_by_label, created_at, client_request_id';
+  'id, quote_id, body, created_by, created_by_label, created_at, client_request_id, ' +
+  'redacted_at, redacted_by_label, redacted_reason';
 
 function toStaffNote(row: StaffNoteRow): StaffNote {
   return {
@@ -59,6 +79,9 @@ function toStaffNote(row: StaffNoteRow): StaffNote {
     createdBy: row.created_by,
     createdByLabel: row.created_by_label,
     createdAt: row.created_at,
+    redactedAt: row.redacted_at ?? null,
+    redactedByLabel: row.redacted_by_label ?? null,
+    redactedReason: row.redacted_reason ?? null,
   };
 }
 
@@ -100,7 +123,10 @@ export async function listStaffNotes(
     console.error('[staff-notes] list failed', error.message);
     return null;
   }
-  const rows = (data ?? []) as StaffNoteRow[];
+  // `as unknown` first: the multi-line select string (row 372 widened it past
+  // what postgrest-js's literal-type inference follows) makes it infer an error
+  // shape rather than the row shape.
+  const rows = (data ?? []) as unknown as StaffNoteRow[];
   const hasMore = rows.length > STAFF_NOTES_PAGE_SIZE;
   return { notes: rows.slice(0, STAFF_NOTES_PAGE_SIZE).map(toStaffNote), hasMore };
 }
@@ -145,4 +171,76 @@ export async function appendStaffNote(input: AppendStaffNoteInput): Promise<Appe
     return { kind: 'conflict' };
   }
   return { kind: 'duplicate', note: toStaffNote(existing) };
+}
+
+export type RedactStaffNoteInput = {
+  quoteId: string;
+  noteId: string;
+  redactedBy: string;
+  redactedByLabel: string;
+  reason: string | null;
+};
+
+export type RedactStaffNoteResult =
+  | { kind: 'redacted'; note: StaffNote }
+  | { kind: 'already-redacted'; note: StaffNote }
+  | { kind: 'not-found' | 'error' };
+
+/**
+ * Row 372: withdraw a note. The row stays, its author and timestamp stay, and
+ * the body becomes a tombstone.
+ *
+ * Guarded the way this module's other writer is (appendStaffNote's unique
+ * (quote_id, client_request_id) key, and the sibling-guard parity rule in
+ * AGENTS.md): the update is scoped to `quote_id` AND conditioned on
+ * `redacted_at is null`, so
+ *   • a note id from another quote cannot be redacted through this quote, and
+ *   • a second click cannot overwrite the FIRST redaction's attribution and
+ *     timestamp with a later staffer's — the original withdrawal is the one
+ *     that happened, and it is what the timeline should keep saying.
+ * A zero-row update is therefore ambiguous by design, so it is disambiguated
+ * with a read rather than reported as a failure: already-withdrawn is a
+ * success from the caller's point of view, and a genuinely missing note is
+ * not the same answer.
+ */
+export async function redactStaffNote(input: RedactStaffNoteInput): Promise<RedactStaffNoteResult> {
+  const db = getSupabaseServiceClient();
+  if (!db) return { kind: 'error' };
+
+  const reason = input.reason?.trim() ? input.reason.trim().slice(0, STAFF_NOTE_REASON_MAX_LENGTH) : null;
+  const { data, error } = await db
+    .from('staff_notes')
+    .update({
+      body: REDACTED_NOTE_BODY,
+      redacted_at: new Date().toISOString(),
+      redacted_by: input.redactedBy,
+      redacted_by_label: input.redactedByLabel,
+      redacted_reason: reason,
+    })
+    .eq('id', input.noteId)
+    .eq('quote_id', input.quoteId)
+    .is('redacted_at', null)
+    .select(STAFF_NOTE_COLUMNS)
+    .maybeSingle<StaffNoteRow>();
+
+  if (error) {
+    console.error('[staff-notes] redact failed', error.message);
+    return { kind: 'error' };
+  }
+  if (data) return { kind: 'redacted', note: toStaffNote(data) };
+
+  // Nothing was updated: either the note is not on this quote, or it was
+  // already withdrawn. Read it back to say which.
+  const { data: existing, error: lookupError } = await db
+    .from('staff_notes')
+    .select(STAFF_NOTE_COLUMNS)
+    .eq('id', input.noteId)
+    .eq('quote_id', input.quoteId)
+    .maybeSingle<StaffNoteRow>();
+  if (lookupError) {
+    console.error('[staff-notes] redact lookup failed', lookupError.message);
+    return { kind: 'error' };
+  }
+  if (!existing) return { kind: 'not-found' };
+  return { kind: 'already-redacted', note: toStaffNote(existing) };
 }

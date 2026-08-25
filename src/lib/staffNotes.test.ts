@@ -9,8 +9,10 @@ vi.mock('@/lib/supabase', () => ({
 }));
 
 import {
+  REDACTED_NOTE_BODY,
   STAFF_NOTES_PAGE_SIZE,
   appendStaffNote,
+  redactStaffNote,
   listStaffNotes,
   quoteExistsForStaffNotes,
 } from './staffNotes';
@@ -27,6 +29,10 @@ const ROW = {
   created_by_label: 'Naldo',
   created_at: '2026-08-21T14:00:00.000Z',
   client_request_id: REQUEST_ID,
+  // Row 372: an ordinary note that was never withdrawn.
+  redacted_at: null,
+  redacted_by_label: null,
+  redacted_reason: null,
 };
 
 function terminalBuilder(result: { data: unknown; error: unknown }) {
@@ -39,6 +45,9 @@ function terminalBuilder(result: { data: unknown; error: unknown }) {
     // Row 373: keyset paging — `or` carries the cursor, `limit` the page size.
     or: vi.fn(() => builder),
     limit: vi.fn(() => builder),
+    // Row 372: redaction writes through `update` and guards on `is`.
+    update: vi.fn(() => builder),
+    is: vi.fn(() => builder),
     maybeSingle: vi.fn(async () => result),
     single: vi.fn(async () => result),
     then: (resolve: (value: unknown) => void) => resolve(result),
@@ -83,6 +92,9 @@ describe('listStaffNotes', () => {
           createdBy: OPERATOR_ID,
           createdByLabel: 'Naldo',
           createdAt: ROW.created_at,
+          redactedAt: null,
+          redactedByLabel: null,
+          redactedReason: null,
         },
       ],
       hasMore: false,
@@ -152,6 +164,118 @@ describe('listStaffNotes', () => {
   });
 });
 
+// ─── Row 372: withdrawing a note ────────────────────────────────────────────
+// staff_notes is append-only down to the grants, so the only way to remove a
+// note written in error — or one naming someone who should not be named — was
+// to delete the whole quote. This is a tombstone instead: the row and its
+// attribution survive, the text does not.
+describe('redactStaffNote (row 372)', () => {
+  const REDACTED_ROW = {
+    ...ROW,
+    body: REDACTED_NOTE_BODY,
+    redacted_at: '2026-08-25T10:00:00.000Z',
+    redacted_by_label: 'Jason',
+    redacted_reason: 'Wrong customer',
+  };
+
+  it('replaces the body with the tombstone and stamps who withdrew it', async () => {
+    const query = terminalBuilder({ data: REDACTED_ROW, error: null });
+    serviceClientRef.current = { from: vi.fn(() => query) };
+
+    const result = await redactStaffNote({
+      quoteId: QUOTE_ID,
+      noteId: ROW.id,
+      redactedBy: OPERATOR_ID,
+      redactedByLabel: 'Jason',
+      reason: '  Wrong customer  ',
+    });
+
+    expect(result.kind).toBe('redacted');
+    const payload = (query.update as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(payload.body).toBe(REDACTED_NOTE_BODY);
+    expect(payload.redacted_by).toBe(OPERATOR_ID);
+    expect(payload.redacted_by_label).toBe('Jason');
+    expect(payload.redacted_reason).toBe('Wrong customer'); // trimmed
+    // The note's OWN identity is never part of the write — the column grant
+    // refuses it too, but nothing should be trying.
+    expect(payload).not.toHaveProperty('created_by');
+    expect(payload).not.toHaveProperty('created_at');
+    expect(payload).not.toHaveProperty('client_request_id');
+    expect(payload).not.toHaveProperty('quote_id');
+  });
+
+  it('scopes the write to the quote AND to a note that is not already withdrawn', async () => {
+    const query = terminalBuilder({ data: REDACTED_ROW, error: null });
+    serviceClientRef.current = { from: vi.fn(() => query) };
+
+    await redactStaffNote({
+      quoteId: QUOTE_ID,
+      noteId: ROW.id,
+      redactedBy: OPERATOR_ID,
+      redactedByLabel: 'Jason',
+      reason: null,
+    });
+
+    const eqCalls = (query.eq as ReturnType<typeof vi.fn>).mock.calls;
+    expect(eqCalls).toContainEqual(['id', ROW.id]);
+    expect(eqCalls).toContainEqual(['quote_id', QUOTE_ID]); // no cross-quote redaction
+    expect((query.is as ReturnType<typeof vi.fn>).mock.calls).toContainEqual(['redacted_at', null]);
+  });
+
+  // A second click must not overwrite the FIRST withdrawal's attribution and
+  // timestamp — that one is what actually happened.
+  it('reports an already-withdrawn note as such, without restamping it', async () => {
+    const update = terminalBuilder({ data: null, error: null });
+    const lookup = terminalBuilder({ data: REDACTED_ROW, error: null });
+    let call = 0;
+    serviceClientRef.current = { from: vi.fn(() => (call++ === 0 ? update : lookup)) };
+
+    const result = await redactStaffNote({
+      quoteId: QUOTE_ID,
+      noteId: ROW.id,
+      redactedBy: '99999999-9999-4999-8999-999999999999',
+      redactedByLabel: 'Someone Else',
+      reason: null,
+    });
+
+    expect(result.kind).toBe('already-redacted');
+    if (result.kind !== 'already-redacted') return;
+    expect(result.note.redactedByLabel).toBe('Jason'); // the original redactor
+  });
+
+  it('distinguishes a note that does not exist on this quote from one already withdrawn', async () => {
+    const update = terminalBuilder({ data: null, error: null });
+    const lookup = terminalBuilder({ data: null, error: null });
+    let call = 0;
+    serviceClientRef.current = { from: vi.fn(() => (call++ === 0 ? update : lookup)) };
+
+    expect(
+      (await redactStaffNote({
+        quoteId: QUOTE_ID,
+        noteId: ROW.id,
+        redactedBy: OPERATOR_ID,
+        redactedByLabel: 'Jason',
+        reason: null,
+      })).kind,
+    ).toBe('not-found');
+  });
+
+  it('reports an error rather than claiming success when the write fails', async () => {
+    const query = terminalBuilder({ data: null, error: { message: 'permission denied' } });
+    serviceClientRef.current = { from: vi.fn(() => query) };
+
+    expect(
+      (await redactStaffNote({
+        quoteId: QUOTE_ID,
+        noteId: ROW.id,
+        redactedBy: OPERATOR_ID,
+        redactedByLabel: 'Jason',
+        reason: null,
+      })).kind,
+    ).toBe('error');
+  });
+});
+
 describe('appendStaffNote', () => {
   it('writes the server-derived author and request id exactly once', async () => {
     const insert = terminalBuilder({ data: ROW, error: null });
@@ -174,6 +298,10 @@ describe('appendStaffNote', () => {
         createdBy: OPERATOR_ID,
         createdByLabel: 'Naldo',
         createdAt: ROW.created_at,
+        // Row 372: a freshly written note is never withdrawn.
+        redactedAt: null,
+        redactedByLabel: null,
+        redactedReason: null,
       },
     });
     expect(insert.insert).toHaveBeenCalledWith({

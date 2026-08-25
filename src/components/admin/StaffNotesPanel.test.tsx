@@ -9,6 +9,7 @@ import {
   loadStaffNotes,
   mergeStaffNote,
   oldestStaffNoteCursor,
+  redactStaffNote,
   staffNotesPageQuery,
   mergeStaffNotes,
   postStaffNote,
@@ -23,6 +24,10 @@ const NOTE = {
   createdBy: '22222222-2222-4222-8222-222222222222',
   createdByLabel: 'Naldo',
   createdAt: '2026-08-21T14:00:00.000Z',
+  // Row 372: an ordinary, never-withdrawn note.
+  redactedAt: null,
+  redactedByLabel: null,
+  redactedReason: null,
 };
 
 describe('StaffNotesList — the older-notes control (row 373)', () => {
@@ -63,6 +68,80 @@ describe('StaffNotesList — the older-notes control (row 373)', () => {
     );
     expect(html).toContain('disabled');
     expect(html).toContain('Loading…');
+  });
+});
+
+// ─── Row 372: a withdrawn note ──────────────────────────────────────────────
+// staff_notes is append-only down to the grants, so a note written in error —
+// or one naming someone who should not be named — could only be removed by
+// deleting the whole quote. A withdrawal keeps the row and the attribution and
+// replaces the text.
+describe('StaffNotesList — withdrawn notes (row 372)', () => {
+  const WITHDRAWN = {
+    ...NOTE,
+    body: '[Note withdrawn]',
+    redactedAt: '2026-08-25T10:00:00.000Z',
+    redactedByLabel: 'Jason',
+    redactedReason: 'Wrong customer',
+  };
+
+  it('keeps a withdrawn note in the timeline, marked, with both attributions', () => {
+    const html = renderToStaticMarkup(<StaffNotesList notes={[WITHDRAWN]} loading={false} />);
+    expect(html).toContain('[Note withdrawn]');
+    expect(html).toContain('Naldo'); // who wrote it — the record of that stays
+    expect(html).toContain('withdrawn');
+    expect(html).toContain('Jason'); // who withdrew it
+    expect(html).toContain('Wrong customer');
+  });
+
+  it('offers the control on an ordinary note and never on an already-withdrawn one', () => {
+    const live = renderToStaticMarkup(
+      <StaffNotesList notes={[NOTE]} loading={false} onRedact={() => {}} />,
+    );
+    expect(live).toContain('Withdraw');
+
+    const done = renderToStaticMarkup(
+      <StaffNotesList notes={[WITHDRAWN]} loading={false} onRedact={() => {}} />,
+    );
+    // "withdrawn" appears in the attribution line; the BUTTON must not.
+    expect(done).not.toContain('>Withdraw<');
+  });
+
+  it('renders no control at all for a caller that does not pass one', () => {
+    const html = renderToStaticMarkup(<StaffNotesList notes={[NOTE]} loading={false} />);
+    expect(html).not.toContain('>Withdraw<');
+  });
+
+  it('disables only the note being withdrawn, not its neighbours', () => {
+    const other = { ...NOTE, id: 'other-id', body: 'Second note' };
+    const html = renderToStaticMarkup(
+      <StaffNotesList notes={[NOTE, other]} loading={false} onRedact={() => {}} redactingId={NOTE.id} />,
+    );
+    expect(html).toContain('Withdrawing…');
+    expect(html).toContain('>Withdraw<'); // the other one is still offered
+  });
+});
+
+describe('staff-note withdrawal transport (row 372)', () => {
+  it('PATCHes the note id and reason to the quote-scoped route', async () => {
+    const fetcher = vi.fn(
+      async () => new Response(JSON.stringify({ note: { ...NOTE, body: '[Note withdrawn]' } }), { status: 200 }),
+    );
+
+    await redactStaffNote(QUOTE_ID, NOTE.id, 'Wrong customer', fetcher);
+
+    expect(fetcher).toHaveBeenCalledWith(`/api/quotes/${QUOTE_ID}/staff-notes`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ noteId: NOTE.id, reason: 'Wrong customer' }),
+    });
+  });
+
+  it('throws the server message rather than pretending the note was withdrawn', async () => {
+    const fetcher = vi.fn(
+      async () => new Response(JSON.stringify({ error: 'Note not found on this quote' }), { status: 404 }),
+    );
+    await expect(redactStaffNote(QUOTE_ID, NOTE.id, '', fetcher)).rejects.toThrow('Note not found on this quote');
   });
 });
 
