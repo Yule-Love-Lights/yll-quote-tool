@@ -108,7 +108,11 @@ import type { QuoteStatus } from '@/lib/quoteStatus';
 // Row 341 (staff-lens HIGH): the reconciliation guard below recomputes the
 // SAME invoice-basis figures resyncInvoiceToAgreedTotal would have written,
 // from the quote's CURRENT agreed total — the one place both formulas live.
-import { computeInvoiceResyncTotals, priorBalanceCollectedUsd } from '@/lib/quoteAmendInvoiceSync';
+import {
+  computeInvoiceResyncTotals,
+  priorBalanceCollectedUsd,
+  clearInvoiceStaleMarkers,
+} from '@/lib/quoteAmendInvoiceSync';
 import { resolveAgreedTotal } from '@/lib/agreedTotal';
 // #173: same EPSILON-nudged + finite-guarded round-to-cents invoices.ts/amend.ts/
 // balanceCollection.ts already alias as round2 — used to keep the stale-balance
@@ -468,6 +472,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // the quote has no `result` — nothing to recompute against, the same
   // permissive default every other quote_id-gated check in this route
   // already takes on missing data.
+  // Row 404: did the stale-vs-agreed-total check actually RUN AND PASS?
+  // Only that proves the invoice matched the agreed total. Skipped (no
+  // quote.result) proves nothing, and overridden proves the opposite.
+  let staleCheckPassed = false;
   if (quote.result && !overrideStale) {
     const agreedTotal = resolveAgreedTotal(quote.approval_snapshot, quote.result);
     // Row 341 fix round 3 (technical-lens HIGH): pass priorBalanceCollectedUsd
@@ -498,6 +506,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         { status: 409 },
       );
     }
+    // Fell through the 409: the invoice balance equals the agreed total.
+    staleCheckPassed = true;
   }
 
   const result = await chargeBalanceOnFile({
@@ -814,6 +824,38 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
   } catch (err) {
     console.warn('[api/invoices/:id/charge-balance] job close failed:', err);
+  }
+
+  // Row 404: the stale-invoice markers had NO in-app path to clear when the
+  // invoice needed no further re-price. `clearInvoiceStaleMarkers` was
+  // reachable only from resyncInvoiceToAgreedTotal, which runs from /amend and
+  // /amend-decline — and /amend hard-rejects with a 409 'no-change' when there
+  // is no real price delta. So an invoice carrying `invoiceResyncFailed` that
+  // was ALREADY correct could never clear it, and the board warning could only
+  // accumulate (the same failure shape as rows 394/404 themselves).
+  //
+  // Gated on staleCheckPassed, NOT merely on a successful charge. Passing that
+  // check means the invoice balance equalled the resolveAgreedTotal-derived
+  // figure that both markers exist to flag a violation of — the same condition
+  // a successful resync establishes — and this charge has now settled the
+  // invoice to paid/$0. An `overrideStale` charge deliberately does NOT clear:
+  // there the operator charged the amount ON FILE, which may differ from the
+  // agreed total, so the discrepancy is still real and the marker is the only
+  // record that this order was billed off a stale figure.
+  //
+  // Best-effort and last, exactly like the txn-record and job-close steps
+  // above: a failure here must never turn a completed charge into an error
+  // response. The marker simply stays until the next resync or passing charge.
+  if (staleCheckPassed) {
+    // Correlated to the snapshot this request's staleness check actually ran
+    // against (read at request start). A concurrent writer that flagged a NEW
+    // marker during the card round-trip trips the CAS, the clear drops, and
+    // that marker survives — see clearInvoiceStaleMarkers' own comment.
+    await clearInvoiceStaleMarkers(
+      invoice.quote_id,
+      '[api/invoices/:id/charge-balance]',
+      (quote.approval_snapshot ?? null) as Record<string, unknown> | null,
+    );
   }
 
   return NextResponse.json({

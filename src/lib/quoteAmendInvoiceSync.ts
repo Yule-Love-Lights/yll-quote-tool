@@ -418,7 +418,7 @@ export async function resyncInvoiceToAgreedTotal(args: ResyncInvoiceArgs): Promi
       //     false by construction, so the condition that tripped the guard
       //     no longer holds.
       // Best-effort, never blocks the caller's own success.
-      await clearInvoiceStaleMarkers(invoiceForSync, logPrefix);
+      await clearInvoiceStaleMarkers(invoiceForSync.quote_id, logPrefix);
 
       // #170(b): reopening a PAID invoice starts a NEW charge cycle — retire the
       // settled txn to valor_txn_log and clear the live slot, or the next card
@@ -581,25 +581,68 @@ async function flagInvoiceResyncFailed(
 }
 
 // Row 394 fix: the CLEAR side of isStaleInvoiceSnapshot's two markers,
-// called only from resyncInvoiceToAgreedTotal's own success branch above —
-// see the comment at that call site for which markers a successful resync
-// actually proves resolved (both) and why. Same shape as
+// TWO callers, and the distinction between them is the whole safety argument:
+//
+//   1. resyncInvoiceToAgreedTotal's own success branch above — see the comment
+//      at that call site for why a successful resync PROVES both markers
+//      resolved.
+//   2. POST /api/invoices/[id]/charge-balance, but ONLY on a charge whose
+//      stale-vs-agreed-total check actually RAN AND PASSED (row 404). That
+//      check compares the invoice balance against the same
+//      resolveAgreedTotal-derived figure both markers exist to flag a
+//      violation of, so passing it re-establishes the same condition a resync
+//      would, and the charge then settles the invoice to paid/$0.
+//
+// NOT called when that charge used `overrideStale`. An override means the
+// operator asserted the figure by hand and charged the amount ON FILE, which
+// may differ from the agreed total — so the discrepancy is still real and the
+// marker is the only record that this order was billed off a stale figure.
+// Clearing it there would erase a money signal, not resolve one. (Ledger row
+// 404 originally proposed exactly that; it is the wrong half of the branch.) Same shape as
 // flagInvoiceResyncFailed: read-then-CAS on the exact prior snapshot, drop
 // (never retry, never blind-overwrite) on a lost race, never throws. Scoped
 // to exactly the two marker keys — every other approval_snapshot field
 // (amendments, invoice_basis, pendingColorRequest, ...) rides through
 // untouched, via object-rest-destructure rather than a blind merge.
-async function clearInvoiceStaleMarkers(invoiceForSync: InvoiceRow, logPrefix: string): Promise<void> {
-  if (!invoiceForSync.quote_id) return;
+//
+// `expectedSnapshot` (premerge MED, found independently by the technical AND
+// admin lenses): the caller's gate is computed from data read at the START of
+// its request, but this clear fires at the END, after a multi-second card
+// round-trip. Re-reading here would happily clear a marker a CONCURRENT writer
+// set in that window for an unrelated, still-live reason — e.g. an /amend that
+// raised the total, lost its invoice-sync race twice, and flagged
+// invoiceResyncFailed. The CAS alone does not help, because a fresh read
+// includes that new marker and the CAS then matches.
+//
+// So a caller whose justification is tied to a specific earlier observation
+// passes the snapshot it observed. The clear then CASes on THAT value: if
+// anything wrote to approval_snapshot in between, the CAS misses, the clear
+// drops, and the new marker survives — which is the correct outcome, because
+// the caller only ever proved something about the state it actually saw.
+// Omitting it keeps the original read-then-CAS behaviour for
+// resyncInvoiceToAgreedTotal, whose own success IS the proof and needs no
+// correlation to an earlier read.
+export async function clearInvoiceStaleMarkers(
+  quoteId: string | null | undefined,
+  logPrefix: string,
+  expectedSnapshot?: Record<string, unknown> | null,
+): Promise<void> {
+  if (!quoteId) return;
   try {
     const sb = getSupabaseServiceClient();
     if (!sb) return;
-    const { data: quoteRow } = await sb
-      .from('quotes')
-      .select('approval_snapshot')
-      .eq('id', invoiceForSync.quote_id)
-      .maybeSingle<{ approval_snapshot: Record<string, unknown> | null }>();
-    const priorSnapshot = quoteRow?.approval_snapshot ?? null;
+    let priorSnapshot: Record<string, unknown> | null;
+    if (expectedSnapshot !== undefined) {
+      // Correlated caller: use exactly what it observed, do not re-read.
+      priorSnapshot = expectedSnapshot;
+    } else {
+      const { data: quoteRow } = await sb
+        .from('quotes')
+        .select('approval_snapshot')
+        .eq('id', quoteId)
+        .maybeSingle<{ approval_snapshot: Record<string, unknown> | null }>();
+      priorSnapshot = quoteRow?.approval_snapshot ?? null;
+    }
     if (!priorSnapshot || (!priorSnapshot.paymentBlocked && !priorSnapshot.invoiceResyncFailed)) {
       return; // nothing to clear
     }
@@ -609,7 +652,7 @@ async function clearInvoiceStaleMarkers(invoiceForSync: InvoiceRow, logPrefix: s
     const { data: updated, error } = await sb
       .from('quotes')
       .update({ approval_snapshot: nextSnapshot })
-      .eq('id', invoiceForSync.quote_id)
+      .eq('id', quoteId)
       // Serialize jsonb explicitly — PostgREST string-interpolates filter
       // values; passing the object directly would produce "[object Object]"
       // and never match (same reasoning as every sibling CAS in this repo).
@@ -624,7 +667,7 @@ async function clearInvoiceStaleMarkers(invoiceForSync: InvoiceRow, logPrefix: s
       // blind-overwrite whatever concurrent write just landed. The marker
       // simply stays until the NEXT successful resync clears it.
       console.warn(
-        `${logPrefix} stale-invoice marker clear lost a concurrent write to quote ${invoiceForSync.quote_id}'s approval_snapshot — dropped (best-effort, not retried)`,
+        `${logPrefix} stale-invoice marker clear lost a concurrent write to quote ${quoteId}'s approval_snapshot — dropped (best-effort, not retried)`,
       );
     }
   } catch (err) {
