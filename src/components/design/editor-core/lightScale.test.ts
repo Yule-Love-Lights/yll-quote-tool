@@ -206,7 +206,11 @@ describe("spritzerLightDims", () => {
   // Customer lens MED: fixing only the hub widened a band at the SMALL end
   // where the hub covered the entire spray — because it was chasing tips that
   // were themselves bigger than the spray. Bounding the tips closed it.
-  it("never lets the lit parts outgrow the spray that contains them", () => {
+  // NOTE the scope in this name: the tip DOT and the hub, not the tip HALO.
+  // The halo is a gradient that fades to fully transparent, so it reaches past
+  // the spray by design (and did so before row 350, by more) — asserting it
+  // here would be asserting something untrue.
+  it("never lets the tip dot or the hub outgrow the spray that contains them", () => {
     for (let r = 5; r <= 240; r += 1) {
       for (const scale of [LIGHT_SCALE_MIN, 1, 2, 2.5, 3, LIGHT_SCALE_MAX]) {
         const d = spritzerLightDims(r, scale);
@@ -215,6 +219,20 @@ describe("spritzerLightDims", () => {
         expect(d.tipRadius).toBeLessThanOrEqual(r * 0.42);
       }
     }
+  });
+
+  // Delta-verify MED: below radiusPx ~3.6 the tip cap collapses onto the 1.5px
+  // floor, so the slider stops moving the tips entirely. Deliberate — the
+  // whole spray is under 7px across there — but it was neither documented nor
+  // covered, and the sweep above starts at 5, so it could not have been.
+  it("holds the tips at their floor on a spritzer smaller than one dot, at every scale", () => {
+    for (const r of [2, 3, 3.5]) {
+      for (const scale of [1, 2, LIGHT_SCALE_MAX]) {
+        expect(spritzerLightDims(r, scale).tipRadius).toBe(1.5);
+      }
+    }
+    // ...and starts moving again as soon as the spray is big enough to hold it.
+    expect(spritzerLightDims(4, LIGHT_SCALE_MAX).tipRadius).toBeGreaterThan(1.5);
   });
 
   it("leaves the tips untouched at the default scale, where the cap must not bind", () => {
