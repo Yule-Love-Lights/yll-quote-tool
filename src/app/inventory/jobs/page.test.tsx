@@ -8,7 +8,7 @@
 // rendering the modal.
 
 import { describe, expect, it } from 'vitest';
-import { shortSkusFromPrepareResponse } from './page';
+import { shortSkusFromPrepareResponse, shouldShowStuckStockBadge } from './page';
 
 describe('shortSkusFromPrepareResponse', () => {
   it('passes through the short SKU list from a real PrepareResult body', () => {
@@ -35,5 +35,20 @@ describe('shortSkusFromPrepareResponse', () => {
     expect(shortSkusFromPrepareResponse({ short: 'not-an-array' })).toEqual([]);
     // Drops non-string entries rather than passing them through raw.
     expect(shortSkusFromPrepareResponse({ short: ['SKU-A', 42, null] })).toEqual(['SKU-A']);
+  });
+});
+
+// Staff-lens fix (row 382/MED): stockSnapshotPending was on FulfillmentCard
+// but the board (the surface staff actually watch) never rendered it — only
+// the daily digest did. JobCard's badge condition reads this pure function
+// (see page.tsx), the same jsdom-free pattern as shortSkusFromPrepareResponse
+// above, so the JSX wiring is provable without rendering the component.
+describe('shouldShowStuckStockBadge', () => {
+  it('is false for a card without the flag', () => {
+    expect(shouldShowStuckStockBadge({ stockSnapshotPending: false })).toBe(false);
+  });
+
+  it('is true for a card with the flag set', () => {
+    expect(shouldShowStuckStockBadge({ stockSnapshotPending: true })).toBe(true);
   });
 });
