@@ -99,6 +99,9 @@ const PUBLIC_API_EXACT = new Set([
   // its own CRON_SECRET check (the /api/leads carve-out below is exact-match +
   // POST/OPTIONS only, so it does NOT cover this GET sub-path). The sibling
   // /api/admin/leads* routes are requireAdmin (operator-session) and stay gated.
+  '/api/referrals/sweep', // Vercel Cron (CRON_SECRET-guarded, naldo/referral-link-sweep), same
+  // reason as every other cron above: a scheduled request carries no operator
+  // session, so it must be allowlisted here to reach its own CRON_SECRET check.
 ]);
 
 // Bare /api/quotes/<uuid> — matches ONLY an id segment (no further sub-path),
