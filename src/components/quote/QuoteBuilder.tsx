@@ -88,6 +88,7 @@ import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/
 import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
 import { track } from '@/lib/analytics/posthog';
 import { loadQuoteDraft, saveQuoteDraft, clearQuoteDraft, customerIsEmpty, draftAutosaveActive } from '@/lib/quoteDraft';
+import { stableStringify, quoteHasUnsavedEdits } from '@/lib/quoteDirty';
 import { downscaleForUpload, downscaleForUploadAsBlob, readUploadErrorMessage } from '@/lib/clientImage';
 import {
   parkSatelliteContext,
@@ -875,6 +876,62 @@ export default function QuoteBuilder({
           ...(prefill?.isNce ? { depositPercent: 40 } : {}),
         },
   );
+  // ─── Unsaved-edit guard (ledger row 406) ────────────────────────────────
+  // Row 406 is a CONFIRMED prod loss: Front footage typed 95 -> 100, Calculate
+  // clicked, and the quote still read 95 long afterwards. `form` above is
+  // seeded ONCE from a Server Component prop, and unlike a brand-new quote
+  // (draftActive, below) a REOPENED one has no autosave at all — so any reload
+  // between the edit and Calculate silently restores the server value and
+  // Calculate then saves the OLD number, with nothing on screen ever saying a
+  // change was pending.
+  //
+  // `userTouchedRef` latches on the first real DOM edit anywhere in the
+  // builder (see onInputCapture on the wrapper below) and is NEVER reset — see
+  // quoteHasUnsavedEdits for why resetting it would drop an edit typed while a
+  // save was in flight. `lastPersistedFormRef` holds the serialization of the
+  // form snapshot that last actually reached the database, seeded here with
+  // the mount value because that IS the server truth at mount.
+  //
+  // SCOPE, stated honestly: beforeunload covers an accidental refresh, a tab
+  // close and navigating away. It does NOT cover a silent browser tab discard
+  // (Chrome Memory Saver), which never runs the handler — that case needs
+  // edit-mode autosave and is tracked separately, because the existing draft
+  // autosave is deliberately gated OFF for reopened quotes (reopen-safety) and
+  // turning it on is its own design with its own clobber risk.
+  // Both halves are STATE, not refs: the indicator below is rendered from
+  // them, and a ref mutation would not re-render, leaving a stale warning on
+  // screen after a successful save until something else happened to re-render.
+  const [userTouched, setUserTouched] = useState(false);
+  const userTouchedRef = useRef(false);
+  const [lastPersistedForm, setLastPersistedForm] = useState<string>(() => stableStringify(form));
+  const currentFormSerialized = useMemo(() => stableStringify(form), [form]);
+  const hasUnsavedEdits = quoteHasUnsavedEdits({
+    userTouched,
+    currentForm: currentFormSerialized,
+    lastPersistedForm,
+  });
+  // One capture-phase handler for the whole builder. A DOM input event fires
+  // only for genuine operator typing/selection — a programmatic setForm (the
+  // permanent-side derive, the satellite/footage effects, the draft restore)
+  // never produces one, which is exactly the distinction the guard needs.
+  const markUserTouched = () => {
+    if (userTouchedRef.current) return;
+    userTouchedRef.current = true;
+    setUserTouched(true);
+  };
+  // Native beforeunload, registered ONLY while genuinely dirty so an untouched
+  // or already-saved quote never prompts. preventDefault() is the modern
+  // required signal; returnValue is kept for older engines.
+  useEffect(() => {
+    if (!hasUnsavedEdits) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [hasUnsavedEdits]);
+
   // Fix-round HIGH (staff lens, #243 gate): a ref mirror of `form.serviceType`,
   // same never-stale idiom as isNceRef/legacyRebookRef above — but unlike those
   // two, serviceType has no single "apply" function every change funnels
@@ -4693,7 +4750,12 @@ export default function QuoteBuilder({
     // new quote), recalculating UPDATES that row in place — no more duplicate
     // rows piling up in /admin/quotes (#31).
     const existingQuoteId = savedQuoteId;
-    const inputs = buildQuoteInputs(formOverride ?? form, rooflineChoiceOverride);
+    // Row 406: the snapshot this save actually SENDS. Recorded as the new
+    // persisted baseline only once the server confirms the row was written
+    // (persisted === true, below) — never on a 200 that failed to save, which
+    // would silently clear the unsaved-changes warning on work still at risk.
+    const sentForm = formOverride ?? form;
+    const inputs = buildQuoteInputs(sentForm, rooflineChoiceOverride);
     const quoteBuildTimer = quoteBuildTimerRef.current?.current();
 
     try {
@@ -4793,6 +4855,11 @@ export default function QuoteBuilder({
       // 200 with persisted:false means the DB write failed even though
       // pricing succeeded (see /api/quote's own persisted: saved !== null).
       const persisted = data.persisted === true;
+      // Row 406: the database now matches `sentForm`, so that becomes the
+      // baseline the unsaved-changes warning compares against. Anything the
+      // operator typed WHILE this save was in flight differs from it and stays
+      // flagged, which is the intended behaviour.
+      if (persisted) setLastPersistedForm(stableStringify(sentForm));
       // #839 fix-round MED: surface the #251 freeze when it actually fired on
       // THIS save (route.ts only sends the key when updateQuote set it —
       // absent/falsy on every normal save, including a brand-new insert).
@@ -5171,7 +5238,11 @@ export default function QuoteBuilder({
 
   return (
     <OperatorShell active="new">
-      <div className="max-w-3xl mx-auto">
+      {/* Row 406: capture-phase input/change listener for the whole builder.
+          Capture (not bubble) so a child that stops propagation cannot hide an
+          edit from the guard, and on the inner wrapper rather than the shell so
+          the nav's own controls never mark a quote dirty. */}
+      <div className="max-w-3xl mx-auto" onInputCapture={markUserTouched} onChangeCapture={markUserTouched}>
 
         {/* TEST MODE banner (#93) — persistent while building/driving a test
             quote. Violet (not error-red / warning-amber) so it reads clearly as
@@ -7159,6 +7230,25 @@ export default function QuoteBuilder({
               Blank defaults to 50%. Overrides the deposit due at approval for this quote only.
             </span>
           </Section>
+
+          {/* Row 406: the unsaved-changes indicator. Sits directly above
+              Calculate because Calculate IS the save — the operator needs to
+              see "not saved yet" at the moment they are deciding whether they
+              are done. Amber, not red: nothing is broken, there is simply work
+              on screen that the database does not have. */}
+          {hasUnsavedEdits && (
+            <div
+              className="mb-2 rounded-lg border px-3 py-2 text-sm flex items-start gap-2"
+              style={{ borderColor: '#f59e0b', backgroundColor: '#fffbeb', color: '#92400e' }}
+              role="status"
+            >
+              <span aria-hidden="true">●</span>
+              <span>
+                <strong>Unsaved changes.</strong> Your edits are not in the quote yet — click
+                Calculate Quote to save them. Leaving or reloading this page first will lose them.
+              </span>
+            </div>
+          )}
 
           {/* Calculate */}
           <button
