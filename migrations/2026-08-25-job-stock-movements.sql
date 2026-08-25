@@ -43,12 +43,14 @@
 -- RLS ENABLED, ZERO POLICIES - service-role only, matching job_segments /
 -- job_assignments / shifts / crew_members.
 --
--- HOW TO APPLY: this migration is INTENTIONALLY LEFT UNAPPLIED by this PR
--- (see AGENTS.md's migration-application rules and docs/context/
--- task_ledger.md row 386) — the CREATE TABLE itself is on the safe/additive
--- allowlist (brand-new table, indexes on an empty table, RLS-enable-zero-
--- policies on that new table), but leaving code + migration to land together
--- and apply once the PR is reviewed keeps this change auditable end-to-end.
+-- APPLIED TO PROD (2026-08-25, under this file's renamed job_stock_movements
+-- table — no stock_movements table was ever created). Verified via direct
+-- query: 8 columns, RLS enabled with 0 policies, 0 rows. Per AGENTS.md's
+-- migration-application rules this was on the safe/additive allowlist
+-- (brand-new table, indexes on an empty table, RLS-enable-zero-policies on
+-- that new table); this file stays in the repo as the durable record of the
+-- DDL that ran — the CREATE TABLE/INDEX/RLS statements above are exactly
+-- what's live.
 -- =====================================================================
 
 create table if not exists public.job_stock_movements (

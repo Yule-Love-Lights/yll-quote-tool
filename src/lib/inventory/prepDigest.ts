@@ -90,8 +90,12 @@ export function prepDigestMessage(cards: FulfillmentCard[], baseUrl: string): st
     if (omitted > 0) lines.push(`…and ${omitted} more`);
   }
   if (stuck.length) {
+    // Row 398 fix (delta-verify finding): don't assert the audit row exists —
+    // recordJobStockMovements is best-effort and runs on the same DB write
+    // that just failed once already (correlated, not independent), so the
+    // copy points at where to check first and names the fallback.
     lines.push(
-      `⚠️ ${stuck.length} job(s) prepped but the per-job snapshot failed to save — the exact stock taken is recorded in job_stock_movements (reason: 'prep'), not on the job row; reconcile manually: ${stuck
+      `⚠️ ${stuck.length} job(s) prepped but the per-job snapshot failed to save — check job_stock_movements (reason: 'prep') first for the exact amounts; that log is best-effort, so reconcile against materials if it's empty: ${stuck
         .map(jobLine)
         .join(', ')}`,
     );

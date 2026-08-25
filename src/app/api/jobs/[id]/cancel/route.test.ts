@@ -655,8 +655,12 @@ describe('POST /api/jobs/[id]/cancel — Row 325 stock_deductions snapshot', () 
     expect(adjustOnHandAtomicMock).not.toHaveBeenCalled();
     expect(json.stockReturned).toEqual([]);
     expect(json.note).toMatch(/snapshot failed to save/i);
-    expect(json.note).toMatch(/durably recorded in job_stock_movements/i);
-    expect(json.note).toMatch(/reconcile on-hand manually/i);
+    expect(json.note).toMatch(/check there first/i);
+    // Row 398 delta-verify fix: the copy must NOT assert the audit row
+    // exists (recordJobStockMovements is best-effort on the same DB write
+    // that just failed) — it points at the record and names the fallback.
+    expect(json.note).toMatch(/best-effort/i);
+    expect(json.note).toMatch(/reconcile against the job's materials list/i);
     // Distinct message from the true-legacy caveat — this is not "reconstructed
     // and may not match", it's "nothing was reconstructed at all".
     expect(json.note).not.toMatch(/no per-prep snapshot/i);

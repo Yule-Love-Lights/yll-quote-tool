@@ -124,13 +124,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         if (snapshot === PENDING_STOCK_SNAPSHOT) {
           // Finding 1: refuse, don't guess. A wrong stock credit is worse
           // than a refusal that asks a human to look. Row 397: this does NOT
-          // mean the exact deduction is lost — prepareJobMaterials writes it
-          // to job_stock_movements (reason: 'prep') unconditionally, even
-          // when this per-job snapshot column failed to save. What failed is
-          // only the automatic reversal path, which reads this column, not
-          // the durable record itself.
+          // necessarily mean the exact deduction is lost — prepareJobMaterials
+          // writes it to job_stock_movements (reason: 'prep') unconditionally,
+          // even when this per-job snapshot column failed to save. BUT that
+          // write is itself best-effort (recordJobStockMovements swallows its
+          // own insert error) and runs on the same DB write that just failed
+          // once already — the two failures are correlated, not independent —
+          // so the copy below must not promise the row exists, only point at
+          // where to look and name the fallback if it's empty.
           stockReturnNote =
-            'This job was prepped, but the per-job stock_deductions snapshot failed to save right after prep (a transient error) — nothing was automatically returned to stock. What prep actually took off the shelf is durably recorded in job_stock_movements (reason: \'prep\') for this job; use that record to reconcile on-hand manually before restocking.';
+            'This job was prepped, but the per-job stock_deductions snapshot failed to save right after prep (a transient error) — nothing was automatically returned to stock. Prep normally logs what it took to job_stock_movements (reason: \'prep\') for this job — check there first. That log is best-effort, so if it has no rows for this job, reconcile against the job\'s materials list instead.';
         } else {
           // Row 325: prefer the snapshot prep actually deducted. Only fall
           // back to a live reconstruction when no snapshot exists AT ALL — a
