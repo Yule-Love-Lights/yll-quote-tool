@@ -99,11 +99,32 @@ function makeSb(quote: Record<string, unknown> | null, invoiceResponses: Invoice
   const invoiceCalls: InvoiceUpdateCall[] = [];
   let invoiceCallIdx = 0;
 
+  // Row 404: the route now also CLEARS the stale-invoice markers on the quote
+  // after a charge whose staleness check ran and passed, so the quotes table
+  // needs a read-then-CAS-update shape too, and the calls have to be
+  // observable. `maybeSingle` (the clear's read) and `update` are additive —
+  // no pre-existing test touches either, which is why this cannot disturb the
+  // rest of the suite.
+  const quoteUpdates: Array<{ patch: Record<string, unknown>; eqs: Array<[string, unknown]> }> = [];
   const quotesChain: Record<string, unknown> = {};
   Object.assign(quotesChain, {
     select: () => quotesChain,
     eq: () => quotesChain,
     single: async () => ({ data: quote, error: quote ? null : { message: 'no rows' } }),
+    maybeSingle: async () => ({ data: quote, error: null }),
+    update: (patch: Record<string, unknown>) => {
+      const call = { patch, eqs: [] as Array<[string, unknown]> };
+      quoteUpdates.push(call);
+      const chain: Record<string, unknown> = {};
+      Object.assign(chain, {
+        eq: (col: string, val: unknown) => {
+          call.eqs.push([col, val]);
+          return chain;
+        },
+        select: () => Promise.resolve({ data: [{ id: QID }], error: null }),
+      });
+      return chain;
+    },
   });
 
   function makeInvoiceChain(patch: Record<string, unknown>) {
@@ -136,6 +157,7 @@ function makeSb(quote: Record<string, unknown> | null, invoiceResponses: Invoice
   const b = {
     from: (table: string) => (table === 'quotes' ? quotesChain : invoicesTable),
     _invoiceCalls: invoiceCalls,
+    _quoteUpdates: quoteUpdates,
   };
   return b;
 }
@@ -144,6 +166,12 @@ function makeSb(quote: Record<string, unknown> | null, invoiceResponses: Invoice
 // release/final-record), used to assert the idempotency CAS shape.
 function invoiceCallsOf(sb: unknown): InvoiceUpdateCall[] {
   return (sb as { _invoiceCalls: InvoiceUpdateCall[] })._invoiceCalls;
+}
+
+// Row 404: the quotes-table updates the route made (today only the
+// stale-marker clear).
+function quoteUpdatesOf(sb: unknown): Array<{ patch: Record<string, unknown>; eqs: Array<[string, unknown]> }> {
+  return (sb as { _quoteUpdates: Array<{ patch: Record<string, unknown>; eqs: Array<[string, unknown]> }> })._quoteUpdates;
 }
 
 const INVOICE = {
@@ -984,5 +1012,84 @@ describe('POST /api/invoices/[id]/charge-balance — #173 stale-balance race', (
     expect(json.reason).toBe('already-charged');
     expect(chargeMock).not.toHaveBeenCalled();
     expect(invoiceCallsOf(sbRef.current)).toHaveLength(0);
+  });
+});
+
+// ─── Row 404: clearing the stale-invoice markers after a passing charge ─────
+// The markers (`paymentBlocked`, `invoiceResyncFailed`) drive the workflow
+// board's amber caution. Before this, they were cleared ONLY by
+// resyncInvoiceToAgreedTotal, reachable only from /amend and /amend-decline —
+// and /amend hard-rejects with a 409 'no-change' when there is no real price
+// delta. So an invoice carrying a marker that needed no further re-price had
+// NO in-app path to clear it and the warning could only accumulate.
+//
+// The gate is deliberately the staleness CHECK PASSING, not merely a
+// successful charge. See the route's own comment for why an `overrideStale`
+// charge must NOT clear.
+const QUOTE_MARKED = {
+  ...QUOTE_WITH_AGREED_TOTAL,
+  approval_snapshot: {
+    amendments: [] as unknown[],
+    invoiceResyncFailed: { at: '2026-01-01T00:00:00.000Z' },
+    paymentBlocked: { at: '2026-01-02T00:00:00.000Z' },
+  },
+};
+
+describe('POST /api/invoices/[id]/charge-balance — stale-marker clear (row 404)', () => {
+  it('clears BOTH markers after a charge whose staleness check ran and PASSED', async () => {
+    getInvoiceMock.mockResolvedValue({ ...INVOICE, balance: 1400 }); // matches the agreed total
+    chargeMock.mockResolvedValueOnce({ ok: true, chargedUsd: 1400, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
+    sbRef.current = makeSb(QUOTE_MARKED, SETTLE_OK);
+
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+
+    const updates = quoteUpdatesOf(sbRef.current);
+    expect(updates).toHaveLength(1);
+    const next = updates[0].patch.approval_snapshot as Record<string, unknown>;
+    expect(next).not.toHaveProperty('invoiceResyncFailed');
+    expect(next).not.toHaveProperty('paymentBlocked');
+    // Every OTHER approval_snapshot field rides through untouched — the clear
+    // is scoped to exactly the two marker keys, never a blind overwrite.
+    expect(next).toHaveProperty('amendments');
+    // ...and it is a compare-and-swap on the exact prior snapshot, so it can
+    // never clobber a concurrent write.
+    expect(updates[0].eqs.map(([col]) => col)).toContain('approval_snapshot');
+  });
+
+  it('does NOT clear when the operator used overrideStale — the discrepancy is still real', async () => {
+    // The invoice ($2,500) genuinely disagrees with the agreed total ($1,400).
+    // overrideStale charges the amount ON FILE anyway, so the marker is the
+    // only surviving record that this order was billed off a stale figure.
+    // Clearing here would erase a money signal rather than resolve one.
+    getInvoiceMock.mockResolvedValue({ ...INVOICE });
+    sbRef.current = makeSb(QUOTE_MARKED, SETTLE_OK);
+
+    const res = await POST(req({ overrideStale: true }), ctx());
+    expect(res.status).toBe(200);
+    expect(chargeMock).toHaveBeenCalled();
+    expect(quoteUpdatesOf(sbRef.current)).toHaveLength(0);
+  });
+
+  it('does NOT clear when the check was SKIPPED because the quote has no result', async () => {
+    // Skipping proves nothing about whether the invoice matches the agreed
+    // total — there is no agreed total to compare against — so a charge here
+    // must leave the markers exactly as it found them.
+    sbRef.current = makeSb({ ...QUOTE, approval_snapshot: QUOTE_MARKED.approval_snapshot }, SETTLE_OK);
+
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+    expect(chargeMock).toHaveBeenCalled();
+    expect(quoteUpdatesOf(sbRef.current)).toHaveLength(0);
+  });
+
+  it('makes no quotes write at all when the quote carries no markers to clear', async () => {
+    getInvoiceMock.mockResolvedValue({ ...INVOICE, balance: 1400 });
+    chargeMock.mockResolvedValueOnce({ ok: true, chargedUsd: 1400, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
+    sbRef.current = makeSb(QUOTE_WITH_AGREED_TOTAL, SETTLE_OK); // approval_snapshot has amendments only
+
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+    expect(quoteUpdatesOf(sbRef.current)).toHaveLength(0);
   });
 });
