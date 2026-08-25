@@ -2,6 +2,21 @@ import { getSupabaseServiceClient } from '@/lib/supabase';
 
 export const STAFF_NOTE_MAX_LENGTH = 2000;
 
+/** Row 373: notes per page. The list was previously unbounded, so a quote with
+ *  hundreds of notes fetched every one of them on every panel open. A silent
+ *  cap was explicitly rejected when this row was written — it would hide notes
+ *  the same way the failed-load-looks-empty bug (#874) did — so the page is
+ *  paired with an explicit "hasMore" and a control that fetches the next one. */
+export const STAFF_NOTES_PAGE_SIZE = 20;
+
+/** Row 373: where the NEXT page starts. Keyset, not offset: notes are
+ *  append-only and read newest-first, so an offset window would silently SKIP a
+ *  note whenever one was added between two page reads — the exact class of
+ *  quiet omission this row exists to avoid. */
+export type StaffNoteCursor = { createdAt: string; id: string };
+
+export type StaffNotesPage = { notes: StaffNote[]; hasMore: boolean };
+
 export type StaffNote = {
   id: string;
   quoteId: string;
@@ -58,20 +73,36 @@ export async function quoteExistsForStaffNotes(quoteId: string): Promise<boolean
   return !!data;
 }
 
-export async function listStaffNotes(quoteId: string): Promise<StaffNote[] | null> {
+export async function listStaffNotes(
+  quoteId: string,
+  before?: StaffNoteCursor | null,
+): Promise<StaffNotesPage | null> {
   const db = getSupabaseServiceClient();
   if (!db) return null;
-  const { data, error } = await db
-    .from('staff_notes')
-    .select(STAFF_NOTE_COLUMNS)
-    .eq('quote_id', quoteId)
+  let query = db.from('staff_notes').select(STAFF_NOTE_COLUMNS).eq('quote_id', quoteId);
+  if (before) {
+    // Strictly older than the cursor row under the SAME (created_at desc, id
+    // desc) ordering used below. The `id` half is not decoration: two notes can
+    // share a created_at, and without the tiebreaker one of them would either
+    // repeat on the next page or vanish from both. Values are double-quoted so
+    // a timestamp's own punctuation can never be read as PostgREST syntax.
+    query = query.or(
+      `created_at.lt."${before.createdAt}",and(created_at.eq."${before.createdAt}",id.lt."${before.id}")`,
+    );
+  }
+  const { data, error } = await query
     .order('created_at', { ascending: false })
-    .order('id', { ascending: false });
+    .order('id', { ascending: false })
+    // One MORE than the page, purely to answer "is there another page?" without
+    // a second count query. The extra row is sliced off below and never shown.
+    .limit(STAFF_NOTES_PAGE_SIZE + 1);
   if (error) {
     console.error('[staff-notes] list failed', error.message);
     return null;
   }
-  return ((data ?? []) as StaffNoteRow[]).map(toStaffNote);
+  const rows = (data ?? []) as StaffNoteRow[];
+  const hasMore = rows.length > STAFF_NOTES_PAGE_SIZE;
+  return { notes: rows.slice(0, STAFF_NOTES_PAGE_SIZE).map(toStaffNote), hasMore };
 }
 
 export async function appendStaffNote(input: AppendStaffNoteInput): Promise<AppendStaffNoteResult> {
