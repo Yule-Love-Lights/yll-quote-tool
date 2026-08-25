@@ -2767,6 +2767,32 @@ describe('listDueFollowUps — contact fallback + due-window (#229)', () => {
     expect(result.items[0].contactEmail).toBe('lead@x.com');
   });
 
+  // Row 390: re_chase_since rides through untouched so FollowUpStrip can tell
+  // a re-chase apart from a first-time nudge — null for the ordinary case,
+  // the stored anchor string for a re-chase.
+  it('carries re_chase_since through as reChaseSince — null for an ordinary nudge', async () => {
+    const rows = [dueRow({ re_chase_since: null })];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
+    sbRef.current = { from: () => mainBuilder };
+
+    const result = await listDueFollowUps(NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items[0].reChaseSince).toBeNull();
+  });
+
+  it('carries re_chase_since through as reChaseSince — set for a re-chase', async () => {
+    const anchor = '2026-08-10T09:00:00Z';
+    const rows = [dueRow({ re_chase_since: anchor })];
+    const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
+    sbRef.current = { from: () => mainBuilder };
+
+    const result = await listDueFollowUps(NOW);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.items[0].reChaseSince).toBe(anchor);
+  });
+
   it('excludes a follow-up due strictly in the future (not yet due today)', async () => {
     const rows = [dueRow({ due_at: '2026-08-08T10:00:00Z' })]; // 2 days ahead
     const { builder: mainBuilder } = makeBuilder({ data: rows, error: null });
@@ -3476,6 +3502,25 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
 
       const dueAt = Date.parse(String(fake.rows[0].due_at));
       expect(dueAt).toBe(sentAt.getTime() + 3 * 86_400_000);
+      // Row 390: a first-time nudge must NOT be flagged as a re-chase.
+      expect(fake.rows[0].re_chase_since).toBeNull();
+    });
+
+    // Row 390: the strip needs a persisted signal to tell a re-chase apart
+    // from a first-time nudge. This pins that ensureFollowUp writes it —
+    // set to the SAME anchor mayReChaseHandled used to allow the re-chase
+    // (existingNudge.updated_at here, since it's the more-recent of the two).
+    it('persists re_chase_since (the silence-start anchor) on a re-chase, matching the nudge anchor', async () => {
+      const anchor = daysAgo(8);
+      const fake = makeFollowUpsFake([
+        { id: 'fu-1', inbox_item_id: 'item-1', reason: 'quote_sent_no_reply', status: 'done', updated_at: anchor },
+      ]);
+      wire(fake, 'handled', daysAgo(9));
+
+      const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
+
+      expect(created).toBe('created');
+      expect(fake.rows[0].re_chase_since).toBe(anchor);
     });
 
     it('does NOT re-arm a handled item while the quiet window is still running', async () => {
@@ -3494,14 +3539,18 @@ describe('ensureFollowUp — idempotency scoped to pending (WT-43)', () => {
     });
 
     it('falls back to handled_at when no nag row exists yet to anchor on', async () => {
+      const handledAt = daysAgo(8);
       const fake = makeFollowUpsFake([]);
-      wire(fake, 'handled', daysAgo(8));
+      wire(fake, 'handled', handledAt);
 
       const created = await ensureFollowUp({ inboxItemId: 'item-1', contactId: 'c1', reason: 'quote_sent_no_reply', sentAt: new Date() });
 
       expect(created).toBe('created');
       expect(fake.rows).toHaveLength(1);
       expect(fake.rows[0].status).toBe('pending');
+      // Row 390: re_chase_since falls back to handled_at along with the
+      // eligibility decision itself — same anchor, same fallback.
+      expect(fake.rows[0].re_chase_since).toBe(handledAt);
     });
 
     it('leaves a handled item alone when there is no anchor to measure silence from', async () => {
