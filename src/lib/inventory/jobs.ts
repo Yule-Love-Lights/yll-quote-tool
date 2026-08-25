@@ -13,7 +13,7 @@ import type { QuoteResult, QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { getInventoryBindings, type Bindings, type ClipRules } from './bindings';
 import { listCatalog, catalogCostOverrides } from './catalog';
 import { listOnHand, adjustOnHandAtomic } from './onHand';
-import { recordStockMovements } from './stockMovements';
+import { recordJobStockMovements } from './jobStockMovements';
 import { projectMaterials, buildMaterialsView, type MaterialLine, type MaterialsView } from './materialsProjection';
 import { colorChoiceFromSnapshot } from './resolveInstalls';
 import { permanentBomFromQuote, includedPermanentSidesFromSnapshot } from '@/lib/permanent/bomFromQuote';
@@ -702,10 +702,11 @@ export async function prepareJobMaterials(id: string): Promise<PrepareResult | n
   // Row 386: the per-job snapshot column above is the LIVE working copy the
   // cancel route reverses — and cancel deliberately nulls it out once it's
   // used (so the job can be re-prepped later). Mirror it into the durable,
-  // append-only stock_movements log too, so what prep actually took off the
-  // shelf survives a later cancel even though the jobs-row snapshot doesn't.
-  // Best-effort — never blocks the return of the deduction the job DID get.
-  await recordStockMovements(
+  // append-only job_stock_movements log too, so what prep actually took off
+  // the shelf survives a later cancel even though the jobs-row snapshot
+  // doesn't. Best-effort — never blocks the return of the deduction the job
+  // DID get.
+  await recordJobStockMovements(
     db,
     id,
     'prep',

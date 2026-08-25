@@ -17,13 +17,13 @@ let quoteRow: Record<string, unknown> | null = null;
 // deduction (qty 2), so applied === the requested delta exactly. The one test
 // below that needs a clamp overrides this default via mockResolvedValueOnce;
 // the clamp arithmetic itself is unit-tested directly in onHand.test.ts.
-const { adjustOnHandAtomic, recordStockMovements } = vi.hoisted(() => ({
+const { adjustOnHandAtomic, recordJobStockMovements } = vi.hoisted(() => ({
   adjustOnHandAtomic: vi.fn(async (_db: unknown, _sku: string, delta: number) => {
     const before = 10;
     const after = Math.max(0, before + delta);
     return { before, after, applied: after - before };
   }),
-  recordStockMovements: vi.fn(async () => {}),
+  recordJobStockMovements: vi.fn(async () => {}),
 }));
 
 vi.mock('../supabase', () => ({ getSupabaseServiceClient: () => currentDb }));
@@ -35,8 +35,8 @@ vi.mock('./bindings', () => ({ getInventoryBindings: vi.fn(async () => ({ bindin
 vi.mock('./catalog', () => ({ listCatalog: vi.fn(async () => []) }));
 vi.mock('./onHand', () => ({ listOnHand: vi.fn(async () => []), adjustOnHandAtomic }));
 // Row 386: the durable audit log — assert wiring here, its own insert-shape
-// behavior is covered directly in stockMovements.test.ts.
-vi.mock('./stockMovements', () => ({ recordStockMovements }));
+// behavior is covered directly in jobStockMovements.test.ts.
+vi.mock('./jobStockMovements', () => ({ recordJobStockMovements }));
 // buildMaterialsView returns one tracked, deductible SKU regardless of inputs —
 // so a real job WOULD deduct, and only the is_test gate stops it.
 vi.mock('./materialsProjection', () => ({
@@ -154,7 +154,7 @@ describe('prepareJobMaterials — Test Quote stock safety (#93)', () => {
     // qty_delta NEGATIVE (mirrors adjustOnHandAtomic's own signed delta) —
     // this is the record that survives after cancel later nulls the jobs-row
     // snapshot.
-    expect(recordStockMovements).toHaveBeenCalledWith(expect.anything(), 'j1', 'prep', [
+    expect(recordJobStockMovements).toHaveBeenCalledWith(expect.anything(), 'j1', 'prep', [
       { sku: 'SKU-A', qtyDelta: -2, before: 10, after: 8 },
     ]);
   });
@@ -166,8 +166,8 @@ describe('prepareJobMaterials — Test Quote stock safety (#93)', () => {
     expect(res).toEqual({ ok: true, alreadyDone: false, deductions: [], short: [] });
     expect(adjustOnHandAtomic).not.toHaveBeenCalled();
     // Row 386: nothing to audit for a test job either — called with an empty
-    // list, which recordStockMovements itself no-ops on (see its own test).
-    expect(recordStockMovements).toHaveBeenCalledWith(expect.anything(), 'j1', 'prep', []);
+    // list, which recordJobStockMovements itself no-ops on (see its own test).
+    expect(recordJobStockMovements).toHaveBeenCalledWith(expect.anything(), 'j1', 'prep', []);
   });
 
   it('reports alreadyDone (no deduction) when the claim is already taken', async () => {
@@ -353,7 +353,7 @@ describe('prepareJobMaterials — Row 329 claim-error distinguished from already
 });
 
 describe('prepareJobMaterials — re-prep after a cancel reversal (row 386)', () => {
-  // Row 386's fix (the durable stock_movements audit log) must NOT change how
+  // Row 386's fix (the durable job_stock_movements audit log) must NOT change how
   // the cancel route reverses a prep: it still clears stock_decremented_at /
   // stock_deductions back to null (see cancel/route.ts), which is exactly the
   // state prepareJobMaterials's atomic claim (`.is('stock_decremented_at',

@@ -19,7 +19,7 @@ import { releaseAccrualOnCancel } from '@/lib/referrals';
 // src/lib/inventory/jobs.ts.
 import { getJobWorkOrder, computeStockDeductions, PENDING_STOCK_SNAPSHOT } from '@/lib/inventory/jobs';
 import { adjustOnHandAtomic } from '@/lib/inventory/onHand';
-import { recordStockMovements } from '@/lib/inventory/stockMovements';
+import { recordJobStockMovements } from '@/lib/inventory/jobStockMovements';
 
 export const runtime = 'nodejs';
 
@@ -137,8 +137,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
             // claim only needs stock_decremented_at back to null). That
             // clearing destroys the record of what cancel actually returned
             // unless it's captured elsewhere first — durableMovements is that
-            // capture, written to stock_movements below (append-only, never
-            // touched by this or prepareJobMaterials's own nulling/claim).
+            // capture, written to job_stock_movements below (append-only,
+            // never touched by this or prepareJobMaterials's own
+            // nulling/claim).
             const durableMovements: { sku: string; qtyDelta: number; before: number; after: number }[] = [];
             for (const d of deductions) {
               try {
@@ -152,7 +153,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
                 console.error(`[api/jobs/:id/cancel] stock return failed for ${d.sku}:`, err);
               }
             }
-            await recordStockMovements(stockSb, id, 'cancel_reversal', durableMovements);
+            await recordJobStockMovements(stockSb, id, 'cancel_reversal', durableMovements);
           } else {
             stockReturnNote =
               'Materials were marked prepped for this job — no trackable on-hand stock to reverse automatically; check manually.';
