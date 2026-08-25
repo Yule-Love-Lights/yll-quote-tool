@@ -11,6 +11,12 @@ import {
 export const runtime = 'nodejs';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Row 373: exactly the shape Postgres hands back for a `timestamptz` through
+// PostgREST — date, time, fractional seconds, and a Z or +/-HH:MM offset.
+// Deliberately narrow: this value is interpolated into a filter string, so the
+// question is not "can Date parse it" but "is it only the characters a
+// timestamp can contain".
+const ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$/;
 
 type StaffNotesContext =
   | { ok: true; id: string; operator: NonNullable<Awaited<ReturnType<typeof getOperator>>> }
@@ -46,14 +52,30 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   const context = await contextForStaffNotes(params);
   if (!context.ok) return context.response;
 
-  // Row 373: keyset cursor for the NEXT page. Both halves must be present —
-  // a lone timestamp would drop or repeat notes that share one — so a partial
-  // cursor is treated as no cursor and simply serves the first page again,
-  // which is wrong-but-visible rather than a silently skipped note.
+  // Row 373: keyset cursor for the NEXT page.
+  //
+  // VALIDATED HERE, not trusted downstream (technical lens MED): listStaffNotes
+  // interpolates both halves into a PostgREST `.or()` filter string, and
+  // postgrest-js does no escaping of its own. An id like `X",body.neq."y` would
+  // close the quoting and append a condition of the attacker's choosing. The
+  // `quote_id` scope is a separate AND'd parameter so it could not reach
+  // another quote's notes, and the route already requires an operator session —
+  // but a filter an outsider can shape is not a thing to leave standing. Same
+  // UUID_RE this route already applies to the quote id, plus a strict ISO-8601
+  // check on the timestamp; anything else is a 400, not a silent first page.
+  //
+  // Both halves must be present — a lone timestamp cannot separate two notes
+  // written in the same instant — so a partial cursor is no cursor.
   const url = new URL(_req.url);
   const beforeCreatedAt = url.searchParams.get('beforeCreatedAt');
   const beforeId = url.searchParams.get('beforeId');
-  const before = beforeCreatedAt && beforeId ? { createdAt: beforeCreatedAt, id: beforeId } : null;
+  if (beforeCreatedAt || beforeId) {
+    if (!beforeCreatedAt || !beforeId || !UUID_RE.test(beforeId) || !ISO_TIMESTAMP_RE.test(beforeCreatedAt)) {
+      return NextResponse.json({ error: 'Invalid page cursor' }, { status: 400 });
+    }
+  }
+  const before =
+    beforeCreatedAt && beforeId ? { createdAt: beforeCreatedAt, id: beforeId } : null;
 
   const page = await listStaffNotes(context.id, before);
   if (!page) {

@@ -96,17 +96,47 @@ describe('GET /api/quotes/[id]/staff-notes', () => {
   // timestamp cannot separate two notes written in the same instant, so a
   // half-cursor is ignored rather than used to skip past a note.
   it('passes a complete page cursor through, and ignores a half one', async () => {
-    await GET(request({}, '?beforeCreatedAt=2026-08-21T14:00:00.000Z&beforeId=note-9'), ctx());
+    await GET(request({}, `?beforeCreatedAt=${NOTE.createdAt}&beforeId=${NOTE.id}`), ctx());
     expect(listStaffNotesMock).toHaveBeenLastCalledWith(QUOTE_ID, {
-      createdAt: '2026-08-21T14:00:00.000Z',
-      id: 'note-9',
+      createdAt: NOTE.createdAt,
+      id: NOTE.id,
     });
 
-    await GET(request({}, '?beforeCreatedAt=2026-08-21T14:00:00.000Z'), ctx());
-    expect(listStaffNotesMock).toHaveBeenLastCalledWith(QUOTE_ID, null);
+    // Half a cursor is not a cursor, and is refused rather than quietly
+    // serving the first page again.
+    expect((await GET(request({}, '?beforeCreatedAt=2026-08-21T14:00:00.000Z'), ctx())).status).toBe(400);
+    expect((await GET(request({}, `?beforeId=${NOTE.id}`), ctx())).status).toBe(400);
+  });
 
-    await GET(request({}, '?beforeId=note-9'), ctx());
-    expect(listStaffNotesMock).toHaveBeenLastCalledWith(QUOTE_ID, null);
+  // Technical lens MED: listStaffNotes interpolates both halves into a
+  // PostgREST `.or()` filter, and postgrest-js escapes nothing. An id that
+  // closes the quoting appends a condition of the caller's choosing, so the
+  // shape is checked at the boundary rather than trusted downstream.
+  it('refuses a cursor that could reshape the database filter', async () => {
+    const injections = [
+      `${NOTE.id}",body.neq."x`,
+      `${NOTE.id}),or(quote_id.neq.`,
+      `${NOTE.id},created_at.gt.2000-01-01`,
+      "' OR 1=1 --",
+    ];
+    for (const beforeId of injections) {
+      const res = await GET(
+        request({}, `?beforeCreatedAt=${encodeURIComponent(NOTE.createdAt)}&beforeId=${encodeURIComponent(beforeId)}`),
+        ctx(),
+      );
+      expect(res.status).toBe(400);
+    }
+
+    for (const beforeCreatedAt of ['not-a-date', `${NOTE.createdAt}",id.neq."x`, '2026-08-21']) {
+      const res = await GET(
+        request({}, `?beforeCreatedAt=${encodeURIComponent(beforeCreatedAt)}&beforeId=${NOTE.id}`),
+        ctx(),
+      );
+      expect(res.status).toBe(400);
+    }
+
+    // Nothing reached the database on any of them.
+    expect(listStaffNotesMock).not.toHaveBeenCalled();
   });
 
   it('reports hasMore so the panel can offer the older page', async () => {
