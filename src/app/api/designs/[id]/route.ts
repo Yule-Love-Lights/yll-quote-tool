@@ -21,6 +21,7 @@ import {
   type DesignSatelliteLines,
   type DesignPortalVisibility,
 } from '@/lib/designs';
+import { clampBrightness } from '@/lib/design/photoBrightness';
 
 export const runtime = 'nodejs';
 
@@ -142,7 +143,33 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     let portalVisibility: DesignPortalVisibility | null = null;
     let newVersion: number | undefined;
     if (scene !== undefined) {
-      const outcome = await updateDesignSceneGuarded(id, scene as DesignScene, version as number | null | undefined);
+      // Row 348 (admin LOW): clamp brightness before persisting. `lightScale`
+      // does NOT need the same treatment here — every render path already
+      // clamps it on READ via `normalizeLightScale` (editor.ts's
+      // `activeLightScale()`, render-readonly.ts:89), so a raw out-of-range
+      // stored value self-corrects and adding a write-time clamp too would
+      // be redundant machinery. Brightness has no such read-time guard
+      // anywhere (see photoBrightness.ts's `clampBrightness` doc comment),
+      // so an unclamped value would persist and paint an opaque tint over
+      // the whole design on every render path, portal included.
+      const rawScene = scene as DesignScene;
+      const normalizedScene: DesignScene = {
+        ...rawScene,
+        ...(rawScene.brightness !== undefined
+          ? { brightness: clampBrightness(rawScene.brightness) }
+          : {}),
+        ...(rawScene.extraPhotoBrightness
+          ? {
+              extraPhotoBrightness: Object.fromEntries(
+                Object.entries(rawScene.extraPhotoBrightness).map(([photoId, b]) => [
+                  photoId,
+                  clampBrightness(b),
+                ]),
+              ),
+            }
+          : {}),
+      };
+      const outcome = await updateDesignSceneGuarded(id, normalizedScene, version as number | null | undefined);
       if (!outcome.ok) {
         if (outcome.reason === 'conflict') {
           // Distinguishable body (`conflict: true`) so the editor can tell

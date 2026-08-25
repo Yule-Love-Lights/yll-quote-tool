@@ -305,6 +305,28 @@ describe('PUT /api/designs/[id]', () => {
     expect(updateDesignSceneGuarded).toHaveBeenCalledWith(VALID_ID, perPhotoScene, 4);
   });
 
+  // Row 348 (admin LOW): a caller-supplied brightness outside [0,100] must be
+  // clamped before it reaches storage — nothing downstream clamps it on read
+  // the way lightScale is (see photoBrightness.ts's clampBrightness comment).
+  it('clamps an out-of-range brightness (base + per-photo) before persisting', async () => {
+    const wildScene = {
+      ...validScene,
+      brightness: 9000,
+      extraPhotoBrightness: { 'left-photo': -50, 'right-photo': 40 },
+    };
+    const res = await PUT(makeReq({ scene: wildScene, version: 4 }), ctx());
+    expect(res.status).toBe(200);
+    expect(updateDesignSceneGuarded).toHaveBeenCalledWith(
+      VALID_ID,
+      {
+        ...validScene,
+        brightness: 100,
+        extraPhotoBrightness: { 'left-photo': 0, 'right-photo': 40 },
+      },
+      4,
+    );
+  });
+
   it('treats an omitted version as null (the adopt path) rather than crashing', async () => {
     const res = await PUT(makeReq({ scene: validScene }), ctx());
     expect(res.status).toBe(200);
