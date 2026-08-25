@@ -127,6 +127,16 @@ export default function JobsBoardPage() {
   );
 }
 
+// Staff-lens fix (row 382/MED): pure extraction of the badge condition, same
+// pattern as shortSkusFromPrepareResponse below (this repo has no
+// jsdom/testing-library, so a JobCard render can't be unit-tested directly —
+// the pure boolean the JSX condition reads on IS the testable unit, and the
+// negative control below proves the JSX actually reads this function's
+// result, not a copy of the logic).
+export function shouldShowStuckStockBadge(card: Pick<FulfillmentCard, 'stockSnapshotPending'>): boolean {
+  return !!card.stockSnapshotPending;
+}
+
 function JobCard({ card, onMove, onOpen }: { card: FulfillmentCard; onMove: (id: string, s: FulfillmentStage) => void; onOpen: () => void }) {
   return (
     <div className="rounded-md border p-2.5 text-sm" style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' }}>
@@ -144,6 +154,22 @@ function JobCard({ card, onMove, onOpen }: { card: FulfillmentCard; onMove: (id:
             title="Simulated test job — no real stock or supplier order"
           >
             Test
+          </span>
+        )}
+        {/* Staff-lens fix (row 382/MED): stockSnapshotPending was on
+            FulfillmentCard but only ever read by the daily digest — this
+            board, the surface staff actually watch all day, rendered
+            nothing. Same badge shape/placement as the Test pill above, the
+            page's own amber "needs attention" color (matches the short-SKU
+            warning in the work-order modal below), plain wording matching
+            the corrected staff copy — no table/column names. */}
+        {shouldShowStuckStockBadge(card) && (
+          <span
+            className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0"
+            style={{ background: '#fef3c7', color: '#b45309' }}
+            title="This job was prepped, but the record of exactly what it took didn't save — check on-hand against its materials before restocking"
+          >
+            Check stock
           </span>
         )}
       </div>
