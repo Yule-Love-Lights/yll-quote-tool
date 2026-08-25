@@ -3,6 +3,9 @@ import { getSupabaseServiceClient } from './supabase';
 import type { Scene } from './design/sceneTypes';
 import { pruneOrphanedMiniGroups, isMiniGroup } from './design/sceneTypes';
 import { seedLinesHaveContent, type RooflineSeedLines } from './design/seedRoofline';
+// Row 371: the ONE definition of "prune this photo's brightness override",
+// shared with the editor so the two sides of a photo delete cannot disagree.
+import { removeBrightnessForPhoto } from './design/photoBrightness';
 import {
   seedSceneFromAnalysis,
   analysisSeedHasContent,
@@ -1237,15 +1240,6 @@ const REMOVE_EXTRA_PHOTO_FAILED: RemoveDesignExtraPhotoResult = { ok: false, pru
 // item drawn on it (an item tagged to a deleted photo would otherwise be
 // invisible everywhere, forever). PR2b's linked twins refine delete semantics;
 // here any item with the matching photoId dies with its photo.
-// Row 371: a copy of the scene's per-photo brightness map with one photo's
-// entry removed. A deleted photo's override is not attached to any item, so
-// the item prune below never reached it and the key survived the delete.
-function withoutPhotoBrightness(scene: DesignScene, photoId: string): Record<string, number> {
-  const next = { ...(scene.extraPhotoBrightness ?? {}) };
-  delete next[photoId];
-  return next;
-}
-
 export async function removeDesignExtraPhoto(id: string, photoId: string): Promise<RemoveDesignExtraPhotoResult> {
   const sb = getSb();
   if (!sb) return REMOVE_EXTRA_PHOTO_FAILED;
@@ -1341,7 +1335,7 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
         // entirely, which is not this function's job and would change billing.
         const outcome = await updateDesignSceneGuarded(
           id,
-          { ...freshScene, extraPhotoBrightness: withoutPhotoBrightness(freshScene, photoId) },
+          removeBrightnessForPhoto(freshScene, photoId),
           freshVersion,
         );
         if (outcome.ok) {
@@ -1369,13 +1363,7 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
       // the one write rather than a second CAS round-trip.
       const outcome = await updateDesignSceneGuarded(
         id,
-        {
-          ...freshScene,
-          items: keptItems,
-          ...(freshScene.extraPhotoBrightness
-            ? { extraPhotoBrightness: withoutPhotoBrightness(freshScene, photoId) }
-            : {}),
-        },
+        { ...removeBrightnessForPhoto(freshScene, photoId), items: keptItems },
         freshVersion,
       );
       if (outcome.ok) {

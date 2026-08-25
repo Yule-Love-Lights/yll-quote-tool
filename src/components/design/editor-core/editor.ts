@@ -37,7 +37,7 @@ import {
 import { isLineDrawContext } from "./drawContext";
 import { surfaceOptionsForBulbType } from "./surfaceOptions";
 import { sideOfHouseOptions } from "./sideOfHouseOptions";
-import { brightnessForPhoto, setBrightnessForPhoto } from "@/lib/design/photoBrightness";
+import { brightnessForPhoto, setBrightnessForPhoto, removeBrightnessForPhoto } from "@/lib/design/photoBrightness";
 import { seedGroupStringCount } from "./miniGroupBilling";
 
 // Default real-world width for newly-placed custom uploads — about 3 feet,
@@ -1844,8 +1844,17 @@ export async function renderEditor(
     // bumps the version (its brightness entry is pruned), and that is exactly
     // the case the early-return below skips.
     if (typeof serverVersion === 'number') design.version = serverVersion;
+
+    // Row 371 fix round (delta-verify MED): prune the deleted photo's
+    // brightness override from the RESIDENT scene too. This is not cosmetic
+    // bookkeeping — adopting the version above means the next autosave now
+    // SUCCEEDS its CAS, and an autosave writes the whole scene, so a client
+    // still holding the key would write it straight back over the server's
+    // prune and resurrect the exact orphan this row exists to remove. Same
+    // pure helper the server prune uses, so the two cannot drift.
+    const prunedScene = removeBrightnessForPhoto(scene, photoId);
     const nextItems = removeItemsForPhoto(scene.items, photoId);
-    if (nextItems === scene.items) return; // nothing tagged to this photo — no-op
+    if (nextItems === scene.items && prunedScene === scene) return; // nothing on this photo at all — no-op
 
     // #741 defect 1 (round 2, HIGH): also scrub every EXISTING undo/redo
     // snapshot's copy of this photo's items — commit() below only appends a
@@ -1858,9 +1867,13 @@ export async function renderEditor(
     // this delete just correctly pruned, re-entering the #227/#254 dead-
     // billing failure through undo. `future` doesn't need the same treatment:
     // commit() unconditionally clears it right below, on every call.
+    // Row 371: the same scrub covers the brightness key, for the same reason —
+    // undo() restores a whole snapshot and then autosaves it, so a snapshot
+    // still carrying the key would reintroduce it through Ctrl+Z.
     past = past.map((s) => {
-      const filtered = removeItemsForPhoto(s.items, photoId);
-      return filtered === s.items ? s : { ...s, items: filtered };
+      const pruned = removeBrightnessForPhoto(s, photoId);
+      const filtered = removeItemsForPhoto(pruned.items, photoId);
+      return filtered === pruned.items ? pruned : { ...pruned, items: filtered };
     });
 
     // #741 defect 2: no in-canvas toast here (unlike deleteSelected's
@@ -1868,7 +1881,7 @@ export async function renderEditor(
     // server-side prune up to QuoteBuilder's persistent banner (the
     // authoritative channel: it reflects what the server actually did).
     // Firing both duplicated one removal into two differently-worded notices.
-    scene = { ...scene, items: nextItems };
+    scene = { ...prunedScene, items: nextItems };
     commit();
     redrawScene();
 
