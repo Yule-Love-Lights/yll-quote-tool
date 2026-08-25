@@ -51,14 +51,17 @@ export async function POST(req: NextRequest) {
   // item moved on (another operator answered/completed it), not a backend
   // failure, so the client can tell a lost race from an outage.
   //
-  // Known cosmetic gap (staff lens, deferred): on a real refusal the row has by
-  // definition left the needs_reply bucket, so act()'s refresh() drops it and
-  // the error note is keyed to an id that never renders again. The operator sees
-  // the row disappear — the same thing they would see on success — so they may
-  // believe the sender was suppressed when it deliberately was not. Not harmful
-  // (the refusal is CORRECT: a colleague answered it, so it IS a real lead and
-  // must not be suppressed), but it is the honesty gap row 287 closed for reply,
-  // and closing it here means keeping a note visible for a removed row.
+  // Row 392 (fixed — this comment used to describe a known cosmetic gap): a
+  // real refusal means the row has by definition left the needs_reply
+  // bucket, so act()'s refresh() would silently drop it and orphan its error
+  // note — the operator would see the row vanish, indistinguishable from
+  // success, and could believe the sender was suppressed when it deliberately
+  // was not (the refusal is CORRECT: a colleague answered it, so it IS a real
+  // lead and must not be suppressed). Closed the same way row 287 closed it
+  // for reply: InboxList.tsx's act() now checks isRefusalStatus(res.status)
+  // — on this exact 409 it restores the row and keeps its note visible
+  // (refusedIds) until the operator dismisses it, instead of letting
+  // refresh() erase it.
   if (!res.ok) return NextResponse.json({ error: res.error }, { status: res.refused ? 409 : 503 });
   return NextResponse.json({ ok: true });
 }
