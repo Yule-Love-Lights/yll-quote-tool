@@ -97,7 +97,21 @@ export function TelegramRoutingManager({
     (draft?.[audience] ?? []).filter((id) => chats.some((c) => c.id === id)).length;
 
   if (status === 'loading') {
-    return <p className="text-sm text-gray-500 py-10 text-center">Loading Telegram chats…</p>;
+    // Row 346, mirrors row 332/#171b and PortalSwatchEditor beside it: was a
+    // bare centred "Loading…" line that then vanished and dropped a full table
+    // in its place — the whole panel jumped. Placeholder rows in the shape of
+    // the routing table that follows, so the layout settles once.
+    return (
+      <div role="status" aria-busy="true" className="flex flex-col gap-6">
+        <div className="h-16 animate-pulse rounded-md bg-black/10" />
+        <div className="rounded-2xl border border-gray-200 bg-white p-4 space-y-2.5">
+          <div className="h-8 animate-pulse rounded-md bg-black/10" />
+          <div className="h-8 animate-pulse rounded-md bg-black/10" />
+          <div className="h-8 animate-pulse rounded-md bg-black/10" />
+        </div>
+        <span className="sr-only">Loading Telegram chats…</span>
+      </div>
+    );
   }
   // draft is only ever null when the initial load failed (success always seeds
   // it) — show the error + a retry instead of a forever-"Loading…" dead end.
