@@ -137,10 +137,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
  * DELETE that leaves the record standing would describe itself wrongly to the
  * next person reading this file.
  *
- * Any signed-in operator may withdraw any note on a quote they can already
- * read, matching who can WRITE one — a note written in error, or one naming
- * someone who should not be named, should not wait on a specific person being
- * available. The withdrawal is attributed, which is what makes that safe.
+ * WHO MAY: your own note is yours to withdraw; anyone else's takes an admin.
+ * The rule itself is mayRedactStaffNote (staffNotes.ts) and is enforced in the
+ * lib against the author read from the row — not here, and never against
+ * anything a request body supplied. This route only forwards the session's
+ * role and turns a refusal into a 403.
+ *
+ * (An earlier version of this comment said any operator may withdraw any note.
+ * That was the shipped behaviour for one commit, and the admin lens was right
+ * that it was wrong: the erasure is irreversible and total, and this repo gates
+ * irreversible actions on an admin. Requiring an admin for ALL of them was also
+ * wrong — the common case is someone fixing their own mistake seconds later,
+ * which must not wait on the owner being awake.)
  */
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const context = await contextForStaffNotes(params);
