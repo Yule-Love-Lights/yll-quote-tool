@@ -15,6 +15,7 @@ const {
   releaseAccrualOnCancelMock,
   getJobWorkOrderMock,
   adjustOnHandAtomicMock,
+  recordStockMovementsMock,
 } = vi.hoisted(() => ({
   getJob: vi.fn(),
   setJobStatus: vi.fn(),
@@ -25,7 +26,13 @@ const {
   hl: { sendEmail: vi.fn(async () => ({})), configured: { value: true } },
   releaseAccrualOnCancelMock: vi.fn(async () => ({ released: false })),
   getJobWorkOrderMock: vi.fn(),
-  adjustOnHandAtomicMock: vi.fn(async () => {}),
+  // Row 386: before/after now flow through to recordStockMovements — the
+  // default mirrors a return-to-stock delta from a before of 0.
+  adjustOnHandAtomicMock: vi.fn(async (_sb: unknown, _sku: string, delta: number) => ({
+    before: 0,
+    after: delta,
+  })),
+  recordStockMovementsMock: vi.fn(async () => {}),
 }));
 
 vi.mock('@/lib/supabase', () => ({
@@ -53,6 +60,9 @@ vi.mock('@/lib/inventory/jobs', async (importOriginal) => {
   return { ...actual, getJobWorkOrder: getJobWorkOrderMock };
 });
 vi.mock('@/lib/inventory/onHand', () => ({ adjustOnHandAtomic: adjustOnHandAtomicMock }));
+// Row 386: the durable audit log — assert wiring here, its own insert-shape
+// behavior is covered directly in stockMovements.test.ts.
+vi.mock('@/lib/inventory/stockMovements', () => ({ recordStockMovements: recordStockMovementsMock }));
 
 import { POST } from './route';
 import { PENDING_STOCK_SNAPSHOT } from '@/lib/inventory/jobs';
@@ -129,6 +139,9 @@ describe('POST /api/jobs/[id]/cancel', () => {
     expect(res.status).toBe(200);
     expect(json.alreadyCancelled).toBe(true);
     expect(setJobStatus).not.toHaveBeenCalled();
+    // Row 382: previously a bare `{ ok: true, alreadyCancelled: true }` gave
+    // staff no way to tell WHY a retried/double-clicked cancel no-opped.
+    expect(json.note).toMatch(/already cancelled/i);
   });
 
   it('cancels the job, its invoice, and the quote', async () => {
@@ -415,6 +428,19 @@ describe('POST /api/jobs/[id]/cancel', () => {
         ]),
       );
       expect(json.note).toMatch(/Returned to stock/);
+      // Row 386: the durable audit log gets one row per SKU actually
+      // returned, reason 'cancel_reversal', POSITIVE qty_delta (the SKU was
+      // returned) — this is the record that survives the reversal-claim's
+      // own nulling of the jobs-row snapshot below.
+      expect(recordStockMovementsMock).toHaveBeenCalledWith(
+        sbRef.current,
+        ID,
+        'cancel_reversal',
+        expect.arrayContaining([
+          { sku: 'SKU-A', qtyDelta: 5, before: 0, after: 5 },
+          { sku: 'SKU-B', qtyDelta: 1, before: 0, after: 1 },
+        ]),
+      );
     });
 
     it('is a no-op when the job was never prepped (stock_decremented_at null)', async () => {
@@ -434,6 +460,8 @@ describe('POST /api/jobs/[id]/cancel', () => {
       expect(json.stockReturned).toEqual([]);
       // Fix round 3 (Finding LOW): nothing to reconcile — no ⚠️ cue.
       expect(json.stockNeedsAttention).toBe(false);
+      // Row 386: nothing was returned, so nothing to audit either.
+      expect(recordStockMovementsMock).not.toHaveBeenCalled();
     });
 
     it('skips the real reversal for a TEST job even if it was marked prepped (never touched real stock)', async () => {
@@ -635,6 +663,8 @@ describe('POST /api/jobs/[id]/cancel — Row 325 stock_deductions snapshot', () 
     // Fix round 3 (Finding LOW): this is exactly the case the widened ⚠️ cue
     // exists for — a human needs to look, even though no refund is owed.
     expect(json.stockNeedsAttention).toBe(true);
+    // Row 386: nothing was reconstructed, so nothing to audit.
+    expect(recordStockMovementsMock).not.toHaveBeenCalled();
   });
 
   it('clears stock_deductions in the same atomic reversal-claim update (mirrors clearing stock_decremented_at)', async () => {

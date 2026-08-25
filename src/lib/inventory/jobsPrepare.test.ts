@@ -17,12 +17,13 @@ let quoteRow: Record<string, unknown> | null = null;
 // deduction (qty 2), so applied === the requested delta exactly. The one test
 // below that needs a clamp overrides this default via mockResolvedValueOnce;
 // the clamp arithmetic itself is unit-tested directly in onHand.test.ts.
-const { adjustOnHandAtomic } = vi.hoisted(() => ({
+const { adjustOnHandAtomic, recordStockMovements } = vi.hoisted(() => ({
   adjustOnHandAtomic: vi.fn(async (_db: unknown, _sku: string, delta: number) => {
     const before = 10;
     const after = Math.max(0, before + delta);
     return { before, after, applied: after - before };
   }),
+  recordStockMovements: vi.fn(async () => {}),
 }));
 
 vi.mock('../supabase', () => ({ getSupabaseServiceClient: () => currentDb }));
@@ -33,6 +34,9 @@ vi.mock('../jobs', () => ({
 vi.mock('./bindings', () => ({ getInventoryBindings: vi.fn(async () => ({ bindings: [] })) }));
 vi.mock('./catalog', () => ({ listCatalog: vi.fn(async () => []) }));
 vi.mock('./onHand', () => ({ listOnHand: vi.fn(async () => []), adjustOnHandAtomic }));
+// Row 386: the durable audit log — assert wiring here, its own insert-shape
+// behavior is covered directly in stockMovements.test.ts.
+vi.mock('./stockMovements', () => ({ recordStockMovements }));
 // buildMaterialsView returns one tracked, deductible SKU regardless of inputs —
 // so a real job WOULD deduct, and only the is_test gate stops it.
 vi.mock('./materialsProjection', () => ({
@@ -146,6 +150,13 @@ describe('prepareJobMaterials — Test Quote stock safety (#93)', () => {
     // The write is now an ATOMIC NEGATIVE delta (-deducted), not an absolute set,
     // so a concurrent receipt/decrement on the same SKU can't be clobbered.
     expect(adjustOnHandAtomic).toHaveBeenCalledWith(expect.anything(), 'SKU-A', -2);
+    // Row 386: the durable audit log gets the same deduction, reason 'prep',
+    // qty_delta NEGATIVE (mirrors adjustOnHandAtomic's own signed delta) —
+    // this is the record that survives after cancel later nulls the jobs-row
+    // snapshot.
+    expect(recordStockMovements).toHaveBeenCalledWith(expect.anything(), 'j1', 'prep', [
+      { sku: 'SKU-A', qtyDelta: -2, before: 10, after: 8 },
+    ]);
   });
 
   it('does NOT decrement on-hand for a TEST job, but still marks it prepped', async () => {
@@ -154,6 +165,9 @@ describe('prepareJobMaterials — Test Quote stock safety (#93)', () => {
     // Won the claim (advanced + prepped) but zero stock movement.
     expect(res).toEqual({ ok: true, alreadyDone: false, deductions: [], short: [] });
     expect(adjustOnHandAtomic).not.toHaveBeenCalled();
+    // Row 386: nothing to audit for a test job either — called with an empty
+    // list, which recordStockMovements itself no-ops on (see its own test).
+    expect(recordStockMovements).toHaveBeenCalledWith(expect.anything(), 'j1', 'prep', []);
   });
 
   it('reports alreadyDone (no deduction) when the claim is already taken', async () => {
@@ -335,5 +349,27 @@ describe('prepareJobMaterials — Row 329 claim-error distinguished from already
     currentDb = makeDb({ claimWins: false });
     const res = await prepareJobMaterials('j1');
     expect(res).toEqual({ ok: true, alreadyDone: true });
+  });
+});
+
+describe('prepareJobMaterials — re-prep after a cancel reversal (row 386)', () => {
+  // Row 386's fix (the durable stock_movements audit log) must NOT change how
+  // the cancel route reverses a prep: it still clears stock_decremented_at /
+  // stock_deductions back to null (see cancel/route.ts), which is exactly the
+  // state prepareJobMaterials's atomic claim (`.is('stock_decremented_at',
+  // null)`) is written to re-claim. makeDb's `claimWins: true` default IS that
+  // post-cancel state — this test names it explicitly so the guarantee is
+  // documented, not just incidentally covered by the baseline test above.
+  it('claims and deducts again when stock_decremented_at reads null (the exact state cancel leaves behind)', async () => {
+    currentDb = makeDb(); // claimWins: true — mirrors the DB read cancel's reversal leaves: stock_decremented_at IS NULL
+    quoteRow = { ...quoteRow, is_test: false };
+    const res = await prepareJobMaterials('j1');
+    expect(res).toEqual({
+      ok: true,
+      alreadyDone: false,
+      deductions: [{ sku: 'SKU-A', before: 10, deducted: 2, after: 8 }],
+      short: [],
+    });
+    expect(adjustOnHandAtomic).toHaveBeenCalledWith(expect.anything(), 'SKU-A', -2);
   });
 });

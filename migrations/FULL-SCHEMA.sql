@@ -2540,3 +2540,39 @@ alter table public.quotes
 
 comment on column public.quotes.ghl_event_date_pushed is
   'MM/DD/YYYY value last CONFIRMED pushed to GHL''s "Event Date" custom field (ledger #314). Stamped by every push site (send route, quote/route.ts''s date-changing update, the approve route reconcile) on a successful push. Compared against the quote''s current formatted event date to detect "our side changed since the last push" — never compared against GHL''s live value, which would silently revert a staff correction made directly in GHL. Null = legacy/never-confirmed-pushed row.';
+
+-- ---------------------------------------------------------------------
+-- stock_movements (2026-08-25, migrations/2026-08-25-stock-movements.sql,
+-- ledger row 386) — durable, append-only audit of stock taken off / put back
+-- on the shelf per job. prepareJobMaterials's jobs.stock_deductions snapshot
+-- and the cancel route's reversal of it are both CLEARED back to null the
+-- instant cancel finishes using them (so the same job can be re-prepped
+-- later) — this table is the durable record that clearing destroys, written
+-- by src/lib/inventory/stockMovements.ts's recordStockMovements, one row per
+-- SKU per prep or cancel-reversal event. Never read/updated/cleared by
+-- either caller. RLS ENABLED, ZERO POLICIES - service-role only, matching
+-- job_segments / job_assignments / shifts / crew_members.
+-- ---------------------------------------------------------------------
+create table if not exists public.stock_movements (
+  id         uuid primary key default gen_random_uuid(),
+  job_id     uuid not null references public.jobs(id) on delete cascade,
+  sku        text not null,
+
+  -- Signed: negative = taken off the shelf (prep), positive = returned
+  -- (cancel reversal) — mirrors adjustOnHandAtomic's own signed `delta`
+  -- (src/lib/inventory/onHand.ts).
+  qty_delta  integer not null,
+  before_qty integer not null,
+  after_qty  integer not null,
+
+  reason     text not null check (reason in ('prep', 'cancel_reversal')),
+  created_at timestamptz not null default now()
+);
+
+create index if not exists stock_movements_job_id_idx
+  on public.stock_movements (job_id);
+
+create index if not exists stock_movements_created_at_idx
+  on public.stock_movements (created_at desc);
+
+alter table public.stock_movements enable row level security;

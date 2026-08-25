@@ -19,6 +19,7 @@ import { releaseAccrualOnCancel } from '@/lib/referrals';
 // src/lib/inventory/jobs.ts.
 import { getJobWorkOrder, computeStockDeductions, PENDING_STOCK_SNAPSHOT } from '@/lib/inventory/jobs';
 import { adjustOnHandAtomic } from '@/lib/inventory/onHand';
+import { recordStockMovements } from '@/lib/inventory/stockMovements';
 
 export const runtime = 'nodejs';
 
@@ -41,7 +42,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Job not found' }, { status: 404 });
   }
   if (job.status === 'cancelled') {
-    return NextResponse.json({ ok: true, alreadyCancelled: true });
+    // Row 382: previously bare `{ ok: true, alreadyCancelled: true }` — a
+    // retried/double-clicked cancel told staff nothing beyond the flag itself.
+    // This route is the ONLY writer of status 'cancelled' (see setJobStatus
+    // call below), so reaching here always means an earlier request already
+    // ran this same flow to completion; say so plainly instead of silence.
+    return NextResponse.json({
+      ok: true,
+      alreadyCancelled: true,
+      note: 'This job was already cancelled — no action was taken on this request.',
+    });
   }
   if (job.status === 'done') {
     return NextResponse.json(
@@ -121,17 +131,28 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           const usingSnapshot = snapshot != null;
           const deductions = usingSnapshot ? snapshot : computeStockDeductions(wo.materials.materials);
           if (deductions.length) {
+            // Row 386: the jobs-row snapshot this reversal reads (`snapshot`)
+            // is CLEARED by the claim update above the instant it's used — by
+            // design, so the same job can be re-prepped later (its atomic
+            // claim only needs stock_decremented_at back to null). That
+            // clearing destroys the record of what cancel actually returned
+            // unless it's captured elsewhere first — durableMovements is that
+            // capture, written to stock_movements below (append-only, never
+            // touched by this or prepareJobMaterials's own nulling/claim).
+            const durableMovements: { sku: string; qtyDelta: number; before: number; after: number }[] = [];
             for (const d of deductions) {
               try {
                 // Positive delta returns exactly what prep deducted — mirrors
                 // prepareJobMaterials's negative delta (adjustOnHandAtomic in
                 // onHand.ts).
-                await adjustOnHandAtomic(stockSb, d.sku, d.deducted);
+                const { before, after } = await adjustOnHandAtomic(stockSb, d.sku, d.deducted);
                 stockReturned.push({ sku: d.sku, qty: d.deducted });
+                durableMovements.push({ sku: d.sku, qtyDelta: d.deducted, before, after });
               } catch (err) {
                 console.error(`[api/jobs/:id/cancel] stock return failed for ${d.sku}:`, err);
               }
             }
+            await recordStockMovements(stockSb, id, 'cancel_reversal', durableMovements);
           } else {
             stockReturnNote =
               'Materials were marked prepped for this job — no trackable on-hand stock to reverse automatically; check manually.';

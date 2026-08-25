@@ -13,6 +13,7 @@ import type { QuoteResult, QuoteInputs } from '@/lib/pricing/pricingEngine';
 import { getInventoryBindings, type Bindings, type ClipRules } from './bindings';
 import { listCatalog, catalogCostOverrides } from './catalog';
 import { listOnHand, adjustOnHandAtomic } from './onHand';
+import { recordStockMovements } from './stockMovements';
 import { projectMaterials, buildMaterialsView, type MaterialLine, type MaterialsView } from './materialsProjection';
 import { colorChoiceFromSnapshot } from './resolveInstalls';
 import { permanentBomFromQuote, includedPermanentSidesFromSnapshot } from '@/lib/permanent/bomFromQuote';
@@ -60,6 +61,15 @@ export type FulfillmentCard = {
   // mirroring JobAdminCard's precedence (same jobs table).
   highlevelContactId: string | null;
   customerId: string | null;
+  // Row 382: true when this job's stock_deductions is stuck at
+  // PENDING_STOCK_SNAPSHOT — prepped by current code, but the accurate
+  // follow-up snapshot write never landed (a transient failure right after
+  // prep). The job has already advanced to 'ready_for_install' by the time
+  // this can happen (the claim stamps both in the same write), which is
+  // BEFORE the prep-stages digest below — so without this flag, nothing
+  // enumerates these jobs and the state is only ever discovered by opening
+  // (or cancelling) that specific job. See PENDING_STOCK_SNAPSHOT in jobs.ts.
+  stockSnapshotPending: boolean;
 };
 
 // Pure: bucket cards into the four columns (every column present, stable order).
@@ -74,6 +84,7 @@ export function groupByStage(cards: FulfillmentCard[]): Record<FulfillmentStage,
 function toCard(
   j: JobRow,
   cust?: { name: string | null; address: string | null; isTest?: boolean; highlevelContactId?: string | null; customerId?: string | null },
+  stockSnapshotPending = false,
 ): FulfillmentCard {
   return {
     id: j.id,
@@ -89,6 +100,7 @@ function toCard(
     isTest: cust?.isTest ?? false,
     highlevelContactId: cust?.highlevelContactId ?? null,
     customerId: j.customer_id ?? cust?.customerId ?? null,
+    stockSnapshotPending,
   };
 }
 
@@ -131,7 +143,19 @@ export async function listFulfillmentCards(): Promise<FulfillmentCard[]> {
     }
   }
 
-  return jobs.map((j) => toCard(j, j.quote_id ? custById.get(j.quote_id) : undefined));
+  // Row 382: a SEPARATE targeted query for stock_deductions rather than
+  // widening the shared billing JOB_SELECT (src/lib/jobs.ts) — this column is
+  // read-only here and #82-owned, and this file already makes a second query
+  // (quotes, above) for the same reason. Only need the sentinel comparison, so
+  // this stays a single flat select scoped to the jobs already on the board.
+  const jobIds = jobs.map((j) => j.id);
+  const pendingById = new Set<string>();
+  const { data: sdRows } = await db.from('jobs').select('id, stock_deductions').in('id', jobIds);
+  for (const row of (sdRows ?? []) as { id: string; stock_deductions: unknown }[]) {
+    if (row.stock_deductions === PENDING_STOCK_SNAPSHOT) pendingById.add(row.id);
+  }
+
+  return jobs.map((j) => toCard(j, j.quote_id ? custById.get(j.quote_id) : undefined, pendingById.has(j.id)));
 }
 
 /** Set a job's fulfillment stage (the only column #82 writes). Returns ok. */
@@ -674,6 +698,19 @@ export async function prepareJobMaterials(id: string): Promise<PrepareResult | n
   } catch (err) {
     console.error(`prepareJobMaterials: stock_deductions snapshot write failed for job ${id}:`, err);
   }
+
+  // Row 386: the per-job snapshot column above is the LIVE working copy the
+  // cancel route reverses — and cancel deliberately nulls it out once it's
+  // used (so the job can be re-prepped later). Mirror it into the durable,
+  // append-only stock_movements log too, so what prep actually took off the
+  // shelf survives a later cancel even though the jobs-row snapshot doesn't.
+  // Best-effort — never blocks the return of the deduction the job DID get.
+  await recordStockMovements(
+    db,
+    id,
+    'prep',
+    actualDeductions.map((d) => ({ sku: d.sku, qtyDelta: -d.deducted, before: d.before, after: d.after })),
+  );
 
   return { ok: true, alreadyDone: false, deductions: actualDeductions, short };
 }
