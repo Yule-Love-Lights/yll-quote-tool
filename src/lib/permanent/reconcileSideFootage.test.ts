@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import {
   reconcilePermanentSideField,
@@ -465,6 +466,35 @@ describe('reconcilePermanentSideField — row 399: a second, different-address a
     });
     expect(run2.target).toBe(52); // FIXED: house B's real footage wins outright
     expect(run2.nextBaseline).toBe(52);
+  });
+});
+
+// Row 399's actual fix lives in QuoteBuilder.tsx's permanentImageryOnly seed
+// block (handleLookupAddress), not in this file — reconcilePermanentSideField
+// itself never changed for row 399 (scaleChanged is exactly what row 379
+// shipped; the two tests above prove the CALLER-side bug/fix, not a change to
+// this function). QuoteBuilder.tsx has no component-render harness (same
+// constraint documented in lightScale.test.ts and photoBrightness.test.ts's
+// "resyncs the brightness control" test, which pins editor.ts's undo()/redo()
+// the same way) — deleting the two-line ref reset there left the full suite
+// green, because nothing else exercises that call site. This test closes
+// that hole as SOURCE TEXT: it isolates the exact `if (seeded &&
+// seededSides.length > 0)` block (the only occurrence of that guard in the
+// file) up to its `setPermanentSatLines({` call, so a reset line elsewhere
+// in the file — or reworded, or reordered relative to a DIFFERENT
+// setPermanentSatLines call — cannot satisfy it.
+describe('QuoteBuilder.tsx — row 399: the permanentImageryOnly seed block actually resets the baseline+scale refs', () => {
+  it('sets prevPermSideDerivedRef and prevPermSideScaleRef back to their brand-new state before the wholesale line replace', () => {
+    const source = readFileSync(
+      new URL('../../components/quote/QuoteBuilder.tsx', import.meta.url),
+      'utf8',
+    );
+    const [seedBlock] = source.match(
+      /if \(seeded && seededSides\.length > 0\) \{[\s\S]*?setPermanentSatLines\(\{/,
+    ) ?? [''];
+    expect(seedBlock).not.toBe(''); // the guard itself must still exist
+    expect(seedBlock).toContain('prevPermSideDerivedRef.current = {};');
+    expect(seedBlock).toContain('prevPermSideScaleRef.current = undefined;');
   });
 });
 

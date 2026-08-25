@@ -3397,6 +3397,20 @@ export default function QuoteBuilder({
             // reads back as `undefined`) and the reconcile's brand-new
             // branch takes the AI's fresh values unconditionally, exactly
             // as this comment always claimed.
+            //
+            // Known tradeoff, left alone on purpose (row 399 delta-verify):
+            // a reopened quote that got a manual line edit first (so a real
+            // override is on record), then a re-analyze for a DIFFERENT
+            // address, DOES lose that standing override here — same as it
+            // always has, even same-scale, before this fix existed. Unlike
+            // the two satellite-replacement paths above (handleSatelliteSelect,
+            // applyPulledSatellite), which window.confirm before discarding
+            // anything drawn/overridden, this path has NO confirm dialog —
+            // the operator gets no warning before a re-analyze silently wipes
+            // a hand-typed number. Not introduced by row 399 (the same-scale
+            // case already clobbered silently), so left unchanged; just
+            // flagging it here so the next reader treats the silence as a
+            // known gap, not an oversight.
             permDeriveFrozenRef.current = false;
             prevPermSideDerivedRef.current = {};
             prevPermSideScaleRef.current = undefined;
