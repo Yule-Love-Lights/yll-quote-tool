@@ -481,8 +481,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid permanent.trackColor' }, { status: 400 });
     }
     // #192 — per-side track style override (optional). An unknown key is
-    // silently ignored (mirrors sideSource's leniency); a PRESENT recognized
-    // side key must carry a valid TrackStyle value.
+    // silently ignored; a PRESENT recognized side key must carry a valid
+    // TrackStyle value.
     if (pf.trackStyleBySide !== undefined) {
       if (!isObj(pf.trackStyleBySide) || Array.isArray(pf.trackStyleBySide)) {
         return NextResponse.json({ error: 'permanent.trackStyleBySide must be an object if provided' }, { status: 400 });

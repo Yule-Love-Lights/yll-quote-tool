@@ -1726,6 +1726,19 @@ export default function QuoteBuilder({
   // whole effect). See reconcileSideFootage.ts and the rehydrate-seed comment
   // in getSetter(side) below.
   const prevPermSideDerivedRef = useRef<PermanentSideFootageBaseline>({});
+  // Row 379 (S48 #921 delta-verify MED): the satellite scale that
+  // prevPermSideDerivedRef's FOOTAGE entries were actually computed under —
+  // `undefined` until first seeded/derived. Footage is scale-derived
+  // (deriveSideMeasure); corners is not. Reading this alongside a fresh
+  // derive run lets the effect below tell "this side's own geometry changed"
+  // apart from "the satellite scale changed out from under an untouched
+  // baseline" — the latter is reachable across a service-type switch (reopen
+  // permanent frozen -> switch to permanent_bistro before the first edit
+  // thaws it -> a fresh street lookup pulls a NEW scale and thaws via
+  // thawPermDerive -> switch back to permanent), and without this, a pure
+  // scale artifact looks identical to a redraw and silently reprices the
+  // side. See reconcileSideFootage.ts's `scaleChanged` for the actual guard.
+  const prevPermSideScaleRef = useRef<number | null | undefined>(undefined);
 
   // Recompute footages from the SATELLITE lines (#35: the only line-measurement
   // source — deterministic feet-per-pixel × image pixel width). When there's no
@@ -1906,15 +1919,25 @@ export default function QuoteBuilder({
   // getSetter branch below (for every side, not just the touched one), so
   // every field's baseline is seeded together. Seeds from the CURRENT
   // (pre-edit) lines/scale/aspect, same as the bistro seed.
-  const seedPermanentSideBaselineIfFrozen = () => {
+  //
+  // Row 379: `scale` defaults to the current closure's satelliteFeetPerPixel,
+  // but a caller that JUST called setSatelliteFeetPerPixel(newScale) earlier
+  // in the SAME synchronous handler (a fresh address lookup) must pass that
+  // new value explicitly — setState doesn't flush mid-handler, so the
+  // closure's satelliteFeetPerPixel is still the OLD scale at this point,
+  // and seeding under it would stamp the baseline with a scale that's
+  // already stale the instant this function returns. See the
+  // permanent_bistro fresh-lookup call site below for the reachable case.
+  const seedPermanentSideBaselineIfFrozen = (scale: number | null = satelliteFeetPerPixel) => {
     if (!permDeriveFrozenRef.current) return;
     const sides = {} as Record<PermanentSideKey, { hasLines: boolean; footage: number | null; corners: number }>;
     for (const side of PERMANENT_SIDES) {
       const lines = permanentSatLines[side];
-      const m = deriveSideMeasure(lines, satelliteFeetPerPixel, satelliteAspect);
+      const m = deriveSideMeasure(lines, scale, satelliteAspect);
       sides[side] = { hasLines: lines.length > 0, footage: m.footage, corners: m.corners };
     }
     prevPermSideDerivedRef.current = derivePermanentSideFootageBaseline(sides);
+    prevPermSideScaleRef.current = scale;
   };
 
   // Row 345 finding 2: permDeriveFrozenRef is shared by THREE independent
@@ -1945,8 +1968,12 @@ export default function QuoteBuilder({
   // delete-transition resets each field to 0 — which is exactly what the
   // confirm dialog promised. Seeding there would be wrong, not merely
   // redundant; see the fresh-analyze site's own comment for the full case.
-  const thawPermDerive = () => {
-    seedPermanentSideBaselineIfFrozen();
+  // Row 379: `scale` (when passed) forwards straight to
+  // seedPermanentSideBaselineIfFrozen — see that function's own comment for
+  // why the permanent_bistro fresh-lookup call site below must pass one
+  // explicitly instead of relying on the default.
+  const thawPermDerive = (scale?: number | null) => {
+    seedPermanentSideBaselineIfFrozen(scale);
     permDeriveFrozenRef.current = false;
   };
 
@@ -2064,6 +2091,14 @@ export default function QuoteBuilder({
     if (permDeriveFrozenRef.current) return; // #142: rehydrated, untouched — saved values win
     const baseline = prevPermSideDerivedRef.current;
     const hasScale = satelliteFeetPerPixel != null;
+    // Row 379: baseline's footage entries were computed under
+    // prevPermSideScaleRef.current — if that's not undefined (something has
+    // been seeded/derived before) and it disagrees with the scale in effect
+    // THIS run, any freshValue/baseline mismatch below is a scale artifact,
+    // not proof this side was redrawn. See reconcileSideFootage.ts's
+    // `scaleChanged` doc for what the guard actually does with this.
+    const scaleChanged =
+      prevPermSideScaleRef.current !== undefined && prevPermSideScaleRef.current !== satelliteFeetPerPixel;
     const p = form.permanent;
 
     const front = deriveSideMeasure(permanentSatLines.front, satelliteFeetPerPixel, satelliteAspect);
@@ -2089,13 +2124,13 @@ export default function QuoteBuilder({
     // its side has lines. See reconcileSideFootage.ts's header comment for
     // why folding these into one flag (the pre-fix design) made a
     // no-scale delete-transition unreachable.
-    const frontFootage = reconcilePermanentSideField({ active: true, canDerive: hasScale, hasLines: hasFront, hadLinesPrev: hadFrontPrev, freshValue: front.footage ?? 0, currentBilled: p.frontFootage, baseline: baseline.frontFootage });
+    const frontFootage = reconcilePermanentSideField({ active: true, canDerive: hasScale, hasLines: hasFront, hadLinesPrev: hadFrontPrev, freshValue: front.footage ?? 0, currentBilled: p.frontFootage, baseline: baseline.frontFootage, scaleChanged });
     const frontCorners = reconcilePermanentSideField({ active: true, canDerive: true, hasLines: hasFront, hadLinesPrev: hadFrontPrev, freshValue: front.corners, currentBilled: p.frontCorners, baseline: baseline.frontCorners });
-    const leftFootage = reconcilePermanentSideField({ active: true, canDerive: hasScale, hasLines: hasLeft, hadLinesPrev: hadLeftPrev, freshValue: left.footage ?? 0, currentBilled: p.leftFootage, baseline: baseline.leftFootage });
+    const leftFootage = reconcilePermanentSideField({ active: true, canDerive: hasScale, hasLines: hasLeft, hadLinesPrev: hadLeftPrev, freshValue: left.footage ?? 0, currentBilled: p.leftFootage, baseline: baseline.leftFootage, scaleChanged });
     const leftCorners = reconcilePermanentSideField({ active: true, canDerive: true, hasLines: hasLeft, hadLinesPrev: hadLeftPrev, freshValue: left.corners, currentBilled: p.leftCorners, baseline: baseline.leftCorners });
-    const rightFootage = reconcilePermanentSideField({ active: true, canDerive: hasScale, hasLines: hasRight, hadLinesPrev: hadRightPrev, freshValue: right.footage ?? 0, currentBilled: p.rightFootage, baseline: baseline.rightFootage });
+    const rightFootage = reconcilePermanentSideField({ active: true, canDerive: hasScale, hasLines: hasRight, hadLinesPrev: hadRightPrev, freshValue: right.footage ?? 0, currentBilled: p.rightFootage, baseline: baseline.rightFootage, scaleChanged });
     const rightCorners = reconcilePermanentSideField({ active: true, canDerive: true, hasLines: hasRight, hadLinesPrev: hadRightPrev, freshValue: right.corners, currentBilled: p.rightCorners, baseline: baseline.rightCorners });
-    const backFootage = reconcilePermanentSideField({ active: true, canDerive: hasScale, hasLines: hasBack, hadLinesPrev: hadBackPrev, freshValue: back.footage ?? 0, currentBilled: p.backFootage, baseline: baseline.backFootage });
+    const backFootage = reconcilePermanentSideField({ active: true, canDerive: hasScale, hasLines: hasBack, hadLinesPrev: hadBackPrev, freshValue: back.footage ?? 0, currentBilled: p.backFootage, baseline: baseline.backFootage, scaleChanged });
     const backCorners = reconcilePermanentSideField({ active: true, canDerive: true, hasLines: hasBack, hadLinesPrev: hadBackPrev, freshValue: back.corners, currentBilled: p.backCorners, baseline: baseline.backCorners });
 
     // MERGE into the previous baseline (row 333 finding 1 precedent) — but
@@ -2119,6 +2154,13 @@ export default function QuoteBuilder({
       frontFootage, frontCorners, leftFootage, leftCorners, rightFootage, rightCorners, backFootage, backCorners,
     };
     prevPermSideDerivedRef.current = mergePermanentSideFootageBaseline(baseline, activeByField, resultsByField);
+    // Row 379: record the scale THIS run's footage entries are now
+    // consistent with, but only when a real scale actually drove them
+    // (hasScale) — when it's false every footage field just echoed its prior
+    // value through unchanged (the canDerive: false branch), so the scale
+    // that value is still denominated in hasn't changed and this ref must
+    // not be overwritten with the current (no-scale) null.
+    if (hasScale) prevPermSideScaleRef.current = satelliteFeetPerPixel;
 
     const anyTarget = Object.values(resultsByField).some((r) => r.target != null);
     if (!anyTarget) return;
@@ -3218,7 +3260,14 @@ export default function QuoteBuilder({
             // Row 345 finding 2: thaw via the shared helper (seeds the
             // permanent-SIDE baseline too) rather than clearing the ref
             // directly — see thawPermDerive's own comment.
-            thawPermDerive();
+            //
+            // Row 379: pass the scale EXPLICITLY. setSatelliteFeetPerPixel
+            // (the new scale, above) already fired this render — the
+            // closure's satelliteFeetPerPixel is still the OLD value until
+            // React flushes, so seeding off the default would stamp the
+            // permanent-side baseline with a scale that's already stale,
+            // reachable straight through this exact switch-to-bistro path.
+            thawPermDerive(data.satelliteFeetPerPixel ?? null);
             hadBistroLinesRef.current = satelliteBistroLines.length > 0;
             setSatelliteBistroLines([]);
           } else {

@@ -491,7 +491,7 @@ describe('POST /api/quote — permanent block validation (#88 P4b)', () => {
     expect(save).not.toHaveBeenCalled();
   });
 
-  it('accepts a well-formed trackStyleBySide, ignoring an unknown key (mirrors sideSource leniency)', async () => {
+  it('accepts a well-formed trackStyleBySide, ignoring an unknown key', async () => {
     const inputs = permInputs(120);
     inputs.permanent = {
       ...(inputs.permanent as Record<string, unknown>),

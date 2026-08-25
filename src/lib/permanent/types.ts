@@ -105,14 +105,6 @@ export type PermanentQuoteFields = {
   sidesCustomRate?: number;
   backCustomRate?: number;
   /**
-   * Per-side provenance for footage/corners (#88). 'auto' = last written by a
-   * design Refresh, 'manual' = the operator typed it. "Refresh from design"
-   * overwrites 'auto' sides (INCLUDING clearing a side whose design run was
-   * deleted, so a stale run can't keep billing) but preserves 'manual'
-   * (satellite-measured) sides. Absent/legacy reads as 'manual'.
-   */
-  sideSource?: Partial<Record<'front' | 'left' | 'right' | 'back', 'auto' | 'manual'>>;
-  /**
    * Staff "advised for this home" flags per side (#131 — the WW/Stake #12
    * pattern: rides the inputs, saves on Calculate). The portal opens with the
    * recommended sides pre-selected instead of the Whole Home default.
@@ -249,7 +241,6 @@ export function makeDefaultPermanentFields(): PermanentQuoteFields {
     trackColor: '9003',
     blackHousing: false,
     maintenanceAddOn: false,
-    sideSource: {},
     trackStyleBySide: {},
   };
 }

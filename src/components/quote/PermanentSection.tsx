@@ -7,19 +7,6 @@ const lbl = 'block text-xs font-medium text-gray-500 uppercase tracking-wide mb-
 const inp = 'w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500';
 const sel = 'w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500';
 
-// Which house side each footage/corner field belongs to — editing one marks that
-// side 'manual' (a hand-typed override of the satellite-measured number).
-const SIDE_OF_FIELD: Partial<Record<keyof PermanentQuoteFields, 'front' | 'left' | 'right' | 'back'>> = {
-  frontFootage: 'front',
-  frontCorners: 'front',
-  leftFootage: 'left',
-  leftCorners: 'left',
-  rightFootage: 'right',
-  rightCorners: 'right',
-  backFootage: 'back',
-  backCorners: 'back',
-};
-
 // Mirrors the holiday builder's Section card (QuoteBuilder.tsx) so the permanent
 // sections read as the same surface — white card, uppercase header, divider.
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -72,17 +59,12 @@ export default function PermanentSection({ form, setForm, onRecount, tracedSides
     tracedReady === true && footage > 0 && tracedSides?.[side] === false;
 
   const setP = <K extends keyof PermanentQuoteFields>(k: K, v: PermanentQuoteFields[K]) =>
-    setForm((f) => {
-      const side = SIDE_OF_FIELD[k];
-      const permanent = { ...f.permanent, [k]: v };
-      if (side) permanent.sideSource = { ...(f.permanent.sideSource ?? {}), [side]: 'manual' };
-      return { ...f, permanent };
-    });
+    setForm((f) => ({ ...f, permanent: { ...f.permanent, [k]: v } }));
 
   // #192 — per-side track style. footageOfSide gates which style rows show
   // (only sides with billed footage). The setter spreads trackStyleBySide and
-  // deliberately does NOT go through setP — track style isn't footage/corners
-  // provenance, so it must never touch sideSource.
+  // deliberately does NOT go through setP — it's a separate concern from the
+  // footage/corners fields setP writes.
   const footageOfSide: Record<PermanentSide, number> = {
     front: p.frontFootage,
     left: p.leftFootage,
@@ -102,7 +84,7 @@ export default function PermanentSection({ form, setForm, onRecount, tracedSides
   // UP to the next multiple of 5 when the operator leaves the field (22 → 25;
   // exact multiples stay put). On-blur, not per keystroke, so typing "22" isn't
   // fought mid-entry. No-ops when already rounded, so merely focusing a
-  // satellite-measured field never flips its sideSource to 'manual'.
+  // field doesn't trigger a spurious form update.
   const roundFootageOnBlur =
     (k: 'frontFootage' | 'leftFootage' | 'rightFootage' | 'backFootage') => () => {
       const r = roundFootageUpTo5(p[k]);

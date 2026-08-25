@@ -290,6 +290,107 @@ describe('row 345 finding 1: the no-scale delete-transition (footage and corners
   });
 });
 
+// Row 379 (S48 #921 delta-verify MED): a baseline can be paired with a scale
+// it was not derived under, reachable across a service-type switch (reopen a
+// permanent quote frozen -> switch to permanent_bistro before the first edit
+// thaws it -> a fresh street lookup pulls a new scale and thaws -> switch
+// back to permanent). Without `scaleChanged`, a mere scale difference makes
+// freshValue !== baseline look exactly like a real redraw and silently
+// stamps the new-scale value over a standing override.
+describe('reconcilePermanentSideField — scaleChanged (row 379: baseline captured under a different scale)', () => {
+  it('does NOT clobber a standing override when the mismatch is purely a scale artifact', () => {
+    // Same lines as when the baseline was seeded (40ft under the old scale),
+    // but the new scale re-derives them to 46ft — a pure scale artifact, not
+    // a redraw. Staff has an override on record (55ft).
+    const result = reconcilePermanentSideField({
+      active: true,
+      canDerive: true,
+      hasLines: true,
+      hadLinesPrev: true,
+      freshValue: 46, // re-derived under the NEW scale
+      currentBilled: 55, // staff's override, untouched by the scale change
+      baseline: 40, // captured under the OLD scale
+      scaleChanged: true,
+    });
+    expect(result.target).toBeNull(); // override survives — no stamp
+    expect(result.nextBaseline).toBe(46); // baseline resyncs to the new scale
+  });
+
+  it('also does not clobber an un-overridden (derived-only) billed value on a scale mismatch', () => {
+    const result = reconcilePermanentSideField({
+      active: true,
+      canDerive: true,
+      hasLines: true,
+      hadLinesPrev: true,
+      freshValue: 46,
+      currentBilled: 40, // matches the OLD baseline exactly (no override)
+      baseline: 40,
+      scaleChanged: true,
+    });
+    expect(result.target).toBeNull(); // still no stamp — the scale artifact isn't a redraw
+    expect(result.nextBaseline).toBe(46);
+  });
+
+  it('WITHOUT scaleChanged (the pre-379 behavior), the same scale artifact silently clobbers the override', () => {
+    const result = reconcilePermanentSideField({
+      active: true,
+      canDerive: true,
+      hasLines: true,
+      hadLinesPrev: true,
+      freshValue: 46,
+      currentBilled: 55,
+      baseline: 40,
+      // scaleChanged omitted — defaults to false
+    });
+    expect(result.target).toBe(46); // BUG (pre-fix shape): the override is stamped over
+  });
+
+  it('with no prior baseline, scaleChanged is moot — falls through to the brand-new auto-populate branch', () => {
+    const result = reconcilePermanentSideField({
+      active: true,
+      canDerive: true,
+      hasLines: true,
+      hadLinesPrev: false,
+      freshValue: 46,
+      currentBilled: 0,
+      baseline: undefined,
+      scaleChanged: true,
+    });
+    expect(result).toEqual({ target: 46, nextBaseline: 46 });
+  });
+
+  it('a real redraw (scaleChanged false) still wins normally — the guard does not mask genuine geometry changes', () => {
+    const result = reconcilePermanentSideField({
+      active: true,
+      canDerive: true,
+      hasLines: true,
+      hadLinesPrev: true,
+      freshValue: 65,
+      currentBilled: 55,
+      baseline: 40,
+      scaleChanged: false,
+    });
+    expect(result).toEqual({ target: 65, nextBaseline: 65 });
+  });
+
+  it('a genuine second scale change (two mismatches before the operator ever redraws) still keeps resyncing safely, never clobbering', () => {
+    // Simulates row 379's own named residual: a second scale/geometry change
+    // before switching back to permanent. Even chained, scaleChanged never
+    // lets a scale-only difference touch the billed value.
+    const run1 = reconcilePermanentSideField({
+      active: true, canDerive: true, hasLines: true, hadLinesPrev: true,
+      freshValue: 46, currentBilled: 55, baseline: 40, scaleChanged: true,
+    });
+    const run2 = reconcilePermanentSideField({
+      active: true, canDerive: true, hasLines: true, hadLinesPrev: true,
+      freshValue: 52, currentBilled: 55, baseline: run1.nextBaseline, scaleChanged: true,
+    });
+    expect(run1.target).toBeNull();
+    expect(run2.target).toBeNull();
+    expect(run2.nextBaseline).toBe(52);
+  });
+});
+
 describe('reconcilePermanentSideField — corners reconciles independently of footage', () => {
   it('preserves a hand-typed corners override while footage on the SAME side follows its own redraw', () => {
     // Corners unchanged (still 3, matching baseline) but staff corrected
