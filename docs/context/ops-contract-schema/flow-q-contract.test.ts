@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -27,7 +28,14 @@ type OpenApiDocument = {
 };
 
 async function readJson(name: string) {
-  return JSON.parse(await readFile(new URL(name, `file://${schemaDirectory}`).pathname, 'utf8')) as OpenApiDocument;
+  // `file://${schemaDirectory}` only works where an absolute path starts with
+  // "/". On Windows schemaDirectory is `C:\Users\...`, so the template
+  // produced `file://C:\Users\...` and `.pathname` came back as
+  // `/C:/Users/...`, which readFile resolved against the drive root as
+  // `C:\C:\Users\...` — ENOENT. CI runs on Linux, so the whole suite stayed
+  // green there while every Windows checkout (both devs') had three red tests.
+  // schemaDirectory is already a real filesystem path; just join to it.
+  return JSON.parse(await readFile(join(schemaDirectory, name), 'utf8')) as OpenApiDocument;
 }
 
 function quoteLifecyclePayload(openApi: Awaited<ReturnType<typeof readJson>>) {
