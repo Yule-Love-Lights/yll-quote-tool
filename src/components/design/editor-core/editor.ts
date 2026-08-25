@@ -38,6 +38,7 @@ import { isLineDrawContext } from "./drawContext";
 import { surfaceOptionsForBulbType } from "./surfaceOptions";
 import { sideOfHouseOptions } from "./sideOfHouseOptions";
 import { brightnessForPhoto, setBrightnessForPhoto, removeBrightnessForPhoto } from "@/lib/design/photoBrightness";
+import { shouldAdoptPrunedVersion } from "./designVersion";
 import { seedGroupStringCount } from "./miniGroupBilling";
 
 // Default real-world width for newly-placed custom uploads — about 3 feet,
@@ -1833,17 +1834,24 @@ export async function renderEditor(
   // matches server truth, so a later teardown flush is harmless.
   function removePhotoItems(photoId: string, serverVersion?: number | null) {
     // Row 371 (staff lens HIGH): adopt the version the server's own prune just
-    // wrote, BEFORE the no-op early-return below. `design.version` is otherwise
-    // only ever refreshed from this editor's own save response (runSave), so a
-    // server-side prune left this still-mounted editor one version behind and
-    // the next save — of a completely unrelated edit, on a surviving photo —
-    // lost the CAS and hit the "Save blocked — reload" banner, discarding that
-    // edit. Adopting a version that is merely OLD is safe: it can only lose the
-    // CAS again, which is the correct outcome for a genuine outside write.
-    // Ordered first on purpose: a deleted photo carrying NO drawn items still
-    // bumps the version (its brightness entry is pruned), and that is exactly
-    // the case the early-return below skips.
-    if (typeof serverVersion === 'number') design.version = serverVersion;
+    // wrote, so this still-mounted editor is not left a version behind — that
+    // used to fail its next save (of a completely unrelated edit, on a
+    // surviving photo) and hit the "Save blocked — reload" banner, discarding
+    // it. `design.version` is otherwise only ever refreshed from this editor's
+    // own save response, in runSave.
+    //
+    // Guarded, per the final pre-merge verify's HIGH: adopt ONLY a version one
+    // ahead of what we hold. A bigger jump means another operator's write sits
+    // between, and that version represents content this client has never read —
+    // adopting it would let the next save pass the CAS and silently overwrite
+    // their work. See shouldAdoptPrunedVersion for the full reasoning.
+    //
+    // Ordered before the no-op early-return below on purpose: a deleted photo
+    // carrying NO drawn items still bumps the version (its brightness entry is
+    // pruned), and that is exactly the case the early return skips.
+    if (shouldAdoptPrunedVersion(design.version, serverVersion)) {
+      design.version = serverVersion as number;
+    }
 
     // Row 371 fix round (delta-verify MED): prune the deleted photo's
     // brightness override from the RESIDENT scene too. This is not cosmetic

@@ -30,9 +30,9 @@ describe('photo-delete version adoption is actually wired (row 371)', () => {
     );
   });
 
-  it('adopts it in the editor BEFORE the no-items early return', () => {
+  it('adopts it in the editor BEFORE the no-items early return, through the guard', () => {
     const fn = editorCore.slice(editorCore.indexOf('function removePhotoItems('));
-    const adopt = fn.indexOf("design.version = serverVersion");
+    const adopt = fn.indexOf('shouldAdoptPrunedVersion(design.version, serverVersion)');
     const earlyReturn = fn.indexOf('return; // nothing on this photo at all');
     expect(adopt).toBeGreaterThan(-1);
     expect(earlyReturn).toBeGreaterThan(-1);
