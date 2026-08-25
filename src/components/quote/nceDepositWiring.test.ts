@@ -34,8 +34,36 @@ describe('the NCE deposit rules are actually wired (row 328)', () => {
   // Every path that changes which contact the quote points at, or that acts on
   // the deposit deliberately, must retire a standing notice — a lens found two
   // of these missing, one per round.
-  it('clears the held-back notice on every path that answers or invalidates it', () => {
-    const clears = builder.split('setNceDepositHeldBack(null)').length - 1;
-    expect(clears).toBeGreaterThanOrEqual(4); // pick, clear-contact, deposit edit, deliberate chip move
+  //
+  // Asserted SITE BY SITE, not by counting. A delta-verify ran the obvious
+  // attack on the count version: delete the real clear in the contact pick, add
+  // a spurious one in an unrelated handler, and the total stays at four with
+  // every test green while the stale-notice bug ships. designEditorWiring.test
+  // .ts warns about exactly this shape; round 2 cited that precedent without
+  // applying it, which is how the hole got here.
+  const clearsIn = (fnName: string, marker: string) => {
+    const start = builder.indexOf(fnName);
+    expect(start).toBeGreaterThan(-1);
+    const end = builder.indexOf(marker, start);
+    expect(end).toBeGreaterThan(start);
+    return builder.slice(start, end).includes('setNceDepositHeldBack(null)');
+  };
+
+  it('clears it when a new contact pick supersedes the old one', () => {
+    // Between the pick handler's start and the tag-lookup fetch it fires.
+    expect(clearsIn('const pickHighLevelContact = (c: CrmContact) => {', 'const tagLookupSeq')).toBe(true);
+  });
+
+  it('clears it when the contact is unlinked entirely', () => {
+    expect(clearsIn('const clearHighLevelContact = () => {', 'attachSeqRef.current++')).toBe(true);
+  });
+
+  it('clears it when the staffer edits the deposit themselves', () => {
+    // The deposit input's own onChange, which already clears rule provenance.
+    expect(clearsIn('nceDepositSetByRuleRef.current = false;', "set('depositPercent'")).toBe(true);
+  });
+
+  it('clears it when a deliberate chip move actually changes the deposit', () => {
+    expect(clearsIn('const applyIsNce = (next: boolean', 'const wasRuleSet')).toBe(true);
   });
 });
