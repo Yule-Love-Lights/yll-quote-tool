@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  mayReChaseHandled,
+  mayReChaseHandled, reChaseAnchor,
   RECHASE_QUIET_DAYS, isDueToday, dueFollowUps, quoteSentNoReplyFollowUp, FOLLOWUP_REASONS, DEFAULT_FOLLOW_UP_DAYS } from './followups';
 
 describe('isDueToday — evaluated in America/New_York', () => {
@@ -111,5 +111,28 @@ describe('mayReChaseHandled', () => {
   it('honours an explicit quietDays override', () => {
     expect(mayReChaseHandled({ lastNudgeAt: at(3), handledAt: null, now, quietDays: 2 })).toBe(true);
     expect(mayReChaseHandled({ lastNudgeAt: at(3), handledAt: null, now, quietDays: 30 })).toBe(false);
+  });
+});
+
+// Row 390: reChaseAnchor is mayReChaseHandled's own anchor computation,
+// pulled out so ensureFollowUp (store.ts) can persist the EXACT same value it
+// used to decide re-chase eligibility (follow_ups.re_chase_since) instead of
+// a second, potentially-drifting derivation. Every case here mirrors one of
+// mayReChaseHandled's own anchor-choice tests above, on the same inputs.
+describe('reChaseAnchor', () => {
+  const at = (isoDaysAgo: number) => new Date(Date.now() - isoDaysAgo * 86_400_000);
+
+  it('prefers the nudge time over handled_at when both are present', () => {
+    const lastNudgeAt = at(8);
+    expect(reChaseAnchor({ lastNudgeAt, handledAt: at(365) })).toBe(lastNudgeAt);
+  });
+
+  it('falls back to handled_at when there is no nudge to anchor on', () => {
+    const handledAt = at(9);
+    expect(reChaseAnchor({ lastNudgeAt: null, handledAt })).toBe(handledAt);
+  });
+
+  it('returns null when neither anchor exists', () => {
+    expect(reChaseAnchor({ lastNudgeAt: null, handledAt: null })).toBeNull();
   });
 });

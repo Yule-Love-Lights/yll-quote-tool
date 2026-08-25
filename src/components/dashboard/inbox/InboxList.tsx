@@ -401,6 +401,19 @@ export function errorNoteFor(unreachableAction: string | undefined, rejectionErr
   return rejectionError || 'Something went wrong — try again.';
 }
 
+/** Row 392: a 409 is act()'s signal that a write's own compare-and-swap guard
+ *  refused it — the row's status genuinely moved out from under the
+ *  optimistic removal (e.g. dismiss/route.ts: "refused means the CAS matched
+ *  zero rows"), not a transient backend failure. Only this case needs act()
+ *  to restore + refusedIds the row instead of letting refresh() silently drop
+ *  it: on any OTHER failure (503, a throw) the item's server-side state is
+ *  unchanged, so the existing refresh()/restore paths already bring it back
+ *  correctly. Pure and exported, mirroring this file's other small named
+ *  gates (retiresFollowUp above). */
+export function isRefusalStatus(status: number): boolean {
+  return status === 409;
+}
+
 /** Fix round 3 (MED — this file was the THIRD, unaudited ReplyComposer
  *  consumer left on the old flatten-everything-into-remove `onComposerSent`;
  *  InWorksSection.tsx and the reply route were fixed in earlier rounds, this
@@ -902,6 +915,14 @@ export function InboxList({
     setErrorIds((prev) => withRowFlagCleared(prev, id));
     setUnreachableActions((prev) => omitKey(prev, id));
     setRejectionErrors((prev) => omitKey(prev, id));
+    // Row 392: clear a stale refusedIds flag from an EARLIER attempt on this
+    // same row before this new attempt runs — otherwise a retry that later
+    // fails for an unrelated reason (a real 503, item unchanged, refresh()
+    // legitimately brings the row back) would inherit the old refusal's
+    // shouldRemove=true and dismissError would wrongly delete a row that was
+    // never actually refused this time. Only THIS attempt's own outcome
+    // (below) sets it again.
+    setRefusedIds((prev) => withRowFlagCleared(prev, id));
     const removedItem = items.find((i) => i.id === id);
     setItems((prev) => prev.filter((i) => i.id !== id)); // optimistic removal
     try {
@@ -917,7 +938,30 @@ export function InboxList({
         // Row 311 fix-round FIX 3: surface the route's own error text (e.g.
         // "Already marked followed") instead of only the generic fallback.
         setRejectionErrors((prev) => (data?.error ? { ...prev, [id]: data.error } : omitKey(prev, id)));
-        await refresh();
+        if (isRefusalStatus(res.status)) {
+          // Row 392: a 409 means the write's own CAS guard refused it — real
+          // evidence this row already left its expected status server-side
+          // (see dismiss/route.ts's own doc comment), not a backend failure.
+          // Left alone, refresh() below would silently drop this row from
+          // `items` (the server's fresh "needs_reply" bucket no longer
+          // contains it) — orphaning the errorIds/rejectionErrors note we
+          // just set, since ItemRow only renders for ids present in `items`.
+          // The operator would then see the row simply vanish, indistinguishable
+          // from the action having SUCCEEDED, and for Dismiss specifically
+          // could wrongly conclude the sender is now suppressed when the CAS
+          // guard means addSuppressedSenders never ran.
+          //
+          // Mirrors onComposerSent's existing 'refused' handling EXACTLY
+          // (same file, below): restore the row and mark refusedIds so it
+          // stays visible with its note until the operator dismisses it —
+          // dismissError's shouldRemove branch (below) already does the
+          // deferred removal, unchanged. No refresh() here, same as that
+          // precedent — the rest of the list can catch up on the next poll.
+          setRefusedIds((prev) => withRowFlagSet(prev, id));
+          setItems((prev) => withItemRestored(prev, id, removedItem));
+        } else {
+          await refresh();
+        }
       } else if (retiresFollowUp(path)) {
         // Row 309: this row's own optimistic removal above already keeps
         // THIS list correct — router.refresh() exists purely to reach the
