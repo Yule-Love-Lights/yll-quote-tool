@@ -391,6 +391,83 @@ describe('reconcilePermanentSideField — scaleChanged (row 379: baseline captur
   });
 });
 
+// Row 399 (lens review on #938, escalated MED-dormant -> HIGH-live): the
+// scaleChanged guard row 379 added made a REAL two-address re-analyze
+// indistinguishable from a pure scale artifact, because nothing at
+// QuoteBuilder.tsx's permanentImageryOnly seed site ever reset
+// prevPermSideDerivedRef/prevPermSideScaleRef before the wholesale line
+// replace — so a SECOND "Analyze from Address" for a DIFFERENT address (an
+// ordinary typo-correction workflow; the button is never disabled after a
+// first success) inherited the FIRST address's baseline+scale. Composes
+// reconcilePermanentSideField exactly as QuoteBuilder.tsx's derive effect
+// does across two consecutive analyze runs, using the SAME scaleChanged
+// formula the effect computes at ~line 2101, so this pins the caller-side
+// bug/fix, not just the reconcile function in isolation.
+function computeScaleChanged(prevScale: number | null | undefined, currentScale: number | null): boolean {
+  return prevScale !== undefined && prevScale !== currentScale;
+}
+
+describe('reconcilePermanentSideField — row 399: a second, different-address analyze', () => {
+  it('BUG (the un-reset refs QuoteBuilder.tsx shipped before row 399): house B\'s real footage is silently suppressed and house A\'s wrong number sticks', () => {
+    // Run 1: brand-new permanent quote, "Analyze from Address" for address A
+    // (a typo — wrong house). No prior baseline/scale.
+    const scaleA = 0.5; // ft/px at address A's latitude
+    const run1 = reconcilePermanentSideField({
+      active: true, canDerive: true, hasLines: true, hadLinesPrev: false,
+      freshValue: 30, currentBilled: 0, baseline: undefined,
+      scaleChanged: computeScaleChanged(undefined, scaleA),
+    });
+    expect(run1.target).toBe(30); // brand-new -> applied
+    // Mirrors QuoteBuilder.tsx's real post-run bookkeeping — WITHOUT the
+    // row-399 reset, nothing else touches these refs before the next analyze.
+    const prevBaseline = run1.nextBaseline;
+    const prevScale = scaleA;
+
+    // Operator notices the typo, corrects the address, and re-runs "Analyze
+    // from Address" for the REAL house (address B) — a completely different
+    // latitude, so a different satellite scale, and a genuinely different
+    // 52ft front (not a rescale of the same geometry).
+    const scaleB = 0.5137;
+    const run2 = reconcilePermanentSideField({
+      active: true, canDerive: true, hasLines: true, hadLinesPrev: true,
+      freshValue: 52, currentBilled: run1.target ?? 0, baseline: prevBaseline,
+      scaleChanged: computeScaleChanged(prevScale, scaleB),
+    });
+    expect(run2.target).toBeNull(); // BUG: house B's real 52ft is suppressed
+    expect(run2.nextBaseline).toBe(52); // and the baseline silently resyncs — the guard can never fire again
+    // The billed value stays at house A's WRONG 30ft, permanently and silently.
+  });
+
+  it('FIXED (row 399): resetting prevPermSideDerivedRef/prevPermSideScaleRef before the second analyze lets house B\'s real footage win outright', () => {
+    let prevBaseline: number | undefined;
+    let prevScale: number | null | undefined;
+    const scaleA = 0.5;
+    const run1 = reconcilePermanentSideField({
+      active: true, canDerive: true, hasLines: true, hadLinesPrev: false,
+      freshValue: 30, currentBilled: 0, baseline: prevBaseline,
+      scaleChanged: computeScaleChanged(prevScale, scaleA),
+    });
+    prevBaseline = run1.nextBaseline;
+    prevScale = scaleA;
+
+    // Row 399 fix: QuoteBuilder.tsx's permanentImageryOnly seed site now
+    // resets BOTH refs to their brand-new (unseeded) state in the same
+    // breath as the wholesale setPermanentSatLines replace, before the
+    // second analyze's derive effect ever runs.
+    prevBaseline = undefined; // prevPermSideDerivedRef.current = {}
+    prevScale = undefined; // prevPermSideScaleRef.current = undefined
+
+    const scaleB = 0.5137;
+    const run2 = reconcilePermanentSideField({
+      active: true, canDerive: true, hasLines: true, hadLinesPrev: true,
+      freshValue: 52, currentBilled: run1.target ?? 0, baseline: prevBaseline,
+      scaleChanged: computeScaleChanged(prevScale, scaleB),
+    });
+    expect(run2.target).toBe(52); // FIXED: house B's real footage wins outright
+    expect(run2.nextBaseline).toBe(52);
+  });
+});
+
 describe('reconcilePermanentSideField — corners reconciles independently of footage', () => {
   it('preserves a hand-typed corners override while footage on the SAME side follows its own redraw', () => {
     // Corners unchanged (still 3, matching baseline) but staff corrected

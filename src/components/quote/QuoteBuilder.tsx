@@ -1959,15 +1959,23 @@ export default function QuoteBuilder({
   //
   // ONE class of exception, three sites (verified by grep at the 2026-08-24
   // master re-sync, after #849/#866/#871/#874 added two more): a thaw that
-  // WIPES all four sides' lines wholesale in the same breath — the fresh
+  // REPLACES all four sides' lines wholesale in the same breath — the fresh
   // analyze below, and the two satellite-replacement paths (manual upload,
   // address re-pull, both of which warn the operator that traced footage will
-  // reset). Those stay PLAIN thaws on purpose. There is no override worth
-  // preserving across a wipe the operator just confirmed, and the next derive
-  // run sees hasLines=false with hadLinesPrev=true, so the reconcile's own
-  // delete-transition resets each field to 0 — which is exactly what the
-  // confirm dialog promised. Seeding there would be wrong, not merely
-  // redundant; see the fresh-analyze site's own comment for the full case.
+  // reset). Those stay PLAIN thaws on purpose, but by TWO DIFFERENT safety
+  // mechanisms, not one — row 399 shipped from conflating them:
+  //   - The two satellite-replacement paths wipe every side to `[]` FIRST.
+  //     The next derive run sees hasLines=false with hadLinesPrev=true, so
+  //     the reconcile's own delete-transition resets each field to 0 before
+  //     canDerive/scaleChanged are ever consulted — safe regardless of any
+  //     scale change alongside it.
+  //   - The fresh-analyze site does NOT wipe first — it replaces with the
+  //     AI's fresh (usually non-empty) trace directly, so hasLines is often
+  //     TRUE on the very next run. That path is safe only because it ALSO
+  //     resets prevPermSideDerivedRef/prevPermSideScaleRef to their
+  //     brand-new (unseeded) state in the same breath (row 399 fix) — see
+  //     that site's own comment for why seeding there would be wrong, not
+  //     merely unnecessary.
   // Row 379: `scale` (when passed) forwards straight to
   // seedPermanentSideBaselineIfFrozen — see that function's own comment for
   // why the permanent_bistro fresh-lookup call site below must pass one
@@ -3357,21 +3365,41 @@ export default function QuoteBuilder({
             // preserve the current lines (a manual edit touches one side,
             // Recount re-derives from what's already drawn); this one
             // REPLACES all four sides wholesale with a fresh AI re-trace two
-            // lines below — the same wipe-then-thaw shape as the two
-            // satellite-replacement paths above, which is exactly the
-            // "geometry changed" case the reconcile is supposed to let win
-            // outright. Seeding from the pre-replace (old/frozen) lines
-            // would only matter in the rare coincidence where the AI
+            // lines below — exactly the "geometry changed" case the
+            // reconcile is supposed to let win outright, even over a
+            // standing override. Seeding from the pre-replace (old/frozen)
+            // lines would only matter in the rare coincidence where the AI
             // re-derives a side to the exact same footage/corners as
             // before — and in that one case seeding would make a stale
             // hand-typed override survive a fresh re-analysis the operator
             // explicitly asked for, which is the opposite of "drive
-            // footage/counts immediately" above. Leaving the baseline
-            // un-seeded here means every side starts this run with no
-            // recorded baseline, so the reconcile's "brand-new" branch
-            // takes the AI's fresh values unconditionally — the correct
-            // behavior for a full re-analyze.
+            // footage/counts immediately" above.
+            //
+            // Row 399 (was a live money bug, not a documentation exercise):
+            // this comment used to ASSERT that leaving the baseline
+            // un-seeded was enough to make every side "start this run with
+            // no recorded baseline" — false. Nothing here reset
+            // prevPermSideDerivedRef/prevPermSideScaleRef, so a SECOND
+            // analyze in the same session (e.g. the operator corrects a
+            // typo'd address and re-runs) inherited the FIRST analyze's
+            // baseline + scale. Since almost any two different addresses
+            // geocode to two different latitudes, satelliteFeetPerPixel
+            // (set above) differs -> scaleChanged computes true against
+            // that stale baseline -> reconcilePermanentSideField's
+            // `scaleChanged && baseline != null` branch fires FIRST and
+            // treats the second address's real (different-house) footage
+            // as a pure scale artifact, silently keeping the FIRST
+            // address's wrong number forever (see
+            // reconcileSideFootage.test.ts's "second address" regression).
+            // Actually resetting both refs here is what makes "every side
+            // starts this run with no recorded baseline" true, so
+            // scaleChanged short-circuits to false (prevPermSideScaleRef
+            // reads back as `undefined`) and the reconcile's brand-new
+            // branch takes the AI's fresh values unconditionally, exactly
+            // as this comment always claimed.
             permDeriveFrozenRef.current = false;
+            prevPermSideDerivedRef.current = {};
+            prevPermSideScaleRef.current = undefined;
             setPermanentSatLines({
               front: seeded.front ?? [],
               left: seeded.left ?? [],
