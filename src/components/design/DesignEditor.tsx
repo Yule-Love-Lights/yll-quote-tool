@@ -87,7 +87,7 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
   // #741 defect 1: the current mount's discardPending — see deletePhoto.
   const discardRef = useRef<(() => boolean) | null>(null);
   // #741 defect 2: the current mount's removePhotoItems — see deletePhoto.
-  const removePhotoItemsRef = useRef<((photoId: string) => void) | null>(null);
+  const removePhotoItemsRef = useRef<((photoId: string, serverVersion?: number | null) => void) | null>(null);
   // Keep the latest onReady in a ref so the mount effect doesn't depend on it
   // (a new callback identity each render would needlessly remount the editor).
   const onReadyRef = useRef(onReady);
@@ -170,8 +170,14 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
       }
       flushRef.current = handle.flushSave ? () => handle!.flushSave!() : null;
       discardRef.current = handle.discardPending ? () => handle!.discardPending!() : null;
+      // Row 371 (delta-verify HIGH): forward serverVersion. This wrapper
+      // silently dropped it, which made the whole post-delete version adoption
+      // inert — tsc cannot catch it, because a narrower function is assignable
+      // to a wider one. The ref's own type carries the parameter, so name it
+      // here rather than relying on the arity matching by accident.
       removePhotoItemsRef.current = handle.removePhotoItems
-        ? (photoId: string) => handle!.removePhotoItems!(photoId)
+        ? (photoId: string, serverVersion?: number | null) =>
+            handle!.removePhotoItems!(photoId, serverVersion)
         : null;
       onReadyRef.current?.(flushRef.current, discardRef.current);
     })();
@@ -289,7 +295,10 @@ export default function DesignEditor({ designId, onClose, height = 600, onReady,
         // out of the resident scene in place instead, mirroring the server's
         // own prune — the resident scene then already matches server truth,
         // so no remount and no discard are needed here.
-        removePhotoItemsRef.current?.(id);
+        // Row 371: pass the server's post-prune version along with the id —
+        // see removePhotoItems' own comment for why the still-mounted editor
+        // needs it even when the deleted tab held nothing drawn.
+        removePhotoItemsRef.current?.(id, typeof data.version === 'number' ? data.version : null);
       }
       await refreshPhotoTabs(designId);
     } finally {

@@ -23,6 +23,27 @@ export function brightnessForPhoto(scene: Scene, photoId: string | null): number
   return scene.extraPhotoBrightness?.[photoId] ?? baseBrightness;
 }
 
+/** Row 371: the scene with one photo's per-photo brightness override removed.
+ *  A deleted photo's override is not attached to any item, so an item-only
+ *  prune never reached it and the key survived the delete forever.
+ *
+ *  Shared by BOTH sides of that delete on purpose. The server prunes the
+ *  stored scene (`removeDesignExtraPhoto`), and the still-mounted editor has
+ *  to prune its RESIDENT copy in the same breath — the editor saves the whole
+ *  scene on every autosave, so a client that kept the key would write it
+ *  straight back over the server's prune on the very next edit. One
+ *  implementation means the two can never disagree about what "pruned" means.
+ *
+ *  Returns the SAME scene object when there is nothing to remove, so callers
+ *  can use reference equality to decide whether anything changed. */
+export function removeBrightnessForPhoto(scene: Scene, photoId: string): Scene {
+  const current = scene.extraPhotoBrightness;
+  if (!current || !Object.prototype.hasOwnProperty.call(current, photoId)) return scene;
+  const next = { ...current };
+  delete next[photoId];
+  return { ...scene, extraPhotoBrightness: next };
+}
+
 export function setBrightnessForPhoto(
   scene: Scene,
   extraPhotoIds: string[],
