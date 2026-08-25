@@ -66,6 +66,26 @@ export function priorBalanceCollectedUsd(invoiceRow: {
   return round2(Math.max(0, total - balance - depositApplied));
 }
 
+// Row 389 (S, admin lens MED): a quote's approval_snapshot carries a durable
+// marker whenever this repo already KNOWS its linked invoice's total/balance
+// is provisional — either a customer charge was refused because the invoice
+// didn't match the agreed total (`paymentBlocked`, written by pay-balance/
+// route.ts) or a staff-side re-sync itself failed to land
+// (`invoiceResyncFailed`, written by flagInvoiceResyncFailed below). Row 378
+// and row 341 deliberately FREEZE both cases rather than correcting them —
+// money must not move on a number we cannot stand behind — but a report
+// (workflowBoard.ts's Invoices column, needsAction.ts's collect-balance nag)
+// that keeps summing/quoting the frozen figure with no indicator is exactly
+// the gap this row named. Pure, no IO — the ONE place both dashboard call
+// sites import this from, so the two marker names can't drift apart between
+// them (the same reasoning FIX A gives for a shared money formula, applied to
+// a shared STALENESS check instead).
+export function isStaleInvoiceSnapshot(
+  approvalSnapshot: { paymentBlocked?: unknown; invoiceResyncFailed?: unknown } | null | undefined,
+): boolean {
+  return !!(approvalSnapshot?.paymentBlocked || approvalSnapshot?.invoiceResyncFailed);
+}
+
 // FIX A (delta-verify HIGH, fix round 4): the exact money formula
 // resyncInvoiceToAgreedTotal uses to re-price the invoice — pulled out so the
 // amend route can compute the SAME figures BEFORE it persists the amendment

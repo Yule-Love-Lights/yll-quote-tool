@@ -38,7 +38,11 @@ vi.mock('@/lib/invoices', async (importOriginal) => {
   return { ...actual, getInvoiceByJob: getInvoiceByJobMock, appendRetiredTxn: appendRetiredTxnMock };
 });
 
-import { resyncInvoiceToAgreedTotal, computeInvoiceResyncTotals } from './quoteAmendInvoiceSync';
+import {
+  resyncInvoiceToAgreedTotal,
+  computeInvoiceResyncTotals,
+  isStaleInvoiceSnapshot,
+} from './quoteAmendInvoiceSync';
 
 // Table-aware fake matching the two calls this module (+ its row-341 marker
 // helper) make against Supabase:
@@ -602,5 +606,32 @@ describe('computeInvoiceResyncTotals — the shared money formula (no IO)', () =
     const totals = computeInvoiceResyncTotals(result, 2500, 5600, false);
     expect(totals.total).toBe(5600); // no tax removed
     expect(totals.balance).toBe(3100);
+  });
+});
+
+describe('isStaleInvoiceSnapshot — row 389 (no IO)', () => {
+  it('is false on a clean snapshot with neither marker', () => {
+    expect(isStaleInvoiceSnapshot({})).toBe(false);
+  });
+
+  it('is false on null/undefined (a quote with no snapshot yet)', () => {
+    expect(isStaleInvoiceSnapshot(null)).toBe(false);
+    expect(isStaleInvoiceSnapshot(undefined)).toBe(false);
+  });
+
+  it('is true when paymentBlocked is present (pay-balance/route.ts refusal)', () => {
+    expect(isStaleInvoiceSnapshot({ paymentBlocked: { at: '2026-08-24T00:00:00Z' } })).toBe(true);
+  });
+
+  it('is true when invoiceResyncFailed is present (flagInvoiceResyncFailed)', () => {
+    expect(
+      isStaleInvoiceSnapshot({ invoiceResyncFailed: { invoiceId: 'inv-1', attemptedTotal: 100 } }),
+    ).toBe(true);
+  });
+
+  it('is true when BOTH markers are present', () => {
+    expect(
+      isStaleInvoiceSnapshot({ paymentBlocked: { at: 'x' }, invoiceResyncFailed: { invoiceId: 'y' } }),
+    ).toBe(true);
   });
 });

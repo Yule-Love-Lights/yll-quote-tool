@@ -28,6 +28,17 @@ function StatusRowItem({ row }: { row: StatusRow }) {
         {bucket.totalUsd > 0 && (
           <span style={{ color: 'var(--op-text-dim)' }}>{` · ${fmtMoney(bucket.totalUsd)}`}</span>
         )}
+        {/* Row 389: this total may include a frozen/unreconciled invoice —
+            flag it here rather than silently dropping it from the sum. */}
+        {bucket.staleCount > 0 && (
+          <span
+            title={`${bucket.staleCount} of ${bucket.count} unreconciled — this total is provisional`}
+            aria-label={`${bucket.staleCount} unreconciled invoice${bucket.staleCount === 1 ? '' : 's'} in this total`}
+            style={{ color: 'var(--op-warning, #b45309)' }}
+          >
+            {' ⚠'}
+          </span>
+        )}
       </span>
     </>
   );
