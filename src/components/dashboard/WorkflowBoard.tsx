@@ -157,6 +157,19 @@ const INVOICE_DOTS = {
 const QUOTES_HREF = '/admin/quotes';
 const INVOICES_HREF = '/admin/invoices';
 
+// Row 396 (MED): a bucket's ⚠ (staleCount > 0, rendered inside
+// StatusRowItem above) used to link to the same unfiltered INVOICES_HREF as
+// everything else — a bucket reading "3 unreconciled" gave the owner no way
+// to find WHICH three. /admin/invoices now reads ?stale=1 and filters to
+// just the unreconciled rows (isStaleInvoiceSnapshot, the same check this
+// board's own queries.ts already runs) — route a stale bucket's link there
+// instead of the plain list. Pure, exported for its own unit test (no
+// jsdom/testing-library in this repo — same pattern as
+// admin/jobs/[id]/page.tsx's cancelActionMessage).
+export function invoicesRowHref(bucket: StageBucket): string {
+  return bucket.staleCount > 0 ? `${INVOICES_HREF}?stale=1` : INVOICES_HREF;
+}
+
 /** The Jobber-style pipeline board (ledger #83): Quotes · Jobs · Invoices.
  *  All three columns are live from real data — Invoices wired to the #83 Phase 3
  *  billing flow (its money lens is the outstanding balance still to collect). */
@@ -193,10 +206,10 @@ export function WorkflowBoard({ board }: { board: WorkflowBoardData }) {
   // Invoices column: the money lens is the OUTSTANDING balance (draft +
   // awaiting_payment) — what's still to collect. Paid/cancelled show counts.
   const invoiceRows: StatusRow[] = [
-    { key: 'draft', label: 'Draft', dot: INVOICE_DOTS.draft, bucket: inv.draft, href: INVOICES_HREF },
-    { key: 'awaiting_payment', label: 'Awaiting payment', dot: INVOICE_DOTS.awaiting_payment, bucket: inv.awaiting_payment, href: INVOICES_HREF },
-    { key: 'paid', label: 'Paid', dot: INVOICE_DOTS.paid, bucket: inv.paid, href: INVOICES_HREF },
-    { key: 'cancelled', label: 'Cancelled', dot: INVOICE_DOTS.cancelled, bucket: inv.cancelled, href: INVOICES_HREF },
+    { key: 'draft', label: 'Draft', dot: INVOICE_DOTS.draft, bucket: inv.draft, href: invoicesRowHref(inv.draft) },
+    { key: 'awaiting_payment', label: 'Awaiting payment', dot: INVOICE_DOTS.awaiting_payment, bucket: inv.awaiting_payment, href: invoicesRowHref(inv.awaiting_payment) },
+    { key: 'paid', label: 'Paid', dot: INVOICE_DOTS.paid, bucket: inv.paid, href: invoicesRowHref(inv.paid) },
+    { key: 'cancelled', label: 'Cancelled', dot: INVOICE_DOTS.cancelled, bucket: inv.cancelled, href: invoicesRowHref(inv.cancelled) },
   ];
   const invoicesTotal = invoiceRows.reduce((sum, r) => sum + r.bucket.count, 0);
   const outstandingCount = inv.draft.count + inv.awaiting_payment.count;
