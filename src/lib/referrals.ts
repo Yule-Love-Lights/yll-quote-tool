@@ -39,8 +39,11 @@ export const REFERRAL_FRIEND_SPRITZERS = { count: 2, sizeInches: 16 } as const;
 
 /** The env var backing the GHL contact custom field that carries the
  *  referrer's personal link (so a workflow can merge {{contact.referral_link}}).
- *  Unset ⇒ the stamp is skipped (mirrors quoteLinkFieldId's fail-open contract). */
-const REFERRAL_LINK_FIELD_ENV = 'HIGHLEVEL_CONTACT_FIELD_REFERRAL_LINK';
+ *  Unset ⇒ the stamp is skipped (mirrors quoteLinkFieldId's fail-open contract).
+ *  Exported (naldo/referral-link-sweep) so the referral sweep can resolve the
+ *  SAME field id for its idempotency check (reading a contact's own
+ *  customFields) without duplicating the env var name a second place. */
+export const REFERRAL_LINK_FIELD_ENV = 'HIGHLEVEL_CONTACT_FIELD_REFERRAL_LINK';
 
 export type ReferralSource = 'link' | 'mention';
 export type ReferralStatus = 'pending' | 'booked' | 'credited';
@@ -221,18 +224,30 @@ export async function ensureReferralCode(customerId: string): Promise<string | n
 // workflow can merge {{contact.referral_link}}. Fail-open on every axis (no
 // contact, GHL not configured, field id not set, or the call itself throwing)
 // — the referral code exists regardless of whether this stamp lands.
-async function stampReferralLinkOnContact(hlContactId: string | null, code: string): Promise<void> {
-  if (!hlContactId || !isHighLevelConfigured()) return;
+//
+// Exported + returns boolean (naldo/referral-link-sweep, was previously
+// private and void-returning): ensureReferralCode above still calls this
+// fire-and-forget via after() on first mint only, where the return value is
+// irrelevant. The referral sweep needs a SYNCHRONOUS, awaited answer instead:
+// it stamps every eligible contact's field itself (not just on first
+// mint, since a contact can reach the sweep already holding a code from
+// some other path with its OWN field never stamped), and its per-run summary
+// counts need to know whether the write actually landed, not just that it
+// was scheduled.
+export async function stampReferralLinkOnContact(hlContactId: string | null, code: string): Promise<boolean> {
+  if (!hlContactId || !isHighLevelConfigured()) return false;
   const fieldId = process.env[REFERRAL_LINK_FIELD_ENV];
   if (!fieldId) {
     console.warn(`[referrals] ${REFERRAL_LINK_FIELD_ENV} not set — skipping referral-link custom field stamp`);
-    return;
+    return false;
   }
   try {
     const link = `${appBaseUrl()}/refer/${code}`;
     await upsertContactCustomField(hlContactId, fieldId, link);
+    return true;
   } catch (err) {
     console.error('[referrals] referral-link custom field stamp failed:', err);
+    return false;
   }
 }
 

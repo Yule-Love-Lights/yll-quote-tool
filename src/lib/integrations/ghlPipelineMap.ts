@@ -16,6 +16,7 @@
 // visible in the Settings → HighLevel setup page.
 
 import { asServiceType, DEFAULT_SERVICE_TYPE, type ServiceType } from '@/lib/serviceType';
+import type { Pipeline } from './highlevelPipelines';
 
 export type PipelineStages = {
   pipelineId: string;
@@ -114,6 +115,76 @@ const NEIGHBORS_STAGES: PipelineStages = {
   // separate stage — there isn't one.
   abandoned: 'abe1ed98-1091-4b70-bc6f-ae786cbea333', // Declined for 2026
 };
+
+// ─── Referral sweep suppression (naldo/referral-link-sweep) ───────────────
+// Two stages in the Neighbors pipeline mean DO NOT TOUCH for the referral
+// sweep (src/lib/referralSweep.ts): a contact with an opportunity sitting in
+// either one must never get a referral code minted, a link stamped, or a
+// tag applied. "Declined for 2026" reuses NEIGHBORS_STAGES.declined above
+// (same id, same stage): it isn't a new stage, just a new REASON to name it
+// here. "Do Not Call" is a separate stage in the same pipeline that has no
+// other purpose in this app yet.
+//
+// NEIGHBORS_DO_NOT_CALL_STAGE_ID is a PLACEHOLDER, not a real id. It could
+// NOT be discovered live this session. This build sandbox has no outbound
+// network access to services.leadconnectorhq.com (a read-only GET
+// /opportunities/pipelines call failed with ConnectTimeoutError, confirmed
+// 2026-08-25), so the live pipeline listing that every other id in this file
+// was captured from was unreachable here. Run the new read-only
+// `npx tsx scripts/ghl-list-pipelines.ts` from a machine with real GHL
+// access, find "Do Not Call" under "Yule Love Lights Neighbors", and replace
+// the value below with the real id before this ships.
+//
+// Until it's replaced, this is a deliberate sentinel that will never match a
+// real live stage id: missingSuppressionStageIds() below will always report
+// it missing, so referralSweep's own fail-loud check (see its header) will
+// correctly refuse to run rather than silently suppressing nobody. That is
+// the intended, safe failure mode for an un-configured suppression id, not a
+// bug to work around.
+export const NEIGHBORS_DO_NOT_CALL_STAGE_ID = 'PLACEHOLDER_DO_NOT_CALL_STAGE_ID_NOT_YET_DISCOVERED_LIVE';
+
+/** The Neighbors pipeline id, exported under its own name for callers (the
+ *  referral sweep) that need it without pulling in the rest of the map. */
+export const NEIGHBORS_PIPELINE_ID = NEIGHBORS_STAGES.pipelineId;
+
+/** Every stage id that means DO NOT TOUCH for the referral sweep. */
+export const NEIGHBORS_SUPPRESSED_STAGE_IDS: readonly string[] = [
+  NEIGHBORS_STAGES.declined, // "Declined for 2026"
+  NEIGHBORS_DO_NOT_CALL_STAGE_ID, // "Do Not Call"
+];
+
+/**
+ * Every known pipeline's stage map: the four service-type pipelines plus
+ * the Neighbors pipeline, for a caller that needs to check ALL of a
+ * contact's cards for a status, not just one service_type's. The referral
+ * sweep uses this to look for a "booked-or-later" opportunity anywhere,
+ * since a GHL contact's history isn't scoped to a single service_type the
+ * way a quote row is. Order is not meaningful to any consumer.
+ */
+export function allPipelineStages(): PipelineStages[] {
+  return [...Object.values(PIPELINE_MAP), NEIGHBORS_STAGES];
+}
+
+/**
+ * Verify every configured Neighbors suppression stage id (declared above) is
+ * still present in a LIVE pipelines listing: the same shape
+ * highlevelPipelines.ts's parsePipelines() returns from GET
+ * /opportunities/pipelines. Returns the subset of NEIGHBORS_SUPPRESSED_STAGE_IDS
+ * that are MISSING; an empty array means everything checks out (including
+ * the case where the Neighbors pipeline itself can't be found live, which
+ * naturally makes every configured id "missing").
+ *
+ * Pure, no network, no env, so it's cheap to unit test. The referral
+ * sweep calls this against a freshly-fetched live listing before touching
+ * any contact: a renamed or deleted stage must surface as a loud error,
+ * never as silently suppressing nobody. That is the entire point of this
+ * function existing.
+ */
+export function missingSuppressionStageIds(livePipelines: Pipeline[]): string[] {
+  const neighbors = livePipelines.find((p) => p.id === NEIGHBORS_PIPELINE_ID);
+  const liveStageIds = new Set((neighbors?.stages ?? []).map((s) => s.id));
+  return NEIGHBORS_SUPPRESSED_STAGE_IDS.filter((id) => !liveStageIds.has(id));
+}
 
 /**
  * Resolve the pipeline + stage ids to use for a quote's service_type.

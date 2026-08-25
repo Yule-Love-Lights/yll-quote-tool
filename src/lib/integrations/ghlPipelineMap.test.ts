@@ -9,7 +9,17 @@
 //     send never overwrites another pipeline's drip-automation field.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { resolvePipelineStages, quoteLinkFieldId, quoteLinkFieldEnvVar } from './ghlPipelineMap';
+import {
+  resolvePipelineStages,
+  quoteLinkFieldId,
+  quoteLinkFieldEnvVar,
+  allPipelineStages,
+  missingSuppressionStageIds,
+  NEIGHBORS_PIPELINE_ID,
+  NEIGHBORS_SUPPRESSED_STAGE_IDS,
+  NEIGHBORS_DO_NOT_CALL_STAGE_ID,
+} from './ghlPipelineMap';
+import type { Pipeline } from './highlevelPipelines';
 
 const ENV_KEYS = [
   'HIGHLEVEL_PIPELINE_ID',
@@ -321,5 +331,68 @@ describe('quoteLinkFieldEnvVar', () => {
   it('legacy_rebook (#156): legacyRebook=true names the NEIGHBOR var regardless of service_type', () => {
     expect(quoteLinkFieldEnvVar('holiday', { legacyRebook: true })).toBe('HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_NEIGHBOR');
     expect(quoteLinkFieldEnvVar('permanent', { legacyRebook: true })).toBe('HIGHLEVEL_CONTACT_FIELD_QUOTE_LINK_NEIGHBOR');
+  });
+});
+
+describe('allPipelineStages (referral sweep)', () => {
+  it('returns all four service-type pipelines plus Neighbors: five total', () => {
+    const all = allPipelineStages();
+    expect(all).toHaveLength(5);
+    const pipelineIds = all.map((p) => p.pipelineId);
+    expect(pipelineIds).toContain(NEIGHBORS_PIPELINE_ID);
+    // Each service-type pipeline resolved WITHOUT env overrides (holiday
+    // included): the four hardcoded map ids, not the legacy env vars.
+    expect(pipelineIds).toContain('sC6JEcxlGnNDasanlXDN'); // Christmas Lights
+    expect(pipelineIds).toContain('YfCi5jy8Alc3oD5AfXmV'); // Event Lighting
+    expect(pipelineIds).toContain('OqpjVflTdgmjmUQmbcSF'); // Permanent Lighting
+    expect(pipelineIds).toContain('GTFURwOGzGLBl2zsdl0N'); // Landscape (bistro)
+  });
+
+  it('every entry carries a depositPaid and installed stage id (the referral sweep\'s only two signals)', () => {
+    for (const stages of allPipelineStages()) {
+      expect(stages.depositPaid).toBeTruthy();
+      expect(stages.installed).toBeTruthy();
+    }
+  });
+});
+
+describe('missingSuppressionStageIds: fail-loud suppression check (referral sweep)', () => {
+  const liveNeighborsFixture = (stageIds: string[]): Pipeline[] => [
+    {
+      id: NEIGHBORS_PIPELINE_ID,
+      name: 'Yule Love Lights Neighbors',
+      stages: stageIds.map((id) => ({ id, name: id })),
+    },
+  ];
+
+  it('returns EMPTY when both configured suppression stages are present live', () => {
+    const live = liveNeighborsFixture([...NEIGHBORS_SUPPRESSED_STAGE_IDS, 'some-other-stage-id']);
+    expect(missingSuppressionStageIds(live)).toEqual([]);
+  });
+
+  it('reports the DO NOT CALL placeholder as missing (it is a sentinel, not a real id, until discovered live)', () => {
+    // This is the CURRENT real-world state: NEIGHBORS_DO_NOT_CALL_STAGE_ID has
+    // not been discovered live yet, so this must always fail loud today.
+    const live = liveNeighborsFixture(['some-other-stage-id']);
+    const missing = missingSuppressionStageIds(live);
+    expect(missing).toContain(NEIGHBORS_DO_NOT_CALL_STAGE_ID);
+  });
+
+  it('reports a stage as missing when it is renamed/removed from the live pipeline (a real id, simulated present-then-absent)', () => {
+    const bothPresent = liveNeighborsFixture([...NEIGHBORS_SUPPRESSED_STAGE_IDS]);
+    expect(missingSuppressionStageIds(bothPresent)).toEqual([]);
+
+    const declinedRemoved = liveNeighborsFixture([NEIGHBORS_DO_NOT_CALL_STAGE_ID]);
+    expect(missingSuppressionStageIds(declinedRemoved)).toContain(NEIGHBORS_SUPPRESSED_STAGE_IDS[0]);
+  });
+
+  it('reports EVERY configured id as missing when the Neighbors pipeline itself is not found live', () => {
+    const live: Pipeline[] = [{ id: 'some-other-pipeline', name: 'Unrelated', stages: [{ id: 'x', name: 'x' }] }];
+    const missing = missingSuppressionStageIds(live);
+    expect(missing).toEqual([...NEIGHBORS_SUPPRESSED_STAGE_IDS]);
+  });
+
+  it('handles an empty live pipelines list the same way (everything missing)', () => {
+    expect(missingSuppressionStageIds([])).toEqual([...NEIGHBORS_SUPPRESSED_STAGE_IDS]);
   });
 });
