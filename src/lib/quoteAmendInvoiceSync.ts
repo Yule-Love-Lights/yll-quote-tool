@@ -604,20 +604,45 @@ async function flagInvoiceResyncFailed(
 // to exactly the two marker keys — every other approval_snapshot field
 // (amendments, invoice_basis, pendingColorRequest, ...) rides through
 // untouched, via object-rest-destructure rather than a blind merge.
+//
+// `expectedSnapshot` (premerge MED, found independently by the technical AND
+// admin lenses): the caller's gate is computed from data read at the START of
+// its request, but this clear fires at the END, after a multi-second card
+// round-trip. Re-reading here would happily clear a marker a CONCURRENT writer
+// set in that window for an unrelated, still-live reason — e.g. an /amend that
+// raised the total, lost its invoice-sync race twice, and flagged
+// invoiceResyncFailed. The CAS alone does not help, because a fresh read
+// includes that new marker and the CAS then matches.
+//
+// So a caller whose justification is tied to a specific earlier observation
+// passes the snapshot it observed. The clear then CASes on THAT value: if
+// anything wrote to approval_snapshot in between, the CAS misses, the clear
+// drops, and the new marker survives — which is the correct outcome, because
+// the caller only ever proved something about the state it actually saw.
+// Omitting it keeps the original read-then-CAS behaviour for
+// resyncInvoiceToAgreedTotal, whose own success IS the proof and needs no
+// correlation to an earlier read.
 export async function clearInvoiceStaleMarkers(
   quoteId: string | null | undefined,
   logPrefix: string,
+  expectedSnapshot?: Record<string, unknown> | null,
 ): Promise<void> {
   if (!quoteId) return;
   try {
     const sb = getSupabaseServiceClient();
     if (!sb) return;
-    const { data: quoteRow } = await sb
-      .from('quotes')
-      .select('approval_snapshot')
-      .eq('id', quoteId)
-      .maybeSingle<{ approval_snapshot: Record<string, unknown> | null }>();
-    const priorSnapshot = quoteRow?.approval_snapshot ?? null;
+    let priorSnapshot: Record<string, unknown> | null;
+    if (expectedSnapshot !== undefined) {
+      // Correlated caller: use exactly what it observed, do not re-read.
+      priorSnapshot = expectedSnapshot;
+    } else {
+      const { data: quoteRow } = await sb
+        .from('quotes')
+        .select('approval_snapshot')
+        .eq('id', quoteId)
+        .maybeSingle<{ approval_snapshot: Record<string, unknown> | null }>();
+      priorSnapshot = quoteRow?.approval_snapshot ?? null;
+    }
     if (!priorSnapshot || (!priorSnapshot.paymentBlocked && !priorSnapshot.invoiceResyncFailed)) {
       return; // nothing to clear
     }

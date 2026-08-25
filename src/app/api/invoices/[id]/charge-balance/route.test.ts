@@ -95,7 +95,15 @@ type InvoiceUpdateResult = { data?: unknown; error?: unknown };
 // order/count, records every call (for asserting the idempotency claim/release
 // CAS shape), and resolves to a QUEUED result per call (default: a successful
 // 1-row update) so existing tests that never touch the queue keep working.
-function makeSb(quote: Record<string, unknown> | null, invoiceResponses: InvoiceUpdateResult[] = []) {
+function makeSb(
+  quote: Record<string, unknown> | null,
+  invoiceResponses: InvoiceUpdateResult[] = [],
+  // Row 404 fix round: models a CONCURRENT write landing between the route's
+  // initial quote read and the trailing marker clear. When set, the clear's own
+  // re-read sees this instead, and the quotes CAS only matches THIS snapshot —
+  // exactly how the real row behaves.
+  driftedQuote?: Record<string, unknown> | null,
+) {
   const invoiceCalls: InvoiceUpdateCall[] = [];
   let invoiceCallIdx = 0;
 
@@ -111,7 +119,7 @@ function makeSb(quote: Record<string, unknown> | null, invoiceResponses: Invoice
     select: () => quotesChain,
     eq: () => quotesChain,
     single: async () => ({ data: quote, error: quote ? null : { message: 'no rows' } }),
-    maybeSingle: async () => ({ data: quote, error: null }),
+    maybeSingle: async () => ({ data: driftedQuote ?? quote, error: null }),
     update: (patch: Record<string, unknown>) => {
       const call = { patch, eqs: [] as Array<[string, unknown]> };
       quoteUpdates.push(call);
@@ -121,7 +129,14 @@ function makeSb(quote: Record<string, unknown> | null, invoiceResponses: Invoice
           call.eqs.push([col, val]);
           return chain;
         },
-        select: () => Promise.resolve({ data: [{ id: QID }], error: null }),
+        select: () => {
+          // Model the CAS: the update claims a row only when its
+          // approval_snapshot predicate equals the row's CURRENT value.
+          const current = JSON.stringify((driftedQuote ?? quote)?.approval_snapshot);
+          const cas = call.eqs.find(([col]) => col === 'approval_snapshot');
+          const matched = cas === undefined || cas[1] === current;
+          return Promise.resolve({ data: matched ? [{ id: QID }] : [], error: null });
+        },
       });
       return chain;
     },
@@ -1091,5 +1106,60 @@ describe('POST /api/invoices/[id]/charge-balance — stale-marker clear (row 404
     const res = await POST(req(), ctx());
     expect(res.status).toBe(200);
     expect(quoteUpdatesOf(sbRef.current)).toHaveLength(0);
+  });
+});
+
+// ─── Row 404 fix round: the clear is CORRELATED to what the check saw ───────
+// Premerge MED, found independently by the technical and admin lenses: the
+// gate is computed from data read at request START, but the clear fires at
+// request END after a card round-trip. A concurrent writer that flags a NEW
+// marker in that window must not have it erased — the charge only ever proved
+// something about the state it actually observed.
+describe('POST /api/invoices/[id]/charge-balance — the clear cannot erase a concurrent marker (row 404 fix round)', () => {
+  it('CASes on the snapshot the staleness check ran against, not on a fresh read', async () => {
+    getInvoiceMock.mockResolvedValue({ ...INVOICE, balance: 1400 });
+    chargeMock.mockResolvedValueOnce({ ok: true, chargedUsd: 1400, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
+    sbRef.current = makeSb(QUOTE_MARKED, SETTLE_OK);
+
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200);
+
+    const updates = quoteUpdatesOf(sbRef.current);
+    expect(updates).toHaveLength(1);
+    // The CAS value must be the snapshot READ AT REQUEST START. If a concurrent
+    // write landed during the charge, this predicate misses and the clear
+    // drops, leaving the newer marker alone.
+    const casEq = updates[0].eqs.find(([col]) => col === 'approval_snapshot');
+    expect(casEq).toBeDefined();
+    expect(casEq![1]).toBe(JSON.stringify(QUOTE_MARKED.approval_snapshot));
+  });
+
+  it('LEAVES a marker that a concurrent writer set during the card round-trip', async () => {
+    // The real scenario the two lenses constructed: an /amend raises the total,
+    // loses its invoice-sync race twice, and flags invoiceResyncFailed WHILE
+    // this charge is at Valor. An uncorrelated clear would re-read, see that
+    // brand-new marker, and erase it — silencing the board about a live
+    // problem this charge never verified anything about.
+    const CONCURRENTLY_FLAGGED = {
+      ...QUOTE_MARKED,
+      approval_snapshot: {
+        ...QUOTE_MARKED.approval_snapshot,
+        invoiceResyncFailed: { at: '2026-06-06T00:00:00.000Z', note: 'set by a concurrent amend' },
+      },
+    };
+    getInvoiceMock.mockResolvedValue({ ...INVOICE, balance: 1400 });
+    chargeMock.mockResolvedValueOnce({ ok: true, chargedUsd: 1400, txnId: 'txn-9', approvalCode: 'A1', receiptUrl: 'r', raw: {} });
+    sbRef.current = makeSb(QUOTE_MARKED, SETTLE_OK, CONCURRENTLY_FLAGGED);
+
+    const res = await POST(req(), ctx());
+    expect(res.status).toBe(200); // the charge still succeeds — this is best-effort
+
+    // The clear was ATTEMPTED, but CASed on the pre-charge snapshot, so against
+    // the concurrently-updated row it claims zero rows and drops.
+    const updates = quoteUpdatesOf(sbRef.current);
+    expect(updates).toHaveLength(1);
+    const casEq = updates[0].eqs.find(([col]) => col === 'approval_snapshot');
+    expect(casEq![1]).toBe(JSON.stringify(QUOTE_MARKED.approval_snapshot));
+    expect(casEq![1]).not.toBe(JSON.stringify(CONCURRENTLY_FLAGGED.approval_snapshot));
   });
 });

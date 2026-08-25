@@ -847,7 +847,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // above: a failure here must never turn a completed charge into an error
   // response. The marker simply stays until the next resync or passing charge.
   if (staleCheckPassed) {
-    await clearInvoiceStaleMarkers(invoice.quote_id, '[api/invoices/:id/charge-balance]');
+    // Correlated to the snapshot this request's staleness check actually ran
+    // against (read at request start). A concurrent writer that flagged a NEW
+    // marker during the card round-trip trips the CAS, the clear drops, and
+    // that marker survives — see clearInvoiceStaleMarkers' own comment.
+    await clearInvoiceStaleMarkers(
+      invoice.quote_id,
+      '[api/invoices/:id/charge-balance]',
+      (quote.approval_snapshot ?? null) as Record<string, unknown> | null,
+    );
   }
 
   return NextResponse.json({
