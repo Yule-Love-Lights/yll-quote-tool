@@ -2178,6 +2178,21 @@ export default function QuoteBuilder({
         if (rightCorners.target != null) n = { ...n, rightCorners: rightCorners.target };
         if (backFootage.target != null) n = { ...n, backFootage: backFootage.target };
         if (backCorners.target != null) n = { ...n, backCorners: backCorners.target };
+        // Row 400: whichever fields THIS run actually stamped just got
+        // written by the system, not staff — mark them 'auto'. A field
+        // whose target stayed null (a standing override held, canDerive
+        // was false, or nothing changed) is left alone; its existing
+        // provenance, if any, survives untouched.
+        const stampedFields = (Object.keys(resultsByField) as PermanentSideFieldKey[]).filter(
+          (k) => resultsByField[k].target != null,
+        );
+        if (stampedFields.length > 0) {
+          const nextSource: Partial<Record<PermanentSideFieldKey, 'auto' | 'manual'>> = {
+            ...(n.sideMeasureSource ?? {}),
+          };
+          for (const k of stampedFields) nextSource[k] = 'auto';
+          n = { ...n, sideMeasureSource: nextSource };
+        }
         return n === cur ? f : { ...f, permanent: n };
       }),
     );

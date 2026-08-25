@@ -61,6 +61,50 @@ export default function PermanentSection({ form, setForm, onRecount, tracedSides
   const setP = <K extends keyof PermanentQuoteFields>(k: K, v: PermanentQuoteFields[K]) =>
     setForm((f) => ({ ...f, permanent: { ...f.permanent, [k]: v } }));
 
+  // Row 400: the 8 footage/corners fields' provenance keys — same 8 strings
+  // as reconcileSideFootage.ts's PermanentSideFieldKey.
+  type MeasureFieldKey =
+    | 'frontFootage' | 'frontCorners'
+    | 'leftFootage' | 'leftCorners'
+    | 'rightFootage' | 'rightCorners'
+    | 'backFootage' | 'backCorners';
+
+  // Row 400: typing a footage/corners value takes MANUAL ownership of THAT
+  // field only (footage and corners reconcile independently — see
+  // reconcileSideFootage.ts — so marking the whole side would lie about
+  // whichever field the operator didn't touch). Mirrors setAccessoryCount's
+  // "typing wins" rule; the derive effect (QuoteBuilder.tsx) is the only
+  // 'auto' writer, stamped only when it actually overwrites this exact
+  // field. Not routed through setP — setP is shared by many non-measurement
+  // fields (trackColor, custom rates, …) that must never touch this map.
+  const setMeasure = (k: MeasureFieldKey, v: number) =>
+    setForm((f) => ({
+      ...f,
+      permanent: {
+        ...f.permanent,
+        [k]: v,
+        sideMeasureSource: { ...(f.permanent.sideMeasureSource ?? {}), [k]: 'manual' },
+      },
+    }));
+
+  // Row 400: small caption under each footage/corners input reflecting
+  // sideMeasureSource[k] — 'manual' warns the derive won't touch it until
+  // the operator redraws that side's line (the natural "recount": no
+  // separate button exists for footage/corners, unlike the Extensions card).
+  // Absent (undefined) shows nothing — a legacy quote or a field with no
+  // known scale yet has no provenance to report, same as accessoriesSource's
+  // undefined state.
+  const measureCaption = (k: MeasureFieldKey) => {
+    const src = p.sideMeasureSource?.[k];
+    if (src === 'manual') {
+      return <p className="text-xs font-medium text-amber-600 mt-1">Manually set — redraw the line to auto-update.</p>;
+    }
+    if (src === 'auto') {
+      return <p className="text-xs text-gray-400 mt-1">Auto-measured from the satellite trace.</p>;
+    }
+    return null;
+  };
+
   // #192 — per-side track style. footageOfSide gates which style rows show
   // (only sides with billed footage). The setter spreads trackStyleBySide and
   // deliberately does NOT go through setP — it's a separate concern from the
@@ -127,7 +171,7 @@ export default function PermanentSection({ form, setForm, onRecount, tracedSides
               min={0}
               className={inp}
               value={p.frontFootage}
-              onChange={(e) => setP('frontFootage', Number(e.target.value))}
+              onChange={(e) => setMeasure('frontFootage', Number(e.target.value))}
               onBlur={roundFootageOnBlur('frontFootage')}
             />
             {p.frontFootage === 0 && (
@@ -141,6 +185,7 @@ export default function PermanentSection({ form, setForm, onRecount, tracedSides
                 roof map won&apos;t show it. Draw it there, or confirm this is correct before sending.
               </p>
             )}
+            {measureCaption('frontFootage')}
           </div>
           <div>
             <label className={lbl}>Front corners</label>
@@ -149,11 +194,12 @@ export default function PermanentSection({ form, setForm, onRecount, tracedSides
               min={0}
               className={inp}
               value={p.frontCorners}
-              onChange={(e) => setP('frontCorners', Number(e.target.value))}
+              onChange={(e) => setMeasure('frontCorners', Number(e.target.value))}
             />
             <p className="text-xs text-gray-400 mt-1">
               Every corner / end / gable peak = 3 lights. Auto-counted from the satellite draw; adjust if needed.
             </p>
+            {measureCaption('frontCorners')}
           </div>
         </div>
       </Section>
@@ -171,7 +217,7 @@ export default function PermanentSection({ form, setForm, onRecount, tracedSides
               min={0}
               className={inp}
               value={p.leftFootage}
-              onChange={(e) => setP('leftFootage', Number(e.target.value))}
+              onChange={(e) => setMeasure('leftFootage', Number(e.target.value))}
               onBlur={roundFootageOnBlur('leftFootage')}
             />
             {untracedButBilled('left', p.leftFootage) && (
@@ -180,6 +226,7 @@ export default function PermanentSection({ form, setForm, onRecount, tracedSides
                 roof map won&apos;t show it. Draw it there, or confirm this is correct before sending.
               </p>
             )}
+            {measureCaption('leftFootage')}
           </div>
           <div>
             <label className={lbl}>Left corners</label>
@@ -188,8 +235,9 @@ export default function PermanentSection({ form, setForm, onRecount, tracedSides
               min={0}
               className={inp}
               value={p.leftCorners}
-              onChange={(e) => setP('leftCorners', Number(e.target.value))}
+              onChange={(e) => setMeasure('leftCorners', Number(e.target.value))}
             />
+            {measureCaption('leftCorners')}
           </div>
           <div>
             <label className={lbl}>Right footage</label>
@@ -198,7 +246,7 @@ export default function PermanentSection({ form, setForm, onRecount, tracedSides
               min={0}
               className={inp}
               value={p.rightFootage}
-              onChange={(e) => setP('rightFootage', Number(e.target.value))}
+              onChange={(e) => setMeasure('rightFootage', Number(e.target.value))}
               onBlur={roundFootageOnBlur('rightFootage')}
             />
             {untracedButBilled('right', p.rightFootage) && (
@@ -207,6 +255,7 @@ export default function PermanentSection({ form, setForm, onRecount, tracedSides
                 roof map won&apos;t show it. Draw it there, or confirm this is correct before sending.
               </p>
             )}
+            {measureCaption('rightFootage')}
           </div>
           <div>
             <label className={lbl}>Right corners</label>
@@ -215,8 +264,9 @@ export default function PermanentSection({ form, setForm, onRecount, tracedSides
               min={0}
               className={inp}
               value={p.rightCorners}
-              onChange={(e) => setP('rightCorners', Number(e.target.value))}
+              onChange={(e) => setMeasure('rightCorners', Number(e.target.value))}
             />
+            {measureCaption('rightCorners')}
           </div>
           <div>
             <label className={lbl}>Back footage</label>
@@ -225,7 +275,7 @@ export default function PermanentSection({ form, setForm, onRecount, tracedSides
               min={0}
               className={inp}
               value={p.backFootage}
-              onChange={(e) => setP('backFootage', Number(e.target.value))}
+              onChange={(e) => setMeasure('backFootage', Number(e.target.value))}
               onBlur={roundFootageOnBlur('backFootage')}
             />
             {untracedButBilled('back', p.backFootage) && (
@@ -234,6 +284,7 @@ export default function PermanentSection({ form, setForm, onRecount, tracedSides
                 roof map won&apos;t show it. Draw it there, or confirm this is correct before sending.
               </p>
             )}
+            {measureCaption('backFootage')}
           </div>
           <div>
             <label className={lbl}>Back corners</label>
@@ -242,8 +293,9 @@ export default function PermanentSection({ form, setForm, onRecount, tracedSides
               min={0}
               className={inp}
               value={p.backCorners}
-              onChange={(e) => setP('backCorners', Number(e.target.value))}
+              onChange={(e) => setMeasure('backCorners', Number(e.target.value))}
             />
+            {measureCaption('backCorners')}
           </div>
         </div>
       </Section>

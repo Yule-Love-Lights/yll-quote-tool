@@ -501,6 +501,36 @@ describe('POST /api/quote — permanent block validation (#88 P4b)', () => {
     expect(res.status).toBe(200);
     expect(save).toHaveBeenCalledTimes(1);
   });
+
+  // Row 400 — per-field footage/corners provenance, mirrors trackStyleBySide's trio above.
+  it('rejects a non-object sideMeasureSource with 400', async () => {
+    const res = await POST(badPerm({ sideMeasureSource: 'manual' }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('rejects an ARRAY sideMeasureSource with 400 (isObj alone admits arrays)', async () => {
+    const res = await POST(badPerm({ sideMeasureSource: [] }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid VALUE on a recognized sideMeasureSource key with 400', async () => {
+    const res = await POST(badPerm({ sideMeasureSource: { frontFootage: 'yes' } }));
+    expect(res.status).toBe(400);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('accepts a well-formed sideMeasureSource, ignoring an unknown key', async () => {
+    const inputs = permInputs(120);
+    inputs.permanent = {
+      ...(inputs.permanent as Record<string, unknown>),
+      sideMeasureSource: { frontFootage: 'manual', leftCorners: 'auto', notAField: 'auto' },
+    };
+    const res = await POST(makeReq({ serviceType: 'permanent', inputs }));
+    expect(res.status).toBe(200);
+    expect(save).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('POST /api/quote — event block validation (#96 audit fixes #9 / #5)', () => {

@@ -543,6 +543,27 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: `permanent.${f} must be a non-negative number if provided` }, { status: 400 });
       }
     }
+    // Row 400: per-field footage/corners provenance, mirrors accessoriesSource
+    // above — an unknown key is silently ignored; a PRESENT recognized key
+    // must be 'auto' or 'manual'.
+    if (pf.sideMeasureSource !== undefined) {
+      if (!isObj(pf.sideMeasureSource) || Array.isArray(pf.sideMeasureSource)) {
+        return NextResponse.json({ error: 'permanent.sideMeasureSource must be an object if provided' }, { status: 400 });
+      }
+      const measureFields = [
+        'frontFootage', 'frontCorners', 'leftFootage', 'leftCorners',
+        'rightFootage', 'rightCorners', 'backFootage', 'backCorners',
+      ] as const;
+      for (const k of measureFields) {
+        const v = (pf.sideMeasureSource as Record<string, unknown>)[k];
+        if (v !== undefined && v !== 'auto' && v !== 'manual') {
+          return NextResponse.json(
+            { error: `permanent.sideMeasureSource.${k} must be 'auto' or 'manual' if provided` },
+            { status: 400 },
+          );
+        }
+      }
+    }
   }
 
   // Event Lighting (#96) — audit fixes: validate the optional event block at
