@@ -12,6 +12,7 @@ metadata:
 > Session-continuity layer — the quick "where are we / what's decided" so a cold session resumes without re-litigating. Deep detail lives in the repo: `docs/ONBOARDING.md` (setup), `docs/CURRENT_STATE.md` (done / half-done / bugs), `docs/CONVENTIONS.md` (how to add code). Pair this with `session_log.md`.
 
 ## Current state at a glance
+- **The self-serve estimator `/estimate` IS customer-reachable and indexable, and it has recorded ZERO completions (measured in prod 2026-08-25, S68).** The page returns 200 with `robots: index, follow`, but `self_serve_estimates` holds 0 rows while `quotes` holds 191, so the dashboard's self-serve accuracy tile has nothing to score. `recordSelfServeEstimate` is best-effort and only `console.warn`s, so an empty table cannot be distinguished from an insert failing silently since telemetry landed 2026-07-19. That is **ledger row 404**, and it is the first thing to settle before treating any estimator metric as real. Note this sits in tension with the "pre-launch, not customer-facing" line below: that line is true of the quote/portal flow, not of `/estimate`.
 - **Pre-launch.** This tool is NOT customer-facing or used internally yet. The live customer flow today is **home.works** (separate system). So changes here are lower-risk — we're building *toward* launch.
 - Deployed on **Vercel** (`yll-quote-tool`, Production tracks `master` → quote.yulelovelights.com), but not yet shown to customers. **Prod is LIVE + current as of S9** — it had silently been frozen at an Apr 23 build for ~7 weeks (Vercel Git was connected to the wrong repo); reconnected to `Yule-Love-Lights/yll-quote-tool` + env vars synced S9. See [[deploy-vercel]] (incl. the "if prod looks stale" playbook).
 - Runs locally on **Next 16.2.6** (Turbopack), connected to the **real Supabase** (~55 real/test quotes). `.env.local` is filled on Jason's machine (values: see `project_secrets_access.md`).
@@ -62,6 +63,14 @@ metadata:
 The full task list (done / planning / backlog / Naldo-pending) lives in **[[task_ledger.md]]** — the single source of truth, renumbered into one clean sequence on 2026-06-05 (now #1–#28) with an Old-# column mapping to the historical numbers in this log + PR titles. **Next BUILD (S4): task #27 — the design-tool integration (Path B)**, starting Phase 1 from the LOCKED [[project_integration_data_contract.md]]. #8 (training-system) planning is DONE (feeds #27 Phase 3). Update the ledger as work lands.
 
 ## Next up
+
+**Next up (after Naldo S68, 2026-08-25) - verification pass, nothing shipped.** Master `70a54b9e`, gates green (tsc 0 - lint 0 errors / 19 pre-existing warnings - vitest **419 files / 7590 tests**). The three self-serve estimator PRs (#624/#800/#815) are confirmed merged, present and unreverted on master; the #800 keystroke flash is measurably gone on live prod and the #815 read-time clamp is correct with 12/12 tests green.
+
+- **DO FIRST: row 404.** Grep Vercel logs for `[selfServe] recordSelfServeEstimate failed` and settle whether the estimator has genuinely had no completed submissions or the telemetry insert has been failing silently. Cheap, and it decides whether any estimator metric means anything.
+- **Row 405:** six closed-unmerged branches still carry commits that never reached master (`naldo/s61-postclose-delta2` 4 commits, `naldo/223-named-morning-brief` 4, plus `naldo/s59-close`, `naldo/s57-postclose`, `naldo/s50-journal-3`, `naldo/s47-close` at 1 each). Almost certainly superseded close notes, but that was checked by commit ancestry only, not content. Decide ship-or-drop per branch, then prune.
+- **Row 406:** `/estimate` sets `robots: index, follow` but exports no `alternates.canonical`. One line.
+- **Nothing is unpushed anywhere:** every local branch is in sync with its remote, no stashes, all worktrees clean. Two verification worktrees are left on disk (`C:\dev\wt-verify-master`, `C:\dev\wt-s68-close`) and can be pruned.
+- **Still open from S67:** the four Bouncie API facts, the lens round on PR #945 before any merge, and the geocode backfill dry run.
 
 **▶▶ Next up (after Jason S49, 2026-08-25) — READ THIS FIRST (quote-tool lane).** Master `90cb1c97`, gates green (tsc 0 · lint 0 errors / 19 pre-existing warnings · vitest **417 files / 7518 tests**). S49 shipped rows **378 · 385 · 387 · 383 · 348** plus a ledger truth-up, across PRs #931/#932/#933/#934/#937/#935/#936 — all merged + live.
 
