@@ -11,6 +11,7 @@ import { NceBadge } from '@/components/admin/NceBadge';
 import { StaffNotesPanel } from '@/components/admin/StaffNotesPanel';
 import { reconcileInvoice } from '@/lib/invoices';
 import { isSupersededPendingAmendment, resolveAmendmentBasis } from '@/lib/amend';
+import { priorCollectedWarning } from '@/lib/quoteAmendInvoiceSync';
 import type { JobDetail } from '@/lib/jobs';
 import { JobsListSkeleton } from '../JobsListSkeleton';
 
@@ -462,6 +463,33 @@ export default function JobDetailPage() {
                 portal; the order itself stays booked. Until they sign it, collecting the balance is blocked
                 for a price INCREASE only (a decrease never blocks, and the invoice page can override).
               </p>
+              {/* Row 395 fix round 2 (delta-verify MED, real): moved here from
+                  /admin/invoices/[id] (Jason's ruling), but relocating alone
+                  didn't fix what row 395 was actually about — this panel
+                  rendered unconditionally on every view, same as the removed
+                  page, just on a screen staff open more often. Measured
+                  against prod: all 4 real invoices satisfy
+                  priorBalanceCollectedUsd > 0, so "smaller population" was
+                  never true either.
+                  Gated on amendReason having content, not just data.invoice
+                  existing — this is the actual point of use: the inferred
+                  figure only drives money once computeInvoiceResyncTotals
+                  runs on submit, and typing a reason is the operator
+                  starting exactly that. An untouched page (the common case —
+                  most visits here are to LOOK, not amend) now stays quiet.
+                  Sits ABOVE the textarea, same as before: it appears the
+                  instant a reason is typed, before the sibling "customer
+                  sees this" caution has been read past. */}
+              {data.invoice &&
+                amendReason.trim().length > 0 &&
+                (() => {
+                  const priorNote = priorCollectedWarning(data.invoice!);
+                  return priorNote ? (
+                    <div className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                      {priorNote}
+                    </div>
+                  ) : null;
+                })()}
               {/* Jason 2026-08-19: this reason is NOT an internal note — the portal's
                   AmendmentConsentCard renders it verbatim to the customer while the
                   re-consent is pending (src/components/portal/snowglobe/AmendmentConsentCard.tsx).

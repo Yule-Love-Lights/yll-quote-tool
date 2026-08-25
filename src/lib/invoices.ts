@@ -401,6 +401,16 @@ export type InvoiceAdminCard = {
   // mirroring JobAdminCard's precedence.
   highlevelContactId: string | null;
   customerId: string | null;
+  // Row 396 (LOW): the linked quote's raw approval_snapshot, so
+  // /admin/invoices can derive isStaleInvoiceSnapshot(...) the same way
+  // the dashboard board already does (queries.ts) — until now this list/
+  // detail data path never learned `stale` at all, so the same invoice read
+  // differently on the two surfaces. Deliberately the raw snapshot, not a
+  // pre-computed boolean: isStaleInvoiceSnapshot lives in
+  // quoteAmendInvoiceSync.ts, and importing it here would create a circular
+  // module dependency (that file already imports FROM this one). null when
+  // the invoice has no linked quote or the quote has no snapshot yet.
+  quoteApprovalSnapshot: Record<string, unknown> | null;
 };
 
 /**
@@ -418,12 +428,20 @@ export async function listInvoicesForAdmin(limit = 500): Promise<InvoiceAdminCar
   const quoteIds = [...new Set(invoices.map((i) => i.quote_id).filter((x): x is string => !!x))];
   const byQuote = new Map<
     string,
-    { name: string | null; address: string | null; isTest: boolean; isNce: boolean; highlevelContactId: string | null; customerId: string | null }
+    {
+      name: string | null;
+      address: string | null;
+      isTest: boolean;
+      isNce: boolean;
+      highlevelContactId: string | null;
+      customerId: string | null;
+      approvalSnapshot: Record<string, unknown> | null;
+    }
   >();
   if (quoteIds.length) {
     const { data } = await db
       .from('quotes')
-      .select('id, customer_name, customer_address, is_test, is_nce, highlevel_contact_id, customer_id')
+      .select('id, customer_name, customer_address, is_test, is_nce, highlevel_contact_id, customer_id, approval_snapshot')
       .in('id', quoteIds);
     for (const q of (data ?? []) as {
       id: string;
@@ -433,6 +451,7 @@ export async function listInvoicesForAdmin(limit = 500): Promise<InvoiceAdminCar
       is_nce: boolean | null;
       highlevel_contact_id: string | null;
       customer_id: string | null;
+      approval_snapshot: Record<string, unknown> | null;
     }[]) {
       byQuote.set(q.id, {
         name: q.customer_name ?? null,
@@ -441,6 +460,7 @@ export async function listInvoicesForAdmin(limit = 500): Promise<InvoiceAdminCar
         isNce: !!q.is_nce,
         highlevelContactId: q.highlevel_contact_id ?? null,
         customerId: q.customer_id ?? null,
+        approvalSnapshot: q.approval_snapshot ?? null,
       });
     }
   }
@@ -464,6 +484,7 @@ export async function listInvoicesForAdmin(limit = 500): Promise<InvoiceAdminCar
       paidAt: inv.paid_at,
       highlevelContactId: c?.highlevelContactId ?? null,
       customerId: inv.customer_id ?? c?.customerId ?? null,
+      quoteApprovalSnapshot: c?.approvalSnapshot ?? null,
     };
   });
 }

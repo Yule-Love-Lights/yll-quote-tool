@@ -41,30 +41,30 @@ describe('computeWorkflowBoard', () => {
         deposit_paid_at: '2026-06-04T00:00:00Z',
       }),
     ]);
-    expect(board.quotes.draft).toEqual({ count: 2, totalUsd: 3000 });
-    expect(board.quotes.awaitingResponse).toEqual({ count: 1, totalUsd: 1500 });
-    expect(board.quotes.approved).toEqual({ count: 1, totalUsd: 3000 });
-    expect(board.quotes.booked).toEqual({ count: 1, totalUsd: 4000 });
+    expect(board.quotes.draft).toEqual({ count: 2, totalUsd: 3000, staleCount: 0 });
+    expect(board.quotes.awaitingResponse).toEqual({ count: 1, totalUsd: 1500, staleCount: 0 });
+    expect(board.quotes.approved).toEqual({ count: 1, totalUsd: 3000, staleCount: 0 });
+    expect(board.quotes.booked).toEqual({ count: 1, totalUsd: 4000, staleCount: 0 });
   });
 
   it('treats a null total as 0 in the sum', () => {
     const board = computeWorkflowBoard([mkQuote({ id: 'a', total: null })]);
-    expect(board.quotes.draft).toEqual({ count: 1, totalUsd: 0 });
+    expect(board.quotes.draft).toEqual({ count: 1, totalUsd: 0, staleCount: 0 });
   });
 
   it('returns zeroed buckets for an empty list', () => {
     const board = computeWorkflowBoard([]);
-    expect(board.quotes.draft).toEqual({ count: 0, totalUsd: 0 });
-    expect(board.quotes.awaitingResponse).toEqual({ count: 0, totalUsd: 0 });
-    expect(board.quotes.approved).toEqual({ count: 0, totalUsd: 0 });
-    expect(board.quotes.booked).toEqual({ count: 0, totalUsd: 0 });
+    expect(board.quotes.draft).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
+    expect(board.quotes.awaitingResponse).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
+    expect(board.quotes.approved).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
+    expect(board.quotes.booked).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
   });
 
   it('zeroes every jobs bucket when no jobs are passed', () => {
     const board = computeWorkflowBoard([mkQuote()]);
-    expect(board.jobs.to_schedule).toEqual({ count: 0, totalUsd: 0 });
-    expect(board.jobs.done).toEqual({ count: 0, totalUsd: 0 });
-    expect(board.jobs.cancelled).toEqual({ count: 0, totalUsd: 0 });
+    expect(board.jobs.to_schedule).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
+    expect(board.jobs.done).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
+    expect(board.jobs.cancelled).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
   });
 });
 
@@ -84,7 +84,7 @@ describe('computeWorkflowBoard — cancelled orders excluded from booked bucket 
         status: 'cancelled',
       }),
     ]);
-    expect(board.quotes.booked).toEqual({ count: 0, totalUsd: 0 });
+    expect(board.quotes.booked).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
   });
 
   it('a cancelled order with customer_approved_at does NOT count as approved', () => {
@@ -97,7 +97,7 @@ describe('computeWorkflowBoard — cancelled orders excluded from booked bucket 
         status: 'cancelled',
       }),
     ]);
-    expect(board.quotes.approved).toEqual({ count: 0, totalUsd: 0 });
+    expect(board.quotes.approved).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
     // A cancelled quote should not inflate any forward-progress bucket
     expect(board.quotes.booked.count + board.quotes.approved.count + board.quotes.awaitingResponse.count).toBe(0);
   });
@@ -108,9 +108,9 @@ describe('computeWorkflowBoard — cancelled orders excluded from booked bucket 
       mkQuote({ id: 'l', total: 1500, quote_sent_at: '2026-06-02T00:00:00Z', status: 'abandoned' }),
     ]);
     // Neither should appear in awaitingResponse (even though they have quote_sent_at)
-    expect(board.quotes.awaitingResponse).toEqual({ count: 0, totalUsd: 0 });
-    expect(board.quotes.draft).toEqual({ count: 0, totalUsd: 0 });
-    expect(board.quotes.booked).toEqual({ count: 0, totalUsd: 0 });
+    expect(board.quotes.awaitingResponse).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
+    expect(board.quotes.draft).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
+    expect(board.quotes.booked).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
   });
 
   it('a non-cancelled booked order still counts correctly', () => {
@@ -124,7 +124,7 @@ describe('computeWorkflowBoard — cancelled orders excluded from booked bucket 
         status: 'booked',
       }),
     ]);
-    expect(board.quotes.booked).toEqual({ count: 1, totalUsd: 4000 });
+    expect(board.quotes.booked).toEqual({ count: 1, totalUsd: 4000, staleCount: 0 });
   });
 });
 
@@ -139,34 +139,34 @@ describe('computeWorkflowBoard — jobs column', () => {
         mkJob('done', 4000),
       ],
     );
-    expect(board.jobs.to_schedule).toEqual({ count: 2, totalUsd: 2000 });
-    expect(board.jobs.scheduled).toEqual({ count: 1, totalUsd: 2000 });
-    expect(board.jobs.done).toEqual({ count: 1, totalUsd: 4000 });
-    expect(board.jobs.installed).toEqual({ count: 0, totalUsd: 0 });
+    expect(board.jobs.to_schedule).toEqual({ count: 2, totalUsd: 2000, staleCount: 0 });
+    expect(board.jobs.scheduled).toEqual({ count: 1, totalUsd: 2000, staleCount: 0 });
+    expect(board.jobs.done).toEqual({ count: 1, totalUsd: 4000, staleCount: 0 });
+    expect(board.jobs.installed).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
   });
 
   it('treats an unknown/legacy/null job status as to_schedule (never drops a row)', () => {
     const board = computeWorkflowBoard([], [mkJob('bogus', 100), mkJob(null, 50)]);
-    expect(board.jobs.to_schedule).toEqual({ count: 2, totalUsd: 150 });
+    expect(board.jobs.to_schedule).toEqual({ count: 2, totalUsd: 150, staleCount: 0 });
   });
 
   it('treats null line_items as 0 in the job total', () => {
     const board = computeWorkflowBoard([], [{ status: 'scheduled', line_items: null }]);
-    expect(board.jobs.scheduled).toEqual({ count: 1, totalUsd: 0 });
+    expect(board.jobs.scheduled).toEqual({ count: 1, totalUsd: 0, staleCount: 0 });
   });
 });
 
-function mkInvoice(status: string | null, balance: number | null): WorkflowInvoice {
-  return { status, balance };
+function mkInvoice(status: string | null, balance: number | null, stale?: boolean): WorkflowInvoice {
+  return { status, balance, stale };
 }
 
 describe('computeWorkflowBoard — invoices column (#83 Phase 3 wired)', () => {
   it('zeroes every invoices bucket when no invoices are passed', () => {
     const board = computeWorkflowBoard([mkQuote()]);
-    expect(board.invoices.draft).toEqual({ count: 0, totalUsd: 0 });
-    expect(board.invoices.awaiting_payment).toEqual({ count: 0, totalUsd: 0 });
-    expect(board.invoices.paid).toEqual({ count: 0, totalUsd: 0 });
-    expect(board.invoices.cancelled).toEqual({ count: 0, totalUsd: 0 });
+    expect(board.invoices.draft).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
+    expect(board.invoices.awaiting_payment).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
+    expect(board.invoices.paid).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
+    expect(board.invoices.cancelled).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
   });
 
   it('buckets invoices by status, summing the outstanding balance for the total', () => {
@@ -181,19 +181,45 @@ describe('computeWorkflowBoard — invoices column (#83 Phase 3 wired)', () => {
         mkInvoice('cancelled', 800),
       ],
     );
-    expect(board.invoices.draft).toEqual({ count: 1, totalUsd: 1000 });
-    expect(board.invoices.awaiting_payment).toEqual({ count: 2, totalUsd: 3000 });
-    expect(board.invoices.paid).toEqual({ count: 1, totalUsd: 0 });
-    expect(board.invoices.cancelled).toEqual({ count: 1, totalUsd: 800 });
+    expect(board.invoices.draft).toEqual({ count: 1, totalUsd: 1000, staleCount: 0 });
+    expect(board.invoices.awaiting_payment).toEqual({ count: 2, totalUsd: 3000, staleCount: 0 });
+    expect(board.invoices.paid).toEqual({ count: 1, totalUsd: 0, staleCount: 0 });
+    expect(board.invoices.cancelled).toEqual({ count: 1, totalUsd: 800, staleCount: 0 });
   });
 
   it('treats an unknown/legacy/null invoice status as draft (never drops a row)', () => {
     const board = computeWorkflowBoard([], [], [mkInvoice('bogus', 100), mkInvoice(null, 50)]);
-    expect(board.invoices.draft).toEqual({ count: 2, totalUsd: 150 });
+    expect(board.invoices.draft).toEqual({ count: 2, totalUsd: 150, staleCount: 0 });
   });
 
   it('treats a null balance as 0 in the invoice total', () => {
     const board = computeWorkflowBoard([], [], [mkInvoice('awaiting_payment', null)]);
-    expect(board.invoices.awaiting_payment).toEqual({ count: 1, totalUsd: 0 });
+    expect(board.invoices.awaiting_payment).toEqual({ count: 1, totalUsd: 0, staleCount: 0 });
+  });
+});
+
+describe('computeWorkflowBoard — invoices column staleCount (row 389)', () => {
+  it('FLAGS a stale invoice rather than excluding it — the total still sums its balance', () => {
+    const board = computeWorkflowBoard(
+      [],
+      [],
+      [mkInvoice('awaiting_payment', 500, true), mkInvoice('awaiting_payment', 300, false)],
+    );
+    // Both balances are still counted — row 389 says flag, never silently drop.
+    expect(board.invoices.awaiting_payment).toEqual({ count: 2, totalUsd: 800, staleCount: 1 });
+  });
+
+  it('leaves staleCount at 0 when no invoice in the bucket is stale', () => {
+    const board = computeWorkflowBoard([], [], [mkInvoice('draft', 100, false)]);
+    expect(board.invoices.draft.staleCount).toBe(0);
+  });
+
+  it('counts more than one stale invoice in the same bucket', () => {
+    const board = computeWorkflowBoard(
+      [],
+      [],
+      [mkInvoice('draft', 100, true), mkInvoice('draft', 200, true), mkInvoice('draft', 50, false)],
+    );
+    expect(board.invoices.draft).toEqual({ count: 3, totalUsd: 350, staleCount: 2 });
   });
 });

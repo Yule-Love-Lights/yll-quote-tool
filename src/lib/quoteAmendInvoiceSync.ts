@@ -66,6 +66,58 @@ export function priorBalanceCollectedUsd(invoiceRow: {
   return round2(Math.max(0, total - balance - depositApplied));
 }
 
+// Row 395 fix (two independent review lenses, HIGH): moved here from
+// src/app/admin/invoices/[id]/page.tsx, where it rendered UNCONDITIONALLY on
+// every invoice with `priorBalanceCollectedUsd(inv) > 0` — which is the
+// NORMAL state of any fully-paid invoice (once balance hits 0, `total −
+// balance` stops equalling deposit_applied alone by construction; see that
+// function's own comment). Confirmed against all four real prod invoices —
+// all four permanently paid, all four would show it forever. A caution that
+// fires on 100% of settled invoices trains staff to ignore every amber box
+// on the page.
+//
+// Jason's ruling (row 395): relocate to the point of USE — the "Record
+// amendment" panel on /admin/jobs/[id], the only screen where this
+// inference actually drives money (computeInvoiceResyncTotals' balance math
+// on a re-price) — and remove the invoice detail page's copy entirely.
+// Same formula/copy as the removed version, just re-homed; kept a pure text
+// builder (no IO) so it stays trivially unit-testable without jsdom, which
+// this repo doesn't have.
+export function priorCollectedWarning(inv: {
+  total?: number | null;
+  balance?: number | null;
+  deposit_applied?: number | null;
+}): string | null {
+  const collected = priorBalanceCollectedUsd(inv);
+  if (collected <= 0) return null;
+  const collectedUsd = `$${collected.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return (
+    `Invoice math assumes ${collectedUsd} has already been collected beyond the deposit. ` +
+    `If a refund was issued manually in Valor against this invoice, that figure — and the balance this ` +
+    `amendment computes — may be wrong. Verify in Valor before relying on it.`
+  );
+}
+
+// Row 389 (S, admin lens MED): a quote's approval_snapshot carries a durable
+// marker whenever this repo already KNOWS its linked invoice's total/balance
+// is provisional — either a customer charge was refused because the invoice
+// didn't match the agreed total (`paymentBlocked`, written by pay-balance/
+// route.ts) or a staff-side re-sync itself failed to land
+// (`invoiceResyncFailed`, written by flagInvoiceResyncFailed below). Row 378
+// and row 341 deliberately FREEZE both cases rather than correcting them —
+// money must not move on a number we cannot stand behind — but a report
+// (workflowBoard.ts's Invoices column, needsAction.ts's collect-balance nag)
+// that keeps summing/quoting the frozen figure with no indicator is exactly
+// the gap this row named. Pure, no IO — the ONE place both dashboard call
+// sites import this from, so the two marker names can't drift apart between
+// them (the same reasoning FIX A gives for a shared money formula, applied to
+// a shared STALENESS check instead).
+export function isStaleInvoiceSnapshot(
+  approvalSnapshot: { paymentBlocked?: unknown; invoiceResyncFailed?: unknown } | null | undefined,
+): boolean {
+  return !!(approvalSnapshot?.paymentBlocked || approvalSnapshot?.invoiceResyncFailed);
+}
+
 // FIX A (delta-verify HIGH, fix round 4): the exact money formula
 // resyncInvoiceToAgreedTotal uses to re-price the invoice — pulled out so the
 // amend route can compute the SAME figures BEFORE it persists the amendment
@@ -349,6 +401,25 @@ export async function resyncInvoiceToAgreedTotal(args: ResyncInvoiceArgs): Promi
       // reflecting these figures.
       outcome.resynced = true;
 
+      // Row 394 fix (two independent reviewers, HIGH): a successful re-sync
+      // is the only PROVABLE resolution for isStaleInvoiceSnapshot's two
+      // markers, and this branch just wrote the invoice to exactly the
+      // figures resolveAgreedTotal(<the caller's current snapshot>,
+      // quote.result) resolves to — both amend/route.ts and
+      // amend-decline/route.ts derive `newTotal` (this function's own
+      // parameter) that way, from the snapshot state that is already
+      // persisted by the time this call runs. That is the identical
+      // condition both markers exist to flag a violation of:
+      //   - invoiceResyncFailed: trivially resolved — this IS the
+      //     successful resync (possibly a later one than the failed one).
+      //   - paymentBlocked: pay-balance's guard 409s a payment when
+      //     invoice.balance disagrees with that same resolveAgreedTotal-
+      //     derived figure. A successful resync makes that disagreement
+      //     false by construction, so the condition that tripped the guard
+      //     no longer holds.
+      // Best-effort, never blocks the caller's own success.
+      await clearInvoiceStaleMarkers(invoiceForSync, logPrefix);
+
       // #170(b): reopening a PAID invoice starts a NEW charge cycle — retire the
       // settled txn to valor_txn_log and clear the live slot, or the next card
       // charge 409s 'already-charged' against LAST cycle's txn (the misleading
@@ -506,5 +577,57 @@ async function flagInvoiceResyncFailed(
     }
   } catch (err) {
     console.error(`${logPrefix} failed to flag the invoice re-sync failure on the quote:`, err);
+  }
+}
+
+// Row 394 fix: the CLEAR side of isStaleInvoiceSnapshot's two markers,
+// called only from resyncInvoiceToAgreedTotal's own success branch above —
+// see the comment at that call site for which markers a successful resync
+// actually proves resolved (both) and why. Same shape as
+// flagInvoiceResyncFailed: read-then-CAS on the exact prior snapshot, drop
+// (never retry, never blind-overwrite) on a lost race, never throws. Scoped
+// to exactly the two marker keys — every other approval_snapshot field
+// (amendments, invoice_basis, pendingColorRequest, ...) rides through
+// untouched, via object-rest-destructure rather than a blind merge.
+async function clearInvoiceStaleMarkers(invoiceForSync: InvoiceRow, logPrefix: string): Promise<void> {
+  if (!invoiceForSync.quote_id) return;
+  try {
+    const sb = getSupabaseServiceClient();
+    if (!sb) return;
+    const { data: quoteRow } = await sb
+      .from('quotes')
+      .select('approval_snapshot')
+      .eq('id', invoiceForSync.quote_id)
+      .maybeSingle<{ approval_snapshot: Record<string, unknown> | null }>();
+    const priorSnapshot = quoteRow?.approval_snapshot ?? null;
+    if (!priorSnapshot || (!priorSnapshot.paymentBlocked && !priorSnapshot.invoiceResyncFailed)) {
+      return; // nothing to clear
+    }
+    const nextSnapshot = Object.fromEntries(
+      Object.entries(priorSnapshot).filter(([key]) => key !== 'paymentBlocked' && key !== 'invoiceResyncFailed'),
+    );
+    const { data: updated, error } = await sb
+      .from('quotes')
+      .update({ approval_snapshot: nextSnapshot })
+      .eq('id', invoiceForSync.quote_id)
+      // Serialize jsonb explicitly — PostgREST string-interpolates filter
+      // values; passing the object directly would produce "[object Object]"
+      // and never match (same reasoning as every sibling CAS in this repo).
+      .eq('approval_snapshot', JSON.stringify(priorSnapshot))
+      .select('id');
+    if (error) {
+      console.error(`${logPrefix} failed to clear the stale-invoice markers on the quote:`, error);
+      return;
+    }
+    if (!updated || updated.length === 0) {
+      // Lost the race — drop the clear; do NOT retry and do NOT
+      // blind-overwrite whatever concurrent write just landed. The marker
+      // simply stays until the NEXT successful resync clears it.
+      console.warn(
+        `${logPrefix} stale-invoice marker clear lost a concurrent write to quote ${invoiceForSync.quote_id}'s approval_snapshot — dropped (best-effort, not retried)`,
+      );
+    }
+  } catch (err) {
+    console.error(`${logPrefix} failed to clear the stale-invoice markers on the quote:`, err);
   }
 }
