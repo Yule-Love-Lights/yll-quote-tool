@@ -654,8 +654,9 @@ describe('POST /api/jobs/[id]/cancel — Row 325 stock_deductions snapshot', () 
     expect(res.status).toBe(200);
     expect(adjustOnHandAtomicMock).not.toHaveBeenCalled();
     expect(json.stockReturned).toEqual([]);
-    expect(json.note).toMatch(/never durably recorded/i);
-    expect(json.note).toMatch(/check on-hand manually/i);
+    expect(json.note).toMatch(/snapshot failed to save/i);
+    expect(json.note).toMatch(/durably recorded in job_stock_movements/i);
+    expect(json.note).toMatch(/reconcile on-hand manually/i);
     // Distinct message from the true-legacy caveat — this is not "reconstructed
     // and may not match", it's "nothing was reconstructed at all".
     expect(json.note).not.toMatch(/no per-prep snapshot/i);

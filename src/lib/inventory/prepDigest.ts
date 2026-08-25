@@ -91,7 +91,7 @@ export function prepDigestMessage(cards: FulfillmentCard[], baseUrl: string): st
   }
   if (stuck.length) {
     lines.push(
-      `⚠️ ${stuck.length} job(s) prepped but the exact stock taken was never durably recorded — reconcile manually: ${stuck
+      `⚠️ ${stuck.length} job(s) prepped but the per-job snapshot failed to save — the exact stock taken is recorded in job_stock_movements (reason: 'prep'), not on the job row; reconcile manually: ${stuck
         .map(jobLine)
         .join(', ')}`,
     );

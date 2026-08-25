@@ -104,8 +104,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       // same +qty, over-crediting on-hand into phantom stock. Atomically CLAIM
       // the reversal by clearing stock_decremented_at WHERE it's still set
       // (the INVERSE of prepareJobMaterials's NULL→now claim); only the caller
-      // that flips it non-null → NULL runs the return. The job is terminal
-      // (cancelled), so it's never re-prepped and the cleared marker is inert.
+      // that flips it non-null → NULL runs the return. Note this clears
+      // stock_decremented_at back to the exact NULL state prepareJobMaterials's
+      // own atomic claim (`.is('stock_decremented_at', null)`) re-claims —
+      // prepareJobMaterials has no job-status gate, so a cancelled job CAN be
+      // re-prepped later (see jobsPrepare.test.ts's "re-prep after a cancel
+      // reversal" case), and this clearing is exactly what makes that possible.
       // Clearing stock_deductions unconditionally here also closes out the
       // pending-sentinel state below — a cancelled job never carries it.
       const { data: claimed } = await stockSb
@@ -119,9 +123,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         const snapshot = wo.job.stockDeductions;
         if (snapshot === PENDING_STOCK_SNAPSHOT) {
           // Finding 1: refuse, don't guess. A wrong stock credit is worse
-          // than a refusal that asks a human to look.
+          // than a refusal that asks a human to look. Row 397: this does NOT
+          // mean the exact deduction is lost — prepareJobMaterials writes it
+          // to job_stock_movements (reason: 'prep') unconditionally, even
+          // when this per-job snapshot column failed to save. What failed is
+          // only the automatic reversal path, which reads this column, not
+          // the durable record itself.
           stockReturnNote =
-            'This job was prepped, but the exact stock it deducted was never durably recorded (a transient save failure right after prep) — nothing was automatically returned to stock. Check on-hand manually against this job\'s materials before restocking.';
+            'This job was prepped, but the per-job stock_deductions snapshot failed to save right after prep (a transient error) — nothing was automatically returned to stock. What prep actually took off the shelf is durably recorded in job_stock_movements (reason: \'prep\') for this job; use that record to reconcile on-hand manually before restocking.';
         } else {
           // Row 325: prefer the snapshot prep actually deducted. Only fall
           // back to a live reconstruction when no snapshot exists AT ALL — a

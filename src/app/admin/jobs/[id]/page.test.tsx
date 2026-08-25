@@ -29,7 +29,7 @@ describe('cancelActionMessage', () => {
 
   it('cues on stockNeedsAttention even when no refund is owed (the fix round 3 gap)', () => {
     const note =
-      "This job was prepped, but the exact stock it deducted was never durably recorded (a transient save failure right after prep) — nothing was automatically returned to stock. Check on-hand manually against this job's materials before restocking.";
+      "This job was prepped, but the per-job stock_deductions snapshot failed to save right after prep (a transient error) — nothing was automatically returned to stock. What prep actually took off the shelf is durably recorded in job_stock_movements (reason: 'prep') for this job; use that record to reconcile on-hand manually before restocking.";
     expect(cancelActionMessage({ refundNeeded: false, stockNeedsAttention: true, note })).toBe(
       `⚠️ Order cancelled. ${note}`,
     );
