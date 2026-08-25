@@ -38,6 +38,25 @@ describe('StaffNotesList — the older-notes control (row 373)', () => {
     expect(html).not.toContain('Show older notes');
   });
 
+  // Staff lens MED: a failed older-page fetch used to render its message down
+  // inside the "Add an internal note" form, reading like a failed SAVE, in the
+  // loader's generic wording ("Could not load notes" — as if there were none).
+  it('shows an older-page failure beside the button, and says the notes are still there', () => {
+    const html = renderToStaticMarkup(
+      <StaffNotesList
+        notes={[NOTE]}
+        loading={false}
+        hasMore
+        olderError="Could not load the older notes. They are still there — try again."
+        onLoadMore={() => {}}
+      />,
+    );
+    expect(html).toContain('still there');
+    expect(html).toContain('role="alert"');
+    // The button survives the failure — those notes have not gone anywhere.
+    expect(html).toContain('Show older notes');
+  });
+
   it('disables the control while an older page is in flight', () => {
     const html = renderToStaticMarkup(
       <StaffNotesList notes={[NOTE]} loading={false} hasMore loadingMore onLoadMore={() => {}} />,

@@ -104,6 +104,7 @@ export function StaffNotesList({
   onRetry,
   hasMore = false,
   loadingMore = false,
+  olderError = null,
   onLoadMore,
 }: {
   notes: StaffNote[];
@@ -116,6 +117,9 @@ export function StaffNotesList({
   /** Row 373: older notes exist beyond the loaded page. */
   hasMore?: boolean;
   loadingMore?: boolean;
+  /** Row 373: a failed older-page fetch, shown BESIDE the button that caused
+   *  it rather than in the note-writing form at the far bottom of the panel. */
+  olderError?: string | null;
   onLoadMore?: () => void;
 }) {
   return (
@@ -165,6 +169,11 @@ export function StaffNotesList({
               >
                 {loadingMore ? 'Loading…' : 'Show older notes'}
               </button>
+              {olderError && (
+                <p role="alert" className="mt-1 text-xs text-red-700">
+                  {olderError}
+                </p>
+              )}
             </li>
           )}
         </ol>
@@ -184,6 +193,12 @@ export function StaffNotesPanel({ quoteId }: { quoteId: string }) {
   // notes" fetch is in flight.
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  // Row 373 (staff lens MED): the older-page failure gets its OWN state. Routed
+  // through the shared `error` it rendered down inside the "Add an internal
+  // note" form, indistinguishable from a failed SAVE, and carried the loader's
+  // generic wording — so a staffer could read it as "note not saved", or miss
+  // it entirely and walk away believing there was nothing older to see.
+  const [olderError, setOlderError] = useState<string | null>(null);
   const pendingSubmissionRef = useRef<StaffNoteSubmission | null>(null);
   const loadGenerationRef = useRef(0);
   const [reloadKey, setReloadKey] = useState(0);
@@ -201,6 +216,7 @@ export function StaffNotesPanel({ quoteId }: { quoteId: string }) {
       setLoadFailed(false);
       setHasMore(false);
       setLoadingMore(false);
+      setOlderError(null);
       pendingSubmissionRef.current = null;
       void loadStaffNotes(quoteId)
         .then((page) => {
@@ -234,17 +250,19 @@ export function StaffNotesPanel({ quoteId }: { quoteId: string }) {
     if (!cursor) return;
     const generation = loadGenerationRef.current;
     setLoadingMore(true);
-    setError(null);
+    setOlderError(null);
     try {
       const page = await loadStaffNotes(quoteId, fetch, cursor);
       if (generation !== loadGenerationRef.current) return;
       setNotes((current) => mergeStaffNotes(current, page.notes));
       setHasMore(page.hasMore);
-    } catch (err) {
+    } catch {
       if (generation !== loadGenerationRef.current) return;
       // Deliberately does NOT clear hasMore: the older notes still exist, the
-      // fetch just failed, so the button must stay available to retry.
-      setError(err instanceof Error ? err.message : 'Could not load older notes');
+      // fetch just failed, so the button stays available to retry. The message
+      // is written here rather than passed through from the loader, whose
+      // wording ("Could not load notes") reads as though there are none.
+      setOlderError('Could not load the older notes. They are still there — try again.');
     } finally {
       if (generation === loadGenerationRef.current) setLoadingMore(false);
     }
@@ -283,6 +301,7 @@ export function StaffNotesPanel({ quoteId }: { quoteId: string }) {
         onRetry={() => setReloadKey((n) => n + 1)}
         hasMore={hasMore}
         loadingMore={loadingMore}
+        olderError={olderError}
         onLoadMore={() => void loadMore()}
       />
       <form onSubmit={submit} className="mt-4 border-t border-gray-100 pt-4">
