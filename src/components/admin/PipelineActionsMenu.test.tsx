@@ -28,7 +28,7 @@ describe('cancelAlertMessage', () => {
   });
 
   it('cues on stockNeedsAttention even when no refund is owed (the fix round 3 gap)', () => {
-    const note = 'never durably recorded — check on-hand manually.';
+    const note = 'the per-job snapshot failed to save — reconcile on-hand manually.';
     expect(cancelAlertMessage({ refundNeeded: false, stockNeedsAttention: true, note })).toBe(
       `⚠️ Order cancelled. ${note}`,
     );

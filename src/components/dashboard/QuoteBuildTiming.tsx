@@ -48,7 +48,8 @@ export function QuoteBuildTiming({
                 <th className="pb-2 px-4 text-right font-medium">Quotes</th>
                 <th className="pb-2 px-4 text-right font-medium">Average</th>
                 <th className="pb-2 px-4 text-right font-medium">Median</th>
-                <th className="pb-2 pl-4 text-right font-medium">P90</th>
+                <th className="pb-2 px-4 text-right font-medium">P90</th>
+                <th className="pb-2 pl-4 text-right font-medium" title="Sessions left out of these figures because they ran past the two-hour idle cap. A quote left open over lunch measures interruption, not effort.">Not counted</th>
               </tr>
             </thead>
             <tbody>
@@ -56,9 +57,10 @@ export function QuoteBuildTiming({
                 <tr key={stat.operatorId ?? `former:${stat.operatorLabel}`} className="border-t" style={{ borderColor: 'var(--op-border)' }}>
                   <td className="py-2 pr-4" style={{ color: 'var(--op-text)' }}>{stat.operatorLabel}</td>
                   <td className="py-2 px-4 text-right tabular-nums" style={{ color: 'var(--op-text-2)' }}>{stat.count}</td>
-                  <td className="py-2 px-4 text-right tabular-nums" style={{ color: 'var(--op-text-2)' }}>{duration(stat.averageSeconds)}</td>
-                  <td className="py-2 px-4 text-right tabular-nums" style={{ color: 'var(--op-text-2)' }}>{duration(stat.medianSeconds)}</td>
-                  <td className="py-2 pl-4 text-right tabular-nums" style={{ color: 'var(--op-text-2)' }}>{duration(stat.p90Seconds)}</td>
+                  <td className="py-2 px-4 text-right tabular-nums" style={{ color: 'var(--op-text-2)' }}>{stat.count === 0 ? '—' : duration(stat.averageSeconds)}</td>
+                  <td className="py-2 px-4 text-right tabular-nums" style={{ color: 'var(--op-text-2)' }}>{stat.count === 0 ? '—' : duration(stat.medianSeconds)}</td>
+                  <td className="py-2 px-4 text-right tabular-nums" style={{ color: 'var(--op-text-2)' }}>{stat.count === 0 ? '—' : duration(stat.p90Seconds)}</td>
+                  <td className="py-2 pl-4 text-right tabular-nums" style={{ color: 'var(--op-text-dim)' }}>{stat.excludedCount || '—'}</td>
                 </tr>
               ))}
             </tbody>

@@ -73,6 +73,7 @@ const card = (over: Partial<FulfillmentCard>): FulfillmentCard => ({
   isTest: false,
   highlevelContactId: null,
   customerId: null,
+  stockSnapshotPending: false,
   ...over,
 });
 

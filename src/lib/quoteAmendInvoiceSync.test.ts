@@ -38,7 +38,12 @@ vi.mock('@/lib/invoices', async (importOriginal) => {
   return { ...actual, getInvoiceByJob: getInvoiceByJobMock, appendRetiredTxn: appendRetiredTxnMock };
 });
 
-import { resyncInvoiceToAgreedTotal, computeInvoiceResyncTotals } from './quoteAmendInvoiceSync';
+import {
+  resyncInvoiceToAgreedTotal,
+  computeInvoiceResyncTotals,
+  isStaleInvoiceSnapshot,
+  priorCollectedWarning,
+} from './quoteAmendInvoiceSync';
 
 // Table-aware fake matching the two calls this module (+ its row-341 marker
 // helper) make against Supabase:
@@ -547,6 +552,221 @@ describe('flagInvoiceResyncFailed — CAS on approval_snapshot (row 341 fix roun
   });
 });
 
+// Row 394 fix round 2 (delta-verify LOW — a test-name-claims-more-than-it-
+// proves finding, this repo's own named pitfall): the ORIGINAL "drops the
+// clear... when the CAS loses a concurrent write" test below simulated the
+// lost race with a canned `quoteUpdateResult: 'raced'` flag on the shared
+// makeSb() fake — a flag whose truthiness is INDEPENDENT of what the code
+// actually sends in `.eq('approval_snapshot', ...)`. A mutation probe
+// (deleting that real `.eq()` call from clearInvoiceStaleMarkers) proved it:
+// the test still PASSED, because a DIFFERENT assertion in a DIFFERENT test
+// happened to catch the removal instead. This fake replaces the canned flag
+// with real optimistic-lock semantics — it holds actual server-side state
+// and only accepts a `quotes` update when every filter the caller ACTUALLY
+// sent still matches that state (exactly what Postgres does), so removing
+// the `.eq('approval_snapshot', ...)` call changes the fake's behavior, not
+// just a boolean the test author chose.
+function makeCasAwareQuoteSb(opts: {
+  initialQuoteSnapshot: Record<string, unknown>;
+  invoiceUpdateResults?: Array<'ok' | 'raced'>;
+}) {
+  let quoteSnapshot: Record<string, unknown> = opts.initialQuoteSnapshot;
+  const quoteUpdates: Array<Record<string, unknown>> = [];
+  const results = opts.invoiceUpdateResults ?? ['ok'];
+  let invoiceCallIndex = 0;
+  let table = '';
+  let mode: 'select' | 'update' = 'select';
+  let eqFilters: Array<[string, unknown]> = [];
+  let pendingQuoteUpdate: Record<string, unknown> | null = null;
+  const b: Record<string, unknown> = {};
+  Object.assign(b, {
+    from: (t: string) => {
+      table = t;
+      mode = 'select';
+      eqFilters = [];
+      return b;
+    },
+    update: (payload: Record<string, unknown>) => {
+      mode = 'update';
+      if (table === 'quotes') {
+        quoteUpdates.push(payload);
+        pendingQuoteUpdate = payload;
+      }
+      return b;
+    },
+    eq: (column: string, value: unknown) => {
+      eqFilters.push([column, value]);
+      return b;
+    },
+    select: () => b,
+    maybeSingle: async () => {
+      if (table === 'quotes') {
+        const readValue = quoteSnapshot;
+        // Simulate a concurrent write landing in the EXACT gap between this
+        // read and the CAS write below — deterministic single-threaded
+        // stand-in for "something else committed first," the precise race
+        // clearInvoiceStaleMarkers's CAS exists to detect.
+        quoteSnapshot = {
+          ...quoteSnapshot,
+          amendments: [
+            ...(((quoteSnapshot as { amendments?: unknown[] }).amendments) ?? []),
+            { concurrent: true },
+          ],
+        };
+        return { data: { approval_snapshot: readValue }, error: null };
+      }
+      return { data: null, error: null };
+    },
+    then: (resolve: (v: unknown) => void) => {
+      if (table === 'invoices' && mode === 'update') {
+        const outcome = results[Math.min(invoiceCallIndex, results.length - 1)];
+        invoiceCallIndex++;
+        resolve({ data: outcome === 'ok' ? [{ id: 'inv-1' }] : [], error: null });
+        return;
+      }
+      if (table === 'quotes' && mode === 'update') {
+        // Real CAS semantics: only the filters ACTUALLY sent constrain the
+        // match. Remove the approval_snapshot filter and this succeeds
+        // regardless of drift, exactly like real Postgres would too.
+        const idFilter = eqFilters.find(([c]) => c === 'id');
+        const snapshotFilter = eqFilters.find(([c]) => c === 'approval_snapshot');
+        const idMatches = !idFilter || idFilter[1] === 'quote-1';
+        const snapshotMatches = !snapshotFilter || snapshotFilter[1] === JSON.stringify(quoteSnapshot);
+        if (idMatches && snapshotMatches && pendingQuoteUpdate) {
+          quoteSnapshot = pendingQuoteUpdate.approval_snapshot as Record<string, unknown>;
+          resolve({ data: [{ id: 'quote-1' }], error: null });
+        } else {
+          resolve({ data: [], error: null });
+        }
+        return;
+      }
+      resolve({ data: null, error: null });
+    },
+  });
+  return {
+    client: b,
+    quoteUpdates,
+    get quoteSnapshot() {
+      return quoteSnapshot;
+    },
+  };
+}
+
+describe('resyncInvoiceToAgreedTotal — clears the stale-invoice markers on a SUCCESSFUL resync (row 394)', () => {
+  const invoice: InvoiceRow = {
+    id: 'inv-1',
+    invoice_number: 1,
+    job_id: 'job-1',
+    quote_id: 'quote-1',
+    customer_id: null,
+    subtotal: 2000,
+    discount: 0,
+    tax: 0,
+    total: 2000,
+    deposit_applied: 1000,
+    balance: 1000,
+    credit_note: 0,
+    tax_overridden: false,
+    status: 'awaiting_payment',
+    valor_balance_txn_id: null,
+    valor_receipt_url: null,
+    valor_txn_log: null,
+    payment_preference: null,
+    created_at: '2026-07-01T00:00:00.000Z',
+    paid_at: null,
+    updated_at: '2026-08-01T00:00:00.000Z',
+  };
+
+  it('clears BOTH paymentBlocked and invoiceResyncFailed, preserving every other snapshot key', async () => {
+    const priorSnapshot = {
+      amendments: [{ amended_at: 'x' }],
+      paymentBlocked: { invoiceId: 'inv-1', storedBalance: 1000, expectedBalance: 1400, at: 'a', lastAlertedAt: 'a' },
+      invoiceResyncFailed: { invoiceId: 'inv-1', attemptedTotal: 2400, attemptedBalance: 1400, at: 'b' },
+    };
+    const sb = makeSb({ quoteApprovalSnapshot: priorSnapshot });
+    sbRef.current = sb.client;
+    getInvoiceByJobMock.mockResolvedValue(invoice);
+
+    const outcome = await resyncInvoiceToAgreedTotal({
+      jobId: 'job-1',
+      invoice,
+      result: { total: 2400 },
+      depositPaid: 1000,
+      newTotal: 2400,
+      logPrefix: '[test]',
+      retiredReason: 'amend-reopen',
+    });
+
+    expect(outcome.resynced).toBe(true);
+    // Exactly one quotes-table write: the marker clear (flagInvoiceResyncFailed
+    // never runs on a success path).
+    expect(sb.quoteUpdates).toHaveLength(1);
+    expect(sb.quoteUpdates[0]).toEqual({
+      approval_snapshot: { amendments: [{ amended_at: 'x' }] },
+    });
+    // CASed on the EXACT prior snapshot this call read, same idiom as every
+    // other approval_snapshot writer in this file.
+    expect(sb.quoteEqArgs).toContainEqual(['approval_snapshot', JSON.stringify(priorSnapshot)]);
+  });
+
+  it('is a no-op (no quotes-table write) when neither marker is present', async () => {
+    const priorSnapshot = { amendments: [{ amended_at: 'x' }] };
+    const sb = makeSb({ quoteApprovalSnapshot: priorSnapshot });
+    sbRef.current = sb.client;
+    getInvoiceByJobMock.mockResolvedValue(invoice);
+
+    const outcome = await resyncInvoiceToAgreedTotal({
+      jobId: 'job-1',
+      invoice,
+      result: { total: 2400 },
+      depositPaid: 1000,
+      newTotal: 2400,
+      logPrefix: '[test]',
+      retiredReason: 'amend-reopen',
+    });
+
+    expect(outcome.resynced).toBe(true);
+    expect(sb.quoteUpdates).toHaveLength(0);
+  });
+
+  it('drops the clear (does not throw, does not retry, resync still reports success) when the CAS loses a concurrent write — proven against the fake\'s own server state, not a canned flag', async () => {
+    const initialSnapshot = {
+      amendments: [{ amended_at: 'x' }],
+      paymentBlocked: { invoiceId: 'inv-1', storedBalance: 1000, expectedBalance: 1400, at: 'a', lastAlertedAt: 'a' },
+    };
+    const sb = makeCasAwareQuoteSb({ initialQuoteSnapshot: initialSnapshot });
+    sbRef.current = sb.client;
+    getInvoiceByJobMock.mockResolvedValue(invoice);
+
+    const outcome = await resyncInvoiceToAgreedTotal({
+      jobId: 'job-1',
+      invoice,
+      result: { total: 2400 },
+      depositPaid: 1000,
+      newTotal: 2400,
+      logPrefix: '[test]',
+      retiredReason: 'amend-reopen',
+    });
+
+    // The resync itself still succeeded — a lost marker-clear race is
+    // best-effort and must never turn a real success into a failure.
+    expect(outcome.resynced).toBe(true);
+    expect(sb.quoteUpdates).toHaveLength(1); // one attempt, not retried
+
+    // Real proof the CAS FILTER is what stopped the write, not a canned
+    // flag: the fake's own server-side snapshot still carries the
+    // concurrent write's amendment (the clear's write never actually
+    // applied, so it never clobbered it) AND still carries the marker the
+    // clear tried to remove.
+    const finalSnapshot = sb.quoteSnapshot as {
+      amendments?: Array<{ concurrent?: boolean }>;
+      paymentBlocked?: unknown;
+    };
+    expect(finalSnapshot.amendments?.some((a) => a.concurrent)).toBe(true);
+    expect(finalSnapshot.paymentBlocked).toBeDefined();
+  });
+});
+
 // FIX A (fix round 4): computeInvoiceResyncTotals is the money formula PULLED
 // OUT of resyncInvoiceToAgreedTotal so the amend route can compute the SAME
 // invoice-basis figures BEFORE it persists the amendment trail entry (see
@@ -602,5 +822,62 @@ describe('computeInvoiceResyncTotals — the shared money formula (no IO)', () =
     const totals = computeInvoiceResyncTotals(result, 2500, 5600, false);
     expect(totals.total).toBe(5600); // no tax removed
     expect(totals.balance).toBe(3100);
+  });
+});
+
+describe('isStaleInvoiceSnapshot — row 389 (no IO)', () => {
+  it('is false on a clean snapshot with neither marker', () => {
+    expect(isStaleInvoiceSnapshot({})).toBe(false);
+  });
+
+  it('is false on null/undefined (a quote with no snapshot yet)', () => {
+    expect(isStaleInvoiceSnapshot(null)).toBe(false);
+    expect(isStaleInvoiceSnapshot(undefined)).toBe(false);
+  });
+
+  it('is true when paymentBlocked is present (pay-balance/route.ts refusal)', () => {
+    expect(isStaleInvoiceSnapshot({ paymentBlocked: { at: '2026-08-24T00:00:00Z' } })).toBe(true);
+  });
+
+  it('is true when invoiceResyncFailed is present (flagInvoiceResyncFailed)', () => {
+    expect(
+      isStaleInvoiceSnapshot({ invoiceResyncFailed: { invoiceId: 'inv-1', attemptedTotal: 100 } }),
+    ).toBe(true);
+  });
+
+  it('is true when BOTH markers are present', () => {
+    expect(
+      isStaleInvoiceSnapshot({ paymentBlocked: { at: 'x' }, invoiceResyncFailed: { invoiceId: 'y' } }),
+    ).toBe(true);
+  });
+});
+
+// Row 395 fix: moved here from src/app/admin/invoices/[id]/page.test.tsx —
+// the function relocated (Jason's ruling) to /admin/jobs/[id]'s "Record
+// amendment" panel, where this inference actually drives money; the invoice
+// detail page's copy was removed outright (it fired on 100% of settled
+// invoices, not a genuine caution). These are the same assertions the
+// removed page test carried, unchanged except the import path.
+describe('priorCollectedWarning — row 395 (no IO)', () => {
+  it('is null when nothing has been collected beyond the deposit', () => {
+    expect(priorCollectedWarning({ total: 1000, balance: 600, deposit_applied: 400 })).toBeNull();
+  });
+
+  it('is null when the invoice is fully settled by the deposit alone (balance 0, gap 0)', () => {
+    expect(priorCollectedWarning({ total: 400, balance: 0, deposit_applied: 400 })).toBeNull();
+  });
+
+  it('warns with the exact dollar figure once a balance payment has landed beyond the deposit', () => {
+    // total 1000, deposit 400, balance 0 → 600 collected beyond the deposit.
+    const note = priorCollectedWarning({ total: 1000, balance: 0, deposit_applied: 400 });
+    expect(note).not.toBeNull();
+    expect(note).toContain('$600.00');
+    expect(note).toMatch(/refund/i);
+    expect(note).toMatch(/Valor/);
+  });
+
+  it('is null on a partial/legacy row missing a needed field (defensive, matches priorBalanceCollectedUsd)', () => {
+    expect(priorCollectedWarning({ total: null, balance: 0, deposit_applied: 400 })).toBeNull();
+    expect(priorCollectedWarning({ total: 1000, balance: undefined, deposit_applied: 400 })).toBeNull();
   });
 });
