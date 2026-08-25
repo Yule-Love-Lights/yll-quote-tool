@@ -101,14 +101,27 @@ export function TelegramRoutingManager({
     // bare centred "Loading…" line that then vanished and dropped a full table
     // in its place — the whole panel jumped. Placeholder rows in the shape of
     // the routing table that follows, so the layout settles once.
+    // Staff-lens MED: mirror ALL FOUR sections below, in order, at their real
+    // heights — the explanation box, the status line, the table, the save
+    // button. A skeleton that covers only some of them just relocates the jump
+    // it was added to remove.
     return (
       <div role="status" aria-busy="true" className="flex flex-col gap-6">
-        <div className="h-16 animate-pulse rounded-md bg-black/10" />
-        <div className="rounded-2xl border border-gray-200 bg-white p-4 space-y-2.5">
-          <div className="h-8 animate-pulse rounded-md bg-black/10" />
-          <div className="h-8 animate-pulse rounded-md bg-black/10" />
-          <div className="h-8 animate-pulse rounded-md bg-black/10" />
+        {/* the explanatory box: four lines of text-xs inside p-3 */}
+        <div className="h-[5.5rem] animate-pulse rounded-md bg-black/10" />
+        {/* the aria-live status line, which reserves min-h-[1.25rem] */}
+        <div className="h-5 w-24 animate-pulse rounded bg-black/10" />
+        <div className="rounded-2xl border border-gray-200 bg-white overflow-hidden">
+          {/* header row, then rows at the table's own px-4 py-2.5 rhythm */}
+          <div className="h-10 animate-pulse bg-black/10" />
+          <div className="p-4 space-y-3">
+            <div className="h-11 animate-pulse rounded-md bg-black/10" />
+            <div className="h-11 animate-pulse rounded-md bg-black/10" />
+            <div className="h-11 animate-pulse rounded-md bg-black/10" />
+          </div>
         </div>
+        {/* the save pill: px-5 py-2 on text-sm */}
+        <div className="h-9 w-36 animate-pulse rounded-full bg-black/10" />
         <span className="sr-only">Loading Telegram chats…</span>
       </div>
     );
