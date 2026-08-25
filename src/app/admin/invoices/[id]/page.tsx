@@ -11,7 +11,6 @@ import { StaffNotesPanel } from '@/components/admin/StaffNotesPanel';
 import { reconcileInvoice } from '@/lib/invoices';
 import type { InvoiceDetail, PaymentPreference } from '@/lib/invoices';
 import type { ChargeSlotState } from '@/lib/integrations/valorBalance';
-import { priorBalanceCollectedUsd } from '@/lib/quoteAmendInvoiceSync';
 import { InvoicesListSkeleton } from '../InvoicesListSkeleton';
 
 // Operator BILLING detail for one invoice (ledger #83): the money breakdown
@@ -25,34 +24,6 @@ const money = (n: number | null | undefined) =>
     : `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtDate = (iso: string | null) =>
   iso ? new Date(iso).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }) : '—';
-
-// Row 381 (XS, S48 #927 delta-verify LOW): `priorBalanceCollectedUsd`
-// (quoteAmendInvoiceSync.ts) INFERS money already collected beyond the
-// deposit from this SAME invoice's current total/balance/deposit_applied —
-// it cannot see a manual refund issued directly in Valor's own dashboard,
-// because this system has NO refund integration at all (every refund on
-// this page is "issue it manually in Valor" — see the credit_note/overpaid
-// copy below). That inference now feeds invoice re-sync math on a real
-// amendment: if staff refunded part of a settled balance in Valor and this
-// page doesn't say so, the next re-price would silently UNDER-bill by the
-// refunded amount, because the formula still counts it as money in hand.
-// XS fix (row 381): not a refund integration — just make the assumption
-// VISIBLE to the one human who could actually know whether it's true.
-// Pure, reads only the invoice row already on this page; never changes what
-// is charged or owed.
-export function priorCollectedWarning(inv: {
-  total?: number | null;
-  balance?: number | null;
-  deposit_applied?: number | null;
-}): string | null {
-  const collected = priorBalanceCollectedUsd(inv);
-  if (collected <= 0) return null;
-  return (
-    `Invoice math assumes ${money(collected)} has already been collected beyond the deposit. ` +
-    `If a refund was issued manually in Valor against this invoice, that figure — and the balance on ` +
-    `any future amendment — may be wrong. Verify in Valor before relying on it.`
-  );
-}
 
 export default function InvoiceDetailPage() {
   const params = useParams<{ id: string }>();
@@ -553,19 +524,6 @@ export default function InvoiceDetailPage() {
                   </div>
                 )}
               </dl>
-
-              {(() => {
-                // Row 381: see priorCollectedWarning's own comment above —
-                // this is the one place staff would look for exactly this
-                // question, so it renders as a caution, not a hard error
-                // (nothing here is known to be wrong, only unverifiable).
-                const priorNote = priorCollectedWarning(inv);
-                return priorNote ? (
-                  <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                    {priorNote}
-                  </div>
-                ) : null;
-              })()}
 
               {(() => {
                 // #177 fix 4: pass the quote's INTENDED deposit (its own

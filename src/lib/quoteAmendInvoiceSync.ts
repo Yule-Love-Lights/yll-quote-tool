@@ -66,6 +66,38 @@ export function priorBalanceCollectedUsd(invoiceRow: {
   return round2(Math.max(0, total - balance - depositApplied));
 }
 
+// Row 395 fix (two independent review lenses, HIGH): moved here from
+// src/app/admin/invoices/[id]/page.tsx, where it rendered UNCONDITIONALLY on
+// every invoice with `priorBalanceCollectedUsd(inv) > 0` — which is the
+// NORMAL state of any fully-paid invoice (once balance hits 0, `total −
+// balance` stops equalling deposit_applied alone by construction; see that
+// function's own comment). Confirmed against all four real prod invoices —
+// all four permanently paid, all four would show it forever. A caution that
+// fires on 100% of settled invoices trains staff to ignore every amber box
+// on the page.
+//
+// Jason's ruling (row 395): relocate to the point of USE — the "Record
+// amendment" panel on /admin/jobs/[id], the only screen where this
+// inference actually drives money (computeInvoiceResyncTotals' balance math
+// on a re-price) — and remove the invoice detail page's copy entirely.
+// Same formula/copy as the removed version, just re-homed; kept a pure text
+// builder (no IO) so it stays trivially unit-testable without jsdom, which
+// this repo doesn't have.
+export function priorCollectedWarning(inv: {
+  total?: number | null;
+  balance?: number | null;
+  deposit_applied?: number | null;
+}): string | null {
+  const collected = priorBalanceCollectedUsd(inv);
+  if (collected <= 0) return null;
+  const collectedUsd = `$${collected.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return (
+    `Invoice math assumes ${collectedUsd} has already been collected beyond the deposit. ` +
+    `If a refund was issued manually in Valor against this invoice, that figure — and the balance this ` +
+    `amendment computes — may be wrong. Verify in Valor before relying on it.`
+  );
+}
+
 // Row 389 (S, admin lens MED): a quote's approval_snapshot carries a durable
 // marker whenever this repo already KNOWS its linked invoice's total/balance
 // is provisional — either a customer charge was refused because the invoice

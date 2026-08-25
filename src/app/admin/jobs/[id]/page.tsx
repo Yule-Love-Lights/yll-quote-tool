@@ -11,6 +11,7 @@ import { NceBadge } from '@/components/admin/NceBadge';
 import { StaffNotesPanel } from '@/components/admin/StaffNotesPanel';
 import { reconcileInvoice } from '@/lib/invoices';
 import { isSupersededPendingAmendment, resolveAmendmentBasis } from '@/lib/amend';
+import { priorCollectedWarning } from '@/lib/quoteAmendInvoiceSync';
 import type { JobDetail } from '@/lib/jobs';
 import { JobsListSkeleton } from '../JobsListSkeleton';
 
@@ -462,6 +463,20 @@ export default function JobDetailPage() {
                 portal; the order itself stays booked. Until they sign it, collecting the balance is blocked
                 for a price INCREASE only (a decrease never blocks, and the invoice page can override).
               </p>
+              {/* Row 395 fix: moved here from /admin/invoices/[id] (Jason's ruling) —
+                  this is the one place the inference actually drives money
+                  (computeInvoiceResyncTotals' balance math, right below on submit),
+                  not just a display. Guarded on data.invoice: nothing to warn about
+                  before the job has one. */}
+              {data.invoice &&
+                (() => {
+                  const priorNote = priorCollectedWarning(data.invoice!);
+                  return priorNote ? (
+                    <div className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                      {priorNote}
+                    </div>
+                  ) : null;
+                })()}
               {/* Jason 2026-08-19: this reason is NOT an internal note — the portal's
                   AmendmentConsentCard renders it verbatim to the customer while the
                   re-consent is pending (src/components/portal/snowglobe/AmendmentConsentCard.tsx).

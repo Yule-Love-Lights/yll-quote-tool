@@ -42,6 +42,7 @@ import {
   resyncInvoiceToAgreedTotal,
   computeInvoiceResyncTotals,
   isStaleInvoiceSnapshot,
+  priorCollectedWarning,
 } from './quoteAmendInvoiceSync';
 
 // Table-aware fake matching the two calls this module (+ its row-341 marker
@@ -736,5 +737,35 @@ describe('isStaleInvoiceSnapshot — row 389 (no IO)', () => {
     expect(
       isStaleInvoiceSnapshot({ paymentBlocked: { at: 'x' }, invoiceResyncFailed: { invoiceId: 'y' } }),
     ).toBe(true);
+  });
+});
+
+// Row 395 fix: moved here from src/app/admin/invoices/[id]/page.test.tsx —
+// the function relocated (Jason's ruling) to /admin/jobs/[id]'s "Record
+// amendment" panel, where this inference actually drives money; the invoice
+// detail page's copy was removed outright (it fired on 100% of settled
+// invoices, not a genuine caution). These are the same assertions the
+// removed page test carried, unchanged except the import path.
+describe('priorCollectedWarning — row 395 (no IO)', () => {
+  it('is null when nothing has been collected beyond the deposit', () => {
+    expect(priorCollectedWarning({ total: 1000, balance: 600, deposit_applied: 400 })).toBeNull();
+  });
+
+  it('is null when the invoice is fully settled by the deposit alone (balance 0, gap 0)', () => {
+    expect(priorCollectedWarning({ total: 400, balance: 0, deposit_applied: 400 })).toBeNull();
+  });
+
+  it('warns with the exact dollar figure once a balance payment has landed beyond the deposit', () => {
+    // total 1000, deposit 400, balance 0 → 600 collected beyond the deposit.
+    const note = priorCollectedWarning({ total: 1000, balance: 0, deposit_applied: 400 });
+    expect(note).not.toBeNull();
+    expect(note).toContain('$600.00');
+    expect(note).toMatch(/refund/i);
+    expect(note).toMatch(/Valor/);
+  });
+
+  it('is null on a partial/legacy row missing a needed field (defensive, matches priorBalanceCollectedUsd)', () => {
+    expect(priorCollectedWarning({ total: null, balance: 0, deposit_applied: 400 })).toBeNull();
+    expect(priorCollectedWarning({ total: 1000, balance: undefined, deposit_applied: 400 })).toBeNull();
   });
 });
