@@ -30,14 +30,25 @@ describe('photo-delete version adoption is actually wired (row 371)', () => {
     );
   });
 
-  it('adopts it in the editor BEFORE the no-items early return, through the guard', () => {
+  it('adopts it in the editor BEFORE the no-items early return, GATED by the guard', () => {
     const fn = editorCore.slice(editorCore.indexOf('function removePhotoItems('));
-    const adopt = fn.indexOf('shouldAdoptPrunedVersion(design.version, serverVersion)');
     const earlyReturn = fn.indexOf('return; // nothing on this photo at all');
-    expect(adopt).toBeGreaterThan(-1);
     expect(earlyReturn).toBeGreaterThan(-1);
+
+    // Verify-round MED: an earlier version of this test only checked that the
+    // guard was CALLED somewhere before the early return, which a mutation
+    // that calls it and throws the answer away would have passed — silently
+    // reopening the lost-update the guard exists to close. So match the whole
+    // gated assignment, not two substrings in order.
+    const gated =
+      /if \(shouldAdoptPrunedVersion\(design\.version, serverVersion\)\) \{\s*design\.version = serverVersion as number;\s*\}/;
+    const match = fn.match(gated);
+    expect(match).not.toBeNull();
     // A photo with a brightness override and no drawn items still bumps the
     // server's version, and that is exactly the case the early return skips.
-    expect(adopt).toBeLessThan(earlyReturn);
+    expect(fn.indexOf(match![0])).toBeLessThan(earlyReturn);
+
+    // And the assignment appears nowhere else, ungated.
+    expect(fn.split('design.version = serverVersion').length - 1).toBe(1);
   });
 });
