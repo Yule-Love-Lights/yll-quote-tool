@@ -7293,14 +7293,20 @@ export default function QuoteBuilder({
               are done. Amber, not red: nothing is broken, there is simply work
               on screen that the database does not have.
 
-              STICKY, per a premerge staff-lens HIGH: parked inline near the
-              bottom of a ~7900-line form it was easy to never see, and it is
-              the ONLY guard on in-app navigation (next/link transitions never
-              fire beforeunload). Pinning it to the viewport bottom means the
-              operator sees it wherever they are in the form. */}
+              A premerge staff-lens HIGH noted that parked inline near the
+              bottom of a ~7900-line form this is easy to never see, and that it
+              is the ONLY guard on in-app navigation (next/link transitions
+              never fire beforeunload). A sticky variant was tried and REVERTED:
+              the delta-verify pass argued its containing block is the whole
+              component, which would pin it over the Send Quote button for the
+              entire rest of the scroll, and that could not be settled
+              statically or confirmed in a browser (the dev server is behind the
+              operator auth gate). Shipping an unverifiable overlay across a
+              money surface is the worse trade, so the visibility gap is
+              recorded on the follow-up row instead of papered over here. */}
           {hasUnsavedEdits && (
             <div
-              className="sticky bottom-3 z-20 mb-2 rounded-lg border px-3 py-2 text-sm flex items-start gap-2 shadow-md"
+              className="mb-2 rounded-lg border px-3 py-2 text-sm flex items-start gap-2"
               style={{ borderColor: '#f59e0b', backgroundColor: '#fffbeb', color: '#92400e' }}
               role="status"
             >
