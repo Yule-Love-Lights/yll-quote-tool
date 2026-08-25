@@ -552,6 +552,106 @@ describe('flagInvoiceResyncFailed — CAS on approval_snapshot (row 341 fix roun
   });
 });
 
+// Row 394 fix round 2 (delta-verify LOW — a test-name-claims-more-than-it-
+// proves finding, this repo's own named pitfall): the ORIGINAL "drops the
+// clear... when the CAS loses a concurrent write" test below simulated the
+// lost race with a canned `quoteUpdateResult: 'raced'` flag on the shared
+// makeSb() fake — a flag whose truthiness is INDEPENDENT of what the code
+// actually sends in `.eq('approval_snapshot', ...)`. A mutation probe
+// (deleting that real `.eq()` call from clearInvoiceStaleMarkers) proved it:
+// the test still PASSED, because a DIFFERENT assertion in a DIFFERENT test
+// happened to catch the removal instead. This fake replaces the canned flag
+// with real optimistic-lock semantics — it holds actual server-side state
+// and only accepts a `quotes` update when every filter the caller ACTUALLY
+// sent still matches that state (exactly what Postgres does), so removing
+// the `.eq('approval_snapshot', ...)` call changes the fake's behavior, not
+// just a boolean the test author chose.
+function makeCasAwareQuoteSb(opts: {
+  initialQuoteSnapshot: Record<string, unknown>;
+  invoiceUpdateResults?: Array<'ok' | 'raced'>;
+}) {
+  let quoteSnapshot: Record<string, unknown> = opts.initialQuoteSnapshot;
+  const quoteUpdates: Array<Record<string, unknown>> = [];
+  const results = opts.invoiceUpdateResults ?? ['ok'];
+  let invoiceCallIndex = 0;
+  let table = '';
+  let mode: 'select' | 'update' = 'select';
+  let eqFilters: Array<[string, unknown]> = [];
+  let pendingQuoteUpdate: Record<string, unknown> | null = null;
+  const b: Record<string, unknown> = {};
+  Object.assign(b, {
+    from: (t: string) => {
+      table = t;
+      mode = 'select';
+      eqFilters = [];
+      return b;
+    },
+    update: (payload: Record<string, unknown>) => {
+      mode = 'update';
+      if (table === 'quotes') {
+        quoteUpdates.push(payload);
+        pendingQuoteUpdate = payload;
+      }
+      return b;
+    },
+    eq: (column: string, value: unknown) => {
+      eqFilters.push([column, value]);
+      return b;
+    },
+    select: () => b,
+    maybeSingle: async () => {
+      if (table === 'quotes') {
+        const readValue = quoteSnapshot;
+        // Simulate a concurrent write landing in the EXACT gap between this
+        // read and the CAS write below — deterministic single-threaded
+        // stand-in for "something else committed first," the precise race
+        // clearInvoiceStaleMarkers's CAS exists to detect.
+        quoteSnapshot = {
+          ...quoteSnapshot,
+          amendments: [
+            ...(((quoteSnapshot as { amendments?: unknown[] }).amendments) ?? []),
+            { concurrent: true },
+          ],
+        };
+        return { data: { approval_snapshot: readValue }, error: null };
+      }
+      return { data: null, error: null };
+    },
+    then: (resolve: (v: unknown) => void) => {
+      if (table === 'invoices' && mode === 'update') {
+        const outcome = results[Math.min(invoiceCallIndex, results.length - 1)];
+        invoiceCallIndex++;
+        resolve({ data: outcome === 'ok' ? [{ id: 'inv-1' }] : [], error: null });
+        return;
+      }
+      if (table === 'quotes' && mode === 'update') {
+        // Real CAS semantics: only the filters ACTUALLY sent constrain the
+        // match. Remove the approval_snapshot filter and this succeeds
+        // regardless of drift, exactly like real Postgres would too.
+        const idFilter = eqFilters.find(([c]) => c === 'id');
+        const snapshotFilter = eqFilters.find(([c]) => c === 'approval_snapshot');
+        const idMatches = !idFilter || idFilter[1] === 'quote-1';
+        const snapshotMatches = !snapshotFilter || snapshotFilter[1] === JSON.stringify(quoteSnapshot);
+        if (idMatches && snapshotMatches && pendingQuoteUpdate) {
+          quoteSnapshot = pendingQuoteUpdate.approval_snapshot as Record<string, unknown>;
+          resolve({ data: [{ id: 'quote-1' }], error: null });
+        } else {
+          resolve({ data: [], error: null });
+        }
+        return;
+      }
+      resolve({ data: null, error: null });
+    },
+  });
+  return {
+    client: b,
+    quoteUpdates,
+    get quoteSnapshot() {
+      return quoteSnapshot;
+    },
+  };
+}
+
 describe('resyncInvoiceToAgreedTotal — clears the stale-invoice markers on a SUCCESSFUL resync (row 394)', () => {
   const invoice: InvoiceRow = {
     id: 'inv-1',
@@ -629,12 +729,12 @@ describe('resyncInvoiceToAgreedTotal — clears the stale-invoice markers on a S
     expect(sb.quoteUpdates).toHaveLength(0);
   });
 
-  it('drops the clear (does not throw, does not retry, resync still reports success) when the CAS loses a concurrent write', async () => {
-    const priorSnapshot = {
+  it('drops the clear (does not throw, does not retry, resync still reports success) when the CAS loses a concurrent write — proven against the fake\'s own server state, not a canned flag', async () => {
+    const initialSnapshot = {
       amendments: [{ amended_at: 'x' }],
       paymentBlocked: { invoiceId: 'inv-1', storedBalance: 1000, expectedBalance: 1400, at: 'a', lastAlertedAt: 'a' },
     };
-    const sb = makeSb({ quoteApprovalSnapshot: priorSnapshot, quoteUpdateResult: 'raced' });
+    const sb = makeCasAwareQuoteSb({ initialQuoteSnapshot: initialSnapshot });
     sbRef.current = sb.client;
     getInvoiceByJobMock.mockResolvedValue(invoice);
 
@@ -652,6 +752,18 @@ describe('resyncInvoiceToAgreedTotal — clears the stale-invoice markers on a S
     // best-effort and must never turn a real success into a failure.
     expect(outcome.resynced).toBe(true);
     expect(sb.quoteUpdates).toHaveLength(1); // one attempt, not retried
+
+    // Real proof the CAS FILTER is what stopped the write, not a canned
+    // flag: the fake's own server-side snapshot still carries the
+    // concurrent write's amendment (the clear's write never actually
+    // applied, so it never clobbered it) AND still carries the marker the
+    // clear tried to remove.
+    const finalSnapshot = sb.quoteSnapshot as {
+      amendments?: Array<{ concurrent?: boolean }>;
+      paymentBlocked?: unknown;
+    };
+    expect(finalSnapshot.amendments?.some((a) => a.concurrent)).toBe(true);
+    expect(finalSnapshot.paymentBlocked).toBeDefined();
   });
 });
 
