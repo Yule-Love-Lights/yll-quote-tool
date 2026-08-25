@@ -1103,6 +1103,38 @@ describe('shouldClaimNceDepositProvenance (row 328(b))', () => {
   });
 });
 
+// Fix round (staff lens HIGH): the notice must also require that the chip
+// ACTUALLY changed. applyIsNce no-ops on an unchanged value, so asking only
+// "would the deposit have moved" fired a warning about a contact re-pick where
+// nothing happened — the common case of relinking the same tagged contact on a
+// sent quote whose deposit is not exactly 40. The guard lives at the call site
+// (chipWouldChange, QuoteBuilder), and this pins the arithmetic it protects.
+describe('row 328(a) — the notice only fires when the chip really moves', () => {
+  it('would otherwise fire on a no-op re-pick, which is the false alarm', () => {
+    // Same tagged contact re-picked: chip already true, deposit a hand-set 50.
+    const chipWouldChange = true !== true;
+    const wouldSuppress = nceTagDepositWasSuppressed({
+      quoteLeftDraft: true,
+      locked: false,
+      current: 50,
+      resolved: resolveNceDepositPercent(50, true, false, false),
+    });
+    expect(wouldSuppress).toBe(true); // the deposit arithmetic alone says "yes"
+    expect(chipWouldChange && wouldSuppress).toBe(false); // ...and the guard says no
+  });
+
+  it('still fires when the chip genuinely flips on a quote past draft', () => {
+    const chipWouldChange = true !== false;
+    const wouldSuppress = nceTagDepositWasSuppressed({
+      quoteLeftDraft: true,
+      locked: false,
+      current: 50,
+      resolved: resolveNceDepositPercent(50, true, false, false),
+    });
+    expect(chipWouldChange && wouldSuppress).toBe(true);
+  });
+});
+
 // (a) The contact-pick tag inheritance runs in an async lookup `.then` and
 // routed straight into the same deposit rule, so re-picking a contact could
 // move the deposit on a quote the customer already has a link to.

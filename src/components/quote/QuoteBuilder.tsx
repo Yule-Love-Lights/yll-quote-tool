@@ -3653,6 +3653,10 @@ export default function QuoteBuilder({
     setIsNce(next);
     if (next === wasNce) return;
     if (!moveDeposit) return; // chip only — deposit and its provenance untouched
+    // Any path that DOES move the deposit is a deliberate act on it, so a
+    // standing "we held your deposit back" notice from an earlier contact
+    // pick is now answered and must go.
+    setNceDepositHeldBack(null);
     // Read provenance NOW, not inside the updater: React runs the functional
     // updater at flush time, AFTER this handler finishes — by which point the
     // synchronous clear on the last line below has already set the ref to
@@ -3901,6 +3905,10 @@ export default function QuoteBuilder({
       void quoteBuildTimerRef.current?.start('contact_selected', savedQuoteId);
     }
     everLinkedContactIdRef.current = c.id;
+    // Row 328(a) fix round (technical MED): a standing notice describes the
+    // PREVIOUS pick. Clear it here, before this pick's own lookup can set it
+    // again, so it can never name a contact that is no longer chosen.
+    setNceDepositHeldBack(null);
     setHighLevelContact(c);
     const hlAddress = [c.address1, c.city, c.state, c.postalCode].filter(Boolean).join(', ');
     setForm(f => ({
@@ -3979,6 +3987,13 @@ export default function QuoteBuilder({
         // manual chip click.
         if (!isNceTouchedRef.current) {
           const inheritedNce = eligibleForTags && (tags?.is_nce ?? false);
+          // Fix round (staff HIGH): applyIsNce no-ops when the value is
+          // unchanged, so the notice must ask the same question first.
+          // Without this, re-picking the SAME tagged contact on a sent quote
+          // whose deposit is not exactly 40 fired a notice claiming the chip
+          // had changed when nothing had happened at all — and a warning that
+          // cries wolf is worse than no warning.
+          const chipWouldChange = inheritedNce !== isNceRef.current;
           // Row 328(a): this runs SECONDS after the click, from a lookup the
           // staffer never asked for by name. On a quote that has already left
           // draft the customer may be looking at a portal link quoting the
@@ -3989,7 +4004,7 @@ export default function QuoteBuilder({
           // here (this resolves seconds after the click). That only decides
           // whether the informational line below appears — the deposit itself
           // is not touched on this path at all when the quote has left draft.
-          const suppressed = nceTagDepositWasSuppressed({
+          const suppressed = chipWouldChange && nceTagDepositWasSuppressed({
             quoteLeftDraft,
             locked: nceDepositLocked,
             current: form.depositPercent,
@@ -4692,9 +4707,6 @@ export default function QuoteBuilder({
     formOverride?: QuoteFormData,
   ): Promise<boolean> => {
     if (quoteSaveInProgressRef.current) return false;
-    // Row 328(a): a Calculate re-states the whole quote deliberately, so the
-    // held-back-deposit notice has been read and acted on (or not) by then.
-    setNceDepositHeldBack(null);
     if (satelliteChangeInProgressRef.current || designPhotoChangeInProgressRef.current) {
       setResult(null);
       setError('Wait for the house images to finish loading, then Calculate again.');
@@ -7205,6 +7217,9 @@ export default function QuoteBuilder({
                   // would still get silently wiped by a LATER OFF-toggle that
                   // still thought it owned this field.
                   nceDepositSetByRuleRef.current = false;
+                  // Row 328(a): typing here IS the deliberate act the notice
+                  // asks for, so it stops standing.
+                  setNceDepositHeldBack(null);
                   set('depositPercent', Number(e.target.value));
                 }}
               />
@@ -7218,8 +7233,8 @@ export default function QuoteBuilder({
             {nceDepositHeldBack !== null && (
               <p role="status" className="mt-2 text-sm text-amber-700">
                 ⚠️ This contact {nceDepositHeldBack ? 'is tagged NCE' : 'is not tagged NCE'}, so the NCE chip
-                changed — but the deposit stayed at {form.depositPercent || 50}% because this quote has already
-                been sent. Change it here yourself if the customer agreed to a different deposit.
+                changed — but the deposit was left at {form.depositPercent || 50}% because this quote has already
+                left draft. Change it here yourself if the customer agreed to a different deposit.
               </p>
             )}
           </Section>
