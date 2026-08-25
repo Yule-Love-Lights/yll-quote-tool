@@ -27,7 +27,7 @@ import { catalogCostOverrides, listCatalog } from '@/lib/inventory/catalog';
 import { PermanentBomPanel } from '@/components/permanent/PermanentBomPanel';
 import { bistroBomFromQuote } from '@/lib/permanentBistro/bomFromQuote';
 import { costOverridesFromBistroCatalog } from '@/lib/inventory/bistroCatalog';
-import { getColorScheme, CUSTOM_SCHEME_ID } from '@/lib/design/colorSchemes';
+import { approvedColorLabelForQuote } from '@/lib/design/approvedColorLabels';
 import { depositDeclineReasonText } from '@/lib/integrations/quoteMessages';
 import { VaultRegistrationNotice } from '@/components/admin/VaultRegistrationNotice';
 import { PortalImageVisibilityControls } from '@/components/admin/PortalImageVisibilityControls';
@@ -90,18 +90,6 @@ function relativeTimeFromNow(iso: string): string {
   return `${days} day${days === 1 ? '' : 's'} ago`;
 }
 
-// #155 — the light color/pattern a legacy-rebook customer approved with, for
-// the admin detail card. null when the quote hasn't been approved yet (no
-// customerSelection to read) — the card renders nothing in that case.
-function chosenLightColorLabel(
-  sel: { colorSchemeId?: string; customPattern?: string[] } | undefined,
-): string | null {
-  if (!sel) return null;
-  const hasCustomPattern = Array.isArray(sel.customPattern) && sel.customPattern.length > 0;
-  if (sel.colorSchemeId === CUSTOM_SCHEME_ID || hasCustomPattern) return 'Custom pattern';
-  if (sel.colorSchemeId) return getColorScheme(sel.colorSchemeId).label;
-  return null;
-}
 
 export default async function QuoteDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -170,8 +158,14 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
   // #155 — for a legacy rebook, show what light color/pattern the customer
   // approved with (once approved). null while awaiting approval, or for a
   // normal (non-rebook) quote — the line simply doesn't render.
-  const chosenLightColor =
-    quote.legacy_rebook ? chosenLightColorLabel(quote.approval_snapshot?.customerSelection) : null;
+  // Row 362: resolved against THIS quote's vertical. Before, this called the
+  // label helper with no scheme list, so it silently used the holiday one — a
+  // permanent quote's colour would have read "Staff's pick". Pre-existing and
+  // narrow here (legacy_rebook only), but it is the same defect row 362 is
+  // about, so it is fixed rather than carried forward.
+  const chosenLightColor = quote.legacy_rebook
+    ? await approvedColorLabelForQuote(quote.approval_snapshot, quote.service_type)
+    : null;
 
   // Permanent Lighting (#88 P7/P8): the operator BOM (Ascend/Dauer APL material
   // list + wholesale cost) for ordering. Null for non-permanent quotes. Materials

@@ -29,6 +29,7 @@ import { canTransition, type InvoiceStatus } from './invoiceStatus';
 // `round2` so the call sites are byte-identical.
 import { roundMoneyGuarded as round2 } from './money';
 import { resolveAgreedTotal, type AgreedTotalSnapshot } from './agreedTotal';
+import { approvedColorLabelForQuote } from '@/lib/design/approvedColorLabels';
 
 export type InvoiceRow = {
   id: string;
@@ -493,6 +494,16 @@ export async function listInvoicesForAdmin(limit = 500): Promise<InvoiceAdminCar
 // linked quote's customer identity + is_test/is_nce, and the linked job's number/status.
 export type InvoiceDetail = {
   invoice: InvoiceRow;
+  /**
+   * Row 362: the light colour/pattern the customer APPROVED, as an
+   * operator-facing label. null when the linked quote has no approved
+   * selection, or there is no linked quote.
+   *
+   * On the invoice because this is where staff verify an order before taking
+   * money for it, and the colour was previously visible only on the quote
+   * page — one click away, which is exactly how it got confused.
+   */
+  lightColorLabel: string | null;
   customerName: string | null;
   customerEmail: string | null;
   customerPhone: string | null;
@@ -531,10 +542,11 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
   let isTest = false;
   let isNce = false;
   let intendedDepositUsd: number | null = null;
+  let lightColorLabel: string | null = null;
   if (invoice.quote_id) {
     const { data } = await db
       .from('quotes')
-      .select('customer_name, customer_email, customer_phone, customer_address, is_test, is_nce, deposit_amount_usd')
+      .select('customer_name, customer_email, customer_phone, customer_address, is_test, is_nce, deposit_amount_usd, approval_snapshot, service_type')
       .eq('id', invoice.quote_id)
       .maybeSingle<{
         customer_name: string | null;
@@ -544,6 +556,8 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
         is_test: boolean | null;
         is_nce: boolean | null;
         deposit_amount_usd: number | null;
+        approval_snapshot: unknown;
+        service_type: string | null;
       }>();
     if (data) {
       customerName = data.customer_name ?? null;
@@ -553,6 +567,8 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
       isTest = !!data.is_test;
       isNce = !!data.is_nce;
       intendedDepositUsd = data.deposit_amount_usd ?? null;
+      // Row 362: derived from the same quote row this join already fetches.
+      lightColorLabel = await approvedColorLabelForQuote(data.approval_snapshot, data.service_type);
     }
   }
 
@@ -572,6 +588,7 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
 
   return {
     invoice,
+    lightColorLabel,
     customerName,
     customerEmail,
     customerPhone,
