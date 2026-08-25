@@ -3,7 +3,7 @@
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "info": {
     "title": "Yule Love Lights Operations Hub shared contract components",
-    "version": "1.1.0-draft"
+    "version": "1.2.0-draft"
   },
   "paths": {
     "/api/ops/v1/commitment-events": {
@@ -230,14 +230,14 @@
             "canonical_target": "/api/ops/v1/commitment-events?limit=100&since=abc%2Fdef",
             "timestamp": "1787097600",
             "nonce": "AAECAwQFBgcICQoLDA0ODw",
-            "contract_version": "1.5.0-draft",
-            "schema_version": "1.1.0-draft",
+            "contract_version": "1.6.0-draft",
+            "schema_version": "1.2.0-draft",
             "client_version": "hub-test-v1",
             "version_compatible": true,
             "body_utf8": "",
             "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "canonical_input": "v1\nGET\n/api/ops/v1/commitment-events?limit=100&since=abc%2Fdef\n1787097600\nAAECAwQFBgcICQoLDA0ODw\n1.5.0-draft\n1.1.0-draft\nhub-test-v1\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "expected_signature": "v1=ca0366001d0baa4c5c2415817a6ff6a5cacb7d57206d2854b1a0ac96ecba8457"
+            "canonical_input": "v1\nGET\n/api/ops/v1/commitment-events?limit=100&since=abc%2Fdef\n1787097600\nAAECAwQFBgcICQoLDA0ODw\n1.6.0-draft\n1.2.0-draft\nhub-test-v1\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "expected_signature": "v1=2fb8b6dc7c59ba22f7079fba47ccbc6e5f827b0a20d5c86175c4524c13f94d9b"
           },
           {
             "name": "post-json-body-duplicate-query",
@@ -247,14 +247,14 @@
             "canonical_target": "/api/ops/v1/example?a=1&a=2&z=~",
             "timestamp": "1787097660",
             "nonce": "EBESExQVFhcYGRobHB0eHw",
-            "contract_version": "1.5.0-draft",
-            "schema_version": "1.1.0-draft",
+            "contract_version": "1.6.0-draft",
+            "schema_version": "1.2.0-draft",
             "client_version": "quote-test-v1",
             "version_compatible": true,
             "body_utf8": "{\"ok\":true}",
             "body_sha256": "4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
-            "canonical_input": "v1\nPOST\n/api/ops/v1/example?a=1&a=2&z=~\n1787097660\nEBESExQVFhcYGRobHB0eHw\n1.5.0-draft\n1.1.0-draft\nquote-test-v1\n4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
-            "expected_signature": "v1=397d5bfa4a75a1a2d7cb6f244a42a82767c9a4c3c325ed6a73bb5ca9170b0c06"
+            "canonical_input": "v1\nPOST\n/api/ops/v1/example?a=1&a=2&z=~\n1787097660\nEBESExQVFhcYGRobHB0eHw\n1.6.0-draft\n1.2.0-draft\nquote-test-v1\n4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
+            "expected_signature": "v1=87153ed4f1e7f019f67deab5a623d877892b1b26a05d5373326cb25e98b5e1a1"
           },
           {
             "name": "signed-unsupported-contract-version",
@@ -265,15 +265,15 @@
             "timestamp": "1787097720",
             "nonce": "ICEiIyQlJicoKSorLC0uLw",
             "contract_version": "1.3.0",
-            "schema_version": "1.1.0-draft",
+            "schema_version": "1.2.0-draft",
             "client_version": "legacy-hub-v1",
             "version_compatible": false,
             "expected_http_status": 409,
             "expected_error_code": "contract_version_unsupported",
             "body_utf8": "",
             "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "canonical_input": "v1\nGET\n/api/ops/v1/commitment-events?limit=1\n1787097720\nICEiIyQlJicoKSorLC0uLw\n1.3.0\n1.1.0-draft\nlegacy-hub-v1\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "expected_signature": "v1=8f2c583fb596e195489511ffc46402394c1a909fba8d77700936ac80735723cd"
+            "canonical_input": "v1\nGET\n/api/ops/v1/commitment-events?limit=1\n1787097720\nICEiIyQlJicoKSorLC0uLw\n1.3.0\n1.2.0-draft\nlegacy-hub-v1\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "expected_signature": "v1=ab3583cd798c9fd693185bbde1181aaabfe7f07346d13d450a124eec3d6f41f5"
           },
           {
             "name": "signed-unsupported-schema-version",
@@ -283,7 +283,7 @@
             "canonical_target": "/api/ops/v1/commitment-events?limit=1",
             "timestamp": "1787097780",
             "nonce": "MDEyMzQ1Njc4OTo7PD0-Pw",
-            "contract_version": "1.5.0-draft",
+            "contract_version": "1.6.0-draft",
             "schema_version": "0.9.0",
             "client_version": "legacy-hub-v2",
             "version_compatible": false,
@@ -291,8 +291,8 @@
             "expected_error_code": "schema_version_unsupported",
             "body_utf8": "",
             "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "canonical_input": "v1\nGET\n/api/ops/v1/commitment-events?limit=1\n1787097780\nMDEyMzQ1Njc4OTo7PD0-Pw\n1.5.0-draft\n0.9.0\nlegacy-hub-v2\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "expected_signature": "v1=4342ff3aab6bd7a7115e3e0e81c2f7b13606cb3d26aafbd9138729141bd38c17"
+            "canonical_input": "v1\nGET\n/api/ops/v1/commitment-events?limit=1\n1787097780\nMDEyMzQ1Njc4OTo7PD0-Pw\n1.6.0-draft\n0.9.0\nlegacy-hub-v2\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "expected_signature": "v1=8103bda16269f829b7e321678bd98f5b11d07644f9f5c017e7275e87eabaa6d6"
           },
           {
             "name": "unsorted-query",
@@ -499,11 +499,11 @@
       },
       "ContractVersion": {
         "type": "string",
-        "const": "1.5.0-draft"
+        "const": "1.6.0-draft"
       },
       "SchemaVersion": {
         "type": "string",
-        "const": "1.1.0-draft"
+        "const": "1.2.0-draft"
       },
       "ClientVersion": {
         "type": "string",
@@ -1407,7 +1407,7 @@
       "QuoteLifecycleEventType": {
         "type": "string",
         "enum": [
-          "QuoteRequestReceived", "QuoteRequestLinked", "QuoteCreated", "QuoteAssigned",
+          "QuoteRequestLinked", "QuoteCreated", "QuoteAssigned",
           "QuoteUnassigned", "QuoteMeaningfulEditRecorded", "QuoteRevisionSaved",
           "QuoteWorkWaitStarted", "QuoteWorkWaitEnded", "QuoteSentRecorded",
           "QuoteDeliveryAttempted", "QuoteDeliveryOutcomeRecorded", "QuoteChangesRequested",
@@ -1420,11 +1420,16 @@
         "type": "string",
         "enum": ["send_quote", "provide_revision", "customer_follow_up"]
       },
+      "QuoteWorkWaitReason": {
+        "type": "string",
+        "enum": ["approval", "customer_information"]
+      },
       "QuoteDeliveryMode": {
         "type": "string",
         "enum": ["tool_sms", "tool_email", "tool_both", "manual_external"]
       },
       "QuoteLifecycleEvent": {
+        "x-yll-cross-field-invariants": ["aggregate_id_equals_quote_id"],
         "allOf": [
           { "$ref": "#/components/schemas/EventEnvelope" },
           {
@@ -1432,23 +1437,94 @@
             "required": ["quote_id", "event_type", "source_outbox_sequence"],
             "properties": {
               "event_type": { "$ref": "#/components/schemas/QuoteLifecycleEventType" },
+              "aggregate_id": { "$ref": "#/components/schemas/CanonicalUuid" },
+              "entity_version": { "type": "integer", "minimum": 1 },
               "quote_id": { "$ref": "#/components/schemas/CanonicalUuid" },
               "quote_number": { "type": "integer", "minimum": 1 },
               "request_id": { "$ref": "#/components/schemas/NullableUuid" },
-              "customer_ref": { "oneOf": [{ "$ref": "#/components/schemas/CanonicalUuid" }, { "type": "null" }] },
+              "request_source_system": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] },
+              "request_source_record_id": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] },
+              "customer_ref_hash": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] },
               "job_id": { "$ref": "#/components/schemas/NullableUuid" },
               "assigned_employee_id": { "$ref": "#/components/schemas/NullableUuid" },
               "previous_assigned_employee_id": { "$ref": "#/components/schemas/NullableUuid" },
               "first_sent_at": { "oneOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }] },
               "revision_id": { "$ref": "#/components/schemas/NullableUuid" },
+              "work_wait_reason": { "oneOf": [{ "$ref": "#/components/schemas/QuoteWorkWaitReason" }, { "type": "null" }] },
               "promise_id": { "$ref": "#/components/schemas/NullableUuid" },
               "replacement_promise_id": { "$ref": "#/components/schemas/NullableUuid" },
               "promise_type": { "oneOf": [{ "$ref": "#/components/schemas/QuotePromiseType" }, { "type": "null" }] },
               "promise_due_at": { "oneOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }] },
               "delivery_mode": { "oneOf": [{ "$ref": "#/components/schemas/QuoteDeliveryMode" }, { "type": "null" }] },
+              "delivery_attempt_id": { "$ref": "#/components/schemas/NullableUuid" },
+              "delivery_channel": { "oneOf": [{ "type": "string", "enum": ["sms", "email"] }, { "type": "null" }] },
+              "delivery_attempted_at": { "oneOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }] },
+              "delivery_retry_of_attempt_id": { "$ref": "#/components/schemas/NullableUuid" },
+              "delivery_outcome": { "oneOf": [{ "type": "string", "enum": ["accepted", "failed", "unknown"] }, { "type": "null" }] },
+              "delivery_resolved_at": { "oneOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }] },
+              "provider_delivery_id": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] },
+              "delivery_error_code": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }] },
               "first_send": { "type": "boolean" },
               "total_cents": { "type": "integer", "minimum": 0 },
               "source_outbox_sequence": { "type": "integer", "minimum": 1 }
+            }
+          },
+          {
+            "if": { "properties": { "event_type": { "const": "QuoteRequestLinked" } }, "required": ["event_type"] },
+            "then": {
+              "required": ["request_id", "request_source_system", "request_source_record_id"],
+              "properties": {
+                "request_id": { "$ref": "#/components/schemas/CanonicalUuid" },
+                "request_source_system": { "type": "string", "minLength": 1 },
+                "request_source_record_id": { "type": "string", "minLength": 1 }
+              }
+            }
+          },
+          {
+            "if": { "properties": { "event_type": { "enum": ["QuoteWorkWaitStarted", "QuoteWorkWaitEnded"] } }, "required": ["event_type"] },
+            "then": { "required": ["work_wait_reason"], "properties": { "work_wait_reason": { "$ref": "#/components/schemas/QuoteWorkWaitReason" } } }
+          },
+          {
+            "if": { "properties": { "event_type": { "const": "QuoteSentRecorded" } }, "required": ["event_type"] },
+            "then": {
+              "required": ["first_sent_at", "first_send", "delivery_mode", "total_cents"],
+              "properties": {
+                "first_sent_at": { "type": "string", "format": "date-time" },
+                "delivery_mode": { "$ref": "#/components/schemas/QuoteDeliveryMode" }
+              }
+            }
+          },
+          {
+            "if": { "properties": { "event_type": { "const": "QuoteDeliveryAttempted" } }, "required": ["event_type"] },
+            "then": {
+              "required": ["delivery_attempt_id", "delivery_channel", "delivery_attempted_at"],
+              "properties": {
+                "delivery_attempt_id": { "$ref": "#/components/schemas/CanonicalUuid" },
+                "delivery_channel": { "type": "string", "enum": ["sms", "email"] },
+                "delivery_attempted_at": { "type": "string", "format": "date-time" }
+              }
+            }
+          },
+          {
+            "if": { "properties": { "event_type": { "const": "QuoteDeliveryOutcomeRecorded" } }, "required": ["event_type"] },
+            "then": {
+              "required": ["delivery_attempt_id", "delivery_outcome", "delivery_resolved_at"],
+              "properties": {
+                "delivery_attempt_id": { "$ref": "#/components/schemas/CanonicalUuid" },
+                "delivery_outcome": { "type": "string", "enum": ["accepted", "failed", "unknown"] },
+                "delivery_resolved_at": { "type": "string", "format": "date-time" }
+              }
+            }
+          },
+          {
+            "if": { "properties": { "event_type": { "const": "QuotePromiseRecorded" } }, "required": ["event_type"] },
+            "then": {
+              "required": ["promise_id", "promise_type", "promise_due_at"],
+              "properties": {
+                "promise_id": { "$ref": "#/components/schemas/CanonicalUuid" },
+                "promise_type": { "$ref": "#/components/schemas/QuotePromiseType" },
+                "promise_due_at": { "type": "string", "format": "date-time" }
+              }
             }
           }
         ],
