@@ -26,6 +26,8 @@ import {
   applyPrefill,
   resolveTagPayload,
   resolveNceDepositPercent,
+  shouldClaimNceDepositProvenance,
+  nceTagDepositWasSuppressed,
   clearHolidayOnlyDiscountState,
   clearNceOrNeighborOnServiceTypeSwitch,
   legacyRebookConfirmMessage,
@@ -88,6 +90,8 @@ import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/
 import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
 import { track } from '@/lib/analytics/posthog';
 import { loadQuoteDraft, saveQuoteDraft, clearQuoteDraft, customerIsEmpty, draftAutosaveActive } from '@/lib/quoteDraft';
+import { stableStringify, quoteHasUnsavedEdits } from '@/lib/quoteDirty';
+import { permanentSideOverriddenFields, describePermanentSideField } from '@/lib/permanent/reconcileSideFootage';
 import { downscaleForUpload, downscaleForUploadAsBlob, readUploadErrorMessage } from '@/lib/clientImage';
 import {
   parkSatelliteContext,
@@ -875,6 +879,94 @@ export default function QuoteBuilder({
           ...(prefill?.isNce ? { depositPercent: 40 } : {}),
         },
   );
+  // ─── Unsaved-edit guard (ledger row 406) ────────────────────────────────
+  // Row 406 is a CONFIRMED prod loss: Front footage typed 95 -> 100, Calculate
+  // clicked, and the quote still read 95 long afterwards. `form` above is
+  // seeded ONCE from a Server Component prop, and unlike a brand-new quote
+  // (draftActive, below) a REOPENED one has no autosave at all — so any reload
+  // between the edit and Calculate silently restores the server value and
+  // Calculate then saves the OLD number, with nothing on screen ever saying a
+  // change was pending.
+  //
+  // `userTouchedRef` latches on the first real DOM edit anywhere in the
+  // builder (see onInputCapture on the wrapper below) and is NEVER reset — see
+  // quoteHasUnsavedEdits for why resetting it would drop an edit typed while a
+  // save was in flight. `lastPersistedFormRef` holds the serialization of the
+  // form snapshot that last actually reached the database, seeded here with
+  // the mount value because that IS the server truth at mount.
+  //
+  // SCOPE, stated honestly — corrected after a premerge staff-lens HIGH caught
+  // this very comment overstating its reach. `beforeunload` covers an
+  // accidental refresh, a tab close, and leaving for a DIFFERENT SITE. It does
+  // NOT cover:
+  //   - IN-APP navigation. Every OperatorNav link is a next/link client-side
+  //     transition, which unmounts this component without ever firing
+  //     beforeunload, and there is no route-leave interceptor in the app.
+  //     Clicking Inbox mid-edit is an extremely ordinary action. The visible
+  //     banner below is the only guard on that path today, which is why it is
+  //     sticky rather than parked inline where it can scroll out of sight.
+  //   - A silent browser tab discard (Chrome Memory Saver), which never runs
+  //     the handler at all.
+  // Both remaining gaps need the same real answer — edit-mode autosave — which
+  // is its own design because the existing draft autosave is deliberately
+  // gated OFF for reopened quotes (reopen-safety) and turning it on carries
+  // its own clobber risk. Tracked as a separate ledger row, not smuggled in
+  // here.
+  // Both halves are STATE, not refs: the indicator below is rendered from
+  // them, and a ref mutation would not re-render, leaving a stale warning on
+  // screen after a successful save until something else happened to re-render.
+  const [userTouched, setUserTouched] = useState(false);
+  const userTouchedRef = useRef(false);
+  const [lastPersistedForm, setLastPersistedForm] = useState<string>(() => stableStringify(form));
+  const currentFormSerialized = useMemo(() => stableStringify(form), [form]);
+  const hasUnsavedEdits = quoteHasUnsavedEdits({
+    userTouched,
+    currentForm: currentFormSerialized,
+    lastPersistedForm,
+  });
+  // One capture-phase handler for the whole builder, latching on ANY human
+  // interaction — typing, selection, pointer, keyboard.
+  //
+  // Premerge staff-lens HIGH: the first cut latched on `input`/`change` only,
+  // which missed the tool's PRIMARY footage-editing mechanism. Drawing a
+  // roofline, dragging a line endpoint, or deleting a line mutates `form`
+  // through an effect driven by pointer/click handlers — no input event is
+  // ever dispatched — so redrawing a trace on a reopened quote and navigating
+  // away reproduced the exact row-406 loss with no warning at all. The
+  // narrow latch encoded my own assumption that row 406 was about typing;
+  // the row's own exposure is any unsaved edit.
+  //
+  // Widening the latch is safe because it is NOT the part that prevents false
+  // positives — the comparison against the persisted snapshot is. A click
+  // that changes nothing in the payload (opening a section, a contact search)
+  // still reports clean, and a click that DOES change the payload is a
+  // genuine unsaved edit that deserves the warning. What the latch alone
+  // still buys is silence on the programmatic mount-time derives, which run
+  // with no human interaction of any kind.
+  //
+  // (This also settles a premerge disagreement between two lenses about the
+  // HighLevel contact pick: it is a <button onClick>, so it dispatches no
+  // input event, but reaching it requires typing in the search box first, so
+  // the old latch was already set. Under the widened latch the question is
+  // moot either way.)
+  const markUserTouched = () => {
+    if (userTouchedRef.current) return;
+    userTouchedRef.current = true;
+    setUserTouched(true);
+  };
+  // Native beforeunload, registered ONLY while genuinely dirty so an untouched
+  // or already-saved quote never prompts. preventDefault() is the modern
+  // required signal; returnValue is kept for older engines.
+  useEffect(() => {
+    if (!hasUnsavedEdits) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [hasUnsavedEdits]);
+
   // Fix-round HIGH (staff lens, #243 gate): a ref mirror of `form.serviceType`,
   // same never-stale idiom as isNceRef/legacyRebookRef above — but unlike those
   // two, serviceType has no single "apply" function every change funnels
@@ -1229,6 +1321,11 @@ export default function QuoteBuilder({
     cause: 'reanalyze' | 'photo-delete';
     groups: { surface: string | null; stringCount: number }[];
   } | null>(null);
+  // Row 328(a): set when a contact pick's INHERITED NCE tag would have moved
+  // the deposit on a quote that has already left draft, and was held back.
+  // Holds the inherited tag value so the banner can say which way it went.
+  // Cleared by a Calculate, which re-states the whole quote deliberately.
+  const [nceDepositHeldBack, setNceDepositHeldBack] = useState<boolean | null>(null);
   // #741 defect 3: reports a NEW prune from one of the two triggers. An empty
   // result never overwrites a real, unaddressed warning already standing from
   // the OTHER trigger — e.g. a re-analyze orphans "Curtain — 6 strings"
@@ -1928,17 +2025,38 @@ export default function QuoteBuilder({
   // and seeding under it would stamp the baseline with a scale that's
   // already stale the instant this function returns. See the
   // permanent_bistro fresh-lookup call site below for the reachable case.
-  const seedPermanentSideBaselineIfFrozen = (scale: number | null = satelliteFeetPerPixel) => {
-    if (!permDeriveFrozenRef.current) return;
+  // Row 405: the per-side baseline the CURRENT lines/scale would derive to,
+  // as a pure read. Extracted from the seed below rather than duplicated so
+  // the row-405 confirm and the thaw seed can never drift apart — a drift here
+  // would mean the dialog naming different fields than the reconcile actually
+  // overwrites, which is worse than no dialog.
+  const computePermanentSideBaseline = (scale: number | null = satelliteFeetPerPixel) => {
     const sides = {} as Record<PermanentSideKey, { hasLines: boolean; footage: number | null; corners: number }>;
     for (const side of PERMANENT_SIDES) {
       const lines = permanentSatLines[side];
       const m = deriveSideMeasure(lines, scale, satelliteAspect);
       sides[side] = { hasLines: lines.length > 0, footage: m.footage, corners: m.corners };
     }
-    prevPermSideDerivedRef.current = derivePermanentSideFootageBaseline(sides);
+    return derivePermanentSideFootageBaseline(sides);
+  };
+
+  const seedPermanentSideBaselineIfFrozen = (scale: number | null = satelliteFeetPerPixel) => {
+    if (!permDeriveFrozenRef.current) return;
+    prevPermSideDerivedRef.current = computePermanentSideBaseline(scale);
     prevPermSideScaleRef.current = scale;
   };
+
+  // Row 405 (premerge staff-lens HIGH): the baseline the override check must
+  // read is NOT simply `prevPermSideDerivedRef.current`. That ref is seeded
+  // lazily — only at the rehydrate-thaw, i.e. the first real line edit of the
+  // session, or a Recount. On a REOPENED quote that nobody has touched yet it
+  // is still EMPTY, and an empty baseline makes every field look brand-new,
+  // so the check would report zero overrides and stay silent — inert for the
+  // exact scenario row 405 is about (reopen, hand-typed override, re-analyze a
+  // different address). While frozen, derive the baseline from the current
+  // lines the same way the thaw seed would; once thawed, the ref is the truth.
+  const effectivePermanentSideBaseline = () =>
+    permDeriveFrozenRef.current ? computePermanentSideBaseline() : prevPermSideDerivedRef.current;
 
   // Row 345 finding 2: permDeriveFrozenRef is shared by THREE independent
   // consumers — the permanent-side footage/corners derive above (line
@@ -3196,6 +3314,53 @@ export default function QuoteBuilder({
       setAnalysisError('Enter the property address above first.');
       return;
     }
+    // Row 405: ask BEFORE analyzing, not after.
+    //
+    // A re-analyze replaces the traced sides, discarding any hand-typed
+    // footage/corners override. The loss is intended — a fresh AI re-trace is
+    // exactly the "geometry changed, the redraw wins" case the reconcile is
+    // built around — but it happened with NO warning, while all three sibling
+    // replacement paths (handleSatelliteSelect, applyPulledSatellite, and the
+    // permanent_bistro branch) confirm first. Footage drives price.
+    //
+    // PRE-FLIGHT for a specific reason, found by a premerge customer lens on
+    // the first version of this fix, which asked AFTER the analysis landed:
+    // a decline there had to keep the old traced lines while the NEW address's
+    // satellite image had ALREADY been applied and parked in pendingContextRef,
+    // so the customer portal would render one house's photo underneath another
+    // house's light lines. Declining here changes nothing whatsoever — no
+    // request, no image, no scale, no state — and it also does not spend
+    // 20-40s of analyzer time producing a result the operator has said they do
+    // not want.
+    //
+    // `permanentSideOverriddenFields` asks the same question the reconcile
+    // uses (a derived baseline the billed value has since drifted from), so
+    // the dialog can never name different fields than a re-analyze would
+    // actually overwrite. Non-permanent quotes never populate those baselines,
+    // so this is silent for them by construction, as it is for the ordinary
+    // case of a quote carrying no override at all.
+    // Gated on the service type explicitly. The baselines are permanent-side
+    // only, so a non-permanent quote is silent by construction anyway — but a
+    // quote that was switched FROM permanent can still be carrying stale
+    // permanentSatLines and form.permanent values, and there is no reason to
+    // ask about fields that service type does not bill.
+    const overriddenSideFields =
+      form.serviceType === 'permanent'
+        ? permanentSideOverriddenFields(effectivePermanentSideBaseline(), form.permanent)
+        : [];
+    if (overriddenSideFields.length > 0) {
+      const proceed = window.confirm(
+        `Re-analyzing replaces the traced sides, so these hand-entered numbers will be ` +
+          `recalculated from the new trace:
+
+` +
+          `${overriddenSideFields.map(describePermanentSideField).join(', ')}
+
+` +
+          `Cancel to keep them as they are — nothing on this quote will change.`,
+      );
+      if (!proceed) return;
+    }
     satelliteChangeInProgressRef.current = true;
     setLookingUp(true);
     setAnalysisError(null);
@@ -3635,11 +3800,21 @@ export default function QuoteBuilder({
   // (nceConfirmMessage) can ask the identical "is this locked" question
   // before it prompts, instead of a second inline expression that could drift.
   const nceDepositLocked = savedStatus === 'approved' || savedStatus === 'booked';
-  const applyIsNce = (next: boolean) => {
+  // Row 328(a): `moveDeposit: false` syncs the chip WITHOUT touching the
+  // deposit — used only by the async contact-pick inheritance on a quote that
+  // has left draft. See nceTagDepositWasSuppressed for why the money is held
+  // back there and nowhere else.
+  const applyIsNce = (next: boolean, opts?: { moveDeposit?: boolean }) => {
+    const moveDeposit = opts?.moveDeposit !== false;
     const wasNce = isNceRef.current;
     isNceRef.current = next;
     setIsNce(next);
     if (next === wasNce) return;
+    if (!moveDeposit) return; // chip only — deposit and its provenance untouched
+    // Any path that DOES move the deposit is a deliberate act on it, so a
+    // standing "we held your deposit back" notice from an earlier contact
+    // pick is now answered and must go.
+    setNceDepositHeldBack(null);
     // Read provenance NOW, not inside the updater: React runs the functional
     // updater at flush time, AFTER this handler finishes — by which point the
     // synchronous clear on the last line below has already set the ref to
@@ -3655,15 +3830,30 @@ export default function QuoteBuilder({
         nceDepositLocked,
         wasRuleSet,
       );
+      // Provenance (row 328(b)): the rule owns only what it actually WROTE.
+      // Claiming on every turn-ON adopted a hand-typed 40 that happened to
+      // match the rule's own number, and the next turn-OFF then wiped that
+      // negotiated value. Turning OFF never claims, and a locked quote never
+      // claims because resolveNceDepositPercent wrote nothing.
+      //
+      // Recorded HERE, inside the updater, because `f.depositPercent` is the
+      // authoritative pre-write value and the render closure's is not — this
+      // runs from an async contact-pick `.then` too, where staff may have
+      // typed since. Writing a ref inside an updater is safe in this one
+      // shape: the value is a pure function of (f, next, locked), so React's
+      // double-invocation in development computes the same answer twice. What
+      // it is NOT safe for is READING back in the same tick, which is exactly
+      // why `wasRuleSet` above is captured before this runs.
+      if (!nceDepositLocked) {
+        nceDepositSetByRuleRef.current = shouldClaimNceDepositProvenance({
+          nextIsNce: next,
+          locked: nceDepositLocked,
+          current: f.depositPercent,
+          resolved,
+        });
+      }
       return resolved === f.depositPercent ? f : { ...f, depositPercent: resolved };
     });
-    // Provenance: resolveNceDepositPercent force-writes 40 in exactly one
-    // case — turning ON while unlocked — so that's the only time the NEXT
-    // 40 is "the rule's". Turning OFF always clears it (whether a revert
-    // just fired or the value was left alone as a hand-edit, there is no
-    // rule-owned value anymore). Locked leaves it untouched — resolveNceDepositPercent
-    // never wrote anything, so there's nothing new to record either way.
-    if (!nceDepositLocked) nceDepositSetByRuleRef.current = next;
   };
 
   // ─── Referral program redemption (#41 PR 2) ─────────────────────────────
@@ -3873,6 +4063,10 @@ export default function QuoteBuilder({
       void quoteBuildTimerRef.current?.start('contact_selected', savedQuoteId);
     }
     everLinkedContactIdRef.current = c.id;
+    // Row 328(a) fix round (technical MED): a standing notice describes the
+    // PREVIOUS pick. Clear it here, before this pick's own lookup can set it
+    // again, so it can never name a contact that is no longer chosen.
+    setNceDepositHeldBack(null);
     setHighLevelContact(c);
     const hlAddress = [c.address1, c.city, c.state, c.postalCode].filter(Boolean).join(', ');
     setForm(f => ({
@@ -3950,7 +4144,38 @@ export default function QuoteBuilder({
         // inherited NCE tag also seeds the 40% deposit default, same as a
         // manual chip click.
         if (!isNceTouchedRef.current) {
-          applyIsNce(eligibleForTags && (tags?.is_nce ?? false));
+          const inheritedNce = eligibleForTags && (tags?.is_nce ?? false);
+          // Fix round (staff HIGH): applyIsNce no-ops when the value is
+          // unchanged, so the notice must ask the same question first.
+          // Without this, re-picking the SAME tagged contact on a sent quote
+          // whose deposit is not exactly 40 fired a notice claiming the chip
+          // had changed when nothing had happened at all — and a warning that
+          // cries wolf is worse than no warning.
+          const chipWouldChange = inheritedNce !== isNceRef.current;
+          // Row 328(a): this runs SECONDS after the click, from a lookup the
+          // staffer never asked for by name. On a quote that has already left
+          // draft the customer may be looking at a portal link quoting the
+          // current deposit, so the chip inherits but the money does not —
+          // and the banner below says so, because a deposit that silently
+          // did not change is exactly as surprising as one that did.
+          // The render closure's depositPercent can be one keystroke stale
+          // here (this resolves seconds after the click). That only decides
+          // whether the informational line below appears — the deposit itself
+          // is not touched on this path at all when the quote has left draft.
+          const suppressed = nceTagDepositWasSuppressed({
+            chipWouldChange,
+            quoteLeftDraft,
+            locked: nceDepositLocked,
+            current: form.depositPercent,
+            resolved: resolveNceDepositPercent(
+              form.depositPercent,
+              inheritedNce,
+              nceDepositLocked,
+              nceDepositSetByRuleRef.current,
+            ),
+          });
+          applyIsNce(inheritedNce, { moveDeposit: !quoteLeftDraft });
+          if (suppressed) setNceDepositHeldBack(inheritedNce);
         }
       })
       // Network error or non-OK response: leave chips exactly as they are —
@@ -3973,6 +4198,11 @@ export default function QuoteBuilder({
     // bypass shape changing mid-session, etc).
     const clearMsg = clearContactConfirmMessage(identityEverFrozen);
     if (clearMsg && !window.confirm(clearMsg)) return;
+    // Row 328(a) fix round 2 (delta-verify MED): a standing "deposit held
+    // back" notice describes the contact that was just unlinked. Drop it here
+    // for the same reason a new pick drops it — it must never name a contact
+    // this quote is no longer pointing at.
+    setNceDepositHeldBack(null);
     attachSeqRef.current++;
     const clearSeq = attachSeqRef.current;
     const freshClear = () => clearSeq === attachSeqRef.current;
@@ -4693,7 +4923,12 @@ export default function QuoteBuilder({
     // new quote), recalculating UPDATES that row in place — no more duplicate
     // rows piling up in /admin/quotes (#31).
     const existingQuoteId = savedQuoteId;
-    const inputs = buildQuoteInputs(formOverride ?? form, rooflineChoiceOverride);
+    // Row 406: the snapshot this save actually SENDS. Recorded as the new
+    // persisted baseline only once the server confirms the row was written
+    // (persisted === true, below) — never on a 200 that failed to save, which
+    // would silently clear the unsaved-changes warning on work still at risk.
+    const sentForm = formOverride ?? form;
+    const inputs = buildQuoteInputs(sentForm, rooflineChoiceOverride);
     const quoteBuildTimer = quoteBuildTimerRef.current?.current();
 
     try {
@@ -4793,6 +5028,11 @@ export default function QuoteBuilder({
       // 200 with persisted:false means the DB write failed even though
       // pricing succeeded (see /api/quote's own persisted: saved !== null).
       const persisted = data.persisted === true;
+      // Row 406: the database now matches `sentForm`, so that becomes the
+      // baseline the unsaved-changes warning compares against. Anything the
+      // operator typed WHILE this save was in flight differs from it and stays
+      // flagged, which is the intended behaviour.
+      if (persisted) setLastPersistedForm(stableStringify(sentForm));
       // #839 fix-round MED: surface the #251 freeze when it actually fired on
       // THIS save (route.ts only sends the key when updateQuote set it —
       // absent/falsy on every normal save, including a brand-new insert).
@@ -4985,6 +5225,24 @@ export default function QuoteBuilder({
       setResult(data.result);
       setBaselineResult(data.baseline ?? data.result); // #104
       if (typeof data.quoteId === 'string') setSavedQuoteId(data.quoteId);
+      // Row 406 premerge (THREE lenses converged — admin, staff, technical):
+      // recommendRoofline is the builder's SECOND /api/quote writer, and the
+      // unsaved-changes baseline lived only in runQuote's success branch. The
+      // roofline radio is a real input, so `userTouched` latches, and this
+      // call then changes form.rooflineChoice and SAVES it — leaving the
+      // banner and the leave-site prompt armed forever after a routine
+      // one-click action that had already persisted. A warning that can only
+      // accumulate is exactly how staff learn to ignore warnings.
+      //
+      // The sibling-guard parity rule in AGENTS.md Pitfalls, one more time:
+      // this file's own #214 and #198 fix rounds both caught recommendRoofline
+      // missing something runQuote had. Gated on `persisted` for the same
+      // reason runQuote is — a 200 that failed to write must not clear a
+      // warning about work still at risk. The snapshot is the one this call
+      // actually sent: `form` as captured above, with the new choice.
+      if (data.persisted === true) {
+        setLastPersistedForm(stableStringify({ ...form, rooflineChoice: choice }));
+      }
     } catch (err) {
       // #110 W3-005: revert the optimistic rooflineChoice write on failure —
       // otherwise form.rooflineChoice stays desynced from the billed
@@ -5171,7 +5429,17 @@ export default function QuoteBuilder({
 
   return (
     <OperatorShell active="new">
-      <div className="max-w-3xl mx-auto">
+      {/* Row 406: capture-phase input/change listener for the whole builder.
+          Capture (not bubble) so a child that stops propagation cannot hide an
+          edit from the guard, and on the inner wrapper rather than the shell so
+          the nav's own controls never mark a quote dirty. */}
+      <div
+        className="max-w-3xl mx-auto"
+        onInputCapture={markUserTouched}
+        onChangeCapture={markUserTouched}
+        onPointerDownCapture={markUserTouched}
+        onKeyDownCapture={markUserTouched}
+      >
 
         {/* TEST MODE banner (#93) — persistent while building/driving a test
             quote. Violet (not error-red / warning-amber) so it reads clearly as
@@ -7151,6 +7419,9 @@ export default function QuoteBuilder({
                   // would still get silently wiped by a LATER OFF-toggle that
                   // still thought it owned this field.
                   nceDepositSetByRuleRef.current = false;
+                  // Row 328(a): typing here IS the deliberate act the notice
+                  // asks for, so it stops standing.
+                  setNceDepositHeldBack(null);
                   set('depositPercent', Number(e.target.value));
                 }}
               />
@@ -7158,7 +7429,48 @@ export default function QuoteBuilder({
             <span className="block text-xs text-gray-500 mt-1">
               Blank defaults to 50%. Overrides the deposit due at approval for this quote only.
             </span>
+            {/* Row 328(a): a deposit that silently did NOT change is as
+                surprising as one that did, so the held-back case says so
+                where the number is, and names the deliberate way to do it. */}
+            {nceDepositHeldBack !== null && (
+              <p role="status" className="mt-2 text-sm text-amber-700">
+                ⚠️ This contact {nceDepositHeldBack ? 'is tagged NCE' : 'is not tagged NCE'}, so the NCE chip
+                changed — but the deposit was left at {form.depositPercent || 50}% because this quote has already
+                left draft. Change it here yourself if the customer agreed to a different deposit.
+              </p>
+            )}
           </Section>
+
+          {/* Row 406: the unsaved-changes indicator. Sits directly above
+              Calculate because Calculate IS the save — the operator needs to
+              see "not saved yet" at the moment they are deciding whether they
+              are done. Amber, not red: nothing is broken, there is simply work
+              on screen that the database does not have.
+
+              A premerge staff-lens HIGH noted that parked inline near the
+              bottom of a ~7900-line form this is easy to never see, and that it
+              is the ONLY guard on in-app navigation (next/link transitions
+              never fire beforeunload). A sticky variant was tried and REVERTED:
+              the delta-verify pass argued its containing block is the whole
+              component, which would pin it over the Send Quote button for the
+              entire rest of the scroll, and that could not be settled
+              statically or confirmed in a browser (the dev server is behind the
+              operator auth gate). Shipping an unverifiable overlay across a
+              money surface is the worse trade, so the visibility gap is
+              recorded on the follow-up row instead of papered over here. */}
+          {hasUnsavedEdits && (
+            <div
+              className="mb-2 rounded-lg border px-3 py-2 text-sm flex items-start gap-2"
+              style={{ borderColor: '#f59e0b', backgroundColor: '#fffbeb', color: '#92400e' }}
+              role="status"
+            >
+              <span aria-hidden="true">●</span>
+              <span>
+                <strong>Unsaved changes.</strong> Your edits are not in the quote yet — click
+                Calculate Quote to save them. Leaving or reloading this page first will lose them.
+              </span>
+            </div>
+          )}
 
           {/* Calculate */}
           <button
