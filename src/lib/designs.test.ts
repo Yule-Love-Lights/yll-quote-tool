@@ -208,7 +208,12 @@ describe('uploadDesignPhoto / uploadDesignSatellite orphan cleanup (W2-014)', ()
 // so the test can assert the prune's write doesn't clobber it.
 function makeExtrasSb(row: {
   extra_photos?: DesignExtraPhoto[] | null;
-  scene?: { yardsticks: unknown[]; items: Array<Record<string, unknown>> };
+  scene?: {
+    yardsticks: unknown[];
+    items: Array<Record<string, unknown>>;
+    // Row 371: the per-photo brightness map, pruned alongside the photo's items.
+    extraPhotoBrightness?: Record<string, number>;
+  };
   photo_path?: string | null;
   // Ledger row 260: the scene CAS counter this row starts at (default 1,
   // matching the migration's NOT NULL DEFAULT 1).
@@ -403,6 +408,55 @@ describe('extra street photos (#13)', () => {
     expect((state.row.extra_photos as DesignExtraPhoto[]).map(p => p.id)).toEqual([PHOTO_B]);
     const items = (state.row.scene as { items: Array<{ id: string }> }).items;
     expect(items.map(i => i.id)).toEqual(['i2', 'i3']);
+  });
+
+  // Row 371: the deleted photo's per-photo brightness override lives in its own
+  // map, not on an item, so the items prune alone left the key behind forever.
+  it('removeDesignExtraPhoto drops the deleted photo\'s extraPhotoBrightness entry and keeps the others', async () => {
+    const { client, state } = makeExtrasSb({
+      extra_photos: [
+        { id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 10, h: 10, title: null },
+        { id: PHOTO_B, path: `${ID}/extra-${PHOTO_B}.jpg`, w: 10, h: 10, title: 'Back' },
+      ],
+      scene: {
+        yardsticks: [],
+        items: [
+          { id: 'i1', kind: 'wreath', photoId: PHOTO_A },
+          { id: 'i2', kind: 'wreath', photoId: PHOTO_B },
+        ],
+        extraPhotoBrightness: { [PHOTO_A]: 70, [PHOTO_B]: 30 },
+      },
+    });
+    sbRef.current = client;
+
+    expect((await removeDesignExtraPhoto(ID, PHOTO_A)).ok).toBe(true);
+
+    const scene = state.row.scene as { items: Array<{ id: string }>; extraPhotoBrightness: Record<string, number> };
+    expect(scene.items.map(i => i.id)).toEqual(['i2']);
+    expect(scene.extraPhotoBrightness).toEqual({ [PHOTO_B]: 30 });
+  });
+
+  // Row 371, the case the items-only prune could never reach: a photo staff
+  // dimmed but never drew on takes the "nothing to prune" exit.
+  it('removeDesignExtraPhoto prunes a brightness entry even when the photo carries no scene items', async () => {
+    const { client, state } = makeExtrasSb({
+      extra_photos: [
+        { id: PHOTO_A, path: `${ID}/extra-${PHOTO_A}.jpg`, w: 10, h: 10, title: null },
+        { id: PHOTO_B, path: `${ID}/extra-${PHOTO_B}.jpg`, w: 10, h: 10, title: 'Back' },
+      ],
+      scene: {
+        yardsticks: [],
+        items: [{ id: 'i2', kind: 'wreath', photoId: PHOTO_B }],
+        extraPhotoBrightness: { [PHOTO_A]: 70, [PHOTO_B]: 30 },
+      },
+    });
+    sbRef.current = client;
+
+    expect((await removeDesignExtraPhoto(ID, PHOTO_A)).ok).toBe(true);
+
+    const scene = state.row.scene as { items: Array<{ id: string }>; extraPhotoBrightness: Record<string, number> };
+    expect(scene.extraPhotoBrightness).toEqual({ [PHOTO_B]: 30 });
+    expect(scene.items.map(i => i.id)).toEqual(['i2']); // untouched — no item prune ran
   });
 
   it('removeDesignExtraPhoto also prunes twins of a pruned canonical (#13)', async () => {

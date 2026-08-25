@@ -1226,6 +1226,15 @@ const REMOVE_EXTRA_PHOTO_FAILED: RemoveDesignExtraPhotoResult = { ok: false, pru
 // item drawn on it (an item tagged to a deleted photo would otherwise be
 // invisible everywhere, forever). PR2b's linked twins refine delete semantics;
 // here any item with the matching photoId dies with its photo.
+// Row 371: a copy of the scene's per-photo brightness map with one photo's
+// entry removed. A deleted photo's override is not attached to any item, so
+// the item prune below never reached it and the key survived the delete.
+function withoutPhotoBrightness(scene: DesignScene, photoId: string): Record<string, number> {
+  const next = { ...(scene.extraPhotoBrightness ?? {}) };
+  delete next[photoId];
+  return next;
+}
+
 export async function removeDesignExtraPhoto(id: string, photoId: string): Promise<RemoveDesignExtraPhotoResult> {
   const sb = getSb();
   if (!sb) return REMOVE_EXTRA_PHOTO_FAILED;
@@ -1299,9 +1308,36 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
       const freshRow = freshData as { scene?: DesignScene | null; version?: number | null } | null;
       const freshScene = freshRow?.scene ?? scene;
       const freshVersion = freshRow?.version ?? null;
-      if (!freshScene || !Array.isArray(freshScene.items) || !freshScene.items.some(it => it.photoId === photoId)) {
+      // Row 371: the per-photo BRIGHTNESS entry is pruned here too. It lives in
+      // its own map (`scene.extraPhotoBrightness`), not on an item, so a photo
+      // carrying a brightness override but NO drawn items would take the
+      // "nothing to prune" exit below and leave the key behind forever — which
+      // is why this is checked alongside the items rather than folded into the
+      // items branch.
+      const hasItemsOnPhoto =
+        Array.isArray(freshScene?.items) && freshScene.items.some(it => it.photoId === photoId);
+      const hasBrightnessEntry =
+        freshScene?.extraPhotoBrightness != null &&
+        Object.prototype.hasOwnProperty.call(freshScene.extraPhotoBrightness, photoId);
+      if (!freshScene || (!hasItemsOnPhoto && !hasBrightnessEntry)) {
         settled = true; // nothing (left) to prune — including a retry where a concurrent write already dropped these items
         break;
+      }
+      if (!hasItemsOnPhoto) {
+        // Brightness-only prune: leave `items` completely alone. Running the
+        // miniGroup prune here would drop groups orphaned by something else
+        // entirely, which is not this function's job and would change billing.
+        const outcome = await updateDesignSceneGuarded(
+          id,
+          { ...freshScene, extraPhotoBrightness: withoutPhotoBrightness(freshScene, photoId) },
+          freshVersion,
+        );
+        if (outcome.ok) {
+          settled = true;
+          break;
+        }
+        if (outcome.reason === 'error') throw new Error('scene prune write failed');
+        continue; // 'conflict' — retry from a fresh read
       }
       const prunedIds = new Set(freshScene.items.filter(it => it.photoId === photoId).map(it => it.id));
       // #227: pruneOrphanedMiniGroups drops any miniGroup left with zero
@@ -1316,7 +1352,19 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
         it => it.photoId !== photoId && !(it.linkedToId && prunedIds.has(it.linkedToId)),
       ));
       const afterGroupIds = new Set(keptItems.filter(isMiniGroup).map(g => g.id));
-      const outcome = await updateDesignSceneGuarded(id, { ...freshScene, items: keptItems }, freshVersion);
+      // Row 371: same brightness-key prune as the items-free branch above, in
+      // the one write rather than a second CAS round-trip.
+      const outcome = await updateDesignSceneGuarded(
+        id,
+        {
+          ...freshScene,
+          items: keptItems,
+          ...(freshScene.extraPhotoBrightness
+            ? { extraPhotoBrightness: withoutPhotoBrightness(freshScene, photoId) }
+            : {}),
+        },
+        freshVersion,
+      );
       if (outcome.ok) {
         prunedMiniGroups = beforeGroups
           .filter(g => !afterGroupIds.has(g.id))
