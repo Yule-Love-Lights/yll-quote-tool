@@ -402,7 +402,7 @@ function assertQuoteLifecycleContract(document) {
 
   const eventTypes = schemas.QuoteLifecycleEventType?.enum;
   for (const eventType of [
-    'QuoteRequestReceived', 'QuoteAssigned', 'QuoteUnassigned', 'QuoteSentRecorded',
+    'QuoteRequestLinked', 'QuoteAssigned', 'QuoteUnassigned', 'QuoteSentRecorded',
     'QuoteRevisionSaved', 'QuotePromiseRecorded', 'QuotePromiseSuperseded',
     'QuotePromiseCancelled', 'QuotePromiseFulfilled',
   ]) {
@@ -410,13 +410,25 @@ function assertQuoteLifecycleContract(document) {
       throw new Error(`Flow Q event union is missing ${eventType}`);
     }
   }
+  const lifecycle = schemas.QuoteLifecycleEvent;
+  const lifecyclePayload = lifecycle?.allOf?.[1];
+  const linkedRequestRule = lifecycle?.allOf?.[2];
   if (
     schemas.QuoteEventsPage?.properties?.source_watermark?.minLength !== 1
-    || schemas.QuoteLifecycleEvent?.allOf?.[1]?.properties?.source_outbox_sequence?.minimum !== 1
+    || eventTypes.includes('QuoteRequestReceived')
+    || !lifecycle?.['x-yll-cross-field-invariants']?.includes('aggregate_id_equals_quote_id')
+    || !lifecyclePayload?.required?.includes('quote_id')
+    || lifecyclePayload?.properties?.aggregate_id?.$ref !== '#/components/schemas/CanonicalUuid'
+    || lifecyclePayload?.properties?.entity_version?.minimum !== 1
+    || lifecyclePayload?.properties?.customer_ref !== undefined
+    || lifecyclePayload?.properties?.customer_ref_hash?.oneOf?.[0]?.minLength !== 1
+    || lifecyclePayload?.properties?.source_outbox_sequence?.minimum !== 1
+    || linkedRequestRule?.then?.required?.join(',')
+      !== 'request_id,request_source_system,request_source_record_id'
     || schemas.EmployeeAuthorizationSnapshot?.properties?.authorization_policy_version?.minLength !== 1
     || schemas.CurrentPaidContextRead?.oneOf?.length !== 2
   ) {
-    throw new Error('Flow Q must preserve source watermark, outbox order, policy version, and explicit unavailable paid context');
+    throw new Error('Flow Q must keep quote-scoped events, linked-request source IDs, opaque customer references, outbox order, policy version, and explicit unavailable paid context');
   }
 }
 

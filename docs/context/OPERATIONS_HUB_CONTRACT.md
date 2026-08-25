@@ -1,4 +1,4 @@
-# Operations Hub <-> Quote Tool contract, v1.5.0-draft
+# Operations Hub <-> Quote Tool contract, v1.6.0-draft
 
 > Canonical authority resides at
 > `yll-quote-tool/docs/context/OPERATIONS_HUB_CONTRACT.md`. The byte-identical
@@ -8,7 +8,7 @@
 > This file is the complete normative contract. Historical Hub plans,
 > proposals, and decision logs are provenance only. Implementations may
 > additionally consume only the OpenAPI and JSON Schema artifacts explicitly
-> generated from this file. The draft becomes `v1.5.0` only through the paired
+> generated from this file. The draft becomes `v1.6.0` only through the paired
 > review and human-approval process in section 10; it is never renumbered
 > downward to `v1.0.0`.
 
@@ -276,7 +276,7 @@ only a generic authentication error.
   schema file in their own CI. Neither side hand-implements the envelope
   twice. A CI check in each repo fails on any byte diff between the
   canonical contract and the mirror, version string included.
-  The independent `schema_version` is `1.1.0-draft`; it does not inherit
+  The independent `schema_version` is `1.2.0-draft`; it does not inherit
   or mirror the contract version.
 - **Deploy skew guard:** each side's deploy runs a staging smoke against
   every `/api/ops/v1` endpoint and fails on `contract_version` disagreement.
@@ -681,7 +681,7 @@ additionally carry no attribution at all until ledger #219 lands
 (`call_recordings.ghl_user_id` is NULL on every inbound call), which is why the
 plan routes unattributed inbound to a shared unclaimed lane in the interim.
 
-## 8d. Flow Q: quote lifecycle, paid-context, promises, and task evidence (QT -> Hub), v1.5.0-draft
+## 8d. Flow Q: quote lifecycle, paid-context, promises, and task evidence (QT -> Hub), v1.6.0-draft
 
 **Authority and purpose.** Quote Tool is the sole canonical owner of quote
 requests, quotes, lifecycle, assignment, customer handoff, delivery evidence,
@@ -692,17 +692,22 @@ assignments, and Quote-origin work.
 
 ### Canonical facts and monotonicity
 
-- A `QuoteRequestReceived` event is created only when an inbound source
-  explicitly creates a `quote_requests` record. It carries the stable request
-  id, `received_at`, `source_system`, `source_record_id`, opaque customer
-  reference, optional linked quote id, and assignee when known. The pair
-  (`source_system`, `source_record_id`) is unique. No consumer may manufacture
-  a request by correlating a contact, email, browser activity, or timestamp.
-- The Quote aggregate has an integer `entity_version` that starts at one and
-  increases on every committed canonical lifecycle change. A received event's
-  entity version is never lower than a previously accepted event for that
-  aggregate. Consumers retain the higher version and audit, quarantine, and
-  retry an older or malformed event rather than overwriting newer state.
+- An inbound source may create a `quote_requests` record before a quote exists,
+  but that is a Quote Tool-local fact, not a Flow Q feed event. Flow Q emits no
+  lifecycle event until the permanent Quote Tool `quote_id` exists. When a
+  request is linked, `QuoteRequestLinked` carries that `quote_id`, the stable
+  request id, and the request's `source_system` plus `source_record_id`. The
+  pair (`source_system`, `source_record_id`) is unique. No consumer may
+  manufacture a request by correlating a contact, email, browser activity, or
+  timestamp.
+- Every Flow Q event is quote-scoped: `aggregate_id` equals `quote_id`, both
+  are permanent Quote Tool UUIDs, and `entity_version` starts at one and
+  increases on every committed canonical lifecycle change. Consumers retain
+  the higher version and audit, quarantine, and retry an older or malformed
+  event rather than overwriting newer state.
+- Customer references crossing this boundary are HMAC-derived opaque
+  `customer_ref_hash` values only. Raw customer IDs, names, emails, phone
+  numbers, and address identifiers are not valid Flow Q event fields.
 - `first_sent_at` is immutable. `QuoteSentRecorded` sets it only when it is
   null. A resend, revive, retry, or later delivery outcome may update a
   convenience latest-send value or append evidence, but can never change
@@ -715,7 +720,7 @@ assignments, and Quote-origin work.
 ### Lifecycle union
 
 The `event_type` enum in the shared schema is closed. Its initial members are
-`QuoteRequestReceived`, `QuoteRequestLinked`, `QuoteCreated`, `QuoteAssigned`,
+`QuoteRequestLinked`, `QuoteCreated`, `QuoteAssigned`,
 `QuoteUnassigned`, `QuoteMeaningfulEditRecorded`, `QuoteRevisionSaved`,
 `QuoteWorkWaitStarted`, `QuoteWorkWaitEnded`, `QuoteSentRecorded`,
 `QuoteDeliveryAttempted`, `QuoteDeliveryOutcomeRecorded`,
@@ -732,7 +737,9 @@ delivery guarantee, and carries revision id when available, `first_send`, mode
 (`tool_sms`, `tool_email`, `tool_both`, or `manual_external`), actor, and
 integer total cents. Delivery evidence uses a stable attempt id, channel,
 fresh-or-retry flag, retry lineage, attempted/resolved times, provider id,
-sanitized error code, and outcome `accepted`, `failed`, or `unknown`.
+sanitized error code, and outcome `accepted`, `failed`, or `unknown`. The
+shared schema requires those event-specific fields for request links, work
+waits, sends, delivery attempts, delivery outcomes, and promise records.
 
 ### Explicit promise and task evidence rule
 
@@ -790,6 +797,15 @@ result without duplicate projection or task. A dead letter is visible to an
 admin and does not advance the cursor past unprocessed evidence. The feed and
 the current-context read are independently kill-switched; disabled reads return
 typed HTTP 503 `kill_switched`, never an empty successful response.
+
+### v1.5 transition
+
+Until 2026-09-30, a receiver may accept a syntactically valid v1.5 request
+header only to complete a controlled upgrade to v1.6. The Quote Tool emits
+v1.6 event payloads only; a v1.5 payload is never synthesized, transformed,
+or silently reinterpreted. No Flow Q runtime may be enabled until the Quote
+Tool producer, the Hub consumer, and the Hub's byte-identical mirror all use
+v1.6. This is a bounded deployment bridge, not a permanent dual-version API.
 
 ### Office projection boundary
 
@@ -1172,7 +1188,7 @@ not infer a value, silently choose a default, or weaken a safety gate.
 **Shared schema artifact path (Phase 0):**
 `yll-quote-tool/docs/context/ops-contract-schema/` (generated from the
 OpenAPI fragments; the manifest starts at independent
-`schema_version` is `1.1.0-draft`; both CIs validate against it and the Hub vendors
+`schema_version` is `1.2.0-draft`; both CIs validate against it and the Hub vendors
 the same files byte-identically).
 
 ## 10. Change process
