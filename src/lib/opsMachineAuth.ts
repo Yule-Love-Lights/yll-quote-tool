@@ -111,8 +111,27 @@ function cursorSecret(): string | null {
 // must never be the reason customer identity leaves the building.
 export function hashCustomerRef(customerRef: string): string | null {
   const secret = process.env.OPS_HUB_CUSTOMER_REF_SECRET;
-  if (!secret) return null;
+  // >= 32 matches the floor opsCursorSecret() already enforces on its sibling.
+  // A short key here would be brute-forceable against a known customer id set,
+  // which would undo the whole point of hashing.
+  if (!secret || secret.length < 32) return null;
   return createHmac('sha256', secret).update(customerRef, 'utf8').digest('base64url').slice(0, 32);
+}
+
+// Every authenticated Hub call inserts a nonce and nothing pruned them, so the
+// table grew without bound. Rows are dead once expires_at passes (the replay
+// window is ten minutes), so clear them opportunistically from each route that
+// writes one. Deliberately not awaited: housekeeping must never fail or slow a
+// request that already authenticated. Backed by ops_machine_request_nonces_expires_idx.
+export function pruneExpiredOpsNonces(sb: {
+  from: (t: string) => { delete: () => { lt: (c: string, v: string) => PromiseLike<{ error: { message: string } | null }> } };
+}): void {
+  void Promise.resolve(
+    sb.from('ops_machine_request_nonces').delete().lt('expires_at', new Date().toISOString()),
+  ).then(
+    ({ error }) => { if (error) console.warn('[opsMachineAuth] nonce prune failed:', error.message); },
+    (err) => { console.warn('[opsMachineAuth] nonce prune threw:', err); },
+  );
 }
 
 export function createOpsCursor(sequence: number): string | null {

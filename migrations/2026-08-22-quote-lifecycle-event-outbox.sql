@@ -38,8 +38,14 @@ create table if not exists public.quote_lifecycle_events (
   -- Naldo's call 2026-08-25. This was `on delete restrict`, which made
   -- deleting ANY quote fail once these triggers are live, while deleteQuote()
   -- erases the design and house photos FIRST: irreversible photo loss plus an
-  -- undeletable quote row. Cascade here, and deleteQuote now removes the quote
-  -- row before the design cleanup, so neither ordering can strand anything.
+  -- undeletable quote row.
+  --
+  -- Cascade here is the whole fix. A deleteQuote() REORDER was also proposed and
+  -- approved, then dropped once implementing it showed it was wrong:
+  -- designs.quote_id is `on delete set null` and deleteDesignsForQuote() looks
+  -- designs up BY quote_id, so removing the quote first orphans the row and
+  -- strands the customer's photos in storage forever. src/lib/quotes.ts keeps
+  -- its designs-first order and is untouched by this migration.
   quote_id uuid references public.quotes(id) on delete cascade,
   quote_request_id uuid references public.quote_requests(id) on delete restrict,
   event_type text not null,
@@ -71,7 +77,11 @@ create table if not exists public.quote_lifecycle_events (
 
 create table if not exists public.quote_event_outbox (
   sequence bigint generated always as identity primary key,
-  event_id uuid not null unique references public.quote_lifecycle_events(id) on delete restrict,
+  -- Cascade, not restrict. This was the SECOND wall on the delete chain: even
+  -- with the events FK cascaded and the immutable trigger narrowed, this one
+  -- still blocked the same delete, reproduced live by a review. An outbox row
+  -- with no event is meaningless, so it goes when its event goes.
+  event_id uuid not null unique references public.quote_lifecycle_events(id) on delete cascade,
   created_at timestamptz not null default now(),
   available_at timestamptz not null default now(),
   delivery_attempts integer not null default 0,
@@ -109,6 +119,9 @@ create index if not exists quote_lifecycle_events_quote_accepted_idx
   on public.quote_lifecycle_events (quote_id, accepted_at, id);
 create index if not exists quote_event_outbox_feed_idx
   on public.quote_event_outbox (sequence) where dead_lettered_at is null;
+create index if not exists ops_machine_request_nonces_expires_idx
+  on public.ops_machine_request_nonces (expires_at);
+
 create index if not exists employee_authorization_snapshots_current_idx
   on public.employee_authorization_snapshots (employee_id, entity_version desc);
 
@@ -125,11 +138,36 @@ end;
 $$;
 
 drop trigger if exists quote_lifecycle_events_immutable on public.quote_lifecycle_events;
+-- UPDATE only, deliberately. This used to be `before update or delete`, and a
+-- cascade delete fires a child table's own row triggers, so deleting any real
+-- quote raised 'quote lifecycle events are immutable' and rolled back. A review
+-- reproduced that live in a throwaway Postgres before this change.
+--
+-- Immutability here means history is never REWRITTEN. Deleting the parent quote
+-- is a different act, and Naldo's 2026-08-25 call was explicitly that events die
+-- with their quote, which is what the cascade expresses. Blocking the cascade
+-- did not preserve history, it only made the quote undeletable after its photos
+-- had already been erased.
 create trigger quote_lifecycle_events_immutable
-  before update or delete on public.quote_lifecycle_events
+  before update on public.quote_lifecycle_events
   for each row execute function public.reject_quote_lifecycle_event_mutation();
 
 alter table public.quote_requests enable row level security;
+-- Audit lock-down, restored after the immutability trigger was narrowed to
+-- UPDATE only (it had to be: a cascade delete fires the child's row triggers,
+-- so 'before update or delete' made every real quote undeletable).
+--
+-- Narrowing the trigger left a gap: a standalone DELETE of one event row would
+-- have succeeded, where before it was refused. Revoking the privilege closes
+-- that without re-blocking the cascade. VERIFIED empirically in a throwaway
+-- Postgres, because the two cases behave differently and I did not want to
+-- assume: as service_role a direct DELETE is refused with 'permission denied
+-- for table quote_lifecycle_events', while deleting the parent quote as that
+-- same role still cascades the event away. Referential actions are enforced by
+-- the database itself and do not re-check the deleting role's DELETE grant.
+revoke delete on public.quote_lifecycle_events from service_role;
+revoke delete on public.quote_event_outbox from service_role;
+
 alter table public.quote_lifecycle_events enable row level security;
 alter table public.quote_event_outbox enable row level security;
 alter table public.ops_machine_request_nonces enable row level security;
@@ -175,6 +213,12 @@ begin
   if not found then
     raise exception 'quote not found';
   end if;
+  -- Ledger #93, matching the append trigger's guard. Dead code today (this
+  -- function has no callers) but it must not become the door test traffic walks
+  -- through the moment someone wires it up.
+  if coalesce(v_quote.is_test, false) then
+    raise exception 'lifecycle events are not recorded for test quotes';
+  end if;
   if v_quote.entity_version <> p_expected_entity_version then
     raise exception 'entity version conflict';
   end if;
@@ -190,9 +234,16 @@ begin
   set entity_version = v_entity_version,
       status = coalesce(p_status, status),
       quote_sent_at = coalesce(p_latest_sent_at, quote_sent_at),
+      -- Qualified with the table name deliberately. The RETURNS TABLE OUT
+      -- parameter is also called first_sent_at and shadows the column, so the
+      -- bare references here raised 'column reference "first_sent_at" is
+      -- ambiguous' on EVERY call. Dead code today (no callers), which is the
+      -- only reason it was never noticed; found by running the function in a
+      -- throwaway Postgres rather than by reading it.
       first_sent_at = case
-        when p_event_type = 'QuoteSentRecorded' then coalesce(first_sent_at, p_first_sent_at)
-        else first_sent_at
+        when p_event_type = 'QuoteSentRecorded'
+          then coalesce(public.quotes.first_sent_at, p_first_sent_at)
+        else public.quotes.first_sent_at
       end
   where id = p_quote_id;
 

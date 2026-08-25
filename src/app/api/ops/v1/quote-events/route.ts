@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-import { createOpsCursor, hashCustomerRef, OPS_CONTRACT_VERSION, OPS_SCHEMA_VERSION, parseOpsCursor, verifyOpsMachineRequest } from '@/lib/opsMachineAuth';
+import { createOpsCursor, hashCustomerRef, OPS_CONTRACT_VERSION, OPS_SCHEMA_VERSION, parseOpsCursor, verifyOpsMachineRequest, pruneExpiredOpsNonces } from '@/lib/opsMachineAuth';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 
 export const runtime = 'nodejs';
@@ -43,7 +43,7 @@ function fail(status: number, code: string, clientVersion: string | null = null)
 // The stored event keeps the raw customer_ref, which is ours and useful for
 // internal audit. Only what LEAVES is hashed, and this is the single boundary
 // it leaves through.
-function redactCustomerRef(payload: Record<string, unknown>): Record<string, unknown> {
+export function redactCustomerRef(payload: Record<string, unknown>): Record<string, unknown> {
   const { customer_ref: customerRef, ...rest } = payload;
   if (typeof customerRef !== 'string' || customerRef.length === 0) return rest;
   const hashed = hashCustomerRef(customerRef);
@@ -72,6 +72,7 @@ export async function GET(request: NextRequest) {
     .from('ops_machine_request_nonces')
     .insert({ key_id: auth.keyId, nonce: auth.nonce, expires_at: expiresAt });
   if (nonceError) return fail(401, 'unauthorized', auth.clientVersion);
+  pruneExpiredOpsNonces(sb);
 
   const { data, error } = await sb
     .from('quote_event_outbox')

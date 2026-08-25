@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-import { OPS_CONTRACT_VERSION, OPS_SCHEMA_VERSION, verifyOpsMachineRequest } from '@/lib/opsMachineAuth';
+import { OPS_CONTRACT_VERSION, OPS_SCHEMA_VERSION, verifyOpsMachineRequest, pruneExpiredOpsNonces } from '@/lib/opsMachineAuth';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 
 export const runtime = 'nodejs';
@@ -27,6 +27,7 @@ export async function GET(request: NextRequest) {
     key_id: auth.keyId, nonce: auth.nonce, expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
   });
   if (nonceError) return result(401, { error_code: 'unauthorized', client_version: auth.clientVersion, correlation_id: crypto.randomUUID() });
+  pruneExpiredOpsNonces(sb);
 
   // Current shifts do not yet carry the Hub-owned department/context UUIDs
   // required by Flow Q. Returning unavailable is intentional and safe: it

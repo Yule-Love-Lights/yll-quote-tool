@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 
-import { OPS_CONTRACT_VERSION, OPS_SCHEMA_VERSION, verifyOpsMachineRequest } from '@/lib/opsMachineAuth';
+import { OPS_CONTRACT_VERSION, OPS_SCHEMA_VERSION, verifyOpsMachineRequest, pruneExpiredOpsNonces } from '@/lib/opsMachineAuth';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 
 export const runtime = 'nodejs';
@@ -66,18 +66,7 @@ export async function POST(request: NextRequest) {
     key_id: auth.keyId, nonce: auth.nonce, expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
   });
   if (nonceError) return response(401, { error_code: 'unauthorized', client_version: auth.clientVersion, correlation_id: input.correlation_id });
-  // The nonce table grows one row per authenticated Hub call and nothing pruned
-  // it. Rows are dead the moment expires_at passes (the replay window is ten
-  // minutes), so clear the expired ones opportunistically here. Best-effort and
-  // deliberately un-awaited for failure: a housekeeping problem must never fail
-  // a request that already authenticated.
-  void sb
-    .from('ops_machine_request_nonces')
-    .delete()
-    .lt('expires_at', new Date().toISOString())
-    .then(({ error }) => {
-      if (error) console.warn('[ops/snapshots] nonce prune failed:', error.message);
-    });
+  pruneExpiredOpsNonces(sb);
   const payloadHash = createHash('sha256').update(rawBody, 'utf8').digest('hex');
   const { data: idempotent } = await sb
     .from('employee_authorization_snapshots')
