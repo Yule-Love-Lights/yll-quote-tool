@@ -16,7 +16,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: () => {} }) }));
 
-import { InboxList, isGroupExpanded, canToggleGroup, withRowFlagSet, withRowFlagCleared, withItemRestored, omitKey, errorNoteFor, retiresFollowUp, colorRequestConfirmMessage, replyRowAction, replyOutcomeMessage } from './InboxList';
+import { InboxList, isGroupExpanded, canToggleGroup, withRowFlagSet, withRowFlagCleared, withItemRestored, omitKey, errorNoteFor, retiresFollowUp, colorRequestConfirmMessage, replyRowAction, replyOutcomeMessage, isRefusalStatus } from './InboxList';
 import type { OpenInboxItem } from '@/lib/dashboard/inbox/types';
 import type { InboxGroup } from '@/lib/dashboard/inbox/groupInboxItems';
 
@@ -596,6 +596,27 @@ describe('errorNoteFor (row 311 fix-round FIX 3)', () => {
 
   it('a definite rejection with no error falls back to the generic copy', () => {
     expect(errorNoteFor(undefined, undefined)).toBe('Something went wrong — try again.');
+  });
+});
+
+// Row 392: isRefusalStatus is the exact gate act() uses to tell a CAS refusal
+// (the row genuinely moved out from under it — dismiss/route.ts's own 409)
+// apart from a plain backend failure (503) or a network throw, which is what
+// decides whether act() restores the row + refusedIds it (this row's note
+// must survive) versus falling through to the old refresh()-only path.
+describe('isRefusalStatus (row 392 — distinguishing a CAS refusal from a backend failure)', () => {
+  it('409 is a refusal', () => {
+    expect(isRefusalStatus(409)).toBe(true);
+  });
+
+  it('503 is not a refusal — the item is unchanged server-side, refresh() already handles it', () => {
+    expect(isRefusalStatus(503)).toBe(false);
+  });
+
+  it('200/404/500 are not refusals either', () => {
+    expect(isRefusalStatus(200)).toBe(false);
+    expect(isRefusalStatus(404)).toBe(false);
+    expect(isRefusalStatus(500)).toBe(false);
   });
 });
 
