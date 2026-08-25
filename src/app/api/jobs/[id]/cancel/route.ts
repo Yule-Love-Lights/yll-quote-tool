@@ -17,8 +17,9 @@ import { releaseAccrualOnCancel } from '@/lib/referrals';
 // WT-31: reuse the SAME work-order projection + deduction math the prepare
 // path (prepareJobMaterials) uses, read-only — this route never writes to
 // src/lib/inventory/jobs.ts.
-import { getJobWorkOrder, computeStockDeductions } from '@/lib/inventory/jobs';
+import { getJobWorkOrder, computeStockDeductions, PENDING_STOCK_SNAPSHOT } from '@/lib/inventory/jobs';
 import { adjustOnHandAtomic } from '@/lib/inventory/onHand';
+import { recordJobStockMovements } from '@/lib/inventory/jobStockMovements';
 
 export const runtime = 'nodejs';
 
@@ -41,7 +42,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: 'Job not found' }, { status: 404 });
   }
   if (job.status === 'cancelled') {
-    return NextResponse.json({ ok: true, alreadyCancelled: true });
+    // Row 382: previously bare `{ ok: true, alreadyCancelled: true }` — a
+    // retried/double-clicked cancel told staff nothing beyond the flag itself.
+    // This route is the ONLY writer of status 'cancelled' (see setJobStatus
+    // call below), so reaching here always means an earlier request already
+    // ran this same flow to completion; say so plainly instead of silence.
+    return NextResponse.json({
+      ok: true,
+      alreadyCancelled: true,
+      note: 'This job was already cancelled — no action was taken on this request.',
+    });
   }
   if (job.status === 'done') {
     return NextResponse.json(
@@ -61,11 +71,26 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // WT-31: a cancelled job that already had its materials PREPPED (on-hand
   // decremented at prep — #82 Phase 2) leaves stock permanently short unless
   // the deduction is reversed. Best-effort — the job is already cancelled
-  // either way. Reuses getJobWorkOrder + computeStockDeductions (the SAME
-  // projection + deduction math the prepare path uses) to reconstruct what
-  // prep took off stock — the closest available reconstruction, since no
-  // per-job deduction ledger is kept. Test jobs (ledger #93) never touched
-  // real on-hand at prep, so there's nothing to return for them.
+  // either way. Row 325: reverses the job's OWN stock_deductions snapshot
+  // (persisted by prepareJobMaterials at prep time) — the exact quantities
+  // that were actually taken off stock — rather than recomputing the
+  // materials projection live, which would silently drift from what prep
+  // really deducted if the materials rules changed in between. Three states
+  // for wo.job.stockDeductions (see PENDING_STOCK_SNAPSHOT's doc in jobs.ts):
+  //  - a real snapshot (array)      → reverse it exactly, below.
+  //  - null                         → TRUE legacy: prepped before this
+  //    snapshot column existed at all. Falls back to the old live
+  //    reconstruction via getJobWorkOrder + computeStockDeductions and says
+  //    so in the note — the only state where that reconstruction is safe,
+  //    because it's the only state where no snapshot ever could have existed.
+  //  - PENDING_STOCK_SNAPSHOT ('pending') → prepped by CURRENT code, but its
+  //    accurate follow-up write never landed (fix round 2, Finding 1). This
+  //    is NOT the legacy case: reconstructing live here would repeat the
+  //    exact over/under-credit bug this snapshot exists to prevent, just
+  //    through a transient-failure door instead of a race. Refuse to
+  //    auto-reverse; flag it for a human instead.
+  // Test jobs (ledger #93) never touched real on-hand at prep, so there's
+  // nothing to return for them.
   const stockReturned: { sku: string; qty: number }[] = [];
   let stockReturnNote: string | null = null;
   try {
@@ -79,32 +104,79 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       // same +qty, over-crediting on-hand into phantom stock. Atomically CLAIM
       // the reversal by clearing stock_decremented_at WHERE it's still set
       // (the INVERSE of prepareJobMaterials's NULL→now claim); only the caller
-      // that flips it non-null → NULL runs the return. The job is terminal
-      // (cancelled), so it's never re-prepped and the cleared marker is inert.
+      // that flips it non-null → NULL runs the return. Note this clears
+      // stock_decremented_at back to the exact NULL state prepareJobMaterials's
+      // own atomic claim (`.is('stock_decremented_at', null)`) re-claims —
+      // prepareJobMaterials has no job-status gate, so a cancelled job CAN be
+      // re-prepped later (see jobsPrepare.test.ts's "re-prep after a cancel
+      // reversal" case), and this clearing is exactly what makes that possible.
+      // Clearing stock_deductions unconditionally here also closes out the
+      // pending-sentinel state below — a cancelled job never carries it.
       const { data: claimed } = await stockSb
         .from('jobs')
-        .update({ stock_decremented_at: null })
+        .update({ stock_decremented_at: null, stock_deductions: null })
         .eq('id', id)
         .not('stock_decremented_at', 'is', null)
         .select('id')
         .maybeSingle();
       if (claimed) {
-        const deductions = computeStockDeductions(wo.materials.materials);
-        if (deductions.length) {
-          for (const d of deductions) {
-            try {
-              // Positive delta returns exactly what a prep would deduct today —
-              // mirrors prepareJobMaterials's negative delta (adjustOnHandAtomic
-              // in onHand.ts).
-              await adjustOnHandAtomic(stockSb, d.sku, d.deducted);
-              stockReturned.push({ sku: d.sku, qty: d.deducted });
-            } catch (err) {
-              console.error(`[api/jobs/:id/cancel] stock return failed for ${d.sku}:`, err);
-            }
-          }
-        } else {
+        const snapshot = wo.job.stockDeductions;
+        if (snapshot === PENDING_STOCK_SNAPSHOT) {
+          // Finding 1: refuse, don't guess. A wrong stock credit is worse
+          // than a refusal that asks a human to look. Staff-lens fix (MED):
+          // an earlier version of this copy named the raw table/column
+          // (job_stock_movements, stock_deductions) and gated the actionable
+          // instruction behind "if it has no rows" — jargon a warehouse
+          // person has no in-app way to check, and a fact they can't
+          // determine. Plain and unconditional instead: don't claim the
+          // deduction is durably recorded anywhere (it may or may not be —
+          // the audit write is itself best-effort and runs right after the
+          // same DB write that just failed), don't name any table/column,
+          // just say the record didn't save and what to do about it —
+          // mirrors the pre-row-386 wording this replaces.
           stockReturnNote =
-            'Materials were marked prepped for this job — no trackable on-hand stock to reverse automatically; check manually.';
+            "This job was prepped, but the record of exactly what it took didn't save (a transient error right after prep) — nothing was automatically returned to stock. Check on-hand manually against this job's materials before restocking.";
+        } else {
+          // Row 325: prefer the snapshot prep actually deducted. Only fall
+          // back to a live reconstruction when no snapshot exists AT ALL — a
+          // true legacy job prepped before this column shipped (see the
+          // block comment above; PENDING_STOCK_SNAPSHOT is excluded by the
+          // branch above and never reaches here).
+          const usingSnapshot = snapshot != null;
+          const deductions = usingSnapshot ? snapshot : computeStockDeductions(wo.materials.materials);
+          if (deductions.length) {
+            // Row 386: the jobs-row snapshot this reversal reads (`snapshot`)
+            // is CLEARED by the claim update above the instant it's used — by
+            // design, so the same job can be re-prepped later (its atomic
+            // claim only needs stock_decremented_at back to null). That
+            // clearing destroys the record of what cancel actually returned
+            // unless it's captured elsewhere first — durableMovements is that
+            // capture, written to job_stock_movements below (append-only,
+            // never touched by this or prepareJobMaterials's own
+            // nulling/claim).
+            const durableMovements: { sku: string; qtyDelta: number; before: number; after: number }[] = [];
+            for (const d of deductions) {
+              try {
+                // Positive delta returns exactly what prep deducted — mirrors
+                // prepareJobMaterials's negative delta (adjustOnHandAtomic in
+                // onHand.ts).
+                const { before, after } = await adjustOnHandAtomic(stockSb, d.sku, d.deducted);
+                stockReturned.push({ sku: d.sku, qty: d.deducted });
+                durableMovements.push({ sku: d.sku, qtyDelta: d.deducted, before, after });
+              } catch (err) {
+                console.error(`[api/jobs/:id/cancel] stock return failed for ${d.sku}:`, err);
+              }
+            }
+            await recordJobStockMovements(stockSb, id, 'cancel_reversal', durableMovements);
+          } else {
+            stockReturnNote =
+              'Materials were marked prepped for this job — no trackable on-hand stock to reverse automatically; check manually.';
+          }
+          if (!usingSnapshot) {
+            const legacyNote =
+              'No per-prep snapshot was recorded for this job (prepped before this fix shipped) — the reversal was reconstructed from the CURRENT materials projection and may not exactly match what prep originally deducted.';
+            stockReturnNote = stockReturnNote ? `${stockReturnNote} ${legacyNote}` : legacyNote;
+          }
         }
       }
     }
@@ -250,9 +322,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   }
   // WT-31: surface the stock reversal (or the fallback note when nothing
   // trackable could be reversed) the same way the refund note is surfaced.
+  // Row 325: these are independent now (not else-if) — a legacy-job caveat
+  // (stockReturnNote) can accompany an actual "Returned to stock" line, not
+  // just replace it, since the reconstruction path can still return SOMETHING
+  // while being worth flagging as unverified.
   if (stockReturned.length) {
     notes.push(`Returned to stock: ${stockReturned.map((s) => `${s.qty}×${s.sku}`).join(', ')}.`);
-  } else if (stockReturnNote) {
+  }
+  if (stockReturnNote) {
     notes.push(stockReturnNote);
   }
   return NextResponse.json({
@@ -263,6 +340,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     refundNeeded,
     quoteCancelled,
     stockReturned,
+    // Fix round 3 (Finding LOW, PR #926): a precomputed flag, same shape as
+    // `refundNeeded`, so callers don't have to string-match `note` to decide
+    // whether to draw the eye. True whenever ANY stock-reversal caveat rode
+    // along — the true-legacy live-reconstruction note, the "nothing
+    // trackable" note, or (the case this fix round exists for) the
+    // PENDING_STOCK_SNAPSHOT refusal note. All three mean a human should
+    // look, not just read past the note in the middle of a longer sentence.
+    stockNeedsAttention: !!stockReturnNote,
     note: notes.join(' '),
   });
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { groupPrepCards, prepDigestMessage } from './prepDigest';
+import { groupPrepCards, prepDigestMessage, stuckStockSnapshotCards } from './prepDigest';
 import type { FulfillmentCard } from './jobs';
 
 function card(over: Partial<FulfillmentCard>): FulfillmentCard {
@@ -17,6 +17,7 @@ function card(over: Partial<FulfillmentCard>): FulfillmentCard {
     isTest: false,
     highlevelContactId: null,
     customerId: null,
+    stockSnapshotPending: false,
     ...over,
   };
 }
@@ -85,5 +86,51 @@ describe('prepDigestMessage', () => {
     expect(msg).not.toContain('#41 Jane Doe'); // the 41st is omitted
     expect(msg).toContain('…and 5 more');
     expect(msg.length).toBeLessThan(4000);
+  });
+
+  // Row 382: a job stuck at PENDING_STOCK_SNAPSHOT has already advanced to
+  // 'ready_for_install' — excluded from PREP_STAGES/groupPrepCards above — so
+  // without a dedicated pass it stays invisible to this digest forever.
+  describe('stuck stock-snapshot jobs (row 382)', () => {
+    it('lists a stuck job even when the prep board itself is otherwise clear', () => {
+      const msg = prepDigestMessage(
+        [card({ stage: 'ready_for_install', jobNumber: 77, customerName: 'Stuck Customer', stockSnapshotPending: true })],
+        'https://app.example.com',
+      );
+      // The all-clear line is still accurate (nothing is WAITING to be
+      // prepped) — the stuck-job line rides alongside it, not instead of it,
+      // so a quiet prep board never hides this.
+      expect(msg).toContain('Prep board clear');
+      expect(msg).toContain("1 job(s) prepped but the record of what was taken didn't save");
+      expect(msg).toContain('#77 Stuck Customer');
+      expect(msg).toContain('Board → https://app.example.com/inventory/jobs');
+    });
+
+    it('appends the stuck-job line alongside a normal non-empty prep board', () => {
+      const msg = prepDigestMessage(
+        [
+          card({ stage: 'to_be_ordered', jobNumber: 1, customerName: 'Alice' }),
+          card({ stage: 'ready_for_install', jobNumber: 2, customerName: 'Bob', stockSnapshotPending: true }),
+        ],
+        'https://app.example.com',
+      );
+      expect(msg).toContain('1 job(s) waiting');
+      expect(msg).toContain('#1 Alice');
+      expect(msg).toContain("1 job(s) prepped but the record of what was taken didn't save");
+      expect(msg).toContain('#2 Bob');
+    });
+
+    it('says nothing about stuck jobs when none exist (unchanged all-clear)', () => {
+      const msg = prepDigestMessage([], 'https://app.example.com');
+      expect(msg).toBe('✅ Prep board clear — nothing waiting.');
+    });
+  });
+});
+
+describe('stuckStockSnapshotCards', () => {
+  it('filters to only cards with stockSnapshotPending', () => {
+    const stuck = card({ stockSnapshotPending: true, jobNumber: 5 });
+    const fine = card({ stockSnapshotPending: false, jobNumber: 6 });
+    expect(stuckStockSnapshotCards([stuck, fine])).toEqual([stuck]);
   });
 });
