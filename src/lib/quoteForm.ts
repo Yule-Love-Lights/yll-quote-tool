@@ -279,6 +279,61 @@ export function resolveNceDepositPercent(
 }
 
 /**
+ * Row 328(b): may the NCE rule claim the deposit value now sitting in the form
+ * as ITS OWN?
+ *
+ * Provenance decides what a later turn-OFF does: a 40 the rule wrote reverts to
+ * blank, a 40 a staffer negotiated must survive. The old code claimed ownership
+ * on every turn-ON, unconditionally — so turning the chip ON while a hand-typed
+ * 40 already sat in the field adopted that number, and the next OFF wiped it.
+ * The staffer never saw the rule touch anything, because the value it "wrote"
+ * was the one already there.
+ *
+ * The rule may claim only what it actually WROTE, which is exactly the case
+ * where the resolved value differs from what was there. Turning OFF never
+ * claims (there is no rule-owned value afterwards, whether a revert fired or a
+ * hand-edit was left alone), and a locked quote never claims because
+ * resolveNceDepositPercent wrote nothing.
+ */
+export function shouldClaimNceDepositProvenance(args: {
+  nextIsNce: boolean;
+  locked: boolean;
+  current: number;
+  resolved: number;
+}): boolean {
+  if (args.locked) return false;
+  if (!args.nextIsNce) return false;
+  return args.resolved !== args.current;
+}
+
+/**
+ * Row 328(a): the contact-pick tag inheritance (#198) runs in an async `.then`
+ * after a customers lookup, and routes through the same applyIsNce as a chip
+ * click (#199) — so on a quote that has ALREADY LEFT DRAFT, re-picking a
+ * contact could move the deposit percentage seconds after the click, with no
+ * prompt and nothing on screen saying so. The customer may already be looking
+ * at a portal link quoting the old figure.
+ *
+ * `nceDepositLocked` (approved/booked) already refuses to move it. This covers
+ * the gap underneath: sent or viewed, not yet approved.
+ *
+ * The chip still inherits — that is a fact about the contact, and staff need to
+ * see it. Only the MONEY is held back, and only on this async path: a staffer
+ * clicking the chip themselves is making a deliberate choice in the moment and
+ * keeps the 40% default. Returns true when the deposit was left alone but WOULD
+ * have moved, which is the only case worth telling anyone about.
+ */
+export function nceTagDepositWasSuppressed(args: {
+  quoteLeftDraft: boolean;
+  locked: boolean;
+  current: number;
+  resolved: number;
+}): boolean {
+  if (!args.quoteLeftDraft || args.locked) return false;
+  return args.resolved !== args.current;
+}
+
+/**
  * #212 fix round (finding 1): what to clear on the form when staff switch the
  * service type away from holiday. installTiming (Sep/Oct early-install) is
  * holiday-only — none of the other engines read it, so the builder's own

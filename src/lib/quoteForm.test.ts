@@ -14,6 +14,8 @@ import {
   contactRelinkConfirmMessage,
   clearContactConfirmMessage,
   initialNceDepositProvenance,
+  shouldClaimNceDepositProvenance,
+  nceTagDepositWasSuppressed,
 } from './quoteForm';
 import type { QuoteInputs } from './pricing/pricingEngine';
 import { makeDefaultPermanentFields } from './permanent/types';
@@ -1055,5 +1057,71 @@ describe('permanentBistro inputs (#117)', () => {
       const line = result.lineItems.find((l) => l.label.includes('Bistro'));
       expect(line?.id).toBe('B');
     });
+  });
+});
+
+// ─── Row 328: the two ways the NCE rule could move money it did not own ─────
+
+// (b) The rule marked the deposit as ITS OWN on every turn-ON, including when
+// the field already held a 40 a staffer had negotiated and typed. The chip
+// looked like it did nothing (the number did not change), and the next OFF
+// silently wiped that 40 to blank.
+describe('shouldClaimNceDepositProvenance (row 328(b))', () => {
+  it('claims a 40 the rule actually wrote', () => {
+    expect(shouldClaimNceDepositProvenance({ nextIsNce: true, locked: false, current: 0, resolved: 40 })).toBe(true);
+    expect(shouldClaimNceDepositProvenance({ nextIsNce: true, locked: false, current: 25, resolved: 40 })).toBe(true);
+  });
+
+  // The defect, as a test: the staffer's own 40 stays the staffer's.
+  it('does NOT claim a 40 that was already in the field when the chip went on', () => {
+    expect(shouldClaimNceDepositProvenance({ nextIsNce: true, locked: false, current: 40, resolved: 40 })).toBe(false);
+  });
+
+  it('never claims on turn-OFF, whatever the numbers are', () => {
+    for (const [current, resolved] of [[40, 0], [40, 40], [25, 25], [0, 0]]) {
+      expect(shouldClaimNceDepositProvenance({ nextIsNce: false, locked: false, current, resolved })).toBe(false);
+    }
+  });
+
+  it('never claims on a locked quote, where the rule cannot write at all', () => {
+    expect(shouldClaimNceDepositProvenance({ nextIsNce: true, locked: true, current: 25, resolved: 25 })).toBe(false);
+  });
+
+  // The end-to-end shape of the bug, composed from the two pure rules: type 40
+  // by hand, turn the chip on, turn it off — the 40 must survive.
+  it('composes with resolveNceDepositPercent so a hand-typed 40 survives an on/off cycle', () => {
+    const typed = 40;
+    const onResolved = resolveNceDepositPercent(typed, true, false, false);
+    expect(onResolved).toBe(40); // no visible change, which is what hid this
+    const claimed = shouldClaimNceDepositProvenance({
+      nextIsNce: true, locked: false, current: typed, resolved: onResolved,
+    });
+    expect(claimed).toBe(false);
+    expect(resolveNceDepositPercent(onResolved, false, false, claimed)).toBe(40);
+    // ...and under the OLD unconditional claim it would have gone to blank.
+    expect(resolveNceDepositPercent(onResolved, false, false, true)).toBe(0);
+  });
+});
+
+// (a) The contact-pick tag inheritance runs in an async lookup `.then` and
+// routed straight into the same deposit rule, so re-picking a contact could
+// move the deposit on a quote the customer already has a link to.
+describe('nceTagDepositWasSuppressed (row 328(a))', () => {
+  it('reports a suppressed change once the quote has left draft', () => {
+    expect(nceTagDepositWasSuppressed({ quoteLeftDraft: true, locked: false, current: 50, resolved: 40 })).toBe(true);
+  });
+
+  it('stays quiet on a draft quote, where the inheritance still moves the deposit', () => {
+    expect(nceTagDepositWasSuppressed({ quoteLeftDraft: false, locked: false, current: 50, resolved: 40 })).toBe(false);
+  });
+
+  it('stays quiet when nothing would have moved anyway', () => {
+    expect(nceTagDepositWasSuppressed({ quoteLeftDraft: true, locked: false, current: 40, resolved: 40 })).toBe(false);
+  });
+
+  // An approved/booked quote is already refused by nceDepositLocked, so this
+  // would be a second notice about a thing that was never going to happen.
+  it('stays quiet on a locked quote, which already refuses the change', () => {
+    expect(nceTagDepositWasSuppressed({ quoteLeftDraft: true, locked: true, current: 50, resolved: 40 })).toBe(false);
   });
 });

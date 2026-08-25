@@ -26,6 +26,8 @@ import {
   applyPrefill,
   resolveTagPayload,
   resolveNceDepositPercent,
+  shouldClaimNceDepositProvenance,
+  nceTagDepositWasSuppressed,
   clearHolidayOnlyDiscountState,
   clearNceOrNeighborOnServiceTypeSwitch,
   legacyRebookConfirmMessage,
@@ -1229,6 +1231,11 @@ export default function QuoteBuilder({
     cause: 'reanalyze' | 'photo-delete';
     groups: { surface: string | null; stringCount: number }[];
   } | null>(null);
+  // Row 328(a): set when a contact pick's INHERITED NCE tag would have moved
+  // the deposit on a quote that has already left draft, and was held back.
+  // Holds the inherited tag value so the banner can say which way it went.
+  // Cleared by a Calculate, which re-states the whole quote deliberately.
+  const [nceDepositHeldBack, setNceDepositHeldBack] = useState<boolean | null>(null);
   // #741 defect 3: reports a NEW prune from one of the two triggers. An empty
   // result never overwrites a real, unaddressed warning already standing from
   // the OTHER trigger — e.g. a re-analyze orphans "Curtain — 6 strings"
@@ -3635,11 +3642,17 @@ export default function QuoteBuilder({
   // (nceConfirmMessage) can ask the identical "is this locked" question
   // before it prompts, instead of a second inline expression that could drift.
   const nceDepositLocked = savedStatus === 'approved' || savedStatus === 'booked';
-  const applyIsNce = (next: boolean) => {
+  // Row 328(a): `moveDeposit: false` syncs the chip WITHOUT touching the
+  // deposit — used only by the async contact-pick inheritance on a quote that
+  // has left draft. See nceTagDepositWasSuppressed for why the money is held
+  // back there and nowhere else.
+  const applyIsNce = (next: boolean, opts?: { moveDeposit?: boolean }) => {
+    const moveDeposit = opts?.moveDeposit !== false;
     const wasNce = isNceRef.current;
     isNceRef.current = next;
     setIsNce(next);
     if (next === wasNce) return;
+    if (!moveDeposit) return; // chip only — deposit and its provenance untouched
     // Read provenance NOW, not inside the updater: React runs the functional
     // updater at flush time, AFTER this handler finishes — by which point the
     // synchronous clear on the last line below has already set the ref to
@@ -3655,15 +3668,30 @@ export default function QuoteBuilder({
         nceDepositLocked,
         wasRuleSet,
       );
+      // Provenance (row 328(b)): the rule owns only what it actually WROTE.
+      // Claiming on every turn-ON adopted a hand-typed 40 that happened to
+      // match the rule's own number, and the next turn-OFF then wiped that
+      // negotiated value. Turning OFF never claims, and a locked quote never
+      // claims because resolveNceDepositPercent wrote nothing.
+      //
+      // Recorded HERE, inside the updater, because `f.depositPercent` is the
+      // authoritative pre-write value and the render closure's is not — this
+      // runs from an async contact-pick `.then` too, where staff may have
+      // typed since. Writing a ref inside an updater is safe in this one
+      // shape: the value is a pure function of (f, next, locked), so React's
+      // double-invocation in development computes the same answer twice. What
+      // it is NOT safe for is READING back in the same tick, which is exactly
+      // why `wasRuleSet` above is captured before this runs.
+      if (!nceDepositLocked) {
+        nceDepositSetByRuleRef.current = shouldClaimNceDepositProvenance({
+          nextIsNce: next,
+          locked: nceDepositLocked,
+          current: f.depositPercent,
+          resolved,
+        });
+      }
       return resolved === f.depositPercent ? f : { ...f, depositPercent: resolved };
     });
-    // Provenance: resolveNceDepositPercent force-writes 40 in exactly one
-    // case — turning ON while unlocked — so that's the only time the NEXT
-    // 40 is "the rule's". Turning OFF always clears it (whether a revert
-    // just fired or the value was left alone as a hand-edit, there is no
-    // rule-owned value anymore). Locked leaves it untouched — resolveNceDepositPercent
-    // never wrote anything, so there's nothing new to record either way.
-    if (!nceDepositLocked) nceDepositSetByRuleRef.current = next;
   };
 
   // ─── Referral program redemption (#41 PR 2) ─────────────────────────────
@@ -3950,7 +3978,30 @@ export default function QuoteBuilder({
         // inherited NCE tag also seeds the 40% deposit default, same as a
         // manual chip click.
         if (!isNceTouchedRef.current) {
-          applyIsNce(eligibleForTags && (tags?.is_nce ?? false));
+          const inheritedNce = eligibleForTags && (tags?.is_nce ?? false);
+          // Row 328(a): this runs SECONDS after the click, from a lookup the
+          // staffer never asked for by name. On a quote that has already left
+          // draft the customer may be looking at a portal link quoting the
+          // current deposit, so the chip inherits but the money does not —
+          // and the banner below says so, because a deposit that silently
+          // did not change is exactly as surprising as one that did.
+          // The render closure's depositPercent can be one keystroke stale
+          // here (this resolves seconds after the click). That only decides
+          // whether the informational line below appears — the deposit itself
+          // is not touched on this path at all when the quote has left draft.
+          const suppressed = nceTagDepositWasSuppressed({
+            quoteLeftDraft,
+            locked: nceDepositLocked,
+            current: form.depositPercent,
+            resolved: resolveNceDepositPercent(
+              form.depositPercent,
+              inheritedNce,
+              nceDepositLocked,
+              nceDepositSetByRuleRef.current,
+            ),
+          });
+          applyIsNce(inheritedNce, { moveDeposit: !quoteLeftDraft });
+          if (suppressed) setNceDepositHeldBack(inheritedNce);
         }
       })
       // Network error or non-OK response: leave chips exactly as they are —
@@ -4641,6 +4692,9 @@ export default function QuoteBuilder({
     formOverride?: QuoteFormData,
   ): Promise<boolean> => {
     if (quoteSaveInProgressRef.current) return false;
+    // Row 328(a): a Calculate re-states the whole quote deliberately, so the
+    // held-back-deposit notice has been read and acted on (or not) by then.
+    setNceDepositHeldBack(null);
     if (satelliteChangeInProgressRef.current || designPhotoChangeInProgressRef.current) {
       setResult(null);
       setError('Wait for the house images to finish loading, then Calculate again.');
@@ -7158,6 +7212,16 @@ export default function QuoteBuilder({
             <span className="block text-xs text-gray-500 mt-1">
               Blank defaults to 50%. Overrides the deposit due at approval for this quote only.
             </span>
+            {/* Row 328(a): a deposit that silently did NOT change is as
+                surprising as one that did, so the held-back case says so
+                where the number is, and names the deliberate way to do it. */}
+            {nceDepositHeldBack !== null && (
+              <p role="status" className="mt-2 text-sm text-amber-700">
+                ⚠️ This contact {nceDepositHeldBack ? 'is tagged NCE' : 'is not tagged NCE'}, so the NCE chip
+                changed — but the deposit stayed at {form.depositPercent || 50}% because this quote has already
+                been sent. Change it here yourself if the customer agreed to a different deposit.
+              </p>
+            )}
           </Section>
 
           {/* Calculate */}
