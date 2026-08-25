@@ -29,7 +29,7 @@ import { canTransition, type InvoiceStatus } from './invoiceStatus';
 // `round2` so the call sites are byte-identical.
 import { roundMoneyGuarded as round2 } from './money';
 import { resolveAgreedTotal, type AgreedTotalSnapshot } from './agreedTotal';
-import { chosenLightColorLabelFromSnapshot } from '@/lib/design/chosenColorLabel';
+import { approvedColorLabelForQuote } from '@/lib/design/approvedColorLabels';
 
 export type InvoiceRow = {
   id: string;
@@ -546,7 +546,7 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
   if (invoice.quote_id) {
     const { data } = await db
       .from('quotes')
-      .select('customer_name, customer_email, customer_phone, customer_address, is_test, is_nce, deposit_amount_usd, approval_snapshot')
+      .select('customer_name, customer_email, customer_phone, customer_address, is_test, is_nce, deposit_amount_usd, approval_snapshot, service_type')
       .eq('id', invoice.quote_id)
       .maybeSingle<{
         customer_name: string | null;
@@ -557,6 +557,7 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
         is_nce: boolean | null;
         deposit_amount_usd: number | null;
         approval_snapshot: unknown;
+        service_type: string | null;
       }>();
     if (data) {
       customerName = data.customer_name ?? null;
@@ -567,7 +568,7 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
       isNce = !!data.is_nce;
       intendedDepositUsd = data.deposit_amount_usd ?? null;
       // Row 362: derived from the same quote row this join already fetches.
-      lightColorLabel = chosenLightColorLabelFromSnapshot(data.approval_snapshot);
+      lightColorLabel = await approvedColorLabelForQuote(data.approval_snapshot, data.service_type);
     }
   }
 

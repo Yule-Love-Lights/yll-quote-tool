@@ -18,7 +18,7 @@ import { estimateLaborForQuote } from './laborEstimate';
 import type { LineItem } from './pricing/pricingEngine';
 import { asServiceType } from './serviceType';
 import type { AmendmentTrailEntry } from './amend';
-import { chosenLightColorLabelFromSnapshot } from '@/lib/design/chosenColorLabel';
+import { approvedColorLabelForQuote } from '@/lib/design/approvedColorLabels';
 
 // The job row as the billing side reads/writes it. `fulfillment_stage` is the
 // #82 axis — present in the type for completeness but owned by inventory.
@@ -335,8 +335,10 @@ export async function getJobDetail(id: string): Promise<JobDetail | null> {
         ? data.approval_snapshot.amendments
         : [];
       // Row 362: same snapshot this join already reads for the amendment
-      // trail — no extra query.
-      lightColorLabel = chosenLightColorLabelFromSnapshot(data.approval_snapshot);
+      // trail — no extra query. service_type is REQUIRED: permanent quotes
+      // freeze into a different swatch id space, and resolving against the
+      // wrong one silently renders "Staff's pick" instead of the real colour.
+      lightColorLabel = await approvedColorLabelForQuote(data.approval_snapshot, data.service_type);
     }
   }
 

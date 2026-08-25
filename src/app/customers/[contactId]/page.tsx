@@ -128,7 +128,7 @@ export default async function CustomerDetailPage({
   // Row 362: the approved light colour per quote, so this profile answers
   // "what colour did they want?" without opening each quote. Best-effort — an
   // empty map renders the table exactly as it did before.
-  const colorLabels = await getApprovedColorLabels(quoteIds);
+  const colorLookup = await getApprovedColorLabels(quoteIds);
   const jobs = await listJobsForCustomer(customerId, quoteIds);
   const invoices = await listInvoicesForCustomer(customerId, quoteIds);
 
@@ -312,11 +312,17 @@ export default async function CustomerDetailPage({
                           back to the truncated UUID on legacy rows (BUG-2, S22). */}
                       <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap" style={{ color: 'var(--op-text-dim)' }} title={`Quote ID: ${q.id}`}>{q.quote_number != null ? `#${q.quote_number}` : q.id.slice(0, 8)}</td>
                       <td className="px-3 py-2.5"><CustomerStatusBadge status={statusOf(q)} /></td>
-                      {/* Row 362: em dash, not blank, so "no approved colour
-                          yet" is visibly different from a column that failed to
-                          load. */}
+                      {/* Row 362, premerge staff-lens MED: an em dash means
+                          "no colour approved". When the LOOKUP failed it must
+                          not claim that — the whole point of the column is
+                          answering what the customer wanted, and a confident
+                          "none" is worse than an honest "unknown". */}
                       <td className="px-3 py-2.5 whitespace-nowrap" style={{ color: 'var(--op-text-2)' }}>
-                        {colorLabels.get(q.id) ?? '—'}
+                        {colorLookup.ok ? (
+                          (colorLookup.labels.get(q.id) ?? '—')
+                        ) : (
+                          <span title="Colour lookup unavailable — open the quote to check">unknown</span>
+                        )}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--op-text)' }}>{fmtMoney(q.total)}</td>
                       <td className="px-3 py-2.5 text-right">

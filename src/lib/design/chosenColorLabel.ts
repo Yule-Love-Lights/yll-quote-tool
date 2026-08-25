@@ -25,9 +25,15 @@ export type ChosenColorSelection = {
  * reads on its own surface — a quote that was never approved has no colour,
  * which is different from one deliberately left on the designer's pick.
  *
- * `activeSchemes` is threaded through for permanent quotes, which carry their
- * own scheme list; omit it and the shared list is used, exactly as the quote
- * detail page did before this was extracted.
+ * `activeSchemes` MUST be the live swatch list for this quote's vertical —
+ * resolve it with `activeSchemesForServiceType` in approvedColorLabels.ts, and
+ * do not call this with the default. Holiday and permanent freeze into
+ * disjoint id spaces, and `getColorScheme` does not report a miss: an id it
+ * cannot find silently becomes `as-designed` / "Staff's pick". Resolving a
+ * permanent quote against the holiday list therefore displays a CONFIDENTLY
+ * WRONG colour rather than failing. A premerge lens caught this in the first
+ * cut of row 362, and prod had a live case (booked permanent quote #1303,
+ * approved "Orange", would have read "Staff's pick").
  */
 export function chosenLightColorLabel(
   sel: ChosenColorSelection | undefined | null,
@@ -41,14 +47,4 @@ export function chosenLightColorLabel(
   if (sel.colorSchemeId === CUSTOM_SCHEME_ID || hasCustomPattern) return 'Custom pattern';
   if (sel.colorSchemeId) return getColorScheme(sel.colorSchemeId, activeSchemes).label;
   return null;
-}
-
-/** Convenience for the surfaces that hold a raw approval_snapshot. */
-export function chosenLightColorLabelFromSnapshot(
-  approvalSnapshot: unknown,
-  activeSchemes?: ColorScheme[],
-): string | null {
-  if (!approvalSnapshot || typeof approvalSnapshot !== 'object') return null;
-  const sel = (approvalSnapshot as { customerSelection?: ChosenColorSelection }).customerSelection;
-  return chosenLightColorLabel(sel, activeSchemes);
 }

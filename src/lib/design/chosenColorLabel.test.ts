@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { chosenLightColorLabel, chosenLightColorLabelFromSnapshot } from './chosenColorLabel';
+import { chosenLightColorLabel } from './chosenColorLabel';
+import { PERMANENT_SWATCH_SCHEMES } from './permanentScenes';
+import { DEFAULT_COLOR_SCHEMES } from './colorSchemes';
 
 describe('chosenLightColorLabel (row 362)', () => {
   it('names the approved scheme', () => {
@@ -36,34 +38,35 @@ describe('chosenLightColorLabel (row 362)', () => {
   });
 });
 
-describe('chosenLightColorLabelFromSnapshot', () => {
-  it('digs the selection out of an approval snapshot', () => {
-    expect(
-      chosenLightColorLabelFromSnapshot({
-        amendments: [],
-        customerSelection: { colorSchemeId: 'champagne', customPattern: [] },
-      }),
-    ).toBe('Champagne');
+describe('vertical resolution (premerge HIGH — the wrong list renders a CONFIDENTLY WRONG colour)', () => {
+  // Permanent and holiday freeze into DISJOINT id spaces, and getColorScheme
+  // does not report a miss: an unknown id silently becomes as-designed, whose
+  // label is "Staff's pick". So the failure is not a blank or an error — it is
+  // a plausible-looking wrong answer on the screen the crew builds from.
+  it('names a permanent colour when resolved against the PERMANENT list', () => {
+    expect(chosenLightColorLabel({ colorSchemeId: 'orange' }, PERMANENT_SWATCH_SCHEMES)).toBe('Orange');
+    expect(chosenLightColorLabel({ colorSchemeId: 'rainbow' }, PERMANENT_SWATCH_SCHEMES)).toBe('Rainbow');
+    expect(chosenLightColorLabel({ colorSchemeId: 'patriotic' }, PERMANENT_SWATCH_SCHEMES)).toBe('Red · White · Blue');
   });
 
-  it('survives every shape a missing or malformed snapshot can take', () => {
-    expect(chosenLightColorLabelFromSnapshot(null)).toBeNull();
-    expect(chosenLightColorLabelFromSnapshot(undefined)).toBeNull();
-    expect(chosenLightColorLabelFromSnapshot('not an object')).toBeNull();
-    expect(chosenLightColorLabelFromSnapshot({})).toBeNull();
-    expect(chosenLightColorLabelFromSnapshot({ customerSelection: null })).toBeNull();
+  it("REGRESSION: a permanent colour against the holiday list degrades to \"Staff's pick\"", () => {
+    // This is the live defect the lens found, pinned so it cannot come back.
+    // Booked permanent quote #1303 approved 'orange'; against the holiday list
+    // the job page would have told the crew "Staff's pick".
+    expect(chosenLightColorLabel({ colorSchemeId: 'orange' }, DEFAULT_COLOR_SCHEMES)).toBe("Staff's pick");
+    // ...which is why callers must pass the vertical's own list.
+    expect(chosenLightColorLabel({ colorSchemeId: 'orange' }, PERMANENT_SWATCH_SCHEMES)).not.toBe("Staff's pick");
   });
 
-  it('matches Kristie #1129 after the row-362 correction', () => {
-    // The real shape her booked quote now carries.
-    expect(
-      chosenLightColorLabelFromSnapshot({
-        customerSelection: {
-          colorSchemeId: 'champagne',
-          customPattern: [],
-          colorIds: ['warm-white', 'cool-white'],
-        },
-      }),
-    ).toBe('Champagne');
+  it('still resolves holiday schemes against the holiday list', () => {
+    expect(chosenLightColorLabel({ colorSchemeId: 'champagne' }, DEFAULT_COLOR_SCHEMES)).toBe('Champagne');
+  });
+
+  it('resolves a staff-customised swatch when it is in the passed list', () => {
+    // app_settings lets staff add swatches without a deploy; passing the LIVE
+    // list is what makes those resolve instead of degrading.
+    const custom = [...DEFAULT_COLOR_SCHEMES, { id: 'naldo-special', label: 'Naldo Special', colorIds: ['red'] }];
+    expect(chosenLightColorLabel({ colorSchemeId: 'naldo-special' }, custom)).toBe('Naldo Special');
+    expect(chosenLightColorLabel({ colorSchemeId: 'naldo-special' }, DEFAULT_COLOR_SCHEMES)).toBe("Staff's pick");
   });
 });
