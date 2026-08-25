@@ -38,7 +38,30 @@ alter table public.staff_notes
   add column if not exists redacted_by_label text null,
   add column if not exists redacted_reason text null;
 
--- Column-scoped: everything NOT listed here stays unwritable.
+-- The same shape guarantees `body` and `created_by_label` already carry, so a
+-- redaction cannot write a blank or unbounded label/reason (review LOW, raised
+-- independently by two lenses). NOT VALID is deliberate: no existing row has
+-- these columns set, so there is nothing to validate, and this cannot fail on a
+-- populated table.
+alter table public.staff_notes
+  add constraint staff_notes_redacted_by_label_valid
+  check (
+    redacted_by_label is null
+    or (redacted_by_label = btrim(redacted_by_label) and char_length(redacted_by_label) between 1 and 320)
+  ) not valid;
+
+alter table public.staff_notes
+  add constraint staff_notes_redacted_reason_valid
+  check (
+    redacted_reason is null
+    or (redacted_reason = btrim(redacted_reason) and char_length(redacted_reason) between 1 and 500)
+  ) not valid;
+
+-- Column-scoped: everything NOT listed here stays unwritable. NOTE for whoever
+-- writes the next migration on this table — the safety of the whole design
+-- rests on this staying column-scoped. A later `grant update on
+-- public.staff_notes` with no column list would silently make a note's author,
+-- date and idempotency key writable again.
 grant update (body, redacted_at, redacted_by, redacted_by_label, redacted_reason)
   on public.staff_notes to service_role;
 

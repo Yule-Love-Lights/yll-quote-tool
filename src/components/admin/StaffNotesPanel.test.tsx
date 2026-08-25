@@ -122,19 +122,56 @@ describe('StaffNotesList — withdrawn notes (row 372)', () => {
   });
 });
 
+describe('StaffNotesList — a withdrawal outcome sits with its note (row 372)', () => {
+  it('renders the message against the note it concerns, not elsewhere', () => {
+    const other = { ...NOTE, id: 'other-id', body: 'Second note' };
+    const html = renderToStaticMarkup(
+      <StaffNotesList
+        notes={[NOTE, other]}
+        loading={false}
+        onRedact={() => {}}
+        redactNotice={{ id: NOTE.id, message: 'Could not withdraw the note' }}
+      />,
+    );
+    expect(html).toContain('Could not withdraw the note');
+    expect(html).toContain('role="alert"');
+    // Exactly once — against one note, not repeated under every note.
+    expect(html.split('Could not withdraw the note').length - 1).toBe(1);
+  });
+
+  it('renders nothing extra when there is no outcome to report', () => {
+    const html = renderToStaticMarkup(<StaffNotesList notes={[NOTE]} loading={false} onRedact={() => {}} />);
+    expect(html).not.toContain('role="alert"');
+  });
+});
+
 describe('staff-note withdrawal transport (row 372)', () => {
   it('PATCHes the note id and reason to the quote-scoped route', async () => {
     const fetcher = vi.fn(
       async () => new Response(JSON.stringify({ note: { ...NOTE, body: '[Note withdrawn]' } }), { status: 200 }),
     );
 
-    await redactStaffNote(QUOTE_ID, NOTE.id, 'Wrong customer', fetcher);
+    const result = await redactStaffNote(QUOTE_ID, NOTE.id, 'Wrong customer', fetcher);
+    expect(result.alreadyRedacted).toBe(false);
 
     expect(fetcher).toHaveBeenCalledWith(`/api/quotes/${QUOTE_ID}/staff-notes`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ noteId: NOTE.id, reason: 'Wrong customer' }),
     });
+  });
+
+  it('reports an already-withdrawn note so the second staffer learns their reason was not kept', async () => {
+    const fetcher = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ note: { ...NOTE, redactedByLabel: 'Jason' }, alreadyRedacted: true }),
+          { status: 200 },
+        ),
+    );
+    const result = await redactStaffNote(QUOTE_ID, NOTE.id, 'my reason', fetcher);
+    expect(result.alreadyRedacted).toBe(true);
+    expect(result.note.redactedByLabel).toBe('Jason');
   });
 
   it('throws the server message rather than pretending the note was withdrawn', async () => {

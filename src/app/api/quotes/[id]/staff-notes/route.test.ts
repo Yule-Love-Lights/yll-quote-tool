@@ -228,6 +228,10 @@ describe('PATCH /api/quotes/[id]/staff-notes — withdraw a note (row 372)', () 
       noteId: NOTE.id,
       redactedBy: OPERATOR_ID,
       redactedByLabel: 'Naldo',
+      // Row 372: the ROLE comes from the session too — the author-or-admin
+      // rule is decided in the lib against the note's real author, and nothing
+      // about the actor is taken from the request body.
+      redactedByRole: 'operator',
       reason: 'Wrong customer',
     });
   });
@@ -274,6 +278,13 @@ describe('PATCH /api/quotes/[id]/staff-notes — withdraw a note (row 372)', () 
 
     redactStaffNoteMock.mockResolvedValueOnce({ kind: 'error' });
     expect((await PATCH(request({ noteId: NOTE.id }), ctx())).status).toBe(500);
+  });
+
+  it('403s when the lib refuses the actor, with copy that says who may', async () => {
+    redactStaffNoteMock.mockResolvedValueOnce({ kind: 'forbidden' });
+    const res = await PATCH(request({ noteId: NOTE.id }), ctx());
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain('wrote a note');
   });
 
   it('fails closed without an operator session', async () => {

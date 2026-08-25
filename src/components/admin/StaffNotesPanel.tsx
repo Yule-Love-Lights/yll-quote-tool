@@ -58,7 +58,7 @@ export async function redactStaffNote(
   noteId: string,
   reason: string,
   fetcher: Fetcher = fetch,
-): Promise<StaffNote> {
+): Promise<{ note: StaffNote; alreadyRedacted: boolean }> {
   const response = await fetcher(`/api/quotes/${quoteId}/staff-notes`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -69,7 +69,9 @@ export async function redactStaffNote(
     throw new Error(typeof payload.error === 'string' ? payload.error : 'Could not withdraw the note');
   }
   if (!payload.note || typeof payload.note !== 'object') throw new Error('Could not withdraw the note');
-  return payload.note as StaffNote;
+  // Row 372 (staff lens LOW): a second staffer racing a withdrawal needs to be
+  // told their reason was NOT the one kept — the first withdrawal stands.
+  return { note: payload.note as StaffNote, alreadyRedacted: payload.alreadyRedacted === true };
 }
 
 export async function postStaffNote(
@@ -130,6 +132,7 @@ export function StaffNotesList({
   onLoadMore,
   onRedact,
   redactingId = null,
+  redactNotice = null,
 }: {
   notes: StaffNote[];
   loading: boolean;
@@ -149,6 +152,9 @@ export function StaffNotesList({
    *  is how every read-only caller keeps the old behaviour. */
   onRedact?: (note: StaffNote) => void;
   redactingId?: string | null;
+  /** Row 372: the outcome of a withdrawal, rendered against the note it
+   *  concerns rather than in the compose form far below it. */
+  redactNotice?: { id: string; message: string } | null;
 }) {
   return (
     <div aria-live="polite">
@@ -210,6 +216,11 @@ export function StaffNotesList({
                   {redactingId === note.id ? 'Withdrawing…' : 'Withdraw'}
                 </button>
               )}
+              {redactNotice?.id === note.id && (
+                <p role="alert" className="mt-1 text-xs text-red-700">
+                  {redactNotice.message}
+                </p>
+              )}
             </li>
           ))}
           {/* Row 373: the page is capped, so the older notes have to be
@@ -260,6 +271,10 @@ export function StaffNotesPanel({ quoteId }: { quoteId: string }) {
   // Row 372: which note is mid-withdrawal, so its own control disables without
   // freezing the others.
   const [redactingId, setRedactingId] = useState<string | null>(null);
+  // Row 372 (staff lens MED): a withdrawal's outcome belongs BESIDE the note it
+  // is about, not in the compose form at the bottom of the panel — the same
+  // mistake row 373's older-page error made, and the reason it was moved.
+  const [redactNotice, setRedactNotice] = useState<{ id: string; message: string } | null>(null);
   const pendingSubmissionRef = useRef<StaffNoteSubmission | null>(null);
   const loadGenerationRef = useRef(0);
   const [reloadKey, setReloadKey] = useState(0);
@@ -279,6 +294,7 @@ export function StaffNotesPanel({ quoteId }: { quoteId: string }) {
       setLoadingMore(false);
       setOlderError(null);
       setRedactingId(null);
+      setRedactNotice(null);
       pendingSubmissionRef.current = null;
       void loadStaffNotes(quoteId)
         .then((page) => {
@@ -337,20 +353,44 @@ export function StaffNotesPanel({ quoteId }: { quoteId: string }) {
   // itself.
   const redact = async (note: StaffNote) => {
     if (redactingId) return;
-    if (!window.confirm('Withdraw this note? The text is replaced permanently. The note stays in the timeline, marked as withdrawn by you.')) {
+    // Staff lens MED: quote the note back. Several notes on one quote can read
+    // alike at a glance (three gate codes, three "left voicemail"), the control
+    // sits under each of them, and there is no undo — so the dialog has to show
+    // WHICH one is about to lose its text, not just ask whether to lose one.
+    const preview = note.body.length > 120 ? `${note.body.slice(0, 120)}…` : note.body;
+    if (
+      !window.confirm(
+        `Withdraw this note?
+
+"${preview}"
+
+The text is replaced permanently and cannot be recovered. The note stays in the timeline, marked as withdrawn by you.`,
+      )
+    ) {
       return;
     }
     const reason = window.prompt('Why is it being withdrawn? (optional)') ?? '';
     const generation = loadGenerationRef.current;
     setRedactingId(note.id);
-    setError(null);
+    setRedactNotice(null);
     try {
-      const updated = await redactStaffNote(quoteId, note.id, reason);
+      const { note: updated, alreadyRedacted } = await redactStaffNote(quoteId, note.id, reason);
       if (generation !== loadGenerationRef.current) return;
       setNotes((current) => mergeStaffNotes(current, [updated]));
+      if (alreadyRedacted) {
+        setRedactNotice({
+          id: note.id,
+          message: `Someone else withdrew this note first${
+            updated.redactedByLabel ? ` (${updated.redactedByLabel})` : ''
+          } — their reason is the one kept.`,
+        });
+      }
     } catch (err) {
       if (generation !== loadGenerationRef.current) return;
-      setError(err instanceof Error ? err.message : 'Could not withdraw the note');
+      setRedactNotice({
+        id: note.id,
+        message: err instanceof Error ? err.message : 'Could not withdraw the note',
+      });
     } finally {
       if (generation === loadGenerationRef.current) setRedactingId(null);
     }
@@ -393,13 +433,16 @@ export function StaffNotesPanel({ quoteId }: { quoteId: string }) {
         onLoadMore={() => void loadMore()}
         onRedact={(note) => void redact(note)}
         redactingId={redactingId}
+        redactNotice={redactNotice}
       />
       <form onSubmit={submit} className="mt-4 border-t border-gray-100 pt-4">
         <label htmlFor={`staff-note-${quoteId}`} className="mb-1 block text-sm font-medium text-gray-700">
           Add an internal note
         </label>
         <p className="mb-1 text-xs text-gray-500">
-          Notes are permanent. They cannot be edited or deleted once added.
+          Notes are permanent and cannot be edited. A note added in error can be withdrawn — the
+          text is replaced, and the note stays in the timeline showing who wrote it and who
+          withdrew it.
         </p>
         <textarea
           id={`staff-note-${quoteId}`}

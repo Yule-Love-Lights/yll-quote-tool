@@ -10,6 +10,7 @@ vi.mock('@/lib/supabase', () => ({
 
 import {
   REDACTED_NOTE_BODY,
+  mayRedactStaffNote,
   STAFF_NOTES_PAGE_SIZE,
   appendStaffNote,
   redactStaffNote,
@@ -169,6 +170,35 @@ describe('listStaffNotes', () => {
 // note written in error — or one naming someone who should not be named — was
 // to delete the whole quote. This is a tombstone instead: the row and its
 // attribution survive, the text does not.
+// Admin lens HIGH: withdrawing is irreversible and total — nothing anywhere
+// keeps the original text — so "any operator may erase any note" was the wrong
+// default, and out of step with this repo gating irreversible actions on
+// requireAdmin. Requiring an admin for ALL of them is also wrong: the common
+// case is someone fixing their own mistake, which should not wait on the owner.
+describe('mayRedactStaffNote (row 372 — who may erase)', () => {
+  const ME = OPERATOR_ID;
+  const SOMEONE_ELSE = '55555555-5555-4555-8555-555555555555';
+
+  it('lets a staffer withdraw their OWN note', () => {
+    expect(mayRedactStaffNote({ actorId: ME, actorRole: 'operator', noteAuthorId: ME })).toBe(true);
+  });
+
+  it('refuses a staffer withdrawing someone ELSE s note', () => {
+    expect(mayRedactStaffNote({ actorId: ME, actorRole: 'operator', noteAuthorId: SOMEONE_ELSE })).toBe(false);
+  });
+
+  it('lets an admin withdraw anyone s note', () => {
+    expect(mayRedactStaffNote({ actorId: ME, actorRole: 'admin', noteAuthorId: SOMEONE_ELSE })).toBe(true);
+  });
+
+  // created_by goes null when an account is deleted. An orphaned note is
+  // nobody's own note, so it takes an admin rather than becoming everybody's.
+  it('treats an authorless note as admin-only', () => {
+    expect(mayRedactStaffNote({ actorId: ME, actorRole: 'operator', noteAuthorId: null })).toBe(false);
+    expect(mayRedactStaffNote({ actorId: ME, actorRole: 'admin', noteAuthorId: null })).toBe(true);
+  });
+});
+
 describe('redactStaffNote (row 372)', () => {
   const REDACTED_ROW = {
     ...ROW,
@@ -178,15 +208,26 @@ describe('redactStaffNote (row 372)', () => {
     redacted_reason: 'Wrong customer',
   };
 
+  // The writer reads the note first (to check the author-or-admin rule against
+  // the row's REAL author), then writes — so these fakes hand out the read
+  // builder first and the update builder second.
+  const twoStep = (read: unknown, write: unknown) => {
+    const readB = terminalBuilder({ data: read, error: null });
+    const writeB = terminalBuilder({ data: write, error: null });
+    let call = 0;
+    serviceClientRef.current = { from: vi.fn(() => (call++ === 0 ? readB : writeB)) };
+    return { readB, writeB };
+  };
+
   it('replaces the body with the tombstone and stamps who withdrew it', async () => {
-    const query = terminalBuilder({ data: REDACTED_ROW, error: null });
-    serviceClientRef.current = { from: vi.fn(() => query) };
+    const { writeB: query } = twoStep(ROW, REDACTED_ROW);
 
     const result = await redactStaffNote({
       quoteId: QUOTE_ID,
       noteId: ROW.id,
       redactedBy: OPERATOR_ID,
       redactedByLabel: 'Jason',
+      redactedByRole: 'admin',
       reason: '  Wrong customer  ',
     });
 
@@ -205,14 +246,14 @@ describe('redactStaffNote (row 372)', () => {
   });
 
   it('scopes the write to the quote AND to a note that is not already withdrawn', async () => {
-    const query = terminalBuilder({ data: REDACTED_ROW, error: null });
-    serviceClientRef.current = { from: vi.fn(() => query) };
+    const { readB, writeB: query } = twoStep(ROW, REDACTED_ROW);
 
     await redactStaffNote({
       quoteId: QUOTE_ID,
       noteId: ROW.id,
       redactedBy: OPERATOR_ID,
       redactedByLabel: 'Jason',
+      redactedByRole: 'admin',
       reason: null,
     });
 
@@ -220,34 +261,37 @@ describe('redactStaffNote (row 372)', () => {
     expect(eqCalls).toContainEqual(['id', ROW.id]);
     expect(eqCalls).toContainEqual(['quote_id', QUOTE_ID]); // no cross-quote redaction
     expect((query.is as ReturnType<typeof vi.fn>).mock.calls).toContainEqual(['redacted_at', null]);
+    // Technical lens LOW: the LOOKUP is scoped the same way. Without it, a note
+    // id from another quote would be read (and its author checked) through this
+    // quote — the write would still refuse, but the answer would leak which
+    // quote a note belongs to.
+    const readEq = (readB.eq as ReturnType<typeof vi.fn>).mock.calls;
+    expect(readEq).toContainEqual(['id', ROW.id]);
+    expect(readEq).toContainEqual(['quote_id', QUOTE_ID]);
   });
 
   // A second click must not overwrite the FIRST withdrawal's attribution and
   // timestamp — that one is what actually happened.
   it('reports an already-withdrawn note as such, without restamping it', async () => {
-    const update = terminalBuilder({ data: null, error: null });
-    const lookup = terminalBuilder({ data: REDACTED_ROW, error: null });
-    let call = 0;
-    serviceClientRef.current = { from: vi.fn(() => (call++ === 0 ? update : lookup)) };
+    const { writeB } = twoStep(REDACTED_ROW, null); // the read already shows it withdrawn
 
     const result = await redactStaffNote({
       quoteId: QUOTE_ID,
       noteId: ROW.id,
       redactedBy: '99999999-9999-4999-8999-999999999999',
       redactedByLabel: 'Someone Else',
+      redactedByRole: 'admin',
       reason: null,
     });
 
     expect(result.kind).toBe('already-redacted');
     if (result.kind !== 'already-redacted') return;
     expect(result.note.redactedByLabel).toBe('Jason'); // the original redactor
+    expect(writeB.update).not.toHaveBeenCalled(); // and nothing was rewritten
   });
 
   it('distinguishes a note that does not exist on this quote from one already withdrawn', async () => {
-    const update = terminalBuilder({ data: null, error: null });
-    const lookup = terminalBuilder({ data: null, error: null });
-    let call = 0;
-    serviceClientRef.current = { from: vi.fn(() => (call++ === 0 ? update : lookup)) };
+    twoStep(null, null);
 
     expect(
       (await redactStaffNote({
@@ -255,14 +299,33 @@ describe('redactStaffNote (row 372)', () => {
         noteId: ROW.id,
         redactedBy: OPERATOR_ID,
         redactedByLabel: 'Jason',
+        redactedByRole: 'admin',
         reason: null,
       })).kind,
     ).toBe('not-found');
   });
 
+  it('refuses at the WRITER, against the row s real author, not anything the caller passed', async () => {
+    const { writeB } = twoStep({ ...ROW, created_by: '55555555-5555-4555-8555-555555555555' }, null);
+
+    const result = await redactStaffNote({
+      quoteId: QUOTE_ID,
+      noteId: ROW.id,
+      redactedBy: OPERATOR_ID,
+      redactedByLabel: 'Naldo',
+      redactedByRole: 'operator',
+      reason: null,
+    });
+
+    expect(result.kind).toBe('forbidden');
+    expect(writeB.update).not.toHaveBeenCalled();
+  });
+
   it('reports an error rather than claiming success when the write fails', async () => {
-    const query = terminalBuilder({ data: null, error: { message: 'permission denied' } });
-    serviceClientRef.current = { from: vi.fn(() => query) };
+    const readB = terminalBuilder({ data: ROW, error: null });
+    const writeB = terminalBuilder({ data: null, error: { message: 'permission denied' } });
+    let call = 0;
+    serviceClientRef.current = { from: vi.fn(() => (call++ === 0 ? readB : writeB)) };
 
     expect(
       (await redactStaffNote({
@@ -270,6 +333,7 @@ describe('redactStaffNote (row 372)', () => {
         noteId: ROW.id,
         redactedBy: OPERATOR_ID,
         redactedByLabel: 'Jason',
+        redactedByRole: 'admin',
         reason: null,
       })).kind,
     ).toBe('error');

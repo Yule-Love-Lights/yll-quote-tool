@@ -178,13 +178,44 @@ export type RedactStaffNoteInput = {
   noteId: string;
   redactedBy: string;
   redactedByLabel: string;
+  /** Row 372: the actor's role, so the author-or-admin rule is enforced HERE,
+   *  against the note's real author read from the row — not against anything
+   *  the caller supplied. */
+  redactedByRole: 'admin' | 'operator';
   reason: string | null;
 };
 
 export type RedactStaffNoteResult =
   | { kind: 'redacted'; note: StaffNote }
   | { kind: 'already-redacted'; note: StaffNote }
-  | { kind: 'not-found' | 'error' };
+  | { kind: 'not-found' | 'forbidden' | 'error' };
+
+/**
+ * Row 372 (admin lens HIGH): WHO may withdraw a note.
+ *
+ * Withdrawing is irreversible and total — nothing anywhere keeps the original
+ * text afterwards — so "any signed-in operator may erase any note" was the
+ * wrong default, and out of step with this repo's own convention of gating
+ * irreversible actions on `requireAdmin`.
+ *
+ * But requiring an admin for ALL of them is the wrong default too: the common
+ * case is someone fixing their OWN mistake seconds after making it — a note on
+ * the wrong quote, a name that should not have been typed — and that should not
+ * wait on the owner being awake.
+ *
+ * So: your own note is yours to withdraw; anyone else's takes an admin. PURE,
+ * so the rule is testable without a session.
+ */
+export function mayRedactStaffNote(args: {
+  actorId: string;
+  actorRole: 'admin' | 'operator';
+  noteAuthorId: string | null;
+}): boolean {
+  if (args.actorRole === 'admin') return true;
+  // A note whose author is unknown (the account was deleted, so created_by went
+  // null) is nobody's own note — it takes an admin.
+  return args.noteAuthorId !== null && args.noteAuthorId === args.actorId;
+}
 
 /**
  * Row 372: withdraw a note. The row stays, its author and timestamp stay, and
@@ -208,6 +239,33 @@ export async function redactStaffNote(input: RedactStaffNoteInput): Promise<Reda
   if (!db) return { kind: 'error' };
 
   const reason = input.reason?.trim() ? input.reason.trim().slice(0, STAFF_NOTE_REASON_MAX_LENGTH) : null;
+
+  // Row 372 (admin lens HIGH): read the note's REAL author before writing, and
+  // check the author-or-admin rule against that. Doing it here rather than in
+  // the route means every future caller inherits it, and the id it compares
+  // comes from the row rather than from a request body.
+  const { data: target, error: targetError } = await db
+    .from('staff_notes')
+    .select(STAFF_NOTE_COLUMNS)
+    .eq('id', input.noteId)
+    .eq('quote_id', input.quoteId)
+    .maybeSingle<StaffNoteRow>();
+  if (targetError) {
+    console.error('[staff-notes] redact target read failed', targetError.message);
+    return { kind: 'error' };
+  }
+  if (!target) return { kind: 'not-found' };
+  if (
+    !mayRedactStaffNote({
+      actorId: input.redactedBy,
+      actorRole: input.redactedByRole,
+      noteAuthorId: target.created_by,
+    })
+  ) {
+    return { kind: 'forbidden' };
+  }
+  if (target.redacted_at) return { kind: 'already-redacted', note: toStaffNote(target) };
+
   const { data, error } = await db
     .from('staff_notes')
     .update({

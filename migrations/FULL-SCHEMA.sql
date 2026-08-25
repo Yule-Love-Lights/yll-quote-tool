@@ -2484,7 +2484,18 @@ create table if not exists public.staff_notes (
       and char_length(created_by_label) between 1 and 320
     ),
   constraint staff_notes_quote_request_unique
-    unique (quote_id, client_request_id)
+    unique (quote_id, client_request_id),
+  -- Row 372: same shape guarantee the other text columns carry.
+  constraint staff_notes_redacted_by_label_valid
+    check (
+      redacted_by_label is null
+      or (redacted_by_label = btrim(redacted_by_label) and char_length(redacted_by_label) between 1 and 320)
+    ),
+  constraint staff_notes_redacted_reason_valid
+    check (
+      redacted_reason is null
+      or (redacted_reason = btrim(redacted_reason) and char_length(redacted_reason) between 1 and 500)
+    )
 );
 
 create index if not exists staff_notes_quote_created_idx

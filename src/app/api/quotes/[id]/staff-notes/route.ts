@@ -173,6 +173,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     noteId: payload.noteId,
     redactedBy: context.operator.id,
     redactedByLabel: context.operator.name ?? context.operator.email ?? 'Staff',
+    // Row 372: the author-or-admin rule is enforced in the lib, against the
+    // note's real author — the role is all it needs from the session.
+    redactedByRole: context.operator.role,
     reason: reason || null,
   });
 
@@ -188,6 +191,12 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   }
   if (result.kind === 'not-found') {
     return NextResponse.json({ error: 'Note not found on this quote' }, { status: 404 });
+  }
+  if (result.kind === 'forbidden') {
+    return NextResponse.json(
+      { error: 'Only the staff member who wrote a note, or an admin, can withdraw it' },
+      { status: 403 },
+    );
   }
   return NextResponse.json({ error: 'Failed to withdraw the note' }, { status: 500 });
 }
