@@ -324,11 +324,19 @@ export function shouldClaimNceDepositProvenance(args: {
  * have moved, which is the only case worth telling anyone about.
  */
 export function nceTagDepositWasSuppressed(args: {
+  /** Whether the inherited tag actually MOVES the chip. applyIsNce no-ops on an
+   *  unchanged value, so without this the notice fired on a re-pick of the same
+   *  tagged contact — a warning about nothing, which teaches staff to ignore
+   *  the warning about something. It is a parameter of the rule rather than a
+   *  check at the call site because a delta-verify proved the call-site version
+   *  could be deleted with every test still passing. */
+  chipWouldChange: boolean;
   quoteLeftDraft: boolean;
   locked: boolean;
   current: number;
   resolved: number;
 }): boolean {
+  if (!args.chipWouldChange) return false;
   if (!args.quoteLeftDraft || args.locked) return false;
   return args.resolved !== args.current;
 }

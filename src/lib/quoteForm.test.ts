@@ -1103,35 +1103,25 @@ describe('shouldClaimNceDepositProvenance (row 328(b))', () => {
   });
 });
 
-// Fix round (staff lens HIGH): the notice must also require that the chip
-// ACTUALLY changed. applyIsNce no-ops on an unchanged value, so asking only
-// "would the deposit have moved" fired a warning about a contact re-pick where
-// nothing happened — the common case of relinking the same tagged contact on a
-// sent quote whose deposit is not exactly 40. The guard lives at the call site
-// (chipWouldChange, QuoteBuilder), and this pins the arithmetic it protects.
+// Fix round 2 (delta-verify MED): the "did the chip actually move" check now
+// lives INSIDE the rule. It used to sit at the call site in QuoteBuilder, and
+// a mutation probe deleted it there with all 744 tests still green — the
+// regression test did not pin the regression. As a parameter it cannot be
+// dropped without a type error.
 describe('row 328(a) — the notice only fires when the chip really moves', () => {
-  it('would otherwise fire on a no-op re-pick, which is the false alarm', () => {
-    // Same tagged contact re-picked: chip already true, deposit a hand-set 50.
-    const chipWouldChange = true !== true;
-    const wouldSuppress = nceTagDepositWasSuppressed({
-      quoteLeftDraft: true,
-      locked: false,
-      current: 50,
-      resolved: resolveNceDepositPercent(50, true, false, false),
-    });
-    expect(wouldSuppress).toBe(true); // the deposit arithmetic alone says "yes"
-    expect(chipWouldChange && wouldSuppress).toBe(false); // ...and the guard says no
+  const sentQuoteWithHandSetDeposit = {
+    quoteLeftDraft: true,
+    locked: false,
+    current: 50,
+    resolved: resolveNceDepositPercent(50, true, false, false), // 40
+  };
+
+  it('stays silent on a no-op re-pick of the same tagged contact', () => {
+    expect(nceTagDepositWasSuppressed({ ...sentQuoteWithHandSetDeposit, chipWouldChange: false })).toBe(false);
   });
 
-  it('still fires when the chip genuinely flips on a quote past draft', () => {
-    const chipWouldChange = true !== false;
-    const wouldSuppress = nceTagDepositWasSuppressed({
-      quoteLeftDraft: true,
-      locked: false,
-      current: 50,
-      resolved: resolveNceDepositPercent(50, true, false, false),
-    });
-    expect(chipWouldChange && wouldSuppress).toBe(true);
+  it('fires when the chip genuinely flips on a quote past draft', () => {
+    expect(nceTagDepositWasSuppressed({ ...sentQuoteWithHandSetDeposit, chipWouldChange: true })).toBe(true);
   });
 });
 
@@ -1140,20 +1130,28 @@ describe('row 328(a) — the notice only fires when the chip really moves', () =
 // move the deposit on a quote the customer already has a link to.
 describe('nceTagDepositWasSuppressed (row 328(a))', () => {
   it('reports a suppressed change once the quote has left draft', () => {
-    expect(nceTagDepositWasSuppressed({ quoteLeftDraft: true, locked: false, current: 50, resolved: 40 })).toBe(true);
+    expect(
+      nceTagDepositWasSuppressed({ chipWouldChange: true, quoteLeftDraft: true, locked: false, current: 50, resolved: 40 }),
+    ).toBe(true);
   });
 
   it('stays quiet on a draft quote, where the inheritance still moves the deposit', () => {
-    expect(nceTagDepositWasSuppressed({ quoteLeftDraft: false, locked: false, current: 50, resolved: 40 })).toBe(false);
+    expect(
+      nceTagDepositWasSuppressed({ chipWouldChange: true, quoteLeftDraft: false, locked: false, current: 50, resolved: 40 }),
+    ).toBe(false);
   });
 
   it('stays quiet when nothing would have moved anyway', () => {
-    expect(nceTagDepositWasSuppressed({ quoteLeftDraft: true, locked: false, current: 40, resolved: 40 })).toBe(false);
+    expect(
+      nceTagDepositWasSuppressed({ chipWouldChange: true, quoteLeftDraft: true, locked: false, current: 40, resolved: 40 }),
+    ).toBe(false);
   });
 
   // An approved/booked quote is already refused by nceDepositLocked, so this
   // would be a second notice about a thing that was never going to happen.
   it('stays quiet on a locked quote, which already refuses the change', () => {
-    expect(nceTagDepositWasSuppressed({ quoteLeftDraft: true, locked: true, current: 50, resolved: 40 })).toBe(false);
+    expect(
+      nceTagDepositWasSuppressed({ chipWouldChange: true, quoteLeftDraft: true, locked: true, current: 50, resolved: 40 }),
+    ).toBe(false);
   });
 });

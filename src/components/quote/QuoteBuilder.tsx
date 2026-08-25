@@ -4004,7 +4004,8 @@ export default function QuoteBuilder({
           // here (this resolves seconds after the click). That only decides
           // whether the informational line below appears — the deposit itself
           // is not touched on this path at all when the quote has left draft.
-          const suppressed = chipWouldChange && nceTagDepositWasSuppressed({
+          const suppressed = nceTagDepositWasSuppressed({
+            chipWouldChange,
             quoteLeftDraft,
             locked: nceDepositLocked,
             current: form.depositPercent,
@@ -4039,6 +4040,11 @@ export default function QuoteBuilder({
     // bypass shape changing mid-session, etc).
     const clearMsg = clearContactConfirmMessage(identityEverFrozen);
     if (clearMsg && !window.confirm(clearMsg)) return;
+    // Row 328(a) fix round 2 (delta-verify MED): a standing "deposit held
+    // back" notice describes the contact that was just unlinked. Drop it here
+    // for the same reason a new pick drops it — it must never name a contact
+    // this quote is no longer pointing at.
+    setNceDepositHeldBack(null);
     attachSeqRef.current++;
     const clearSeq = attachSeqRef.current;
     const freshClear = () => clearSeq === attachSeqRef.current;
