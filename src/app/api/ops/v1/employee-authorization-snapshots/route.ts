@@ -48,6 +48,12 @@ export async function POST(request: NextRequest) {
   const url = new URL(request.url);
   const auth = verifyOpsMachineRequest({ method: 'POST', rawTarget: `${url.pathname}${url.search}`, body: rawBody, headers: request.headers });
   if (!auth.ok) return response(auth.status, { error_code: auth.code, client_version: request.headers.get('x-yll-client-version') ?? 'unknown', correlation_id: crypto.randomUUID() });
+  // Technical lens: this is the only MUTATING route of the three and was the
+  // only one without a kill switch, so a misbehaving Hub could not be shut off
+  // without a deploy. Same shape as QUOTE_LIFECYCLE_EVENTS_ENABLED on the feed.
+  if (process.env.EMPLOYEE_AUTHORIZATION_SNAPSHOTS_ENABLED !== 'true') {
+    return response(503, { error_code: 'kill_switch', client_version: auth.clientVersion, correlation_id: crypto.randomUUID() });
+  }
   if (!isSupabaseServiceConfigured()) return response(503, { error_code: 'internal', client_version: auth.clientVersion, correlation_id: crypto.randomUUID() });
   let input: unknown;
   try { input = JSON.parse(rawBody); } catch { return response(400, { error_code: 'validation_failed', client_version: auth.clientVersion, correlation_id: crypto.randomUUID() }); }
@@ -60,7 +66,18 @@ export async function POST(request: NextRequest) {
     key_id: auth.keyId, nonce: auth.nonce, expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
   });
   if (nonceError) return response(401, { error_code: 'unauthorized', client_version: auth.clientVersion, correlation_id: input.correlation_id });
-
+  // The nonce table grows one row per authenticated Hub call and nothing pruned
+  // it. Rows are dead the moment expires_at passes (the replay window is ten
+  // minutes), so clear the expired ones opportunistically here. Best-effort and
+  // deliberately un-awaited for failure: a housekeeping problem must never fail
+  // a request that already authenticated.
+  void sb
+    .from('ops_machine_request_nonces')
+    .delete()
+    .lt('expires_at', new Date().toISOString())
+    .then(({ error }) => {
+      if (error) console.warn('[ops/snapshots] nonce prune failed:', error.message);
+    });
   const payloadHash = createHash('sha256').update(rawBody, 'utf8').digest('hex');
   const { data: idempotent } = await sb
     .from('employee_authorization_snapshots')

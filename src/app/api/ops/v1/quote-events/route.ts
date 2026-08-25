@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-import { createOpsCursor, OPS_CONTRACT_VERSION, OPS_SCHEMA_VERSION, parseOpsCursor, verifyOpsMachineRequest } from '@/lib/opsMachineAuth';
+import { createOpsCursor, hashCustomerRef, OPS_CONTRACT_VERSION, OPS_SCHEMA_VERSION, parseOpsCursor, verifyOpsMachineRequest } from '@/lib/opsMachineAuth';
 import { getSupabaseServiceClient, isSupabaseServiceConfigured } from '@/lib/supabase';
 
 export const runtime = 'nodejs';
@@ -38,6 +38,16 @@ function fail(status: number, code: string, clientVersion: string | null = null)
     client_version: clientVersion ?? 'unknown',
     correlation_id: crypto.randomUUID(),
   }, { status });
+}
+
+// The stored event keeps the raw customer_ref, which is ours and useful for
+// internal audit. Only what LEAVES is hashed, and this is the single boundary
+// it leaves through.
+function redactCustomerRef(payload: Record<string, unknown>): Record<string, unknown> {
+  const { customer_ref: customerRef, ...rest } = payload;
+  if (typeof customerRef !== 'string' || customerRef.length === 0) return rest;
+  const hashed = hashCustomerRef(customerRef);
+  return hashed ? { ...rest, customer_ref_hash: hashed } : rest;
 }
 
 export async function GET(request: NextRequest) {
@@ -107,7 +117,7 @@ export async function GET(request: NextRequest) {
       quote_id: event.quote_id,
       request_id: event.quote_request_id,
       source_outbox_sequence: outboxSequence,
-      ...event.payload,
+      ...redactCustomerRef(event.payload),
     })),
     next_cursor: nextCursor,
     has_more: hasMore,

@@ -35,7 +35,12 @@ create table if not exists public.quote_requests (
 
 create table if not exists public.quote_lifecycle_events (
   id uuid primary key default gen_random_uuid(),
-  quote_id uuid references public.quotes(id) on delete restrict,
+  -- Naldo's call 2026-08-25. This was `on delete restrict`, which made
+  -- deleting ANY quote fail once these triggers are live, while deleteQuote()
+  -- erases the design and house photos FIRST: irreversible photo loss plus an
+  -- undeletable quote row. Cascade here, and deleteQuote now removes the quote
+  -- row before the design cleanup, so neither ordering can strand anything.
+  quote_id uuid references public.quotes(id) on delete cascade,
   quote_request_id uuid references public.quote_requests(id) on delete restrict,
   event_type text not null,
   entity_version integer not null,
@@ -176,6 +181,11 @@ begin
 
   v_entity_version := v_quote.entity_version + 1;
 
+  -- Suppress the append trigger for this transaction: this function inserts
+  -- the event itself, with the real actor/source/payload the trigger cannot
+  -- know. Third argument true = local to the current transaction.
+  perform set_config('yll.skip_lifecycle_trigger', 'on', true);
+
   update public.quotes
   set entity_version = v_entity_version,
       status = coalesce(p_status, status),
@@ -196,6 +206,9 @@ begin
   ) returning id into v_event_id;
 
   insert into public.quote_event_outbox (event_id) values (v_event_id);
+
+  -- Re-arm the trigger for any later statement in this same transaction.
+  perform set_config('yll.skip_lifecycle_trigger', 'off', true);
 
   return query select v_event_id, v_entity_version,
     (select q.first_sent_at from public.quotes q where q.id = p_quote_id);
@@ -267,6 +280,22 @@ declare
   v_event_type text;
   v_event_id uuid;
 begin
+  -- The RPC below authors its own richer event (real actor, source and
+  -- payload) for the same (quote_id, entity_version). Without this guard both
+  -- it and this trigger insert that pair and collide on
+  -- quote_lifecycle_events_quote_version_unique, rolling back the quote update
+  -- that triggered it. The flag is transaction-local (set_config's third arg),
+  -- so it cannot leak into another statement.
+  if coalesce(current_setting('yll.skip_lifecycle_trigger', true), '') = 'on' then
+    return new;
+  end if;
+
+  -- Ledger #93: test quotes stay out of real reporting. The Ops Hub feed has
+  -- no is_test column to filter on, so the isolation has to happen here, at
+  -- the point the event is written, or fake traffic is indistinguishable to
+  -- every consumer downstream.
+  if coalesce(new.is_test, false) then return new; end if;
+
   v_event_type := case when tg_op = 'INSERT'
     then 'QuoteCreated'
     else public.quote_lifecycle_event_type(old, new)

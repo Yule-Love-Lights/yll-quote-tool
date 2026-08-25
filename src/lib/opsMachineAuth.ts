@@ -94,6 +94,27 @@ function cursorSecret(): string | null {
 }
 
 /** Opaque, tamper-evident outbox cursor. It identifies order, never time. */
+// Naldo's call 2026-08-25. Events carry `customer_ref`, which is
+// quotes.customer_id: the PRIMARY KEY of public.customers, a table holding
+// name, email, phone and the HighLevel contact id. So the raw value is not an
+// anonymous token, it is a stable re-identification key. Anyone with the feed
+// and any customer-table access can join straight back to a named homeowner,
+// and the same id repeats across every quote forever.
+//
+// The Ops Hub needs to CORRELATE events per customer, not to identify them, so
+// the feed emits a keyed hash instead. Same customer, same hash, so grouping
+// and per-customer history still work; no path back to a person without this
+// secret.
+//
+// Fails CLOSED: with no secret configured this returns null and the caller
+// OMITS the field rather than falling back to the raw id. A missing env var
+// must never be the reason customer identity leaves the building.
+export function hashCustomerRef(customerRef: string): string | null {
+  const secret = process.env.OPS_HUB_CUSTOMER_REF_SECRET;
+  if (!secret) return null;
+  return createHmac('sha256', secret).update(customerRef, 'utf8').digest('base64url').slice(0, 32);
+}
+
 export function createOpsCursor(sequence: number): string | null {
   const secret = cursorSecret();
   if (!secret || !Number.isSafeInteger(sequence) || sequence < 0) return null;
