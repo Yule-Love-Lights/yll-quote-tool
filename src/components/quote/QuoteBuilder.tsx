@@ -2018,17 +2018,38 @@ export default function QuoteBuilder({
   // and seeding under it would stamp the baseline with a scale that's
   // already stale the instant this function returns. See the
   // permanent_bistro fresh-lookup call site below for the reachable case.
-  const seedPermanentSideBaselineIfFrozen = (scale: number | null = satelliteFeetPerPixel) => {
-    if (!permDeriveFrozenRef.current) return;
+  // Row 405: the per-side baseline the CURRENT lines/scale would derive to,
+  // as a pure read. Extracted from the seed below rather than duplicated so
+  // the row-405 confirm and the thaw seed can never drift apart — a drift here
+  // would mean the dialog naming different fields than the reconcile actually
+  // overwrites, which is worse than no dialog.
+  const computePermanentSideBaseline = (scale: number | null = satelliteFeetPerPixel) => {
     const sides = {} as Record<PermanentSideKey, { hasLines: boolean; footage: number | null; corners: number }>;
     for (const side of PERMANENT_SIDES) {
       const lines = permanentSatLines[side];
       const m = deriveSideMeasure(lines, scale, satelliteAspect);
       sides[side] = { hasLines: lines.length > 0, footage: m.footage, corners: m.corners };
     }
-    prevPermSideDerivedRef.current = derivePermanentSideFootageBaseline(sides);
+    return derivePermanentSideFootageBaseline(sides);
+  };
+
+  const seedPermanentSideBaselineIfFrozen = (scale: number | null = satelliteFeetPerPixel) => {
+    if (!permDeriveFrozenRef.current) return;
+    prevPermSideDerivedRef.current = computePermanentSideBaseline(scale);
     prevPermSideScaleRef.current = scale;
   };
+
+  // Row 405 (premerge staff-lens HIGH): the baseline the override check must
+  // read is NOT simply `prevPermSideDerivedRef.current`. That ref is seeded
+  // lazily — only at the rehydrate-thaw, i.e. the first real line edit of the
+  // session, or a Recount. On a REOPENED quote that nobody has touched yet it
+  // is still EMPTY, and an empty baseline makes every field look brand-new,
+  // so the check would report zero overrides and stay silent — inert for the
+  // exact scenario row 405 is about (reopen, hand-typed override, re-analyze a
+  // different address). While frozen, derive the baseline from the current
+  // lines the same way the thaw seed would; once thawed, the ref is the truth.
+  const effectivePermanentSideBaseline = () =>
+    permDeriveFrozenRef.current ? computePermanentSideBaseline() : prevPermSideDerivedRef.current;
 
   // Row 345 finding 2: permDeriveFrozenRef is shared by THREE independent
   // consumers — the permanent-side footage/corners derive above (line
@@ -3286,6 +3307,53 @@ export default function QuoteBuilder({
       setAnalysisError('Enter the property address above first.');
       return;
     }
+    // Row 405: ask BEFORE analyzing, not after.
+    //
+    // A re-analyze replaces the traced sides, discarding any hand-typed
+    // footage/corners override. The loss is intended — a fresh AI re-trace is
+    // exactly the "geometry changed, the redraw wins" case the reconcile is
+    // built around — but it happened with NO warning, while all three sibling
+    // replacement paths (handleSatelliteSelect, applyPulledSatellite, and the
+    // permanent_bistro branch) confirm first. Footage drives price.
+    //
+    // PRE-FLIGHT for a specific reason, found by a premerge customer lens on
+    // the first version of this fix, which asked AFTER the analysis landed:
+    // a decline there had to keep the old traced lines while the NEW address's
+    // satellite image had ALREADY been applied and parked in pendingContextRef,
+    // so the customer portal would render one house's photo underneath another
+    // house's light lines. Declining here changes nothing whatsoever — no
+    // request, no image, no scale, no state — and it also does not spend
+    // 20-40s of analyzer time producing a result the operator has said they do
+    // not want.
+    //
+    // `permanentSideOverriddenFields` asks the same question the reconcile
+    // uses (a derived baseline the billed value has since drifted from), so
+    // the dialog can never name different fields than a re-analyze would
+    // actually overwrite. Non-permanent quotes never populate those baselines,
+    // so this is silent for them by construction, as it is for the ordinary
+    // case of a quote carrying no override at all.
+    // Gated on the service type explicitly. The baselines are permanent-side
+    // only, so a non-permanent quote is silent by construction anyway — but a
+    // quote that was switched FROM permanent can still be carrying stale
+    // permanentSatLines and form.permanent values, and there is no reason to
+    // ask about fields that service type does not bill.
+    const overriddenSideFields =
+      form.serviceType === 'permanent'
+        ? permanentSideOverriddenFields(effectivePermanentSideBaseline(), form.permanent)
+        : [];
+    if (overriddenSideFields.length > 0) {
+      const proceed = window.confirm(
+        `Re-analyzing replaces the traced sides, so these hand-entered numbers will be ` +
+          `recalculated from the new trace:
+
+` +
+          `${overriddenSideFields.map(describePermanentSideField).join(', ')}
+
+` +
+          `Cancel to keep them as they are — nothing on this quote will change.`,
+      );
+      if (!proceed) return;
+    }
     satelliteChangeInProgressRef.current = true;
     setLookingUp(true);
     setAnalysisError(null);
@@ -3488,47 +3556,28 @@ export default function QuoteBuilder({
             // branch takes the AI's fresh values unconditionally, exactly
             // as this comment always claimed.
             //
-            // Row 405 (was the "known tradeoff" row 399's delta-verify
-            // flagged and deliberately left): a reopened quote that got a
-            // manual line edit first (so a real override is on record), then a
-            // re-analyze for a DIFFERENT address, loses that standing override
-            // here. The LOSS is intended — a fresh AI re-trace is exactly the
-            // "geometry changed, the redraw wins" case — but the SILENCE was
-            // not. The two satellite-replacement siblings
-            // (handleSatelliteSelect, applyPulledSatellite) and the
-            // permanent_bistro branch above all window.confirm before
-            // discarding drawn/overridden work; this path alone wiped a
-            // hand-typed number, which drives PRICE, with no warning at all.
-            //
-            // Mirrors the permanent_bistro precedent exactly, including its
-            // accepted tradeoff: a DECLINE keeps the existing lines and
-            // overrides while the new image/scale above still apply. Silent
-            // when nothing would be lost — `permanentSideOverriddenFields`
-            // asks the same question the reconcile itself uses (a recorded
-            // baseline the billed value has since drifted from), so a quote
-            // with no override never sees a dialog, which is the common case.
-            const overriddenSideFields = permanentSideOverriddenFields(
-              prevPermSideDerivedRef.current,
-              form.permanent,
-            );
-            const keepExistingSides =
-              overriddenSideFields.length > 0 &&
-              !window.confirm(
-                `Re-analyzing replaces the traced sides, so these hand-entered numbers will be ` +
-                  `recalculated from the new trace: ` +
-                  `${overriddenSideFields.map(describePermanentSideField).join(', ')}. Continue?`,
-              );
-            if (!keepExistingSides) {
-              permDeriveFrozenRef.current = false;
-              prevPermSideDerivedRef.current = {};
-              prevPermSideScaleRef.current = undefined;
-              setPermanentSatLines({
-                front: seeded.front ?? [],
-                left: seeded.left ?? [],
-                right: seeded.right ?? [],
-                back: seeded.back ?? [],
-              });
-            }
+            // Known tradeoff, left alone on purpose (row 399 delta-verify):
+            // a reopened quote that got a manual line edit first (so a real
+            // override is on record), then a re-analyze for a DIFFERENT
+            // address, DOES lose that standing override here — same as it
+            // always has, even same-scale, before this fix existed. Unlike
+            // the two satellite-replacement paths above (handleSatelliteSelect,
+            // applyPulledSatellite), which window.confirm before discarding
+            // anything drawn/overridden, this path has NO confirm dialog —
+            // the operator gets no warning before a re-analyze silently wipes
+            // a hand-typed number. Not introduced by row 399 (the same-scale
+            // case already clobbered silently), so left unchanged; just
+            // flagging it here so the next reader treats the silence as a
+            // known gap, not an oversight.
+            permDeriveFrozenRef.current = false;
+            prevPermSideDerivedRef.current = {};
+            prevPermSideScaleRef.current = undefined;
+            setPermanentSatLines({
+              front: seeded.front ?? [],
+              left: seeded.left ?? [],
+              right: seeded.right ?? [],
+              back: seeded.back ?? [],
+            });
             // #140 P3: street runs → editable bulbType:'permanent' strands on
             // the design (visual + portal; billing stays satellite-sourced).
             // Same dispatch-or-park flow the holiday seed uses.
@@ -3536,52 +3585,34 @@ export default function QuoteBuilder({
               side: 'front' | 'left' | 'right';
               points: [number, number][];
             }>;
-            // Row 405: a DECLINE above means "leave my numbers alone", so it has
-            // to cover everything this analysis would bill, not just the traced
-            // sides. The AI extras below drive the Extensions/Splitters counts,
-            // which are PRICED — applying them after the operator declined
-            // would move money on a quote they just asked us not to touch, and
-            // seeding fresh street runs onto the design while the old traced
-            // sides remain would leave the two visibly disagreeing.
+            if (streetRuns.length > 0) {
+              const permSeed: AnalysisSeed = {
+                permanentRuns: streetRuns.map((r) => ({ side: r.side, points: r.points })),
+              };
+              if (designId) {
+                void seedDesignFromAnalysis(designId, permSeed); // bumps designEditorKey itself
+              } else {
+                pendingSeedRef.current = permSeed;
+              }
+            }
             // #140 P3: AI-detected jumps + splitter branch points feed the
             // Extensions/Splitters derive as `extras` (what geometry can't see).
             const jumps = (data.permanentSatellite?.jumps ?? []) as Array<{
               ft: number;
               splitter: boolean;
             }>;
-            if (!keepExistingSides) {
-              if (streetRuns.length > 0) {
-                const permSeed: AnalysisSeed = {
-                  permanentRuns: streetRuns.map((r) => ({ side: r.side, points: r.points })),
-                };
-                if (designId) {
-                  void seedDesignFromAnalysis(designId, permSeed); // bumps designEditorKey itself
-                } else {
-                  pendingSeedRef.current = permSeed;
-                }
-              }
-              setPermanentAiExtras({
-                splitters: jumps.filter((j) => j.splitter).length,
-                jumpsFt: jumps.map((j) => j.ft).filter((f) => Number.isFinite(f) && f > 0),
-              });
-            }
+            setPermanentAiExtras({
+              splitters: jumps.filter((j) => j.splitter).length,
+              jumpsFt: jumps.map((j) => j.ft).filter((f) => Number.isFinite(f) && f > 0),
+            });
             const conf = data.permanentSatellite?.confidence;
             const aiNotes = data.permanentSatellite?.notes;
             setAnalysisNotes(
-              // Row 405: the note is a REPORT of what was applied, so a decline
-              // must not be described as a trace that landed — the operator
-              // would read "drew front, left" and believe their numbers had
-              // just been replaced when they had explicitly kept them.
-              keepExistingSides
-                ? `Re-analysis discarded — your existing traced sides and hand-entered ` +
-                    `numbers were kept. The new satellite image and scale are loaded; ` +
-                    `run Analyze from Address again if you do want the fresh trace.` +
-                    (aiNotes ? ` AI notes: ${aiNotes}` : '')
-                : `Satellite auto-trace drew ${seededSides.join(', ')} (${conf ?? 'low'} confidence)` +
-                    (streetRuns.length ? `, plus ${streetRuns.length} street run(s) on the design` : '') +
-                    (jumps.length ? `, ${jumps.length} jump(s)${jumps.some((j) => j.splitter) ? ' incl. splitter branch(es)' : ''}` : '') +
-                    '. Check each line — footage, corners, and extensions all follow the lines.' +
-                    (aiNotes ? ` AI notes: ${aiNotes}` : ''),
+              `Satellite auto-trace drew ${seededSides.join(', ')} (${conf ?? 'low'} confidence)` +
+                (streetRuns.length ? `, plus ${streetRuns.length} street run(s) on the design` : '') +
+                (jumps.length ? `, ${jumps.length} jump(s)${jumps.some((j) => j.splitter) ? ' incl. splitter branch(es)' : ''}` : '') +
+                '. Check each line — footage, corners, and extensions all follow the lines.' +
+                (aiNotes ? ` AI notes: ${aiNotes}` : ''),
             );
           } else {
             setAnalysisNotes(
@@ -7331,14 +7362,20 @@ export default function QuoteBuilder({
               are done. Amber, not red: nothing is broken, there is simply work
               on screen that the database does not have.
 
-              STICKY, per a premerge staff-lens HIGH: parked inline near the
-              bottom of a ~7900-line form it was easy to never see, and it is
-              the ONLY guard on in-app navigation (next/link transitions never
-              fire beforeunload). Pinning it to the viewport bottom means the
-              operator sees it wherever they are in the form. */}
+              A premerge staff-lens HIGH noted that parked inline near the
+              bottom of a ~7900-line form this is easy to never see, and that it
+              is the ONLY guard on in-app navigation (next/link transitions
+              never fire beforeunload). A sticky variant was tried and REVERTED:
+              the delta-verify pass argued its containing block is the whole
+              component, which would pin it over the Send Quote button for the
+              entire rest of the scroll, and that could not be settled
+              statically or confirmed in a browser (the dev server is behind the
+              operator auth gate). Shipping an unverifiable overlay across a
+              money surface is the worse trade, so the visibility gap is
+              recorded on the follow-up row instead of papered over here. */}
           {hasUnsavedEdits && (
             <div
-              className="sticky bottom-3 z-20 mb-2 rounded-lg border px-3 py-2 text-sm flex items-start gap-2 shadow-md"
+              className="mb-2 rounded-lg border px-3 py-2 text-sm flex items-start gap-2"
               style={{ borderColor: '#f59e0b', backgroundColor: '#fffbeb', color: '#92400e' }}
               role="status"
             >
