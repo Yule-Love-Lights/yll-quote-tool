@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import {
   reconcilePermanentSideField,
@@ -287,6 +288,213 @@ describe('row 345 finding 1: the no-scale delete-transition (footage and corners
     expect(corners.target).toBe(0);
     expect(footage.nextBaseline).toBeUndefined();
     expect(corners.nextBaseline).toBeUndefined();
+  });
+});
+
+// Row 379 (S48 #921 delta-verify MED): a baseline can be paired with a scale
+// it was not derived under, reachable across a service-type switch (reopen a
+// permanent quote frozen -> switch to permanent_bistro before the first edit
+// thaws it -> a fresh street lookup pulls a new scale and thaws -> switch
+// back to permanent). Without `scaleChanged`, a mere scale difference makes
+// freshValue !== baseline look exactly like a real redraw and silently
+// stamps the new-scale value over a standing override.
+describe('reconcilePermanentSideField — scaleChanged (row 379: baseline captured under a different scale)', () => {
+  it('does NOT clobber a standing override when the mismatch is purely a scale artifact', () => {
+    // Same lines as when the baseline was seeded (40ft under the old scale),
+    // but the new scale re-derives them to 46ft — a pure scale artifact, not
+    // a redraw. Staff has an override on record (55ft).
+    const result = reconcilePermanentSideField({
+      active: true,
+      canDerive: true,
+      hasLines: true,
+      hadLinesPrev: true,
+      freshValue: 46, // re-derived under the NEW scale
+      currentBilled: 55, // staff's override, untouched by the scale change
+      baseline: 40, // captured under the OLD scale
+      scaleChanged: true,
+    });
+    expect(result.target).toBeNull(); // override survives — no stamp
+    expect(result.nextBaseline).toBe(46); // baseline resyncs to the new scale
+  });
+
+  it('also does not clobber an un-overridden (derived-only) billed value on a scale mismatch', () => {
+    const result = reconcilePermanentSideField({
+      active: true,
+      canDerive: true,
+      hasLines: true,
+      hadLinesPrev: true,
+      freshValue: 46,
+      currentBilled: 40, // matches the OLD baseline exactly (no override)
+      baseline: 40,
+      scaleChanged: true,
+    });
+    expect(result.target).toBeNull(); // still no stamp — the scale artifact isn't a redraw
+    expect(result.nextBaseline).toBe(46);
+  });
+
+  it('WITHOUT scaleChanged (the pre-379 behavior), the same scale artifact silently clobbers the override', () => {
+    const result = reconcilePermanentSideField({
+      active: true,
+      canDerive: true,
+      hasLines: true,
+      hadLinesPrev: true,
+      freshValue: 46,
+      currentBilled: 55,
+      baseline: 40,
+      // scaleChanged omitted — defaults to false
+    });
+    expect(result.target).toBe(46); // BUG (pre-fix shape): the override is stamped over
+  });
+
+  it('with no prior baseline, scaleChanged is moot — falls through to the brand-new auto-populate branch', () => {
+    const result = reconcilePermanentSideField({
+      active: true,
+      canDerive: true,
+      hasLines: true,
+      hadLinesPrev: false,
+      freshValue: 46,
+      currentBilled: 0,
+      baseline: undefined,
+      scaleChanged: true,
+    });
+    expect(result).toEqual({ target: 46, nextBaseline: 46 });
+  });
+
+  it('a real redraw (scaleChanged false) still wins normally — the guard does not mask genuine geometry changes', () => {
+    const result = reconcilePermanentSideField({
+      active: true,
+      canDerive: true,
+      hasLines: true,
+      hadLinesPrev: true,
+      freshValue: 65,
+      currentBilled: 55,
+      baseline: 40,
+      scaleChanged: false,
+    });
+    expect(result).toEqual({ target: 65, nextBaseline: 65 });
+  });
+
+  it('a genuine second scale change (two mismatches before the operator ever redraws) still keeps resyncing safely, never clobbering', () => {
+    // Simulates row 379's own named residual: a second scale/geometry change
+    // before switching back to permanent. Even chained, scaleChanged never
+    // lets a scale-only difference touch the billed value.
+    const run1 = reconcilePermanentSideField({
+      active: true, canDerive: true, hasLines: true, hadLinesPrev: true,
+      freshValue: 46, currentBilled: 55, baseline: 40, scaleChanged: true,
+    });
+    const run2 = reconcilePermanentSideField({
+      active: true, canDerive: true, hasLines: true, hadLinesPrev: true,
+      freshValue: 52, currentBilled: 55, baseline: run1.nextBaseline, scaleChanged: true,
+    });
+    expect(run1.target).toBeNull();
+    expect(run2.target).toBeNull();
+    expect(run2.nextBaseline).toBe(52);
+  });
+});
+
+// Row 399 (lens review on #938, escalated MED-dormant -> HIGH-live): the
+// scaleChanged guard row 379 added made a REAL two-address re-analyze
+// indistinguishable from a pure scale artifact, because nothing at
+// QuoteBuilder.tsx's permanentImageryOnly seed site ever reset
+// prevPermSideDerivedRef/prevPermSideScaleRef before the wholesale line
+// replace — so a SECOND "Analyze from Address" for a DIFFERENT address (an
+// ordinary typo-correction workflow; the button is never disabled after a
+// first success) inherited the FIRST address's baseline+scale. Composes
+// reconcilePermanentSideField exactly as QuoteBuilder.tsx's derive effect
+// does across two consecutive analyze runs, using the SAME scaleChanged
+// formula the effect computes at ~line 2101, so this pins the caller-side
+// bug/fix, not just the reconcile function in isolation.
+function computeScaleChanged(prevScale: number | null | undefined, currentScale: number | null): boolean {
+  return prevScale !== undefined && prevScale !== currentScale;
+}
+
+describe('reconcilePermanentSideField — row 399: a second, different-address analyze', () => {
+  it('BUG (the un-reset refs QuoteBuilder.tsx shipped before row 399): house B\'s real footage is silently suppressed and house A\'s wrong number sticks', () => {
+    // Run 1: brand-new permanent quote, "Analyze from Address" for address A
+    // (a typo — wrong house). No prior baseline/scale.
+    const scaleA = 0.5; // ft/px at address A's latitude
+    const run1 = reconcilePermanentSideField({
+      active: true, canDerive: true, hasLines: true, hadLinesPrev: false,
+      freshValue: 30, currentBilled: 0, baseline: undefined,
+      scaleChanged: computeScaleChanged(undefined, scaleA),
+    });
+    expect(run1.target).toBe(30); // brand-new -> applied
+    // Mirrors QuoteBuilder.tsx's real post-run bookkeeping — WITHOUT the
+    // row-399 reset, nothing else touches these refs before the next analyze.
+    const prevBaseline = run1.nextBaseline;
+    const prevScale = scaleA;
+
+    // Operator notices the typo, corrects the address, and re-runs "Analyze
+    // from Address" for the REAL house (address B) — a completely different
+    // latitude, so a different satellite scale, and a genuinely different
+    // 52ft front (not a rescale of the same geometry).
+    const scaleB = 0.5137;
+    const run2 = reconcilePermanentSideField({
+      active: true, canDerive: true, hasLines: true, hadLinesPrev: true,
+      freshValue: 52, currentBilled: run1.target ?? 0, baseline: prevBaseline,
+      scaleChanged: computeScaleChanged(prevScale, scaleB),
+    });
+    expect(run2.target).toBeNull(); // BUG: house B's real 52ft is suppressed
+    expect(run2.nextBaseline).toBe(52); // and the baseline silently resyncs — the guard can never fire again
+    // The billed value stays at house A's WRONG 30ft, permanently and silently.
+  });
+
+  it('FIXED (row 399): resetting prevPermSideDerivedRef/prevPermSideScaleRef before the second analyze lets house B\'s real footage win outright', () => {
+    let prevBaseline: number | undefined;
+    let prevScale: number | null | undefined;
+    const scaleA = 0.5;
+    const run1 = reconcilePermanentSideField({
+      active: true, canDerive: true, hasLines: true, hadLinesPrev: false,
+      freshValue: 30, currentBilled: 0, baseline: prevBaseline,
+      scaleChanged: computeScaleChanged(prevScale, scaleA),
+    });
+    prevBaseline = run1.nextBaseline;
+    prevScale = scaleA;
+
+    // Row 399 fix: QuoteBuilder.tsx's permanentImageryOnly seed site now
+    // resets BOTH refs to their brand-new (unseeded) state in the same
+    // breath as the wholesale setPermanentSatLines replace, before the
+    // second analyze's derive effect ever runs.
+    prevBaseline = undefined; // prevPermSideDerivedRef.current = {}
+    prevScale = undefined; // prevPermSideScaleRef.current = undefined
+
+    const scaleB = 0.5137;
+    const run2 = reconcilePermanentSideField({
+      active: true, canDerive: true, hasLines: true, hadLinesPrev: true,
+      freshValue: 52, currentBilled: run1.target ?? 0, baseline: prevBaseline,
+      scaleChanged: computeScaleChanged(prevScale, scaleB),
+    });
+    expect(run2.target).toBe(52); // FIXED: house B's real footage wins outright
+    expect(run2.nextBaseline).toBe(52);
+  });
+});
+
+// Row 399's actual fix lives in QuoteBuilder.tsx's permanentImageryOnly seed
+// block (handleLookupAddress), not in this file — reconcilePermanentSideField
+// itself never changed for row 399 (scaleChanged is exactly what row 379
+// shipped; the two tests above prove the CALLER-side bug/fix, not a change to
+// this function). QuoteBuilder.tsx has no component-render harness (same
+// constraint documented in lightScale.test.ts and photoBrightness.test.ts's
+// "resyncs the brightness control" test, which pins editor.ts's undo()/redo()
+// the same way) — deleting the two-line ref reset there left the full suite
+// green, because nothing else exercises that call site. This test closes
+// that hole as SOURCE TEXT: it isolates the exact `if (seeded &&
+// seededSides.length > 0)` block (the only occurrence of that guard in the
+// file) up to its `setPermanentSatLines({` call, so a reset line elsewhere
+// in the file — or reworded, or reordered relative to a DIFFERENT
+// setPermanentSatLines call — cannot satisfy it.
+describe('QuoteBuilder.tsx — row 399: the permanentImageryOnly seed block actually resets the baseline+scale refs', () => {
+  it('sets prevPermSideDerivedRef and prevPermSideScaleRef back to their brand-new state before the wholesale line replace', () => {
+    const source = readFileSync(
+      new URL('../../components/quote/QuoteBuilder.tsx', import.meta.url),
+      'utf8',
+    );
+    const [seedBlock] = source.match(
+      /if \(seeded && seededSides\.length > 0\) \{[\s\S]*?setPermanentSatLines\(\{/,
+    ) ?? [''];
+    expect(seedBlock).not.toBe(''); // the guard itself must still exist
+    expect(seedBlock).toContain('prevPermSideDerivedRef.current = {};');
+    expect(seedBlock).toContain('prevPermSideScaleRef.current = undefined;');
   });
 });
 
