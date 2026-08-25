@@ -72,5 +72,9 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
   // #741 defect 3: report any mini group this delete's server-side prune just
   // orphaned, so the caller can warn staff (mirrors #255's seed-analysis
   // route, which already reports the same shape for its own prune).
-  return NextResponse.json({ ok: true, prunedMiniGroups: result.prunedMiniGroups });
+  // Row 371: hand back the version this delete's own scene prune wrote, so a
+  // still-mounted editor (an INACTIVE tab was deleted, so it never remounts)
+  // can adopt it instead of failing its next save's CAS. Null when the prune
+  // wrote nothing.
+  return NextResponse.json({ ok: true, prunedMiniGroups: result.prunedMiniGroups, version: result.version });
 }
