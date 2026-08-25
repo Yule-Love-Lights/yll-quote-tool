@@ -127,12 +127,38 @@ export function filterByWindow(items: MetricItem[], days: number | null, now: Da
 
 // ─── Main compute ─────────────────────────────────────────────────────────────
 
+// Row 320(d): this module hand-rolls its own status/direction checks (here and
+// in medianResponseIn below) instead of reusing lifecycle.ts's bucketOf/
+// applyBucketFilter, and never looks at followedUpAt. That is DELIBERATE, not
+// an oversight — bucketOf answers "which queue does this item sit in right
+// now" (display), which folds in followedUpAt as a snooze signal; this module
+// answers a different question, "how long did the customer wait for a reply",
+// which is a property of the handled_at/last_inbound_at TIMESTAMPS alone and
+// has nothing to do with whether the item is currently snoozed. The two must
+// not be conflated: an item can be handled-and-followed (still counts here)
+// or handled-and-not (also counts here) — bucketOf's split between those two
+// is irrelevant to a response-time measurement.
+//
+// The "SLA population" (handledItems below — feeds medianResponseMs,
+// avgResponseMs, withinOneHourPct/withinFourHoursPct, byRep, buckets, and the
+// "Handled" stat) is status==='handled' ONLY. An item that transitions
+// straight from 'unresponded' to 'completed' (markItemCompleted stamps
+// handled_at even when there was no prior 'handled' state) never entered this
+// population and never will — there was no discrete "we replied" event to
+// time. That is not a bug: it is captured separately, correctly, in
+// completedItems/completedTimes below ("time to completed" — createdAt →
+// handledAt, a different, valid question: how long from open to fully done).
+// Structural and ongoing (not something this session's fix changes); already
+// disclosed via the #828 technical lens / row 320.
 export function computeResponseMetrics(items: MetricItem[], now: Date): ResponseMetrics {
   // #110 W7-003: measure from the customer's last INBOUND (falls back to
   // last_message_at on legacy rows that predate the last_inbound_at column).
   const inboundOf = (i: MetricItem) => i.lastInboundAt ?? i.lastMessageAt;
-  // #252 slice F fix round: exclude an outbound-born item (never had a real
-  // inbound leg) — see hadNoInboundLeg's doc above.
+  // #252 slice F fix round (closes row 287(a) — first-observation quotetool
+  // sends were previously counted here with a fabricated near-zero response
+  // time, quote_sent_at→now read as a customer wait that never happened):
+  // exclude an outbound-born item (never had a real inbound leg) — see
+  // hadNoInboundLeg's doc above.
   const handledItems = items.filter(
     (i) => i.status === 'handled' && !hadNoInboundLeg(i) && inboundOf(i) && i.handledAt,
   );

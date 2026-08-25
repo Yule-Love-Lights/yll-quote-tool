@@ -114,20 +114,29 @@ describe('adjustOnHandAtomic — atomic signed delta (decrement/increment race)'
       onHand: [{ sku: 'A', on_hand_qty: 100, updated_at: 'oh0' }],
       concurrentBump: { sku: 'A', addQty: 50 },
     });
-    await adjustOnHandAtomic(db as never, 'A', -10);
+    const r = await adjustOnHandAtomic(db as never, 'A', -10);
     expect(db._onHand.get('A')!.on_hand_qty).toBe(140);
+    // The full requested -10 landed (the retry re-read the concurrently-bumped
+    // 150 and applied the same -10 against it) — applied matches the request.
+    expect(r).toEqual({ before: 150, after: 140, applied: -10 });
   });
 
   it('floors on-hand at 0 (never negative) when the decrement exceeds stock', async () => {
     const db = makeOnHandDb({ onHand: [{ sku: 'A', on_hand_qty: 3, updated_at: 'oh0' }] });
-    await adjustOnHandAtomic(db as never, 'A', -10);
+    const r = await adjustOnHandAtomic(db as never, 'A', -10);
     expect(db._onHand.get('A')!.on_hand_qty).toBe(0);
+    // Row 329: the clamp means only 3 of the requested 10 actually came off —
+    // `applied` reports the TRUE (smaller-magnitude) delta, not the request.
+    // This is exactly the value prepareJobMaterials must persist as its
+    // snapshot, or cancel's reversal over-credits on-hand.
+    expect(r).toEqual({ before: 3, after: 0, applied: -3 });
   });
 
   it('applies a positive delta (the receipt path) atomically', async () => {
     const db = makeOnHandDb({ onHand: [{ sku: 'A', on_hand_qty: 5, updated_at: 'oh0' }] });
-    await adjustOnHandAtomic(db as never, 'A', 10);
+    const r = await adjustOnHandAtomic(db as never, 'A', 10);
     expect(db._onHand.get('A')!.on_hand_qty).toBe(15);
+    expect(r).toEqual({ before: 5, after: 15, applied: 10 });
   });
 
   it('two concurrent decrements on the same SKU both land (no lost delta)', async () => {
@@ -137,7 +146,8 @@ describe('adjustOnHandAtomic — atomic signed delta (decrement/increment race)'
       onHand: [{ sku: 'A', on_hand_qty: 20, updated_at: 'oh0' }],
       concurrentBump: { sku: 'A', addQty: -8 },
     });
-    await adjustOnHandAtomic(db as never, 'A', -8);
+    const r = await adjustOnHandAtomic(db as never, 'A', -8);
     expect(db._onHand.get('A')!.on_hand_qty).toBe(4);
+    expect(r).toEqual({ before: 12, after: 4, applied: -8 });
   });
 });

@@ -28,6 +28,11 @@
 //     dropping whichever mutually-exclusive roofline option wasn't billed.)
 //     The existing approval_snapshot (if any) is preserved and extended with
 //     staffApproved + customerSelection.
+//   - Row 344: also freezes `pricing: quote.result` (the same field the
+//     customer route writes) so the portal's frozen-pricing basis has a
+//     snapshot to read here too — a staff-approved quote used to fall
+//     straight back to the live, still-changing row.result for every line-
+//     item price shown on the portal.
 //   - NO e-signature (the whole point of this path).
 //   - NO GHL/notify calls (the customer already agreed verbally; messaging is
 //     the operator's responsibility). is_test quotes are safe: the route never
@@ -168,6 +173,14 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
       ? { customerSelection: { packageId: 'D' as const, selectedItemIds } }
       : {}),
     ...(permanentWarranty ? { permanentWarranty } : {}),
+    // Row 344 — freeze the full pricing result too, same field the customer
+    // /approve route writes (`pricing: quote.result`). Without this the
+    // portal adapter's frozen-pricing basis has nothing to read for a
+    // staff-approved quote and silently falls back to the live, still-
+    // changing row.result — the exact defect this row exists to close. Omit
+    // entirely (never null) when quote.result is missing, matching how every
+    // other optional snapshot field in this route is written.
+    ...(quote.result ? { pricing: quote.result } : {}),
   };
 
   // Atomic conditional write: .is('customer_approved_at', null) is the

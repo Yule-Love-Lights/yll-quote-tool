@@ -9,6 +9,29 @@ import { useState } from 'react';
 // the only thing the UI needs is `source` (to gate the quotetool channel toggle
 // and to keep gmail out — gmail inline-send is unsupported, so callers render a
 // "Reply in Gmail" hint instead of mounting this).
+
+/** Fix round 2 (MED): what a caller should do with a completed reply send.
+ *  'resolved' — the ordinary case, the item's status write landed.
+ *  'refused' — the send fired (can't be unsent) but the status CAS was
+ *    genuinely refused (0 rows matched — real evidence someone else resolved
+ *    the item in the meantime). Benign.
+ *  'error' — the send fired but the status write failed for a reason OTHER
+ *    than a lost race (a real backend error) — the item's true state is
+ *    UNKNOWN, not confirmed resolved. Callers must not treat this the same as
+ *    'refused'. */
+export type ReplySentOutcome = 'resolved' | 'refused' | 'error';
+
+/** Pure mapping from the reply route's JSON body to a ReplySentOutcome —
+ *  exported + pure so this (previously untested) branch is directly
+ *  unit-testable without jsdom (this project has no jsdom harness). Only
+ *  called when `data.ok` is true (the send itself succeeded); `resolved`
+ *  defaults true for back-compat with any older cached response shape — only
+ *  an explicit `false` means the status CAS didn't land. */
+export function replyOutcome(data: { resolved?: boolean; refused?: boolean }): ReplySentOutcome {
+  if (data.resolved !== false) return 'resolved';
+  return data.refused ? 'refused' : 'error';
+}
+
 export function ReplyComposer({
   itemId,
   source,
@@ -21,7 +44,12 @@ export function ReplyComposer({
    *  caller has it — seeds the toggle's initial choice. Optional so callers
    *  that don't track it (InboxList) keep working unchanged. */
   channel?: string | null;
-  onSent: () => void;
+  /** Finding 1 + fix round 2: reports what actually happened to the item's
+   *  status after a successful send — see ReplySentOutcome's own doc above.
+   *  Callers use this to avoid treating a terminal row as if it were newly
+   *  "awaiting reply", AND to avoid treating an unknown failure as if it were
+   *  a confirmed benign refusal (see InWorksSection's onSent). */
+  onSent: (outcome: ReplySentOutcome) => void;
 }) {
   const [draftText, setDraftText] = useState('');
   const [draftBusy, setDraftBusy] = useState(false);
@@ -67,9 +95,9 @@ export function ReplyComposer({
           channel: source === 'quotetool' ? replyChannel : undefined,
         }),
       });
-      const data = (await res.json()) as { ok?: boolean; error?: string };
+      const data = (await res.json()) as { ok?: boolean; resolved?: boolean; refused?: boolean; error?: string };
       if (data.ok) {
-        onSent();
+        onSent(replyOutcome(data));
       } else {
         setError(data.error ?? 'Failed to send reply.');
       }

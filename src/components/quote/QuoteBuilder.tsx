@@ -1030,6 +1030,35 @@ export default function QuoteBuilder({
   // string) so a real freeze shows a small notice instead of a save that
   // silently succeeds with a stale customer link.
   const [identityFrozenNotice, setIdentityFrozenNotice] = useState(false);
+  // Row 344 Part B: mirrors identityFrozenNotice's shape one line up — the
+  // server (route.ts) only sends `repricedAfterApproval` when THIS save
+  // actually changed the total of an approved-not-booked quote (a footage
+  // edit, a mini-light regroup, or any other scene-driven change; the four
+  // fields with their own hard lock — deposit%/price/label/bistro-footage —
+  // never reach here). Sticky once shown, same as identityFrozenNotice: it
+  // describes what THIS save just did, not a live/re-checked warning, so it
+  // is never cleared back to null by a later save that happens not to
+  // reprice anything.
+  const [postApprovalRepriceNotice, setPostApprovalRepriceNotice] = useState<{
+    previousTotalUsd: number;
+    newTotalUsd: number;
+    deltaUsd: number;
+    // Fix round (staff-lens HIGH): whether the portal is actually still
+    // frozen to the approved figure (adapter.ts falls back to the LIVE
+    // result — the number this save just changed — whenever
+    // approval_snapshot.pricing is absent, e.g. a staff-approve() snapshot
+    // predating that field). The notice text below must say which is true.
+    portalShowsFrozenPrice: boolean;
+    // Second fix round (staff-lens HIGH): the REASON portalShowsFrozenPrice is
+    // false — an accepted amendment already exists (always a BOOKED order;
+    // the remedy is the job's amend flow) vs no frozen pricing was ever taken
+    // (remedy depends on whether the order is booked). The notice's original
+    // copy told staff to "decline, revive, and re-send" unconditionally —
+    // both decline routes structurally refuse a booked order (canTransition
+    // 409s), so on a booked-and-amended quote that instruction was both the
+    // wrong diagnosis AND an impossible remedy. See the notice JSX below.
+    hasAcceptedAmendment: boolean;
+  } | null>(null);
   // FIX A (#237 fix round, staff-lens HIGH): mirrors ghlSyncWarning's shape
   // (send route field: eventDateSyncError) for a DIFFERENT failure surface —
   // the event-date GHL custom-field push can fail independently of the stage
@@ -4662,6 +4691,19 @@ export default function QuoteBuilder({
       // THIS save (route.ts only sends the key when updateQuote set it —
       // absent/falsy on every normal save, including a brand-new insert).
       if (data.identityFrozen === true) setIdentityFrozenNotice(true);
+      // Row 344 Part B: surface a scene-driven reprice of an approved-
+      // not-booked quote the same way — route.ts only sends this key when
+      // the save actually changed the total (see its own comment).
+      if (
+        data.repricedAfterApproval &&
+        typeof data.repricedAfterApproval.previousTotalUsd === 'number' &&
+        typeof data.repricedAfterApproval.newTotalUsd === 'number' &&
+        typeof data.repricedAfterApproval.deltaUsd === 'number' &&
+        typeof data.repricedAfterApproval.portalShowsFrozenPrice === 'boolean' &&
+        typeof data.repricedAfterApproval.hasAcceptedAmendment === 'boolean'
+      ) {
+        setPostApprovalRepriceNotice(data.repricedAfterApproval);
+      }
       // The result is deliberately NOT exposed here. It is set AFTER the
       // satellite plan is durably stored (below), so a failed plan save cannot
       // leave a Send-ready quote on screen beside its own error banner.
@@ -7488,6 +7530,53 @@ export default function QuoteBuilder({
                 HighLevel link on this quote were left exactly as the customer approved them, and nothing on this
                 save changed who the quote belongs to. There is no in-app way to move an approved quote to a
                 different customer — if this needs correcting, contact support for a manual fix rather than re-saving.
+              </p>
+            )}
+
+            {/* Second fix round (staff-lens HIGH): this copy used to tell staff
+                to "decline, revive, and re-send" whenever portalShowsFrozenPrice
+                was false, unconditionally — but both decline routes
+                (decline/route.ts, staff-decline/route.ts) structurally refuse a
+                BOOKED order (canTransition 409s), and a booked order is exactly
+                the case bookedAmendEligible/hasAcceptedAmendment cover. Two
+                independent axes now: the middle sentence diagnoses WHY the
+                portal isn't frozen (missing snapshot vs an already-accepted
+                amendment); the last sentence gives the remedy that actually
+                works for THIS order's state (bookedAmendEligible mirrors the
+                exact predicate the rest of this file already uses for the
+                booked-amend carve-out — see its own comment above). */}
+            {postApprovalRepriceNotice && (
+              <p className="mb-3 text-xs text-amber-700">
+                {`Heads up — this quote was already approved by the customer at ${usd(postApprovalRepriceNotice.previousTotalUsd)}, and this save `}
+                {postApprovalRepriceNotice.deltaUsd > 0 ? 'raised' : 'lowered'}
+                {` the price to ${usd(postApprovalRepriceNotice.newTotalUsd)} (${postApprovalRepriceNotice.deltaUsd > 0 ? '+' : ''}${usd(postApprovalRepriceNotice.deltaUsd)}). `}
+                {postApprovalRepriceNotice.portalShowsFrozenPrice ? (
+                  "The portal still shows what they approved — the customer's approval no longer reflects this quote's current price until you decline, revive, and re-send it."
+                ) : (
+                  <>
+                    {postApprovalRepriceNotice.hasAcceptedAmendment
+                      ? 'This order already has an accepted amendment, so the portal always shows the live price now — it is already showing this new figure, with no re-consent. '
+                      : 'The portal has NO frozen price on file for this approval, so it is already showing the customer this NEW price — with no re-consent. '}
+                    {bookedAmendEligible ? (
+                      savedJobId ? (
+                        <>
+                          {'Record it through '}
+                          <Link
+                            href={`/admin/jobs/${savedJobId}`}
+                            className="font-semibold underline hover:no-underline"
+                          >
+                            the job&apos;s Record-amendment flow
+                          </Link>
+                          {" so the customer consents to it — a booked order can't be declined, revived, or re-sent."}
+                        </>
+                      ) : (
+                        "Record it through the job's amend flow so the customer consents to it — a booked order can't be declined, revived, or re-sent."
+                      )
+                    ) : (
+                      'Call/text before they see it, or decline, revive, and re-send.'
+                    )}
+                  </>
+                )}
               </p>
             )}
 

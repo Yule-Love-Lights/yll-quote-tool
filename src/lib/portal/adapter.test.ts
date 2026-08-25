@@ -2185,6 +2185,143 @@ describe('quoteRowToPortalQuote — amendment consent card money basis (delta-ve
   });
 });
 
+// Row 344 — the portal's ONE pricing basis: an approved quote must render
+// line-item prices from the FROZEN approval_snapshot.pricing, never the
+// live row.result, which keeps changing as staff edit the scene/footage
+// after approval. Before this fix, `row.result` was the only source the
+// adapter ever read, unconditionally.
+//
+// LOW fix round (technical lens — this comment previously overclaimed "these
+// tests fail against that old behavior" for the whole block): only the first
+// two tests below actually discriminate pre-fix vs post-fix code — verified
+// by reverting the fix locally (`frozenPricing = null`) and re-running this
+// file, which failed exactly those two and only those two. The remaining
+// three ("falls back to the live result...", "an ACCEPTED amendment
+// promotes...", "a never-approved quote always reads...") all assert
+// custom?.price === 2900 (the live/drifted figure) — a value the OLD
+// always-live code already produced trivially in every one of those three
+// scenarios too, since it never looked at approval_snapshot.pricing at all.
+// They're real, valuable coverage of the FALLBACK / no-regression paths the
+// fix's own frozenPricing condition carves out (missing snapshot, an
+// accepted amendment, never-approved) — just not pre-fix regression tests
+// for row 344 itself.
+describe('quoteRowToPortalQuote — frozen pricing basis on an approved quote (row 344)', () => {
+  // The customer approved at $2,000 (one custom line item). Staff then edited
+  // the scene/footage — simulated here by a DIFFERENT live `row.result` ($2,900
+  // for the same item) — without going through the frozen re-approval path
+  // (deposit%/price-override/label-override/bistro-footage are the only
+  // fields that route hard-locks; a scene-driven reprice is not one of them).
+  const approvedInputs = emptyInputs({ customLineItems: [{ label: 'Lighting', amount: 2000 }] });
+  const approvedResult = calculateQuote(approvedInputs);
+  const driftedInputs = emptyInputs({ customLineItems: [{ label: 'Lighting', amount: 2900 }] });
+  const driftedResult = calculateQuote(driftedInputs);
+
+  function approvedRow(overrides: Partial<QuoteRowForPortal> = {}): QuoteRowForPortal {
+    const row = rowWith(driftedResult, driftedInputs);
+    row.customer_approved_at = '2026-07-01T00:00:00.000Z';
+    row.approval_snapshot = {
+      approvedAt: '2026-07-01T00:00:00.000Z',
+      customerSelection: {
+        packageId: 'A',
+        activeName: 'Original order',
+        selectedItemIds: ['custom-0'],
+        currentTotalUsd: approvedResult.total,
+        currentDepositUsd: approvedResult.total / 2,
+      },
+      pricing: approvedResult,
+    };
+    return { ...row, ...overrides };
+  }
+
+  it('renders line-item prices from the frozen snapshot, not the live drifted result', () => {
+    const portal = quoteRowToPortalQuote({ row: approvedRow(), photos: PHOTOS })!;
+    // "Lighting" doesn't match any known label pattern, so parseLineItem's
+    // documented fallback classifies it as kind='roofline' (see its own
+    // "Fallback policy" comment) — found by label here rather than assuming
+    // a specific id, so this test doesn't couple to that internal scheme.
+    const custom = portal.lineItems.find((li) => li.label === 'Lighting');
+    expect(custom?.price).toBe(2000); // frozen, NOT the live 2900
+    expect(portal.approval?.totalUsd).toBe(approvedResult.total); // already agreed with the total
+  });
+
+  it('the frozen line-item total and the approval badge total agree (one basis, by construction)', () => {
+    const portal = quoteRowToPortalQuote({ row: approvedRow(), photos: PHOTOS })!;
+    const subtotal = portal.lineItems.reduce((sum, li) => sum + li.price, 0);
+    // Both numbers come from the SAME frozen result now, so they can never
+    // disagree by even a cent — the exact defect row 344 exists to close.
+    expect(subtotal).toBe(approvedResult.lineItems.reduce((s, li) => s + li.amount, 0));
+    expect(portal.approval?.totalUsd).toBe(approvedResult.total);
+  });
+
+  it('falls back to the live result when the snapshot has no frozen pricing (staff-approve pre-fix / legacy)', () => {
+    const row = approvedRow();
+    // A legacy or staff-approved snapshot that predates row 344's `pricing`
+    // freeze — no pricing field at all. Must degrade to today's pre-fix
+    // behavior (live row.result), never crash or 404.
+    row.approval_snapshot = {
+      approvedAt: row.approval_snapshot!.approvedAt,
+      customerSelection: row.approval_snapshot!.customerSelection,
+    };
+    const portal = quoteRowToPortalQuote({ row, photos: PHOTOS })!;
+    // "Lighting" doesn't match any known label pattern, so parseLineItem's
+    // documented fallback classifies it as kind='roofline' (see its own
+    // "Fallback policy" comment) — found by label here rather than assuming
+    // a specific id, so this test doesn't couple to that internal scheme.
+    const custom = portal.lineItems.find((li) => li.label === 'Lighting');
+    expect(custom?.price).toBe(2900); // no frozen pricing to read — live basis
+  });
+
+  it('an ACCEPTED amendment promotes the live result back to authoritative (matches amend/route.ts, never the stale original snapshot)', () => {
+    const row = approvedRow({ status: 'booked', deposit_paid_at: '2026-07-01T00:10:00.000Z' } as Partial<QuoteRowForPortal>);
+    row.approval_snapshot = {
+      ...row.approval_snapshot,
+      amendments: [
+        {
+          amended_at: '2026-07-18T12:00:00.000Z',
+          by: 'staff:ops',
+          reason: 'Re-measured footage on site',
+          previous_total: approvedResult.total,
+          new_total: driftedResult.total,
+          previous_balance: approvedResult.total / 2,
+          new_balance: driftedResult.total - approvedResult.total / 2,
+          deposit_applied: approvedResult.total / 2,
+          delta: driftedResult.total - approvedResult.total,
+          line_item_changes: [],
+          consent: {
+            status: 'accepted',
+            accepted_at: '2026-07-18T12:05:00.000Z',
+            signature: { name: 'Jordan Smith', kind: 'typed', value: 'Jordan Smith', signed_at: '2026-07-18T12:05:00.000Z', ip: null },
+          },
+        },
+      ],
+    };
+    const portal = quoteRowToPortalQuote({ row, photos: PHOTOS })!;
+    // "Lighting" doesn't match any known label pattern, so parseLineItem's
+    // documented fallback classifies it as kind='roofline' (see its own
+    // "Fallback policy" comment) — found by label here rather than assuming
+    // a specific id, so this test doesn't couple to that internal scheme.
+    const custom = portal.lineItems.find((li) => li.label === 'Lighting');
+    // amend/route.ts records new_total FROM row.result at amend time and never
+    // rewrites approval_snapshot.pricing (the ORIGINAL snapshot) — so once an
+    // amendment is accepted, the live row.result (not the stale original
+    // snapshot) is the authoritative basis, matching buildApproval's own
+    // totalUsd precedence exactly.
+    expect(custom?.price).toBe(2900);
+    expect(portal.approval?.totalUsd).toBe(driftedResult.total);
+  });
+
+  it('a never-approved quote always reads the live result (unaffected by this fix)', () => {
+    const row = rowWith(driftedResult, driftedInputs);
+    const portal = quoteRowToPortalQuote({ row, photos: PHOTOS })!;
+    // "Lighting" doesn't match any known label pattern, so parseLineItem's
+    // documented fallback classifies it as kind='roofline' (see its own
+    // "Fallback policy" comment) — found by label here rather than assuming
+    // a specific id, so this test doesn't couple to that internal scheme.
+    const custom = portal.lineItems.find((li) => li.label === 'Lighting');
+    expect(custom?.price).toBe(2900);
+  });
+});
+
 // Ledger row 239 — persisted portal BROWSING selection (never the frozen
 // approval). Covers the pure reconciliation function directly, then the full
 // quoteRowToPortalQuote → resolveBrowsingSelectionSeed pipeline the portal

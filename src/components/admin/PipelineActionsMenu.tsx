@@ -476,6 +476,24 @@ const FOCUSABLE_SELECTOR = 'a[href], button:not([disabled])';
 // on (a typo'd string literal in only one place would still type-check).
 type MenuContentKey = 'loading' | 'ready' | 'error';
 
+// Fix round 3 (Finding LOW, PR #926): pure extraction of the cancel alert
+// string, mirroring ColorRequestPanel.tsx's applyOutcomeFromResponse — this
+// repo's pattern for testing a fetch-response-driven string without
+// jsdom/testing-library. Null when there's no note to show (mirrors the
+// `if (body.note) alert(...)` gate this replaces). Widened to cue on
+// `stockNeedsAttention` (a stock-reversal caveat — most importantly the
+// PENDING_STOCK_SNAPSHOT refusal note) in addition to `refundNeeded`, mirroring
+// admin/jobs/[id]/page.tsx's cancelActionMessage.
+export function cancelAlertMessage(body: {
+  refundNeeded?: boolean;
+  stockNeedsAttention?: boolean;
+  note?: string;
+}): string | null {
+  if (!body.note) return null;
+  const cue = body.refundNeeded || body.stockNeedsAttention ? '⚠️ ' : '';
+  return `${cue}Order cancelled. ${body.note}`;
+}
+
 export function PipelineActionsMenu({
   quoteId,
   onDone,
@@ -714,6 +732,19 @@ export function PipelineActionsMenu({
         alert((body as { error?: string }).error ?? 'Action failed');
       }
       if (res && res.ok) {
+        // Row 329 fix: cancel's response carries a `note` (refund-due caveat,
+        // the stock-returned line, or the legacy-snapshot-reconstruction
+        // caveat) that this generic success path used to drop silently. This
+        // menu backs cancel on FOUR surfaces (admin/quotes, admin/jobs list,
+        // admin/invoices, customers/[contactId]); only admin/jobs/[id]'s own
+        // cancelOrder (not this component) ever surfaced it. Same idiom as
+        // that page: a ⚠️ cue when a refund is due, the note appended (now via
+        // cancelAlertMessage — see its doc comment for fix round 3).
+        if (action.kind === 'cancel') {
+          const body = await res.json().catch(() => ({}));
+          const msg = cancelAlertMessage(body);
+          if (msg) alert(msg);
+        }
         closeAndReset();
         onDone?.();
       }
