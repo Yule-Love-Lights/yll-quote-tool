@@ -46,12 +46,21 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   const context = await contextForStaffNotes(params);
   if (!context.ok) return context.response;
 
-  const notes = await listStaffNotes(context.id);
-  if (!notes) {
+  // Row 373: keyset cursor for the NEXT page. Both halves must be present —
+  // a lone timestamp would drop or repeat notes that share one — so a partial
+  // cursor is treated as no cursor and simply serves the first page again,
+  // which is wrong-but-visible rather than a silently skipped note.
+  const url = new URL(_req.url);
+  const beforeCreatedAt = url.searchParams.get('beforeCreatedAt');
+  const beforeId = url.searchParams.get('beforeId');
+  const before = beforeCreatedAt && beforeId ? { createdAt: beforeCreatedAt, id: beforeId } : null;
+
+  const page = await listStaffNotes(context.id, before);
+  if (!page) {
     return NextResponse.json({ error: 'Failed to load staff notes' }, { status: 500 });
   }
   return NextResponse.json(
-    { notes },
+    { notes: page.notes, hasMore: page.hasMore },
     { headers: { 'Cache-Control': 'private, no-store' } },
   );
 }

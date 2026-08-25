@@ -43,8 +43,11 @@ const NOTE = {
 };
 
 const ctx = (id = QUOTE_ID) => ({ params: Promise.resolve({ id }) });
-const request = (body?: unknown) =>
+// Row 373: GET now reads the page cursor off the query string, so the fake
+// carries a url. `search` defaults to none — the first page.
+const request = (body?: unknown, search = '') =>
   ({
+    url: `https://quote.example.com/api/quotes/${QUOTE_ID}/staff-notes${search}`,
     json: async () => {
       if (body === undefined) throw new Error('invalid json');
       return body;
@@ -61,7 +64,7 @@ beforeEach(() => {
     role: 'operator',
   });
   quoteExistsMock.mockResolvedValue(true);
-  listStaffNotesMock.mockResolvedValue([NOTE]);
+  listStaffNotesMock.mockResolvedValue({ notes: [NOTE], hasMore: false });
   appendStaffNoteMock.mockResolvedValue({ kind: 'created', note: NOTE });
 });
 
@@ -84,8 +87,32 @@ describe('GET /api/quotes/[id]/staff-notes', () => {
     const response = await GET(request({}), ctx());
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ notes: [NOTE] });
-    expect(listStaffNotesMock).toHaveBeenCalledWith(QUOTE_ID);
+    await expect(response.json()).resolves.toEqual({ notes: [NOTE], hasMore: false });
+    // Row 373: no cursor on the first page.
+    expect(listStaffNotesMock).toHaveBeenCalledWith(QUOTE_ID, null);
+  });
+
+  // Row 373: the page cursor. Both halves must arrive together — a lone
+  // timestamp cannot separate two notes written in the same instant, so a
+  // half-cursor is ignored rather than used to skip past a note.
+  it('passes a complete page cursor through, and ignores a half one', async () => {
+    await GET(request({}, '?beforeCreatedAt=2026-08-21T14:00:00.000Z&beforeId=note-9'), ctx());
+    expect(listStaffNotesMock).toHaveBeenLastCalledWith(QUOTE_ID, {
+      createdAt: '2026-08-21T14:00:00.000Z',
+      id: 'note-9',
+    });
+
+    await GET(request({}, '?beforeCreatedAt=2026-08-21T14:00:00.000Z'), ctx());
+    expect(listStaffNotesMock).toHaveBeenLastCalledWith(QUOTE_ID, null);
+
+    await GET(request({}, '?beforeId=note-9'), ctx());
+    expect(listStaffNotesMock).toHaveBeenLastCalledWith(QUOTE_ID, null);
+  });
+
+  it('reports hasMore so the panel can offer the older page', async () => {
+    listStaffNotesMock.mockResolvedValueOnce({ notes: [NOTE], hasMore: true });
+    const response = await GET(request({}), ctx());
+    await expect(response.json()).resolves.toEqual({ notes: [NOTE], hasMore: true });
   });
 
   it('rejects invalid and missing quote ids', async () => {

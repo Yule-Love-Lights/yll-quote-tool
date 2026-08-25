@@ -8,6 +8,8 @@ import {
   canSubmitStaffNote,
   loadStaffNotes,
   mergeStaffNote,
+  oldestStaffNoteCursor,
+  staffNotesPageQuery,
   mergeStaffNotes,
   postStaffNote,
 } from './StaffNotesPanel';
@@ -23,12 +25,65 @@ const NOTE = {
   createdAt: '2026-08-21T14:00:00.000Z',
 };
 
+describe('StaffNotesList — the older-notes control (row 373)', () => {
+  it('offers a way to READ the older notes, not just a note that they exist', () => {
+    const html = renderToStaticMarkup(
+      <StaffNotesList notes={[NOTE]} loading={false} hasMore onLoadMore={() => {}} />,
+    );
+    expect(html).toContain('Show older notes');
+  });
+
+  it('renders no control when the page holds every note', () => {
+    const html = renderToStaticMarkup(<StaffNotesList notes={[NOTE]} loading={false} />);
+    expect(html).not.toContain('Show older notes');
+  });
+
+  it('disables the control while an older page is in flight', () => {
+    const html = renderToStaticMarkup(
+      <StaffNotesList notes={[NOTE]} loading={false} hasMore loadingMore onLoadMore={() => {}} />,
+    );
+    expect(html).toContain('disabled');
+    expect(html).toContain('Loading…');
+  });
+});
+
 describe('staff-note transport', () => {
   it('loads only the quote-scoped internal route', async () => {
-    const fetcher = vi.fn(async () => new Response(JSON.stringify({ notes: [NOTE] }), { status: 200 }));
+    const fetcher = vi.fn(
+      async () => new Response(JSON.stringify({ notes: [NOTE], hasMore: false }), { status: 200 }),
+    );
 
-    await expect(loadStaffNotes(QUOTE_ID, fetcher)).resolves.toEqual([NOTE]);
+    await expect(loadStaffNotes(QUOTE_ID, fetcher)).resolves.toEqual({ notes: [NOTE], hasMore: false });
     expect(fetcher).toHaveBeenCalledWith(`/api/quotes/${QUOTE_ID}/staff-notes`, { cache: 'no-store' });
+  });
+
+  // ── Row 373: paging transport ─────────────────────────────────────────────
+  it('sends the page cursor as both halves, url-encoded', async () => {
+    const fetcher = vi.fn(
+      async () => new Response(JSON.stringify({ notes: [], hasMore: false }), { status: 200 }),
+    );
+
+    await loadStaffNotes(QUOTE_ID, fetcher, { createdAt: NOTE.createdAt, id: NOTE.id });
+
+    expect(fetcher).toHaveBeenCalledWith(
+      `/api/quotes/${QUOTE_ID}/staff-notes?beforeCreatedAt=${encodeURIComponent(NOTE.createdAt)}&beforeId=${NOTE.id}`,
+      { cache: 'no-store' },
+    );
+  });
+
+  // An old server (or a garbled body) that omits the flag must leave the
+  // "Show older notes" button AVAILABLE. An extra click costs nothing; a
+  // wrongly-hidden button hides notes, which is the whole point of this row.
+  it('assumes there may be more when the response omits hasMore', async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ notes: [NOTE] }), { status: 200 }));
+    await expect(loadStaffNotes(QUOTE_ID, fetcher)).resolves.toEqual({ notes: [NOTE], hasMore: true });
+  });
+
+  it('builds the next-page cursor from the OLDEST loaded note, and nothing from an empty list', () => {
+    const older = { ...NOTE, id: 'older-id', createdAt: '2026-08-20T09:00:00.000Z' };
+    expect(oldestStaffNoteCursor([NOTE, older])).toEqual({ createdAt: older.createdAt, id: older.id });
+    expect(oldestStaffNoteCursor([])).toBeNull();
+    expect(staffNotesPageQuery(null)).toBe('');
   });
 
   it('posts the exact body and idempotency key', async () => {

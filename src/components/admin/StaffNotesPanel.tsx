@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import type { StaffNote } from '@/lib/staffNotes';
+import type { StaffNote, StaffNoteCursor, StaffNotesPage } from '@/lib/staffNotes';
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -18,12 +18,36 @@ async function responseBody(response: Response): Promise<Record<string, unknown>
   }
 }
 
-export async function loadStaffNotes(quoteId: string, fetcher: Fetcher = fetch): Promise<StaffNote[]> {
-  const response = await fetcher(`/api/quotes/${quoteId}/staff-notes`, { cache: 'no-store' });
+/** Row 373: the query string for the next page, or '' for the first one.
+ *  Exported so the cursor arithmetic is unit-testable without a fetch. Both
+ *  halves ride together — a cursor missing either one is not a cursor. */
+export function staffNotesPageQuery(before: StaffNoteCursor | null): string {
+  if (!before) return '';
+  return `?beforeCreatedAt=${encodeURIComponent(before.createdAt)}&beforeId=${encodeURIComponent(before.id)}`;
+}
+
+/** Row 373: the cursor for the page AFTER the ones already loaded — the OLDEST
+ *  note held, since the list runs newest-first. Null when nothing is loaded. */
+export function oldestStaffNoteCursor(notes: StaffNote[]): StaffNoteCursor | null {
+  const oldest = notes[notes.length - 1];
+  return oldest ? { createdAt: oldest.createdAt, id: oldest.id } : null;
+}
+
+export async function loadStaffNotes(
+  quoteId: string,
+  fetcher: Fetcher = fetch,
+  before: StaffNoteCursor | null = null,
+): Promise<StaffNotesPage> {
+  const response = await fetcher(`/api/quotes/${quoteId}/staff-notes${staffNotesPageQuery(before)}`, {
+    cache: 'no-store',
+  });
   const payload = await responseBody(response);
   if (!response.ok) throw new Error(typeof payload.error === 'string' ? payload.error : 'Could not load notes');
   if (!Array.isArray(payload.notes)) throw new Error('Could not load notes');
-  return payload.notes as StaffNote[];
+  // Row 373: an absent/garbled flag means "assume there could be more" — an
+  // over-eager "Show older notes" button is a wasted click, while a wrongly
+  // absent one hides notes, which is the failure this row exists to avoid.
+  return { notes: payload.notes as StaffNote[], hasMore: payload.hasMore !== false };
 }
 
 export async function postStaffNote(
@@ -78,6 +102,9 @@ export function StaffNotesList({
   loading,
   loadFailed = false,
   onRetry,
+  hasMore = false,
+  loadingMore = false,
+  onLoadMore,
 }: {
   notes: StaffNote[];
   loading: boolean;
@@ -86,6 +113,10 @@ export function StaffNotesList({
   // trust an empty panel on a quote that actually has notes they needed to see.
   loadFailed?: boolean;
   onRetry?: () => void;
+  /** Row 373: older notes exist beyond the loaded page. */
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
 }) {
   return (
     <div aria-live="polite">
@@ -119,6 +150,23 @@ export function StaffNotesList({
               </p>
             </li>
           ))}
+          {/* Row 373: the page is capped, so the older notes have to be
+              REACHABLE, not merely acknowledged — a "there are more" line with
+              no way to read them would hide notes exactly like the empty-panel
+              bug this component already fixed once. Sits inside the scroll
+              list, at the bottom, where the oldest note is. */}
+          {hasMore && (
+            <li className="border-t border-gray-100 pt-3">
+              <button
+                type="button"
+                onClick={onLoadMore}
+                disabled={loadingMore || !onLoadMore}
+                className="rounded-md border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 disabled:opacity-50"
+              >
+                {loadingMore ? 'Loading…' : 'Show older notes'}
+              </button>
+            </li>
+          )}
         </ol>
       )}
     </div>
@@ -132,6 +180,10 @@ export function StaffNotesPanel({ quoteId }: { quoteId: string }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
+  // Row 373: older notes exist past the loaded page, and whether a "Show older
+  // notes" fetch is in flight.
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const pendingSubmissionRef = useRef<StaffNoteSubmission | null>(null);
   const loadGenerationRef = useRef(0);
   const [reloadKey, setReloadKey] = useState(0);
@@ -147,11 +199,14 @@ export function StaffNotesPanel({ quoteId }: { quoteId: string }) {
       setSaving(false);
       setError(null);
       setLoadFailed(false);
+      setHasMore(false);
+      setLoadingMore(false);
       pendingSubmissionRef.current = null;
       void loadStaffNotes(quoteId)
-        .then((loaded) => {
+        .then((page) => {
           if (!cancelled && generation === loadGenerationRef.current) {
-            setNotes((current) => mergeStaffNotes(current, loaded));
+            setNotes((current) => mergeStaffNotes(current, page.notes));
+            setHasMore(page.hasMore);
           }
         })
         .catch((err) => {
@@ -168,6 +223,32 @@ export function StaffNotesPanel({ quoteId }: { quoteId: string }) {
       cancelled = true;
     };
   }, [quoteId, reloadKey]);
+
+  // Row 373: fetch the page BELOW what is loaded, keyed off the oldest note
+  // held. Guarded on the same generation ref as the initial load, so a click
+  // that lands as the panel switches quotes cannot append the old quote's
+  // notes into the new one's list.
+  const loadMore = async () => {
+    if (loadingMore) return;
+    const cursor = oldestStaffNoteCursor(notes);
+    if (!cursor) return;
+    const generation = loadGenerationRef.current;
+    setLoadingMore(true);
+    setError(null);
+    try {
+      const page = await loadStaffNotes(quoteId, fetch, cursor);
+      if (generation !== loadGenerationRef.current) return;
+      setNotes((current) => mergeStaffNotes(current, page.notes));
+      setHasMore(page.hasMore);
+    } catch (err) {
+      if (generation !== loadGenerationRef.current) return;
+      // Deliberately does NOT clear hasMore: the older notes still exist, the
+      // fetch just failed, so the button must stay available to retry.
+      setError(err instanceof Error ? err.message : 'Could not load older notes');
+    } finally {
+      if (generation === loadGenerationRef.current) setLoadingMore(false);
+    }
+  };
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -200,6 +281,9 @@ export function StaffNotesPanel({ quoteId }: { quoteId: string }) {
         loading={loading}
         loadFailed={loadFailed}
         onRetry={() => setReloadKey((n) => n + 1)}
+        hasMore={hasMore}
+        loadingMore={loadingMore}
+        onLoadMore={() => void loadMore()}
       />
       <form onSubmit={submit} className="mt-4 border-t border-gray-100 pt-4">
         <label htmlFor={`staff-note-${quoteId}`} className="mb-1 block text-sm font-medium text-gray-700">
