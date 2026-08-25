@@ -89,6 +89,7 @@ import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
 import { track } from '@/lib/analytics/posthog';
 import { loadQuoteDraft, saveQuoteDraft, clearQuoteDraft, customerIsEmpty, draftAutosaveActive } from '@/lib/quoteDraft';
 import { stableStringify, quoteHasUnsavedEdits } from '@/lib/quoteDirty';
+import { permanentSideOverriddenFields, describePermanentSideField } from '@/lib/permanent/reconcileSideFootage';
 import { downscaleForUpload, downscaleForUploadAsBlob, readUploadErrorMessage } from '@/lib/clientImage';
 import {
   parkSatelliteContext,
@@ -2017,17 +2018,38 @@ export default function QuoteBuilder({
   // and seeding under it would stamp the baseline with a scale that's
   // already stale the instant this function returns. See the
   // permanent_bistro fresh-lookup call site below for the reachable case.
-  const seedPermanentSideBaselineIfFrozen = (scale: number | null = satelliteFeetPerPixel) => {
-    if (!permDeriveFrozenRef.current) return;
+  // Row 405: the per-side baseline the CURRENT lines/scale would derive to,
+  // as a pure read. Extracted from the seed below rather than duplicated so
+  // the row-405 confirm and the thaw seed can never drift apart — a drift here
+  // would mean the dialog naming different fields than the reconcile actually
+  // overwrites, which is worse than no dialog.
+  const computePermanentSideBaseline = (scale: number | null = satelliteFeetPerPixel) => {
     const sides = {} as Record<PermanentSideKey, { hasLines: boolean; footage: number | null; corners: number }>;
     for (const side of PERMANENT_SIDES) {
       const lines = permanentSatLines[side];
       const m = deriveSideMeasure(lines, scale, satelliteAspect);
       sides[side] = { hasLines: lines.length > 0, footage: m.footage, corners: m.corners };
     }
-    prevPermSideDerivedRef.current = derivePermanentSideFootageBaseline(sides);
+    return derivePermanentSideFootageBaseline(sides);
+  };
+
+  const seedPermanentSideBaselineIfFrozen = (scale: number | null = satelliteFeetPerPixel) => {
+    if (!permDeriveFrozenRef.current) return;
+    prevPermSideDerivedRef.current = computePermanentSideBaseline(scale);
     prevPermSideScaleRef.current = scale;
   };
+
+  // Row 405 (premerge staff-lens HIGH): the baseline the override check must
+  // read is NOT simply `prevPermSideDerivedRef.current`. That ref is seeded
+  // lazily — only at the rehydrate-thaw, i.e. the first real line edit of the
+  // session, or a Recount. On a REOPENED quote that nobody has touched yet it
+  // is still EMPTY, and an empty baseline makes every field look brand-new,
+  // so the check would report zero overrides and stay silent — inert for the
+  // exact scenario row 405 is about (reopen, hand-typed override, re-analyze a
+  // different address). While frozen, derive the baseline from the current
+  // lines the same way the thaw seed would; once thawed, the ref is the truth.
+  const effectivePermanentSideBaseline = () =>
+    permDeriveFrozenRef.current ? computePermanentSideBaseline() : prevPermSideDerivedRef.current;
 
   // Row 345 finding 2: permDeriveFrozenRef is shared by THREE independent
   // consumers — the permanent-side footage/corners derive above (line
@@ -3284,6 +3306,53 @@ export default function QuoteBuilder({
     if (!addr) {
       setAnalysisError('Enter the property address above first.');
       return;
+    }
+    // Row 405: ask BEFORE analyzing, not after.
+    //
+    // A re-analyze replaces the traced sides, discarding any hand-typed
+    // footage/corners override. The loss is intended — a fresh AI re-trace is
+    // exactly the "geometry changed, the redraw wins" case the reconcile is
+    // built around — but it happened with NO warning, while all three sibling
+    // replacement paths (handleSatelliteSelect, applyPulledSatellite, and the
+    // permanent_bistro branch) confirm first. Footage drives price.
+    //
+    // PRE-FLIGHT for a specific reason, found by a premerge customer lens on
+    // the first version of this fix, which asked AFTER the analysis landed:
+    // a decline there had to keep the old traced lines while the NEW address's
+    // satellite image had ALREADY been applied and parked in pendingContextRef,
+    // so the customer portal would render one house's photo underneath another
+    // house's light lines. Declining here changes nothing whatsoever — no
+    // request, no image, no scale, no state — and it also does not spend
+    // 20-40s of analyzer time producing a result the operator has said they do
+    // not want.
+    //
+    // `permanentSideOverriddenFields` asks the same question the reconcile
+    // uses (a derived baseline the billed value has since drifted from), so
+    // the dialog can never name different fields than a re-analyze would
+    // actually overwrite. Non-permanent quotes never populate those baselines,
+    // so this is silent for them by construction, as it is for the ordinary
+    // case of a quote carrying no override at all.
+    // Gated on the service type explicitly. The baselines are permanent-side
+    // only, so a non-permanent quote is silent by construction anyway — but a
+    // quote that was switched FROM permanent can still be carrying stale
+    // permanentSatLines and form.permanent values, and there is no reason to
+    // ask about fields that service type does not bill.
+    const overriddenSideFields =
+      form.serviceType === 'permanent'
+        ? permanentSideOverriddenFields(effectivePermanentSideBaseline(), form.permanent)
+        : [];
+    if (overriddenSideFields.length > 0) {
+      const proceed = window.confirm(
+        `Re-analyzing replaces the traced sides, so these hand-entered numbers will be ` +
+          `recalculated from the new trace:
+
+` +
+          `${overriddenSideFields.map(describePermanentSideField).join(', ')}
+
+` +
+          `Cancel to keep them as they are — nothing on this quote will change.`,
+      );
+      if (!proceed) return;
     }
     satelliteChangeInProgressRef.current = true;
     setLookingUp(true);
