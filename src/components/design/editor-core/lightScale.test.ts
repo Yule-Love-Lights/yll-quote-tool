@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, it, expect } from "vitest";
 import {
   LIGHT_SCALE_DEFAULT,
@@ -161,5 +162,28 @@ describe("spritzerLightDims", () => {
       "tipHaloRadius",
       "tipRadius",
     ]);
+  });
+});
+
+// Row 348: undo()/redo() in editor.ts reassign `scene` and call
+// redrawScene(), which correctly resizes bulbs (redrawCanvas() reads
+// activeLightScale() fresh off the reverted scene) — but neither used to
+// resync the light-size slider's thumb/readout, which kept showing the
+// pre-undo value. editor.ts imports Konva, which needs the optional `canvas`
+// package this headless test environment doesn't have (see the file header
+// above), so this pins the fix as source text instead of executing it.
+describe("editor.ts undo()/redo() light-scale resync", () => {
+  it("calls showLightScale(activeLightScale()) in both undo() and redo()", () => {
+    const editor = readFileSync(
+      new URL("./editor.ts", import.meta.url),
+      "utf8",
+    );
+    const [undoBody] = editor.match(/function undo\(\) \{[\s\S]*?\n  \}/) ?? [""];
+    const [redoBody] = editor.match(/function redo\(\) \{[\s\S]*?\n  \}/) ?? [""];
+
+    for (const body of [undoBody, redoBody]) {
+      expect(body).toContain("redrawScene();");
+      expect(body).toContain("showLightScale(activeLightScale());");
+    }
   });
 });
