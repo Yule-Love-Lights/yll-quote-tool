@@ -78,10 +78,31 @@ export function spritzerLightDims(
 ) {
   const scale = normalizeLightScale(lightScale);
   const tipRadius = Math.max(1.5, radiusPx * 0.028) * scale;
+  // Row 350: the centre hub belongs HERE, with the tips it sits under, rather
+  // than in spritzer.ts on its own. Row 347 scaled the tips and rays but left
+  // the hub fixed at `max(4, radiusPx * 0.18)` — deliberately, so it would not
+  // swallow the rays on a large spritzer. The side effect the S65 wrap staff
+  // lens computed: on a whole-house shot (a 24" spritzer at 10 px/ft is only
+  // 10px in radius) the tips sit on their 1.5px FLOOR, so at 4x they reach 6px
+  // while the hub stays at its own 4px floor — ray-end dots visibly bigger
+  // than the light source they spray from, on the portal too.
+  //
+  // So the hub scales with the tips, under a ceiling that keeps row 347's
+  // original concern intact:
+  //   • never smaller than a tip dot — that IS the artifact;
+  //   • never past ~a third of the spray, so the rays still read as rays;
+  //   • and, because the ceiling can never fall below the unscaled base, the
+  //     default (scale 1) renders exactly the number it always did.
+  const centerBase = Math.max(4, radiusPx * 0.18);
+  const centerRadius = Math.min(
+    centerBase * scale,
+    Math.max(centerBase, tipRadius, radiusPx * 0.35),
+  );
   return {
     tipRadius,
     tipHaloRadius: tipRadius * 2.6,
     rayStroke: Math.max(0.6, radiusPx * 0.008) * scale,
+    centerRadius,
   };
 }
 
