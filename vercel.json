@@ -43,6 +43,10 @@
     {
       "path": "/api/ops/midnight-close",
       "schedule": "15 5 * * *"
+    },
+    {
+      "path": "/api/referrals/sweep",
+      "schedule": "*/15 * * * *"
     }
   ]
 }
