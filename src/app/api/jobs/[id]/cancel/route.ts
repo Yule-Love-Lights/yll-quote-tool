@@ -123,17 +123,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         const snapshot = wo.job.stockDeductions;
         if (snapshot === PENDING_STOCK_SNAPSHOT) {
           // Finding 1: refuse, don't guess. A wrong stock credit is worse
-          // than a refusal that asks a human to look. Row 397: this does NOT
-          // necessarily mean the exact deduction is lost — prepareJobMaterials
-          // writes it to job_stock_movements (reason: 'prep') unconditionally,
-          // even when this per-job snapshot column failed to save. BUT that
-          // write is itself best-effort (recordJobStockMovements swallows its
-          // own insert error) and runs on the same DB write that just failed
-          // once already — the two failures are correlated, not independent —
-          // so the copy below must not promise the row exists, only point at
-          // where to look and name the fallback if it's empty.
+          // than a refusal that asks a human to look. Staff-lens fix (MED):
+          // an earlier version of this copy named the raw table/column
+          // (job_stock_movements, stock_deductions) and gated the actionable
+          // instruction behind "if it has no rows" — jargon a warehouse
+          // person has no in-app way to check, and a fact they can't
+          // determine. Plain and unconditional instead: don't claim the
+          // deduction is durably recorded anywhere (it may or may not be —
+          // the audit write is itself best-effort and runs right after the
+          // same DB write that just failed), don't name any table/column,
+          // just say the record didn't save and what to do about it —
+          // mirrors the pre-row-386 wording this replaces.
           stockReturnNote =
-            'This job was prepped, but the per-job stock_deductions snapshot failed to save right after prep (a transient error) — nothing was automatically returned to stock. Prep normally logs what it took to job_stock_movements (reason: \'prep\') for this job — check there first. That log is best-effort, so if it has no rows for this job, reconcile against the job\'s materials list instead.';
+            "This job was prepped, but the record of exactly what it took didn't save (a transient error right after prep) — nothing was automatically returned to stock. Check on-hand manually against this job's materials before restocking.";
         } else {
           // Row 325: prefer the snapshot prep actually deducted. Only fall
           // back to a live reconstruction when no snapshot exists AT ALL — a

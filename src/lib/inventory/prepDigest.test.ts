@@ -101,7 +101,7 @@ describe('prepDigestMessage', () => {
       // prepped) — the stuck-job line rides alongside it, not instead of it,
       // so a quiet prep board never hides this.
       expect(msg).toContain('Prep board clear');
-      expect(msg).toContain("1 job(s) prepped but the per-job snapshot failed to save");
+      expect(msg).toContain("1 job(s) prepped but the record of what was taken didn't save");
       expect(msg).toContain('#77 Stuck Customer');
       expect(msg).toContain('Board → https://app.example.com/inventory/jobs');
     });
@@ -116,7 +116,7 @@ describe('prepDigestMessage', () => {
       );
       expect(msg).toContain('1 job(s) waiting');
       expect(msg).toContain('#1 Alice');
-      expect(msg).toContain("1 job(s) prepped but the per-job snapshot failed to save");
+      expect(msg).toContain("1 job(s) prepped but the record of what was taken didn't save");
       expect(msg).toContain('#2 Bob');
     });
 

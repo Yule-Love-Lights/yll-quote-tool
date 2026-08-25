@@ -90,12 +90,12 @@ export function prepDigestMessage(cards: FulfillmentCard[], baseUrl: string): st
     if (omitted > 0) lines.push(`…and ${omitted} more`);
   }
   if (stuck.length) {
-    // Row 398 fix (delta-verify finding): don't assert the audit row exists —
-    // recordJobStockMovements is best-effort and runs on the same DB write
-    // that just failed once already (correlated, not independent), so the
-    // copy points at where to check first and names the fallback.
+    // Staff-lens fix (MED): this line goes to the least technical audience
+    // this app writes to (the staff-configurable Inventory Telegram group),
+    // so no table/column names and no claim the deduction is recorded
+    // anywhere — just what happened and what to do, plain.
     lines.push(
-      `⚠️ ${stuck.length} job(s) prepped but the per-job snapshot failed to save — check job_stock_movements (reason: 'prep') first for the exact amounts; that log is best-effort, so reconcile against materials if it's empty: ${stuck
+      `⚠️ ${stuck.length} job(s) prepped but the record of what was taken didn't save — check on-hand against their materials before restocking: ${stuck
         .map(jobLine)
         .join(', ')}`,
     );

@@ -654,13 +654,20 @@ describe('POST /api/jobs/[id]/cancel — Row 325 stock_deductions snapshot', () 
     expect(res.status).toBe(200);
     expect(adjustOnHandAtomicMock).not.toHaveBeenCalled();
     expect(json.stockReturned).toEqual([]);
-    expect(json.note).toMatch(/snapshot failed to save/i);
-    expect(json.note).toMatch(/check there first/i);
-    // Row 398 delta-verify fix: the copy must NOT assert the audit row
-    // exists (recordJobStockMovements is best-effort on the same DB write
-    // that just failed) — it points at the record and names the fallback.
-    expect(json.note).toMatch(/best-effort/i);
-    expect(json.note).toMatch(/reconcile against the job's materials list/i);
+    expect(json.note).toMatch(/record of exactly what it took didn't save/i);
+    // Staff-lens fix (MED): the copy must NOT name a raw table/column
+    // (a warehouse person has no in-app way to open one) and must NOT
+    // assert the deduction is durably recorded anywhere — just say the
+    // record didn't save and give the same plain instruction the
+    // pre-row-386 copy always had.
+    expect(json.note).toMatch(/check on-hand manually against this job's materials/i);
+    expect(json.note).not.toMatch(/job_stock_movements/i);
+    expect(json.note).not.toMatch(/stock_deductions/i);
+    // Must not reintroduce the absolute "never durably recorded" claim in
+    // either direction (row 398's original mistake) — nor its inverse
+    // ("is durably recorded", the delta-verify's mistake).
+    expect(json.note).not.toMatch(/never durably recorded/i);
+    expect(json.note).not.toMatch(/is durably recorded/i);
     // Distinct message from the true-legacy caveat — this is not "reconstructed
     // and may not match", it's "nothing was reconstructed at all".
     expect(json.note).not.toMatch(/no per-prep snapshot/i);
