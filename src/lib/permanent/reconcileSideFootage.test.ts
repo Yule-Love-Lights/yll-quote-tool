@@ -4,6 +4,8 @@ import {
   reconcilePermanentSideField,
   derivePermanentSideFootageBaseline,
   mergePermanentSideFootageBaseline,
+  permanentSideOverriddenFields,
+  describePermanentSideField,
   type PermanentSideFootageBaseline,
   type PermanentSideFieldKey,
   type PermanentSideFieldReconcileResult,
@@ -970,5 +972,80 @@ describe('reconcile helpers are idempotent under repeated calls with identical i
     expect(call2).toEqual(call1);
     expect(call2).toEqual({ frontFootage: 35, leftFootage: 40 }); // leftFootage survives inactivity
     expect(prev).toEqual({ frontFootage: 30, leftFootage: 40 }); // input never mutated
+  });
+});
+
+describe('permanentSideOverriddenFields (row 405 — what a re-analyze is about to discard)', () => {
+  it('reports a field whose billed value has drifted from its derived baseline', () => {
+    expect(
+      permanentSideOverriddenFields({ frontFootage: 95 }, { frontFootage: 100 }),
+    ).toEqual(['frontFootage']);
+  });
+
+  it('reports nothing when every field still sits at its derived value', () => {
+    expect(
+      permanentSideOverriddenFields(
+        { frontFootage: 95, leftCorners: 4 },
+        { frontFootage: 95, leftCorners: 4 },
+      ),
+    ).toEqual([]);
+  });
+
+  it('does NOT treat a field with no baseline as an override', () => {
+    // Never derived -> nothing to have drifted from. A manual-only field on a
+    // side with no lines is the ordinary case; warning about it is noise.
+    expect(permanentSideOverriddenFields({}, { frontFootage: 100 })).toEqual([]);
+  });
+
+  it('does NOT report a field whose billed value is missing', () => {
+    expect(permanentSideOverriddenFields({ backFootage: 40 }, {})).toEqual([]);
+    expect(permanentSideOverriddenFields({ backFootage: 40 }, { backFootage: null })).toEqual([]);
+  });
+
+  it('treats a billed ZERO as a real override, not as absent', () => {
+    // A side deliberately zeroed by staff is exactly the kind of deliberate
+    // number a silent re-analyze would wipe, so `0` must not be swallowed by
+    // a falsy check.
+    expect(permanentSideOverriddenFields({ rightFootage: 30 }, { rightFootage: 0 })).toEqual([
+      'rightFootage',
+    ]);
+  });
+
+  it('reports every drifted field across sides and both field types', () => {
+    expect(
+      permanentSideOverriddenFields(
+        { frontFootage: 95, frontCorners: 4, leftFootage: 20, backCorners: 2 },
+        { frontFootage: 100, frontCorners: 4, leftFootage: 25, backCorners: 3 },
+      ).sort(),
+    ).toEqual(['backCorners', 'frontFootage', 'leftFootage']);
+  });
+
+  it('agrees with the reconcile own override branch on the same inputs', () => {
+    // Cross-check: the reconcile keeps a value (target null) precisely when
+    // geometry is unchanged and billed has drifted. The helper must call that
+    // same state an override, or the confirm dialog and the reconcile would
+    // disagree about what a re-analyze destroys.
+    const result = reconcilePermanentSideField({
+      active: true,
+      hasLines: true,
+      hadLinesPrev: true,
+      canDerive: true,
+      freshValue: 95,
+      currentBilled: 100,
+      baseline: 95,
+    });
+    expect(result.target).toBeNull(); // reconcile: "staff typed an override -> keep it"
+    expect(permanentSideOverriddenFields({ frontFootage: 95 }, { frontFootage: 100 })).toEqual([
+      'frontFootage',
+    ]);
+  });
+});
+
+describe('describePermanentSideField', () => {
+  it('renders each of the eight keys in operator words', () => {
+    expect(describePermanentSideField('frontFootage')).toBe('Front footage');
+    expect(describePermanentSideField('backCorners')).toBe('Back corners');
+    expect(describePermanentSideField('leftFootage')).toBe('Left footage');
+    expect(describePermanentSideField('rightCorners')).toBe('Right corners');
   });
 });

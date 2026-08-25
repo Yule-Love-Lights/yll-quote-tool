@@ -89,6 +89,7 @@ import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
 import { track } from '@/lib/analytics/posthog';
 import { loadQuoteDraft, saveQuoteDraft, clearQuoteDraft, customerIsEmpty, draftAutosaveActive } from '@/lib/quoteDraft';
 import { stableStringify, quoteHasUnsavedEdits } from '@/lib/quoteDirty';
+import { permanentSideOverriddenFields, describePermanentSideField } from '@/lib/permanent/reconcileSideFootage';
 import { downscaleForUpload, downscaleForUploadAsBlob, readUploadErrorMessage } from '@/lib/clientImage';
 import {
   parkSatelliteContext,
@@ -3487,28 +3488,47 @@ export default function QuoteBuilder({
             // branch takes the AI's fresh values unconditionally, exactly
             // as this comment always claimed.
             //
-            // Known tradeoff, left alone on purpose (row 399 delta-verify):
-            // a reopened quote that got a manual line edit first (so a real
-            // override is on record), then a re-analyze for a DIFFERENT
-            // address, DOES lose that standing override here — same as it
-            // always has, even same-scale, before this fix existed. Unlike
-            // the two satellite-replacement paths above (handleSatelliteSelect,
-            // applyPulledSatellite), which window.confirm before discarding
-            // anything drawn/overridden, this path has NO confirm dialog —
-            // the operator gets no warning before a re-analyze silently wipes
-            // a hand-typed number. Not introduced by row 399 (the same-scale
-            // case already clobbered silently), so left unchanged; just
-            // flagging it here so the next reader treats the silence as a
-            // known gap, not an oversight.
-            permDeriveFrozenRef.current = false;
-            prevPermSideDerivedRef.current = {};
-            prevPermSideScaleRef.current = undefined;
-            setPermanentSatLines({
-              front: seeded.front ?? [],
-              left: seeded.left ?? [],
-              right: seeded.right ?? [],
-              back: seeded.back ?? [],
-            });
+            // Row 405 (was the "known tradeoff" row 399's delta-verify
+            // flagged and deliberately left): a reopened quote that got a
+            // manual line edit first (so a real override is on record), then a
+            // re-analyze for a DIFFERENT address, loses that standing override
+            // here. The LOSS is intended — a fresh AI re-trace is exactly the
+            // "geometry changed, the redraw wins" case — but the SILENCE was
+            // not. The two satellite-replacement siblings
+            // (handleSatelliteSelect, applyPulledSatellite) and the
+            // permanent_bistro branch above all window.confirm before
+            // discarding drawn/overridden work; this path alone wiped a
+            // hand-typed number, which drives PRICE, with no warning at all.
+            //
+            // Mirrors the permanent_bistro precedent exactly, including its
+            // accepted tradeoff: a DECLINE keeps the existing lines and
+            // overrides while the new image/scale above still apply. Silent
+            // when nothing would be lost — `permanentSideOverriddenFields`
+            // asks the same question the reconcile itself uses (a recorded
+            // baseline the billed value has since drifted from), so a quote
+            // with no override never sees a dialog, which is the common case.
+            const overriddenSideFields = permanentSideOverriddenFields(
+              prevPermSideDerivedRef.current,
+              form.permanent,
+            );
+            const keepExistingSides =
+              overriddenSideFields.length > 0 &&
+              !window.confirm(
+                `Re-analyzing replaces the traced sides, so these hand-entered numbers will be ` +
+                  `recalculated from the new trace: ` +
+                  `${overriddenSideFields.map(describePermanentSideField).join(', ')}. Continue?`,
+              );
+            if (!keepExistingSides) {
+              permDeriveFrozenRef.current = false;
+              prevPermSideDerivedRef.current = {};
+              prevPermSideScaleRef.current = undefined;
+              setPermanentSatLines({
+                front: seeded.front ?? [],
+                left: seeded.left ?? [],
+                right: seeded.right ?? [],
+                back: seeded.back ?? [],
+              });
+            }
             // #140 P3: street runs → editable bulbType:'permanent' strands on
             // the design (visual + portal; billing stays satellite-sourced).
             // Same dispatch-or-park flow the holiday seed uses.
@@ -3516,34 +3536,52 @@ export default function QuoteBuilder({
               side: 'front' | 'left' | 'right';
               points: [number, number][];
             }>;
-            if (streetRuns.length > 0) {
-              const permSeed: AnalysisSeed = {
-                permanentRuns: streetRuns.map((r) => ({ side: r.side, points: r.points })),
-              };
-              if (designId) {
-                void seedDesignFromAnalysis(designId, permSeed); // bumps designEditorKey itself
-              } else {
-                pendingSeedRef.current = permSeed;
-              }
-            }
+            // Row 405: a DECLINE above means "leave my numbers alone", so it has
+            // to cover everything this analysis would bill, not just the traced
+            // sides. The AI extras below drive the Extensions/Splitters counts,
+            // which are PRICED — applying them after the operator declined
+            // would move money on a quote they just asked us not to touch, and
+            // seeding fresh street runs onto the design while the old traced
+            // sides remain would leave the two visibly disagreeing.
             // #140 P3: AI-detected jumps + splitter branch points feed the
             // Extensions/Splitters derive as `extras` (what geometry can't see).
             const jumps = (data.permanentSatellite?.jumps ?? []) as Array<{
               ft: number;
               splitter: boolean;
             }>;
-            setPermanentAiExtras({
-              splitters: jumps.filter((j) => j.splitter).length,
-              jumpsFt: jumps.map((j) => j.ft).filter((f) => Number.isFinite(f) && f > 0),
-            });
+            if (!keepExistingSides) {
+              if (streetRuns.length > 0) {
+                const permSeed: AnalysisSeed = {
+                  permanentRuns: streetRuns.map((r) => ({ side: r.side, points: r.points })),
+                };
+                if (designId) {
+                  void seedDesignFromAnalysis(designId, permSeed); // bumps designEditorKey itself
+                } else {
+                  pendingSeedRef.current = permSeed;
+                }
+              }
+              setPermanentAiExtras({
+                splitters: jumps.filter((j) => j.splitter).length,
+                jumpsFt: jumps.map((j) => j.ft).filter((f) => Number.isFinite(f) && f > 0),
+              });
+            }
             const conf = data.permanentSatellite?.confidence;
             const aiNotes = data.permanentSatellite?.notes;
             setAnalysisNotes(
-              `Satellite auto-trace drew ${seededSides.join(', ')} (${conf ?? 'low'} confidence)` +
-                (streetRuns.length ? `, plus ${streetRuns.length} street run(s) on the design` : '') +
-                (jumps.length ? `, ${jumps.length} jump(s)${jumps.some((j) => j.splitter) ? ' incl. splitter branch(es)' : ''}` : '') +
-                '. Check each line — footage, corners, and extensions all follow the lines.' +
-                (aiNotes ? ` AI notes: ${aiNotes}` : ''),
+              // Row 405: the note is a REPORT of what was applied, so a decline
+              // must not be described as a trace that landed — the operator
+              // would read "drew front, left" and believe their numbers had
+              // just been replaced when they had explicitly kept them.
+              keepExistingSides
+                ? `Re-analysis discarded — your existing traced sides and hand-entered ` +
+                    `numbers were kept. The new satellite image and scale are loaded; ` +
+                    `run Analyze from Address again if you do want the fresh trace.` +
+                    (aiNotes ? ` AI notes: ${aiNotes}` : '')
+                : `Satellite auto-trace drew ${seededSides.join(', ')} (${conf ?? 'low'} confidence)` +
+                    (streetRuns.length ? `, plus ${streetRuns.length} street run(s) on the design` : '') +
+                    (jumps.length ? `, ${jumps.length} jump(s)${jumps.some((j) => j.splitter) ? ' incl. splitter branch(es)' : ''}` : '') +
+                    '. Check each line — footage, corners, and extensions all follow the lines.' +
+                    (aiNotes ? ` AI notes: ${aiNotes}` : ''),
             );
           } else {
             setAnalysisNotes(
