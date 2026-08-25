@@ -88,7 +88,26 @@ export function reChaseLabel(reChaseSince: string | null, now: Date): string | n
   return `Re-chase — quiet ${quietDays}d`;
 }
 
-export function FollowUpStrip({ initialItems }: { initialItems: DueFollowUp[] }) {
+/** Row 391: the notice under a capped list. PURE and exported so the wording is
+ *  unit-testable without rendering, and so the "how many are missing" arithmetic
+ *  lives in exactly one place. `shown` is the strip's CURRENT list length, which
+ *  shrinks as staff clear rows — but `totalDue` was measured at page load, so
+ *  the difference is only trustworthy as "at least this many more", never as a
+ *  live number. Returns null when nothing is hidden. */
+export function hiddenFollowUpNotice(shown: number, totalDue: number): string | null {
+  const hidden = totalDue - shown;
+  if (hidden <= 0) return null;
+  return `Showing the oldest ${shown} — ${hidden} more due and not shown yet.`;
+}
+
+export function FollowUpStrip({
+  initialItems,
+  totalDue,
+}: {
+  initialItems: DueFollowUp[];
+  /** Row 391: the real count of due follow-ups, which can exceed the page cap. */
+  totalDue: number;
+}) {
   const [items, setItems] = useState<DueFollowUp[]>(initialItems);
   const [busyIds, setBusyIds] = useState<Record<string, boolean>>({});
   // Mirrors busyIds for the reconcile effect below, which must fire ONLY when
@@ -151,7 +170,12 @@ export function FollowUpStrip({ initialItems }: { initialItems: DueFollowUp[] })
       style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' }}
     >
       <h2 className="text-sm font-semibold mb-2" style={{ color: 'var(--op-text)' }}>
-        Follow-ups due today ({items.length})
+        {/* Row 391 fix round (staff lens MED): when the page is capped, a bare
+            live count reads as the whole job and drifts against the notice
+            below as staff clear rows. "N of TOTAL" keeps both honest — the
+            first number is what is on screen right now, the second is how many
+            are actually due. Uncapped, it stays the single number it was. */}
+        Follow-ups due today ({hiddenFollowUpNotice(initialItems.length, totalDue) ? `${items.length} of ${totalDue}` : items.length})
       </h2>
       <ul className="space-y-2">
         {items.map((f) => {
@@ -188,6 +212,13 @@ export function FollowUpStrip({ initialItems }: { initialItems: DueFollowUp[] })
           );
         })}
       </ul>
+      {/* Row 391: anchored on initialItems.length (the page as SERVED), not the
+          live list — clearing rows must not make the "N more" figure climb. */}
+      {hiddenFollowUpNotice(initialItems.length, totalDue) && (
+        <p className="mt-2 text-xs" style={{ color: 'var(--op-text-2)' }}>
+          {hiddenFollowUpNotice(initialItems.length, totalDue)}
+        </p>
+      )}
     </section>
   );
 }
