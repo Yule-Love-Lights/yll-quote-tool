@@ -5,12 +5,14 @@ const {
   appendStaffNoteMock,
   getOperatorMock,
   listStaffNotesMock,
+  redactStaffNoteMock,
   quoteExistsMock,
   serviceConfiguredRef,
 } = vi.hoisted(() => ({
   appendStaffNoteMock: vi.fn(),
   getOperatorMock: vi.fn(),
   listStaffNotesMock: vi.fn(),
+  redactStaffNoteMock: vi.fn(),
   quoteExistsMock: vi.fn(),
   serviceConfiguredRef: { current: true },
 }));
@@ -23,12 +25,14 @@ vi.mock('@/lib/supabase', () => ({
 }));
 vi.mock('@/lib/staffNotes', () => ({
   STAFF_NOTE_MAX_LENGTH: 2000,
+  STAFF_NOTE_REASON_MAX_LENGTH: 500,
   appendStaffNote: appendStaffNoteMock,
   listStaffNotes: listStaffNotesMock,
+  redactStaffNote: redactStaffNoteMock,
   quoteExistsForStaffNotes: quoteExistsMock,
 }));
 
-import { GET, POST } from './route';
+import { GET, PATCH, POST } from './route';
 
 const QUOTE_ID = '11111111-1111-4111-8111-111111111111';
 const OPERATOR_ID = '22222222-2222-4222-8222-222222222222';
@@ -65,6 +69,7 @@ beforeEach(() => {
   });
   quoteExistsMock.mockResolvedValue(true);
   listStaffNotesMock.mockResolvedValue({ notes: [NOTE], hasMore: false });
+  redactStaffNoteMock.mockResolvedValue({ kind: 'redacted', note: { ...NOTE, body: '[Note withdrawn]' } });
   appendStaffNoteMock.mockResolvedValue({ kind: 'created', note: NOTE });
 });
 
@@ -209,5 +214,82 @@ describe('POST /api/quotes/[id]/staff-notes', () => {
 
     appendStaffNoteMock.mockResolvedValueOnce({ kind: 'error' });
     expect((await POST(request({ body: NOTE.body, clientRequestId: REQUEST_ID }), ctx())).status).toBe(500);
+  });
+});
+
+// ─── Row 372: withdrawing a note ────────────────────────────────────────────
+describe('PATCH /api/quotes/[id]/staff-notes — withdraw a note (row 372)', () => {
+  it('withdraws under the SERVER-derived operator, never one from the request body', async () => {
+    const res = await PATCH(request({ noteId: NOTE.id, reason: 'Wrong customer' }), ctx());
+
+    expect(res.status).toBe(200);
+    expect(redactStaffNoteMock).toHaveBeenCalledWith({
+      quoteId: QUOTE_ID,
+      noteId: NOTE.id,
+      redactedBy: OPERATOR_ID,
+      redactedByLabel: 'Naldo',
+      // Row 372: the ROLE comes from the session too — the author-or-admin
+      // rule is decided in the lib against the note's real author, and nothing
+      // about the actor is taken from the request body.
+      redactedByRole: 'operator',
+      reason: 'Wrong customer',
+    });
+  });
+
+  it('accepts a withdrawal with no reason — the reason can be the sensitive part', async () => {
+    await PATCH(request({ noteId: NOTE.id }), ctx());
+    expect(redactStaffNoteMock).toHaveBeenLastCalledWith(expect.objectContaining({ reason: null }));
+
+    await PATCH(request({ noteId: NOTE.id, reason: '   ' }), ctx());
+    expect(redactStaffNoteMock).toHaveBeenLastCalledWith(expect.objectContaining({ reason: null }));
+  });
+
+  it('400s a missing or malformed note id, and never reaches the database', async () => {
+    for (const body of [{}, { noteId: 'not-a-uuid' }, { noteId: 42 }]) {
+      expect((await PATCH(request(body), ctx())).status).toBe(400);
+    }
+    expect(redactStaffNoteMock).not.toHaveBeenCalled();
+  });
+
+  it('400s a reason that is not text, or is too long', async () => {
+    expect((await PATCH(request({ noteId: NOTE.id, reason: 12 }), ctx())).status).toBe(400);
+    expect((await PATCH(request({ noteId: NOTE.id, reason: 'x'.repeat(501) }), ctx())).status).toBe(400);
+    expect(redactStaffNoteMock).not.toHaveBeenCalled();
+  });
+
+  // A second click is not an error — the caller asked for a state the note is
+  // already in — and the body carries the ORIGINAL withdrawal so the panel
+  // shows who actually did it.
+  it('answers 200 for an already-withdrawn note, flagged as such', async () => {
+    redactStaffNoteMock.mockResolvedValueOnce({
+      kind: 'already-redacted',
+      note: { ...NOTE, body: '[Note withdrawn]', redactedByLabel: 'Someone Else' },
+    });
+    const res = await PATCH(request({ noteId: NOTE.id }), ctx());
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.alreadyRedacted).toBe(true);
+    expect(data.note.redactedByLabel).toBe('Someone Else');
+  });
+
+  it('404s a note that is not on this quote, and 500s a failed write', async () => {
+    redactStaffNoteMock.mockResolvedValueOnce({ kind: 'not-found' });
+    expect((await PATCH(request({ noteId: NOTE.id }), ctx())).status).toBe(404);
+
+    redactStaffNoteMock.mockResolvedValueOnce({ kind: 'error' });
+    expect((await PATCH(request({ noteId: NOTE.id }), ctx())).status).toBe(500);
+  });
+
+  it('403s when the lib refuses the actor, with copy that says who may', async () => {
+    redactStaffNoteMock.mockResolvedValueOnce({ kind: 'forbidden' });
+    const res = await PATCH(request({ noteId: NOTE.id }), ctx());
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain('wrote a note');
+  });
+
+  it('fails closed without an operator session', async () => {
+    getOperatorMock.mockResolvedValue(null);
+    expect((await PATCH(request({ noteId: NOTE.id }), ctx())).status).toBe(401);
+    expect(redactStaffNoteMock).not.toHaveBeenCalled();
   });
 });
