@@ -3,6 +3,9 @@ import { getSupabaseServiceClient } from './supabase';
 import type { Scene } from './design/sceneTypes';
 import { pruneOrphanedMiniGroups, isMiniGroup } from './design/sceneTypes';
 import { seedLinesHaveContent, type RooflineSeedLines } from './design/seedRoofline';
+// Row 371: the ONE definition of "prune this photo's brightness override",
+// shared with the editor so the two sides of a photo delete cannot disagree.
+import { removeBrightnessForPhoto } from './design/photoBrightness';
 import {
   seedSceneFromAnalysis,
   analysisSeedHasContent,
@@ -1219,8 +1222,19 @@ export async function addDesignExtraPhoto(
 // staff-facing "these were removed" notice — mirrors the #255 seed-analysis
 // route's identical shape so QuoteBuilder can render both with one message.
 export type PrunedMiniGroupReport = { surface: string | null; stringCount: number };
-type RemoveDesignExtraPhotoResult = { ok: boolean; prunedMiniGroups: PrunedMiniGroupReport[] };
-const REMOVE_EXTRA_PHOTO_FAILED: RemoveDesignExtraPhotoResult = { ok: false, prunedMiniGroups: [] };
+type RemoveDesignExtraPhotoResult = {
+  ok: boolean;
+  prunedMiniGroups: PrunedMiniGroupReport[];
+  /** Row 371 (staff lens HIGH): the design's version AFTER this function's own
+   *  scene prune, or null when it wrote nothing. The editor tracks `version`
+   *  and only ever refreshes it from its OWN save response (editor.ts's
+   *  runSave), so a server-side prune silently left the still-mounted editor a
+   *  version behind — its next save then lost the CAS and tripped the
+   *  "Save blocked — reload" banner, discarding a live edit. Handing the new
+   *  version back lets the client adopt it instead. */
+  version: number | null;
+};
+const REMOVE_EXTRA_PHOTO_FAILED: RemoveDesignExtraPhotoResult = { ok: false, prunedMiniGroups: [], version: null };
 
 // Remove one extra photo: its storage object, its array entry, AND every scene
 // item drawn on it (an item tagged to a deleted photo would otherwise be
@@ -1287,6 +1301,7 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
   // the scene column instead of extra_photos.
   const MAX_SCENE_PRUNE_RETRIES = 5;
   let prunedMiniGroups: PrunedMiniGroupReport[] = [];
+  let prunedVersion: number | null = null; // row 371: see RemoveDesignExtraPhotoResult
   try {
     let settled = false;
     for (let attempt = 0; attempt < MAX_SCENE_PRUNE_RETRIES && !settled; attempt++) {
@@ -1299,9 +1314,37 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
       const freshRow = freshData as { scene?: DesignScene | null; version?: number | null } | null;
       const freshScene = freshRow?.scene ?? scene;
       const freshVersion = freshRow?.version ?? null;
-      if (!freshScene || !Array.isArray(freshScene.items) || !freshScene.items.some(it => it.photoId === photoId)) {
+      // Row 371: the per-photo BRIGHTNESS entry is pruned here too. It lives in
+      // its own map (`scene.extraPhotoBrightness`), not on an item, so a photo
+      // carrying a brightness override but NO drawn items would take the
+      // "nothing to prune" exit below and leave the key behind forever — which
+      // is why this is checked alongside the items rather than folded into the
+      // items branch.
+      const hasItemsOnPhoto =
+        Array.isArray(freshScene?.items) && freshScene.items.some(it => it.photoId === photoId);
+      const hasBrightnessEntry =
+        freshScene?.extraPhotoBrightness != null &&
+        Object.prototype.hasOwnProperty.call(freshScene.extraPhotoBrightness, photoId);
+      if (!freshScene || (!hasItemsOnPhoto && !hasBrightnessEntry)) {
         settled = true; // nothing (left) to prune — including a retry where a concurrent write already dropped these items
         break;
+      }
+      if (!hasItemsOnPhoto) {
+        // Brightness-only prune: leave `items` completely alone. Running the
+        // miniGroup prune here would drop groups orphaned by something else
+        // entirely, which is not this function's job and would change billing.
+        const outcome = await updateDesignSceneGuarded(
+          id,
+          removeBrightnessForPhoto(freshScene, photoId),
+          freshVersion,
+        );
+        if (outcome.ok) {
+          prunedVersion = outcome.version;
+          settled = true;
+          break;
+        }
+        if (outcome.reason === 'error') throw new Error('scene prune write failed');
+        continue; // 'conflict' — retry from a fresh read
       }
       const prunedIds = new Set(freshScene.items.filter(it => it.photoId === photoId).map(it => it.id));
       // #227: pruneOrphanedMiniGroups drops any miniGroup left with zero
@@ -1316,8 +1359,15 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
         it => it.photoId !== photoId && !(it.linkedToId && prunedIds.has(it.linkedToId)),
       ));
       const afterGroupIds = new Set(keptItems.filter(isMiniGroup).map(g => g.id));
-      const outcome = await updateDesignSceneGuarded(id, { ...freshScene, items: keptItems }, freshVersion);
+      // Row 371: same brightness-key prune as the items-free branch above, in
+      // the one write rather than a second CAS round-trip.
+      const outcome = await updateDesignSceneGuarded(
+        id,
+        { ...removeBrightnessForPhoto(freshScene, photoId), items: keptItems },
+        freshVersion,
+      );
       if (outcome.ok) {
+        prunedVersion = outcome.version;
         prunedMiniGroups = beforeGroups
           .filter(g => !afterGroupIds.has(g.id))
           .map(g => ({ surface: g.surface ?? null, stringCount: g.stringCount ?? 1 }));
@@ -1333,7 +1383,7 @@ export async function removeDesignExtraPhoto(id: string, photoId: string): Promi
     console.error('removeDesignExtraPhoto: scene prune failed:', err);
   }
 
-  return { ok: true, prunedMiniGroups };
+  return { ok: true, prunedMiniGroups, version: prunedVersion };
 }
 
 // Rename the BASE photo (#13) — null/empty clears back to "Photo 1".
