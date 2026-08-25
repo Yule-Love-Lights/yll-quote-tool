@@ -1,5 +1,21 @@
 ﻿# Task ledger - ARCHIVE (completed + shelved)
 
+## Archived at S49 (2026-08-25) - row #393, RESOLVED as SUPERSEDED. The decision the row asked for, made on evidence rather than preference.
+
+The row asked: land the orphaned `jason/288-backfill-script-fix` branch as insurance, or drop it. DROPPED, because the defect it fixes NO LONGER EXISTS ON MASTER, and master's current handling is strictly safer than the branch's.
+
+Evidence, all checked at S49 close:
+- The branch was **727 commits behind** master and `git merge-tree` reported conflicts, so landing it was never going to be a clean cherry-pick of a small fix.
+- The bug was: a Gmail row with a composite `external_id` and no `source_message_id` fell through to a THREAD-WIDE `modifyThread`, marking every sibling customer's thread read/labeled. The branch's fix was to skip the write-back for that one shape.
+- Current master (`src/lib/dashboard/inbox/sync.ts`, the `runHandledWriteback` gmail branch) now reads simply: if `target.sourceMessageId` go message-level, ELSE `sync.gmailLabel = 'skipped'`. There is no thread-wide fallback left at all — `modifyThread` and `gmailThreadIdFromExternalId` are BOTH grep-zero across `src/`. So master skips EVERY row lacking a message id, not merely the composite ones the branch guarded. That is a superset of the orphaned fix.
+- Live exposure was separately measured at zero before the decision: 553 gmail items, 22 composite, 20 exposed, and **0 of the 20 still open** (all closed 2026-08-18 by the backfill run itself).
+
+The three commits were archived as patches OUTSIDE the repo before deletion (session scratchpad, `branch-archive/0001..0003`) rather than trusted to memory, then the worktree `.claude/worktrees/agent-a70c8c5d532aa1159` was removed and the branch deleted. Nothing of value was discarded unrecorded.
+
+| # | Task | Size | Notes | Old # |
+|---|------|------|-------|-------|
+| 393 | ⛔ RESOLVED-SUPERSEDED S49 (dropped, not landed — master already fixes it more thoroughly) — **An unmerged branch holds a real #288 Gmail write-back fix that never got a PR - land it or drop it deliberately (S49 recon)** | XS | `jason/288-backfill-script-fix` (3 commits, worktree `.claude/worktrees/agent-a70c8c5d532aa1159`, no PR ever opened) carries a staff-HIGH fix: a backfilled Gmail row has a composite `external_id` with no `source_message_id`, so `runHandledWriteback` falls through to `modifyThread`, marking EVERY sibling customer's thread read/labeled. MEASURED in S49 rather than assumed: 553 gmail items, 22 composite, **20 exposed, and 0 of the 20 still open** - every one was already closed on 2026-08-18 by the backfill run itself. So the fix is DEFENSIVE ONLY today (it guards a re-run of `scripts/backfill-gml-threads.ts`), not a live bug, which is why it did not jump the queue. Decide: land it as insurance before any future backfill, or close the branch and delete the worktree. | - |
+
 ## Archived at S49 close truth-up, part 3 (2026-08-25) - rows #191/#192/#331/#333/#338, ALREADY CLOSED but left in the ACTIVE table. Three of them (#331/#333/#338) literally say "[SHIPPED S46 - PR #NNN, still listed here in error]" in their own task text; #191 and #192 carry "✅ S33" in their Notes column and are written throughout in the past tense as completed work. #191 was additionally verified against the CODE before archiving - permGlow, portal-perm-glow and perm-glow-sweep are all grep-zero in src, exactly as its body claims.
 
 WHY A THIRD PASS WAS NEEDED, worth recording: parts 1 and 2 swept only the TASK column for a completion marker. #191 and #192 declare themselves done in the NOTES column instead, so a task-column sweep could never see them - and #191 was on the list of rows Jason had just asked to have BUILT, i.e. the stale ledger was one step from causing already-finished work to be redone. The sweep now covers EVERY cell of every row.
