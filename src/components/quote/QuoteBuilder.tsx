@@ -90,6 +90,7 @@ import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/
 import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
 import { track } from '@/lib/analytics/posthog';
 import { loadQuoteDraft, saveQuoteDraft, clearQuoteDraft, customerIsEmpty, draftAutosaveActive } from '@/lib/quoteDraft';
+import { loadQuoteEditDraft, saveQuoteEditDraft, clearQuoteEditDraft, sweepQuoteEditDrafts, formatDraftAge, type QuoteEditDraft } from '@/lib/quoteEditDraft';
 import { stableStringify, quoteHasUnsavedEdits } from '@/lib/quoteDirty';
 import { permanentSideOverriddenFields, describePermanentSideField } from '@/lib/permanent/reconcileSideFootage';
 import { downscaleForUpload, downscaleForUploadAsBlob, readUploadErrorMessage } from '@/lib/clientImage';
@@ -953,6 +954,11 @@ export default function QuoteBuilder({
     if (userTouchedRef.current) return;
     userTouchedRef.current = true;
     setUserTouched(true);
+    // Row 413: the first real edit withdraws the restore offer — from here the
+    // operator is editing the SERVER value, their new edits start stashing
+    // over the old draft, and restoring the stale one on top of live typing
+    // would itself be a clobber.
+    setEditDraftOffer(null);
   };
   // Native beforeunload, registered ONLY while genuinely dirty so an untouched
   // or already-saved quote never prompts. preventDefault() is the modern
@@ -966,6 +972,63 @@ export default function QuoteBuilder({
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [hasUnsavedEdits]);
+
+  // ─── Edit-mode autosave (ledger row 413) ────────────────────────────────
+  // The half of row 406 the banner + beforeunload above CANNOT cover: an
+  // in-app next/link navigation unmounts this component without any event, and
+  // a Chrome Memory Saver discard never runs a handler at all. While the form
+  // is genuinely dirty, the whole QuoteFormData is stashed to localStorage
+  // (debounced), bound to the exact `lastPersistedForm` it was edited on top
+  // of; quoteEditDraft.ts refuses to offer it back unless the server row still
+  // serializes to that same base, so a row that moved since (another operator,
+  // another tab, an approval) silently wins — the reopen-safety rule that
+  // keeps the OLD new-quote draft gated off for edit mode, kept, not waived.
+  //
+  // Restoring is an OFFER (banner near the top), never an automatic setForm:
+  // the operator decides. The offer also self-dismisses on the first real
+  // touch of the form — from that moment the operator is editing the SERVER
+  // value, their new edits start stashing over the old draft, and restoring
+  // the stale one on top of live typing would itself be a clobber.
+  const [editDraftOffer, setEditDraftOffer] = useState<QuoteEditDraft | null>(null);
+  // The stable id of the quote being edited — initialQuote's, not savedQuoteId
+  // (declared further down, and identical in edit mode anyway: savedQuoteId is
+  // seeded from this exact value and never changes for an existing quote).
+  const editQuoteId = initialQuote?.quoteId ?? null;
+  useEffect(() => {
+    if (!editMode || !editQuoteId) return;
+    sweepQuoteEditDrafts();
+    // lastPersistedForm at mount IS the server truth (seeded from the Server
+    // Component prop) — exactly the base a restorable draft must match.
+    const draft = loadQuoteEditDraft(editQuoteId, lastPersistedForm);
+    // queueMicrotask defers the setState out of the effect body, the same
+    // idiom the new-quote draft-restore effect above uses for the identical
+    // react-hooks/set-state-in-effect error-level rule.
+    if (draft) queueMicrotask(() => setEditDraftOffer(draft));
+    // Mount-only by design: a draft can only be offered against the freshly
+    // loaded row, never against mid-session state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    if (!editMode || !editQuoteId) return;
+    if (hasUnsavedEdits) {
+      // Debounced stash while dirty. 800ms: long enough to not thrash JSON +
+      // localStorage on every keystroke of a footage number, short enough that
+      // a tab discard moments after typing still has the edit.
+      const t = setTimeout(() => {
+        saveQuoteEditDraft(editQuoteId, form, lastPersistedForm);
+      }, 800);
+      return () => clearTimeout(t);
+    }
+    // Clean again — but ONLY clear the stash when a save made it clean
+    // (userTouched latches on the first edit and never resets). On an
+    // untouched mount this branch also runs, and clearing THERE would delete
+    // the very draft the offer banner is holding before the operator answers.
+    if (userTouched) clearQuoteEditDraft(editQuoteId);
+  }, [editMode, editQuoteId, hasUnsavedEdits, currentFormSerialized, lastPersistedForm, userTouched, form]);
+  // Self-dismiss of the offer on the operator's first edit lives inside
+  // markUserTouched below (an event handler, not an effect — the
+  // set-state-in-effect rule is at error here, and the handler is the actual
+  // moment the intent changes anyway).
 
   // Fix-round HIGH (staff lens, #243 gate): a ref mirror of `form.serviceType`,
   // same never-stale idiom as isNceRef/legacyRebookRef above — but unlike those
@@ -5460,6 +5523,64 @@ export default function QuoteBuilder({
                 but never sends a real text/email or charges a card, and is excluded from every dashboard metric.
                 Clean it up anytime with “Delete test data” in Settings.
               </p>
+            </div>
+          </div>
+        )}
+
+        {/* Row 413: recovered-edits offer. Rendered at the top (a mount-time
+            decision the operator should see before touching anything), and an
+            OFFER by design — restoring never happens automatically, and the
+            offer withdraws itself on the first real edit (markUserTouched).
+            It can only appear at all when the server row still matches the
+            base the draft was edited on top of (quoteEditDraft's CAS-style
+            check), so Restore can never clobber someone else's newer save. */}
+        {editDraftOffer && (
+          <div
+            className="mb-6 rounded-lg border px-4 py-3 flex items-start gap-3"
+            style={{ borderColor: '#f59e0b', backgroundColor: '#fffbeb' }}
+            role="status"
+          >
+            <span aria-hidden="true">●</span>
+            <div className="flex-1">
+              <p className="text-sm font-semibold" style={{ color: '#92400e' }}>
+                Unsaved edits from an earlier visit were recovered.
+              </p>
+              <p className="text-xs mt-0.5" style={{ color: '#92400e' }}>
+                You edited this quote {formatDraftAge(editDraftOffer.savedAt)} but never clicked
+                Calculate, so those changes are not in the saved quote. Restore them to keep
+                working, or discard them to stay with what&rsquo;s saved.
+              </p>
+              <div className="mt-2 flex gap-2">
+                <button
+                  type="button"
+                  className="text-xs font-semibold px-3 py-1.5 rounded-md text-white"
+                  style={{ backgroundColor: '#d97706' }}
+                  onClick={() => {
+                    const draft = editDraftOffer;
+                    setEditDraftOffer(null);
+                    if (!draft) return;
+                    // Restoring IS an edit: latch the dirty machinery so the
+                    // row-406 banner + beforeunload arm immediately, and the
+                    // stash effect re-saves this draft until Calculate lands.
+                    userTouchedRef.current = true;
+                    setUserTouched(true);
+                    setForm(draft.form);
+                  }}
+                >
+                  Restore my edits
+                </button>
+                <button
+                  type="button"
+                  className="text-xs font-semibold px-3 py-1.5 rounded-md border"
+                  style={{ borderColor: '#d97706', color: '#92400e' }}
+                  onClick={() => {
+                    setEditDraftOffer(null);
+                    if (editQuoteId) clearQuoteEditDraft(editQuoteId);
+                  }}
+                >
+                  Discard
+                </button>
+              </div>
             </div>
           </div>
         )}
