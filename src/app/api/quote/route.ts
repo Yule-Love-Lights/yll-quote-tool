@@ -999,43 +999,54 @@ export async function POST(req: NextRequest) {
           gatedIsNce,
         );
 
+    // Row 376: this bookkeeping used to be awaited inline here — up to four
+    // sequential DB round trips (each a 5s-timeout withDbTimeout call: start,
+    // maybe link, maybe re-read target state, maybe complete) chained onto
+    // Calculate's response, the most frequent staff action. send/mark-sent
+    // already defer their own timer completion via after() (see
+    // queueQuoteBuildSessionCompletion below); this makes Calculate match.
+    // Nothing in the response body (below) reads `started`/`linked` — it's
+    // pure bookkeeping — so it's safe to move wholesale into after().
     if (saved && quoteBuildTimerId && quoteBuildStartReason && operator) {
       const timerTargetEligible = isUpdate
         ? existing?.is_test === false && existing.view_only === false && deriveStatus(existing) === 'draft'
         : !isTest;
       if (timerTargetEligible) {
-        const started = await startQuoteBuildSession({
-          timerId: quoteBuildTimerId,
-          startReason: quoteBuildStartReason,
-          operator,
-          quoteId: saved.id,
-          startedAt: quoteSaveStartedAt,
-        });
-        let linked = false;
-        if (
-          started.ok &&
-          started.row.id === quoteBuildTimerId &&
-          (started.row.quote_id === null || started.row.quote_id === saved.id)
-        ) {
-          linked = started.row.quote_id === saved.id || await linkQuoteBuildSession({
+        const savedId = saved.id;
+        after(async () => {
+          const started = await startQuoteBuildSession({
             timerId: quoteBuildTimerId,
-            quoteId: saved.id,
-            operatorId: operator.id,
+            startReason: quoteBuildStartReason,
+            operator,
+            quoteId: savedId,
+            startedAt: quoteSaveStartedAt,
           });
-        }
-        if (linked) {
-          const latestTarget = await quoteBuildSessionTargetState(saved.id);
-          if (latestTarget?.kind === 'sent' && started.ok && started.row.sent_at == null) {
-            await completeQuoteBuildSession({
-              quoteId: saved.id,
+          let linked = false;
+          if (
+            started.ok &&
+            started.row.id === quoteBuildTimerId &&
+            (started.row.quote_id === null || started.row.quote_id === savedId)
+          ) {
+            linked = started.row.quote_id === savedId || await linkQuoteBuildSession({
               timerId: quoteBuildTimerId,
+              quoteId: savedId,
               operatorId: operator.id,
-              sentAt: latestTarget.sentAt,
             });
           }
-        } else {
-          console.warn('[quote/route] quote build timer could not be linked after save');
-        }
+          if (linked) {
+            const latestTarget = await quoteBuildSessionTargetState(savedId);
+            if (latestTarget?.kind === 'sent' && started.ok && started.row.sent_at == null) {
+              await completeQuoteBuildSession({
+                quoteId: savedId,
+                timerId: quoteBuildTimerId,
+                operatorId: operator.id,
+                sentAt: latestTarget.sentAt,
+              });
+            }
+          } else {
+            console.warn('[quote/route] quote build timer could not be linked after save');
+          }
+        });
       }
     }
 
