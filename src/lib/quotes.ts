@@ -1,5 +1,5 @@
 import { getSupabaseClient, getSupabaseServiceClient } from './supabase';
-import { QuoteInputs, QuoteResult } from './pricing/pricingEngine';
+import { QuoteInputs, QuoteResult, liveDepositRate } from './pricing/pricingEngine';
 import { ServiceType, DEFAULT_SERVICE_TYPE, asServiceType } from './serviceType';
 import { deleteDesign, deleteDesignsForQuote } from './designs';
 import { allocateNumber } from './displayId';
@@ -59,6 +59,18 @@ export type QuoteListItem = {
   // profile.
   highlevel_contact_id: string | null;
   customer_id: string | null;
+  // Row 409 — the deposit rate (0-1) this quote is actually on, resolved HERE
+  // rather than in the UI so the admin list can never show a rate the charge
+  // path disagrees with. An NCE quote is EXPECTED to sit at
+  // NCE_DEPOSIT_PERCENT, but nothing enforces that (Jason's 2026-08-25 ruling),
+  // so the list surfaces the real number instead of assuming it.
+  deposit_rate: number;
+  // Row 409 fix round (admin lens): whether `deposit_rate` is the rate FROZEN
+  // into the approval snapshot, or merely the current one. 8 of 24 live
+  // approved/booked quotes have no frozen rate — the staff/verbal approve path
+  // writes a minimal snapshot — so a surface that implies "this is what was
+  // agreed" would be wrong a third of the time.
+  deposit_rate_frozen: boolean;
 };
 
 export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
@@ -70,7 +82,10 @@ export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
   const { data, error } = await sb
     .from('quotes')
     .select(
-      'id, customer_name, customer_address, customer_phone, customer_email, total, created_at, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, last_viewed_at, view_count, status, decline_reason, quote_number, is_test, service_type, legacy_rebook, is_nce, view_only, highlevel_contact_id, customer_id',
+      // Row 409: the three deposit inputs are pulled as scalar JSON paths, not
+      // as whole `inputs`/`result`/`approval_snapshot` blobs — those are large
+      // and this list runs 500 rows deep.
+      'id, customer_name, customer_address, customer_phone, customer_email, total, created_at, quote_sent_at, customer_approved_at, deposit_paid_at, viewed_at, last_viewed_at, view_count, status, decline_reason, quote_number, is_test, service_type, legacy_rebook, is_nce, view_only, highlevel_contact_id, customer_id, deposit_percent_raw:inputs->>depositPercent, result_deposit_rate_raw:result->>depositRate, snapshot_deposit_rate_raw:approval_snapshot->customerSelection->>depositRate',
     )
     .order('created_at', { ascending: false })
     .limit(limit);
@@ -78,7 +93,46 @@ export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
     console.error('Supabase listQuotes error:', error);
     return [];
   }
-  return (data ?? []) as QuoteListItem[];
+  return (data ?? []).map((row) => {
+    const { deposit_percent_raw, result_deposit_rate_raw, snapshot_deposit_rate_raw, ...rest } =
+      row as Record<string, unknown>;
+    const snapshotRate = numberOrUndefined(snapshot_deposit_rate_raw);
+    return {
+      ...(rest as Omit<QuoteListItem, 'deposit_rate' | 'deposit_rate_frozen'>),
+      deposit_rate: resolveQuoteDepositRate({
+        depositPercent: numberOrUndefined(deposit_percent_raw),
+        resultRate: numberOrUndefined(result_deposit_rate_raw),
+        snapshotRate,
+      }),
+      deposit_rate_frozen: snapshotRate !== undefined,
+    };
+  });
+}
+
+// PostgREST returns `->>` paths as TEXT (or null), so every deposit input
+// arrives as a string here. Anything that isn't a finite number — null, '', a
+// legacy garbage value — becomes undefined so the resolution below falls
+// through to the next source instead of propagating NaN into a displayed rate.
+export function numberOrUndefined(v: unknown): number | undefined {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : undefined;
+  if (typeof v !== 'string' || v.trim() === '') return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+// Row 409 — the deposit rate (0-1) a quote is on, for DISPLAY. Precedence
+// mirrors the money paths exactly: an approved quote's frozen
+// approval_snapshot.customerSelection.depositRate is what the customer agreed
+// to and what the Valor webhook charges against (see
+// src/app/api/integrations/valor/webhook/route.ts), so it wins outright;
+// otherwise the live rate is chargesFromResult's own rule, shared as
+// liveDepositRate so the two cannot drift.
+export function resolveQuoteDepositRate(args: {
+  depositPercent?: number;
+  resultRate?: number;
+  snapshotRate?: number;
+}): number {
+  return args.snapshotRate ?? liveDepositRate(args.depositPercent, args.resultRate);
 }
 
 export async function deleteQuote(id: string): Promise<void> {
