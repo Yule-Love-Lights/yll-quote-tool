@@ -171,7 +171,7 @@ describe('quoteEditDraft (row 413)', () => {
     const open = ['draft', 'sent', 'viewed', null] as const;
     const stamps = open.map(s => quoteEditDraftLifecycle({ status: s, approvedAt: null, depositPaidAt: null }));
     expect(new Set(stamps).size).toBe(1);
-    for (const s of ['approved', 'booked', 'declined', 'changes_requested', 'abandoned']) {
+    for (const s of ['approved', 'booked', 'declined', 'changes_requested', 'abandoned', 'cancelled']) {
       expect(quoteEditDraftLifecycle({ status: s, approvedAt: null, depositPaidAt: null })).not.toBe(stamps[0]);
     }
   });
