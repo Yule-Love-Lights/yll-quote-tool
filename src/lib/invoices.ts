@@ -518,9 +518,26 @@ export type InvoiceDetail = {
    * Row 414: the linked quote's stale-invoice markers, surfaced HERE because
    * the invoice detail page is where a staffer verifies an order before (or
    * after) taking money for it — and it is where the mark-reconciled override
-   * lives. Both false when there is no linked quote.
+   * lives. Both null when absent (and when there is no linked quote).
+   *
+   * The PAYLOADS ride through, not booleans — the #973 admin lens's HIGH: the
+   * override panel must put the FLAGGED figures next to the invoice's current
+   * ones, or "verify before clearing" is a glance at prose. Numbers are
+   * sanitized here (finite or null) so a malformed marker degrades to the
+   * generic wording instead of rendering NaN.
    */
-  staleMarkers: { paymentBlocked: boolean; invoiceResyncFailed: boolean };
+  staleMarkers: {
+    paymentBlocked: { storedBalance: number | null; expectedBalance: number | null; at: string | null } | null;
+    invoiceResyncFailed: { attemptedTotal: number | null; attemptedBalance: number | null; at: string | null } | null;
+  };
+  /**
+   * Row 414 (#973 staff lens): the most recent mark-reconciled override for
+   * THIS invoice, rendered on the page so the trail is owner-visible — the
+   * same precedent the sibling valor_txn_log audit follows (#640 review LOW:
+   * an audit trail must be visible on the invoice, not write-only forensics).
+   * null when no override was ever recorded for this invoice.
+   */
+  lastMarkerOverride: { by: string | null; at: string | null } | null;
   // #177 fix 4: the linked quote's stamped deposit_amount_usd — the deposit
   // actually INTENDED to be collected at this quote's own deposit percent.
   // Fed into reconcileInvoice so 'short-deposit' compares against the real
@@ -550,7 +567,8 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
   let isNce = false;
   let intendedDepositUsd: number | null = null;
   let lightColorLabel: string | null = null;
-  let staleMarkers = { paymentBlocked: false, invoiceResyncFailed: false };
+  let staleMarkers: InvoiceDetail['staleMarkers'] = { paymentBlocked: null, invoiceResyncFailed: null };
+  let lastMarkerOverride: InvoiceDetail['lastMarkerOverride'] = null;
   if (invoice.quote_id) {
     const { data } = await db
       .from('quotes')
@@ -577,13 +595,43 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
       intendedDepositUsd = data.deposit_amount_usd ?? null;
       // Row 362: derived from the same quote row this join already fetches.
       lightColorLabel = await approvedColorLabelForQuote(data.approval_snapshot, data.service_type);
-      const snap = data.approval_snapshot as { paymentBlocked?: unknown; invoiceResyncFailed?: unknown } | null;
-      // Row 414: same predicate isStaleInvoiceSnapshot uses, split per marker
-      // so the panel can say WHICH discrepancy is flagged.
+      const snap = data.approval_snapshot as {
+        paymentBlocked?: { storedBalance?: unknown; expectedBalance?: unknown; at?: unknown };
+        invoiceResyncFailed?: { attemptedTotal?: unknown; attemptedBalance?: unknown; at?: unknown };
+        markerOverrides?: unknown;
+      } | null;
+      // Row 414: same truthiness isStaleInvoiceSnapshot uses, but the payload
+      // figures ride through so the panel shows the flagged numbers.
+      const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+      const str = (v: unknown) => (typeof v === 'string' ? v : null);
       staleMarkers = {
-        paymentBlocked: !!snap?.paymentBlocked,
-        invoiceResyncFailed: !!snap?.invoiceResyncFailed,
+        paymentBlocked: snap?.paymentBlocked
+          ? {
+              storedBalance: num(snap.paymentBlocked.storedBalance),
+              expectedBalance: num(snap.paymentBlocked.expectedBalance),
+              at: str(snap.paymentBlocked.at),
+            }
+          : null,
+        invoiceResyncFailed: snap?.invoiceResyncFailed
+          ? {
+              attemptedTotal: num(snap.invoiceResyncFailed.attemptedTotal),
+              attemptedBalance: num(snap.invoiceResyncFailed.attemptedBalance),
+              at: str(snap.invoiceResyncFailed.at),
+            }
+          : null,
       };
+      // Newest override recorded for THIS invoice (the quote may carry
+      // overrides for other invoices across a rebook).
+      if (Array.isArray(snap?.markerOverrides)) {
+        for (const entry of snap.markerOverrides as Array<Record<string, unknown>>) {
+          if (entry && entry.invoiceId === id) {
+            lastMarkerOverride = {
+              by: typeof entry.by === 'string' ? entry.by : null,
+              at: typeof entry.at === 'string' ? entry.at : null,
+            };
+          }
+        }
+      }
     }
   }
 
@@ -614,6 +662,7 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
     jobStatus,
     intendedDepositUsd,
     staleMarkers,
+    lastMarkerOverride,
   };
 }
 

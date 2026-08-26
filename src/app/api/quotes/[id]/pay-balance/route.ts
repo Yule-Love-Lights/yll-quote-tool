@@ -349,14 +349,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       // SHARED-ownership path, and exporting it would need a cross-owner heads-up
       // for what is a purely cosmetic fix here.
       //
-      // The remedy line names the path that ACTUALLY works today. A review traced
-      // every route and screen for a "reconcile the invoice" action and found none
-      // exists — resyncInvoiceToAgreedTotal is called only by /amend and
-      // /amend-decline — so telling staff to "reconcile the invoice" (which the
-      // staff-side sibling's copy still does, alongside naming an "edit the invoice
-      // directly" capability that does not exist anywhere) points at nothing.
-      // Recording a $0-change amendment re-runs the invoice sync and is the real
-      // fix until a dedicated action exists (ledger row 388).
+      // The remedy line names the paths that ACTUALLY work. Row 414 (PR #973)
+      // built the dedicated action this comment used to say did not exist: the
+      // invoice detail page's Mark reconciled override. The honest instruction
+      // has two branches — if the invoice figures are genuinely WRONG, a
+      // $0-change amendment re-runs the invoice sync (the re-price path); if
+      // they turn out RIGHT (or were settled outside the card flow), Mark
+      // reconciled on the invoice page retires the flag. A #973 staff lens
+      // caught this copy still prescribing only the workaround.
       if (!alertedRecently) {
         await notifyTelegramAudience(
           'jobs',
@@ -366,8 +366,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
             `tried to pay $${freshInvoice.balance.toFixed(2)}, but this order's current agreed total makes it ` +
             `$${expected.balance.toFixed(2)}.
 ` +
-            `A prior amendment's invoice sync did not land. To fix: open the order below, then Record amendment ` +
-            `with a $0 change — that re-runs the invoice sync. Then tell them it's ready to pay.
+            `A prior amendment's invoice sync did not land. Open the invoice below and compare it against the ` +
+            `order: if the figures are wrong, Record amendment with a $0 change to re-run the sync; if they're ` +
+            `right, use Mark reconciled on the invoice page. Then tell them it's ready to pay.
 ` +
             `${baseUrl}/admin/invoices/${freshInvoice.id}`,
         );
