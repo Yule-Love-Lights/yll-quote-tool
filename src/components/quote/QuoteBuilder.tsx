@@ -5973,7 +5973,19 @@ export default function QuoteBuilder({
                 <span>
                   A saved draft from an earlier, unfinished quote was found, but this quote was
                   started from a lead — so the draft was left untouched instead of overwriting
-                  these fields.
+                  these fields. To get back to it, open{' '}
+                  {/* A plain <a>, NOT next/link: this navigates to the SAME
+                      route minus the ?prefill params, and the restore effect
+                      is mount-once — a client transition would keep this
+                      component instance alive and never re-offer the draft.
+                      A full load guarantees a fresh mount (and the row-406
+                      beforeunload warning still guards unsaved typing). */}
+                  {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- full
+                      document load is REQUIRED here, see comment above */}
+                  <a href="/quote/new" className="font-semibold underline">
+                    + New quote
+                  </a>{' '}
+                  directly (without a lead) and it will be offered there.
                 </span>
                 <button
                   type="button"
