@@ -9,6 +9,7 @@ import { deriveStatus, APPROVED_DISPLAYS_AS, statusMatchesFilter, type QuoteStat
 import { PipelineActionsMenu } from '@/components/admin/PipelineActionsMenu';
 import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
 import { NceBadge } from '@/components/admin/NceBadge';
+import { DepositRateChip } from '@/components/admin/DepositRateChip';
 import { SERVICE_TYPE_LABELS, SERVICE_TYPES, DEFAULT_SERVICE_TYPE, type ServiceType } from '@/lib/serviceType';
 import { QuotesListSkeleton } from './QuotesListSkeleton';
 
@@ -401,6 +402,10 @@ export default function QuotesAdminPage() {
                           {q.legacy_rebook && <YllNeighborBadge />}
                           {/* NCE (#198) — the barter/trade network tag. Tags coexist. */}
                           {q.is_nce && <NceBadge />}
+                          {/* Row 409 — the deposit rate this quote is really on,
+                              beside the tag that implies one. Amber when the two
+                              disagree; nothing here corrects it (Jason's ruling). */}
+                          <DepositRateChip isNce={q.is_nce} rate={q.deposit_rate} />
                           {/* View-only portal (#176) — mirrors the detail page's pill. */}
                           {q.view_only && (
                             <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-100 text-sky-700">

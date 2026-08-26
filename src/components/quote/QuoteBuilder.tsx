@@ -8,7 +8,7 @@ import type {
   CustomLineItem,
   RooflineChoice,
 } from '@/lib/pricing/pricingEngine';
-import { BUSINESS_RULES, resolveLineItemLabel } from '@/lib/pricing/pricingEngine';
+import { BUSINESS_RULES, NCE_DEPOSIT_PERCENT, resolveLineItemLabel } from '@/lib/pricing/pricingEngine';
 import { buildPortalLineItems, BILLED_ROOFLINE_IDS, PERMANENT_RECOMMEND_FIELDS } from '@/lib/portal/adapter';
 import { attachSceneLinks } from '@/lib/portal/sceneLinks';
 import { extraPhotoLabels, photoLabelForLine } from '@/lib/design/photoLabels';
@@ -876,7 +876,7 @@ export default function QuoteBuilder({
           // rule applyIsNce below applies to a live chip turn-on. Blank-slate
           // only — there's nothing to clobber yet (initialFormData.depositPercent
           // is always 0 here), unlike a reopened quote's already-resolved rate.
-          ...(prefill?.isNce ? { depositPercent: 40 } : {}),
+          ...(prefill?.isNce ? { depositPercent: NCE_DEPOSIT_PERCENT } : {}),
         },
   );
   // ─── Unsaved-edit guard (ledger row 406) ────────────────────────────────
