@@ -45,8 +45,36 @@ export type QuoteEditDraft = {
   form: QuoteFormData;
   /** stableStringify of the last-persisted form this draft was edited on top of. */
   base: string;
+  /**
+   * Row 420: the quote's LIFECYCLE at stash time (quoteEditDraftLifecycle of
+   * status + customer_approved_at + deposit_paid_at). The `base` CAS above
+   * only binds the draft to the FORM it was edited on top of — /approve and
+   * the deposit webhook never touch inputs/result, so a draft stashed
+   * pre-approval still base-matches after the customer approved or booked,
+   * and offering it would push abandoned numbers onto a live booked order
+   * (amendReprice fires unconditionally for booked). Binding the draft to
+   * the lifecycle too makes such a draft DISCARDED at reopen, not offered.
+   */
+  lifecycle: string;
   savedAt: number;
 };
+
+/**
+ * Row 420: the lifecycle stamp a draft is bound to. Timestamps, not the
+ * derived status label, so a status-derivation change can never silently
+ * un-bind old drafts; JSON of a fixed-key object so the comparison is exact.
+ */
+export function quoteEditDraftLifecycle(q: {
+  status: string | null;
+  approvedAt: string | null;
+  depositPaidAt: string | null;
+}): string {
+  return JSON.stringify({
+    status: q.status ?? null,
+    approvedAt: q.approvedAt ?? null,
+    depositPaidAt: q.depositPaidAt ?? null,
+  });
+}
 
 function hasWindow(): boolean {
   return typeof window !== 'undefined' && !!window.localStorage;
@@ -56,10 +84,10 @@ function keyFor(quoteId: string): string {
   return PREFIX + quoteId;
 }
 
-export function saveQuoteEditDraft(quoteId: string, form: QuoteFormData, base: string): void {
+export function saveQuoteEditDraft(quoteId: string, form: QuoteFormData, base: string, lifecycle: string): void {
   if (!hasWindow()) return;
   try {
-    const draft: QuoteEditDraft = { form, base, savedAt: Date.now() };
+    const draft: QuoteEditDraft = { form, base, lifecycle, savedAt: Date.now() };
     window.localStorage.setItem(keyFor(quoteId), JSON.stringify(draft));
   } catch {
     /* private mode / storage full — the stash is best-effort; the row-406
@@ -79,7 +107,8 @@ export function saveQuoteEditDraft(quoteId: string, form: QuoteFormData, base: s
 export function loadQuoteEditDraft(
   quoteId: string,
   currentBase: string,
-): QuoteEditDraft | 'server-moved' | null {
+  currentLifecycle: string,
+): QuoteEditDraft | 'server-moved' | 'lifecycle-moved' | null {
   if (!hasWindow()) return null;
   try {
     const raw = window.localStorage.getItem(keyFor(quoteId));
@@ -94,6 +123,26 @@ export function loadQuoteEditDraft(
       clearQuoteEditDraft(quoteId);
       return null;
     }
+    // Row 420: a draft with no lifecycle stamp (stashed before this shipped)
+    // cannot be verified against the live quote's state, and the unverifiable
+    // case IS the dangerous one (a pre-approval stash on a now-booked order).
+    // Cleared silently, not with the 'lifecycle-moved' notice — that notice
+    // claims the order's state moved, which a missing stamp can't establish.
+    // One-time migration cost, bounded by the 7-day TTL anyway.
+    if (typeof parsed.lifecycle !== 'string') {
+      clearQuoteEditDraft(quoteId);
+      return null;
+    }
+    if (parsed.lifecycle !== currentLifecycle) {
+      // Row 420: the quote's LIFECYCLE moved since the stash — approved,
+      // booked, declined, un-approved — even though the priced form itself
+      // (`base`) still matches. Offering the draft would let Calculate push
+      // pre-approval numbers onto a live order whose state the operator has
+      // no hint moved. DISCARD, and tell the operator why (same reasoning as
+      // 'server-moved': a silent drop reads as the tool eating work).
+      clearQuoteEditDraft(quoteId);
+      return 'lifecycle-moved';
+    }
     if (parsed.base !== currentBase) {
       // The server row moved since this draft was stashed. The server wins —
       // but the operator is TOLD (PR #972 staff lens MED: a silent drop reads
@@ -102,7 +151,7 @@ export function loadQuoteEditDraft(
       clearQuoteEditDraft(quoteId);
       return 'server-moved';
     }
-    return { form: parsed.form as QuoteFormData, base: parsed.base, savedAt };
+    return { form: parsed.form as QuoteFormData, base: parsed.base, lifecycle: parsed.lifecycle, savedAt };
   } catch {
     return null;
   }

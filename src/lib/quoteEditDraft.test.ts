@@ -5,6 +5,7 @@ import {
   clearQuoteEditDraft,
   sweepQuoteEditDrafts,
   formatDraftAge,
+  quoteEditDraftLifecycle,
 } from './quoteEditDraft';
 import type { QuoteFormData } from './quoteForm';
 import { initialFormData } from './quoteForm';
@@ -18,6 +19,7 @@ import { initialFormData } from './quoteForm';
 const QUOTE_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const QUOTE_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const BASE = '{"front":95}';
+const LIFE = '{"status":null,"approvedAt":null,"depositPaidAt":null}';
 const form = (): QuoteFormData => ({ ...initialFormData });
 
 function stubLocalStorage() {
@@ -44,11 +46,11 @@ afterEach(() => {
 
 describe('quoteEditDraft (row 413)', () => {
   it('round-trips a draft when the server base has not moved', () => {
-    saveQuoteEditDraft(QUOTE_A, form(), BASE);
-    const got = loadQuoteEditDraft(QUOTE_A, BASE);
+    saveQuoteEditDraft(QUOTE_A, form(), BASE, LIFE);
+    const got = loadQuoteEditDraft(QUOTE_A, BASE, LIFE);
     expect(got).not.toBeNull();
     expect(got).not.toBe('server-moved');
-    const draft = got as Exclude<typeof got, 'server-moved' | null>;
+    const draft = got as Exclude<typeof got, 'server-moved' | 'lifecycle-moved' | null>;
     expect(draft.base).toBe(BASE);
     expect(draft.form).toEqual(form());
   });
@@ -58,8 +60,8 @@ describe('quoteEditDraft (row 413)', () => {
     // operator (or another tab) saved since the stash, so restoring the
     // draft would overwrite their work. The server wins, silently.
     const store = stubLocalStorage();
-    saveQuoteEditDraft(QUOTE_A, form(), BASE);
-    const got = loadQuoteEditDraft(QUOTE_A, '{"front":100}');
+    saveQuoteEditDraft(QUOTE_A, form(), BASE, LIFE);
+    const got = loadQuoteEditDraft(QUOTE_A, '{"front":100}', LIFE);
     // PR #972 staff lens MED: the drop is no longer silent - the caller gets
     // 'server-moved' to show an informational notice. The draft is still
     // cleared either way; nothing is restorable.
@@ -68,17 +70,17 @@ describe('quoteEditDraft (row 413)', () => {
   });
 
   it('drafts are per-quote: quote B cannot see quote A\'s stash', () => {
-    saveQuoteEditDraft(QUOTE_A, form(), BASE);
-    expect(loadQuoteEditDraft(QUOTE_B, BASE)).toBeNull();
-    expect(loadQuoteEditDraft(QUOTE_A, BASE)).not.toBeNull();
+    saveQuoteEditDraft(QUOTE_A, form(), BASE, LIFE);
+    expect(loadQuoteEditDraft(QUOTE_B, BASE, LIFE)).toBeNull();
+    expect(loadQuoteEditDraft(QUOTE_A, BASE, LIFE)).not.toBeNull();
   });
 
   it('expires a stale draft on load (7-day TTL, same as the new-quote draft)', () => {
     vi.useFakeTimers();
     try {
-      saveQuoteEditDraft(QUOTE_A, form(), BASE);
+      saveQuoteEditDraft(QUOTE_A, form(), BASE, LIFE);
       vi.setSystemTime(Date.now() + 8 * 24 * 60 * 60 * 1000);
-      expect(loadQuoteEditDraft(QUOTE_A, BASE)).toBeNull();
+      expect(loadQuoteEditDraft(QUOTE_A, BASE, LIFE)).toBeNull();
     } finally {
       vi.useRealTimers();
     }
@@ -88,14 +90,14 @@ describe('quoteEditDraft (row 413)', () => {
     vi.useFakeTimers();
     try {
       const store = stubLocalStorage();
-      saveQuoteEditDraft(QUOTE_A, form(), BASE);
+      saveQuoteEditDraft(QUOTE_A, form(), BASE, LIFE);
       vi.setSystemTime(Date.now() + 8 * 24 * 60 * 60 * 1000);
-      saveQuoteEditDraft(QUOTE_B, form(), BASE); // fresh, must survive
+      saveQuoteEditDraft(QUOTE_B, form(), BASE, LIFE); // fresh, must survive
       store.set('yll_quote_edit_draft_v1:garbage', 'not json');
       store.set('unrelated_key', 'untouched');
       sweepQuoteEditDrafts();
-      expect(loadQuoteEditDraft(QUOTE_A, BASE)).toBeNull();
-      expect(loadQuoteEditDraft(QUOTE_B, BASE)).not.toBeNull();
+      expect(loadQuoteEditDraft(QUOTE_A, BASE, LIFE)).toBeNull();
+      expect(loadQuoteEditDraft(QUOTE_B, BASE, LIFE)).not.toBeNull();
       expect(store.has('yll_quote_edit_draft_v1:garbage')).toBe(false);
       expect(store.get('unrelated_key')).toBe('untouched');
     } finally {
@@ -104,17 +106,64 @@ describe('quoteEditDraft (row 413)', () => {
   });
 
   it('clear removes exactly its own quote\'s stash', () => {
-    saveQuoteEditDraft(QUOTE_A, form(), BASE);
-    saveQuoteEditDraft(QUOTE_B, form(), BASE);
+    saveQuoteEditDraft(QUOTE_A, form(), BASE, LIFE);
+    saveQuoteEditDraft(QUOTE_B, form(), BASE, LIFE);
     clearQuoteEditDraft(QUOTE_A);
-    expect(loadQuoteEditDraft(QUOTE_A, BASE)).toBeNull();
-    expect(loadQuoteEditDraft(QUOTE_B, BASE)).not.toBeNull();
+    expect(loadQuoteEditDraft(QUOTE_A, BASE, LIFE)).toBeNull();
+    expect(loadQuoteEditDraft(QUOTE_B, BASE, LIFE)).not.toBeNull();
+  });
+
+  // ─── Row 420: the lifecycle CAS ─────────────────────────────────────────
+  // The base check above binds a draft to the FORM it was edited on top of.
+  // /approve and the deposit webhook never touch inputs/result, so base still
+  // matches after the customer approved or booked — the lifecycle stamp is
+  // what refuses a pre-approval draft on a now-booked order.
+
+  it('row 420: REFUSES and clears the draft when the lifecycle moved, even though base matches', () => {
+    const store = stubLocalStorage();
+    saveQuoteEditDraft(QUOTE_A, form(), BASE, LIFE);
+    const booked = quoteEditDraftLifecycle({
+      status: null,
+      approvedAt: '2026-08-20T00:00:00Z',
+      depositPaidAt: '2026-08-21T00:00:00Z',
+    });
+    const got = loadQuoteEditDraft(QUOTE_A, BASE, booked);
+    expect(got).toBe('lifecycle-moved');
+    expect(store.size).toBe(0); // cleared, not just hidden
+  });
+
+  it('row 420: still offered when the lifecycle is unchanged', () => {
+    const stamped = quoteEditDraftLifecycle({ status: 'sent', approvedAt: null, depositPaidAt: null });
+    saveQuoteEditDraft(QUOTE_A, form(), BASE, stamped);
+    const got = loadQuoteEditDraft(QUOTE_A, BASE, stamped);
+    expect(got).not.toBeNull();
+    expect(got).not.toBe('server-moved');
+    expect(got).not.toBe('lifecycle-moved');
+  });
+
+  it('row 420: a legacy draft with NO lifecycle stamp is cleared silently (unverifiable = unsafe)', () => {
+    const store = stubLocalStorage();
+    // Hand-write a pre-420 stash: form + base + savedAt, no lifecycle field.
+    store.set(
+      'yll_quote_edit_draft_v1:' + QUOTE_A,
+      JSON.stringify({ form: form(), base: BASE, savedAt: Date.now() }),
+    );
+    expect(loadQuoteEditDraft(QUOTE_A, BASE, LIFE)).toBeNull();
+    expect(store.size).toBe(0);
+  });
+
+  it('row 420: quoteEditDraftLifecycle is exact — any one field moving changes the stamp', () => {
+    const a = quoteEditDraftLifecycle({ status: 'sent', approvedAt: null, depositPaidAt: null });
+    expect(quoteEditDraftLifecycle({ status: 'sent', approvedAt: null, depositPaidAt: null })).toBe(a);
+    expect(quoteEditDraftLifecycle({ status: 'declined', approvedAt: null, depositPaidAt: null })).not.toBe(a);
+    expect(quoteEditDraftLifecycle({ status: 'sent', approvedAt: '2026-08-20T00:00:00Z', depositPaidAt: null })).not.toBe(a);
+    expect(quoteEditDraftLifecycle({ status: 'sent', approvedAt: null, depositPaidAt: '2026-08-21T00:00:00Z' })).not.toBe(a);
   });
 
   it('survives a missing window (SSR) without throwing', () => {
     vi.unstubAllGlobals();
-    expect(() => saveQuoteEditDraft(QUOTE_A, form(), BASE)).not.toThrow();
-    expect(loadQuoteEditDraft(QUOTE_A, BASE)).toBeNull();
+    expect(() => saveQuoteEditDraft(QUOTE_A, form(), BASE, LIFE)).not.toThrow();
+    expect(loadQuoteEditDraft(QUOTE_A, BASE, LIFE)).toBeNull();
     expect(() => sweepQuoteEditDrafts()).not.toThrow();
   });
 });
