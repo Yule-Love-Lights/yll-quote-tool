@@ -1072,7 +1072,6 @@ export default function QuoteBuilder({
     };
     // Mount-only: the cleanup must run at UNMOUNT, and the ref always holds
     // the latest stash closure (or null when there is nothing worth keeping).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   // Self-dismiss of the offer on the operator's first edit lives inside
   // markUserTouched below (an event handler, not an effect — the
