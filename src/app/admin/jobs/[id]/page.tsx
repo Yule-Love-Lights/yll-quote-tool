@@ -392,6 +392,29 @@ export default function JobDetailPage() {
                       </p>
                     );
                   })()}
+                  {/* Row 388: compact, read-only notice — the flagged figures +
+                      the override/resync actions live on the invoice detail
+                      page (row 414's panel, row 388's resync button); this is
+                      just a pointer so a crew-facing job page isn't the only
+                      place someone finds out the invoice needs attention. */}
+                  {(data.staleMarkers.paymentBlocked || data.staleMarkers.invoiceResyncFailed) && (
+                    <p
+                      className="mt-2 rounded-md border px-3 py-2 text-xs"
+                      style={{ borderColor: '#f59e0b', backgroundColor: '#fffbeb', color: '#92400e' }}
+                      role="status"
+                    >
+                      ⚠ This order has an unreconciled invoice marker
+                      {data.staleMarkers.invoiceResyncFailed && data.staleMarkers.paymentBlocked
+                        ? ' (a re-sync failed and a payment was refused)'
+                        : data.staleMarkers.invoiceResyncFailed
+                          ? ' (a re-sync failed)'
+                          : ' (a payment was refused)'}
+                      .{' '}
+                      <Link href={`/admin/invoices/${data.invoice.id}`} className="font-semibold underline">
+                        Review on the invoice →
+                      </Link>
+                    </p>
+                  )}
                 </>
               ) : (
                 <>
