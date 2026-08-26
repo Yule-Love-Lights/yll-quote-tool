@@ -1108,3 +1108,25 @@ export function computeTotalsTail(
     balanceDue,
   };
 }
+
+// Row 409 — the NCE (barter/trade network) deposit rule's percent, in ONE place.
+// #199 set this default when the NCE tag goes on; three call sites carried the
+// bare literal 40 (the nce route, QuoteBuilder's prefill, and this rule's own
+// description) which is how a rule number drifts. Nothing ENFORCES it — Jason
+// ruled 2026-08-25 that a sent quote may legitimately sit off it (row 409) — so
+// this is the number surfaces COMPARE against, not one they impose.
+export const NCE_DEPOSIT_PERCENT = 40;
+
+// Row 409 — the live (pre-approval) deposit rate a quote is actually charged
+// at, resolved in ONE place so every surface that shows it agrees with the one
+// that charges it by construction. Precedence is chargesFromResult's, which is
+// what the portal and the approve route price from: a staff-set
+// inputs.depositPercent wins, else the rate frozen into result at pricing time,
+// else the business default. An APPROVED quote's frozen
+// approval_snapshot.customerSelection.depositRate outranks all of this and is
+// applied by the caller (see resolveQuoteDepositRate in src/lib/quotes.ts).
+export function liveDepositRate(depositPercent?: number, resultRate?: number | null): number {
+  return typeof depositPercent === 'number'
+    ? effectiveDepositRate(depositPercent)
+    : (resultRate ?? BUSINESS_RULES.depositPercentage);
+}

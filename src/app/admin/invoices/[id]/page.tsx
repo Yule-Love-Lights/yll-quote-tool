@@ -97,6 +97,58 @@ export default function InvoiceDetailPage() {
     queueMicrotask(() => void load());
   }, [load]);
 
+  // Row 414: the mark-reconciled override. Confirm first (a money-marker
+  // override with no undo), POST, then reload the detail so the panel and the
+  // list's warning both reflect the cleared state from the server, not from
+  // an optimistic guess.
+  const [reconcileBusy, setReconcileBusy] = useState(false);
+  // #973 delta-verify MED: the message carries the invoice id it belongs to,
+  // and renders only when it matches — moving it outside the marker panel
+  // removed the accidental gate that kept a stale "Cleared" from one invoice
+  // off another's page (back/forward between two visited details need not
+  // remount this component). Scoping by id beats a reset-on-id effect: no
+  // set-state-in-effect, and no ordering race with markReconciled's own set.
+  const [reconcileMsg, setReconcileMsg] = useState<{ text: string; ok: boolean; forId: string } | null>(null);
+  const markReconciled = async () => {
+    if (!id || reconcileBusy) return;
+    if (
+      !window.confirm(
+        'Clear the unreconciled flag? Only do this after verifying the invoice against the agreed order - the override is recorded with your name.',
+      )
+    )
+      return;
+    setReconcileBusy(true);
+    setReconcileMsg(null);
+    try {
+      const res = await fetch(`/api/invoices/${id}/mark-reconciled`, { method: 'POST' });
+      const body = (await res.json()) as { error?: string; code?: string };
+      if (!res.ok) {
+        // #973 staff lens MED: the already-cleared race must SAY so, not
+        // silently reload - a staffer can't tell their click worked from a
+        // no-op otherwise.
+        if (body.code === 'no-markers') {
+          setReconcileMsg({ text: 'Already cleared - someone (or a re-sync) got there first.', ok: true, forId: id });
+          await load();
+          return;
+        }
+        // #973 staff lens LOW: the concurrent-edit 409 told staff to reload
+        // and retry without doing the reload for them.
+        if (body.code === 'concurrent-edit') {
+          setReconcileMsg({ text: 'The order changed while you were reconciling - reloaded; check the figures and retry.', ok: false, forId: id });
+          await load();
+          return;
+        }
+        throw new Error(body.error ?? 'Failed');
+      }
+      setReconcileMsg({ text: 'Cleared - recorded under your account.', ok: true, forId: id });
+      await load();
+    } catch (err) {
+      setReconcileMsg({ text: err instanceof Error ? err.message : 'Failed', ok: false, forId: id });
+    } finally {
+      setReconcileBusy(false);
+    }
+  };
+
   const toggleTax = async () => {
     const invoice = data?.invoice;
     if (!invoice) return;
@@ -426,6 +478,20 @@ export default function InvoiceDetailPage() {
               <p className="text-sm text-gray-500">
                 {[data.customerPhone, data.customerEmail].filter(Boolean).join(' · ') || '—'}
               </p>
+              {/* Row 362: the approved light colour, where staff verify an
+                  order before taking money for it. Internal only — it is NOT
+                  on the customer-facing invoice document (docModels.ts does not
+                  read this field). */}
+              {data.lightColorLabel && (
+                <p className="mt-2 text-sm">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                    Light colour
+                  </span>{' '}
+                  <span className="ml-1 inline-block rounded px-2 py-0.5 text-sm font-medium bg-amber-50 text-amber-900 border border-amber-200">
+                    {data.lightColorLabel}
+                  </span>
+                </p>
+              )}
               <div className="mt-2 flex flex-wrap gap-3 text-sm">
                 {inv.job_id && (
                   <Link href={`/admin/jobs/${inv.job_id}`} className="text-blue-700 hover:underline">
@@ -472,6 +538,111 @@ export default function InvoiceDetailPage() {
                 )}
               </div>
             </div>
+
+            {/* Row 414: the unreconciled-marker panel + the explicit staff
+                override. The list's amber warning says what the flag MEANS; this
+                is the one place it can be CLEARED once a human has verified the
+                invoice against the agreed order. The clear is audited on the
+                quote's approval_snapshot (markerOverrides names who asserted it
+                and preserves the cleared payloads), and it deliberately does
+                NOT change any money figure - it only retires the flag.
+                Admin lens HIGH on this PR: the FLAGGED figures render right
+                here, next to the invoice's current ones - "verify before
+                clearing" with no numbers in front of the staffer is a glance
+                at prose. Fields can be null on a malformed marker; each line
+                renders only when its numbers exist. */}
+            {data && (data.staleMarkers.paymentBlocked || data.staleMarkers.invoiceResyncFailed) && (
+              <div
+                className="rounded-lg border px-4 py-3"
+                style={{ borderColor: '#f59e0b', backgroundColor: '#fffbeb' }}
+                role="status"
+              >
+                <p className="text-sm font-semibold" style={{ color: '#92400e' }}>
+                  Unreconciled marker on this order
+                </p>
+                <div className="text-xs mt-1 space-y-1" style={{ color: '#92400e' }}>
+                  {data.staleMarkers.invoiceResyncFailed && (
+                    <p>
+                      An amendment could not re-sync this invoice
+                      {data.staleMarkers.invoiceResyncFailed.attemptedTotal != null && (
+                        <>
+                          {' '}- the order&rsquo;s re-priced total was{' '}
+                          <strong>{money(data.staleMarkers.invoiceResyncFailed.attemptedTotal)}</strong>
+                          {data.staleMarkers.invoiceResyncFailed.attemptedBalance != null && (
+                            <> (balance {money(data.staleMarkers.invoiceResyncFailed.attemptedBalance)})</>
+                          )}
+                          , while this invoice shows total <strong>{money(inv.total)}</strong> and
+                          balance <strong>{money(inv.balance)}</strong>
+                        </>
+                      )}
+                      .
+                    </p>
+                  )}
+                  {data.staleMarkers.paymentBlocked && (
+                    <p>
+                      A customer payment attempt was refused while the invoice was flagged
+                      {data.staleMarkers.paymentBlocked.expectedBalance != null &&
+                        data.staleMarkers.paymentBlocked.storedBalance != null && (
+                          <>
+                            {' '}- the invoice showed a balance of{' '}
+                            <strong>{money(data.staleMarkers.paymentBlocked.storedBalance)}</strong> when the
+                            agreed order works out to{' '}
+                            <strong>{money(data.staleMarkers.paymentBlocked.expectedBalance)}</strong>
+                          </>
+                        )}
+                      .
+                    </p>
+                  )}
+                  <p>
+                    Compare those figures with the invoice above. If they now agree - or the balance
+                    was settled outside the card flow (cash, check, NCE) - clear the flag here.
+                    Clearing only retires the warning: it does not change any amount, and a card
+                    payment still re-checks the figures on its own.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={reconcileBusy}
+                  className="mt-2 text-xs font-semibold px-3 py-1.5 rounded-md text-white disabled:opacity-50"
+                  style={{ backgroundColor: '#d97706' }}
+                  onClick={() => void markReconciled()}
+                >
+                  {reconcileBusy ? 'Recording…' : 'Mark reconciled'}
+                </button>
+              </div>
+            )}
+
+            {/* #973 staff lens MED: the outcome message renders OUTSIDE the
+                marker panel - the panel unmounts the moment the post-clear
+                reload lands, which used to take the "Cleared" confirmation
+                with it almost as soon as it appeared. */}
+            {reconcileMsg && reconcileMsg.forId === id && (
+              <p
+                className="text-xs font-medium rounded-md border px-3 py-2"
+                role="status"
+                style={
+                  reconcileMsg.ok
+                    ? { color: '#166534', borderColor: '#bbf7d0', backgroundColor: '#f0fdf4' }
+                    : { color: '#b91c1c', borderColor: '#fecaca', backgroundColor: '#fef2f2' }
+                }
+              >
+                {reconcileMsg.text}
+              </p>
+            )}
+
+            {/* #973 staff lens MED: the override trail is owner-visible on the
+                invoice, mirroring the valor_txn_log precedent - a write-only
+                audit is forensics nobody can find. */}
+            {data?.lastMarkerOverride && (
+              <p className="text-xs text-gray-500">
+                Unreconciled flag last cleared
+                {data.lastMarkerOverride.by ? ` by ${data.lastMarkerOverride.by}` : ''}
+                {data.lastMarkerOverride.at
+                  ? ` on ${new Date(data.lastMarkerOverride.at).toLocaleString()}`
+                  : ''}
+                .
+              </p>
+            )}
 
             {inv.quote_id && <StaffNotesPanel key={inv.quote_id} quoteId={inv.quote_id} />}
 

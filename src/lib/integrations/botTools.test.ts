@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { QuoteListItem } from '@/lib/quotes';
+import { BUSINESS_RULES } from '@/lib/pricing/pricingEngine';
 import type { FulfillmentCard } from '@/lib/inventory/jobs';
 
 // IO seams mocked; the search/format/timezone logic runs for real.
@@ -36,6 +37,10 @@ const quote = (over: Partial<QuoteListItem>): QuoteListItem => ({
   view_only: false,
   highlevel_contact_id: null,
   customer_id: null,
+  // Row 409: listQuotes now resolves every row's deposit rate; these fixtures
+  // are not about deposits, so they take the business default.
+  deposit_rate: BUSINESS_RULES.depositPercentage,
+  deposit_rate_frozen: false,
   ...over,
 });
 
@@ -80,7 +85,10 @@ describe('runStatusTool', () => {
       quote({ id: 'c', quote_number: 3, customer_name: 'Draft Dan' }),
     ]);
     expect(await runStatusTool('booked bob')).toContain('Booked (deposit paid)');
-    expect(await runStatusTool('approved ann')).toContain('Approved, deposit pending');
+    // Row 327: approved reads identically to 'sent, not viewed' — no separate
+    // 'Approved, deposit pending' wording, mirroring quoteStatus.ts's
+    // APPROVED_DISPLAYS_AS (ledger row 242: no third stage).
+    expect(await runStatusTool('approved ann')).toContain('Sent, not viewed');
     expect(await runStatusTool('draft dan')).toContain('Draft, not sent');
   });
 

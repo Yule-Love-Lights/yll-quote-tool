@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 
 import { dollarsToCents } from '@/lib/hourlyRate';
 import { isValidTelegramUserId } from '@/lib/telegramUserId';
+import { SkeletonBar, SkeletonRows } from '@/components/ui/LoadingSkeleton';
 
 /**
  * Settings → Accounts → Staff (ledger #354, unified 2026-08-24).
@@ -336,7 +337,19 @@ export function StaffAccounts() {
       </p>
 
       {loading ? (
-        <p className="text-sm text-gray-500 mt-4">Loading staff…</p>
+        // Row 410, fix round (staff lens LOW): mirror the real structure —
+        // two GROUPS (Office, Field crew), each a heading + hint line + rows —
+        // not a flat list that grows headings on load. Rows stay h-16: the
+        // list is two lines per person (identity above, actions below).
+        <div role="status" aria-busy="true" className="mt-4">
+          <SkeletonBar className="h-4 w-20 mb-1" />
+          <SkeletonBar className="h-3 w-56 mb-2" />
+          <SkeletonRows label="" announce={false} rows={2} rowClassName="h-16" className="flex flex-col gap-2 mb-4" />
+          <SkeletonBar className="h-4 w-20 mb-1" />
+          <SkeletonBar className="h-3 w-56 mb-2" />
+          <SkeletonRows label="" announce={false} rows={2} rowClassName="h-16" className="flex flex-col gap-2" />
+          <span className="sr-only">Loading staff…</span>
+        </div>
       ) : (
         <>
           {groups.map(({ label, rows, hint }) => (

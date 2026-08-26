@@ -135,6 +135,20 @@ export type PermanentSideFieldReconcileInput = {
   currentBilled: number;
   /** The derived value recorded at the last reconcile (or seeded at a reopened quote's rehydrate-thaw). */
   baseline: number | undefined;
+  /**
+   * Row 379 (S48 #921 delta-verify MED): true when `baseline` was captured
+   * under a DIFFERENT satellite scale than the one that produced this run's
+   * `freshValue` — reachable across a service-type switch (reopen a
+   * permanent quote frozen -> switch to permanent_bistro before the first
+   * edit thaws it -> a fresh street lookup pulls a new scale and thaws ->
+   * switch back to permanent). `freshValue !== baseline` in that case is a
+   * SCALE artifact, not evidence this field's own geometry changed, so it
+   * must not be trusted the way a real redraw is. Only meaningful for
+   * footage (scale-derived); corners is scale-free and callers should always
+   * pass false (the default) for it. Optional + defaulted so every existing
+   * call site (which has no scale-provenance concept) is unaffected.
+   */
+  scaleChanged?: boolean;
 };
 
 export type PermanentSideFieldReconcileResult = {
@@ -147,7 +161,7 @@ export type PermanentSideFieldReconcileResult = {
 export function reconcilePermanentSideField(
   input: PermanentSideFieldReconcileInput,
 ): PermanentSideFieldReconcileResult {
-  const { active, hasLines, hadLinesPrev, canDerive, freshValue, currentBilled, baseline } = input;
+  const { active, hasLines, hadLinesPrev, canDerive, freshValue, currentBilled, baseline, scaleChanged = false } = input;
   if (!active) return { target: null, nextBaseline: undefined };
   if (!hasLines) {
     // Fires REGARDLESS of canDerive — a side with no known scale still needs
@@ -163,6 +177,19 @@ export function reconcilePermanentSideField(
     // scale (an address re-pull) resumes the override comparison exactly
     // where it left off instead of treating the field as brand-new.
     return { target: null, nextBaseline: baseline };
+  }
+  if (scaleChanged && baseline != null) {
+    // Row 379: `baseline` was captured under a scale that is no longer the
+    // one in effect. `freshValue !== baseline` here proves nothing about
+    // this side's own geometry — it may be purely the scale difference — so
+    // don't let it win the way a real redraw does (`target: freshValue`
+    // below would silently rescale/clobber a standing override on a side
+    // nobody touched). Resync the baseline to this run's fresh value under
+    // the NEW scale and leave the billed value exactly as the operator left
+    // it; the next run compares like-for-like again. If baseline is null
+    // there's nothing to resync against — falls through to the brand-new
+    // auto-populate branch below, same as any first-ever derive.
+    return { target: null, nextBaseline: freshValue };
   }
   if (baseline == null || freshValue !== baseline) {
     // Brand-new derive, or this field's own geometry changed since the last
@@ -245,4 +272,48 @@ export function mergePermanentSideFootageBaseline(
     else delete next[field];
   });
   return next;
+}
+
+/**
+ * Which permanent side fields currently hold a STANDING MANUAL OVERRIDE
+ * (ledger row 405).
+ *
+ * Same test the reconcile itself uses to decide an override exists: a field
+ * has a recorded derived baseline, and the billed value no longer equals it
+ * (`currentBilled !== baseline`, the "staff typed an override -> keep it"
+ * branch above). Extracted so the re-analyze path can ASK the question before
+ * it throws the baselines away, rather than discovering the answer after.
+ *
+ * Why this exists: "Analyze from Address" for a DIFFERENT address resets
+ * `prevPermSideDerivedRef`/`prevPermSideScaleRef` on purpose — without that
+ * reset, the second address's real footage is misread as a pure scale
+ * artifact and the FIRST address's wrong number sticks forever. But the reset
+ * also discards any hand-typed override, and unlike the two sibling
+ * satellite-replacement paths (`handleSatelliteSelect`, `applyPulledSatellite`)
+ * that path had NO confirm — so footage, which drives price, could be wiped
+ * with no warning. This tells the caller exactly which fields are at stake so
+ * the operator can be told what they are about to lose.
+ *
+ * A field with no baseline is NOT an override: it was never derived, so there
+ * is nothing to have drifted from (a manual-only field on a side with no
+ * lines is the ordinary case, and warning about it would be noise).
+ */
+export function permanentSideOverriddenFields(
+  baseline: PermanentSideFootageBaseline,
+  billed: Partial<Record<PermanentSideFieldKey, number | null | undefined>>,
+): PermanentSideFieldKey[] {
+  return (Object.keys(baseline) as PermanentSideFieldKey[]).filter((key) => {
+    const base = baseline[key];
+    if (base == null) return false;
+    const current = billed[key];
+    if (current == null) return false;
+    return current !== base;
+  });
+}
+
+/** Human-readable "Front footage", "Left corners", ... for a confirm dialog. */
+export function describePermanentSideField(key: PermanentSideFieldKey): string {
+  const side = key.replace(/(Footage|Corners)$/, '');
+  const what = key.endsWith('Footage') ? 'footage' : 'corners';
+  return `${side.charAt(0).toUpperCase()}${side.slice(1)} ${what}`;
 }

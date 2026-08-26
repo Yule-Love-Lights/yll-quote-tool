@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { QuoteListItem } from '@/lib/quotes';
+import { BUSINESS_RULES } from '@/lib/pricing/pricingEngine';
 import type { FulfillmentCard } from '@/lib/inventory/jobs';
 
 // IO seams mocked; the collect filtering + the pure formatter run for real.
@@ -7,7 +8,7 @@ const { listQuotes, listFulfillmentCards, listOpenItems, listDueFollowUps, sbRef
   listQuotes: vi.fn(async (): Promise<unknown[]> => []),
   listFulfillmentCards: vi.fn(async (): Promise<unknown[]> => []),
   listOpenItems: vi.fn(async (): Promise<unknown> => ({ ok: true, items: [], totalOpen: 0, totalLeads: 0, truncated: false })),
-  listDueFollowUps: vi.fn(async (): Promise<unknown> => ({ ok: true, items: [] })),
+  listDueFollowUps: vi.fn(async (): Promise<unknown> => ({ ok: true, items: [], totalDue: 0, truncated: false })),
   sbRef: { current: null as unknown },
 }));
 vi.mock('@/lib/quotes', () => ({ listQuotes }));
@@ -56,6 +57,10 @@ const quote = (over: Partial<QuoteListItem>): QuoteListItem => ({
   view_only: false,
   highlevel_contact_id: null,
   customer_id: null,
+  // Row 409: listQuotes now resolves every row's deposit rate; these fixtures
+  // are not about deposits, so they take the business default.
+  deposit_rate: BUSINESS_RULES.depositPercentage,
+  deposit_rate_frozen: false,
   ...over,
 });
 
@@ -99,7 +104,7 @@ beforeEach(() => {
   listQuotes.mockResolvedValue([]);
   listFulfillmentCards.mockResolvedValue([]);
   listOpenItems.mockResolvedValue({ ok: true, items: [], totalOpen: 0, totalLeads: 0, truncated: false });
-  listDueFollowUps.mockResolvedValue({ ok: true, items: [] });
+  listDueFollowUps.mockResolvedValue({ ok: true, items: [], totalDue: 0, truncated: false });
   sbRef.current = null;
 });
 
@@ -154,7 +159,7 @@ describe('collectOpsDigest', () => {
 
   it('reads inbox open + due-follow-up counts from the inbox surface (totalLeads, not the capped page)', async () => {
     listOpenItems.mockResolvedValue({ ok: true, items: [{}, {}], totalOpen: 64, totalLeads: 40, truncated: true });
-    listDueFollowUps.mockResolvedValue({ ok: true, items: [{}, {}, {}] });
+    listDueFollowUps.mockResolvedValue({ ok: true, items: [{}, {}, {}], totalDue: 3, truncated: false });
     const data = await collectOpsDigest();
     expect(data.inboxOpenCount).toBe(40);
     expect(data.inboxFollowUpsDueCount).toBe(3);
@@ -217,6 +222,8 @@ describe('collectOpsDigest — #229 named details', () => {
     vi.setSystemTime(new Date('2026-08-06T15:00:00Z')); // Aug 6, ET morning
     listDueFollowUps.mockResolvedValue({
       ok: true,
+      totalDue: 1,
+      truncated: false,
       items: [
         {
           id: 'f1',
@@ -245,6 +252,8 @@ describe('collectOpsDigest — #229 named details', () => {
     vi.setSystemTime(new Date('2026-08-06T15:00:00Z'));
     listDueFollowUps.mockResolvedValue({
       ok: true,
+      totalDue: 2,
+      truncated: false,
       items: [
         {
           id: 'f1',
@@ -272,11 +281,70 @@ describe('collectOpsDigest — #229 named details', () => {
     ]);
   });
 
+  // Row 391 fix round (admin lens MED): the named list's own "+N more" trailer
+  // was computed from the page array, so a digest could read "137 follow-ups
+  // due" above five names and "+95 more" — accounting for 100 and silently
+  // dropping 37. It now counts against the real total printed on the line above.
+  it('the named list overflow counts against the REAL total, not the capped page', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-06T11:30:00Z'));
+    const item = (i: number) => ({
+      id: `f${i}`,
+      reason: 'quote_sent_no_reply',
+      dueAt: '2026-08-05T12:00:00Z',
+      contactName: `Person ${i}`,
+      contactPhone: null,
+      contactEmail: null,
+    });
+    listDueFollowUps.mockResolvedValue({
+      ok: true,
+      totalDue: 137,
+      truncated: true,
+      items: Array.from({ length: 8 }, (_, i) => item(i)),
+    });
+    const data = await collectOpsDigest();
+    const msg = opsDigestMessage(data, 'https://x');
+    expect(msg).toContain('137 follow-ups due');
+    // 137 due, NAMED_LIST_CAP names printed — the trailer covers the rest.
+    const shown = (msg.match(/• Person \d+ —/g) ?? []).length;
+    expect(msg).toContain(`+${137 - shown} more`);
+    expect(msg).not.toContain(`+${8 - shown} more`);
+  });
+
+  // Row 391: the named list is capped at listDueFollowUps' page size, but the
+  // COUNT must be the real total. Before this, the digest read the count off
+  // items.length, so a backlog past the cap reported a flat "100 due" forever
+  // and disagreed with the inbox strip's own "N more not shown".
+  it('reports the REAL due count even when the named list is capped below it', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-06T11:30:00Z'));
+    listDueFollowUps.mockResolvedValue({
+      ok: true,
+      totalDue: 137,
+      truncated: true,
+      items: [
+        {
+          id: 'f1',
+          reason: 'quote_sent_no_reply',
+          dueAt: '2026-08-05T12:00:00Z',
+          contactName: 'Sam Overdue',
+          contactPhone: null,
+          contactEmail: null,
+        },
+      ],
+    });
+    const data = await collectOpsDigest();
+    expect(data.inboxFollowUpsDueCount).toBe(137);
+    expect(data.overdueFollowUps).toHaveLength(1); // the NAMED list stays the page
+  });
+
   it('falls back name -> phone -> email -> "(no name)" for a nameless follow-up contact', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-06T15:00:00Z'));
     listDueFollowUps.mockResolvedValue({
       ok: true,
+      totalDue: 3,
+      truncated: false,
       items: [
         { id: 'f1', reason: 'x', dueAt: '2026-08-05T12:00:00Z', contactName: null, contactPhone: '+16315551234', contactEmail: 'lead@x.com' },
         { id: 'f2', reason: 'x', dueAt: '2026-08-05T12:00:00Z', contactName: null, contactPhone: null, contactEmail: 'onlyemail@x.com' },
@@ -297,6 +365,8 @@ describe('collectOpsDigest — #229 named details', () => {
   it('guards a malformed dueAt (invalid date) to 0 days rather than NaN', async () => {
     listDueFollowUps.mockResolvedValue({
       ok: true,
+      totalDue: 1,
+      truncated: false,
       items: [{ id: 'f1', reason: 'x', dueAt: 'not-a-date', contactName: 'Bad Date Bob', contactPhone: null, contactEmail: null }],
     });
     const data = await collectOpsDigest();
@@ -315,6 +385,8 @@ describe('collectOpsDigest — #229 named details', () => {
     vi.setSystemTime(new Date('2026-08-06T11:30:00Z'));
     listDueFollowUps.mockResolvedValue({
       ok: true,
+      totalDue: 1,
+      truncated: false,
       items: [
         {
           id: 'f1',

@@ -67,7 +67,7 @@ export function createSpritzer(
   group.add(halo);
 
   // ----- Rays + tip bulbs -----
-  const { tipRadius, tipHaloRadius, rayStroke } = spritzerLightDims(radiusPx, lightScale);
+  const { tipRadius, tipHaloRadius, rayStroke, centerRadius } = spritzerLightDims(radiusPx, lightScale);
 
   for (let i = 0; i < numRays; i++) {
     // Even angular spacing with a small per-ray jitter for organic look.
@@ -135,11 +135,10 @@ export function createSpritzer(
   // The ray bases all overlap at center but adding a small dense glow makes
   // the core read as a single bright source rather than a knot of lines.
   const centerHex = isMulti ? "#fff2d4" : colorOf(colors[0]).glow;
-  // Left off lightScale on purpose, unlike the tips and rays above. This is a
-  // single blob sized against the spritzer's own radius, so growing it makes
-  // the spritzer read as a bigger blob rather than as more light, and at the
-  // top of the range it would swallow the rays it is supposed to sit under.
-  const centerRadius = Math.max(4, radiusPx * 0.18);
+  // Row 350: sized alongside the tips in spritzerLightDims, so the hub can
+  // never end up smaller than the dots at the end of its own rays. Row 347's
+  // reason for leaving it unscaled — a hub that swallows the rays at the top
+  // of the range — survives as the ceiling in that function.
   const center = new Konva.Circle({
     radius: centerRadius,
     fillRadialGradientStartPoint: { x: 0, y: 0 },

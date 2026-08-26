@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ops.yulelovelights.com/schemas/operations-hub/common.schema.json",
   "title": "Yule Love Lights Operations Hub shared contract schemas",
-  "schema_version": "1.1.0-draft",
-  "contract_version": "1.5.0-draft",
+  "schema_version": "1.2.0-draft",
+  "contract_version": "1.6.0-draft",
   "$defs": {
     "RequestedContractVersion": {
       "type": "string",
@@ -15,11 +15,11 @@
     },
     "ContractVersion": {
       "type": "string",
-      "const": "1.5.0-draft"
+      "const": "1.6.0-draft"
     },
     "SchemaVersion": {
       "type": "string",
-      "const": "1.1.0-draft"
+      "const": "1.2.0-draft"
     },
     "ClientVersion": {
       "type": "string",
@@ -923,7 +923,6 @@
     "QuoteLifecycleEventType": {
       "type": "string",
       "enum": [
-        "QuoteRequestReceived",
         "QuoteRequestLinked",
         "QuoteCreated",
         "QuoteAssigned",
@@ -957,6 +956,13 @@
         "customer_follow_up"
       ]
     },
+    "QuoteWorkWaitReason": {
+      "type": "string",
+      "enum": [
+        "approval",
+        "customer_information"
+      ]
+    },
     "QuoteDeliveryMode": {
       "type": "string",
       "enum": [
@@ -967,6 +973,9 @@
       ]
     },
     "QuoteLifecycleEvent": {
+      "x-yll-cross-field-invariants": [
+        "aggregate_id_equals_quote_id"
+      ],
       "allOf": [
         {
           "$ref": "#/$defs/EventEnvelope"
@@ -982,6 +991,13 @@
             "event_type": {
               "$ref": "#/$defs/QuoteLifecycleEventType"
             },
+            "aggregate_id": {
+              "$ref": "#/$defs/CanonicalUuid"
+            },
+            "entity_version": {
+              "type": "integer",
+              "minimum": 1
+            },
             "quote_id": {
               "$ref": "#/$defs/CanonicalUuid"
             },
@@ -992,10 +1008,33 @@
             "request_id": {
               "$ref": "#/$defs/NullableUuid"
             },
-            "customer_ref": {
+            "request_source_system": {
               "oneOf": [
                 {
-                  "$ref": "#/$defs/CanonicalUuid"
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "request_source_record_id": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "customer_ref_hash": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
                 },
                 {
                   "type": "null"
@@ -1024,6 +1063,16 @@
             },
             "revision_id": {
               "$ref": "#/$defs/NullableUuid"
+            },
+            "work_wait_reason": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/QuoteWorkWaitReason"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "promise_id": {
               "$ref": "#/$defs/NullableUuid"
@@ -1062,6 +1111,85 @@
                 }
               ]
             },
+            "delivery_attempt_id": {
+              "$ref": "#/$defs/NullableUuid"
+            },
+            "delivery_channel": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "sms",
+                    "email"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "delivery_attempted_at": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "delivery_retry_of_attempt_id": {
+              "$ref": "#/$defs/NullableUuid"
+            },
+            "delivery_outcome": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "accepted",
+                    "failed",
+                    "unknown"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "delivery_resolved_at": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "provider_delivery_id": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "delivery_error_code": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "first_send": {
               "type": "boolean"
             },
@@ -1072,6 +1200,194 @@
             "source_outbox_sequence": {
               "type": "integer",
               "minimum": 1
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "event_type": {
+                "const": "QuoteRequestLinked"
+              }
+            },
+            "required": [
+              "event_type"
+            ]
+          },
+          "then": {
+            "required": [
+              "request_id",
+              "request_source_system",
+              "request_source_record_id"
+            ],
+            "properties": {
+              "request_id": {
+                "$ref": "#/$defs/CanonicalUuid"
+              },
+              "request_source_system": {
+                "type": "string",
+                "minLength": 1
+              },
+              "request_source_record_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "event_type": {
+                "enum": [
+                  "QuoteWorkWaitStarted",
+                  "QuoteWorkWaitEnded"
+                ]
+              }
+            },
+            "required": [
+              "event_type"
+            ]
+          },
+          "then": {
+            "required": [
+              "work_wait_reason"
+            ],
+            "properties": {
+              "work_wait_reason": {
+                "$ref": "#/$defs/QuoteWorkWaitReason"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "event_type": {
+                "const": "QuoteSentRecorded"
+              }
+            },
+            "required": [
+              "event_type"
+            ]
+          },
+          "then": {
+            "required": [
+              "first_sent_at",
+              "first_send",
+              "delivery_mode",
+              "total_cents"
+            ],
+            "properties": {
+              "first_sent_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "delivery_mode": {
+                "$ref": "#/$defs/QuoteDeliveryMode"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "event_type": {
+                "const": "QuoteDeliveryAttempted"
+              }
+            },
+            "required": [
+              "event_type"
+            ]
+          },
+          "then": {
+            "required": [
+              "delivery_attempt_id",
+              "delivery_channel",
+              "delivery_attempted_at"
+            ],
+            "properties": {
+              "delivery_attempt_id": {
+                "$ref": "#/$defs/CanonicalUuid"
+              },
+              "delivery_channel": {
+                "type": "string",
+                "enum": [
+                  "sms",
+                  "email"
+                ]
+              },
+              "delivery_attempted_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "event_type": {
+                "const": "QuoteDeliveryOutcomeRecorded"
+              }
+            },
+            "required": [
+              "event_type"
+            ]
+          },
+          "then": {
+            "required": [
+              "delivery_attempt_id",
+              "delivery_outcome",
+              "delivery_resolved_at"
+            ],
+            "properties": {
+              "delivery_attempt_id": {
+                "$ref": "#/$defs/CanonicalUuid"
+              },
+              "delivery_outcome": {
+                "type": "string",
+                "enum": [
+                  "accepted",
+                  "failed",
+                  "unknown"
+                ]
+              },
+              "delivery_resolved_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "event_type": {
+                "const": "QuotePromiseRecorded"
+              }
+            },
+            "required": [
+              "event_type"
+            ]
+          },
+          "then": {
+            "required": [
+              "promise_id",
+              "promise_type",
+              "promise_due_at"
+            ],
+            "properties": {
+              "promise_id": {
+                "$ref": "#/$defs/CanonicalUuid"
+              },
+              "promise_type": {
+                "$ref": "#/$defs/QuotePromiseType"
+              },
+              "promise_due_at": {
+                "type": "string",
+                "format": "date-time"
+              }
             }
           }
         }

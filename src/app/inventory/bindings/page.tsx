@@ -24,6 +24,7 @@ import {
   WIRE_C9_KEY, WIRE_MAGNETIC_KEY,
   buildSeedBindings, buildSeedClipRules,
 } from '@/lib/inventory/concepts';
+import { SkeletonBar, SkeletonRows } from '@/components/ui/LoadingSkeleton';
 
 type Status = 'idle' | 'saving' | 'saved' | 'error';
 const TABS = [
@@ -199,7 +200,18 @@ export default function BindingsPage() {
         </div>
 
         {loading ? (
-          <p className="text-sm text-gray-500 py-10 text-center">Loading bindings…</p>
+          // Row 410: was a bare centred "Loading…" line that then dropped the
+          // whole binding table in its place. Fix round (staff lens MED): the
+          // default "bulbs" tab renders TWO sections of ~a dozen picker rows,
+          // so the skeleton mirrors that — headers and all — instead of six
+          // rows at half the real height, which would relocate the jump.
+          <div role="status" aria-busy="true" className="py-1">
+            <SkeletonBar className="h-4 w-24 mb-2" />
+            <SkeletonRows label="" announce={false} rows={8} rowClassName="h-10" className="flex flex-col gap-3 mb-6" />
+            <SkeletonBar className="h-4 w-32 mb-2" />
+            <SkeletonRows label="" announce={false} rows={4} rowClassName="h-10" className="flex flex-col gap-3" />
+            <span className="sr-only">Loading bindings…</span>
+          </div>
         ) : (
           <>
             {tab === 'bulbs' && (
