@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { StaffNote, StaffNoteCursor, StaffNotesPage } from '@/lib/staffNotes';
+import { SkeletonRows } from '@/components/ui/LoadingSkeleton';
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -162,7 +163,11 @@ export function StaffNotesList({
         Staff only
       </span>
       {loading ? (
-        <p className="text-sm text-gray-500">Loading notes…</p>
+        // Row 410: was a bare line that then dropped the whole note list in.
+        // announce={false}: this panel already wraps everything in its own
+        // aria-live region, and nesting a second role="status" inside it can
+        // double-announce (technical lens LOW on PR #969).
+        <SkeletonRows label="Loading notes…" announce={false} rows={3} rowClassName="h-16" className="flex flex-col gap-2" />
       ) : loadFailed && notes.length === 0 ? (
         <div role="alert" className="text-sm text-red-700">
           <p>Could not load notes. This quote may still have notes that are not shown.</p>

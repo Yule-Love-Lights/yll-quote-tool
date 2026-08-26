@@ -12,6 +12,7 @@ import { InventorySubNav } from '@/components/inventory/InventorySubNav';
 import { SkuPicker } from '@/components/inventory/SkuPicker';
 import type { CatalogItem } from '@/lib/inventory/catalog';
 import { toQty, type OnHandRow } from '@/lib/inventory/onHand';
+import { SkeletonBar } from '@/components/ui/LoadingSkeleton';
 
 const effCat = (i: CatalogItem) => i.yll_category ?? i.category;
 const isLow = (r: OnHandRow) => r.reorder_point > 0 && r.on_hand_qty <= r.reorder_point;
@@ -172,7 +173,22 @@ export function OnHandStock() {
         </div>
 
         {loading ? (
-          <p className="text-sm text-gray-500 py-10 text-center">Loading stock…</p>
+          // Row 410: mirrors the stock table below it — the same bordered box
+          // and header strip, then rows at the real px-3 py-2 rhythm.
+          <div role="status" aria-busy="true" className="border border-gray-100 rounded">
+            <div className="px-3 py-2 border-b border-gray-100">
+              <SkeletonBar className="h-3 w-full" />
+            </div>
+            {/* Row 410 fix round (staff lens LOW): rows are h-11 — the real
+                rows run two lines (~44px), and h-8 undershot them. */}
+            <div className="p-3 flex flex-col gap-3">
+              <SkeletonBar className="h-11" />
+              <SkeletonBar className="h-11" />
+              <SkeletonBar className="h-11" />
+              <SkeletonBar className="h-11" />
+            </div>
+            <span className="sr-only">Loading stock…</span>
+          </div>
         ) : rows.length === 0 ? (
           <p className="text-sm text-gray-400 py-10 text-center">No stocked items yet — add one above.</p>
         ) : (
