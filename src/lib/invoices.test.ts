@@ -870,6 +870,85 @@ describe('getInvoiceDetail', () => {
     expect(d?.isNce).toBe(false);
   });
 
+  // Row 414 (#973 delta-verify MED): the marker plumbing the admin-lens HIGH
+  // was about — payload figures ride through sanitized, and the override
+  // trail is scoped to THIS invoice — shipped untested in the fix round.
+  it('threads the stale-marker payload FIGURES through, sanitized', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [{ id: 'i1', job_id: null, quote_id: 'q1', total: 4000, balance: 3200, status: 'draft' }],
+      quotes: [
+        {
+          id: 'q1',
+          customer_name: 'Alice',
+          is_test: false,
+          approval_snapshot: {
+            paymentBlocked: { storedBalance: 1500, expectedBalance: 1300, at: '2026-08-01T00:00:00Z' },
+            invoiceResyncFailed: { attemptedTotal: 'garbage', attemptedBalance: 900, at: 42 },
+          },
+        },
+      ],
+    });
+    sbRef.current = fake.client;
+    const d = await getInvoiceDetail('i1');
+    expect(d?.staleMarkers.paymentBlocked).toEqual({
+      storedBalance: 1500,
+      expectedBalance: 1300,
+      at: '2026-08-01T00:00:00Z',
+    });
+    // malformed fields degrade to null — the panel then shows generic wording,
+    // never NaN or a wrong number.
+    expect(d?.staleMarkers.invoiceResyncFailed).toEqual({
+      attemptedTotal: null,
+      attemptedBalance: 900,
+      at: null,
+    });
+  });
+
+  it('staleMarkers are null (not booleans) when absent, and for an unlinked invoice', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [
+        { id: 'i1', job_id: null, quote_id: 'q1', total: 4000, balance: 3200, status: 'draft' },
+        { id: 'i2', job_id: null, quote_id: null, total: 100, balance: 0, status: 'paid' },
+      ],
+      quotes: [{ id: 'q1', customer_name: 'Alice', is_test: false, approval_snapshot: {} }],
+    });
+    sbRef.current = fake.client;
+    expect((await getInvoiceDetail('i1'))?.staleMarkers).toEqual({ paymentBlocked: null, invoiceResyncFailed: null });
+    expect((await getInvoiceDetail('i2'))?.staleMarkers).toEqual({ paymentBlocked: null, invoiceResyncFailed: null });
+  });
+
+  it('lastMarkerOverride takes the NEWEST entry for THIS invoice, ignoring other invoices', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [{ id: 'i1', job_id: null, quote_id: 'q1', total: 4000, balance: 0, status: 'paid' }],
+      quotes: [
+        {
+          id: 'q1',
+          customer_name: 'Alice',
+          is_test: false,
+          approval_snapshot: {
+            markerOverrides: [
+              { action: 'mark-reconciled', by: 'old@x.com', at: '2026-08-01T00:00:00Z', invoiceId: 'i1' },
+              { action: 'mark-reconciled', by: 'other@x.com', at: '2026-08-02T00:00:00Z', invoiceId: 'i-other' },
+              { action: 'mark-reconciled', by: 'new@x.com', at: '2026-08-03T00:00:00Z', invoiceId: 'i1' },
+            ],
+          },
+        },
+      ],
+    });
+    sbRef.current = fake.client;
+    const d = await getInvoiceDetail('i1');
+    expect(d?.lastMarkerOverride).toEqual({ by: 'new@x.com', at: '2026-08-03T00:00:00Z' });
+  });
+
+  it('lastMarkerOverride is null with no override history', async () => {
+    const fake = makeFakeSupabase({
+      invoices: [{ id: 'i1', job_id: null, quote_id: 'q1', total: 4000, balance: 0, status: 'paid' }],
+      quotes: [{ id: 'q1', customer_name: 'Alice', is_test: false, approval_snapshot: {} }],
+    });
+    sbRef.current = fake.client;
+    expect((await getInvoiceDetail('i1'))?.lastMarkerOverride).toBeNull();
+  });
+
   it('returns null when the invoice is missing', async () => {
     const fake = makeFakeSupabase({ invoices: [] });
     sbRef.current = fake.client;
