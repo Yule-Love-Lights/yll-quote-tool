@@ -7,6 +7,7 @@ import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
 import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
 import { LegacyRebookToggle } from '@/components/admin/LegacyRebookToggle';
 import { NceBadge } from '@/components/admin/NceBadge';
+import { depositCaution } from '@/components/admin/DepositRateChip';
 import { NceToggle } from '@/components/admin/NceToggle';
 import { ViewOnlyToggle } from '@/components/admin/ViewOnlyToggle';
 import { MarkAsSentButton } from '@/components/admin/MarkAsSentButton';
@@ -15,7 +16,7 @@ import { ColorRequestPanel } from '@/components/admin/ColorRequestPanel';
 import { StaffNotesPanel } from '@/components/admin/StaffNotesPanel';
 import { buildPortalLineItems } from '@/lib/portal/adapter';
 import { BUSINESS_RULES, resolveLineItemLabel, type QuoteInputs } from '@/lib/pricing/pricingEngine';
-import { getQuoteRaw } from '@/lib/quotes';
+import { getQuoteRaw, resolveQuoteDepositRate, numberOrUndefined } from '@/lib/quotes';
 import { deriveStatus, repriceSignalCanFire, APPROVED_DISPLAYS_AS, type QuoteStatus } from '@/lib/quoteStatus';
 import { requiresReconsent, isSupersededPendingAmendment, resolveAmendmentBasis } from '@/lib/amend';
 import { getJobByQuote } from '@/lib/jobs';
@@ -27,7 +28,7 @@ import { catalogCostOverrides, listCatalog } from '@/lib/inventory/catalog';
 import { PermanentBomPanel } from '@/components/permanent/PermanentBomPanel';
 import { bistroBomFromQuote } from '@/lib/permanentBistro/bomFromQuote';
 import { costOverridesFromBistroCatalog } from '@/lib/inventory/bistroCatalog';
-import { getColorScheme, CUSTOM_SCHEME_ID } from '@/lib/design/colorSchemes';
+import { approvedColorLabelForQuote } from '@/lib/design/approvedColorLabels';
 import { depositDeclineReasonText } from '@/lib/integrations/quoteMessages';
 import { VaultRegistrationNotice } from '@/components/admin/VaultRegistrationNotice';
 import { PortalImageVisibilityControls } from '@/components/admin/PortalImageVisibilityControls';
@@ -90,18 +91,6 @@ function relativeTimeFromNow(iso: string): string {
   return `${days} day${days === 1 ? '' : 's'} ago`;
 }
 
-// #155 — the light color/pattern a legacy-rebook customer approved with, for
-// the admin detail card. null when the quote hasn't been approved yet (no
-// customerSelection to read) — the card renders nothing in that case.
-function chosenLightColorLabel(
-  sel: { colorSchemeId?: string; customPattern?: string[] } | undefined,
-): string | null {
-  if (!sel) return null;
-  const hasCustomPattern = Array.isArray(sel.customPattern) && sel.customPattern.length > 0;
-  if (sel.colorSchemeId === CUSTOM_SCHEME_ID || hasCustomPattern) return 'Custom pattern';
-  if (sel.colorSchemeId) return getColorScheme(sel.colorSchemeId).label;
-  return null;
-}
 
 export default async function QuoteDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -127,6 +116,42 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
     : [];
 
   const amendments = quote.approval_snapshot?.amendments ?? [];
+  // Row 409 (staff lens HIGH on PR #968): two deposit percentages exist on a
+  // quote and they are not always the same number. PRICED is the rate the
+  // dollar figures in the summary below were computed with (frozen into
+  // `result` by the last Calculate). CONFIGURED is the rate the money paths
+  // will actually use — the frozen approval rate if there is one, else the
+  // staff override, else the rate in `result` — resolved by the same helper the
+  // admin list's deposit chip reads, so the two staff screens cannot disagree.
+  const pricedDepositPercent = Math.round(
+    (quote.result?.depositRate ?? BUSINESS_RULES.depositPercentage) * 100,
+  );
+  // Fix round 2 LOW: sanitize the snapshot value through the same guard the
+  // list uses, instead of an unchecked cast — a legacy string "0.4" or garbage
+  // must degrade, not propagate NaN into a rendered percent.
+  const frozenDepositRate = numberOrUndefined(
+    quote.approval_snapshot?.customerSelection?.depositRate,
+  );
+  const configuredDepositPercent = Math.round(
+    resolveQuoteDepositRate({
+      depositPercent: (quote.inputs as QuoteInputs | null)?.depositPercent,
+      resultRate: quote.result?.depositRate ?? undefined,
+      snapshotRate: frozenDepositRate,
+    }) * 100,
+  );
+  // Fix round 2 (delta-verify MED x2): what the caution may CLAIM depends on
+  // the quote's state, and the instruction it gives has to be one that can
+  // actually run — the enumeration lives in depositCaution, which is pure and
+  // tested. `frozen` picks the honest basis wording, mirroring the list chip:
+  // 8 of 24 live approved quotes have NO frozen rate, and for those "the
+  // customer agreed to X%" is a claim nothing on file supports.
+  const caution = depositCaution({
+    pricedPercent: pricedDepositPercent,
+    configuredPercent: configuredDepositPercent,
+    status,
+  });
+  const configuredBasis = frozenDepositRate !== undefined ? 'agreed at approval' : 'currently configured';
+
 
   // Row 344 fix round (staff-lens HIGH): the audit trail route.ts appends to
   // on a scene-driven reprice of an approved-not-booked quote was written
@@ -170,8 +195,14 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
   // #155 — for a legacy rebook, show what light color/pattern the customer
   // approved with (once approved). null while awaiting approval, or for a
   // normal (non-rebook) quote — the line simply doesn't render.
-  const chosenLightColor =
-    quote.legacy_rebook ? chosenLightColorLabel(quote.approval_snapshot?.customerSelection) : null;
+  // Row 362: resolved against THIS quote's vertical. Before, this called the
+  // label helper with no scheme list, so it silently used the holiday one — a
+  // permanent quote's colour would have read "Staff's pick". Pre-existing and
+  // narrow here (legacy_rebook only), but it is the same defect row 362 is
+  // about, so it is fixed rather than carried forward.
+  const chosenLightColor = quote.legacy_rebook
+    ? await approvedColorLabelForQuote(quote.approval_snapshot, quote.service_type)
+    : null;
 
   // Permanent Lighting (#88 P7/P8): the operator BOM (Ascend/Dauer APL material
   // list + wholesale cost) for ordering. Null for non-permanent quotes. Materials
@@ -469,10 +500,12 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
                   <dt>
                     Deposit
                     {/* #177 fix 5: surface the percent when it's not the 50% default —
-                        cheaply derivable from the same result.depositRate. */}
-                    {Math.round((quote.result.depositRate ?? BUSINESS_RULES.depositPercentage) * 100) !== 50 && (
-                      <> ({Math.round((quote.result.depositRate ?? BUSINESS_RULES.depositPercentage) * 100)}%)</>
-                    )}
+                        cheaply derivable from the same result.depositRate. This
+                        stays the rate the FIGURE beside it was priced with, so
+                        the percent and the dollars can never disagree; row 409's
+                        staleness caution below names the configured rate when
+                        the two have drifted apart. */}
+                    {pricedDepositPercent !== 50 && <> ({pricedDepositPercent}%)</>}
                   </dt>
                   <dd>{money(quote.result.depositAmount)}</dd>
                 </div>
@@ -480,6 +513,37 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
                   <dt>Balance due</dt>
                   <dd>{money(quote.result.balanceDue)}</dd>
                 </div>
+                {/* Row 409 (staff lens HIGH on PR #968). Tagging a quote NCE
+                    writes inputs.depositPercent and does NOT reprice, by design
+                    — so until someone runs Calculate again, the deposit figures
+                    above are the OLD rate's while the portal, the approve route
+                    and the Valor charge all read the new one (chargesFromResult
+                    prefers inputs.depositPercent). The admin list's deposit chip
+                    shows the new rate, so without this the two staff screens
+                    disagree about one quote with nothing on either to explain
+                    it. This does not invent a corrected dollar figure: a partial
+                    selection prices the deposit off the SELECTED subtotal, not
+                    off this total, so the only honest thing to show is which
+                    rate produced these numbers and which one is configured. */}
+                {caution && (
+                  <p className="mt-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-800">
+                    {caution.kind === 'recalc' ? (
+                      <>
+                        This quote&rsquo;s deposit is {caution.configured}% ({configuredBasis}), but
+                        the figures above were priced at {caution.priced}%. Reopen the quote and
+                        Calculate again to bring them in line — collection uses the{' '}
+                        {caution.configured}% rate.
+                      </>
+                    ) : (
+                      <>
+                        The figures above were priced at {caution.priced}%, but this order&rsquo;s
+                        deposit was {caution.configured}% ({configuredBasis}). The deposit has
+                        already been settled, so this is a record of the drift, not something to
+                        fix.
+                      </>
+                    )}
+                  </p>
+                )}
               </dl>
             </>
           )}

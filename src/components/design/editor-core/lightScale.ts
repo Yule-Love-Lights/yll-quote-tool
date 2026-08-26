@@ -77,11 +77,55 @@ export function spritzerLightDims(
   lightScale: number = LIGHT_SCALE_DEFAULT,
 ) {
   const scale = normalizeLightScale(lightScale);
-  const tipRadius = Math.max(1.5, radiusPx * 0.028) * scale;
+
+  // Row 350. Row 347 scaled the tips and rays with the slider but left the
+  // centre hub fixed, so on a whole-house shot — where BOTH sit on their pixel
+  // floors — the tip dots overtook the hub they spray from. Fixing that from
+  // one side only moves the problem, so both ends are bounded here, against
+  // the spray radius the tips have to live inside.
+  //
+  // Every bound is written so that at scale 1 it cannot bind: each ceiling is
+  // floored at that dimension's own unscaled value. A design nobody has
+  // touched the slider on renders exactly the pixels it always did.
+  const unscaledTip = Math.max(1.5, radiusPx * 0.028);
+  // A tip dot never grows past ~40% of the spray. Without this, the 1.5px
+  // FLOOR times 4x puts 6px dots on a 6px-radius spritzer — dots wider than
+  // the spray that is supposed to contain them.
+  //
+  // Below radiusPx ≈ 3.6 that cap collapses onto the floor itself, so the tips
+  // hold at 1.5px and the slider stops moving them. That is the honest outcome
+  // rather than a flaw: the whole spray is under 7px across there — smaller
+  // than one dot at its minimum — so there is nothing left to make visible,
+  // only a blob to make bigger. Pinned by test so it stays a decision.
+  const tipRadius = Math.min(unscaledTip * scale, Math.max(unscaledTip, radiusPx * 0.42));
+
+  // The hub scales too, under a ceiling that keeps row 347's own concern
+  // intact — a hub that swallows the rays reads as one blob rather than as a
+  // light spraying outward. Three bounds, and the reason for each:
+  //   • at least a tip dot: that IS the artifact this row exists to remove;
+  //   • at most ~45% of the spray, so the outer half still reads as rays;
+  //   • never below the unscaled base, which is what preserves scale 1.
+  //
+  // Consequence worth knowing rather than discovering: on a spritzer bigger
+  // than ~22px the hub reaches that ceiling around 2.5x and then holds while
+  // the tips keep growing. That is the ceiling doing its job, not the slider
+  // breaking, and it is pinned by test so it stays a decision.
+  const centerBase = Math.max(4, radiusPx * 0.18);
+  const centerRadius = Math.min(
+    centerBase * scale,
+    Math.max(centerBase, tipRadius, radiusPx * 0.45),
+  );
+
   return {
     tipRadius,
+    // NOT capped against the spray, unlike the dot it surrounds: this is a
+    // radial gradient that fades to fully transparent at its edge, so a halo
+    // reaching past the spray reads as glow spilling outward, which is what a
+    // light does. (It did so before row 350 too, and by more — the tip cap
+    // above pulled its worst case in from ~156% of the spray to ~109%.)
     tipHaloRadius: tipRadius * 2.6,
     rayStroke: Math.max(0.6, radiusPx * 0.008) * scale,
+    centerRadius,
   };
 }
 

@@ -65,6 +65,12 @@ function makeSb(
     // CAS): 'raced' simulates the same 0-rows-no-error shape the invoices
     // CAS uses when a concurrent write already changed approval_snapshot.
     quoteUpdateResult?: 'ok' | 'raced';
+    // Row 411 fix round (delta-verify MED): simulate the quotes-select READ
+    // itself failing — { data: null, error } — so the skip-on-unconfirmed
+    // guard in flagInvoiceResyncFailed is actually reachable. Without this the
+    // fake structurally could not exercise that branch, and a probe reverted
+    // the guard with every test green.
+    quoteReadFails?: boolean;
   } = {},
 ) {
   const invoiceUpdates: Array<Record<string, unknown>> = [];
@@ -94,10 +100,13 @@ function makeSb(
       return b;
     },
     select: () => b,
-    maybeSingle: async () => ({
-      data: table === 'quotes' ? { approval_snapshot: opts.quoteApprovalSnapshot ?? null } : null,
-      error: null,
-    }),
+    maybeSingle: async () =>
+      table === 'quotes' && opts.quoteReadFails
+        ? { data: null, error: { message: 'connection reset' } }
+        : {
+            data: table === 'quotes' ? { approval_snapshot: opts.quoteApprovalSnapshot ?? null } : null,
+            error: null,
+          },
     then: (resolve: (v: unknown) => void) => {
       if (table === 'invoices' && mode === 'update') {
         const outcome = results[Math.min(invoiceCallIndex, results.length - 1)];
@@ -549,6 +558,33 @@ describe('flagInvoiceResyncFailed — CAS on approval_snapshot (row 341 fix roun
     // never retried and never blind-overwritten (unlike the invoices CAS,
     // which retries once against a fresh read).
     expect(sb.quoteUpdates).toHaveLength(1);
+  });
+
+  it('SKIPS the marker write entirely when the snapshot read fails — never degrades to {} (row 411)', async () => {
+    // The reviewed data-loss pattern: a failed read coerced to {} and CAS'd
+    // against '{}'. The CAS bounded the damage to a dropped marker with a
+    // misleading lost-the-race log, but the guard must SKIP — no quotes-table
+    // write at all. Mutation-proof: reverting the guard to the old ?? {}
+    // coercion makes this fail (a quotes update is attempted).
+    const sb = makeSb({
+      invoiceUpdateResults: ['raced', 'raced'],
+      quoteReadFails: true,
+    });
+    sbRef.current = sb.client;
+    getInvoiceByJobMock.mockResolvedValue(invoice);
+
+    const outcome = await resyncInvoiceToAgreedTotal({
+      jobId: 'job-1',
+      invoice,
+      result: { total: 2400 },
+      depositPaid: 1000,
+      newTotal: 2400,
+      logPrefix: '[test]',
+      retiredReason: 'amend-decline-reopen',
+    });
+
+    expect(outcome.resynced).toBe(false); // the resync failure is still reported
+    expect(sb.quoteUpdates).toHaveLength(0); // but NO snapshot write was attempted
   });
 });
 

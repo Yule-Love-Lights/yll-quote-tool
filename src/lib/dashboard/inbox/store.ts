@@ -34,6 +34,11 @@ import { addSuppressedSenders, removeSuppressedSenders } from './suppression';
 import { applyBucketFilter, inverseOf, type ReverseAction } from './lifecycle';
 import { listOperatorAccounts } from '@/lib/auth/adminUsers';
 import { deriveStatus, isParkedLegacyRebookDraft, type QuoteStatus } from '@/lib/quoteStatus';
+// Row 391: the ET day boundary, DST-correct. Lives in the payroll module
+// because that is where the two-transition-day bug was found and fixed; it is
+// a pure function of an instant, so listDueFollowUps borrows it rather than
+// keeping a second copy that could drift out of agreement with it.
+import { etMidnightAfter } from '@/lib/opsMidnightClose';
 
 // ─── Pure ingest planner ────────────────────────────────────────────────────
 
@@ -2576,7 +2581,23 @@ export async function sweepResolvedItemFollowUps(): Promise<number> {
   return closed;
 }
 
-export type DueFollowUpsResult = { ok: true; items: DueFollowUp[] } | { ok: false; error: string };
+/** Row 391: the read cap on `listDueFollowUps`, named so the truncation signal
+ *  below can be derived from it rather than from a repeated literal. */
+export const DUE_FOLLOW_UPS_CAP = 100;
+
+export type DueFollowUpsResult =
+  | {
+      ok: true;
+      items: DueFollowUp[];
+      /** Row 391: the REAL number of pending follow-ups due today or earlier,
+       *  independent of the page cap — the direct analogue of listOpenItems'
+       *  `totalOpen`, and floored the same way so `totalDue - items.length`
+       *  can never go negative. */
+      totalDue: number;
+      /** Row 391: true when the cap hid due follow-ups from this page. */
+      truncated: boolean;
+    }
+  | { ok: false; error: string };
 
 /**
  * Pending follow-ups due today or overdue (ET), for the top strip AND (#229)
@@ -2601,12 +2622,30 @@ export type DueFollowUpsResult = { ok: true; items: DueFollowUp[] } | { ok: fals
 export async function listDueFollowUps(now: Date): Promise<DueFollowUpsResult> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false, error: 'Supabase service role not configured' };
-  const { data, error } = await sb
+  // Row 391: the cap is applied by the DB BEFORE the isDueToday filter below,
+  // and the read is oldest-first, so a backlog of 100+ overdue nags fills the
+  // page and today's fresh ones never arrive. Two halves to the fix:
+  //  (a) bound the QUERY to the same due window the filter enforces, so the cap
+  //      is spent only on rows that can actually appear (they already were —
+  //      due_at ascending makes the due rows a prefix — but this is what lets
+  //      Postgrest's exact count mean "due", not "pending at any future date");
+  //  (b) report that count, so the strip can say how many are not shown.
+  // The bound is the ET start of tomorrow, exclusive, which is exactly
+  // isDueToday's `etDayKey(dueAt) <= etDayKey(now)`. It reuses payroll's
+  // etMidnightAfter rather than re-deriving ET midnight here: that function
+  // already carries the DST-convergence fix (a naive noon-offset probe is an
+  // hour wrong on both transition days), and a second copy would drift.
+  const dueBefore = etMidnightAfter(now).toISOString();
+  const { data, error, count } = await sb
     .from('follow_ups')
-    .select('id, reason, due_at, re_chase_since, dashboard_contacts ( display_name, primary_phone, primary_email )')
+    .select(
+      'id, reason, due_at, re_chase_since, dashboard_contacts ( display_name, primary_phone, primary_email )',
+      { count: 'exact' },
+    )
     .eq('status', 'pending')
+    .lt('due_at', dueBefore)
     .order('due_at', { ascending: true })
-    .limit(100);
+    .limit(DUE_FOLLOW_UPS_CAP);
   if (error) return { ok: false, error: error.message };
   const items = ((data ?? []) as unknown as Record<string, unknown>[])
     .filter((r) => {
@@ -2628,7 +2667,16 @@ export async function listDueFollowUps(now: Date): Promise<DueFollowUpsResult> {
         reChaseSince: (r.re_chase_since as string | null) ?? null,
       };
     });
-  return { ok: true, items };
+  // Row 391: `count` is null only if Postgrest didn't return one (it should,
+  // with { count: 'exact' }) — fall back to the page length rather than lie
+  // low. Floored against items.length for the same reason listOpenItems floors
+  // totalOpen: the strip subtracts these, and a negative "N more not shown"
+  // would be worse than no signal at all. The floor also absorbs the one way
+  // the two can legitimately disagree — the isDueToday filter is evaluated in
+  // JS while the count comes from the SQL bound, so a row sitting within a
+  // millisecond of the ET boundary can be counted and then filtered out.
+  const totalDue = Math.max(count ?? items.length, items.length);
+  return { ok: true, items, totalDue, truncated: totalDue > items.length };
 }
 
 export type PendingColorRequestsResult =

@@ -276,7 +276,11 @@ alter table quotes
   -- documents it.
   add column if not exists deposit_declined_at timestamptz,
   add column if not exists deposit_decline_code text,
-  add column if not exists deposit_decline_notified_at timestamptz;
+  add column if not exists deposit_decline_notified_at timestamptz,
+  -- 2026-08-05 NCE tag (#198) — row 188 true-up 2026-08-26: applied by
+  -- migrations/2026-08-05-nce-customer-tags.sql, never folded into this file
+  -- (predates the same-PR fold-in rule).
+  add column if not exists is_nce boolean not null default false;
 
 alter table quotes drop constraint if exists quotes_video_kind_check;
 alter table quotes add constraint quotes_video_kind_check
@@ -445,9 +449,18 @@ alter table training_houses
   add column if not exists cost_labor_hours numeric,
   add column if not exists revenue numeric;
 
+-- 2026-08-05 corpus source tag (archive-slice3) — row 188 true-up 2026-08-26:
+-- this column + index were applied by
+-- migrations/2026-08-05-archive-slice3-corpus-and-night-photos.sql but never
+-- folded into this file (the migration predates the same-PR fold-in rule).
+alter table training_houses
+  add column if not exists source text not null default 'manual';
+
 alter table training_houses enable row level security;
 create index if not exists training_houses_created_at_idx on training_houses (created_at desc);
 create index if not exists training_houses_address_idx on training_houses (address);
+create index if not exists training_houses_source_created_idx
+  on public.training_houses (source, created_at desc);
 
 
 -- ---------------------------------------------------------------------
@@ -801,6 +814,12 @@ alter table public.customers
   add column if not exists referral_code text unique;
 alter table public.customers
   add column if not exists referral_photo_optout boolean not null default false;
+
+-- 2026-08-05 NCE + YLL Neighbor tags (#198) — row 188 true-up 2026-08-26:
+-- applied by migrations/2026-08-05-nce-customer-tags.sql, never folded in.
+alter table public.customers
+  add column if not exists is_nce boolean not null default false,
+  add column if not exists is_yll_neighbor boolean not null default false;
 
 -- 2026-07-28 Customer tenure (#178) staff-editable manual override years,
 -- unioned with the auto-derived set (deposit-paid + legacy-rebook years) in
@@ -2355,6 +2374,31 @@ create index if not exists site_submissions_form_type_created_at_idx
 
 -- Service-role only, same as website_leads: RLS on with no policies, so the
 -- anon key can neither read nor write. Every access goes through the server.
+-- 2026-08-17 follow-ups (#195) — row 188 true-up 2026-08-26: applied to prod
+-- as Supabase migration 20260817123021 (site_submissions_followups) but the
+-- file was never committed; recovered as
+-- migrations/2026-08-17-site-submissions-followups.sql. Statements verbatim.
+alter table public.site_submissions
+  add column if not exists handled_at timestamptz;
+alter table public.site_submissions
+  add column if not exists handled_by text;
+create index if not exists site_submissions_unhandled_idx
+  on public.site_submissions (created_at desc)
+  where handled_at is null;
+alter table public.site_submissions
+  add column if not exists retry_count integer not null default 0;
+alter table public.site_submissions
+  add column if not exists last_retried_at timestamptz;
+create index if not exists site_submissions_retry_idx
+  on public.site_submissions (last_retried_at nulls first, created_at)
+  where sync_status in ('pending', 'error');
+alter table public.site_submissions
+  add column if not exists nominee_consent boolean not null default false;
+alter table public.site_submissions
+  add column if not exists nominee_ghl_contact_id text;
+alter table public.site_submissions
+  add column if not exists nominee_sync_error text;
+
 alter table public.site_submissions enable row level security;
 
 -- The PRIVATE bucket resumes live in. Created here, in the same migration that
@@ -2467,6 +2511,14 @@ create table if not exists public.staff_notes (
   created_by_label    text not null,
   created_at          timestamptz not null default now(),
   client_request_id   uuid not null,
+  -- Row 372 (2026-08-25, migrations/2026-08-25-staff-notes-redaction.sql):
+  -- a withdrawn note keeps its row and its attribution; only the body is
+  -- replaced by a tombstone. Non-null redacted_at means body is that
+  -- tombstone, not what was originally written.
+  redacted_at         timestamptz,
+  redacted_by         uuid references auth.users(id) on delete set null,
+  redacted_by_label   text,
+  redacted_reason     text,
 
   constraint staff_notes_body_valid
     check (body = btrim(body) and char_length(body) between 1 and 2000),
@@ -2476,7 +2528,18 @@ create table if not exists public.staff_notes (
       and char_length(created_by_label) between 1 and 320
     ),
   constraint staff_notes_quote_request_unique
-    unique (quote_id, client_request_id)
+    unique (quote_id, client_request_id),
+  -- Row 372: same shape guarantee the other text columns carry.
+  constraint staff_notes_redacted_by_label_valid
+    check (
+      redacted_by_label is null
+      or (redacted_by_label = btrim(redacted_by_label) and char_length(redacted_by_label) between 1 and 320)
+    ),
+  constraint staff_notes_redacted_reason_valid
+    check (
+      redacted_reason is null
+      or (redacted_reason = btrim(redacted_reason) and char_length(redacted_reason) between 1 and 500)
+    )
 );
 
 create index if not exists staff_notes_quote_created_idx
@@ -2490,6 +2553,11 @@ alter table public.staff_notes enable row level security;
 
 revoke all on public.staff_notes from anon, authenticated, service_role;
 grant select, insert on public.staff_notes to service_role;
+-- Row 372: column-scoped on purpose — a redaction may rewrite the body and
+-- stamp itself, and may NOT re-attribute, re-date, or reuse the idempotency
+-- key of a note. Enforced by Postgres, not by the application.
+grant update (body, redacted_at, redacted_by, redacted_by_label, redacted_reason)
+  on public.staff_notes to service_role;
 
 comment on table public.staff_notes is
   'Internal staff-only quote timeline, also shown on the linked job and invoice. Never customer-facing.';

@@ -47,6 +47,7 @@ import {
   priorBalanceCollectedUsd,
 } from '@/lib/quoteAmendInvoiceSync';
 import { getJobByQuote } from '@/lib/jobs';
+import { casSwapApprovalSnapshot } from '@/lib/quoteAudit';
 import { deriveStatus, type QuoteStatus } from '@/lib/quoteStatus';
 import { sendSms, sendEmail, isHighLevelConfigured } from '@/lib/integrations/highlevel';
 import {
@@ -337,19 +338,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // everywhere deriveStatus() is used (review HIGH ×3).
   const priorSnapshot = fresh?.approval_snapshot ?? snap;
   const newSnapshot = { ...priorSnapshot, amendments: [...freshAmendments, amendment] };
-  const { data: updatedQuotes, error: upErr } = await sb
-    .from('quotes')
-    .update({ approval_snapshot: newSnapshot })
-    .eq('id', id)
-    // PostgREST string-interpolates filter values. Serialize jsonb explicitly;
-    // passing the object would produce "[object Object]" and never match.
-    .eq('approval_snapshot', JSON.stringify(priorSnapshot))
-    .select('id');
-  if (upErr) {
-    console.error('[api/quotes/:id/amend] snapshot update failed:', upErr);
+  // Row 411: the CAS write itself (serialize-the-filter, rowcount check) is
+  // the shared primitive in src/lib/quoteAudit.ts now. The POLICY stays here:
+  // this is a foreground financial write, so a lost race is the caller's 409
+  // to resubmit — never a silent retry against a snapshot this request has
+  // not re-derived its amendment from.
+  const casOutcome = await casSwapApprovalSnapshot(
+    sb,
+    id,
+    priorSnapshot as Record<string, unknown>,
+    newSnapshot as Record<string, unknown>,
+    '[api/quotes/:id/amend]',
+  );
+  if (casOutcome === 'error') {
     return NextResponse.json({ error: 'Failed to record the amendment' }, { status: 500 });
   }
-  if (!updatedQuotes || updatedQuotes.length === 0) {
+  if (casOutcome === 'conflict') {
     return NextResponse.json(
       { error: 'The order changed while you were amending — please retry.', code: 'concurrent-amend' },
       { status: 409 },

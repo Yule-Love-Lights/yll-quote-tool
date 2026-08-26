@@ -244,6 +244,23 @@ export default function JobDetailPage() {
               <p className="text-sm text-gray-500">
                 {[data.customerPhone, data.customerEmail].filter(Boolean).join(' · ') || '—'}
               </p>
+              {/* Row 362: the approved light colour, on the screen the crew
+                  actually builds from. Rendered as a chip rather than a line of
+                  grey text because getting this wrong means the wrong lights go
+                  on a real house — Kristie Tibbetts was told Champagne by SMS
+                  while her order still read "Staff's pick", and nothing on this
+                  page would have shown the difference. Absent only when the
+                  quote has no approved selection. */}
+              {data.lightColorLabel && (
+                <p className="mt-2 text-sm">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                    Light colour
+                  </span>{' '}
+                  <span className="ml-1 inline-block rounded px-2 py-0.5 text-sm font-medium bg-amber-50 text-amber-900 border border-amber-200">
+                    {data.lightColorLabel}
+                  </span>
+                </p>
+              )}
               {data.job.quote_id && (
                 <div className="mt-2 flex gap-3 text-sm">
                   <Link href={`/quote/${data.job.quote_id}`} className="text-blue-700 hover:underline">

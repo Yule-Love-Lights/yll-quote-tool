@@ -5,12 +5,14 @@ const {
   appendStaffNoteMock,
   getOperatorMock,
   listStaffNotesMock,
+  redactStaffNoteMock,
   quoteExistsMock,
   serviceConfiguredRef,
 } = vi.hoisted(() => ({
   appendStaffNoteMock: vi.fn(),
   getOperatorMock: vi.fn(),
   listStaffNotesMock: vi.fn(),
+  redactStaffNoteMock: vi.fn(),
   quoteExistsMock: vi.fn(),
   serviceConfiguredRef: { current: true },
 }));
@@ -23,12 +25,14 @@ vi.mock('@/lib/supabase', () => ({
 }));
 vi.mock('@/lib/staffNotes', () => ({
   STAFF_NOTE_MAX_LENGTH: 2000,
+  STAFF_NOTE_REASON_MAX_LENGTH: 500,
   appendStaffNote: appendStaffNoteMock,
   listStaffNotes: listStaffNotesMock,
+  redactStaffNote: redactStaffNoteMock,
   quoteExistsForStaffNotes: quoteExistsMock,
 }));
 
-import { GET, POST } from './route';
+import { GET, PATCH, POST } from './route';
 
 const QUOTE_ID = '11111111-1111-4111-8111-111111111111';
 const OPERATOR_ID = '22222222-2222-4222-8222-222222222222';
@@ -43,8 +47,11 @@ const NOTE = {
 };
 
 const ctx = (id = QUOTE_ID) => ({ params: Promise.resolve({ id }) });
-const request = (body?: unknown) =>
+// Row 373: GET now reads the page cursor off the query string, so the fake
+// carries a url. `search` defaults to none — the first page.
+const request = (body?: unknown, search = '') =>
   ({
+    url: `https://quote.example.com/api/quotes/${QUOTE_ID}/staff-notes${search}`,
     json: async () => {
       if (body === undefined) throw new Error('invalid json');
       return body;
@@ -61,7 +68,8 @@ beforeEach(() => {
     role: 'operator',
   });
   quoteExistsMock.mockResolvedValue(true);
-  listStaffNotesMock.mockResolvedValue([NOTE]);
+  listStaffNotesMock.mockResolvedValue({ notes: [NOTE], hasMore: false });
+  redactStaffNoteMock.mockResolvedValue({ kind: 'redacted', note: { ...NOTE, body: '[Note withdrawn]' } });
   appendStaffNoteMock.mockResolvedValue({ kind: 'created', note: NOTE });
 });
 
@@ -84,8 +92,62 @@ describe('GET /api/quotes/[id]/staff-notes', () => {
     const response = await GET(request({}), ctx());
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ notes: [NOTE] });
-    expect(listStaffNotesMock).toHaveBeenCalledWith(QUOTE_ID);
+    await expect(response.json()).resolves.toEqual({ notes: [NOTE], hasMore: false });
+    // Row 373: no cursor on the first page.
+    expect(listStaffNotesMock).toHaveBeenCalledWith(QUOTE_ID, null);
+  });
+
+  // Row 373: the page cursor. Both halves must arrive together — a lone
+  // timestamp cannot separate two notes written in the same instant, so a
+  // half-cursor is ignored rather than used to skip past a note.
+  it('passes a complete page cursor through, and ignores a half one', async () => {
+    await GET(request({}, `?beforeCreatedAt=${NOTE.createdAt}&beforeId=${NOTE.id}`), ctx());
+    expect(listStaffNotesMock).toHaveBeenLastCalledWith(QUOTE_ID, {
+      createdAt: NOTE.createdAt,
+      id: NOTE.id,
+    });
+
+    // Half a cursor is not a cursor, and is refused rather than quietly
+    // serving the first page again.
+    expect((await GET(request({}, '?beforeCreatedAt=2026-08-21T14:00:00.000Z'), ctx())).status).toBe(400);
+    expect((await GET(request({}, `?beforeId=${NOTE.id}`), ctx())).status).toBe(400);
+  });
+
+  // Technical lens MED: listStaffNotes interpolates both halves into a
+  // PostgREST `.or()` filter, and postgrest-js escapes nothing. An id that
+  // closes the quoting appends a condition of the caller's choosing, so the
+  // shape is checked at the boundary rather than trusted downstream.
+  it('refuses a cursor that could reshape the database filter', async () => {
+    const injections = [
+      `${NOTE.id}",body.neq."x`,
+      `${NOTE.id}),or(quote_id.neq.`,
+      `${NOTE.id},created_at.gt.2000-01-01`,
+      "' OR 1=1 --",
+    ];
+    for (const beforeId of injections) {
+      const res = await GET(
+        request({}, `?beforeCreatedAt=${encodeURIComponent(NOTE.createdAt)}&beforeId=${encodeURIComponent(beforeId)}`),
+        ctx(),
+      );
+      expect(res.status).toBe(400);
+    }
+
+    for (const beforeCreatedAt of ['not-a-date', `${NOTE.createdAt}",id.neq."x`, '2026-08-21']) {
+      const res = await GET(
+        request({}, `?beforeCreatedAt=${encodeURIComponent(beforeCreatedAt)}&beforeId=${NOTE.id}`),
+        ctx(),
+      );
+      expect(res.status).toBe(400);
+    }
+
+    // Nothing reached the database on any of them.
+    expect(listStaffNotesMock).not.toHaveBeenCalled();
+  });
+
+  it('reports hasMore so the panel can offer the older page', async () => {
+    listStaffNotesMock.mockResolvedValueOnce({ notes: [NOTE], hasMore: true });
+    const response = await GET(request({}), ctx());
+    await expect(response.json()).resolves.toEqual({ notes: [NOTE], hasMore: true });
   });
 
   it('rejects invalid and missing quote ids', async () => {
@@ -152,5 +214,82 @@ describe('POST /api/quotes/[id]/staff-notes', () => {
 
     appendStaffNoteMock.mockResolvedValueOnce({ kind: 'error' });
     expect((await POST(request({ body: NOTE.body, clientRequestId: REQUEST_ID }), ctx())).status).toBe(500);
+  });
+});
+
+// ─── Row 372: withdrawing a note ────────────────────────────────────────────
+describe('PATCH /api/quotes/[id]/staff-notes — withdraw a note (row 372)', () => {
+  it('withdraws under the SERVER-derived operator, never one from the request body', async () => {
+    const res = await PATCH(request({ noteId: NOTE.id, reason: 'Wrong customer' }), ctx());
+
+    expect(res.status).toBe(200);
+    expect(redactStaffNoteMock).toHaveBeenCalledWith({
+      quoteId: QUOTE_ID,
+      noteId: NOTE.id,
+      redactedBy: OPERATOR_ID,
+      redactedByLabel: 'Naldo',
+      // Row 372: the ROLE comes from the session too — the author-or-admin
+      // rule is decided in the lib against the note's real author, and nothing
+      // about the actor is taken from the request body.
+      redactedByRole: 'operator',
+      reason: 'Wrong customer',
+    });
+  });
+
+  it('accepts a withdrawal with no reason — the reason can be the sensitive part', async () => {
+    await PATCH(request({ noteId: NOTE.id }), ctx());
+    expect(redactStaffNoteMock).toHaveBeenLastCalledWith(expect.objectContaining({ reason: null }));
+
+    await PATCH(request({ noteId: NOTE.id, reason: '   ' }), ctx());
+    expect(redactStaffNoteMock).toHaveBeenLastCalledWith(expect.objectContaining({ reason: null }));
+  });
+
+  it('400s a missing or malformed note id, and never reaches the database', async () => {
+    for (const body of [{}, { noteId: 'not-a-uuid' }, { noteId: 42 }]) {
+      expect((await PATCH(request(body), ctx())).status).toBe(400);
+    }
+    expect(redactStaffNoteMock).not.toHaveBeenCalled();
+  });
+
+  it('400s a reason that is not text, or is too long', async () => {
+    expect((await PATCH(request({ noteId: NOTE.id, reason: 12 }), ctx())).status).toBe(400);
+    expect((await PATCH(request({ noteId: NOTE.id, reason: 'x'.repeat(501) }), ctx())).status).toBe(400);
+    expect(redactStaffNoteMock).not.toHaveBeenCalled();
+  });
+
+  // A second click is not an error — the caller asked for a state the note is
+  // already in — and the body carries the ORIGINAL withdrawal so the panel
+  // shows who actually did it.
+  it('answers 200 for an already-withdrawn note, flagged as such', async () => {
+    redactStaffNoteMock.mockResolvedValueOnce({
+      kind: 'already-redacted',
+      note: { ...NOTE, body: '[Note withdrawn]', redactedByLabel: 'Someone Else' },
+    });
+    const res = await PATCH(request({ noteId: NOTE.id }), ctx());
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.alreadyRedacted).toBe(true);
+    expect(data.note.redactedByLabel).toBe('Someone Else');
+  });
+
+  it('404s a note that is not on this quote, and 500s a failed write', async () => {
+    redactStaffNoteMock.mockResolvedValueOnce({ kind: 'not-found' });
+    expect((await PATCH(request({ noteId: NOTE.id }), ctx())).status).toBe(404);
+
+    redactStaffNoteMock.mockResolvedValueOnce({ kind: 'error' });
+    expect((await PATCH(request({ noteId: NOTE.id }), ctx())).status).toBe(500);
+  });
+
+  it('403s when the lib refuses the actor, with copy that says who may', async () => {
+    redactStaffNoteMock.mockResolvedValueOnce({ kind: 'forbidden' });
+    const res = await PATCH(request({ noteId: NOTE.id }), ctx());
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toContain('wrote a note');
+  });
+
+  it('fails closed without an operator session', async () => {
+    getOperatorMock.mockResolvedValue(null);
+    expect((await PATCH(request({ noteId: NOTE.id }), ctx())).status).toBe(401);
+    expect(redactStaffNoteMock).not.toHaveBeenCalled();
   });
 });

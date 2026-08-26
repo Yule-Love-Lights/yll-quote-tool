@@ -273,3 +273,47 @@ export function mergePermanentSideFootageBaseline(
   });
   return next;
 }
+
+/**
+ * Which permanent side fields currently hold a STANDING MANUAL OVERRIDE
+ * (ledger row 405).
+ *
+ * Same test the reconcile itself uses to decide an override exists: a field
+ * has a recorded derived baseline, and the billed value no longer equals it
+ * (`currentBilled !== baseline`, the "staff typed an override -> keep it"
+ * branch above). Extracted so the re-analyze path can ASK the question before
+ * it throws the baselines away, rather than discovering the answer after.
+ *
+ * Why this exists: "Analyze from Address" for a DIFFERENT address resets
+ * `prevPermSideDerivedRef`/`prevPermSideScaleRef` on purpose — without that
+ * reset, the second address's real footage is misread as a pure scale
+ * artifact and the FIRST address's wrong number sticks forever. But the reset
+ * also discards any hand-typed override, and unlike the two sibling
+ * satellite-replacement paths (`handleSatelliteSelect`, `applyPulledSatellite`)
+ * that path had NO confirm — so footage, which drives price, could be wiped
+ * with no warning. This tells the caller exactly which fields are at stake so
+ * the operator can be told what they are about to lose.
+ *
+ * A field with no baseline is NOT an override: it was never derived, so there
+ * is nothing to have drifted from (a manual-only field on a side with no
+ * lines is the ordinary case, and warning about it would be noise).
+ */
+export function permanentSideOverriddenFields(
+  baseline: PermanentSideFootageBaseline,
+  billed: Partial<Record<PermanentSideFieldKey, number | null | undefined>>,
+): PermanentSideFieldKey[] {
+  return (Object.keys(baseline) as PermanentSideFieldKey[]).filter((key) => {
+    const base = baseline[key];
+    if (base == null) return false;
+    const current = billed[key];
+    if (current == null) return false;
+    return current !== base;
+  });
+}
+
+/** Human-readable "Front footage", "Left corners", ... for a confirm dialog. */
+export function describePermanentSideField(key: PermanentSideFieldKey): string {
+  const side = key.replace(/(Footage|Corners)$/, '');
+  const what = key.endsWith('Footage') ? 'footage' : 'corners';
+  return `${side.charAt(0).toUpperCase()}${side.slice(1)} ${what}`;
+}

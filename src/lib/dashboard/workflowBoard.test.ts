@@ -41,9 +41,11 @@ describe('computeWorkflowBoard', () => {
         deposit_paid_at: '2026-06-04T00:00:00Z',
       }),
     ]);
+    // Row 327: 'd' (sent + customer-approved, no deposit) folds into
+    // awaitingResponse alongside 'c' (sent only) — no separate approved
+    // bucket any more, mirroring quoteStatus.ts's APPROVED_DISPLAYS_AS.
     expect(board.quotes.draft).toEqual({ count: 2, totalUsd: 3000, staleCount: 0 });
-    expect(board.quotes.awaitingResponse).toEqual({ count: 1, totalUsd: 1500, staleCount: 0 });
-    expect(board.quotes.approved).toEqual({ count: 1, totalUsd: 3000, staleCount: 0 });
+    expect(board.quotes.awaitingResponse).toEqual({ count: 2, totalUsd: 4500, staleCount: 0 });
     expect(board.quotes.booked).toEqual({ count: 1, totalUsd: 4000, staleCount: 0 });
   });
 
@@ -52,11 +54,24 @@ describe('computeWorkflowBoard', () => {
     expect(board.quotes.draft).toEqual({ count: 1, totalUsd: 0, staleCount: 0 });
   });
 
+  it('row 327: an approved-not-booked quote folds into awaitingResponse, matching quoteStatus.ts APPROVED_DISPLAYS_AS', () => {
+    const board = computeWorkflowBoard([
+      mkQuote({
+        id: 'approved-only',
+        total: 2200,
+        quote_sent_at: '2026-06-02T00:00:00Z',
+        customer_approved_at: '2026-06-03T00:00:00Z',
+      }),
+    ]);
+    expect(board.quotes.awaitingResponse).toEqual({ count: 1, totalUsd: 2200, staleCount: 0 });
+    expect(board.quotes.booked).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
+    expect(board.quotes.draft).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
+  });
+
   it('returns zeroed buckets for an empty list', () => {
     const board = computeWorkflowBoard([]);
     expect(board.quotes.draft).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
     expect(board.quotes.awaitingResponse).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
-    expect(board.quotes.approved).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
     expect(board.quotes.booked).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
   });
 
@@ -87,7 +102,7 @@ describe('computeWorkflowBoard — cancelled orders excluded from booked bucket 
     expect(board.quotes.booked).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
   });
 
-  it('a cancelled order with customer_approved_at does NOT count as approved', () => {
+  it('a cancelled order with customer_approved_at does NOT count as awaitingResponse (approved folds there)', () => {
     const board = computeWorkflowBoard([
       mkQuote({
         id: 'cancelled-approved',
@@ -97,9 +112,9 @@ describe('computeWorkflowBoard — cancelled orders excluded from booked bucket 
         status: 'cancelled',
       }),
     ]);
-    expect(board.quotes.approved).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
+    expect(board.quotes.awaitingResponse).toEqual({ count: 0, totalUsd: 0, staleCount: 0 });
     // A cancelled quote should not inflate any forward-progress bucket
-    expect(board.quotes.booked.count + board.quotes.approved.count + board.quotes.awaitingResponse.count).toBe(0);
+    expect(board.quotes.booked.count + board.quotes.awaitingResponse.count).toBe(0);
   });
 
   it('declined and abandoned orders are also excluded from forward-progress buckets', () => {

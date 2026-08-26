@@ -12,6 +12,7 @@
 
 import { useEffect, useState } from 'react';
 import { DEFAULT_EVENT_RATES, type EventRates } from '@/lib/event/types';
+import { SkeletonBar } from '@/components/ui/LoadingSkeleton';
 
 type Status = 'loading' | 'idle' | 'saving' | 'saved' | 'error';
 
@@ -117,7 +118,24 @@ export function EventRatesSettings() {
   }
 
   if (status === 'loading') {
-    return <p className="text-sm text-gray-500">Loading event rates…</p>;
+    // Row 410: this panel replaced one bare line with a heading, an
+    // explanation and a two-column grid of rate fields — the whole settings
+    // page jumped. The skeleton mirrors that layout at its real heights.
+    return (
+      <div role="status" aria-busy="true" className="space-y-4">
+        <div>
+          <SkeletonBar className="h-5 w-56" />
+          <SkeletonBar className="h-8 mt-1.5" />
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <SkeletonBar className="h-36" />
+          <SkeletonBar className="h-36" />
+          <SkeletonBar className="h-36" />
+          <SkeletonBar className="h-36" />
+        </div>
+        <span className="sr-only">Loading event rates…</span>
+      </div>
+    );
   }
 
   return (
