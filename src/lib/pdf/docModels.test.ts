@@ -280,6 +280,8 @@ function makeDetail(invoiceOverrides: Partial<InvoiceRow> = {}, detailOverrides:
   return {
     invoice: makeInvoiceRow(invoiceOverrides),
     lightColorLabel: null,
+    // Row 414: required on InvoiceDetail; PDFs never render the markers.
+    staleMarkers: { paymentBlocked: false, invoiceResyncFailed: false },
     customerName: 'Alice Anderson',
     customerEmail: 'alice@example.com',
     customerPhone: '555-0100',

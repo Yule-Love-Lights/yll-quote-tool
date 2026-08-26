@@ -212,11 +212,12 @@ function InvoicesAdminPageContent() {
                           // "See the amend panel on the linked order" — a promised remedy
                           // that doesn't always exist. /amend 409s "no-change" when there's
                           // no real price delta, so an invoiceResyncFailed marker with
-                          // nothing left to re-price can't be cleared there at all
-                          // (clearing it needs its own change — deferred to a ledger row).
-                          // Say what the ⚠ MEANS, not how to fix it.
+                          // nothing left to re-price can't be cleared there at all.
+                          // Row 414 built that clearing path: the detail page's
+                          // Mark reconciled override. Say what the ⚠ MEANS and
+                          // where the remedy lives.
                           <span
-                            title="Unreconciled — this invoice may not match the agreed total. Verify against the linked order before collecting the balance."
+                            title="Unreconciled — this invoice may not match the agreed total. Verify against the linked order before collecting the balance. Once verified, clear it with Mark reconciled on the invoice detail page (row 414)."
                             aria-label="Unreconciled invoice"
                             className="text-amber-600"
                           >

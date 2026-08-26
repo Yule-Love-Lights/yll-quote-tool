@@ -514,6 +514,13 @@ export type InvoiceDetail = {
   isNce: boolean;
   jobNumber: number | null;
   jobStatus: string | null;
+  /**
+   * Row 414: the linked quote's stale-invoice markers, surfaced HERE because
+   * the invoice detail page is where a staffer verifies an order before (or
+   * after) taking money for it — and it is where the mark-reconciled override
+   * lives. Both false when there is no linked quote.
+   */
+  staleMarkers: { paymentBlocked: boolean; invoiceResyncFailed: boolean };
   // #177 fix 4: the linked quote's stamped deposit_amount_usd — the deposit
   // actually INTENDED to be collected at this quote's own deposit percent.
   // Fed into reconcileInvoice so 'short-deposit' compares against the real
@@ -543,6 +550,7 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
   let isNce = false;
   let intendedDepositUsd: number | null = null;
   let lightColorLabel: string | null = null;
+  let staleMarkers = { paymentBlocked: false, invoiceResyncFailed: false };
   if (invoice.quote_id) {
     const { data } = await db
       .from('quotes')
@@ -569,6 +577,13 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
       intendedDepositUsd = data.deposit_amount_usd ?? null;
       // Row 362: derived from the same quote row this join already fetches.
       lightColorLabel = await approvedColorLabelForQuote(data.approval_snapshot, data.service_type);
+      const snap = data.approval_snapshot as { paymentBlocked?: unknown; invoiceResyncFailed?: unknown } | null;
+      // Row 414: same predicate isStaleInvoiceSnapshot uses, split per marker
+      // so the panel can say WHICH discrepancy is flagged.
+      staleMarkers = {
+        paymentBlocked: !!snap?.paymentBlocked,
+        invoiceResyncFailed: !!snap?.invoiceResyncFailed,
+      };
     }
   }
 
@@ -598,6 +613,7 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
     jobNumber,
     jobStatus,
     intendedDepositUsd,
+    staleMarkers,
   };
 }
 

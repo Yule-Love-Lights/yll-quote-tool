@@ -97,6 +97,42 @@ export default function InvoiceDetailPage() {
     queueMicrotask(() => void load());
   }, [load]);
 
+  // Row 414: the mark-reconciled override. Confirm first (a money-marker
+  // override with no undo), POST, then reload the detail so the panel and the
+  // list's warning both reflect the cleared state from the server, not from
+  // an optimistic guess.
+  const [reconcileBusy, setReconcileBusy] = useState(false);
+  const [reconcileMsg, setReconcileMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const markReconciled = async () => {
+    if (!id || reconcileBusy) return;
+    if (
+      !window.confirm(
+        'Clear the unreconciled flag? Only do this after verifying the invoice against the agreed order - the override is recorded with your name.',
+      )
+    )
+      return;
+    setReconcileBusy(true);
+    setReconcileMsg(null);
+    try {
+      const res = await fetch(`/api/invoices/${id}/mark-reconciled`, { method: 'POST' });
+      const body = (await res.json()) as { error?: string; code?: string };
+      if (!res.ok) {
+        // no-markers = someone (or a resync) already cleared it - reload shows that.
+        if (body.code === 'no-markers') {
+          await load();
+          return;
+        }
+        throw new Error(body.error ?? 'Failed');
+      }
+      setReconcileMsg({ text: 'Cleared - recorded under your account.', ok: true });
+      await load();
+    } catch (err) {
+      setReconcileMsg({ text: err instanceof Error ? err.message : 'Failed', ok: false });
+    } finally {
+      setReconcileBusy(false);
+    }
+  };
+
   const toggleTax = async () => {
     const invoice = data?.invoice;
     if (!invoice) return;
@@ -486,6 +522,47 @@ export default function InvoiceDetailPage() {
                 )}
               </div>
             </div>
+
+            {/* Row 414: the unreconciled-marker panel + the explicit staff
+                override. The list's amber warning says what the flag MEANS; this
+                is the one place it can be CLEARED once a human has verified the
+                invoice against the agreed order. The clear is audited on the
+                quote's approval_snapshot (markerOverrides names who asserted it
+                and preserves the cleared payloads), and it deliberately does
+                NOT change any money figure - it only retires the flag. */}
+            {data && (data.staleMarkers.paymentBlocked || data.staleMarkers.invoiceResyncFailed) && (
+              <div
+                className="rounded-lg border px-4 py-3"
+                style={{ borderColor: '#f59e0b', backgroundColor: '#fffbeb' }}
+                role="status"
+              >
+                <p className="text-sm font-semibold" style={{ color: '#92400e' }}>
+                  Unreconciled marker on this order
+                </p>
+                <p className="text-xs mt-1" style={{ color: '#92400e' }}>
+                  {data.staleMarkers.invoiceResyncFailed &&
+                    'This invoice may not match the agreed order total (an amendment could not re-sync it). '}
+                  {data.staleMarkers.paymentBlocked &&
+                    'A customer payment attempt was blocked while the invoice was flagged. '}
+                  Verify the figures above against the linked order. If they are right - or the
+                  balance was settled outside the card flow (cash, check, NCE) - clear the flag here.
+                </p>
+                {reconcileMsg && (
+                  <p className="text-xs mt-2 font-medium" style={{ color: reconcileMsg.ok ? '#166534' : '#b91c1c' }}>
+                    {reconcileMsg.text}
+                  </p>
+                )}
+                <button
+                  type="button"
+                  disabled={reconcileBusy}
+                  className="mt-2 text-xs font-semibold px-3 py-1.5 rounded-md text-white disabled:opacity-50"
+                  style={{ backgroundColor: '#d97706' }}
+                  onClick={() => void markReconciled()}
+                >
+                  {reconcileBusy ? 'Recording…' : 'Mark reconciled'}
+                </button>
+              </div>
+            )}
 
             {inv.quote_id && <StaffNotesPanel key={inv.quote_id} quoteId={inv.quote_id} />}
 
