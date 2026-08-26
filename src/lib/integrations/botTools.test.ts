@@ -85,7 +85,10 @@ describe('runStatusTool', () => {
       quote({ id: 'c', quote_number: 3, customer_name: 'Draft Dan' }),
     ]);
     expect(await runStatusTool('booked bob')).toContain('Booked (deposit paid)');
-    expect(await runStatusTool('approved ann')).toContain('Approved, deposit pending');
+    // Row 327: approved reads identically to 'sent, not viewed' — no separate
+    // 'Approved, deposit pending' wording, mirroring quoteStatus.ts's
+    // APPROVED_DISPLAYS_AS (ledger row 242: no third stage).
+    expect(await runStatusTool('approved ann')).toContain('Sent, not viewed');
     expect(await runStatusTool('draft dan')).toContain('Draft, not sent');
   });
 
