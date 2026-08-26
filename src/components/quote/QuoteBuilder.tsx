@@ -5690,9 +5690,9 @@ export default function QuoteBuilder({
             role="status"
           >
             <span className="flex-1">
-              Unsaved edits from an earlier visit were found, but this quote&apos;s status has changed
-              since they were made (approved, booked, or otherwise moved) - so they were discarded
-              rather than re-applied to an order in a different state.
+              Unsaved edits from an earlier visit were found, but they could not be safely
+              re-applied - this quote&apos;s status has moved since they were made (approved, booked,
+              declined), or they predate the status check - so they were discarded.
             </span>
             <button
               type="button"

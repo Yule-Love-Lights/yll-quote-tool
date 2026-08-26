@@ -63,14 +63,29 @@ export type QuoteEditDraft = {
  * Row 420: the lifecycle stamp a draft is bound to. Timestamps, not the
  * derived status label, so a status-derivation change can never silently
  * un-bind old drafts; JSON of a fixed-key object so the comparison is exact.
+ *
+ * The raw status column is NORMALIZED first (premerge staff HIGH + customer
+ * MED on this PR): the open pre-approval flow — null/'draft'/'sent'/'viewed'
+ * — collapses to one bucket, because 'sent' is written by the operator's own
+ * Send click and 'viewed' by the customer merely opening their portal link
+ * (view/route.ts), and neither changes what restoring an edit draft would
+ * mean. Without the collapse, a homeowner peeking at their quote silently
+ * destroyed the operator's in-progress edits at next reopen. Every other
+ * status ('approved', 'booked', 'declined', 'changes_requested',
+ * 'abandoned', …) stays verbatim — those are real state moves a stale draft
+ * must not survive — and the approvedAt/depositPaidAt timestamps catch the
+ * money transitions independently of the label.
  */
+const OPEN_STATUSES = new Set<string | null>([null, 'draft', 'sent', 'viewed']);
+
 export function quoteEditDraftLifecycle(q: {
   status: string | null;
   approvedAt: string | null;
   depositPaidAt: string | null;
 }): string {
+  const raw = q.status ?? null;
   return JSON.stringify({
-    status: q.status ?? null,
+    status: OPEN_STATUSES.has(raw) ? 'open' : raw,
     approvedAt: q.approvedAt ?? null,
     depositPaidAt: q.depositPaidAt ?? null,
   });
@@ -126,19 +141,20 @@ export function loadQuoteEditDraft(
     // Row 420: a draft with no lifecycle stamp (stashed before this shipped)
     // cannot be verified against the live quote's state, and the unverifiable
     // case IS the dangerous one (a pre-approval stash on a now-booked order).
-    // Cleared silently, not with the 'lifecycle-moved' notice — that notice
-    // claims the order's state moved, which a missing stamp can't establish.
-    // One-time migration cost, bounded by the 7-day TTL anyway.
+    // Discarded WITH the notice (fix round, staff MED): this module's own
+    // principle is that a silent drop reads as the tool eating work, and the
+    // notice's wording covers the unverifiable case honestly. One-time
+    // migration cost, bounded by the 7-day TTL anyway.
     if (typeof parsed.lifecycle !== 'string') {
       clearQuoteEditDraft(quoteId);
-      return null;
+      return 'lifecycle-moved';
     }
     if (parsed.lifecycle !== currentLifecycle) {
       // Row 420: the quote's LIFECYCLE moved since the stash — approved,
-      // booked, declined, un-approved — even though the priced form itself
-      // (`base`) still matches. Offering the draft would let Calculate push
-      // pre-approval numbers onto a live order whose state the operator has
-      // no hint moved. DISCARD, and tell the operator why (same reasoning as
+      // booked, declined — even though the priced form itself (`base`) still
+      // matches. Offering the draft would let Calculate push pre-approval
+      // numbers onto a live order whose state the operator has no hint
+      // moved. DISCARD, and tell the operator why (same reasoning as
       // 'server-moved': a silent drop reads as the tool eating work).
       clearQuoteEditDraft(quoteId);
       return 'lifecycle-moved';
