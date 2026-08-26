@@ -24,6 +24,7 @@ import {
   WIRE_C9_KEY, WIRE_MAGNETIC_KEY,
   buildSeedBindings, buildSeedClipRules,
 } from '@/lib/inventory/concepts';
+import { SkeletonRows } from '@/components/ui/LoadingSkeleton';
 
 type Status = 'idle' | 'saving' | 'saved' | 'error';
 const TABS = [
@@ -199,7 +200,10 @@ export default function BindingsPage() {
         </div>
 
         {loading ? (
-          <p className="text-sm text-gray-500 py-10 text-center">Loading bindings…</p>
+          // Row 410: was a bare centred "Loading…" line that then dropped the
+          // whole binding table in its place. Placeholder rows at the real row
+          // rhythm so the page settles once.
+          <SkeletonRows label="Loading bindings…" rows={6} rowClassName="h-10" className="flex flex-col gap-3 py-1" />
         ) : (
           <>
             {tab === 'bulbs' && (

@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { OperatorShell } from '@/components/OperatorShell';
 import { InventorySubNav } from '@/components/inventory/InventorySubNav';
+import { SkeletonRows } from '@/components/ui/LoadingSkeleton';
 
 type QuoteItem = {
   id: string;
@@ -98,7 +99,9 @@ export default function MaterialsPage() {
             />
             <div className="border border-gray-100 rounded max-h-[60vh] overflow-auto">
               {loadingQuotes ? (
-                <p className="text-sm text-gray-400 px-3 py-4">Loading quotes…</p>
+                // Row 410: the picker grows from one line to a full scrolling
+                // list; placeholder rows at the real two-line row height.
+                <SkeletonRows label="Loading quotes…" rows={5} rowClassName="h-12" className="flex flex-col gap-2 p-2" />
               ) : filtered.length === 0 ? (
                 <p className="text-sm text-gray-400 px-3 py-4">No quotes.</p>
               ) : (

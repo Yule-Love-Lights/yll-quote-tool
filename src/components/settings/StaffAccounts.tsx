@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 
 import { dollarsToCents } from '@/lib/hourlyRate';
 import { isValidTelegramUserId } from '@/lib/telegramUserId';
+import { SkeletonRows } from '@/components/ui/LoadingSkeleton';
 
 /**
  * Settings → Accounts → Staff (ledger #354, unified 2026-08-24).
@@ -336,7 +337,9 @@ export function StaffAccounts() {
       </p>
 
       {loading ? (
-        <p className="text-sm text-gray-500 mt-4">Loading staff…</p>
+        // Row 410: the staff list is two lines per person (identity above,
+        // actions below), so the placeholder rows are that tall.
+        <SkeletonRows label="Loading staff…" rows={4} rowClassName="h-16" className="mt-4 flex flex-col gap-2" />
       ) : (
         <>
           {groups.map(({ label, rows, hint }) => (
