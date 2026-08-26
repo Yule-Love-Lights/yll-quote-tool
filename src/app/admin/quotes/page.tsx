@@ -183,8 +183,18 @@ export default function QuotesAdminPage() {
     if (serviceFilter !== 'All' && (q.service_type ?? DEFAULT_SERVICE_TYPE) !== serviceFilter) return false;
     if (testOnly && !q.is_test) return false;
     if (!term) return true;
-    return [q.customer_name, q.customer_address, q.customer_phone, q.customer_email, q.id]
-      .some(v => v != null && v.toLowerCase().includes(term));
+    // Device check 2026-08-26: typing the "#1262" the list itself displays
+    // found nothing — the haystack had the UUID but not the quote number. Same
+    // `#${n}` idiom as the jobs and invoices lists, so "#1262" and "1262" both
+    // match.
+    return [
+      q.customer_name,
+      q.customer_address,
+      q.customer_phone,
+      q.customer_email,
+      q.id,
+      q.quote_number != null ? `#${q.quote_number}` : null,
+    ].some(v => v != null && v.toLowerCase().includes(term));
   });
 
   return (
