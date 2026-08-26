@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { verifyBouncieSecret, bodyHash, parseBouncieEvent, isBouncieWebhookConfigured } from './bouncie';
+import { verifyBouncieSecret, bodyHash, parseBouncieEvent, isBouncieWebhookConfigured, isOffHours } from './bouncie';
 
 describe('verifyBouncieSecret', () => {
   const secret = 'a-long-shared-secret-value';
@@ -150,5 +150,71 @@ describe('parseBouncieEvent', () => {
     it('reads an unknown event type through, so a new event is captured not dropped', () => {
       expect(parseBouncieEvent({ eventType: 'somethingNew', imei: '1' }).eventType).toBe('somethingNew');
     });
+  });
+});
+
+describe('occurredAt for the non-trip events', () => {
+  // REGRESSION (S68 technical lens): an earlier version only knew about start,
+  // end, geozone and data, so all six of these stored a NULL timestamp despite
+  // carrying a perfectly good one inside their own sub-object.
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ['connect', { connect: { timestamp: '2026-08-26T12:00:00.000Z', timeZone: 'America/New_York' } }],
+    ['disconnect', { disconnect: { timestamp: '2026-08-26T12:00:00.000Z' } }],
+    ['battery', { battery: { timestamp: '2026-08-26T12:00:00.000Z', value: 11.8 } }],
+    ['mil', { mil: { timestamp: '2026-08-26T12:00:00.000Z', value: true, codes: ['P0420'] } }],
+    ['vinChange', { vinChange: { timestamp: '2026-08-26T12:00:00.000Z', oldVin: 'A', newVin: 'B' } }],
+    ['tripMetrics', { metrics: { timestamp: '2026-08-26T12:00:00.000Z', tripDistance: 12.4 } }],
+  ];
+
+  for (const [eventType, extra] of cases) {
+    it(`reads the timestamp for ${eventType}`, () => {
+      expect(parseBouncieEvent({ eventType, imei: '1', vin: 'V', ...extra }).occurredAt).toBe(
+        '2026-08-26T12:00:00.000Z',
+      );
+    });
+  }
+
+  it('dispatches on eventType, so a tripEnd echoing a start block is stamped with the END', () => {
+    // A positional ?? chain would take start.timestamp here and read as a
+    // vehicle sitting at a job for the whole trip.
+    expect(
+      parseBouncieEvent({
+        eventType: 'tripEnd',
+        start: { timestamp: '2026-08-26T13:00:00.000Z' },
+        end: { timestamp: '2026-08-26T15:00:00.000Z' },
+      }).occurredAt,
+    ).toBe('2026-08-26T15:00:00.000Z');
+  });
+
+  it('still finds a timestamp for an event type Bouncie has not documented yet', () => {
+    expect(parseBouncieEvent({ eventType: 'somethingNew', battery: { timestamp: '2026-08-26T12:00:00.000Z' } }).occurredAt)
+      .toBe('2026-08-26T12:00:00.000Z');
+  });
+});
+
+describe('isOffHours — row 403 constraint (f)', () => {
+  // ET, so a UTC timestamp is 4 or 5 hours ahead depending on DST.
+  it('counts a mid-afternoon workday event as in-hours', () => {
+    expect(isOffHours('2026-08-26T18:00:00.000Z')).toBe(false); // 14:00 ET
+  });
+
+  it('counts a late-evening event as OFF-hours', () => {
+    expect(isOffHours('2026-08-27T03:00:00.000Z')).toBe(true); // 23:00 ET
+  });
+
+  it('counts an overnight event as OFF-hours', () => {
+    expect(isOffHours('2026-08-26T07:00:00.000Z')).toBe(true); // 03:00 ET
+  });
+
+  it('returns undefined — not false — when there is no timestamp', () => {
+    // "We do not know when this happened" must not default into the keep pile.
+    expect(isOffHours(undefined)).toBeUndefined();
+    expect(isOffHours('not a date')).toBeUndefined();
+  });
+
+  it('uses ET, not UTC, so the boundary does not drift with the season', () => {
+    // 10:00 ET in August (UTC-4) and in January (UTC-5) are both in-hours.
+    expect(isOffHours('2026-08-26T14:00:00.000Z')).toBe(false);
+    expect(isOffHours('2026-01-26T15:00:00.000Z')).toBe(false);
   });
 });

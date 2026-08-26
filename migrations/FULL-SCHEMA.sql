@@ -2687,6 +2687,22 @@ create unique index if not exists vehicles_imei_key
 create unique index if not exists vehicles_vin_key
   on public.vehicles (vin) where vin is not null;
 
+-- `updated_at` maintenance, matching every other table in this schema that has
+-- the column (S68 technical lens: it was declared and then never maintained,
+-- which is worse than not having it — it would read as fresh forever).
+create or replace function vehicles_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists vehicles_updated_at_trigger on public.vehicles;
+create trigger vehicles_updated_at_trigger
+  before update on public.vehicles
+  for each row execute function vehicles_set_updated_at();
+
 -- The STATIC vehicle-to-crew assignment (constraint (d)) — a setting edited when
 -- a crew actually changes, not a daily screen. A vehicle carries a CREW, so the
 -- map label holds several names. Whatever reads this must present it as an
@@ -2718,6 +2734,17 @@ create table if not exists public.vehicle_events (
   vin             text,
   transaction_id  text,
   occurred_at     timestamptz,
+
+  -- ROW 403 CONSTRAINT (f): off-hours location is not the company's to see.
+  -- The truck goes home with an employee, so without this the table quietly
+  -- accumulates every evening, weekend and personal errand, forever, at rooftop
+  -- precision. Tagging at INSERT is the floor: it costs nothing, it cannot be
+  -- forgotten later, and it gives a retention or redaction job something to act
+  -- on without re-parsing every payload. NULL means the event carried no usable
+  -- timestamp, which is itself a case a purge job must decide about rather than
+  -- silently treat as in-hours. The window itself is a business decision, held
+  -- in ONE place: BUSINESS_HOURS in src/lib/integrations/bouncie.ts.
+  occurred_off_hours boolean,
   body_sha256     text not null,
   payload         jsonb not null
 );

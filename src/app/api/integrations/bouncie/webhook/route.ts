@@ -38,8 +38,9 @@
 // phase exists to catch.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyBouncieSecret, bodyHash, parseBouncieEvent } from '@/lib/integrations/bouncie';
+import { verifyBouncieSecret, bodyHash, parseBouncieEvent, isOffHours } from '@/lib/integrations/bouncie';
 import { getSupabaseServiceClient } from '@/lib/supabase';
+import { rateLimitResponse } from '@/lib/rateLimit';
 
 export const runtime = 'nodejs';
 
@@ -51,16 +52,32 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  const raw = await req.text();
+  // Rate limit first, matching the sibling webhooks (ghl/webhook, homeworks/
+  // signed). Bouncie sends bursts by design — an offline device dumps a buffered
+  // trip on reconnect — so the ceiling is generous; it exists to bound an
+  // attacker who has learned the secret, not to shape normal traffic.
+  const limited = rateLimitResponse(req, { bucket: 'bouncie-webhook', limit: 300, windowMs: 60_000 });
+  if (limited) return limited;
 
-  // Secret first, before anything is parsed or stored. Fails closed when
-  // BOUNCIE_WEBHOOK_SECRET is unset, so an unconfigured deploy can never accept
-  // an unauthenticated write.
+  // The secret is header-only, so check it BEFORE buffering a body. Reading
+  // first let an unauthenticated caller make us hold their payload in memory for
+  // no reason (S68 security lens). Fails closed when BOUNCIE_WEBHOOK_SECRET is
+  // unset, so an unconfigured deploy can never accept an unauthenticated write.
   if (
     !verifyBouncieSecret(req.headers.get('authorization'), req.headers.get('x-bouncie-authorization'))
   ) {
     return new NextResponse('Bad secret', { status: 401 });
   }
+
+  // Reject an oversized body on its declared length, before reading it. A body
+  // with no Content-Length is still measured after the read, below.
+  const declaredLength = Number(req.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
+    console.warn('[bouncie] rejected an oversized webhook body (declared):', declaredLength);
+    return NextResponse.json({ ok: true, stored: false, reason: 'oversized' });
+  }
+
+  const raw = await req.text();
 
   if (Buffer.byteLength(raw, 'utf8') > MAX_BODY_BYTES) {
     // Worth knowing about loudly rather than storing. 200 so Bouncie does not
@@ -96,6 +113,9 @@ export async function POST(req: NextRequest) {
     vin: facts.vin ?? null,
     transaction_id: facts.transactionId ?? null,
     occurred_at: facts.occurredAt ?? null,
+    // Constraint (f): tagged at insert so a retention job never has to re-parse
+    // payloads to find out which rows are a crew member's private evenings.
+    occurred_off_hours: isOffHours(facts.occurredAt) ?? null,
     body_sha256: bodyHash(raw),
     payload,
   });

@@ -100,6 +100,53 @@ describe('the shared-secret gate', () => {
   });
 });
 
+describe('the body is not read until the secret passes', () => {
+  // S68 security lens: reading first let an unauthenticated caller make us hold
+  // their payload in memory for nothing. The secret is header-only, so it can be
+  // checked first.
+  it('never touches the body on a bad secret', async () => {
+    const text = vi.fn(async () => tripStart);
+    const req = {
+      headers: { get: (k: string) => (k.toLowerCase() === 'authorization' ? 'wrong' : null) },
+      text,
+    } as unknown as NextRequest;
+    const res = await POST(req);
+    expect(res.status).toBe(401);
+    expect(text).not.toHaveBeenCalled();
+  });
+
+  it('reads the body once the secret passes', async () => {
+    const text = vi.fn(async () => tripStart);
+    const req = {
+      headers: { get: (k: string) => (k.toLowerCase() === 'authorization' ? SECRET : null) },
+      text,
+    } as unknown as NextRequest;
+    await POST(req);
+    expect(text).toHaveBeenCalledOnce();
+  });
+});
+
+describe('ROW 403 CONSTRAINT (f) — off-hours tagging', () => {
+  it('tags a workday-afternoon event as in-hours', async () => {
+    const body = JSON.stringify({ eventType: 'tripStart', start: { timestamp: '2026-08-26T18:00:00.000Z' } });
+    await POST(makeReq(body, { authorization: SECRET }));
+    expect(insertedRow().occurred_off_hours).toBe(false);
+  });
+
+  it('tags a late-night event as OFF-hours, so a purge job can find it', async () => {
+    // The truck goes home with an employee. This is the row that records their
+    // private evening, and it has to be findable without re-parsing payloads.
+    const body = JSON.stringify({ eventType: 'tripEnd', end: { timestamp: '2026-08-27T03:00:00.000Z' } });
+    await POST(makeReq(body, { authorization: SECRET }));
+    expect(insertedRow().occurred_off_hours).toBe(true);
+  });
+
+  it('stores NULL, not false, when the event carried no usable timestamp', async () => {
+    await POST(makeReq(JSON.stringify({ eventType: 'tripStart' }), { authorization: SECRET }));
+    expect(insertedRow().occurred_off_hours).toBeNull();
+  });
+});
+
 describe('THE ROTATION FOOTGUN', () => {
   // Bouncie rotates our shared secret when the endpoint returns a NEW value in
   // an Authorization RESPONSE header. Setting it by accident silently adopts

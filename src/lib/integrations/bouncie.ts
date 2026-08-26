@@ -27,6 +27,40 @@
 
 import { createHash } from 'node:crypto';
 import { safeEqual } from '@/lib/security';
+import { etHour } from '@/lib/dashboard/inbox/normalize';
+
+/**
+ * When the company may see where its vehicles are. Row 403 constraint (f).
+ *
+ * ONE PLACE, on purpose. The truck goes home with an employee, so every event
+ * outside this window is a record of that person's private movements. This is a
+ * BUSINESS POLICY, not a technical constant: widen it, narrow it, or split it by
+ * day here, and every stored row and any future purge job follows.
+ *
+ * The default is deliberately generous to the business, because installs really
+ * do run late and run weekends in season, and a window that is too tight would
+ * mislabel real work as private. It is NOT a considered privacy decision yet —
+ * Naldo has not set the hours. Treat it as a placeholder that fails toward
+ * capturing work, and revisit before anything reads or deletes on the strength
+ * of it.
+ */
+export const BUSINESS_HOURS = { startHourEt: 6, endHourEt: 21 } as const;
+
+/**
+ * True when an event happened OUTSIDE business hours, undefined when the event
+ * carried no usable timestamp.
+ *
+ * Undefined rather than false on purpose: "we do not know when this happened" is
+ * a different thing from "this happened during work", and a retention job must
+ * be forced to decide about it rather than defaulting it into the keep pile.
+ */
+export function isOffHours(occurredAtIso: string | undefined): boolean | undefined {
+  if (!occurredAtIso) return undefined;
+  const at = new Date(occurredAtIso);
+  if (Number.isNaN(at.getTime())) return undefined;
+  const hour = etHour(at);
+  return hour < BUSINESS_HOURS.startHourEt || hour >= BUSINESS_HOURS.endHourEt;
+}
 
 /** True when the webhook secret is configured. Everything fails closed without it. */
 export function isBouncieWebhookConfigured(): boolean {
@@ -104,18 +138,62 @@ export function parseBouncieEvent(body: unknown): BouncieEventFacts {
     transactionId: str(b.transactionId),
   };
 
+  facts.occurredAt = occurredAt(b, facts.eventType);
+  return facts;
+}
+
+/**
+ * Where each event type keeps its timestamp. Every documented Bouncie event
+ * carries one, but each buries it in its OWN sub-object, named after the event.
+ *
+ * Dispatching on `eventType` rather than probing keys in a fixed order matters
+ * for two reasons. First, a positional `a ?? b ?? c` chain silently picks the
+ * wrong field if a payload ever carries more than one of them (a `tripEnd` that
+ * echoes its `start` block would be stamped with the trip's START time, which
+ * would read as a vehicle sitting at a job for the whole trip). Second, an
+ * earlier version of this function only knew about `start`, `end`, `geozone` and
+ * `data`, so `connect`, `disconnect`, `battery`, `mil`, `vinChange` and
+ * `tripMetrics` all stored a NULL timestamp despite carrying a perfectly good
+ * one. Found by the S68 technical lens.
+ */
+const TIMESTAMP_CONTAINER: Record<string, string> = {
+  tripStart: 'start',
+  tripEnd: 'end',
+  tripMetrics: 'metrics',
+  applicationGeozone: 'geozone',
+  userGeozone: 'geozone',
+  connect: 'connect',
+  deviceConnect: 'connect',
+  disconnect: 'disconnect',
+  deviceDisconnect: 'disconnect',
+  battery: 'battery',
+  mil: 'mil',
+  vinChange: 'vinChange',
+};
+
+function occurredAt(b: Record<string, unknown>, eventType: string | undefined): string | undefined {
   const sub = (key: string): Record<string, unknown> | undefined => {
     const v = b[key];
     return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
   };
 
-  facts.occurredAt =
-    isoTimestamp(sub('start')?.timestamp) ??
-    isoTimestamp(sub('end')?.timestamp) ??
-    isoTimestamp(sub('geozone')?.timestamp) ??
-    lastTripDataTimestamp(b.data);
+  // tripData is the one event whose timestamps live in an array, not a sub-object.
+  if (eventType === 'tripData') return lastTripDataTimestamp(b.data);
 
-  return facts;
+  const container = eventType ? TIMESTAMP_CONTAINER[eventType] : undefined;
+  if (container) {
+    const stamped = isoTimestamp(sub(container)?.timestamp);
+    if (stamped) return stamped;
+  }
+
+  // Unknown or absent eventType: fall back to probing. An event Bouncie adds
+  // later should still get a timestamp rather than silently storing null, and
+  // capturing the unexpected is this phase's whole purpose.
+  for (const key of ['start', 'end', 'metrics', 'geozone', 'connect', 'disconnect', 'battery', 'mil', 'vinChange']) {
+    const stamped = isoTimestamp(sub(key)?.timestamp);
+    if (stamped) return stamped;
+  }
+  return lastTripDataTimestamp(b.data);
 }
 
 /** Freshest timestamp in a `tripData` batch, scanning from the end. */
