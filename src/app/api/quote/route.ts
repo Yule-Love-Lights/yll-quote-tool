@@ -1013,7 +1013,13 @@ export async function POST(req: NextRequest) {
         : !isTest;
       if (timerTargetEligible) {
         const savedId = saved.id;
+        // Premerge technical MED: the deferred body wraps in try/catch per this
+        // codebase's own after() convention (queueQuoteBuildSessionCompletion,
+        // estimate/route.ts) — every helper self-catches today, but that is a
+        // fragile invariant, and an unhandled rejection after the response is
+        // the one failure shape nothing upstream can contain.
         after(async () => {
+          try {
           const started = await startQuoteBuildSession({
             timerId: quoteBuildTimerId,
             startReason: quoteBuildStartReason,
@@ -1045,6 +1051,11 @@ export async function POST(req: NextRequest) {
             }
           } else {
             console.warn('[quote/route] quote build timer could not be linked after save');
+          }
+          } catch (err) {
+            // Metric bookkeeping only — a failure here must never escape the
+            // deferred task. Logged so a dead timing pipeline is noticeable.
+            console.error('[quote/route] deferred quote build timer bookkeeping failed:', err);
           }
         });
       }
