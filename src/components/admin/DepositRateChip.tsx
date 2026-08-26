@@ -73,3 +73,43 @@ export function DepositRateChip({
     </span>
   );
 }
+
+// Row 409, fix round 2 (delta-verify MED x3). The detail page's staleness
+// caution needs to know MORE than "the two percents differ":
+//
+// - "Reopen the quote and Calculate again" is an instruction /api/quote will
+//   409 on for a reprice-locked status (booked/declined/cancelled/abandoned —
+//   its REPRICE_LOCKED_STATUSES), and the NCE toggle only gates on
+//   customer_approved_at, so a declined quote CAN reach the mismatched state.
+// - On a terminal quote (declined/cancelled/abandoned) nothing will ever
+//   charge, so the caution is noise: null.
+// - On a BOOKED quote the deposit is already settled, so the mismatch is a
+//   RECORD of what happened, not an action item — and "the portal charges X%"
+//   would be false. Suppressing it entirely would reintroduce the original
+//   HIGH (two staff screens disagreeing with nothing explaining it), so it
+//   stays visible as kind 'record', with no instruction.
+// - Everywhere else the recalculate instruction is real: kind 'recalc'.
+//
+// Pure and exported so the enumeration above is TESTED, not prose.
+export type DepositCaution = {
+  kind: 'recalc' | 'record';
+  priced: number;
+  configured: number;
+} | null;
+
+const TERMINAL_STATUSES = new Set(['declined', 'cancelled', 'abandoned']);
+
+export function depositCaution(args: {
+  pricedPercent: number;
+  configuredPercent: number;
+  status: string;
+}): DepositCaution {
+  const { pricedPercent, configuredPercent, status } = args;
+  if (pricedPercent === configuredPercent) return null;
+  if (TERMINAL_STATUSES.has(status)) return null;
+  return {
+    kind: status === 'booked' ? 'record' : 'recalc',
+    priced: pricedPercent,
+    configured: configuredPercent,
+  };
+}

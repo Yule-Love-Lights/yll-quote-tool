@@ -113,7 +113,7 @@ export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
 // arrives as a string here. Anything that isn't a finite number — null, '', a
 // legacy garbage value — becomes undefined so the resolution below falls
 // through to the next source instead of propagating NaN into a displayed rate.
-function numberOrUndefined(v: unknown): number | undefined {
+export function numberOrUndefined(v: unknown): number | undefined {
   if (typeof v === 'number') return Number.isFinite(v) ? v : undefined;
   if (typeof v !== 'string' || v.trim() === '') return undefined;
   const n = Number(v);

@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, it, expect } from 'vitest';
-import { DepositRateChip, depositChipState } from './DepositRateChip';
+import { DepositRateChip, depositChipState, depositCaution } from './DepositRateChip';
 import { BUSINESS_RULES, NCE_DEPOSIT_PERCENT } from '@/lib/pricing/pricingEngine';
 
 // Row 409 — the chip REPORTS a deposit mismatch, it never corrects one (Jason's
@@ -87,5 +87,45 @@ describe('DepositRateChip markup (row 409)', () => {
   it('never renders NaN', () => {
     const html = renderToStaticMarkup(<DepositRateChip isNce rate={0.4} />);
     expect(html).not.toContain('NaN');
+  });
+});
+
+// Fix round 2 (delta-verify MED x3): the detail page's caution was shipped
+// with zero coverage, its instruction could not run on reprice-locked
+// statuses, and its claim over-reached. The enumeration is now a pure
+// function; these pin each state.
+describe('depositCaution (row 409, fix round 2)', () => {
+  const drift = { pricedPercent: 50, configuredPercent: 40 };
+
+  it('is silent when the priced and configured rates agree', () => {
+    expect(depositCaution({ pricedPercent: 40, configuredPercent: 40, status: 'sent' })).toBeNull();
+  });
+
+  it('instructs a recalculate on statuses where /api/quote allows one', () => {
+    for (const status of ['draft', 'sent', 'viewed', 'approved']) {
+      expect(depositCaution({ ...drift, status })).toMatchObject({ kind: 'recalc' });
+    }
+  });
+
+  it('never instructs the impossible: terminal statuses get no caution at all', () => {
+    // /api/quote's REPRICE_LOCKED_STATUSES 409s a Calculate on these, and
+    // nothing will ever charge them — the old copy told staff to do something
+    // the API refuses (delta-verify MED, reachable via the NCE toggle, which
+    // only gates on customer_approved_at).
+    for (const status of ['declined', 'cancelled', 'abandoned']) {
+      expect(depositCaution({ ...drift, status })).toBeNull();
+    }
+  });
+
+  it('on a booked order the drift is shown as a record, not an action item', () => {
+    // Suppressing it entirely would reintroduce the original HIGH (the list
+    // chip and detail page disagreeing with nothing explaining it); telling
+    // staff to Calculate would 409; claiming "the portal charges X%" is false
+    // once the deposit is settled. So: visible, kind 'record'.
+    expect(depositCaution({ ...drift, status: 'booked' })).toMatchObject({
+      kind: 'record',
+      priced: 50,
+      configured: 40,
+    });
   });
 });

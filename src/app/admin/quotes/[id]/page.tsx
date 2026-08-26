@@ -7,6 +7,7 @@ import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
 import { YllNeighborBadge } from '@/components/admin/YllNeighborBadge';
 import { LegacyRebookToggle } from '@/components/admin/LegacyRebookToggle';
 import { NceBadge } from '@/components/admin/NceBadge';
+import { depositCaution } from '@/components/admin/DepositRateChip';
 import { NceToggle } from '@/components/admin/NceToggle';
 import { ViewOnlyToggle } from '@/components/admin/ViewOnlyToggle';
 import { MarkAsSentButton } from '@/components/admin/MarkAsSentButton';
@@ -15,7 +16,7 @@ import { ColorRequestPanel } from '@/components/admin/ColorRequestPanel';
 import { StaffNotesPanel } from '@/components/admin/StaffNotesPanel';
 import { buildPortalLineItems } from '@/lib/portal/adapter';
 import { BUSINESS_RULES, resolveLineItemLabel, type QuoteInputs } from '@/lib/pricing/pricingEngine';
-import { getQuoteRaw, resolveQuoteDepositRate } from '@/lib/quotes';
+import { getQuoteRaw, resolveQuoteDepositRate, numberOrUndefined } from '@/lib/quotes';
 import { deriveStatus, repriceSignalCanFire, APPROVED_DISPLAYS_AS, type QuoteStatus } from '@/lib/quoteStatus';
 import { requiresReconsent, isSupersededPendingAmendment, resolveAmendmentBasis } from '@/lib/amend';
 import { getJobByQuote } from '@/lib/jobs';
@@ -125,13 +126,31 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
   const pricedDepositPercent = Math.round(
     (quote.result?.depositRate ?? BUSINESS_RULES.depositPercentage) * 100,
   );
+  // Fix round 2 LOW: sanitize the snapshot value through the same guard the
+  // list uses, instead of an unchecked cast — a legacy string "0.4" or garbage
+  // must degrade, not propagate NaN into a rendered percent.
+  const frozenDepositRate = numberOrUndefined(
+    quote.approval_snapshot?.customerSelection?.depositRate,
+  );
   const configuredDepositPercent = Math.round(
     resolveQuoteDepositRate({
       depositPercent: (quote.inputs as QuoteInputs | null)?.depositPercent,
       resultRate: quote.result?.depositRate ?? undefined,
-      snapshotRate: quote.approval_snapshot?.customerSelection?.depositRate as number | undefined,
+      snapshotRate: frozenDepositRate,
     }) * 100,
   );
+  // Fix round 2 (delta-verify MED x2): what the caution may CLAIM depends on
+  // the quote's state, and the instruction it gives has to be one that can
+  // actually run — the enumeration lives in depositCaution, which is pure and
+  // tested. `frozen` picks the honest basis wording, mirroring the list chip:
+  // 8 of 24 live approved quotes have NO frozen rate, and for those "the
+  // customer agreed to X%" is a claim nothing on file supports.
+  const caution = depositCaution({
+    pricedPercent: pricedDepositPercent,
+    configuredPercent: configuredDepositPercent,
+    status,
+  });
+  const configuredBasis = frozenDepositRate !== undefined ? 'agreed at approval' : 'currently configured';
 
 
   // Row 344 fix round (staff-lens HIGH): the audit trail route.ts appends to
@@ -506,12 +525,23 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
                     selection prices the deposit off the SELECTED subtotal, not
                     off this total, so the only honest thing to show is which
                     rate produced these numbers and which one is configured. */}
-                {configuredDepositPercent !== pricedDepositPercent && (
+                {caution && (
                   <p className="mt-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-800">
-                    This quote is set to a {configuredDepositPercent}% deposit, but the figures above
-                    were priced at {pricedDepositPercent}%. Reopen the quote and Calculate again to
-                    bring them in line — the customer&rsquo;s portal already charges{' '}
-                    {configuredDepositPercent}%.
+                    {caution.kind === 'recalc' ? (
+                      <>
+                        This quote&rsquo;s deposit is {caution.configured}% ({configuredBasis}), but
+                        the figures above were priced at {caution.priced}%. Reopen the quote and
+                        Calculate again to bring them in line — collection uses the{' '}
+                        {caution.configured}% rate.
+                      </>
+                    ) : (
+                      <>
+                        The figures above were priced at {caution.priced}%, but this order&rsquo;s
+                        deposit was {caution.configured}% ({configuredBasis}). The deposit has
+                        already been settled, so this is a record of the drift, not something to
+                        fix.
+                      </>
+                    )}
                   </p>
                 )}
               </dl>
