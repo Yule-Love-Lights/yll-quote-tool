@@ -8,8 +8,9 @@
 //                            portalShowSatelliteView? } — #8 Stage A).
 
 import { NextRequest, NextResponse } from 'next/server';
-import { isSupabaseServiceConfigured } from '@/lib/supabase';
-import { requireOperator } from '@/lib/auth/supabaseServer';
+import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
+import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
+import { appendQuoteAuditEntry } from '@/lib/quoteAudit';
 import {
   getDesignWithPhoto,
   updateDesignSceneGuarded,
@@ -220,6 +221,19 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       if (!portalVisibility) {
         return NextResponse.json({ error: 'Failed to save portal visibility' }, { status: 500 });
       }
+      // Row 370: record WHO hid/showed a portal image and when. The shared
+      // updated_at trigger cannot distinguish this from any other design
+      // write, and there was no paper trail if a customer disputed what was
+      // shown. Best-effort by design (appendQuoteAuditEntry's contract):
+      // the trail matters exactly for quotes with a FROZEN agreement — a
+      // design with no linked quote, or a quote never approved (NULL
+      // snapshot), has nothing agreed to dispute, and the helper's
+      // unconfirmed-snapshot guard skips those rather than risking the
+      // frozen agreement to record a presentational toggle.
+      await recordVisibilityAudit(id, {
+        ...(hasStreetVisibility ? { portalShowStreetView: portalShowStreetView as boolean } : {}),
+        ...(hasSatelliteVisibility ? { portalShowSatelliteView: portalShowSatelliteView as boolean } : {}),
+      });
     }
     return NextResponse.json({
       ok: true,
@@ -230,5 +244,48 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     const msg = err instanceof Error ? err.message : 'Update failed';
     console.error('PUT /api/designs/[id] error:', err);
     return NextResponse.json({ error: msg }, { status: 500 });
+  }
+}
+
+// Row 370 — best-effort audit of a portal-visibility change, onto the linked
+// quote's approval_snapshot (key: portalVisibilityChanges) via the shared
+// hardened append (row 411). Never throws, never fails the caller's request:
+// losing this audit line is acceptable; breaking a visibility save (or the
+// frozen agreement) to record one is not.
+async function recordVisibilityAudit(
+  designId: string,
+  changes: { portalShowStreetView?: boolean; portalShowSatelliteView?: boolean },
+): Promise<void> {
+  try {
+    const sb = getSupabaseServiceClient();
+    if (!sb) return;
+    const { data: designRow, error: designErr } = await sb
+      .from('designs')
+      .select('quote_id')
+      .eq('id', designId)
+      .maybeSingle<{ quote_id: string | null }>();
+    if (designErr || !designRow?.quote_id) return; // unlinked design — nothing to audit onto
+    const { data: quoteRow, error: quoteErr } = await sb
+      .from('quotes')
+      .select('approval_snapshot')
+      .eq('id', designRow.quote_id)
+      .maybeSingle<{ approval_snapshot: unknown }>();
+    if (quoteErr || !quoteRow) return; // unconfirmed read — the helper would skip anyway
+    const operator = await getOperator();
+    await appendQuoteAuditEntry(
+      sb,
+      designRow.quote_id,
+      'portalVisibilityChanges',
+      {
+        by: operator?.email ?? null,
+        at: new Date().toISOString(),
+        designId,
+        changes,
+      },
+      '[api/designs/:id]',
+      quoteRow.approval_snapshot,
+    );
+  } catch (err) {
+    console.warn('[api/designs/:id] portal-visibility audit append threw:', err);
   }
 }
