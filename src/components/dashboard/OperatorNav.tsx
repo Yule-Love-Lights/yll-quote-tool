@@ -169,6 +169,20 @@ export function OperatorNav({
               </Link>
             </li>
           ))}
+          {/* "+ New quote" (Jason, 2026-08-26): the dashboard header's CTA,
+              duplicated here for one-click access from every page. The
+              homepage copy stays — this is an addition, not a move. Styled
+              as the CTA it is, not a nav tab, so it never takes the
+              active-tab highlight (that is Quotes' job for /quote/*). */}
+          <li>
+            <Link
+              href="/quote/new"
+              className="px-3 py-1.5 rounded-md transition-colors inline-flex items-center font-medium"
+              style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
+            >
+              + New quote
+            </Link>
+          </li>
           {/* Always mounted (ledger #347 fix round) — reserves its layout
               width so every link to its left never jumps once the session
               check resolves. `visibility: hidden` (not a conditional
@@ -208,6 +222,18 @@ export function OperatorNav({
           className="lg:hidden border-t"
           style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg-raised)' }}
         >
+          {/* "+ New quote" first in the mobile menu — same one-click-access
+              ask as the desktop CTA above. */}
+          <li>
+            <Link
+              href="/quote/new"
+              onClick={() => setOpen(false)}
+              className="flex items-center px-4 py-3 text-sm font-semibold border-b"
+              style={{ borderColor: 'var(--op-border)', background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
+            >
+              + New quote
+            </Link>
+          </li>
           {ITEMS.map(item => (
             <li key={item.href}>
               <Link
