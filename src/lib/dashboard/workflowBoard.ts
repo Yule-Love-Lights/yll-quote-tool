@@ -39,17 +39,19 @@ export type WorkflowInvoice = {
 
 export type WorkflowBoard = {
   /**
-   * The QUOTES column, bucketed by the four lifecycle states a dashboard quote
-   * row can actually reach. `deriveStatus` can name nine statuses, but the
+   * The QUOTES column, bucketed by the lifecycle states a dashboard quote row
+   * can actually reach. `deriveStatus` can name nine statuses, but the
    * dashboard query only selects the lifecycle timestamps (not `viewed_at` /
-   * the persisted `status`), so a row here resolves to exactly one of:
-   * draft → sent → approved → booked. We bucket to those four rather than
-   * inventing always-zero rows for the unreachable states.
+   * the persisted `status`), so a row here resolves to one of:
+   * draft → sent/viewed → booked. Row 327: an 'approved' (customer signed,
+   * deposit not yet paid) quote folds into `awaitingResponse`, mirroring
+   * quoteStatus.ts's APPROVED_DISPLAYS_AS/statusMatchesFilter convention —
+   * ledger row 242 already ruled there is no separate 'approved' stage
+   * anywhere else in the quote lane, so this board doesn't invent one either.
    */
   quotes: {
     draft: StageBucket;
-    awaitingResponse: StageBucket; // status 'sent' — sent, awaiting the customer
-    approved: StageBucket;
+    awaitingResponse: StageBucket; // status 'sent' | 'viewed' | 'approved'
     booked: StageBucket;
   };
   /** Per billing-status buckets for the JOBS column (Phase 2). */
@@ -101,22 +103,21 @@ export function computeWorkflowBoard(
 ): WorkflowBoard {
   const draft = emptyBucket();
   const awaitingResponse = emptyBucket();
-  const approved = emptyBucket();
   const booked = emptyBucket();
 
   for (const q of quotes) {
     const status = deriveStatus(q);
     // B7 fix: skip terminal-status orders — they must not inflate any
-    // forward-progress bucket (booked/approved/sent/draft).
+    // forward-progress bucket (booked/sent/draft).
     if (TERMINAL_STATUSES.has(status)) continue;
+    // Row 327: 'approved' folds into awaitingResponse alongside sent/viewed —
+    // see the `quotes` type doc comment above.
     const bucket =
       status === 'booked'
         ? booked
-        : status === 'approved'
-          ? approved
-          : status === 'sent' || status === 'viewed'
-            ? awaitingResponse
-            : draft;
+        : status === 'sent' || status === 'viewed' || status === 'approved'
+          ? awaitingResponse
+          : draft;
     bucket.count += 1;
     bucket.totalUsd += q.total ?? 0;
   }
@@ -145,7 +146,7 @@ export function computeWorkflowBoard(
   }
 
   return {
-    quotes: { draft, awaitingResponse, approved, booked },
+    quotes: { draft, awaitingResponse, booked },
     jobs: jobBuckets,
     invoices: invoiceBuckets,
   };
