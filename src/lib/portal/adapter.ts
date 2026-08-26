@@ -108,6 +108,10 @@ type BrowsingSelectionJson = {
   colorSchemeId?: string;
   customPattern?: string[];
   permanentEffect?: string;
+  // Ledger row 324 — additive provenance marker the staff-selection route
+  // stamps; a plain customer autosave never writes this key. See
+  // PortalBrowsingSelection.staffSet.
+  staffSet?: { by: string | null; at: string };
 };
 
 // Shape of a `quotes` row pulled with the columns the portal needs.
@@ -645,6 +649,7 @@ function buildBrowsingSelection(row: QuoteRowForPortal): PortalBrowsingSelection
       : {}),
     ...(isPermanentEffect(raw.permanentEffect) ? { permanentEffect: raw.permanentEffect } : {}),
     savedAt: row.browsing_selection_updated_at ?? '',
+    ...(raw.staffSet && typeof raw.staffSet === 'object' ? { staffSet: raw.staffSet } : {}),
   };
 }
 
@@ -1207,5 +1212,7 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
       status: row.status ?? null,
     }) as string,
     declineReason: row.decline_reason ?? null,
+    // Ledger row 324 — raw #68 view receipt, not the derived status (see PortalQuote.viewedAt).
+    ...(row.viewed_at ? { viewedAt: row.viewed_at } : {}),
   };
 }
