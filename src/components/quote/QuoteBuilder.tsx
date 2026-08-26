@@ -90,6 +90,7 @@ import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/
 import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
 import { track } from '@/lib/analytics/posthog';
 import { loadQuoteDraft, saveQuoteDraft, clearQuoteDraft, customerIsEmpty, draftAutosaveActive } from '@/lib/quoteDraft';
+import { loadQuoteEditDraft, saveQuoteEditDraft, clearQuoteEditDraft, sweepQuoteEditDrafts, formatDraftAge, type QuoteEditDraft } from '@/lib/quoteEditDraft';
 import { stableStringify, quoteHasUnsavedEdits } from '@/lib/quoteDirty';
 import { permanentSideOverriddenFields, describePermanentSideField } from '@/lib/permanent/reconcileSideFootage';
 import { downscaleForUpload, downscaleForUploadAsBlob, readUploadErrorMessage } from '@/lib/clientImage';
@@ -953,6 +954,13 @@ export default function QuoteBuilder({
     if (userTouchedRef.current) return;
     userTouchedRef.current = true;
     setUserTouched(true);
+    // Row 413 deliberately does NOT dismiss the restore offer here. This runs
+    // from CAPTURE-phase pointer/key handlers on the whole builder, so it
+    // fires for a click on the offer banner's own Restore button - and
+    // dismissing here unmounts that button before its click event ever
+    // dispatches, turning Restore into Discard (PR #972 staff lens HIGH, the
+    // classic capture-unmount race). The offer withdraws on a REAL edit
+    // instead - see the stash effect below.
   };
   // Native beforeunload, registered ONLY while genuinely dirty so an untouched
   // or already-saved quote never prompts. preventDefault() is the modern
@@ -966,6 +974,109 @@ export default function QuoteBuilder({
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [hasUnsavedEdits]);
+
+  // ─── Edit-mode autosave (ledger row 413) ────────────────────────────────
+  // The half of row 406 the banner + beforeunload above CANNOT cover: an
+  // in-app next/link navigation unmounts this component without any event, and
+  // a Chrome Memory Saver discard never runs a handler at all. While the form
+  // is genuinely dirty, the whole QuoteFormData is stashed to localStorage
+  // (debounced), bound to the exact `lastPersistedForm` it was edited on top
+  // of; quoteEditDraft.ts refuses to offer it back unless the server row still
+  // serializes to that same base, so a row that moved since (another operator,
+  // another tab, an approval) silently wins — the reopen-safety rule that
+  // keeps the OLD new-quote draft gated off for edit mode, kept, not waived.
+  //
+  // Restoring is an OFFER (banner near the top), never an automatic setForm:
+  // the operator decides. The offer also self-dismisses on the first real
+  // touch of the form — from that moment the operator is editing the SERVER
+  // value, their new edits start stashing over the old draft, and restoring
+  // the stale one on top of live typing would itself be a clobber.
+  const [editDraftOffer, setEditDraftOffer] = useState<QuoteEditDraft | null>(null);
+  // PR #972 staff lens MED: when a stash existed but the quote changed since,
+  // the draft is dropped (the server wins) and the operator is TOLD - a
+  // silent drop is indistinguishable from the tool eating their work.
+  const [editDraftDiscardedNotice, setEditDraftDiscardedNotice] = useState(false);
+  // The stable id of the quote being edited — initialQuote's, not savedQuoteId
+  // (declared further down, and identical in edit mode anyway: savedQuoteId is
+  // seeded from this exact value and never changes for an existing quote).
+  const editQuoteId = initialQuote?.quoteId ?? null;
+  useEffect(() => {
+    if (!editMode || !editQuoteId) return;
+    sweepQuoteEditDrafts();
+    // lastPersistedForm at mount IS the server truth (seeded from the Server
+    // Component prop) — exactly the base a restorable draft must match.
+    const draft = loadQuoteEditDraft(editQuoteId, lastPersistedForm);
+    // queueMicrotask defers the setState out of the effect body, the same
+    // idiom the new-quote draft-restore effect above uses for the identical
+    // react-hooks/set-state-in-effect error-level rule.
+    if (draft === 'server-moved') queueMicrotask(() => setEditDraftDiscardedNotice(true));
+    else if (draft) queueMicrotask(() => setEditDraftOffer(draft));
+    // Mount-only by design: a draft can only be offered against the freshly
+    // loaded row, never against mid-session state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    if (!editMode || !editQuoteId) return;
+    if (hasUnsavedEdits) {
+      // A REAL edit (payload actually changed, not a search-box keystroke)
+      // withdraws the pending restore offer: from here the operator is editing
+      // the server value, their new edits stash over the old draft, and
+      // restoring the stale one on top of live typing would be a clobber.
+      // Deferred out of the effect body per the set-state-in-effect rule.
+      if (editDraftOffer) queueMicrotask(() => setEditDraftOffer(null));
+      // Debounced stash while dirty. 800ms: long enough to not thrash JSON +
+      // localStorage on every keystroke of a footage number, short enough that
+      // a tab discard moments after typing still has the edit.
+      const t = setTimeout(() => {
+        saveQuoteEditDraft(editQuoteId, form, lastPersistedForm);
+      }, 800);
+      return () => clearTimeout(t);
+    }
+    // Clean again: clear the stash when a save made it clean (userTouched
+    // latches on the first edit and never resets). Two guards: an untouched
+    // mount also reaches this branch (userTouched false), and the draft the
+    // offer banner is holding UN-ANSWERED must never be deleted out from
+    // under it (!editDraftOffer) - which means, deliberately, that a no-edit
+    // Calculate while the offer is pending does NOT wipe the stash: the
+    // persisted values are unchanged, so the recovered edits remain a valid,
+    // still-unanswered alternative, and wiping them on a routine pricing
+    // click would destroy exactly what this feature preserves. (The #972
+    // delta-verify caught the earlier comment claiming the opposite.) Once
+    // the offer is resolved - restored, discarded, or displaced by a real
+    // edit - every successful Calculate wipes the stash here.
+    if (userTouched && !editDraftOffer) clearQuoteEditDraft(editQuoteId);
+  }, [editMode, editQuoteId, hasUnsavedEdits, currentFormSerialized, lastPersistedForm, userTouched, form, editDraftOffer]);
+  // Premerge technical-lens HIGH: the debounce's cleanup CANCELS a pending
+  // stash, and this component's whole premise is that an in-app next/link
+  // click unmounts it with no event — so typing a footage number and clicking
+  // Inbox inside the 800ms window would lose the edit through the exact door
+  // this feature closes (the original row-406 loss, reintroduced by its own
+  // fix — the S51 class). Flush ON UNMOUNT ONLY, via refs kept current every
+  // render: a cleanup-flush on the debounce effect itself would fire on every
+  // dep change (each keystroke) and delete the debounce entirely.
+  const stashFlushRef = useRef<null | (() => void)>(null);
+  // Kept current from an every-render effect, not a render-time assignment —
+  // the react-compiler lint rule forbids ref writes during render (CI caught
+  // it; my local lint read was the truncated tail of the output, not the
+  // count). Post-commit assignment is equivalent here: the unmount cleanup
+  // below reads whatever the LAST committed render left.
+  useEffect(() => {
+    stashFlushRef.current =
+      editMode && editQuoteId && hasUnsavedEdits
+        ? () => saveQuoteEditDraft(editQuoteId, form, lastPersistedForm)
+        : null;
+  });
+  useEffect(() => {
+    return () => {
+      stashFlushRef.current?.();
+    };
+    // Mount-only: the cleanup must run at UNMOUNT, and the ref always holds
+    // the latest stash closure (or null when there is nothing worth keeping).
+  }, []);
+  // Self-dismiss of the offer on the operator's first edit lives inside
+  // markUserTouched below (an event handler, not an effect — the
+  // set-state-in-effect rule is at error here, and the handler is the actual
+  // moment the intent changes anyway).
 
   // Fix-round HIGH (staff lens, #243 gate): a ref mirror of `form.serviceType`,
   // same never-stale idiom as isNceRef/legacyRebookRef above — but unlike those
@@ -5461,6 +5572,92 @@ export default function QuoteBuilder({
                 Clean it up anytime with “Delete test data” in Settings.
               </p>
             </div>
+          </div>
+        )}
+
+        {/* Row 413: recovered-edits offer. Rendered at the top (a mount-time
+            decision the operator should see before touching anything), and an
+            OFFER by design — restoring never happens automatically, and the
+            offer withdraws itself on the first real edit (markUserTouched).
+            It can only appear at all when the server row still matches the
+            base the draft was edited on top of (quoteEditDraft's CAS-style
+            check), so Restore can never clobber someone else's newer save. */}
+        {editDraftOffer && (
+          <div
+            className="mb-6 rounded-lg border px-4 py-3 flex items-start gap-3"
+            style={{ borderColor: '#f59e0b', backgroundColor: '#fffbeb' }}
+            role="status"
+          >
+            <span aria-hidden="true">●</span>
+            <div className="flex-1">
+              <p className="text-sm font-semibold" style={{ color: '#92400e' }}>
+                Unsaved edits from an earlier visit were recovered.
+              </p>
+              <p className="text-xs mt-0.5" style={{ color: '#92400e' }}>
+                You edited this quote {formatDraftAge(editDraftOffer.savedAt)} but never clicked
+                Calculate, so those changes are not in the saved quote. Restore them to keep
+                working, or discard them to stay with what&rsquo;s saved.
+              </p>
+              <div className="mt-2 flex gap-2">
+                <button
+                  type="button"
+                  className="text-xs font-semibold px-3 py-1.5 rounded-md text-white"
+                  style={{ backgroundColor: '#d97706' }}
+                  onClick={() => {
+                    const draft = editDraftOffer;
+                    setEditDraftOffer(null);
+                    if (!draft) return;
+                    // Restoring IS an edit: latch the dirty machinery so the
+                    // row-406 banner + beforeunload arm immediately, and the
+                    // stash effect re-saves this draft until Calculate lands.
+                    userTouchedRef.current = true;
+                    setUserTouched(true);
+                    setForm(draft.form);
+                  }}
+                >
+                  Restore my edits
+                </button>
+                <button
+                  type="button"
+                  className="text-xs font-semibold px-3 py-1.5 rounded-md border"
+                  style={{ borderColor: '#d97706', color: '#92400e' }}
+                  onClick={() => {
+                    // PR #972 staff lens MED: destructive with no undo, 8px
+                    // from Restore - confirm, matching this file's convention
+                    // for every other destructive action.
+                    if (!window.confirm('Discard the recovered edits? This cannot be undone.')) return;
+                    setEditDraftOffer(null);
+                    if (editQuoteId) clearQuoteEditDraft(editQuoteId);
+                  }}
+                >
+                  Discard
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* PR #972 staff lens MED: the informational half - a stash existed
+            but the quote changed since it was made, so it was discarded (the
+            server wins, by design). Told once, dismissible, grey not amber:
+            nothing is wrong and nothing is recoverable. */}
+        {editDraftDiscardedNotice && (
+          <div
+            className="mb-6 rounded-lg border px-4 py-2.5 flex items-start gap-2 text-xs"
+            style={{ borderColor: '#d1d5db', backgroundColor: '#f9fafb', color: '#4b5563' }}
+            role="status"
+          >
+            <span className="flex-1">
+              Unsaved edits from an earlier visit were found, but this quote has been changed since
+              they were made - so they were discarded to protect the newer save.
+            </span>
+            <button
+              type="button"
+              className="font-semibold underline"
+              onClick={() => setEditDraftDiscardedNotice(false)}
+            >
+              OK
+            </button>
           </div>
         )}
 
