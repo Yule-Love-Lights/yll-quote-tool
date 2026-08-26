@@ -502,6 +502,35 @@ export async function listInvoicesForAdmin(limit = 500): Promise<InvoiceAdminCar
   });
 }
 
+/**
+ * Row 419 fix (premerge staff lens MED): service_type for an arbitrary set of
+ * quote ids. The customer profile's Invoices table resolves its Service chip
+ * through the page's quote list, which is filtered from the newest-500
+ * SYSTEM-WIDE dashboard query — a returning customer's invoice can link a
+ * quote older than that cutoff, and without this lookup it would render the
+ * "no linked quote" em dash for an order that has a real service line. Values
+ * are the RAW column (null allowed — the badge itself applies the holiday
+ * default); a quote id absent from the result genuinely doesn't resolve.
+ * Best-effort: an error returns the partial/empty map, never throws.
+ */
+export async function serviceTypesForQuotes(quoteIds: string[]): Promise<Map<string, string | null>> {
+  const out = new Map<string, string | null>();
+  const db = sb();
+  if (!db || !quoteIds.length) return out;
+  const { data, error } = await db
+    .from('quotes')
+    .select('id, service_type')
+    .in('id', quoteIds);
+  if (error) {
+    console.error('serviceTypesForQuotes: query error:', error);
+    return out;
+  }
+  for (const q of (data ?? []) as { id: string; service_type: string | null }[]) {
+    out.set(q.id, q.service_type ?? null);
+  }
+  return out;
+}
+
 // The full billing detail for one invoice (/admin/invoices/[id]): the invoice, the
 // linked quote's customer identity + is_test/is_nce, and the linked job's number/status.
 export type InvoiceDetail = {

@@ -19,7 +19,7 @@ import { getContact, isHighLevelConfigured } from '@/lib/integrations/highlevel'
 import type { CrmContact } from '@/lib/integrations/types';
 import type { DashboardQuote } from '@/lib/dashboard/types';
 import { listJobsForCustomer } from '@/lib/jobs';
-import { listInvoicesForCustomer } from '@/lib/invoices';
+import { listInvoicesForCustomer, serviceTypesForQuotes } from '@/lib/invoices';
 import { JobStatusBadge } from '@/components/admin/JobStatusBadge';
 import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
 import { ServiceTypeBadge } from '@/components/admin/ServiceTypeBadge';
@@ -133,8 +133,25 @@ export default async function CustomerDetailPage({
   const jobs = await listJobsForCustomer(customerId, quoteIds);
   const invoices = await listInvoicesForCustomer(customerId, quoteIds);
   // Row 419: invoices don't carry a service_type — resolve each through its
-  // linked quote, all of which are already fetched above.
-  const serviceTypeByQuote = new Map(quotes.map(q => [q.id, q.service_type]));
+  // linked quote. Seeded from the quotes already fetched above, then topped up
+  // for any invoice whose quote fell outside that list: `quotes` is filtered
+  // from the newest-500 SYSTEM-WIDE dashboard query, while the invoices list
+  // is matched by customer_id with no such cap, so a returning customer's
+  // older order would otherwise show a false "no linked quote" em dash
+  // (premerge staff lens MED on this PR).
+  const serviceTypeByQuote = new Map<string, string | null>(quotes.map(q => [q.id, q.service_type]));
+  const uncoveredQuoteIds = [
+    ...new Set(
+      invoices
+        .map(inv => inv.quote_id)
+        .filter((x): x is string => !!x && !serviceTypeByQuote.has(x)),
+    ),
+  ];
+  if (uncoveredQuoteIds.length) {
+    for (const [id, svc] of await serviceTypesForQuotes(uncoveredQuoteIds)) {
+      serviceTypeByQuote.set(id, svc);
+    }
+  }
 
   // Property-aware rebook (WT-53): resolve this customer's properties server-side
   // so RebookButton can scope the clone to a KNOWN building instead of falling
