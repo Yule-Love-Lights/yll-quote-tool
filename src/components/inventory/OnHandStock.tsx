@@ -179,11 +179,13 @@ export function OnHandStock() {
             <div className="px-3 py-2 border-b border-gray-100">
               <SkeletonBar className="h-3 w-full" />
             </div>
+            {/* Row 410 fix round (staff lens LOW): rows are h-11 — the real
+                rows run two lines (~44px), and h-8 undershot them. */}
             <div className="p-3 flex flex-col gap-3">
-              <SkeletonBar className="h-8" />
-              <SkeletonBar className="h-8" />
-              <SkeletonBar className="h-8" />
-              <SkeletonBar className="h-8" />
+              <SkeletonBar className="h-11" />
+              <SkeletonBar className="h-11" />
+              <SkeletonBar className="h-11" />
+              <SkeletonBar className="h-11" />
             </div>
             <span className="sr-only">Loading stock…</span>
           </div>

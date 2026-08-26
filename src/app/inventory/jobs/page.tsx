@@ -17,7 +17,7 @@ import {
 } from '@/lib/inventory/fulfillmentStage';
 import type { FulfillmentCard } from '@/lib/inventory/jobs';
 import { PERMANENT_SIDE_LABEL, type PermanentSide } from '@/lib/permanent/types';
-import { SkeletonBar, SkeletonRows } from '@/components/ui/LoadingSkeleton';
+import { SkeletonBar } from '@/components/ui/LoadingSkeleton';
 
 type MaterialRow = { sku: string; name: string; qty: number; onHand: number | null; short: boolean };
 type UnboundConcept = { conceptKey: string; label: string; qty: number };
@@ -333,9 +333,18 @@ function WorkOrderModal({ id, onClose }: { id: string; onClose: () => void }) {
           {error ? (
             <p className="text-sm" style={{ color: '#b91c1c' }}>{error}</p>
           ) : !data ? (
-            // Row 410: the drawer opens on one line and then fills with the
-            // whole work order; placeholder lines hold that space instead.
-            <SkeletonRows label="Loading work order…" rows={5} rowClassName="h-6" className="flex flex-col gap-3" />
+            // Row 410 fix round (staff lens MED): the real drawer is a
+            // customer line, a stage/action row, the prep button and a
+            // materials TABLE — several hundred pixels. Five thin lines held a
+            // sixth of that and the drawer still ballooned right as a staffer
+            // reached for "Mark prepared". Mirror the real shape instead.
+            <div role="status" aria-busy="true" className="flex flex-col gap-3">
+              <SkeletonBar className="h-5 w-64" />
+              <SkeletonBar className="h-5 w-80" />
+              <SkeletonBar className="h-9 w-40" />
+              <SkeletonBar className="h-64" />
+              <span className="sr-only">Loading work order…</span>
+            </div>
           ) : (
             <>
               {(data.job.customerName || data.job.customerAddress) && (

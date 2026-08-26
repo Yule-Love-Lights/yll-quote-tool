@@ -27,6 +27,16 @@ describe('SkeletonRows (row 410)', () => {
   });
 });
 
+  it('announce={false} drops the live-region semantics so a parent region owns them', () => {
+    // PR #969 technical lens: StaffNotesPanel already wraps its content in
+    // aria-live="polite"; a nested role="status" can double-announce.
+    const html = renderToStaticMarkup(<SkeletonRows label="Loading notes…" announce={false} />);
+    expect(html).not.toContain('role="status"');
+    expect(html).not.toContain('aria-busy');
+    expect(html).not.toContain('sr-only');
+    expect(html.split('animate-pulse').length - 1).toBeGreaterThan(0);
+  });
+
 describe('SkeletonBar (row 410)', () => {
   it('carries the pulse and the caller class', () => {
     const html = renderToStaticMarkup(<SkeletonBar className="h-28 w-40" />);

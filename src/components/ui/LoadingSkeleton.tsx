@@ -22,6 +22,7 @@ export function SkeletonRows({
   rows = 3,
   rowClassName = 'h-11',
   className = 'flex flex-col gap-2',
+  announce = true,
 }: {
   /** The text the bare line used to show — kept for screen readers. */
   label: string;
@@ -29,13 +30,20 @@ export function SkeletonRows({
   /** Height (and any width) of one placeholder row, matching the real one. */
   rowClassName?: string;
   className?: string;
+  /**
+   * Pass false when this sits INSIDE another live region (a parent aria-live
+   * wrapper, or a hand-built role="status" container composing several of
+   * these) — a nested role="status" can double-announce (PR #969 technical
+   * lens). The parent then owns the announcement and the sr-only label.
+   */
+  announce?: boolean;
 }) {
   return (
-    <div role="status" aria-busy="true" className={className}>
+    <div {...(announce ? { role: 'status', 'aria-busy': true } : {})} className={className}>
       {Array.from({ length: rows }, (_, i) => (
         <SkeletonBar key={i} className={rowClassName} />
       ))}
-      <span className="sr-only">{label}</span>
+      {announce && label ? <span className="sr-only">{label}</span> : null}
     </div>
   );
 }

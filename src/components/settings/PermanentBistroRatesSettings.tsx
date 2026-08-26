@@ -130,8 +130,9 @@ export function PermanentBistroRatesSettings() {
           <SkeletonBar className="h-5 w-56" />
           <SkeletonBar className="h-8 mt-1.5" />
         </div>
+        {/* Row 410 fix round (staff lens LOW): THREE cards, matching this
+            panel's three real sections — not EventRatesSettings' four. */}
         <div className="grid gap-4 sm:grid-cols-2">
-          <SkeletonBar className="h-36" />
           <SkeletonBar className="h-36" />
           <SkeletonBar className="h-36" />
           <SkeletonBar className="h-36" />
