@@ -76,7 +76,10 @@ export function saveQuoteEditDraft(quoteId: string, form: QuoteFormData, base: s
  * work, which is the precise failure the reopen-safety gate on the old
  * new-quote draft exists to prevent.
  */
-export function loadQuoteEditDraft(quoteId: string, currentBase: string): QuoteEditDraft | null {
+export function loadQuoteEditDraft(
+  quoteId: string,
+  currentBase: string,
+): QuoteEditDraft | 'server-moved' | null {
   if (!hasWindow()) return null;
   try {
     const raw = window.localStorage.getItem(keyFor(quoteId));
@@ -92,9 +95,12 @@ export function loadQuoteEditDraft(quoteId: string, currentBase: string): QuoteE
       return null;
     }
     if (parsed.base !== currentBase) {
-      // The server row moved since this draft was stashed. The server wins.
+      // The server row moved since this draft was stashed. The server wins —
+      // but the operator is TOLD (PR #972 staff lens MED: a silent drop reads
+      // as "the tool ate my work", indistinguishable from a bug). The draft
+      // itself is still cleared; 'server-moved' only drives an info notice.
       clearQuoteEditDraft(quoteId);
-      return null;
+      return 'server-moved';
     }
     return { form: parsed.form as QuoteFormData, base: parsed.base, savedAt };
   } catch {

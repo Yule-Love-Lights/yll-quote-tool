@@ -47,8 +47,10 @@ describe('quoteEditDraft (row 413)', () => {
     saveQuoteEditDraft(QUOTE_A, form(), BASE);
     const got = loadQuoteEditDraft(QUOTE_A, BASE);
     expect(got).not.toBeNull();
-    expect(got!.base).toBe(BASE);
-    expect(got!.form).toEqual(form());
+    expect(got).not.toBe('server-moved');
+    const draft = got as Exclude<typeof got, 'server-moved' | null>;
+    expect(draft.base).toBe(BASE);
+    expect(draft.form).toEqual(form());
   });
 
   it('REFUSES and clears the draft when the server row moved — the clobber guard', () => {
@@ -58,7 +60,10 @@ describe('quoteEditDraft (row 413)', () => {
     const store = stubLocalStorage();
     saveQuoteEditDraft(QUOTE_A, form(), BASE);
     const got = loadQuoteEditDraft(QUOTE_A, '{"front":100}');
-    expect(got).toBeNull();
+    // PR #972 staff lens MED: the drop is no longer silent - the caller gets
+    // 'server-moved' to show an informational notice. The draft is still
+    // cleared either way; nothing is restorable.
+    expect(got).toBe('server-moved');
     expect(store.size).toBe(0); // cleared, not just hidden
   });
 

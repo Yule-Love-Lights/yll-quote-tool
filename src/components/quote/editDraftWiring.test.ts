@@ -28,7 +28,10 @@ describe('edit-mode autosave is actually wired (row 413)', () => {
     // The offer banner holds the draft at mount while hasUnsavedEdits is
     // false. An unconditional clear on !hasUnsavedEdits would delete the very
     // draft being offered before the operator answers.
-    expect(builder).toContain('if (userTouched) clearQuoteEditDraft(editQuoteId);');
+    // ...and a mere TOUCH that changed no payload (a contact-search
+    // keystroke) must not delete it either while the offer is un-answered
+    // (PR #972 fix round).
+    expect(builder).toContain('if (userTouched && !editDraftOffer) clearQuoteEditDraft(editQuoteId);');
   });
 
   it('restore is an explicit operator action that arms the dirty machinery', () => {
@@ -37,9 +40,31 @@ describe('edit-mode autosave is actually wired (row 413)', () => {
     expect(builder).toMatch(/userTouchedRef\.current = true;\s*\n\s*setUserTouched\(true\);\s*\n\s*setForm\(draft\.form\);/);
   });
 
-  it('the first real edit withdraws the offer (markUserTouched)', () => {
-    // Editing the server value and then restoring a stale draft on top would
-    // itself be a clobber, so the offer self-dismisses on first touch.
-    expect(builder).toMatch(/setUserTouched\(true\);\s*\n\s*\/\/ Row 413:[\s\S]{0,400}?setEditDraftOffer\(null\);/);
+  it('flushes a pending stash at unmount — the in-app-navigation door itself', () => {
+    // Premerge HIGH: the debounce cleanup cancels the pending write, and an
+    // in-app next/link click unmounts within the 800ms window — the original
+    // row-406 loss reintroduced. The unmount flush is ref-based on purpose: a
+    // cleanup-flush on the debounce effect would fire per keystroke.
+    expect(builder).toMatch(/stashFlushRef\.current =\s+editMode && editQuoteId && hasUnsavedEdits/);
+    expect(builder).toMatch(/return \(\) => \{\s+stashFlushRef\.current\?\.\(\);/);
+  });
+
+  it('the offer withdraws on a REAL edit, never from the capture-phase touch latch', () => {
+    // PR #972 staff lens HIGH: markUserTouched runs from capture-phase
+    // pointer handlers on the whole builder, so dismissing the offer there
+    // unmounts the Restore button before its own click dispatches - Restore
+    // became Discard. The dismissal lives in the stash effect's dirty branch
+    // (a payload actually changed), deferred per the set-state rule.
+    expect(builder).toMatch(/if \(editDraftOffer\) queueMicrotask\(\(\) => setEditDraftOffer\(null\)\);/);
+    // And markUserTouched itself must NOT dismiss: its body contains no
+    // setEditDraftOffer call.
+    const fnStart = builder.indexOf('const markUserTouched = () => {');
+    const fnEnd = builder.indexOf('};', fnStart);
+    expect(fnStart).toBeGreaterThan(-1);
+    expect(builder.slice(fnStart, fnEnd)).not.toContain('setEditDraftOffer(null);');
+  });
+
+  it('a base-mismatched draft surfaces the informational notice instead of vanishing', () => {
+    expect(builder).toContain("if (draft === 'server-moved') queueMicrotask(() => setEditDraftDiscardedNotice(true));");
   });
 });
