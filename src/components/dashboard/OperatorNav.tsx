@@ -160,7 +160,12 @@ export function OperatorNav({
             md (768px): the 9-item row needs ~832px, so at md it overflowed the
             viewport → horizontal page scroll on iPad portrait (#56, S22). 768–1023
             uses the hamburger below. */}
-        <ul className="hidden lg:flex items-center gap-1 text-sm">
+        {/* gap-0.5, not gap-1 (premerge staff MED on this PR): with the "+ New
+            quote" CTA added, the row overflowed 1024px by ~20px whenever the
+            Inbox badge showed — measured in headless Chromium, the exact
+            iPad-width horizontal-scroll class #56/S22 fixed. Ten gaps × 2px
+            saved = exactly the overflow. */}
+        <ul className="hidden lg:flex items-center gap-0.5 text-sm">
           {ITEMS.map(item => (
             <li key={item.href}>
               <Link href={item.href} className="px-3 py-1.5 rounded-md transition-colors inline-flex items-center" style={linkStyle(item)}>
@@ -175,9 +180,11 @@ export function OperatorNav({
               as the CTA it is, not a nav tab, so it never takes the
               active-tab highlight (that is Quotes' job for /quote/*). */}
           <li>
+            {/* px-2.5 (not the tabs' px-3): 4px of extra headroom on top of
+                the gap fix above, so the 1024px fit isn't zero-margin. */}
             <Link
               href="/quote/new"
-              className="px-3 py-1.5 rounded-md transition-colors inline-flex items-center font-medium"
+              className="px-2.5 py-1.5 rounded-md transition-colors inline-flex items-center font-medium"
               style={{ background: 'var(--brand-evergreen)', color: 'var(--brand-cream)' }}
             >
               + New quote
