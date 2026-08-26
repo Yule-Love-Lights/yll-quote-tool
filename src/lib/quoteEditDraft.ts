@@ -45,8 +45,51 @@ export type QuoteEditDraft = {
   form: QuoteFormData;
   /** stableStringify of the last-persisted form this draft was edited on top of. */
   base: string;
+  /**
+   * Row 420: the quote's LIFECYCLE at stash time (quoteEditDraftLifecycle of
+   * status + customer_approved_at + deposit_paid_at). The `base` CAS above
+   * only binds the draft to the FORM it was edited on top of — /approve and
+   * the deposit webhook never touch inputs/result, so a draft stashed
+   * pre-approval still base-matches after the customer approved or booked,
+   * and offering it would push abandoned numbers onto a live booked order
+   * (amendReprice fires unconditionally for booked). Binding the draft to
+   * the lifecycle too makes such a draft DISCARDED at reopen, not offered.
+   */
+  lifecycle: string;
   savedAt: number;
 };
+
+/**
+ * Row 420: the lifecycle stamp a draft is bound to. Timestamps, not the
+ * derived status label, so a status-derivation change can never silently
+ * un-bind old drafts; JSON of a fixed-key object so the comparison is exact.
+ *
+ * The raw status column is NORMALIZED first (premerge staff HIGH + customer
+ * MED on this PR): the open pre-approval flow — null/'draft'/'sent'/'viewed'
+ * — collapses to one bucket, because 'sent' is written by the operator's own
+ * Send click and 'viewed' by the customer merely opening their portal link
+ * (view/route.ts), and neither changes what restoring an edit draft would
+ * mean. Without the collapse, a homeowner peeking at their quote silently
+ * destroyed the operator's in-progress edits at next reopen. Every other
+ * status ('approved', 'booked', 'declined', 'changes_requested',
+ * 'abandoned', …) stays verbatim — those are real state moves a stale draft
+ * must not survive — and the approvedAt/depositPaidAt timestamps catch the
+ * money transitions independently of the label.
+ */
+const OPEN_STATUSES = new Set<string | null>([null, 'draft', 'sent', 'viewed']);
+
+export function quoteEditDraftLifecycle(q: {
+  status: string | null;
+  approvedAt: string | null;
+  depositPaidAt: string | null;
+}): string {
+  const raw = q.status ?? null;
+  return JSON.stringify({
+    status: OPEN_STATUSES.has(raw) ? 'open' : raw,
+    approvedAt: q.approvedAt ?? null,
+    depositPaidAt: q.depositPaidAt ?? null,
+  });
+}
 
 function hasWindow(): boolean {
   return typeof window !== 'undefined' && !!window.localStorage;
@@ -56,10 +99,10 @@ function keyFor(quoteId: string): string {
   return PREFIX + quoteId;
 }
 
-export function saveQuoteEditDraft(quoteId: string, form: QuoteFormData, base: string): void {
+export function saveQuoteEditDraft(quoteId: string, form: QuoteFormData, base: string, lifecycle: string): void {
   if (!hasWindow()) return;
   try {
-    const draft: QuoteEditDraft = { form, base, savedAt: Date.now() };
+    const draft: QuoteEditDraft = { form, base, lifecycle, savedAt: Date.now() };
     window.localStorage.setItem(keyFor(quoteId), JSON.stringify(draft));
   } catch {
     /* private mode / storage full — the stash is best-effort; the row-406
@@ -79,7 +122,8 @@ export function saveQuoteEditDraft(quoteId: string, form: QuoteFormData, base: s
 export function loadQuoteEditDraft(
   quoteId: string,
   currentBase: string,
-): QuoteEditDraft | 'server-moved' | null {
+  currentLifecycle: string,
+): QuoteEditDraft | 'server-moved' | 'lifecycle-moved' | null {
   if (!hasWindow()) return null;
   try {
     const raw = window.localStorage.getItem(keyFor(quoteId));
@@ -94,6 +138,27 @@ export function loadQuoteEditDraft(
       clearQuoteEditDraft(quoteId);
       return null;
     }
+    // Row 420: a draft with no lifecycle stamp (stashed before this shipped)
+    // cannot be verified against the live quote's state, and the unverifiable
+    // case IS the dangerous one (a pre-approval stash on a now-booked order).
+    // Discarded WITH the notice (fix round, staff MED): this module's own
+    // principle is that a silent drop reads as the tool eating work, and the
+    // notice's wording covers the unverifiable case honestly. One-time
+    // migration cost, bounded by the 7-day TTL anyway.
+    if (typeof parsed.lifecycle !== 'string') {
+      clearQuoteEditDraft(quoteId);
+      return 'lifecycle-moved';
+    }
+    if (parsed.lifecycle !== currentLifecycle) {
+      // Row 420: the quote's LIFECYCLE moved since the stash — approved,
+      // booked, declined — even though the priced form itself (`base`) still
+      // matches. Offering the draft would let Calculate push pre-approval
+      // numbers onto a live order whose state the operator has no hint
+      // moved. DISCARD, and tell the operator why (same reasoning as
+      // 'server-moved': a silent drop reads as the tool eating work).
+      clearQuoteEditDraft(quoteId);
+      return 'lifecycle-moved';
+    }
     if (parsed.base !== currentBase) {
       // The server row moved since this draft was stashed. The server wins —
       // but the operator is TOLD (PR #972 staff lens MED: a silent drop reads
@@ -102,7 +167,7 @@ export function loadQuoteEditDraft(
       clearQuoteEditDraft(quoteId);
       return 'server-moved';
     }
-    return { form: parsed.form as QuoteFormData, base: parsed.base, savedAt };
+    return { form: parsed.form as QuoteFormData, base: parsed.base, lifecycle: parsed.lifecycle, savedAt };
   } catch {
     return null;
   }

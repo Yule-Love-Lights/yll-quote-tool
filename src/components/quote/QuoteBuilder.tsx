@@ -90,7 +90,7 @@ import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/
 import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
 import { track } from '@/lib/analytics/posthog';
 import { loadQuoteDraft, saveQuoteDraft, clearQuoteDraft, customerIsEmpty, draftAutosaveActive } from '@/lib/quoteDraft';
-import { loadQuoteEditDraft, saveQuoteEditDraft, clearQuoteEditDraft, sweepQuoteEditDrafts, formatDraftAge, type QuoteEditDraft } from '@/lib/quoteEditDraft';
+import { loadQuoteEditDraft, saveQuoteEditDraft, clearQuoteEditDraft, sweepQuoteEditDrafts, formatDraftAge, quoteEditDraftLifecycle, type QuoteEditDraft } from '@/lib/quoteEditDraft';
 import { stableStringify, quoteHasUnsavedEdits } from '@/lib/quoteDirty';
 import { permanentSideOverriddenFields, describePermanentSideField } from '@/lib/permanent/reconcileSideFootage';
 import { downscaleForUpload, downscaleForUploadAsBlob, readUploadErrorMessage } from '@/lib/clientImage';
@@ -996,20 +996,37 @@ export default function QuoteBuilder({
   // the draft is dropped (the server wins) and the operator is TOLD - a
   // silent drop is indistinguishable from the tool eating their work.
   const [editDraftDiscardedNotice, setEditDraftDiscardedNotice] = useState(false);
+  // Row 420: the sibling notice for a draft discarded because the quote's
+  // LIFECYCLE moved (approved / booked / declined since the stash) — a
+  // different fact than "someone edited the form", so it gets its own words.
+  const [editDraftLifecycleNotice, setEditDraftLifecycleNotice] = useState(false);
   // The stable id of the quote being edited — initialQuote's, not savedQuoteId
   // (declared further down, and identical in edit mode anyway: savedQuoteId is
   // seeded from this exact value and never changes for an existing quote).
   const editQuoteId = initialQuote?.quoteId ?? null;
+  // Row 420: the lifecycle this session's stashes are bound to. Mount-time
+  // server truth, like lastPersistedForm — if the customer approves or books
+  // WHILE the operator edits, the stash carries the pre-approval stamp and
+  // the NEXT reopen (which loads the fresh row) discards it, which is the
+  // point: a draft never outlives the order state it was priced against.
+  const editLifecycle = initialQuote
+    ? quoteEditDraftLifecycle({
+        status: initialQuote.status ?? null,
+        approvedAt: initialQuote.approvedAt ?? null,
+        depositPaidAt: initialQuote.depositPaidAt ?? null,
+      })
+    : '';
   useEffect(() => {
     if (!editMode || !editQuoteId) return;
     sweepQuoteEditDrafts();
     // lastPersistedForm at mount IS the server truth (seeded from the Server
     // Component prop) — exactly the base a restorable draft must match.
-    const draft = loadQuoteEditDraft(editQuoteId, lastPersistedForm);
+    const draft = loadQuoteEditDraft(editQuoteId, lastPersistedForm, editLifecycle);
     // queueMicrotask defers the setState out of the effect body, the same
     // idiom the new-quote draft-restore effect above uses for the identical
     // react-hooks/set-state-in-effect error-level rule.
     if (draft === 'server-moved') queueMicrotask(() => setEditDraftDiscardedNotice(true));
+    else if (draft === 'lifecycle-moved') queueMicrotask(() => setEditDraftLifecycleNotice(true));
     else if (draft) queueMicrotask(() => setEditDraftOffer(draft));
     // Mount-only by design: a draft can only be offered against the freshly
     // loaded row, never against mid-session state.
@@ -1028,7 +1045,7 @@ export default function QuoteBuilder({
       // localStorage on every keystroke of a footage number, short enough that
       // a tab discard moments after typing still has the edit.
       const t = setTimeout(() => {
-        saveQuoteEditDraft(editQuoteId, form, lastPersistedForm);
+        saveQuoteEditDraft(editQuoteId, form, lastPersistedForm, editLifecycle);
       }, 800);
       return () => clearTimeout(t);
     }
@@ -1045,7 +1062,7 @@ export default function QuoteBuilder({
     // the offer is resolved - restored, discarded, or displaced by a real
     // edit - every successful Calculate wipes the stash here.
     if (userTouched && !editDraftOffer) clearQuoteEditDraft(editQuoteId);
-  }, [editMode, editQuoteId, hasUnsavedEdits, currentFormSerialized, lastPersistedForm, userTouched, form, editDraftOffer]);
+  }, [editMode, editQuoteId, hasUnsavedEdits, currentFormSerialized, lastPersistedForm, userTouched, form, editDraftOffer, editLifecycle]);
   // Premerge technical-lens HIGH: the debounce's cleanup CANCELS a pending
   // stash, and this component's whole premise is that an in-app next/link
   // click unmounts it with no event — so typing a footage number and clicking
@@ -1063,7 +1080,7 @@ export default function QuoteBuilder({
   useEffect(() => {
     stashFlushRef.current =
       editMode && editQuoteId && hasUnsavedEdits
-        ? () => saveQuoteEditDraft(editQuoteId, form, lastPersistedForm)
+        ? () => saveQuoteEditDraft(editQuoteId, form, lastPersistedForm, editLifecycle)
         : null;
   });
   useEffect(() => {
@@ -5655,6 +5672,32 @@ export default function QuoteBuilder({
               type="button"
               className="font-semibold underline"
               onClick={() => setEditDraftDiscardedNotice(false)}
+            >
+              OK
+            </button>
+          </div>
+        )}
+
+        {/* Row 420: sibling of the notice above, for a draft discarded because
+            the quote's LIFECYCLE moved (approved / booked / declined since the
+            stash). Different words on purpose: the form the draft was priced
+            against may be untouched — what moved is the order's state, and
+            restoring old numbers onto it is exactly what was refused. */}
+        {editDraftLifecycleNotice && (
+          <div
+            className="mb-6 rounded-lg border px-4 py-2.5 flex items-start gap-2 text-xs"
+            style={{ borderColor: '#d1d5db', backgroundColor: '#f9fafb', color: '#4b5563' }}
+            role="status"
+          >
+            <span className="flex-1">
+              Unsaved edits from an earlier visit were found, but they could not be safely
+              re-applied - this quote&apos;s status has moved since they were made (approved, booked,
+              declined), or they predate the status check - so they were discarded.
+            </span>
+            <button
+              type="button"
+              className="font-semibold underline"
+              onClick={() => setEditDraftLifecycleNotice(false)}
             >
               OK
             </button>
