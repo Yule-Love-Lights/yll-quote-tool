@@ -47,6 +47,15 @@ export async function casSwapApprovalSnapshot(
   logPrefix: string,
   extraColumns?: Record<string, unknown>,
 ): Promise<SnapshotCasOutcome> {
+  // Fix round (admin lens LOW): extraColumns exists for columns that must move
+  // ATOMICALLY with the snapshot (free-items' inputs/result). It must never be
+  // a side door for the snapshot itself — the spread order below already makes
+  // `next` win, but a caller passing approval_snapshot here is confused about
+  // which argument is which, and that confusion should fail loudly in dev
+  // rather than be silently corrected.
+  if (extraColumns && 'approval_snapshot' in extraColumns) {
+    console.error(`${logPrefix} casSwapApprovalSnapshot: approval_snapshot passed via extraColumns for quote ${quoteId} — pass it as \`next\`; the extraColumns copy is ignored`);
+  }
   const { data, error } = await client
     .from('quotes')
     .update({ ...(extraColumns ?? {}), approval_snapshot: next })
@@ -55,7 +64,9 @@ export async function casSwapApprovalSnapshot(
     .eq('approval_snapshot', JSON.stringify(prior))
     .select('id');
   if (error) {
-    console.error(`${logPrefix} approval_snapshot CAS write failed for quote ${quoteId}:`, error.message);
+    // Fix round (two lenses, LOW): log the whole error object — .code/.details/
+    // .hint are what an incident grep needs, and .message alone drops them.
+    console.error(`${logPrefix} approval_snapshot CAS write failed for quote ${quoteId}:`, error);
     return 'error';
   }
   if (!data || data.length === 0) return 'conflict';

@@ -121,20 +121,27 @@ async function logIdentityRefusal(
   // lost race, SKIP (never coerce to {}) when the observed snapshot is
   // unconfirmed, because losing an audit line is acceptable and replacing the
   // frozen agreement to record one is not.
-  const operator = await getOperator();
-  const newEntry: IdentityRefusalEntry = {
-    by: operator?.email ?? null,
-    at: new Date().toISOString(),
-    ...entry,
-  };
-  await appendQuoteAuditEntry(
-    client,
-    quoteId,
-    'identityChangeRefusals',
-    newEntry,
-    '[api/integrations/highlevel/attach]',
-    baseSnapshot,
-  );
+  // Fix round (staff lens LOW on PR #970): the old inline code ran getOperator
+  // INSIDE its try — a throw here must never turn a routine refusal response
+  // into a 500, because this whole function is a best-effort audit line.
+  try {
+    const operator = await getOperator();
+    const newEntry: IdentityRefusalEntry = {
+      by: operator?.email ?? null,
+      at: new Date().toISOString(),
+      ...entry,
+    };
+    await appendQuoteAuditEntry(
+      client,
+      quoteId,
+      'identityChangeRefusals',
+      newEntry,
+      '[api/integrations/highlevel/attach]',
+      baseSnapshot,
+    );
+  } catch (err) {
+    console.warn(`[api/integrations/highlevel/attach] identity-refusal audit write threw for quote ${quoteId}:`, err);
+  }
 }
 
 // Fix-round LOW: a minimal display snapshot for the refused contact, cheap

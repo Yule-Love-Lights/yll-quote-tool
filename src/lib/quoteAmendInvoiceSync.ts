@@ -538,12 +538,25 @@ async function flagInvoiceResyncFailed(
   try {
     const sb = getSupabaseServiceClient();
     if (!sb) return;
-    const { data: quoteRow } = await sb
+    const { data: quoteRow, error: readErr } = await sb
       .from('quotes')
       .select('approval_snapshot')
       .eq('id', invoiceForSync.quote_id)
       .maybeSingle<{ approval_snapshot: Record<string, unknown> | null }>();
-    const priorSnapshot = quoteRow?.approval_snapshot ?? {};
+    // Row 411 (admin lens on PR #970): a FAILED read must skip, never degrade
+    // to {} — this was the exact pattern behind the attach route's reviewed
+    // data-loss bug. Here the value-CAS below already bounded the damage to
+    // "marker dropped" (a '{}' filter cannot match a populated snapshot), but
+    // the skip also stops the misleading lost-the-race warning a failed read
+    // used to produce, and makes this writer consistent with the module that
+    // now owns the idiom (src/lib/quoteAudit.ts's trap 2).
+    if (readErr || !quoteRow) {
+      console.warn(
+        `${logPrefix} invoiceResyncFailed marker SKIPPED for quote ${invoiceForSync.quote_id} — could not confirm the current approval_snapshot (read failed or no row)`,
+      );
+      return;
+    }
+    const priorSnapshot = quoteRow.approval_snapshot ?? {};
     const nextSnapshot = {
       ...priorSnapshot,
       invoiceResyncFailed: {
