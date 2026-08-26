@@ -149,6 +149,46 @@ export default function InvoiceDetailPage() {
     }
   };
 
+  // Row 388: the standalone resync action. Unlike Mark reconciled (which only
+  // retires the flag), this REWRITES the invoice's total/balance/status to the
+  // order's current agreed total — the same resyncInvoiceToAgreedTotal /amend
+  // and /amend-decline already call. A money-mutating action gets its own
+  // confirm, same shape as markReconciled above.
+  const [resyncBusy, setResyncBusy] = useState(false);
+  const [resyncMsg, setResyncMsg] = useState<{ text: string; ok: boolean; forId: string } | null>(null);
+  const resyncInvoice = async () => {
+    if (!id || resyncBusy) return;
+    if (
+      !window.confirm(
+        'Resync this invoice to the order’s current agreed total? This rewrites the invoice’s total, ' +
+          'balance, and status to match — verify the agreed total first, this cannot be undone.',
+      )
+    )
+      return;
+    setResyncBusy(true);
+    setResyncMsg(null);
+    try {
+      const res = await fetch(`/api/invoices/${id}/resync`, { method: 'POST' });
+      const body = (await res.json()) as { error?: string; code?: string; invoicedTotal?: number };
+      if (!res.ok) {
+        throw new Error(body.error ?? 'Failed');
+      }
+      setResyncMsg({
+        text:
+          body.invoicedTotal != null
+            ? `Resynced — invoice now totals ${money(body.invoicedTotal)}.`
+            : 'Resynced.',
+        ok: true,
+        forId: id,
+      });
+      await load();
+    } catch (err) {
+      setResyncMsg({ text: err instanceof Error ? err.message : 'Failed', ok: false, forId: id });
+    } finally {
+      setResyncBusy(false);
+    }
+  };
+
   const toggleTax = async () => {
     const invoice = data?.invoice;
     if (!invoice) return;
@@ -745,7 +785,7 @@ export default function InvoiceDetailPage() {
                 );
               })()}
 
-              <div className="mt-3">
+              <div className="mt-3 flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   onClick={toggleTax}
@@ -754,7 +794,38 @@ export default function InvoiceDetailPage() {
                 >
                   {inv.tax_overridden ? 'Restore tax' : 'Mark tax-exempt (override)'}
                 </button>
+                {/* Row 388: the standalone resync action — rewrites total/balance/
+                    status to the order's current agreed total. Distinct from
+                    "Mark reconciled" above (which only clears the flag): this
+                    is what charge-balance's "invoice-stale" 409 actually
+                    needs, including the case with NO marker set (that check
+                    is independent of paymentBlocked/invoiceResyncFailed), so
+                    it's always available here rather than gated to the
+                    marker panel. */}
+                {inv.quote_id && (
+                  <button
+                    type="button"
+                    onClick={() => void resyncInvoice()}
+                    disabled={resyncBusy || inv.status === 'cancelled'}
+                    className="text-xs font-medium px-2.5 py-1 rounded-md border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-60"
+                  >
+                    {resyncBusy ? 'Resyncing…' : 'Resync to agreed total'}
+                  </button>
+                )}
               </div>
+              {resyncMsg && resyncMsg.forId === id && (
+                <p
+                  className="mt-2 text-xs font-medium rounded-md border px-3 py-2"
+                  role="status"
+                  style={
+                    resyncMsg.ok
+                      ? { color: '#166534', borderColor: '#bbf7d0', backgroundColor: '#f0fdf4' }
+                      : { color: '#b91c1c', borderColor: '#fecaca', backgroundColor: '#fef2f2' }
+                  }
+                >
+                  {resyncMsg.text}
+                </p>
+              )}
 
               {inv.quote_id && inv.balance > 0 && inv.status !== 'paid' && inv.status !== 'cancelled' && (
                 <div className="mt-3 border-t border-gray-100 pt-3">
