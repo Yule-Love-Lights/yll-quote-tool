@@ -1,5 +1,6 @@
+import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, it, expect } from 'vitest';
-import { depositChipState } from './DepositRateChip';
+import { DepositRateChip, depositChipState } from './DepositRateChip';
 import { BUSINESS_RULES, NCE_DEPOSIT_PERCENT } from '@/lib/pricing/pricingEngine';
 
 // Row 409 — the chip REPORTS a deposit mismatch, it never corrects one (Jason's
@@ -46,5 +47,32 @@ describe('depositChipState (row 409)', () => {
     const s = depositChipState(true, 0.1 + 0.3);
     expect(s.percent).toBe(40);
     expect(s.mismatch).toBe(false);
+  });
+});
+
+// Rendered markup, the repo's renderToStaticMarkup idiom (StaffNotesPanel.test.tsx):
+// the local browser leg is behind the operator auth gate, so this is what proves
+// the chip actually emits a percentage rather than an empty span or NaN%.
+describe('DepositRateChip markup (row 409)', () => {
+  it('prints the real percentage and marks a mismatch amber', () => {
+    const html = renderToStaticMarkup(<DepositRateChip isNce rate={0.5} />);
+    expect(html).toContain('50% dep');
+    expect(html).toContain('bg-amber-100');
+    expect(html).toContain('off the 40% NCE rate');
+  });
+
+  it('prints a matching rate without the amber flag', () => {
+    const html = renderToStaticMarkup(<DepositRateChip isNce rate={0.4} />);
+    expect(html).toContain('40% dep');
+    expect(html).not.toContain('bg-amber-100');
+  });
+
+  it('renders nothing at all on an ordinary default-deposit quote', () => {
+    expect(renderToStaticMarkup(<DepositRateChip isNce={false} rate={0.5} />)).toBe('');
+  });
+
+  it('never renders NaN', () => {
+    const html = renderToStaticMarkup(<DepositRateChip isNce rate={0.4} />);
+    expect(html).not.toContain('NaN');
   });
 });
