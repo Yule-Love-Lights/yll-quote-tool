@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextResponse, type NextRequest } from 'next/server';
 
 const {
+  auditSbRef,
   getDesignWithPhoto,
   updateDesignSceneGuarded,
   linkDesignToQuote,
@@ -23,6 +24,7 @@ const {
   updateDesignPortalVisibility: vi.fn(),
   requireOperatorMock: vi.fn(async (): Promise<unknown> => null),
   isConfigured: { current: true },
+  auditSbRef: { current: null as unknown },
 }));
 
 vi.mock('@/lib/designs', () => ({
@@ -37,10 +39,15 @@ vi.mock('@/lib/designs', () => ({
 
 vi.mock('@/lib/supabase', () => ({
   isSupabaseServiceConfigured: () => isConfigured.current,
+  // Row 370: the visibility-audit helper reads designs.quote_id + the quote
+  // snapshot through the service client, then appends via the REAL
+  // appendQuoteAuditEntry — auditSbRef seeds a per-test fake.
+  getSupabaseServiceClient: () => auditSbRef.current,
 }));
 
 vi.mock('@/lib/auth/supabaseServer', () => ({
   requireOperator: requireOperatorMock,
+  getOperator: vi.fn(async () => ({ id: 'op-1', email: 'jason@yulelovelights.com' })),
 }));
 
 import { GET, PUT } from './route';
@@ -413,5 +420,84 @@ describe('PUT /api/designs/[id]', () => {
     expect(res.status).toBe(409);
     const json = await res.json();
     expect(json.conflict).toBe(true);
+  });
+});
+
+// ── Row 370: portal-visibility changes are audited onto the linked quote ──
+// The append itself is the REAL appendQuoteAuditEntry (row 411's hardened
+// shape) running against a fake that models PostgREST's serialized CAS filter.
+function makeAuditFake(opts: { quoteId: string | null; snapshot: unknown }) {
+  const state = { snapshot: opts.snapshot };
+  const updates: Array<Record<string, unknown>> = [];
+  function from(table: string) {
+    const q = { table, op: 'select' as 'select' | 'update', payload: null as Record<string, unknown> | null, casMatch: true };
+    const b = {
+      select: () => b,
+      update(payload: Record<string, unknown>) {
+        q.op = 'update';
+        q.payload = payload;
+        return b;
+      },
+      eq(col: string, val: unknown) {
+        if (col === 'approval_snapshot')
+          q.casMatch = typeof val === 'string' && JSON.stringify(state.snapshot) === val;
+        return b;
+      },
+      async maybeSingle() {
+        if (q.table === 'designs') return { data: { quote_id: opts.quoteId }, error: null };
+        return { data: { approval_snapshot: state.snapshot }, error: null };
+      },
+      then(resolve: (v: unknown) => void) {
+        if (q.table === 'quotes' && q.op === 'update' && q.casMatch) {
+          updates.push(q.payload!);
+          state.snapshot = (q.payload as { approval_snapshot: unknown }).approval_snapshot;
+          return resolve({ data: [{ id: opts.quoteId }], error: null });
+        }
+        return resolve({ data: [], error: null });
+      },
+    };
+    return b;
+  }
+  return { client: { from }, updates };
+}
+
+describe('PUT /api/designs/[id] — portal-visibility audit (row 370)', () => {
+  const FROZEN = { currentTotalUsd: 5000, customerSelection: { depositRate: 0.5 } };
+
+  it('appends who/when/what onto the linked quote when a snapshot exists', async () => {
+    const fake = makeAuditFake({ quoteId: OTHER_ID, snapshot: FROZEN });
+    auditSbRef.current = fake.client;
+    const res = await PUT(makeReq({ portalShowStreetView: false }), ctx());
+    expect(res.status).toBe(200);
+    expect(fake.updates).toHaveLength(1);
+    const written = fake.updates[0].approval_snapshot as Record<string, unknown>;
+    // frozen agreement intact, audit appended
+    expect(written.currentTotalUsd).toBe(5000);
+    const trail = written.portalVisibilityChanges as Array<Record<string, unknown>>;
+    expect(trail).toHaveLength(1);
+    expect(trail[0].by).toBe('jason@yulelovelights.com');
+    expect(trail[0].designId).toBe(VALID_ID);
+    expect(trail[0].changes).toEqual({ portalShowStreetView: false });
+  });
+
+  it('SKIPS (writes nothing) for a quote never approved — NULL snapshot', async () => {
+    // appendQuoteAuditEntry's unconfirmed-snapshot guard: there is no frozen
+    // agreement to dispute, and writing one from nothing is the reviewed
+    // data-loss class. The visibility save itself still succeeds.
+    const fake = makeAuditFake({ quoteId: OTHER_ID, snapshot: null });
+    auditSbRef.current = fake.client;
+    const res = await PUT(makeReq({ portalShowSatelliteView: false }), ctx());
+    expect(res.status).toBe(200);
+    expect(fake.updates).toHaveLength(0);
+  });
+
+  it('SKIPS for an unlinked design, and an audit failure never fails the save', async () => {
+    const fake = makeAuditFake({ quoteId: null, snapshot: FROZEN });
+    auditSbRef.current = fake.client;
+    expect((await PUT(makeReq({ portalShowStreetView: true }), ctx())).status).toBe(200);
+    expect(fake.updates).toHaveLength(0);
+    // client missing entirely (throwing accessor) — save still succeeds
+    auditSbRef.current = null;
+    expect((await PUT(makeReq({ portalShowStreetView: true }), ctx())).status).toBe(200);
   });
 });
