@@ -14,7 +14,11 @@ type NavItem = { label: string; href: string; match: OperatorArea[] };
 const ITEMS: NavItem[] = [
   { label: 'Home', href: '/', match: ['home'] },
   { label: 'Inbox', href: '/inbox', match: ['inbox'] },
-  { label: 'Leads', href: '/admin/leads', match: ['leads'] },
+  // Leads deliberately has NO nav item (Jason, 2026-08-26): the /admin/leads
+  // page and everything behind it stay live — reachable by URL and from any
+  // in-app links — it just doesn't earn a top-level slot. Visiting it renders
+  // no highlighted tab (its 'leads' OperatorArea matches nothing here), which
+  // is expected. Re-adding is one line: { label: 'Leads', href: '/admin/leads', match: ['leads'] }.
   { label: 'Customers', href: '/customers', match: ['customers'] },
   { label: 'Quotes', href: '/admin/quotes', match: ['quotes', 'new'] },
   { label: 'Jobs', href: '/admin/jobs', match: ['jobs'] },
