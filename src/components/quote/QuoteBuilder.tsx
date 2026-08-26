@@ -1055,10 +1055,17 @@ export default function QuoteBuilder({
   // render: a cleanup-flush on the debounce effect itself would fire on every
   // dep change (each keystroke) and delete the debounce entirely.
   const stashFlushRef = useRef<null | (() => void)>(null);
-  stashFlushRef.current =
-    editMode && editQuoteId && hasUnsavedEdits
-      ? () => saveQuoteEditDraft(editQuoteId, form, lastPersistedForm)
-      : null;
+  // Kept current from an every-render effect, not a render-time assignment —
+  // the react-compiler lint rule forbids ref writes during render (CI caught
+  // it; my local lint read was the truncated tail of the output, not the
+  // count). Post-commit assignment is equivalent here: the unmount cleanup
+  // below reads whatever the LAST committed render left.
+  useEffect(() => {
+    stashFlushRef.current =
+      editMode && editQuoteId && hasUnsavedEdits
+        ? () => saveQuoteEditDraft(editQuoteId, form, lastPersistedForm)
+        : null;
+  });
   useEffect(() => {
     return () => {
       stashFlushRef.current?.();

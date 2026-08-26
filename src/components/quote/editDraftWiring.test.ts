@@ -46,6 +46,8 @@ describe('edit-mode autosave is actually wired (row 413)', () => {
     // row-406 loss reintroduced. The unmount flush is ref-based on purpose: a
     // cleanup-flush on the debounce effect would fire per keystroke.
     expect(builder).toMatch(/stashFlushRef\.current =\s+editMode && editQuoteId && hasUnsavedEdits/);
+    // …and the assignment lives inside an effect, not render (react-compiler rule).
+    expect(builder).toMatch(/useEffect\(\(\) => \{\s+stashFlushRef\.current =/);
     expect(builder).toMatch(/return \(\) => \{\s+stashFlushRef\.current\?\.\(\);/);
   });
 
