@@ -304,7 +304,7 @@ export default function QuotesAdminPage() {
                 type="search"
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                placeholder="Search name, address, phone, email, ID…"
+                placeholder="Search name, address, phone, email, quote #…"
                 className="flex-1 min-w-[12rem] text-sm border border-gray-300 rounded-md px-3 py-1.5"
               />
               <span className="text-xs text-gray-500 whitespace-nowrap">
