@@ -75,6 +75,16 @@ describe('listQuotes deposit rate (row 409)', () => {
     expect(q.deposit_rate).toBe(BUSINESS_RULES.depositPercentage);
   });
 
+  it('marks the rate as frozen only when the approval snapshot actually holds one', async () => {
+    rowsRef.current = [row({ snapshot_deposit_rate_raw: '0.4' })];
+    expect((await listQuotes())[0].deposit_rate_frozen).toBe(true);
+    rowsRef.current = [row({ result_deposit_rate_raw: '0.4' })];
+    // A quote approved through the staff/verbal path writes a minimal snapshot
+    // with no depositRate in it — 8 of 24 live approved quotes are like this,
+    // and the chip must not claim their rate was agreed at approval.
+    expect((await listQuotes())[0].deposit_rate_frozen).toBe(false);
+  });
+
   it('leaves every other listed field untouched', async () => {
     rowsRef.current = [row({ id: 'q9', is_nce: true, customer_name: 'Maria Alvarez', total: 348 })];
     const [q] = await listQuotes();

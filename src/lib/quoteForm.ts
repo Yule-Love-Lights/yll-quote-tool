@@ -15,6 +15,7 @@ import { ServiceType, DEFAULT_SERVICE_TYPE, asServiceType, canCarryNceOrYllNeigh
 import type { EventInputFields } from './event/types';
 import { type PermanentQuoteFields, makeDefaultPermanentFields } from './permanent/types';
 import type { PermanentBistroInputFields } from './permanentBistro/types';
+import { NCE_DEPOSIT_PERCENT } from '@/lib/pricing/pricingEngine';
 
 // Mapping between the quote builder's form state and the pricing engine's
 // QuoteInputs (task #31). Two directions:
@@ -274,8 +275,8 @@ export function resolveNceDepositPercent(
   wasRuleSet: boolean,
 ): number {
   if (locked) return current;
-  if (nextIsNce) return 40;
-  return wasRuleSet && current === 40 ? 0 : current;
+  if (nextIsNce) return NCE_DEPOSIT_PERCENT;
+  return wasRuleSet && current === NCE_DEPOSIT_PERCENT ? 0 : current;
 }
 
 /**

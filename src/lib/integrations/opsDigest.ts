@@ -288,7 +288,8 @@ function formatDollarsOrUnknown(amount: number | null): string {
  * this list is strictly `deriveStatus === 'approved'` (`deposit_paid_at` IS
  * null) — so no amendment could have touched it yet.
  *
- * `listQuotes()`'s shared select does not carry `approval_snapshot`, and
+ * `listQuotes()`'s shared select carries ONE scalar path out of
+ * `approval_snapshot` (row 409's deposit rate) and not the object itself, and
  * this digest deliberately does NOT widen that shared select — every OTHER
  * `listQuotes()` caller (the admin quotes list, botTools, /api/quotes) would
  * then pay for a JSONB payload they never read. Instead this is a SEPARATE,

@@ -355,7 +355,10 @@ export default function QuotesAdminPage() {
                         {q.quote_number != null ? `#${q.quote_number}` : q.id.slice(0, 8)}
                       </td>
                       <td className="px-3 py-2 text-gray-700">
-                        <div className="flex items-center gap-2">
+                        {/* Row 409 staff-lens LOW: this row carries the name plus
+                            up to five badges; it never wrapped, and the deposit
+                            chip is one more thing to push off the edge. */}
+                        <div className="flex flex-wrap items-center gap-2">
                           {/* Customer-name link (this task): same routing rule as
                               src/lib/dashboard/customers.ts customerRouteId —
                               highlevel_contact_id, else customer_id. A walk-in
@@ -405,7 +408,11 @@ export default function QuotesAdminPage() {
                           {/* Row 409 — the deposit rate this quote is really on,
                               beside the tag that implies one. Amber when the two
                               disagree; nothing here corrects it (Jason's ruling). */}
-                          <DepositRateChip isNce={q.is_nce} rate={q.deposit_rate} />
+                          <DepositRateChip
+                            isNce={q.is_nce}
+                            rate={q.deposit_rate}
+                            frozen={q.deposit_rate_frozen}
+                          />
                           {/* View-only portal (#176) — mirrors the detail page's pill. */}
                           {q.view_only && (
                             <span className="text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-100 text-sky-700">

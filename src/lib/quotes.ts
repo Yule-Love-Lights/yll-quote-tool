@@ -65,6 +65,12 @@ export type QuoteListItem = {
   // NCE_DEPOSIT_PERCENT, but nothing enforces that (Jason's 2026-08-25 ruling),
   // so the list surfaces the real number instead of assuming it.
   deposit_rate: number;
+  // Row 409 fix round (admin lens): whether `deposit_rate` is the rate FROZEN
+  // into the approval snapshot, or merely the current one. 8 of 24 live
+  // approved/booked quotes have no frozen rate — the staff/verbal approve path
+  // writes a minimal snapshot — so a surface that implies "this is what was
+  // agreed" would be wrong a third of the time.
+  deposit_rate_frozen: boolean;
 };
 
 export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
@@ -90,13 +96,15 @@ export async function listQuotes(limit = 500): Promise<QuoteListItem[]> {
   return (data ?? []).map((row) => {
     const { deposit_percent_raw, result_deposit_rate_raw, snapshot_deposit_rate_raw, ...rest } =
       row as Record<string, unknown>;
+    const snapshotRate = numberOrUndefined(snapshot_deposit_rate_raw);
     return {
-      ...(rest as Omit<QuoteListItem, 'deposit_rate'>),
+      ...(rest as Omit<QuoteListItem, 'deposit_rate' | 'deposit_rate_frozen'>),
       deposit_rate: resolveQuoteDepositRate({
         depositPercent: numberOrUndefined(deposit_percent_raw),
         resultRate: numberOrUndefined(result_deposit_rate_raw),
-        snapshotRate: numberOrUndefined(snapshot_deposit_rate_raw),
+        snapshotRate,
       }),
+      deposit_rate_frozen: snapshotRate !== undefined,
     };
   });
 }

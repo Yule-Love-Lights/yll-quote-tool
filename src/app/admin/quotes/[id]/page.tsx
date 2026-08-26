@@ -15,7 +15,7 @@ import { ColorRequestPanel } from '@/components/admin/ColorRequestPanel';
 import { StaffNotesPanel } from '@/components/admin/StaffNotesPanel';
 import { buildPortalLineItems } from '@/lib/portal/adapter';
 import { BUSINESS_RULES, resolveLineItemLabel, type QuoteInputs } from '@/lib/pricing/pricingEngine';
-import { getQuoteRaw } from '@/lib/quotes';
+import { getQuoteRaw, resolveQuoteDepositRate } from '@/lib/quotes';
 import { deriveStatus, repriceSignalCanFire, APPROVED_DISPLAYS_AS, type QuoteStatus } from '@/lib/quoteStatus';
 import { requiresReconsent, isSupersededPendingAmendment, resolveAmendmentBasis } from '@/lib/amend';
 import { getJobByQuote } from '@/lib/jobs';
@@ -115,6 +115,24 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
     : [];
 
   const amendments = quote.approval_snapshot?.amendments ?? [];
+  // Row 409 (staff lens HIGH on PR #968): two deposit percentages exist on a
+  // quote and they are not always the same number. PRICED is the rate the
+  // dollar figures in the summary below were computed with (frozen into
+  // `result` by the last Calculate). CONFIGURED is the rate the money paths
+  // will actually use — the frozen approval rate if there is one, else the
+  // staff override, else the rate in `result` — resolved by the same helper the
+  // admin list's deposit chip reads, so the two staff screens cannot disagree.
+  const pricedDepositPercent = Math.round(
+    (quote.result?.depositRate ?? BUSINESS_RULES.depositPercentage) * 100,
+  );
+  const configuredDepositPercent = Math.round(
+    resolveQuoteDepositRate({
+      depositPercent: (quote.inputs as QuoteInputs | null)?.depositPercent,
+      resultRate: quote.result?.depositRate ?? undefined,
+      snapshotRate: quote.approval_snapshot?.customerSelection?.depositRate as number | undefined,
+    }) * 100,
+  );
+
 
   // Row 344 fix round (staff-lens HIGH): the audit trail route.ts appends to
   // on a scene-driven reprice of an approved-not-booked quote was written
@@ -463,10 +481,12 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
                   <dt>
                     Deposit
                     {/* #177 fix 5: surface the percent when it's not the 50% default —
-                        cheaply derivable from the same result.depositRate. */}
-                    {Math.round((quote.result.depositRate ?? BUSINESS_RULES.depositPercentage) * 100) !== 50 && (
-                      <> ({Math.round((quote.result.depositRate ?? BUSINESS_RULES.depositPercentage) * 100)}%)</>
-                    )}
+                        cheaply derivable from the same result.depositRate. This
+                        stays the rate the FIGURE beside it was priced with, so
+                        the percent and the dollars can never disagree; row 409's
+                        staleness caution below names the configured rate when
+                        the two have drifted apart. */}
+                    {pricedDepositPercent !== 50 && <> ({pricedDepositPercent}%)</>}
                   </dt>
                   <dd>{money(quote.result.depositAmount)}</dd>
                 </div>
@@ -474,6 +494,26 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
                   <dt>Balance due</dt>
                   <dd>{money(quote.result.balanceDue)}</dd>
                 </div>
+                {/* Row 409 (staff lens HIGH on PR #968). Tagging a quote NCE
+                    writes inputs.depositPercent and does NOT reprice, by design
+                    — so until someone runs Calculate again, the deposit figures
+                    above are the OLD rate's while the portal, the approve route
+                    and the Valor charge all read the new one (chargesFromResult
+                    prefers inputs.depositPercent). The admin list's deposit chip
+                    shows the new rate, so without this the two staff screens
+                    disagree about one quote with nothing on either to explain
+                    it. This does not invent a corrected dollar figure: a partial
+                    selection prices the deposit off the SELECTED subtotal, not
+                    off this total, so the only honest thing to show is which
+                    rate produced these numbers and which one is configured. */}
+                {configuredDepositPercent !== pricedDepositPercent && (
+                  <p className="mt-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-800">
+                    This quote is set to a {configuredDepositPercent}% deposit, but the figures above
+                    were priced at {pricedDepositPercent}%. Reopen the quote and Calculate again to
+                    bring them in line — the customer&rsquo;s portal already charges{' '}
+                    {configuredDepositPercent}%.
+                  </p>
+                )}
               </dl>
             </>
           )}

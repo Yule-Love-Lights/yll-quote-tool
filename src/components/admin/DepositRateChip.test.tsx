@@ -12,7 +12,7 @@ describe('depositChipState (row 409)', () => {
   it('shows an NCE quote sitting at the NCE rate, without flagging it', () => {
     const s = depositChipState(true, NCE_DEPOSIT_PERCENT / 100);
     expect(s.show).toBe(true);
-    expect(s.mismatch).toBe(false);
+    expect(s.tagConflict).toBe(false);
     expect(s.percent).toBe(40);
   });
 
@@ -20,7 +20,7 @@ describe('depositChipState (row 409)', () => {
     // Measured on prod 2026-08-25: quote #1262, sent, is_nce with a 50% deposit.
     const s = depositChipState(true, BUSINESS_RULES.depositPercentage);
     expect(s.show).toBe(true);
-    expect(s.mismatch).toBe(true);
+    expect(s.tagConflict).toBe(true);
     expect(s.percent).toBe(50);
     expect(s.expectedPercent).toBe(40);
   });
@@ -28,7 +28,7 @@ describe('depositChipState (row 409)', () => {
   it('flags the reverse direction: the tag came off and the NCE deposit stayed', () => {
     const s = depositChipState(false, NCE_DEPOSIT_PERCENT / 100);
     expect(s.show).toBe(true);
-    expect(s.mismatch).toBe(true);
+    expect(s.tagConflict).toBe(true);
     expect(s.expectedPercent).toBe(50);
   });
 
@@ -36,9 +36,13 @@ describe('depositChipState (row 409)', () => {
     expect(depositChipState(false, BUSINESS_RULES.depositPercentage).show).toBe(false);
   });
 
-  it('shows any other staff-set rate on a non-NCE quote', () => {
+  it('shows any other staff-set rate on a non-NCE quote, WITHOUT flagging it', () => {
+    // Staff-lens MED: a hand-set 25% deposit is somebody doing their job. It is
+    // worth showing and it is not a tag conflict; colouring it the same amber as
+    // a real NCE disagreement drains the signal out of the case row 409 is for.
     const s = depositChipState(false, 0.25);
     expect(s.show).toBe(true);
+    expect(s.tagConflict).toBe(false);
     expect(s.percent).toBe(25);
   });
 
@@ -46,7 +50,7 @@ describe('depositChipState (row 409)', () => {
     // 0.1 + 0.3 = 0.4 with a float tail; the chip must still read 40%.
     const s = depositChipState(true, 0.1 + 0.3);
     expect(s.percent).toBe(40);
-    expect(s.mismatch).toBe(false);
+    expect(s.tagConflict).toBe(false);
   });
 });
 
@@ -69,6 +73,15 @@ describe('DepositRateChip markup (row 409)', () => {
 
   it('renders nothing at all on an ordinary default-deposit quote', () => {
     expect(renderToStaticMarkup(<DepositRateChip isNce={false} rate={0.5} />)).toBe('');
+  });
+
+  it('says whether the rate was agreed at approval or is merely current', () => {
+    // Admin-lens MED: 8 of 24 live approved/booked quotes carry no frozen rate,
+    // so the chip must not imply the stronger claim for all of them.
+    expect(renderToStaticMarkup(<DepositRateChip isNce rate={0.4} frozen />)).toContain(
+      'agreed at approval',
+    );
+    expect(renderToStaticMarkup(<DepositRateChip isNce rate={0.4} />)).toContain('current rate');
   });
 
   it('never renders NaN', () => {

@@ -60,6 +60,7 @@ const quote = (over: Partial<QuoteListItem>): QuoteListItem => ({
   // Row 409: listQuotes now resolves every row's deposit rate; these fixtures
   // are not about deposits, so they take the business default.
   deposit_rate: BUSINESS_RULES.depositPercentage,
+  deposit_rate_frozen: false,
   ...over,
 });
 

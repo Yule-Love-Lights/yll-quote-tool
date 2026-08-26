@@ -17,35 +17,56 @@ export type DepositChipState = {
   // Non-default rates are the only ones worth pixels: a plain holiday quote at
   // the business default deposit says nothing a reader needs.
   show: boolean;
-  // The quote is off the rate its tags imply — an NCE quote not at the NCE
-  // percent, which is the case row 409 exists for.
-  mismatch: boolean;
+  // The quote's DEPOSIT and its TAGS disagree — an NCE quote off the NCE
+  // percent, or a non-NCE quote sitting exactly on it. Staff-lens MED: this is
+  // deliberately narrower than "off the default", because an ordinary quote on
+  // a hand-set 25% deposit is somebody doing their job, not a conflict, and
+  // colouring both the same drains the signal out of the one row 409 is for.
+  tagConflict: boolean;
   percent: number;
   expectedPercent: number;
 };
 
 export function depositChipState(isNce: boolean, rate: number): DepositChipState {
-  const expectedPercent = Math.round((isNce ? NCE_DEPOSIT_PERCENT / 100 : BUSINESS_RULES.depositPercentage) * 100);
+  const nce = NCE_DEPOSIT_PERCENT;
+  const standard = Math.round(BUSINESS_RULES.depositPercentage * 100);
+  const expectedPercent = isNce ? nce : standard;
   const percent = Math.round(rate * 100);
-  const mismatch = percent !== expectedPercent;
+  const tagConflict = isNce ? percent !== nce : percent === nce;
   // An NCE quote always shows its deposit (that is the pairing the row asks
-  // for); everything else shows only when it is off the business default,
-  // which covers the reverse direction the row names — the tag dropping to
-  // false while a 40% deposit stays behind.
-  return { show: isNce || mismatch, mismatch, percent, expectedPercent };
+  // for); everything else shows only when it is off the business default, which
+  // covers both the reverse direction the row names and any hand-set rate.
+  return { show: isNce || percent !== standard, tagConflict, percent, expectedPercent };
 }
 
-export function DepositRateChip({ isNce, rate }: { isNce: boolean; rate: number }) {
+export function DepositRateChip({
+  isNce,
+  rate,
+  frozen = false,
+}: {
+  isNce: boolean;
+  rate: number;
+  /** True when this rate is the one frozen into the quote at approval. */
+  frozen?: boolean;
+}) {
   const state = depositChipState(isNce, rate);
   if (!state.show) return null;
-  const title = state.mismatch
-    ? `Deposit ${state.percent}% — off the ${state.expectedPercent}% ${isNce ? 'NCE' : 'standard'} rate. Not an error on its own: the deposit is deliberately left alone once a quote has been sent.`
-    : `Deposit ${state.percent}%`;
+  // Admin-lens MED: 8 of 24 approved/booked quotes have NO frozen rate in their
+  // approval snapshot (the staff/verbal approve path writes a minimal one), so
+  // for those the number here is the CURRENT rate, not a record of what was
+  // agreed. Say which one it is rather than letting the chip imply the stronger
+  // claim.
+  const basis = frozen ? 'agreed at approval' : 'current rate';
+  const title = state.tagConflict
+    ? `Deposit ${state.percent}% (${basis}) — off the ${state.expectedPercent}% ${
+        isNce ? 'NCE' : 'standard'
+      } rate. Not an error on its own: the deposit is deliberately left alone once a quote has been sent.`
+    : `Deposit ${state.percent}% (${basis})`;
   return (
     <span
       title={title}
       className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${
-        state.mismatch ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-gray-600'
+        state.tagConflict ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-gray-600'
       }`}
     >
       {state.percent}% dep
