@@ -1033,12 +1033,17 @@ export default function QuoteBuilder({
       return () => clearTimeout(t);
     }
     // Clean again: clear the stash when a save made it clean (userTouched
-    // latches on the first edit and never resets; any successful Calculate
-    // lands here and wipes the stash, base-match or not, which is the
-    // property the admin lens verified). Two guards: an untouched mount also
-    // reaches this branch (userTouched false), and a mere TOUCH that changed
-    // no payload - a contact-search keystroke - must not delete the draft the
-    // offer banner is still holding un-answered (!editDraftOffer).
+    // latches on the first edit and never resets). Two guards: an untouched
+    // mount also reaches this branch (userTouched false), and the draft the
+    // offer banner is holding UN-ANSWERED must never be deleted out from
+    // under it (!editDraftOffer) - which means, deliberately, that a no-edit
+    // Calculate while the offer is pending does NOT wipe the stash: the
+    // persisted values are unchanged, so the recovered edits remain a valid,
+    // still-unanswered alternative, and wiping them on a routine pricing
+    // click would destroy exactly what this feature preserves. (The #972
+    // delta-verify caught the earlier comment claiming the opposite.) Once
+    // the offer is resolved - restored, discarded, or displaced by a real
+    // edit - every successful Calculate wipes the stash here.
     if (userTouched && !editDraftOffer) clearQuoteEditDraft(editQuoteId);
   }, [editMode, editQuoteId, hasUnsavedEdits, currentFormSerialized, lastPersistedForm, userTouched, form, editDraftOffer]);
   // Premerge technical-lens HIGH: the debounce's cleanup CANCELS a pending
