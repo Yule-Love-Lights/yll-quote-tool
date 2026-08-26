@@ -264,13 +264,29 @@ async function recordVisibilityAudit(
       .select('quote_id')
       .eq('id', designId)
       .maybeSingle<{ quote_id: string | null }>();
-    if (designErr || !designRow?.quote_id) return; // unlinked design — nothing to audit onto
+    if (designErr) {
+      // #976 lens MED: a REAL query error must leave a trace — this trail's
+      // whole purpose is a dispute paper record, and a silently-failing read
+      // would let it go dark with zero signal. The legitimate no-op (an
+      // unlinked design) stays silent below.
+      console.warn('[api/designs/:id] portal-visibility audit skipped — design read failed:', designErr.message);
+      return;
+    }
+    if (!designRow?.quote_id) return; // unlinked design — nothing to audit onto
     const { data: quoteRow, error: quoteErr } = await sb
       .from('quotes')
       .select('approval_snapshot')
       .eq('id', designRow.quote_id)
       .maybeSingle<{ approval_snapshot: unknown }>();
-    if (quoteErr || !quoteRow) return; // unconfirmed read — the helper would skip anyway
+    if (quoteErr || !quoteRow) {
+      // Same reasoning: an unconfirmed read is exactly what the helper's
+      // guard exists for, but it must be VISIBLE in the logs.
+      console.warn(
+        '[api/designs/:id] portal-visibility audit skipped — quote snapshot read failed or no row:',
+        quoteErr?.message ?? 'no row',
+      );
+      return;
+    }
     const operator = await getOperator();
     await appendQuoteAuditEntry(
       sb,
