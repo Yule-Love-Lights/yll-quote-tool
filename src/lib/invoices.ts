@@ -29,6 +29,7 @@ import { canTransition, type InvoiceStatus } from './invoiceStatus';
 // `round2` so the call sites are byte-identical.
 import { roundMoneyGuarded as round2 } from './money';
 import { resolveAgreedTotal, type AgreedTotalSnapshot } from './agreedTotal';
+import { DEFAULT_SERVICE_TYPE } from './serviceType';
 import { approvedColorLabelForQuote } from '@/lib/design/approvedColorLabels';
 
 export type InvoiceRow = {
@@ -412,6 +413,11 @@ export type InvoiceAdminCard = {
   // module dependency (that file already imports FROM this one). null when
   // the invoice has no linked quote or the quote has no snapshot yet.
   quoteApprovalSnapshot: Record<string, unknown> | null;
+  // Row 419: the linked quote's service line for the list's Service chip.
+  // A quote with a NULL service_type reads as the default (holiday, the DB
+  // backfill rule); null here means NO linked quote at all, rendered as an
+  // em dash rather than guessing — mirrors JobAdminCard.serviceType.
+  serviceType: string | null;
 };
 
 /**
@@ -437,12 +443,13 @@ export async function listInvoicesForAdmin(limit = 500): Promise<InvoiceAdminCar
       highlevelContactId: string | null;
       customerId: string | null;
       approvalSnapshot: Record<string, unknown> | null;
+      serviceType: string | null;
     }
   >();
   if (quoteIds.length) {
     const { data } = await db
       .from('quotes')
-      .select('id, customer_name, customer_address, is_test, is_nce, highlevel_contact_id, customer_id, approval_snapshot')
+      .select('id, customer_name, customer_address, is_test, is_nce, highlevel_contact_id, customer_id, approval_snapshot, service_type')
       .in('id', quoteIds);
     for (const q of (data ?? []) as {
       id: string;
@@ -453,6 +460,7 @@ export async function listInvoicesForAdmin(limit = 500): Promise<InvoiceAdminCar
       highlevel_contact_id: string | null;
       customer_id: string | null;
       approval_snapshot: Record<string, unknown> | null;
+      service_type: string | null;
     }[]) {
       byQuote.set(q.id, {
         name: q.customer_name ?? null,
@@ -462,6 +470,7 @@ export async function listInvoicesForAdmin(limit = 500): Promise<InvoiceAdminCar
         highlevelContactId: q.highlevel_contact_id ?? null,
         customerId: q.customer_id ?? null,
         approvalSnapshot: q.approval_snapshot ?? null,
+        serviceType: q.service_type ?? null,
       });
     }
   }
@@ -486,6 +495,9 @@ export async function listInvoicesForAdmin(limit = 500): Promise<InvoiceAdminCar
       highlevelContactId: c?.highlevelContactId ?? null,
       customerId: inv.customer_id ?? c?.customerId ?? null,
       quoteApprovalSnapshot: c?.approvalSnapshot ?? null,
+      // Quote present + NULL column = the default (backfill rule); no quote =
+      // genuinely unknown, stays null.
+      serviceType: c ? (c.serviceType ?? DEFAULT_SERVICE_TYPE) : null,
     };
   });
 }
@@ -508,6 +520,12 @@ export type InvoiceDetail = {
   customerEmail: string | null;
   customerPhone: string | null;
   customerAddress: string | null;
+  // Row 418 sweep: the id that routes to /customers/[id] (same rule as
+  // src/lib/dashboard/customers.ts customerRouteId — highlevel_contact_id,
+  // else customer_id, preferring the invoice's OWN customer_id over the
+  // linked quote's, mirroring listInvoicesForBilling). null for an
+  // identity-less walk-in, whose name stays plain text.
+  customerRouteId: string | null;
   isTest: boolean;
   // #199: the linked quote's NCE tag — gates the charge-button/send-balance-
   // link UI and the "Mark paid — NCE" affordance on the invoice detail page.
@@ -567,12 +585,14 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
   let isNce = false;
   let intendedDepositUsd: number | null = null;
   let lightColorLabel: string | null = null;
+  let quoteHlContactId: string | null = null;
+  let quoteCustomerId: string | null = null;
   let staleMarkers: InvoiceDetail['staleMarkers'] = { paymentBlocked: null, invoiceResyncFailed: null };
   let lastMarkerOverride: InvoiceDetail['lastMarkerOverride'] = null;
   if (invoice.quote_id) {
     const { data } = await db
       .from('quotes')
-      .select('customer_name, customer_email, customer_phone, customer_address, is_test, is_nce, deposit_amount_usd, approval_snapshot, service_type')
+      .select('customer_name, customer_email, customer_phone, customer_address, is_test, is_nce, deposit_amount_usd, approval_snapshot, service_type, highlevel_contact_id, customer_id')
       .eq('id', invoice.quote_id)
       .maybeSingle<{
         customer_name: string | null;
@@ -584,6 +604,8 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
         deposit_amount_usd: number | null;
         approval_snapshot: unknown;
         service_type: string | null;
+        highlevel_contact_id: string | null;
+        customer_id: string | null;
       }>();
     if (data) {
       customerName = data.customer_name ?? null;
@@ -593,6 +615,8 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
       isTest = !!data.is_test;
       isNce = !!data.is_nce;
       intendedDepositUsd = data.deposit_amount_usd ?? null;
+      quoteHlContactId = data.highlevel_contact_id ?? null;
+      quoteCustomerId = data.customer_id ?? null;
       // Row 362: derived from the same quote row this join already fetches.
       lightColorLabel = await approvedColorLabelForQuote(data.approval_snapshot, data.service_type);
       const snap = data.approval_snapshot as {
@@ -656,6 +680,10 @@ export async function getInvoiceDetail(id: string): Promise<InvoiceDetail | null
     customerEmail,
     customerPhone,
     customerAddress,
+    // Row 418 sweep: HL contact id first (preserves the CRM-linked URL), then
+    // the invoice's own customer_id, then the linked quote's — the same
+    // precedence listInvoicesForBilling's pair resolves to at the link site.
+    customerRouteId: quoteHlContactId ?? invoice.customer_id ?? quoteCustomerId,
     isTest,
     isNce,
     jobNumber,

@@ -824,6 +824,26 @@ describe('getInvoiceDetail', () => {
     });
   });
 
+  // Row 418 sweep: the customer-name link on /admin/invoices/[id] routes by
+  // this field — HL contact id first, then the invoice's own customer_id, then
+  // the quote's, then null (plain-text walk-in).
+  it('resolves customerRouteId: HL contact id > invoice customer_id > quote customer_id > null', async () => {
+    const cases: Array<{ hl: string | null; invCust: string | null; qCust: string | null; want: string | null }> = [
+      { hl: 'hl-1', invCust: 'inv-cust', qCust: 'quote-cust', want: 'hl-1' },
+      { hl: null, invCust: 'inv-cust', qCust: 'quote-cust', want: 'inv-cust' },
+      { hl: null, invCust: null, qCust: 'quote-cust', want: 'quote-cust' },
+      { hl: null, invCust: null, qCust: null, want: null },
+    ];
+    for (const c of cases) {
+      const fake = makeFakeSupabase({
+        invoices: [{ id: 'i1', job_id: null, quote_id: 'q1', customer_id: c.invCust, total: 1000, balance: 500, status: 'draft' }],
+        quotes: [{ id: 'q1', customer_name: 'Alice', highlevel_contact_id: c.hl, customer_id: c.qCust }],
+      });
+      sbRef.current = fake.client;
+      expect((await getInvoiceDetail('i1'))?.customerRouteId).toBe(c.want);
+    }
+  });
+
   // #177 fix 4: the linked quote's stamped deposit_amount_usd is threaded through
   // as intendedDepositUsd, so the admin detail page can pass it to reconcileInvoice.
   it('surfaces the linked quote\'s deposit_amount_usd as intendedDepositUsd', async () => {

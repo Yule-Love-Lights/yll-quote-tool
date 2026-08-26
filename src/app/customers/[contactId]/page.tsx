@@ -22,6 +22,7 @@ import { listJobsForCustomer } from '@/lib/jobs';
 import { listInvoicesForCustomer } from '@/lib/invoices';
 import { JobStatusBadge } from '@/components/admin/JobStatusBadge';
 import { InvoiceStatusBadge } from '@/components/admin/InvoiceStatusBadge';
+import { ServiceTypeBadge } from '@/components/admin/ServiceTypeBadge';
 import { getApprovedColorLabels } from '@/lib/design/approvedColorLabels';
 
 export const dynamic = 'force-dynamic';
@@ -131,6 +132,9 @@ export default async function CustomerDetailPage({
   const colorLookup = await getApprovedColorLabels(quoteIds);
   const jobs = await listJobsForCustomer(customerId, quoteIds);
   const invoices = await listInvoicesForCustomer(customerId, quoteIds);
+  // Row 419: invoices don't carry a service_type — resolve each through its
+  // linked quote, all of which are already fetched above.
+  const serviceTypeByQuote = new Map(quotes.map(q => [q.id, q.service_type]));
 
   // Property-aware rebook (WT-53): resolve this customer's properties server-side
   // so RebookButton can scope the clone to a KNOWN building instead of falling
@@ -295,6 +299,10 @@ export default async function CustomerDetailPage({
                 <tr>
                   <th className="text-left px-4 py-2 font-semibold">Created</th>
                   <th className="text-left px-3 py-2 font-semibold">Quote</th>
+                  {/* Row 419 (Jason device note): the Jobs table below already
+                      shows a type; quotes get the real service line, in the
+                      same column position. */}
+                  <th className="text-left px-3 py-2 font-semibold">Service</th>
                   <th className="text-left px-3 py-2 font-semibold">Status</th>
                   <th className="text-left px-3 py-2 font-semibold">Light colour</th>
                   <th className="text-right px-3 py-2 font-semibold">Total</th>
@@ -311,6 +319,7 @@ export default async function CustomerDetailPage({
                       {/* Sequential display number (#83) when allocated; falls
                           back to the truncated UUID on legacy rows (BUG-2, S22). */}
                       <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap" style={{ color: 'var(--op-text-dim)' }} title={`Quote ID: ${q.id}`}>{q.quote_number != null ? `#${q.quote_number}` : q.id.slice(0, 8)}</td>
+                      <td className="px-3 py-2.5"><ServiceTypeBadge serviceType={q.service_type} /></td>
                       <td className="px-3 py-2.5"><CustomerStatusBadge status={statusOf(q)} /></td>
                       {/* Row 362, premerge staff-lens MED: an em dash means
                           "no colour approved". When the LOOKUP failed it must
@@ -393,6 +402,9 @@ export default async function CustomerDetailPage({
                 <tr>
                   <th className="text-left px-4 py-2 font-semibold">Created</th>
                   <th className="text-left px-3 py-2 font-semibold">Invoice</th>
+                  {/* Row 419: service line resolved through the linked quote
+                      (invoices don't carry their own service_type). */}
+                  <th className="text-left px-3 py-2 font-semibold">Service</th>
                   <th className="text-left px-3 py-2 font-semibold">Status</th>
                   <th className="text-right px-3 py-2 font-semibold">Total</th>
                   <th className="text-right px-3 py-2 font-semibold">Balance</th>
@@ -405,6 +417,16 @@ export default async function CustomerDetailPage({
                   <tr key={inv.id} className="border-t" style={{ borderColor: 'var(--op-border)' }}>
                     <td className="px-4 py-2.5 whitespace-nowrap" style={{ color: 'var(--op-text-2)' }}>{fmtDate(inv.created_at)}</td>
                     <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap" style={{ color: 'var(--op-text-dim)' }} title={`Invoice ID: ${inv.id}`}>{inv.invoice_number != null ? `#${inv.invoice_number}` : inv.id.slice(0, 8)}</td>
+                    {/* Resolved through the linked quote; an invoice whose
+                        quote isn't in this customer's list stays an em dash
+                        rather than guessing a default. */}
+                    <td className="px-3 py-2.5">
+                      {inv.quote_id && serviceTypeByQuote.has(inv.quote_id) ? (
+                        <ServiceTypeBadge serviceType={serviceTypeByQuote.get(inv.quote_id)} />
+                      ) : (
+                        <span style={{ color: 'var(--op-text-dim)' }}>—</span>
+                      )}
+                    </td>
                     <td className="px-3 py-2.5"><InvoiceStatusBadge status={inv.status} /></td>
                     <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--op-text)' }}>{fmtMoney(inv.total)}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums" style={{ color: 'var(--op-text)' }}>{fmtMoney(inv.balance)}</td>

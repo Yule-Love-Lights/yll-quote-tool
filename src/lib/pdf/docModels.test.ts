@@ -287,6 +287,8 @@ function makeDetail(invoiceOverrides: Partial<InvoiceRow> = {}, detailOverrides:
     customerEmail: 'alice@example.com',
     customerPhone: '555-0100',
     customerAddress: '1 Main St',
+    // Row 418: required on InvoiceDetail; PDFs never render the profile link.
+    customerRouteId: null,
     isTest: false,
     isNce: false,
     jobNumber: 500,
