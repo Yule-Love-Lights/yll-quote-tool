@@ -467,6 +467,7 @@ describe('row 209: reconcileAnalysisFootage — street re-analyze must not clobb
       aiGingerbreadFootage: 45,
       hasSatelliteSantasLines: false,
       hasSatelliteGingerbreadLines: false,
+      satelliteHasScale: true,
     });
     expect(out).toEqual({ santasFootage: 80, gingerbreadFootage: 45 });
   });
@@ -477,6 +478,7 @@ describe('row 209: reconcileAnalysisFootage — street re-analyze must not clobb
       aiGingerbreadFootage: 45,
       hasSatelliteSantasLines: true,
       hasSatelliteGingerbreadLines: true,
+      satelliteHasScale: true,
     });
     expect(out).toEqual({});
   });
@@ -487,6 +489,7 @@ describe('row 209: reconcileAnalysisFootage — street re-analyze must not clobb
       aiGingerbreadFootage: 45,
       hasSatelliteSantasLines: true,
       hasSatelliteGingerbreadLines: false,
+      satelliteHasScale: true,
     });
     // santas is omitted (kept from satellite geometry); gingerbread applies
     // the AI text estimate, because it has nothing else to go on yet.
@@ -499,7 +502,23 @@ describe('row 209: reconcileAnalysisFootage — street re-analyze must not clobb
       aiGingerbreadFootage: 45,
       hasSatelliteSantasLines: false,
       hasSatelliteGingerbreadLines: true,
+      satelliteHasScale: true,
     });
     expect(out).toEqual({ santasFootage: 80 });
+  });
+
+  // Fix round (staff lens MED): the manual-satellite flow (#9) traces lines
+  // with NO scale, purely for training value — nothing was ever DERIVED from
+  // them (the measurement effect bails on null scale), so the AI estimate is
+  // still the only real measurement and must apply.
+  it('scale-less manual-satellite lines do NOT protect a field — the AI estimate still applies', () => {
+    const out = reconcileAnalysisFootage({
+      aiSantasFootage: 80,
+      aiGingerbreadFootage: 45,
+      hasSatelliteSantasLines: true,
+      hasSatelliteGingerbreadLines: true,
+      satelliteHasScale: false,
+    });
+    expect(out).toEqual({ santasFootage: 80, gingerbreadFootage: 45 });
   });
 });

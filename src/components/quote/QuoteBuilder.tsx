@@ -3201,6 +3201,10 @@ export default function QuoteBuilder({
       aiGingerbreadFootage: r.gingerbreadFootage,
       hasSatelliteSantasLines: satelliteSantasLines.length > 0,
       hasSatelliteGingerbreadLines: satelliteGingerbreadLines.length > 0,
+      // Fix round (staff MED): scale-less manual-satellite lines (#9, traced
+      // "for training value") derive nothing — same bail the measurement
+      // effect makes — so they must not suppress the AI estimate.
+      satelliteHasScale: satelliteFeetPerPixel != null,
     });
     // The AI's footage estimates pre-fill the inputs (only when no satellite
     // geometry already exists for that field — see above); satellite lines
@@ -3304,13 +3308,15 @@ export default function QuoteBuilder({
     // Row 209: tell the operator when a field's footage was deliberately
     // NOT taken from this analysis, so a number that looks unchanged after
     // "Re-analyze" reads as intentional rather than as a stale UI.
+    // Field names match the ON-SCREEN labels (admin + staff lens LOWs: the
+    // old note said "gingerbread" for the field labelled "Ridge + Sides").
     const keptFootageFields = [
       footageFromAnalysis.santasFootage === undefined ? 'front gutterline' : null,
-      footageFromAnalysis.gingerbreadFootage === undefined ? 'gingerbread' : null,
+      footageFromAnalysis.gingerbreadFootage === undefined ? 'ridge + sides' : null,
     ].filter((label): label is string => label != null);
     const keptFootageNote =
       keptFootageFields.length > 0
-        ? ` Footage for ${keptFootageFields.join(' + ')} kept from the drawn satellite lines — this analysis's street estimate was not applied.`
+        ? ` Footage for ${keptFootageFields.join(' + ')} kept from the drawn satellite lines — this analysis's street estimate was not applied. (Want the street estimate instead? Delete those satellite lines and re-analyze, or type the number directly.)`
         : '';
     setAnalysisNotes(`${r.notes} (confidence: ${r.confidence})${keptFootageNote}`);
     const photoNeedsSave = !!(

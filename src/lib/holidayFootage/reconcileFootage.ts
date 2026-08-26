@@ -168,9 +168,22 @@ export function reconcileAnalysisFootage(input: {
   aiGingerbreadFootage: number;
   hasSatelliteSantasLines: boolean;
   hasSatelliteGingerbreadLines: boolean;
+  /**
+   * Fix round (staff lens MED): lines alone are not a measurement. The
+   * manual-satellite flow (#9) has staff trace lines with NO scale
+   * (satelliteFeetPerPixel null, "for training value") and type footage by
+   * hand — the derive effect bails on null scale, so nothing was ever
+   * DERIVED from those lines and the AI estimate must still apply. A field
+   * is protected only when its lines exist AND the satellite has a real
+   * scale, i.e. exactly when the derive effect would have produced the
+   * number the ruling protects.
+   */
+  satelliteHasScale: boolean;
 }): Partial<Record<AnalysisFootageField, number>> {
   const out: Partial<Record<AnalysisFootageField, number>> = {};
-  if (!input.hasSatelliteSantasLines) out.santasFootage = input.aiSantasFootage;
-  if (!input.hasSatelliteGingerbreadLines) out.gingerbreadFootage = input.aiGingerbreadFootage;
+  const santasProtected = input.hasSatelliteSantasLines && input.satelliteHasScale;
+  const gingerbreadProtected = input.hasSatelliteGingerbreadLines && input.satelliteHasScale;
+  if (!santasProtected) out.santasFootage = input.aiSantasFootage;
+  if (!gingerbreadProtected) out.gingerbreadFootage = input.aiGingerbreadFootage;
   return out;
 }
