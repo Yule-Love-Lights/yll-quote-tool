@@ -23,12 +23,7 @@ import {
   type DesignPortalVisibility,
 } from '@/lib/designs';
 import { clampBrightness } from '@/lib/design/photoBrightness';
-import {
-  isSceneFrozen,
-  SCENE_LOCKED_CODE,
-  SCENE_LOCKED_MESSAGE,
-  type SceneFreezeRow,
-} from '@/lib/design/sceneFreeze';
+import { SCENE_LOCKED_CODE, SCENE_LOCKED_MESSAGE } from '@/lib/design/sceneFreeze';
 
 export const runtime = 'nodejs';
 
@@ -150,42 +145,6 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     let portalVisibility: DesignPortalVisibility | null = null;
     let newVersion: number | undefined;
     if (scene !== undefined) {
-      // Row 367: the design's post-approval freeze. The money was frozen at
-      // approval; the PICTURE was not, and the portal reads this scene LIVE —
-      // so without this a signed-off design could be recoloured, respaced or
-      // regrouped and silently drift from what the customer agreed to. The
-      // predicate lives in sceneFreeze.ts and is the SAME one /api/quote and
-      // QuoteBuilder already use, so the two freezes cannot drift apart; a
-      // BOOKED order is deliberately still editable (that is the sanctioned
-      // amend path). QuoteBuilder passes the matching `locked` prop to
-      // DesignEditor so staff see this BEFORE they draw; this check is the
-      // server-side truth a stale tab cannot talk past.
-      const lock = await readSceneLock(id);
-      if (!lock.ok) {
-        // A read we could not confirm is NOT a licence to write, and it is not
-        // a lock either — 500 so the editor's ordinary backoff retry keeps the
-        // edit queued (a 409 would block saves permanently on a transient DB
-        // blip, and telling staff a live quote is "approved" would be a lie).
-        return NextResponse.json(
-          { error: "Could not verify this design's approval state — not saved. Retrying." },
-          { status: 500 },
-        );
-      }
-      if (lock.locked) {
-        return NextResponse.json(
-          { error: SCENE_LOCKED_MESSAGE, code: SCENE_LOCKED_CODE },
-          { status: 409 },
-        );
-      }
-      // Row 348 (admin LOW): clamp brightness before persisting. `lightScale`
-      // does NOT need the same treatment here — every render path already
-      // clamps it on READ via `normalizeLightScale` (editor.ts's
-      // `activeLightScale()`, render-readonly.ts:89), so a raw out-of-range
-      // stored value self-corrects and adding a write-time clamp too would
-      // be redundant machinery. Brightness has no such read-time guard
-      // anywhere (see photoBrightness.ts's `clampBrightness` doc comment),
-      // so an unclamped value would persist and paint an opaque tint over
-      // the whole design on every render path, portal included.
       const rawScene = scene as DesignScene;
       const normalizedScene: DesignScene = {
         ...rawScene,
@@ -216,6 +175,27 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       };
       const outcome = await updateDesignSceneGuarded(id, normalizedScene, version as number | null | undefined);
       if (!outcome.ok) {
+        // Row 367: the shared writer refused because the linked quote carries
+        // a frozen (customer-approved) agreement. Distinguishable `code` so
+        // the editor tells this apart from the row-260 CAS conflict below —
+        // the conflict's remedy is "reload", which here would loop staff back
+        // into the same lock.
+        if (outcome.reason === 'locked') {
+          return NextResponse.json(
+            { error: SCENE_LOCKED_MESSAGE, code: SCENE_LOCKED_CODE },
+            { status: 409 },
+          );
+        }
+        // Row 367: the freeze state could not be READ. Not a lock (a transient
+        // blip must not permanently block this editor, nor claim a live quote
+        // is approved) and not a licence to write — a retryable 5xx keeps the
+        // edit queued for the editor's own backoff retry.
+        if (outcome.reason === 'unverified') {
+          return NextResponse.json(
+            { error: "Could not verify this design's approval state — not saved. Retrying." },
+            { status: 500 },
+          );
+        }
         if (outcome.reason === 'conflict') {
           // Distinguishable body (`conflict: true`) so the editor can tell
           // this apart from an ordinary save failure and block-and-offer-
@@ -278,37 +258,6 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     console.error('PUT /api/designs/[id] error:', err);
     return NextResponse.json({ error: msg }, { status: 500 });
   }
-}
-
-// Row 367 — resolve whether this design's linked quote has a frozen (approved)
-// agreement. Returns `ok: false` for a read we could NOT confirm, which the
-// caller turns into a retryable 500 rather than guessing in either direction.
-// An unlinked design, or one pointing at a quote row that no longer exists, has
-// no signed-off agreement to protect and is editable.
-async function readSceneLock(designId: string): Promise<{ ok: true; locked: boolean } | { ok: false }> {
-  const sb = getSupabaseServiceClient();
-  if (!sb) return { ok: false };
-  const { data: designRow, error: designErr } = await sb
-    .from('designs')
-    .select('quote_id')
-    .eq('id', designId)
-    .maybeSingle<{ quote_id: string | null }>();
-  if (designErr) {
-    console.warn('[api/designs/:id] scene-freeze check — design read failed:', designErr.message);
-    return { ok: false };
-  }
-  if (!designRow?.quote_id) return { ok: true, locked: false };
-  const { data: quoteRow, error: quoteErr } = await sb
-    .from('quotes')
-    .select('status, quote_sent_at, viewed_at, customer_approved_at, deposit_paid_at, is_test')
-    .eq('id', designRow.quote_id)
-    .maybeSingle<SceneFreezeRow>();
-  if (quoteErr) {
-    console.warn('[api/designs/:id] scene-freeze check — quote read failed:', quoteErr.message);
-    return { ok: false };
-  }
-  if (!quoteRow) return { ok: true, locked: false }; // quote gone — nothing agreed to protect
-  return { ok: true, locked: isSceneFrozen(quoteRow) };
 }
 
 // Row 370 — best-effort audit of a portal-visibility change, onto the linked

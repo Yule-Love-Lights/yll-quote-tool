@@ -9,7 +9,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 
-const { removeDesignExtraPhoto, updateDesignExtraPhotoTitle, updateDesignPhotoTitle } = vi.hoisted(() => ({
+const { removeDesignExtraPhoto, updateDesignExtraPhotoTitle, updateDesignPhotoTitle, readSceneLock } = vi.hoisted(() => ({
+  // Row 367: the pre-flight freeze lookup. Mocked here (rather than mocking
+  // Supabase) so these tests stay about the ROUTE's ordering guarantee: a
+  // frozen or unverifiable design must be refused before ANY of the three
+  // writes a delete performs (storage object, extra_photos, scene prune).
+  readSceneLock: vi.fn(async (): Promise<{ ok: true; locked: boolean } | { ok: false }> => ({ ok: true, locked: false })),
   removeDesignExtraPhoto: vi.fn(
     // Row 371: `version` is the post-prune CAS version the route hands back.
     async (): Promise<{
@@ -38,6 +43,11 @@ vi.mock('@/lib/supabase', () => ({
   isSupabaseServiceConfigured: () => true,
 }));
 
+vi.mock('@/lib/design/sceneFreeze', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/design/sceneFreeze')>()),
+  readSceneLock,
+}));
+
 vi.mock('@/lib/auth/supabaseServer', () => ({
   requireOperator: async () => null,
 }));
@@ -57,6 +67,7 @@ beforeEach(() => {
   removeDesignExtraPhoto.mockResolvedValue({ ok: true, prunedMiniGroups: [], version: null });
   updateDesignExtraPhotoTitle.mockResolvedValue(true);
   updateDesignPhotoTitle.mockResolvedValue(true);
+  readSceneLock.mockResolvedValue({ ok: true, locked: false });
 });
 
 describe('photoId validation — tightened UUID (#110 W2-023)', () => {
@@ -134,5 +145,48 @@ describe('DELETE — reports mini groups the photo delete prune orphaned (#741 d
       params: Promise.resolve({ id: VALID_DESIGN_ID, photoId: VALID_PHOTO_ID }),
     });
     expect(res.status).toBe(404);
+  });
+});
+
+// ── Row 367: the design's post-approval freeze, PRE-FLIGHT on this route ─────
+// A delete is three writes (storage object → extra_photos → scene prune) and
+// only the last goes through the shared guarded scene writer. Refusing at that
+// last step would leave the photo already gone from storage and from the tab
+// strip, so these pin the ORDERING: a refusal changes nothing at all.
+describe('post-approval freeze (row 367)', () => {
+  const ctx = { params: Promise.resolve({ id: VALID_DESIGN_ID, photoId: VALID_PHOTO_ID }) };
+  const baseCtx = { params: Promise.resolve({ id: VALID_DESIGN_ID, photoId: 'base' }) };
+
+  it('DELETE on a locked design 409s with the shared code and removes NOTHING', async () => {
+    readSceneLock.mockResolvedValue({ ok: true, locked: true });
+    const res = await DELETE(makeReq(), ctx);
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('design-locked');
+    expect(removeDesignExtraPhoto).not.toHaveBeenCalled();
+  });
+
+  it('PATCH (rename) on a locked design 409s and renames NOTHING', async () => {
+    readSceneLock.mockResolvedValue({ ok: true, locked: true });
+    const res = await PATCH(makeReq({ title: 'Left side' }), baseCtx);
+    expect(res.status).toBe(409);
+    expect(updateDesignPhotoTitle).not.toHaveBeenCalled();
+    expect(updateDesignExtraPhotoTitle).not.toHaveBeenCalled();
+  });
+
+  it('an unverifiable freeze read is a retryable 500, and still removes NOTHING', async () => {
+    // Neither direction is safe to guess: writing anyway is the drift row 367
+    // closes, and a 409 would tell staff a live quote is approved.
+    readSceneLock.mockResolvedValue({ ok: false });
+    const res = await DELETE(makeReq(), ctx);
+    expect(res.status).toBe(500);
+    expect((await res.json()).code).toBeUndefined();
+    expect(removeDesignExtraPhoto).not.toHaveBeenCalled();
+  });
+
+  it('lets both verbs through on an unlocked design', async () => {
+    expect((await DELETE(makeReq(), ctx)).status).toBe(200);
+    expect(removeDesignExtraPhoto).toHaveBeenCalledTimes(1);
+    expect((await PATCH(makeReq({ title: 'Front' }), baseCtx)).status).toBe(200);
+    expect(updateDesignPhotoTitle).toHaveBeenCalledTimes(1);
   });
 });

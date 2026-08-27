@@ -1,4 +1,5 @@
 import sharp from 'sharp';
+import { readSceneLock } from '@/lib/design/sceneFreeze';
 import { getSupabaseServiceClient } from './supabase';
 import type { Scene } from './design/sceneTypes';
 import { pruneOrphanedMiniGroups, isMiniGroup } from './design/sceneTypes';
@@ -629,6 +630,13 @@ export async function updateDesignPortalVisibility(
 export type UpdateSceneOutcome =
   | { ok: true; version: number }
   | { ok: false; reason: 'conflict' }
+  // Row 367: the linked quote carries a frozen (customer-approved) agreement,
+  // so the picture they signed off on must not change. Callers surface this as
+  // a 409 with `code: 'design-locked'`, NOT as a generic failure.
+  | { ok: false; reason: 'locked' }
+  // Row 367: the freeze state could not be READ. Neither a lock nor a licence
+  // to write — callers surface it as a retryable 5xx.
+  | { ok: false; reason: 'unverified' }
   | { ok: false; reason: 'error' };
 
 async function casWriteScene(
@@ -660,6 +668,20 @@ export async function updateDesignSceneGuarded(
 ): Promise<UpdateSceneOutcome> {
   const sb = getSb();
   if (!sb) return { ok: false, reason: 'error' };
+
+  // Row 367 — the design's post-approval freeze, enforced HERE rather than in
+  // any one route. The first cut of this guard lived inline in
+  // `PUT /api/designs/[id]` and two premerge lenses independently found the
+  // same hole: `seed-analysis`, `seed-roofline` and the photo-delete prune all
+  // call THIS function directly and sailed straight past it, so "Re-analyze
+  // This View" could silently rewrite a signed-off design. Gating the shared
+  // writer instead of each caller means a route added tomorrow is covered by
+  // construction. `updateDesignScene` (the unguarded sibling below) is
+  // deliberately NOT gated: its only two callers seed a row that was inserted
+  // moments earlier and has no quote link yet.
+  const lock = await readSceneLock(id);
+  if (!lock.ok) return { ok: false, reason: 'unverified' };
+  if (lock.locked) return { ok: false, reason: 'locked' };
 
   if (expectedVersion == null) {
     const { data: currentRow, error: readError } = await sb

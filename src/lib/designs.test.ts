@@ -31,6 +31,24 @@ vi.mock('./supabase', () => ({
   getSupabaseServiceClient: () => sbRef.current,
 }));
 
+// Row 367: designs.ts's shared scene writer now consults the post-approval
+// freeze before it writes. Mocked here so the row-260 CAS suite below stays
+// about the compare-and-swap (the freeze's own lookup issues two extra
+// queries, which the sequencing test asserts against); the row-367 suite at
+// the bottom drives this mock directly. Default = unlocked, i.e. the
+// pre-row-367 behaviour every existing test was written against.
+const { readSceneLockMock } = vi.hoisted(() => ({
+  readSceneLockMock: vi.fn(async (): Promise<{ ok: true; locked: boolean } | { ok: false }> => ({
+    ok: true,
+    locked: false,
+  })),
+}));
+
+vi.mock('@/lib/design/sceneFreeze', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/design/sceneFreeze')>()),
+  readSceneLock: readSceneLockMock,
+}));
+
 import {
   uploadDesignPhoto,
   uploadDesignSatellite,
@@ -56,6 +74,7 @@ const oversizedBase64 = Buffer.alloc(11 * 1024 * 1024, 1).toString('base64');
 
 describe('design upload size cap (audit #22)', () => {
   beforeEach(() => {
+  readSceneLockMock.mockResolvedValue({ ok: true, locked: false });
     sharpMock.mockClear();
     // A truthy stub is enough — the size guard runs before any storage/DB call.
     sbRef.current = {};
@@ -1513,5 +1532,83 @@ describe('isValidDesignId (W2-029)', () => {
     expect(isValidDesignId(undefined)).toBe(false);
     expect(isValidDesignId('')).toBe(false);
     expect(isValidDesignId(12345)).toBe(false);
+  });
+});
+
+// ── Row 367: the post-approval freeze lives in the SHARED writer ─────────────
+// Four premerge lenses independently found that gating only the PUT route
+// missed seed-analysis, seed-roofline and the photo-delete prune, which all
+// call this function directly. Gating here covers them by construction — and
+// covers a route added tomorrow. These are the load-bearing tests for that.
+describe('updateDesignSceneGuarded — post-approval freeze (row 367)', () => {
+  const scene = { items: [], yardsticks: [] } as unknown as Parameters<typeof updateDesignSceneGuarded>[1];
+
+  it('refuses a frozen design with reason "locked", and issues NO write', async () => {
+    const calls: string[] = [];
+    sbRef.current = {
+      from(table: string) {
+        calls.push(table);
+        const b = {
+          select: () => b,
+          eq: () => b,
+          update: () => { calls.push('UPDATE'); return b; },
+          maybeSingle: async () => ({ data: null, error: null }),
+          then: (resolve: (v: unknown) => void) => resolve({ data: [], error: null }),
+        };
+        return b;
+      },
+    };
+    readSceneLockMock.mockResolvedValueOnce({ ok: true, locked: true });
+
+    const outcome = await updateDesignSceneGuarded('d1', scene, 5);
+
+    expect(outcome).toEqual({ ok: false, reason: 'locked' });
+    // The whole point: the refusal happens BEFORE the CAS, so nothing is
+    // written and no version is burned.
+    expect(calls).not.toContain('UPDATE');
+  });
+
+  it('refuses with reason "unverified" when the freeze state could not be read', async () => {
+    // Distinct from 'locked' on purpose: callers turn this into a retryable
+    // 5xx, never a 409. A transient read failure must not manufacture a
+    // permanent lock, and must not wave the write through either.
+    const calls: string[] = [];
+    sbRef.current = {
+      from() {
+        const b = {
+          select: () => b,
+          eq: () => b,
+          update: () => { calls.push('UPDATE'); return b; },
+          maybeSingle: async () => ({ data: null, error: null }),
+          then: (resolve: (v: unknown) => void) => resolve({ data: [], error: null }),
+        };
+        return b;
+      },
+    };
+    readSceneLockMock.mockResolvedValueOnce({ ok: false });
+
+    const outcome = await updateDesignSceneGuarded('d1', scene, 5);
+
+    expect(outcome).toEqual({ ok: false, reason: 'unverified' });
+    expect(calls).not.toContain('UPDATE');
+  });
+
+  it('writes normally when the design is not frozen', async () => {
+    sbRef.current = {
+      from() {
+        const b = {
+          select: () => b,
+          eq: () => b,
+          update: () => b,
+          maybeSingle: async () => ({ data: { version: 5 }, error: null }),
+          then: (resolve: (v: unknown) => void) => resolve({ data: [{ version: 6 }], error: null }),
+        };
+        return b;
+      },
+    };
+
+    const outcome = await updateDesignSceneGuarded('d1', scene, 5);
+
+    expect(outcome).toEqual({ ok: true, version: 6 });
   });
 });

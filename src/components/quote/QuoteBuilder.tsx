@@ -851,6 +851,11 @@ export default function QuoteBuilder({
   // reopening the quote for editing. That resend is the sanctioned way to
   // change a price/label/footage that was already customer-approved but
   // never booked.
+  // Row 367: the DESIGN's own lock copy. Separate from the money reason above
+  // because the remedy sentence differs — nothing here needs re-pricing, the
+  // customer simply agreed to a picture.
+  const POST_APPROVAL_DESIGN_LOCK_REASON =
+    'Locked after approval — the customer agreed to this design. To change the drawing, decline this quote, revive it, edit, and re-send. (A booked order is changed through the amend flow.)';
   const POST_APPROVAL_LOCK_REASON =
     "Locked after approval — a price, label, or footage change here needs re-approval. Decline this quote, revive it, make the change, and re-send; the customer's prior approval no longer applies once you do.";
   const quoteNumber = initialQuote?.quoteNumber ?? null;
@@ -5204,7 +5209,10 @@ export default function QuoteBuilder({
         // and flip the tab to frozen so the controls lock with the honest
         // post-approval copy — the tab self-corrects to server truth instead
         // of staying editable and re-erroring on every retry.
-        const LOCK_CODES = new Set(['price-override-locked', 'label-override-locked', 'bistro-footage-locked']);
+        // Row 367: 'design-locked' joins the money lock codes so a stale tab
+        // that learns the quote is approved from a DESIGN write self-corrects
+        // the whole page, not just the editor that got the 409.
+        const LOCK_CODES = new Set(['price-override-locked', 'label-override-locked', 'bistro-footage-locked', 'design-locked']);
         if (res.status === 409 && typeof data?.code === 'string' && LOCK_CODES.has(data.code)) {
           setResult(prevResult);
           setBaselineResult(prevBaseline);
@@ -6323,7 +6331,12 @@ export default function QuoteBuilder({
                   <button
                     type="button"
                     onClick={handleAnalyzePhoto}
-                    disabled={analyzing || loading}
+                    // Row 367: seeding a scene past approval rewrites the
+                    // picture the customer signed off on, and the server now
+                    // refuses it — disable rather than let staff click into a
+                    // 409 they can do nothing about.
+                    disabled={analyzing || loading || postApprovalFrozen}
+                    title={postApprovalFrozen ? POST_APPROVAL_DESIGN_LOCK_REASON : undefined}
                     className="bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white font-medium py-2 px-4 rounded-md text-sm"
                   >
                     {analyzing
@@ -6545,7 +6558,8 @@ export default function QuoteBuilder({
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                         Reset
                       </button>
-                      <button type="button" disabled={analyzing || recapturing}
+                      <button type="button" disabled={analyzing || recapturing || postApprovalFrozen}
+                        title={postApprovalFrozen ? POST_APPROVAL_DESIGN_LOCK_REASON : undefined}
                         onClick={reanalyzeCurrent}
                         className="ml-auto text-xs font-semibold text-white bg-green-600 hover:bg-green-700 disabled:bg-green-300 rounded px-3 py-1.5">
                         {analyzing ? 'Re-analyzing…' : 'Re-analyze This View'}
@@ -8028,10 +8042,13 @@ export default function QuoteBuilder({
                         type="checkbox"
                         className="cursor-pointer accent-green-600"
                         checked={checked}
-                        disabled={recommendBusy}
+                        // Row 367: this toggle persists on the SCENE, so it is
+                        // frozen with the rest of the picture — parity with the
+                        // EditablePrice/EditableLabel controls on this same row.
+                        disabled={recommendBusy || postApprovalFrozen}
                         onChange={() => void toggleDesignItemRecommended(sceneItemIds, !checked)}
                         aria-label={`Recommend ${resolvedLabel.label}`}
-                        title="Recommend this item to the customer"
+                        title={postApprovalFrozen ? POST_APPROVAL_DESIGN_LOCK_REASON : 'Recommend this item to the customer'}
                       />
                     );
                   } else if (item.id === 'winter-wonderland' || item.id === 'stake-lighting') {

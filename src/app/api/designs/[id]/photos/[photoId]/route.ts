@@ -11,6 +11,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { removeDesignExtraPhoto, updateDesignExtraPhotoTitle, updateDesignPhotoTitle, isValidDesignId } from '@/lib/designs';
 import { requireOperator } from '@/lib/auth/supabaseServer';
+import { readSceneLock, SCENE_LOCKED_CODE, SCENE_LOCKED_MESSAGE } from '@/lib/design/sceneFreeze';
 
 export const runtime = 'nodejs';
 
@@ -37,6 +38,27 @@ async function checkParams(params: Params['params']): Promise<{ id: string; phot
   return { id, photoId };
 }
 
+// Row 367 — the design's post-approval freeze, PRE-FLIGHT. Deleting a photo is
+// a three-step write (storage object, then extra_photos, then the scene prune)
+// and only the last of those goes through the shared guarded scene writer. A
+// refusal discovered at step three would leave the photo already gone from
+// storage and from the tab strip, so the check has to happen before ANY of it
+// — a decline must change nothing at all. Rename shares it because photo
+// titles are customer-visible on the portal.
+async function refuseIfFrozen(designId: string): Promise<NextResponse | null> {
+  const lock = await readSceneLock(designId);
+  if (!lock.ok) {
+    return NextResponse.json(
+      { error: "Could not verify this design's approval state — nothing was changed." },
+      { status: 500 },
+    );
+  }
+  if (lock.locked) {
+    return NextResponse.json({ error: SCENE_LOCKED_MESSAGE, code: SCENE_LOCKED_CODE }, { status: 409 });
+  }
+  return null;
+}
+
 export async function PATCH(req: NextRequest, { params }: Params) {
   const denied = await requireOperator();
   if (denied) return denied;
@@ -50,6 +72,9 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
   const title = typeof body.title === 'string' ? body.title : null;
+
+  const frozen = await refuseIfFrozen(checked.id);
+  if (frozen) return frozen;
 
   const ok = checked.photoId.toLowerCase() === 'base'
     ? await updateDesignPhotoTitle(checked.id, title)
@@ -66,6 +91,9 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
   if (checked.photoId.toLowerCase() === 'base') {
     return NextResponse.json({ error: 'The base photo cannot be deleted' }, { status: 400 });
   }
+
+  const frozen = await refuseIfFrozen(checked.id);
+  if (frozen) return frozen;
 
   const result = await removeDesignExtraPhoto(checked.id, checked.photoId);
   if (!result.ok) return NextResponse.json({ error: 'Photo not found' }, { status: 404 });

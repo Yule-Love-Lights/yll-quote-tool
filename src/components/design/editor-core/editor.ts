@@ -1682,6 +1682,7 @@ export async function renderEditor(
     banner.textContent =
       message ??
       "This design is locked — the customer already approved it. Changes here are NOT saved.";
+    banner.style.whiteSpace = "normal";
     host.prepend(banner);
   }
   function showConflictBanner() {
