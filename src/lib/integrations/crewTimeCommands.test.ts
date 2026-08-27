@@ -25,7 +25,10 @@ describe('parseCrewTimeCommand — the simple punches', () => {
     }
   });
 
-  it('recognises status, help and done', () => {
+  // Row 336: the old name claimed `help` coverage that never existed, and
+  // PR #818 removed the help kind entirely — a test name ships as
+  // documentation, so it names exactly what it asserts.
+  it('recognises status, and done/finished as complete', () => {
     expect(parseCrewTimeCommand('status')).toEqual({ kind: 'status' });
     expect(parseCrewTimeCommand('done')).toEqual({ kind: 'complete' });
     expect(parseCrewTimeCommand('finished')).toEqual({ kind: 'complete' });
