@@ -40,6 +40,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyBouncieSecret, bodyHash, parseBouncieEvent, isOffHours } from '@/lib/integrations/bouncie';
 import { getSupabaseServiceClient } from '@/lib/supabase';
+import { parseGeozoneEvent, recordGeozoneVisit } from '@/lib/integrations/vehicleVisits';
 import { rateLimitResponse } from '@/lib/rateLimit';
 
 export const runtime = 'nodejs';
@@ -107,18 +108,21 @@ export async function POST(req: NextRequest) {
     return new NextResponse('Storage unavailable', { status: 503 });
   }
 
-  const { error } = await sb.from('vehicle_events').insert({
-    event_type: facts.eventType ?? null,
-    imei: facts.imei ?? null,
-    vin: facts.vin ?? null,
-    transaction_id: facts.transactionId ?? null,
-    occurred_at: facts.occurredAt ?? null,
-    // Constraint (f): tagged at insert so a retention job never has to re-parse
-    // payloads to find out which rows are a crew member's private evenings.
-    occurred_off_hours: isOffHours(facts.occurredAt) ?? null,
-    body_sha256: bodyHash(raw),
-    payload,
-  });
+  const { data: inserted, error } = await sb
+    .from('vehicle_events')
+    .insert({
+      event_type: facts.eventType ?? null,
+      imei: facts.imei ?? null,
+      vin: facts.vin ?? null,
+      transaction_id: facts.transactionId ?? null,
+      occurred_at: facts.occurredAt ?? null,
+      // Constraint (f): tagged at insert so a retention job never has to re-parse
+      // payloads to find out which rows are a crew member's private evenings.
+      occurred_off_hours: isOffHours(facts.occurredAt) ?? null,
+      body_sha256: bodyHash(raw),
+      payload,
+    })
+    .select('id');
 
   if (error) {
     // 23505 = unique violation on body_sha256: a byte-identical redelivery, which
@@ -129,6 +133,29 @@ export async function POST(req: NextRequest) {
     }
     console.error('[bouncie] failed to store event:', error.message);
     return new NextResponse('Storage failed', { status: 503 });
+  }
+
+  // DERIVED, AND DELIBERATELY BEST-EFFORT. A geofence event also opens or closes
+  // a visit on the GPS timeline (row 403 phase 3b, the second clock). This runs
+  // AFTER the raw event is safely stored and can never change the response:
+  // the capture is the source of truth and can be reprocessed, whereas answering
+  // Bouncie with an error gets the webhook retried and eventually deactivated.
+  //
+  // Constraint (a) still holds here — the visit timeline has no foreign key into
+  // shifts or job_segments, and nothing below writes payroll.
+  const eventId = inserted?.[0]?.id;
+  if (eventId) {
+    try {
+      const geo = parseGeozoneEvent(parsed, eventId, facts.occurredAt ?? null);
+      if (geo) {
+        const outcome = await recordGeozoneVisit(geo);
+        if (outcome.action === 'ignored') {
+          console.info('[bouncie] geozone event not recorded as a visit:', outcome.reason);
+        }
+      }
+    } catch (err) {
+      console.error('[bouncie] visit derivation failed (event IS stored):', err instanceof Error ? err.message : String(err));
+    }
   }
 
   return NextResponse.json({ ok: true, stored: true });
