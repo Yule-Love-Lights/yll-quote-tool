@@ -977,8 +977,9 @@ export function InboxList({
         // THIS list correct — router.refresh() exists to reach the rest of the
         // page. Row 430: the sibling that used to need it was the FollowUpStrip
         // (now deleted); today it is the awaiting bucket's server-rendered
-        // "N follow-ups due" count. See retiresFollowUp's doc
-        // comment for why this is scoped to dismiss/completed only.
+        // "N follow-ups due" count. See retiresFollowUp's doc comment for
+        // which actions are scoped in (dismiss, completed, and — since row
+        // 430 — followed).
         router.refresh();
       }
     } catch {

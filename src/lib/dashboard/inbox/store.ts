@@ -1400,9 +1400,25 @@ export async function markItemFollowed(
   // prod rows carry that shape today: all 33 items with a pending nag are
   // 'handled' (measured 2026-08-27).
   //
-  // Best-effort: closeFollowUp swallows its own errors and returns 0, so a
-  // failed close never fails the operator's Followed/reply action.
-  await closeFollowUp(itemId, FOLLOWUP_REASONS.quoteSentNoReply);
+  // Best-effort: closeFollowUp catches and logs its own failures and returns
+  // 0, so a failed close never fails the operator's Followed/reply action.
+  //
+  // FIX-ROUND DELTA-VERIFY (MED): gated on the item being 'handled', which is
+  // the only status where the snooze this promises actually holds. An
+  // 'unresponded' item sits OUTSIDE ensureFollowUp's skip set, so closing its
+  // nag would have re-armed it on the next reconcile tick (~5 min) carrying
+  // its ORIGINAL, already-elapsed due date — the pill blinking off and
+  // straight back on, under a button whose own tooltip says "snoozed until
+  // they reply". Round 1 called that case "correct rather than a leak"
+  // because an unanswered customer outranks a snooze; that reasoning holds
+  // for the NAG, and was still the wrong thing to promise in the UI. Not
+  // closing it leaves that path exactly as it was before row 430 — no
+  // regression, no false promise. `from` is the pre-update snapshot and the
+  // UPDATE does not touch status, so it is the right read; when it is
+  // undefined (row vanished, or a failed read) this correctly does nothing.
+  if (from?.status === 'handled') {
+    await closeFollowUp(itemId, FOLLOWUP_REASONS.quoteSentNoReply);
+  }
   return { ok: true };
 }
 
@@ -1958,18 +1974,31 @@ export async function ensureFollowUp(input: {
 export async function closeFollowUp(inboxItemId: string, reason: string): Promise<number> {
   const sb = getSupabaseServiceClient();
   if (!sb) return 0;
-  const { data, error } = await sb
-    .from('follow_ups')
-    .update({ status: 'done' })
-    .eq('inbox_item_id', inboxItemId)
-    .eq('reason', reason)
-    .eq('status', 'pending')
-    .select('id');
-  if (error) {
-    console.error('[inbox] closeFollowUp failed:', error.message);
+  // Row 430 fix-round delta-verify (LOW): wrapped, matching its sibling
+  // closeFollowUpsForResolvedItem's non-fatal contract. Row 320(b) already
+  // handled a RETURNED error here; a THROWN one (a dropped socket, a DNS
+  // failure) still escaped to the caller. That was survivable while every
+  // caller was the reconcile's own try/catch, but markItemFollowed now calls
+  // this on an operator action and its comment claims the close can never
+  // fail that action — this is what makes the claim true rather than nearly
+  // true.
+  try {
+    const { data, error } = await sb
+      .from('follow_ups')
+      .update({ status: 'done' })
+      .eq('inbox_item_id', inboxItemId)
+      .eq('reason', reason)
+      .eq('status', 'pending')
+      .select('id');
+    if (error) {
+      console.error('[inbox] closeFollowUp failed:', error.message);
+      return 0;
+    }
+    return data ? data.length : 0;
+  } catch (e) {
+    console.error('[inbox] closeFollowUp threw (non-fatal):', e);
     return 0;
   }
-  return data ? data.length : 0;
 }
 
 /**

@@ -6253,8 +6253,11 @@ describe('markItemFollowed — status guard (row 306)', () => {
   // nag; without a replacement the "Follow-up due" pill that inherited its
   // signal would stay lit until the deal itself ended. "I followed up" is the
   // answer to "you should follow up", so this action now closes it.
-  it('closes the due follow-up when the Followed stamp succeeds', async () => {
-    const { from, followUpCalls } = makeSbFor({ data: { id: ITEM_ID }, error: null });
+  it('closes the due follow-up when a HANDLED item is stamped Followed', async () => {
+    const { from, followUpCalls } = makeSbForWithPrior(
+      { data: { status: 'handled', followed_up_at: null }, error: null },
+      { data: { id: ITEM_ID }, error: null },
+    );
     sbRef.current = { from };
 
     const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
@@ -6267,10 +6270,32 @@ describe('markItemFollowed — status guard (row 306)', () => {
     expect(followUpCalls.some((c) => c.method === 'eq' && c.args[0] === 'status' && c.args[1] === 'pending')).toBe(true);
   });
 
+  // Fix-round delta-verify (MED). An 'unresponded' item is outside
+  // ensureFollowUp's skip set, so closing its nag would re-arm it on the next
+  // reconcile tick carrying its ORIGINAL, already-elapsed due date - the pill
+  // blinking off and straight back on, under a button that says "snoozed
+  // until they reply". This path is reachable from the main Open leads queue,
+  // whose Followed button is unconditional.
+  it('does NOT close the nag for an UNRESPONDED item, where the snooze could not hold', async () => {
+    const { from, followUpCalls } = makeSbForWithPrior(
+      { data: { status: 'unresponded', followed_up_at: null }, error: null },
+      { data: { id: ITEM_ID }, error: null },
+    );
+    sbRef.current = { from };
+
+    const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
+
+    expect(res.ok).toBe(true);
+    expect(followUpCalls).toHaveLength(0);
+  });
+
   it('leaves the follow-up alone when the Followed stamp was refused', async () => {
     // The guarded UPDATE matched zero rows (already completed/dismissed, or
     // already followed) - nothing was stamped, so nothing may be retired.
-    const { from, followUpCalls } = makeSbFor({ data: null, error: null });
+    const { from, followUpCalls } = makeSbForWithPrior(
+      { data: { status: 'handled', followed_up_at: null }, error: null },
+      { data: null, error: null },
+    );
     sbRef.current = { from };
 
     const res = await markItemFollowed(ITEM_ID, OPERATOR_ID, NOW);
@@ -6385,6 +6410,10 @@ describe('markItemFollowed — status guard (row 306)', () => {
     const { builder: updateBuilder, calls: updateCalls } = makeBuilder(itemUpdateResult);
     const { builder: rereadBuilder } = makeBuilder(rereadResult ?? priorResult);
     const { builder: activityBuilder, calls: activityCalls } = makeBuilder({ data: null, error: null });
+    // Row 430: a successful Followed stamp now also closes the item's due nag,
+    // so this harness answers for follow_ups and captures the calls - the
+    // gate is on the PRIOR status, which only this harness can set.
+    const { builder: followUpBuilder, calls: followUpCalls } = makeBuilder({ data: [{ id: 'fu-1' }], error: null });
     let inboxCallCount = 0;
     const from = (table: string) => {
       if (table === 'inbox_items') {
@@ -6394,12 +6423,10 @@ describe('markItemFollowed — status guard (row 306)', () => {
         return rereadBuilder;
       }
       if (table === 'dashboard_activity') return activityBuilder;
-      // Row 430: same reason as makeSbFor above - a successful Followed stamp
-      // now also closes the item's due nag.
-      if (table === 'follow_ups') return makeBuilder({ data: [{ id: 'fu-1' }], error: null }).builder;
+      if (table === 'follow_ups') return followUpBuilder;
       throw new Error(`unexpected table: ${table}`);
     };
-    return { from, updateCalls, activityCalls };
+    return { from, updateCalls, activityCalls, followUpCalls };
   }
 
   it('allowRestamp:true (the reply-route caller) skips the followed_up_at guard entirely', async () => {
