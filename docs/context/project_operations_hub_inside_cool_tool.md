@@ -16,7 +16,7 @@ The scrapped separate-Hub direction left real artifacts on current master. They 
 
 - `docs/context/OPERATIONS_HUB_CONTRACT.md` (v1.6.0-draft). It says the Hub owns all advertising and uses phone-OTP auth. Both points are superseded by this document.
 - The byte-identical mirror of that contract in the `yll-call-copilot` repo (`docs/operations-hub/INTEGRATION-CONTRACT.md`).
-- The AGENTS.md "Operations Hub contract" ownership row reserving `/api/ops/v1/**` for a separate Hub.
+- The AGENTS.md "Operations Hub contract" ownership row, written for the separate-Hub era. It locks `/api/ops/v1/**` and the shared-labor schema to this repo's assistant and bars the Hub's Codex from editing them.
 - Three machine routes with no consumer: `src/app/api/ops/v1/jobs/[id]/arrive`, `depart`, and `complete`. Built for the Hub; they are the natural foundation for the Crew My Day actions.
 
 Task ledger row 433 tracks their disposition, which is Naldo's call. Any audit session must treat these as superseded remnants, not as current truth, and should propose what to do with each (likely: reuse the routes for Crew My Day, mark or strip the contract).
@@ -274,7 +274,7 @@ Known direction:
 - The desired future direction is automatic recording and transcript ingestion, not manual-only importing.
 - Durable/background work may still need a worker architecture if call ingestion, polling, transcription, grading, retries, queues, or scheduled processing return.
 
-About 1,210 call transcripts already exist in the sibling `yll-call-copilot` Supabase project and its repo. Check there before declaring any part of the chain missing; a repo-scoped audit of the quote tool alone will wrongly report that no transcription exists.
+About 1,210 call transcripts already exist in the sibling `yll-call-copilot` Supabase project; the repo of the same name holds the ingestion code. Check both before declaring any part of the chain missing; an audit scoped to the quote tool alone will wrongly report that no transcription exists.
 
 Before rebuilding call features, audit the full chain:
 
@@ -431,7 +431,7 @@ The desired direction is automatic recording and transcript ingestion, not manua
 
 Audit the full current chain: HighLevel/provider call source, recording availability, ingestion or polling, persistence, transcription, grading/coaching analysis, customer promise extraction, review process, task creation if approved, and display in Cool Tool.
 
-About 1,210 call transcripts already exist in the sibling yll-call-copilot Supabase project and its repo. Check there before declaring any part of the chain missing.
+About 1,210 call transcripts already exist in the sibling yll-call-copilot Supabase project; the repo of the same name holds the ingestion code. Check both before declaring any part of the chain missing.
 
 Do not enable live calls, live transcription, automatic sends, cron jobs, Twilio Verify, Turnstile, phone login, Cloudflare auth work, or Railway-style background processing without explicit approval.
 
@@ -482,7 +482,8 @@ Past Operations Hub chats, branches, migrations, and docs are context only. Do n
 SUPERSEDED REMNANTS ON MASTER
 The scrapped separate-Hub direction left artifacts on current master that look authoritative but describe the old direction:
 - docs/context/OPERATIONS_HUB_CONTRACT.md (v1.6.0-draft). It says the Hub owns all advertising and uses phone-OTP auth. Both points are superseded by this prompt.
-- The AGENTS.md "Operations Hub contract" ownership row reserving /api/ops/v1/** for a separate Hub.
+- The byte-identical mirror of that contract in the yll-call-copilot repo (docs/operations-hub/INTEGRATION-CONTRACT.md).
+- The AGENTS.md "Operations Hub contract" ownership row, written for the separate-Hub era. It locks /api/ops/v1/** and the shared-labor schema to this repo's assistant and bars the Hub's Codex from editing them.
 - Three machine routes with no consumer: src/app/api/ops/v1/jobs/[id]/arrive, depart, and complete. Likely reusable for Crew My Day.
 Task ledger row 433 tracks their disposition, which is Naldo's decision. Treat these as superseded remnants, not current truth, and propose a disposition for each in your report.
 
@@ -744,7 +745,7 @@ HighLevel call features are desired future Operations Hub features inside Cool T
 
 The desired direction is automatic recording and transcript ingestion, not manual-only imports.
 
-About 1,210 call transcripts already exist in the sibling yll-call-copilot Supabase project and its repo. Check there before declaring any part of the chain missing.
+About 1,210 call transcripts already exist in the sibling yll-call-copilot Supabase project; the repo of the same name holds the ingestion code. Check both before declaring any part of the chain missing.
 
 Audit before building:
 - HighLevel/provider call source
