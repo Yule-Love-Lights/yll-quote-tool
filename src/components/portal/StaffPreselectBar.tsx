@@ -17,6 +17,39 @@
 import { useState } from 'react';
 import { useSelection } from './SelectionContext';
 
+// Fix-round MED (staff lens): the fields the save persists, reduced to a
+// stable string so the component can tell "the live selection is exactly
+// what was last saved" from "staff changed something since". Extracted as a
+// pure function (mirrors this file's siblings — nextSelectedItemIds,
+// computeInitialSelection in SelectionContext.tsx — pure + unit-tested
+// rather than exercised only through a rendered component) so equality
+// logic doesn't drift from the payload save() actually POSTs.
+export type StaffSelectionSnapshot = {
+  packageId: string;
+  selectedItemIds: Iterable<string>;
+  rushSelected: boolean;
+  takedownSelected: boolean;
+  installTiming: string;
+  colorSchemeId: string;
+  customPattern: string[];
+  permanentEffect: string;
+};
+
+export function staffSelectionSignature(s: StaffSelectionSnapshot): string {
+  return JSON.stringify({
+    packageId: s.packageId,
+    // Sorted so the signature reflects WHICH items are selected, not the
+    // Set's iteration order (order is otherwise insertion-dependent).
+    selectedItemIds: [...s.selectedItemIds].sort(),
+    rushSelected: s.rushSelected,
+    takedownSelected: s.takedownSelected,
+    installTiming: s.installTiming,
+    colorSchemeId: s.colorSchemeId,
+    customPattern: s.customPattern,
+    permanentEffect: s.permanentEffect,
+  });
+}
+
 export function StaffPreselectBar({
   quoteId,
   customerViewed,
@@ -33,6 +66,19 @@ export function StaffPreselectBar({
   const selection = useSelection();
   const [status, setStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [error, setError] = useState<string | null>(null);
+  // Fix-round MED (staff lens): the "Saved" confirmation used to stay lit
+  // forever once shown, even after staff kept editing — so a staffer could
+  // walk away trusting a stale confirmation while their newest edit was
+  // never persisted. Instead of an effect that watches the selection and
+  // resets state (fights the lint-as-error set-state-in-effect rule), the
+  // save records a SIGNATURE of exactly what it persisted; the confirmation
+  // renders only while the live selection still matches that signature — any
+  // edit afterward changes the signature and the confirmation drops on its
+  // own, during the very next render.
+  const [savedSignature, setSavedSignature] = useState<string | null>(null);
+
+  const currentSignature = staffSelectionSignature(selection);
+  const showSaved = status === 'saved' && savedSignature === currentSignature;
 
   const save = async () => {
     if (customerViewed) {
@@ -58,6 +104,7 @@ export function StaffPreselectBar({
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? 'Could not save the selection');
+      setSavedSignature(currentSignature);
       setStatus('saved');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save the selection');
@@ -73,7 +120,7 @@ export function StaffPreselectBar({
     >
       <span className="font-semibold uppercase tracking-[0.15em] text-amber-300">Staff preview</span>
       <div className="flex items-center gap-3">
-        {status === 'saved' && (
+        {showSaved && (
           <span className="text-emerald-300">Saved as the customer&apos;s starting selection.</span>
         )}
         {status === 'error' && error && (
