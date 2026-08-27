@@ -32,6 +32,29 @@ export const BUSINESS_RULES = {
     hard: 12,
   },
 
+
+
+  // The difficulty a roofline (Santa's front line and Gingerbread ridge+sides)
+  // STARTS at, everywhere it can start: a new quote's form, and the customer's
+  // self-serve estimate. Easy = $8/ft.
+  //
+  // Jason, 2026-08-27: an analysis used to be able to move this on its own —
+  // the AI returns its own difficulty read and both the builder and the
+  // self-serve estimator adopted it, so the same house could quote at $10/ft
+  // just because a photo was re-analyzed. Roofline difficulty is now a purely
+  // MANUAL decision: nothing but a staff member picking a value in the
+  // dropdown changes it. Exported so the three places that need a starting
+  // value cannot drift into disagreeing about what it is.
+  //
+  // Used for the read-side fallbacks too (quoteForm's `?? ...`, QuoteBuilder's
+  // DIFFICULTY_BY_ITEM). The first draft of this change deliberately left those
+  // at 'medium', reasoning that they describe legacy quotes already PRICED at
+  // medium and that moving them would re-price history on reopen. Measured
+  // instead of argued: 187 of 187 holiday quotes in production store both
+  // difficulty keys, so that fallback is unreachable for real data and the
+  // population it was protecting does not exist. One value everywhere beats a
+  // second one guarding nothing.
+  rooflineDefaultDifficulty: 'easy' as const,
   // Stake Lighting (independent staked ground runs) — its OWN per-ft rate table,
   // distinct from the roofline rates above (Naldo, 2026-06-26).
   stakeLightingRates: {

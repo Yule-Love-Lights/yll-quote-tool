@@ -149,8 +149,10 @@ type RateFieldKeys = {
   fallback: DifficultyChoice;
 };
 const OVERRIDE_ID_TO_RATE: Record<string, RateFieldKeys> = {
-  'roofline-santas': { diffKey: 'santasDifficulty', rateKey: 'santasCustomRate', fallback: 'medium' },
-  'roofline-gingerbread': { diffKey: 'gingerbreadDifficulty', rateKey: 'gingerbreadCustomRate', fallback: 'medium' },
+  // Roofline falls back to the ONE shared starting value (Easy $8/ft) — see
+  // BUSINESS_RULES.rooflineDefaultDifficulty. WW keeps 'medium', stake 'easy'.
+  'roofline-santas': { diffKey: 'santasDifficulty', rateKey: 'santasCustomRate', fallback: BUSINESS_RULES.rooflineDefaultDifficulty },
+  'roofline-gingerbread': { diffKey: 'gingerbreadDifficulty', rateKey: 'gingerbreadCustomRate', fallback: BUSINESS_RULES.rooflineDefaultDifficulty },
   'winter-wonderland': { diffKey: 'winterWonderlandDifficulty', rateKey: 'winterWonderlandCustomRate', fallback: 'medium' },
   'stake-lighting': { diffKey: 'stakeLightingDifficulty', rateKey: 'stakeLightingCustomRate', fallback: 'easy' },
 };
@@ -3240,12 +3242,15 @@ export default function QuoteBuilder({
     setForm(f => ({
       ...f,
       ...footageFromAnalysis,
-      santasDifficulty: r.santasDifficulty,
-      // #102: a fresh AI analysis sets a PRESET difficulty, so clear any stale
-      // custom $/ft on these two types — keeps the difficulty + rate consistent.
-      santasCustomRate: 0,
-      gingerbreadDifficulty: r.gingerbreadDifficulty,
-      gingerbreadCustomRate: 0,
+      // Jason, 2026-08-27: an analysis moves FOOTAGE and nothing else. It used
+      // to adopt the analyzer's own difficulty read (`r.santasDifficulty` /
+      // `r.gingerbreadDifficulty`), so re-analyzing a house could silently flip
+      // a roofline from Easy $8/ft to Medium $10/ft with no person involved —
+      // and #102's companion `santasCustomRate: 0` / `gingerbreadCustomRate: 0`
+      // then wiped a $/ft a staff member had typed by hand. Both are gone:
+      // roofline difficulty and any custom rate are now purely manual, changed
+      // only by a staff member using the dropdown / rate field. New quotes
+      // start at BUSINESS_RULES.rooflineDefaultDifficulty (Easy).
     }));
     // Satellite polylines — seed them so the satellite tab is ready for
     // complex / commercial rooflines without re-analyzing. #97: only (re)set the

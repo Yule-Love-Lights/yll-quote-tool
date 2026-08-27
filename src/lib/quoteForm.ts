@@ -15,7 +15,7 @@ import { ServiceType, DEFAULT_SERVICE_TYPE, asServiceType, canCarryNceOrYllNeigh
 import type { EventInputFields } from './event/types';
 import { type PermanentQuoteFields, makeDefaultPermanentFields } from './permanent/types';
 import type { PermanentBistroInputFields } from './permanentBistro/types';
-import { NCE_DEPOSIT_PERCENT } from '@/lib/pricing/pricingEngine';
+import { NCE_DEPOSIT_PERCENT, BUSINESS_RULES } from '@/lib/pricing/pricingEngine';
 
 // Mapping between the quote builder's form state and the pricing engine's
 // QuoteInputs (task #31). Two directions:
@@ -136,10 +136,13 @@ export const initialFormData: QuoteFormData = {
   customer: { name: '', address: '', phone: '', email: '' },
   serviceType: DEFAULT_SERVICE_TYPE,
   santasFootage: 0,
-  santasDifficulty: 'medium',
+  // Roofline difficulty starts at Easy ($8/ft) and only ever moves when a staff
+  // member picks a different value — see BUSINESS_RULES.rooflineDefaultDifficulty
+  // for why (Jason, 2026-08-27).
+  santasDifficulty: BUSINESS_RULES.rooflineDefaultDifficulty,
   santasCustomRate: 0,
   gingerbreadFootage: 0,
-  gingerbreadDifficulty: 'medium',
+  gingerbreadDifficulty: BUSINESS_RULES.rooflineDefaultDifficulty,
   gingerbreadCustomRate: 0,
   winterWonderlandFootage: 0,
   winterWonderlandDifficulty: 'medium',
@@ -780,10 +783,11 @@ export function buildQuoteInputs(
   rooflineChoiceOverride?: RooflineChoice,
 ): QuoteInputs {
   const effectiveRooflineChoice = rooflineChoiceOverride ?? form.rooflineChoice;
-  // #102 per-item-type custom $/ft → wire (santas/gingerbread/WW fall back to
-  // 'medium', stake to 'easy', matching their preset defaults).
-  const santas = toWireRate(form.santasDifficulty, form.santasCustomRate, 'medium');
-  const gingerbread = toWireRate(form.gingerbreadDifficulty, form.gingerbreadCustomRate, 'medium');
+  // #102 per-item-type custom $/ft → wire. Each falls back to its own preset
+  // default: the two ROOFLINE types to BUSINESS_RULES.rooflineDefaultDifficulty
+  // (Easy, 2026-08-27), WW to 'medium', stake to 'easy'.
+  const santas = toWireRate(form.santasDifficulty, form.santasCustomRate, BUSINESS_RULES.rooflineDefaultDifficulty);
+  const gingerbread = toWireRate(form.gingerbreadDifficulty, form.gingerbreadCustomRate, BUSINESS_RULES.rooflineDefaultDifficulty);
   const winterWonderland = toWireRate(form.winterWonderlandDifficulty, form.winterWonderlandCustomRate, 'medium');
   const stakeLighting = toWireRate(form.stakeLightingDifficulty, form.stakeLightingCustomRate, 'easy');
   return {
@@ -918,10 +922,10 @@ export function inputsToFormData(
     santasFootage: i.santasFootage ?? 0,
     // #102: a stored positive custom rate rehydrates the dropdown to 'custom'
     // and seeds the numeric field; otherwise the stored preset difficulty.
-    santasDifficulty: customRateActive(i.santasCustomRate) ? 'custom' : (i.santasDifficulty ?? 'medium'),
+    santasDifficulty: customRateActive(i.santasCustomRate) ? 'custom' : (i.santasDifficulty ?? BUSINESS_RULES.rooflineDefaultDifficulty),
     santasCustomRate: i.santasCustomRate ?? 0,
     gingerbreadFootage: i.gingerbreadFootage ?? 0,
-    gingerbreadDifficulty: customRateActive(i.gingerbreadCustomRate) ? 'custom' : (i.gingerbreadDifficulty ?? 'medium'),
+    gingerbreadDifficulty: customRateActive(i.gingerbreadCustomRate) ? 'custom' : (i.gingerbreadDifficulty ?? BUSINESS_RULES.rooflineDefaultDifficulty),
     gingerbreadCustomRate: i.gingerbreadCustomRate ?? 0,
     winterWonderlandFootage: i.winterWonderlandFootage ?? 0,
     winterWonderlandDifficulty: customRateActive(i.winterWonderlandCustomRate)

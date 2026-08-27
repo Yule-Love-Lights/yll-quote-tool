@@ -9,7 +9,7 @@
 // single total into the RANGE the customer sees. Phase A never shows a binding
 // number; staff confirm every self-serve quote before the customer can pay.
 
-import type { QuoteInputs } from '@/lib/pricing/pricingEngine';
+import { BUSINESS_RULES, type QuoteInputs } from '@/lib/pricing/pricingEngine';
 import type { PhotoAnalysisResult } from '@/lib/photoAnalysis';
 
 export type EstimateRange = { low: number; high: number };
@@ -109,9 +109,16 @@ export function analysisToHolidayInputs(result: PhotoAnalysisResult): QuoteInput
 
   return {
     santasFootage,
-    santasDifficulty: result.santasDifficulty,
+    // Jason, 2026-08-27: roofline difficulty is a MANUAL staff decision — the
+    // analyzer's own read is deliberately ignored here. It used to be adopted
+    // straight into the customer's estimate, so the same house could be quoted
+    // at $10/ft or $12/ft purely on how a photo read, with no person involved
+    // and no way for the customer to see why. Both roofline types now start at
+    // Easy ($8/ft), the same value the builder starts at, and only a staff
+    // member picking a different one in the dropdown moves it.
+    santasDifficulty: BUSINESS_RULES.rooflineDefaultDifficulty,
     gingerbreadFootage,
-    gingerbreadDifficulty: result.gingerbreadDifficulty,
+    gingerbreadDifficulty: BUSINESS_RULES.rooflineDefaultDifficulty,
     winterWonderlandFootage: 0,
     winterWonderlandDifficulty: 'medium',
     stakeLightingFootage: 0,
