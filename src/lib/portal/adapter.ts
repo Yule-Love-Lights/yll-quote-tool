@@ -838,6 +838,25 @@ export function deriveIsBooked(args: {
   return isApproved && (isPaid || isPortalActionable(quoteStatus));
 }
 
+// Ledger row 324 fix round (customer MED): whether to show the "your
+// installer set these starting choices" line on the portal. Gated on BOTH
+// staffSet (the current selection was set by staff-selection/route.ts, not
+// a genuine customer edit) AND the customer having viewed before (viewedAt
+// — the #68 view receipt, same signal StaffPreselectBar uses for its
+// overwrite confirm) — a first-ever view has nothing "replaced" to explain.
+//
+// Self-clears without any extra machinery here: quote.browsingSelection is
+// undefined once approved (see quoteRowToPortalQuote), and the customer's
+// own next autosave (/api/quotes/[id]/selection) overwrites browsing_selection
+// WITHOUT a staffSet key (see that route's own comment) — so the NEXT page
+// load reads staffSet:false on its own, no live tracking needed here.
+export function showStaffPreselectNotice(
+  browsingSelection: Pick<PortalBrowsingSelection, 'staffSet'> | undefined,
+  viewedAt: string | undefined,
+): boolean {
+  return !!browsingSelection?.staffSet && !!viewedAt;
+}
+
 // Seed the SelectionProvider package/item selection. On an approved (locked)
 // portal we prefer the FROZEN snapshot over the recommendation/staff default so
 // the display matches what the customer signed:

@@ -63,7 +63,12 @@ import {
 } from '@/components/portal/mockQuote';
 import { loadPortalQuote, PortalConfigError } from '@/lib/portal/loader';
 import { pickInitialPackageId } from '@/lib/portal/derivePackages';
-import { deriveIsBooked, resolveApprovalSelectionSeed, resolveBrowsingSelectionSeed } from '@/lib/portal/adapter';
+import {
+  deriveIsBooked,
+  resolveApprovalSelectionSeed,
+  resolveBrowsingSelectionSeed,
+  showStaffPreselectNotice,
+} from '@/lib/portal/adapter';
 import { isPortalActionable } from '@/lib/quoteStatus';
 import { canCustomerRecolor } from '@/lib/serviceType';
 import type { PortalQuote } from '@/components/portal/types';
@@ -483,6 +488,10 @@ export default async function PortalPage({
           palette={appSettings.colors}
           renderSettings={appSettings.render}
           serviceType={quote.serviceType}
+          // Row 324 fix round (customer MED): a returning customer whose
+          // choices were staff-preselected sees one plain line explaining it
+          // — see showStaffPreselectNotice's own comment for the self-clear.
+          showStaffPreselectNotice={showStaffPreselectNotice(quote.browsingSelection, quote.viewedAt)}
         />
 
         {/* 3.4 Your Event Schedule (#96) — the 3 staff-entered dates as a timeline;
