@@ -25,6 +25,36 @@ const money = (n: number | null | undefined) =>
 const fmtDate = (iso: string | null) =>
   iso ? new Date(iso).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }) : '—';
 
+/**
+ * Row 388 fix-round delta-verify (MED): the resync route computes — and unit
+ * tests — `audited: false` on three separate failure paths, but NOTHING
+ * rendered it, so a staffer saw the identical "Resynced" whether the audit
+ * entry landed or silently failed. That defeats the owner-visible trail the
+ * admin HIGH asked for, and a returned field no consumer reads is this
+ * repo's inert-fix class. Pure + exported so the wording is TESTED rather
+ * than hoped, mirroring cancelActionMessage on the job detail page (this
+ * repo's pattern for a fetch-response-driven string, no jsdom needed).
+ *
+ * The audit warning is deliberately gated on `changed !== false` too: a
+ * no-op resync writes nothing, so it has nothing to audit and must not warn
+ * about a missing trail for a change that never happened.
+ */
+export function resyncActionMessage(
+  body: { invoicedTotal?: number; changed?: boolean; audited?: boolean },
+  fmtMoney: (n: number) => string = money,
+): string {
+  const head =
+    body.changed === false
+      ? 'Already in sync — nothing changed.'
+      : body.invoicedTotal != null
+        ? `Resynced — invoice now totals ${fmtMoney(body.invoicedTotal)}.`
+        : 'Resynced.';
+  const auditFailed = body.changed !== false && body.audited === false;
+  return auditFailed
+    ? `${head} ⚠️ The money change was applied, but recording who did it FAILED — note this manually.`
+    : head;
+}
+
 export default function InvoiceDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id;
@@ -146,6 +176,45 @@ export default function InvoiceDetailPage() {
       setReconcileMsg({ text: err instanceof Error ? err.message : 'Failed', ok: false, forId: id });
     } finally {
       setReconcileBusy(false);
+    }
+  };
+
+  // Row 388: the standalone resync action. Unlike Mark reconciled (which only
+  // retires the flag), this REWRITES the invoice's total/balance/status to the
+  // order's current agreed total — the same resyncInvoiceToAgreedTotal /amend
+  // and /amend-decline already call. A money-mutating action gets its own
+  // confirm, same shape as markReconciled above.
+  const [resyncBusy, setResyncBusy] = useState(false);
+  const [resyncMsg, setResyncMsg] = useState<{ text: string; ok: boolean; forId: string } | null>(null);
+  const resyncInvoice = async () => {
+    if (!id || resyncBusy) return;
+    if (
+      !window.confirm(
+        'Resync this invoice to the order’s current agreed total? This rewrites the invoice’s total, ' +
+          'balance, and status to match — verify the agreed total first, this cannot be undone.',
+      )
+    )
+      return;
+    setResyncBusy(true);
+    setResyncMsg(null);
+    try {
+      const res = await fetch(`/api/invoices/${id}/resync`, { method: 'POST' });
+      const body = (await res.json()) as {
+        error?: string;
+        code?: string;
+        invoicedTotal?: number;
+        changed?: boolean;
+        audited?: boolean;
+      };
+      if (!res.ok) {
+        throw new Error(body.error ?? 'Failed');
+      }
+      setResyncMsg({ text: resyncActionMessage(body), ok: true, forId: id });
+      await load();
+    } catch (err) {
+      setResyncMsg({ text: err instanceof Error ? err.message : 'Failed', ok: false, forId: id });
+    } finally {
+      setResyncBusy(false);
     }
   };
 
@@ -590,7 +659,8 @@ export default function InvoiceDetailPage() {
                           balance <strong>{money(inv.balance)}</strong>
                         </>
                       )}
-                      .
+                      . If the totals genuinely drifted, use &lsquo;Resync to agreed total&rsquo; below
+                      &mdash; &lsquo;Mark reconciled&rsquo; only clears the flag without touching the numbers.
                     </p>
                   )}
                   {data.staleMarkers.paymentBlocked && (
@@ -647,15 +717,36 @@ export default function InvoiceDetailPage() {
 
             {/* #973 staff lens MED: the override trail is owner-visible on the
                 invoice, mirroring the valor_txn_log precedent - a write-only
-                audit is forensics nobody can find. */}
+                audit is forensics nobody can find.
+                Row 990 fix round (admin lens HIGH): the SAME markerOverrides
+                list also carries /resync audit entries now - label by
+                `action` so a resync reads as what it actually did (rewrote
+                the total) instead of the mark-reconciled wording ("cleared
+                the flag") that never touched a number. */}
             {data?.lastMarkerOverride && (
               <p className="text-xs text-gray-500">
-                Unreconciled flag last cleared
-                {data.lastMarkerOverride.by ? ` by ${data.lastMarkerOverride.by}` : ''}
-                {data.lastMarkerOverride.at
-                  ? ` on ${new Date(data.lastMarkerOverride.at).toLocaleString()}`
-                  : ''}
-                .
+                {data.lastMarkerOverride.action === 'resync' &&
+                data.lastMarkerOverride.fromTotal != null &&
+                data.lastMarkerOverride.toTotal != null ? (
+                  <>
+                    Invoice last resynced to the agreed total
+                    {data.lastMarkerOverride.by ? ` by ${data.lastMarkerOverride.by}` : ''}
+                    {data.lastMarkerOverride.at
+                      ? ` on ${new Date(data.lastMarkerOverride.at).toLocaleString()}`
+                      : ''}
+                    {' '}
+                    (was {money(data.lastMarkerOverride.fromTotal)}, now {money(data.lastMarkerOverride.toTotal)}).
+                  </>
+                ) : (
+                  <>
+                    Unreconciled flag last cleared
+                    {data.lastMarkerOverride.by ? ` by ${data.lastMarkerOverride.by}` : ''}
+                    {data.lastMarkerOverride.at
+                      ? ` on ${new Date(data.lastMarkerOverride.at).toLocaleString()}`
+                      : ''}
+                    .
+                  </>
+                )}
               </p>
             )}
 
@@ -745,7 +836,7 @@ export default function InvoiceDetailPage() {
                 );
               })()}
 
-              <div className="mt-3">
+              <div className="mt-3 flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   onClick={toggleTax}
@@ -754,7 +845,43 @@ export default function InvoiceDetailPage() {
                 >
                   {inv.tax_overridden ? 'Restore tax' : 'Mark tax-exempt (override)'}
                 </button>
+                {/* Row 388: the standalone resync action — rewrites total/balance/
+                    status to the order's current agreed total. Distinct from
+                    "Mark reconciled" above (which only clears the flag): this
+                    is what charge-balance's "invoice-stale" 409 actually
+                    needs, including the case with NO marker set (that check
+                    is independent of paymentBlocked/invoiceResyncFailed), so
+                    it's always available here rather than gated to the
+                    marker panel. */}
+                {inv.quote_id && (
+                  <button
+                    type="button"
+                    onClick={() => void resyncInvoice()}
+                    disabled={resyncBusy || inv.status === 'cancelled' || inv.status === 'paid'}
+                    title={
+                      inv.status === 'paid'
+                        ? 'This invoice is already settled - record a re-price from the job page (Record amendment) so the customer is notified and re-consents.'
+                        : undefined
+                    }
+                    className="text-xs font-medium px-2.5 py-1 rounded-md border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-60"
+                  >
+                    {resyncBusy ? 'Resyncing…' : 'Resync to agreed total'}
+                  </button>
+                )}
               </div>
+              {resyncMsg && resyncMsg.forId === id && (
+                <p
+                  className="mt-2 text-xs font-medium rounded-md border px-3 py-2"
+                  role="status"
+                  style={
+                    resyncMsg.ok
+                      ? { color: '#166534', borderColor: '#bbf7d0', backgroundColor: '#f0fdf4' }
+                      : { color: '#b91c1c', borderColor: '#fecaca', backgroundColor: '#fef2f2' }
+                  }
+                >
+                  {resyncMsg.text}
+                </p>
+              )}
 
               {inv.quote_id && inv.balance > 0 && inv.status !== 'paid' && inv.status !== 'cancelled' && (
                 <div className="mt-3 border-t border-gray-100 pt-3">

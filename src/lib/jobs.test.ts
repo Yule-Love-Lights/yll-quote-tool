@@ -739,6 +739,57 @@ describe('getJobDetail', () => {
     expect(detail?.isNce).toBe(false);
   });
 
+  // Row 388: the job page previously had NO visibility into either
+  // unreconciled-invoice marker at all — only a one-time inline message right
+  // after submitting an amendment, gone on reload even though the marker
+  // persists on the quote. staleMarkers surfaces both, read-only, pointing at
+  // the invoice detail page where the real actions live.
+  it('surfaces both unreconciled-invoice markers from the linked quote', async () => {
+    const { client } = makeSb({
+      jobs: { read: { id: 'j1', quote_id: 'q1', status: 'to_schedule' } },
+      quotes: {
+        read: {
+          customer_name: 'Grace',
+          approval_snapshot: {
+            paymentBlocked: { at: '2026-08-20T00:00:00.000Z' },
+            invoiceResyncFailed: { invoiceId: 'inv1', attemptedTotal: 2400 },
+          },
+        },
+      },
+      invoices: { read: null },
+    });
+    sbRef.current = client;
+
+    const detail = await getJobDetail('j1');
+    expect(detail?.staleMarkers).toEqual({ paymentBlocked: true, invoiceResyncFailed: true });
+  });
+
+  it('defaults staleMarkers to false/false when the snapshot has neither marker, or there is no linked quote', async () => {
+    {
+      const { client } = makeSb({
+        jobs: { read: { id: 'j1', quote_id: 'q1', status: 'to_schedule' } },
+        quotes: { read: { customer_name: 'Henry', approval_snapshot: { amendments: [] } } },
+        invoices: { read: null },
+      });
+      sbRef.current = client;
+      expect((await getJobDetail('j1'))?.staleMarkers).toEqual({
+        paymentBlocked: false,
+        invoiceResyncFailed: false,
+      });
+    }
+    {
+      const { client } = makeSb({
+        jobs: { read: { id: 'j1', quote_id: null, status: 'to_schedule' } },
+        invoices: { read: null },
+      });
+      sbRef.current = client;
+      expect((await getJobDetail('j1'))?.staleMarkers).toEqual({
+        paymentBlocked: false,
+        invoiceResyncFailed: false,
+      });
+    }
+  });
+
   // Ledger #83 follow-up (a real live incident): the job page previously had
   // NO visibility into the amendment trail at all — a customer could decline
   // a price change and the operator on THIS page would never know.
