@@ -80,6 +80,7 @@ import {
   reconcileHolidayFootageField,
   deriveHolidayFootageBaseline,
   mergeHolidayFootageBaseline,
+  reconcileAnalysisFootage,
   type HolidayFootageBaseline,
   type HolidayFootageFieldKey,
   type HolidayFieldReconcileResult,
@@ -3214,16 +3215,35 @@ export default function QuoteBuilder({
   const applyAnalysisResult = (data: AnalysisResponse) => {
     if (!data.result) return; // fail-safe: analyzer was unavailable, nothing to seed
     const r = data.result;
-    // The AI's footage estimates pre-fill the inputs; satellite lines (when
-    // present) take over via the measurement effect, and staff can always type.
+    // Row 209: drawn satellite geometry outranks the AI's street-photo text
+    // estimate. A street-only analyze (analyze-photo) never touches
+    // satelliteSantasLines/satelliteGingerbreadLines (the #97/#190 guards
+    // below), so if satellite lines already exist for a field, the
+    // measurement effect (~line 1990) is already the sole authority over its
+    // billed footage — its dependency array never moves on a street
+    // re-analyze, so it can't self-correct a clobber from this write. The
+    // gate (reconcileAnalysisFootage) has to live right here, at the write.
+    const footageFromAnalysis = reconcileAnalysisFootage({
+      aiSantasFootage: r.santasFootage,
+      aiGingerbreadFootage: r.gingerbreadFootage,
+      hasSatelliteSantasLines: satelliteSantasLines.length > 0,
+      hasSatelliteGingerbreadLines: satelliteGingerbreadLines.length > 0,
+      // Fix round (staff MED): scale-less manual-satellite lines (#9, traced
+      // "for training value") derive nothing — same bail the measurement
+      // effect makes — so they must not suppress the AI estimate.
+      satelliteHasScale: satelliteFeetPerPixel != null,
+    });
+    // The AI's footage estimates pre-fill the inputs (only when no satellite
+    // geometry already exists for that field — see above); satellite lines
+    // (when present) take over via the measurement effect, and staff can
+    // always type.
     setForm(f => ({
       ...f,
-      santasFootage: r.santasFootage,
+      ...footageFromAnalysis,
       santasDifficulty: r.santasDifficulty,
       // #102: a fresh AI analysis sets a PRESET difficulty, so clear any stale
       // custom $/ft on these two types — keeps the difficulty + rate consistent.
       santasCustomRate: 0,
-      gingerbreadFootage: r.gingerbreadFootage,
       gingerbreadDifficulty: r.gingerbreadDifficulty,
       gingerbreadCustomRate: 0,
     }));
@@ -3312,7 +3332,20 @@ export default function QuoteBuilder({
     // Claude may flag satellite as the better measurement source (e.g. rear
     // rooflines invisible from the street) — surface that tab if so.
     setViewMode(r.preferredSource === 'satellite' ? 'satellite' : 'design');
-    setAnalysisNotes(`${r.notes} (confidence: ${r.confidence})`);
+    // Row 209: tell the operator when a field's footage was deliberately
+    // NOT taken from this analysis, so a number that looks unchanged after
+    // "Re-analyze" reads as intentional rather than as a stale UI.
+    // Field names match the ON-SCREEN labels (admin + staff lens LOWs: the
+    // old note said "gingerbread" for the field labelled "Ridge + Sides").
+    const keptFootageFields = [
+      footageFromAnalysis.santasFootage === undefined ? 'front gutterline' : null,
+      footageFromAnalysis.gingerbreadFootage === undefined ? 'ridge + sides' : null,
+    ].filter((label): label is string => label != null);
+    const keptFootageNote =
+      keptFootageFields.length > 0
+        ? ` Footage for ${keptFootageFields.join(' + ')} kept from the drawn satellite lines — this analysis's street estimate was not applied. (Want the street estimate instead? Delete those satellite lines and re-analyze, or type the number directly.)`
+        : '';
+    setAnalysisNotes(`${r.notes} (confidence: ${r.confidence})${keptFootageNote}`);
     const photoNeedsSave = !!(
       data.photoBase64 &&
       data.photoMediaType &&
