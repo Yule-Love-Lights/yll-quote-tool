@@ -64,6 +64,14 @@ The full task list (done / planning / backlog / Naldo-pending) lives in **[[task
 
 ## Next up
 
+**Next up (after Naldo S70, 2026-08-24) — the staff-admin surface is rebuilt; one PR waits on Jason.**
+Settings → Accounts now has ONE Staff panel (`/api/admin/staff`) covering office and field together, replacing the two panels and two routes that did the same job differently. Every row has the same actions: edit rate, link/change/unlink Telegram, reset password, move office<->field, activate/deactivate, remove. Setting up an office person no longer needs hand-written SQL, crew passwords can be reset at all (they never could), and field-crew rows can be created in-app (`insertCrewMember` had zero callers before).
+- **Waiting on Jason:** PR #1017 (row 355, skip CI on docs-only pushes). Needs his EXPLICIT go rather than the 48h async standard, because it changes what "gates green" means for a docs-only PR and the wrap skill's unattended auto-merge depends on that reading.
+- **Owed:** a live admin pass on the new panel. It replaced a screen Naldo had just tested, and two of the session's own copy claims turned out false under review.
+- **Open:** row 359 (deleting an operator still orphans their pay row; the panel now SHOWS it as "login deleted" but cannot repair it).
+- **Moot:** row 358 (expose the time clock to the Operations Hub) — the Hub was scrapped 2026-08-27.
+- **Do not re-litigate:** `is_office` controls only whether someone is offered when assigning crew to a job; both clocks ignore it. Jason is an admin on a field row and should stay that way. Admin shows as a badge, not a third group.
+
 **Next up (after Naldo S68, 2026-08-27) - a verification pass plus one small fix.** The three self-serve estimator PRs (#624/#800/#815) are confirmed merged, present and unreverted, re-checked at master `27df2103`. The #800 keystroke flash is measurably gone on live prod (DOM instrumentation with a control) and the #815 read-time clamp is correct with 12/12 tests green.
 
 - **DO FIRST: row 435 is already ANSWERED - the work is a LAUNCH.** The estimator has no traffic and the marketing site links it nowhere, so the next move is to link or embed it, then re-check. Superseded detail: Grep Vercel logs for `[selfServe] recordSelfServeEstimate failed` and settle whether the estimator has genuinely had no completed submissions or the telemetry insert has been failing silently. Cheap, and it decides whether any estimator metric means anything.
