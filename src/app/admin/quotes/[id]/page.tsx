@@ -382,6 +382,12 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
             designId={design.id}
             portalShowStreetView={design.portalShowStreetView}
             portalShowSatelliteView={design.portalShowSatelliteView}
+            // Row 429: WIDER than the design freeze on purpose. `isSceneFrozen`
+            // exempts a booked order (the amend path); this confirms on one too,
+            // because a booked customer has approved AND paid. These toggles stay
+            // ALLOWED — they are presentational, and row 370 audits them — but
+            // they ask first.
+            customerApproved={!!quote.customer_approved_at && !quote.is_test}
             hasStreetImage={design.hasStreetImage}
             hasSatelliteImage={design.hasSatelliteImage}
           />
