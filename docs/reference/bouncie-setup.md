@@ -371,3 +371,76 @@ is how a scheduling tool turns into a trust problem.
   the server log says why.
 - **No retention limit.** These tables grow forever, in line with the
   keep-everything decision. Tracked as ledger row 415.
+
+---
+
+# Phase 3c: the geofences
+
+## What this does
+
+For every job scheduled on a day, it draws a circle around the customer's house
+in Bouncie's system and asks Bouncie to tell us when a van enters or leaves.
+Those events feed the visit timeline. Zones are armed only for days that have
+scheduled jobs, and retired afterwards.
+
+## Apply the migration
+
+`migrations/2026-08-27-job-geozones-vehicle.sql`. One added column and its
+indexes. Apply it after the phase-3b migration.
+
+## Something worth deciding, not just doing
+
+**This sends your customers' home coordinates to Bouncie.** Rooftop-precision
+locations of private homes, stored in a third-party vendor's account so their
+system can watch for your vans.
+
+That is a real change in what leaves the company, separate from the decision to
+track company vehicles, and nobody has recorded a decision about it. It is
+defensible and it is normal for this kind of integration, but it should be a
+choice rather than a side effect. Worth a line in your privacy policy if
+customers are told what happens to their address.
+
+## It is not running yet
+
+Nothing calls `armZonesForDate` on a schedule. It also cannot run at all until
+the phase-3a OAuth variables are set. So no zones exist, no arrivals fire, and
+the visit timeline stays empty. That is expected, not broken.
+
+## The radius, and why it is a guess
+
+`GEOFENCE_RADIUS_METRES = 120` in `src/lib/integrations/bouncieGeozones.ts`.
+
+Too small and a van parked down the street never registers as arriving. Too
+large and driving past on the road counts as a visit. **Nobody has measured
+this.** It is the most consequential number in the feature and it needs tuning
+from real arrivals compared against real jobs. Tracked as ledger row 432.
+
+**The overlap problem, which matters for how you work.** You often do several
+houses in one neighbourhood. At 120 metres those circles overlap, so a van
+parked at one job can sit inside a neighbour's geofence at the same time and
+produce two visits at once. Nothing currently resolves that, and it would make
+"how long did this job take" wrong for both. Decide it before the durations are
+used for anything.
+
+## When arming fails
+
+Every run logs a one-line summary. A run that armed nothing is reported as an
+error, not as silence, which was a real gap: a night where everything failed
+used to look exactly like a night with nothing scheduled.
+
+**Orphaned zones.** A zone can be created on Bouncie and then fail to be recorded
+here, at which point nothing will ever delete it. `findOrphanedZones()` lists
+zones that exist on Bouncie but not in our table. It only reports; deleting is a
+human decision, because another application on the same account could legitimately
+own a zone we do not recognise.
+
+## A job with no coordinate gets no geofence, permanently
+
+About 15 of your ~215 properties were refused during the geocoding pass because
+their address did not resolve to a specific house. Those jobs will never produce
+a timeline.
+
+**That matters for how the data reads.** A job with no geofence looks identical
+to a job the crew never attended. Before anyone compares GPS against the manual
+clock, they need to know which jobs are untrackable, or an address-quality
+problem will look like a crew problem.
