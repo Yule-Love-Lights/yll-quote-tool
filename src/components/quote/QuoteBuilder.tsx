@@ -6278,8 +6278,25 @@ export default function QuoteBuilder({
                 <button
                   type="button"
                   onClick={handleLookupAddress}
-                  disabled={lookingUp || loading || !form.customer.address.trim()}
-                  title={form.customer.address.trim() ? undefined : 'Enter the property address above first.'}
+                  // Row 367, found by a live device check on approved quote
+                  // #1290: this is the OTHER entry point into a scene seed
+                  // (handleLookupAddress -> applyAnalysisResult ->
+                  // seedDesignFromAnalysis -> POST seed-analysis). Its sibling
+                  // "Analyze with Claude" was gated when the freeze shipped and
+                  // this one was missed, so on an approved quote the server
+                  // correctly refused the write while the button still invited
+                  // the click. "Pull satellite" deliberately stays enabled: it
+                  // fills the satellite slot and never seeds the scene, and the
+                  // satellite trace is intentionally not frozen (Jason,
+                  // 2026-08-27 — a re-Calculate must keep working).
+                  disabled={lookingUp || loading || !form.customer.address.trim() || postApprovalFrozen}
+                  title={
+                    postApprovalFrozen
+                      ? POST_APPROVAL_DESIGN_LOCK_REASON
+                      : form.customer.address.trim()
+                        ? undefined
+                        : 'Enter the property address above first.'
+                  }
                   className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium text-sm px-4 py-2 rounded-md whitespace-nowrap"
                 >
                   {lookingUp ? 'Looking up…' : '🏠 Analyze from Address'}
