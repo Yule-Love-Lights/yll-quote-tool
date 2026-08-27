@@ -50,6 +50,16 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ quo
   // leftover browsing_selection on any OTHER status (a live sent/viewed
   // quote's real in-progress selection) is not this feature's concern and
   // must never surface here as if it were stale.
+  //
+  // Row 324 fix round (admin lens MED): staffSet threaded through so the
+  // operator confirm can distinguish a selection STAFF preselected from one
+  // the customer actually chose — without this, a declined/abandoned quote
+  // that staff (not the customer) preselected shows the confirm's "this
+  // customer has a saved selection" wording, presenting a colleague's pick
+  // as the customer's own choice. Deliberately still surfaces either way
+  // (see PipelineActionsMenu): the portal really will reseed from it either
+  // way, so suppressing the warning for a staff-set selection would trade a
+  // wrong label for a missing warning.
   const rawSelection = quote.browsing_selection;
   const staleBrowsingSelection =
     isTerminalBrowseStatus(quoteStatus) && rawSelection
@@ -57,6 +67,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ quo
           packageId: typeof rawSelection.packageId === 'string' ? rawSelection.packageId : null,
           itemCount: Array.isArray(rawSelection.selectedItemIds) ? rawSelection.selectedItemIds.length : 0,
           savedAt: quote.browsing_selection_updated_at ?? null,
+          staffSet: !!(rawSelection.staffSet && typeof rawSelection.staffSet === 'object'),
         }
       : null;
 

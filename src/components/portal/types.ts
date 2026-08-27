@@ -193,6 +193,12 @@ export type PortalBrowsingSelection = {
   /** ISO timestamp of the last save — the seam a future staff-visibility
    *  surface (e.g. /quote/[id]) would show, per row 239's second reason. */
   savedAt: string;
+  /** Ledger row 324 — present when this selection was saved by the NEW
+   *  operator-authed staff-selection route (never by the customer's own
+   *  autosave), so a future surface can tell a staff-set opening selection
+   *  from a genuine customer edit. Undefined for every pre-row-324 save and
+   *  for any customer-authored save (that route never writes this key). */
+  staffSet?: { by: string | null; at: string };
 };
 
 // Effective per-job charges fed into priceSelection: the actual dollar
@@ -325,6 +331,13 @@ export type PortalQuote = {
   // The reason the customer declined (or null/absent for non-declines). Shown
   // on the portal's closed-state screen to acknowledge the customer's feedback.
   declineReason?: string | null;
+  // Ledger row 324 — the raw #68 view-receipt timestamp (never derived/
+  // overwritten by status). /view deliberately skips stamping this for a
+  // staff preview (isStaffPreview), so "set" always means a REAL customer
+  // opened the link — the signal page.tsx uses to warn staff before an
+  // opening-selection save overwrites whatever the customer already saw.
+  // Undefined when never viewed (or the row predates the #68 column).
+  viewedAt?: string;
   photo: {
     before: string;     // URL of daytime photo
     after: string;      // URL of a lit "after" image ('' since #36 — the

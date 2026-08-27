@@ -986,9 +986,18 @@ export type QuoteRaw = {
   // shape) — read here so GET /api/pipeline/[quoteId] can summarize it for
   // staff (item count / packageId / saved-at) before a revive silently
   // reseeds a declined/abandoned quote's portal from it. Untyped beyond the
-  // two fields that summary needs; every other consumer of getQuoteRaw
-  // already ignores fields it doesn't ask for.
-  browsing_selection: { packageId?: string; selectedItemIds?: unknown[] } | null;
+  // fields that summary needs; every other consumer of getQuoteRaw already
+  // ignores fields it doesn't ask for.
+  //
+  // Row 324 fix round (admin lens MED): staffSet added so the same summary
+  // can tell a STAFF-set selection (this route's staff-selection write) from
+  // a genuine customer edit — see staleBrowsingSelection below. Shape mirrors
+  // adapter.ts's BrowsingSelectionJson.staffSet exactly (same jsonb column).
+  browsing_selection: {
+    packageId?: string;
+    selectedItemIds?: unknown[];
+    staffSet?: { by: string | null; at: string };
+  } | null;
   browsing_selection_updated_at: string | null;
 };
 
