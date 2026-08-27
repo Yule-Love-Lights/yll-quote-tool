@@ -6259,6 +6259,22 @@ export default function QuoteBuilder({
 
           {/* ── Photo Analysis ── */}
           <Section title="House Photo — Auto-Measure">
+            {/* Row 427b (premerge staff lens): this note used to live inside the
+                "Move the Camera" box, which only renders when a Google geocode
+                succeeded — so an approved quote where staff went straight to a
+                manual upload showed NO visible lock text at all, just a
+                disabled attribute and a title that is invisible on touch. At
+                section level it covers every control in the section, and the
+                copy now names them instead of only the camera. */}
+            {postApprovalFrozen && (
+              <p className="text-xs text-amber-700 mb-3">
+                🔒 <strong>Locked after approval.</strong> The customer agreed to this photo and design,
+                so nothing in this section can change it — analyzing, moving the camera, saving an angle,
+                pulling or uploading a satellite image, and uploading a house photo are all disabled.
+                To change it: decline this quote, revive it, edit, and re-send. (A booked order is changed
+                through the amend flow.)
+              </p>
+            )}
             <p className="text-xs text-gray-400 mb-3">
               {form.serviceType === 'permanent'
                 ? 'Look up the address on Google Maps — the satellite auto-trace draws the four side rooflines (editable), and footage/corners/extensions follow the lines. Or upload a photo and draw/type manually.'
@@ -6556,15 +6572,6 @@ export default function QuoteBuilder({
                       </span>
                     </div>
                     <div className="flex items-center gap-2 flex-wrap">
-                      {postApprovalFrozen && (
-                        <p className="w-full text-xs text-amber-700 mb-1">
-                          🔒 Locked after approval — the customer agreed to this photo and design.
-                          Moving the camera, saving an angle, pulling satellite or uploading a new
-                          satellite photo would all change what they signed off on. To change it:
-                          decline this quote, revive it, edit, and re-send. (A booked order is
-                          changed through the amend flow.)
-                        </p>
-                      )}
                       {/* Row 427: every camera move REPLACES the design's base
                           photo (moveStreetView/recaptureStreetView -> setPhotoBase64
                           -> POST /api/designs/[id]/photo), and saving an angle adds a
