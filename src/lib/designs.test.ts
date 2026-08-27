@@ -38,16 +38,26 @@ vi.mock('./supabase', () => ({
 // the bottom drives this mock directly. Default = unlocked, i.e. the
 // pre-row-367 behaviour every existing test was written against.
 const { readSceneLockMock } = vi.hoisted(() => ({
-  readSceneLockMock: vi.fn(async (): Promise<{ ok: true; locked: boolean } | { ok: false }> => ({
-    ok: true,
-    locked: false,
-  })),
+  readSceneLockMock: vi.fn(
+    async (): Promise<
+      { ok: true; locked: boolean; quoteId: string | null; auditable: boolean } | { ok: false }
+    > => ({ ok: true, locked: false, quoteId: null, auditable: false }),
+  ),
 }));
 
 vi.mock('@/lib/design/sceneFreeze', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/design/sceneFreeze')>()),
   readSceneLock: readSceneLockMock,
 }));
+
+// Row 423: the audit recorder is best-effort and talks to Supabase + auth on
+// its own; mocked so these tests stay about WHEN it is called, not what it
+// writes (that is designAudit.test.ts's job).
+const { recordDesignChangeMock } = vi.hoisted(() => ({
+  recordDesignChangeMock: vi.fn(async () => {}),
+}));
+
+vi.mock('@/lib/design/designAudit', () => ({ recordDesignChange: recordDesignChangeMock }));
 
 import {
   uploadDesignPhoto,
@@ -74,7 +84,7 @@ const oversizedBase64 = Buffer.alloc(11 * 1024 * 1024, 1).toString('base64');
 
 describe('design upload size cap (audit #22)', () => {
   beforeEach(() => {
-  readSceneLockMock.mockResolvedValue({ ok: true, locked: false });
+  readSceneLockMock.mockResolvedValue({ ok: true, locked: false, quoteId: null, auditable: false });
     sharpMock.mockClear();
     // A truthy stub is enough — the size guard runs before any storage/DB call.
     sbRef.current = {};
@@ -1558,7 +1568,7 @@ describe('updateDesignSceneGuarded — post-approval freeze (row 367)', () => {
         return b;
       },
     };
-    readSceneLockMock.mockResolvedValueOnce({ ok: true, locked: true });
+    readSceneLockMock.mockResolvedValueOnce({ ok: true, locked: true, quoteId: 'q1', auditable: true });
 
     const outcome = await updateDesignSceneGuarded('d1', scene, 5);
 
@@ -1642,7 +1652,7 @@ describe('removeDesignExtraPhoto — row 367 outcomes are terminal, not retryabl
     const { client, state } = fixture();
     sbRef.current = client;
     // The quote was approved between the route's pre-flight check and here.
-    readSceneLockMock.mockResolvedValue({ ok: true, locked: true });
+    readSceneLockMock.mockResolvedValue({ ok: true, locked: true, quoteId: 'q1', auditable: true });
 
     const result = await removeDesignExtraPhoto(ID, P);
 
@@ -1683,7 +1693,7 @@ describe('removeDesignExtraPhoto — row 367 outcomes are terminal, not retryabl
       scene: { yardsticks: [], items: [], extraPhotoBrightness: { [P]: 30 } },
     });
     sbRef.current = client;
-    readSceneLockMock.mockResolvedValue({ ok: true, locked: true });
+    readSceneLockMock.mockResolvedValue({ ok: true, locked: true, quoteId: 'q1', auditable: true });
 
     const result = await removeDesignExtraPhoto(ID, P);
 
@@ -1697,7 +1707,7 @@ describe('removeDesignExtraPhoto — row 367 outcomes are terminal, not retryabl
   it('reports nothing on the ordinary unfrozen path', async () => {
     const { client, state } = fixture();
     sbRef.current = client;
-    readSceneLockMock.mockResolvedValue({ ok: true, locked: false });
+    readSceneLockMock.mockResolvedValue({ ok: true, locked: false, quoteId: null, auditable: false });
 
     const result = await removeDesignExtraPhoto(ID, P);
 
@@ -1705,5 +1715,68 @@ describe('removeDesignExtraPhoto — row 367 outcomes are terminal, not retryabl
     expect(result.sceneNotPruned).toBeUndefined();
     const items = (state.row.scene as { items: Array<{ id: string }> }).items;
     expect(items).toHaveLength(0); // pruned, as always
+  });
+});
+
+// ── Row 423: the design-change trail fires from the shared writer ────────────
+describe('updateDesignSceneGuarded — records a design change on a signed-off quote', () => {
+  const scene = { items: [], yardsticks: [] } as unknown as Parameters<typeof updateDesignSceneGuarded>[1];
+
+  function okSb() {
+    return {
+      from() {
+        const b = {
+          select: () => b,
+          eq: () => b,
+          update: () => b,
+          maybeSingle: async () => ({ data: { version: 5 }, error: null }),
+          then: (resolve: (v: unknown) => void) => resolve({ data: [{ version: 6 }], error: null }),
+        };
+        return b;
+      },
+    };
+  }
+
+  it('records when the quote carries a frozen agreement (a booked order)', async () => {
+    sbRef.current = okSb();
+    readSceneLockMock.mockResolvedValueOnce({ ok: true, locked: false, quoteId: 'q-7', auditable: true });
+
+    const outcome = await updateDesignSceneGuarded('d-7', scene, 5);
+
+    expect(outcome.ok).toBe(true);
+    expect(recordDesignChangeMock).toHaveBeenCalledWith('d-7', 'q-7');
+  });
+
+  it('records NOTHING for an ordinary draft — an unapproved quote pays nothing', async () => {
+    recordDesignChangeMock.mockClear();
+    sbRef.current = okSb();
+    readSceneLockMock.mockResolvedValueOnce({ ok: true, locked: false, quoteId: 'q-7', auditable: false });
+
+    await updateDesignSceneGuarded('d-7', scene, 5);
+
+    expect(recordDesignChangeMock).not.toHaveBeenCalled();
+  });
+
+  it('records nothing when the write itself did not land', async () => {
+    recordDesignChangeMock.mockClear();
+    // A trail entry claiming a change that never happened is worse than none.
+    sbRef.current = {
+      from() {
+        const b = {
+          select: () => b,
+          eq: () => b,
+          update: () => b,
+          maybeSingle: async () => ({ data: { version: 5 }, error: null }),
+          then: (resolve: (v: unknown) => void) => resolve({ data: [], error: null }), // CAS lost
+        };
+        return b;
+      },
+    };
+    readSceneLockMock.mockResolvedValueOnce({ ok: true, locked: false, quoteId: 'q-7', auditable: true });
+
+    const outcome = await updateDesignSceneGuarded('d-7', scene, 5);
+
+    expect(outcome.ok).toBe(false);
+    expect(recordDesignChangeMock).not.toHaveBeenCalled();
   });
 });

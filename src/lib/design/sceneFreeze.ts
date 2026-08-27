@@ -66,9 +66,24 @@ export function isSceneFrozen(q: SceneFreezeRow): boolean {
  * An unlinked design, or one pointing at a quote row that no longer exists,
  * has no signed-off agreement to protect and is writable.
  */
-export async function readSceneLock(
-  designId: string,
-): Promise<{ ok: true; locked: boolean } | { ok: false }> {
+export type SceneLock =
+  | {
+      ok: true;
+      locked: boolean;
+      /** The linked quote, or null for an unlinked design. */
+      quoteId: string | null;
+      /**
+       * Row 423: this quote has a frozen agreement worth auditing a design
+       * change against — the customer approved it and it is not a test quote.
+       * In practice that means a BOOKED order, since anything approved and not
+       * booked is `locked` and no write lands at all. Returned here so the
+       * caller gets it from the read it was already doing.
+       */
+      auditable: boolean;
+    }
+  | { ok: false };
+
+export async function readSceneLock(designId: string): Promise<SceneLock> {
   const sb = getSupabaseServiceClient();
   if (!sb) return { ok: false };
   const { data: designRow, error: designErr } = await sb
@@ -80,7 +95,7 @@ export async function readSceneLock(
     console.warn('[sceneFreeze] design read failed:', designErr.message);
     return { ok: false };
   }
-  if (!designRow?.quote_id) return { ok: true, locked: false };
+  if (!designRow?.quote_id) return { ok: true, locked: false, quoteId: null, auditable: false };
   const { data: quoteRow, error: quoteErr } = await sb
     .from('quotes')
     .select('status, quote_sent_at, viewed_at, customer_approved_at, deposit_paid_at, is_test')
@@ -90,6 +105,12 @@ export async function readSceneLock(
     console.warn('[sceneFreeze] quote read failed:', quoteErr.message);
     return { ok: false };
   }
-  if (!quoteRow) return { ok: true, locked: false }; // quote gone — nothing agreed to protect
-  return { ok: true, locked: isSceneFrozen(quoteRow) };
+  // quote gone — nothing agreed to protect, and nothing to audit onto
+  if (!quoteRow) return { ok: true, locked: false, quoteId: null, auditable: false };
+  return {
+    ok: true,
+    locked: isSceneFrozen(quoteRow),
+    quoteId: designRow.quote_id,
+    auditable: !quoteRow.is_test && !!quoteRow.customer_approved_at,
+  };
 }

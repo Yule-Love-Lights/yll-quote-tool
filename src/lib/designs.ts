@@ -1,5 +1,6 @@
 import sharp from 'sharp';
 import { readSceneLock } from '@/lib/design/sceneFreeze';
+import { recordDesignChange } from '@/lib/design/designAudit';
 import { getSupabaseServiceClient } from './supabase';
 import type { Scene } from './design/sceneTypes';
 import { pruneOrphanedMiniGroups, isMiniGroup } from './design/sceneTypes';
@@ -683,6 +684,20 @@ export async function updateDesignSceneGuarded(
   if (!lock.ok) return { ok: false, reason: 'unverified' };
   if (lock.locked) return { ok: false, reason: 'locked' };
 
+  // Row 423: the only design writes that reach a signed-off quote are the ones
+  // row 367 deliberately allows on a BOOKED order (the amend path), which is
+  // exactly the set the owner needs a record of. Recorded here rather than in
+  // each route for the same reason the freeze is: one place, no bypass. The
+  // recorder is best-effort and never throws, and it only touches the database
+  // at all when `auditable` says there is a frozen agreement to record against
+  // — an ordinary draft autosave pays nothing.
+  const auditAfterWrite = async (outcome: UpdateSceneOutcome): Promise<UpdateSceneOutcome> => {
+    if (outcome.ok && lock.auditable && lock.quoteId) {
+      await recordDesignChange(id, lock.quoteId);
+    }
+    return outcome;
+  };
+
   if (expectedVersion == null) {
     const { data: currentRow, error: readError } = await sb
       .from('designs')
@@ -694,10 +709,10 @@ export async function updateDesignSceneGuarded(
       return { ok: false, reason: 'error' };
     }
     if (!currentRow) return { ok: false, reason: 'error' }; // no such design
-    return casWriteScene(sb, id, scene, (currentRow as { version: number }).version);
+    return auditAfterWrite(await casWriteScene(sb, id, scene, (currentRow as { version: number }).version));
   }
 
-  return casWriteScene(sb, id, scene, expectedVersion);
+  return auditAfterWrite(await casWriteScene(sb, id, scene, expectedVersion));
 }
 
 // Link an existing design to a quote (set when the operator clicks "Calculate
