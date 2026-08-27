@@ -26,41 +26,51 @@
 
 name: CI
 
-# DOCS-ONLY PUSHES DON'T RUN (row 355). The org is on the free plan's 2000
+# MARKDOWN-ONLY PUSHES DON'T RUN (row 355). The org is on the free plan's 2000
 # Actions minutes, and an exhausted balance fails every workflow repo-wide with
-# an instant no-runner error — S66 diagnosed exactly that. tsc, lint and vitest
-# cannot be affected by a markdown file, so a push touching ONLY the paths below
-# spends nothing. `paths-ignore` skips only when EVERY changed file matches, so
-# a PR mixing docs with code still runs the full gates.
+# an instant no-runner error — S66 diagnosed exactly that. A .md file cannot
+# affect tsc, lint or vitest, so a push touching ONLY the paths below spends
+# nothing. `paths-ignore` skips only when EVERY changed file matches, so a PR
+# mixing prose with code still runs the full gates.
+#
+# ⚠️ THE GLOB IS `docs/**/*.md`, NOT `docs/**`, AND THAT IS LOAD-BEARING.
+# `docs/` is not only prose: it holds `context/ops-contract-schema/
+# flow-q-contract.test.ts` (a REAL vitest test, 3 cases, inside tsconfig's
+# `**/*.ts` include), plus `generate-schema.mjs` and several .json fixtures.
+# Ignoring all of `docs/**` would have silently stopped gating a live test file.
+# Caught by the S70 wrap process lens before this merged. If you widen this
+# list, check `git ls-files <path> | grep -v '\.md$'` first.
 #
 # `.claude/**` is deliberately NOT ignored: skills, commands and settings.json
 # change how the assistants behave, and that is not something to make cheaper to
 # land unreviewed.
 #
 # ⚠️ TWO CONSEQUENCES, both deliberate, do not "fix" them by surprise:
-#   1. A docs-only PR has NO `gates` check at all — not a red one, not a green
-#      one, simply absent. AGENTS.md says to verify gates green before merging;
-#      for a docs-only PR the correct reading is "no run is expected", NOT "the
-#      run is missing, fall back to local gates and say CI did not run". This
-#      includes the wrap skill's own documents-only close PR, which auto-merges
-#      on Naldo's machine.
+#   1. A markdown-only PR has NO `gates` check at all — not a red one, not a
+#      green one, simply absent. AGENTS.md says to verify gates green before
+#      merging; for such a PR the correct reading is "no run is expected", NOT
+#      the missing-run fallback of running gates locally and saying CI did not
+#      run. (The wrap skill's own close PR is unaffected either way: wrap step 1
+#      already runs all three gates locally before it commits, so it never
+#      depended on this check. An earlier draft of this comment claimed it did;
+#      that was wrong.)
 #   2. If `gates` is ever made a REQUIRED status check (see the note above about
 #      the free plan), a skipped workflow leaves that check permanently pending
-#      and blocks every docs-only PR forever. The fix at that point is a
+#      and blocks every markdown-only PR forever. The fix at that point is a
 #      companion job that reports success for the ignored paths, not deleting
 #      this block. Decide it then; this comment is the warning.
 on:
   pull_request:
     branches: [master]
     paths-ignore:
-      - 'docs/**'
+      - 'docs/**/*.md'
       - 'CLAUDE.md'
       - 'AGENTS.md'
       - 'README.md'
   push:
     branches: [master]
     paths-ignore:
-      - 'docs/**'
+      - 'docs/**/*.md'
       - 'CLAUDE.md'
       - 'AGENTS.md'
       - 'README.md'
