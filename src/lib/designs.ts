@@ -1007,6 +1007,11 @@ export async function updateDesignSatelliteLines(
     console.error('Supabase updateDesignSatelliteLines error:', error);
     return { ok: false, reason: 'error' };
   }
+  // Row 427 (premerge technical MED): the trace is portal-visible and, on a
+  // BOOKED order, still changeable — the same combination that earned the scene
+  // its row-423 trail. Recorded through the same helper, so "who changed this
+  // drawing and when" covers the satellite half too rather than only the scene.
+  if (lock.auditable && lock.quoteId) await recordDesignChange(id, lock.quoteId);
   return { ok: true };
 }
 
