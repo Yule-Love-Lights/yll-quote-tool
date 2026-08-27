@@ -595,8 +595,13 @@ export function InWorksSection({
           {/* #252 slice H: this list and the main "Open leads" queue above both
               read as "awaiting reply" at a glance — spell out who owes whom so
               they're unambiguous side by side. */}
+          {/* Row 430: the qualifier is load-bearing now that the deleted
+              "Follow-ups due today" strip's signal lives on these rows as a
+              "Follow-up due" pill — a flat "nothing to do" would contradict a
+              pill sitting two lines below it. */}
           <p className="text-xs mb-2" style={{ color: 'var(--op-text-2)' }}>
-            You’ve followed up on these — nothing to do until they write back.
+            You’ve followed up on these — nothing to do until they write back, unless a row is
+            flagged “Follow-up due”.
           </p>
           <ul className="space-y-2">
             {awaitingItems.map((item) => renderRow(item, 'awaiting'))}
@@ -611,7 +616,7 @@ export function InWorksSection({
           specific row is missing, only that the check may be incomplete. */}
       {evidenceIncomplete && (
         <p className="text-xs mb-2" style={{ color: '#92400e' }}>
-          Some evidence checks didn’t finish — Needs a look may be missing rows.
+          Some evidence checks didn’t finish — Needs a look and “Follow-up due” may be missing rows.
         </p>
       )}
 

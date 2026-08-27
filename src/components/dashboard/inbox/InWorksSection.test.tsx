@@ -88,7 +88,14 @@ describe('InWorksSection (row 291 — initial render)', () => {
     const withAwaiting = renderToStaticMarkup(
       <InWorksSection awaiting={awaiting} handled={[]} followUpDays={3} nowMs={now} />,
     );
-    expect(withAwaiting).toContain('You’ve followed up on these — nothing to do until they write back.');
+    // Row 430: the sentence gained a qualifier when the deleted follow-up
+    // strip's signal moved onto these rows as a “Follow-up due” pill — a flat
+    // “nothing to do” would contradict a pill rendered directly below it. The
+    // two-path claim this test exists to pin (“followed up”, never “replied”) is
+    // unchanged.
+    expect(withAwaiting).toContain(
+      'You’ve followed up on these — nothing to do until they write back, unless a row is flagged “Follow-up due”.',
+    );
     expect(withAwaiting).not.toContain('already replied');
 
     const handled: InWorksItem[] = [{ ...baseItem, id: 'h1', customerName: 'Handled Customer' }];

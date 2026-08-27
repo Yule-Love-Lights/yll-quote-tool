@@ -4,7 +4,6 @@ import { getOperator } from '@/lib/auth/supabaseServer';
 import {
   getOperatorLabels,
   getReopenCounts,
-  listDueFollowUps,
   listGmailWritebackFailures,
   listInWorks,
   listItemsForMetrics,
@@ -14,7 +13,6 @@ import {
 import { getFollowUpDays } from '@/lib/dashboard/inbox/settings';
 import { computeResponseAnalytics, withOperatorLabels } from '@/lib/dashboard/inbox/responseMetrics';
 import { InboxList } from '@/components/dashboard/inbox/InboxList';
-import { FollowUpStrip } from '@/components/dashboard/inbox/FollowUpStrip';
 import { GmailWritebackFailuresBanner } from '@/components/dashboard/inbox/GmailWritebackFailuresBanner';
 import { InWorksSection } from '@/components/dashboard/inbox/InWorksSection';
 import { PendingColorRequestsSection } from '@/components/dashboard/inbox/PendingColorRequestsSection';
@@ -44,10 +42,9 @@ export default async function InboxPage() {
   const { ms: totalMs, value: results } = await timed('total', () =>
     Promise.all([
       timed('listOpenItems', () => listOpenItems()),
-      timed('listDueFollowUps', () => listDueFollowUps(now)),
       timed('listItemsForMetrics', () => listItemsForMetrics()),
       timed('getOperator', () => getOperator()),
-      timed('listInWorks', () => listInWorks()),
+      timed('listInWorks', () => listInWorks(200, now)),
       timed('getFollowUpDays', () => getFollowUpDays()),
       timed('getReopenCounts', () => getReopenCounts(now)),
       timed('getOperatorLabels', () => getOperatorLabels()),
@@ -55,9 +52,8 @@ export default async function InboxPage() {
       timed('listGmailWritebackFailures', () => listGmailWritebackFailures()),
     ]),
   );
-  const [openR, followR, metricsR, operatorR, inWorksR, daysR, reopenR, repLabelsR, colorRequestsR, gmailFailR] = results;
+  const [openR, metricsR, operatorR, inWorksR, daysR, reopenR, repLabelsR, colorRequestsR, gmailFailR] = results;
   const openRes = openR.value;
-  const followRes = followR.value;
   const metricsRes = metricsR.value;
   const operator = operatorR.value;
   const inWorksRes = inWorksR.value;
@@ -130,10 +126,6 @@ export default async function InboxPage() {
             hidden the way the old inbox-item-only view could. */}
         {colorRequestsRes.ok && colorRequestsRes.items.length > 0 && (
           <PendingColorRequestsSection items={colorRequestsRes.items} nowMs={now.getTime()} />
-        )}
-
-        {followRes.ok && followRes.items.length > 0 && (
-          <FollowUpStrip initialItems={followRes.items} totalDue={followRes.totalDue} />
         )}
 
         {/* WT-41: above the 100-item page cap, the oldest items are what's shown
