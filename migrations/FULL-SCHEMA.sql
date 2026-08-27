@@ -1363,13 +1363,31 @@ create table if not exists public.integration_tokens (
   id                uuid primary key default gen_random_uuid(),
   provider          text  not null,                   -- 'gmail'
   account_email     citext not null,
-  refresh_token_enc text,                             -- encrypted at rest (Vault/pgcrypto)
+  refresh_token_enc text,                             -- AES-256-GCM via src/lib/crypto/secretBox.ts
+  access_token_enc  text,                             -- same box; short-lived but still a live credential
+  access_token_expires_at timestamptz,                -- NULL when the provider does not say
+  scope             text,                             -- what the grant covers, as the provider described it
   watch_history_id  text,
   watch_expiration  timestamptz,
   created_at        timestamptz not null default now(),
   updated_at        timestamptz not null default now(),
   constraint integration_tokens_provider_account_key unique (provider, account_email)
 );
+
+-- Rotation happens on every refresh, so "when did this last change" is the first
+-- question during an outage.
+create or replace function integration_tokens_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists integration_tokens_updated_at_trigger on public.integration_tokens;
+create trigger integration_tokens_updated_at_trigger
+  before update on public.integration_tokens
+  for each row execute function integration_tokens_set_updated_at();
 
 alter table public.integration_tokens enable row level security;
 drop policy if exists integration_tokens_service_all on public.integration_tokens;
