@@ -211,3 +211,40 @@ describe('POST .../properties/[propertyId] — errors', () => {
     expect(res.status).toBe(500);
   });
 });
+
+describe('POST .../properties/[propertyId] — address correction (the geocode fix-list)', () => {
+  it('passes the address through to updateProperty and returns the row WITH lat/lng', async () => {
+    updatePropertyMock.mockResolvedValue({
+      data: { ...SOME_ROW, address: '6 Birch Rd, Amityville, NY 11701', lat: 40.711, lng: -73.404 },
+      error: null,
+    });
+    const res = await POST(makeReq({ address: '6 Birch Rd, Amityville, NY 11701' }), makeParams(CUSTOMER_ID, PROPERTY_ID));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { property: { lat: number | null; lng: number | null } };
+    // The fix-list tells VERIFIED from still-refused by these fields; a response
+    // without them made both outcomes look identical (the S68 lens round).
+    expect(body.property.lat).toBe(40.711);
+    expect(body.property.lng).toBe(-73.404);
+    expect(updatePropertyMock).toHaveBeenCalledWith(CUSTOMER_ID, PROPERTY_ID, {
+      address: '6 Birch Rd, Amityville, NY 11701',
+    });
+  });
+
+  it('a still-refused correction returns lat null, so the caller can say so', async () => {
+    updatePropertyMock.mockResolvedValue({ data: { ...SOME_ROW, lat: null, lng: null }, error: null });
+    const res = await POST(makeReq({ address: '1 Nowhere Ln' }), makeParams(CUSTOMER_ID, PROPERTY_ID));
+    const body = (await res.json()) as { property: { lat: number | null } };
+    expect(body.property.lat).toBeNull();
+  });
+
+  it('surfaces the duplicate-address collision as a 409', async () => {
+    updatePropertyMock.mockResolvedValue({ data: null, error: { message: 'duplicate key value (23505)' } });
+    const res = await POST(makeReq({ address: '1 A St' }), makeParams(CUSTOMER_ID, PROPERTY_ID));
+    expect(res.status).toBe(409);
+  });
+
+  it('rejects an empty address', async () => {
+    const res = await POST(makeReq({ address: '   ' }), makeParams(CUSTOMER_ID, PROPERTY_ID));
+    expect(res.status).toBe(400);
+  });
+});

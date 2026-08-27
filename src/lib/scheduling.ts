@@ -162,6 +162,39 @@ export async function assignCrewToJob(
     throw new AssignmentRefusedError('That crew member is inactive and cannot be assigned.');
   }
 
+  // NALDO'S RULE, 2026-08-27: a job cannot go on the schedule unless its
+  // property has verified coordinates. This is what makes the GPS timeline
+  // trustworthy by construction — a scheduled job can always be watched, so a
+  // missing timeline can never be mistaken for a crew that did not show up.
+  // The fix path is the geocode fix-list: correct the address there and it
+  // verifies on save. Enforced HERE at the write, per the row-356 precedent:
+  // a dropdown filter alone would not stop a direct POST or a stale id.
+  const { data: jobData, error: jobError } = await db
+    .from('jobs')
+    .select('id, property_id')
+    .eq('id', jobId.trim())
+    .maybeSingle();
+  if (jobError) throw new Error(`assignCrewToJob: job lookup: ${jobError.message}`);
+  const job = jobData as unknown as { id: string; property_id: string | null } | null;
+  if (!job) throw new AssignmentRefusedError('Unknown job.');
+  if (!job.property_id) {
+    throw new AssignmentRefusedError(
+      'This job has no property linked, so it cannot be scheduled until it does.',
+    );
+  }
+  const { data: propData, error: propError } = await db
+    .from('properties')
+    .select('id, lat, lng')
+    .eq('id', job.property_id)
+    .maybeSingle();
+  if (propError) throw new Error(`assignCrewToJob: property lookup: ${propError.message}`);
+  const prop = propData as unknown as { id: string; lat: number | null; lng: number | null } | null;
+  if (!prop || prop.lat == null || prop.lng == null) {
+    throw new AssignmentRefusedError(
+      'This property has no verified coordinates yet. Fix its address on the geocoding page, then schedule it.',
+    );
+  }
+
   const { data, error } = await db
     .from('job_assignments')
     .insert({ job_id: jobId.trim(), crew_member_id: crewMemberId.trim(), assigned_date: assignedDate })
