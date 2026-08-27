@@ -180,9 +180,22 @@ export type WhatsIncludedProps = {
   // pricing/approve). These seasonal fee sections are HOLIDAY-ONLY via a positive
   // match, so a FUTURE vertical won't inherit them either. Absent ⇒ holiday.
   serviceType?: ServiceType;
+  // Row 324 fix round (customer MED): true when the customer's CURRENT
+  // starting selection was set by staff (not a genuine customer edit) AND
+  // they've viewed the portal before — see adapter.ts's
+  // showStaffPreselectNotice for the gating + self-clear reasoning. Absent/
+  // false ⇒ no line, unchanged from before this fix.
+  showStaffPreselectNotice?: boolean;
 };
 
-export function WhatsIncluded({ items, design, palette, renderSettings, serviceType }: WhatsIncludedProps) {
+export function WhatsIncluded({
+  items,
+  design,
+  palette,
+  renderSettings,
+  serviceType,
+  showStaffPreselectNotice,
+}: WhatsIncludedProps) {
   // Holiday (or a legacy/null service_type, which reads as holiday) is the only
   // vertical carrying the seasonal rush/takedown + early-install fee toggles.
   // Positive-match on holiday — never `!== 'permanent'` — so a FUTURE vertical
@@ -297,6 +310,14 @@ export function WhatsIncluded({ items, design, palette, renderSettings, serviceT
             </p>
           )}
           <p className="mt-3 text-[13px] text-[#A89F87]">Prices shown are before tax.</p>
+          {/* Row 324 fix round (customer MED): framed as service, not
+              correction — a returning customer whose selection was
+              staff-preselected gets one plain heads-up, never a banner. */}
+          {showStaffPreselectNotice && (
+            <p className="mt-3 text-[13px] text-[#A89F87]">
+              Your installer set these starting choices for you — change anything you like.
+            </p>
+          )}
         </div>
 
         <ul className={`grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4 ${itemsReadOnly ? 'pointer-events-none' : ''}`}>

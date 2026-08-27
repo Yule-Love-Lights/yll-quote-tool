@@ -194,19 +194,7 @@ async function run(action: PipelineAction, rec: PipelineRecord): Promise<Respons
         rec.staleBrowsingSelection
       ) {
         const sel = rec.staleBrowsingSelection;
-        const what =
-          sel.packageId && sel.packageId !== 'D'
-            ? `Package ${sel.packageId}`
-            : `${sel.itemCount} custom item${sel.itemCount === 1 ? '' : 's'}`;
-        // LOW (staff+customer, row 340): status-appropriate wording — this
-        // quote may never have been declined at all (abandoned = the
-        // customer just never came back), and a missing savedAt used to
-        // fall back to literally "before they declined" even then.
-        const priorState = rec.quoteStatus === 'declined' ? 'declined' : 'the quote went abandoned';
-        const savedLabel = sel.savedAt ? `saved ${new Date(sel.savedAt).toLocaleDateString()}` : 'saved earlier';
-        const keepIt = window.confirm(
-          `Heads up: this customer has a saved selection from before ${priorState} (${what}, ${savedLabel}). Send will reopen their portal on it.\n\nOK = keep it and send. Cancel = decide whether to clear it instead.`,
-        );
+        const keepIt = window.confirm(staleSelectionConfirmMessage(sel, rec.quoteStatus));
         if (!keepIt) {
           // LOW (row 340): the clear is PERMANENT — this route is the only
           // copy of the selection (browsing_selection has no history/undo).
@@ -484,6 +472,34 @@ type MenuContentKey = 'loading' | 'ready' | 'error';
 // `stockNeedsAttention` (a stock-reversal caveat — most importantly the
 // PENDING_STOCK_SNAPSHOT refusal note) in addition to `refundNeeded`, mirroring
 // admin/jobs/[id]/page.tsx's cancelActionMessage.
+// Row 324 fix round (admin lens MED): the "Send will reopen their portal on
+// a saved selection" confirm's wording — extracted (mirrors cancelAlertMessage
+// above; this repo has no jsdom/testing-library setup) so it's testable
+// without a render, and so staffSet's wording can't silently drift from what
+// staleBrowsingSelection's own comment (route.ts) promises: a staff-set
+// selection is NOT presented as the customer's own choice, but the warning
+// still fires either way — the portal reseeds from it regardless of who set
+// it.
+export function staleSelectionConfirmMessage(
+  sel: { packageId: string | null; itemCount: number; savedAt: string | null; staffSet: boolean },
+  quoteStatus: 'declined' | 'abandoned',
+): string {
+  const what =
+    sel.packageId && sel.packageId !== 'D'
+      ? `Package ${sel.packageId}`
+      : `${sel.itemCount} custom item${sel.itemCount === 1 ? '' : 's'}`;
+  // LOW (staff+customer, row 340): status-appropriate wording — this quote
+  // may never have been declined at all (abandoned = the customer just
+  // never came back), and a missing savedAt used to fall back to literally
+  // "before they declined" even then.
+  const priorState = quoteStatus === 'declined' ? 'declined' : 'the quote went abandoned';
+  const savedLabel = sel.savedAt ? `saved ${new Date(sel.savedAt).toLocaleDateString()}` : 'saved earlier';
+  const whoSet = sel.staffSet
+    ? 'a starting selection your team set'
+    : `a saved selection from before ${priorState}`;
+  return `Heads up: this customer has ${whoSet} (${what}, ${savedLabel}). Send will reopen their portal on it.\n\nOK = keep it and send. Cancel = decide whether to clear it instead.`;
+}
+
 export function cancelAlertMessage(body: {
   refundNeeded?: boolean;
   stockNeedsAttention?: boolean;
