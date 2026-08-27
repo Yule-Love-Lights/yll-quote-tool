@@ -247,9 +247,14 @@ export async function getAccessToken(accountEmail?: string): Promise<string> {
  *
  * Note the header: the raw token, NO `Bearer` prefix. Trap 1 above.
  */
-export async function bouncieFetch(path: string, accountEmail?: string): Promise<Response> {
-  const token = await getAccessToken(accountEmail);
+export async function bouncieFetch(
+  path: string,
+  init?: { method?: string; body?: unknown; accountEmail?: string },
+): Promise<Response> {
+  const token = await getAccessToken(init?.accountEmail);
   return fetch(`${BOUNCIE_API_BASE}${path}`, {
+    method: init?.method ?? 'GET',
     headers: { Authorization: token, 'Content-Type': 'application/json' },
+    body: init?.body === undefined ? undefined : JSON.stringify(init.body),
   });
 }
