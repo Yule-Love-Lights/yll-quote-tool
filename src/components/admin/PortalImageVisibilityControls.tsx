@@ -20,6 +20,14 @@ export function portalVisibilityPatch(
  * Row 429 — the confirm shown before a visibility change on a quote the
  * customer has already APPROVED.
  *
+ * The predicate is deliberately WIDER than the design freeze's, not the same:
+ * `isSceneFrozen` exempts a BOOKED order (that is the amend path), while this
+ * confirms on one. That is the right asymmetry — a booked customer has approved
+ * AND paid, so a change to what their portal shows deserves a beat of thought
+ * more than an unbooked one, not less. An earlier version of this comment
+ * claimed parity with the freeze; an admin lens measured the difference at 22 of
+ * 24 approved non-test quotes, which is most of them.
+ *
  * Deliberately a confirm and NOT a freeze. Everything the customer actually
  * agreed to — the design geometry, the photo, the satellite trace, the price —
  * is frozen by rows 367/427. These two switches only decide which IMAGES their
@@ -162,9 +170,9 @@ export function PortalImageVisibilityControls({
       </p>
       {customerApproved && (
         <p className="text-xs text-amber-700 mb-3">
-          This customer has <strong>already approved</strong> this quote. These switches still work —
-          the design, measurements and price are locked, but which images their portal shows is not —
-          and every change is recorded against the quote.
+          This customer has <strong>already approved</strong> this quote, so these switches change
+          what they see on their portal. They only decide which images are shown — they do not
+          change the design, the measurements or the price. You will be asked to confirm.
         </p>
       )}
       <div className="space-y-3">
