@@ -35,6 +35,22 @@ export const runtime = 'nodejs';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// Shared by the top-of-request 'paid' pre-check and the TOCTOU refusal below
+// (row 990 fix round) — both are the SAME operator-facing outcome ("this
+// invoice is settled, do it as an amendment instead"), just caught at two
+// different points, so the copy can't drift between them.
+function alreadySettledResponse() {
+  return NextResponse.json(
+    {
+      error:
+        'This invoice is already settled. Changing a settled total is an amendment — record it from the ' +
+        'job page so the customer is notified and re-consents.',
+      code: 'paid',
+    },
+    { status: 409 },
+  );
+}
+
 type QuoteRow = {
   result: (InvoicePricingInput & { total: number }) | null;
   approval_snapshot: AgreedTotalSnapshot;
@@ -67,15 +83,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   // settled invoice would silently reopen settled money with no customer
   // notice and no re-consent. Refuse before ever calling the resync.
   if (invoice.status === 'paid') {
-    return NextResponse.json(
-      {
-        error:
-          'This invoice is already settled. Changing a settled total is an amendment — record it from the ' +
-          'job page so the customer is notified and re-consents.',
-        code: 'paid',
-      },
-      { status: 409 },
-    );
+    return alreadySettledResponse();
   }
   if (!invoice.quote_id) {
     // The agreed total lives on the linked QUOTE; an invoice with no linked
@@ -151,7 +159,23 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     newTotal,
     logPrefix: '[api/invoices/:id/resync]',
     retiredReason: 'manual-resync',
+    // FIX 2 continued (technical-lens MED + delta-verify LOW, TOCTOU): the
+    // 'paid' pre-check above reads `invoice` at the top of this request — if
+    // a payment settles in the gap before resyncInvoiceToAgreedTotal's own
+    // fresh re-read runs, that stale pre-check can't see it, and without this
+    // flag the fresh read would legally reopen the just-settled invoice
+    // (canTransition('paid','awaiting_payment') is legal) with none of the
+    // consent/notice machinery /amend wraps around that same reopen. Refuse
+    // it there too, at the point of the actual write.
+    refuseIfPaid: true,
   });
+
+  if (outcome.refusedPaid) {
+    // Same response as the top-of-request pre-check above — from the
+    // operator's point of view this IS that refusal, just caught one step
+    // later because the invoice settled in the gap between the two reads.
+    return alreadySettledResponse();
+  }
 
   if (!outcome.resynced) {
     // resyncInvoiceToAgreedTotal already flagged invoiceResyncFailed

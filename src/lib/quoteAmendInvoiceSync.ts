@@ -182,6 +182,18 @@ export type InvoiceResyncOutcome = {
   // invoice-basis total with the trail's tax-inclusive delta — the two can
   // disagree by the whole tax line on a tax-overridden invoice.
   previousInvoicedTotal: number | null;
+  // Row 990 fix round (technical-lens MED + delta-verify LOW, TOCTOU): true
+  // ONLY when `refuseIfPaid` was set and the fresh re-read below (not the
+  // caller's own earlier read) found the invoice already 'paid' — the caller
+  // asked this function to refuse exactly that outcome instead of silently
+  // reopening a just-settled invoice. Additive and optional so the two
+  // callers that never pass `refuseIfPaid` (amend/route.ts,
+  // amend-decline/route.ts, where reopening a paid invoice IS the intended
+  // behavior, wrapped in their own consent/notice machinery) are unaffected —
+  // they will simply never see this field set. Distinguishable from an
+  // ordinary `resynced: false` failure so a caller can map it to its OWN
+  // "already settled" refusal instead of a generic "resync failed, retry" message.
+  refusedPaid?: true;
   // Row 341 (staff-lens HIGH, fix round): true ONLY when the invoices row was
   // actually written to these figures — including a successful retry after a
   // lost CAS race (see the retry loop below). False for EVERY skip/failure
@@ -219,6 +231,18 @@ export type ResyncInvoiceArgs = {
   // appendRetiredTxn's `reason` field — lets a reopened txn's audit trail say
   // WHY (a staff re-price vs a customer decline reverting one).
   retiredReason: string;
+  // Row 990 fix round (TOCTOU): opt-in refusal to reopen an invoice this
+  // function's OWN fresh re-read (not the caller's earlier one) finds already
+  // 'paid'. /amend and /amend-decline never pass this — reopening a paid
+  // invoice there is legitimate and already wrapped in consent/notice
+  // machinery — so it defaults to undefined/false and their behavior is
+  // unchanged. The standalone resync route (which has none of that
+  // machinery) sets it: its own top-of-request 'paid' pre-check closes the
+  // obvious case, but a payment can settle in the gap between that read and
+  // this function's re-read, and without this flag the function would
+  // silently reopen the just-settled invoice anyway (its whole point is to
+  // recompute status from a FRESH read).
+  refuseIfPaid?: boolean;
 };
 
 /**
@@ -231,7 +255,7 @@ export type ResyncInvoiceArgs = {
  * was NOT updated to match.
  */
 export async function resyncInvoiceToAgreedTotal(args: ResyncInvoiceArgs): Promise<InvoiceResyncOutcome> {
-  const { jobId, invoice, result, depositPaid, newTotal, logPrefix, retiredReason } = args;
+  const { jobId, invoice, result, depositPaid, newTotal, logPrefix, retiredReason, refuseIfPaid } = args;
   const outcome: InvoiceResyncOutcome = {
     invoicedBalance: null,
     invoicedTotal: null,
@@ -281,6 +305,22 @@ export async function resyncInvoiceToAgreedTotal(args: ResyncInvoiceArgs): Promi
     // genuine "we expected to sync and couldn't" outcomes.
     if (invoiceForSync.status === 'cancelled') {
       return outcome; // don't resurrect a cancelled invoice
+    }
+
+    // Row 990 fix round (TOCTOU, technical-lens MED + delta-verify LOW):
+    // mirrors the cancelled-invoice branch immediately above, same reasoning.
+    // A caller that set `refuseIfPaid` has already decided reopening a paid
+    // invoice from THIS call site is never acceptable (see the flag's own
+    // comment); if this freshly re-read row is already 'paid', that decision
+    // applies regardless of whether it was paid at the caller's own earlier
+    // read or settled in the gap since. Deliberately NOT flagged via
+    // flagInvoiceResyncFailed, same reasoning as the cancelled branch: the
+    // caller asked for exactly this outcome, so a settled invoice being left
+    // untouched is the system working as designed, not a "we expected to
+    // sync and couldn't" failure.
+    if (refuseIfPaid && invoiceForSync.status === 'paid') {
+      outcome.refusedPaid = true;
+      return outcome;
     }
 
     // W1-004: re-sync to the AGREED new total (on the selection basis), not the

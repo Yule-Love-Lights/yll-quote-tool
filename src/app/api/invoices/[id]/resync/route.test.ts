@@ -39,12 +39,20 @@ const {
   getOperatorMock: vi.fn(async (): Promise<unknown> => ({ id: 'op-1', email: 'jason@yulelovelights.com' })),
   getInvoiceMock: vi.fn(async (): Promise<unknown> => null),
   getJobByQuoteMock: vi.fn(async (): Promise<unknown> => null),
-  resyncInvoiceToAgreedTotalMock: vi.fn(async () => ({
-    invoicedBalance: 1500 as number | null,
-    invoicedTotal: 2500 as number | null,
-    previousInvoicedTotal: 2000 as number | null,
-    resynced: true,
-  })),
+  resyncInvoiceToAgreedTotalMock: vi.fn(
+    async (): Promise<{
+      invoicedBalance: number | null;
+      invoicedTotal: number | null;
+      previousInvoicedTotal: number | null;
+      resynced: boolean;
+      refusedPaid?: true;
+    }> => ({
+      invoicedBalance: 1500,
+      invoicedTotal: 2500,
+      previousInvoicedTotal: 2000,
+      resynced: true,
+    }),
+  ),
 }));
 
 vi.mock('@/lib/supabase', () => ({
@@ -200,6 +208,7 @@ describe('POST /api/invoices/[id]/resync (row 388)', () => {
       newTotal: 2500,
       logPrefix: '[api/invoices/:id/resync]',
       retiredReason: 'manual-resync',
+      refuseIfPaid: true,
     });
   });
 
@@ -297,6 +306,31 @@ describe('POST /api/invoices/[id]/resync (row 388)', () => {
       const res = await POST(req(), params);
       expect(res.status).toBe(409);
       expect((await res.json()).code).toBe('paid');
+    });
+
+    // Row 990 fix round (technical-lens MED + delta-verify LOW, TOCTOU): the
+    // pre-check above reads `invoice` at the top of THIS request — if a
+    // payment settles after that read but before resyncInvoiceToAgreedTotal's
+    // own fresh re-read runs, the pre-check can't see it. resyncInvoiceToAgreedTotal
+    // itself is mocked here (its real race behavior is covered directly in
+    // quoteAmendInvoiceSync.test.ts's own 'refuseIfPaid' describe block) — this
+    // test verifies the ROUTE's side: it passes refuseIfPaid:true, and maps an
+    // outcome.refusedPaid response to the SAME 409 'paid' the top-of-request
+    // check returns, not the generic resync-failed message.
+    it("409s 'paid' (not the generic resync-failed message) when the resync reports refusedPaid — the race caught one step later", async () => {
+      resyncInvoiceToAgreedTotalMock.mockResolvedValue({
+        invoicedBalance: null,
+        invoicedTotal: null,
+        previousInvoicedTotal: null,
+        resynced: false,
+        refusedPaid: true,
+      });
+      const res = await POST(req(), params);
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.code).toBe('paid');
+      expect(body.error).toMatch(/amendment/i);
+      expect(body.error).toMatch(/job page/i);
     });
   });
 
