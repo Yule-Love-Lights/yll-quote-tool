@@ -14,10 +14,10 @@ import {
   quoteLinkFieldId,
   quoteLinkFieldEnvVar,
   allPipelineStages,
-  missingSuppressionStageIds,
+  checkNeighborsSuppression,
   NEIGHBORS_PIPELINE_ID,
-  NEIGHBORS_SUPPRESSED_STAGE_IDS,
-  NEIGHBORS_DO_NOT_CALL_STAGE_ID,
+  NEIGHBORS_DECLINED_STAGE_ID,
+  NEIGHBORS_DO_NOT_CALL_STAGE_NAME,
 } from './ghlPipelineMap';
 import type { Pipeline } from './highlevelPipelines';
 
@@ -356,43 +356,76 @@ describe('allPipelineStages (referral sweep)', () => {
   });
 });
 
-describe('missingSuppressionStageIds: fail-loud suppression check (referral sweep)', () => {
-  const liveNeighborsFixture = (stageIds: string[]): Pipeline[] => [
-    {
-      id: NEIGHBORS_PIPELINE_ID,
-      name: 'Yule Love Lights Neighbors',
-      stages: stageIds.map((id) => ({ id, name: id })),
-    },
+describe('checkNeighborsSuppression: fail-loud suppression check (referral sweep)', () => {
+  // "Declined for 2026" is a verified hardcoded id (NEIGHBORS_DECLINED_STAGE_ID);
+  // "Do Not Call" has none, so its fixture stage is named NEIGHBORS_DO_NOT_CALL_STAGE_NAME
+  // and gets its OWN id, distinct from the hardcoded one: resolution must find it by
+  // name, not by coincidentally reusing NEIGHBORS_DECLINED_STAGE_ID.
+  const DNC_LIVE_ID = 'live-do-not-call-stage-id';
+
+  const liveNeighborsFixture = (
+    stages: { id: string; name: string }[],
+    pipelineId: string = NEIGHBORS_PIPELINE_ID,
+  ): Pipeline[] => [{ id: pipelineId, name: 'Yule Love Lights Neighbors', stages }];
+
+  const bothPresentStages = [
+    { id: NEIGHBORS_DECLINED_STAGE_ID, name: 'Declined for 2026' },
+    { id: DNC_LIVE_ID, name: NEIGHBORS_DO_NOT_CALL_STAGE_NAME },
   ];
 
-  it('returns EMPTY when both configured suppression stages are present live', () => {
-    const live = liveNeighborsFixture([...NEIGHBORS_SUPPRESSED_STAGE_IDS, 'some-other-stage-id']);
-    expect(missingSuppressionStageIds(live)).toEqual([]);
+  it('resolves both stages when present live: no missing hardcoded ids, Do Not Call id found by name', () => {
+    const live = liveNeighborsFixture([...bothPresentStages, { id: 'x', name: 'some-other-stage' }]);
+    const result = checkNeighborsSuppression(live);
+    expect(result.missingHardcodedIds).toEqual([]);
+    expect(result.doNotCallStageId).toBe(DNC_LIVE_ID);
   });
 
-  it('reports the DO NOT CALL placeholder as missing (it is a sentinel, not a real id, until discovered live)', () => {
-    // This is the CURRENT real-world state: NEIGHBORS_DO_NOT_CALL_STAGE_ID has
-    // not been discovered live yet, so this must always fail loud today.
-    const live = liveNeighborsFixture(['some-other-stage-id']);
-    const missing = missingSuppressionStageIds(live);
-    expect(missing).toContain(NEIGHBORS_DO_NOT_CALL_STAGE_ID);
+  it('matches the Do Not Call stage name case-insensitively and with whitespace trimmed', () => {
+    const live = liveNeighborsFixture([
+      { id: NEIGHBORS_DECLINED_STAGE_ID, name: 'Declined for 2026' },
+      { id: DNC_LIVE_ID, name: '  Do Not Call  ' }, // re-cased + padded, as a live edit might leave it
+    ]);
+    const result = checkNeighborsSuppression(live);
+    expect(result.doNotCallStageId).toBe(DNC_LIVE_ID);
   });
 
-  it('reports a stage as missing when it is renamed/removed from the live pipeline (a real id, simulated present-then-absent)', () => {
-    const bothPresent = liveNeighborsFixture([...NEIGHBORS_SUPPRESSED_STAGE_IDS]);
-    expect(missingSuppressionStageIds(bothPresent)).toEqual([]);
-
-    const declinedRemoved = liveNeighborsFixture([NEIGHBORS_DO_NOT_CALL_STAGE_ID]);
-    expect(missingSuppressionStageIds(declinedRemoved)).toContain(NEIGHBORS_SUPPRESSED_STAGE_IDS[0]);
+  it('resolves NOTHING (null) when no stage in the Neighbors pipeline matches the Do Not Call name, and names what it found', () => {
+    const live = liveNeighborsFixture([
+      { id: NEIGHBORS_DECLINED_STAGE_ID, name: 'Declined for 2026' },
+      { id: 'some-id', name: 'Some Unrelated Stage' },
+    ]);
+    const result = checkNeighborsSuppression(live);
+    expect(result.doNotCallStageId).toBeNull();
+    expect(result.liveNeighborsStageNames).toEqual(['Declined for 2026', 'Some Unrelated Stage']);
   });
 
-  it('reports EVERY configured id as missing when the Neighbors pipeline itself is not found live', () => {
+  it('never matches a same-named "Do Not Call" stage sitting in a DIFFERENT pipeline', () => {
+    const live: Pipeline[] = [
+      { id: NEIGHBORS_PIPELINE_ID, name: 'Yule Love Lights Neighbors', stages: [{ id: NEIGHBORS_DECLINED_STAGE_ID, name: 'Declined for 2026' }] },
+      { id: 'some-other-pipeline-id', name: 'Some Other Pipeline', stages: [{ id: 'imposter-id', name: NEIGHBORS_DO_NOT_CALL_STAGE_NAME }] },
+    ];
+    const result = checkNeighborsSuppression(live);
+    expect(result.doNotCallStageId).toBeNull();
+  });
+
+  it('reports NEIGHBORS_DECLINED_STAGE_ID as missing when it is renamed/removed from the live pipeline, even while Do Not Call still resolves', () => {
+    const live = liveNeighborsFixture([{ id: DNC_LIVE_ID, name: NEIGHBORS_DO_NOT_CALL_STAGE_NAME }]);
+    const result = checkNeighborsSuppression(live);
+    expect(result.missingHardcodedIds).toEqual([NEIGHBORS_DECLINED_STAGE_ID]);
+    expect(result.doNotCallStageId).toBe(DNC_LIVE_ID);
+  });
+
+  it('reports the hardcoded id missing AND doNotCallStageId null when the Neighbors pipeline itself is not found live', () => {
     const live: Pipeline[] = [{ id: 'some-other-pipeline', name: 'Unrelated', stages: [{ id: 'x', name: 'x' }] }];
-    const missing = missingSuppressionStageIds(live);
-    expect(missing).toEqual([...NEIGHBORS_SUPPRESSED_STAGE_IDS]);
+    const result = checkNeighborsSuppression(live);
+    expect(result.missingHardcodedIds).toEqual([NEIGHBORS_DECLINED_STAGE_ID]);
+    expect(result.doNotCallStageId).toBeNull();
+    expect(result.liveNeighborsStageNames).toEqual([]);
   });
 
-  it('handles an empty live pipelines list the same way (everything missing)', () => {
-    expect(missingSuppressionStageIds([])).toEqual([...NEIGHBORS_SUPPRESSED_STAGE_IDS]);
+  it('handles an empty live pipelines list the same way (everything missing/unresolved)', () => {
+    const result = checkNeighborsSuppression([]);
+    expect(result.missingHardcodedIds).toEqual([NEIGHBORS_DECLINED_STAGE_ID]);
+    expect(result.doNotCallStageId).toBeNull();
   });
 });

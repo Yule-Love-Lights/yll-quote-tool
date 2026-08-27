@@ -1,7 +1,7 @@
 // Tests for the referral link sweep (naldo/referral-link-sweep).
 //
 // IO seams mocked (GHL + Supabase); the pure suppression/idempotency helpers
-// and ghlPipelineMap's real allPipelineStages/missingSuppressionStageIds run
+// and ghlPipelineMap's real allPipelineStages/checkNeighborsSuppression run
 // for real, so the fail-loud + suppression logic is genuinely exercised
 // against the SAME constants the production code uses (not a re-typed copy
 // that could silently drift from them).
@@ -58,7 +58,11 @@ vi.mock('@/lib/referrals', () => ({
 
 import { runReferralSweep, alreadyProcessed, isSuppressedByOpportunities } from './referralSweep';
 import { HighLevelError } from '@/lib/integrations/highlevel';
-import { NEIGHBORS_PIPELINE_ID, NEIGHBORS_SUPPRESSED_STAGE_IDS } from '@/lib/integrations/ghlPipelineMap';
+import {
+  NEIGHBORS_PIPELINE_ID,
+  NEIGHBORS_DECLINED_STAGE_ID,
+  NEIGHBORS_DO_NOT_CALL_STAGE_NAME,
+} from '@/lib/integrations/ghlPipelineMap';
 
 // ─── Supabase fake: just enough of the query-builder chain the sweep uses ──
 
@@ -138,16 +142,36 @@ function makeContact(overrides: Partial<HighLevelContact> = {}): HighLevelContac
   };
 }
 
-/** The full set of Neighbors suppression stage ids as "present live": the
+/** A "Do Not Call" stage id distinct from any hardcoded constant, so a test
+ *  can't accidentally pass by conflating it with NEIGHBORS_DECLINED_STAGE_ID.
+ *  Do Not Call is resolved by NAME in production (no verified id exists for
+ *  it), so fixtures below carry NEIGHBORS_DO_NOT_CALL_STAGE_NAME as the
+ *  stage's `name`, never a caller-supplied id. */
+const LIVE_DO_NOT_CALL_STAGE_ID = 'live-do-not-call-stage-id';
+
+/** The full set of Neighbors suppression stages as "present live": the
  *  happy-path default so tests that don't care about the fail-loud check
- *  don't accidentally trip it. */
-function livePipelinesJson(stageIds: string[] = [...NEIGHBORS_SUPPRESSED_STAGE_IDS]) {
+ *  don't accidentally trip it. "Declined for 2026" is matched by id
+ *  (NEIGHBORS_DECLINED_STAGE_ID); "Do Not Call" is matched by NAME, so its
+ *  fixture stage carries NEIGHBORS_DO_NOT_CALL_STAGE_NAME as `name` with an
+ *  id only a live listing would actually reveal (LIVE_DO_NOT_CALL_STAGE_ID). */
+function livePipelinesJson(
+  stages: { id: string; name: string }[] = [
+    { id: NEIGHBORS_DECLINED_STAGE_ID, name: 'Declined for 2026' },
+    { id: LIVE_DO_NOT_CALL_STAGE_ID, name: NEIGHBORS_DO_NOT_CALL_STAGE_NAME },
+  ],
+) {
   return {
-    pipelines: [
-      { id: NEIGHBORS_PIPELINE_ID, name: 'Yule Love Lights Neighbors', stages: stageIds.map((id) => ({ id, name: id })) },
-    ],
+    pipelines: [{ id: NEIGHBORS_PIPELINE_ID, name: 'Yule Love Lights Neighbors', stages }],
   };
 }
+
+/** The suppressed-stage-ids list runReferralSweep computes internally once
+ *  both suppression stages resolve, matching the happy-path fixture above.
+ *  isSuppressedByOpportunities is now a pure function of its second
+ *  argument (the module no longer holds a static suppressed-ids list), so
+ *  tests calling it directly pass this. */
+const TEST_SUPPRESSED_STAGE_IDS = [NEIGHBORS_DECLINED_STAGE_ID, LIVE_DO_NOT_CALL_STAGE_ID];
 
 function opportunity(pipelineStageId: string, overrides: Partial<HighLevelOpportunity> = {}): HighLevelOpportunity {
   return { id: 'opp-1', contactId: 'contact-1', pipelineId: NEIGHBORS_PIPELINE_ID, pipelineStageId, status: 'open', ...overrides };
@@ -199,29 +223,33 @@ describe('alreadyProcessed', () => {
 
 describe('isSuppressedByOpportunities', () => {
   it('is false with no opportunities', () => {
-    expect(isSuppressedByOpportunities([])).toBe(false);
+    expect(isSuppressedByOpportunities([], TEST_SUPPRESSED_STAGE_IDS)).toBe(false);
   });
   it('is true when an opportunity sits at a suppressed stage, regardless of its status field', () => {
-    const opp = opportunity(NEIGHBORS_SUPPRESSED_STAGE_IDS[0]!, { status: 'open' });
-    expect(isSuppressedByOpportunities([opp])).toBe(true);
+    const opp = opportunity(TEST_SUPPRESSED_STAGE_IDS[0]!, { status: 'open' });
+    expect(isSuppressedByOpportunities([opp], TEST_SUPPRESSED_STAGE_IDS)).toBe(true);
   });
   it('is false when every opportunity sits at a non-suppressed stage', () => {
-    expect(isSuppressedByOpportunities([opportunity('some-other-stage')])).toBe(false);
+    expect(isSuppressedByOpportunities([opportunity('some-other-stage')], TEST_SUPPRESSED_STAGE_IDS)).toBe(false);
   });
 });
 
 // ─── The sweep itself ───────────────────────────────────────────────────────
 
 describe('runReferralSweep: fail-loud on a missing suppression stage', () => {
-  it('refuses to run and touches NO contact when a suppression stage id is missing live', async () => {
-    listPipelines.mockResolvedValue(livePipelinesJson([NEIGHBORS_SUPPRESSED_STAGE_IDS[0]!])); // DO_NOT_CALL missing
+  it('refuses to run and touches NO contact when no live stage matches the Do Not Call name', async () => {
+    // Only "Declined for 2026" present; nothing named NEIGHBORS_DO_NOT_CALL_STAGE_NAME.
+    listPipelines.mockResolvedValue(
+      livePipelinesJson([{ id: NEIGHBORS_DECLINED_STAGE_ID, name: 'Declined for 2026' }]),
+    );
     searchContactsPage.mockResolvedValue({ contacts: [makeContact()], nextSearchAfter: undefined });
 
     const summary = await runReferralSweep({ ...FAST, dryRun: false });
 
     expect(summary.ok).toBe(false);
     expect(summary.error).toBeTruthy();
-    expect(summary.error).toContain(NEIGHBORS_SUPPRESSED_STAGE_IDS[1]);
+    expect(summary.error).toContain(NEIGHBORS_DO_NOT_CALL_STAGE_NAME);
+    expect(summary.resolvedDoNotCallStageId).toBeUndefined();
     expect(summary.scanned).toBe(0);
     expect(searchContactsPage).not.toHaveBeenCalled();
     expect(findOrCreateCustomer).not.toHaveBeenCalled();
@@ -231,14 +259,54 @@ describe('runReferralSweep: fail-loud on a missing suppression stage', () => {
     listPipelines.mockResolvedValue({ pipelines: [{ id: 'some-other-pipeline', name: 'Unrelated', stages: [] }] });
     const summary = await runReferralSweep({ ...FAST, dryRun: false });
     expect(summary.ok).toBe(false);
-    expect(summary.error).toContain(NEIGHBORS_SUPPRESSED_STAGE_IDS[0]);
+    expect(summary.error).toContain(NEIGHBORS_DECLINED_STAGE_ID);
   });
 
-  it('runs normally when both suppression stages are confirmed live (the happy-path default)', async () => {
+  it('never matches a same-named "Do Not Call" stage sitting in a DIFFERENT pipeline: still refuses to run', async () => {
+    listPipelines.mockResolvedValue({
+      pipelines: [
+        {
+          id: NEIGHBORS_PIPELINE_ID,
+          name: 'Yule Love Lights Neighbors',
+          stages: [{ id: NEIGHBORS_DECLINED_STAGE_ID, name: 'Declined for 2026' }], // no DNC stage here
+        },
+        {
+          id: 'some-other-pipeline-id',
+          name: 'Some Other Pipeline',
+          stages: [{ id: 'imposter-id', name: NEIGHBORS_DO_NOT_CALL_STAGE_NAME }], // right name, wrong pipeline
+        },
+      ],
+    });
+
+    const summary = await runReferralSweep({ ...FAST, dryRun: false });
+
+    expect(summary.ok).toBe(false);
+    expect(summary.error).toContain(NEIGHBORS_DO_NOT_CALL_STAGE_NAME);
+    expect(summary.resolvedDoNotCallStageId).toBeUndefined();
+  });
+
+  it('runs normally when both suppression stages are confirmed live, and logs the resolved Do Not Call id (the happy-path default)', async () => {
     searchContactsPage.mockResolvedValue({ contacts: [], nextSearchAfter: undefined });
     const summary = await runReferralSweep({ ...FAST, dryRun: false });
     expect(summary.ok).toBe(true);
     expect(summary.error).toBeUndefined();
+    expect(summary.resolvedDoNotCallStageId).toBe(LIVE_DO_NOT_CALL_STAGE_ID);
+  });
+
+  it('matches a Do Not Call stage name that differs only by case/whitespace: still resolves and runs', async () => {
+    listPipelines.mockResolvedValue(
+      livePipelinesJson([
+        { id: NEIGHBORS_DECLINED_STAGE_ID, name: 'Declined for 2026' },
+        { id: LIVE_DO_NOT_CALL_STAGE_ID, name: '  do not call  ' }, // lowercased + padded
+      ]),
+    );
+    searchContactsPage.mockResolvedValue({ contacts: [], nextSearchAfter: undefined });
+
+    const summary = await runReferralSweep({ ...FAST, dryRun: false });
+
+    expect(summary.ok).toBe(true);
+    expect(summary.error).toBeUndefined();
+    expect(summary.resolvedDoNotCallStageId).toBe(LIVE_DO_NOT_CALL_STAGE_ID);
   });
 });
 
@@ -259,12 +327,12 @@ describe('runReferralSweep: fail-loud on a missing referral-link field id (self-
 });
 
 describe('runReferralSweep: suppression skips a contact ENTIRELY', () => {
-  it('mints nothing, stamps nothing, tags nothing, and creates no Supabase customer for a suppressed contact', async () => {
+  it('"Declined for 2026" (hardcoded id): mints nothing, stamps nothing, tags nothing, creates no Supabase customer', async () => {
     const suppressed = makeContact({ id: 'contact-suppressed' });
     searchContactsPage.mockResolvedValue({ contacts: [suppressed], nextSearchAfter: undefined });
     findAllOpportunitiesForContact.mockImplementation(async (contactId: string, pipelineId: string) => {
       if (contactId === 'contact-suppressed' && pipelineId === NEIGHBORS_PIPELINE_ID) {
-        return [opportunity(NEIGHBORS_SUPPRESSED_STAGE_IDS[0]!)]; // "Declined for 2026"
+        return [opportunity(NEIGHBORS_DECLINED_STAGE_ID)]; // "Declined for 2026"
       }
       return [];
     });
@@ -283,10 +351,14 @@ describe('runReferralSweep: suppression skips a contact ENTIRELY', () => {
     expect(addContactTags).not.toHaveBeenCalled();
   });
 
-  it('suppression on the "Do Not Call" stage also skips entirely', async () => {
+  it('"Do Not Call" (resolved by name at runtime) also skips entirely', async () => {
     const suppressed = makeContact({ id: 'contact-dnc' });
     searchContactsPage.mockResolvedValue({ contacts: [suppressed], nextSearchAfter: undefined });
-    findAllOpportunitiesForContact.mockResolvedValue([opportunity(NEIGHBORS_SUPPRESSED_STAGE_IDS[1]!)]);
+    // LIVE_DO_NOT_CALL_STAGE_ID is the id the happy-path livePipelinesJson()
+    // fixture resolves NEIGHBORS_DO_NOT_CALL_STAGE_NAME to. This is only
+    // suppressed if the sweep actually resolved it by name and threaded it
+    // through to the per-contact check, not a hardcoded constant.
+    findAllOpportunitiesForContact.mockResolvedValue([opportunity(LIVE_DO_NOT_CALL_STAGE_ID)]);
 
     const summary = await runReferralSweep({ ...FAST, dryRun: false });
 

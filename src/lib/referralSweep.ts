@@ -64,9 +64,10 @@ import {
 import { parsePipelines } from '@/lib/integrations/highlevelPipelines';
 import {
   NEIGHBORS_PIPELINE_ID,
-  NEIGHBORS_SUPPRESSED_STAGE_IDS,
+  NEIGHBORS_DECLINED_STAGE_ID,
+  NEIGHBORS_DO_NOT_CALL_STAGE_NAME,
   allPipelineStages,
-  missingSuppressionStageIds,
+  checkNeighborsSuppression,
 } from '@/lib/integrations/ghlPipelineMap';
 import { findOrCreateCustomer, getCustomerByHlContactId } from '@/lib/customers';
 import { ensureReferralCode, stampReferralLinkOnContact, REFERRAL_LINK_FIELD_ENV } from '@/lib/referrals';
@@ -144,6 +145,16 @@ export type ReferralSweepSummary = {
   /** This run reached the end of the contact list (cursor wraps to the
    *  start next run) rather than stopping on the cap/time budget. */
   reachedEndOfList: boolean;
+  /** The "Do Not Call" Neighbors stage id resolved BY NAME this run (see
+   *  ghlPipelineMap.ts's checkNeighborsSuppression / NEIGHBORS_DO_NOT_CALL_
+   *  STAGE_NAME). Logged here, not just used internally, so a human can
+   *  read it once off a run's response/logs and hardcode it in
+   *  ghlPipelineMap.ts later, the same way NEIGHBORS_DECLINED_STAGE_ID
+   *  already is a verified hardcoded id instead of a name lookup. Set on
+   *  every run that got past the fail-loud pre-flight check (both dry-run
+   *  and live); undefined only when the run aborted before resolving it
+   *  (see `error`). */
+  resolvedDoNotCallStageId?: string;
   /** Set only on a fatal error: config missing, or the fail-loud
    *  suppression-stage check tripped. No contact was touched. */
   error?: string;
@@ -229,12 +240,20 @@ export function alreadyProcessed(contact: HighLevelContact, referralLinkFieldId:
 }
 
 /** Step 1: SUPPRESSED means an opportunity sits in one of
- *  NEIGHBORS_SUPPRESSED_STAGE_IDS, regardless of that opportunity's own
- *  `status` field (this app's updateOpportunityStage never sets status;
- *  see findAllOpportunitiesForContact's doc comment in highlevel.ts). Pure,
+ *  `suppressedStageIds` (NEIGHBORS_DECLINED_STAGE_ID plus this run's
+ *  resolved "Do Not Call" id. See checkNeighborsSuppression in
+ *  ghlPipelineMap.ts, resolved once per run in runReferralSweep below and
+ *  threaded through as a parameter here rather than read off a module
+ *  constant, since the "Do Not Call" half is only known after a live
+ *  fetch), regardless of the opportunity's own `status` field (this app's
+ *  updateOpportunityStage never sets status; see
+ *  findAllOpportunitiesForContact's doc comment in highlevel.ts). Pure,
  *  given an already-fetched opportunity list, so it's cheap to unit test. */
-export function isSuppressedByOpportunities(opportunities: HighLevelOpportunity[]): boolean {
-  return opportunities.some((o) => !!o.pipelineStageId && NEIGHBORS_SUPPRESSED_STAGE_IDS.includes(o.pipelineStageId));
+export function isSuppressedByOpportunities(
+  opportunities: HighLevelOpportunity[],
+  suppressedStageIds: readonly string[],
+): boolean {
+  return opportunities.some((o) => !!o.pipelineStageId && suppressedStageIds.includes(o.pipelineStageId));
 }
 
 async function hasBookedQuoteInSupabase(sb: SupabaseServiceClient, customerId: string): Promise<boolean> {
@@ -327,12 +346,15 @@ async function saveCursor(sb: SupabaseServiceClient, cursor: SweepCursor): Promi
  * advance, nothing.
  *
  * FAIL LOUD: before touching a single contact, this fetches the live GHL
- * pipeline listing and verifies every configured Neighbors suppression
- * stage id (ghlPipelineMap.ts) is still present. If one is missing (renamed,
- * deleted, or, as of this writing, still the NEIGHBORS_DO_NOT_CALL_STAGE_ID
- * placeholder), the run refuses outright and returns
- * `{ ok: false, error: ... }` without scanning anyone. A silently broken
- * suppression check is the one failure mode this sweep must never have.
+ * pipeline listing and resolves both Neighbors suppression stages
+ * (ghlPipelineMap.ts's checkNeighborsSuppression): NEIGHBORS_DECLINED_
+ * STAGE_ID must still be a real stage id live, and a stage named
+ * NEIGHBORS_DO_NOT_CALL_STAGE_NAME ("Do Not Call") must be found within the
+ * Neighbors pipeline. If either check fails (a renamed/deleted hardcoded
+ * id, or no live stage matches the Do Not Call name), the run refuses
+ * outright and returns `{ ok: false, error: ... }` without scanning anyone.
+ * A silently broken suppression check is the one failure mode this sweep
+ * must never have.
  */
 export async function runReferralSweep(options: ReferralSweepOptions = {}): Promise<ReferralSweepSummary> {
   const dryRun = options.dryRun !== false;
@@ -368,14 +390,32 @@ export async function runReferralSweep(options: ReferralSweepOptions = {}): Prom
     summary.error = `Could not fetch live pipelines to verify suppression stages: ${errMessage(err)}`;
     return summary;
   }
-  const missingStageIds = missingSuppressionStageIds(livePipelines);
-  if (missingStageIds.length > 0) {
+  const suppressionCheck = checkNeighborsSuppression(livePipelines);
+  if (suppressionCheck.missingHardcodedIds.length > 0) {
     summary.error =
       `Refusing to run: suppression stage id(s) not found in the live "Yule Love Lights Neighbors" ` +
-      `pipeline: ${missingStageIds.join(', ')}. See ghlPipelineMap.ts (NEIGHBORS_SUPPRESSED_STAGE_IDS). ` +
-      `A renamed, deleted, or not-yet-discovered stage must be fixed there before the sweep can safely run.`;
+      `pipeline: ${suppressionCheck.missingHardcodedIds.join(', ')}. See ghlPipelineMap.ts ` +
+      `(NEIGHBORS_DECLINED_STAGE_ID). A renamed or deleted stage must be fixed there before the ` +
+      `sweep can safely run.`;
     return summary;
   }
+  if (!suppressionCheck.doNotCallStageId) {
+    const found =
+      suppressionCheck.liveNeighborsStageNames.length > 0
+        ? suppressionCheck.liveNeighborsStageNames.map((n) => `"${n}"`).join(', ')
+        : '(the "Yule Love Lights Neighbors" pipeline itself was not found live)';
+    summary.error =
+      `Refusing to run: no stage named "${NEIGHBORS_DO_NOT_CALL_STAGE_NAME}" (case/whitespace-insensitive) ` +
+      `found in the live "Yule Love Lights Neighbors" pipeline. Live stages found: ${found}. See ` +
+      `ghlPipelineMap.ts (NEIGHBORS_DO_NOT_CALL_STAGE_NAME). A renamed, deleted, or not-yet-created ` +
+      `stage must be fixed before the sweep can safely run.`;
+    return summary;
+  }
+  // Logged in the summary (not just used internally) so a human can read the
+  // resolved id once and hardcode it in ghlPipelineMap.ts later. See
+  // ReferralSweepSummary.resolvedDoNotCallStageId's own comment for why.
+  summary.resolvedDoNotCallStageId = suppressionCheck.doNotCallStageId;
+  const suppressedStageIds: readonly string[] = [NEIGHBORS_DECLINED_STAGE_ID, suppressionCheck.doNotCallStageId];
 
   // Self-review catch: without this check, a missing field id doesn't fail
   // loud. stampReferralLinkOnContact fails OPEN (its own documented
@@ -431,7 +471,7 @@ export async function runReferralSweep(options: ReferralSweepOptions = {}): Prom
         const neighborsOpportunities = await paced(() =>
           findAllOpportunitiesForContact(contact.id, NEIGHBORS_PIPELINE_ID),
         );
-        if (isSuppressedByOpportunities(neighborsOpportunities)) {
+        if (isSuppressedByOpportunities(neighborsOpportunities, suppressedStageIds)) {
           summary.suppressed += 1;
           continue;
         }

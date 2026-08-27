@@ -1,12 +1,22 @@
 // scripts/ghl-list-pipelines.ts, READ-ONLY discovery helper (naldo/referral-
 // link-sweep). Lists every HighLevel pipeline + stage (name + id) so the dev
-// can find the "Do Not Call" stage inside the "Yule Love Lights Neighbors"
-// pipeline and set NEIGHBORS_DO_NOT_CALL_STAGE_ID in
-// src/lib/integrations/ghlPipelineMap.ts. That constant currently holds a
-// placeholder. It could not be discovered live from the build sandbox this
-// script was written in (no outbound network access to
+// can eyeball the "Do Not Call" stage inside the "Yule Love Lights
+// Neighbors" pipeline by hand. It could not be run live from the build
+// sandbox this script was written in (no outbound network access to
 // services.leadconnectorhq.com), so this script exists for you to run it
 // from a machine that DOES have real GHL access.
+//
+// NOTE: the referral sweep itself no longer needs this script's output to
+// function. src/lib/integrations/ghlPipelineMap.ts's checkNeighborsSuppression
+// resolves the "Do Not Call" stage BY NAME (NEIGHBORS_DO_NOT_CALL_STAGE_NAME,
+// case/whitespace-insensitive, scoped to the Neighbors pipeline) from a live
+// pipeline listing on every run, and logs the id it resolved in the run
+// summary (ReferralSweepSummary.resolvedDoNotCallStageId). This script is
+// now just a convenient standalone way to see that id (and every other
+// pipeline/stage id) without running the full sweep. Once someone has read
+// the resolved id from a real run, it can be hardcoded in ghlPipelineMap.ts
+// as NEIGHBORS_DECLINED_STAGE_ID's sibling, the same way "Declined for 2026"
+// already is. See that file's "ASYMMETRIC ON PURPOSE" comment.
 //
 // This script performs ONLY a GET (/opportunities/pipelines, the same
 // read-only endpoint highlevel.ts's listPipelines() wraps). It never
@@ -14,13 +24,6 @@
 // production location.
 //
 // Usage:  npx tsx scripts/ghl-list-pipelines.ts
-//
-// After running: find "Do Not Call" under "Yule Love Lights Neighbors"
-// below, copy its id, and replace NEIGHBORS_DO_NOT_CALL_STAGE_ID's
-// placeholder value in ghlPipelineMap.ts with it. Until that's done, the
-// referral sweep's fail-loud check (see referralSweep.ts) will keep
-// refusing to run. That's the intended, safe behavior for an
-// un-configured suppression id, not a bug.
 
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join, parse as parsePath } from 'node:path';
@@ -130,8 +133,10 @@ async function main(): Promise<void> {
   console.log('\n---');
   if (doNotCall) {
     console.log(`✓ Found a stage named "${doNotCall.name}", id: ${doNotCall.id}`);
-    console.log('  Paste this into src/lib/integrations/ghlPipelineMap.ts, replacing');
-    console.log('  NEIGHBORS_DO_NOT_CALL_STAGE_ID\'s placeholder value:');
+    console.log('  The referral sweep already resolves this by name at runtime (see');
+    console.log('  ghlPipelineMap.ts\'s checkNeighborsSuppression) and logs it in every run\'s');
+    console.log('  summary, so this confirms the id. Optionally upgrade it to a verified');
+    console.log('  hardcoded constant now, the same way NEIGHBORS_DECLINED_STAGE_ID already is:');
     console.log(`\n  export const NEIGHBORS_DO_NOT_CALL_STAGE_ID = '${doNotCall.id}'; // Do Not Call, discovered live <today's date>`);
   } else {
     console.log('✗ No stage named "Do Not Call" found under Yule Love Lights Neighbors.');
