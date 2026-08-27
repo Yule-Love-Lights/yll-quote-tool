@@ -6144,30 +6144,18 @@ export default function QuoteBuilder({
             <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
               <div className="flex items-center justify-between gap-3 mb-1">
                 <span className="text-sm font-medium text-blue-900">Look up on Google Maps</span>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handlePullSatellite}
-                    disabled={lookingUp || loading || !form.customer.address.trim()}
-                    title={
-                      form.customer.address.trim()
-                        ? 'No Street View at this address? Skip straight to the satellite image + real scale — instant, no AI. Draw channels by hand.'
-                        : 'Enter the property address above first.'
-                    }
-                    className="bg-white hover:bg-blue-50 disabled:bg-blue-50 disabled:text-blue-300 text-blue-700 border border-blue-300 font-medium text-sm px-3 py-2 rounded-md whitespace-nowrap"
-                  >
-                    {lookingUp ? 'Working…' : '🛰️ Pull satellite'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleLookupAddress}
-                    disabled={lookingUp || loading || !form.customer.address.trim()}
-                    title={form.customer.address.trim() ? undefined : 'Enter the property address above first.'}
-                    className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium text-sm px-4 py-2 rounded-md whitespace-nowrap"
-                  >
-                    {lookingUp ? 'Looking up…' : '🏠 Analyze from Address'}
-                  </button>
-                </div>
+                {/* Jason (2026-08-26): "Pull satellite" moved DOWN to the
+                    manual satellite-photo row — it belongs with the satellite
+                    slot it fills, not beside the full auto-measure. */}
+                <button
+                  type="button"
+                  onClick={handleLookupAddress}
+                  disabled={lookingUp || loading || !form.customer.address.trim()}
+                  title={form.customer.address.trim() ? undefined : 'Enter the property address above first.'}
+                  className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium text-sm px-4 py-2 rounded-md whitespace-nowrap"
+                >
+                  {lookingUp ? 'Looking up…' : '🏠 Analyze from Address'}
+                </button>
               </div>
               <p className="text-xs text-blue-700">
                 {form.serviceType === 'permanent'
@@ -6176,7 +6164,7 @@ export default function QuoteBuilder({
                     ? 'Uses the Property Address above. Fetches Street View + satellite (with scale) so you draw the bistro runs on the Satellite tab.'
                     : 'Uses the Property Address above. Fetches Street View + satellite view, sends both to Claude.'}
                 {' '}
-                {'No Street View at the address? Use "Pull satellite" instead — just the satellite image + scale, instant, then upload your own front photo below.'}
+                {'No Street View at the address? Use the "Pull satellite" button in the satellite section below — just the satellite image + scale, instant, then upload your own front photo.'}
               </p>
               {/* #95: quick link to open the house on Google Maps (standard pin, not
                   Street View) — precise coords once analyzed, else the matched/typed
@@ -6256,13 +6244,32 @@ export default function QuoteBuilder({
                 <label className="block text-xs font-medium text-gray-500 mb-1">
                   Satellite photo (optional) — screenshot from Google Maps top-down
                 </label>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={handleSatelliteSelect}
-                  disabled={loading}
-                  className="block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
-                />
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handleSatelliteSelect}
+                    disabled={loading}
+                    className="block flex-1 min-w-[14rem] text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                  />
+                  {/* Jason (2026-08-26): moved here from the Google-Maps box
+                      header — this button FILLS this satellite slot (image +
+                      real scale, instant, no AI), so it lives beside it. Same
+                      handler, same gating, pure relocation. */}
+                  <button
+                    type="button"
+                    onClick={handlePullSatellite}
+                    disabled={lookingUp || loading || !form.customer.address.trim()}
+                    title={
+                      form.customer.address.trim()
+                        ? 'No Street View at this address? Skip straight to the satellite image + real scale — instant, no AI. Draw channels by hand.'
+                        : 'Enter the property address above first.'
+                    }
+                    className="bg-white hover:bg-blue-50 disabled:bg-blue-50 disabled:text-blue-300 text-blue-700 border border-blue-300 font-medium text-sm px-3 py-2 rounded-md whitespace-nowrap"
+                  >
+                    {lookingUp ? 'Working…' : '🛰️ Pull satellite'}
+                  </button>
+                </div>
                 {satellitePreview != null && satelliteFeetPerPixel == null && (
                   <p className="mt-1 text-xs text-amber-700">
                     Manual satellite has no known scale — trace the roofline on the Satellite tab for
