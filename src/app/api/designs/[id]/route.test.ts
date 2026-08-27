@@ -77,7 +77,35 @@ beforeEach(() => {
     portalShowStreetView: true,
     portalShowSatelliteView: true,
   });
+  // Row 367: the scene write now resolves the linked quote's approval state
+  // through the service client, so every scene test needs one. Default = an
+  // UNLINKED design (nothing signed off), which is the pre-row-367 behaviour.
+  // Also stops the row-370 tests below leaking their own client into the next
+  // test, which they did before this line existed.
+  auditSbRef.current = makeFreezeFake({ quoteId: null }).client;
 });
+
+// Row 367 — a minimal service-client fake. The freeze lookup itself moved into
+// the shared writer (see the row-367 describe at the bottom), so all this does
+// now is give `recordVisibilityAudit` a client and stop the row-370 tests below
+// leaking their own client into whatever test runs next, which they did before
+// this existed.
+function makeFreezeFake(opts: { quoteId?: string | null; quote?: Record<string, unknown> | null }) {
+  function from(table: string) {
+    const b = {
+      select: () => b,
+      eq: () => b,
+      async maybeSingle() {
+        if (table === 'designs') return { data: { quote_id: opts.quoteId ?? null }, error: null };
+        return { data: opts.quote ?? null, error: null };
+      },
+      update: () => b,
+      then: (resolve: (v: unknown) => void) => resolve({ data: [], error: null }),
+    };
+    return b;
+  }
+  return { client: { from } };
+}
 
 describe('GET /api/designs/[id]', () => {
   it('401s when the operator gate denies', async () => {
@@ -499,5 +527,59 @@ describe('PUT /api/designs/[id] — portal-visibility audit (row 370)', () => {
     // client missing entirely (throwing accessor) — save still succeeds
     auditSbRef.current = null;
     expect((await PUT(makeReq({ portalShowStreetView: true }), ctx())).status).toBe(200);
+  });
+});
+
+// ── Row 367: the design's post-approval freeze ────────────────────────────────
+// The guard itself lives in the SHARED writer (`updateDesignSceneGuarded`, so
+// seed-analysis / seed-roofline / the photo-delete prune are covered by
+// construction — four premerge lenses independently found that a route-level
+// check missed all three). What THIS route owns is the mapping from the
+// writer's outcome to an honest HTTP answer, which is what these pin. The
+// predicate and the lookup are covered in src/lib/design/sceneFreeze.test.ts.
+describe('PUT /api/designs/[id] — post-approval design freeze (row 367)', () => {
+  it('maps a locked write to a 409 carrying a distinguishable code', async () => {
+    updateDesignSceneGuarded.mockResolvedValueOnce({ ok: false, reason: 'locked' });
+    const res = await PUT(makeReq({ scene: validScene, version: 1 }), ctx());
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('design-locked');
+    // The code is what stops the editor mistaking this for the row-260 CAS
+    // conflict and telling staff to "reload" into the same lock forever.
+    expect(body.error).toContain('already approved');
+  });
+
+  it('maps an UNVERIFIED freeze read to a retryable 500, never a 409', async () => {
+    // Both other answers are wrong here: a 409 would block this editor's saves
+    // permanently on a transient DB blip AND tell staff a live quote is
+    // approved; a 200 would be the exact drift row 367 closes. A 500 keeps the
+    // edit queued for the editor's own backoff retry.
+    updateDesignSceneGuarded.mockResolvedValueOnce({ ok: false, reason: 'unverified' });
+    const res = await PUT(makeReq({ scene: validScene, version: 1 }), ctx());
+    expect(res.status).toBe(500);
+    expect((await res.json()).code).toBeUndefined();
+  });
+
+  it('still maps a CAS conflict to its own 409 shape, unchanged', async () => {
+    // Regression guard on the row-260 contract: adding a second kind of 409
+    // must not blur the first. `conflict: true` and NO `code`.
+    updateDesignSceneGuarded.mockResolvedValueOnce({ ok: false, reason: 'conflict' });
+    const res = await PUT(makeReq({ scene: validScene, version: 1 }), ctx());
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.conflict).toBe(true);
+    expect(body.code).toBeUndefined();
+  });
+
+  it('does not consult the freeze on the non-scene write paths', async () => {
+    // Scope note, deliberately pinned: satelliteLines and portal-visibility are
+    // separate writes on this same route and are NOT frozen by row 367 (the
+    // satellite trace is tracked as its own ledger row — it is portal-visible,
+    // and gating it inside Calculate's persistence path needs its own design).
+    // Change this test only alongside a decision to widen the row.
+    expect((await PUT(makeReq({ satelliteLines: validSatelliteLines }), ctx())).status).toBe(200);
+    expect(updateDesignSceneGuarded).not.toHaveBeenCalled();
+    expect((await PUT(makeReq({ portalShowStreetView: false }), ctx())).status).toBe(200);
+    expect(updateDesignSceneGuarded).not.toHaveBeenCalled();
   });
 });

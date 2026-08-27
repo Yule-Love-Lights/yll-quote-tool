@@ -851,6 +851,23 @@ export default function QuoteBuilder({
   // reopening the quote for editing. That resend is the sanctioned way to
   // change a price/label/footage that was already customer-approved but
   // never booked.
+  // Row 367 delta-verify MED: the REAL whole-page self-correction for a design
+  // lock. The design routes answer 409 `code: 'design-locked'` when the linked
+  // quote turns out to be customer-approved; this tab may still be showing
+  // editable money controls from before that happened. Flipping
+  // staleApprovalFrozen makes the page agree with the server — the same
+  // recovery /api/quote's own lock codes already trigger.
+  const noteDesignLocked = (data: unknown): boolean => {
+    const code = (data as { code?: unknown } | null)?.code;
+    if (code !== 'design-locked') return false;
+    setStaleApprovalFrozen(true);
+    return true;
+  };
+  // Row 367: the DESIGN's own lock copy. Separate from the money reason above
+  // because the remedy sentence differs — nothing here needs re-pricing, the
+  // customer simply agreed to a picture.
+  const POST_APPROVAL_DESIGN_LOCK_REASON =
+    'Locked after approval — the customer agreed to this design. To change the drawing, decline this quote, revive it, edit, and re-send. (A booked order is changed through the amend flow.)';
   const POST_APPROVAL_LOCK_REASON =
     "Locked after approval — a price, label, or footage change here needs re-approval. Decline this quote, revive it, make the change, and re-send; the customer's prior approval no longer applies once you do.";
   const quoteNumber = initialQuote?.quoteNumber ?? null;
@@ -1725,6 +1742,7 @@ export default function QuoteBuilder({
         // conflict) via the same designError banner the design-photo effect
         // above already uses for this design.
         const data = await res.json().catch(() => ({}));
+        noteDesignLocked(data);
         setDesignError(data.error ?? 'The AI-detected layout could not be applied — reopen the design and try again');
       }
     } catch {
@@ -5204,6 +5222,12 @@ export default function QuoteBuilder({
         // and flip the tab to frozen so the controls lock with the honest
         // post-approval copy — the tab self-corrects to server truth instead
         // of staying editable and re-erroring on every retry.
+        // Row 367 delta-verify MED: 'design-locked' deliberately does NOT
+        // belong here. This set is only ever matched against /api/quote's
+        // response, and /api/quote never returns that code (grep-confirmed) —
+        // adding it read as a self-correction that could not fire. The design
+        // routes that DO return it self-correct through noteDesignLocked()
+        // below instead.
         const LOCK_CODES = new Set(['price-override-locked', 'label-override-locked', 'bistro-footage-locked']);
         if (res.status === 409 && typeof data?.code === 'string' && LOCK_CODES.has(data.code)) {
           setResult(prevResult);
@@ -5604,6 +5628,7 @@ export default function QuoteBuilder({
       });
       if (!putRes.ok) {
         const putData = await putRes.json().catch(() => ({}));
+        noteDesignLocked(putData);
         throw new Error(putData.error ?? 'Could not save recommendation');
       }
       // Remount the editor + re-fetch the scene (also refreshes DesignSummary).
@@ -6323,7 +6348,12 @@ export default function QuoteBuilder({
                   <button
                     type="button"
                     onClick={handleAnalyzePhoto}
-                    disabled={analyzing || loading}
+                    // Row 367: seeding a scene past approval rewrites the
+                    // picture the customer signed off on, and the server now
+                    // refuses it — disable rather than let staff click into a
+                    // 409 they can do nothing about.
+                    disabled={analyzing || loading || postApprovalFrozen}
+                    title={postApprovalFrozen ? POST_APPROVAL_DESIGN_LOCK_REASON : undefined}
                     className="bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white font-medium py-2 px-4 rounded-md text-sm"
                   >
                     {analyzing
@@ -6545,7 +6575,8 @@ export default function QuoteBuilder({
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                         Reset
                       </button>
-                      <button type="button" disabled={analyzing || recapturing}
+                      <button type="button" disabled={analyzing || recapturing || postApprovalFrozen}
+                        title={postApprovalFrozen ? POST_APPROVAL_DESIGN_LOCK_REASON : undefined}
                         onClick={reanalyzeCurrent}
                         className="ml-auto text-xs font-semibold text-white bg-green-600 hover:bg-green-700 disabled:bg-green-300 rounded px-3 py-1.5">
                         {analyzing ? 'Re-analyzing…' : 'Re-analyze This View'}
@@ -6622,6 +6653,15 @@ export default function QuoteBuilder({
                       height={640}
                       permanentOnly={form.serviceType === 'permanent'}
                       bistroOnly={form.serviceType === 'permanent_bistro'}
+                      // Row 367: the design's post-approval freeze rides the
+                      // SAME predicate as the money freeze on this page, so the
+                      // picture and the price can never be locked on different
+                      // rules. Server-enforced too (PUT /api/designs/[id]).
+                      locked={postApprovalFrozen}
+                      // Row 367 delta-verify MED: the editor mounted unlocked and
+                      // the server said otherwise — bring the rest of the page
+                      // into line instead of leaving money controls that 409.
+                      onDesignLocked={() => setStaleApprovalFrozen(true)}
                       onReady={(flush, discard) => { editorFlushRef.current = flush; editorDiscardRef.current = discard; }}
                       onPrunedMiniGroups={(groups) => reportPrunedMiniGroups('photo-delete', groups)}
                     />
@@ -8023,10 +8063,13 @@ export default function QuoteBuilder({
                         type="checkbox"
                         className="cursor-pointer accent-green-600"
                         checked={checked}
-                        disabled={recommendBusy}
+                        // Row 367: this toggle persists on the SCENE, so it is
+                        // frozen with the rest of the picture — parity with the
+                        // EditablePrice/EditableLabel controls on this same row.
+                        disabled={recommendBusy || postApprovalFrozen}
                         onChange={() => void toggleDesignItemRecommended(sceneItemIds, !checked)}
                         aria-label={`Recommend ${resolvedLabel.label}`}
-                        title="Recommend this item to the customer"
+                        title={postApprovalFrozen ? POST_APPROVAL_DESIGN_LOCK_REASON : 'Recommend this item to the customer'}
                       />
                     );
                   } else if (item.id === 'winter-wonderland' || item.id === 'stake-lighting') {

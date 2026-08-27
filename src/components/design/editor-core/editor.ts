@@ -6,7 +6,7 @@ import Konva from "konva";
 // design tool's canonical editor.ts — keep it that way.
 import { isStrand, isWreath, isBow, isGarland, isSpritzer, isText, isCustom, isPole, isItemOnPhoto, type Design, type Scene, type SceneItem, type Strand, type StrandItem, type WreathItem, type BowItem, type GarlandItem, type SpritzerItem, type TextItem, type CustomItem, type CustomUpload, type PoleItem, type Yardstick, type BulbType, type DrawingStyle, type Surface, type RoofFeature, type SideOfHouse, type Tier, type WrapStyle, type QuoteWreathSize, type QuoteSpritzerSize, type QuoteGarlandLength, isMiniArea, isMiniGroup, isMiniGroupable, pruneOrphanedMiniGroups, removeItemsForPhoto, type MiniAreaItem, type MiniGroupItem } from "@/lib/design/sceneTypes";
 import { addMiniGroupMembers, createMiniGroup, resolveMiniGroupSelection, setMiniGroupMemberSpacing, sharedMiniGroupColorPattern, updateMiniGroupMemberColorPatterns, updateSelectedColorPatterns } from "@/lib/design/miniGroupEdits";
-import { createEditorApi, SceneConflictError } from "./storage";
+import { createEditorApi, SceneConflictError, SceneLockedError } from "./storage";
 import { COLORS, setPalette } from "./colors";
 import { renderStrand, strandLengthPx } from "./strand";
 import { createWreath } from "./wreath";
@@ -208,7 +208,7 @@ type ToolState = {
 export async function renderEditor(
   root: HTMLElement,
   designId: string,
-  opts: { embedded?: boolean; onBack?: () => void; showQuoteBinding?: boolean; keymap?: KeyMap; activePhotoId?: string | null; permanentOnly?: boolean; bistroOnly?: boolean } = {},
+  opts: { embedded?: boolean; onBack?: () => void; showQuoteBinding?: boolean; keymap?: KeyMap; activePhotoId?: string | null; permanentOnly?: boolean; bistroOnly?: boolean; locked?: boolean; onLocked?: () => void } = {},
 ): Promise<EditorHandle> {
   // (EditorHandle = the destroy fn + an optional flushSave — defined below.)
   // VENDOR ADAPTATION (Path B): storage connector bound to this design — talks
@@ -1558,6 +1558,14 @@ export async function renderEditor(
   // is deliberately the only way out — reload-and-reapply-the-edit is a real
   // design decision this fix doesn't make; see showConflictBanner().
   let conflicted = false;
+  // Row 367: the design's post-approval freeze. The host passes `locked` when
+  // the linked quote already carries a customer approval (the SAME predicate
+  // /api/quote and QuoteBuilder use), and `PUT /api/designs/[id]` enforces it
+  // server-side regardless — so a stale tab that mounted before the approval
+  // still finds out, via the SceneLockedError branch in runSave(). Blocks
+  // saving exactly like `conflicted` does, but with its own honest copy: a
+  // reload does not unlock anything.
+  let locked = !!opts.locked;
   // Ledger row 260: every doSave() call chains onto this tail instead of
   // firing its own overlapping PUT. Without this, two saves in flight at once
   // (a slow autosave overlapping a forced #741 corrective save, or a retry
@@ -1570,7 +1578,7 @@ export async function renderEditor(
   let saveTail: Promise<void> = Promise.resolve();
   const savingEl = root.querySelector("#saving") as HTMLElement;
   function doSave(): Promise<void> {
-    saveTail = saveTail.then(() => (conflicted ? undefined : runSave()));
+    saveTail = saveTail.then(() => (conflicted || locked ? undefined : runSave()));
     return saveTail;
   }
   async function runSave() {
@@ -1588,6 +1596,26 @@ export async function renderEditor(
       const result = await api.updateDesign(design.id, { scene, name: design.name, version: design.version ?? null });
       if (typeof result.version === "number") design.version = result.version;
     } catch (err) {
+      if (err instanceof SceneLockedError) {
+        // Row 367: the server refused this write because the linked quote is
+        // customer-approved. Unlike a CAS conflict there is nothing to reload
+        // INTO — the edit is not saved and will not be, so block saving and
+        // say exactly that. No recovery marker (`editorUnsavedDesign`) is
+        // written: that marker exists to flag a LOST race the operator should
+        // recover, and this is a deliberate refusal, not a loss of a race.
+        if (destroyed || seq !== saveSeq) return;
+        locked = true;
+        // Row 367 delta-verify MED: tell the HOST too. This editor just
+        // learned from the server that the quote is approved; the page around
+        // it may still be showing editable money controls from before that
+        // happened, which would 409 on their own next write.
+        try { opts.onLocked?.(); } catch { /* host handler must never break the editor */ }
+        pendingSave = false;
+        if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+        savingEl.textContent = "Locked — not saved";
+        showLockedBanner(err.message);
+        return;
+      }
       if (err instanceof SceneConflictError) {
         // Fix round (HIGH, four-lens review): this branch must run BEFORE the
         // `destroyed` early-return below. destroy()'s final teardown flush
@@ -1640,6 +1668,28 @@ export async function renderEditor(
   // for the same reason showTransientNotice is (see its comment above): this
   // file travels unchanged into the standalone design tool, which has no rule
   // for a class this repo invents.
+  // Row 367 — the post-approval freeze banner. Same shape as the conflict
+  // banner, deliberately WITHOUT a Reload button: reloading changes nothing
+  // here, and offering it would send staff round a loop.
+  function showLockedBanner(message?: string) {
+    if (root.querySelector("#scene-locked-banner")) return; // already shown
+    const host = root.querySelector(".editor");
+    if (!host) return;
+    const banner = document.createElement("div");
+    banner.id = "scene-locked-banner";
+    banner.style.cssText = [
+      "position:fixed", "top:12px", "left:50%", "transform:translateX(-50%)", "z-index:9999",
+      "max-width:min(90vw,520px)", "padding:10px 14px", "border-radius:8px",
+      "background:#7a1f1f", "color:#fff2f2", "border:1px solid rgba(255,255,255,0.25)",
+      "box-shadow:0 4px 14px rgba(0,0,0,0.35)", "font-size:13px", "line-height:1.4",
+      "text-align:center",
+    ].join(";");
+    banner.textContent =
+      message ??
+      "This design is locked — the customer already approved it. Changes here are NOT saved.";
+    banner.style.whiteSpace = "normal";
+    host.prepend(banner);
+  }
   function showConflictBanner() {
     if (root.querySelector("#scene-conflict-banner")) return; // already shown
     const host = root.querySelector(".editor");
@@ -1676,6 +1726,7 @@ export async function renderEditor(
   }
   function scheduleSave() {
     if (conflicted) return; // #260: blocked until reload — see showConflictBanner()
+    if (locked) { savingEl.textContent = "Locked — not saved"; showLockedBanner(); return; } // row 367
     if (saveTimer) clearTimeout(saveTimer);
     pendingSave = true;
     savingEl.textContent = "Saving…";
