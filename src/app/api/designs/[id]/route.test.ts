@@ -72,7 +72,7 @@ beforeEach(() => {
   getDesignWithPhoto.mockResolvedValue({ id: VALID_ID, scene: validScene, version: 1 });
   updateDesignSceneGuarded.mockResolvedValue({ ok: true, version: 2 });
   linkDesignToQuote.mockResolvedValue(true);
-  updateDesignSatelliteLines.mockResolvedValue(true);
+  updateDesignSatelliteLines.mockResolvedValue({ ok: true });
   updateDesignPortalVisibility.mockResolvedValue({
     portalShowStreetView: true,
     portalShowSatelliteView: true,
@@ -571,15 +571,49 @@ describe('PUT /api/designs/[id] — post-approval design freeze (row 367)', () =
     expect(body.code).toBeUndefined();
   });
 
-  it('does not consult the freeze on the non-scene write paths', async () => {
-    // Scope note, deliberately pinned: satelliteLines and portal-visibility are
-    // separate writes on this same route and are NOT frozen by row 367 (the
-    // satellite trace is tracked as its own ledger row — it is portal-visible,
-    // and gating it inside Calculate's persistence path needs its own design).
-    // Change this test only alongside a decision to widen the row.
+  it('never routes a non-scene write through the scene writer', async () => {
+    // Row 427 UPDATE: satelliteLines is no longer un-frozen — it is frozen on
+    // an actual CHANGE only (see the satellite-trace describe below), which is
+    // what let Jason's "a re-Calculate must keep working" ruling and the freeze
+    // coexist. What stays true, and is what this pins, is that neither
+    // satelliteLines nor portal-visibility goes through the SCENE writer.
     expect((await PUT(makeReq({ satelliteLines: validSatelliteLines }), ctx())).status).toBe(200);
     expect(updateDesignSceneGuarded).not.toHaveBeenCalled();
     expect((await PUT(makeReq({ portalShowStreetView: false }), ctx())).status).toBe(200);
     expect(updateDesignSceneGuarded).not.toHaveBeenCalled();
+  });
+});
+
+// ── Row 427: the satellite trace is frozen on a real CHANGE, not on approval ──
+// Jason ruled the trace must stay writable so an ordinary re-Calculate on an
+// approved quote keeps working; a premerge staff lens showed staff could also
+// redraw or DELETE the roofline the customer approved, which the portal
+// renders. `updateDesignSatelliteLines` compares before refusing; this pins how
+// the route reports each outcome.
+describe('PUT /api/designs/[id] — satellite trace outcomes (row 427)', () => {
+  it('409s a real trace change with the shared design-locked code', async () => {
+    updateDesignSatelliteLines.mockResolvedValueOnce({ ok: false, reason: 'locked' });
+    const res = await PUT(makeReq({ satelliteLines: validSatelliteLines }), ctx());
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('design-locked');
+    // The copy must NOT say "this quote is locked" flatly — an unchanged
+    // re-Calculate on the very same quote is allowed, and staff need to know
+    // that or they will think the quote is unusable.
+    expect(body.error).toContain('without changing the lines still works');
+  });
+
+  it('maps an unverifiable freeze read to a retryable 500, not a lock', async () => {
+    updateDesignSatelliteLines.mockResolvedValueOnce({ ok: false, reason: 'unverified' });
+    const res = await PUT(makeReq({ satelliteLines: validSatelliteLines }), ctx());
+    expect(res.status).toBe(500);
+    expect((await res.json()).code).toBeUndefined();
+  });
+
+  it('still reports an ordinary write failure as a plain 500', async () => {
+    updateDesignSatelliteLines.mockResolvedValueOnce({ ok: false, reason: 'error' });
+    const res = await PUT(makeReq({ satelliteLines: validSatelliteLines }), ctx());
+    expect(res.status).toBe(500);
+    expect((await res.json()).code).toBeUndefined();
   });
 });

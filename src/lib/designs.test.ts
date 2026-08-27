@@ -69,6 +69,7 @@ import {
   removeDesignExtraPhoto,
   updateDesignExtraPhotoTitle,
   updateDesignSceneGuarded,
+  updateDesignSatelliteLines,
   getDesignWithPhoto,
   getDesignByQuote,
   updateDesignPortalVisibility,
@@ -1778,5 +1779,96 @@ describe('updateDesignSceneGuarded — records a design change on a signed-off q
 
     expect(outcome.ok).toBe(false);
     expect(recordDesignChangeMock).not.toHaveBeenCalled();
+  });
+});
+
+// ── Row 427: the satellite trace is frozen on a CHANGE, not on approval ──────
+// This is the guard that lets Jason's ruling ("a re-Calculate must keep
+// working") and the freeze coexist, so it has to be right in both directions.
+describe('updateDesignSatelliteLines — frozen only when the trace actually changes', () => {
+  // REAL shape: a channel is an array of SEGMENTS, `{ points, label }[]`. The
+  // first cut of these fixtures used raw polylines, which matched a wrong
+  // implementation and hid a hole big enough to let any point edit through.
+  type Lines = Parameters<typeof updateDesignSatelliteLines>[1];
+  const seg = (points: [number, number][], label = 'Front') => ({ points, label });
+  const STORED = { santas: [seg([[0.1, 0.1], [0.9, 0.1]])] } as unknown as Lines;
+  const SAME = { santas: [seg([[0.1, 0.1], [0.9, 0.1]])] } as unknown as Lines;
+  const REDRAWN = { santas: [seg([[0.1, 0.1], [0.5, 0.1]])] } as unknown as Lines;
+  // Same LINE COUNT, one point moved — the edit a count-only comparison misses.
+  const POINT_MOVED = { santas: [seg([[0.1, 0.1], [0.9, 0.4]])] } as unknown as Lines;
+  const DELETED = { santas: [] } as unknown as Lines;
+
+  function sb(stored: unknown) {
+    const writes: unknown[] = [];
+    const client = {
+      from() {
+        const b = {
+          select: () => b,
+          eq: () => b,
+          update(payload: unknown) { writes.push(payload); return b; },
+          maybeSingle: async () => ({ data: { satellite_lines: stored }, error: null }),
+          then: (resolve: (v: unknown) => void) => resolve({ data: [], error: null }),
+        };
+        return b;
+      },
+    };
+    return { client, writes };
+  }
+
+  it('ALLOWS an approved quote to re-persist identical lines — the re-Calculate case', async () => {
+    const { client, writes } = sb(STORED);
+    sbRef.current = client;
+    readSceneLockMock.mockResolvedValue({ ok: true, locked: true, quoteId: 'q1', auditable: true });
+
+    expect(await updateDesignSatelliteLines('d1', SAME)).toEqual({ ok: true });
+    expect(writes).toHaveLength(1); // the no-op write still lands, so callers are unchanged
+  });
+
+  it('REFUSES a redraw on an approved quote', async () => {
+    const { client, writes } = sb(STORED);
+    sbRef.current = client;
+    readSceneLockMock.mockResolvedValue({ ok: true, locked: true, quoteId: 'q1', auditable: true });
+
+    expect(await updateDesignSatelliteLines('d1', REDRAWN)).toEqual({ ok: false, reason: 'locked' });
+    expect(writes).toHaveLength(0);
+  });
+
+  it('REFUSES a single moved POINT with the line count unchanged', async () => {
+    // The premerge technical lens found the first implementation blind to
+    // exactly this: same number of lines, so it reported "identical" and a
+    // redraw of the customer's approved roofline sailed through.
+    const { client, writes } = sb(STORED);
+    sbRef.current = client;
+    readSceneLockMock.mockResolvedValue({ ok: true, locked: true, quoteId: 'q1', auditable: true });
+
+    expect(await updateDesignSatelliteLines('d1', POINT_MOVED)).toEqual({ ok: false, reason: 'locked' });
+    expect(writes).toHaveLength(0);
+  });
+
+  it('REFUSES a deletion of the approved roofline — the staff lens case', async () => {
+    const { client, writes } = sb(STORED);
+    sbRef.current = client;
+    readSceneLockMock.mockResolvedValue({ ok: true, locked: true, quoteId: 'q1', auditable: true });
+
+    expect(await updateDesignSatelliteLines('d1', DELETED)).toEqual({ ok: false, reason: 'locked' });
+    expect(writes).toHaveLength(0);
+  });
+
+  it('writes freely when the quote is NOT frozen, without reading the stored trace', async () => {
+    const { client, writes } = sb(STORED);
+    sbRef.current = client;
+    readSceneLockMock.mockResolvedValue({ ok: true, locked: false, quoteId: null, auditable: false });
+
+    expect(await updateDesignSatelliteLines('d1', REDRAWN)).toEqual({ ok: true });
+    expect(writes).toHaveLength(1);
+  });
+
+  it('reports unverified — never a lock — when the freeze state cannot be read', async () => {
+    const { client, writes } = sb(STORED);
+    sbRef.current = client;
+    readSceneLockMock.mockResolvedValue({ ok: false });
+
+    expect(await updateDesignSatelliteLines('d1', REDRAWN)).toEqual({ ok: false, reason: 'unverified' });
+    expect(writes).toHaveLength(0);
   });
 });

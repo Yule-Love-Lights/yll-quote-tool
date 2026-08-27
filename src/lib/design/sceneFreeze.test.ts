@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const { sbRef } = vi.hoisted(() => ({ sbRef: { current: null as unknown } }));
 vi.mock('@/lib/supabase', () => ({ getSupabaseServiceClient: () => sbRef.current }));
 
-import { isSceneFrozen, readSceneLock, SCENE_LOCKED_CODE, type SceneFreezeRow } from './sceneFreeze';
+import { isSceneFrozen, readSceneLock, refuseIfFrozen, SCENE_LOCKED_CODE, type SceneFreezeRow } from './sceneFreeze';
 
 const base: SceneFreezeRow = {
   quote_sent_at: '2026-08-01T00:00:00Z',
@@ -176,5 +176,39 @@ describe('readSceneLock — the row 423 audit signal', () => {
     // Parity with the freeze itself: a test quote is exempt from both.
     sbRef.current = fakeSb({ quoteId: 'q1', quote: { ...APPROVED, is_test: true } }).client;
     expect(await readSceneLock('d1')).toMatchObject({ locked: false, auditable: false });
+  });
+});
+
+// ── Row 427: ONE refusal, shared by every design write route ─────────────────
+// Row 367 gated the scene; four premerge lenses hunting the same class on a
+// later PR found the base photo, extra photos, the satellite image and the
+// satellite trace still open, each a separate route with its own check or none.
+// This helper is the answer, so it is the thing that must be right.
+describe('refuseIfFrozen', () => {
+  beforeEach(() => {
+    sbRef.current = null;
+  });
+
+  it('returns null — carry on — for a design nothing has approved', async () => {
+    sbRef.current = fakeSb({ quoteId: 'q1', quote: { ...APPROVED, customer_approved_at: null } }).client;
+    expect(await refuseIfFrozen('d1')).toBeNull();
+  });
+
+  it('returns a 409 carrying the shared code when frozen', async () => {
+    sbRef.current = fakeSb({ quoteId: 'q1', quote: APPROVED }).client;
+    const res = await refuseIfFrozen('d1');
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(409);
+    const body = await res!.json();
+    expect(body.code).toBe(SCENE_LOCKED_CODE);
+  });
+
+  it('returns a retryable 500 with NO lock code when the state cannot be read', async () => {
+    // Every route that uses this inherits the rule: a transient blip must not
+    // manufacture a permanent refusal, and must not wave the write through.
+    sbRef.current = fakeSb({ designError: 'boom' }).client;
+    const res = await refuseIfFrozen('d1');
+    expect(res!.status).toBe(500);
+    expect((await res!.json()).code).toBeUndefined();
   });
 });

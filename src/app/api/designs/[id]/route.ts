@@ -219,8 +219,33 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       }
     }
     if (satelliteLines !== undefined) {
-      const ok = await updateDesignSatelliteLines(id, satelliteLines as DesignSatelliteLines);
-      if (!ok) return NextResponse.json({ error: 'Failed to save satellite lines' }, { status: 500 });
+      const outcome = await updateDesignSatelliteLines(id, satelliteLines as DesignSatelliteLines);
+      if (!outcome.ok) {
+        // Row 427: `locked` here does NOT mean "this quote is approved" — an
+        // approved quote's re-Calculate re-persists identical lines and is
+        // allowed through. It means these lines actually DIFFER from the trace
+        // the customer signed off on, which the portal renders.
+        if (outcome.reason === 'locked') {
+          return NextResponse.json(
+            {
+              error:
+                'This satellite trace is locked — the customer already approved the roofline it shows, so it ' +
+                'cannot be redrawn here. Re-calculating without changing the lines still works. To change the ' +
+                'trace itself: decline this quote, revive it, edit, and re-send. (A booked order is changed ' +
+                'through the amend flow.)',
+              code: SCENE_LOCKED_CODE,
+            },
+            { status: 409 },
+          );
+        }
+        if (outcome.reason === 'unverified') {
+          return NextResponse.json(
+            { error: "Could not verify this design's approval state — the satellite trace was not saved." },
+            { status: 500 },
+          );
+        }
+        return NextResponse.json({ error: 'Failed to save satellite lines' }, { status: 500 });
+      }
     }
     if (hasStreetVisibility || hasSatelliteVisibility) {
       portalVisibility = await updateDesignPortalVisibility(id, {
