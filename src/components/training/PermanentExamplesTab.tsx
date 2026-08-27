@@ -477,7 +477,10 @@ function PermanentExampleDetail({
               </div>
             )}
             <div>
-              <div className="font-semibold text-gray-700">What did the AI get wrong here?</div>
+              <div className="flex items-center justify-between">
+                <div className="font-semibold text-gray-700">What did the AI get wrong here?</div>
+                <button onClick={startEdit} className="text-blue-600 hover:underline">✎ Edit</button>
+              </div>
               {example.notes ? (
                 <div className="italic">&ldquo;{example.notes}&rdquo;</div>
               ) : (
