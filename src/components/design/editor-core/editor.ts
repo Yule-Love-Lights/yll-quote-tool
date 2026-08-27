@@ -35,6 +35,7 @@ import {
   offPresetSizeSuffix,
 } from "./sizePresets";
 import { isLineDrawContext } from "./drawContext";
+import { finalizeScattershotPolygon, SCATTERSHOT_MIN_POINTS } from "./scattershotPolygon";
 import { surfaceOptionsForBulbType } from "./surfaceOptions";
 import { sideOfHouseOptions } from "./sideOfHouseOptions";
 import { brightnessForPhoto, setBrightnessForPhoto, removeBrightnessForPhoto } from "@/lib/design/photoBrightness";
@@ -138,10 +139,19 @@ const STYLE_HELP: Record<DrawingStyle, string> = {
 
 // "Scattershot" is a lights-only 4th drawing style tracked by a LOCAL tool flag
 // (tool.scattershot) — deliberately NOT added to the shared DrawingStyle type,
-// which garland drawing also uses. It drag-draws a box that fills with
-// scattered mini-lights (a MiniAreaItem; the internal kind stays "miniArea").
+// which garland drawing also uses. It draws a MiniAreaItem (internal kind
+// stays "miniArea") two ways: drag a box (shape:"box"), or click a series of
+// outline points around the real shape and close it (shape:"polygon", points
+// mirroring the "trace" style's click-to-place-points convention).
 const SCATTERSHOT_HELP =
-  "Click and drag a box — it fills with scattered mini-lights in the selected color pattern. Drag its corners after to refit; set fill density in the edit panel.";
+  "Drag a box, or click points around the outline and press Enter, double-click, or click the first point again to close it. Either way it fills with scattered mini-lights in the selected color pattern. Drag a box's corners after to refit it; set fill density in the edit panel.";
+
+// "Click near the first point closes the outline" tolerance, in SCREEN px
+// (divided by stageScale below before comparing against image-space click
+// coordinates) so the target stays the same physical size on screen at any
+// zoom level, rather than shrinking to an unhittable few image-px when
+// zoomed in.
+const SCATTERSHOT_CLOSE_PX = 14;
 
 type ItemCategory = "lights" | "decor" | "text" | "custom" | "poles";
 type DecorType = "wreath" | "bow" | "garland" | "spritzer";
@@ -467,6 +477,12 @@ export async function renderEditor(
   let drawPreview: Konva.Line | null = null;
   // Scattershot box-drag state (lights-only local style → commits a MiniAreaItem).
   let scattershotStart: { x: number; y: number } | null = null;
+  // Scattershot polygon-draw state: click to place successive outline points
+  // (a MiniAreaItem with shape:"polygon" on finish). Mirrors tracePts exactly
+  // — accumulates committed points; the last pair tracks the cursor. Set only
+  // once a scattershot mousedown resolves to a click (not a real box drag) —
+  // see the mouseup handler below.
+  let scatterPolyPts: number[] | null = null;
   // Mini-group / scattershot / spritzer edit panels: when armed (via "+ Add to pattern"),
   // the next color tap APPENDS to the pattern instead of replacing it.
   let mgAddArmed = false;
@@ -876,8 +892,9 @@ export async function renderEditor(
       if (isStrandDrawContext()) g.draggable(false);
       g.on("click tap", (e) => {
         e.cancelBubble = true;
-        // While tracing, clicks must continue the polyline — never select.
-        if (tracePts) return;
+        // While tracing (or mid-way through a scattershot polygon outline),
+        // clicks must continue the line/outline — never select.
+        if (tracePts || scatterPolyPts) return;
         // #63: in strand-draw mode, selection is decided by the deferred
         // mousedown/mouseup draw logic (drag = draw-through, click = select) —
         // don't also select here.
@@ -5253,6 +5270,36 @@ export async function renderEditor(
     commit();
   }
 
+  // Commit a scattershot polygon drawn via click-to-place-points (the
+  // alternative to the box drag above). `rawPoints` is the committed click
+  // stream (cursor-tracking pair already stripped — see finishScattershotDraw).
+  // finalizeScattershotPolygon (Konva-free, unit-tested) dedupes and validates;
+  // a null result means the draw is cancelled, matching commitStrand's "need
+  // at least 2 distinct points" guard one point higher (a polygon needs 3).
+  // Same quote-binding fields as commitMiniArea's box path — shape/points is
+  // the only difference.
+  function commitScattershotPolygon(rawPoints: number[]) {
+    const points = finalizeScattershotPolygon(rawPoints);
+    if (!points) return; // fewer than 3 distinct points — cancelled, not committed
+    const area: MiniAreaItem = {
+      id: cryptoId(),
+      kind: "miniArea",
+      shape: "polygon",
+      points,
+      density: 0.5,
+      colorPattern: [...tool.colorPattern],
+      yardstickId: activeYs()?.id ?? null,
+      surface: tool.surface || "bush",
+      wrapStyle: "canopy",
+      stringCount: 1,
+      included: true,
+    };
+    scene = { ...scene, items: [...scene.items, stampPhoto(area)] };
+    selectedIds = new Set([area.id]);
+    scheduleSave();
+    commit();
+  }
+
   function commitText(p: { x: number; y: number }) {
     const item: TextItem = {
       id: cryptoId(),
@@ -5551,6 +5598,7 @@ export async function renderEditor(
   function cancelInProgress() {
     dragPts = null;
     tracePts = null;
+    scatterPolyPts = null;
     drawOverItemId = null;
     drawPreview?.destroy();
     drawPreview = null;
@@ -5592,6 +5640,21 @@ export async function renderEditor(
       commitTraceSegments(committed);
     }
     tracePts = null;
+    drawPreview?.destroy();
+    drawPreview = null;
+    redrawScene();
+  }
+
+  // Finish a scattershot polygon draw (Enter / double-click / mouseleave /
+  // "click near the first point" all route here — mirrors finishTrace()).
+  // Drops the trailing cursor-tracking pair, same as finishTrace, then hands
+  // the committed clicks to commitScattershotPolygon, which cancels instead
+  // of committing when fewer than 3 distinct points survive dedup.
+  function finishScattershotDraw() {
+    if (!scatterPolyPts) return;
+    const committed = scatterPolyPts.slice(0, -2);
+    commitScattershotPolygon(committed);
+    scatterPolyPts = null;
     drawPreview?.destroy();
     drawPreview = null;
     redrawScene();
@@ -5660,8 +5723,11 @@ export async function renderEditor(
       // don't fall through to the place/draw pipeline (which would drop a
       // duplicate box and destroy the pressed group mid-gesture). Same trace
       // exception as strands/garlands (continuing OR about to start — #203):
-      // mid-trace clicks continue the polyline.
-      if (e.target.findAncestor(".miniArea", true) && !tracePts && !isTraceDrawContext()) return;
+      // mid-trace clicks continue the polyline. Same exception for a
+      // scattershot polygon outline already in progress (scatterPolyPts) —
+      // a vertex click landing over an existing area must place a point,
+      // not select that area out from under the in-progress draw.
+      if (e.target.findAncestor(".miniArea", true) && !tracePts && !scatterPolyPts && !isTraceDrawContext()) return;
 
       // Click on an existing text item — same.
       if (e.target.findAncestor(".text", true)) return;
@@ -5764,9 +5830,39 @@ export async function renderEditor(
       return;
     }
 
-    // Scattershot (lights-only local style): drag a box that fills with
-    // scattered mini-lights on release. Preview drawn on mousemove.
+    // Scattershot (lights-only local style): two gestures share the one tool
+    // flag. A drag (resolved at mouseup, once the release point is known)
+    // draws a box that fills with scattered mini-lights — unchanged. A click
+    // without a real drag instead starts (or, once started, continues) a
+    // click-to-place-points polygon outline, mirroring the "trace" style's
+    // click-click-click convention exactly (see tracePts above).
     if (tool.scattershot) {
+      if (scatterPolyPts) {
+        // Mid-outline: does this click land close enough to the first vertex
+        // to close the shape? Gated on at least SCATTERSHOT_MIN_POINTS other
+        // vertices already committed so an early click can't accidentally
+        // self-close a 1-2-point outline at zero area.
+        const committedSoFar = (scatterPolyPts.length - 2) / 2;
+        const closeDistImg = SCATTERSHOT_CLOSE_PX / stageScale;
+        const dx = p.x - scatterPolyPts[0];
+        const dy = p.y - scatterPolyPts[1];
+        if (committedSoFar >= SCATTERSHOT_MIN_POINTS && Math.hypot(dx, dy) <= closeDistImg) {
+          finishScattershotDraw();
+          return;
+        }
+        // Lock the cursor-tracked pair as a newly committed vertex, then
+        // start tracking a fresh cursor pair — same bookkeeping as trace's
+        // "subsequent click" branch below.
+        scatterPolyPts[scatterPolyPts.length - 2] = p.x;
+        scatterPolyPts[scatterPolyPts.length - 1] = p.y;
+        scatterPolyPts.push(p.x, p.y);
+        drawPreview?.points([...scatterPolyPts]);
+        drawLayer.batchDraw();
+        return;
+      }
+      // Not yet known whether this is a box drag or the first outline click
+      // — resolved at mouseup by the drag distance, same threshold the box
+      // path already used.
       scattershotStart = p;
       return;
     }
@@ -5865,6 +5961,14 @@ export async function renderEditor(
       return;
     }
 
+    if (tool.scattershot && scatterPolyPts) {
+      scatterPolyPts[scatterPolyPts.length - 2] = p.x;
+      scatterPolyPts[scatterPolyPts.length - 1] = p.y;
+      drawPreview?.points([...scatterPolyPts]);
+      drawLayer.batchDraw();
+      return;
+    }
+
     if (tool.drawingStyle === "strand" && dragPts) {
       dragPts[dragPts.length - 2] = p.x;
       dragPts[dragPts.length - 1] = p.y;
@@ -5930,16 +6034,32 @@ export async function renderEditor(
 
     if (scattershotStart) {
       const p = imagePoint();
-      if (p) {
-        const x = Math.min(p.x, scattershotStart.x);
-        const y = Math.min(p.y, scattershotStart.y);
-        const w = Math.abs(p.x - scattershotStart.x);
-        const h = Math.abs(p.y - scattershotStart.y);
-        // Reject tiny boxes as accidental clicks (same spirit as strand's 6px).
-        if (w > 8 && h > 8) commitMiniArea({ x, y, width: w, height: h });
-      }
-      drawLayer.find(".scattershot-preview").forEach((n) => n.destroy());
+      const start = scattershotStart;
       scattershotStart = null;
+      drawLayer.find(".scattershot-preview").forEach((n) => n.destroy());
+      if (p) {
+        const x = Math.min(p.x, start.x);
+        const y = Math.min(p.y, start.y);
+        const w = Math.abs(p.x - start.x);
+        const h = Math.abs(p.y - start.y);
+        if (w > 8 && h > 8) {
+          // Reject tiny boxes as accidental clicks (same spirit as strand's 6px).
+          commitMiniArea({ x, y, width: w, height: h });
+          redrawScene();
+          return;
+        }
+        // Not a real drag — this click starts a polygon outline instead:
+        // commit the mousedown point as vertex 1 and start tracking the
+        // cursor (mirrors trace's very first click exactly). Deliberately
+        // skips redrawScene() here — same as trace's first click — because
+        // redrawCanvas() destroys and rebuilds drawLayer's children from
+        // scene.items, which would immediately destroy the fresh preview
+        // line below (nothing is committed to scene.items yet).
+        scatterPolyPts = [start.x, start.y, start.x, start.y];
+        newPreview(scatterPolyPts);
+        drawLayer.batchDraw();
+        return;
+      }
       redrawScene();
       return;
     }
@@ -5973,13 +6093,17 @@ export async function renderEditor(
     }
   });
 
-  // Trace mode: leaving the photo finishes the polyline.
+  // Trace mode: leaving the photo finishes the polyline. Same for an
+  // in-progress scattershot polygon outline (finishScattershotDraw no-ops
+  // when nothing is in progress, same as finishTrace).
   stage.on("mouseleave", () => {
     if (tool.drawingStyle === "trace") finishTrace();
+    if (tool.scattershot) finishScattershotDraw();
   });
   // Double-click also finishes (extra safety / convention).
   stage.on("dblclick", () => {
     if (tool.drawingStyle === "trace") finishTrace();
+    if (tool.scattershot) finishScattershotDraw();
   });
 
   // Keyboard:
@@ -5997,6 +6121,12 @@ export async function renderEditor(
     // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y / Ctrl+C / Ctrl+V / Delete / Esc set.
     if (e.key === "Enter" && tool.drawingStyle === "trace" && tracePts) {
       finishTrace();
+      return;
+    }
+    // Enter while placing a scattershot polygon outline closes it — same
+    // fixed, non-remappable behavior as trace's Enter-to-finish above.
+    if (e.key === "Enter" && tool.scattershot && scatterPolyPts) {
+      finishScattershotDraw();
       return;
     }
     const action = resolveAction(e, opts.keymap ?? DEFAULT_KEYMAP, "core");
@@ -6036,10 +6166,21 @@ export async function renderEditor(
         e.preventDefault();
         break;
       case "cancel":
-        // Esc: finish an in-progress trace, else clear selection, else cancel.
+        // Esc: finish an in-progress trace, else cancel an in-progress
+        // scattershot outline, else clear selection, else cancel.
         // (No preventDefault — matches the original Esc behavior.)
+        //
+        // Scattershot's Esc deliberately CANCELS (discards the in-progress
+        // outline, no commit) rather than finishing it like trace's Esc
+        // does above. Trace's partial segments are each independently a
+        // valid, useful strand on their own, so "finish what's drawn so
+        // far" makes sense; a 1-2 point polygon has no such value, and the
+        // brief calls out Escape/cancel as distinct from the close-the-
+        // shape gestures (double-click / click-near-first-point / Enter).
         if (tool.drawingStyle === "trace" && tracePts) {
           finishTrace();
+        } else if (tool.scattershot && scatterPolyPts) {
+          cancelInProgress();
         } else if (stampSourceId) {
           cancelInProgress();
         } else if (selectedIds.size > 0) {
