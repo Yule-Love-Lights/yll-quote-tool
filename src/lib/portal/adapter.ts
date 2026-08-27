@@ -108,6 +108,10 @@ type BrowsingSelectionJson = {
   colorSchemeId?: string;
   customPattern?: string[];
   permanentEffect?: string;
+  // Ledger row 324 — additive provenance marker the staff-selection route
+  // stamps; a plain customer autosave never writes this key. See
+  // PortalBrowsingSelection.staffSet.
+  staffSet?: { by: string | null; at: string };
 };
 
 // Shape of a `quotes` row pulled with the columns the portal needs.
@@ -645,6 +649,7 @@ function buildBrowsingSelection(row: QuoteRowForPortal): PortalBrowsingSelection
       : {}),
     ...(isPermanentEffect(raw.permanentEffect) ? { permanentEffect: raw.permanentEffect } : {}),
     savedAt: row.browsing_selection_updated_at ?? '',
+    ...(raw.staffSet && typeof raw.staffSet === 'object' ? { staffSet: raw.staffSet } : {}),
   };
 }
 
@@ -831,6 +836,25 @@ export function deriveIsBooked(args: {
   const { checkoutEnabled, isTest, isPaid, isApproved, quoteStatus } = args;
   if (checkoutEnabled || isTest) return isPaid;
   return isApproved && (isPaid || isPortalActionable(quoteStatus));
+}
+
+// Ledger row 324 fix round (customer MED): whether to show the "your
+// installer set these starting choices" line on the portal. Gated on BOTH
+// staffSet (the current selection was set by staff-selection/route.ts, not
+// a genuine customer edit) AND the customer having viewed before (viewedAt
+// — the #68 view receipt, same signal StaffPreselectBar uses for its
+// overwrite confirm) — a first-ever view has nothing "replaced" to explain.
+//
+// Self-clears without any extra machinery here: quote.browsingSelection is
+// undefined once approved (see quoteRowToPortalQuote), and the customer's
+// own next autosave (/api/quotes/[id]/selection) overwrites browsing_selection
+// WITHOUT a staffSet key (see that route's own comment) — so the NEXT page
+// load reads staffSet:false on its own, no live tracking needed here.
+export function showStaffPreselectNotice(
+  browsingSelection: Pick<PortalBrowsingSelection, 'staffSet'> | undefined,
+  viewedAt: string | undefined,
+): boolean {
+  return !!browsingSelection?.staffSet && !!viewedAt;
 }
 
 // Seed the SelectionProvider package/item selection. On an approved (locked)
@@ -1207,5 +1231,7 @@ export function quoteRowToPortalQuote({ row, photos }: AdapterInput): PortalQuot
       status: row.status ?? null,
     }) as string,
     declineReason: row.decline_reason ?? null,
+    // Ledger row 324 — raw #68 view receipt, not the derived status (see PortalQuote.viewedAt).
+    ...(row.viewed_at ? { viewedAt: row.viewed_at } : {}),
   };
 }

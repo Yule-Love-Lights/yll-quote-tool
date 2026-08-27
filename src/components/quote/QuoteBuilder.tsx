@@ -8,7 +8,7 @@ import type {
   CustomLineItem,
   RooflineChoice,
 } from '@/lib/pricing/pricingEngine';
-import { BUSINESS_RULES, resolveLineItemLabel } from '@/lib/pricing/pricingEngine';
+import { BUSINESS_RULES, NCE_DEPOSIT_PERCENT, resolveLineItemLabel } from '@/lib/pricing/pricingEngine';
 import { buildPortalLineItems, BILLED_ROOFLINE_IDS, PERMANENT_RECOMMEND_FIELDS } from '@/lib/portal/adapter';
 import { attachSceneLinks } from '@/lib/portal/sceneLinks';
 import { extraPhotoLabels, photoLabelForLine } from '@/lib/design/photoLabels';
@@ -26,6 +26,8 @@ import {
   applyPrefill,
   resolveTagPayload,
   resolveNceDepositPercent,
+  shouldClaimNceDepositProvenance,
+  nceTagDepositWasSuppressed,
   clearHolidayOnlyDiscountState,
   clearNceOrNeighborOnServiceTypeSwitch,
   legacyRebookConfirmMessage,
@@ -78,6 +80,7 @@ import {
   reconcileHolidayFootageField,
   deriveHolidayFootageBaseline,
   mergeHolidayFootageBaseline,
+  reconcileAnalysisFootage,
   type HolidayFootageBaseline,
   type HolidayFootageFieldKey,
   type HolidayFieldReconcileResult,
@@ -88,7 +91,9 @@ import { offeredFromLists, offeredIsKnown, type OfferedColorLists } from '@/lib/
 import { detectUnfulfillable } from '@/lib/inventory/detectUnfulfillable';
 import { track } from '@/lib/analytics/posthog';
 import { loadQuoteDraft, saveQuoteDraft, clearQuoteDraft, customerIsEmpty, draftAutosaveActive } from '@/lib/quoteDraft';
+import { loadQuoteEditDraft, saveQuoteEditDraft, clearQuoteEditDraft, sweepQuoteEditDrafts, formatDraftAge, quoteEditDraftLifecycle, type QuoteEditDraft } from '@/lib/quoteEditDraft';
 import { stableStringify, quoteHasUnsavedEdits } from '@/lib/quoteDirty';
+import { permanentSideOverriddenFields, describePermanentSideField } from '@/lib/permanent/reconcileSideFootage';
 import { downscaleForUpload, downscaleForUploadAsBlob, readUploadErrorMessage } from '@/lib/clientImage';
 import {
   parkSatelliteContext,
@@ -144,8 +149,10 @@ type RateFieldKeys = {
   fallback: DifficultyChoice;
 };
 const OVERRIDE_ID_TO_RATE: Record<string, RateFieldKeys> = {
-  'roofline-santas': { diffKey: 'santasDifficulty', rateKey: 'santasCustomRate', fallback: 'medium' },
-  'roofline-gingerbread': { diffKey: 'gingerbreadDifficulty', rateKey: 'gingerbreadCustomRate', fallback: 'medium' },
+  // Roofline falls back to the ONE shared starting value (Easy $8/ft) — see
+  // BUSINESS_RULES.rooflineDefaultDifficulty. WW keeps 'medium', stake 'easy'.
+  'roofline-santas': { diffKey: 'santasDifficulty', rateKey: 'santasCustomRate', fallback: BUSINESS_RULES.rooflineDefaultDifficulty },
+  'roofline-gingerbread': { diffKey: 'gingerbreadDifficulty', rateKey: 'gingerbreadCustomRate', fallback: BUSINESS_RULES.rooflineDefaultDifficulty },
   'winter-wonderland': { diffKey: 'winterWonderlandDifficulty', rateKey: 'winterWonderlandCustomRate', fallback: 'medium' },
   'stake-lighting': { diffKey: 'stakeLightingDifficulty', rateKey: 'stakeLightingCustomRate', fallback: 'easy' },
 };
@@ -846,6 +853,23 @@ export default function QuoteBuilder({
   // reopening the quote for editing. That resend is the sanctioned way to
   // change a price/label/footage that was already customer-approved but
   // never booked.
+  // Row 367 delta-verify MED: the REAL whole-page self-correction for a design
+  // lock. The design routes answer 409 `code: 'design-locked'` when the linked
+  // quote turns out to be customer-approved; this tab may still be showing
+  // editable money controls from before that happened. Flipping
+  // staleApprovalFrozen makes the page agree with the server — the same
+  // recovery /api/quote's own lock codes already trigger.
+  const noteDesignLocked = (data: unknown): boolean => {
+    const code = (data as { code?: unknown } | null)?.code;
+    if (code !== 'design-locked') return false;
+    setStaleApprovalFrozen(true);
+    return true;
+  };
+  // Row 367: the DESIGN's own lock copy. Separate from the money reason above
+  // because the remedy sentence differs — nothing here needs re-pricing, the
+  // customer simply agreed to a picture.
+  const POST_APPROVAL_DESIGN_LOCK_REASON =
+    'Locked after approval — the customer agreed to this design. To change the drawing, decline this quote, revive it, edit, and re-send. (A booked order is changed through the amend flow.)';
   const POST_APPROVAL_LOCK_REASON =
     "Locked after approval — a price, label, or footage change here needs re-approval. Decline this quote, revive it, make the change, and re-send; the customer's prior approval no longer applies once you do.";
   const quoteNumber = initialQuote?.quoteNumber ?? null;
@@ -873,7 +897,7 @@ export default function QuoteBuilder({
           // rule applyIsNce below applies to a live chip turn-on. Blank-slate
           // only — there's nothing to clobber yet (initialFormData.depositPercent
           // is always 0 here), unlike a reopened quote's already-resolved rate.
-          ...(prefill?.isNce ? { depositPercent: 40 } : {}),
+          ...(prefill?.isNce ? { depositPercent: NCE_DEPOSIT_PERCENT } : {}),
         },
   );
   // ─── Unsaved-edit guard (ledger row 406) ────────────────────────────────
@@ -950,6 +974,13 @@ export default function QuoteBuilder({
     if (userTouchedRef.current) return;
     userTouchedRef.current = true;
     setUserTouched(true);
+    // Row 413 deliberately does NOT dismiss the restore offer here. This runs
+    // from CAPTURE-phase pointer/key handlers on the whole builder, so it
+    // fires for a click on the offer banner's own Restore button - and
+    // dismissing here unmounts that button before its click event ever
+    // dispatches, turning Restore into Discard (PR #972 staff lens HIGH, the
+    // classic capture-unmount race). The offer withdraws on a REAL edit
+    // instead - see the stash effect below.
   };
   // Native beforeunload, registered ONLY while genuinely dirty so an untouched
   // or already-saved quote never prompts. preventDefault() is the modern
@@ -963,6 +994,126 @@ export default function QuoteBuilder({
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, [hasUnsavedEdits]);
+
+  // ─── Edit-mode autosave (ledger row 413) ────────────────────────────────
+  // The half of row 406 the banner + beforeunload above CANNOT cover: an
+  // in-app next/link navigation unmounts this component without any event, and
+  // a Chrome Memory Saver discard never runs a handler at all. While the form
+  // is genuinely dirty, the whole QuoteFormData is stashed to localStorage
+  // (debounced), bound to the exact `lastPersistedForm` it was edited on top
+  // of; quoteEditDraft.ts refuses to offer it back unless the server row still
+  // serializes to that same base, so a row that moved since (another operator,
+  // another tab, an approval) silently wins — the reopen-safety rule that
+  // keeps the OLD new-quote draft gated off for edit mode, kept, not waived.
+  //
+  // Restoring is an OFFER (banner near the top), never an automatic setForm:
+  // the operator decides. The offer also self-dismisses on the first real
+  // touch of the form — from that moment the operator is editing the SERVER
+  // value, their new edits start stashing over the old draft, and restoring
+  // the stale one on top of live typing would itself be a clobber.
+  const [editDraftOffer, setEditDraftOffer] = useState<QuoteEditDraft | null>(null);
+  // PR #972 staff lens MED: when a stash existed but the quote changed since,
+  // the draft is dropped (the server wins) and the operator is TOLD - a
+  // silent drop is indistinguishable from the tool eating their work.
+  const [editDraftDiscardedNotice, setEditDraftDiscardedNotice] = useState(false);
+  // Row 420: the sibling notice for a draft discarded because the quote's
+  // LIFECYCLE moved (approved / booked / declined since the stash) — a
+  // different fact than "someone edited the form", so it gets its own words.
+  const [editDraftLifecycleNotice, setEditDraftLifecycleNotice] = useState(false);
+  // The stable id of the quote being edited — initialQuote's, not savedQuoteId
+  // (declared further down, and identical in edit mode anyway: savedQuoteId is
+  // seeded from this exact value and never changes for an existing quote).
+  const editQuoteId = initialQuote?.quoteId ?? null;
+  // Row 420: the lifecycle this session's stashes are bound to. Mount-time
+  // server truth, like lastPersistedForm — if the customer approves or books
+  // WHILE the operator edits, the stash carries the pre-approval stamp and
+  // the NEXT reopen (which loads the fresh row) discards it, which is the
+  // point: a draft never outlives the order state it was priced against.
+  const editLifecycle = initialQuote
+    ? quoteEditDraftLifecycle({
+        status: initialQuote.status ?? null,
+        approvedAt: initialQuote.approvedAt ?? null,
+        depositPaidAt: initialQuote.depositPaidAt ?? null,
+      })
+    : '';
+  useEffect(() => {
+    if (!editMode || !editQuoteId) return;
+    sweepQuoteEditDrafts();
+    // lastPersistedForm at mount IS the server truth (seeded from the Server
+    // Component prop) — exactly the base a restorable draft must match.
+    const draft = loadQuoteEditDraft(editQuoteId, lastPersistedForm, editLifecycle);
+    // queueMicrotask defers the setState out of the effect body, the same
+    // idiom the new-quote draft-restore effect above uses for the identical
+    // react-hooks/set-state-in-effect error-level rule.
+    if (draft === 'server-moved') queueMicrotask(() => setEditDraftDiscardedNotice(true));
+    else if (draft === 'lifecycle-moved') queueMicrotask(() => setEditDraftLifecycleNotice(true));
+    else if (draft) queueMicrotask(() => setEditDraftOffer(draft));
+    // Mount-only by design: a draft can only be offered against the freshly
+    // loaded row, never against mid-session state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    if (!editMode || !editQuoteId) return;
+    if (hasUnsavedEdits) {
+      // A REAL edit (payload actually changed, not a search-box keystroke)
+      // withdraws the pending restore offer: from here the operator is editing
+      // the server value, their new edits stash over the old draft, and
+      // restoring the stale one on top of live typing would be a clobber.
+      // Deferred out of the effect body per the set-state-in-effect rule.
+      if (editDraftOffer) queueMicrotask(() => setEditDraftOffer(null));
+      // Debounced stash while dirty. 800ms: long enough to not thrash JSON +
+      // localStorage on every keystroke of a footage number, short enough that
+      // a tab discard moments after typing still has the edit.
+      const t = setTimeout(() => {
+        saveQuoteEditDraft(editQuoteId, form, lastPersistedForm, editLifecycle);
+      }, 800);
+      return () => clearTimeout(t);
+    }
+    // Clean again: clear the stash when a save made it clean (userTouched
+    // latches on the first edit and never resets). Two guards: an untouched
+    // mount also reaches this branch (userTouched false), and the draft the
+    // offer banner is holding UN-ANSWERED must never be deleted out from
+    // under it (!editDraftOffer) - which means, deliberately, that a no-edit
+    // Calculate while the offer is pending does NOT wipe the stash: the
+    // persisted values are unchanged, so the recovered edits remain a valid,
+    // still-unanswered alternative, and wiping them on a routine pricing
+    // click would destroy exactly what this feature preserves. (The #972
+    // delta-verify caught the earlier comment claiming the opposite.) Once
+    // the offer is resolved - restored, discarded, or displaced by a real
+    // edit - every successful Calculate wipes the stash here.
+    if (userTouched && !editDraftOffer) clearQuoteEditDraft(editQuoteId);
+  }, [editMode, editQuoteId, hasUnsavedEdits, currentFormSerialized, lastPersistedForm, userTouched, form, editDraftOffer, editLifecycle]);
+  // Premerge technical-lens HIGH: the debounce's cleanup CANCELS a pending
+  // stash, and this component's whole premise is that an in-app next/link
+  // click unmounts it with no event — so typing a footage number and clicking
+  // Inbox inside the 800ms window would lose the edit through the exact door
+  // this feature closes (the original row-406 loss, reintroduced by its own
+  // fix — the S51 class). Flush ON UNMOUNT ONLY, via refs kept current every
+  // render: a cleanup-flush on the debounce effect itself would fire on every
+  // dep change (each keystroke) and delete the debounce entirely.
+  const stashFlushRef = useRef<null | (() => void)>(null);
+  // Kept current from an every-render effect, not a render-time assignment —
+  // the react-compiler lint rule forbids ref writes during render (CI caught
+  // it; my local lint read was the truncated tail of the output, not the
+  // count). Post-commit assignment is equivalent here: the unmount cleanup
+  // below reads whatever the LAST committed render left.
+  useEffect(() => {
+    stashFlushRef.current =
+      editMode && editQuoteId && hasUnsavedEdits
+        ? () => saveQuoteEditDraft(editQuoteId, form, lastPersistedForm, editLifecycle)
+        : null;
+  });
+  useEffect(() => {
+    return () => {
+      stashFlushRef.current?.();
+    };
+    // Mount-only: the cleanup must run at UNMOUNT, and the ref always holds
+    // the latest stash closure (or null when there is nothing worth keeping).
+  }, []);
+  // Self-dismiss of the offer on the operator's first edit lives inside
+  // markUserTouched below (an event handler, not an effect — the
+  // set-state-in-effect rule is at error here, and the handler is the actual
+  // moment the intent changes anyway).
 
   // Fix-round HIGH (staff lens, #243 gate): a ref mirror of `form.serviceType`,
   // same never-stale idiom as isNceRef/legacyRebookRef above — but unlike those
@@ -1209,14 +1360,41 @@ export default function QuoteBuilder({
   // src/lib/quoteDraft.ts.
   const draftActive = draftAutosaveActive({ editMode, isTest, savedQuoteId });
   const [draftRestored, setDraftRestored] = useState(false);
+  // Row 206: a stale draft withheld because a lead prefill was applied — see
+  // the effect below. Separate flag from draftRestored (different fact,
+  // different copy): this one never touches form state at all.
+  const [draftWithheldByPrefill, setDraftWithheldByPrefill] = useState(false);
   const draftRestoreTriedRef = useRef(false);
 
   // Restore once on mount: a blank new builder + a saved draft → prefill the
   // customer block + service type. queueMicrotask defers the setState out of
   // the effect body (react-hooks/set-state-in-effect is at error here).
+  //
+  // Row 206: an incoming lead prefill (?name=/?serviceType=/?ghlContactId=,
+  // src/app/admin/leads' "Create quote" link) means the operator is starting
+  // from a KNOWN lead. customerIsEmpty(form.customer) below only catches a
+  // prefill that carried contact fields — applyPrefill already wrote them
+  // into form.customer before this effect ever runs (see the useState
+  // initializer above). A prefill that carried ONLY serviceType and/or
+  // ghlContactId (no name/phone/email/address) leaves form.customer empty,
+  // so without this guard a week-old draft for a DIFFERENT customer would
+  // restore right over it — clobbering the prefill's serviceType, and
+  // leaving the picked-contact chip (seeded from prefill.ghlContactId,
+  // independent of the customer fields) pointing at one customer while the
+  // restored fields show another. Skip the restore whenever a prefill was
+  // applied at all, regardless of which fields it carried — the draft itself
+  // is left in storage untouched (only the RESTORE is skipped), so a later
+  // plain /quote/new visit with no prefill can still recover it; deleting a
+  // real draft just because someone opened a prefill link would be its own
+  // data loss (row 206's own text). Told, not silent, per the rows 413/420
+  // convention: a withheld draft still gets a dismissible grey notice.
   useEffect(() => {
     if (!draftActive || draftRestoreTriedRef.current) return;
     draftRestoreTriedRef.current = true;
+    if (prefill) {
+      if (loadQuoteDraft()) queueMicrotask(() => setDraftWithheldByPrefill(true));
+      return;
+    }
     const draft = loadQuoteDraft();
     if (!draft) return;
     // Only restore (and only then show the note) when the block is genuinely
@@ -1318,6 +1496,11 @@ export default function QuoteBuilder({
     cause: 'reanalyze' | 'photo-delete';
     groups: { surface: string | null; stringCount: number }[];
   } | null>(null);
+  // Row 328(a): set when a contact pick's INHERITED NCE tag would have moved
+  // the deposit on a quote that has already left draft, and was held back.
+  // Holds the inherited tag value so the banner can say which way it went.
+  // Cleared by a Calculate, which re-states the whole quote deliberately.
+  const [nceDepositHeldBack, setNceDepositHeldBack] = useState<boolean | null>(null);
   // #741 defect 3: reports a NEW prune from one of the two triggers. An empty
   // result never overwrites a real, unaddressed warning already standing from
   // the OTHER trigger — e.g. a re-analyze orphans "Curtain — 6 strings"
@@ -1561,6 +1744,7 @@ export default function QuoteBuilder({
         // conflict) via the same designError banner the design-photo effect
         // above already uses for this design.
         const data = await res.json().catch(() => ({}));
+        noteDesignLocked(data);
         setDesignError(data.error ?? 'The AI-detected layout could not be applied — reopen the design and try again');
       }
     } catch {
@@ -2017,17 +2201,38 @@ export default function QuoteBuilder({
   // and seeding under it would stamp the baseline with a scale that's
   // already stale the instant this function returns. See the
   // permanent_bistro fresh-lookup call site below for the reachable case.
-  const seedPermanentSideBaselineIfFrozen = (scale: number | null = satelliteFeetPerPixel) => {
-    if (!permDeriveFrozenRef.current) return;
+  // Row 405: the per-side baseline the CURRENT lines/scale would derive to,
+  // as a pure read. Extracted from the seed below rather than duplicated so
+  // the row-405 confirm and the thaw seed can never drift apart — a drift here
+  // would mean the dialog naming different fields than the reconcile actually
+  // overwrites, which is worse than no dialog.
+  const computePermanentSideBaseline = (scale: number | null = satelliteFeetPerPixel) => {
     const sides = {} as Record<PermanentSideKey, { hasLines: boolean; footage: number | null; corners: number }>;
     for (const side of PERMANENT_SIDES) {
       const lines = permanentSatLines[side];
       const m = deriveSideMeasure(lines, scale, satelliteAspect);
       sides[side] = { hasLines: lines.length > 0, footage: m.footage, corners: m.corners };
     }
-    prevPermSideDerivedRef.current = derivePermanentSideFootageBaseline(sides);
+    return derivePermanentSideFootageBaseline(sides);
+  };
+
+  const seedPermanentSideBaselineIfFrozen = (scale: number | null = satelliteFeetPerPixel) => {
+    if (!permDeriveFrozenRef.current) return;
+    prevPermSideDerivedRef.current = computePermanentSideBaseline(scale);
     prevPermSideScaleRef.current = scale;
   };
+
+  // Row 405 (premerge staff-lens HIGH): the baseline the override check must
+  // read is NOT simply `prevPermSideDerivedRef.current`. That ref is seeded
+  // lazily — only at the rehydrate-thaw, i.e. the first real line edit of the
+  // session, or a Recount. On a REOPENED quote that nobody has touched yet it
+  // is still EMPTY, and an empty baseline makes every field look brand-new,
+  // so the check would report zero overrides and stay silent — inert for the
+  // exact scenario row 405 is about (reopen, hand-typed override, re-analyze a
+  // different address). While frozen, derive the baseline from the current
+  // lines the same way the thaw seed would; once thawed, the ref is the truth.
+  const effectivePermanentSideBaseline = () =>
+    permDeriveFrozenRef.current ? computePermanentSideBaseline() : prevPermSideDerivedRef.current;
 
   // Row 345 finding 2: permDeriveFrozenRef is shared by THREE independent
   // consumers — the permanent-side footage/corners derive above (line
@@ -3030,18 +3235,40 @@ export default function QuoteBuilder({
   const applyAnalysisResult = (data: AnalysisResponse) => {
     if (!data.result) return; // fail-safe: analyzer was unavailable, nothing to seed
     const r = data.result;
-    // The AI's footage estimates pre-fill the inputs; satellite lines (when
-    // present) take over via the measurement effect, and staff can always type.
+    // Row 209: drawn satellite geometry outranks the AI's street-photo text
+    // estimate. A street-only analyze (analyze-photo) never touches
+    // satelliteSantasLines/satelliteGingerbreadLines (the #97/#190 guards
+    // below), so if satellite lines already exist for a field, the
+    // measurement effect (~line 1990) is already the sole authority over its
+    // billed footage — its dependency array never moves on a street
+    // re-analyze, so it can't self-correct a clobber from this write. The
+    // gate (reconcileAnalysisFootage) has to live right here, at the write.
+    const footageFromAnalysis = reconcileAnalysisFootage({
+      aiSantasFootage: r.santasFootage,
+      aiGingerbreadFootage: r.gingerbreadFootage,
+      hasSatelliteSantasLines: satelliteSantasLines.length > 0,
+      hasSatelliteGingerbreadLines: satelliteGingerbreadLines.length > 0,
+      // Fix round (staff MED): scale-less manual-satellite lines (#9, traced
+      // "for training value") derive nothing — same bail the measurement
+      // effect makes — so they must not suppress the AI estimate.
+      satelliteHasScale: satelliteFeetPerPixel != null,
+    });
+    // The AI's footage estimates pre-fill the inputs (only when no satellite
+    // geometry already exists for that field — see above); satellite lines
+    // (when present) take over via the measurement effect, and staff can
+    // always type.
     setForm(f => ({
       ...f,
-      santasFootage: r.santasFootage,
-      santasDifficulty: r.santasDifficulty,
-      // #102: a fresh AI analysis sets a PRESET difficulty, so clear any stale
-      // custom $/ft on these two types — keeps the difficulty + rate consistent.
-      santasCustomRate: 0,
-      gingerbreadFootage: r.gingerbreadFootage,
-      gingerbreadDifficulty: r.gingerbreadDifficulty,
-      gingerbreadCustomRate: 0,
+      ...footageFromAnalysis,
+      // Jason, 2026-08-27: an analysis moves FOOTAGE and nothing else. It used
+      // to adopt the analyzer's own difficulty read (`r.santasDifficulty` /
+      // `r.gingerbreadDifficulty`), so re-analyzing a house could silently flip
+      // a roofline from Easy $8/ft to Medium $10/ft with no person involved —
+      // and #102's companion `santasCustomRate: 0` / `gingerbreadCustomRate: 0`
+      // then wiped a $/ft a staff member had typed by hand. Both are gone:
+      // roofline difficulty and any custom rate are now purely manual, changed
+      // only by a staff member using the dropdown / rate field. New quotes
+      // start at BUSINESS_RULES.rooflineDefaultDifficulty (Easy).
     }));
     // Satellite polylines — seed them so the satellite tab is ready for
     // complex / commercial rooflines without re-analyzing. #97: only (re)set the
@@ -3128,7 +3355,20 @@ export default function QuoteBuilder({
     // Claude may flag satellite as the better measurement source (e.g. rear
     // rooflines invisible from the street) — surface that tab if so.
     setViewMode(r.preferredSource === 'satellite' ? 'satellite' : 'design');
-    setAnalysisNotes(`${r.notes} (confidence: ${r.confidence})`);
+    // Row 209: tell the operator when a field's footage was deliberately
+    // NOT taken from this analysis, so a number that looks unchanged after
+    // "Re-analyze" reads as intentional rather than as a stale UI.
+    // Field names match the ON-SCREEN labels (admin + staff lens LOWs: the
+    // old note said "gingerbread" for the field labelled "Ridge + Sides").
+    const keptFootageFields = [
+      footageFromAnalysis.santasFootage === undefined ? 'front gutterline' : null,
+      footageFromAnalysis.gingerbreadFootage === undefined ? 'ridge + sides' : null,
+    ].filter((label): label is string => label != null);
+    const keptFootageNote =
+      keptFootageFields.length > 0
+        ? ` Footage for ${keptFootageFields.join(' + ')} kept from the drawn satellite lines — this analysis's street estimate was not applied. (Want the street estimate instead? Delete those satellite lines and re-analyze, or type the number directly.)`
+        : '';
+    setAnalysisNotes(`${r.notes} (confidence: ${r.confidence})${keptFootageNote}`);
     const photoNeedsSave = !!(
       data.photoBase64 &&
       data.photoMediaType &&
@@ -3284,6 +3524,53 @@ export default function QuoteBuilder({
     if (!addr) {
       setAnalysisError('Enter the property address above first.');
       return;
+    }
+    // Row 405: ask BEFORE analyzing, not after.
+    //
+    // A re-analyze replaces the traced sides, discarding any hand-typed
+    // footage/corners override. The loss is intended — a fresh AI re-trace is
+    // exactly the "geometry changed, the redraw wins" case the reconcile is
+    // built around — but it happened with NO warning, while all three sibling
+    // replacement paths (handleSatelliteSelect, applyPulledSatellite, and the
+    // permanent_bistro branch) confirm first. Footage drives price.
+    //
+    // PRE-FLIGHT for a specific reason, found by a premerge customer lens on
+    // the first version of this fix, which asked AFTER the analysis landed:
+    // a decline there had to keep the old traced lines while the NEW address's
+    // satellite image had ALREADY been applied and parked in pendingContextRef,
+    // so the customer portal would render one house's photo underneath another
+    // house's light lines. Declining here changes nothing whatsoever — no
+    // request, no image, no scale, no state — and it also does not spend
+    // 20-40s of analyzer time producing a result the operator has said they do
+    // not want.
+    //
+    // `permanentSideOverriddenFields` asks the same question the reconcile
+    // uses (a derived baseline the billed value has since drifted from), so
+    // the dialog can never name different fields than a re-analyze would
+    // actually overwrite. Non-permanent quotes never populate those baselines,
+    // so this is silent for them by construction, as it is for the ordinary
+    // case of a quote carrying no override at all.
+    // Gated on the service type explicitly. The baselines are permanent-side
+    // only, so a non-permanent quote is silent by construction anyway — but a
+    // quote that was switched FROM permanent can still be carrying stale
+    // permanentSatLines and form.permanent values, and there is no reason to
+    // ask about fields that service type does not bill.
+    const overriddenSideFields =
+      form.serviceType === 'permanent'
+        ? permanentSideOverriddenFields(effectivePermanentSideBaseline(), form.permanent)
+        : [];
+    if (overriddenSideFields.length > 0) {
+      const proceed = window.confirm(
+        `Re-analyzing replaces the traced sides, so these hand-entered numbers will be ` +
+          `recalculated from the new trace:
+
+` +
+          `${overriddenSideFields.map(describePermanentSideField).join(', ')}
+
+` +
+          `Cancel to keep them as they are — nothing on this quote will change.`,
+      );
+      if (!proceed) return;
     }
     satelliteChangeInProgressRef.current = true;
     setLookingUp(true);
@@ -3724,11 +4011,21 @@ export default function QuoteBuilder({
   // (nceConfirmMessage) can ask the identical "is this locked" question
   // before it prompts, instead of a second inline expression that could drift.
   const nceDepositLocked = savedStatus === 'approved' || savedStatus === 'booked';
-  const applyIsNce = (next: boolean) => {
+  // Row 328(a): `moveDeposit: false` syncs the chip WITHOUT touching the
+  // deposit — used only by the async contact-pick inheritance on a quote that
+  // has left draft. See nceTagDepositWasSuppressed for why the money is held
+  // back there and nowhere else.
+  const applyIsNce = (next: boolean, opts?: { moveDeposit?: boolean }) => {
+    const moveDeposit = opts?.moveDeposit !== false;
     const wasNce = isNceRef.current;
     isNceRef.current = next;
     setIsNce(next);
     if (next === wasNce) return;
+    if (!moveDeposit) return; // chip only — deposit and its provenance untouched
+    // Any path that DOES move the deposit is a deliberate act on it, so a
+    // standing "we held your deposit back" notice from an earlier contact
+    // pick is now answered and must go.
+    setNceDepositHeldBack(null);
     // Read provenance NOW, not inside the updater: React runs the functional
     // updater at flush time, AFTER this handler finishes — by which point the
     // synchronous clear on the last line below has already set the ref to
@@ -3744,15 +4041,30 @@ export default function QuoteBuilder({
         nceDepositLocked,
         wasRuleSet,
       );
+      // Provenance (row 328(b)): the rule owns only what it actually WROTE.
+      // Claiming on every turn-ON adopted a hand-typed 40 that happened to
+      // match the rule's own number, and the next turn-OFF then wiped that
+      // negotiated value. Turning OFF never claims, and a locked quote never
+      // claims because resolveNceDepositPercent wrote nothing.
+      //
+      // Recorded HERE, inside the updater, because `f.depositPercent` is the
+      // authoritative pre-write value and the render closure's is not — this
+      // runs from an async contact-pick `.then` too, where staff may have
+      // typed since. Writing a ref inside an updater is safe in this one
+      // shape: the value is a pure function of (f, next, locked), so React's
+      // double-invocation in development computes the same answer twice. What
+      // it is NOT safe for is READING back in the same tick, which is exactly
+      // why `wasRuleSet` above is captured before this runs.
+      if (!nceDepositLocked) {
+        nceDepositSetByRuleRef.current = shouldClaimNceDepositProvenance({
+          nextIsNce: next,
+          locked: nceDepositLocked,
+          current: f.depositPercent,
+          resolved,
+        });
+      }
       return resolved === f.depositPercent ? f : { ...f, depositPercent: resolved };
     });
-    // Provenance: resolveNceDepositPercent force-writes 40 in exactly one
-    // case — turning ON while unlocked — so that's the only time the NEXT
-    // 40 is "the rule's". Turning OFF always clears it (whether a revert
-    // just fired or the value was left alone as a hand-edit, there is no
-    // rule-owned value anymore). Locked leaves it untouched — resolveNceDepositPercent
-    // never wrote anything, so there's nothing new to record either way.
-    if (!nceDepositLocked) nceDepositSetByRuleRef.current = next;
   };
 
   // ─── Referral program redemption (#41 PR 2) ─────────────────────────────
@@ -3962,6 +4274,10 @@ export default function QuoteBuilder({
       void quoteBuildTimerRef.current?.start('contact_selected', savedQuoteId);
     }
     everLinkedContactIdRef.current = c.id;
+    // Row 328(a) fix round (technical MED): a standing notice describes the
+    // PREVIOUS pick. Clear it here, before this pick's own lookup can set it
+    // again, so it can never name a contact that is no longer chosen.
+    setNceDepositHeldBack(null);
     setHighLevelContact(c);
     const hlAddress = [c.address1, c.city, c.state, c.postalCode].filter(Boolean).join(', ');
     setForm(f => ({
@@ -4039,7 +4355,38 @@ export default function QuoteBuilder({
         // inherited NCE tag also seeds the 40% deposit default, same as a
         // manual chip click.
         if (!isNceTouchedRef.current) {
-          applyIsNce(eligibleForTags && (tags?.is_nce ?? false));
+          const inheritedNce = eligibleForTags && (tags?.is_nce ?? false);
+          // Fix round (staff HIGH): applyIsNce no-ops when the value is
+          // unchanged, so the notice must ask the same question first.
+          // Without this, re-picking the SAME tagged contact on a sent quote
+          // whose deposit is not exactly 40 fired a notice claiming the chip
+          // had changed when nothing had happened at all — and a warning that
+          // cries wolf is worse than no warning.
+          const chipWouldChange = inheritedNce !== isNceRef.current;
+          // Row 328(a): this runs SECONDS after the click, from a lookup the
+          // staffer never asked for by name. On a quote that has already left
+          // draft the customer may be looking at a portal link quoting the
+          // current deposit, so the chip inherits but the money does not —
+          // and the banner below says so, because a deposit that silently
+          // did not change is exactly as surprising as one that did.
+          // The render closure's depositPercent can be one keystroke stale
+          // here (this resolves seconds after the click). That only decides
+          // whether the informational line below appears — the deposit itself
+          // is not touched on this path at all when the quote has left draft.
+          const suppressed = nceTagDepositWasSuppressed({
+            chipWouldChange,
+            quoteLeftDraft,
+            locked: nceDepositLocked,
+            current: form.depositPercent,
+            resolved: resolveNceDepositPercent(
+              form.depositPercent,
+              inheritedNce,
+              nceDepositLocked,
+              nceDepositSetByRuleRef.current,
+            ),
+          });
+          applyIsNce(inheritedNce, { moveDeposit: !quoteLeftDraft });
+          if (suppressed) setNceDepositHeldBack(inheritedNce);
         }
       })
       // Network error or non-OK response: leave chips exactly as they are —
@@ -4062,6 +4409,11 @@ export default function QuoteBuilder({
     // bypass shape changing mid-session, etc).
     const clearMsg = clearContactConfirmMessage(identityEverFrozen);
     if (clearMsg && !window.confirm(clearMsg)) return;
+    // Row 328(a) fix round 2 (delta-verify MED): a standing "deposit held
+    // back" notice describes the contact that was just unlinked. Drop it here
+    // for the same reason a new pick drops it — it must never name a contact
+    // this quote is no longer pointing at.
+    setNceDepositHeldBack(null);
     attachSeqRef.current++;
     const clearSeq = attachSeqRef.current;
     const freshClear = () => clearSeq === attachSeqRef.current;
@@ -4875,6 +5227,12 @@ export default function QuoteBuilder({
         // and flip the tab to frozen so the controls lock with the honest
         // post-approval copy — the tab self-corrects to server truth instead
         // of staying editable and re-erroring on every retry.
+        // Row 367 delta-verify MED: 'design-locked' deliberately does NOT
+        // belong here. This set is only ever matched against /api/quote's
+        // response, and /api/quote never returns that code (grep-confirmed) —
+        // adding it read as a self-correction that could not fire. The design
+        // routes that DO return it self-correct through noteDesignLocked()
+        // below instead.
         const LOCK_CODES = new Set(['price-override-locked', 'label-override-locked', 'bistro-footage-locked']);
         if (res.status === 409 && typeof data?.code === 'string' && LOCK_CODES.has(data.code)) {
           setResult(prevResult);
@@ -5275,6 +5633,7 @@ export default function QuoteBuilder({
       });
       if (!putRes.ok) {
         const putData = await putRes.json().catch(() => ({}));
+        noteDesignLocked(putData);
         throw new Error(putData.error ?? 'Could not save recommendation');
       }
       // Remount the editor + re-fetch the scene (also refreshes DesignSummary).
@@ -5320,6 +5679,118 @@ export default function QuoteBuilder({
                 Clean it up anytime with “Delete test data” in Settings.
               </p>
             </div>
+          </div>
+        )}
+
+        {/* Row 413: recovered-edits offer. Rendered at the top (a mount-time
+            decision the operator should see before touching anything), and an
+            OFFER by design — restoring never happens automatically, and the
+            offer withdraws itself on the first real edit (markUserTouched).
+            It can only appear at all when the server row still matches the
+            base the draft was edited on top of (quoteEditDraft's CAS-style
+            check), so Restore can never clobber someone else's newer save. */}
+        {editDraftOffer && (
+          <div
+            className="mb-6 rounded-lg border px-4 py-3 flex items-start gap-3"
+            style={{ borderColor: '#f59e0b', backgroundColor: '#fffbeb' }}
+            role="status"
+          >
+            <span aria-hidden="true">●</span>
+            <div className="flex-1">
+              <p className="text-sm font-semibold" style={{ color: '#92400e' }}>
+                Unsaved edits from an earlier visit were recovered.
+              </p>
+              <p className="text-xs mt-0.5" style={{ color: '#92400e' }}>
+                You edited this quote {formatDraftAge(editDraftOffer.savedAt)} but never clicked
+                Calculate, so those changes are not in the saved quote. Restore them to keep
+                working, or discard them to stay with what&rsquo;s saved.
+              </p>
+              <div className="mt-2 flex gap-2">
+                <button
+                  type="button"
+                  className="text-xs font-semibold px-3 py-1.5 rounded-md text-white"
+                  style={{ backgroundColor: '#d97706' }}
+                  onClick={() => {
+                    const draft = editDraftOffer;
+                    setEditDraftOffer(null);
+                    if (!draft) return;
+                    // Restoring IS an edit: latch the dirty machinery so the
+                    // row-406 banner + beforeunload arm immediately, and the
+                    // stash effect re-saves this draft until Calculate lands.
+                    userTouchedRef.current = true;
+                    setUserTouched(true);
+                    setForm(draft.form);
+                  }}
+                >
+                  Restore my edits
+                </button>
+                <button
+                  type="button"
+                  className="text-xs font-semibold px-3 py-1.5 rounded-md border"
+                  style={{ borderColor: '#d97706', color: '#92400e' }}
+                  onClick={() => {
+                    // PR #972 staff lens MED: destructive with no undo, 8px
+                    // from Restore - confirm, matching this file's convention
+                    // for every other destructive action.
+                    if (!window.confirm('Discard the recovered edits? This cannot be undone.')) return;
+                    setEditDraftOffer(null);
+                    if (editQuoteId) clearQuoteEditDraft(editQuoteId);
+                  }}
+                >
+                  Discard
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* PR #972 staff lens MED: the informational half - a stash existed
+            but the quote changed since it was made, so it was discarded (the
+            server wins, by design). Told once, dismissible, grey not amber:
+            nothing is wrong and nothing is recoverable. */}
+        {editDraftDiscardedNotice && (
+          <div
+            className="mb-6 rounded-lg border px-4 py-2.5 flex items-start gap-2 text-xs"
+            style={{ borderColor: '#d1d5db', backgroundColor: '#f9fafb', color: '#4b5563' }}
+            role="status"
+          >
+            <span className="flex-1">
+              Unsaved edits from an earlier visit were found, but this quote has been changed since
+              they were made - so they were discarded to protect the newer save.
+            </span>
+            <button
+              type="button"
+              className="font-semibold underline"
+              onClick={() => setEditDraftDiscardedNotice(false)}
+            >
+              OK
+            </button>
+          </div>
+        )}
+
+        {/* Row 420: sibling of the notice above, for a draft discarded because
+            the quote's LIFECYCLE moved (approved / booked / declined since the
+            stash). Different words on purpose: the form the draft was priced
+            against may be untouched — what moved is the order's state, and
+            restoring old numbers onto it is exactly what was refused. */}
+        {editDraftLifecycleNotice && (
+          <div
+            className="mb-6 rounded-lg border px-4 py-2.5 flex items-start gap-2 text-xs"
+            style={{ borderColor: '#d1d5db', backgroundColor: '#f9fafb', color: '#4b5563' }}
+            role="status"
+          >
+            <span className="flex-1">
+              Unsaved edits from an earlier visit were found, but they could not be safely
+              re-applied - this quote&apos;s status has moved since they were made (approved, booked,
+              declined), or they predate the status check - so they were discarded.
+            </span>
+            <button
+              type="button"
+              className="font-semibold underline"
+              onClick={() => setEditDraftLifecycleNotice(false)}
+            >
+              OK
+            </button>
           </div>
         )}
 
@@ -5550,6 +6021,44 @@ export default function QuoteBuilder({
                 </button>
               </div>
             )}
+            {/* Row 206: a saved draft existed but was left untouched because a
+                lead prefill was applied here — grey/dismissible, same
+                convention as rows 413/420 (nothing is wrong, nothing was
+                lost; the draft is still sitting in storage for a plain
+                /quote/new visit). No Clear button: this notice never touched
+                the draft, so there's nothing here to undo. */}
+            {draftWithheldByPrefill && (
+              <div
+                className="flex items-center justify-between gap-3 mb-3 rounded-md border px-3 py-2 text-xs"
+                style={{ borderColor: '#d1d5db', backgroundColor: '#f9fafb', color: '#4b5563' }}
+                role="status"
+              >
+                <span>
+                  A saved draft from an earlier, unfinished quote was found, but this quote was
+                  started from a lead — so the draft was left untouched instead of overwriting
+                  these fields. To get back to it, open{' '}
+                  {/* A plain <a>, NOT next/link: this navigates to the SAME
+                      route minus the ?prefill params, and the restore effect
+                      is mount-once — a client transition would keep this
+                      component instance alive and never re-offer the draft.
+                      A full load guarantees a fresh mount (and the row-406
+                      beforeunload warning still guards unsaved typing). */}
+                  {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- full
+                      document load is REQUIRED here, see comment above */}
+                  <a href="/quote/new" className="font-semibold underline">
+                    + New quote
+                  </a>{' '}
+                  directly (without a lead) and it will be offered there.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setDraftWithheldByPrefill(false)}
+                  className="font-semibold underline whitespace-nowrap"
+                >
+                  OK
+                </button>
+              </div>
+            )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className={lbl} htmlFor="customer-name">Name</label>
@@ -5750,6 +6259,22 @@ export default function QuoteBuilder({
 
           {/* ── Photo Analysis ── */}
           <Section title="House Photo — Auto-Measure">
+            {/* Row 427b (premerge staff lens): this note used to live inside the
+                "Move the Camera" box, which only renders when a Google geocode
+                succeeded — so an approved quote where staff went straight to a
+                manual upload showed NO visible lock text at all, just a
+                disabled attribute and a title that is invisible on touch. At
+                section level it covers every control in the section, and the
+                copy now names them instead of only the camera. */}
+            {postApprovalFrozen && (
+              <p className="text-xs text-amber-700 mb-3">
+                🔒 <strong>Locked after approval.</strong> The customer agreed to this photo and design,
+                so nothing in this section can change it — analyzing, moving the camera, saving an angle,
+                pulling or uploading a satellite image, and uploading a house photo are all disabled.
+                To change it: decline this quote, revive it, edit, and re-send. (A booked order is changed
+                through the amend flow.)
+              </p>
+            )}
             <p className="text-xs text-gray-400 mb-3">
               {form.serviceType === 'permanent'
                 ? 'Look up the address on Google Maps — the satellite auto-trace draws the four side rooflines (editable), and footage/corners/extensions follow the lines. Or upload a photo and draw/type manually.'
@@ -5763,30 +6288,35 @@ export default function QuoteBuilder({
             <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
               <div className="flex items-center justify-between gap-3 mb-1">
                 <span className="text-sm font-medium text-blue-900">Look up on Google Maps</span>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handlePullSatellite}
-                    disabled={lookingUp || loading || !form.customer.address.trim()}
-                    title={
-                      form.customer.address.trim()
-                        ? 'No Street View at this address? Skip straight to the satellite image + real scale — instant, no AI. Draw channels by hand.'
+                {/* Jason (2026-08-26): "Pull satellite" moved DOWN to the
+                    manual satellite-photo row — it belongs with the satellite
+                    slot it fills, not beside the full auto-measure. */}
+                <button
+                  type="button"
+                  onClick={handleLookupAddress}
+                  // Row 367, found by a live device check on approved quote
+                  // #1290: this is the OTHER entry point into a scene seed
+                  // (handleLookupAddress -> applyAnalysisResult ->
+                  // seedDesignFromAnalysis -> POST seed-analysis). Its sibling
+                  // "Analyze with Claude" was gated when the freeze shipped and
+                  // this one was missed, so on an approved quote the server
+                  // correctly refused the write while the button still invited
+                  // the click. "Pull satellite" deliberately stays enabled: it
+                  // fills the satellite slot and never seeds the scene, and the
+                  // satellite trace is intentionally not frozen (Jason,
+                  // 2026-08-27 — a re-Calculate must keep working).
+                  disabled={lookingUp || loading || !form.customer.address.trim() || postApprovalFrozen}
+                  title={
+                    postApprovalFrozen
+                      ? POST_APPROVAL_DESIGN_LOCK_REASON
+                      : form.customer.address.trim()
+                        ? undefined
                         : 'Enter the property address above first.'
-                    }
-                    className="bg-white hover:bg-blue-50 disabled:bg-blue-50 disabled:text-blue-300 text-blue-700 border border-blue-300 font-medium text-sm px-3 py-2 rounded-md whitespace-nowrap"
-                  >
-                    {lookingUp ? 'Working…' : '🛰️ Pull satellite'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleLookupAddress}
-                    disabled={lookingUp || loading || !form.customer.address.trim()}
-                    title={form.customer.address.trim() ? undefined : 'Enter the property address above first.'}
-                    className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium text-sm px-4 py-2 rounded-md whitespace-nowrap"
-                  >
-                    {lookingUp ? 'Looking up…' : '🏠 Analyze from Address'}
-                  </button>
-                </div>
+                  }
+                  className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium text-sm px-4 py-2 rounded-md whitespace-nowrap"
+                >
+                  {lookingUp ? 'Looking up…' : '🏠 Analyze from Address'}
+                </button>
               </div>
               <p className="text-xs text-blue-700">
                 {form.serviceType === 'permanent'
@@ -5795,7 +6325,7 @@ export default function QuoteBuilder({
                     ? 'Uses the Property Address above. Fetches Street View + satellite (with scale) so you draw the bistro runs on the Satellite tab.'
                     : 'Uses the Property Address above. Fetches Street View + satellite view, sends both to Claude.'}
                 {' '}
-                {'No Street View at the address? Use "Pull satellite" instead — just the satellite image + scale, instant, then upload your own front photo below.'}
+                {'No Street View at the address? Use the "Pull satellite" button in the satellite section below — just the satellite image + scale, instant, then upload your own front photo.'}
               </p>
               {/* #95: quick link to open the house on Google Maps (standard pin, not
                   Street View) — precise coords once analyzed, else the matched/typed
@@ -5846,7 +6376,20 @@ export default function QuoteBuilder({
                 type="file"
                 accept="image/*"
                 onChange={handlePhotoSelect}
-                disabled={loading}
+                // Row 427b, found by a live prod check on approved quote #1290:
+                // the satellite upload beside it was gated and this one was not.
+                //
+                // Corrected after a premerge lens traced it: choosing a file
+                // does NOT itself write. handlePhotoSelect sets photoFile /
+                // photoPreview only; the eager design effect keys on
+                // photoBase64, which the Analyze button sets — and that button
+                // was already frozen. So this is a CONSISTENCY fix, not a
+                // closed write path: it stops staff picking a photo, watching
+                // the preview appear, and then finding the only button that can
+                // do anything with it greyed out. The comment here first
+                // claimed it closed a live write; it did not.
+                disabled={loading || postApprovalFrozen}
+                title={postApprovalFrozen ? POST_APPROVAL_DESIGN_LOCK_REASON : undefined}
                 className="block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-green-50 file:text-green-700 hover:file:bg-green-100"
               />
               {photoPreview && photoFile && (
@@ -5856,7 +6399,12 @@ export default function QuoteBuilder({
                   <button
                     type="button"
                     onClick={handleAnalyzePhoto}
-                    disabled={analyzing || loading}
+                    // Row 367: seeding a scene past approval rewrites the
+                    // picture the customer signed off on, and the server now
+                    // refuses it — disable rather than let staff click into a
+                    // 409 they can do nothing about.
+                    disabled={analyzing || loading || postApprovalFrozen}
+                    title={postApprovalFrozen ? POST_APPROVAL_DESIGN_LOCK_REASON : undefined}
                     className="bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white font-medium py-2 px-4 rounded-md text-sm"
                   >
                     {analyzing
@@ -5875,13 +6423,45 @@ export default function QuoteBuilder({
                 <label className="block text-xs font-medium text-gray-500 mb-1">
                   Satellite photo (optional) — screenshot from Google Maps top-down
                 </label>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={handleSatelliteSelect}
-                  disabled={loading}
-                  className="block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
-                />
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handleSatelliteSelect}
+                    // Row 427: same write, same freeze — uploading a satellite
+                    // photo replaces the image the customer approved.
+                    disabled={loading || postApprovalFrozen}
+                    title={postApprovalFrozen ? POST_APPROVAL_DESIGN_LOCK_REASON : undefined}
+                    className="block flex-1 min-w-[14rem] text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                  />
+                  {/* Jason (2026-08-26): moved here from the Google-Maps box
+                      header — this button FILLS this satellite slot (image +
+                      real scale, instant, no AI), so it lives beside it. Same
+                      handler, same gating, pure relocation. */}
+                  <button
+                    type="button"
+                    onClick={handlePullSatellite}
+                    // Row 427 (premerge staff lens): this PR froze the write
+                    // this button ends in (POST analysis-context swaps the
+                    // satellite IMAGE the portal renders), so leaving it
+                    // enabled meant a click that optimistically wiped the drawn
+                    // trace, hit a 409, swallowed it in pushAnalysisContext's
+                    // catch, and still told staff "Satellite loaded". The
+                    // comment defending it as safe was written BEFORE this PR
+                    // froze that route and went stale against my own change.
+                    disabled={lookingUp || loading || !form.customer.address.trim() || postApprovalFrozen}
+                    title={
+                      postApprovalFrozen
+                        ? POST_APPROVAL_DESIGN_LOCK_REASON
+                        : form.customer.address.trim()
+                          ? 'No Street View at this address? Skip straight to the satellite image + real scale — instant, no AI. Draw channels by hand.'
+                          : 'Enter the property address above first.'
+                    }
+                    className="bg-white hover:bg-blue-50 disabled:bg-blue-50 disabled:text-blue-300 text-blue-700 border border-blue-300 font-medium text-sm px-3 py-2 rounded-md whitespace-nowrap"
+                  >
+                    {lookingUp ? 'Working…' : '🛰️ Pull satellite'}
+                  </button>
+                </div>
                 {satellitePreview != null && satelliteFeetPerPixel == null && (
                   <p className="mt-1 text-xs text-amber-700">
                     Manual satellite has no known scale — trace the roofline on the Satellite tab for
@@ -5998,68 +6578,76 @@ export default function QuoteBuilder({
                       </span>
                     </div>
                     <div className="flex items-center gap-2 flex-wrap">
-                      <button type="button" disabled={recapturing}
+                      {/* Row 427: every camera move REPLACES the design's base
+                          photo (moveStreetView/recaptureStreetView -> setPhotoBase64
+                          -> POST /api/designs/[id]/photo), and saving an angle adds a
+                          quoted extra photo. Both change the picture the customer
+                          approved, so both are frozen with the rest of it - the server
+                          refuses them too, this just stops staff clicking into a
+                          refusal. Found by three premerge lenses on PR #998. */}
+                      <button type="button" disabled={recapturing || postApprovalFrozen}
                         onClick={() => moveStreetView('left')}
                         title="Move the camera to the next panorama along the street (re-aims at the house)"
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                         ◀ Along street
                       </button>
-                      <button type="button" disabled={recapturing}
+                      <button type="button" disabled={recapturing || postApprovalFrozen}
                         onClick={() => moveStreetView('right')}
                         title="Move the camera to the next panorama along the street (re-aims at the house)"
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                         Along street ▶
                       </button>
                       <span className="mx-1 text-gray-300">|</span>
-                      <button type="button" disabled={recapturing}
+                      <button type="button" disabled={recapturing || postApprovalFrozen}
                         onClick={() => recaptureStreetView({ heading: (svHeading ?? 0) - 30 })}
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                         ◀ Rotate −30°
                       </button>
-                      <button type="button" disabled={recapturing}
+                      <button type="button" disabled={recapturing || postApprovalFrozen}
                         onClick={() => recaptureStreetView({ heading: (svHeading ?? 0) - 10 })}
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                         ◀ −10°
                       </button>
-                      <button type="button" disabled={recapturing}
+                      <button type="button" disabled={recapturing || postApprovalFrozen}
                         onClick={() => recaptureStreetView({ heading: (svHeading ?? 0) + 10 })}
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                         +10° ▶
                       </button>
-                      <button type="button" disabled={recapturing}
+                      <button type="button" disabled={recapturing || postApprovalFrozen}
                         onClick={() => recaptureStreetView({ heading: (svHeading ?? 0) + 30 })}
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                         Rotate +30° ▶
                       </button>
                       <span className="mx-1 text-gray-300">|</span>
-                      <button type="button" disabled={recapturing}
+                      <button type="button" disabled={recapturing || postApprovalFrozen}
                         onClick={() => recaptureStreetView({ pitch: Math.min(90, svPitch + 10) })}
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                         ▲ Tilt Up
                       </button>
-                      <button type="button" disabled={recapturing}
+                      <button type="button" disabled={recapturing || postApprovalFrozen}
                         onClick={() => recaptureStreetView({ pitch: Math.max(-90, svPitch - 10) })}
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                         ▼ Tilt Down
                       </button>
                       <span className="mx-1 text-gray-300">|</span>
-                      <button type="button" disabled={recapturing}
+                      <button type="button" disabled={recapturing || postApprovalFrozen}
                         onClick={() => recaptureStreetView({ fov: Math.min(120, svFov + 10) })}
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                         − Zoom Out
                       </button>
-                      <button type="button" disabled={recapturing}
+                      <button type="button" disabled={recapturing || postApprovalFrozen}
                         onClick={() => recaptureStreetView({ fov: Math.max(30, svFov - 10) })}
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                         + Zoom In
                       </button>
                       <span className="mx-1 text-gray-300">|</span>
-                      <button type="button" disabled={recapturing}
+                      <button type="button" disabled={recapturing || postApprovalFrozen}
                         onClick={() => recaptureStreetView({ heading: null, pitch: 0, fov: 80 })}
                         className="text-xs font-medium border border-gray-300 hover:border-gray-500 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                         Reset
                       </button>
-                      <button type="button" disabled={analyzing || recapturing}
+                      <button type="button" disabled={analyzing || recapturing || postApprovalFrozen}
+                        title={postApprovalFrozen ? POST_APPROVAL_DESIGN_LOCK_REASON : undefined}
                         onClick={reanalyzeCurrent}
                         className="ml-auto text-xs font-semibold text-white bg-green-600 hover:bg-green-700 disabled:bg-green-300 rounded px-3 py-1.5">
                         {analyzing ? 'Re-analyzing…' : 'Re-analyze This View'}
@@ -6070,13 +6658,13 @@ export default function QuoteBuilder({
                         tab to draw the new angle on). */}
                     {designId && (
                       <div className="mt-2 flex items-center gap-2 flex-wrap">
-                        <button type="button" disabled={savingVantage || recapturing}
+                        <button type="button" disabled={savingVantage || recapturing || postApprovalFrozen}
                           onClick={() => void saveVantageAsExtra('left')}
                           title="Fetch the next panorama to the left (aimed at the house) and add it as an extra photo of the design — the current photo stays put"
                           className="text-xs font-medium border border-green-300 hover:border-green-500 text-green-800 rounded px-3 py-1.5 bg-white disabled:opacity-50">
                           📌 ◀ Save prev angle as extra photo
                         </button>
-                        <button type="button" disabled={savingVantage || recapturing}
+                        <button type="button" disabled={savingVantage || recapturing || postApprovalFrozen}
                           onClick={() => void saveVantageAsExtra('right')}
                           title="Fetch the next panorama to the right (aimed at the house) and add it as an extra photo of the design — the current photo stays put"
                           className="text-xs font-medium border border-green-300 hover:border-green-500 text-green-800 rounded px-3 py-1.5 bg-white disabled:opacity-50">
@@ -6136,6 +6724,15 @@ export default function QuoteBuilder({
                       height={640}
                       permanentOnly={form.serviceType === 'permanent'}
                       bistroOnly={form.serviceType === 'permanent_bistro'}
+                      // Row 367: the design's post-approval freeze rides the
+                      // SAME predicate as the money freeze on this page, so the
+                      // picture and the price can never be locked on different
+                      // rules. Server-enforced too (PUT /api/designs/[id]).
+                      locked={postApprovalFrozen}
+                      // Row 367 delta-verify MED: the editor mounted unlocked and
+                      // the server said otherwise — bring the rest of the page
+                      // into line instead of leaving money controls that 409.
+                      onDesignLocked={() => setStaleApprovalFrozen(true)}
                       onReady={(flush, discard) => { editorFlushRef.current = flush; editorDiscardRef.current = discard; }}
                       onPrunedMiniGroups={(groups) => reportPrunedMiniGroups('photo-delete', groups)}
                     />
@@ -6814,7 +7411,11 @@ export default function QuoteBuilder({
           {/* ── Santa's — Front Gutterline ── */}
           <div className={`transition-opacity ${form.santasFootage === 0 ? 'opacity-50' : ''}`}>
             <Section title="Santa's — Front Gutterline (C9 Bulbs)">
-              <p className="text-xs text-gray-400 mb-3">Auto-measured from photo. Adjust if needed.</p>
+              <p className="text-xs text-gray-400 mb-3">
+                Footage is auto-measured from the photo — adjust if needed. <strong>Difficulty is not:</strong>{' '}
+                it stays where you left it (new quotes start at Easy $8/ft) and only changes when you pick a
+                different value here. Bump it for a genuinely hard roof.
+              </p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className={lbl}>Linear Footage</label>
@@ -6851,7 +7452,11 @@ export default function QuoteBuilder({
           {/* ── Gingerbread — Ridge + Sides ── */}
           <div className={`transition-opacity ${form.gingerbreadFootage === 0 ? 'opacity-50' : ''}`}>
             <Section title="Gingerbread — Ridge + Sides (C9 Bulbs)">
-              <p className="text-xs text-gray-400 mb-3">Auto-measured from photo. Adjust if needed.</p>
+              <p className="text-xs text-gray-400 mb-3">
+                Footage is auto-measured from the photo — adjust if needed. <strong>Difficulty is not:</strong>{' '}
+                it stays where you left it (new quotes start at Easy $8/ft) and only changes when you pick a
+                different value here. Bump it for a genuinely hard roof.
+              </p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className={lbl}>Linear Footage</label>
@@ -7278,6 +7883,9 @@ export default function QuoteBuilder({
                   // would still get silently wiped by a LATER OFF-toggle that
                   // still thought it owned this field.
                   nceDepositSetByRuleRef.current = false;
+                  // Row 328(a): typing here IS the deliberate act the notice
+                  // asks for, so it stops standing.
+                  setNceDepositHeldBack(null);
                   set('depositPercent', Number(e.target.value));
                 }}
               />
@@ -7285,6 +7893,16 @@ export default function QuoteBuilder({
             <span className="block text-xs text-gray-500 mt-1">
               Blank defaults to 50%. Overrides the deposit due at approval for this quote only.
             </span>
+            {/* Row 328(a): a deposit that silently did NOT change is as
+                surprising as one that did, so the held-back case says so
+                where the number is, and names the deliberate way to do it. */}
+            {nceDepositHeldBack !== null && (
+              <p role="status" className="mt-2 text-sm text-amber-700">
+                ⚠️ This contact {nceDepositHeldBack ? 'is tagged NCE' : 'is not tagged NCE'}, so the NCE chip
+                changed — but the deposit was left at {form.depositPercent || 50}% because this quote has already
+                left draft. Change it here yourself if the customer agreed to a different deposit.
+              </p>
+            )}
           </Section>
 
           {/* Row 406: the unsaved-changes indicator. Sits directly above
@@ -7524,10 +8142,13 @@ export default function QuoteBuilder({
                         type="checkbox"
                         className="cursor-pointer accent-green-600"
                         checked={checked}
-                        disabled={recommendBusy}
+                        // Row 367: this toggle persists on the SCENE, so it is
+                        // frozen with the rest of the picture — parity with the
+                        // EditablePrice/EditableLabel controls on this same row.
+                        disabled={recommendBusy || postApprovalFrozen}
                         onChange={() => void toggleDesignItemRecommended(sceneItemIds, !checked)}
                         aria-label={`Recommend ${resolvedLabel.label}`}
-                        title="Recommend this item to the customer"
+                        title={postApprovalFrozen ? POST_APPROVAL_DESIGN_LOCK_REASON : 'Recommend this item to the customer'}
                       />
                     );
                   } else if (item.id === 'winter-wonderland' || item.id === 'stake-lighting') {

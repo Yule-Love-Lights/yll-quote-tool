@@ -15,6 +15,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { requireOperator } from '@/lib/auth/supabaseServer';
 import { getDesign, updateDesignSceneGuarded, isValidDesignId, EMPTY_SCENE } from '@/lib/designs';
+import { SCENE_LOCKED_CODE, SCENE_LOCKED_MESSAGE } from '@/lib/design/sceneFreeze';
 import {
   seedSceneFromAnalysis,
   sanitizeAnalysisSeed,
@@ -82,6 +83,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // real guarantee instead of an accepted risk.
   const outcome = await updateDesignSceneGuarded(id, scene, row.version ?? null);
   if (!outcome.ok) {
+    if (outcome.reason === 'locked') {
+      // Row 367: the linked quote carries a frozen (customer-approved)
+      // agreement. Same wire code as PUT /api/designs/[id] so every client
+      // branch on ONE value.
+      return NextResponse.json(
+        { error: SCENE_LOCKED_MESSAGE, code: SCENE_LOCKED_CODE },
+        { status: 409 },
+      );
+    }
+    if (outcome.reason === 'unverified') {
+      // Row 367: the freeze state could not be READ — retryable, not a lock.
+      return NextResponse.json(
+        { error: "Could not verify this design's approval state — nothing was saved." },
+        { status: 500 },
+      );
+    }
     if (outcome.reason === 'conflict') {
       return NextResponse.json(
         { error: 'The design changed elsewhere while re-analyzing — reopen it and try again', conflict: true },

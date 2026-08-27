@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { StaffNote, StaffNoteCursor, StaffNotesPage } from '@/lib/staffNotes';
+import { SkeletonRows } from '@/components/ui/LoadingSkeleton';
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -48,6 +49,30 @@ export async function loadStaffNotes(
   // over-eager "Show older notes" button is a wasted click, while a wrongly
   // absent one hides notes, which is the failure this row exists to avoid.
   return { notes: payload.notes as StaffNote[], hasMore: payload.hasMore !== false };
+}
+
+/** Row 372: withdraw a note. Returns the note as it now stands — for a second
+ *  click that is the ORIGINAL withdrawal, not this one, so the panel shows who
+ *  actually did it. */
+export async function redactStaffNote(
+  quoteId: string,
+  noteId: string,
+  reason: string,
+  fetcher: Fetcher = fetch,
+): Promise<{ note: StaffNote; alreadyRedacted: boolean }> {
+  const response = await fetcher(`/api/quotes/${quoteId}/staff-notes`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ noteId, reason }),
+  });
+  const payload = await responseBody(response);
+  if (!response.ok) {
+    throw new Error(typeof payload.error === 'string' ? payload.error : 'Could not withdraw the note');
+  }
+  if (!payload.note || typeof payload.note !== 'object') throw new Error('Could not withdraw the note');
+  // Row 372 (staff lens LOW): a second staffer racing a withdrawal needs to be
+  // told their reason was NOT the one kept — the first withdrawal stands.
+  return { note: payload.note as StaffNote, alreadyRedacted: payload.alreadyRedacted === true };
 }
 
 export async function postStaffNote(
@@ -106,6 +131,9 @@ export function StaffNotesList({
   loadingMore = false,
   olderError = null,
   onLoadMore,
+  onRedact,
+  redactingId = null,
+  redactNotice = null,
 }: {
   notes: StaffNote[];
   loading: boolean;
@@ -121,6 +149,13 @@ export function StaffNotesList({
    *  it rather than in the note-writing form at the far bottom of the panel. */
   olderError?: string | null;
   onLoadMore?: () => void;
+  /** Row 372: withdraw this note. Absent = no control rendered at all, which
+   *  is how every read-only caller keeps the old behaviour. */
+  onRedact?: (note: StaffNote) => void;
+  redactingId?: string | null;
+  /** Row 372: the outcome of a withdrawal, rendered against the note it
+   *  concerns rather than in the compose form far below it. */
+  redactNotice?: { id: string; message: string } | null;
 }) {
   return (
     <div aria-live="polite">
@@ -128,7 +163,11 @@ export function StaffNotesList({
         Staff only
       </span>
       {loading ? (
-        <p className="text-sm text-gray-500">Loading notes…</p>
+        // Row 410: was a bare line that then dropped the whole note list in.
+        // announce={false}: this panel already wraps everything in its own
+        // aria-live region, and nesting a second role="status" inside it can
+        // double-announce (technical lens LOW on PR #969).
+        <SkeletonRows label="Loading notes…" announce={false} rows={3} rowClassName="h-16" className="flex flex-col gap-2" />
       ) : loadFailed && notes.length === 0 ? (
         <div role="alert" className="text-sm text-red-700">
           <p>Could not load notes. This quote may still have notes that are not shown.</p>
@@ -148,10 +187,45 @@ export function StaffNotesList({
         <ol className="max-h-80 space-y-3 overflow-y-auto">
           {notes.map((note) => (
             <li key={note.id} className="border-t border-gray-100 pt-3 first:border-0 first:pt-0">
-              <p className="whitespace-pre-wrap text-sm text-gray-800">{note.body}</p>
+              {/* Row 372: a withdrawn note keeps its place and its author in
+                  the timeline — the fact that something was written and taken
+                  back is itself part of the record — but reads as withdrawn
+                  rather than as ordinary text. */}
+              <p
+                className={
+                  note.redactedAt
+                    ? 'whitespace-pre-wrap text-sm italic text-gray-500'
+                    : 'whitespace-pre-wrap text-sm text-gray-800'
+                }
+              >
+                {note.body}
+              </p>
               <p className="mt-1 text-xs text-gray-500">
                 {note.createdByLabel} · {formatNoteTime(note.createdAt)}
+                {note.redactedAt && (
+                  <>
+                    {' · withdrawn'}
+                    {note.redactedByLabel ? ` by ${note.redactedByLabel}` : ''}{' '}
+                    {formatNoteTime(note.redactedAt)}
+                    {note.redactedReason ? ` — ${note.redactedReason}` : ''}
+                  </>
+                )}
               </p>
+              {!note.redactedAt && onRedact && (
+                <button
+                  type="button"
+                  onClick={() => onRedact(note)}
+                  disabled={redactingId === note.id}
+                  className="mt-1 text-xs font-medium text-gray-500 underline disabled:opacity-50"
+                >
+                  {redactingId === note.id ? 'Withdrawing…' : 'Withdraw'}
+                </button>
+              )}
+              {redactNotice?.id === note.id && (
+                <p role="alert" className="mt-1 text-xs text-red-700">
+                  {redactNotice.message}
+                </p>
+              )}
             </li>
           ))}
           {/* Row 373: the page is capped, so the older notes have to be
@@ -199,6 +273,13 @@ export function StaffNotesPanel({ quoteId }: { quoteId: string }) {
   // generic wording — so a staffer could read it as "note not saved", or miss
   // it entirely and walk away believing there was nothing older to see.
   const [olderError, setOlderError] = useState<string | null>(null);
+  // Row 372: which note is mid-withdrawal, so its own control disables without
+  // freezing the others.
+  const [redactingId, setRedactingId] = useState<string | null>(null);
+  // Row 372 (staff lens MED): a withdrawal's outcome belongs BESIDE the note it
+  // is about, not in the compose form at the bottom of the panel — the same
+  // mistake row 373's older-page error made, and the reason it was moved.
+  const [redactNotice, setRedactNotice] = useState<{ id: string; message: string } | null>(null);
   const pendingSubmissionRef = useRef<StaffNoteSubmission | null>(null);
   const loadGenerationRef = useRef(0);
   const [reloadKey, setReloadKey] = useState(0);
@@ -217,6 +298,8 @@ export function StaffNotesPanel({ quoteId }: { quoteId: string }) {
       setHasMore(false);
       setLoadingMore(false);
       setOlderError(null);
+      setRedactingId(null);
+      setRedactNotice(null);
       pendingSubmissionRef.current = null;
       void loadStaffNotes(quoteId)
         .then((page) => {
@@ -268,6 +351,56 @@ export function StaffNotesPanel({ quoteId }: { quoteId: string }) {
     }
   };
 
+  // Row 372: withdraw a note. Confirmed first, because the text does not come
+  // back — this is the correction path for a note that should not stand, not an
+  // edit. The reason is optional on purpose: the reason may itself be the
+  // sensitive part, and a redaction should never be blocked on explaining
+  // itself.
+  const redact = async (note: StaffNote) => {
+    if (redactingId) return;
+    // Staff lens MED: quote the note back. Several notes on one quote can read
+    // alike at a glance (three gate codes, three "left voicemail"), the control
+    // sits under each of them, and there is no undo — so the dialog has to show
+    // WHICH one is about to lose its text, not just ask whether to lose one.
+    const preview = note.body.length > 120 ? `${note.body.slice(0, 120)}…` : note.body;
+    if (
+      !window.confirm(
+        `Withdraw this note?
+
+"${preview}"
+
+The text is replaced permanently and cannot be recovered. The note stays in the timeline, marked as withdrawn by you.`,
+      )
+    ) {
+      return;
+    }
+    const reason = window.prompt('Why is it being withdrawn? (optional)') ?? '';
+    const generation = loadGenerationRef.current;
+    setRedactingId(note.id);
+    setRedactNotice(null);
+    try {
+      const { note: updated, alreadyRedacted } = await redactStaffNote(quoteId, note.id, reason);
+      if (generation !== loadGenerationRef.current) return;
+      setNotes((current) => mergeStaffNotes(current, [updated]));
+      if (alreadyRedacted) {
+        setRedactNotice({
+          id: note.id,
+          message: `Someone else withdrew this note first${
+            updated.redactedByLabel ? ` (${updated.redactedByLabel})` : ''
+          } — their reason is the one kept.`,
+        });
+      }
+    } catch (err) {
+      if (generation !== loadGenerationRef.current) return;
+      setRedactNotice({
+        id: note.id,
+        message: err instanceof Error ? err.message : 'Could not withdraw the note',
+      });
+    } finally {
+      if (generation === loadGenerationRef.current) setRedactingId(null);
+    }
+  };
+
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const body = draft.trim();
@@ -303,13 +436,18 @@ export function StaffNotesPanel({ quoteId }: { quoteId: string }) {
         loadingMore={loadingMore}
         olderError={olderError}
         onLoadMore={() => void loadMore()}
+        onRedact={(note) => void redact(note)}
+        redactingId={redactingId}
+        redactNotice={redactNotice}
       />
       <form onSubmit={submit} className="mt-4 border-t border-gray-100 pt-4">
         <label htmlFor={`staff-note-${quoteId}`} className="mb-1 block text-sm font-medium text-gray-700">
           Add an internal note
         </label>
         <p className="mb-1 text-xs text-gray-500">
-          Notes are permanent. They cannot be edited or deleted once added.
+          Notes are permanent and cannot be edited. A note added in error can be withdrawn — the
+          text is replaced, and the note stays in the timeline showing who wrote it and who
+          withdrew it.
         </p>
         <textarea
           id={`staff-note-${quoteId}`}

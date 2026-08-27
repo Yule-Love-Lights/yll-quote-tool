@@ -5,7 +5,7 @@
 //    extra_photos) — no behavior change, existing 404 semantics must still hold.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import type { NextRequest } from 'next/server';
+import { NextResponse, type NextRequest } from 'next/server';
 
 const { setDesignAnalysis, uploadDesignSatellite, singleResult } = vi.hoisted(() => ({
   setDesignAnalysis: vi.fn(async () => true),
@@ -36,6 +36,17 @@ vi.mock('@/lib/auth/supabaseServer', () => ({
   requireOperator: async () => null,
 }));
 
+
+// Row 427: every design write route shares ONE post-approval refusal.
+const { refuseIfFrozenMock } = vi.hoisted(() => ({
+  refuseIfFrozenMock: vi.fn(async (): Promise<unknown> => null),
+}));
+
+vi.mock('@/lib/design/sceneFreeze', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/design/sceneFreeze')>()),
+  refuseIfFrozen: refuseIfFrozenMock,
+}));
+
 import { POST } from './route';
 
 const VALID_ID = '11111111-1111-1111-1111-111111111111';
@@ -45,6 +56,7 @@ function makeReq(body: unknown): NextRequest {
 }
 
 beforeEach(() => {
+  refuseIfFrozenMock.mockResolvedValue(null);
   vi.clearAllMocks();
   setDesignAnalysis.mockResolvedValue(true);
   uploadDesignSatellite.mockResolvedValue({ path: 'd1/satellite.jpg' });
@@ -82,5 +94,23 @@ describe('POST /api/designs/[id]/analysis-context — narrowed existence check (
     const json = await res.json();
     expect(json.error).toMatch(/not found/i);
     expect(setDesignAnalysis).not.toHaveBeenCalled();
+  });
+});
+
+// Row 427: this route swaps the SATELLITE IMAGE the portal renders under the
+// customer's roofline trace. It was the one route frozen in this PR without a
+// freeze test of its own — flagged by the premerge staff lens, which is exactly
+// the kind of gap an untested guard hides in.
+describe('POST /api/designs/[id]/analysis-context — post-approval freeze (row 427)', () => {
+  it('refuses a frozen design before writing anything', async () => {
+    refuseIfFrozenMock.mockResolvedValueOnce(
+      NextResponse.json({ error: 'locked', code: 'design-locked' }, { status: 409 }),
+    );
+    const res = await POST(
+      makeReq({ satelliteBase64: 'data:image/jpeg;base64,AAA' }),
+      { params: Promise.resolve({ id: VALID_ID }) },
+    );
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe('design-locked');
   });
 });

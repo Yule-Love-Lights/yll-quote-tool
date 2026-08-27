@@ -8,8 +8,9 @@
 //                            portalShowSatelliteView? } — #8 Stage A).
 
 import { NextRequest, NextResponse } from 'next/server';
-import { isSupabaseServiceConfigured } from '@/lib/supabase';
-import { requireOperator } from '@/lib/auth/supabaseServer';
+import { isSupabaseServiceConfigured, getSupabaseServiceClient } from '@/lib/supabase';
+import { requireOperator, getOperator } from '@/lib/auth/supabaseServer';
+import { appendQuoteAuditEntry } from '@/lib/quoteAudit';
 import {
   getDesignWithPhoto,
   updateDesignSceneGuarded,
@@ -22,6 +23,7 @@ import {
   type DesignPortalVisibility,
 } from '@/lib/designs';
 import { clampBrightness } from '@/lib/design/photoBrightness';
+import { SCENE_LOCKED_CODE, SCENE_LOCKED_MESSAGE } from '@/lib/design/sceneFreeze';
 
 export const runtime = 'nodejs';
 
@@ -143,15 +145,6 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     let portalVisibility: DesignPortalVisibility | null = null;
     let newVersion: number | undefined;
     if (scene !== undefined) {
-      // Row 348 (admin LOW): clamp brightness before persisting. `lightScale`
-      // does NOT need the same treatment here — every render path already
-      // clamps it on READ via `normalizeLightScale` (editor.ts's
-      // `activeLightScale()`, render-readonly.ts:89), so a raw out-of-range
-      // stored value self-corrects and adding a write-time clamp too would
-      // be redundant machinery. Brightness has no such read-time guard
-      // anywhere (see photoBrightness.ts's `clampBrightness` doc comment),
-      // so an unclamped value would persist and paint an opaque tint over
-      // the whole design on every render path, portal included.
       const rawScene = scene as DesignScene;
       const normalizedScene: DesignScene = {
         ...rawScene,
@@ -182,6 +175,27 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       };
       const outcome = await updateDesignSceneGuarded(id, normalizedScene, version as number | null | undefined);
       if (!outcome.ok) {
+        // Row 367: the shared writer refused because the linked quote carries
+        // a frozen (customer-approved) agreement. Distinguishable `code` so
+        // the editor tells this apart from the row-260 CAS conflict below —
+        // the conflict's remedy is "reload", which here would loop staff back
+        // into the same lock.
+        if (outcome.reason === 'locked') {
+          return NextResponse.json(
+            { error: SCENE_LOCKED_MESSAGE, code: SCENE_LOCKED_CODE },
+            { status: 409 },
+          );
+        }
+        // Row 367: the freeze state could not be READ. Not a lock (a transient
+        // blip must not permanently block this editor, nor claim a live quote
+        // is approved) and not a licence to write — a retryable 5xx keeps the
+        // edit queued for the editor's own backoff retry.
+        if (outcome.reason === 'unverified') {
+          return NextResponse.json(
+            { error: "Could not verify this design's approval state — not saved. Retrying." },
+            { status: 500 },
+          );
+        }
         if (outcome.reason === 'conflict') {
           // Distinguishable body (`conflict: true`) so the editor can tell
           // this apart from an ordinary save failure and block-and-offer-
@@ -205,8 +219,33 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       }
     }
     if (satelliteLines !== undefined) {
-      const ok = await updateDesignSatelliteLines(id, satelliteLines as DesignSatelliteLines);
-      if (!ok) return NextResponse.json({ error: 'Failed to save satellite lines' }, { status: 500 });
+      const outcome = await updateDesignSatelliteLines(id, satelliteLines as DesignSatelliteLines);
+      if (!outcome.ok) {
+        // Row 427: `locked` here does NOT mean "this quote is approved" — an
+        // approved quote's re-Calculate re-persists identical lines and is
+        // allowed through. It means these lines actually DIFFER from the trace
+        // the customer signed off on, which the portal renders.
+        if (outcome.reason === 'locked') {
+          return NextResponse.json(
+            {
+              error:
+                'This satellite trace is locked — the customer already approved the roofline it shows, so it ' +
+                'cannot be redrawn here. Re-calculating without changing the lines still works. To change the ' +
+                'trace itself: decline this quote, revive it, edit, and re-send. (A booked order is changed ' +
+                'through the amend flow.)',
+              code: SCENE_LOCKED_CODE,
+            },
+            { status: 409 },
+          );
+        }
+        if (outcome.reason === 'unverified') {
+          return NextResponse.json(
+            { error: "Could not verify this design's approval state — the satellite trace was not saved." },
+            { status: 500 },
+          );
+        }
+        return NextResponse.json({ error: 'Failed to save satellite lines' }, { status: 500 });
+      }
     }
     if (hasStreetVisibility || hasSatelliteVisibility) {
       portalVisibility = await updateDesignPortalVisibility(id, {
@@ -220,6 +259,19 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
       if (!portalVisibility) {
         return NextResponse.json({ error: 'Failed to save portal visibility' }, { status: 500 });
       }
+      // Row 370: record WHO hid/showed a portal image and when. The shared
+      // updated_at trigger cannot distinguish this from any other design
+      // write, and there was no paper trail if a customer disputed what was
+      // shown. Best-effort by design (appendQuoteAuditEntry's contract):
+      // the trail matters exactly for quotes with a FROZEN agreement — a
+      // design with no linked quote, or a quote never approved (NULL
+      // snapshot), has nothing agreed to dispute, and the helper's
+      // unconfirmed-snapshot guard skips those rather than risking the
+      // frozen agreement to record a presentational toggle.
+      await recordVisibilityAudit(id, {
+        ...(hasStreetVisibility ? { portalShowStreetView: portalShowStreetView as boolean } : {}),
+        ...(hasSatelliteVisibility ? { portalShowSatelliteView: portalShowSatelliteView as boolean } : {}),
+      });
     }
     return NextResponse.json({
       ok: true,
@@ -230,5 +282,64 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     const msg = err instanceof Error ? err.message : 'Update failed';
     console.error('PUT /api/designs/[id] error:', err);
     return NextResponse.json({ error: msg }, { status: 500 });
+  }
+}
+
+// Row 370 — best-effort audit of a portal-visibility change, onto the linked
+// quote's approval_snapshot (key: portalVisibilityChanges) via the shared
+// hardened append (row 411). Never throws, never fails the caller's request:
+// losing this audit line is acceptable; breaking a visibility save (or the
+// frozen agreement) to record one is not.
+async function recordVisibilityAudit(
+  designId: string,
+  changes: { portalShowStreetView?: boolean; portalShowSatelliteView?: boolean },
+): Promise<void> {
+  try {
+    const sb = getSupabaseServiceClient();
+    if (!sb) return;
+    const { data: designRow, error: designErr } = await sb
+      .from('designs')
+      .select('quote_id')
+      .eq('id', designId)
+      .maybeSingle<{ quote_id: string | null }>();
+    if (designErr) {
+      // #976 lens MED: a REAL query error must leave a trace — this trail's
+      // whole purpose is a dispute paper record, and a silently-failing read
+      // would let it go dark with zero signal. The legitimate no-op (an
+      // unlinked design) stays silent below.
+      console.warn('[api/designs/:id] portal-visibility audit skipped — design read failed:', designErr.message);
+      return;
+    }
+    if (!designRow?.quote_id) return; // unlinked design — nothing to audit onto
+    const { data: quoteRow, error: quoteErr } = await sb
+      .from('quotes')
+      .select('approval_snapshot')
+      .eq('id', designRow.quote_id)
+      .maybeSingle<{ approval_snapshot: unknown }>();
+    if (quoteErr || !quoteRow) {
+      // Same reasoning: an unconfirmed read is exactly what the helper's
+      // guard exists for, but it must be VISIBLE in the logs.
+      console.warn(
+        '[api/designs/:id] portal-visibility audit skipped — quote snapshot read failed or no row:',
+        quoteErr?.message ?? 'no row',
+      );
+      return;
+    }
+    const operator = await getOperator();
+    await appendQuoteAuditEntry(
+      sb,
+      designRow.quote_id,
+      'portalVisibilityChanges',
+      {
+        by: operator?.email ?? null,
+        at: new Date().toISOString(),
+        designId,
+        changes,
+      },
+      '[api/designs/:id]',
+      quoteRow.approval_snapshot,
+    );
+  } catch (err) {
+    console.warn('[api/designs/:id] portal-visibility audit append threw:', err);
   }
 }

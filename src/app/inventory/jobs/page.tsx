@@ -17,6 +17,7 @@ import {
 } from '@/lib/inventory/fulfillmentStage';
 import type { FulfillmentCard } from '@/lib/inventory/jobs';
 import { PERMANENT_SIDE_LABEL, type PermanentSide } from '@/lib/permanent/types';
+import { SkeletonBar } from '@/components/ui/LoadingSkeleton';
 
 type MaterialRow = { sku: string; name: string; qty: number; onHand: number | null; short: boolean };
 type UnboundConcept = { conceptKey: string; label: string; qty: number };
@@ -95,7 +96,27 @@ export default function JobsBoardPage() {
 
         {error && <p className="text-sm mb-4" style={{ color: '#b91c1c' }}>Couldn&apos;t load jobs: {error}</p>}
         {loading ? (
-          <p className="text-sm py-10 text-center" style={{ color: 'var(--op-text-dim)' }}>Loading jobs…</p>
+          // Row 410: the board is a fixed set of stage columns, so the
+          // skeleton is those columns at their real minimum width — the page
+          // never reflows from a one-line placeholder into a wide grid.
+          <div
+            role="status"
+            aria-busy="true"
+            className="grid gap-3 overflow-x-auto pb-2"
+            style={{ gridTemplateColumns: `repeat(${FULFILLMENT_STAGES.length}, minmax(220px, 1fr))` }}
+          >
+            {FULFILLMENT_STAGES.map((stage) => (
+              <section key={stage} className="rounded-lg border" style={{ borderColor: 'var(--op-border)', background: 'var(--op-bg)' }}>
+                <header className="px-3 py-2 border-b" style={{ borderColor: 'var(--op-border)' }}>
+                  <SkeletonBar className="h-4 w-24" />
+                </header>
+                <div className="p-2 flex flex-col gap-2 min-h-[60px]">
+                  <SkeletonBar className="h-16" />
+                </div>
+              </section>
+            ))}
+            <span className="sr-only">Loading jobs…</span>
+          </div>
         ) : cards.length === 0 ? (
           <div className="rounded-lg border p-8 text-sm text-center" style={{ borderColor: 'var(--op-border)', color: 'var(--op-text-dim)', background: 'var(--op-bg-raised)' }}>
             No active jobs yet — a job appears here once a customer pays their deposit.
@@ -312,7 +333,18 @@ function WorkOrderModal({ id, onClose }: { id: string; onClose: () => void }) {
           {error ? (
             <p className="text-sm" style={{ color: '#b91c1c' }}>{error}</p>
           ) : !data ? (
-            <p className="text-sm" style={{ color: 'var(--op-text-dim)' }}>Loading work order…</p>
+            // Row 410 fix round (staff lens MED): the real drawer is a
+            // customer line, a stage/action row, the prep button and a
+            // materials TABLE — several hundred pixels. Five thin lines held a
+            // sixth of that and the drawer still ballooned right as a staffer
+            // reached for "Mark prepared". Mirror the real shape instead.
+            <div role="status" aria-busy="true" className="flex flex-col gap-3">
+              <SkeletonBar className="h-5 w-64" />
+              <SkeletonBar className="h-5 w-80" />
+              <SkeletonBar className="h-9 w-40" />
+              <SkeletonBar className="h-64" />
+              <span className="sr-only">Loading work order…</span>
+            </div>
           ) : (
             <>
               {(data.job.customerName || data.job.customerAddress) && (

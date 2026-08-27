@@ -276,7 +276,11 @@ alter table quotes
   -- documents it.
   add column if not exists deposit_declined_at timestamptz,
   add column if not exists deposit_decline_code text,
-  add column if not exists deposit_decline_notified_at timestamptz;
+  add column if not exists deposit_decline_notified_at timestamptz,
+  -- 2026-08-05 NCE tag (#198) — row 188 true-up 2026-08-26: applied by
+  -- migrations/2026-08-05-nce-customer-tags.sql, never folded into this file
+  -- (predates the same-PR fold-in rule).
+  add column if not exists is_nce boolean not null default false;
 
 alter table quotes drop constraint if exists quotes_video_kind_check;
 alter table quotes add constraint quotes_video_kind_check
@@ -445,9 +449,18 @@ alter table training_houses
   add column if not exists cost_labor_hours numeric,
   add column if not exists revenue numeric;
 
+-- 2026-08-05 corpus source tag (archive-slice3) — row 188 true-up 2026-08-26:
+-- this column + index were applied by
+-- migrations/2026-08-05-archive-slice3-corpus-and-night-photos.sql but never
+-- folded into this file (the migration predates the same-PR fold-in rule).
+alter table training_houses
+  add column if not exists source text not null default 'manual';
+
 alter table training_houses enable row level security;
 create index if not exists training_houses_created_at_idx on training_houses (created_at desc);
 create index if not exists training_houses_address_idx on training_houses (address);
+create index if not exists training_houses_source_created_idx
+  on public.training_houses (source, created_at desc);
 
 
 -- ---------------------------------------------------------------------
@@ -801,6 +814,12 @@ alter table public.customers
   add column if not exists referral_code text unique;
 alter table public.customers
   add column if not exists referral_photo_optout boolean not null default false;
+
+-- 2026-08-05 NCE + YLL Neighbor tags (#198) — row 188 true-up 2026-08-26:
+-- applied by migrations/2026-08-05-nce-customer-tags.sql, never folded in.
+alter table public.customers
+  add column if not exists is_nce boolean not null default false,
+  add column if not exists is_yll_neighbor boolean not null default false;
 
 -- 2026-07-28 Customer tenure (#178) staff-editable manual override years,
 -- unioned with the auto-derived set (deposit-paid + legacy-rebook years) in
@@ -1344,13 +1363,31 @@ create table if not exists public.integration_tokens (
   id                uuid primary key default gen_random_uuid(),
   provider          text  not null,                   -- 'gmail'
   account_email     citext not null,
-  refresh_token_enc text,                             -- encrypted at rest (Vault/pgcrypto)
+  refresh_token_enc text,                             -- AES-256-GCM via src/lib/crypto/secretBox.ts
+  access_token_enc  text,                             -- same box; short-lived but still a live credential
+  access_token_expires_at timestamptz,                -- NULL when the provider does not say
+  scope             text,                             -- what the grant covers, as the provider described it
   watch_history_id  text,
   watch_expiration  timestamptz,
   created_at        timestamptz not null default now(),
   updated_at        timestamptz not null default now(),
   constraint integration_tokens_provider_account_key unique (provider, account_email)
 );
+
+-- Rotation happens on every refresh, so "when did this last change" is the first
+-- question during an outage.
+create or replace function integration_tokens_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists integration_tokens_updated_at_trigger on public.integration_tokens;
+create trigger integration_tokens_updated_at_trigger
+  before update on public.integration_tokens
+  for each row execute function integration_tokens_set_updated_at();
 
 alter table public.integration_tokens enable row level security;
 drop policy if exists integration_tokens_service_all on public.integration_tokens;
@@ -2355,6 +2392,31 @@ create index if not exists site_submissions_form_type_created_at_idx
 
 -- Service-role only, same as website_leads: RLS on with no policies, so the
 -- anon key can neither read nor write. Every access goes through the server.
+-- 2026-08-17 follow-ups (#195) — row 188 true-up 2026-08-26: applied to prod
+-- as Supabase migration 20260817123021 (site_submissions_followups) but the
+-- file was never committed; recovered as
+-- migrations/2026-08-17-site-submissions-followups.sql. Statements verbatim.
+alter table public.site_submissions
+  add column if not exists handled_at timestamptz;
+alter table public.site_submissions
+  add column if not exists handled_by text;
+create index if not exists site_submissions_unhandled_idx
+  on public.site_submissions (created_at desc)
+  where handled_at is null;
+alter table public.site_submissions
+  add column if not exists retry_count integer not null default 0;
+alter table public.site_submissions
+  add column if not exists last_retried_at timestamptz;
+create index if not exists site_submissions_retry_idx
+  on public.site_submissions (last_retried_at nulls first, created_at)
+  where sync_status in ('pending', 'error');
+alter table public.site_submissions
+  add column if not exists nominee_consent boolean not null default false;
+alter table public.site_submissions
+  add column if not exists nominee_ghl_contact_id text;
+alter table public.site_submissions
+  add column if not exists nominee_sync_error text;
+
 alter table public.site_submissions enable row level security;
 
 -- The PRIVATE bucket resumes live in. Created here, in the same migration that
@@ -2467,6 +2529,14 @@ create table if not exists public.staff_notes (
   created_by_label    text not null,
   created_at          timestamptz not null default now(),
   client_request_id   uuid not null,
+  -- Row 372 (2026-08-25, migrations/2026-08-25-staff-notes-redaction.sql):
+  -- a withdrawn note keeps its row and its attribution; only the body is
+  -- replaced by a tombstone. Non-null redacted_at means body is that
+  -- tombstone, not what was originally written.
+  redacted_at         timestamptz,
+  redacted_by         uuid references auth.users(id) on delete set null,
+  redacted_by_label   text,
+  redacted_reason     text,
 
   constraint staff_notes_body_valid
     check (body = btrim(body) and char_length(body) between 1 and 2000),
@@ -2476,7 +2546,18 @@ create table if not exists public.staff_notes (
       and char_length(created_by_label) between 1 and 320
     ),
   constraint staff_notes_quote_request_unique
-    unique (quote_id, client_request_id)
+    unique (quote_id, client_request_id),
+  -- Row 372: same shape guarantee the other text columns carry.
+  constraint staff_notes_redacted_by_label_valid
+    check (
+      redacted_by_label is null
+      or (redacted_by_label = btrim(redacted_by_label) and char_length(redacted_by_label) between 1 and 320)
+    ),
+  constraint staff_notes_redacted_reason_valid
+    check (
+      redacted_reason is null
+      or (redacted_reason = btrim(redacted_reason) and char_length(redacted_reason) between 1 and 500)
+    )
 );
 
 create index if not exists staff_notes_quote_created_idx
@@ -2490,6 +2571,11 @@ alter table public.staff_notes enable row level security;
 
 revoke all on public.staff_notes from anon, authenticated, service_role;
 grant select, insert on public.staff_notes to service_role;
+-- Row 372: column-scoped on purpose — a redaction may rewrite the body and
+-- stamp itself, and may NOT re-attribute, re-date, or reuse the idempotency
+-- key of a note. Enforced by Postgres, not by the application.
+grant update (body, redacted_at, redacted_by, redacted_by_label, redacted_reason)
+  on public.staff_notes to service_role;
 
 comment on table public.staff_notes is
   'Internal staff-only quote timeline, also shown on the linked job and invoice. Never customer-facing.';
@@ -2590,3 +2676,237 @@ create index if not exists job_stock_movements_created_at_idx
   on public.job_stock_movements (created_at desc);
 
 alter table public.job_stock_movements enable row level security;
+
+-- ---------------------------------------------------------------------
+-- Fleet GPS (Bouncie) — ledger row 403 phase 2, capture-only.
+-- Source migration: 2026-08-26-bouncie-vehicles.sql (read it for the reasoning).
+--
+-- These three tables record where the company vehicles are. They deliberately
+-- have NO foreign key into job_segments / shifts / jobs: row 403 constraint (a)
+-- is that GPS never writes payroll. A geofence may only SUGGEST an arrive or
+-- depart to a crew member's own device, and a human still affirmatively taps.
+-- ---------------------------------------------------------------------
+create table if not exists public.vehicles (
+  id          uuid primary key default gen_random_uuid(),
+  label       text not null,
+  imei        text,
+  vin         text,
+  active      boolean not null default true,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+
+-- One device per vehicle, never shared (constraint (c)): the Bouncie
+-- subscription and trip history belong to the DEVICE, so moving the truck's
+-- tracker into the van would file the van's miles under the truck.
+create unique index if not exists vehicles_imei_key
+  on public.vehicles (imei) where imei is not null;
+
+create unique index if not exists vehicles_vin_key
+  on public.vehicles (vin) where vin is not null;
+
+-- `updated_at` maintenance, matching every other table in this schema that has
+-- the column (S68 technical lens: it was declared and then never maintained,
+-- which is worse than not having it — it would read as fresh forever).
+create or replace function vehicles_set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists vehicles_updated_at_trigger on public.vehicles;
+create trigger vehicles_updated_at_trigger
+  before update on public.vehicles
+  for each row execute function vehicles_set_updated_at();
+
+-- The STATIC vehicle-to-crew assignment (constraint (d)) — a setting edited when
+-- a crew actually changes, not a daily screen. A vehicle carries a CREW, so the
+-- map label holds several names. Whatever reads this must present it as an
+-- assumption, never as an assertion about who is physically in the vehicle.
+create table if not exists public.vehicle_crew (
+  id              uuid primary key default gen_random_uuid(),
+  vehicle_id      uuid not null references public.vehicles (id) on delete cascade,
+  crew_member_id  uuid not null references public.crew_members (id) on delete cascade,
+  active          boolean not null default true,
+  created_at      timestamptz not null default now()
+);
+
+create unique index if not exists vehicle_crew_vehicle_member_key
+  on public.vehicle_crew (vehicle_id, crew_member_id);
+
+create index if not exists vehicle_crew_vehicle_idx
+  on public.vehicle_crew (vehicle_id) where active;
+
+-- The raw capture log. Everything but the payload and its hash is NULLABLE on
+-- purpose: this table's job is to record what Bouncie ACTUALLY sent, including a
+-- payload that does not match the published spec, which is the most valuable
+-- thing it can catch. Dedupe is a sha256 of the exact body, because
+-- transaction_id identifies a TRIP and many distinct events share one.
+create table if not exists public.vehicle_events (
+  id              uuid primary key default gen_random_uuid(),
+  received_at     timestamptz not null default now(),
+  event_type      text,
+  imei            text,
+  vin             text,
+  transaction_id  text,
+  occurred_at     timestamptz,
+
+  -- ROW 403 CONSTRAINT (f): off-hours location is not the company's to see.
+  -- The truck goes home with an employee, so without this the table quietly
+  -- accumulates every evening, weekend and personal errand, forever, at rooftop
+  -- precision. Tagging at INSERT is the floor: it costs nothing, it cannot be
+  -- forgotten later, and it gives a retention or redaction job something to act
+  -- on without re-parsing every payload. NULL means the event carried no usable
+  -- timestamp, which is itself a case a purge job must decide about rather than
+  -- silently treat as in-hours. The window itself is a business decision, held
+  -- in ONE place: BUSINESS_HOURS in src/lib/integrations/bouncie.ts.
+  occurred_off_hours boolean,
+  body_sha256     text not null,
+  payload         jsonb not null
+);
+
+create unique index if not exists vehicle_events_body_sha256_key
+  on public.vehicle_events (body_sha256);
+
+create index if not exists vehicle_events_imei_received_idx
+  on public.vehicle_events (imei, received_at desc);
+
+create index if not exists vehicle_events_transaction_idx
+  on public.vehicle_events (transaction_id) where transaction_id is not null;
+
+alter table public.vehicles       enable row level security;
+alter table public.vehicle_crew   enable row level security;
+alter table public.vehicle_events enable row level security;
+
+
+-- ---------------------------------------------------------------------
+-- Fleet GPS — the SECOND CLOCK (ledger row 403 phase 3b).
+-- Source migration: 2026-08-27-vehicle-visits.sql (read it for the reasoning).
+--
+-- The crew clock in and out by hand and that stays the payroll record. These
+-- tables are an independent record of the same day, derived from where the vans
+-- actually were, so the two can be COMPARED. Row 403 constraint (a): GPS never
+-- writes payroll, and that is enforced structurally — there is deliberately NO
+-- foreign key from here into `shifts` or `job_segments`.
+-- ---------------------------------------------------------------------
+-- ---------------------------------------------------------------------
+-- job_geozones — the mapping between OUR jobs and BOUNCIE's geofences.
+--
+-- Bouncie runs the geofence server-side and tells us ENTER/EXIT by its own zone
+-- id. That id means nothing to us on its own, so this is the lookup that turns
+-- an incoming event back into "the Smith job on the 28th".
+--
+-- Zones are armed only for days that actually have scheduled jobs (Naldo's
+-- rule), so rows here are created the night before and retired after. `retired_at`
+-- rather than deletion, because an event can arrive slightly after we tear a
+-- zone down and we would rather resolve it than drop it.
+--
+-- `job_id` is NULLABLE on purpose: the depot zone (6 Birch Road, Amityville) is
+-- not a job. `kind` says which it is, so a reader never has to infer it from a
+-- null.
+-- ---------------------------------------------------------------------
+create table if not exists public.job_geozones (
+  id                   uuid primary key default gen_random_uuid(),
+  kind                 text not null check (kind in ('job', 'depot')),
+  job_id               uuid references public.jobs(id) on delete cascade,
+  assigned_date        date,
+  bouncie_location_id  text not null,
+  bouncie_geozone_id   text not null,
+  created_at           timestamptz not null default now(),
+  retired_at           timestamptz,
+
+  -- A depot zone has no job and no date; a job zone must have both. Enforced
+  -- here rather than in code, because a half-populated row would resolve events
+  -- to the wrong thing silently.
+  constraint job_geozones_shape check (
+    (kind = 'depot' and job_id is null and assigned_date is null)
+    or (kind = 'job' and job_id is not null and assigned_date is not null)
+  )
+);
+
+-- The lookup the webhook does on every geozone event.
+create unique index if not exists job_geozones_bouncie_geozone_key
+  on public.job_geozones (bouncie_geozone_id);
+
+-- One live zone per job per day. Partial, so a retired zone does not block
+-- re-arming the same job on a later date.
+create unique index if not exists job_geozones_job_date_live_key
+  on public.job_geozones (job_id, assigned_date) where retired_at is null and kind = 'job';
+
+-- At most one live depot zone.
+create unique index if not exists job_geozones_depot_live_key
+  on public.job_geozones (kind) where retired_at is null and kind = 'depot';
+
+-- ---------------------------------------------------------------------
+-- vehicle_visits — one row per arrival.
+--
+-- `exited_at` is NULL while a vehicle is still there. That is a normal, expected
+-- state during the working day, not an error, and any reader has to handle it.
+--
+-- WHAT ACTUALLY MAKES THIS IDEMPOTENT is the writer refusing to open a second
+-- visit while one is already open for the same vehicle and zone — not the unique
+-- index below. Bouncie's documented duplicate pattern is two SEPARATE deliveries
+-- reporting one physical arrival (its real-time and periodic streams overlap,
+-- and a device that loses signal dumps a burst on reconnect). Those differ in
+-- bytes, so a per-event index cannot see them as duplicates at all.
+-- ---------------------------------------------------------------------
+create table if not exists public.vehicle_visits (
+  id              uuid primary key default gen_random_uuid(),
+  vehicle_id      uuid not null references public.vehicles(id) on delete cascade,
+  geozone_id      uuid not null references public.job_geozones(id) on delete cascade,
+
+  -- Denormalised from job_geozones so the common queries ("visits to this job",
+  -- "did they leave the depot today") do not need a join, and so a visit stays
+  -- readable if its zone is later retired.
+  kind            text not null check (kind in ('job', 'depot')),
+  job_id          uuid references public.jobs(id) on delete set null,
+
+  entered_at      timestamptz not null,
+  exited_at       timestamptz,
+
+  -- Which raw events produced this. The whole point of the capture table is that
+  -- any derived row can be traced back to the bytes Bouncie actually sent.
+  --
+  -- BOTH ARE `on delete set null`, AND NULLABLE, ON PURPOSE. An earlier draft had
+  -- `enter_event_id not null ... on delete cascade`, which meant that the moment
+  -- anyone purged old raw events — and this project already anticipates a
+  -- retention job — every visit derived from them would be silently deleted too.
+  -- The timeline is the durable record; the raw event is the receipt for it.
+  -- Losing the receipt should cost the provenance link, not the history.
+  -- Found by the S68 technical lens.
+  enter_event_id  uuid references public.vehicle_events(id) on delete set null,
+  exit_event_id   uuid references public.vehicle_events(id) on delete set null,
+
+  created_at      timestamptz not null default now()
+);
+
+-- Provenance uniqueness: one visit per source event. Partial, because the column
+-- is nullable now — a purged raw event leaves its visit intact with a null link,
+-- and several such rows must not collide with each other.
+--
+-- NOTE this is NOT what makes arrivals idempotent. It only catches a redelivery
+-- of the SAME stored event, and those never reach the visit writer anyway: the
+-- body hash on `vehicle_events` drops them first. Real duplicate arrivals come
+-- from Bouncie's overlapping streams as DIFFERENT events reporting one physical
+-- arrival, and the writer guards those by refusing to open a second visit while
+-- one is already open for that vehicle and zone.
+create unique index if not exists vehicle_visits_enter_event_key
+  on public.vehicle_visits (enter_event_id) where enter_event_id is not null;
+
+-- "What is still open for this vehicle" — the lookup EXIT does.
+create index if not exists vehicle_visits_open_idx
+  on public.vehicle_visits (vehicle_id, geozone_id) where exited_at is null;
+
+-- "Every visit to this job, in order" — including the second one when a crew
+-- doubles back, which is the point.
+create index if not exists vehicle_visits_job_idx
+  on public.vehicle_visits (job_id, entered_at) where job_id is not null;
+
+-- "What happened on this day" — the comparison view against the manual clock.
+create index if not exists vehicle_visits_entered_idx
+  on public.vehicle_visits (entered_at desc);
+
+alter table public.job_geozones   enable row level security;
+alter table public.vehicle_visits enable row level security;

@@ -7,6 +7,7 @@ import { OperatorShell } from '@/components/OperatorShell';
 import { BillingSubNav } from '@/components/admin/BillingSubNav';
 import { InvoiceStatusBadge, INVOICE_STATUS_LABELS } from '@/components/admin/InvoiceStatusBadge';
 import { NceBadge } from '@/components/admin/NceBadge';
+import { ServiceTypeBadge } from '@/components/admin/ServiceTypeBadge';
 import type { InvoiceAdminCard } from '@/lib/invoices';
 import { INVOICE_STATUSES, type InvoiceStatus } from '@/lib/invoiceStatus';
 import { isStaleInvoiceSnapshot } from '@/lib/quoteAmendInvoiceSync';
@@ -157,6 +158,8 @@ function InvoicesAdminPageContent() {
                 <tr>
                   <th className="text-left px-3 py-2">Created</th>
                   <th className="text-left px-3 py-2">Invoice</th>
+                  {/* Row 419: service line, consistent across the admin lists. */}
+                  <th className="text-left px-3 py-2">Service</th>
                   <th className="text-left px-3 py-2">Customer</th>
                   <th className="text-right px-3 py-2">Total</th>
                   <th className="text-right px-3 py-2">Balance</th>
@@ -173,6 +176,11 @@ function InvoicesAdminPageContent() {
                       <Link href={`/admin/invoices/${inv.id}`} className="text-blue-600 hover:underline">
                         {inv.invoiceNumber != null ? `#${inv.invoiceNumber}` : inv.id.slice(0, 8)}
                       </Link>
+                    </td>
+                    {/* Row 419: em dash when the invoice has no linked quote —
+                        nothing else carries the service line. */}
+                    <td className="px-3 py-2">
+                      {inv.serviceType != null ? <ServiceTypeBadge serviceType={inv.serviceType} /> : <span className="text-gray-400">—</span>}
                     </td>
                     <td className="px-3 py-2 text-gray-700">
                       <div className="flex items-center gap-2">
@@ -212,11 +220,12 @@ function InvoicesAdminPageContent() {
                           // "See the amend panel on the linked order" — a promised remedy
                           // that doesn't always exist. /amend 409s "no-change" when there's
                           // no real price delta, so an invoiceResyncFailed marker with
-                          // nothing left to re-price can't be cleared there at all
-                          // (clearing it needs its own change — deferred to a ledger row).
-                          // Say what the ⚠ MEANS, not how to fix it.
+                          // nothing left to re-price can't be cleared there at all.
+                          // Row 414 built that clearing path: the detail page's
+                          // Mark reconciled override. Say what the ⚠ MEANS and
+                          // where the remedy lives.
                           <span
-                            title="Unreconciled — this invoice may not match the agreed total. Verify against the linked order before collecting the balance."
+                            title="Unreconciled — this invoice may not match the agreed total. Verify against the linked order before collecting the balance. Once verified, clear it with Mark reconciled on the invoice detail page (row 414)."
                             aria-label="Unreconciled invoice"
                             className="text-amber-600"
                           >

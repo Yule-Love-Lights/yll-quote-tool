@@ -239,11 +239,43 @@ export default function JobDetailPage() {
 
             <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
               <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Customer</h2>
-              <p className="text-gray-800 font-medium">{data.customerName ?? '—'}</p>
+              {/* Row 418: link to the customer profile (mirrors /admin/jobs'
+                  list idiom — customerRouteId rule; a walk-in with no id stays
+                  plain text). */}
+              <p className="text-gray-800 font-medium">
+                {data.customerRouteId ? (
+                  <Link
+                    href={`/customers/${encodeURIComponent(data.customerRouteId)}`}
+                    className="hover:underline"
+                    style={{ color: 'var(--op-primary)' }}
+                  >
+                    {data.customerName ?? '—'}
+                  </Link>
+                ) : (
+                  data.customerName ?? '—'
+                )}
+              </p>
               {data.customerAddress && <p className="text-sm text-gray-500">{data.customerAddress}</p>}
               <p className="text-sm text-gray-500">
                 {[data.customerPhone, data.customerEmail].filter(Boolean).join(' · ') || '—'}
               </p>
+              {/* Row 362: the approved light colour, on the screen the crew
+                  actually builds from. Rendered as a chip rather than a line of
+                  grey text because getting this wrong means the wrong lights go
+                  on a real house — Kristie Tibbetts was told Champagne by SMS
+                  while her order still read "Staff's pick", and nothing on this
+                  page would have shown the difference. Absent only when the
+                  quote has no approved selection. */}
+              {data.lightColorLabel && (
+                <p className="mt-2 text-sm">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                    Light colour
+                  </span>{' '}
+                  <span className="ml-1 inline-block rounded px-2 py-0.5 text-sm font-medium bg-amber-50 text-amber-900 border border-amber-200">
+                    {data.lightColorLabel}
+                  </span>
+                </p>
+              )}
               {data.job.quote_id && (
                 <div className="mt-2 flex gap-3 text-sm">
                   <Link href={`/quote/${data.job.quote_id}`} className="text-blue-700 hover:underline">
@@ -360,6 +392,29 @@ export default function JobDetailPage() {
                       </p>
                     );
                   })()}
+                  {/* Row 388: compact, read-only notice — the flagged figures +
+                      the override/resync actions live on the invoice detail
+                      page (row 414's panel, row 388's resync button); this is
+                      just a pointer so a crew-facing job page isn't the only
+                      place someone finds out the invoice needs attention. */}
+                  {(data.staleMarkers.paymentBlocked || data.staleMarkers.invoiceResyncFailed) && (
+                    <p
+                      className="mt-2 rounded-md border px-3 py-2 text-xs"
+                      style={{ borderColor: '#f59e0b', backgroundColor: '#fffbeb', color: '#92400e' }}
+                      role="status"
+                    >
+                      ⚠ This order has an unreconciled invoice marker
+                      {data.staleMarkers.invoiceResyncFailed && data.staleMarkers.paymentBlocked
+                        ? ' (a re-sync failed and a payment was refused)'
+                        : data.staleMarkers.invoiceResyncFailed
+                          ? ' (a re-sync failed)'
+                          : ' (a payment was refused)'}
+                      .{' '}
+                      <Link href={`/admin/invoices/${data.invoice.id}`} className="font-semibold underline">
+                        Review on the invoice →
+                      </Link>
+                    </p>
+                  )}
                 </>
               ) : (
                 <>

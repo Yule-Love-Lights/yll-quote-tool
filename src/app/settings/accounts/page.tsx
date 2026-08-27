@@ -12,10 +12,17 @@ import { getOperator } from '@/lib/auth/supabaseServer';
 import { AccountsManager } from '@/components/settings/AccountsManager';
 import { ChangeMyPassword } from '@/components/settings/ChangeMyPassword';
 import { StaffAccounts } from '@/components/settings/StaffAccounts';
+import { BouncieConnectNotice } from '@/components/settings/BouncieConnectNotice';
 
 export const dynamic = 'force-dynamic';
 
-export default async function AccountsPage() {
+export default async function AccountsPage({
+  searchParams,
+}: {
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const params = (await searchParams) ?? {};
+  const bouncie = Array.isArray(params.bouncie) ? params.bouncie[0] : params.bouncie;
   const operator = await getOperator();
   const isAdmin = operator?.role === 'admin';
 
@@ -23,6 +30,7 @@ export default async function AccountsPage() {
     <OperatorShell active="settings">
       <main className="max-w-3xl mx-auto">
         <SettingsSubNav active="accounts" />
+        <BouncieConnectNotice status={bouncie} />
         <div className="mb-6">
           <p
             className="text-xs font-semibold uppercase tracking-widest mb-1"

@@ -105,6 +105,11 @@ export async function persistSelfServeDesign(
     );
     // uploadDesignSatellite resets satellite_lines (a new image invalidates old
     // polylines), so write the traced lines AFTER it.
+    // Row 427: the outcome is deliberately ignored, as it was when this
+    // returned a bare boolean. This design was created moments ago for a
+    // brand-new self-serve draft, so it has no approved quote to be frozen
+    // against and no caller waiting on the trace — losing it costs the
+    // preview, not the lead.
     await updateDesignSatelliteLines(designId, buildSelfServeSatelliteLines(input.result));
   } catch (err) {
     console.error('[selfServe] persistSelfServeDesign satellite failed:', err instanceof Error ? err.message : 'error');

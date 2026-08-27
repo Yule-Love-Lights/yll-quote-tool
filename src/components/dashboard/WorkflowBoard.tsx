@@ -130,12 +130,14 @@ function StageColumn({
 }
 
 // Canonical-ish status dot colors. Quotes mirror the lifecycle intent (gold
-// draft → blue sent → green approved → evergreen booked); Jobs use a sensible
-// billing progression. Pulled from the operator/brand palette in globals.css.
+// draft → blue sent → evergreen booked); Jobs use a sensible billing
+// progression. Pulled from the operator/brand palette in globals.css.
+// Row 327: no separate 'approved' dot — an approved-not-booked quote folds
+// into 'sent' on this board now, matching quoteStatus.ts's
+// APPROVED_DISPLAYS_AS convention (ledger row 242: no third stage).
 const QUOTE_DOTS = {
   draft: 'var(--brand-gold)',
   sent: '#378ADD',
-  approved: '#639922',
   booked: 'var(--brand-evergreen)',
 } as const;
 
@@ -179,13 +181,15 @@ export function WorkflowBoard({ board }: { board: WorkflowBoardData }) {
   const inv = board.invoices;
 
   // Quotes headline = booked (the deals that converted), mirroring the KPI strip.
+  // Row 327: 'awaitingResponse' includes an approved-not-booked quote too (it
+  // folds into 'sent' — see workflowBoard.ts and quoteStatus.ts's
+  // APPROVED_DISPLAYS_AS), so there is no separate Approved row any more.
   const quoteRows: StatusRow[] = [
     { key: 'draft', label: 'Draft', dot: QUOTE_DOTS.draft, bucket: q.draft, href: QUOTES_HREF },
     { key: 'sent', label: 'Awaiting response', dot: QUOTE_DOTS.sent, bucket: q.awaitingResponse, href: QUOTES_HREF },
-    { key: 'approved', label: 'Approved · awaiting deposit', dot: QUOTE_DOTS.approved, bucket: q.approved, href: QUOTES_HREF },
     { key: 'booked', label: 'Booked · deposit paid', dot: QUOTE_DOTS.booked, bucket: q.booked, href: QUOTES_HREF },
   ];
-  const quotesTotal = q.draft.count + q.awaitingResponse.count + q.approved.count + q.booked.count;
+  const quotesTotal = q.draft.count + q.awaitingResponse.count + q.booked.count;
 
   // "Active" jobs = everything still in flight (before done / cancelled).
   const activeJobsCount =

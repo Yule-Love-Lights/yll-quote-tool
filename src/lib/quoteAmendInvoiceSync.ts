@@ -182,6 +182,18 @@ export type InvoiceResyncOutcome = {
   // invoice-basis total with the trail's tax-inclusive delta — the two can
   // disagree by the whole tax line on a tax-overridden invoice.
   previousInvoicedTotal: number | null;
+  // Row 990 fix round (technical-lens MED + delta-verify LOW, TOCTOU): true
+  // ONLY when `refuseIfPaid` was set and the fresh re-read below (not the
+  // caller's own earlier read) found the invoice already 'paid' — the caller
+  // asked this function to refuse exactly that outcome instead of silently
+  // reopening a just-settled invoice. Additive and optional so the two
+  // callers that never pass `refuseIfPaid` (amend/route.ts,
+  // amend-decline/route.ts, where reopening a paid invoice IS the intended
+  // behavior, wrapped in their own consent/notice machinery) are unaffected —
+  // they will simply never see this field set. Distinguishable from an
+  // ordinary `resynced: false` failure so a caller can map it to its OWN
+  // "already settled" refusal instead of a generic "resync failed, retry" message.
+  refusedPaid?: true;
   // Row 341 (staff-lens HIGH, fix round): true ONLY when the invoices row was
   // actually written to these figures — including a successful retry after a
   // lost CAS race (see the retry loop below). False for EVERY skip/failure
@@ -219,6 +231,18 @@ export type ResyncInvoiceArgs = {
   // appendRetiredTxn's `reason` field — lets a reopened txn's audit trail say
   // WHY (a staff re-price vs a customer decline reverting one).
   retiredReason: string;
+  // Row 990 fix round (TOCTOU): opt-in refusal to reopen an invoice this
+  // function's OWN fresh re-read (not the caller's earlier one) finds already
+  // 'paid'. /amend and /amend-decline never pass this — reopening a paid
+  // invoice there is legitimate and already wrapped in consent/notice
+  // machinery — so it defaults to undefined/false and their behavior is
+  // unchanged. The standalone resync route (which has none of that
+  // machinery) sets it: its own top-of-request 'paid' pre-check closes the
+  // obvious case, but a payment can settle in the gap between that read and
+  // this function's re-read, and without this flag the function would
+  // silently reopen the just-settled invoice anyway (its whole point is to
+  // recompute status from a FRESH read).
+  refuseIfPaid?: boolean;
 };
 
 /**
@@ -231,7 +255,7 @@ export type ResyncInvoiceArgs = {
  * was NOT updated to match.
  */
 export async function resyncInvoiceToAgreedTotal(args: ResyncInvoiceArgs): Promise<InvoiceResyncOutcome> {
-  const { jobId, invoice, result, depositPaid, newTotal, logPrefix, retiredReason } = args;
+  const { jobId, invoice, result, depositPaid, newTotal, logPrefix, retiredReason, refuseIfPaid } = args;
   const outcome: InvoiceResyncOutcome = {
     invoicedBalance: null,
     invoicedTotal: null,
@@ -281,6 +305,22 @@ export async function resyncInvoiceToAgreedTotal(args: ResyncInvoiceArgs): Promi
     // genuine "we expected to sync and couldn't" outcomes.
     if (invoiceForSync.status === 'cancelled') {
       return outcome; // don't resurrect a cancelled invoice
+    }
+
+    // Row 990 fix round (TOCTOU, technical-lens MED + delta-verify LOW):
+    // mirrors the cancelled-invoice branch immediately above, same reasoning.
+    // A caller that set `refuseIfPaid` has already decided reopening a paid
+    // invoice from THIS call site is never acceptable (see the flag's own
+    // comment); if this freshly re-read row is already 'paid', that decision
+    // applies regardless of whether it was paid at the caller's own earlier
+    // read or settled in the gap since. Deliberately NOT flagged via
+    // flagInvoiceResyncFailed, same reasoning as the cancelled branch: the
+    // caller asked for exactly this outcome, so a settled invoice being left
+    // untouched is the system working as designed, not a "we expected to
+    // sync and couldn't" failure.
+    if (refuseIfPaid && invoiceForSync.status === 'paid') {
+      outcome.refusedPaid = true;
+      return outcome;
     }
 
     // W1-004: re-sync to the AGREED new total (on the selection basis), not the
@@ -418,7 +458,7 @@ export async function resyncInvoiceToAgreedTotal(args: ResyncInvoiceArgs): Promi
       //     false by construction, so the condition that tripped the guard
       //     no longer holds.
       // Best-effort, never blocks the caller's own success.
-      await clearInvoiceStaleMarkers(invoiceForSync, logPrefix);
+      await clearInvoiceStaleMarkers(invoiceForSync.quote_id, logPrefix);
 
       // #170(b): reopening a PAID invoice starts a NEW charge cycle — retire the
       // settled txn to valor_txn_log and clear the live slot, or the next card
@@ -538,12 +578,25 @@ async function flagInvoiceResyncFailed(
   try {
     const sb = getSupabaseServiceClient();
     if (!sb) return;
-    const { data: quoteRow } = await sb
+    const { data: quoteRow, error: readErr } = await sb
       .from('quotes')
       .select('approval_snapshot')
       .eq('id', invoiceForSync.quote_id)
       .maybeSingle<{ approval_snapshot: Record<string, unknown> | null }>();
-    const priorSnapshot = quoteRow?.approval_snapshot ?? {};
+    // Row 411 (admin lens on PR #970): a FAILED read must skip, never degrade
+    // to {} — this was the exact pattern behind the attach route's reviewed
+    // data-loss bug. Here the value-CAS below already bounded the damage to
+    // "marker dropped" (a '{}' filter cannot match a populated snapshot), but
+    // the skip also stops the misleading lost-the-race warning a failed read
+    // used to produce, and makes this writer consistent with the module that
+    // now owns the idiom (src/lib/quoteAudit.ts's trap 2).
+    if (readErr || !quoteRow) {
+      console.warn(
+        `${logPrefix} invoiceResyncFailed marker SKIPPED for quote ${invoiceForSync.quote_id} — could not confirm the current approval_snapshot (read failed or no row)`,
+      );
+      return;
+    }
+    const priorSnapshot = quoteRow.approval_snapshot ?? {};
     const nextSnapshot = {
       ...priorSnapshot,
       invoiceResyncFailed: {
@@ -581,25 +634,68 @@ async function flagInvoiceResyncFailed(
 }
 
 // Row 394 fix: the CLEAR side of isStaleInvoiceSnapshot's two markers,
-// called only from resyncInvoiceToAgreedTotal's own success branch above —
-// see the comment at that call site for which markers a successful resync
-// actually proves resolved (both) and why. Same shape as
+// TWO callers, and the distinction between them is the whole safety argument:
+//
+//   1. resyncInvoiceToAgreedTotal's own success branch above — see the comment
+//      at that call site for why a successful resync PROVES both markers
+//      resolved.
+//   2. POST /api/invoices/[id]/charge-balance, but ONLY on a charge whose
+//      stale-vs-agreed-total check actually RAN AND PASSED (row 404). That
+//      check compares the invoice balance against the same
+//      resolveAgreedTotal-derived figure both markers exist to flag a
+//      violation of, so passing it re-establishes the same condition a resync
+//      would, and the charge then settles the invoice to paid/$0.
+//
+// NOT called when that charge used `overrideStale`. An override means the
+// operator asserted the figure by hand and charged the amount ON FILE, which
+// may differ from the agreed total — so the discrepancy is still real and the
+// marker is the only record that this order was billed off a stale figure.
+// Clearing it there would erase a money signal, not resolve one. (Ledger row
+// 404 originally proposed exactly that; it is the wrong half of the branch.) Same shape as
 // flagInvoiceResyncFailed: read-then-CAS on the exact prior snapshot, drop
 // (never retry, never blind-overwrite) on a lost race, never throws. Scoped
 // to exactly the two marker keys — every other approval_snapshot field
 // (amendments, invoice_basis, pendingColorRequest, ...) rides through
 // untouched, via object-rest-destructure rather than a blind merge.
-async function clearInvoiceStaleMarkers(invoiceForSync: InvoiceRow, logPrefix: string): Promise<void> {
-  if (!invoiceForSync.quote_id) return;
+//
+// `expectedSnapshot` (premerge MED, found independently by the technical AND
+// admin lenses): the caller's gate is computed from data read at the START of
+// its request, but this clear fires at the END, after a multi-second card
+// round-trip. Re-reading here would happily clear a marker a CONCURRENT writer
+// set in that window for an unrelated, still-live reason — e.g. an /amend that
+// raised the total, lost its invoice-sync race twice, and flagged
+// invoiceResyncFailed. The CAS alone does not help, because a fresh read
+// includes that new marker and the CAS then matches.
+//
+// So a caller whose justification is tied to a specific earlier observation
+// passes the snapshot it observed. The clear then CASes on THAT value: if
+// anything wrote to approval_snapshot in between, the CAS misses, the clear
+// drops, and the new marker survives — which is the correct outcome, because
+// the caller only ever proved something about the state it actually saw.
+// Omitting it keeps the original read-then-CAS behaviour for
+// resyncInvoiceToAgreedTotal, whose own success IS the proof and needs no
+// correlation to an earlier read.
+export async function clearInvoiceStaleMarkers(
+  quoteId: string | null | undefined,
+  logPrefix: string,
+  expectedSnapshot?: Record<string, unknown> | null,
+): Promise<void> {
+  if (!quoteId) return;
   try {
     const sb = getSupabaseServiceClient();
     if (!sb) return;
-    const { data: quoteRow } = await sb
-      .from('quotes')
-      .select('approval_snapshot')
-      .eq('id', invoiceForSync.quote_id)
-      .maybeSingle<{ approval_snapshot: Record<string, unknown> | null }>();
-    const priorSnapshot = quoteRow?.approval_snapshot ?? null;
+    let priorSnapshot: Record<string, unknown> | null;
+    if (expectedSnapshot !== undefined) {
+      // Correlated caller: use exactly what it observed, do not re-read.
+      priorSnapshot = expectedSnapshot;
+    } else {
+      const { data: quoteRow } = await sb
+        .from('quotes')
+        .select('approval_snapshot')
+        .eq('id', quoteId)
+        .maybeSingle<{ approval_snapshot: Record<string, unknown> | null }>();
+      priorSnapshot = quoteRow?.approval_snapshot ?? null;
+    }
     if (!priorSnapshot || (!priorSnapshot.paymentBlocked && !priorSnapshot.invoiceResyncFailed)) {
       return; // nothing to clear
     }
@@ -609,7 +705,7 @@ async function clearInvoiceStaleMarkers(invoiceForSync: InvoiceRow, logPrefix: s
     const { data: updated, error } = await sb
       .from('quotes')
       .update({ approval_snapshot: nextSnapshot })
-      .eq('id', invoiceForSync.quote_id)
+      .eq('id', quoteId)
       // Serialize jsonb explicitly — PostgREST string-interpolates filter
       // values; passing the object directly would produce "[object Object]"
       // and never match (same reasoning as every sibling CAS in this repo).
@@ -624,7 +720,7 @@ async function clearInvoiceStaleMarkers(invoiceForSync: InvoiceRow, logPrefix: s
       // blind-overwrite whatever concurrent write just landed. The marker
       // simply stays until the NEXT successful resync clears it.
       console.warn(
-        `${logPrefix} stale-invoice marker clear lost a concurrent write to quote ${invoiceForSync.quote_id}'s approval_snapshot — dropped (best-effort, not retried)`,
+        `${logPrefix} stale-invoice marker clear lost a concurrent write to quote ${quoteId}'s approval_snapshot — dropped (best-effort, not retried)`,
       );
     }
   } catch (err) {

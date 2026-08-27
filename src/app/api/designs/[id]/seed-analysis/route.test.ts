@@ -195,3 +195,38 @@ describe('POST /api/designs/[id]/seed-analysis — scene compare-and-swap (ledge
     expect(data.conflict).toBe(true);
   });
 });
+
+// ── Row 367: the freeze reaches THIS route through the shared writer ─────────
+// This route was one of the three bypasses four premerge lenses found in the
+// first cut of row 367 (the guard sat in PUT /api/designs/[id] only, so
+// "Re-analyze This View" could silently rewrite a signed-off design). The
+// guard now lives in updateDesignSceneGuarded; what this route owns is mapping
+// its refusal to an honest answer instead of a generic 500.
+describe('POST /api/designs/[id]/seed-analysis — post-approval freeze (row 367)', () => {
+  it('maps a locked write to a 409 carrying the shared design-locked code', async () => {
+    updateDesignSceneGuarded.mockResolvedValueOnce({ ok: false, reason: 'locked' });
+    getDesign.mockResolvedValue(baseRow({ yardsticks: [], items: [] }));
+    const res = await POST(
+      makeReq({ seed: MINI_DETECTION_SEED }),
+      { params: Promise.resolve({ id: VALID_DESIGN_ID }) },
+    );
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe('design-locked');
+    // Same wire code as the PUT route, so the builder's LOCK_CODES set and the
+    // editor's SceneLockedError branch both recognise it without a second
+    // vocabulary.
+    expect(body.error).toContain('already approved');
+  });
+
+  it('maps an unverified freeze read to a retryable 500 with no lock code', async () => {
+    updateDesignSceneGuarded.mockResolvedValueOnce({ ok: false, reason: 'unverified' });
+    getDesign.mockResolvedValue(baseRow({ yardsticks: [], items: [] }));
+    const res = await POST(
+      makeReq({ seed: MINI_DETECTION_SEED }),
+      { params: Promise.resolve({ id: VALID_DESIGN_ID }) },
+    );
+    expect(res.status).toBe(500);
+    expect((await res.json()).code).toBeUndefined();
+  });
+});

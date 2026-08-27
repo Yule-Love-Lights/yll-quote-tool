@@ -65,6 +65,12 @@ function makeSb(
     // CAS): 'raced' simulates the same 0-rows-no-error shape the invoices
     // CAS uses when a concurrent write already changed approval_snapshot.
     quoteUpdateResult?: 'ok' | 'raced';
+    // Row 411 fix round (delta-verify MED): simulate the quotes-select READ
+    // itself failing — { data: null, error } — so the skip-on-unconfirmed
+    // guard in flagInvoiceResyncFailed is actually reachable. Without this the
+    // fake structurally could not exercise that branch, and a probe reverted
+    // the guard with every test green.
+    quoteReadFails?: boolean;
   } = {},
 ) {
   const invoiceUpdates: Array<Record<string, unknown>> = [];
@@ -94,10 +100,13 @@ function makeSb(
       return b;
     },
     select: () => b,
-    maybeSingle: async () => ({
-      data: table === 'quotes' ? { approval_snapshot: opts.quoteApprovalSnapshot ?? null } : null,
-      error: null,
-    }),
+    maybeSingle: async () =>
+      table === 'quotes' && opts.quoteReadFails
+        ? { data: null, error: { message: 'connection reset' } }
+        : {
+            data: table === 'quotes' ? { approval_snapshot: opts.quoteApprovalSnapshot ?? null } : null,
+            error: null,
+          },
     then: (resolve: (v: unknown) => void) => {
       if (table === 'invoices' && mode === 'update') {
         const outcome = results[Math.min(invoiceCallIndex, results.length - 1)];
@@ -245,6 +254,104 @@ describe('resyncInvoiceToAgreedTotal — declining a DECREASE reopens an already
 
     expect(sb.invoiceUpdates[0]).toMatchObject({ status: 'awaiting_payment' });
     expect(appendRetiredTxnMock).not.toHaveBeenCalled();
+  });
+});
+
+// Row 990 fix round (technical-lens MED + delta-verify LOW, TOCTOU): the
+// standalone resync route's own 'paid' pre-check reads the invoice at the TOP
+// of the request; if a payment settles in the gap before this function's OWN
+// fresh re-read (the B10 re-read above) runs, that stale pre-check can't see
+// it and canTransition('paid','awaiting_payment') is legal, so without
+// `refuseIfPaid` this function would silently reopen a just-settled invoice.
+// These tests drive the race directly: the caller-supplied `invoice` arg
+// (standing in for the route's stale top-of-request read) is NOT paid, but
+// the fresh re-read (mocked via getInvoiceByJobMock, exactly as the B10
+// re-read comment describes) IS.
+describe('resyncInvoiceToAgreedTotal — refuseIfPaid (row 990, TOCTOU race)', () => {
+  const staleAwaitingInvoice: InvoiceRow = {
+    id: 'inv-1',
+    invoice_number: 1,
+    job_id: 'job-1',
+    quote_id: 'quote-1',
+    customer_id: null,
+    subtotal: 1000,
+    discount: 0,
+    tax: 0,
+    total: 1000,
+    deposit_applied: 500,
+    balance: 500,
+    credit_note: 0,
+    tax_overridden: false,
+    status: 'awaiting_payment',
+    valor_balance_txn_id: null,
+    valor_receipt_url: null,
+    valor_txn_log: null,
+    payment_preference: null,
+    created_at: '2026-07-01T00:00:00.000Z',
+    paid_at: null,
+    updated_at: '2026-08-20T10:00:00.000Z',
+  };
+  const settledInvoice: InvoiceRow = {
+    ...staleAwaitingInvoice,
+    status: 'paid',
+    balance: 0,
+    paid_at: '2026-08-20T10:00:05.000Z',
+    updated_at: '2026-08-20T10:00:05.000Z',
+  };
+
+  it('refuses and writes NOTHING when the fresh re-read finds the invoice already paid, even though the caller-supplied (stale) invoice was still awaiting_payment', async () => {
+    const sb = makeSb();
+    sbRef.current = sb.client;
+    getInvoiceByJobMock.mockResolvedValueOnce(settledInvoice);
+
+    const outcome = await resyncInvoiceToAgreedTotal({
+      jobId: 'job-1',
+      invoice: staleAwaitingInvoice,
+      result: { total: 1400 },
+      depositPaid: 500,
+      newTotal: 1400,
+      logPrefix: '[test]',
+      retiredReason: 'manual-resync',
+      refuseIfPaid: true,
+    });
+
+    expect(outcome).toEqual({
+      invoicedBalance: null,
+      invoicedTotal: null,
+      previousInvoicedTotal: null,
+      resynced: false,
+      refusedPaid: true,
+    });
+    expect(sb.invoiceUpdates).toHaveLength(0); // no write ever attempted
+    // Deliberately NOT flagged via flagInvoiceResyncFailed — see the branch's
+    // own comment (mirrors the cancelled-invoice branch's reasoning): the
+    // caller asked for exactly this outcome, so it isn't a "we expected to
+    // sync and couldn't" failure.
+    expect(sb.quoteUpdates).toHaveLength(0);
+    expect(appendRetiredTxnMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT refuse when refuseIfPaid is absent — matches /amend and /amend-decline, which legitimately reopen a paid invoice under their own consent machinery', async () => {
+    const sb = makeSb();
+    sbRef.current = sb.client;
+    getInvoiceByJobMock.mockResolvedValueOnce(settledInvoice);
+
+    const outcome = await resyncInvoiceToAgreedTotal({
+      jobId: 'job-1',
+      invoice: staleAwaitingInvoice,
+      result: { total: 1400 },
+      depositPaid: 500,
+      newTotal: 1400,
+      logPrefix: '[test]',
+      retiredReason: 'amend-reopen',
+      // refuseIfPaid intentionally omitted — this is the exact call shape
+      // amend/route.ts and amend-decline/route.ts use.
+    });
+
+    expect(outcome.resynced).toBe(true);
+    expect(outcome.refusedPaid).toBeUndefined();
+    expect(sb.invoiceUpdates).toHaveLength(1);
+    expect(sb.invoiceUpdates[0]).toMatchObject({ status: 'awaiting_payment' });
   });
 });
 
@@ -549,6 +656,33 @@ describe('flagInvoiceResyncFailed — CAS on approval_snapshot (row 341 fix roun
     // never retried and never blind-overwritten (unlike the invoices CAS,
     // which retries once against a fresh read).
     expect(sb.quoteUpdates).toHaveLength(1);
+  });
+
+  it('SKIPS the marker write entirely when the snapshot read fails — never degrades to {} (row 411)', async () => {
+    // The reviewed data-loss pattern: a failed read coerced to {} and CAS'd
+    // against '{}'. The CAS bounded the damage to a dropped marker with a
+    // misleading lost-the-race log, but the guard must SKIP — no quotes-table
+    // write at all. Mutation-proof: reverting the guard to the old ?? {}
+    // coercion makes this fail (a quotes update is attempted).
+    const sb = makeSb({
+      invoiceUpdateResults: ['raced', 'raced'],
+      quoteReadFails: true,
+    });
+    sbRef.current = sb.client;
+    getInvoiceByJobMock.mockResolvedValue(invoice);
+
+    const outcome = await resyncInvoiceToAgreedTotal({
+      jobId: 'job-1',
+      invoice,
+      result: { total: 2400 },
+      depositPaid: 1000,
+      newTotal: 2400,
+      logPrefix: '[test]',
+      retiredReason: 'amend-decline-reopen',
+    });
+
+    expect(outcome.resynced).toBe(false); // the resync failure is still reported
+    expect(sb.quoteUpdates).toHaveLength(0); // but NO snapshot write was attempted
   });
 });
 

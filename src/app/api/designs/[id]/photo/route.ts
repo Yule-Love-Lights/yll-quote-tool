@@ -9,6 +9,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isSupabaseServiceConfigured } from '@/lib/supabase';
 import { uploadDesignPhoto, signDesignPhoto, isValidDesignId, getDesign } from '@/lib/designs';
 import { requireOperator } from '@/lib/auth/supabaseServer';
+import { refuseIfFrozen } from '@/lib/design/sceneFreeze';
 
 export const runtime = 'nodejs';
 
@@ -25,6 +26,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!isValidDesignId(id)) {
     return NextResponse.json({ error: 'Invalid design id' }, { status: 400 });
   }
+
+  // Row 427: replacing the BASE PHOTO changes the picture the customer
+  // approved just as surely as moving a light does. Refused before the upload,
+  // so a decline costs nothing.
+  const frozen = await refuseIfFrozen(id);
+  if (frozen) return frozen;
 
   let body: Record<string, unknown>;
   try {
